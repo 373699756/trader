@@ -47,7 +47,8 @@
       </section>
 
       <nav class="tabs" aria-label="榜单视图">
-        <button class="tab-button active" type="button" data-tab="todayPanel">今日推荐</button>
+        <button class="tab-button active" type="button" data-tab="overviewPanel">策略总览</button>
+        <button class="tab-button" type="button" data-tab="todayPanel">今日推荐</button>
         <button class="tab-button" type="button" data-tab="tomorrowPanel">明天预测50</button>
         <button class="tab-button" type="button" data-tab="horizonPanel">波段/中长期</button>
         <button class="tab-button" type="button" data-tab="techPanel">科技潜力50</button>
@@ -55,7 +56,61 @@
         <button class="tab-button" type="button" data-tab="strategyPanel">策略说明</button>
       </nav>
 
-      <section class="recommendation-grid tab-panel active" id="todayPanel">
+      <section class="tab-panel active" id="overviewPanel">
+        <div class="board">
+          <div class="board-header">
+            <h2>策略总览</h2>
+            <span>先看策略是否有效，再看具体股票</span>
+          </div>
+          <section class="overview-summary">
+            <div>
+              <span>当前最佳</span>
+              <strong id="overviewBestStrategy">-</strong>
+            </div>
+            <div>
+              <span>已验证策略</span>
+              <strong id="overviewVerifiedCount">-</strong>
+            </div>
+            <div>
+              <span>总验证样本</span>
+              <strong id="overviewSampleCount">-</strong>
+            </div>
+            <div>
+              <span>观察周期</span>
+              <strong id="overviewDays">近20个保存日</strong>
+            </div>
+          </section>
+          <div class="strategy-overview-grid" id="strategyOverviewGrid">
+            <div class="empty">加载中...</div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>策略</th>
+                  <th>版本</th>
+                  <th>周期</th>
+                  <th>样本</th>
+                  <th>推荐价次日</th>
+                  <th>3%命中</th>
+                  <th>3日收益</th>
+                  <th>平均回撤</th>
+                  <th>最近保存</th>
+                  <th>状态</th>
+                  <th>建议</th>
+                </tr>
+              </thead>
+              <tbody id="strategyOverviewBody">
+                <tr>
+                  <td colspan="11" class="empty">加载中...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="recommendation-grid tab-panel" id="todayPanel">
         <div class="board">
           <div class="board-header">
             <h2>短期推荐 10 支</h2>
@@ -80,7 +135,7 @@
                   <th>舆情分</th>
                   <th>综合分</th>
                   <th>稳定</th>
-                  <th>推荐理由</th>
+                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="shortTermBody">
@@ -116,7 +171,7 @@
                   <th>舆情分</th>
                   <th>综合分</th>
                   <th>稳定</th>
-                  <th>推荐理由</th>
+                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="longTermBody">
@@ -180,7 +235,7 @@
                   <th>趋势</th>
                   <th>执行性</th>
                   <th>综合分</th>
-                  <th>分析理由</th>
+                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="tomorrowBody">
@@ -218,7 +273,7 @@
                   <th>趋势</th>
                   <th>流动性</th>
                   <th>综合分</th>
-                  <th>分析理由</th>
+                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="swingBody">
@@ -254,7 +309,7 @@
                   <th>稳健</th>
                   <th>流动性</th>
                   <th>综合分</th>
-                  <th>分析理由</th>
+                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="positionBody">
@@ -292,7 +347,7 @@
                   <th>未透支</th>
                   <th>执行性</th>
                   <th>综合分</th>
-                  <th>分析理由</th>
+                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="techBody">

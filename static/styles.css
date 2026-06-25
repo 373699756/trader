@@ -266,6 +266,22 @@ tbody tr.selected {
   color: var(--warning);
 }
 
+.warning {
+  background: #fff7d6;
+  color: #8a5a00;
+}
+
+.strategy {
+  background: #eaf8ef;
+  color: #1c6b3a;
+  font-weight: 650;
+}
+
+.validation {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
 .new {
   background: #eaf8ef;
   color: #1c6b3a;
@@ -303,6 +319,117 @@ tbody tr.selected {
   overflow-wrap: anywhere;
   font-size: 16px;
   line-height: 1.25;
+}
+
+.overview-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
+.overview-summary div {
+  min-height: 68px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.overview-summary span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.overview-summary strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.strategy-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
+.strategy-card {
+  min-height: 170px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--muted);
+  border-radius: 8px;
+}
+
+.strategy-card.status-good {
+  border-left-color: var(--positive);
+}
+
+.strategy-card.status-neutral {
+  border-left-color: var(--accent);
+}
+
+.strategy-card.status-bad {
+  border-left-color: var(--warning);
+}
+
+.strategy-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.strategy-card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.strategy-card-head span,
+.strategy-card p,
+.strategy-card-metrics span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.strategy-card p {
+  min-height: 40px;
+  margin: 0 0 12px;
+  line-height: 1.45;
+}
+
+.strategy-card-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.strategy-card-metrics div {
+  min-width: 0;
+}
+
+.strategy-card-metrics span {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.strategy-card-metrics strong {
+  display: block;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.strategy-status {
+  margin-top: 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .validation-actions {
@@ -454,6 +581,11 @@ footer {
   .prediction-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .overview-summary,
+  .strategy-overview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 560px) {
@@ -462,6 +594,11 @@ footer {
   }
 
   .prediction-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-summary,
+  .strategy-overview-grid {
     grid-template-columns: 1fr;
   }
 

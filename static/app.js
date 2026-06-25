@@ -12,6 +12,7 @@ const state = {
   tomorrowLoaded: false,
   techLoaded: false,
   horizonLoaded: false,
+  overviewLoaded: false,
   validationLoaded: false,
   selectedValidation: {
     date: "",
@@ -29,6 +30,12 @@ const els = {
   refreshButton: document.getElementById("refreshButton"),
   tabButtons: document.querySelectorAll(".tab-button"),
   tabPanels: document.querySelectorAll(".tab-panel"),
+  overviewBestStrategy: document.getElementById("overviewBestStrategy"),
+  overviewVerifiedCount: document.getElementById("overviewVerifiedCount"),
+  overviewSampleCount: document.getElementById("overviewSampleCount"),
+  overviewDays: document.getElementById("overviewDays"),
+  strategyOverviewGrid: document.getElementById("strategyOverviewGrid"),
+  strategyOverviewBody: document.getElementById("strategyOverviewBody"),
   shortTermBody: document.getElementById("shortTermBody"),
   longTermBody: document.getElementById("longTermBody"),
   tomorrowBody: document.getElementById("tomorrowBody"),
@@ -102,6 +109,23 @@ async function loadRecommendations() {
   }
 }
 
+async function loadStrategyOverview() {
+  state.overviewLoaded = true;
+  els.strategyOverviewGrid.innerHTML = '<div class="empty">加载中...</div>';
+  els.strategyOverviewBody.innerHTML = '<tr><td colspan="11" class="empty">加载中...</td></tr>';
+  try {
+    const res = await fetch("/api/strategy-overview?days=20");
+    const payload = await res.json();
+    if (!payload.ok) {
+      throw new Error(payload.error || "接口返回异常");
+    }
+    renderStrategyOverview(payload);
+  } catch (err) {
+    els.strategyOverviewGrid.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+    els.strategyOverviewBody.innerHTML = `<tr><td colspan="11" class="empty">${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
 async function loadValidation() {
   state.validationLoaded = true;
   els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">加载中...</td></tr>';
@@ -143,6 +167,7 @@ async function saveStrategySnapshot(strategy) {
     };
     els.validationStrategySelect.value = strategy;
     setStatus(`已保存 ${payload.saved.saved} 条预测，替换旧样本 ${payload.saved.replaced || 0} 条`);
+    loadStrategyOverview();
     loadValidation();
   } catch (err) {
     setStatus(`保存预测失败：${err.message}`);
@@ -167,6 +192,7 @@ async function updateValidationOutcomes() {
       throw new Error(payload.error || "更新失败");
     }
     setStatus(`验证结果已更新 ${payload.result.updated} 条，跳过 ${payload.result.skipped} 条`);
+    loadStrategyOverview();
     loadValidation();
   } catch (err) {
     setStatus(`更新验证失败：${err.message}`);
@@ -285,6 +311,64 @@ function renderMetrics(payload) {
   els.marketSentiment.textContent = marketSentiment.score ? `${marketSentiment.score}` : "-";
 }
 
+function renderStrategyOverview(payload) {
+  const strategies = payload.strategies || [];
+  const best = payload.best_strategy;
+  const verifiedCount = strategies.filter(row => Number(row.metrics?.sample_count || 0) > 0).length;
+  const sampleCount = strategies.reduce((sum, row) => sum + Number(row.metrics?.sample_count || 0), 0);
+  els.overviewBestStrategy.textContent = best ? best.label : "暂无";
+  els.overviewVerifiedCount.textContent = `${verifiedCount}/${strategies.length}`;
+  els.overviewSampleCount.textContent = sampleCount;
+  els.overviewDays.textContent = `近${payload.days || 20}个保存日`;
+
+  if (!strategies.length) {
+    els.strategyOverviewGrid.innerHTML = '<div class="empty">暂无策略</div>';
+    els.strategyOverviewBody.innerHTML = '<tr><td colspan="11" class="empty">暂无策略</td></tr>';
+    return;
+  }
+
+  els.strategyOverviewGrid.innerHTML = strategies.map(row => {
+    const metrics = row.metrics || {};
+    const status = row.status || {};
+    return `
+      <article class="strategy-card status-${escapeHtml(status.level || "pending")}">
+        <div class="strategy-card-head">
+          <h3>${escapeHtml(row.label)}</h3>
+          <span>${escapeHtml(row.horizon)}</span>
+        </div>
+        <p>${escapeHtml(row.goal || "")}</p>
+        <div class="strategy-card-metrics">
+          <div><span>样本</span><strong>${metrics.sample_count ?? 0}</strong></div>
+          <div><span>次日</span><strong>${formatPercent(metrics.avg_next_close_return)}</strong></div>
+          <div><span>3%命中</span><strong>${formatPercent(metrics.hit_3pct_rate)}</strong></div>
+        </div>
+        <div class="strategy-status">${escapeHtml(status.label || "待验证")}</div>
+      </article>
+    `;
+  }).join("");
+
+  els.strategyOverviewBody.innerHTML = strategies.map(row => {
+    const metrics = row.metrics || {};
+    const latest = row.latest_signal || {};
+    const status = row.status || {};
+    return `
+      <tr>
+        <td>${escapeHtml(row.label)}</td>
+        <td>${escapeHtml(row.version)}</td>
+        <td>${escapeHtml(row.horizon)}</td>
+        <td class="num">${metrics.sample_count ?? 0}</td>
+        <td class="num ${numberClass(metrics.avg_next_close_return)}">${formatPercent(metrics.avg_next_close_return)}</td>
+        <td class="num">${formatPercent(metrics.hit_3pct_rate)}</td>
+        <td class="num ${numberClass(metrics.avg_hold_3d_return)}">${formatPercent(metrics.avg_hold_3d_return)}</td>
+        <td class="num ${numberClass(metrics.avg_max_drawdown_3d)}">${formatPercent(metrics.avg_max_drawdown_3d)}</td>
+        <td>${escapeHtml(latest.signal_date || "-")}</td>
+        <td><span class="tag ${status.level === "bad" ? "risk" : ""}">${escapeHtml(status.label || "待验证")}</span></td>
+        <td>${escapeHtml(status.advice || "-")}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
 function renderTomorrowPredictionStrip(payload) {
   const health = payload.health || {};
   const meta = payload.meta || {};
@@ -324,6 +408,49 @@ async function loadTomorrowValidationMetrics() {
   }
 }
 
+function explanationTags(row) {
+  const tags = [];
+  const strategy = row.strategy_label || strategyLabel(row.strategy_name) || "-";
+  const signal = row.signal_label ? ` / ${row.signal_label}` : "";
+  tags.push(`<span class="tag strategy">策略:${escapeHtml(strategy)}${escapeHtml(signal)}</span>`);
+
+  (row.reasons || []).slice(0, 5).forEach(text => {
+    tags.push(`<span class="tag">推荐:${escapeHtml(text)}</span>`);
+  });
+  tags.push(riskTag("追高", row.chase_risk));
+  tags.push(riskTag("透支", row.overextension));
+
+  (row.failure_reasons || []).slice(0, 4).forEach(text => {
+    tags.push(`<span class="tag risk">失败:${escapeHtml(text)}</span>`);
+  });
+  (row.risk_words || []).slice(0, 3).forEach(text => {
+    tags.push(`<span class="tag risk">舆情:${escapeHtml(text)}</span>`);
+  });
+  tags.push(similarSignalStatsTag(row.similar_signal_stats));
+  return tags.filter(Boolean).join("");
+}
+
+function riskTag(prefix, risk) {
+  if (!risk) {
+    return `<span class="tag stable">${prefix}:未知</span>`;
+  }
+  const level = risk.level || "low";
+  const cls = level === "high" ? "risk" : level === "medium" ? "warning" : "stable";
+  const label = risk.label || (level === "high" ? "高" : level === "medium" ? "中" : "低");
+  return `<span class="tag ${cls}">${escapeHtml(prefix)}:${escapeHtml(label)}</span>`;
+}
+
+function similarSignalStatsTag(stats) {
+  if (!stats || !Number(stats.sample_count || 0)) {
+    return '<span class="tag stable">同类胜率:暂无样本</span>';
+  }
+  const sample = Number(stats.sample_count || 0);
+  const hit3 = stats.hit_3pct_rate == null ? "-" : `${formatNumber(stats.hit_3pct_rate, 1)}%`;
+  const win = stats.win_rate_next_close == null ? "-" : `${formatNumber(stats.win_rate_next_close, 1)}%`;
+  const avg = stats.avg_next_close_return == null ? "-" : `${formatNumber(stats.avg_next_close_return, 2)}%`;
+  return `<span class="tag validation">同类${sample}样本 3%:${hit3} 胜:${win} 均:${avg}</span>`;
+}
+
 function renderShortTermTable(rows) {
   if (!rows.length) {
     els.shortTermBody.innerHTML = '<tr><td colspan="16" class="empty">暂无符合条件的股票</td></tr>';
@@ -331,8 +458,7 @@ function renderShortTermTable(rows) {
   }
   els.shortTermBody.innerHTML = rows.map(row => {
     const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
-    const reasons = (row.reasons || []).map(text => `<span class="tag">${escapeHtml(text)}</span>`).join("");
-    const risks = (row.risk_words || []).map(text => `<span class="tag risk">${escapeHtml(text)}</span>`).join("");
+    const explanation = explanationTags(row);
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
@@ -350,7 +476,7 @@ function renderShortTermTable(rows) {
         <td class="num">${formatNumber(row.sentiment_score, 1)}</td>
         <td class="num score">${formatNumber(row.score, 1)}</td>
         <td>${stabilityTag(row)}</td>
-        <td class="reasons">${reasons}${risks}</td>
+        <td class="reasons">${explanation}</td>
       </tr>
     `;
   }).join("");
@@ -367,8 +493,7 @@ function renderLongTermTable(rows) {
     const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
     const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
     const ytdClass = row.ytd_pct >= 0 ? "positive" : "negative";
-    const reasons = (row.reasons || []).map(text => `<span class="tag">${escapeHtml(text)}</span>`).join("");
-    const risks = (row.risk_words || []).map(text => `<span class="tag risk">${escapeHtml(text)}</span>`).join("");
+    const explanation = explanationTags(row);
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
@@ -386,7 +511,7 @@ function renderLongTermTable(rows) {
         <td class="num">${formatNumber(row.sentiment_score, 1)}</td>
         <td class="num score">${formatNumber(row.score, 1)}</td>
         <td>${stabilityTag(row)}</td>
-        <td class="reasons">${reasons}${risks}</td>
+        <td class="reasons">${explanation}</td>
       </tr>
     `;
   }).join("");
@@ -402,7 +527,7 @@ function renderTomorrowTable(rows) {
   els.tomorrowBody.innerHTML = rows.map(row => {
     const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
     const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
-    const reasons = (row.reasons || []).map(text => `<span class="tag">${escapeHtml(text)}</span>`).join("");
+    const explanation = explanationTags(row);
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
@@ -420,7 +545,7 @@ function renderTomorrowTable(rows) {
         <td class="num">${formatNumber(row.trend_score, 1)}</td>
         <td class="num">${formatNumber(row.execution_score, 1)}</td>
         <td class="num score">${formatNumber(row.score, 1)}</td>
-        <td class="reasons">${reasons}</td>
+        <td class="reasons">${explanation}</td>
       </tr>
     `;
   }).join("");
@@ -437,7 +562,7 @@ function renderTechTable(rows) {
     const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
     const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
     const ytdClass = row.ytd_pct >= 0 ? "positive" : "negative";
-    const reasons = (row.reasons || []).map(text => `<span class="tag">${escapeHtml(text)}</span>`).join("");
+    const explanation = explanationTags(row);
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
@@ -455,7 +580,7 @@ function renderTechTable(rows) {
         <td class="num">${formatNumber(row.not_overextended_score, 1)}</td>
         <td class="num">${formatNumber(row.execution_score, 1)}</td>
         <td class="num score">${formatNumber(row.score, 1)}</td>
-        <td class="reasons">${reasons}</td>
+        <td class="reasons">${explanation}</td>
       </tr>
     `;
   }).join("");
@@ -473,7 +598,7 @@ function renderSwingTable(rows) {
     const ret5Class = row.ret_5d >= 0 ? "positive" : "negative";
     const ret10Class = row.ret_10d >= 0 ? "positive" : "negative";
     const ret20Class = row.ret_20d >= 0 ? "positive" : "negative";
-    const reasons = (row.reasons || []).map(text => `<span class="tag">${escapeHtml(text)}</span>`).join("");
+    const explanation = explanationTags(row);
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
@@ -491,7 +616,7 @@ function renderSwingTable(rows) {
         <td class="num">${formatNumber(row.trend_score, 1)}</td>
         <td class="num">${formatNumber(row.liquidity_score, 1)}</td>
         <td class="num score">${formatNumber(row.score, 1)}</td>
-        <td class="reasons">${reasons}</td>
+        <td class="reasons">${explanation}</td>
       </tr>
     `;
   }).join("");
@@ -507,7 +632,7 @@ function renderPositionTable(rows) {
     const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
     const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
     const ytdClass = row.ytd_pct >= 0 ? "positive" : "negative";
-    const reasons = (row.reasons || []).map(text => `<span class="tag">${escapeHtml(text)}</span>`).join("");
+    const explanation = explanationTags(row);
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
@@ -525,7 +650,7 @@ function renderPositionTable(rows) {
         <td class="num">${formatNumber(row.quality_proxy_score, 1)}</td>
         <td class="num">${formatNumber(row.liquidity_score, 1)}</td>
         <td class="num score">${formatNumber(row.score, 1)}</td>
-        <td class="reasons">${reasons}</td>
+        <td class="reasons">${explanation}</td>
       </tr>
     `;
   }).join("");
@@ -702,6 +827,22 @@ function formatMoney(value) {
   return num.toFixed(0);
 }
 
+function formatPercent(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return "-";
+  }
+  return `${num.toFixed(2)}%`;
+}
+
+function numberClass(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num === 0) {
+    return "";
+  }
+  return num >= 0 ? "positive" : "negative";
+}
+
 function stabilityTag(row) {
   const status = row.stability_status === "new" ? "新进" : "留存";
   const cls = row.stability_status === "new" ? "tag new" : "tag stable";
@@ -758,6 +899,9 @@ els.tabButtons.forEach(button => {
     if (button.dataset.tab === "validationPanel" && !state.validationLoaded) {
       loadValidation();
     }
+    if (button.dataset.tab === "overviewPanel" && !state.overviewLoaded) {
+      loadStrategyOverview();
+    }
   });
 });
 els.saveTechSnapshot.addEventListener("click", () => saveStrategySnapshot("tech_potential"));
@@ -775,3 +919,4 @@ els.closeDetails.addEventListener("click", () => {
 });
 
 loadRecommendations();
+loadStrategyOverview();

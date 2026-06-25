@@ -24,6 +24,17 @@ from stock_analyzer.strategy_validation import StrategyValidationStore
 
 
 class ScoringTest(unittest.TestCase):
+    def assertHasExplanationFields(self, row, strategy_name):
+        self.assertEqual(row["strategy_name"], strategy_name)
+        self.assertIn("strategy_label", row)
+        self.assertIn("signal_label", row)
+        self.assertIn("chase_risk", row)
+        self.assertIn(row["chase_risk"]["level"], {"low", "medium", "high"})
+        self.assertIn("overextension", row)
+        self.assertIn(row["overextension"]["level"], {"low", "medium", "high"})
+        self.assertIn("failure_reasons", row)
+        self.assertTrue(row["failure_reasons"])
+
     def test_prepare_candidates_keeps_star_market_and_filters_st(self):
         quotes = pd.DataFrame(
             [
@@ -149,6 +160,8 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(meta["top_n"], 10)
         self.assertEqual(result["short_term"][0]["code"], "600001")
         self.assertEqual(result["long_term"][0]["code"], "600002")
+        self.assertHasExplanationFields(result["short_term"][0], "short_term")
+        self.assertHasExplanationFields(result["long_term"][0], "long_term")
 
     def test_tomorrow_candidates_rank_buyable_liquid_names(self):
         quotes = pd.DataFrame(
@@ -198,6 +211,7 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual({row["code"] for row in rows}, {"600001", "300001"})
         self.assertEqual(meta["analysis_window"], "14:30")
         self.assertLessEqual(len(rows), 50)
+        self.assertHasExplanationFields(rows[0], "tomorrow_picks")
 
     def test_tech_potential_prefers_theme_match_without_overextension(self):
         quotes = pd.DataFrame(
@@ -247,6 +261,7 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(rows[0]["code"], "600001")
         self.assertNotIn("600003", {row["code"] for row in rows})
         self.assertGreater(meta["matched_count"], 0)
+        self.assertHasExplanationFields(rows[0], "tech_potential")
 
     def test_swing_candidates_prefer_5_10_day_momentum_without_heat(self):
         quotes = pd.DataFrame(
@@ -300,6 +315,7 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(rows[0]["code"], "600001")
         self.assertEqual(meta["strategy_version"], "swing_5_10d_v1")
         self.assertEqual(rows[0]["horizon"], "swing")
+        self.assertHasExplanationFields(rows[0], "swing_picks")
 
     def test_position_candidates_filter_overextended_and_mark_limitation(self):
         quotes = pd.DataFrame(
@@ -347,6 +363,7 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual([row["code"] for row in rows], ["688001"])
         self.assertEqual(rows[0]["horizon"], "position")
         self.assertIn("未接入财务", meta["limitation"])
+        self.assertHasExplanationFields(rows[0], "position_picks")
 
     def test_alphalite_factors_detect_momentum_and_breakout(self):
         history = pd.DataFrame(

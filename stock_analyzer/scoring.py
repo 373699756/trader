@@ -306,8 +306,7 @@ def score_tomorrow_candidates(
             + execution_score * 0.22
             - risk_penalty
         )
-        rows.append(
-            {
+        item = {
                 "code": row["code"],
                 "name": str(row.get("name", "")),
                 "market": row.get("market", "main"),
@@ -337,6 +336,14 @@ def score_tomorrow_candidates(
                     risk_penalty,
                 ),
             }
+        rows.append(
+            _attach_signal_explanation(
+                item,
+                row,
+                "tomorrow_picks",
+                "明天预测",
+                "次日冲高",
+            )
         )
 
     rows.sort(key=lambda item: item["score"], reverse=True)
@@ -407,8 +414,7 @@ def score_tech_potential_candidates(
             + execution_score * 0.07
             - risk_penalty
         )
-        rows.append(
-            {
+        item = {
                 "code": row["code"],
                 "name": str(row.get("name", "")),
                 "market": row.get("market", "main"),
@@ -438,6 +444,14 @@ def score_tech_potential_candidates(
                     risk_penalty,
                 ),
             }
+        rows.append(
+            _attach_signal_explanation(
+                item,
+                row,
+                "tech_potential",
+                "科技潜力",
+                "科技主题潜力",
+            )
         )
 
     rows.sort(key=lambda item: item["score"], reverse=True)
@@ -516,7 +530,7 @@ def score_swing_candidates(
             + _not_overextended_score(row) * 0.08
             - risk_penalty
         )
-        rows.append(_horizon_row(row, {
+        item = _horizon_row(row, {
             "ret_5d": ret_5d,
             "ret_10d": ret_10d,
             "ret_20d": ret_20d,
@@ -533,7 +547,8 @@ def score_swing_candidates(
             "score": final_score,
             "horizon": "swing",
             "reasons": _build_swing_reasons(row, momentum_score, trend_score, liquidity_score, risk_penalty),
-        }))
+        })
+        rows.append(_attach_signal_explanation(item, row, "swing_picks", "波段 5-10 日", "波段延续"))
 
     rows.sort(key=lambda item: item["score"], reverse=True)
     for rank, row in enumerate(rows[:top_n], start=1):
@@ -604,7 +619,7 @@ def score_position_candidates(
             + _execution_score(row) * 0.08
             - risk_penalty
         )
-        rows.append(_horizon_row(row, {
+        item = _horizon_row(row, {
             "theme": theme,
             "theme_score": theme_score,
             "ret_10d": ret_10d,
@@ -620,7 +635,8 @@ def score_position_candidates(
             "score": final_score,
             "horizon": "position",
             "reasons": _build_position_reasons(row, theme, trend_score, quality_proxy_score, liquidity_score, risk_penalty),
-        }))
+        })
+        rows.append(_attach_signal_explanation(item, row, "position_picks", "中长期 1-3 月", "中期趋势"))
 
     rows.sort(key=lambda item: item["score"], reverse=True)
     for rank, row in enumerate(rows[:top_n], start=1):
@@ -797,7 +813,7 @@ def _score_row(
             final_score -= 5
         reasons = _build_reasons(row, industry_pct, hot_rank, sentiment)
 
-    return {
+    item = {
         "code": code,
         "name": str(row.get("name", "")),
         "market": row.get("market", "main"),
@@ -834,6 +850,142 @@ def _score_row(
         "reasons": reasons,
         "horizon": horizon,
     }
+    if horizon == "long":
+        return _attach_signal_explanation(item, row, "long_term", "长期推荐", "趋势稳健")
+    return _attach_signal_explanation(item, row, "short_term", "短线推荐", "盘中强势")
+
+
+def _attach_signal_explanation(
+    item: Dict[str, object],
+    row: pd.Series,
+    strategy_name: str,
+    strategy_label: str,
+    signal_label: str,
+) -> Dict[str, object]:
+    chase_risk = _chase_risk(row)
+    overextension = _overextension_risk(row)
+    failure_reasons = _failure_reasons(row, chase_risk, overextension)
+    item.update(
+        {
+            "strategy_name": strategy_name,
+            "strategy_label": strategy_label,
+            "signal_label": signal_label,
+            "chase_risk": chase_risk,
+            "overextension": overextension,
+            "failure_reasons": failure_reasons,
+        }
+    )
+    return item
+
+
+def _chase_risk(row: pd.Series) -> Dict[str, object]:
+    pct = coerce_number(row.get("pct_chg"))
+    market = row.get("market")
+    upper = config.MAX_BUYABLE_GAIN_GROWTH if market in ("chinext", "star") else config.MAX_BUYABLE_GAIN_MAIN
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+    turnover_rate = coerce_number(row.get("turnover_rate"))
+    amplitude = coerce_number(row.get("amplitude"))
+    reasons: List[str] = []
+    score = 0
+    if pct >= upper * 0.85:
+        score += 3
+        reasons.append("涨幅接近可买上限")
+    elif pct >= upper * 0.70:
+        score += 2
+        reasons.append("当日涨幅偏高")
+    if volume_ratio >= 5.5:
+        score += 3
+        reasons.append("量比过热")
+    elif volume_ratio >= 4:
+        score += 2
+        reasons.append("量比偏高")
+    if turnover_rate >= 18:
+        score += 3
+        reasons.append("换手过热")
+    elif turnover_rate >= 12:
+        score += 2
+        reasons.append("换手偏高")
+    if amplitude >= 12:
+        score += 2
+        reasons.append("振幅偏大")
+
+    if score >= 5:
+        level, label = "high", "高"
+    elif score >= 2:
+        level, label = "medium", "中"
+    else:
+        level, label = "low", "低"
+    return {"level": level, "label": label, "score": score, "reasons": reasons}
+
+
+def _overextension_risk(row: pd.Series) -> Dict[str, object]:
+    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+    ytd_pct = coerce_number(row.get("ytd_pct"))
+    ret_20d = coerce_number(row.get("ret_20d"))
+    ma20_gap = coerce_number(row.get("ma20_gap"))
+    reasons: List[str] = []
+    score = 0
+    if sixty_day_pct > 70:
+        score += 3
+        reasons.append("60日涨幅过大")
+    elif sixty_day_pct > 45:
+        score += 2
+        reasons.append("60日涨幅偏大")
+    if ytd_pct > 120:
+        score += 3
+        reasons.append("年内涨幅过大")
+    elif ytd_pct > 80:
+        score += 2
+        reasons.append("年内涨幅偏大")
+    if ret_20d > 45:
+        score += 3
+        reasons.append("20日涨幅过快")
+    elif ret_20d > 25:
+        score += 2
+        reasons.append("20日涨幅偏快")
+    if ma20_gap > 35:
+        score += 3
+        reasons.append("偏离20日线过远")
+    elif ma20_gap > 22:
+        score += 2
+        reasons.append("偏离20日线偏远")
+
+    if score >= 5:
+        level, label = "high", "高"
+    elif score >= 2:
+        level, label = "medium", "中"
+    else:
+        level, label = "low", "低"
+    return {"level": level, "label": label, "score": score, "reasons": reasons}
+
+
+def _failure_reasons(
+    row: pd.Series,
+    chase_risk: Dict[str, object],
+    overextension: Dict[str, object],
+) -> List[str]:
+    reasons: List[str] = []
+    reasons.extend(str(reason) for reason in chase_risk.get("reasons", []))
+    reasons.extend(str(reason) for reason in overextension.get("reasons", []))
+
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+    turnover = coerce_number(row.get("turnover"))
+    amplitude = coerce_number(row.get("amplitude"))
+    pct = coerce_number(row.get("pct_chg"))
+    if volume_ratio < 1:
+        reasons.append("量能不足")
+    if turnover < config.MIN_TURNOVER * 2:
+        reasons.append("成交承接偏弱")
+    if amplitude > 10:
+        reasons.append("波动大，次日容易分歧")
+    if pct < 0:
+        reasons.append("当日走势偏弱")
+
+    unique: List[str] = []
+    for reason in reasons:
+        if reason and reason not in unique:
+            unique.append(reason)
+    return unique[:6] or ["暂无明显单项风险，仍需次日走势验证"]
 
 
 def _combined_speed(df: pd.DataFrame) -> pd.Series:

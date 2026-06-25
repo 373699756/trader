@@ -19,6 +19,42 @@ from .strategy_validation import StrategyValidationStore
 from .stability import TopKDropoutTracker
 
 
+STRATEGY_CATALOG = (
+    {
+        "name": "tomorrow_picks",
+        "label": "明天预测",
+        "version": "tomorrow_picks_v2",
+        "horizon": "次日",
+        "goal": "14:30 后筛选次日可能冲高且仍可买的股票",
+        "route": "/api/tomorrow-picks",
+    },
+    {
+        "name": "swing_picks",
+        "label": "波段 5-10 日",
+        "version": "swing_5_10d_v1",
+        "horizon": "5-10日",
+        "goal": "筛选短周期趋势延续、温和放量且不过热的股票",
+        "route": "/api/swing-picks",
+    },
+    {
+        "name": "position_picks",
+        "label": "中长期 1-3 月",
+        "version": "position_1_3m_v1",
+        "horizon": "1-3月",
+        "goal": "技术趋势版中长期候选，偏好趋势稳健、波动可控、涨幅未透支",
+        "route": "/api/position-picks",
+    },
+    {
+        "name": "tech_potential",
+        "label": "科技潜力",
+        "version": "tech_potential_v1",
+        "horizon": "主题潜力",
+        "goal": "匹配科技方向并过滤前期涨幅明显透支的股票",
+        "route": "/api/tech-potential",
+    },
+)
+
+
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
     provider = MarketDataProvider()
@@ -38,6 +74,45 @@ def create_app() -> Flask:
             refresh_seconds=config.REFRESH_SECONDS,
             default_top_n=config.DEFAULT_TOP_N,
         )
+
+    @app.route("/api/strategy-overview")
+    def strategy_overview():
+        days = _int_arg("days", 20, minimum=1, maximum=120)
+        try:
+            strategies = []
+            for item in STRATEGY_CATALOG:
+                metrics = validation_store.metrics(item["name"], days=days)
+                dates = validation_store.list_signal_dates(item["name"])
+                latest = dates[0] if dates else {}
+                strategies.append(
+                    {
+                        **item,
+                        "metrics": metrics,
+                        "latest_signal": latest,
+                        "status": _strategy_status(metrics),
+                    }
+                )
+            ranked = sorted(
+                strategies,
+                key=lambda row: (
+                    row["metrics"].get("sample_count", 0) > 0,
+                    row["metrics"].get("avg_next_close_return", -999),
+                    row["metrics"].get("hit_3pct_rate", -999),
+                ),
+                reverse=True,
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "days": days,
+                    "strategies": strategies,
+                    "best_strategy": ranked[0] if ranked and ranked[0]["metrics"].get("sample_count", 0) else None,
+                    "health": provider.health(),
+                    "disclaimer": "仅供研究，不构成投资建议。",
+                }
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc), "health": provider.health()}), 502
 
     @app.route("/api/recommendations")
     def recommendations():
@@ -97,6 +172,8 @@ def create_app() -> Flask:
                 "short_term": short_stability["rows"][:top_n],
                 "long_term": long_stability["rows"][:top_n],
             }
+            _attach_validation_summary(recommendations_by_horizon["short_term"], validation_store, "short_term")
+            _attach_validation_summary(recommendations_by_horizon["long_term"], validation_store, "long_term")
             meta["top_n"] = top_n
             meta["stability"] = {
                 "short_term": {
@@ -129,6 +206,7 @@ def create_app() -> Flask:
         except Exception as exc:
             saved_rows = validation_store.latest_signal_rows("tomorrow_picks")
             if saved_rows:
+                _attach_validation_summary(saved_rows, validation_store, "tomorrow_picks")
                 return jsonify(
                     {
                         "ok": True,
@@ -199,6 +277,7 @@ def create_app() -> Flask:
                 quotes_cache.set(quotes)
             candidates = prepare_candidates(quotes)
             rows, meta = score_tomorrow_candidates(candidates, top_n=top_n, market_filter=market)
+            _attach_validation_summary(rows, validation_store, "tomorrow_picks")
             return jsonify(
                 {
                     "ok": True,
@@ -211,6 +290,7 @@ def create_app() -> Flask:
         except Exception as exc:
             saved_rows = validation_store.latest_signal_rows("tomorrow_picks")
             if saved_rows:
+                _attach_validation_summary(saved_rows, validation_store, "tomorrow_picks")
                 return jsonify(
                     {
                         "ok": True,
@@ -261,6 +341,7 @@ def create_app() -> Flask:
                 quotes_cache.set(quotes)
             candidates = prepare_candidates(quotes)
             rows, meta = score_tech_potential_candidates(candidates, top_n=top_n, market_filter=market)
+            _attach_validation_summary(rows, validation_store, "tech_potential")
             return jsonify(
                 {
                     "ok": True,
@@ -297,6 +378,7 @@ def create_app() -> Flask:
             candidates = prepare_candidates(quotes)
             candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
             rows, meta = score_swing_candidates(candidates, top_n=top_n, market_filter=market)
+            _attach_validation_summary(rows, validation_store, "swing_picks")
             return jsonify(
                 {
                     "ok": True,
@@ -333,6 +415,7 @@ def create_app() -> Flask:
             candidates = prepare_candidates(quotes)
             candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
             rows, meta = score_position_candidates(candidates, top_n=top_n, market_filter=market)
+            _attach_validation_summary(rows, validation_store, "position_picks")
             return jsonify(
                 {
                     "ok": True,
@@ -536,6 +619,28 @@ def _attach_alphalite_factors(provider, cache: TimedCache, candidates):
     return merge_alphalite(candidates, factors)
 
 
+def _attach_validation_summary(
+    rows: list,
+    validation_store: StrategyValidationStore,
+    strategy_name: str,
+    days: int = 20,
+) -> None:
+    metrics = validation_store.metrics(strategy_name, days=days)
+    sample_count = int(metrics.get("sample_count") or 0)
+    summary = {
+        "strategy_name": strategy_name,
+        "days": days,
+        "sample_count": sample_count,
+        "win_rate_next_close": metrics.get("win_rate_next_close"),
+        "hit_3pct_rate": metrics.get("hit_3pct_rate"),
+        "avg_next_close_return": metrics.get("avg_next_close_return"),
+        "avg_max_drawdown_3d": metrics.get("avg_max_drawdown_3d"),
+        "label": "暂无验证样本" if sample_count <= 0 else "过去同类信号",
+    }
+    for row in rows:
+        row["similar_signal_stats"] = summary
+
+
 def _market_news(provider, cache: TimedCache):
     if not config.ENABLE_MARKET_NEWS:
         return []
@@ -548,3 +653,17 @@ def _market_news(provider, cache: TimedCache):
         market_news = []
     cache.set(market_news)
     return market_news
+
+
+def _strategy_status(metrics: Dict[str, object]) -> Dict[str, str]:
+    sample_count = int(metrics.get("sample_count") or 0)
+    avg_return = float(metrics.get("avg_next_close_return") or 0)
+    hit_3pct = float(metrics.get("hit_3pct_rate") or 0)
+    drawdown = float(metrics.get("avg_max_drawdown_3d") or 0)
+    if sample_count < 30:
+        return {"level": "pending", "label": "样本不足", "advice": "先保存并更新验证，至少积累30个样本。"}
+    if avg_return > 1 and hit_3pct >= 35 and drawdown > -8:
+        return {"level": "good", "label": "继续观察", "advice": "近期表现可继续跟踪，但仍需控制仓位。"}
+    if avg_return < 0 or drawdown <= -10:
+        return {"level": "bad", "label": "建议降权", "advice": "近期收益或回撤不理想，优先降低权重或暂停使用。"}
+    return {"level": "neutral", "label": "中性", "advice": "表现不突出，继续与其他策略对比。"}
