@@ -10,6 +10,7 @@ from stock_analyzer.factors import compute_alphalite_for_stock
 from stock_analyzer.history_cache import HistoryCache
 from stock_analyzer.normalization import rename_known_columns
 from stock_analyzer.providers import MarketDataProvider, _normalize_eastmoney_spot, _request_eastmoney_page
+from stock_analyzer.risk_rules import simulate_exit
 from stock_analyzer.scoring import (
     build_market_regime,
     build_strategy_consensus,
@@ -599,6 +600,36 @@ class ScoringTest(unittest.TestCase):
         self.assertIn("600001", codes)
         self.assertNotIn("600002", codes)
 
+    def test_regime_adaptive_weights_boost_breakout_in_risk_on(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "突破样本", "price": 20, "pct_chg": 3.0, "turnover": 9e8,
+                 "turnover_rate": 7, "volume_ratio": 2.2, "speed": 1.5, "sixty_day_pct": 22, "ytd_pct": 28,
+                 "amplitude": 5, "ma_bull_aligned": 1, "breakout_20d": 1, "vol_ma5_ratio": 2.1, "ma20_gap": 9,
+                 "industry": "电子"},
+            ]
+        )
+        candidates = prepare_candidates(quotes)
+
+        risk_on_rows, _ = score_breakout_candidates(
+            candidates,
+            top_n=10,
+            market_regime={"level": "risk_on", "label": "偏进攻"},
+        )
+        risk_off_rows, _ = score_breakout_candidates(
+            candidates,
+            top_n=10,
+            market_regime={"level": "risk_off", "label": "偏防守"},
+        )
+
+        self.assertTrue(risk_on_rows)
+        self.assertGreater(risk_on_rows[0]["score"], risk_off_rows[0]["score"])
+        self.assertIn("regime_weight_profile", risk_on_rows[0])
+        self.assertGreater(
+            risk_on_rows[0]["regime_weight_profile"]["breakout"],
+            risk_off_rows[0]["regime_weight_profile"]["breakout"],
+        )
+
     def test_prepare_candidates_coerces_fundamental_fields(self):
         quotes = pd.DataFrame(
             [{"code": "600001", "name": "x", "price": 10, "pct_chg": 2, "turnover": 9e8,
@@ -825,6 +856,59 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(result["metrics"]["selected_count"], 1)
         self.assertIn("avg_net_return", result["metrics"])
 
+    def test_simulate_exit_handles_stop_take_profit_and_trailing(self):
+        stop = simulate_exit(
+            pd.DataFrame([{"trade_date": "20240102", "high": 10.2, "low": 9.4, "price": 9.8}]),
+            entry_price=10,
+            holding_days=3,
+        )
+        take = simulate_exit(
+            pd.DataFrame([{"trade_date": "20240102", "high": 10.9, "low": 10.1, "price": 10.5}]),
+            entry_price=10,
+            holding_days=3,
+        )
+        trailing = simulate_exit(
+            pd.DataFrame(
+                [
+                    {"trade_date": "20240102", "high": 10.7, "low": 10.2, "price": 10.6},
+                    {"trade_date": "20240103", "high": 10.8, "low": 10.3, "price": 10.4},
+                ]
+            ),
+            entry_price=10,
+            holding_days=3,
+            policy={"stop_loss_pct": 0, "take_profit_pct": 0, "trailing_stop_pct": 4},
+        )
+
+        self.assertEqual(stop["exit_reason"], "stop_loss")
+        self.assertAlmostEqual(stop["exit_return"], -5.0)
+        self.assertEqual(take["exit_reason"], "take_profit")
+        self.assertAlmostEqual(take["exit_return"], 8.0)
+        self.assertEqual(trailing["exit_reason"], "trailing_stop")
+        self.assertGreater(trailing["exit_return"], 0)
+
+    def test_backtest_uses_exit_rule_before_fixed_holding_period(self):
+        prices = [10 + i * 0.1 for i in range(60)]
+        lows = [price * 0.99 for price in prices]
+        lows[57] = prices[56] * 0.94
+        history_by_code = {
+            "600001": pd.DataFrame(
+                {
+                    "price": prices,
+                    "high": [price * 1.02 for price in prices],
+                    "low": lows,
+                    "turnover": [10000000 + i * 50000 for i in range(60)],
+                }
+            )
+        }
+
+        result = run_alphalite_backtest(history_by_code, top_k=1, holding_days=3)
+
+        self.assertTrue(result["ok"])
+        selected = result["selected"][0]
+        self.assertEqual(selected["exit_reason"], "stop_loss")
+        self.assertAlmostEqual(selected["gross_return"], -5.0)
+        self.assertGreater(selected["fixed_gross_return"], 0)
+
     def test_rolling_backtest_returns_drawdown_metrics(self):
         history_by_code = {
             "600001": pd.DataFrame(
@@ -938,6 +1022,39 @@ class ScoringTest(unittest.TestCase):
             metrics["avg_primary_return_net"],
             25.0 - config.VALIDATION_TRADE_COST_PCT,
         )
+
+    def test_strategy_validation_stores_exit_rule_outcome(self):
+        import tempfile
+
+        class FakeProvider:
+            def get_history(self, code, days=180):
+                return pd.DataFrame(
+                    {
+                        "trade_date": ["20240101", "20240102", "20240103"],
+                        "open": [10, 10.1, 10.4],
+                        "high": [10.2, 10.3, 10.6],
+                        "low": [9.8, 9.4, 10.1],
+                        "price": [10, 10.2, 10.5],
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            store.save_signals(
+                "tomorrow_picks",
+                "tomorrow_picks_v2",
+                "2024-01-01T14:30:00",
+                [{"rank": 1, "code": "600001", "name": "止损样本", "price": 10, "score": 90}],
+            )
+            update = store.update_outcomes(FakeProvider(), signal_date="2024-01-01", strategy_name="tomorrow_picks")
+            rows = store.signals_for_date("2024-01-01", "tomorrow_picks")
+            metrics = store.metrics("tomorrow_picks", days=20)
+
+        self.assertEqual(update["updated"], 1)
+        self.assertEqual(rows[0]["exit_reason"], "stop_loss")
+        self.assertAlmostEqual(rows[0]["signal_exit_return"], -5.0)
+        self.assertAlmostEqual(metrics["avg_exit_return"], -5.0)
+        self.assertAlmostEqual(metrics["avg_exit_return_net"], -5.0 - config.VALIDATION_TRADE_COST_PCT)
 
     def test_strategy_validation_splits_real_and_replay_samples(self):
         import tempfile

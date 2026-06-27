@@ -20,6 +20,7 @@
 - Verdict 评级阶梯：把裸 0-100 综合分映射为强烈关注/关注/观察/谨慎/回避，数据覆盖不足时强制降级并标注（参考 UZI-Skill / Buffett 评级思路）。
 - 多空双分：每条推荐顶层暴露 `bull_score` 与 `bear_score`，区分“强但过热”和“平庸”，前端以双进度条展示。
 - 过热乘法抑制：对短线/明天/科技/波段的最终分施加 `_not_overextended_score` 派生的乘法 damp，完全过热的票无法靠动量挤进前列。
+- 市况自适应权重：偏进攻市自动放大动量/趋势/突破/量能因子，偏防守市自动放大低波/质量/流动性因子；结果行输出 `regime_weight_profile` 解释当日权重画像。
 - 卡脖子主题倾斜：科技潜力策略加入 `_chokepoint_score`，奖励供给紧、尚未被重定价的上游/元件环节（Serenity / chokepoint 方法论）。
 - 卡脖子独立策略页：`/api/chokepoint-picks` 以 `_chokepoint_score` 为主导因子，只保留命中上游环节的票并按产业链环节（半导体设备/材料、封装/载板、EDA/IP、光器件、高端材料、精密零部件）归类，meta 附 `chain` 用于前端产业链全景图。
 - 反转低波策略（`/api/reversal-picks`）：依据 A 股短线反转+低波动+高换手回避证据，挑超跌且不躁动的标的，含接飞刀风险惩罚。
@@ -30,7 +31,8 @@
 - 回测权重校准：`python -m stock_analyzer.calibrate` 以滚动回测胜率+平均收益为目标离线扫描 AlphaLite 信号权重，写入 `.runtime/weights.json` 供运行时覆盖。
 - TopK-Dropout 稳定榜单：展示新进、留存、连续上榜次数，减少刷新噪声。
 - SQLite 历史 K 线缓存：减少重复请求免费行情接口。
-- 滚动回测：按 AlphaLite 信号做多期 TopK 组合验证，输出胜率、累计收益、最大回撤和扣成本收益。
+- 止损/持有期退出模拟：策略验证和 AlphaLite 回测统一使用固定持有期 + 固定止损 + 止盈 + 移动止损，不再只按期末收盘价评估。
+- 滚动回测：按 AlphaLite 信号做多期 TopK 组合验证，输出胜率、累计收益、最大回撤、扣成本收益和退出原因。
 - 点击股票可查看相关新闻、电报、关键词命中和舆情分。
 - 行情优先使用 AKShare；配置 `TUSHARE_TOKEN` 后可尝试 Tushare 降级。
 
@@ -132,6 +134,9 @@ export HISTORY_FACTOR_LIMIT=40
 export HISTORY_CACHE_PATH=.runtime/history_cache.sqlite3
 export HISTORY_CACHE_FRESHNESS_HOURS=18
 export VALIDATION_TRADE_COST_PCT=0.25
+export EXIT_STOP_LOSS_PCT=5.0
+export EXIT_TAKE_PROFIT_PCT=8.0
+export EXIT_TRAILING_STOP_PCT=4.0
 ```
 
 ## 接口
@@ -170,6 +175,8 @@ export VALIDATION_TRADE_COST_PCT=0.25
 策略验证的“样本不足”指验证库里已经有结果、且已经走完该策略主周期的信号少于 30 条，不是单纯缺少K线。只下载历史K线只能更新已保存信号的结果，不能凭空增加过去的推荐样本。
 
 当前主评估口径是“主周期净收益/净胜率”，并会扣 `VALIDATION_TRADE_COST_PCT`（默认 0.25%）作为固定交易成本/滑点近似。不同策略的主周期不同：明天预测/短期看次日，反转低波看 5 日，波段/突破看 10 日，中长期/科技/卡脖子/小市值价值看 20 日。未来交易日不足时，该样本只计入 `outcome_sample_count`，不计入主样本 `sample_count`。
+
+策略验证还会额外记录 `signal_exit_return` / `exit_reason` / `exit_days` / `exit_date`：按主周期窗口内的止损、止盈、移动止损或持有到期计算退出收益。默认参数是 5% 固定止损、8% 止盈、4% 移动止损，可用 `EXIT_STOP_LOSS_PCT`、`EXIT_TAKE_PROFIT_PCT`、`EXIT_TRAILING_STOP_PCT` 调整。该模型仍是日线近似：同一天同时触发止损和止盈时按保守顺序先算止损，且未精确模拟涨跌停不可成交和盘中滑点。
 
 当前提供两条路径：
 

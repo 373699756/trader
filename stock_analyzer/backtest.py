@@ -5,6 +5,7 @@ import pandas as pd
 from . import config
 from .factors import compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code, rename_known_columns
+from .risk_rules import simulate_exit
 
 
 # AlphaLite 信号权重。calibrate.py 离线扫描后写入 .runtime/weights.json 的
@@ -58,17 +59,26 @@ def run_alphalite_backtest(
         if not factor:
             continue
         entry_price = prepared["price"].iloc[-holding_days - 1]
-        exit_price = prepared["price"].iloc[-1]
-        if entry_price <= 0:
+        fixed_exit_price = prepared["price"].iloc[-1]
+        if entry_price <= 0 or fixed_exit_price <= 0:
             continue
-        gross_return = (exit_price / entry_price - 1) * 100
+        future = prepared.iloc[-holding_days:]
+        exit_result = simulate_exit(future, entry_price, holding_days=holding_days)
+        gross_return = exit_result.get("exit_return", 0.0) if exit_result.get("ok") else (
+            fixed_exit_price / entry_price - 1
+        ) * 100
+        fixed_gross_return = (fixed_exit_price / entry_price - 1) * 100
         net_return = gross_return - cost_rate * 100
         rows.append(
             {
                 "code": normalize_code(code),
                 "signal": round(_alphalite_signal(factor), 4),
                 "gross_return": round(gross_return, 4),
+                "fixed_gross_return": round(fixed_gross_return, 4),
                 "net_return": round(net_return, 4),
+                "exit_reason": exit_result.get("exit_reason", "hold_to_term"),
+                "exit_days": exit_result.get("exit_days", holding_days),
+                "exit_date": exit_result.get("exit_date", _trade_date(prepared, len(prepared) - 1)),
                 "factor": factor,
             }
         )
@@ -132,10 +142,15 @@ def run_rolling_alphalite_backtest(
             if not factor:
                 continue
             entry_price = history["price"].iloc[signal_index]
-            exit_price = history["price"].iloc[signal_index + holding_days]
-            if entry_price <= 0 or exit_price <= 0:
+            fixed_exit_price = history["price"].iloc[signal_index + holding_days]
+            if entry_price <= 0 or fixed_exit_price <= 0:
                 continue
-            gross_return = (exit_price / entry_price - 1) * 100
+            future = history.iloc[signal_index + 1 : signal_index + holding_days + 1]
+            exit_result = simulate_exit(future, entry_price, holding_days=holding_days)
+            gross_return = exit_result.get("exit_return", 0.0) if exit_result.get("ok") else (
+                fixed_exit_price / entry_price - 1
+            ) * 100
+            fixed_gross_return = (fixed_exit_price / entry_price - 1) * 100
             net_return = gross_return - cost_rate * 100
             signals.append(
                 {
@@ -143,8 +158,11 @@ def run_rolling_alphalite_backtest(
                     "signal": _alphalite_signal(factor, weights),
                     "net_return": net_return,
                     "gross_return": gross_return,
+                    "fixed_gross_return": fixed_gross_return,
                     "trade_date": _trade_date(history, signal_index),
-                    "exit_date": _trade_date(history, signal_index + holding_days),
+                    "exit_date": exit_result.get("exit_date") or _trade_date(history, signal_index + holding_days),
+                    "exit_reason": exit_result.get("exit_reason", "hold_to_term"),
+                    "exit_days": exit_result.get("exit_days", holding_days),
                 }
             )
         signals.sort(key=lambda item: item["signal"], reverse=True)

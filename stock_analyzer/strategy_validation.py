@@ -8,6 +8,7 @@ import pandas as pd
 
 from . import config
 from .normalization import coerce_number, normalize_code
+from .risk_rules import simulate_exit
 
 
 PRIMARY_RETURN_BY_STRATEGY = {
@@ -146,6 +147,7 @@ class StrategyValidationStore:
                        o.signal_hold_3d_return, o.signal_max_gain_3d,
                        o.signal_max_drawdown_3d, o.signal_hit_3pct, o.signal_hit_5pct,
                        o.signal_hold_5d_return, o.signal_hold_10d_return, o.signal_hold_20d_return,
+                       o.exit_return, o.signal_exit_return, o.exit_reason, o.exit_days, o.exit_date,
                        o.future_days,
                        o.updated_at AS outcome_updated_at
                 FROM strategy_signals s
@@ -250,8 +252,9 @@ class StrategyValidationStore:
                      signal_next_close_return, signal_intraday_high_return, signal_hold_3d_return,
                      signal_hold_5d_return, signal_hold_10d_return, signal_hold_20d_return,
                      signal_max_gain_3d, signal_max_drawdown_3d, signal_hit_3pct, signal_hit_5pct,
+                     exit_return, signal_exit_return, exit_reason, exit_days, exit_date,
                      updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         signal["id"],
@@ -283,6 +286,11 @@ class StrategyValidationStore:
                         outcome["signal_max_drawdown_3d"],
                         int(outcome["signal_hit_3pct"]),
                         int(outcome["signal_hit_5pct"]),
+                        outcome["exit_return"],
+                        outcome["signal_exit_return"],
+                        outcome["exit_reason"],
+                        outcome["exit_days"],
+                        outcome["exit_date"],
                         datetime.now().isoformat(timespec="seconds"),
                     ),
                 )
@@ -308,6 +316,7 @@ class StrategyValidationStore:
                        COALESCE(o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_5d_return,
                        COALESCE(o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_10d_return,
                        COALESCE(o.signal_hold_20d_return, o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_20d_return,
+                       COALESCE(o.signal_exit_return, o.exit_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_exit_return,
                        COALESCE(o.signal_max_drawdown_3d, o.max_drawdown_3d) AS signal_max_drawdown_3d,
                        COALESCE(o.signal_hit_3pct, o.hit_3pct) AS signal_hit_3pct,
                        COALESCE(o.signal_hit_5pct, o.hit_5pct) AS signal_hit_5pct,
@@ -340,6 +349,8 @@ class StrategyValidationStore:
             )
             row["_primary_return"] = coerce_number(row[row_primary_column])
             row["_primary_return_net"] = round(row["_primary_return"] - cost, 4)
+            row["_exit_return"] = coerce_number(row.get("signal_exit_return"))
+            row["_exit_return_net"] = round(row["_exit_return"] - cost, 4)
             row["_is_replay"] = _is_replay_version(row["strategy_version"])
             row["_primary_ready"] = int(row.get("future_days") or 1) >= row_primary_days
             row["_primary_holding_days"] = row_primary_days
@@ -375,6 +386,9 @@ class StrategyValidationStore:
             "avg_primary_return_net": _avg(row["_primary_return_net"] for row in selected),
             "win_rate_primary": _rate(row["_primary_return"] > 0 for row in selected),
             "win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in selected),
+            "avg_exit_return": _avg(row["_exit_return"] for row in selected),
+            "avg_exit_return_net": _avg(row["_exit_return_net"] for row in selected),
+            "win_rate_exit_net": _rate(row["_exit_return_net"] > 0 for row in selected),
             "real_avg_primary_return_net": _avg(row["_primary_return_net"] for row in real_rows),
             "real_win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in real_rows),
             "replay_avg_primary_return_net": _avg(row["_primary_return_net"] for row in replay_rows),
@@ -464,6 +478,11 @@ class StrategyValidationStore:
                 "signal_max_drawdown_3d": "REAL",
                 "signal_hit_3pct": "INTEGER",
                 "signal_hit_5pct": "INTEGER",
+                "exit_return": "REAL",
+                "signal_exit_return": "REAL",
+                "exit_reason": "TEXT",
+                "exit_days": "INTEGER",
+                "exit_date": "TEXT",
             }
             for column, column_type in outcome_columns.items():
                 if column not in existing_columns:
@@ -498,6 +517,9 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     hold_20d_close = _window_close(future, 20, hold_10d_close)
     max_high = max(coerce_number(value) for value in window.get("high", pd.Series([high])).tolist())
     min_low = min(coerce_number(value) for value in window.get("low", pd.Series([low])).tolist())
+    _, primary_days, _ = _primary_return_config(str(signal["strategy_name"]))
+    open_exit = simulate_exit(future, open_entry, holding_days=primary_days)
+    signal_exit = simulate_exit(future, signal_entry, holding_days=primary_days)
     return {
         "next_trade_date": str(first.get("trade_date")),
         "future_days": future_days,
@@ -526,6 +548,11 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
         "signal_max_drawdown_3d": round((min_low / signal_entry - 1) * 100, 4) if min_low > 0 else 0.0,
         "signal_hit_3pct": high / signal_entry - 1 >= 0.03 if high > 0 else False,
         "signal_hit_5pct": high / signal_entry - 1 >= 0.05 if high > 0 else False,
+        "exit_return": open_exit.get("exit_return", 0.0),
+        "signal_exit_return": signal_exit.get("exit_return", open_exit.get("exit_return", 0.0)),
+        "exit_reason": signal_exit.get("exit_reason", open_exit.get("exit_reason", "hold_to_term")),
+        "exit_days": signal_exit.get("exit_days", open_exit.get("exit_days", 0)),
+        "exit_date": signal_exit.get("exit_date", open_exit.get("exit_date", "")),
     }
 
 
@@ -586,6 +613,9 @@ def _daily_metrics(rows: List[sqlite3.Row]) -> List[Dict[str, object]]:
                 "avg_primary_return_net": _avg(row["_primary_return_net"] for row in items),
                 "win_rate_primary": _rate(row["_primary_return"] > 0 for row in items),
                 "win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in items),
+                "avg_exit_return": _avg(row["_exit_return"] for row in items),
+                "avg_exit_return_net": _avg(row["_exit_return_net"] for row in items),
+                "win_rate_exit_net": _rate(row["_exit_return_net"] > 0 for row in items),
                 "real_sample_count": sum(1 for row in items if not row["_is_replay"]),
                 "replay_sample_count": sum(1 for row in items if row["_is_replay"]),
             }

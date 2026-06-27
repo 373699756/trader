@@ -104,6 +104,33 @@ _DEFAULT_WEIGHTS = {
         "trend": 0.42, "liquidity": 0.20, "industry": 0.13,
         "sentiment": 0.13, "momentum": 0.07, "hot": 0.05,
     },
+    "regime_profiles": {
+        "risk_on": {
+            "momentum": 1.12,
+            "trend": 1.08,
+            "breakout": 1.16,
+            "volume": 1.08,
+            "lowvol": 0.88,
+            "quality": 0.92,
+        },
+        "risk_off": {
+            "momentum": 0.82,
+            "trend": 0.94,
+            "breakout": 0.78,
+            "volume": 0.88,
+            "lowvol": 1.18,
+            "quality": 1.16,
+            "liquidity": 1.08,
+        },
+        "balanced": {
+            "momentum": 0.96,
+            "trend": 1.0,
+            "breakout": 0.94,
+            "volume": 1.0,
+            "lowvol": 1.06,
+            "quality": 1.04,
+        },
+    },
 }
 
 # verdict 评级阶梯阈值（参考 UZI 的 80/65/50/35 分档）。
@@ -774,11 +801,12 @@ def score_tomorrow_candidates(
         execution_score = _execution_score(row)
         risk_penalty = _tomorrow_risk_penalty(row)
         regime_bonus = _market_regime_adjustment(row, market_regime, "tomorrow")
+        regime_profile = _regime_weight_profile(market_regime, ["liquidity", "momentum", "trend", "quality"])
         final_score = (
-            liquidity_score * 0.30
-            + momentum_score * 0.28
-            + trend_score * 0.20
-            + execution_score * 0.22
+            _regime_component(liquidity_score, "liquidity", market_regime) * 0.30
+            + _regime_component(momentum_score, "momentum", market_regime) * 0.28
+            + _regime_component(trend_score, "trend", market_regime) * 0.20
+            + _regime_component(execution_score, "quality", market_regime) * 0.22
             - risk_penalty
             + regime_bonus
         )
@@ -804,6 +832,7 @@ def score_tomorrow_candidates(
                 "execution_score": round(execution_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
                 "regime_bonus": round(regime_bonus, 2),
+                "regime_weight_profile": regime_profile,
                 "score": round(max(0.0, min(100.0, final_score)), 2),
                 "reasons": _build_tomorrow_reasons(
                     row,
@@ -890,14 +919,15 @@ def score_tech_potential_candidates(
         chokepoint_score, chokepoint_hits = _chokepoint_score(row)
         risk_penalty = _tech_potential_risk_penalty(row)
         regime_bonus = _market_regime_adjustment(row, market_regime, "tech")
+        regime_profile = _regime_weight_profile(market_regime, ["liquidity", "trend", "volume", "quality"])
         final_score = (
             theme_score * 0.24
             + chokepoint_score * 0.10
-            + liquidity_score * 0.18
-            + early_trend_score * 0.20
-            + valuation_proxy_score * 0.14
-            + volume_score * 0.08
-            + execution_score * 0.06
+            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.18
+            + _regime_component(early_trend_score, "trend", market_regime) * 0.20
+            + _regime_component(valuation_proxy_score, "quality", market_regime) * 0.14
+            + _regime_component(volume_score, "volume", market_regime) * 0.08
+            + _regime_component(execution_score, "quality", market_regime) * 0.06
             - risk_penalty
             + regime_bonus
         )
@@ -925,6 +955,7 @@ def score_tech_potential_candidates(
                 "execution_score": round(execution_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
                 "regime_bonus": round(regime_bonus, 2),
+                "regime_weight_profile": regime_profile,
                 "score": round(max(0.0, min(100.0, final_score)), 2),
                 "reasons": _build_tech_potential_reasons(
                     row,
@@ -1015,13 +1046,14 @@ def score_chokepoint_candidates(
         execution_score = _execution_score(row)
         risk_penalty = _tech_potential_risk_penalty(row)
         regime_bonus = _market_regime_adjustment(row, market_regime, "tech")
+        regime_profile = _regime_weight_profile(market_regime, ["liquidity", "trend", "volume", "quality"])
         final_score = (
             chokepoint_score * 0.34
-            + liquidity_score * 0.20
-            + early_trend_score * 0.18
-            + not_overextended_score * 0.14
-            + execution_score * 0.08
-            + volume_score * 0.06
+            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.20
+            + _regime_component(early_trend_score, "trend", market_regime) * 0.18
+            + _regime_component(not_overextended_score, "quality", market_regime) * 0.14
+            + _regime_component(execution_score, "quality", market_regime) * 0.08
+            + _regime_component(volume_score, "volume", market_regime) * 0.06
             - risk_penalty
             + regime_bonus
         )
@@ -1049,6 +1081,7 @@ def score_chokepoint_candidates(
                 "execution_score": round(execution_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
                 "regime_bonus": round(regime_bonus, 2),
+                "regime_weight_profile": regime_profile,
                 "score": round(max(0.0, min(100.0, final_score)), 2),
                 "reasons": [
                     "卡脖子环节：{}".format(chain_segment),
@@ -1174,12 +1207,14 @@ def score_swing_candidates(
         execution_score = _execution_score(row)
         risk_penalty = _swing_risk_penalty(row)
         regime_bonus = _market_regime_adjustment(row, market_regime, "swing")
+        not_overextended_score = _not_overextended_score(row)
+        regime_profile = _regime_weight_profile(market_regime, ["momentum", "trend", "liquidity", "quality"])
         final_score = (
-            momentum_score * 0.34
-            + trend_score * 0.26
-            + liquidity_score * 0.20
-            + execution_score * 0.12
-            + _not_overextended_score(row) * 0.08
+            _regime_component(momentum_score, "momentum", market_regime) * 0.34
+            + _regime_component(trend_score, "trend", market_regime) * 0.26
+            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.20
+            + _regime_component(execution_score, "quality", market_regime) * 0.12
+            + _regime_component(not_overextended_score, "quality", market_regime) * 0.08
             - risk_penalty
             + regime_bonus
         )
@@ -1197,8 +1232,10 @@ def score_swing_candidates(
             "trend_score": trend_score,
             "liquidity_score": liquidity_score,
             "execution_score": execution_score,
+            "not_overextended_score": not_overextended_score,
             "risk_penalty": risk_penalty,
             "regime_bonus": regime_bonus,
+            "regime_weight_profile": regime_profile,
             "score": final_score,
             "horizon": "swing",
             "reasons": _build_swing_reasons(row, momentum_score, trend_score, liquidity_score, risk_penalty),
@@ -1274,12 +1311,14 @@ def score_position_candidates(
         )
         risk_penalty = _position_risk_penalty(row)
         regime_bonus = _market_regime_adjustment(row, market_regime, "position")
+        execution_score = _execution_score(row)
+        regime_profile = _regime_weight_profile(market_regime, ["trend", "quality", "liquidity"])
         final_score = (
-            trend_score * 0.34
-            + quality_proxy_score * 0.26
-            + liquidity_score * 0.20
+            _regime_component(trend_score, "trend", market_regime) * 0.34
+            + _regime_component(quality_proxy_score, "quality", market_regime) * 0.26
+            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.20
             + theme_score * 0.12
-            + _execution_score(row) * 0.08
+            + _regime_component(execution_score, "quality", market_regime) * 0.08
             - risk_penalty
             + regime_bonus
         )
@@ -1294,9 +1333,10 @@ def score_position_candidates(
             "trend_score": trend_score,
             "quality_proxy_score": quality_proxy_score,
             "liquidity_score": liquidity_score,
-            "execution_score": _execution_score(row),
+            "execution_score": execution_score,
             "risk_penalty": risk_penalty,
             "regime_bonus": regime_bonus,
+            "regime_weight_profile": regime_profile,
             "score": final_score,
             "horizon": "position",
             "reasons": _build_position_reasons(row, theme, trend_score, quality_proxy_score, liquidity_score, risk_penalty),
@@ -1357,12 +1397,13 @@ def score_reversal_candidates(
         not_overextended = _not_overextended_score(row)
         risk_penalty = _reversal_risk_penalty(row)
         regime_bonus = _market_regime_adjustment(row, market_regime, "long")
+        regime_profile = _regime_weight_profile(market_regime, ["lowvol", "quality", "liquidity"])
         final_score = (
             reversal_score * 0.40
-            + lowvol_score * 0.26
-            + calm_turnover_score * 0.16
-            + liquidity_score * 0.12
-            + not_overextended * 0.06
+            + _regime_component(lowvol_score, "lowvol", market_regime) * 0.26
+            + _regime_component(calm_turnover_score, "quality", market_regime) * 0.16
+            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.12
+            + _regime_component(not_overextended, "quality", market_regime) * 0.06
             - risk_penalty
             + regime_bonus
         )
@@ -1386,6 +1427,7 @@ def score_reversal_candidates(
             "not_overextended_score": round(not_overextended, 2),
             "risk_penalty": round(risk_penalty, 2),
             "regime_bonus": round(regime_bonus, 2),
+            "regime_weight_profile": regime_profile,
             "score": round(max(0.0, min(100.0, final_score)), 2),
             "reasons": [
                 "反转分 {:.0f}（近20日跌幅越大越靠前）".format(reversal_score),
@@ -1452,12 +1494,13 @@ def score_smallcap_value_candidates(
         risk_penalty = _position_risk_penalty(row)
         # 市场偏防守时小市值整体降权（尾风险最大的时候）。
         regime_bonus = _market_regime_adjustment(row, market_regime, "position")
+        regime_profile = _regime_weight_profile(market_regime, ["liquidity", "lowvol", "quality"])
         final_score = (
             smallcap_score * 0.34
             + value_score * 0.22
-            + liquidity_score * 0.20
-            + lowvol_score * 0.12
-            + not_overextended * 0.12
+            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.20
+            + _regime_component(lowvol_score, "lowvol", market_regime) * 0.12
+            + _regime_component(not_overextended, "quality", market_regime) * 0.12
             - risk_penalty
             + regime_bonus
         )
@@ -1481,6 +1524,7 @@ def score_smallcap_value_candidates(
             "not_overextended_score": round(not_overextended, 2),
             "risk_penalty": round(risk_penalty, 2),
             "regime_bonus": round(regime_bonus, 2),
+            "regime_weight_profile": regime_profile,
             "score": round(max(0.0, min(100.0, final_score)), 2),
             "reasons": [
                 "流通市值 {:.1f} 亿、PE {:.1f}、PB {:.2f}".format(float_cap / 1e8, pe, pb),
@@ -1550,12 +1594,13 @@ def score_breakout_candidates(
         execution_score = _execution_score(row)
         risk_penalty = _tomorrow_risk_penalty(row)
         regime_bonus = _market_regime_adjustment(row, market_regime, "swing")
+        regime_profile = _regime_weight_profile(market_regime, ["momentum", "breakout", "volume", "trend", "quality"])
         final_score = (
-            momentum_score * 0.30
-            + breakout_strength * 0.26
-            + volume_break * 0.18
-            + trend_score * 0.16
-            + execution_score * 0.10
+            _regime_component(momentum_score, "momentum", market_regime) * 0.30
+            + _regime_component(breakout_strength, "breakout", market_regime) * 0.26
+            + _regime_component(volume_break, "volume", market_regime) * 0.18
+            + _regime_component(trend_score, "trend", market_regime) * 0.16
+            + _regime_component(execution_score, "quality", market_regime) * 0.10
             - risk_penalty
             + regime_bonus
         )
@@ -1582,6 +1627,7 @@ def score_breakout_candidates(
             "execution_score": round(execution_score, 2),
             "risk_penalty": round(risk_penalty, 2),
             "regime_bonus": round(regime_bonus, 2),
+            "regime_weight_profile": regime_profile,
             "score": round(max(0.0, min(100.0, final_score)), 2),
             "reasons": [
                 "{}{}".format("均线多头排列 " if ma_bull >= 0.5 else "", "创20日新高" if breakout_20d >= 0.5 else "").strip() or "趋势确认",
@@ -1786,15 +1832,19 @@ def _score_row(
     sentiment_score = coerce_number(sentiment.get("score"), 50.0)
     regime_style = "long" if horizon == "long" else "short"
     regime_bonus = _market_regime_adjustment(row, market_regime, regime_style)
+    regime_profile = _regime_weight_profile(
+        market_regime,
+        ["trend", "liquidity", "momentum", "quality"] if horizon == "long" else ["momentum", "liquidity"],
+    )
 
     if horizon == "long":
         w = WEIGHTS["long_term"]
         final_score = (
-            trend_score * w["trend"]
-            + liquidity_score * w["liquidity"]
+            _regime_component(trend_score, "trend", market_regime) * w["trend"]
+            + _regime_component(liquidity_score, "liquidity", market_regime) * w["liquidity"]
             + industry_score * w["industry"]
             + sentiment_score * w["sentiment"]
-            + momentum_score * w["momentum"]
+            + _regime_component(momentum_score, "momentum", market_regime) * w["momentum"]
             + hot_score * w["hot"]
             + regime_bonus
         )
@@ -1803,8 +1853,8 @@ def _score_row(
     else:
         w = WEIGHTS["short_term"]
         final_score = (
-            momentum_score * w["momentum"]
-            + liquidity_score * w["liquidity"]
+            _regime_component(momentum_score, "momentum", market_regime) * w["momentum"]
+            + _regime_component(liquidity_score, "liquidity", market_regime) * w["liquidity"]
             + industry_score * w["industry"]
             + hot_score * w["hot"]
             + sentiment_score * w["sentiment"]
@@ -1855,6 +1905,7 @@ def _score_row(
         "industry_score": round(industry_score, 2),
         "sentiment_score": round(sentiment_score, 2),
         "regime_bonus": round(regime_bonus, 2),
+        "regime_weight_profile": regime_profile,
         "score": round(max(0.0, min(100.0, final_score)), 2),
         "sentiment_summary": sentiment.get("summary", "暂无明显舆情信号"),
         "risk_words": sentiment.get("risk_words", []),
@@ -2472,6 +2523,27 @@ def _market_regime_adjustment(
             bonus -= 1.2
 
     return round(bonus, 2)
+
+
+def _regime_weight(key: str, market_regime: Dict[str, object], default: float = 1.0) -> float:
+    if not market_regime:
+        return default
+    level = market_regime.get("level") or "balanced"
+    profiles = WEIGHTS.get("regime_profiles") or {}
+    profile = profiles.get(level) or profiles.get("balanced") or {}
+    value = coerce_number(profile.get(key), default)
+    return max(0.5, min(1.5, value))
+
+
+def _regime_weight_profile(market_regime: Dict[str, object], keys: List[str]) -> Dict[str, float]:
+    return {key: round(_regime_weight(key, market_regime), 3) for key in keys}
+
+
+def _regime_component(score: float, key: str, market_regime: Dict[str, object]) -> float:
+    """以 50 为中性点放大/压缩因子边际优势，避免把中性因子整体抬高。"""
+    value = max(0.0, min(100.0, coerce_number(score, 50.0)))
+    weight = _regime_weight(key, market_regime)
+    return max(0.0, min(100.0, 50.0 + (value - 50.0) * weight))
 
 
 def _with_regime_reason(
