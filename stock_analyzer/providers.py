@@ -199,6 +199,36 @@ class MarketDataProvider:
                 return cached
         return cached
 
+    def prefetch_history(self, codes: List[str], days: int = 180, force: bool = False) -> Dict[str, object]:
+        result = {
+            "requested": len(codes),
+            "downloaded": 0,
+            "cached": 0,
+            "failed": 0,
+            "errors": [],
+        }
+        seen = set()
+        for code_value in codes:
+            code = normalize_code(code_value)
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            cached = self._history_cache.get(code, days)
+            if not force and not cached.empty and len(cached) >= min(days, 30) and self._history_cache.is_fresh(code):
+                result["cached"] += 1
+                continue
+            try:
+                fetched = self._fetch_akshare_history(code, days)
+                if fetched is None or fetched.empty:
+                    raise RuntimeError("历史行情为空")
+                self._history_cache.set(code, fetched)
+                result["downloaded"] += 1
+            except Exception as exc:  # pragma: no cover - depends on remote services
+                result["failed"] += 1
+                result["errors"].append({"code": code, "error": str(exc)})
+        result["unique_codes"] = len(seen)
+        return result
+
     def _fetch_akshare_history(self, code: str, days: int) -> pd.DataFrame:
         ak = self._get_akshare()
         end_date = datetime.now().strftime("%Y%m%d")

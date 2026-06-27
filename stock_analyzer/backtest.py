@@ -2,8 +2,45 @@ from typing import Dict, Iterable, List
 
 import pandas as pd
 
+from . import config
 from .factors import compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code, rename_known_columns
+
+
+# AlphaLite 信号权重。calibrate.py 离线扫描后写入 .runtime/weights.json 的
+# "alphalite_signal" 段即可覆盖，无需改代码。
+_DEFAULT_ALPHALITE_WEIGHTS = {
+    "ret_5d": 0.20,
+    "ret_10d": 0.22,
+    "ret_20d": 0.25,
+    "ma20_gap": 0.14,
+    "vol_amount_5d": 2.0,
+    "breakout_20d": 4.0,
+    "volatility_20d": -0.35,
+}
+
+
+def _load_alphalite_weights() -> Dict[str, float]:
+    import copy
+    import json
+    import os
+
+    weights = copy.deepcopy(_DEFAULT_ALPHALITE_WEIGHTS)
+    path = getattr(config, "WEIGHTS_OVERRIDE_PATH", os.path.join(".runtime", "weights.json"))
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            override = payload.get("alphalite_signal") or {}
+            for key, value in override.items():
+                if key in weights:
+                    weights[key] = float(value)
+    except Exception:
+        return copy.deepcopy(_DEFAULT_ALPHALITE_WEIGHTS)
+    return weights
+
+
+ALPHALITE_SIGNAL_WEIGHTS = _load_alphalite_weights()
 
 
 def run_alphalite_backtest(
@@ -67,6 +104,7 @@ def run_rolling_alphalite_backtest(
     lookback_days: int = 30,
     rebalance_step: int = 1,
     cost_rate: float = 0.0015,
+    weights: Dict[str, float] = None,
 ) -> Dict[str, object]:
     prepared = {
         normalize_code(code): _prepare_history(code, history)
@@ -102,7 +140,7 @@ def run_rolling_alphalite_backtest(
             signals.append(
                 {
                     "code": code,
-                    "signal": _alphalite_signal(factor),
+                    "signal": _alphalite_signal(factor, weights),
                     "net_return": net_return,
                     "gross_return": gross_return,
                     "trade_date": _trade_date(history, signal_index),
@@ -182,15 +220,16 @@ def _prepare_history(code: str, history: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def _alphalite_signal(factor: Dict[str, float]) -> float:
+def _alphalite_signal(factor: Dict[str, float], weights: Dict[str, float] = None) -> float:
+    w = weights or ALPHALITE_SIGNAL_WEIGHTS
     return (
-        coerce_number(factor.get("ret_5d")) * 0.20
-        + coerce_number(factor.get("ret_10d")) * 0.22
-        + coerce_number(factor.get("ret_20d")) * 0.25
-        + coerce_number(factor.get("ma20_gap")) * 0.14
-        + coerce_number(factor.get("vol_amount_5d")) * 2.0
-        + coerce_number(factor.get("breakout_20d")) * 4.0
-        - coerce_number(factor.get("volatility_20d")) * 0.35
+        coerce_number(factor.get("ret_5d")) * w["ret_5d"]
+        + coerce_number(factor.get("ret_10d")) * w["ret_10d"]
+        + coerce_number(factor.get("ret_20d")) * w["ret_20d"]
+        + coerce_number(factor.get("ma20_gap")) * w["ma20_gap"]
+        + coerce_number(factor.get("vol_amount_5d")) * w["vol_amount_5d"]
+        + coerce_number(factor.get("breakout_20d")) * w["breakout_20d"]
+        + coerce_number(factor.get("volatility_20d")) * w["volatility_20d"]
     )
 
 

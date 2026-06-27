@@ -24,6 +24,166 @@ TECH_THEMES = {
     "脑机/医疗科技": ("脑机", "神经", "医疗", "器械", "生物", "基因", "康复"),
 }
 
+STRATEGY_LABELS = {
+    "short_term": "短期推荐",
+    "long_term": "长期推荐",
+    "tomorrow_picks": "明天预测",
+    "tech_potential": "科技潜力",
+    "swing_picks": "波段 5-10 日",
+    "position_picks": "中长期 1-3 月",
+    "chokepoint_picks": "卡脖子",
+    "reversal_picks": "反转低波",
+    "smallcap_value_picks": "小市值价值",
+    "breakout_picks": "量价突破",
+}
+
+# Serenity 在量化语境中并不是某个软件库，而是 chokepoint / 瓶颈投资方法论
+# （人设 @aleabito，亦见于 UZI-Skill 的 Group I 与 SerenityAlphaTrader）。核心思路：
+# 不追被买爆的下游龙头，沿供应链上溯到最难替代、供给最紧、尚未被重定价的“卡脖子”环节。
+# 本项目据此为科技潜力策略加入 _chokepoint_score 上游主题倾斜（见 A6）。
+SERENITY_REFERENCES = (
+    {
+        "repo": "Serenity / chokepoint 投资方法论",
+        "url": "https://github.com/14H034160212/AlphaTrader",
+        "adopted": "卡脖子/瓶颈投资：上溯供应链，挖掘供给最紧、尚未被重定价的环节",
+    },
+    {
+        "repo": "wbh604/UZI-Skill (Group I)",
+        "url": "https://github.com/wbh604/UZI-Skill",
+        "adopted": "结构化证据 + 数据覆盖自检门控 + 共识极化拉伸",
+    },
+)
+
+# 卡脖子/上游环节关键词：供给紧、最难替代、易被市场忽视的供应链上游。
+CHOKEPOINT_KEYWORDS = (
+    "材料", "衬底", "封装", "载板", "光刻胶", "光模块", "光芯片", "硅片",
+    "靶材", "电子特气", "前驱体", "掩膜", "EDA", "IP核", "设备", "零部件",
+    "元件", "晶圆", "陶瓷", "薄膜", "磁材", "永磁", "稀土", "精密",
+)
+
+# 卡脖子产业链：环节 -> 关键词。用于把命中词归类到环节名，并在前端画产业链全景图。
+# 顺序即匹配优先级（靠前的环节先命中）。
+CHOKEPOINT_CHAIN = (
+    {"segment": "半导体设备", "keywords": ("刻蚀", "光刻", "量测", "薄膜沉积", "设备")},
+    {"segment": "半导体材料", "keywords": ("光刻胶", "硅片", "衬底", "晶圆", "靶材", "电子特气", "前驱体", "掩膜", "抛光")},
+    {"segment": "封装/载板", "keywords": ("封装", "载板", "基板")},
+    {"segment": "EDA/IP", "keywords": ("EDA", "IP核")},
+    {"segment": "光器件", "keywords": ("光模块", "光芯片", "光器件")},
+    {"segment": "高端材料", "keywords": ("陶瓷", "薄膜", "磁材", "永磁", "稀土", "碳", "复材")},
+    {"segment": "精密零部件", "keywords": ("零部件", "元件", "精密", "传感")},
+)
+
+
+def _chain_segment(hits: List[str]) -> str:
+    """把卡脖子命中词归类到产业链环节名；无法归类则返回'其他上游'。"""
+    for kw in hits:
+        for node in CHOKEPOINT_CHAIN:
+            if any(k in kw or kw in k for k in node["keywords"]):
+                return node["segment"]
+    return "其他上游"
+
+
+TRADING_AGENTS_REFERENCE = {
+    "repo": "TauricResearch/TradingAgents",
+    "url": "https://github.com/TauricResearch/TradingAgents",
+    "adopted": "借鉴分析师团队、牛熊研究辩论、交易员、风控和组合经理的分层决策流",
+}
+
+# 可调权重/阈值集中在此，便于回测校准脚本（calibrate.py）离线扫描后写入
+# .runtime/weights.json 覆盖，无需改动代码。键路径与下方各策略 final 组合一一对应。
+_DEFAULT_WEIGHTS = {
+    "short_term": {
+        "momentum": 0.55, "liquidity": 0.15, "industry": 0.08,
+        "hot": 0.07, "sentiment": 0.15,
+        # 反转修正项：A股短线证据显示动量偏弱、反转占优。reversal_tilt>0 时，
+        # 对“近期涨太多”按比例减分（0 = 关闭，保持原动量行为）。由 calibrate
+        # --compare-momentum 回测决定是否启用及幅度，写入 .runtime/weights.json。
+        "reversal_tilt": 0.0,
+    },
+    "long_term": {
+        "trend": 0.42, "liquidity": 0.20, "industry": 0.13,
+        "sentiment": 0.13, "momentum": 0.07, "hot": 0.05,
+    },
+}
+
+# verdict 评级阶梯阈值（参考 UZI 的 80/65/50/35 分档）。
+_DEFAULT_THRESHOLDS = {
+    "verdict": {"strong_buy": 80.0, "buy": 65.0, "watch": 50.0, "reduce": 35.0},
+    # 数据覆盖低于此值的票强制降级 verdict 并打“数据不足”标签。
+    "min_data_coverage": 0.5,
+    # 过热乘法抑制下限（_not_overextended_score/100 的地板）。
+    "overheat_damp_floor": 0.6,
+    # 共识极化拉伸系数（一致→拉伸，分歧→压缩）。
+    "consensus_stretch_k": 1.3,
+}
+
+
+def _load_weight_overrides() -> Tuple[Dict[str, object], Dict[str, object]]:
+    """从 .runtime/weights.json 读取覆盖（存在则深合并到默认值）。任何异常都安全回退到默认。"""
+    import copy
+    import json
+    import os
+
+    weights = copy.deepcopy(_DEFAULT_WEIGHTS)
+    thresholds = copy.deepcopy(_DEFAULT_THRESHOLDS)
+    path = getattr(config, "WEIGHTS_OVERRIDE_PATH", os.path.join(".runtime", "weights.json"))
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            for group, values in (payload.get("weights") or {}).items():
+                if isinstance(values, dict):
+                    weights.setdefault(group, {}).update(values)
+            for key, value in (payload.get("thresholds") or {}).items():
+                default = thresholds.get(key)
+                if isinstance(default, dict):
+                    # 字典段只接受字典覆盖；标量覆盖会破坏下游下标访问，忽略之。
+                    if isinstance(value, dict):
+                        default.update(value)
+                    continue
+                thresholds[key] = value
+            # 关键数值阈值兜底，避免非法值（如 k<=0 触发除零）打挂打分流程。
+            k = thresholds.get("consensus_stretch_k")
+            if not isinstance(k, (int, float)) or k <= 0:
+                thresholds["consensus_stretch_k"] = _DEFAULT_THRESHOLDS["consensus_stretch_k"]
+            cov = thresholds.get("min_data_coverage")
+            if not isinstance(cov, (int, float)) or not (0.0 <= cov <= 1.0):
+                thresholds["min_data_coverage"] = _DEFAULT_THRESHOLDS["min_data_coverage"]
+            floor = thresholds.get("overheat_damp_floor")
+            if not isinstance(floor, (int, float)) or not (0.0 <= floor <= 1.0):
+                thresholds["overheat_damp_floor"] = _DEFAULT_THRESHOLDS["overheat_damp_floor"]
+    except Exception:
+        return copy.deepcopy(_DEFAULT_WEIGHTS), copy.deepcopy(_DEFAULT_THRESHOLDS)
+    return weights, thresholds
+
+
+WEIGHTS, THRESHOLDS = _load_weight_overrides()
+
+PROFILE_COMPONENTS = (
+    ("momentum_score", "动量"),
+    ("trend_score", "趋势"),
+    ("liquidity_score", "流动性"),
+    ("execution_score", "可执行性"),
+    ("theme_score", "主题"),
+    ("sentiment_score", "舆情"),
+    ("industry_score", "行业"),
+    ("not_overextended_score", "不过热"),
+    ("quality_proxy_score", "质量代理"),
+    ("early_trend_score", "启动趋势"),
+)
+
+ALPHALITE_SIGNAL_COLUMNS = (
+    "ret_3d",
+    "ret_5d",
+    "ret_10d",
+    "ret_20d",
+    "ma5_gap",
+    "ma20_gap",
+    "vol_amount_5d",
+    "breakout_20d",
+    "volatility_20d",
+)
+
 
 def prepare_candidates(quotes: pd.DataFrame) -> pd.DataFrame:
     if quotes.empty:
@@ -54,6 +214,10 @@ def prepare_candidates(quotes: pd.DataFrame) -> pd.DataFrame:
         "five_min_pct",
         "sixty_day_pct",
         "ytd_pct",
+        "float_market_cap",
+        "market_cap",
+        "pe_dynamic",
+        "pb",
     ):
         if column not in df.columns:
             df[column] = 0.0
@@ -84,6 +248,312 @@ def _is_buyable_gain(row: pd.Series) -> bool:
     if market in ("chinext", "star"):
         return pct <= config.MAX_BUYABLE_GAIN_GROWTH
     return pct <= config.MAX_BUYABLE_GAIN_MAIN
+
+
+def build_market_regime(df: pd.DataFrame) -> Dict[str, object]:
+    if df.empty:
+        return {
+            "level": "unknown",
+            "label": "未知",
+            "score": 50.0,
+            "breadth_pct": 0.0,
+            "strong_pct": 0.0,
+            "weak_pct": 0.0,
+            "median_pct_chg": 0.0,
+            "avg_amplitude": 0.0,
+            "avg_turnover": 0.0,
+            "leaders": [],
+            "advice": "暂无足够样本判断当前盘面环境。",
+        }
+
+    pct_values = finite_series(df, "pct_chg")
+    amplitude_values = finite_series(df, "amplitude")
+    turnover_values = finite_series(df, "turnover")
+    breadth_pct = round(float((pct_values > 0).mean() * 100), 2) if len(pct_values) else 0.0
+    strong_pct = round(float((pct_values >= 3).mean() * 100), 2) if len(pct_values) else 0.0
+    weak_pct = round(float((pct_values <= -3).mean() * 100), 2) if len(pct_values) else 0.0
+    median_pct_chg = round(coerce_number(pct_values.median()), 2) if len(pct_values) else 0.0
+    avg_amplitude = round(coerce_number(amplitude_values.mean()), 2) if len(amplitude_values) else 0.0
+    avg_turnover = round(coerce_number(turnover_values.mean()), 2) if len(turnover_values) else 0.0
+
+    score = 50.0
+    score += median_pct_chg * 7.5
+    score += (breadth_pct - 50.0) * 0.55
+    score += (strong_pct - weak_pct) * 0.35
+    score -= max(0.0, avg_amplitude - 7.0) * 2.4
+    score = round(max(0.0, min(100.0, score)), 2)
+
+    if score >= 68:
+        level = "risk_on"
+        label = "偏进攻"
+        advice = "盘面承接较强，优先看强势延续与多策略共识标的。"
+    elif score <= 42:
+        level = "risk_off"
+        label = "偏防守"
+        advice = "盘面分歧偏大，优先看稳健趋势与低追高风险标的。"
+    else:
+        level = "balanced"
+        label = "均衡震荡"
+        advice = "盘面没有明显单边优势，优先看流动性和验证样本更好的策略。"
+
+    leaders: List[Dict[str, object]] = []
+    for market in ("main", "chinext", "star"):
+        subset = df[df["market"] == market]
+        if subset.empty:
+            continue
+        market_pct = finite_series(subset, "pct_chg")
+        leaders.append(
+            {
+                "market": market,
+                "market_label": config.MARKET_LABELS.get(market, market),
+                "breadth_pct": round(float((market_pct > 0).mean() * 100), 2) if len(market_pct) else 0.0,
+                "median_pct_chg": round(coerce_number(market_pct.median()), 2) if len(market_pct) else 0.0,
+                "count": int(len(subset)),
+            }
+        )
+    leaders.sort(key=lambda item: (item["median_pct_chg"], item["breadth_pct"]), reverse=True)
+
+    return {
+        "level": level,
+        "label": label,
+        "score": score,
+        "breadth_pct": breadth_pct,
+        "strong_pct": strong_pct,
+        "weak_pct": weak_pct,
+        "median_pct_chg": median_pct_chg,
+        "avg_amplitude": avg_amplitude,
+        "avg_turnover": avg_turnover,
+        "leaders": leaders[:3],
+        "advice": advice,
+    }
+
+
+def _stddev(values: List[float]) -> float:
+    nums = [coerce_number(v) for v in values if pd.notna(coerce_number(v))]
+    if len(nums) < 2:
+        return 0.0
+    mean = sum(nums) / len(nums)
+    variance = sum((v - mean) ** 2 for v in nums) / len(nums)
+    return variance ** 0.5
+
+
+def _consensus_stretch(score: float, agreement: float) -> float:
+    """A3：以 50 为中心做极化拉伸。
+
+    agreement≈1（策略高度一致）→ 把分数朝两端推；agreement≈0（互相打架）→ 朝 50 压缩。
+    k 取 THRESHOLDS.consensus_stretch_k（默认 1.3）。
+    """
+    k = coerce_number(THRESHOLDS.get("consensus_stretch_k"), 1.3)
+    if k <= 0:  # 防御非法覆盖导致的除零
+        k = 1.3
+    # gain 在 [1/k, k] 之间随一致性线性变化。
+    gain = (1.0 / k) + (k - 1.0 / k) * max(0.0, min(1.0, agreement))
+    return 50.0 + (score - 50.0) * gain
+
+
+def _strategy_reliability(strategy_metrics: Dict[str, Dict[str, object]]) -> Dict[str, float]:
+    """B2：把各策略真实样本净表现折成可信度乘子。
+
+    优先使用真实前瞻样本的主周期净胜率/净收益；真实样本不足时才轻度参考
+    回放样本，避免历史回放把共识权重虚高。
+    """
+    reliability: Dict[str, float] = {}
+    if not strategy_metrics:
+        return reliability
+    for name, metrics in strategy_metrics.items():
+        if not isinstance(metrics, dict):
+            continue
+        real_samples = int(metrics.get("real_sample_count") or 0)
+        replay_samples = int(metrics.get("replay_sample_count") or 0)
+        total_samples = int(metrics.get("sample_count") or 0)
+        if real_samples >= 10:
+            win_rate = metrics.get("real_win_rate_primary_net")
+            avg_return = metrics.get("real_avg_primary_return_net")
+            confidence = min(1.0, real_samples / 30.0)
+        elif total_samples >= 20 and replay_samples > 0:
+            win_rate = metrics.get("win_rate_primary_net")
+            avg_return = metrics.get("avg_primary_return_net")
+            confidence = min(0.45, total_samples / 120.0)
+        else:
+            win_rate = metrics.get("win_rate_next_close")
+            avg_return = metrics.get("avg_next_close_return")
+            confidence = min(0.35, total_samples / 60.0) if total_samples else 0.0
+        if win_rate is None or confidence <= 0:
+            continue
+        win_component = (coerce_number(win_rate) - 50.0) / 10.0 * 0.04
+        return_component = coerce_number(avg_return) * 0.015
+        multiplier = 1.0 + (win_component + return_component) * confidence
+        reliability[name] = max(0.8, min(1.2, multiplier))
+    return reliability
+
+
+def build_strategy_consensus(
+    strategy_rows: Dict[str, List[Dict[str, object]]],
+    minimum_appearances: int = 2,
+    top_n: int = 10,
+    strategy_metrics: Dict[str, Dict[str, object]] = None,
+) -> List[Dict[str, object]]:
+    available_strategies = [name for name, rows in strategy_rows.items() if rows]
+    strategy_count = len(available_strategies)
+    if strategy_count <= 0:
+        return []
+
+    # B2：把各策略的历史命中率折成可信度乘子（0.8~1.2），命中率高的策略票更被采信。
+    reliability = _strategy_reliability(strategy_metrics)
+
+    merged: Dict[str, Dict[str, object]] = {}
+    for strategy_name, rows in strategy_rows.items():
+        if not rows:
+            continue
+        strategy_label = STRATEGY_LABELS.get(strategy_name, strategy_name)
+        weight = reliability.get(strategy_name, 1.0)
+        for row in rows[:top_n]:
+            code = str(row.get("code") or "").strip()
+            if not code:
+                continue
+            item = merged.setdefault(
+                code,
+                {
+                    "code": code,
+                    "name": str(row.get("name", "")),
+                    "market_label": str(row.get("market_label", row.get("market", ""))),
+                    "theme": str(row.get("theme", "")),
+                    "appearances": 0,
+                    "rank_total": 0.0,
+                    "score_total": 0.0,
+                    "quality_total": 0.0,
+                    "confidence_total": 0.0,
+                    "risk_total": 0.0,
+                    "agent_total": 0.0,
+                    "best_rank": 999.0,
+                    "strategies": [],
+                    "strategy_names": [],
+                    "evidence": [],
+                    "actions": [],
+                    "agent_actions": [],
+                    "member_scores": [],
+                    "reliability_total": 0.0,
+                },
+            )
+            profile = row.get("serenity_profile") or {}
+            committee = row.get("agent_committee") or {}
+            item["appearances"] += 1
+            item["rank_total"] += coerce_number(row.get("rank"), 99.0)
+            item["score_total"] += coerce_number(row.get("score"))
+            item["quality_total"] += coerce_number(profile.get("quality_score"), row.get("score"))
+            item["confidence_total"] += coerce_number(profile.get("confidence_score"), 50.0)
+            item["risk_total"] += coerce_number(profile.get("risk_score"), 50.0)
+            item["agent_total"] += coerce_number(committee.get("final_score"), profile.get("quality_score", row.get("score")))
+            item["best_rank"] = min(coerce_number(item.get("best_rank"), 999.0), coerce_number(row.get("rank"), 99.0))
+            item["member_scores"].append(coerce_number(row.get("score")))
+            item["reliability_total"] += weight
+            if strategy_label not in item["strategies"]:
+                item["strategies"].append(strategy_label)
+            if strategy_name not in item["strategy_names"]:
+                item["strategy_names"].append(strategy_name)
+            if not item.get("theme") and row.get("theme"):
+                item["theme"] = str(row.get("theme"))
+            for evidence in profile.get("evidence", [])[:2]:
+                text = str(evidence.get("label", ""))
+                if text and text not in item["evidence"]:
+                    item["evidence"].append(text)
+            action = str(profile.get("action_label", ""))
+            if action and action not in item["actions"]:
+                item["actions"].append(action)
+            agent_action = str(committee.get("final_action_label", ""))
+            if agent_action and agent_action not in item["agent_actions"]:
+                item["agent_actions"].append(agent_action)
+
+    rows: List[Dict[str, object]] = []
+    for item in merged.values():
+        appearances = int(item["appearances"])
+        if appearances < minimum_appearances:
+            continue
+        avg_rank = item["rank_total"] / max(appearances, 1)
+        avg_score = item["score_total"] / max(appearances, 1)
+        avg_quality = item["quality_total"] / max(appearances, 1)
+        avg_confidence = item["confidence_total"] / max(appearances, 1)
+        avg_risk = item["risk_total"] / max(appearances, 1)
+        avg_agent_score = item["agent_total"] / max(appearances, 1)
+        ratio = round(appearances / strategy_count * 100, 2)
+        if appearances >= 4:
+            level, label = "high", "强共识"
+        elif appearances >= 3:
+            level, label = "medium", "中共识"
+        else:
+            level, label = "low", "弱共识"
+
+        # A3：跨策略分数离散度 → 一致性。一致(低离散)拉伸、分歧(高离散)压缩。
+        member_scores = item.get("member_scores") or [avg_score]
+        dispersion = _stddev(member_scores)
+        agreement = round(max(0.0, min(1.0, 1.0 - dispersion / 25.0)), 3)
+        # B2：可信度均值（>1 表示该票多来自高命中率策略）。
+        reliability_avg = item["reliability_total"] / max(appearances, 1)
+
+        base_consensus = (
+            avg_score * 0.32
+            + avg_quality * 0.25
+            + avg_confidence * 0.15
+            + avg_agent_score * 0.12
+            + (110.0 - avg_rank * 8.0) * 0.16
+            - max(0.0, avg_risk - 55.0) * 0.35
+        )
+        consensus_score = round(
+            max(0.0, min(100.0, _consensus_stretch(base_consensus, agreement) * reliability_avg)),
+            2,
+        )
+        action_label = _consensus_action(label, avg_quality, avg_confidence, avg_risk, avg_agent_score)
+        rows.append(
+            {
+                "code": item["code"],
+                "name": item["name"],
+                "market_label": item["market_label"],
+                "theme": item["theme"],
+                "appearances": appearances,
+                "strategy_count": strategy_count,
+                "consensus_ratio": ratio,
+                "best_rank": int(item["best_rank"]),
+                "avg_rank": round(avg_rank, 2),
+                "avg_score": round(avg_score, 2),
+                "avg_quality": round(avg_quality, 2),
+                "avg_confidence": round(avg_confidence, 2),
+                "avg_risk": round(avg_risk, 2),
+                "avg_agent_score": round(avg_agent_score, 2),
+                "dispersion": round(dispersion, 2),
+                "agreement": agreement,
+                "reliability": round(reliability_avg, 3),
+                "consensus_score": consensus_score,
+                "level": level,
+                "label": label,
+                "action_label": action_label,
+                "evidence": item["evidence"][:4],
+                "actions": item["actions"][:3],
+                "agent_actions": item["agent_actions"][:3],
+                "strategies": item["strategies"],
+                "strategy_names": item["strategy_names"],
+            }
+        )
+
+    rows.sort(
+        key=lambda item: (
+            item["appearances"],
+            item["consensus_score"],
+            -item["avg_risk"],
+            -item["avg_rank"],
+        ),
+        reverse=True,
+    )
+    return rows[:top_n]
+
+
+def _consensus_action(label: str, quality: float, confidence: float, risk: float, agent_score: float = 50.0) -> str:
+    if risk >= 72:
+        return "只观察"
+    if quality >= 72 and confidence >= 62 and risk <= 48 and agent_score >= 66:
+        return "{}优先".format(label)
+    if quality >= 62 and risk <= 58 and agent_score >= 56:
+        return "小仓跟踪"
+    return "等待确认"
 
 
 def score_candidates(
@@ -191,6 +661,7 @@ def score_dual_horizon_candidates(
     sentiment_lookup: Dict[str, Dict[str, object]],
     top_n: int = 10,
     market_filter: str = "all",
+    market_regime: Dict[str, object] = None,
 ) -> Tuple[Dict[str, List[Dict[str, object]]], Dict[str, object]]:
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
@@ -214,6 +685,7 @@ def score_dual_horizon_candidates(
                 sentiment_lookup=sentiment_lookup,
                 context=context,
                 horizon="short",
+                market_regime=market_regime,
             )
         )
         long_rows.append(
@@ -224,6 +696,7 @@ def score_dual_horizon_candidates(
                 sentiment_lookup=sentiment_lookup,
                 context=context,
                 horizon="long",
+                market_regime=market_regime,
             )
         )
 
@@ -251,6 +724,7 @@ def score_tomorrow_candidates(
     df: pd.DataFrame,
     top_n: int = 50,
     market_filter: str = "all",
+    market_regime: Dict[str, object] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
@@ -299,13 +773,16 @@ def score_tomorrow_candidates(
         )
         execution_score = _execution_score(row)
         risk_penalty = _tomorrow_risk_penalty(row)
+        regime_bonus = _market_regime_adjustment(row, market_regime, "tomorrow")
         final_score = (
             liquidity_score * 0.30
             + momentum_score * 0.28
             + trend_score * 0.20
             + execution_score * 0.22
             - risk_penalty
+            + regime_bonus
         )
+        final_score = _apply_overheat_damp(final_score, row)
         item = {
                 "code": row["code"],
                 "name": str(row.get("name", "")),
@@ -326,6 +803,7 @@ def score_tomorrow_candidates(
                 "trend_score": round(trend_score, 2),
                 "execution_score": round(execution_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
+                "regime_bonus": round(regime_bonus, 2),
                 "score": round(max(0.0, min(100.0, final_score)), 2),
                 "reasons": _build_tomorrow_reasons(
                     row,
@@ -335,14 +813,18 @@ def score_tomorrow_candidates(
                     execution_score,
                     risk_penalty,
                 ),
-            }
+        }
         rows.append(
-            _attach_signal_explanation(
-                item,
-                row,
-                "tomorrow_picks",
-                "明天预测",
-                "次日冲高",
+            _with_regime_reason(
+                _attach_signal_explanation(
+                    item,
+                    row,
+                    "tomorrow_picks",
+                    "明天预测",
+                    "次日冲高",
+                ),
+                market_regime,
+                regime_bonus,
             )
         )
 
@@ -366,6 +848,7 @@ def score_tech_potential_candidates(
     df: pd.DataFrame,
     top_n: int = 50,
     market_filter: str = "all",
+    market_regime: Dict[str, object] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
@@ -404,16 +887,21 @@ def score_tech_potential_candidates(
         volume_score = _balanced_volume_score(volume_ratio)
         valuation_proxy_score = _not_overextended_score(row)
         execution_score = _execution_score(row)
+        chokepoint_score, chokepoint_hits = _chokepoint_score(row)
         risk_penalty = _tech_potential_risk_penalty(row)
+        regime_bonus = _market_regime_adjustment(row, market_regime, "tech")
         final_score = (
-            theme_score * 0.28
-            + liquidity_score * 0.20
+            theme_score * 0.24
+            + chokepoint_score * 0.10
+            + liquidity_score * 0.18
             + early_trend_score * 0.20
-            + valuation_proxy_score * 0.16
-            + volume_score * 0.09
-            + execution_score * 0.07
+            + valuation_proxy_score * 0.14
+            + volume_score * 0.08
+            + execution_score * 0.06
             - risk_penalty
+            + regime_bonus
         )
+        final_score = _apply_overheat_damp(final_score, row)
         item = {
                 "code": row["code"],
                 "name": str(row.get("name", "")),
@@ -429,11 +917,14 @@ def score_tech_potential_candidates(
                 "ytd_pct": round(ytd_pct, 2),
                 "amplitude": round(amplitude, 2),
                 "theme_score": round(theme_score, 2),
+                "chokepoint_score": round(chokepoint_score, 2),
+                "chokepoint_hits": chokepoint_hits,
                 "liquidity_score": round(liquidity_score, 2),
                 "early_trend_score": round(early_trend_score, 2),
                 "not_overextended_score": round(valuation_proxy_score, 2),
                 "execution_score": round(execution_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
+                "regime_bonus": round(regime_bonus, 2),
                 "score": round(max(0.0, min(100.0, final_score)), 2),
                 "reasons": _build_tech_potential_reasons(
                     row,
@@ -443,14 +934,18 @@ def score_tech_potential_candidates(
                     liquidity_score,
                     risk_penalty,
                 ),
-            }
+        }
         rows.append(
-            _attach_signal_explanation(
-                item,
-                row,
-                "tech_potential",
-                "科技潜力",
-                "科技主题潜力",
+            _with_regime_reason(
+                _attach_signal_explanation(
+                    item,
+                    row,
+                    "tech_potential",
+                    "科技潜力",
+                    "科技主题潜力",
+                ),
+                market_regime,
+                regime_bonus,
             )
         )
 
@@ -467,10 +962,166 @@ def score_tech_potential_candidates(
     }
 
 
+def score_chokepoint_candidates(
+    df: pd.DataFrame,
+    top_n: int = 30,
+    market_filter: str = "all",
+    market_regime: Dict[str, object] = None,
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    """卡脖子策略：以 _chokepoint_score 为主导，挑供给紧、难替代、尚未被重定价的上游环节。
+
+    与科技潜力的区别：chokepoint 是主导因子（0.34）而非副权重，且只保留命中上游关键词的票，
+    并把命中词归类到产业链环节（chain_segment），meta 里附 chain 用于前端产业链全景图。
+    """
+    if market_filter in ("main", "chinext", "star"):
+        df = df[df["market"] == market_filter].copy()
+    df = df[
+        (finite_series(df, "sixty_day_pct") <= 90)
+        & (finite_series(df, "ytd_pct") <= 150)
+        & (finite_series(df, "sixty_day_pct") >= -25)
+    ].copy()
+    if df.empty:
+        return [], {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "candidate_count": 0,
+            "matched_count": 0,
+            "top_n": top_n,
+            "market_filter": market_filter,
+            "chain": [],
+        }
+
+    context = _score_context(df, {})
+    rows: List[Dict[str, object]] = []
+    for _, row in df.iterrows():
+        chokepoint_score, chokepoint_hits = _chokepoint_score(row)
+        if not chokepoint_hits:
+            continue  # 只保留真正落在卡脖子环节的票
+        pct_chg = coerce_number(row.get("pct_chg"))
+        turnover = coerce_number(row.get("turnover"))
+        turnover_rate = coerce_number(row.get("turnover_rate"))
+        volume_ratio = coerce_number(row.get("volume_ratio"))
+        sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+        ytd_pct = coerce_number(row.get("ytd_pct"))
+        amplitude = coerce_number(row.get("amplitude"))
+        chain_segment = _chain_segment(chokepoint_hits)
+
+        liquidity_score = (
+            percentile_score(turnover, context["turnover_values"]) * 0.62
+            + percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.38
+        )
+        early_trend_score = _early_trend_score(row)
+        volume_score = _balanced_volume_score(volume_ratio)
+        not_overextended_score = _not_overextended_score(row)
+        execution_score = _execution_score(row)
+        risk_penalty = _tech_potential_risk_penalty(row)
+        regime_bonus = _market_regime_adjustment(row, market_regime, "tech")
+        final_score = (
+            chokepoint_score * 0.34
+            + liquidity_score * 0.20
+            + early_trend_score * 0.18
+            + not_overextended_score * 0.14
+            + execution_score * 0.08
+            + volume_score * 0.06
+            - risk_penalty
+            + regime_bonus
+        )
+        final_score = _apply_overheat_damp(final_score, row)
+        item = {
+                "code": row["code"],
+                "name": str(row.get("name", "")),
+                "market": row.get("market", "main"),
+                "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+                "theme": chain_segment,
+                "chain_segment": chain_segment,
+                "price": round(coerce_number(row.get("price")), 3),
+                "pct_chg": round(pct_chg, 2),
+                "volume_ratio": round(volume_ratio, 2),
+                "turnover_rate": round(turnover_rate, 2),
+                "turnover": round(turnover, 2),
+                "sixty_day_pct": round(sixty_day_pct, 2),
+                "ytd_pct": round(ytd_pct, 2),
+                "amplitude": round(amplitude, 2),
+                "chokepoint_score": round(chokepoint_score, 2),
+                "chokepoint_hits": chokepoint_hits,
+                "liquidity_score": round(liquidity_score, 2),
+                "early_trend_score": round(early_trend_score, 2),
+                "not_overextended_score": round(not_overextended_score, 2),
+                "execution_score": round(execution_score, 2),
+                "risk_penalty": round(risk_penalty, 2),
+                "regime_bonus": round(regime_bonus, 2),
+                "score": round(max(0.0, min(100.0, final_score)), 2),
+                "reasons": [
+                    "卡脖子环节：{}".format(chain_segment),
+                    "命中：{}".format("、".join(chokepoint_hits)),
+                ],
+        }
+        rows.append(
+            _with_regime_reason(
+                _attach_signal_explanation(
+                    item,
+                    row,
+                    "chokepoint_picks",
+                    "卡脖子",
+                    "卡脖子上游",
+                ),
+                market_regime,
+                regime_bonus,
+            )
+        )
+
+    rows.sort(key=lambda item: item["score"], reverse=True)
+    for rank, row in enumerate(rows[:top_n], start=1):
+        row["rank"] = rank
+
+    # 产业链全景：按环节分组，每组列出当日命中该环节的 top 票（即使没进总 top_n）。
+    chain_map: Dict[str, List[Dict[str, object]]] = {}
+    for row in rows:
+        chain_map.setdefault(row["chain_segment"], []).append(row)
+    chain = []
+    for node in CHOKEPOINT_CHAIN:
+        members = chain_map.get(node["segment"], [])
+        chain.append({
+            "segment": node["segment"],
+            "count": len(members),
+            "picks": [
+                {
+                    "code": m["code"],
+                    "name": m["name"],
+                    "score": m["score"],
+                    "verdict": m.get("verdict"),
+                    "pct_chg": m["pct_chg"],
+                }
+                for m in members[:6]
+            ],
+        })
+    other = chain_map.get("其他上游", [])
+    if other:
+        chain.append({
+            "segment": "其他上游",
+            "count": len(other),
+            "picks": [
+                {"code": m["code"], "name": m["name"], "score": m["score"], "verdict": m.get("verdict"), "pct_chg": m["pct_chg"]}
+                for m in other[:6]
+            ],
+        })
+
+    return rows[:top_n], {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "candidate_count": len(df),
+        "matched_count": len(rows),
+        "top_n": top_n,
+        "market_filter": market_filter,
+        "strategy_version": "chokepoint_v1",
+        "strategy": "卡脖子：上溯供应链，挖掘供给最紧、最难替代、尚未被重定价的上游环节",
+        "chain": chain,
+    }
+
+
 def score_swing_candidates(
     df: pd.DataFrame,
     top_n: int = 30,
     market_filter: str = "all",
+    market_regime: Dict[str, object] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
@@ -522,6 +1173,7 @@ def score_swing_candidates(
         )
         execution_score = _execution_score(row)
         risk_penalty = _swing_risk_penalty(row)
+        regime_bonus = _market_regime_adjustment(row, market_regime, "swing")
         final_score = (
             momentum_score * 0.34
             + trend_score * 0.26
@@ -529,7 +1181,9 @@ def score_swing_candidates(
             + execution_score * 0.12
             + _not_overextended_score(row) * 0.08
             - risk_penalty
+            + regime_bonus
         )
+        final_score = _apply_overheat_damp(final_score, row)
         item = _horizon_row(row, {
             "ret_5d": ret_5d,
             "ret_10d": ret_10d,
@@ -544,11 +1198,18 @@ def score_swing_candidates(
             "liquidity_score": liquidity_score,
             "execution_score": execution_score,
             "risk_penalty": risk_penalty,
+            "regime_bonus": regime_bonus,
             "score": final_score,
             "horizon": "swing",
             "reasons": _build_swing_reasons(row, momentum_score, trend_score, liquidity_score, risk_penalty),
         })
-        rows.append(_attach_signal_explanation(item, row, "swing_picks", "波段 5-10 日", "波段延续"))
+        rows.append(
+            _with_regime_reason(
+                _attach_signal_explanation(item, row, "swing_picks", "波段 5-10 日", "波段延续"),
+                market_regime,
+                regime_bonus,
+            )
+        )
 
     rows.sort(key=lambda item: item["score"], reverse=True)
     for rank, row in enumerate(rows[:top_n], start=1):
@@ -562,6 +1223,7 @@ def score_position_candidates(
     df: pd.DataFrame,
     top_n: int = 30,
     market_filter: str = "all",
+    market_regime: Dict[str, object] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
@@ -611,6 +1273,7 @@ def score_position_candidates(
             + percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.32
         )
         risk_penalty = _position_risk_penalty(row)
+        regime_bonus = _market_regime_adjustment(row, market_regime, "position")
         final_score = (
             trend_score * 0.34
             + quality_proxy_score * 0.26
@@ -618,6 +1281,7 @@ def score_position_candidates(
             + theme_score * 0.12
             + _execution_score(row) * 0.08
             - risk_penalty
+            + regime_bonus
         )
         item = _horizon_row(row, {
             "theme": theme,
@@ -632,11 +1296,18 @@ def score_position_candidates(
             "liquidity_score": liquidity_score,
             "execution_score": _execution_score(row),
             "risk_penalty": risk_penalty,
+            "regime_bonus": regime_bonus,
             "score": final_score,
             "horizon": "position",
             "reasons": _build_position_reasons(row, theme, trend_score, quality_proxy_score, liquidity_score, risk_penalty),
         })
-        rows.append(_attach_signal_explanation(item, row, "position_picks", "中长期 1-3 月", "中期趋势"))
+        rows.append(
+            _with_regime_reason(
+                _attach_signal_explanation(item, row, "position_picks", "中长期 1-3 月", "中期趋势"),
+                market_regime,
+                regime_bonus,
+            )
+        )
 
     rows.sort(key=lambda item: item["score"], reverse=True)
     for rank, row in enumerate(rows[:top_n], start=1):
@@ -645,6 +1316,325 @@ def score_position_candidates(
     meta["strategy"] = "中长期 1-3 月：技术趋势版，偏好中期趋势向上、波动可控、涨幅未透支、流动性充足和科技/先进制造方向"
     meta["limitation"] = "当前未接入财务、估值和业绩数据，不能视为基本面价值策略。"
     return rows[:top_n], meta
+
+
+def score_reversal_candidates(
+    df: pd.DataFrame,
+    top_n: int = 30,
+    market_filter: str = "all",
+    market_regime: Dict[str, object] = None,
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    """反转·低波·高换手回避因子股。
+
+    依据 A 股横截面证据（短线反转 + 低波动 + 高换手未来弱）。主导因子：
+    近期跌得多(反转)、波动低、换手不过热。不加过热 damp（本就偏低位）。
+    """
+    if market_filter in ("main", "chinext", "star"):
+        df = df[df["market"] == market_filter].copy()
+    if df.empty:
+        return [], _basic_meta(top_n, market_filter, "reversal_v1")
+
+    context = _score_context(df, {})
+    rows: List[Dict[str, object]] = []
+    for _, row in df.iterrows():
+        ret_20d = coerce_number(row.get("ret_20d"))
+        volatility_20d = coerce_number(row.get("volatility_20d"))
+        turnover_rate = coerce_number(row.get("turnover_rate"))
+        turnover = coerce_number(row.get("turnover"))
+        sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+
+        # 反转：近期跌得多→分高（history 关时回退 sixty_day_pct）。
+        reversal_score = _optional_factor_score(
+            ret_20d, context["ret_20d_values"], higher_is_better=False,
+            fallback=sixty_day_pct, fallback_values=context["sixty_day_values"],
+        )
+        lowvol_score = _optional_factor_score(
+            volatility_20d, context["volatility_20d_values"], higher_is_better=False,
+            fallback=coerce_number(row.get("amplitude")), fallback_values=context["amplitude_values"],
+        )
+        calm_turnover_score = percentile_score(turnover_rate, context["turnover_rate_values"], higher_is_better=False)
+        liquidity_score = percentile_score(turnover, context["turnover_values"])
+        not_overextended = _not_overextended_score(row)
+        risk_penalty = _reversal_risk_penalty(row)
+        regime_bonus = _market_regime_adjustment(row, market_regime, "long")
+        final_score = (
+            reversal_score * 0.40
+            + lowvol_score * 0.26
+            + calm_turnover_score * 0.16
+            + liquidity_score * 0.12
+            + not_overextended * 0.06
+            - risk_penalty
+            + regime_bonus
+        )
+        item = {
+            "code": row["code"],
+            "name": str(row.get("name", "")),
+            "market": row.get("market", "main"),
+            "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+            "price": round(coerce_number(row.get("price")), 3),
+            "pct_chg": round(coerce_number(row.get("pct_chg")), 2),
+            "turnover": round(turnover, 2),
+            "turnover_rate": round(turnover_rate, 2),
+            "sixty_day_pct": round(sixty_day_pct, 2),
+            "ytd_pct": round(coerce_number(row.get("ytd_pct")), 2),
+            "ret_20d": round(ret_20d, 2),
+            "volatility_20d": round(volatility_20d, 2),
+            "reversal_score": round(reversal_score, 2),
+            "lowvol_score": round(lowvol_score, 2),
+            "calm_turnover_score": round(calm_turnover_score, 2),
+            "liquidity_score": round(liquidity_score, 2),
+            "not_overextended_score": round(not_overextended, 2),
+            "risk_penalty": round(risk_penalty, 2),
+            "regime_bonus": round(regime_bonus, 2),
+            "score": round(max(0.0, min(100.0, final_score)), 2),
+            "reasons": [
+                "反转分 {:.0f}（近20日跌幅越大越靠前）".format(reversal_score),
+                "低波分 {:.0f}、换手不过热分 {:.0f}".format(lowvol_score, calm_turnover_score),
+            ],
+        }
+        rows.append(
+            _with_regime_reason(
+                _attach_signal_explanation(item, row, "reversal_picks", "反转低波", "超跌反转"),
+                market_regime, regime_bonus,
+            )
+        )
+
+    rows.sort(key=lambda item: item["score"], reverse=True)
+    for rank, row in enumerate(rows[:top_n], start=1):
+        row["rank"] = rank
+    meta = _basic_meta(top_n, market_filter, "reversal_v1")
+    meta["candidate_count"] = len(df)
+    meta["matched_count"] = len(rows)
+    meta["strategy"] = "反转低波：A股短线反转+低波动+高换手回避，挖掘超跌且不躁动的标的"
+    return rows[:top_n], meta
+
+
+def score_smallcap_value_candidates(
+    df: pd.DataFrame,
+    top_n: int = 30,
+    market_filter: str = "all",
+    market_regime: Dict[str, object] = None,
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    """小市值·价值股。A股历史最强因子之一，但带 2024 微盘崩盘尾风险 → 多重护栏。"""
+    if market_filter in ("main", "chinext", "star"):
+        df = df[df["market"] == market_filter].copy()
+    # 护栏：需有有效流通市值与正 PE/PB；过滤亏损与超小市值（壳/退市风险）。
+    if "float_market_cap" not in df.columns:
+        return [], _basic_meta(top_n, market_filter, "smallcap_value_v1", note="当前行情源未提供市值/估值字段，建议使用东方财富源")
+    df = df[
+        (finite_series(df, "float_market_cap") >= config.SMALLCAP_MIN_FLOAT_CAP)
+        & (finite_series(df, "pe_dynamic") > 0)
+        & (finite_series(df, "pb") > 0)
+    ].copy()
+    if df.empty:
+        return [], _basic_meta(top_n, market_filter, "smallcap_value_v1", note="无满足市值/估值护栏的标的")
+
+    context = _score_context(df, {})
+    rows: List[Dict[str, object]] = []
+    for _, row in df.iterrows():
+        float_cap = coerce_number(row.get("float_market_cap"))
+        pe = coerce_number(row.get("pe_dynamic"))
+        pb = coerce_number(row.get("pb"))
+        turnover = coerce_number(row.get("turnover"))
+        volatility_20d = coerce_number(row.get("volatility_20d"))
+
+        smallcap_score = percentile_score(float_cap, context["float_market_cap_values"], higher_is_better=False)
+        value_score = (
+            percentile_score(pe, context["pe_dynamic_values"], higher_is_better=False) * 0.5
+            + percentile_score(pb, context["pb_values"], higher_is_better=False) * 0.5
+        )
+        liquidity_score = percentile_score(turnover, context["turnover_values"])
+        lowvol_score = _optional_factor_score(
+            volatility_20d, context["volatility_20d_values"], higher_is_better=False,
+            fallback=coerce_number(row.get("amplitude")), fallback_values=context["amplitude_values"],
+        )
+        not_overextended = _not_overextended_score(row)
+        risk_penalty = _position_risk_penalty(row)
+        # 市场偏防守时小市值整体降权（尾风险最大的时候）。
+        regime_bonus = _market_regime_adjustment(row, market_regime, "position")
+        final_score = (
+            smallcap_score * 0.34
+            + value_score * 0.22
+            + liquidity_score * 0.20
+            + lowvol_score * 0.12
+            + not_overextended * 0.12
+            - risk_penalty
+            + regime_bonus
+        )
+        item = {
+            "code": row["code"],
+            "name": str(row.get("name", "")),
+            "market": row.get("market", "main"),
+            "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+            "price": round(coerce_number(row.get("price")), 3),
+            "pct_chg": round(coerce_number(row.get("pct_chg")), 2),
+            "turnover": round(turnover, 2),
+            "turnover_rate": round(coerce_number(row.get("turnover_rate")), 2),
+            "float_market_cap": round(float_cap, 2),
+            "pe_dynamic": round(pe, 2),
+            "pb": round(pb, 2),
+            "sixty_day_pct": round(coerce_number(row.get("sixty_day_pct")), 2),
+            "ytd_pct": round(coerce_number(row.get("ytd_pct")), 2),
+            "smallcap_score": round(smallcap_score, 2),
+            "value_score": round(value_score, 2),
+            "liquidity_score": round(liquidity_score, 2),
+            "not_overextended_score": round(not_overextended, 2),
+            "risk_penalty": round(risk_penalty, 2),
+            "regime_bonus": round(regime_bonus, 2),
+            "score": round(max(0.0, min(100.0, final_score)), 2),
+            "reasons": [
+                "流通市值 {:.1f} 亿、PE {:.1f}、PB {:.2f}".format(float_cap / 1e8, pe, pb),
+                "小市值分 {:.0f}、价值分 {:.0f}".format(smallcap_score, value_score),
+            ],
+        }
+        rows.append(
+            _with_regime_reason(
+                _attach_signal_explanation(item, row, "smallcap_value_picks", "小市值价值", "小市值低估"),
+                market_regime, regime_bonus,
+            )
+        )
+
+    rows.sort(key=lambda item: item["score"], reverse=True)
+    for rank, row in enumerate(rows[:top_n], start=1):
+        row["rank"] = rank
+    meta = _basic_meta(top_n, market_filter, "smallcap_value_v1")
+    meta["candidate_count"] = len(df)
+    meta["matched_count"] = len(rows)
+    meta["strategy"] = "小市值价值：低流通市值+低PE/PB，含市值下限/亏损过滤/流动性/防守降权护栏"
+    meta["risk_note"] = "小市值因子有 2024 年初微盘股流动性崩盘的尾风险；偏防守市况已自动降权，仍建议分散并设止损。"
+    return rows[:top_n], meta
+
+
+def score_breakout_candidates(
+    df: pd.DataFrame,
+    top_n: int = 30,
+    market_filter: str = "all",
+    market_regime: Dict[str, object] = None,
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    """量价突破·均线多头。经典技术派趋势确认：多头排列或20日新高 + 量能突破。"""
+    if market_filter in ("main", "chinext", "star"):
+        df = df[df["market"] == market_filter].copy()
+    if df.empty:
+        return [], _basic_meta(top_n, market_filter, "breakout_v1")
+
+    context = _score_context(df, {})
+    rows: List[Dict[str, object]] = []
+    for _, row in df.iterrows():
+        breakout_20d = coerce_number(row.get("breakout_20d"))
+        ma_bull = coerce_number(row.get("ma_bull_aligned"))
+        vol_ma5_ratio = coerce_number(row.get("vol_ma5_ratio"))
+        # 预过滤：需多头排列或创20日新高之一。
+        if breakout_20d < 0.5 and ma_bull < 0.5:
+            continue
+        pct_chg = coerce_number(row.get("pct_chg"))
+        speed = _row_speed(row)
+        volume_ratio = coerce_number(row.get("volume_ratio"))
+        turnover = coerce_number(row.get("turnover"))
+        sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+
+        momentum_score = (
+            percentile_score(pct_chg, context["pct_values"]) * 0.5
+            + percentile_score(speed, context["speed_values"]) * 0.5
+        )
+        trend_score = (
+            percentile_score(sixty_day_pct, context["sixty_day_values"]) * 0.6
+            + _optional_factor_score(coerce_number(row.get("ma20_gap")), context["ma20_gap_values"]) * 0.4
+        )
+        # 突破强度：多头排列 + 创新高各自加分。
+        breakout_strength = 50.0 + ma_bull * 25.0 + breakout_20d * 25.0
+        # 量能突破：vol_ma5_ratio>=1.5 加分（history 关时回退量比）。
+        if vol_ma5_ratio > 0:
+            volume_break = min(100.0, 40.0 + max(0.0, vol_ma5_ratio - 1.0) * 40.0)
+        else:
+            volume_break = _balanced_volume_score(volume_ratio)
+        execution_score = _execution_score(row)
+        risk_penalty = _tomorrow_risk_penalty(row)
+        regime_bonus = _market_regime_adjustment(row, market_regime, "swing")
+        final_score = (
+            momentum_score * 0.30
+            + breakout_strength * 0.26
+            + volume_break * 0.18
+            + trend_score * 0.16
+            + execution_score * 0.10
+            - risk_penalty
+            + regime_bonus
+        )
+        final_score = _apply_overheat_damp(final_score, row)
+        item = {
+            "code": row["code"],
+            "name": str(row.get("name", "")),
+            "market": row.get("market", "main"),
+            "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+            "price": round(coerce_number(row.get("price")), 3),
+            "pct_chg": round(pct_chg, 2),
+            "volume_ratio": round(volume_ratio, 2),
+            "turnover": round(turnover, 2),
+            "turnover_rate": round(coerce_number(row.get("turnover_rate")), 2),
+            "sixty_day_pct": round(sixty_day_pct, 2),
+            "ytd_pct": round(coerce_number(row.get("ytd_pct")), 2),
+            "breakout_20d": bool(breakout_20d),
+            "ma_bull_aligned": bool(ma_bull),
+            "vol_ma5_ratio": round(vol_ma5_ratio, 2),
+            "momentum_score": round(momentum_score, 2),
+            "breakout_strength": round(breakout_strength, 2),
+            "volume_break_score": round(volume_break, 2),
+            "trend_score": round(trend_score, 2),
+            "execution_score": round(execution_score, 2),
+            "risk_penalty": round(risk_penalty, 2),
+            "regime_bonus": round(regime_bonus, 2),
+            "score": round(max(0.0, min(100.0, final_score)), 2),
+            "reasons": [
+                "{}{}".format("均线多头排列 " if ma_bull >= 0.5 else "", "创20日新高" if breakout_20d >= 0.5 else "").strip() or "趋势确认",
+                "量能突破 {:.1f}×5日均量".format(vol_ma5_ratio) if vol_ma5_ratio > 0 else "量比 {:.1f}".format(volume_ratio),
+            ],
+        }
+        rows.append(
+            _with_regime_reason(
+                _attach_signal_explanation(item, row, "breakout_picks", "量价突破", "突破确认"),
+                market_regime, regime_bonus,
+            )
+        )
+
+    rows.sort(key=lambda item: item["score"], reverse=True)
+    for rank, row in enumerate(rows[:top_n], start=1):
+        row["rank"] = rank
+    meta = _basic_meta(top_n, market_filter, "breakout_v1")
+    meta["candidate_count"] = len(df)
+    meta["matched_count"] = len(rows)
+    meta["strategy"] = "量价突破：均线多头排列或20日新高 + 量能突破，趋势确认型选股"
+    return rows[:top_n], meta
+
+
+def _basic_meta(top_n: int, market_filter: str, version: str, note: str = "") -> Dict[str, object]:
+    meta = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "candidate_count": 0,
+        "matched_count": 0,
+        "top_n": top_n,
+        "market_filter": market_filter,
+        "strategy_version": version,
+    }
+    if note:
+        meta["note"] = note
+    return meta
+
+
+def _reversal_risk_penalty(row: pd.Series) -> float:
+    """反转策略风险：连续大跌+放量下杀（基本面崩坏迹象）扣分，避免接飞刀。"""
+    penalty = 0.0
+    ret_20d = coerce_number(row.get("ret_20d"))
+    ret_5d = coerce_number(row.get("ret_5d"))
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+    pct = coerce_number(row.get("pct_chg"))
+    if ret_20d < -40:
+        penalty += 12  # 20日腰斩级别，可能有实质利空
+    elif ret_20d < -28:
+        penalty += 6
+    if ret_5d < -18 and volume_ratio > 2.5:
+        penalty += 8  # 近期放量急杀
+    if pct < -6:
+        penalty += 4  # 当日仍在大跌
+    return penalty
 
 
 def _score_context(df: pd.DataFrame, industry_strength: Dict[str, float]) -> Dict[str, List[float]]:
@@ -663,9 +1653,15 @@ def _score_context(df: pd.DataFrame, industry_strength: Dict[str, float]) -> Dic
         "ret_20d_values": finite_series(df, "ret_20d").tolist(),
         "ma5_gap_values": finite_series(df, "ma5_gap").tolist(),
         "ma20_gap_values": finite_series(df, "ma20_gap").tolist(),
+        "ma10_gap_values": finite_series(df, "ma10_gap").tolist(),
+        "ma60_gap_values": finite_series(df, "ma60_gap").tolist(),
+        "vol_ma5_ratio_values": finite_series(df, "vol_ma5_ratio").tolist(),
         "vol_amount_5d_values": finite_series(df, "vol_amount_5d").tolist(),
         "breakout_20d_values": finite_series(df, "breakout_20d").tolist(),
         "volatility_20d_values": finite_series(df, "volatility_20d").tolist(),
+        "float_market_cap_values": finite_series(df, "float_market_cap").tolist(),
+        "pe_dynamic_values": finite_series(df, "pe_dynamic").tolist(),
+        "pb_values": finite_series(df, "pb").tolist(),
         "industry_values": list(industry_strength.values()),
     }
 
@@ -730,6 +1726,7 @@ def _score_row(
     sentiment_lookup: Dict[str, Dict[str, object]],
     context: Dict[str, List[float]],
     horizon: str,
+    market_regime: Dict[str, object] = None,
 ) -> Dict[str, object]:
     code = row["code"]
     industry = str(row.get("industry", "") or "")
@@ -787,30 +1784,43 @@ def _score_row(
     )
     hot_score = _hot_rank_score(hot_rank)
     sentiment_score = coerce_number(sentiment.get("score"), 50.0)
+    regime_style = "long" if horizon == "long" else "short"
+    regime_bonus = _market_regime_adjustment(row, market_regime, regime_style)
 
     if horizon == "long":
+        w = WEIGHTS["long_term"]
         final_score = (
-            trend_score * 0.42
-            + liquidity_score * 0.20
-            + industry_score * 0.13
-            + sentiment_score * 0.13
-            + momentum_score * 0.07
-            + hot_score * 0.05
+            trend_score * w["trend"]
+            + liquidity_score * w["liquidity"]
+            + industry_score * w["industry"]
+            + sentiment_score * w["sentiment"]
+            + momentum_score * w["momentum"]
+            + hot_score * w["hot"]
+            + regime_bonus
         )
         final_score -= _long_term_risk_penalty(row, sentiment)
         reasons = _build_long_term_reasons(row, industry_pct, sentiment, trend_score, liquidity_score)
     else:
+        w = WEIGHTS["short_term"]
         final_score = (
-            momentum_score * 0.55
-            + liquidity_score * 0.15
-            + industry_score * 0.08
-            + hot_score * 0.07
-            + sentiment_score * 0.15
+            momentum_score * w["momentum"]
+            + liquidity_score * w["liquidity"]
+            + industry_score * w["industry"]
+            + hot_score * w["hot"]
+            + sentiment_score * w["sentiment"]
+            + regime_bonus
         )
+        # 反转修正（默认关闭）：近期涨幅越高，按 reversal_tilt 比例减分。
+        # 依据 A 股短线反转>动量证据；幅度由 calibrate --compare-momentum 回测决定。
+        reversal_tilt = coerce_number(w.get("reversal_tilt"), 0.0)
+        if reversal_tilt > 0:
+            recent_gain = coerce_number(row.get("ret_5d"), pct_chg)
+            final_score -= max(0.0, recent_gain) * reversal_tilt
         if sentiment.get("risk_words"):
             final_score -= 8
         if _near_limit_up_risk(row):
             final_score -= 5
+        final_score = _apply_overheat_damp(final_score, row)
         reasons = _build_reasons(row, industry_pct, hot_rank, sentiment)
 
     item = {
@@ -844,6 +1854,7 @@ def _score_row(
         "trend_score": round(trend_score, 2),
         "industry_score": round(industry_score, 2),
         "sentiment_score": round(sentiment_score, 2),
+        "regime_bonus": round(regime_bonus, 2),
         "score": round(max(0.0, min(100.0, final_score)), 2),
         "sentiment_summary": sentiment.get("summary", "暂无明显舆情信号"),
         "risk_words": sentiment.get("risk_words", []),
@@ -851,8 +1862,65 @@ def _score_row(
         "horizon": horizon,
     }
     if horizon == "long":
-        return _attach_signal_explanation(item, row, "long_term", "长期推荐", "趋势稳健")
-    return _attach_signal_explanation(item, row, "short_term", "短线推荐", "盘中强势")
+        return _with_regime_reason(
+            _attach_signal_explanation(item, row, "long_term", "长期推荐", "趋势稳健"),
+            market_regime,
+            regime_bonus,
+        )
+    return _with_regime_reason(
+        _attach_signal_explanation(item, row, "short_term", "短线推荐", "盘中强势"),
+        market_regime,
+        regime_bonus,
+    )
+
+
+def _verdict_tier(score: float, risk_score: float, data_coverage: float) -> Dict[str, object]:
+    """把裸 0-100 分映射成 verdict 评级阶梯（参考 UZI/Buffett 的离散评级）。
+
+    50-65 的中性带按 risk 细分为 lean_bull / neutral / lean_bear；
+    数据覆盖低于阈值时强制降级到 watch 并标注（A4 数据覆盖硬门控）。
+    """
+    t = THRESHOLDS["verdict"]
+    score = max(0.0, min(100.0, coerce_number(score)))
+    risk_score = max(0.0, min(100.0, coerce_number(risk_score)))
+    low_coverage = data_coverage < THRESHOLDS["min_data_coverage"]
+
+    if score >= t["strong_buy"] and risk_score < 60:
+        tier, label = "strong_buy", "强烈关注"
+    elif score >= t["buy"] and risk_score < 68:
+        tier, label = "buy", "关注"
+    elif score >= t["watch"]:
+        if risk_score >= 70:
+            tier, label = "reduce", "谨慎"
+        elif score >= 60 and risk_score <= 48:
+            tier, label = "watch", "观察(偏多)"
+        elif score < 56 or risk_score >= 60:
+            tier, label = "watch", "观察(偏空)"
+        else:
+            tier, label = "watch", "观察"
+    elif score >= t["reduce"]:
+        tier, label = "reduce", "谨慎"
+    else:
+        tier, label = "avoid", "回避"
+
+    # 风控否决：风险极高直接压到回避，不让动量骑进前列（A5 硬淘汰路径）。
+    if risk_score >= 80 and tier in ("strong_buy", "buy"):
+        tier, label = "reduce", "谨慎"
+
+    note = ""
+    if low_coverage and tier in ("strong_buy", "buy"):
+        tier, label, note = "watch", "观察(数据不足)", "数据覆盖不足，已降级"
+    elif low_coverage:
+        note = "数据覆盖不足"
+
+    return {
+        "tier": tier,
+        "label": label,
+        "score": round(score, 2),
+        "risk_score": round(risk_score, 2),
+        "data_coverage": round(data_coverage, 2),
+        "note": note,
+    }
 
 
 def _attach_signal_explanation(
@@ -875,7 +1943,317 @@ def _attach_signal_explanation(
             "failure_reasons": failure_reasons,
         }
     )
+    item["agent_committee"] = _build_agent_committee(item, row)
+    profile = _build_serenity_profile(item, row)
+    item["serenity_profile"] = profile
+
+    # A2：把牛熊双分提升到行顶层，便于前端双进度条直接读取，
+    # 复用 agent_committee 已算好的 bull/bear（避免重复实现）。
+    committee = item["agent_committee"]
+    item["bull_score"] = round(coerce_number(committee.get("bull_researcher_score"), 50.0), 2)
+    item["bear_score"] = round(coerce_number(committee.get("bear_researcher_score"), 50.0), 2)
+
+    # A1 + A4：verdict 评级 + 数据覆盖硬门控。
+    item["verdict"] = _verdict_tier(
+        item.get("score"),
+        profile.get("risk_score"),
+        coerce_number(profile.get("data_coverage"), 0.0),
+    )
     return item
+
+
+def _build_agent_committee(item: Dict[str, object], row: pd.Series) -> Dict[str, object]:
+    """Deterministic TradingAgents-style committee built from local signals."""
+    chase_risk = item.get("chase_risk") or {}
+    overextension = item.get("overextension") or {}
+    risk_penalty = max(0.0, coerce_number(item.get("risk_penalty")))
+    regime_bonus = coerce_number(item.get("regime_bonus"))
+    risk_words = list(item.get("risk_words") or [])
+
+    technical_score = _weighted_score(
+        (
+            (item.get("momentum_score"), 0.28),
+            (item.get("trend_score"), 0.24),
+            (item.get("execution_score"), 0.18),
+            (item.get("early_trend_score"), 0.12),
+            (item.get("not_overextended_score"), 0.10),
+            (item.get("score"), 0.08),
+        ),
+        fallback=item.get("score"),
+    )
+    sentiment_score = max(0.0, min(100.0, coerce_number(item.get("sentiment_score"), 50.0) - len(risk_words) * 8.0))
+    fundamentals_proxy_score = _weighted_score(
+        (
+            (item.get("quality_proxy_score"), 0.32),
+            (item.get("industry_score"), 0.20),
+            (item.get("theme_score"), 0.18),
+            (item.get("liquidity_score"), 0.16),
+            (item.get("not_overextended_score"), 0.14),
+        ),
+        fallback=item.get("score"),
+    )
+    news_environment_score = max(
+        0.0,
+        min(
+            100.0,
+            50.0
+            + regime_bonus * 6.0
+            - risk_penalty * 1.4
+            - coerce_number(chase_risk.get("score")) * 4.0
+            - coerce_number(overextension.get("score")) * 3.5
+        ),
+    )
+    liquidity_score = _weighted_score(
+        (
+            (item.get("liquidity_score"), 0.76),
+            (percentile_score(coerce_number(row.get("turnover")), [config.MIN_TURNOVER, config.MIN_TURNOVER * 4]), 0.24),
+        ),
+        fallback=50.0,
+    )
+
+    bull_score = _weighted_score(
+        (
+            (technical_score, 0.34),
+            (fundamentals_proxy_score, 0.20),
+            (sentiment_score, 0.16),
+            (liquidity_score, 0.16),
+            (news_environment_score, 0.14),
+        ),
+        fallback=item.get("score"),
+    )
+    bear_score = max(
+        0.0,
+        min(
+            100.0,
+            coerce_number(chase_risk.get("score")) * 11.5
+            + coerce_number(overextension.get("score")) * 10.0
+            + risk_penalty * 2.0
+            + max(0.0, 50.0 - sentiment_score) * 0.55
+            + max(0.0, 50.0 - news_environment_score) * 0.45
+            + max(0.0, 55.0 - liquidity_score) * 0.25,
+        ),
+    )
+    trader_score = max(0.0, min(100.0, bull_score * 0.62 + (100.0 - bear_score) * 0.28 + news_environment_score * 0.10))
+    risk_score = min(100.0, bear_score + max(0.0, risk_penalty - 8.0) * 1.8)
+    portfolio_score = max(
+        0.0,
+        min(
+            100.0,
+            trader_score * 0.68
+            + liquidity_score * 0.14
+            + fundamentals_proxy_score * 0.10
+            + news_environment_score * 0.08
+            - max(0.0, risk_score - 60.0) * 0.45,
+        ),
+    )
+
+    if risk_score >= 78:
+        action_label = "风控否决"
+        stance = "reject"
+    elif portfolio_score >= 72 and risk_score <= 48:
+        action_label = "组合经理批准"
+        stance = "approve"
+    elif portfolio_score >= 60 and risk_score <= 62:
+        action_label = "交易员小仓试单"
+        stance = "small_position"
+    else:
+        action_label = "等待更多确认"
+        stance = "wait"
+
+    bull_cases = _agent_bull_cases(item, technical_score, fundamentals_proxy_score, sentiment_score, liquidity_score)
+    bear_cases = _agent_bear_cases(item, risk_score, news_environment_score)
+    return {
+        "version": "trading_agents_committee_v1",
+        "reference": TRADING_AGENTS_REFERENCE["repo"],
+        "technical_analyst_score": round(technical_score, 2),
+        "sentiment_analyst_score": round(sentiment_score, 2),
+        "fundamentals_proxy_score": round(fundamentals_proxy_score, 2),
+        "news_environment_score": round(news_environment_score, 2),
+        "bull_researcher_score": round(bull_score, 2),
+        "bear_researcher_score": round(bear_score, 2),
+        "trader_score": round(trader_score, 2),
+        "risk_manager_score": round(risk_score, 2),
+        "portfolio_manager_score": round(portfolio_score, 2),
+        "final_score": round(portfolio_score, 2),
+        "final_action_label": action_label,
+        "stance": stance,
+        "bull_cases": bull_cases[:4],
+        "bear_cases": bear_cases[:4],
+        "source": "参考 TradingAgents 的分析师、研究辩论、交易员、风控和组合经理分层决策流；本项目使用本地量价/舆情/风险字段确定性计算。",
+    }
+
+
+def _weighted_score(pairs: Tuple[Tuple[object, float], ...], fallback: object = 50.0) -> float:
+    total = 0.0
+    weight_total = 0.0
+    for value, weight in pairs:
+        if value is None:
+            continue
+        num = coerce_number(value)
+        if not pd.notna(num):
+            continue
+        total += max(0.0, min(100.0, num)) * weight
+        weight_total += weight
+    if weight_total <= 0:
+        return max(0.0, min(100.0, coerce_number(fallback, 50.0)))
+    return max(0.0, min(100.0, total / weight_total))
+
+
+def _agent_bull_cases(
+    item: Dict[str, object],
+    technical_score: float,
+    fundamentals_proxy_score: float,
+    sentiment_score: float,
+    liquidity_score: float,
+) -> List[str]:
+    cases: List[str] = []
+    if technical_score >= 68:
+        cases.append("技术分析师支持：趋势/动量组合较强")
+    if fundamentals_proxy_score >= 62:
+        cases.append("基本面代理支持：主题/行业/稳健代理分较好")
+    if sentiment_score >= 60:
+        cases.append("情绪分析师支持：舆情或热度偏正面")
+    if liquidity_score >= 65:
+        cases.append("交易员支持：流动性足，便于执行")
+    if coerce_number(item.get("regime_bonus")) >= 2.5:
+        cases.append("新闻环境支持：当前市场状态顺风")
+    return cases or ["牛方暂无强证据"]
+
+
+def _agent_bear_cases(item: Dict[str, object], risk_score: float, news_environment_score: float) -> List[str]:
+    cases: List[str] = []
+    cases.extend(str(reason) for reason in (item.get("failure_reasons") or [])[:3])
+    if risk_score >= 65:
+        cases.append("风控提示：综合风险分偏高")
+    if news_environment_score <= 42:
+        cases.append("新闻/市场环境偏逆风")
+    if item.get("risk_words"):
+        cases.append("情绪分析师提示：存在负面关键词")
+    unique: List[str] = []
+    for case in cases:
+        if case and case not in unique:
+            unique.append(case)
+    return unique or ["熊方暂无硬性否决项"]
+
+
+def _build_serenity_profile(item: Dict[str, object], row: pd.Series) -> Dict[str, object]:
+    component_values = []
+    evidence = []
+    for key, label in PROFILE_COMPONENTS:
+        if key not in item:
+            continue
+        value = coerce_number(item.get(key), 0.0)
+        component_values.append(value)
+        if value >= 72:
+            evidence.append({"label": "{}强".format(label), "score": round(value, 2), "level": "positive"})
+        elif value <= 38:
+            evidence.append({"label": "{}弱".format(label), "score": round(value, 2), "level": "negative"})
+
+    score = coerce_number(item.get("score"), 0.0)
+    regime_bonus = coerce_number(item.get("regime_bonus"), 0.0)
+    chase_risk = item.get("chase_risk") or {}
+    overextension = item.get("overextension") or {}
+    committee = item.get("agent_committee") or {}
+    agent_score = coerce_number(committee.get("final_score"), 50.0)
+    agent_risk_score = coerce_number(committee.get("risk_manager_score"), 0.0)
+    risk_score = min(
+        100.0,
+        coerce_number(chase_risk.get("score")) * 11.0
+        + coerce_number(overextension.get("score")) * 10.0
+        + max(0.0, coerce_number(item.get("risk_penalty"))) * 2.1
+        + max(0.0, -regime_bonus) * 4.0
+        + max(0.0, agent_risk_score - 62.0) * 0.35,
+    )
+    data_coverage = _data_coverage(row)
+    confidence_score = min(
+        100.0,
+        max(
+            0.0,
+            42.0
+            + len([value for value in component_values if value >= 60]) * 7.0
+            + data_coverage * 18.0
+            + max(0.0, regime_bonus) * 1.6
+            + max(0.0, agent_score - 55.0) * 0.22
+            - risk_score * 0.18,
+        ),
+    )
+    component_average = sum(component_values) / len(component_values) if component_values else score
+    quality_score = min(
+        100.0,
+        max(
+            0.0,
+            score * 0.36
+            + component_average * 0.25
+            + confidence_score * 0.16
+            + agent_score * 0.15
+            - risk_score * 0.20,
+        ),
+    )
+    committee_stance = committee.get("stance")
+    if committee_stance == "reject" or risk_score >= 78:
+        action_label = "只观察"
+        level = "risk"
+    elif quality_score >= 72 and risk_score <= 45 and agent_score >= 66:
+        action_label = "优先跟踪"
+        level = "good"
+    elif risk_score >= 72:
+        action_label = "只观察"
+        level = "risk"
+    elif quality_score >= 60 and agent_score >= 54:
+        action_label = "小仓观察"
+        level = "watch"
+    else:
+        action_label = "等待确认"
+        level = "neutral"
+
+    risk_reasons = list(chase_risk.get("reasons", [])) + list(overextension.get("reasons", []))
+    risk_reasons.extend(committee.get("bear_cases", [])[:3])
+    if regime_bonus <= -2.5:
+        risk_reasons.append("市场状态逆风")
+    if regime_bonus >= 2.5:
+        evidence.insert(0, {"label": "市场状态顺风", "score": round(regime_bonus, 2), "level": "positive"})
+    if committee.get("final_action_label"):
+        evidence.insert(
+            0,
+            {
+                "label": "Agent委员会:{}".format(committee.get("final_action_label")),
+                "score": round(agent_score, 2),
+                "level": "positive" if committee_stance in ("approve", "small_position") else "negative",
+            },
+        )
+    for case in committee.get("bull_cases", [])[:2]:
+        evidence.append({"label": case, "score": round(agent_score, 2), "level": "positive"})
+
+    return {
+        "version": "serenity_profile_v1",
+        "quality_score": round(quality_score, 2),
+        "risk_score": round(risk_score, 2),
+        "confidence_score": round(confidence_score, 2),
+        "agent_committee_score": round(agent_score, 2),
+        "data_coverage": round(data_coverage, 2),
+        "level": level,
+        "action_label": action_label,
+        "evidence": evidence[:5],
+        "risk_reasons": _unique_strings(risk_reasons)[:5],
+        "source": "借鉴 Serenity 系列库的结构化证据与 TradingAgents 的多角色投研决策流。",
+    }
+
+
+def _data_coverage(row: pd.Series) -> float:
+    present = 0
+    for column in ALPHALITE_SIGNAL_COLUMNS:
+        if abs(coerce_number(row.get(column))) > 1e-9:
+            present += 1
+    return present / len(ALPHALITE_SIGNAL_COLUMNS)
+
+
+def _unique_strings(values: List[object]) -> List[str]:
+    result: List[str] = []
+    for value in values:
+        text = str(value)
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _chase_risk(row: pd.Series) -> Dict[str, object]:
@@ -1042,6 +2420,76 @@ def _near_limit_up_risk(row: pd.Series) -> bool:
     return pct >= limit * 0.88 and turnover < config.MIN_TURNOVER * 2
 
 
+def _market_regime_adjustment(
+    row: pd.Series,
+    market_regime: Dict[str, object],
+    strategy_style: str,
+) -> float:
+    if not market_regime:
+        return 0.0
+
+    level = market_regime.get("level")
+    pct = coerce_number(row.get("pct_chg"))
+    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+    amplitude = coerce_number(row.get("amplitude"))
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+    turnover = coerce_number(row.get("turnover"))
+    bonus = 0.0
+
+    if level == "risk_on":
+        if strategy_style in ("short", "tomorrow", "swing", "tech"):
+            if pct > 0:
+                bonus += 1.8
+            if 1.1 <= volume_ratio <= 4.5:
+                bonus += 1.6
+            if turnover >= config.MIN_TURNOVER * 4:
+                bonus += 1.2
+        if strategy_style in ("long", "position") and sixty_day_pct >= 0:
+            bonus += 0.8
+        if amplitude > 11:
+            bonus -= 1.5
+    elif level == "risk_off":
+        if strategy_style in ("short", "tomorrow", "tech"):
+            if pct > 4:
+                bonus -= 4.5
+            if volume_ratio > 4.5:
+                bonus -= 2.5
+            if amplitude > 9:
+                bonus -= 2.5
+        if strategy_style in ("long", "position"):
+            if 0 <= sixty_day_pct <= 40:
+                bonus += 2.4
+            if amplitude <= 7:
+                bonus += 1.6
+            if turnover >= config.MIN_TURNOVER * 3:
+                bonus += 1.0
+        if sixty_day_pct < -12:
+            bonus -= 2.5
+    else:
+        if strategy_style in ("short", "tomorrow", "swing") and 1.0 <= volume_ratio <= 3.5:
+            bonus += 0.8
+        if amplitude > 12:
+            bonus -= 1.2
+
+    return round(bonus, 2)
+
+
+def _with_regime_reason(
+    item: Dict[str, object],
+    market_regime: Dict[str, object],
+    regime_bonus: float,
+) -> Dict[str, object]:
+    if not market_regime:
+        return item
+    reasons = list(item.get("reasons", []))
+    if regime_bonus >= 2.5:
+        reasons.insert(0, "{}环境顺风".format(market_regime.get("label", "当前")))
+    elif regime_bonus <= -2.5:
+        reasons.append("{}环境下需谨慎".format(market_regime.get("label", "当前")))
+    item["reasons"] = reasons[:6]
+    return item
+
+
 def _execution_score(row: pd.Series) -> float:
     pct = coerce_number(row.get("pct_chg"))
     market = row.get("market")
@@ -1083,6 +2531,40 @@ def _tomorrow_risk_penalty(row: pd.Series) -> float:
     elif ytd_pct >= 80:
         penalty += 5
     return penalty
+
+
+def _apply_overheat_damp(final_score: float, row: pd.Series) -> float:
+    """A5：过热乘法抑制。
+
+    把 _not_overextended_score 折算成 [floor, 1.0] 的乘子作用在 final 上，
+    让完全过热的票即使动量很高也无法骑进 top-N（加法权重做不到这一点）。
+    """
+    not_overextended = _not_overextended_score(row) / 100.0
+    floor = coerce_number(THRESHOLDS.get("overheat_damp_floor"), 0.6)
+    damp = floor + (1.0 - floor) * max(0.0, min(1.0, not_overextended))
+    return final_score * damp
+
+
+def _chokepoint_score(row: pd.Series) -> Tuple[float, List[str]]:
+    """A6：卡脖子/上游环节倾斜（Serenity chokepoint 方法论）。
+
+    命中上游/元件类关键词，且“供给紧但尚未被重定价”（近期涨幅温和）时给高分；
+    若已被买爆（涨幅过大）则降分。返回 0-100 分与命中标签。
+    """
+    haystack = "{} {}".format(row.get("name", ""), row.get("industry", "")).upper()
+    hits = [kw for kw in CHOKEPOINT_KEYWORDS if kw.upper() in haystack]
+    if not hits:
+        return 50.0, []
+    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+    score = 60.0 + min(3, len(hits)) * 8.0  # 上游环节基础加分
+    # 尚未被重定价（涨幅温和）→ 加分；已被买爆 → 扣分。
+    if -5 <= sixty_day_pct <= 25:
+        score += 16
+    elif 25 < sixty_day_pct <= 45:
+        score += 6
+    elif sixty_day_pct > 60:
+        score -= 18
+    return max(0.0, min(100.0, score)), hits[:3]
 
 
 def _tech_theme_score(row: pd.Series) -> Tuple[str, float]:

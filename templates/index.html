@@ -7,56 +7,118 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
   <body>
-    <header class="topbar">
-      <div>
-        <h1>A 股实时强势股推荐</h1>
-        <p id="statusText">等待刷新</p>
-      </div>
-      <div class="toolbar">
-        <label>
-          市场
-          <select id="marketSelect">
-            <option value="all">全部</option>
-            <option value="main">主板</option>
-            <option value="chinext">创业板</option>
-            <option value="star">科创板</option>
-          </select>
-        </label>
-        <button id="refreshButton" type="button">刷新</button>
-      </div>
-    </header>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <h1>A 股荐股工作台</h1>
+          <p id="statusText">等待刷新</p>
+        </div>
+        <nav class="tabs side-nav" aria-label="榜单视图">
+          <button class="tab-button active" type="button" data-tab="overviewPanel">决策台</button>
+          <button class="tab-button" type="button" data-tab="todayPanel">今日推荐</button>
+          <button class="tab-button" type="button" data-tab="tomorrowPanel">明天预测</button>
+          <button class="tab-button" type="button" data-tab="horizonPanel">波段/中长期</button>
+          <button class="tab-button" type="button" data-tab="techPanel">科技潜力</button>
+          <button class="tab-button" type="button" data-tab="chokepointPanel">卡脖子</button>
+          <button class="tab-button" type="button" data-tab="reversalPanel">反转低波</button>
+          <button class="tab-button" type="button" data-tab="smallcapPanel">小市值价值</button>
+          <button class="tab-button" type="button" data-tab="breakoutPanel">量价突破</button>
+          <button class="tab-button" type="button" data-tab="validationPanel">策略验证</button>
+          <button class="tab-button" type="button" data-tab="strategyPanel">策略说明</button>
+        </nav>
+      </aside>
 
-    <main>
-      <section class="metrics">
-        <div>
-          <span>行情源</span>
-          <strong id="quoteSource">-</strong>
-        </div>
-        <div>
-          <span>舆情源</span>
-          <strong id="sentimentSource">-</strong>
-        </div>
-        <div>
-          <span>候选数</span>
-          <strong id="candidateCount">-</strong>
-        </div>
-        <div>
-          <span>市场舆情</span>
-          <strong id="marketSentiment">-</strong>
-        </div>
-      </section>
-
-      <nav class="tabs" aria-label="榜单视图">
-        <button class="tab-button active" type="button" data-tab="overviewPanel">策略总览</button>
-        <button class="tab-button" type="button" data-tab="todayPanel">今日推荐</button>
-        <button class="tab-button" type="button" data-tab="tomorrowPanel">明天预测50</button>
-        <button class="tab-button" type="button" data-tab="horizonPanel">波段/中长期</button>
-        <button class="tab-button" type="button" data-tab="techPanel">科技潜力50</button>
-        <button class="tab-button" type="button" data-tab="validationPanel">策略验证</button>
-        <button class="tab-button" type="button" data-tab="strategyPanel">策略说明</button>
-      </nav>
+      <main class="workspace">
+        <header class="topbar">
+          <section class="metrics status-strip">
+            <div>
+              <span>行情源</span>
+              <strong id="quoteSource">-</strong>
+            </div>
+            <div>
+              <span>舆情源</span>
+              <strong id="sentimentSource">-</strong>
+            </div>
+            <div>
+              <span>候选数</span>
+              <strong id="candidateCount">-</strong>
+            </div>
+            <div>
+              <span>市场舆情</span>
+              <strong id="marketSentiment">-</strong>
+            </div>
+          </section>
+          <div class="toolbar">
+            <label>
+              市场
+              <select id="marketSelect">
+                <option value="all">全部</option>
+                <option value="main">主板</option>
+                <option value="chinext">创业板</option>
+                <option value="star">科创板</option>
+              </select>
+            </label>
+            <label>
+              动作
+              <select id="actionFilterSelect">
+                <option value="all">全部</option>
+                <option value="priority">优先跟踪</option>
+                <option value="watch">小仓观察</option>
+                <option value="wait">等待确认</option>
+                <option value="observe">只观察</option>
+              </select>
+            </label>
+            <label>
+              排序
+              <select id="sortSelect">
+                <option value="rank">默认排名</option>
+                <option value="quality">质量优先</option>
+                <option value="risk">风险最低</option>
+                <option value="score">综合分</option>
+                <option value="turnover">成交额</option>
+              </select>
+            </label>
+            <button id="refreshButton" type="button">刷新</button>
+          </div>
+        </header>
 
       <section class="tab-panel active" id="overviewPanel">
+        <section class="decision-desk" aria-label="今日决策台">
+          <article class="decision-hero">
+            <span>今日工作流</span>
+            <strong id="decisionRegimeLabel">-</strong>
+            <p id="decisionAdvice">等待行情刷新</p>
+          </article>
+          <article class="decision-card">
+            <span>强共识</span>
+            <strong id="decisionConsensusCount">-</strong>
+            <p>2 个以上策略同时入选</p>
+          </article>
+          <article class="decision-card">
+            <span>优先跟踪</span>
+            <strong id="decisionPriorityCount">-</strong>
+            <p>低风险且质量较高</p>
+          </article>
+          <article class="decision-card">
+            <span>平均风险</span>
+            <strong id="decisionAvgRisk">-</strong>
+            <p>共识榜风险均值</p>
+          </article>
+        </section>
+
+        <section class="stock-predictor board" aria-label="单票涨跌预测">
+          <div class="board-header">
+            <h2>输入股票代码预测涨跌</h2>
+            <span>同时输出短期与长期倾向，复用短线、明天、波段、中长期、科技、卡脖子策略</span>
+          </div>
+          <div class="stock-predictor-form">
+            <input id="stockPredictionInput" type="text" inputmode="numeric" maxlength="12" placeholder="例如 600000 / 300750 / 688981" />
+            <button id="stockPredictionBtn" class="primary-action" type="button">预测</button>
+          </div>
+          <div class="ops-status" id="stockPredictionStatus"></div>
+          <div id="stockPredictionResult" class="stock-prediction-result" hidden></div>
+        </section>
+
         <div class="board">
           <div class="board-header">
             <h2>策略总览</h2>
@@ -80,6 +142,71 @@
               <strong id="overviewDays">近20个保存日</strong>
             </div>
           </section>
+          <section class="market-regime-strip" aria-label="市场状态">
+            <div>
+              <span>盘面状态</span>
+              <strong id="overviewRegimeLabel">-</strong>
+            </div>
+            <div>
+              <span>环境分</span>
+              <strong id="overviewRegimeScore">-</strong>
+            </div>
+            <div>
+              <span>上涨广度</span>
+              <strong id="overviewRegimeBreadth">-</strong>
+            </div>
+            <div>
+              <span>中位涨跌</span>
+              <strong id="overviewRegimeMedian">-</strong>
+            </div>
+            <div>
+              <span>强势占比</span>
+              <strong id="overviewRegimeStrong">-</strong>
+            </div>
+            <div>
+              <span>建议</span>
+              <strong id="overviewRegimeAdvice">-</strong>
+            </div>
+          </section>
+          <div class="chart-row">
+            <div class="chart-card">
+              <h3>市场环境</h3>
+              <div id="regimeGauge" class="chart-box"></div>
+            </div>
+            <div class="chart-card">
+              <h3>共识热度（出现次数 × 共识分，气泡=一致性）</h3>
+              <div id="consensusScatter" class="chart-box"></div>
+            </div>
+          </div>
+          <div class="board-header">
+            <h2>多策略共识</h2>
+            <span>优先看 2 个以上策略同时入选的标的</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>市场</th>
+                  <th>共识级别</th>
+                  <th>出现次数</th>
+                  <th>平均排名</th>
+                  <th>平均分</th>
+                  <th>质量</th>
+                  <th>风险</th>
+                  <th>共识分</th>
+                  <th>动作</th>
+                  <th>来自策略</th>
+                </tr>
+              </thead>
+              <tbody id="strategyConsensusBody">
+                <tr>
+                  <td colspan="12" class="empty">加载中...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <div class="strategy-overview-grid" id="strategyOverviewGrid">
             <div class="empty">加载中...</div>
           </div>
@@ -90,10 +217,11 @@
                   <th>策略</th>
                   <th>版本</th>
                   <th>周期</th>
-                  <th>样本</th>
-                  <th>推荐价次日</th>
-                  <th>3%命中</th>
-                  <th>3日收益</th>
+                  <th>主样本</th>
+                  <th>真/回</th>
+                  <th>主周期净收益</th>
+                  <th>净胜率</th>
+                  <th>真实净收益</th>
                   <th>平均回撤</th>
                   <th>最近保存</th>
                   <th>状态</th>
@@ -212,7 +340,7 @@
               <strong id="tomorrowValidationSamples">-</strong>
             </div>
             <div>
-              <span>3%命中</span>
+              <span>主周期净胜率</span>
               <strong id="tomorrowValidationHit3">-</strong>
             </div>
           </section>
@@ -360,102 +488,301 @@
         </div>
       </section>
 
-      <section class="tab-panel" id="validationPanel">
+      <section class="tab-panel" id="chokepointPanel">
         <div class="board">
           <div class="board-header">
-            <h2>策略验证</h2>
-            <span>按策略和日期保存预测 / 更新结果 / 查看命中率和收益</span>
+            <h2>卡脖子 · 供应链上游</h2>
+            <span>上溯供应链，挖掘供给最紧、最难替代、尚未被重定价的环节</span>
           </div>
-          <div class="validation-controls">
-            <label>
-              策略
-              <select id="validationStrategySelect">
-                <option value="tomorrow_picks">明天预测</option>
-                <option value="swing_picks">波段 5-10 日</option>
-                <option value="position_picks">中长期 1-3 月</option>
-                <option value="tech_potential">科技潜力</option>
-                <option value="">全部策略</option>
-              </select>
-            </label>
-            <label>
-              周期
-              <select id="validationDaysSelect">
-                <option value="20">近20个保存日</option>
-                <option value="60">近60个保存日</option>
-                <option value="120">近120个保存日</option>
-              </select>
-            </label>
-            <div class="selected-validation">
-              <span>当前明细</span>
-              <strong id="validationSelectionLabel">未选择日期</strong>
-            </div>
+
+          <!-- 产业链全景图：按环节分组的代表票卡片 -->
+          <div class="chain-map" id="chokepointChainMap">
+            <div class="empty">切换到本页后加载</div>
           </div>
-          <div class="validation-actions">
-            <button id="saveTechSnapshot" type="button">保存科技潜力预测</button>
-            <button id="saveTomorrowSnapshot" type="button">保存明天预测</button>
-            <button id="saveSwingSnapshot" type="button">保存波段预测</button>
-            <button id="savePositionSnapshot" type="button">保存中长期预测</button>
-            <button id="updateValidation" type="button">更新当前验证</button>
+
+          <div class="board-header">
+            <h2>卡脖子打分榜</h2>
+            <span>命中上游环节、实时打分排序</span>
           </div>
-          <section class="metrics validation-metrics">
-            <div>
-              <span>样本数</span>
-              <strong id="validationSampleCount">-</strong>
-            </div>
-            <div>
-              <span>推荐价次日上涨率</span>
-              <strong id="validationWinRate">-</strong>
-            </div>
-            <div>
-              <span>3% 命中率</span>
-              <strong id="validationHit3">-</strong>
-            </div>
-            <div>
-              <span>推荐价次日均收益</span>
-              <strong id="validationAvgReturn">-</strong>
-            </div>
-          </section>
           <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>日期</th>
-                  <th>策略</th>
-                  <th>数量</th>
-                  <th>保存时间</th>
-                </tr>
-              </thead>
-              <tbody id="validationDatesBody">
-                <tr>
-                  <td colspan="4" class="empty">暂无保存记录</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="table-wrap validation-detail">
             <table>
               <thead>
                 <tr>
                   <th>排名</th>
                   <th>代码</th>
                   <th>名称</th>
-                  <th>策略</th>
-                  <th>推荐价</th>
-                  <th>推收</th>
-                  <th>推高</th>
-                  <th>开收</th>
-                  <th>3日推收</th>
-                  <th>3%命中</th>
-                  <th>5%命中</th>
-                  <th>理由</th>
+                  <th>环节</th>
+                  <th>市场</th>
+                  <th>最新价</th>
+                  <th>今日涨跌</th>
+                  <th>60日</th>
+                  <th>年内</th>
+                  <th>成交额</th>
+                  <th>卡脖子分</th>
+                  <th>启动</th>
+                  <th>未透支</th>
+                  <th>执行性</th>
+                  <th>综合分</th>
+                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
-              <tbody id="validationDetailBody">
+              <tbody id="chokepointBody">
                 <tr>
-                  <td colspan="12" class="empty">点击上方日期查看明细</td>
+                  <td colspan="16" class="empty">切换到本页后加载</td>
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="reversalPanel">
+        <div class="board">
+          <div class="board-header">
+            <h2>反转低波因子股</h2>
+            <span>A股短线反转+低波动+高换手回避；超跌且不躁动者优先</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>排名</th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>市场</th>
+                  <th>最新价</th>
+                  <th>今日涨跌</th>
+                  <th>60日</th>
+                  <th>20日涨跌</th>
+                  <th>20日波动</th>
+                  <th>换手率</th>
+                  <th>反转分</th>
+                  <th>低波分</th>
+                  <th>换手分</th>
+                  <th>综合分</th>
+                  <th>解释/风险/验证</th>
+                </tr>
+              </thead>
+              <tbody id="reversalBody">
+                <tr><td colspan="15" class="empty">切换到本页后加载</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="smallcapPanel">
+        <div class="board">
+          <div class="board-header">
+            <h2>小市值价值股</h2>
+            <span>低流通市值+低PE/PB；含市值下限/亏损过滤/防守降权护栏</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>排名</th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>市场</th>
+                  <th>最新价</th>
+                  <th>今日涨跌</th>
+                  <th>流通市值(亿)</th>
+                  <th>PE</th>
+                  <th>PB</th>
+                  <th>换手率</th>
+                  <th>小市值分</th>
+                  <th>价值分</th>
+                  <th>综合分</th>
+                  <th>解释/风险/验证</th>
+                </tr>
+              </thead>
+              <tbody id="smallcapBody">
+                <tr><td colspan="14" class="empty">切换到本页后加载</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="breakoutPanel">
+        <div class="board">
+          <div class="board-header">
+            <h2>量价突破·均线多头</h2>
+            <span>均线多头排列或20日新高 + 量能突破的趋势确认</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>排名</th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>市场</th>
+                  <th>最新价</th>
+                  <th>今日涨跌</th>
+                  <th>60日</th>
+                  <th>多头排列</th>
+                  <th>20日新高</th>
+                  <th>量能比</th>
+                  <th>突破强度</th>
+                  <th>量能突破</th>
+                  <th>综合分</th>
+                  <th>解释/风险/验证</th>
+                </tr>
+              </thead>
+              <tbody id="breakoutBody">
+                <tr><td colspan="14" class="empty">切换到本页后加载</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="validationPanel">
+        <div class="board">
+          <div class="board-header">
+            <h2>策略验证</h2>
+            <span>一眼看清哪个策略能信，再保存预测、回填结果、复盘</span>
+          </div>
+
+          <!-- 一眼结论：每策略一张记分牌（命中率徽章 + 一句话结论） -->
+          <div class="scoreboard" id="validationScoreboard">
+            <div class="empty">加载中...</div>
+          </div>
+
+          <div class="chart-card chart-card-wide">
+            <h3>各策略主周期净胜率走势</h3>
+            <div id="validationLine" class="chart-box chart-box-tall"></div>
+          </div>
+
+          <div class="validation-grid">
+            <!-- 左：操作面板 -->
+            <aside class="validation-ops">
+              <div class="ops-block">
+                <div class="ops-title">① 保存今日预测</div>
+                <div class="ops-row">
+                  <select id="saveStrategySelect">
+                    <option value="tomorrow_picks">明天预测</option>
+                    <option value="swing_picks">波段 5-10 日</option>
+                    <option value="position_picks">中长期 1-3 月</option>
+                    <option value="tech_potential">科技潜力</option>
+                    <option value="chokepoint_picks">卡脖子</option>
+                    <option value="reversal_picks">反转低波</option>
+                    <option value="smallcap_value_picks">小市值价值</option>
+                    <option value="breakout_picks">量价突破</option>
+                  </select>
+                  <button id="saveSnapshotBtn" class="primary-action" type="button">保存</button>
+                </div>
+                <div class="ops-status" id="saveStatus"></div>
+              </div>
+
+              <div class="ops-block">
+                <div class="ops-title">② 回填真实结果</div>
+                <div class="ops-row">
+                  <select id="validationStrategySelect">
+                    <option value="">全部策略</option>
+                    <option value="tomorrow_picks">明天预测</option>
+                    <option value="swing_picks">波段 5-10 日</option>
+                    <option value="position_picks">中长期 1-3 月</option>
+                    <option value="tech_potential">科技潜力</option>
+                    <option value="chokepoint_picks">卡脖子</option>
+                    <option value="reversal_picks">反转低波</option>
+                    <option value="smallcap_value_picks">小市值价值</option>
+                    <option value="breakout_picks">量价突破</option>
+                  </select>
+                  <select id="validationDaysSelect">
+                    <option value="20">近20日</option>
+                    <option value="60">近60日</option>
+                    <option value="120">近120日</option>
+                  </select>
+                </div>
+                <button id="backfillValidationSamples" class="primary-action wide" type="button">回放历史补样本</button>
+                <button id="prefetchValidationHistory" class="ghost-action wide" type="button">下载历史并验证</button>
+                <button id="updateValidation" class="ghost-action wide" type="button">仅更新当前批次</button>
+                <p class="ops-hint">“回放历史补样本”会用历史K线模拟过去信号，适合快速解决样本不足；真实可信度仍以每天保存的前瞻样本为准。</p>
+                <div class="ops-status" id="updateStatus"></div>
+              </div>
+            </aside>
+
+            <!-- 右：复盘（批次 + 明细，默认自动选最新批次） -->
+            <section class="validation-review">
+              <div class="validation-summary-row">
+                <div class="selected-validation">
+                  <span>当前明细</span>
+                  <strong id="validationSelectionLabel">未选择日期</strong>
+                </div>
+                <div class="validation-score-card">
+                  <span>样本数</span>
+                  <strong id="validationSampleCount">-</strong>
+                </div>
+                <div class="validation-score-card">
+                  <span>主周期净胜率</span>
+                  <strong id="validationWinRate">-</strong>
+                </div>
+                <div class="validation-score-card">
+                  <span>真实/回放</span>
+                  <strong id="validationHit3">-</strong>
+                </div>
+                <div class="validation-score-card">
+                  <span>主周期净收益</span>
+                  <strong id="validationAvgReturn">-</strong>
+                </div>
+              </div>
+
+              <div class="validation-split">
+                <div class="validation-batches">
+                  <div class="section-label">保存批次（点击查看明细）</div>
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>日期</th>
+                          <th>策略</th>
+                          <th>数量</th>
+                          <th>保存时间</th>
+                        </tr>
+                      </thead>
+                      <tbody id="validationDatesBody">
+                        <tr>
+                          <td colspan="4" class="empty">暂无保存记录</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div class="validation-results">
+                  <div class="section-label">批次明细</div>
+                  <div class="table-wrap validation-detail">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>排名</th>
+                          <th>代码</th>
+                          <th>名称</th>
+                          <th>策略</th>
+                          <th>推荐价</th>
+                          <th>推收</th>
+                          <th>推高</th>
+                          <th>开收</th>
+                          <th>持有推收</th>
+                          <th>未来日</th>
+                          <th>3%命中</th>
+                          <th>5%命中</th>
+                          <th>理由</th>
+                        </tr>
+                      </thead>
+                      <tbody id="validationDetailBody">
+                        <tr>
+                          <td colspan="13" class="empty">选择左侧批次查看明细</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </section>
           </div>
         </div>
       </section>
@@ -467,6 +794,14 @@
             <span>规则来源 / 权重 / 风险限制 / 验证方式</span>
           </div>
           <div class="strategy-notes">
+            <article>
+              <h3>推荐默认策略</h3>
+              <p>优先使用“强共识 + Agent 风控优先策略”：先看市场状态，再筛选 2 个以上策略共同入选、质量分较高、风险分较低、Agent 委员会未风控否决的股票。动作过滤建议选“优先跟踪”，排序选“风险最低”或“质量优先”。</p>
+            </article>
+            <article>
+              <h3>TradingAgents 映射</h3>
+              <p>参考 TauricResearch/TradingAgents 的分析师、牛熊研究、交易员、风控和组合经理流程，但不复制其代码、不默认接入 LLM。当前用本地量价、舆情、市场状态和风险字段生成 Agent 委员会分数与最终动作。</p>
+            </article>
             <article>
               <h3>策略来源</h3>
               <p>当前策略是本地启发式量化规则，不是训练好的收益预测模型。它来自常见短线量价逻辑：成交额、换手、量比、当日涨幅、趋势位置、执行性和风险扣分。</p>
@@ -491,15 +826,18 @@
         </div>
       </section>
 
-      <section class="details" id="detailsPanel" hidden>
+      </main>
+
+      <section class="details detail-drawer" id="detailsPanel" hidden>
         <div class="details-header">
           <h2 id="detailsTitle">舆情详情</h2>
           <button id="closeDetails" type="button">关闭</button>
         </div>
         <div id="detailsSummary" class="details-summary"></div>
+        <div id="detailRadar" class="chart-box chart-box-radar"></div>
         <div id="newsList" class="news-list"></div>
       </section>
-    </main>
+    </div>
 
     <footer>
       仅供研究，不构成投资建议。数据来自第三方公开接口，可能延迟、缺失或失败。
@@ -511,6 +849,10 @@
         defaultTopN: 10
       };
     </script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
+      onerror="window.__echartsFailed = true"
+    ></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
   </body>
 </html>

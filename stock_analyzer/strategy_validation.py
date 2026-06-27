@@ -6,7 +6,22 @@ from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
+from . import config
 from .normalization import coerce_number, normalize_code
+
+
+PRIMARY_RETURN_BY_STRATEGY = {
+    "short_term": ("signal_next_close_return", 1, "次日"),
+    "tomorrow_picks": ("signal_next_close_return", 1, "次日"),
+    "reversal_picks": ("signal_hold_5d_return", 5, "5日"),
+    "swing_picks": ("signal_hold_10d_return", 10, "10日"),
+    "breakout_picks": ("signal_hold_10d_return", 10, "10日"),
+    "long_term": ("signal_hold_20d_return", 20, "20日"),
+    "position_picks": ("signal_hold_20d_return", 20, "20日"),
+    "tech_potential": ("signal_hold_20d_return", 20, "20日"),
+    "chokepoint_picks": ("signal_hold_20d_return", 20, "20日"),
+    "smallcap_value_picks": ("signal_hold_20d_return", 20, "20日"),
+}
 
 
 class StrategyValidationStore:
@@ -124,11 +139,14 @@ class StrategyValidationStore:
             rows = conn.execute(
                 """
                 SELECT s.*, o.next_trade_date, o.next_open_return, o.next_close_return,
-                       o.intraday_high_return, o.hold_3d_return, o.max_gain_3d,
+                       o.intraday_high_return, o.hold_3d_return, o.hold_5d_return,
+                       o.hold_10d_return, o.hold_20d_return, o.max_gain_3d,
                        o.max_drawdown_3d, o.hit_3pct, o.hit_5pct,
                        o.signal_next_close_return, o.signal_intraday_high_return,
                        o.signal_hold_3d_return, o.signal_max_gain_3d,
                        o.signal_max_drawdown_3d, o.signal_hit_3pct, o.signal_hit_5pct,
+                       o.signal_hold_5d_return, o.signal_hold_10d_return, o.signal_hold_20d_return,
+                       o.future_days,
                        o.updated_at AS outcome_updated_at
                 FROM strategy_signals s
                 LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
@@ -164,6 +182,40 @@ class StrategyValidationStore:
         rows.sort(key=lambda item: int(item.get("rank") or 9999))
         return rows
 
+    def signal_codes(
+        self,
+        signal_date: str = "",
+        strategy_name: str = "",
+        limit: int = 500,
+    ) -> List[Dict[str, object]]:
+        where = "WHERE 1=1"
+        params: List[object] = []
+        if signal_date:
+            where += " AND signal_date = ?"
+            params.append(signal_date)
+        if strategy_name:
+            where += " AND strategy_name = ?"
+            params.append(strategy_name)
+        params.append(max(1, int(limit)))
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT code,
+                       MAX(name) AS name,
+                       COUNT(*) AS signal_count,
+                       MAX(signal_date) AS latest_signal_date,
+                       MIN(rank) AS best_rank
+                FROM strategy_signals
+                {}
+                GROUP BY code
+                ORDER BY latest_signal_date DESC, best_rank ASC
+                LIMIT ?
+                """.format(where),
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def update_outcomes(self, provider, signal_date: str = "", strategy_name: str = "") -> Dict[str, object]:
         where = "WHERE 1=1"
         params = []
@@ -191,18 +243,21 @@ class StrategyValidationStore:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO strategy_outcomes
-                    (signal_id, code, next_trade_date, next_open, next_high, next_low, next_close,
+                    (signal_id, code, next_trade_date, future_days, next_open, next_high, next_low, next_close,
                      next_open_return, next_close_return, intraday_high_return, hold_3d_return,
+                     hold_5d_return, hold_10d_return, hold_20d_return,
                      max_gain_3d, max_drawdown_3d, hit_3pct, hit_5pct,
                      signal_next_close_return, signal_intraday_high_return, signal_hold_3d_return,
+                     signal_hold_5d_return, signal_hold_10d_return, signal_hold_20d_return,
                      signal_max_gain_3d, signal_max_drawdown_3d, signal_hit_3pct, signal_hit_5pct,
                      updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         signal["id"],
                         signal["code"],
                         outcome["next_trade_date"],
+                        outcome["future_days"],
                         outcome["next_open"],
                         outcome["next_high"],
                         outcome["next_low"],
@@ -211,6 +266,9 @@ class StrategyValidationStore:
                         outcome["next_close_return"],
                         outcome["intraday_high_return"],
                         outcome["hold_3d_return"],
+                        outcome["hold_5d_return"],
+                        outcome["hold_10d_return"],
+                        outcome["hold_20d_return"],
                         outcome["max_gain_3d"],
                         outcome["max_drawdown_3d"],
                         int(outcome["hit_3pct"]),
@@ -218,6 +276,9 @@ class StrategyValidationStore:
                         outcome["signal_next_close_return"],
                         outcome["signal_intraday_high_return"],
                         outcome["signal_hold_3d_return"],
+                        outcome["signal_hold_5d_return"],
+                        outcome["signal_hold_10d_return"],
+                        outcome["signal_hold_20d_return"],
                         outcome["signal_max_gain_3d"],
                         outcome["signal_max_drawdown_3d"],
                         int(outcome["signal_hit_3pct"]),
@@ -239,13 +300,18 @@ class StrategyValidationStore:
             rows = conn.execute(
                 """
                 SELECT s.signal_date, s.strategy_name, s.rank,
+                       s.strategy_version,
                        COALESCE(o.signal_next_close_return, o.next_close_return) AS signal_next_close_return,
                        o.next_close_return,
                        COALESCE(o.signal_intraday_high_return, o.intraday_high_return) AS signal_intraday_high_return,
                        COALESCE(o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_3d_return,
+                       COALESCE(o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_5d_return,
+                       COALESCE(o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_10d_return,
+                       COALESCE(o.signal_hold_20d_return, o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_20d_return,
                        COALESCE(o.signal_max_drawdown_3d, o.max_drawdown_3d) AS signal_max_drawdown_3d,
                        COALESCE(o.signal_hit_3pct, o.hit_3pct) AS signal_hit_3pct,
-                       COALESCE(o.signal_hit_5pct, o.hit_5pct) AS signal_hit_5pct
+                       COALESCE(o.signal_hit_5pct, o.hit_5pct) AS signal_hit_5pct,
+                       COALESCE(o.future_days, 1) AS future_days
                 FROM strategy_signals s
                 JOIN strategy_outcomes o ON o.signal_id = s.id
                 {}
@@ -261,23 +327,66 @@ class StrategyValidationStore:
                 dates.append(row["signal_date"])
             if len(dates) >= days:
                 break
-        selected = [row for row in rows if row["signal_date"] in dates]
-        return {
+        rows = [dict(row) for row in rows]
+        selected_all = [row for row in rows if row["signal_date"] in dates]
+        cost = coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25))
+        if strategy_name:
+            primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
+        else:
+            primary_column, primary_days, primary_label = "strategy_primary_return", 0, "混合主周期"
+        for row in selected_all:
+            row_primary_column, row_primary_days, row_primary_label = _primary_return_config(
+                strategy_name or row["strategy_name"]
+            )
+            row["_primary_return"] = coerce_number(row[row_primary_column])
+            row["_primary_return_net"] = round(row["_primary_return"] - cost, 4)
+            row["_is_replay"] = _is_replay_version(row["strategy_version"])
+            row["_primary_ready"] = int(row.get("future_days") or 1) >= row_primary_days
+            row["_primary_holding_days"] = row_primary_days
+            row["_primary_horizon_label"] = row_primary_label
+        selected = [row for row in selected_all if row["_primary_ready"]]
+        real_rows = [row for row in selected if not row["_is_replay"]]
+        replay_rows = [row for row in selected if row["_is_replay"]]
+        primary_dates = []
+        for row in selected:
+            if row["signal_date"] not in primary_dates:
+                primary_dates.append(row["signal_date"])
+        metrics = {
             "sample_count": len(selected),
-            "day_count": len(dates),
-            "avg_next_close_return": _avg(row["signal_next_close_return"] for row in selected),
-            "win_rate_next_close": _rate(row["signal_next_close_return"] > 0 for row in selected),
-            "hit_3pct_rate": _rate(bool(row["signal_hit_3pct"]) for row in selected),
-            "hit_5pct_rate": _rate(bool(row["signal_hit_5pct"]) for row in selected),
-            "avg_intraday_high_return": _avg(row["signal_intraday_high_return"] for row in selected),
+            "outcome_sample_count": len(selected_all),
+            "real_sample_count": len(real_rows),
+            "replay_sample_count": len(replay_rows),
+            "day_count": len(primary_dates),
+            "outcome_day_count": len(dates),
+            "primary_return_field": primary_column,
+            "primary_holding_days": primary_days,
+            "primary_horizon_label": primary_label,
+            "trade_cost_pct": cost,
+            "avg_next_close_return": _avg(row["signal_next_close_return"] for row in selected_all),
+            "win_rate_next_close": _rate(row["signal_next_close_return"] > 0 for row in selected_all),
+            "hit_3pct_rate": _rate(bool(row["signal_hit_3pct"]) for row in selected_all),
+            "hit_5pct_rate": _rate(bool(row["signal_hit_5pct"]) for row in selected_all),
+            "avg_intraday_high_return": _avg(row["signal_intraday_high_return"] for row in selected_all),
             "avg_hold_3d_return": _avg(row["signal_hold_3d_return"] for row in selected),
+            "avg_hold_5d_return": _avg(row["signal_hold_5d_return"] for row in selected),
+            "avg_hold_10d_return": _avg(row["signal_hold_10d_return"] for row in selected),
+            "avg_hold_20d_return": _avg(row["signal_hold_20d_return"] for row in selected),
+            "avg_primary_return": _avg(row["_primary_return"] for row in selected),
+            "avg_primary_return_net": _avg(row["_primary_return_net"] for row in selected),
+            "win_rate_primary": _rate(row["_primary_return"] > 0 for row in selected),
+            "win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in selected),
+            "real_avg_primary_return_net": _avg(row["_primary_return_net"] for row in real_rows),
+            "real_win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in real_rows),
+            "replay_avg_primary_return_net": _avg(row["_primary_return_net"] for row in replay_rows),
+            "replay_win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in replay_rows),
             "avg_max_drawdown_3d": _avg(row["signal_max_drawdown_3d"] for row in selected),
             "top10_avg_next_close_return": _avg(
-                row["signal_next_close_return"] for row in selected if row["rank"] <= 10
+                row["signal_next_close_return"] for row in selected_all if row["rank"] <= 10
             ),
-            "avg_open_to_close_return": _avg(row["next_close_return"] for row in selected),
+            "avg_open_to_close_return": _avg(row["next_close_return"] for row in selected_all),
             "daily": _daily_metrics(selected),
         }
+        return metrics
 
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -322,7 +431,11 @@ class StrategyValidationStore:
                     next_open_return REAL NOT NULL DEFAULT 0,
                     next_close_return REAL NOT NULL DEFAULT 0,
                     intraday_high_return REAL NOT NULL DEFAULT 0,
+                    future_days INTEGER NOT NULL DEFAULT 1,
                     hold_3d_return REAL NOT NULL DEFAULT 0,
+                    hold_5d_return REAL NOT NULL DEFAULT 0,
+                    hold_10d_return REAL NOT NULL DEFAULT 0,
+                    hold_20d_return REAL NOT NULL DEFAULT 0,
                     max_gain_3d REAL NOT NULL DEFAULT 0,
                     max_drawdown_3d REAL NOT NULL DEFAULT 0,
                     hit_3pct INTEGER NOT NULL DEFAULT 0,
@@ -340,6 +453,13 @@ class StrategyValidationStore:
                 "signal_next_close_return": "REAL",
                 "signal_intraday_high_return": "REAL",
                 "signal_hold_3d_return": "REAL",
+                "future_days": "INTEGER",
+                "hold_5d_return": "REAL",
+                "hold_10d_return": "REAL",
+                "hold_20d_return": "REAL",
+                "signal_hold_5d_return": "REAL",
+                "signal_hold_10d_return": "REAL",
+                "signal_hold_20d_return": "REAL",
                 "signal_max_gain_3d": "REAL",
                 "signal_max_drawdown_3d": "REAL",
                 "signal_hit_3pct": "INTEGER",
@@ -369,13 +489,18 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
         return None
     if signal_entry <= 0:
         signal_entry = open_entry
+    future_days = len(future)
     window = future.head(3)
     last = window.iloc[-1]
     hold_3d_close = coerce_number(last.get("price"))
+    hold_5d_close = _window_close(future, 5, close)
+    hold_10d_close = _window_close(future, 10, hold_5d_close)
+    hold_20d_close = _window_close(future, 20, hold_10d_close)
     max_high = max(coerce_number(value) for value in window.get("high", pd.Series([high])).tolist())
     min_low = min(coerce_number(value) for value in window.get("low", pd.Series([low])).tolist())
     return {
         "next_trade_date": str(first.get("trade_date")),
+        "future_days": future_days,
         "next_open": round(open_entry, 4),
         "next_high": round(high, 4),
         "next_low": round(low, 4),
@@ -384,6 +509,9 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
         "next_close_return": round((close / open_entry - 1) * 100, 4) if close > 0 else 0.0,
         "intraday_high_return": round((high / open_entry - 1) * 100, 4) if high > 0 else 0.0,
         "hold_3d_return": round((hold_3d_close / open_entry - 1) * 100, 4) if hold_3d_close > 0 else 0.0,
+        "hold_5d_return": round((hold_5d_close / open_entry - 1) * 100, 4) if hold_5d_close > 0 else 0.0,
+        "hold_10d_return": round((hold_10d_close / open_entry - 1) * 100, 4) if hold_10d_close > 0 else 0.0,
+        "hold_20d_return": round((hold_20d_close / open_entry - 1) * 100, 4) if hold_20d_close > 0 else 0.0,
         "max_gain_3d": round((max_high / open_entry - 1) * 100, 4) if max_high > 0 else 0.0,
         "max_drawdown_3d": round((min_low / open_entry - 1) * 100, 4) if min_low > 0 else 0.0,
         "hit_3pct": high / open_entry - 1 >= 0.03 if high > 0 else False,
@@ -391,11 +519,32 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
         "signal_next_close_return": round((close / signal_entry - 1) * 100, 4) if close > 0 else 0.0,
         "signal_intraday_high_return": round((high / signal_entry - 1) * 100, 4) if high > 0 else 0.0,
         "signal_hold_3d_return": round((hold_3d_close / signal_entry - 1) * 100, 4) if hold_3d_close > 0 else 0.0,
+        "signal_hold_5d_return": round((hold_5d_close / signal_entry - 1) * 100, 4) if hold_5d_close > 0 else 0.0,
+        "signal_hold_10d_return": round((hold_10d_close / signal_entry - 1) * 100, 4) if hold_10d_close > 0 else 0.0,
+        "signal_hold_20d_return": round((hold_20d_close / signal_entry - 1) * 100, 4) if hold_20d_close > 0 else 0.0,
         "signal_max_gain_3d": round((max_high / signal_entry - 1) * 100, 4) if max_high > 0 else 0.0,
         "signal_max_drawdown_3d": round((min_low / signal_entry - 1) * 100, 4) if min_low > 0 else 0.0,
         "signal_hit_3pct": high / signal_entry - 1 >= 0.03 if high > 0 else False,
         "signal_hit_5pct": high / signal_entry - 1 >= 0.05 if high > 0 else False,
     }
+
+
+def _window_close(future: pd.DataFrame, days: int, fallback: float) -> float:
+    window = future.head(days)
+    if window.empty:
+        return coerce_number(fallback)
+    return coerce_number(window.iloc[-1].get("price")) or coerce_number(fallback)
+
+
+def _primary_return_config(strategy_name: str):
+    return PRIMARY_RETURN_BY_STRATEGY.get(
+        strategy_name,
+        ("signal_next_close_return", 1, "次日"),
+    )
+
+
+def _is_replay_version(strategy_version: str) -> bool:
+    return "replay" in str(strategy_version or "").lower()
 
 
 def _row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
@@ -433,6 +582,12 @@ def _daily_metrics(rows: List[sqlite3.Row]) -> List[Dict[str, object]]:
                 "hit_3pct_rate": _rate(bool(row["signal_hit_3pct"]) for row in items),
                 "hit_5pct_rate": _rate(bool(row["signal_hit_5pct"]) for row in items),
                 "avg_hold_3d_return": _avg(row["signal_hold_3d_return"] for row in items),
+                "avg_primary_return": _avg(row["_primary_return"] for row in items),
+                "avg_primary_return_net": _avg(row["_primary_return_net"] for row in items),
+                "win_rate_primary": _rate(row["_primary_return"] > 0 for row in items),
+                "win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in items),
+                "real_sample_count": sum(1 for row in items if not row["_is_replay"]),
+                "replay_sample_count": sum(1 for row in items if row["_is_replay"]),
             }
         )
     return sorted(daily, key=lambda item: item["signal_date"], reverse=True)
