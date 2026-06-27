@@ -1,3 +1,5 @@
+import json
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -6,9 +8,14 @@ import pandas as pd
 from stock_analyzer import config
 from stock_analyzer.app import create_app
 from stock_analyzer.backtest import run_alphalite_backtest, run_rolling_alphalite_backtest
+from stock_analyzer.event_risk import attach_event_risk, build_event_risk_map
 from stock_analyzer.factors import compute_alphalite_for_stock
+from stock_analyzer.factor_ic import compute_factor_ic
+from stock_analyzer.fundamentals import attach_fundamental_factors, load_fundamentals
 from stock_analyzer.history_cache import HistoryCache
 from stock_analyzer.normalization import rename_known_columns
+from stock_analyzer.paper_trading import PaperTradingStore
+from stock_analyzer.portfolio import build_portfolio
 from stock_analyzer.providers import MarketDataProvider, _normalize_eastmoney_spot, _request_eastmoney_page
 from stock_analyzer.risk_rules import simulate_exit
 from stock_analyzer.scoring import (
@@ -28,6 +35,7 @@ from stock_analyzer.scoring import (
 )
 from stock_analyzer.sentiment import score_news_items
 from stock_analyzer.stability import TopKDropoutTracker
+from stock_analyzer.snapshot import run_snapshot
 from stock_analyzer.strategy_validation import StrategyValidationStore
 from stock_analyzer.validation_replay import backfill_strategy_validation_samples
 
@@ -203,6 +211,22 @@ class ScoringTest(unittest.TestCase):
         self.assertGreater(regime["score"], 60)
         self.assertTrue(regime["leaders"])
 
+    def test_market_regime_breadth_can_use_full_quote_source(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "强势A", "price": 10, "pct_chg": 5, "turnover": 100000000, "amplitude": 4},
+                {"code": "600002", "name": "强势B", "price": 10, "pct_chg": 4, "turnover": 100000000, "amplitude": 4},
+                {"code": "600003", "name": "弱势C", "price": 10, "pct_chg": -5, "turnover": 1000000, "amplitude": 5},
+                {"code": "600004", "name": "弱势D", "price": 10, "pct_chg": -4, "turnover": 1000000, "amplitude": 5},
+            ]
+        )
+        candidates = prepare_candidates(quotes)
+        regime = build_market_regime(candidates, breadth_source=quotes)
+
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(regime["breadth_pct"], 50.0)
+        self.assertLessEqual(regime["median_pct_chg"], 0.5)
+
     def test_build_strategy_consensus_collects_multi_strategy_overlap(self):
         rows = build_strategy_consensus(
             {
@@ -299,10 +323,16 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(_verdict_tier(85, 30, 0.9)["tier"], "strong_buy")
         # 低分 → avoid
         self.assertEqual(_verdict_tier(20, 40, 0.9)["tier"], "avoid")
-        # A4：高分但数据覆盖不足 → 强制降级到 watch，且带 note
+        # A4：高分但历史因子覆盖不足 → 强制降级到 watch，且带 note
         gated = _verdict_tier(85, 30, 0.2)
         self.assertEqual(gated["tier"], "watch")
-        self.assertTrue(gated["note"])
+        self.assertEqual(gated["note"], "历史因子覆盖不足，评级降级")
+
+    def test_data_coverage_uses_factor_metadata_not_nonzero_values(self):
+        from stock_analyzer.scoring import _data_coverage
+
+        row = pd.Series({"alphalite_coverage": 0.67, "ret_20d": 0.0, "breakout_20d": 0.0})
+        self.assertAlmostEqual(_data_coverage(row), 0.67)
 
     def test_consensus_stretch_rewards_agreement(self):
         from stock_analyzer.scoring import _consensus_stretch
@@ -315,13 +345,54 @@ class ScoringTest(unittest.TestCase):
         self.assertLess(low, 80)
 
     def test_overheat_damp_suppresses_extended_names(self):
-        from stock_analyzer.scoring import _apply_overheat_damp
+        from stock_analyzer.scoring import _apply_overheat_damp, _overheat_damp_multiplier
 
         calm = pd.Series({"sixty_day_pct": 5, "ytd_pct": 10, "amplitude": 4})
         extended = pd.Series({"sixty_day_pct": 130, "ytd_pct": 160, "amplitude": 15})
         # 过热票的 final 被乘法压低，明显低于温和票。
         self.assertLess(_apply_overheat_damp(80, extended), _apply_overheat_damp(80, calm))
         self.assertLessEqual(_apply_overheat_damp(80, extended), 80)
+        self.assertLess(_overheat_damp_multiplier(extended), _overheat_damp_multiplier(calm))
+
+    def test_overheat_is_not_repeated_in_tomorrow_risk_penalty(self):
+        from stock_analyzer.scoring import _tomorrow_risk_penalty_parts, _overheat_damp_multiplier
+
+        extended = pd.Series(
+            {
+                "pct_chg": 2.0,
+                "market": "main",
+                "amplitude": 4.0,
+                "turnover_rate": 5.0,
+                "volume_ratio": 1.5,
+                "sixty_day_pct": 120.0,
+                "ytd_pct": 180.0,
+            }
+        )
+
+        parts = _tomorrow_risk_penalty_parts(extended)
+
+        self.assertEqual(parts, {})
+        self.assertLess(_overheat_damp_multiplier(extended), 1.0)
+
+    def test_tomorrow_rows_expose_combiner_diagnostics(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "样本A", "price": 10, "pct_chg": 2, "turnover": 8e8,
+                 "turnover_rate": 5, "volume_ratio": 1.8, "speed": 0.6, "sixty_day_pct": 10,
+                 "ytd_pct": 20, "amplitude": 4},
+                {"code": "600002", "name": "样本B", "price": 11, "pct_chg": 1, "turnover": 7e8,
+                 "turnover_rate": 4, "volume_ratio": 1.2, "speed": 0.2, "sixty_day_pct": 4,
+                 "ytd_pct": 8, "amplitude": 3},
+            ]
+        )
+        rows, _ = score_tomorrow_candidates(prepare_candidates(quotes), top_n=2)
+
+        self.assertTrue(rows)
+        row = rows[0]
+        self.assertIn("base_score", row)
+        self.assertIn("raw_score", row)
+        self.assertIn("overheat_damp", row)
+        self.assertIn("risk_penalty_parts", row)
 
     def test_chokepoint_score_rewards_upstream_underpriced(self):
         from stock_analyzer.scoring import _chokepoint_score
@@ -336,6 +407,25 @@ class ScoringTest(unittest.TestCase):
         )
         self.assertEqual(neutral_hits, [])
         self.assertEqual(neutral_score, 50.0)
+
+    def test_reversal_uses_oversold_calm_composite(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "超跌低波", "price": 10, "pct_chg": 0.5, "turnover": 8e8,
+                 "turnover_rate": 3, "volume_ratio": 1.2, "sixty_day_pct": -10, "ytd_pct": -8,
+                 "amplitude": 3, "ret_20d": -12, "volatility_20d": 2},
+                {"code": "600002", "name": "普通样本", "price": 11, "pct_chg": 0.4, "turnover": 6e8,
+                 "turnover_rate": 8, "volume_ratio": 1.1, "sixty_day_pct": 20, "ytd_pct": 30,
+                 "amplitude": 8, "ret_20d": 8, "volatility_20d": 8},
+            ]
+        )
+
+        rows, meta = score_reversal_candidates(prepare_candidates(quotes), top_n=2)
+
+        self.assertTrue(rows)
+        self.assertIn("oversold_calm_score", rows[0])
+        self.assertIn("factor_correlation", meta)
+        self.assertIn("reversal_lowvol", meta["factor_correlation"])
 
     def test_strategy_reliability_from_win_rate(self):
         from stock_analyzer.scoring import _strategy_reliability
@@ -377,8 +467,26 @@ class ScoringTest(unittest.TestCase):
             }
         )
 
-        self.assertGreater(rel["real_good_replay_bad"], 1.0)
+        self.assertGreater(rel["real_good_replay_bad"], rel["real_bad_replay_good"])
+        self.assertLess(rel["real_good_replay_bad"], 1.0)
         self.assertLess(rel["real_bad_replay_good"], 1.0)
+
+    def test_strategy_reliability_can_zero_decayed_real_strategy(self):
+        from stock_analyzer.scoring import _strategy_reliability
+
+        rel = _strategy_reliability(
+            {
+                "decayed": {
+                    "sample_count": 30,
+                    "real_sample_count": 25,
+                    "replay_sample_count": 0,
+                    "real_win_rate_primary_net": 35,
+                    "real_avg_primary_return_net": -0.4,
+                }
+            }
+        )
+
+        self.assertEqual(rel["decayed"], 0.0)
 
     def test_serenity_references_corrected_to_chokepoint(self):
         from stock_analyzer.scoring import SERENITY_REFERENCES
@@ -427,6 +535,8 @@ class ScoringTest(unittest.TestCase):
         row = short_rows[0]
         self.assertIn("verdict", row)
         self.assertIn(row["verdict"]["tier"], {"strong_buy", "buy", "watch", "reduce", "avoid"})
+        self.assertIn("execution_score", row)
+        self.assertIsInstance(row["execution_score"], (int, float))
         self.assertIn("bull_score", row)
         self.assertIn("bear_score", row)
 
@@ -489,6 +599,98 @@ class ScoringTest(unittest.TestCase):
         # meta.chain 应是按环节分组的列表，且至少一个环节有 picks。
         self.assertIn("chain", meta)
         self.assertTrue(any(node["count"] > 0 for node in meta["chain"]))
+
+    def test_chokepoint_candidates_include_glass_substrate_segment(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "603773", "name": "玻璃基板样本", "price": 25, "pct_chg": 2.0, "turnover": 8e8,
+                 "turnover_rate": 5, "volume_ratio": 1.6, "speed": 0.8, "sixty_day_pct": 12, "ytd_pct": 20,
+                 "amplitude": 4, "industry": "TGV玻璃通孔"},
+            ]
+        )
+        candidates = prepare_candidates(quotes)
+        rows, meta = score_chokepoint_candidates(candidates, top_n=10)
+
+        self.assertTrue(rows)
+        self.assertEqual(rows[0]["chain_segment"], "玻璃基板/TGV")
+        self.assertIn("玻璃基板/TGV", [node["segment"] for node in meta["chain"]])
+
+    def test_chokepoint_candidates_include_satellite_internet_segment(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600118", "name": "中国星网样本", "price": 28, "pct_chg": 1.2, "turnover": 8e8,
+                 "turnover_rate": 4, "volume_ratio": 1.4, "speed": 0.4, "sixty_day_pct": 10, "ytd_pct": 18,
+                 "amplitude": 4, "industry": "卫星互联网低轨星座相控阵终端"},
+            ]
+        )
+        candidates = prepare_candidates(quotes)
+        rows, meta = score_chokepoint_candidates(candidates, top_n=10)
+
+        self.assertTrue(rows)
+        self.assertEqual(rows[0]["chain_segment"], "卫星互联网/低轨星座")
+        self.assertIn("卫星互联网/低轨星座", [node["segment"] for node in meta["chain"]])
+
+    def test_chokepoint_industry_leaders_cover_expanded_segments(self):
+        from stock_analyzer.scoring import CHOKEPOINT_INDUSTRY_LEADERS
+
+        segments = set(CHOKEPOINT_INDUSTRY_LEADERS)
+        self.assertGreaterEqual(len(segments), 15)
+        for segment in (
+            "先进光刻/精密光学",
+            "AI算力液冷/电源",
+            "工业母机/高端数控",
+            "高端轴承/丝杠导轨",
+            "机器人核心零部件",
+            "SiC/GaN功率半导体",
+            "工业软件/CAE",
+            "高端膜材料/催化剂",
+            "基础软件/信创",
+            "玻璃基板/TGV",
+            "卫星互联网/低轨星座",
+        ):
+            self.assertIn(segment, segments)
+            self.assertTrue(CHOKEPOINT_INDUSTRY_LEADERS[segment])
+
+    def test_chokepoint_industry_map_contains_glass_substrate_leaders(self):
+        import tempfile
+
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "603773",
+                    "name": "沃格光电",
+                    "price": 25,
+                    "pct_chg": 1.8,
+                    "turnover": 800000000,
+                    "turnover_rate": 5,
+                    "volume_ratio": 1.6,
+                    "sixty_day_pct": 12,
+                    "ytd_pct": 20,
+                    "amplitude": 4,
+                    "industry": "玻璃基板",
+                },
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(config, "STATE_PATH", "{}/state.json".format(tmpdir)), patch.object(
+                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
+            ), patch(
+                "stock_analyzer.app.MarketDataProvider.get_realtime_quotes",
+                return_value=quotes,
+            ):
+                app = create_app()
+                client = app.test_client()
+                response = client.get("/api/chokepoint-picks?top_n=10")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        industry_map = payload["meta"]["industry_map"]
+        glass = next(node for node in industry_map if node["segment"] == "玻璃基板/TGV")
+        self.assertTrue(any(item["code"] == "603773" for item in glass["leaders"]))
+        self.assertIn("玻璃基板/TGV", [row["chain_segment"] for row in payload["data"]])
+
         quotes = pd.DataFrame(
             [
                 {
@@ -599,6 +801,71 @@ class ScoringTest(unittest.TestCase):
         # 无多头排列且无新高的票应被预过滤剔除。
         self.assertIn("600001", codes)
         self.assertNotIn("600002", codes)
+
+    def test_breakout_uses_realtime_fallback_when_history_factors_missing(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "实时强势", "price": 20, "pct_chg": 3.2, "turnover": 9e8,
+                 "turnover_rate": 7, "volume_ratio": 2.0, "speed": 0.8, "sixty_day_pct": 18, "ytd_pct": 28,
+                 "amplitude": 5, "industry": "电子"},
+                {"code": "600002", "name": "弱势无量", "price": 10, "pct_chg": 0.2, "turnover": 6e8,
+                 "turnover_rate": 3, "volume_ratio": 1.0, "speed": 0.0, "sixty_day_pct": 2, "ytd_pct": 3,
+                 "amplitude": 2, "industry": "电子"},
+            ]
+        )
+        candidates = prepare_candidates(quotes)
+        rows, meta = score_breakout_candidates(candidates, top_n=10)
+
+        self.assertTrue(rows)
+        self.assertEqual(rows[0]["code"], "600001")
+        self.assertTrue(rows[0]["breakout_fallback"])
+        self.assertFalse(meta["history_signal_available"])
+        self.assertIn("兜底", meta["note"])
+        json.dumps({"data": rows, "meta": meta}, ensure_ascii=False)
+
+    def test_breakout_uses_realtime_fallback_when_history_partially_covered(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "历史普通", "price": 20, "pct_chg": 0.8, "turnover": 8e8,
+                 "turnover_rate": 3, "volume_ratio": 1.0, "speed": 0.1, "sixty_day_pct": 4,
+                 "ytd_pct": 8, "amplitude": 3, "ma_bull_aligned": 0, "breakout_20d": 0,
+                 "vol_ma5_ratio": 1.0, "ma20_gap": -2, "alphalite_factor_ready": 1},
+                {"code": "600002", "name": "实时放量", "price": 18, "pct_chg": 3.5, "turnover": 9e8,
+                 "turnover_rate": 7, "volume_ratio": 2.1, "speed": 0.8, "sixty_day_pct": 18,
+                 "ytd_pct": 25, "amplitude": 5},
+            ]
+        )
+        rows, meta = score_breakout_candidates(prepare_candidates(quotes), top_n=10)
+
+        self.assertTrue(rows)
+        self.assertEqual(rows[0]["code"], "600002")
+        self.assertTrue(rows[0]["breakout_fallback"])
+        self.assertEqual(meta["fallback_count"], 1)
+
+    def test_alphalite_attach_uses_cache_only_by_default_to_avoid_request_blocking(self):
+        from stock_analyzer.app import TimedCache, _attach_alphalite_factors
+
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "样本", "price": 20, "pct_chg": 3.0, "turnover": 9e8,
+                 "turnover_rate": 7, "volume_ratio": 2.0, "sixty_day_pct": 18, "amplitude": 5},
+            ]
+        )
+
+        class SlowProvider:
+            def get_cached_history(self, code, days=90):
+                return pd.DataFrame()
+
+            def get_history(self, code, days=90):
+                raise AssertionError("request path should not fetch remote history by default")
+
+        with patch.object(config, "ENABLE_HISTORY_FACTORS", True), patch.object(
+            config, "HISTORY_FACTORS_FETCH_ON_REQUEST", False
+        ):
+            enriched = _attach_alphalite_factors(SlowProvider(), TimedCache(1), prepare_candidates(quotes))
+
+        self.assertIn("alphalite_factor_ready", enriched.columns)
+        self.assertEqual(enriched.iloc[0]["alphalite_factor_ready"], 0.0)
 
     def test_regime_adaptive_weights_boost_breakout_in_risk_on(self):
         quotes = pd.DataFrame(
@@ -886,6 +1153,23 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(trailing["exit_reason"], "trailing_stop")
         self.assertGreater(trailing["exit_return"], 0)
 
+    def test_simulate_exit_delays_stop_on_sealed_limit_down(self):
+        result = simulate_exit(
+            pd.DataFrame(
+                [
+                    {"trade_date": "20240102", "prev_close": 10.0, "open": 9.0, "high": 9.05, "low": 9.0, "price": 9.0},
+                    {"trade_date": "20240103", "prev_close": 9.0, "open": 8.8, "high": 9.0, "low": 8.6, "price": 8.9},
+                ]
+            ),
+            entry_price=10,
+            holding_days=1,
+            policy={"limit_down_pct": 10},
+        )
+
+        self.assertEqual(result["exit_reason"], "stop_loss_limit_down_delayed")
+        self.assertEqual(result["exit_days"], 2)
+        self.assertAlmostEqual(result["exit_price"], 8.8)
+
     def test_backtest_uses_exit_rule_before_fixed_holding_period(self):
         prices = [10 + i * 0.1 for i in range(60)]
         lows = [price * 0.99 for price in prices]
@@ -985,6 +1269,599 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(rows[0]["code"], "600001")
         self.assertEqual(rows[0]["name"], "新样本")
 
+    def test_build_portfolio_respects_position_single_and_theme_caps(self):
+        rows = [
+            {
+                "rank": idx + 1,
+                "code": "60000{}".format(idx),
+                "name": "样本{}".format(idx),
+                "theme": theme,
+                "score": 90 - idx,
+                "serenity_profile": {"confidence_score": 80 - idx, "risk_score": 40 + idx},
+            }
+            for idx, theme in enumerate(["半导体", "半导体", "算力", "算力", "军工", "医药"])
+        ]
+
+        result = build_portfolio(rows, max_positions=5, single_cap=0.3, theme_cap=0.5)
+        weights = [row["suggested_weight"] for row in result["rows"]]
+
+        self.assertEqual(len(result["rows"]), 5)
+        self.assertAlmostEqual(sum(weights), 100.0, places=1)
+        self.assertLessEqual(max(weights), 30.01)
+        self.assertTrue(all(value <= 50.01 for value in result["exposure"].values()))
+        self.assertTrue(result["summary"]["constraints_feasible"])
+
+    def test_event_risk_can_hard_filter_and_tag_candidates(self):
+        from datetime import datetime, timedelta
+
+        future_date = (datetime.now() + timedelta(days=5)).strftime("%Y%m%d")
+        risk_map = build_event_risk_map(
+            unlocks=[{"code": "600001", "unlock_ratio": 12, "date": future_date}],
+            pledges=[{"code": "600001", "pledge_ratio": 60}],
+        )
+        candidates = pd.DataFrame(
+            [
+                {"code": "600001", "name": "风险样本", "price": 10, "pct_chg": 1, "turnover": 100000000},
+                {"code": "600002", "name": "普通样本", "price": 10, "pct_chg": 1, "turnover": 100000000},
+            ]
+        )
+
+        with patch.object(config, "EVENT_RISK_HARD_FILTER", True):
+            filtered = attach_event_risk(prepare_candidates(candidates), {"status": "ok", "items": risk_map})
+        tagged = attach_event_risk(prepare_candidates(candidates), {"status": "ok", "items": risk_map})
+
+        self.assertEqual(set(filtered["code"]), {"600002"})
+        risk_row = tagged[tagged["code"] == "600001"].iloc[0]
+        self.assertGreater(risk_row["event_risk_penalty"], 0)
+        self.assertTrue(risk_row["event_risk_flags"])
+
+    def test_event_risk_raises_profile_risk_and_adds_reasons(self):
+        from datetime import datetime, timedelta
+
+        future_date = (datetime.now() + timedelta(days=5)).strftime("%Y%m%d")
+        risk_map = build_event_risk_map(
+            unlocks=[{"code": "600001", "unlock_ratio": 12, "date": future_date}],
+            pledges=[{"code": "600001", "pledge_ratio": 60}],
+        )
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "风险样本", "price": 10, "pct_chg": 2, "turnover": 200000000, "volume_ratio": 1.5},
+                {"code": "600002", "name": "普通样本", "price": 10, "pct_chg": 2, "turnover": 200000000, "volume_ratio": 1.5},
+            ]
+        )
+        candidates = attach_event_risk(prepare_candidates(quotes), {"status": "ok", "items": risk_map})
+        rows, _ = score_tomorrow_candidates(candidates, top_n=2)
+        risk_row = next(row for row in rows if row["code"] == "600001")
+        normal_row = next(row for row in rows if row["code"] == "600002")
+
+        self.assertGreater(risk_row["serenity_profile"]["risk_score"], normal_row["serenity_profile"]["risk_score"])
+        self.assertTrue(any("事件风险" in reason for reason in risk_row["failure_reasons"]))
+
+    def test_event_risk_ignores_stale_reduction_notice(self):
+        from datetime import datetime, timedelta
+
+        stale_date = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
+        recent_date = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
+        with patch.object(config, "EVENT_RISK_REDUCTION_LOOKBACK_DAYS", 120):
+            risk_map = build_event_risk_map(
+                reductions=[
+                    {"code": "600001", "date": stale_date},
+                    {"code": "600002", "date": recent_date},
+                ]
+            )
+
+        self.assertNotIn("600001", risk_map)
+        self.assertIn("600002", risk_map)
+
+    def test_portfolio_gross_exposure_uses_regime_and_drawdown(self):
+        rows = [
+            {"rank": idx + 1, "code": "60000{}".format(idx), "name": "样本{}".format(idx), "theme": theme, "score": 80}
+            for idx, theme in enumerate(["半导体", "算力", "军工", "医药"])
+        ]
+        perf = {"metrics": {"max_drawdown_pct": -10.0}}
+        result = build_portfolio(
+            rows,
+            max_positions=4,
+            single_cap=0.4,
+            theme_cap=0.7,
+            market_regime={"score": 35, "level": "risk_off"},
+            performance=perf,
+        )
+
+        self.assertLess(result["summary"]["total_weight"], 50)
+        self.assertGreater(result["summary"]["cash_pct"], 50)
+        self.assertAlmostEqual(result["summary"]["regime_factor"], config.PORTFOLIO_GROSS_RISK_OFF, places=2)
+        self.assertAlmostEqual(result["summary"]["drawdown_factor"], config.PORTFOLIO_DD_FACTOR_1, places=2)
+
+    def test_fundamental_factors_and_factor_ic(self):
+        df = pd.DataFrame(
+            [
+                {"code": "600001", "roe": 18, "gross_margin": 45, "debt_ratio": 25, "pe_dynamic": 12, "pb": 1.2, "earnings_surprise": 20},
+                {"code": "600002", "roe": 5, "gross_margin": 18, "debt_ratio": 70, "pe_dynamic": 60, "pb": 8.0, "earnings_surprise": -10},
+                {"code": "600003", "roe": 12, "gross_margin": 30, "debt_ratio": 45, "pe_dynamic": 25, "pb": 2.5, "earnings_surprise": 5},
+            ]
+        )
+        with patch.object(config, "ENABLE_FUNDAMENTALS", True):
+            enriched = attach_fundamental_factors(df)
+        samples = [
+            {"raw": {"fundamental_quality_score": row["fundamental_quality_score"]}, "primary_return_net": ret}
+            for row, ret in zip(enriched.to_dict("records"), [3.0, -2.0, 1.0])
+        ]
+        ic = compute_factor_ic(samples, factor_keys=["fundamental_quality_score"])
+
+        self.assertGreater(enriched.iloc[0]["fundamental_quality_score"], enriched.iloc[1]["fundamental_quality_score"])
+        self.assertGreater(ic["ic"]["fundamental_quality_score"]["ic"], 0)
+
+    def test_missing_fundamental_factors_are_neutral_not_top_ranked(self):
+        df = pd.DataFrame(
+            [
+                {"code": "600001", "pe_dynamic": 0, "pb": 0},
+                {"code": "600002", "pe_dynamic": 0, "pb": 0},
+            ]
+        )
+        with patch.object(config, "ENABLE_FUNDAMENTALS", True):
+            enriched = attach_fundamental_factors(df)
+
+        self.assertTrue(enriched["fundamental_degraded"].all())
+        self.assertEqual(enriched.iloc[0]["fundamental_quality_score"], 50.0)
+        self.assertEqual(enriched.iloc[0]["earnings_surprise_score"], 50.0)
+
+    def test_fundamental_loader_uses_daily_cache(self):
+        import tempfile
+
+        class FakeProvider:
+            def __init__(self):
+                self.calls = 0
+
+            def get_fundamental_factors(self, codes=None):
+                self.calls += 1
+                return {"600001": {"roe": 18, "gross_margin": 40, "debt_ratio": 25, "pe_dynamic": 12, "pb": 1.5}}
+
+        provider = FakeProvider()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = "{}/fundamentals.json".format(tmpdir)
+            with patch.object(config, "ENABLE_FUNDAMENTALS", True), patch.object(
+                config, "FUNDAMENTAL_CACHE_PATH", cache_path
+            ), patch.object(config, "FUNDAMENTAL_CACHE_HOURS", 24):
+                first = load_fundamentals(provider, codes=["600001"])
+                second = load_fundamentals(provider, codes=["600001"])
+
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(second["status"], "ok")
+        self.assertEqual(provider.calls, 1)
+        self.assertIn("600001", second["items"])
+
+    def test_daily_job_factor_ic_writes_file(self):
+        import io
+        import json
+        import sys
+        import tempfile
+        from contextlib import redirect_stdout
+        from stock_analyzer import daily_job
+
+        samples = [
+            {"raw": {"fundamental_quality_score": 90}, "primary_return_net": 3.0},
+            {"raw": {"fundamental_quality_score": 50}, "primary_return_net": 1.0},
+            {"raw": {"fundamental_quality_score": 10}, "primary_return_net": -2.0},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            factor_path = "{}/factor_ic.json".format(tmpdir)
+            db_path = "{}/validation.sqlite3".format(tmpdir)
+            argv = ["daily_job", "--factor-ic", "--strategy", "tomorrow_picks"]
+            with patch.object(sys, "argv", argv), patch.object(config, "FACTOR_IC_PATH", factor_path), patch.object(
+                config, "VALIDATION_DB_PATH", db_path
+            ), patch(
+                "stock_analyzer.daily_job.StrategyValidationStore.live_weight_samples",
+                return_value=samples,
+            ):
+                with redirect_stdout(io.StringIO()):
+                    result = daily_job.main()
+            with open(factor_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+
+        self.assertEqual(result, 0)
+        self.assertGreater(payload["ic"]["fundamental_quality_score"]["ic"], 0)
+
+    def test_factor_ic_weighting_can_adjust_combiner_when_enabled(self):
+        import json
+        import tempfile
+        from stock_analyzer.scoring import _combine
+
+        components = {
+            "liquidity_score": 10,
+            "momentum_score": 90,
+            "trend_score": 50,
+            "execution_score": 50,
+            "risk_penalty": 0,
+            "overheat_damp": 1,
+        }
+        baseline = _combine(components, "tomorrow_picks")
+        payload = {
+            "ic": {
+                "momentum_score": {"ic": 1.0, "sample_count": 3, "status": "ok"},
+                "liquidity_score": {"ic": -1.0, "sample_count": 3, "status": "ok"},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = "{}/factor_ic.json".format(tmpdir)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            with patch.object(config, "ENABLE_FACTOR_IC_WEIGHTING", True), patch.object(
+                config, "FACTOR_IC_PATH", path
+            ), patch.object(config, "FACTOR_IC_MIN_SAMPLES", 1):
+                adjusted = _combine(components, "tomorrow_picks")
+
+        self.assertGreater(adjusted, baseline)
+
+    def test_portfolio_endpoint_uses_latest_saved_snapshot(self):
+        import tempfile
+
+        rows = [
+            {
+                "rank": idx + 1,
+                "code": "60000{}".format(idx),
+                "name": "样本{}".format(idx),
+                "price": 10 + idx,
+                "score": 90 - idx,
+                "theme": ["半导体", "算力", "军工", "医药"][idx],
+                "serenity_profile": {"confidence_score": 80 - idx, "risk_score": 40 + idx},
+            }
+            for idx in range(4)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            validation_path = "{}/validation.sqlite3".format(tmpdir)
+            StrategyValidationStore(validation_path).save_signals(
+                "tomorrow_picks",
+                "tomorrow_picks_v2",
+                "2024-01-01T14:30:00",
+                rows,
+            )
+            with patch.object(config, "VALIDATION_DB_PATH", validation_path), patch.object(
+                config, "VALIDATION_AUTO_UPDATE_ENABLED", False
+            ), patch.object(config, "PORTFOLIO_SINGLE_CAP", 0.4), patch.object(
+                config, "PORTFOLIO_THEME_CAP", 0.7
+            ):
+                app = create_app()
+                response = app.test_client().get("/api/portfolio?strategy=tomorrow_picks")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["summary"]["position_count"], 4)
+        self.assertIn("suggested_weight", payload["data"][0])
+        total_weight = sum(row["suggested_weight"] for row in payload["data"])
+        self.assertAlmostEqual(total_weight, payload["summary"]["total_weight"], places=1)
+        self.assertAlmostEqual(total_weight + payload["summary"]["cash_pct"], 100.0, places=1)
+        self.assertIn("gross_exposure_pct", payload["summary"])
+
+    def test_paper_trading_store_records_closed_trades_and_nav(self):
+        import tempfile
+
+        rows = [
+            {
+                "rank": 1,
+                "code": "600001",
+                "name": "盈利样本",
+                "price": 10,
+                "score": 90,
+                "theme": "半导体",
+                "turnover": 500000000,
+                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+            },
+            {
+                "rank": 2,
+                "code": "600002",
+                "name": "亏损样本",
+                "price": 10,
+                "score": 80,
+                "theme": "算力",
+                "turnover": 500000000,
+                "serenity_profile": {"confidence_score": 70, "risk_score": 45},
+            },
+        ]
+        histories = {
+            "600001": pd.DataFrame(
+                {
+                    "trade_date": ["20240101", "20240102"],
+                    "open": [10.0, 10.0],
+                    "high": [10.1, 11.5],
+                    "low": [9.9, 9.8],
+                    "price": [10.0, 11.0],
+                    "turnover": [500000000, 520000000],
+                }
+            ),
+            "600002": pd.DataFrame(
+                {
+                    "trade_date": ["20240101", "20240102"],
+                    "open": [10.0, 10.0],
+                    "high": [10.1, 10.2],
+                    "low": [9.9, 9.3],
+                    "price": [10.0, 9.4],
+                    "turnover": [500000000, 510000000],
+                }
+            ),
+        }
+
+        class FakeProvider:
+            def get_history(self, code, days=220):
+                return histories[code]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            validation_path = "{}/validation.sqlite3".format(tmpdir)
+            paper_path = "{}/paper.sqlite3".format(tmpdir)
+            validation_store = StrategyValidationStore(validation_path)
+            validation_store.save_signals("tomorrow_picks", "tomorrow_picks_v2", "2024-01-01T14:30:00", rows)
+            paper_store = PaperTradingStore(paper_path)
+            with patch.object(config, "PORTFOLIO_SINGLE_CAP", 0.6), patch.object(config, "PORTFOLIO_THEME_CAP", 0.8):
+                result = paper_store.run_paper_trade(FakeProvider(), validation_store, "tomorrow_picks")
+            performance = paper_store.performance("tomorrow_picks", days=20)
+            trades = paper_store.trades("tomorrow_picks")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["saved"], 2)
+        self.assertEqual({trade["status"] for trade in trades}, {"closed"})
+        self.assertEqual(performance["metrics"]["closed_count"], 2)
+        self.assertNotEqual(performance["metrics"]["total_return_pct"], 0.0)
+        self.assertIn("max_drawdown_pct", performance["metrics"])
+
+    def test_paper_trade_spreads_capital_by_holding_days(self):
+        from stock_analyzer.paper_trading import _evaluate_trade
+
+        history = pd.DataFrame(
+            {
+                "trade_date": ["20240101"] + ["202401{:02d}".format(day) for day in range(2, 13)],
+                "open": [10.0] * 12,
+                "high": [10.1] * 12,
+                "low": [9.9] * 12,
+                "price": [10.0] + [11.0] * 11,
+                "turnover": [500000000] * 12,
+            }
+        )
+
+        class FakeProvider:
+            def get_history(self, code, days=220):
+                return history
+
+        with patch.object(config, "PAPER_TRADING_SPREAD_CAPITAL_BY_HOLDING_DAYS", True):
+            trade = _evaluate_trade(
+                FakeProvider(),
+                "swing_picks",
+                "2024-01-01",
+                {"code": "600001", "name": "样本", "price": 10, "suggested_weight": 100, "turnover": 500000000},
+            )
+
+        self.assertEqual(trade["status"], "closed")
+        self.assertLess(trade["weighted_return_pct"], trade["net_return_pct"])
+        self.assertAlmostEqual(trade["weighted_return_pct"], trade["net_return_pct"] / 10, places=4)
+
+    def test_portfolio_performance_endpoint_returns_paper_nav(self):
+        import tempfile
+
+        rows = [
+            {
+                "rank": 1,
+                "code": "600001",
+                "name": "盈利样本",
+                "price": 10,
+                "score": 90,
+                "theme": "半导体",
+                "turnover": 500000000,
+                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+            }
+        ]
+        history = pd.DataFrame(
+            {
+                "trade_date": ["20240101", "20240102"],
+                "open": [10.0, 10.0],
+                "high": [10.1, 11.5],
+                "low": [9.9, 9.8],
+                "price": [10.0, 11.0],
+                "turnover": [500000000, 520000000],
+            }
+        )
+
+        class FakeProvider:
+            def get_history(self, code, days=220):
+                return history
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            validation_path = "{}/validation.sqlite3".format(tmpdir)
+            paper_path = "{}/paper.sqlite3".format(tmpdir)
+            validation_store = StrategyValidationStore(validation_path)
+            validation_store.save_signals("tomorrow_picks", "tomorrow_picks_v2", "2024-01-01T14:30:00", rows)
+            with patch.object(config, "PORTFOLIO_SINGLE_CAP", 1.0), patch.object(config, "PORTFOLIO_THEME_CAP", 1.0):
+                PaperTradingStore(paper_path).run_paper_trade(FakeProvider(), validation_store, "tomorrow_picks")
+            with patch.object(config, "VALIDATION_DB_PATH", validation_path), patch.object(
+                config, "PAPER_TRADING_DB_PATH", paper_path
+            ), patch.object(config, "VALIDATION_AUTO_UPDATE_ENABLED", False):
+                app = create_app()
+                client = app.test_client()
+                perf_response = client.get("/api/portfolio/performance?strategy=tomorrow_picks&days=20")
+                trades_response = client.get("/api/paper-trades?strategy=tomorrow_picks")
+                portfolio_response = client.get("/api/portfolio?strategy=tomorrow_picks")
+
+        self.assertEqual(perf_response.status_code, 200)
+        perf_payload = perf_response.get_json()
+        self.assertTrue(perf_payload["ok"])
+        self.assertEqual(perf_payload["performance"]["metrics"]["closed_count"], 1)
+        self.assertEqual(trades_response.get_json()["data"][0]["status"], "closed")
+        self.assertIn("performance", portfolio_response.get_json())
+
+    def test_run_snapshot_saves_strategy_rows_without_web_route(self):
+        import tempfile
+
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600001",
+                    "name": "强势样本",
+                    "price": 12,
+                    "pct_chg": 4.2,
+                    "speed": 1.2,
+                    "volume_ratio": 1.8,
+                    "turnover_rate": 4.5,
+                    "turnover": 180000000,
+                    "industry": "半导体",
+                    "sixty_day_pct": 20,
+                    "ytd_pct": 30,
+                    "amplitude": 5,
+                },
+                {
+                    "code": "600002",
+                    "name": "稳健样本",
+                    "price": 9,
+                    "pct_chg": 2.0,
+                    "speed": 0.4,
+                    "volume_ratio": 1.2,
+                    "turnover_rate": 2.5,
+                    "turnover": 120000000,
+                    "industry": "电力",
+                    "sixty_day_pct": 8,
+                    "ytd_pct": 12,
+                    "amplitude": 3,
+                },
+            ]
+        )
+
+        class FakeProvider:
+            def get_realtime_quotes(self):
+                return quotes
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")
+            dates = store.list_signal_dates("tomorrow_picks")
+
+        self.assertTrue(result["ok"])
+        self.assertGreater(result["saved"]["saved"], 0)
+        self.assertEqual(dates[0]["strategy_name"], "tomorrow_picks")
+
+    def test_live_weight_calibration_keeps_weights_when_samples_insufficient(self):
+        import tempfile
+        from stock_analyzer.calibrate import calibrate_live_weights
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            weights_path = "{}/weights.json".format(tmpdir)
+            db_path = "{}/validation.sqlite3".format(tmpdir)
+            with patch.object(config, "WEIGHTS_OVERRIDE_PATH", weights_path), patch.object(
+                config, "CALIBRATE_MIN_SAMPLES", 30
+            ):
+                result = calibrate_live_weights("tomorrow_picks", db_path=db_path, dry_run=False)
+
+        self.assertEqual(result["status"], "insufficient_samples")
+        self.assertFalse(os.path.exists(weights_path))
+
+    def test_live_sample_evaluation_uses_alpha_not_absolute_beta(self):
+        from stock_analyzer.calibrate import _evaluate_live_samples
+
+        samples = []
+        for idx, score in enumerate((90, 70, 50), start=1):
+            samples.append(
+                {
+                    "signal_date": "2024-01-01",
+                    "primary_return_net": 5.0,
+                    "raw": {
+                        "liquidity_score": score,
+                        "momentum_score": score,
+                        "trend_score": score,
+                        "execution_score": score,
+                        "risk_penalty": 0,
+                    },
+                }
+            )
+
+        metrics = _evaluate_live_samples(
+            "tomorrow_picks",
+            samples,
+            {"liquidity": 0.25, "momentum": 0.25, "trend": 0.25, "execution": 0.25},
+            top_k=1,
+        )
+
+        self.assertEqual(metrics["absolute_win_rate"], 100.0)
+        self.assertEqual(metrics["absolute_avg_period_return"], 5.0)
+        self.assertEqual(metrics["win_rate"], 0.0)
+        self.assertEqual(metrics["avg_period_return"], 0.0)
+
+    def test_live_weight_calibration_requires_oos_improvement_to_write(self):
+        import tempfile
+        from stock_analyzer.calibrate import calibrate_live_weights
+
+        samples = []
+        for day in range(1, 5):
+            for rank, score in enumerate((90, 60), start=1):
+                samples.append(
+                    {
+                        "signal_date": "2024-01-{:02d}".format(day),
+                        "primary_return_net": 1.0 if rank == 1 else 0.5,
+                        "raw": {
+                            "liquidity_score": score,
+                            "momentum_score": score,
+                            "trend_score": score,
+                            "execution_score": score,
+                            "risk_penalty": 0,
+                            "serenity_profile": {"data_coverage": 1.0},
+                        },
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            weights_path = "{}/weights.json".format(tmpdir)
+            with patch.object(config, "WEIGHTS_OVERRIDE_PATH", weights_path), patch.object(
+                config, "CALIBRATE_MIN_SAMPLES", 2
+            ), patch(
+                "stock_analyzer.calibrate.StrategyValidationStore.live_weight_samples",
+                return_value=samples,
+            ), patch(
+                "stock_analyzer.calibrate._walk_forward_evaluate",
+                return_value={
+                    "ok": True,
+                    "baseline_oos_objective": 10.0,
+                    "best_oos_objective": 10.01,
+                    "oos_improvement": 0.01,
+                    "positive_folds": 1,
+                    "fold_count": 4,
+                    "folds": [],
+                },
+            ), patch("stock_analyzer.calibrate._write_weights_override") as writer:
+                result = calibrate_live_weights("tomorrow_picks", db_path="{}/v.sqlite3".format(tmpdir), dry_run=False)
+
+        self.assertEqual(result["status"], "no_oos_improvement")
+        writer.assert_not_called()
+
+    def test_live_weight_calibration_rejects_low_factor_coverage(self):
+        import tempfile
+        from stock_analyzer.calibrate import calibrate_live_weights
+
+        samples = []
+        for day in range(1, 5):
+            for score in (90, 60):
+                samples.append(
+                    {
+                        "signal_date": "2024-02-{:02d}".format(day),
+                        "primary_return_net": 1.0,
+                        "raw": {
+                            "liquidity_score": score,
+                            "momentum_score": score,
+                            "trend_score": score,
+                            "execution_score": score,
+                            "risk_penalty": 0,
+                        },
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(config, "CALIBRATE_MIN_SAMPLES", 2), patch.object(
+                config, "CALIBRATE_MIN_COVERAGE", 0.5
+            ), patch(
+                "stock_analyzer.calibrate.StrategyValidationStore.live_weight_samples",
+                return_value=samples,
+            ):
+                result = calibrate_live_weights("tomorrow_picks", db_path="{}/v.sqlite3".format(tmpdir), dry_run=False)
+
+        self.assertEqual(result["status"], "insufficient_factor_coverage")
+        self.assertEqual(result["avg_data_coverage"], 0.0)
+
     def test_strategy_validation_uses_signal_price_returns(self):
         import tempfile
 
@@ -1017,10 +1894,11 @@ class ScoringTest(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["next_close_return"], 4.1667)
         self.assertEqual(metrics["avg_next_close_return"], 25.0)
         self.assertEqual(metrics["hit_3pct_rate"], 100.0)
-        self.assertEqual(metrics["avg_primary_return"], 25.0)
+        self.assertEqual(metrics["primary_horizon_label"], "次日开盘入场")
+        self.assertEqual(metrics["avg_primary_return"], 4.1667)
         self.assertAlmostEqual(
             metrics["avg_primary_return_net"],
-            25.0 - config.VALIDATION_TRADE_COST_PCT,
+            4.1667 - metrics["avg_trade_cost_pct"],
         )
 
     def test_strategy_validation_stores_exit_rule_outcome(self):
@@ -1054,7 +1932,43 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(rows[0]["exit_reason"], "stop_loss")
         self.assertAlmostEqual(rows[0]["signal_exit_return"], -5.0)
         self.assertAlmostEqual(metrics["avg_exit_return"], -5.0)
-        self.assertAlmostEqual(metrics["avg_exit_return_net"], -5.0 - config.VALIDATION_TRADE_COST_PCT)
+        self.assertAlmostEqual(metrics["avg_exit_return_net"], -5.0 - metrics["avg_trade_cost_pct"])
+
+    def test_strategy_validation_skips_unbuyable_limit_up_sample(self):
+        from stock_analyzer.strategy_validation import _compute_outcome
+
+        class FakeProvider:
+            def get_history(self, code, days=180):
+                return pd.DataFrame(
+                    {
+                        "trade_date": ["20240101", "20240102", "20240103"],
+                        "open": [10.0, 11.0, 11.2],
+                        "high": [10.1, 11.0, 11.5],
+                        "low": [9.9, 11.0, 11.1],
+                        "price": [10.0, 11.0, 11.3],
+                    }
+                )
+
+        signal = {
+            "code": "600001",
+            "signal_date": "2024-01-01",
+            "price_at_signal": 10.0,
+            "strategy_name": "tomorrow_picks",
+            "market": "main",
+        }
+
+        outcome = _compute_outcome(FakeProvider(), signal)
+        self.assertTrue(outcome["excluded"])
+        self.assertEqual(outcome["skip_reason"], "unbuyable_limit_up")
+
+    def test_validation_execution_cost_uses_liquidity_slippage(self):
+        from stock_analyzer.strategy_validation import _execution_cost_pct
+
+        liquid = _execution_cost_pct({"turnover": 1_500_000_000})
+        illiquid = _execution_cost_pct({"turnover": 50_000_000})
+
+        self.assertGreater(illiquid, liquid)
+        self.assertGreater(illiquid, config.VALIDATION_TRADE_COST_PCT)
 
     def test_strategy_validation_splits_real_and_replay_samples(self):
         import tempfile
@@ -1090,7 +2004,7 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(metrics["outcome_sample_count"], 2)
         self.assertEqual(metrics["real_sample_count"], 1)
         self.assertEqual(metrics["replay_sample_count"], 1)
-        self.assertEqual(metrics["primary_horizon_label"], "次日")
+        self.assertEqual(metrics["primary_horizon_label"], "次日开盘入场")
 
     def test_long_horizon_validation_requires_mature_future_days(self):
         import tempfile
@@ -1122,19 +2036,19 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(update["updated"], 2)
         self.assertEqual(len(rows), 2)
         self.assertEqual(metrics["primary_holding_days"], 20)
-        self.assertEqual(metrics["primary_horizon_label"], "20日")
+        self.assertEqual(metrics["primary_horizon_label"], "20日开盘入场")
         self.assertEqual(metrics["outcome_sample_count"], 2)
         self.assertEqual(metrics["sample_count"], 1)
         self.assertEqual(metrics["real_sample_count"], 1)
-        self.assertAlmostEqual(metrics["avg_primary_return"], 20.0)
+        self.assertAlmostEqual(metrics["avg_primary_return"], 18.8119)
         self.assertAlmostEqual(
             metrics["avg_primary_return_net"],
-            20.0 - config.VALIDATION_TRADE_COST_PCT,
+            18.8119 - metrics["avg_trade_cost_pct"],
         )
         self.assertEqual(metrics["daily"][0]["sample_count"], 1)
         self.assertAlmostEqual(
             metrics["daily"][0]["avg_primary_return_net"],
-            20.0 - config.VALIDATION_TRADE_COST_PCT,
+            18.8119 - metrics["avg_trade_cost_pct"],
         )
 
     def test_strategy_validation_signal_codes_groups_saved_predictions(self):
@@ -1492,6 +2406,84 @@ class ScoringTest(unittest.TestCase):
         self.assertIn("成交额不足", "；".join(payload["risk_flags"]))
         self.assertEqual(payload["strategy_hits"], [])
 
+    def test_stock_prediction_endpoint_uses_history_when_realtime_quote_missing(self):
+        import tempfile
+
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600001",
+                    "name": "其他股票",
+                    "price": 10,
+                    "pct_chg": 1.0,
+                    "volume_ratio": 1.0,
+                    "turnover": 500000000,
+                    "sixty_day_pct": 5,
+                    "ytd_pct": 8,
+                    "industry": "银行",
+                }
+            ]
+        )
+        history = pd.DataFrame(
+            [
+                {"trade_date": "2026-01-02", "price": 10.0, "volume": 1000000, "turnover": 80000000},
+                {"trade_date": "2026-01-03", "price": 10.5, "volume": 1200000, "turnover": 90000000},
+                {"trade_date": "2026-01-04", "price": 10.2, "volume": 1100000, "turnover": 85000000},
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(config, "STATE_PATH", "{}/state.json".format(tmpdir)), patch.object(
+                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
+            ), patch.object(config, "ENABLE_HISTORY_FACTORS", False), patch(
+                "stock_analyzer.app.MarketDataProvider.get_realtime_quotes",
+                return_value=quotes,
+            ), patch(
+                "stock_analyzer.app.MarketDataProvider.get_history",
+                return_value=history,
+            ):
+                app = create_app()
+                client = app.test_client()
+                response = client.get("/api/stock-prediction/600999")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["filtered"])
+        self.assertEqual(payload["data_source"], "历史行情兜底")
+        self.assertEqual(payload["prediction"]["direction"], "down")
+        self.assertIn("实时行情源未返回", "；".join(payload["risk_flags"]))
+        self.assertGreater(payload["price"], 0)
+
+    def test_stock_prediction_endpoint_returns_diagnosis_when_all_quotes_missing(self):
+        import tempfile
+
+        def fail_quotes(self):
+            raise RuntimeError("实时源不可用")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(config, "STATE_PATH", "{}/state.json".format(tmpdir)), patch.object(
+                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
+            ), patch.object(config, "ENABLE_HISTORY_FACTORS", False), patch(
+                "stock_analyzer.app.MarketDataProvider.get_realtime_quotes",
+                fail_quotes,
+            ), patch(
+                "stock_analyzer.app.MarketDataProvider.get_history",
+                return_value=pd.DataFrame(),
+            ):
+                app = create_app()
+                client = app.test_client()
+                response = client.get("/api/stock-prediction/600999")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["filtered"])
+        self.assertEqual(payload["data_source"], "无可用行情")
+        self.assertEqual(payload["prediction"]["direction"], "down")
+        self.assertIn("历史行情也不可用", "；".join(payload["risk_flags"]))
+        self.assertEqual(payload["strategy_hits"], [])
+
     def test_strategy_overview_endpoint_returns_market_regime(self):
         import tempfile
 
@@ -1531,6 +2523,70 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(len(payload["strategies"]), 8)
         for name in ("chokepoint_picks", "reversal_picks", "smallcap_value_picks", "breakout_picks"):
             self.assertIn(name, [s["name"] for s in payload["strategies"]])
+
+    def test_chokepoint_endpoint_returns_industry_map_when_no_matches(self):
+        import tempfile
+
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600000",
+                    "name": "普通银行",
+                    "price": 10,
+                    "pct_chg": 0.5,
+                    "turnover": 500000000,
+                    "turnover_rate": 2,
+                    "volume_ratio": 1.0,
+                    "sixty_day_pct": 3,
+                    "ytd_pct": 5,
+                    "amplitude": 2,
+                    "industry": "银行",
+                },
+                {
+                    "code": "300308",
+                    "name": "中际旭创",
+                    "price": 100,
+                    "pct_chg": 2.1,
+                    "turnover": 900000000,
+                    "turnover_rate": 6,
+                    "volume_ratio": 2.0,
+                    "sixty_day_pct": 15,
+                    "ytd_pct": 30,
+                    "amplitude": 5,
+                    "industry": "通信服务",
+                },
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(config, "STATE_PATH", "{}/state.json".format(tmpdir)), patch.object(
+                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
+            ), patch(
+                "stock_analyzer.app.MarketDataProvider.get_realtime_quotes",
+                return_value=quotes,
+            ):
+                app = create_app()
+                client = app.test_client()
+                response = client.get("/api/chokepoint-picks?top_n=10")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"], [])
+        industry_map = payload["meta"]["industry_map"]
+        self.assertTrue(industry_map)
+        totals = industry_map[0]["totals"]
+        self.assertGreater(totals["industry_count"], 0)
+        self.assertGreater(totals["leader_count"], 0)
+        self.assertGreater(totals["unique_leader_count"], 0)
+        self.assertLessEqual(totals["unique_leader_count"], totals["leader_count"])
+        self.assertEqual(totals["quote_available_count"], 1)
+        optical = next(node for node in industry_map if node["segment"] == "光器件")
+        leader = next(item for item in optical["leaders"] if item["code"] == "300308")
+        self.assertTrue(leader["quote_available"])
+        self.assertFalse(leader["matched"])
+        self.assertIn(leader["recommendation"]["level"], {"observe", "avoid"})
+        self.assertIn("empty_reason", payload["meta"])
 
     def test_eastmoney_normalization_maps_required_quote_fields(self):
         raw = pd.DataFrame(

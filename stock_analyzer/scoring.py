@@ -1,9 +1,11 @@
+import os
 from datetime import datetime
 from typing import Dict, List, Tuple
 
 import pandas as pd
 
 from . import config
+from .factor_ic import load_factor_ic
 from .normalization import (
     coerce_number,
     finite_series,
@@ -12,6 +14,8 @@ from .normalization import (
     normalize_code,
     percentile_score,
 )
+from .event_risk import row_event_risk
+from .strategy_health import strategy_status
 
 
 TECH_THEMES = {
@@ -57,21 +61,272 @@ SERENITY_REFERENCES = (
 # 卡脖子/上游环节关键词：供给紧、最难替代、易被市场忽视的供应链上游。
 CHOKEPOINT_KEYWORDS = (
     "材料", "衬底", "封装", "载板", "光刻胶", "光模块", "光芯片", "硅片",
-    "靶材", "电子特气", "前驱体", "掩膜", "EDA", "IP核", "设备", "零部件",
+    "靶材", "电子特气", "前驱体", "掩膜", "EDA", "IP核", "刻蚀", "量测", "零部件",
     "元件", "晶圆", "陶瓷", "薄膜", "磁材", "永磁", "稀土", "精密",
+    "玻璃基板", "玻璃载板", "玻璃通孔", "TGV", "玻璃基", "封装玻璃",
+    "工业母机", "数控", "机床", "五轴", "伺服", "减速器", "谐波", "丝杠",
+    "液冷", "温控", "电源", "UPS", "CPO", "传感器", "MEMS", "科学仪器",
+    "操作系统", "数据库", "中间件", "信创", "航发", "航空", "航天", "钛合金",
+    "碳纤维", "复材", "超导", "医疗设备", "高端医疗", "测量仪器",
+    "卫星互联网", "低轨卫星", "低轨星座", "中国星网", "国网星座", "千帆",
+    "G60星链", "卫星通信", "卫星载荷", "星载", "相控阵", "卫星终端",
+    "终端天线", "地面站", "射频", "微波", "空间信息",
+    "光刻机", "光刻物镜", "投影物镜", "准分子", "精密光学", "光学元件",
+    "AI芯片", "GPU", "GPGPU", "CPU", "DPU", "算力芯片", "国产算力",
+    "Chiplet", "HBM", "先进封装", "高速互连", "高频高速", "高速PCB",
+    "铜缆", "连接器", "工业软件", "CAE", "CAD", "PLM", "MES", "DCS",
+    "PLC", "伺服驱动", "运动控制", "轴承", "导轨", "滚珠丝杠", "液压",
+    "密封", "阀门", "泵", "SiC", "碳化硅", "GaN", "氮化镓", "功率半导体",
+    "IGBT", "MLCC", "电容", "薄膜电容", "陶瓷电容", "科研试剂", "生物试剂",
+    "培养基", "工业酶", "合成生物", "生物育种", "种业", "转基因", "分离膜",
+    "反渗透膜", "催化剂", "吸附树脂", "质子交换膜",
 )
 
 # 卡脖子产业链：环节 -> 关键词。用于把命中词归类到环节名，并在前端画产业链全景图。
 # 顺序即匹配优先级（靠前的环节先命中）。
 CHOKEPOINT_CHAIN = (
-    {"segment": "半导体设备", "keywords": ("刻蚀", "光刻", "量测", "薄膜沉积", "设备")},
+    {"segment": "先进光刻/精密光学", "keywords": ("光刻机", "光刻物镜", "投影物镜", "准分子", "精密光学", "光学元件", "光学镜头")},
+    {"segment": "半导体设备", "keywords": ("刻蚀", "光刻", "量测", "薄膜沉积", "半导体设备")},
     {"segment": "半导体材料", "keywords": ("光刻胶", "硅片", "衬底", "晶圆", "靶材", "电子特气", "前驱体", "掩膜", "抛光")},
+    {"segment": "国产算力芯片/IP", "keywords": ("AI芯片", "GPU", "GPGPU", "CPU", "DPU", "算力芯片", "国产算力", "处理器", "指令集")},
+    {"segment": "玻璃基板/TGV", "keywords": ("玻璃基板", "玻璃载板", "玻璃通孔", "TGV", "玻璃基", "封装玻璃")},
+    {"segment": "先进封装/HBM", "keywords": ("Chiplet", "HBM", "先进封装", "TSV", "2.5D封装", "3D封装")},
     {"segment": "封装/载板", "keywords": ("封装", "载板", "基板")},
     {"segment": "EDA/IP", "keywords": ("EDA", "IP核")},
+    {"segment": "工业软件/CAE", "keywords": ("工业软件", "CAE", "CAD", "PLM", "MES", "仿真软件", "研发设计软件")},
     {"segment": "光器件", "keywords": ("光模块", "光芯片", "光器件")},
+    {"segment": "AI算力液冷/电源", "keywords": ("液冷", "温控", "散热", "电源", "UPS", "CPO")},
+    {"segment": "高速互连/高频高速PCB", "keywords": ("高速互连", "高频高速", "高速PCB", "铜缆", "连接器", "CCL", "覆铜板")},
+    {"segment": "工业母机/高端数控", "keywords": ("工业母机", "数控", "机床", "五轴")},
+    {"segment": "高端轴承/丝杠导轨", "keywords": ("轴承", "导轨", "滚珠丝杠", "高端轴承", "直线导轨")},
+    {"segment": "机器人核心零部件", "keywords": ("伺服", "减速器", "谐波", "丝杠", "机器人")},
+    {"segment": "工业控制/PLC", "keywords": ("DCS", "PLC", "伺服驱动", "运动控制", "工业控制", "工控")},
+    {"segment": "SiC/GaN功率半导体", "keywords": ("SiC", "碳化硅", "GaN", "氮化镓", "功率半导体", "IGBT")},
+    {"segment": "被动元件/高端电容", "keywords": ("MLCC", "电容", "薄膜电容", "陶瓷电容", "被动元件")},
     {"segment": "高端材料", "keywords": ("陶瓷", "薄膜", "磁材", "永磁", "稀土", "碳", "复材")},
+    {"segment": "稀土/关键金属", "keywords": ("稀土", "永磁", "钨", "钼", "钛", "锂", "关键金属")},
+    {"segment": "基础软件/信创", "keywords": ("操作系统", "数据库", "中间件", "信创", "基础软件")},
+    {"segment": "科学仪器/高端医疗设备", "keywords": ("科学仪器", "测量仪器", "医疗设备", "高端医疗", "基因测序")},
+    {"segment": "科研试剂/生物制造", "keywords": ("科研试剂", "生物试剂", "培养基", "工业酶", "合成生物", "原料酶")},
+    {"segment": "种业/生物育种", "keywords": ("生物育种", "种业", "转基因", "玉米种子", "水稻种子")},
+    {"segment": "高端膜材料/催化剂", "keywords": ("分离膜", "反渗透膜", "催化剂", "吸附树脂", "质子交换膜", "离子交换膜")},
+    {"segment": "卫星互联网/低轨星座", "keywords": ("卫星互联网", "低轨卫星", "低轨星座", "中国星网", "国网星座", "千帆", "G60星链", "卫星通信", "卫星载荷", "星载", "相控阵", "卫星终端", "终端天线", "地面站", "射频", "微波", "空间信息")},
+    {"segment": "航空航天材料/零部件", "keywords": ("航发", "航空", "航天", "钛合金", "超导", "复材")},
+    {"segment": "高端阀门/密封泵", "keywords": ("密封", "阀门", "泵", "高端阀门", "机械密封")},
     {"segment": "精密零部件", "keywords": ("零部件", "元件", "精密", "传感")},
 )
+
+CHOKEPOINT_INDUSTRY_LEADERS = {
+    "先进光刻/精密光学": (
+        {"code": "688502", "name": "茂莱光学"},
+        {"code": "002222", "name": "福晶科技"},
+        {"code": "603297", "name": "永新光学"},
+        {"code": "002338", "name": "奥普光电"},
+        {"code": "688127", "name": "蓝特光学"},
+        {"code": "688195", "name": "腾景科技"},
+    ),
+    "半导体设备": (
+        {"code": "002371", "name": "北方华创"},
+        {"code": "688012", "name": "中微公司"},
+        {"code": "688072", "name": "拓荆科技"},
+        {"code": "688120", "name": "华海清科"},
+    ),
+    "半导体材料": (
+        {"code": "688126", "name": "沪硅产业"},
+        {"code": "688019", "name": "安集科技"},
+        {"code": "300346", "name": "南大光电"},
+        {"code": "300666", "name": "江丰电子"},
+    ),
+    "国产算力芯片/IP": (
+        {"code": "688256", "name": "寒武纪"},
+        {"code": "688041", "name": "海光信息"},
+        {"code": "688047", "name": "龙芯中科"},
+        {"code": "300474", "name": "景嘉微"},
+        {"code": "688385", "name": "复旦微电"},
+        {"code": "002049", "name": "紫光国微"},
+    ),
+    "先进封装/HBM": (
+        {"code": "600584", "name": "长电科技"},
+        {"code": "002156", "name": "通富微电"},
+        {"code": "002185", "name": "华天科技"},
+        {"code": "002916", "name": "深南电路"},
+        {"code": "002436", "name": "兴森科技"},
+        {"code": "300476", "name": "胜宏科技"},
+    ),
+    "封装/载板": (
+        {"code": "600584", "name": "长电科技"},
+        {"code": "002156", "name": "通富微电"},
+        {"code": "002916", "name": "深南电路"},
+        {"code": "002436", "name": "兴森科技"},
+    ),
+    "玻璃基板/TGV": (
+        {"code": "603773", "name": "沃格光电"},
+        {"code": "300162", "name": "雷曼光电"},
+        {"code": "688170", "name": "德龙激光"},
+        {"code": "300554", "name": "三超新材"},
+        {"code": "600552", "name": "凯盛科技"},
+    ),
+    "EDA/IP": (
+        {"code": "301269", "name": "华大九天"},
+        {"code": "688206", "name": "概伦电子"},
+        {"code": "301095", "name": "广立微"},
+    ),
+    "工业软件/CAE": (
+        {"code": "688083", "name": "中望软件"},
+        {"code": "688507", "name": "索辰科技"},
+        {"code": "603859", "name": "能科科技"},
+        {"code": "300687", "name": "赛意信息"},
+        {"code": "300378", "name": "鼎捷数智"},
+        {"code": "600845", "name": "宝信软件"},
+    ),
+    "光器件": (
+        {"code": "300308", "name": "中际旭创"},
+        {"code": "300502", "name": "新易盛"},
+        {"code": "300394", "name": "天孚通信"},
+        {"code": "002281", "name": "光迅科技"},
+    ),
+    "AI算力液冷/电源": (
+        {"code": "002837", "name": "英维克"},
+        {"code": "300499", "name": "高澜股份"},
+        {"code": "002335", "name": "科华数据"},
+        {"code": "002518", "name": "科士达"},
+    ),
+    "高速互连/高频高速PCB": (
+        {"code": "002463", "name": "沪电股份"},
+        {"code": "002916", "name": "深南电路"},
+        {"code": "600183", "name": "生益科技"},
+        {"code": "300476", "name": "胜宏科技"},
+        {"code": "688629", "name": "华丰科技"},
+        {"code": "688800", "name": "瑞可达"},
+        {"code": "300563", "name": "神宇股份"},
+    ),
+    "工业母机/高端数控": (
+        {"code": "688305", "name": "科德数控"},
+        {"code": "300161", "name": "华中数控"},
+        {"code": "000837", "name": "秦川机床"},
+        {"code": "601882", "name": "海天精工"},
+        {"code": "688558", "name": "国盛智科"},
+    ),
+    "高端轴承/丝杠导轨": (
+        {"code": "603667", "name": "五洲新春"},
+        {"code": "002046", "name": "国机精工"},
+        {"code": "300580", "name": "贝斯特"},
+        {"code": "300718", "name": "长盛轴承"},
+        {"code": "300850", "name": "新强联"},
+        {"code": "000837", "name": "秦川机床"},
+    ),
+    "机器人核心零部件": (
+        {"code": "688017", "name": "绿的谐波"},
+        {"code": "300124", "name": "汇川技术"},
+        {"code": "002472", "name": "双环传动"},
+        {"code": "002050", "name": "三花智控"},
+        {"code": "603728", "name": "鸣志电器"},
+    ),
+    "工业控制/PLC": (
+        {"code": "688777", "name": "中控技术"},
+        {"code": "300124", "name": "汇川技术"},
+        {"code": "600845", "name": "宝信软件"},
+        {"code": "603416", "name": "信捷电气"},
+        {"code": "002851", "name": "麦格米特"},
+        {"code": "002979", "name": "雷赛智能"},
+    ),
+    "SiC/GaN功率半导体": (
+        {"code": "688234", "name": "天岳先进"},
+        {"code": "600703", "name": "三安光电"},
+        {"code": "603290", "name": "斯达半导"},
+        {"code": "688261", "name": "东微半导"},
+        {"code": "605111", "name": "新洁能"},
+        {"code": "300373", "name": "扬杰科技"},
+    ),
+    "被动元件/高端电容": (
+        {"code": "300408", "name": "三环集团"},
+        {"code": "000636", "name": "风华高科"},
+        {"code": "600563", "name": "法拉电子"},
+        {"code": "002484", "name": "江海股份"},
+        {"code": "300726", "name": "宏达电子"},
+        {"code": "603678", "name": "火炬电子"},
+    ),
+    "高端材料": (
+        {"code": "300285", "name": "国瓷材料"},
+        {"code": "300777", "name": "中简科技"},
+        {"code": "300699", "name": "光威复材"},
+        {"code": "688295", "name": "中复神鹰"},
+        {"code": "600206", "name": "有研新材"},
+    ),
+    "稀土/关键金属": (
+        {"code": "600111", "name": "北方稀土"},
+        {"code": "000831", "name": "中国稀土"},
+        {"code": "300748", "name": "金力永磁"},
+        {"code": "000970", "name": "中科三环"},
+        {"code": "600549", "name": "厦门钨业"},
+    ),
+    "基础软件/信创": (
+        {"code": "688111", "name": "金山办公"},
+        {"code": "600536", "name": "中国软件"},
+        {"code": "688058", "name": "宝兰德"},
+        {"code": "002368", "name": "太极股份"},
+    ),
+    "科学仪器/高端医疗设备": (
+        {"code": "300760", "name": "迈瑞医疗"},
+        {"code": "688271", "name": "联影医疗"},
+        {"code": "688114", "name": "华大智造"},
+        {"code": "300203", "name": "聚光科技"},
+        {"code": "688139", "name": "海尔生物"},
+    ),
+    "科研试剂/生物制造": (
+        {"code": "688105", "name": "诺唯赞"},
+        {"code": "688179", "name": "阿拉丁"},
+        {"code": "688133", "name": "泰坦科技"},
+        {"code": "688293", "name": "奥浦迈"},
+        {"code": "301080", "name": "百普赛斯"},
+        {"code": "301047", "name": "义翘神州"},
+    ),
+    "种业/生物育种": (
+        {"code": "000998", "name": "隆平高科"},
+        {"code": "002385", "name": "大北农"},
+        {"code": "002041", "name": "登海种业"},
+        {"code": "300087", "name": "荃银高科"},
+        {"code": "000713", "name": "丰乐种业"},
+        {"code": "300189", "name": "神农种业"},
+    ),
+    "高端膜材料/催化剂": (
+        {"code": "002643", "name": "万润股份"},
+        {"code": "300487", "name": "蓝晓科技"},
+        {"code": "300631", "name": "久吾高科"},
+        {"code": "688101", "name": "三达膜"},
+        {"code": "601208", "name": "东材科技"},
+        {"code": "000920", "name": "沃顿科技"},
+    ),
+    "卫星互联网/低轨星座": (
+        {"code": "600118", "name": "中国卫星"},
+        {"code": "601698", "name": "中国卫通"},
+        {"code": "300045", "name": "华力创通"},
+        {"code": "002465", "name": "海格通信"},
+        {"code": "002151", "name": "北斗星通"},
+        {"code": "300101", "name": "振芯科技"},
+    ),
+    "航空航天材料/零部件": (
+        {"code": "600893", "name": "航发动力"},
+        {"code": "600765", "name": "中航重机"},
+        {"code": "600862", "name": "中航高科"},
+        {"code": "688122", "name": "西部超导"},
+        {"code": "688333", "name": "铂力特"},
+    ),
+    "高端阀门/密封泵": (
+        {"code": "300470", "name": "中密控股"},
+        {"code": "002438", "name": "江苏神通"},
+        {"code": "603699", "name": "纽威股份"},
+        {"code": "603308", "name": "应流股份"},
+        {"code": "603100", "name": "川仪股份"},
+        {"code": "300838", "name": "浙江力诺"},
+    ),
+    "精密零部件": (
+        {"code": "300007", "name": "汉威科技"},
+        {"code": "603662", "name": "柯力传感"},
+        {"code": "688322", "name": "奥比中光"},
+        {"code": "688539", "name": "高华科技"},
+    ),
+}
 
 
 def _chain_segment(hits: List[str]) -> str:
@@ -104,6 +359,37 @@ _DEFAULT_WEIGHTS = {
         "trend": 0.42, "liquidity": 0.20, "industry": 0.13,
         "sentiment": 0.13, "momentum": 0.07, "hot": 0.05,
     },
+    "tomorrow_picks": {
+        "liquidity": 0.30, "momentum": 0.28, "trend": 0.20, "execution": 0.22,
+    },
+    "swing_picks": {
+        "momentum": 0.34, "trend": 0.26, "liquidity": 0.20,
+        "execution": 0.12, "not_overextended": 0.08,
+    },
+    "position_picks": {
+        "trend": 0.34, "quality": 0.26, "liquidity": 0.20,
+        "theme": 0.12, "execution": 0.08,
+    },
+    "tech_potential": {
+        "theme": 0.24, "chokepoint": 0.10, "liquidity": 0.18,
+        "early_trend": 0.20, "not_overextended": 0.14,
+        "volume": 0.08, "execution": 0.06,
+    },
+    "chokepoint_picks": {
+        "chokepoint": 0.34, "liquidity": 0.20, "early_trend": 0.18,
+        "not_overextended": 0.14, "execution": 0.08, "volume": 0.06,
+    },
+    "reversal_picks": {
+        "oversold_calm": 0.50, "calm_turnover": 0.22, "liquidity": 0.28,
+    },
+    "smallcap_value_picks": {
+        "smallcap": 0.34, "value": 0.22, "liquidity": 0.20,
+        "oversold_calm": 0.24,
+    },
+    "breakout_picks": {
+        "momentum": 0.30, "breakout": 0.26, "volume": 0.18,
+        "trend": 0.16, "execution": 0.10,
+    },
     "regime_profiles": {
         "risk_on": {
             "momentum": 1.12,
@@ -132,6 +418,126 @@ _DEFAULT_WEIGHTS = {
         },
     },
 }
+
+
+STRATEGY_COMBINERS = {
+    "short_term": {
+        "apply_damp": True,
+        "terms": (
+            {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
+            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
+            {"component": "industry_score", "weight_key": "industry"},
+            {"component": "hot_score", "weight_key": "hot"},
+            {"component": "sentiment_score", "weight_key": "sentiment"},
+        ),
+    },
+    "long_term": {
+        "apply_damp": True,
+        "terms": (
+            {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
+            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
+            {"component": "industry_score", "weight_key": "industry"},
+            {"component": "sentiment_score", "weight_key": "sentiment"},
+            {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
+            {"component": "hot_score", "weight_key": "hot"},
+        ),
+    },
+    "tomorrow_picks": {
+        "apply_damp": True,
+        "terms": (
+            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
+            {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
+            {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
+            {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
+        ),
+    },
+    "swing_picks": {
+        "apply_damp": True,
+        "terms": (
+            {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
+            {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
+            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
+            {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
+            {"component": "not_overextended_score", "weight_key": "not_overextended", "regime_key": "quality"},
+        ),
+    },
+    "position_picks": {
+        "apply_damp": True,
+        "terms": (
+            {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
+            {"component": "quality_proxy_score", "weight_key": "quality", "regime_key": "quality"},
+            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
+            {"component": "theme_score", "weight_key": "theme"},
+            {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
+        ),
+    },
+    "tech_potential": {
+        "apply_damp": True,
+        "terms": (
+            {"component": "theme_score", "weight_key": "theme"},
+            {"component": "chokepoint_score", "weight_key": "chokepoint"},
+            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
+            {"component": "early_trend_score", "weight_key": "early_trend", "regime_key": "trend"},
+            {"component": "not_overextended_score", "weight_key": "not_overextended", "regime_key": "quality"},
+            {"component": "volume_score", "weight_key": "volume", "regime_key": "volume"},
+            {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
+        ),
+    },
+    "chokepoint_picks": {
+        "apply_damp": True,
+        "terms": (
+            {"component": "chokepoint_score", "weight_key": "chokepoint"},
+            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
+            {"component": "early_trend_score", "weight_key": "early_trend", "regime_key": "trend"},
+            {"component": "not_overextended_score", "weight_key": "not_overextended", "regime_key": "quality"},
+            {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
+            {"component": "volume_score", "weight_key": "volume", "regime_key": "volume"},
+        ),
+    },
+    "reversal_picks": {
+        "apply_damp": False,
+        "terms": (
+            {"component": "oversold_calm_score", "weight_key": "oversold_calm"},
+            {"component": "calm_turnover_score", "weight_key": "calm_turnover", "regime_key": "quality"},
+            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
+        ),
+    },
+    "smallcap_value_picks": {
+        "apply_damp": True,
+        "terms": (
+            {"component": "smallcap_score", "weight_key": "smallcap"},
+            {"component": "value_score", "weight_key": "value"},
+            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
+            {"component": "oversold_calm_score", "weight_key": "oversold_calm", "regime_key": "lowvol"},
+        ),
+    },
+    "breakout_picks": {
+        "apply_damp": True,
+        "terms": (
+            {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
+            {"component": "breakout_strength", "weight_key": "breakout", "regime_key": "breakout"},
+            {"component": "volume_break_score", "weight_key": "volume", "regime_key": "volume"},
+            {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
+            {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
+        ),
+    },
+}
+
+
+COMPONENT_FACTOR_KEYS = {
+    "momentum_score": "momentum_score",
+    "trend_score": "trend_score",
+    "liquidity_score": "liquidity_score",
+    "execution_score": "execution_score",
+    "quality_proxy_score": "fundamental_quality_score",
+    "value_score": "fundamental_value_score",
+    "fundamental_quality_score": "fundamental_quality_score",
+    "fundamental_value_score": "fundamental_value_score",
+    "earnings_surprise_score": "earnings_surprise_score",
+    "rating_revision_score": "rating_revision_score",
+}
+
+_FACTOR_IC_CACHE = {"mtime": None, "payload": {}}
 
 # verdict 评级阶梯阈值（参考 UZI 的 80/65/50/35 分档）。
 _DEFAULT_THRESHOLDS = {
@@ -190,12 +596,15 @@ PROFILE_COMPONENTS = (
     ("momentum_score", "动量"),
     ("trend_score", "趋势"),
     ("liquidity_score", "流动性"),
-    ("execution_score", "可执行性"),
+    ("execution_score", "买入安全"),
     ("theme_score", "主题"),
     ("sentiment_score", "舆情"),
     ("industry_score", "行业"),
     ("not_overextended_score", "不过热"),
     ("quality_proxy_score", "质量代理"),
+    ("fundamental_quality_score", "基本面质量"),
+    ("fundamental_value_score", "估值"),
+    ("earnings_surprise_score", "业绩超预期"),
     ("early_trend_score", "启动趋势"),
 )
 
@@ -277,8 +686,11 @@ def _is_buyable_gain(row: pd.Series) -> bool:
     return pct <= config.MAX_BUYABLE_GAIN_MAIN
 
 
-def build_market_regime(df: pd.DataFrame) -> Dict[str, object]:
-    if df.empty:
+def build_market_regime(df: pd.DataFrame, breadth_source: pd.DataFrame = None) -> Dict[str, object]:
+    breadth_df = _market_regime_breadth_frame(breadth_source) if breadth_source is not None else df
+    if breadth_df.empty:
+        breadth_df = df
+    if df.empty and breadth_df.empty:
         return {
             "level": "unknown",
             "label": "未知",
@@ -293,7 +705,7 @@ def build_market_regime(df: pd.DataFrame) -> Dict[str, object]:
             "advice": "暂无足够样本判断当前盘面环境。",
         }
 
-    pct_values = finite_series(df, "pct_chg")
+    pct_values = finite_series(breadth_df, "pct_chg")
     amplitude_values = finite_series(df, "amplitude")
     turnover_values = finite_series(df, "turnover")
     breadth_pct = round(float((pct_values > 0).mean() * 100), 2) if len(pct_values) else 0.0
@@ -325,7 +737,7 @@ def build_market_regime(df: pd.DataFrame) -> Dict[str, object]:
 
     leaders: List[Dict[str, object]] = []
     for market in ("main", "chinext", "star"):
-        subset = df[df["market"] == market]
+        subset = breadth_df[breadth_df["market"] == market]
         if subset.empty:
             continue
         market_pct = finite_series(subset, "pct_chg")
@@ -353,6 +765,29 @@ def build_market_regime(df: pd.DataFrame) -> Dict[str, object]:
         "leaders": leaders[:3],
         "advice": advice,
     }
+
+
+def _market_regime_breadth_frame(quotes: pd.DataFrame) -> pd.DataFrame:
+    if quotes is None or quotes.empty:
+        return pd.DataFrame()
+    df = quotes.copy()
+    if "code" not in df.columns:
+        return pd.DataFrame()
+    if "name" not in df.columns:
+        df["name"] = ""
+    df["code"] = df["code"].map(normalize_code)
+    if "market" not in df.columns:
+        df["market"] = df["code"].map(market_type)
+    if "price" not in df.columns:
+        df["price"] = 0.0
+    if "pct_chg" not in df.columns:
+        df["pct_chg"] = 0.0
+    df["price"] = df["price"].map(coerce_number)
+    df["pct_chg"] = df["pct_chg"].map(coerce_number)
+    mask = df["code"].map(is_supported_code)
+    mask &= ~df["name"].astype(str).str.contains("ST|退", case=False, regex=True, na=False)
+    mask &= df["price"] > 0
+    return df.loc[mask].reset_index(drop=True)
 
 
 def _stddev(values: List[float]) -> float:
@@ -393,6 +828,14 @@ def _strategy_reliability(strategy_metrics: Dict[str, Dict[str, object]]) -> Dic
         real_samples = int(metrics.get("real_sample_count") or 0)
         replay_samples = int(metrics.get("replay_sample_count") or 0)
         total_samples = int(metrics.get("sample_count") or 0)
+        health = strategy_status(metrics)
+        health_state = health.get("state")
+        health_weight = 1.0
+        if health_state == "retired":
+            reliability[name] = 0.0
+            continue
+        if health_state == "probation":
+            health_weight = max(0.0, min(1.0, coerce_number(getattr(config, "STRATEGY_DECAY_SOFT_WEIGHT", 0.5), 0.5)))
         if real_samples >= 10:
             win_rate = metrics.get("real_win_rate_primary_net")
             avg_return = metrics.get("real_avg_primary_return_net")
@@ -410,7 +853,7 @@ def _strategy_reliability(strategy_metrics: Dict[str, Dict[str, object]]) -> Dic
         win_component = (coerce_number(win_rate) - 50.0) / 10.0 * 0.04
         return_component = coerce_number(avg_return) * 0.015
         multiplier = 1.0 + (win_component + return_component) * confidence
-        reliability[name] = max(0.8, min(1.2, multiplier))
+        reliability[name] = max(0.0, min(1.2, multiplier * health_weight))
     return reliability
 
 
@@ -434,6 +877,8 @@ def build_strategy_consensus(
             continue
         strategy_label = STRATEGY_LABELS.get(strategy_name, strategy_name)
         weight = reliability.get(strategy_name, 1.0)
+        if weight <= 0:
+            continue
         for row in rows[:top_n]:
             code = str(row.get("code") or "").strip()
             if not code:
@@ -799,23 +1244,30 @@ def score_tomorrow_candidates(
             ) * 0.20
         )
         execution_score = _execution_score(row)
-        risk_penalty = _tomorrow_risk_penalty(row)
+        risk_penalty_parts = _tomorrow_risk_penalty_parts(row)
+        risk_penalty = _sum_penalty(risk_penalty_parts)
         regime_bonus = _market_regime_adjustment(row, market_regime, "tomorrow")
         regime_profile = _regime_weight_profile(market_regime, ["liquidity", "momentum", "trend", "quality"])
-        final_score = (
-            _regime_component(liquidity_score, "liquidity", market_regime) * 0.30
-            + _regime_component(momentum_score, "momentum", market_regime) * 0.28
-            + _regime_component(trend_score, "trend", market_regime) * 0.20
-            + _regime_component(execution_score, "quality", market_regime) * 0.22
-            - risk_penalty
-            + regime_bonus
+        combined = _combine_details(
+            {
+                "liquidity_score": liquidity_score,
+                "momentum_score": momentum_score,
+                "trend_score": trend_score,
+                "execution_score": execution_score,
+                "risk_penalty": risk_penalty,
+                "regime_bonus": regime_bonus,
+            },
+            "tomorrow_picks",
+            market_regime=market_regime,
+            row=row,
         )
-        final_score = _apply_overheat_damp(final_score, row)
+        final_score = combined["score"]
         item = {
                 "code": row["code"],
                 "name": str(row.get("name", "")),
                 "market": row.get("market", "main"),
                 "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+                "industry": str(row.get("industry", "") or ""),
                 "price": round(coerce_number(row.get("price")), 3),
                 "pct_chg": round(pct_chg, 2),
                 "speed": round(coerce_number(row.get("speed")), 2),
@@ -831,8 +1283,12 @@ def score_tomorrow_candidates(
                 "trend_score": round(trend_score, 2),
                 "execution_score": round(execution_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
+                "risk_penalty_parts": risk_penalty_parts,
                 "regime_bonus": round(regime_bonus, 2),
                 "regime_weight_profile": regime_profile,
+                "base_score": round(combined["base_score"], 2),
+                "raw_score": round(combined["raw_score"], 2),
+                "overheat_damp": round(combined["overheat_damp"], 4),
                 "score": round(max(0.0, min(100.0, final_score)), 2),
                 "reasons": _build_tomorrow_reasons(
                     row,
@@ -868,7 +1324,7 @@ def score_tomorrow_candidates(
         "analysis_window": "14:30",
         "strategy_version": "tomorrow_picks_v2",
         "strategy_label": "明天预测",
-        "strategy": "14:30 明天预测：剔除涨停/近涨停，综合成交额、换手、量比、当日强度、中期趋势和执行性风险",
+        "strategy": "14:30 明天预测：剔除涨停/近涨停，综合成交额、换手、量比、当日强度、中期趋势和买入安全风险",
         "policy": _tomorrow_policy(),
     }
 
@@ -917,27 +1373,36 @@ def score_tech_potential_candidates(
         valuation_proxy_score = _not_overextended_score(row)
         execution_score = _execution_score(row)
         chokepoint_score, chokepoint_hits = _chokepoint_score(row)
-        risk_penalty = _tech_potential_risk_penalty(row)
+        risk_penalty_parts = _tech_potential_risk_penalty_parts(row)
+        risk_penalty = _sum_penalty(risk_penalty_parts)
         regime_bonus = _market_regime_adjustment(row, market_regime, "tech")
         regime_profile = _regime_weight_profile(market_regime, ["liquidity", "trend", "volume", "quality"])
-        final_score = (
-            theme_score * 0.24
-            + chokepoint_score * 0.10
-            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.18
-            + _regime_component(early_trend_score, "trend", market_regime) * 0.20
-            + _regime_component(valuation_proxy_score, "quality", market_regime) * 0.14
-            + _regime_component(volume_score, "volume", market_regime) * 0.08
-            + _regime_component(execution_score, "quality", market_regime) * 0.06
-            - risk_penalty
-            + regime_bonus
+        combined = _combine_details(
+            {
+                "theme_score": theme_score,
+                "chokepoint_score": chokepoint_score,
+                "liquidity_score": liquidity_score,
+                "early_trend_score": early_trend_score,
+                "not_overextended_score": valuation_proxy_score,
+                "volume_score": volume_score,
+                "execution_score": execution_score,
+                "risk_penalty": risk_penalty,
+                "regime_bonus": regime_bonus,
+            },
+            "tech_potential",
+            market_regime=market_regime,
+            row=row,
         )
-        final_score = _apply_overheat_damp(final_score, row)
+        final_score = combined["score"]
         item = {
                 "code": row["code"],
                 "name": str(row.get("name", "")),
                 "market": row.get("market", "main"),
                 "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+                "industry": str(row.get("industry", "") or ""),
                 "theme": theme,
+                "market_cap": round(coerce_number(row.get("market_cap")), 2),
+                "float_market_cap": round(coerce_number(row.get("float_market_cap")), 2),
                 "price": round(coerce_number(row.get("price")), 3),
                 "pct_chg": round(pct_chg, 2),
                 "volume_ratio": round(volume_ratio, 2),
@@ -952,10 +1417,15 @@ def score_tech_potential_candidates(
                 "liquidity_score": round(liquidity_score, 2),
                 "early_trend_score": round(early_trend_score, 2),
                 "not_overextended_score": round(valuation_proxy_score, 2),
+                "volume_score": round(volume_score, 2),
                 "execution_score": round(execution_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
+                "risk_penalty_parts": risk_penalty_parts,
                 "regime_bonus": round(regime_bonus, 2),
                 "regime_weight_profile": regime_profile,
+                "base_score": round(combined["base_score"], 2),
+                "raw_score": round(combined["raw_score"], 2),
+                "overheat_damp": round(combined["overheat_damp"], 4),
                 "score": round(max(0.0, min(100.0, final_score)), 2),
                 "reasons": _build_tech_potential_reasons(
                     row,
@@ -989,7 +1459,7 @@ def score_tech_potential_candidates(
         "matched_count": len(rows),
         "top_n": top_n,
         "market_filter": market_filter,
-        "strategy": "科技潜力：匹配前沿科技方向，排除涨幅透支，偏好刚启动、流动性足、可执行的潜力股",
+        "strategy": "科技潜力：匹配前沿科技方向，排除涨幅透支，偏好刚启动、流动性足、买入安全较好的潜力股",
     }
 
 
@@ -1044,27 +1514,36 @@ def score_chokepoint_candidates(
         volume_score = _balanced_volume_score(volume_ratio)
         not_overextended_score = _not_overextended_score(row)
         execution_score = _execution_score(row)
-        risk_penalty = _tech_potential_risk_penalty(row)
+        risk_penalty_parts = _tech_potential_risk_penalty_parts(row)
+        risk_penalty = _sum_penalty(risk_penalty_parts)
         regime_bonus = _market_regime_adjustment(row, market_regime, "tech")
         regime_profile = _regime_weight_profile(market_regime, ["liquidity", "trend", "volume", "quality"])
-        final_score = (
-            chokepoint_score * 0.34
-            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.20
-            + _regime_component(early_trend_score, "trend", market_regime) * 0.18
-            + _regime_component(not_overextended_score, "quality", market_regime) * 0.14
-            + _regime_component(execution_score, "quality", market_regime) * 0.08
-            + _regime_component(volume_score, "volume", market_regime) * 0.06
-            - risk_penalty
-            + regime_bonus
+        combined = _combine_details(
+            {
+                "chokepoint_score": chokepoint_score,
+                "liquidity_score": liquidity_score,
+                "early_trend_score": early_trend_score,
+                "not_overextended_score": not_overextended_score,
+                "execution_score": execution_score,
+                "volume_score": volume_score,
+                "risk_penalty": risk_penalty,
+                "regime_bonus": regime_bonus,
+            },
+            "chokepoint_picks",
+            market_regime=market_regime,
+            row=row,
         )
-        final_score = _apply_overheat_damp(final_score, row)
+        final_score = combined["score"]
         item = {
                 "code": row["code"],
                 "name": str(row.get("name", "")),
                 "market": row.get("market", "main"),
                 "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+                "industry": str(row.get("industry", "") or ""),
                 "theme": chain_segment,
                 "chain_segment": chain_segment,
+                "market_cap": round(coerce_number(row.get("market_cap")), 2),
+                "float_market_cap": round(coerce_number(row.get("float_market_cap")), 2),
                 "price": round(coerce_number(row.get("price")), 3),
                 "pct_chg": round(pct_chg, 2),
                 "volume_ratio": round(volume_ratio, 2),
@@ -1078,10 +1557,15 @@ def score_chokepoint_candidates(
                 "liquidity_score": round(liquidity_score, 2),
                 "early_trend_score": round(early_trend_score, 2),
                 "not_overextended_score": round(not_overextended_score, 2),
+                "volume_score": round(volume_score, 2),
                 "execution_score": round(execution_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
+                "risk_penalty_parts": risk_penalty_parts,
                 "regime_bonus": round(regime_bonus, 2),
                 "regime_weight_profile": regime_profile,
+                "base_score": round(combined["base_score"], 2),
+                "raw_score": round(combined["raw_score"], 2),
+                "overheat_damp": round(combined["overheat_damp"], 4),
                 "score": round(max(0.0, min(100.0, final_score)), 2),
                 "reasons": [
                     "卡脖子环节：{}".format(chain_segment),
@@ -1205,20 +1689,26 @@ def score_swing_candidates(
             + percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.38
         )
         execution_score = _execution_score(row)
-        risk_penalty = _swing_risk_penalty(row)
+        risk_penalty_parts = _swing_risk_penalty_parts(row)
+        risk_penalty = _sum_penalty(risk_penalty_parts)
         regime_bonus = _market_regime_adjustment(row, market_regime, "swing")
         not_overextended_score = _not_overextended_score(row)
         regime_profile = _regime_weight_profile(market_regime, ["momentum", "trend", "liquidity", "quality"])
-        final_score = (
-            _regime_component(momentum_score, "momentum", market_regime) * 0.34
-            + _regime_component(trend_score, "trend", market_regime) * 0.26
-            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.20
-            + _regime_component(execution_score, "quality", market_regime) * 0.12
-            + _regime_component(not_overextended_score, "quality", market_regime) * 0.08
-            - risk_penalty
-            + regime_bonus
+        combined = _combine_details(
+            {
+                "momentum_score": momentum_score,
+                "trend_score": trend_score,
+                "liquidity_score": liquidity_score,
+                "execution_score": execution_score,
+                "not_overextended_score": not_overextended_score,
+                "risk_penalty": risk_penalty,
+                "regime_bonus": regime_bonus,
+            },
+            "swing_picks",
+            market_regime=market_regime,
+            row=row,
         )
-        final_score = _apply_overheat_damp(final_score, row)
+        final_score = combined["score"]
         item = _horizon_row(row, {
             "ret_5d": ret_5d,
             "ret_10d": ret_10d,
@@ -1234,8 +1724,12 @@ def score_swing_candidates(
             "execution_score": execution_score,
             "not_overextended_score": not_overextended_score,
             "risk_penalty": risk_penalty,
+            "risk_penalty_parts": risk_penalty_parts,
             "regime_bonus": regime_bonus,
             "regime_weight_profile": regime_profile,
+            "base_score": combined["base_score"],
+            "raw_score": combined["raw_score"],
+            "overheat_damp": combined["overheat_damp"],
             "score": final_score,
             "horizon": "swing",
             "reasons": _build_swing_reasons(row, momentum_score, trend_score, liquidity_score, risk_penalty),
@@ -1305,23 +1799,41 @@ def score_position_candidates(
             + _balanced_volume_score(coerce_number(row.get("volume_ratio"))) * 0.15
             + _optional_factor_score(vol_amount_5d, context["vol_amount_5d_values"], fallback=coerce_number(row.get("volume_ratio")), fallback_values=context["volume_ratio_values"]) * 0.10
         )
+        fundamental_blend = _weighted_score(
+            (
+                (row.get("fundamental_quality_score"), 0.45),
+                (row.get("fundamental_value_score"), 0.30),
+                (row.get("earnings_surprise_score"), 0.15),
+                (row.get("rating_revision_score"), 0.10),
+            ),
+            fallback=0.0,
+        )
+        if fundamental_blend > 0:
+            quality_proxy_score = quality_proxy_score * 0.78 + fundamental_blend * 0.22
         liquidity_score = (
             percentile_score(turnover, context["turnover_values"]) * 0.68
             + percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.32
         )
-        risk_penalty = _position_risk_penalty(row)
+        risk_penalty_parts = _position_risk_penalty_parts(row)
+        risk_penalty = _sum_penalty(risk_penalty_parts)
         regime_bonus = _market_regime_adjustment(row, market_regime, "position")
         execution_score = _execution_score(row)
         regime_profile = _regime_weight_profile(market_regime, ["trend", "quality", "liquidity"])
-        final_score = (
-            _regime_component(trend_score, "trend", market_regime) * 0.34
-            + _regime_component(quality_proxy_score, "quality", market_regime) * 0.26
-            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.20
-            + theme_score * 0.12
-            + _regime_component(execution_score, "quality", market_regime) * 0.08
-            - risk_penalty
-            + regime_bonus
+        combined = _combine_details(
+            {
+                "trend_score": trend_score,
+                "quality_proxy_score": quality_proxy_score,
+                "liquidity_score": liquidity_score,
+                "theme_score": theme_score,
+                "execution_score": execution_score,
+                "risk_penalty": risk_penalty,
+                "regime_bonus": regime_bonus,
+            },
+            "position_picks",
+            market_regime=market_regime,
+            row=row,
         )
+        final_score = combined["score"]
         item = _horizon_row(row, {
             "theme": theme,
             "theme_score": theme_score,
@@ -1332,11 +1844,19 @@ def score_position_candidates(
             "volatility_20d": volatility_20d,
             "trend_score": trend_score,
             "quality_proxy_score": quality_proxy_score,
+            "fundamental_quality_score": coerce_number(row.get("fundamental_quality_score")),
+            "fundamental_value_score": coerce_number(row.get("fundamental_value_score")),
+            "earnings_surprise_score": coerce_number(row.get("earnings_surprise_score")),
+            "rating_revision_score": coerce_number(row.get("rating_revision_score")),
             "liquidity_score": liquidity_score,
             "execution_score": execution_score,
             "risk_penalty": risk_penalty,
+            "risk_penalty_parts": risk_penalty_parts,
             "regime_bonus": regime_bonus,
             "regime_weight_profile": regime_profile,
+            "base_score": combined["base_score"],
+            "raw_score": combined["raw_score"],
+            "overheat_damp": combined["overheat_damp"],
             "score": final_score,
             "horizon": "position",
             "reasons": _build_position_reasons(row, theme, trend_score, quality_proxy_score, liquidity_score, risk_penalty),
@@ -1353,8 +1873,8 @@ def score_position_candidates(
     for rank, row in enumerate(rows[:top_n], start=1):
         row["rank"] = rank
     meta = _horizon_meta(len(rows[:top_n]), market_filter, len(df), "position_1_3m_v1", "中长期 1-3 月")
-    meta["strategy"] = "中长期 1-3 月：技术趋势版，偏好中期趋势向上、波动可控、涨幅未透支、流动性充足和科技/先进制造方向"
-    meta["limitation"] = "当前未接入财务、估值和业绩数据，不能视为基本面价值策略。"
+    meta["strategy"] = "中长期 1-3 月：中期趋势 + 可选基本面质量/价值增强，偏好趋势向上、波动可控、涨幅未透支、流动性充足"
+    meta["limitation"] = "未接入财务时仅用量价代理；基本面因子默认关闭，开启后仍需真实样本和 IC 验证，不等同于财务投资建议。"
     return rows[:top_n], meta
 
 
@@ -1395,25 +1915,35 @@ def score_reversal_candidates(
         calm_turnover_score = percentile_score(turnover_rate, context["turnover_rate_values"], higher_is_better=False)
         liquidity_score = percentile_score(turnover, context["turnover_values"])
         not_overextended = _not_overextended_score(row)
-        risk_penalty = _reversal_risk_penalty(row)
+        oversold_calm_score = _composite_score([reversal_score, lowvol_score, not_overextended])
+        risk_penalty_parts = _reversal_risk_penalty_parts(row)
+        risk_penalty = _sum_penalty(risk_penalty_parts)
         regime_bonus = _market_regime_adjustment(row, market_regime, "long")
         regime_profile = _regime_weight_profile(market_regime, ["lowvol", "quality", "liquidity"])
-        final_score = (
-            reversal_score * 0.40
-            + _regime_component(lowvol_score, "lowvol", market_regime) * 0.26
-            + _regime_component(calm_turnover_score, "quality", market_regime) * 0.16
-            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.12
-            + _regime_component(not_overextended, "quality", market_regime) * 0.06
-            - risk_penalty
-            + regime_bonus
+        combined = _combine_details(
+            {
+                "oversold_calm_score": oversold_calm_score,
+                "calm_turnover_score": calm_turnover_score,
+                "liquidity_score": liquidity_score,
+                "risk_penalty": risk_penalty,
+                "regime_bonus": regime_bonus,
+            },
+            "reversal_picks",
+            market_regime=market_regime,
+            row=row,
         )
+        final_score = combined["score"]
         item = {
             "code": row["code"],
             "name": str(row.get("name", "")),
             "market": row.get("market", "main"),
             "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+            "industry": str(row.get("industry", "") or ""),
+            "market_cap": round(coerce_number(row.get("market_cap")), 2),
+            "float_market_cap": round(coerce_number(row.get("float_market_cap")), 2),
             "price": round(coerce_number(row.get("price")), 3),
             "pct_chg": round(coerce_number(row.get("pct_chg")), 2),
+            "volume_ratio": round(coerce_number(row.get("volume_ratio")), 2),
             "turnover": round(turnover, 2),
             "turnover_rate": round(turnover_rate, 2),
             "sixty_day_pct": round(sixty_day_pct, 2),
@@ -1422,16 +1952,21 @@ def score_reversal_candidates(
             "volatility_20d": round(volatility_20d, 2),
             "reversal_score": round(reversal_score, 2),
             "lowvol_score": round(lowvol_score, 2),
+            "oversold_calm_score": round(oversold_calm_score, 2),
             "calm_turnover_score": round(calm_turnover_score, 2),
             "liquidity_score": round(liquidity_score, 2),
             "not_overextended_score": round(not_overextended, 2),
             "risk_penalty": round(risk_penalty, 2),
+            "risk_penalty_parts": risk_penalty_parts,
             "regime_bonus": round(regime_bonus, 2),
             "regime_weight_profile": regime_profile,
+            "base_score": round(combined["base_score"], 2),
+            "raw_score": round(combined["raw_score"], 2),
+            "overheat_damp": round(combined["overheat_damp"], 4),
             "score": round(max(0.0, min(100.0, final_score)), 2),
             "reasons": [
-                "反转分 {:.0f}（近20日跌幅越大越靠前）".format(reversal_score),
-                "低波分 {:.0f}、换手不过热分 {:.0f}".format(lowvol_score, calm_turnover_score),
+                "超跌冷静复合分 {:.0f}（反转/低波/不过热）".format(oversold_calm_score),
+                "换手不过热分 {:.0f}、流动性分 {:.0f}".format(calm_turnover_score, liquidity_score),
             ],
         }
         rows.append(
@@ -1447,6 +1982,7 @@ def score_reversal_candidates(
     meta = _basic_meta(top_n, market_filter, "reversal_v1")
     meta["candidate_count"] = len(df)
     meta["matched_count"] = len(rows)
+    meta["factor_correlation"] = _reversal_factor_correlation(context)
     meta["strategy"] = "反转低波：A股短线反转+低波动+高换手回避，挖掘超跌且不躁动的标的"
     return rows[:top_n], meta
 
@@ -1491,26 +2027,36 @@ def score_smallcap_value_candidates(
             fallback=coerce_number(row.get("amplitude")), fallback_values=context["amplitude_values"],
         )
         not_overextended = _not_overextended_score(row)
-        risk_penalty = _position_risk_penalty(row)
+        oversold_calm_score = _composite_score([lowvol_score, not_overextended])
+        risk_penalty_parts = _position_risk_penalty_parts(row)
+        risk_penalty = _sum_penalty(risk_penalty_parts)
         # 市场偏防守时小市值整体降权（尾风险最大的时候）。
         regime_bonus = _market_regime_adjustment(row, market_regime, "position")
         regime_profile = _regime_weight_profile(market_regime, ["liquidity", "lowvol", "quality"])
-        final_score = (
-            smallcap_score * 0.34
-            + value_score * 0.22
-            + _regime_component(liquidity_score, "liquidity", market_regime) * 0.20
-            + _regime_component(lowvol_score, "lowvol", market_regime) * 0.12
-            + _regime_component(not_overextended, "quality", market_regime) * 0.12
-            - risk_penalty
-            + regime_bonus
+        combined = _combine_details(
+            {
+                "smallcap_score": smallcap_score,
+                "value_score": value_score,
+                "liquidity_score": liquidity_score,
+                "oversold_calm_score": oversold_calm_score,
+                "risk_penalty": risk_penalty,
+                "regime_bonus": regime_bonus,
+            },
+            "smallcap_value_picks",
+            market_regime=market_regime,
+            row=row,
         )
+        final_score = combined["score"]
         item = {
             "code": row["code"],
             "name": str(row.get("name", "")),
             "market": row.get("market", "main"),
             "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+            "industry": str(row.get("industry", "") or ""),
+            "market_cap": round(coerce_number(row.get("market_cap")), 2),
             "price": round(coerce_number(row.get("price")), 3),
             "pct_chg": round(coerce_number(row.get("pct_chg")), 2),
+            "volume_ratio": round(coerce_number(row.get("volume_ratio")), 2),
             "turnover": round(turnover, 2),
             "turnover_rate": round(coerce_number(row.get("turnover_rate")), 2),
             "float_market_cap": round(float_cap, 2),
@@ -1521,14 +2067,20 @@ def score_smallcap_value_candidates(
             "smallcap_score": round(smallcap_score, 2),
             "value_score": round(value_score, 2),
             "liquidity_score": round(liquidity_score, 2),
+            "lowvol_score": round(lowvol_score, 2),
             "not_overextended_score": round(not_overextended, 2),
+            "oversold_calm_score": round(oversold_calm_score, 2),
             "risk_penalty": round(risk_penalty, 2),
+            "risk_penalty_parts": risk_penalty_parts,
             "regime_bonus": round(regime_bonus, 2),
             "regime_weight_profile": regime_profile,
+            "base_score": round(combined["base_score"], 2),
+            "raw_score": round(combined["raw_score"], 2),
+            "overheat_damp": round(combined["overheat_damp"], 4),
             "score": round(max(0.0, min(100.0, final_score)), 2),
             "reasons": [
                 "流通市值 {:.1f} 亿、PE {:.1f}、PB {:.2f}".format(float_cap / 1e8, pe, pb),
-                "小市值分 {:.0f}、价值分 {:.0f}".format(smallcap_score, value_score),
+                "小市值分 {:.0f}、价值分 {:.0f}、稳定分 {:.0f}".format(smallcap_score, value_score, oversold_calm_score),
             ],
         }
         rows.append(
@@ -1562,19 +2114,30 @@ def score_breakout_candidates(
         return [], _basic_meta(top_n, market_filter, "breakout_v1")
 
     context = _score_context(df, {})
+    history_factor_available = any(
+        finite_series(df, column).abs().sum() > 0
+        for column in ("ret_20d", "ma5_gap", "ma20_gap", "vol_ma5_ratio", "volatility_20d")
+    )
+    has_history_breakout_signal = bool(
+        finite_series(df, "breakout_20d").abs().sum() > 0
+        or finite_series(df, "ma_bull_aligned").abs().sum() > 0
+    )
     rows: List[Dict[str, object]] = []
     for _, row in df.iterrows():
         breakout_20d = coerce_number(row.get("breakout_20d"))
         ma_bull = coerce_number(row.get("ma_bull_aligned"))
+        row_history_ready = _row_history_factor_ready(row)
         vol_ma5_ratio = coerce_number(row.get("vol_ma5_ratio"))
-        # 预过滤：需多头排列或创20日新高之一。
-        if breakout_20d < 0.5 and ma_bull < 0.5:
-            continue
         pct_chg = coerce_number(row.get("pct_chg"))
         speed = _row_speed(row)
         volume_ratio = coerce_number(row.get("volume_ratio"))
         turnover = coerce_number(row.get("turnover"))
         sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+        fallback_breakout = False
+        if breakout_20d < 0.5 and ma_bull < 0.5:
+            fallback_breakout = _realtime_breakout_proxy(row)
+            if not fallback_breakout:
+                continue
 
         momentum_score = (
             percentile_score(pct_chg, context["pct_values"]) * 0.5
@@ -1586,30 +2149,47 @@ def score_breakout_candidates(
         )
         # 突破强度：多头排列 + 创新高各自加分。
         breakout_strength = 50.0 + ma_bull * 25.0 + breakout_20d * 25.0
+        if fallback_breakout:
+            breakout_strength = max(
+                breakout_strength,
+                54.0
+                + min(18.0, max(0.0, pct_chg) * 2.2)
+                + min(14.0, max(0.0, volume_ratio - 1.0) * 8.0)
+                + min(10.0, max(0.0, sixty_day_pct) * 0.22),
+            )
         # 量能突破：vol_ma5_ratio>=1.5 加分（history 关时回退量比）。
         if vol_ma5_ratio > 0:
             volume_break = min(100.0, 40.0 + max(0.0, vol_ma5_ratio - 1.0) * 40.0)
         else:
             volume_break = _balanced_volume_score(volume_ratio)
         execution_score = _execution_score(row)
-        risk_penalty = _tomorrow_risk_penalty(row)
+        risk_penalty_parts = _tomorrow_risk_penalty_parts(row)
+        risk_penalty = _sum_penalty(risk_penalty_parts)
         regime_bonus = _market_regime_adjustment(row, market_regime, "swing")
         regime_profile = _regime_weight_profile(market_regime, ["momentum", "breakout", "volume", "trend", "quality"])
-        final_score = (
-            _regime_component(momentum_score, "momentum", market_regime) * 0.30
-            + _regime_component(breakout_strength, "breakout", market_regime) * 0.26
-            + _regime_component(volume_break, "volume", market_regime) * 0.18
-            + _regime_component(trend_score, "trend", market_regime) * 0.16
-            + _regime_component(execution_score, "quality", market_regime) * 0.10
-            - risk_penalty
-            + regime_bonus
+        combined = _combine_details(
+            {
+                "momentum_score": momentum_score,
+                "breakout_strength": breakout_strength,
+                "volume_break_score": volume_break,
+                "trend_score": trend_score,
+                "execution_score": execution_score,
+                "risk_penalty": risk_penalty,
+                "regime_bonus": regime_bonus,
+            },
+            "breakout_picks",
+            market_regime=market_regime,
+            row=row,
         )
-        final_score = _apply_overheat_damp(final_score, row)
+        final_score = combined["score"]
         item = {
             "code": row["code"],
             "name": str(row.get("name", "")),
             "market": row.get("market", "main"),
             "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+            "industry": str(row.get("industry", "") or ""),
+            "market_cap": round(coerce_number(row.get("market_cap")), 2),
+            "float_market_cap": round(coerce_number(row.get("float_market_cap")), 2),
             "price": round(coerce_number(row.get("price")), 3),
             "pct_chg": round(pct_chg, 2),
             "volume_ratio": round(volume_ratio, 2),
@@ -1619,6 +2199,8 @@ def score_breakout_candidates(
             "ytd_pct": round(coerce_number(row.get("ytd_pct")), 2),
             "breakout_20d": bool(breakout_20d),
             "ma_bull_aligned": bool(ma_bull),
+            "breakout_fallback": bool(fallback_breakout),
+            "history_factor_ready": bool(row_history_ready),
             "vol_ma5_ratio": round(vol_ma5_ratio, 2),
             "momentum_score": round(momentum_score, 2),
             "breakout_strength": round(breakout_strength, 2),
@@ -1626,11 +2208,16 @@ def score_breakout_candidates(
             "trend_score": round(trend_score, 2),
             "execution_score": round(execution_score, 2),
             "risk_penalty": round(risk_penalty, 2),
+            "risk_penalty_parts": risk_penalty_parts,
             "regime_bonus": round(regime_bonus, 2),
             "regime_weight_profile": regime_profile,
+            "base_score": round(combined["base_score"], 2),
+            "raw_score": round(combined["raw_score"], 2),
+            "overheat_damp": round(combined["overheat_damp"], 4),
             "score": round(max(0.0, min(100.0, final_score)), 2),
             "reasons": [
-                "{}{}".format("均线多头排列 " if ma_bull >= 0.5 else "", "创20日新高" if breakout_20d >= 0.5 else "").strip() or "趋势确认",
+                "{}{}".format("均线多头排列 " if ma_bull >= 0.5 else "", "创20日新高" if breakout_20d >= 0.5 else "").strip()
+                or ("实时强势兜底" if fallback_breakout else "趋势确认"),
                 "量能突破 {:.1f}×5日均量".format(vol_ma5_ratio) if vol_ma5_ratio > 0 else "量比 {:.1f}".format(volume_ratio),
             ],
         }
@@ -1647,8 +2234,45 @@ def score_breakout_candidates(
     meta = _basic_meta(top_n, market_filter, "breakout_v1")
     meta["candidate_count"] = len(df)
     meta["matched_count"] = len(rows)
+    meta["history_factor_available"] = history_factor_available
+    meta["history_signal_available"] = has_history_breakout_signal
+    meta["fallback_count"] = sum(1 for row in rows if row.get("breakout_fallback"))
+    if not history_factor_available:
+        meta["note"] = "当前未覆盖均线/20日新高历史因子，已使用实时涨幅、涨速、量比和60日趋势做兜底筛选。"
+    elif meta["fallback_count"]:
+        meta["note"] = "部分股票历史突破因子未完整覆盖，已允许实时放量强势票作为兜底候选。"
     meta["strategy"] = "量价突破：均线多头排列或20日新高 + 量能突破，趋势确认型选股"
     return rows[:top_n], meta
+
+
+def _row_history_factor_ready(row: pd.Series) -> bool:
+    if coerce_number(row.get("alphalite_factor_ready")) > 0:
+        return True
+    return any(
+        abs(coerce_number(row.get(column))) > 1e-12
+        for column in ("ret_20d", "ma5_gap", "ma20_gap", "vol_ma5_ratio", "volatility_20d", "breakout_20d", "ma_bull_aligned")
+    )
+
+
+def _realtime_breakout_proxy(row: pd.Series) -> bool:
+    """历史均线因子缺失时的保守兜底：只承认实时强势+放量+流动性充足。"""
+    pct = coerce_number(row.get("pct_chg"))
+    speed = _row_speed(row)
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+    turnover = coerce_number(row.get("turnover"))
+    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+    amplitude = coerce_number(row.get("amplitude"))
+    if turnover < config.MIN_TURNOVER * 2:
+        return False
+    if pct <= 0 or pct > config.MAX_BUYABLE_GAIN_GROWTH:
+        return False
+    if volume_ratio < 1.35:
+        return False
+    if speed < 0.2 and sixty_day_pct < 8:
+        return False
+    if amplitude > 12:
+        return False
+    return True
 
 
 def _basic_meta(top_n: int, market_filter: str, version: str, note: str = "") -> Dict[str, object]:
@@ -1666,21 +2290,25 @@ def _basic_meta(top_n: int, market_filter: str, version: str, note: str = "") ->
 
 
 def _reversal_risk_penalty(row: pd.Series) -> float:
+    return _sum_penalty(_reversal_risk_penalty_parts(row))
+
+
+def _reversal_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
     """反转策略风险：连续大跌+放量下杀（基本面崩坏迹象）扣分，避免接飞刀。"""
-    penalty = 0.0
     ret_20d = coerce_number(row.get("ret_20d"))
     ret_5d = coerce_number(row.get("ret_5d"))
     volume_ratio = coerce_number(row.get("volume_ratio"))
     pct = coerce_number(row.get("pct_chg"))
+    parts = {}
     if ret_20d < -40:
-        penalty += 12  # 20日腰斩级别，可能有实质利空
+        parts["crash_drawdown"] = 12  # 20日腰斩级别，可能有实质利空
     elif ret_20d < -28:
-        penalty += 6
+        parts["crash_drawdown"] = 6
     if ret_5d < -18 and volume_ratio > 2.5:
-        penalty += 8  # 近期放量急杀
+        parts["volume_selloff"] = 8  # 近期放量急杀
     if pct < -6:
-        penalty += 4  # 当日仍在大跌
-    return penalty
+        parts["intraday_drop"] = 4  # 当日仍在大跌
+    return parts
 
 
 def _score_context(df: pd.DataFrame, industry_strength: Dict[str, float]) -> Dict[str, List[float]]:
@@ -1712,13 +2340,36 @@ def _score_context(df: pd.DataFrame, industry_strength: Dict[str, float]) -> Dic
     }
 
 
+def _reversal_factor_correlation(context: Dict[str, List[float]]) -> Dict[str, float]:
+    reversal_proxy = [-coerce_number(value) for value in context.get("ret_20d_values", [])]
+    lowvol_proxy = [-coerce_number(value) for value in context.get("volatility_20d_values", [])]
+    not_extended_proxy = [-coerce_number(value) for value in context.get("sixty_day_values", [])]
+    return {
+        "reversal_lowvol": _safe_corr(reversal_proxy, lowvol_proxy),
+        "reversal_not_extended": _safe_corr(reversal_proxy, not_extended_proxy),
+        "lowvol_not_extended": _safe_corr(lowvol_proxy, not_extended_proxy),
+    }
+
+
+def _safe_corr(left: List[float], right: List[float]) -> float:
+    size = min(len(left), len(right))
+    if size < 2:
+        return 0.0
+    a = pd.Series(left[:size], dtype="float64")
+    b = pd.Series(right[:size], dtype="float64")
+    if a.std() <= 1e-12 or b.std() <= 1e-12:
+        return 0.0
+    value = a.corr(b)
+    return round(coerce_number(value), 4)
+
+
 def _tomorrow_policy() -> Dict[str, object]:
     return {
         "main_max_gain": config.MAX_BUYABLE_GAIN_MAIN,
         "growth_max_gain": config.MAX_BUYABLE_GAIN_GROWTH,
         "min_turnover": config.MIN_TURNOVER,
         "avoid_limit_up": True,
-        "risk_controls": ("高涨幅", "高量比", "高换手", "高振幅", "前期涨幅透支"),
+        "risk_controls": ("高涨幅", "高量比", "高换手", "高振幅", "超涨damp硬门控"),
     }
 
 
@@ -1796,6 +2447,7 @@ def _score_row(
     industry_pct = industry_strength.get(industry, 0.0)
     hot_rank = hot_ranks.get(code)
     sentiment = sentiment_lookup.get(code, {"score": 50.0, "summary": "未拉取到个股舆情"})
+    execution_score = _execution_score(row)
 
     momentum_score = (
         percentile_score(pct_chg, context["pct_values"]) * 0.24
@@ -1838,40 +2490,41 @@ def _score_row(
     )
 
     if horizon == "long":
-        w = WEIGHTS["long_term"]
-        final_score = (
-            _regime_component(trend_score, "trend", market_regime) * w["trend"]
-            + _regime_component(liquidity_score, "liquidity", market_regime) * w["liquidity"]
-            + industry_score * w["industry"]
-            + sentiment_score * w["sentiment"]
-            + _regime_component(momentum_score, "momentum", market_regime) * w["momentum"]
-            + hot_score * w["hot"]
-            + regime_bonus
-        )
-        final_score -= _long_term_risk_penalty(row, sentiment)
+        strategy_name = "long_term"
+        risk_penalty_parts = _long_term_risk_penalty_parts(row, sentiment)
+        risk_penalty = _sum_penalty(risk_penalty_parts)
         reasons = _build_long_term_reasons(row, industry_pct, sentiment, trend_score, liquidity_score)
     else:
-        w = WEIGHTS["short_term"]
-        final_score = (
-            _regime_component(momentum_score, "momentum", market_regime) * w["momentum"]
-            + _regime_component(liquidity_score, "liquidity", market_regime) * w["liquidity"]
-            + industry_score * w["industry"]
-            + hot_score * w["hot"]
-            + sentiment_score * w["sentiment"]
-            + regime_bonus
-        )
+        strategy_name = "short_term"
+        risk_penalty_parts = {}
         # 反转修正（默认关闭）：近期涨幅越高，按 reversal_tilt 比例减分。
         # 依据 A 股短线反转>动量证据；幅度由 calibrate --compare-momentum 回测决定。
-        reversal_tilt = coerce_number(w.get("reversal_tilt"), 0.0)
+        reversal_tilt = coerce_number(WEIGHTS["short_term"].get("reversal_tilt"), 0.0)
         if reversal_tilt > 0:
             recent_gain = coerce_number(row.get("ret_5d"), pct_chg)
-            final_score -= max(0.0, recent_gain) * reversal_tilt
+            risk_penalty_parts["reversal_tilt"] = max(0.0, recent_gain) * reversal_tilt
         if sentiment.get("risk_words"):
-            final_score -= 8
+            risk_penalty_parts["sentiment"] = 8
         if _near_limit_up_risk(row):
-            final_score -= 5
-        final_score = _apply_overheat_damp(final_score, row)
+            risk_penalty_parts["near_limit_up"] = 5
+        risk_penalty = _sum_penalty(risk_penalty_parts)
         reasons = _build_reasons(row, industry_pct, hot_rank, sentiment)
+    combined = _combine_details(
+        {
+            "momentum_score": momentum_score,
+            "liquidity_score": liquidity_score,
+            "trend_score": trend_score,
+            "industry_score": industry_score,
+            "hot_score": hot_score,
+            "sentiment_score": sentiment_score,
+            "risk_penalty": risk_penalty,
+            "regime_bonus": regime_bonus,
+        },
+        strategy_name,
+        market_regime=market_regime,
+        row=row,
+    )
+    final_score = combined["score"]
 
     item = {
         "code": code,
@@ -1899,13 +2552,20 @@ def _score_row(
         "breakout_20d": bool(breakout_20d),
         "volatility_20d": round(volatility_20d, 2),
         "hot_rank": hot_rank,
+        "hot_score": round(hot_score, 2),
         "momentum_score": round(momentum_score, 2),
         "liquidity_score": round(liquidity_score, 2),
         "trend_score": round(trend_score, 2),
+        "execution_score": round(execution_score, 2),
         "industry_score": round(industry_score, 2),
         "sentiment_score": round(sentiment_score, 2),
+        "risk_penalty": round(risk_penalty, 2),
+        "risk_penalty_parts": risk_penalty_parts,
         "regime_bonus": round(regime_bonus, 2),
         "regime_weight_profile": regime_profile,
+        "base_score": round(combined["base_score"], 2),
+        "raw_score": round(combined["raw_score"], 2),
+        "overheat_damp": round(combined["overheat_damp"], 4),
         "score": round(max(0.0, min(100.0, final_score)), 2),
         "sentiment_summary": sentiment.get("summary", "暂无明显舆情信号"),
         "risk_words": sentiment.get("risk_words", []),
@@ -1929,7 +2589,7 @@ def _verdict_tier(score: float, risk_score: float, data_coverage: float) -> Dict
     """把裸 0-100 分映射成 verdict 评级阶梯（参考 UZI/Buffett 的离散评级）。
 
     50-65 的中性带按 risk 细分为 lean_bull / neutral / lean_bear；
-    数据覆盖低于阈值时强制降级到 watch 并标注（A4 数据覆盖硬门控）。
+    历史因子覆盖低于阈值时强制降级到 watch 并标注（A4 因子覆盖硬门控）。
     """
     t = THRESHOLDS["verdict"]
     score = max(0.0, min(100.0, coerce_number(score)))
@@ -1960,9 +2620,9 @@ def _verdict_tier(score: float, risk_score: float, data_coverage: float) -> Dict
 
     note = ""
     if low_coverage and tier in ("strong_buy", "buy"):
-        tier, label, note = "watch", "观察(数据不足)", "数据覆盖不足，已降级"
+        tier, label, note = "watch", "观察(因子不足)", "历史因子覆盖不足，评级降级"
     elif low_coverage:
-        note = "数据覆盖不足"
+        note = "历史因子覆盖不足"
 
     return {
         "tier": tier,
@@ -1984,6 +2644,9 @@ def _attach_signal_explanation(
     chase_risk = _chase_risk(row)
     overextension = _overextension_risk(row)
     failure_reasons = _failure_reasons(row, chase_risk, overextension)
+    event_risk = row_event_risk(row)
+    if event_risk.get("flags"):
+        failure_reasons.extend("事件风险:{}".format(flag.get("label", "")) for flag in event_risk["flags"][:3])
     item.update(
         {
             "strategy_name": strategy_name,
@@ -1992,8 +2655,15 @@ def _attach_signal_explanation(
             "chase_risk": chase_risk,
             "overextension": overextension,
             "failure_reasons": failure_reasons,
+            "event_risk": event_risk,
         }
     )
+    market_cap = coerce_number(row.get("market_cap"), None)
+    if market_cap and market_cap > 0:
+        item["market_cap"] = round(market_cap, 2)
+    float_market_cap = coerce_number(row.get("float_market_cap"), None)
+    if float_market_cap and float_market_cap > 0 and "float_market_cap" not in item:
+        item["float_market_cap"] = round(float_market_cap, 2)
     item["agent_committee"] = _build_agent_committee(item, row)
     profile = _build_serenity_profile(item, row)
     item["serenity_profile"] = profile
@@ -2018,6 +2688,8 @@ def _build_agent_committee(item: Dict[str, object], row: pd.Series) -> Dict[str,
     chase_risk = item.get("chase_risk") or {}
     overextension = item.get("overextension") or {}
     risk_penalty = max(0.0, coerce_number(item.get("risk_penalty")))
+    event_penalty = coerce_number((item.get("event_risk") or {}).get("penalty"))
+    risk_penalty += event_penalty
     regime_bonus = coerce_number(item.get("regime_bonus"))
     risk_words = list(item.get("risk_words") or [])
 
@@ -2212,6 +2884,7 @@ def _build_serenity_profile(item: Dict[str, object], row: pd.Series) -> Dict[str
         coerce_number(chase_risk.get("score")) * 11.0
         + coerce_number(overextension.get("score")) * 10.0
         + max(0.0, coerce_number(item.get("risk_penalty"))) * 2.1
+        + coerce_number((item.get("event_risk") or {}).get("penalty")) * 1.5
         + max(0.0, -regime_bonus) * 4.0
         + max(0.0, agent_risk_score - 62.0) * 0.35,
     )
@@ -2261,6 +2934,9 @@ def _build_serenity_profile(item: Dict[str, object], row: pd.Series) -> Dict[str
     risk_reasons.extend(committee.get("bear_cases", [])[:3])
     if regime_bonus <= -2.5:
         risk_reasons.append("市场状态逆风")
+    event_risk = item.get("event_risk") or {}
+    for flag in event_risk.get("flags", [])[:3]:
+        risk_reasons.append("事件风险:{}".format(flag.get("label", "")))
     if regime_bonus >= 2.5:
         evidence.insert(0, {"label": "市场状态顺风", "score": round(regime_bonus, 2), "level": "positive"})
     if committee.get("final_action_label"):
@@ -2291,11 +2967,10 @@ def _build_serenity_profile(item: Dict[str, object], row: pd.Series) -> Dict[str
 
 
 def _data_coverage(row: pd.Series) -> float:
-    present = 0
-    for column in ALPHALITE_SIGNAL_COLUMNS:
-        if abs(coerce_number(row.get(column))) > 1e-9:
-            present += 1
-    return present / len(ALPHALITE_SIGNAL_COLUMNS)
+    explicit = row.get("alphalite_coverage")
+    if explicit is not None:
+        return max(0.0, min(1.0, coerce_number(explicit)))
+    return 0.0
 
 
 def _unique_strings(values: List[object]) -> List[str]:
@@ -2463,6 +3138,13 @@ def _has_signal(values: List[float]) -> bool:
     return any(abs(coerce_number(value)) > 1e-9 for value in values)
 
 
+def _composite_score(parts: List[float]) -> float:
+    clean = [max(0.0, min(100.0, coerce_number(value))) for value in parts if pd.notna(coerce_number(value))]
+    if not clean:
+        return 50.0
+    return sum(clean) / len(clean)
+
+
 def _near_limit_up_risk(row: pd.Series) -> bool:
     pct = coerce_number(row.get("pct_chg"))
     market = row.get("market")
@@ -2546,6 +3228,123 @@ def _regime_component(score: float, key: str, market_regime: Dict[str, object]) 
     return max(0.0, min(100.0, 50.0 + (value - 50.0) * weight))
 
 
+def _regime_component_from_profile(score: float, key: str, profile: Dict[str, object]) -> float:
+    value = max(0.0, min(100.0, coerce_number(score, 50.0)))
+    weight = coerce_number((profile or {}).get(key), 1.0)
+    weight = max(0.5, min(1.5, weight))
+    return max(0.0, min(100.0, 50.0 + (value - 50.0) * weight))
+
+
+def _combine(
+    components: Dict[str, object],
+    strategy: str,
+    weights: Dict[str, object] = None,
+    market_regime: Dict[str, object] = None,
+    row: pd.Series = None,
+    regime_weight_profile: Dict[str, object] = None,
+) -> float:
+    return _combine_details(
+        components,
+        strategy,
+        weights=weights,
+        market_regime=market_regime,
+        row=row,
+        regime_weight_profile=regime_weight_profile,
+    )["score"]
+
+
+def _combine_details(
+    components: Dict[str, object],
+    strategy: str,
+    weights: Dict[str, object] = None,
+    market_regime: Dict[str, object] = None,
+    row: pd.Series = None,
+    regime_weight_profile: Dict[str, object] = None,
+) -> Dict[str, float]:
+    spec = STRATEGY_COMBINERS.get(strategy)
+    if not spec:
+        raise KeyError("unknown strategy combiner: {}".format(strategy))
+    all_weights = weights or WEIGHTS
+    strategy_weights = all_weights.get(strategy, {})
+    base = 0.0
+    term_total = 0.0
+    weighted_terms = []
+    for term in spec["terms"]:
+        key = term["component"]
+        weight_key = term["weight_key"]
+        weight = coerce_number(strategy_weights.get(weight_key), 0.0)
+        if weight <= 0:
+            continue
+        value = coerce_number(components.get(key), 50.0)
+        regime_key = term.get("regime_key")
+        if regime_key:
+            if regime_weight_profile:
+                value = _regime_component_from_profile(value, regime_key, regime_weight_profile)
+            else:
+                value = _regime_component(value, regime_key, market_regime)
+        weighted_terms.append((value, weight, weight * _factor_ic_multiplier(key)))
+        term_total += weight
+    adjusted_total = sum(item[2] for item in weighted_terms)
+    scale = (term_total / adjusted_total) if adjusted_total > 1e-12 else 1.0
+    for value, _, adjusted_weight in weighted_terms:
+        base += value * adjusted_weight * scale
+    if term_total <= 0:
+        base = 0.0
+    risk_penalty = coerce_number(components.get("risk_penalty"), 0.0)
+    regime_bonus = coerce_number(components.get("regime_bonus"), 0.0)
+    raw_score = base - risk_penalty + regime_bonus
+    if spec.get("apply_damp"):
+        if "overheat_damp" in components:
+            damp = coerce_number(components.get("overheat_damp"), 1.0)
+        elif row is not None:
+            damp = _overheat_damp_multiplier(row)
+        else:
+            damp = 1.0
+        damp = max(0.0, min(1.0, damp))
+    else:
+        damp = 1.0
+    score = max(0.0, min(100.0, raw_score * damp))
+    return {
+        "score": score,
+        "base_score": base,
+        "raw_score": raw_score,
+        "risk_penalty": risk_penalty,
+        "regime_bonus": regime_bonus,
+        "overheat_damp": damp,
+    }
+
+
+def _factor_ic_multiplier(component: str) -> float:
+    if not getattr(config, "ENABLE_FACTOR_IC_WEIGHTING", False):
+        return 1.0
+    factor_key = COMPONENT_FACTOR_KEYS.get(component)
+    if not factor_key:
+        return 1.0
+    payload = _factor_ic_payload()
+    info = ((payload or {}).get("ic") or {}).get(factor_key) or {}
+    if info.get("status") != "ok":
+        return 1.0
+    if int(info.get("sample_count") or 0) < int(getattr(config, "FACTOR_IC_MIN_SAMPLES", 30)):
+        return 1.0
+    band = max(0.0, min(0.8, coerce_number(getattr(config, "FACTOR_IC_WEIGHT_BAND", 0.3), 0.3)))
+    ic = max(-1.0, min(1.0, coerce_number(info.get("ic"))))
+    return max(0.1, 1.0 + max(-band, min(band, ic * band)))
+
+
+def _factor_ic_payload() -> Dict[str, object]:
+    path = getattr(config, "FACTOR_IC_PATH", ".runtime/factor_ic.json")
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        _FACTOR_IC_CACHE["mtime"] = None
+        _FACTOR_IC_CACHE["payload"] = {}
+        return {}
+    if _FACTOR_IC_CACHE.get("mtime") != mtime:
+        _FACTOR_IC_CACHE["mtime"] = mtime
+        _FACTOR_IC_CACHE["payload"] = load_factor_ic()
+    return _FACTOR_IC_CACHE.get("payload") or {}
+
+
 def _with_regime_reason(
     item: Dict[str, object],
     market_regime: Dict[str, object],
@@ -2576,6 +3375,14 @@ def _execution_score(row: pd.Series) -> float:
 
 
 def _tomorrow_risk_penalty(row: pd.Series) -> float:
+    return _sum_penalty(_tomorrow_risk_penalty_parts(row))
+
+
+def _sum_penalty(parts: Dict[str, float]) -> float:
+    return round(sum(max(0.0, coerce_number(value)) for value in parts.values()), 2)
+
+
+def _tomorrow_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
     penalty = 0.0
     pct = coerce_number(row.get("pct_chg"))
     market = row.get("market")
@@ -2583,26 +3390,22 @@ def _tomorrow_risk_penalty(row: pd.Series) -> float:
     amplitude = coerce_number(row.get("amplitude"))
     turnover_rate = coerce_number(row.get("turnover_rate"))
     volume_ratio = coerce_number(row.get("volume_ratio"))
-    ytd_pct = coerce_number(row.get("ytd_pct"))
+    parts = {}
     if pct >= upper * 0.85:
-        penalty += 10
+        parts["intraday_chase"] = 10
     elif pct >= upper * 0.72:
-        penalty += 5
+        parts["intraday_chase"] = 5
     if amplitude >= 12:
-        penalty += 8
+        parts["amplitude"] = 8
     if turnover_rate >= 18:
-        penalty += 7
+        parts["turnover_rate"] = 7
     elif turnover_rate >= 12:
-        penalty += 3
+        parts["turnover_rate"] = 3
     if volume_ratio >= 6:
-        penalty += 8
+        parts["volume_ratio"] = 8
     elif volume_ratio >= 4.5:
-        penalty += 4
-    if ytd_pct >= 120:
-        penalty += 10
-    elif ytd_pct >= 80:
-        penalty += 5
-    return penalty
+        parts["volume_ratio"] = 4
+    return parts
 
 
 def _apply_overheat_damp(final_score: float, row: pd.Series) -> float:
@@ -2611,10 +3414,13 @@ def _apply_overheat_damp(final_score: float, row: pd.Series) -> float:
     把 _not_overextended_score 折算成 [floor, 1.0] 的乘子作用在 final 上，
     让完全过热的票即使动量很高也无法骑进 top-N（加法权重做不到这一点）。
     """
+    return final_score * _overheat_damp_multiplier(row)
+
+
+def _overheat_damp_multiplier(row: pd.Series) -> float:
     not_overextended = _not_overextended_score(row) / 100.0
     floor = coerce_number(THRESHOLDS.get("overheat_damp_floor"), 0.6)
-    damp = floor + (1.0 - floor) * max(0.0, min(1.0, not_overextended))
-    return final_score * damp
+    return floor + (1.0 - floor) * max(0.0, min(1.0, not_overextended))
 
 
 def _chokepoint_score(row: pd.Series) -> Tuple[float, List[str]]:
@@ -2726,92 +3532,85 @@ def _balanced_volume_score(volume_ratio: float) -> float:
 
 
 def _tech_potential_risk_penalty(row: pd.Series) -> float:
-    penalty = _tomorrow_risk_penalty(row)
-    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
-    ytd_pct = coerce_number(row.get("ytd_pct"))
+    return _sum_penalty(_tech_potential_risk_penalty_parts(row))
+
+
+def _tech_potential_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
+    parts = dict(_tomorrow_risk_penalty_parts(row))
     pct = coerce_number(row.get("pct_chg"))
-    if sixty_day_pct > 60:
-        penalty += 12
-    if ytd_pct > 100:
-        penalty += 14
     if pct > 8:
-        penalty += 7
-    return penalty
+        parts["intraday_chase_extra"] = 7
+    return parts
 
 
 def _swing_risk_penalty(row: pd.Series) -> float:
-    penalty = 0.0
+    return _sum_penalty(_swing_risk_penalty_parts(row))
+
+
+def _swing_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
     pct = coerce_number(row.get("pct_chg"))
-    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
-    ytd_pct = coerce_number(row.get("ytd_pct"))
     volume_ratio = coerce_number(row.get("volume_ratio"))
     turnover_rate = coerce_number(row.get("turnover_rate"))
     volatility_20d = coerce_number(row.get("volatility_20d"))
     ma5_gap = coerce_number(row.get("ma5_gap"))
+    parts = {}
     if pct > 7:
-        penalty += 6
-    if sixty_day_pct > 70 or ytd_pct > 110:
-        penalty += 9
+        parts["intraday_chase"] = 6
     if volume_ratio > 5.5:
-        penalty += 7
+        parts["volume_ratio"] = 7
     if turnover_rate > 18:
-        penalty += 6
+        parts["turnover_rate"] = 6
     if volatility_20d > 7:
-        penalty += 7
+        parts["volatility"] = 7
     if ma5_gap > 18:
-        penalty += 5
-    return penalty
+        parts["ma5_gap"] = 5
+    return parts
 
 
 def _position_risk_penalty(row: pd.Series) -> float:
-    penalty = 0.0
+    return _sum_penalty(_position_risk_penalty_parts(row))
+
+
+def _position_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
     pct = coerce_number(row.get("pct_chg"))
-    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
-    ytd_pct = coerce_number(row.get("ytd_pct"))
     amplitude = coerce_number(row.get("amplitude"))
     volatility_20d = coerce_number(row.get("volatility_20d"))
     ma20_gap = coerce_number(row.get("ma20_gap"))
     turnover = coerce_number(row.get("turnover"))
+    parts = {}
     if pct > 5:
-        penalty += 5
-    if sixty_day_pct > 65 or ytd_pct > 100:
-        penalty += 10
-    if sixty_day_pct < -20 or ytd_pct < -25:
-        penalty += 9
+        parts["intraday_chase"] = 5
     if amplitude > 10 or volatility_20d > 6:
-        penalty += 8
+        parts["volatility"] = 8
     if ma20_gap > 30:
-        penalty += 6
+        parts["ma20_gap"] = 6
     if turnover < config.MIN_TURNOVER * 2:
-        penalty += 5
-    return penalty
+        parts["liquidity"] = 5
+    return parts
 
 
 def _long_term_risk_penalty(row: pd.Series, sentiment: Dict[str, object]) -> float:
-    penalty = 0.0
+    return _sum_penalty(_long_term_risk_penalty_parts(row, sentiment))
+
+
+def _long_term_risk_penalty_parts(row: pd.Series, sentiment: Dict[str, object]) -> Dict[str, float]:
     pct = coerce_number(row.get("pct_chg"))
-    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
-    ytd_pct = coerce_number(row.get("ytd_pct"))
     amplitude = coerce_number(row.get("amplitude"))
-    ret_20d = coerce_number(row.get("ret_20d"))
     ma20_gap = coerce_number(row.get("ma20_gap"))
     volatility_20d = coerce_number(row.get("volatility_20d"))
     turnover = coerce_number(row.get("turnover"))
+    parts = {}
     if sentiment.get("risk_words"):
-        penalty += 10
+        parts["sentiment"] = 10
     if pct > 9:
-        penalty += 6
-    if sixty_day_pct > 80 or ytd_pct > 120 or ret_20d > 45:
-        penalty += 8
-    if sixty_day_pct < -20 or ytd_pct < -25:
-        penalty += 10
+        parts["intraday_chase"] = 6
     if ma20_gap > 35:
-        penalty += 5
+        parts["ma20_gap"] = 5
     if amplitude > 12 or volatility_20d > 6:
-        penalty += 5
+        parts["volatility"] = 5
     if turnover < config.MIN_TURNOVER * 2:
-        penalty += 4
-    return penalty
+        parts["liquidity"] = 4
+    return parts
 
 
 def _build_reasons(
@@ -2928,14 +3727,14 @@ def _build_tomorrow_reasons(
     if trend_score >= 65 or sixty_day_pct >= 8:
         reasons.append("中期趋势向上")
     if execution_score >= 75:
-        reasons.append("执行性较好")
+        reasons.append("买入安全较好")
     if amplitude >= 9:
         reasons.append("波动偏大")
     if risk_penalty >= 8:
         reasons.append("风险扣分较高")
     if momentum_score >= 70:
         reasons.append("短线动能靠前")
-    return reasons[:6] or ["流动性、动量和执行性综合排名靠前"]
+    return reasons[:6] or ["流动性、动量和买入安全综合排名靠前"]
 
 
 def _build_tech_potential_reasons(

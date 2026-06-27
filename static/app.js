@@ -23,7 +23,11 @@ const state = {
   horizonLoaded: false,
   overviewLoaded: false,
   validationLoaded: false,
+  portfolioLoaded: false,
   marketRegime: {},
+  chokepointIndustryMap: [],
+  chokepointMeta: {},
+  chokepointActiveSegment: "all",
   selectedValidation: {
     date: "",
     strategy: "",
@@ -75,6 +79,8 @@ const els = {
   marketSelect: document.getElementById("marketSelect"),
   actionFilterSelect: document.getElementById("actionFilterSelect"),
   sortSelect: document.getElementById("sortSelect"),
+  glossaryToggle: document.getElementById("glossaryToggle"),
+  glossaryPopover: document.getElementById("glossaryPopover"),
   refreshButton: document.getElementById("refreshButton"),
   tabButtons: document.querySelectorAll(".tab-button"),
   tabPanels: document.querySelectorAll(".tab-panel"),
@@ -115,6 +121,11 @@ const els = {
   reversalBody: document.getElementById("reversalBody"),
   smallcapBody: document.getElementById("smallcapBody"),
   breakoutBody: document.getElementById("breakoutBody"),
+  portfolioStrategySelect: document.getElementById("portfolioStrategySelect"),
+  loadPortfolioBtn: document.getElementById("loadPortfolioBtn"),
+  portfolioStatus: document.getElementById("portfolioStatus"),
+  portfolioSummary: document.getElementById("portfolioSummary"),
+  portfolioBody: document.getElementById("portfolioBody"),
   swingBody: document.getElementById("swingBody"),
   positionBody: document.getElementById("positionBody"),
   saveStrategySelect: document.getElementById("saveStrategySelect"),
@@ -124,7 +135,7 @@ const els = {
   validationScoreboard: document.getElementById("validationScoreboard"),
   updateValidation: document.getElementById("updateValidation"),
   backfillValidationSamples: document.getElementById("backfillValidationSamples"),
-  prefetchValidationHistory: document.getElementById("prefetchValidationHistory"),
+  validationSimpleDecision: document.getElementById("validationSimpleDecision"),
   validationStrategySelect: document.getElementById("validationStrategySelect"),
   validationDaysSelect: document.getElementById("validationDaysSelect"),
   validationSelectionLabel: document.getElementById("validationSelectionLabel"),
@@ -188,7 +199,7 @@ async function loadRecommendations() {
 async function loadStrategyOverview() {
   state.overviewLoaded = true;
   els.strategyOverviewGrid.innerHTML = '<div class="empty">加载中...</div>';
-  els.strategyOverviewBody.innerHTML = '<tr><td colspan="11" class="empty">加载中...</td></tr>';
+  els.strategyOverviewBody.innerHTML = '<tr><td colspan="12" class="empty">加载中...</td></tr>';
   try {
     const res = await fetch("/api/strategy-overview?days=20");
     const payload = await res.json();
@@ -198,7 +209,7 @@ async function loadStrategyOverview() {
     renderStrategyOverview(payload);
   } catch (err) {
     els.strategyOverviewGrid.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
-    els.strategyOverviewBody.innerHTML = `<tr><td colspan="11" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    els.strategyOverviewBody.innerHTML = `<tr><td colspan="12" class="empty">${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
@@ -219,10 +230,44 @@ async function loadValidation() {
     renderValidationDates(payload.dates || []);
     syncValidationSelection(payload.dates || []);
     loadValidationOverview();
+    if (!els.updateStatus.textContent || els.updateStatus.textContent.includes("后台")) {
+      loadValidationAutoUpdateStatus();
+    }
     setStatus("策略验证已更新");
   } catch (err) {
     els.validationDatesBody.innerHTML = `<tr><td colspan="4" class="empty">${escapeHtml(err.message)}</td></tr>`;
     setStatus(`策略验证加载失败：${err.message}`);
+  }
+}
+
+async function loadPortfolio() {
+  state.portfolioLoaded = true;
+  const strategy = els.portfolioStrategySelect.value || "tomorrow_picks";
+  els.portfolioSummary.innerHTML = '<div class="empty">组合生成中...</div>';
+  els.portfolioBody.innerHTML = '<tr><td colspan="7" class="empty">组合生成中...</td></tr>';
+  setOpsStatus(els.portfolioStatus, "正在读取最近保存快照并执行仓位约束…", "pending");
+  try {
+    const params = new URLSearchParams({ strategy });
+    const res = await fetch(`/api/portfolio?${params.toString()}`);
+    const payload = await res.json();
+    if (!payload.ok) {
+      throw new Error(payload.error || "组合接口返回异常");
+    }
+    renderPortfolio(payload);
+    const count = Number(payload.summary?.position_count || 0);
+    if (!count) {
+      setOpsStatus(els.portfolioStatus, payload.no_trade_reason || payload.empty_reason || "暂无可生成组合的保存快照。", "pending");
+      return;
+    }
+    if (payload.summary?.constraints_feasible === false) {
+      setOpsStatus(els.portfolioStatus, payload.no_trade_reason || "标的或主题分散度不足，剩余权重保留为现金，不强行顶破约束。", "pending");
+      return;
+    }
+    setOpsStatus(els.portfolioStatus, `已按 ${strategyLabel(strategy)} 最近快照生成 ${count} 只组合。`, "ok");
+  } catch (err) {
+    els.portfolioSummary.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+    els.portfolioBody.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    setOpsStatus(els.portfolioStatus, `组合生成失败：${err.message}`, "bad");
   }
 }
 
@@ -243,7 +288,7 @@ async function loadValidationOverview() {
 function renderValidationScoreboard(series) {
   if (!els.validationScoreboard) return;
   if (!series.length) {
-    els.validationScoreboard.innerHTML = '<div class="empty">暂无验证数据，先在左下保存预测并回填结果</div>';
+    els.validationScoreboard.innerHTML = '<div class="empty">暂无验证数据。先让 cron 每天保存预测，或手动点“保存今天”。</div>';
     return;
   }
   els.validationScoreboard.innerHTML = series
@@ -256,22 +301,22 @@ function renderValidationScoreboard(series) {
       let level, verdict;
       if (realSamples < 10 && samples < 30) {
         level = "neutral";
-        verdict = "样本不足 · 待观察";
+        verdict = "先别信：样本不足";
       } else if (realSamples < 10) {
         level = "watch";
-        verdict = "真实样本少 · 降权";
+        verdict = "谨慎看：真实样本少";
       } else if (win == null) {
         level = "neutral";
-        verdict = "无净胜率";
+        verdict = "暂无结论";
       } else if (win >= 55 && Number(avg || 0) > 0) {
         level = "good";
-        verdict = "净表现可观察";
+        verdict = "可观察：净表现较好";
       } else if (win >= 50) {
         level = "watch";
-        verdict = "净胜率中性";
+        verdict = "一般：继续观察";
       } else {
         level = "bad";
-        verdict = "净胜率偏低";
+        verdict = "暂不加权：表现偏弱";
       }
       const winText = win == null ? "-" : `${Number(win).toFixed(0)}%`;
       const avgText = avg == null ? "-" : `${formatNumber(avg, 2)}%`;
@@ -283,7 +328,7 @@ function renderValidationScoreboard(series) {
             <span class="score-badge">${winText}</span>
           </div>
           <div class="score-verdict">${verdict}</div>
-          <div class="score-meta">${escapeHtml(horizon)}净胜率 · 净收益 ${avgText} · 真 ${realSamples} / 回 ${replaySamples}</div>
+          <div class="score-meta">${escapeHtml(horizon)} · 净收益 ${avgText} · 真实 ${realSamples} 条，回放 ${replaySamples} 条</div>
         </div>`;
     })
     .join("");
@@ -418,6 +463,7 @@ function renderStockPrediction(payload) {
       <div><span>成交额</span><strong>${formatMoney(payload.turnover)}</strong></div>
       <div><span>量比</span><strong>${formatNumber(payload.volume_ratio, 2)}</strong></div>
       <div><span>60日</span><strong class="${numberClass(payload.sixty_day_pct)}">${formatNumber(payload.sixty_day_pct, 2)}%</strong></div>
+      <div><span>数据源</span><strong>${escapeHtml(payload.data_source || "实时行情")}</strong></div>
       <div><span>盘面</span><strong>${escapeHtml(payload.market_regime?.label || "-")}</strong></div>
     </div>
     ${riskFlags.length ? `
@@ -521,6 +567,11 @@ async function saveStrategySnapshot(strategy) {
     );
     loadStrategyOverview();
     loadValidation();
+    state.portfolioLoaded = false;
+    if (document.getElementById("portfolioPanel").classList.contains("active")) {
+      els.portfolioStrategySelect.value = strategy;
+      loadPortfolio();
+    }
   } catch (err) {
     setOpsStatus(els.saveStatus, `✗ 保存失败：${err.message}`, "bad");
   } finally {
@@ -557,40 +608,44 @@ async function updateValidationOutcomes() {
   }
 }
 
-async function prefetchHistoryAndUpdateValidation() {
-  const btn = els.prefetchValidationHistory;
-  const label = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "处理中…";
-  setOpsStatus(els.updateStatus, "下载历史并验证中…（可能需要几十秒）", "pending");
-  const params = new URLSearchParams({ days: "180", limit: "500", update: "1" });
-  const strategy = state.selectedValidation.strategy || els.validationStrategySelect.value;
-  if (strategy) {
-    params.set("strategy", strategy);
-  }
-  if (state.selectedValidation.date) {
-    params.set("date", state.selectedValidation.date);
-  }
+async function loadValidationAutoUpdateStatus() {
   try {
-    const res = await fetch(`/api/strategy-validation/prefetch-history?${params.toString()}`, { method: "POST" });
+    const res = await fetch("/api/strategy-validation/auto-update-status");
     const payload = await res.json();
     if (!payload.ok) {
-      throw new Error(payload.error || "历史下载失败");
+      return;
     }
-    const prefetch = payload.prefetch || {};
-    const outcome = payload.outcome || {};
+    const status = payload.auto_update || {};
+    const config = status.config || {};
+    if (!status.enabled) {
+      setOpsStatus(els.updateStatus, "后台历史自动更新已关闭", "pending");
+      return;
+    }
+    if (status.running) {
+      setOpsStatus(els.updateStatus, "后台正在分批更新历史K线和验证结果…", "pending");
+      return;
+    }
+    const result = status.last_result || {};
+    const totals = result.totals || {};
+    if (status.last_error) {
+      setOpsStatus(els.updateStatus, `后台自动更新上次失败：${status.last_error}`, "bad");
+      return;
+    }
+    if (status.last_finished_at) {
+      setOpsStatus(
+        els.updateStatus,
+        `后台自动更新 ${status.last_finished_at} 完成：批次 ${totals.batches || 0}，更新 ${totals.updated || 0}，缓存 ${totals.cached || 0}，下载 ${totals.downloaded || 0}，失败 ${totals.failed || 0}`,
+        "ok"
+      );
+      return;
+    }
     setOpsStatus(
       els.updateStatus,
-      `✓ 下载 ${prefetch.downloaded || 0} / 缓存 ${prefetch.cached || 0} / 失败 ${prefetch.failed || 0}；更新 ${outcome.updated || 0} / 跳过 ${outcome.skipped || 0}`,
-      "ok"
+      `后台自动更新已启动：约 ${Math.round((config.initial_delay_seconds || 0) / 60)} 分钟后首轮，之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟分批更新`,
+      "pending"
     );
-    loadStrategyOverview();
-    loadValidation();
   } catch (err) {
-    setOpsStatus(els.updateStatus, `✗ 下载/验证失败：${err.message}`, "bad");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = label;
+    /* 状态提示不影响验证主流程 */
   }
 }
 
@@ -656,7 +711,7 @@ async function loadValidationDaily(date, strategy) {
     }
     renderValidationDetail(payload.data || []);
   } catch (err) {
-    els.validationDetailBody.innerHTML = `<tr><td colspan="12" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    els.validationDetailBody.innerHTML = `<tr><td colspan="13" class="empty">${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
@@ -712,7 +767,7 @@ async function loadTomorrowPicks() {
 async function loadHorizonPicks() {
   state.horizonLoaded = true;
   els.swingBody.innerHTML = '<tr><td colspan="16" class="empty">加载中...</td></tr>';
-  els.positionBody.innerHTML = '<tr><td colspan="16" class="empty">加载中...</td></tr>';
+  els.positionBody.innerHTML = '<tr><td colspan="17" class="empty">加载中...</td></tr>';
   const params = new URLSearchParams({
     top_n: "30",
     market: els.marketSelect.value,
@@ -737,9 +792,8 @@ async function loadHorizonPicks() {
     renderPositionTable(state.lastRows.position);
     setStatus(`波段/中长期更新时间 ${swingPayload.meta.generated_at}`);
   } catch (err) {
-    const message = `<tr><td colspan="16" class="empty">${escapeHtml(err.message)}</td></tr>`;
-    els.swingBody.innerHTML = message;
-    els.positionBody.innerHTML = message;
+    els.swingBody.innerHTML = `<tr><td colspan="16" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    els.positionBody.innerHTML = `<tr><td colspan="17" class="empty">${escapeHtml(err.message)}</td></tr>`;
     setStatus(`波段/中长期加载失败：${err.message}`);
   }
 }
@@ -812,6 +866,99 @@ function renderStrategyOverview(payload) {
       </tr>
     `;
   }).join("");
+}
+
+function renderPortfolio(payload) {
+  const rows = payload.data || [];
+  const summary = payload.summary || {};
+  const perf = payload.performance?.metrics || {};
+  const exposure = payload.exposure || {};
+  const exposureTags = Object.entries(exposure).length
+    ? Object.entries(exposure)
+        .map(([theme, weight]) => `<span class="portfolio-chip">${escapeHtml(theme)} ${formatNumber(weight, 1)}%</span>`)
+        .join("")
+    : '<span class="portfolio-chip muted">暂无主题暴露</span>';
+  els.portfolioSummary.innerHTML = `
+    <div class="portfolio-summary-card">
+      <span>策略</span>
+      <strong>${escapeHtml(strategyLabel(payload.strategy))}</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>持仓数</span>
+      <strong>${summary.position_count ?? 0}</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>总仓位</span>
+      <strong>${formatNumber(summary.total_weight, 1)}%</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>现金保留</span>
+      <strong>${formatNumber(summary.cash_pct, 1)}%</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>总仓上限</span>
+      <strong>${formatNumber(summary.gross_exposure_pct, 1)}%</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>市况系数</span>
+      <strong>${formatNumber(summary.regime_factor, 2)}</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>回撤系数</span>
+      <strong>${formatNumber(summary.drawdown_factor, 2)}</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>单票上限</span>
+      <strong>${formatNumber(summary.single_cap_pct, 1)}%</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>主题上限</span>
+      <strong>${formatNumber(summary.theme_cap_pct, 1)}%</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>纸面收益</span>
+      <strong class="${numberClass(perf.total_return_pct)}">${formatNumber(perf.total_return_pct, 2)}%</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>最大回撤</span>
+      <strong class="${numberClass(perf.max_drawdown_pct)}">${formatNumber(perf.max_drawdown_pct, 2)}%</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>净胜率</span>
+      <strong>${formatNumber(perf.win_rate_pct, 1)}%</strong>
+    </div>
+    <div class="portfolio-summary-card">
+      <span>纸面交易</span>
+      <strong>${perf.closed_count ?? 0}/${perf.trade_count ?? 0}</strong>
+    </div>
+    <div class="portfolio-exposure">
+      <span>主题暴露</span>
+      <div>${exposureTags}</div>
+      <small>${(summary.gross_reasons || []).map(text => escapeHtml(text)).join("；")}</small>
+    </div>
+  `;
+  if (!rows.length) {
+    els.portfolioBody.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(payload.empty_reason || "暂无保存快照")}</td></tr>`;
+    return;
+  }
+  els.portfolioBody.innerHTML = rows.map(row => {
+    const profile = row.serenity_profile || {};
+    const quality = profile.quality_score ?? row.avg_quality ?? row.score;
+    const risk = profile.risk_score ?? row.avg_risk ?? row.risk_score;
+    const action = rowActionLabel(row) || profile.action_label || "等待确认";
+    return `
+      <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
+        <td class="num">${escapeHtml(row.code)}</td>
+        <td>${escapeHtml(row.name)}</td>
+        <td>${escapeHtml(row.portfolio_theme || row.theme || row.industry || "-")}</td>
+        <td class="num">${formatNumber(quality, 1)}</td>
+        <td class="num ${riskNumberClass(risk)}">${formatNumber(risk, 1)}</td>
+        <td class="num score">${formatNumber(row.suggested_weight, 2)}%</td>
+        <td><span class="tag ${actionTagClass(action)}">${escapeHtml(action)}</span></td>
+      </tr>
+    `;
+  }).join("");
+  bindSentimentRows(els.portfolioBody);
 }
 
 function renderOverviewRegime(regime) {
@@ -983,29 +1130,57 @@ function explanationTags(row) {
       `<span class="tag validation">共识:${escapeHtml(consensus.label || "-")} ${escapeHtml(String(consensus.appearances || 0))}/${escapeHtml(String(consensus.strategy_count || 0))}</span>`
     );
   }
-  if (row.serenity_profile) {
-    const profile = row.serenity_profile;
-    tags.push(
-      `<span class="tag ${actionTagClass(profile.action_label)}">质量:${formatNumber(profile.quality_score, 1)} ${escapeHtml(profile.action_label || "-")}</span>`
-    );
-    (profile.evidence || []).slice(0, 2).forEach(item => {
-      tags.push(`<span class="tag stable">证据:${escapeHtml(item.label || "-")}</span>`);
-    });
+  const profile = row.serenity_profile || {};
+  const quality = profile.quality_score ?? row.avg_quality ?? row.score;
+  const risk = profile.risk_score ?? row.avg_risk;
+  const confidence = profile.confidence_score ?? row.avg_confidence;
+  const coverage = profile.data_coverage;
+  const verdict = row.verdict || {};
+  const committee = row.agent_committee || {};
+  const action = rowActionLabel(row) || profile.action_label || "-";
+  if (verdict.label) {
+    tags.push(`<span class="tag validation">评级:${escapeHtml(verdict.label)}</span>`);
   }
-
-  (row.reasons || []).slice(0, 5).forEach(text => {
+  if (quality != null) {
+    tags.push(`<span class="tag ${actionTagClass(action)}">动作:${escapeHtml(action)} 质量${formatNumber(quality, 1)}</span>`);
+  }
+  if (confidence != null) {
+    tags.push(`<span class="tag stable">置信:${formatNumber(confidence, 1)}</span>`);
+  }
+  if (coverage != null) {
+    tags.push(`<span class="tag validation">覆盖:${formatNumber(Number(coverage) * 100, 0)}%</span>`);
+  }
+  if (verdict.note) {
+    tags.push(`<span class="tag warning">降级:${escapeHtml(verdict.note)}</span>`);
+  }
+  if (committee.final_action_label) {
+    tags.push(`<span class="tag validation">Agent:${escapeHtml(committee.final_action_label)}</span>`);
+  }
+  tags.push(similarSignalStatsTag(row.similar_signal_stats));
+  (profile.evidence || []).slice(0, 2).forEach(item => {
+    tags.push(`<span class="tag stable">证据:${escapeHtml(item.label || "-")}</span>`);
+  });
+  if (risk != null) {
+    const level = Number(risk) >= 70 ? "高" : Number(risk) >= 50 ? "中" : "低";
+    const cls = Number(risk) >= 70 ? "risk" : Number(risk) >= 50 ? "warning" : "stable";
+    tags.push(`<span class="tag ${cls}">风险:${level}</span>`);
+  } else if (row.chase_risk || row.overextension) {
+    tags.push(riskTag("风险", row.chase_risk || row.overextension));
+  }
+  (row.reasons || []).slice(0, 3).forEach(text => {
     tags.push(`<span class="tag">推荐:${escapeHtml(text)}</span>`);
+  });
+  (profile.risk_reasons || []).slice(0, 2).forEach(text => {
+    tags.push(`<span class="tag risk">风控:${escapeHtml(text)}</span>`);
   });
   tags.push(riskTag("追高", row.chase_risk));
   tags.push(riskTag("透支", row.overextension));
-
-  (row.failure_reasons || []).slice(0, 4).forEach(text => {
+  (row.failure_reasons || []).slice(0, 3).forEach(text => {
     tags.push(`<span class="tag risk">失败:${escapeHtml(text)}</span>`);
   });
-  (row.risk_words || []).slice(0, 3).forEach(text => {
+  (row.risk_words || []).slice(0, 2).forEach(text => {
     tags.push(`<span class="tag risk">舆情:${escapeHtml(text)}</span>`);
   });
-  tags.push(similarSignalStatsTag(row.similar_signal_stats));
   return tags.filter(Boolean).join("");
 }
 
@@ -1031,6 +1206,24 @@ function similarSignalStatsTag(stats) {
   return `<span class="tag validation">同类${sample}主样本 ${escapeHtml(horizon)}净胜:${win} 净均:${avg} 真/回:${real}/${replay}</span>`;
 }
 
+function rowIndustryLabel(row) {
+  return row.industry || "行业未知";
+}
+
+function codeCell(row) {
+  return `
+    <td class="stock-cell">
+      <span class="code-main">${escapeHtml(row.code)}</span>
+      <span class="stock-name-inline">${escapeHtml(row.name || "-")}</span>
+      <span class="code-sub">${escapeHtml(rowIndustryLabel(row))}</span>
+    </td>`;
+}
+
+function marketCapCell(row) {
+  const cap = Number(row.market_cap);
+  return `<td class="num market-cap-cell">${Number.isFinite(cap) && cap > 0 ? formatMoney(cap) : "-"}</td>`;
+}
+
 function renderShortTermTable(rows) {
   const displayRows = filterAndSortRows(rows);
   if (!displayRows.length) {
@@ -1039,11 +1232,11 @@ function renderShortTermTable(rows) {
   }
   els.shortTermBody.innerHTML = displayRows.map(row => {
     const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
-    const explanation = explanationTags(row);
+    const explanation = `${stabilityTag(row)}${explanationTags(row)}`;
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
-        <td class="num">${escapeHtml(row.code)}</td>
+        ${codeCell(row)}
         <td>${escapeHtml(row.name)}</td>
         <td>${escapeHtml(row.market_label)}</td>
         <td class="num">${formatNumber(row.price, 3)}</td>
@@ -1052,11 +1245,11 @@ function renderShortTermTable(rows) {
         <td class="num">${formatNumber(row.volume_ratio, 2)}</td>
         <td class="num">${formatNumber(row.turnover_rate, 2)}%</td>
         <td class="num">${formatMoney(row.turnover)}</td>
+        ${marketCapCell(row)}
         <td>${escapeHtml(row.industry || "-")}</td>
         <td class="num">${formatNumber(row.momentum_score, 1)}</td>
         <td class="num">${formatNumber(row.sentiment_score, 1)}</td>
         ${scoreCell(row)}
-        <td>${stabilityTag(row)}</td>
         <td class="reasons">${explanation}</td>
       </tr>
     `;
@@ -1075,11 +1268,11 @@ function renderLongTermTable(rows) {
     const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
     const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
     const ytdClass = row.ytd_pct >= 0 ? "positive" : "negative";
-    const explanation = explanationTags(row);
+    const explanation = `${stabilityTag(row)}${explanationTags(row)}`;
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
-        <td class="num">${escapeHtml(row.code)}</td>
+        ${codeCell(row)}
         <td>${escapeHtml(row.name)}</td>
         <td>${escapeHtml(row.market_label)}</td>
         <td class="num">${formatNumber(row.price, 3)}</td>
@@ -1088,11 +1281,11 @@ function renderLongTermTable(rows) {
         <td class="num ${ytdClass}">${formatNumber(row.ytd_pct, 2)}%</td>
         <td class="num">${formatNumber(row.turnover_rate, 2)}%</td>
         <td class="num">${formatMoney(row.turnover)}</td>
+        ${marketCapCell(row)}
         <td>${escapeHtml(row.industry || "-")}</td>
         <td class="num">${formatNumber(row.trend_score, 1)}</td>
         <td class="num">${formatNumber(row.sentiment_score, 1)}</td>
         ${scoreCell(row)}
-        <td>${stabilityTag(row)}</td>
         <td class="reasons">${explanation}</td>
       </tr>
     `;
@@ -1114,7 +1307,7 @@ function renderTomorrowTable(rows) {
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
-        <td class="num">${escapeHtml(row.code)}</td>
+        ${codeCell(row)}
         <td>${escapeHtml(row.name)}</td>
         <td>${escapeHtml(row.market_label)}</td>
         <td class="num">${formatNumber(row.price, 3)}</td>
@@ -1122,11 +1315,11 @@ function renderTomorrowTable(rows) {
         <td class="num">${formatNumber(row.volume_ratio, 2)}</td>
         <td class="num">${formatNumber(row.turnover_rate, 2)}%</td>
         <td class="num">${formatMoney(row.turnover)}</td>
+        ${marketCapCell(row)}
         <td class="num ${sixtyClass}">${formatNumber(row.sixty_day_pct, 2)}%</td>
         <td class="num">${formatNumber(row.liquidity_score, 1)}</td>
         <td class="num">${formatNumber(row.momentum_score, 1)}</td>
         <td class="num">${formatNumber(row.trend_score, 1)}</td>
-        <td class="num">${formatNumber(row.execution_score, 1)}</td>
         ${scoreCell(row)}
         <td class="reasons">${explanation}</td>
       </tr>
@@ -1137,39 +1330,79 @@ function renderTomorrowTable(rows) {
 }
 
 function renderTechTable(rows) {
+  renderStandardStrategyTable(rows, els.techBody, "暂无符合条件的科技潜力股票", {
+    liquidity: ["liquidity_score"],
+    momentum: ["theme_score", "chokepoint_score"],
+    trend: ["early_trend_score", "not_overextended_score"],
+    execution: ["execution_score"],
+  });
+}
+
+function renderStandardStrategyTable(rows, bodyEl, emptyMessage, scoreKeys = {}) {
   const displayRows = filterAndSortRows(rows);
   if (!displayRows.length) {
-    els.techBody.innerHTML = '<tr><td colspan="16" class="empty">暂无符合条件的科技潜力股票</td></tr>';
+    bodyEl.innerHTML = `<tr><td colspan="16" class="empty">${escapeHtml(emptyMessage)}</td></tr>`;
     return;
   }
-  els.techBody.innerHTML = displayRows.map(row => {
-    const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
-    const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
-    const ytdClass = row.ytd_pct >= 0 ? "positive" : "negative";
-    const explanation = explanationTags(row);
-    return `
-      <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-        <td class="num">${row.rank}</td>
-        <td class="num">${escapeHtml(row.code)}</td>
-        <td>${escapeHtml(row.name)}</td>
-        <td>${escapeHtml(row.theme || "-")}</td>
-        <td>${escapeHtml(row.market_label)}</td>
-        <td class="num">${formatNumber(row.price, 3)}</td>
-        <td class="num ${pctClass}">${formatNumber(row.pct_chg, 2)}%</td>
-        <td class="num ${sixtyClass}">${formatNumber(row.sixty_day_pct, 2)}%</td>
-        <td class="num ${ytdClass}">${formatNumber(row.ytd_pct, 2)}%</td>
-        <td class="num">${formatMoney(row.turnover)}</td>
-        <td class="num">${formatNumber(row.theme_score, 1)}</td>
-        <td class="num">${formatNumber(row.early_trend_score, 1)}</td>
-        <td class="num">${formatNumber(row.not_overextended_score, 1)}</td>
-        <td class="num">${formatNumber(row.execution_score, 1)}</td>
-        ${scoreCell(row)}
-        <td class="reasons">${explanation}</td>
-      </tr>
-    `;
-  }).join("");
+  bodyEl.innerHTML = displayRows.map((row, index) => standardStrategyRow(row, index, scoreKeys)).join("");
+  bindSentimentRows(bodyEl);
+}
 
-  bindSentimentRows(els.techBody);
+function standardStrategyRow(row, index, scoreKeys = {}) {
+  const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
+  const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
+  const executionKeys = scoreKeys.execution || ["execution_score"];
+  const executionValue = strategyScoreValue(row, executionKeys);
+  return `
+    <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
+      <td class="num">${row.rank || index + 1}</td>
+      ${codeCell(row)}
+      <td>${escapeHtml(row.name)}</td>
+      <td>${escapeHtml(row.market_label || "-")}</td>
+      <td class="num">${formatNumber(row.price, 3)}</td>
+      <td class="num ${pctClass}">${formatNumber(row.pct_chg, 2)}%</td>
+      <td class="num">${formatNumber(row.volume_ratio, 2)}</td>
+      <td class="num">${formatNumber(row.turnover_rate, 2)}%</td>
+      <td class="num">${formatMoney(row.turnover)}</td>
+      ${marketCapCell(row)}
+      <td class="num ${sixtyClass}">${formatNumber(row.sixty_day_pct, 2)}%</td>
+      <td class="num">${formatStrategyScore(row, scoreKeys.liquidity || ["liquidity_score"])}</td>
+      <td class="num">${formatStrategyScore(row, scoreKeys.momentum || ["momentum_score"])}</td>
+      <td class="num">${formatStrategyScore(row, scoreKeys.trend || ["trend_score"])}</td>
+      ${scoreCell(row, executionValue)}
+      <td class="reasons">${explanationTags(row)}</td>
+    </tr>`;
+}
+
+function formatStrategyScore(row, keys) {
+  const value = strategyScoreValue(row, keys);
+  return value === undefined ? "-" : formatNumber(value, 1);
+}
+
+function strategyScoreValue(row, keys) {
+  for (const key of keys || []) {
+    if (row[key] === undefined || row[key] === null || row[key] === "") continue;
+    return row[key];
+  }
+  return undefined;
+}
+
+function scoreGradeClass(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "score-grade-empty";
+  if (num >= 80) return "score-grade-high";
+  if (num >= 70) return "score-grade-mid";
+  if (num >= 55) return "score-grade-low";
+  return "score-grade-bad";
+}
+
+function executionScoreHint(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "买入安全：暂无数据";
+  if (num >= 80) return "买入安全高：涨幅未明显过热，当前追高风险较低";
+  if (num >= 70) return "买入安全中：仍可观察，但不要追高";
+  if (num >= 55) return "买入安全偏低：涨幅靠近风控区，谨慎";
+  return "买入安全低：当前不适合追买或缺少上涨确认";
 }
 
 async function loadChokepointPicks() {
@@ -1184,9 +1417,11 @@ async function loadChokepointPicks() {
       throw new Error(payload.error || "接口返回异常");
     }
     state.lastRows.chokepoint = payload.data || [];
+    state.chokepointIndustryMap = payload.meta?.industry_map || [];
+    state.chokepointMeta = payload.meta || {};
     renderMetrics({ health: payload.health, meta: payload.meta, market_sentiment: {} });
-    renderChainMap(payload.meta?.chain || []);
-    renderChokepointTable(state.lastRows.chokepoint);
+    renderChainMap(state.chokepointIndustryMap, payload.meta || {});
+    renderChokepointTable(state.lastRows.chokepoint, payload.meta || {});
     setStatus(`卡脖子榜更新时间 ${payload.meta.generated_at}`);
   } catch (err) {
     els.chokepointBody.innerHTML = `<tr><td colspan="16" class="empty">${escapeHtml(err.message)}</td></tr>`;
@@ -1195,85 +1430,243 @@ async function loadChokepointPicks() {
   }
 }
 
-// 产业链全景图：按环节分组的代表票卡片。
-function renderChainMap(chain) {
-  const active = (chain || []).filter((node) => (node.picks || []).length);
-  if (!active.length) {
-    els.chokepointChainMap.innerHTML = '<div class="empty">当日无命中卡脖子环节的标的</div>';
+// 产业链/行业目录：固定展示关键上游环节和代表龙头，点击行业 Tab 联动下方榜单。
+function renderChainMap(industryMap, meta = {}) {
+  const groups = industryMap || [];
+  if (!groups.length) {
+    els.chokepointChainMap.innerHTML = `<div class="empty">${escapeHtml(meta.empty_reason || "暂无行业目录数据")}</div>`;
     return;
   }
-  els.chokepointChainMap.innerHTML = active
-    .map((node) => {
-      const picks = node.picks
-        .map((p) => {
-          const v = p.verdict || {};
-          const badge = v.tier ? `<span class="verdict verdict-${escapeHtml(v.tier)}">${escapeHtml(v.label || v.tier)}</span>` : "";
-          const pctClass = Number(p.pct_chg || 0) >= 0 ? "positive" : "negative";
-          return `
-            <div class="chain-pick" data-code="${escapeHtml(p.code)}" data-name="${escapeHtml(p.name)}">
-              <div class="chain-pick-name">${escapeHtml(p.name)} <span class="chain-pick-code">${escapeHtml(p.code)}</span></div>
-              <div class="chain-pick-meta">
-                ${badge}
-                <span class="num">${formatNumber(p.score, 1)}</span>
-                <span class="num ${pctClass}">${formatNumber(p.pct_chg, 2)}%</span>
-              </div>
-            </div>`;
-        })
-        .join("");
-      return `
-        <div class="chain-node">
-          <div class="chain-node-head">
-            <span class="chain-segment">${escapeHtml(node.segment)}</span>
-            <span class="chain-count">${node.count}</span>
+  if (
+    state.chokepointActiveSegment !== "all" &&
+    !groups.some(node => node.segment === state.chokepointActiveSegment)
+  ) {
+    state.chokepointActiveSegment = "all";
+  }
+
+  const totals = groups[0]?.totals || {};
+  const totalLeaders = Number(totals.unique_leader_count ?? groups.reduce((sum, node) => sum + Number(node.leader_count || 0), 0));
+  const totalIndustries = Number(totals.industry_count ?? groups.length);
+  const totalRecommended = Number(totals.recommended_count ?? groups.reduce((sum, node) => sum + Number(node.recommended_count || 0), 0));
+  const totalMatched = Number(totals.matched_count ?? 0);
+  const totalQuoted = Number(totals.quote_available_count ?? 0);
+  const active = state.chokepointActiveSegment || "all";
+  const selectedGroups = active === "all"
+    ? groups
+    : groups.filter(node => node.segment === active);
+  const rawLeaderRows = selectedGroups
+    .flatMap(node => (node.leaders || []).map(leader => ({ ...leader, chain_segment: node.segment })))
+    .sort(compareChokepointLeaders);
+  const leaderRows = active === "all" ? uniqueChokepointLeaders(rawLeaderRows) : rawLeaderRows;
+  const matchedCount = active === "all" ? totalMatched : leaderRows.filter(row => row.matched).length;
+  const quoteCount = active === "all" ? totalQuoted : leaderRows.filter(row => row.quote_available).length;
+  const buyWatchCount = active === "all" ? totalRecommended : leaderRows.filter(row => ["buy", "watch"].includes(row.recommendation?.level)).length;
+  const selectedTitle = active === "all" ? "全部卡脖子行业" : active;
+  const note = active === "all"
+    ? (meta.empty_reason || "点击行业 Tab 查看该环节龙头；龙头股只代表产业地位，不等于买入建议。")
+    : "列表优先展示命中策略或可观察标的；未命中会直接给出不推荐或仅观察原因。";
+  const tabs = [
+    `
+      <button class="industry-tab ${active === "all" ? "is-active" : ""}" type="button" data-segment="all">
+        <span>全部</span>
+        <strong>${totalLeaders}</strong>
+        <small>${totalIndustries}行业 · ${totalRecommended}可买/观察</small>
+      </button>
+    `,
+    ...groups.map(node => `
+      <button class="industry-tab ${active === node.segment ? "is-active" : ""}" type="button" data-segment="${escapeHtml(node.segment)}">
+        <span>${escapeHtml(node.segment)}</span>
+        <strong>${node.leader_count || 0}</strong>
+        <small>${node.recommended_count || 0}/${node.leader_count || 0}</small>
+      </button>
+    `),
+  ].join("");
+  const leaders = leaderRows.length
+    ? leaderRows.map(renderChokepointLeaderRow).join("")
+    : `<div class="empty">该行业暂无龙头目录</div>`;
+
+  els.chokepointChainMap.innerHTML = `
+    <div class="industry-browser">
+      <div class="industry-tabs" role="tablist" aria-label="卡脖子行业切换">${tabs}</div>
+      <div class="industry-panel">
+        <div class="industry-panel-head">
+          <div>
+            <h3>${escapeHtml(selectedTitle)}</h3>
+            <p>${escapeHtml(note)}</p>
           </div>
-          <div class="chain-picks">${picks}</div>
-        </div>`;
-    })
-    .join("");
-  bindSentimentRows(els.chokepointChainMap);
+          <div class="industry-stats">
+            <div><span>龙头股</span><strong>${leaderRows.length}</strong></div>
+            <div><span>可买/观察</span><strong>${buyWatchCount}</strong></div>
+            <div><span>命中策略</span><strong>${matchedCount}</strong></div>
+            <div><span>有行情</span><strong>${quoteCount}</strong></div>
+          </div>
+        </div>
+        <div class="leader-list">
+          <div class="leader-list-head">
+            <span>行业/股票</span>
+            <span>实时状态</span>
+            <span>系统动作</span>
+            <span>原因</span>
+          </div>
+          ${leaders}
+        </div>
+      </div>
+    </div>`;
+  bindChokepointIndustryMap();
 }
 
-function renderChokepointTable(rows) {
-  const displayRows = filterAndSortRows(rows);
+function uniqueChokepointLeaders(rows) {
+  const byCode = new Map();
+  (rows || []).forEach(row => {
+    const key = String(row.code || "");
+    const current = byCode.get(key);
+    if (!current) {
+      byCode.set(key, { ...row, segments: [row.chain_segment || row.segment].filter(Boolean) });
+      return;
+    }
+    const mergedSegments = new Set([...(current.segments || []), row.chain_segment || row.segment].filter(Boolean));
+    const better = compareChokepointLeaders(row, current) < 0 ? row : current;
+    byCode.set(key, {
+      ...current,
+      ...better,
+      chain_segment: [...mergedSegments].join(" / "),
+      segments: [...mergedSegments],
+    });
+  });
+  return [...byCode.values()].sort(compareChokepointLeaders);
+}
+
+function bindChokepointIndustryMap() {
+  [...els.chokepointChainMap.querySelectorAll(".industry-tab")].forEach(node => {
+    node.addEventListener("click", () => {
+      state.chokepointActiveSegment = node.dataset.segment || "all";
+      renderChainMap(state.chokepointIndustryMap, state.chokepointMeta || {});
+      renderChokepointTable(state.lastRows.chokepoint, state.chokepointMeta || {});
+    });
+  });
+  [...els.chokepointChainMap.querySelectorAll(".leader-row")].forEach(item => {
+    item.addEventListener("click", event => {
+      event.stopPropagation();
+      showSentiment(item.dataset.code, item.dataset.name);
+    });
+  });
+}
+
+function renderChokepointLeaderRow(row) {
+  const rec = row.recommendation || {};
+  const pctClass = Number(row.pct_chg || 0) >= 0 ? "positive" : "negative";
+  const matched = row.matched ? "命中策略" : row.quote_available ? "未命中策略" : "无行情";
+  const status = row.quote_available
+    ? `${formatNumber(row.price, 3)} / <span class="${pctClass}">${formatNumber(row.pct_chg, 2)}%</span>`
+    : "无行情";
+  return `
+    <div class="leader-row" data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
+      <div class="leader-main">
+        <span class="leader-segment">${escapeHtml(row.chain_segment || row.segment || "-")}</span>
+        <strong>${escapeHtml(row.name)}</strong>
+        <small>${escapeHtml(row.code)}</small>
+      </div>
+      <div class="leader-market">
+        <span>${status}</span>
+        <small>${row.quote_available ? formatMoney(row.turnover) : "-"}</small>
+      </div>
+      <div class="leader-action">
+        <span class="tag ${row.matched ? "strategy" : "stable"}">${escapeHtml(matched)}</span>
+        <span class="tag recommend-${escapeHtml(rec.level || "unknown")}">${escapeHtml(rec.label || "无法判断")}</span>
+      </div>
+      <div class="leader-reason">${escapeHtml(rec.reason || (row.reasons || []).join("；") || "-")}</div>
+    </div>`;
+}
+
+function compareChokepointLeaders(left, right) {
+  const levelRank = { buy: 0, watch: 1, observe: 2, avoid: 3, unknown: 4 };
+  const leftLevel = levelRank[left.recommendation?.level || "unknown"] ?? 9;
+  const rightLevel = levelRank[right.recommendation?.level || "unknown"] ?? 9;
+  if (leftLevel !== rightLevel) return leftLevel - rightLevel;
+  if (Boolean(left.matched) !== Boolean(right.matched)) return left.matched ? -1 : 1;
+  if (Boolean(left.quote_available) !== Boolean(right.quote_available)) return left.quote_available ? -1 : 1;
+  return Number(right.score || 0) - Number(left.score || 0);
+}
+
+function renderChokepointTable(rows, meta = {}) {
+  const activeSegment = state.chokepointActiveSegment || "all";
+  const scopedRows = activeSegment === "all"
+    ? rows
+    : (rows || []).filter(row => row.chain_segment === activeSegment);
+  const displayRows = filterAndSortRows(scopedRows);
   if (!displayRows.length) {
-    els.chokepointBody.innerHTML = '<tr><td colspan="16" class="empty">暂无命中卡脖子环节的股票</td></tr>';
+    const fallbackRows = chokepointLeaderFallbackRows(activeSegment);
+    if (fallbackRows.length) {
+      renderChokepointLeaderFallback(fallbackRows, activeSegment, meta);
+      return;
+    }
+    const scopeText = activeSegment === "all" ? "" : `「${escapeHtml(activeSegment)}」`;
+    const reason = meta.empty_reason || "该环节当前没有股票同时满足上游关键词、流动性和风险过滤条件。";
+    els.chokepointBody.innerHTML = `<tr><td colspan="16" class="empty">${scopeText}暂无命中卡脖子策略的股票。${escapeHtml(reason)}</td></tr>`;
     return;
   }
-  els.chokepointBody.innerHTML = displayRows.map(row => {
-    const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
-    const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
-    const ytdClass = row.ytd_pct >= 0 ? "positive" : "negative";
-    const explanation = explanationTags(row);
-    return `
-      <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-        <td class="num">${row.rank}</td>
-        <td class="num">${escapeHtml(row.code)}</td>
-        <td>${escapeHtml(row.name)}</td>
-        <td>${escapeHtml(row.chain_segment || "-")}</td>
-        <td>${escapeHtml(row.market_label)}</td>
-        <td class="num">${formatNumber(row.price, 3)}</td>
-        <td class="num ${pctClass}">${formatNumber(row.pct_chg, 2)}%</td>
-        <td class="num ${sixtyClass}">${formatNumber(row.sixty_day_pct, 2)}%</td>
-        <td class="num ${ytdClass}">${formatNumber(row.ytd_pct, 2)}%</td>
-        <td class="num">${formatMoney(row.turnover)}</td>
-        <td class="num">${formatNumber(row.chokepoint_score, 1)}</td>
-        <td class="num">${formatNumber(row.early_trend_score, 1)}</td>
-        <td class="num">${formatNumber(row.not_overextended_score, 1)}</td>
-        <td class="num">${formatNumber(row.execution_score, 1)}</td>
-        ${scoreCell(row)}
-        <td class="reasons">${explanation}</td>
-      </tr>
-    `;
-  }).join("");
+  els.chokepointBody.innerHTML = displayRows.map((row, index) => standardStrategyRow(row, index, {
+    liquidity: ["liquidity_score"],
+    momentum: ["chokepoint_score"],
+    trend: ["early_trend_score", "not_overextended_score"],
+    execution: ["execution_score"],
+  })).join("");
+  bindSentimentRows(els.chokepointBody);
+}
 
+function chokepointLeaderFallbackRows(activeSegment) {
+  const groups = state.chokepointIndustryMap || [];
+  const selected = activeSegment === "all"
+    ? groups
+    : groups.filter(node => node.segment === activeSegment);
+  return selected.flatMap(node => (node.leaders || []).map(leader => ({ ...leader, chain_segment: node.segment })));
+}
+
+function renderChokepointLeaderFallback(rows, activeSegment, meta = {}) {
+  const title = activeSegment === "all" ? "行业龙头观察榜" : `「${escapeHtml(activeSegment)}」龙头观察榜`;
+  const reason = meta.empty_reason || "当前没有股票命中卡脖子策略，以下为行业龙头实时状态，不等同于推荐买入。";
+  els.chokepointBody.innerHTML = `
+    <tr>
+      <td colspan="16" class="empty">${title}：${escapeHtml(reason)}</td>
+    </tr>
+	    ${rows.map((row, index) => {
+	      const rec = row.recommendation || {};
+	      const pctClass = Number(row.pct_chg || 0) >= 0 ? "positive" : "negative";
+	      const matched = row.matched ? "命中策略" : row.quote_available ? "未命中策略" : "无行情";
+	      return `
+	        <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
+	          <td class="num">${index + 1}</td>
+	          ${codeCell(row)}
+	          <td>${escapeHtml(row.name)}</td>
+	          <td>${escapeHtml(row.market_label || "-")}</td>
+	          <td class="num">${row.quote_available ? formatNumber(row.price, 3) : "-"}</td>
+	          <td class="num ${pctClass}">${row.quote_available ? `${formatNumber(row.pct_chg, 2)}%` : "-"}</td>
+	          <td class="num">${row.quote_available ? formatNumber(row.volume_ratio, 2) : "-"}</td>
+	          <td class="num">${row.quote_available ? `${formatNumber(row.turnover_rate, 2)}%` : "-"}</td>
+	          <td class="num">${row.quote_available ? formatMoney(row.turnover) : "-"}</td>
+	          ${marketCapCell(row)}
+	          <td class="num">${row.quote_available ? `${formatNumber(row.sixty_day_pct, 2)}%` : "-"}</td>
+	          <td class="num">-</td>
+	          <td class="num">-</td>
+	          <td class="num">-</td>
+	          <td class="num">-</td>
+	          <td><span class="tag recommend-${escapeHtml(rec.level || "unknown")}">${escapeHtml(rec.label || "无法判断")}</span></td>
+	          <td class="reasons">
+	            <span class="tag stable">${escapeHtml(matched)}</span>
+	            <span class="tag stable">${escapeHtml(row.chain_segment || row.segment || "-")}</span>
+	            <span class="tag recommend-${escapeHtml(rec.level || "unknown")}">${escapeHtml(rec.reason || "-")}</span>
+	          </td>
+	        </tr>`;
+    }).join("")}
+  `;
   bindSentimentRows(els.chokepointBody);
 }
 
 // ===== 新增盈利策略页（反转低波 / 小市值价值 / 量价突破） =====
-function makeFactorLoader(stateKey, loadedKey, endpoint, topN, bodyEl, renderFn, label) {
+function makeFactorLoader(stateKey, loadedKey, endpoint, topN, bodyEl, renderFn, label, colSpan = 16) {
   return async function () {
     state[loadedKey] = true;
-    bodyEl().innerHTML = '<tr><td colspan="16" class="empty">加载中...</td></tr>';
+    bodyEl().innerHTML = `<tr><td colspan="${colSpan}" class="empty">加载中...</td></tr>`;
     const params = new URLSearchParams({ top_n: String(topN), market: els.marketSelect.value });
     try {
       const res = await fetch(`${endpoint}?${params.toString()}`);
@@ -1284,100 +1677,46 @@ function makeFactorLoader(stateKey, loadedKey, endpoint, topN, bodyEl, renderFn,
       renderFn(state.lastRows[stateKey], payload.meta || {});
       setStatus(`${label}更新时间 ${payload.meta.generated_at}`);
     } catch (err) {
-      bodyEl().innerHTML = `<tr><td colspan="16" class="empty">${escapeHtml(err.message)}</td></tr>`;
+      bodyEl().innerHTML = `<tr><td colspan="${colSpan}" class="empty">${escapeHtml(err.message)}</td></tr>`;
       setStatus(`${label}加载失败：${err.message}`);
     }
   };
 }
 
-const loadReversalPicks = makeFactorLoader("reversal", "reversalLoaded", "/api/reversal-picks", 30, () => els.reversalBody, renderReversalTable, "反转低波");
-const loadSmallcapPicks = makeFactorLoader("smallcap", "smallcapLoaded", "/api/smallcap-value-picks", 30, () => els.smallcapBody, renderSmallcapTable, "小市值价值");
-const loadBreakoutPicks = makeFactorLoader("breakout", "breakoutLoaded", "/api/breakout-picks", 30, () => els.breakoutBody, renderBreakoutTable, "量价突破");
+const loadReversalPicks = makeFactorLoader("reversal", "reversalLoaded", "/api/reversal-picks", 30, () => els.reversalBody, renderReversalTable, "反转低波", 17);
+const loadSmallcapPicks = makeFactorLoader("smallcap", "smallcapLoaded", "/api/smallcap-value-picks", 30, () => els.smallcapBody, renderSmallcapTable, "小市值价值", 17);
+const loadBreakoutPicks = makeFactorLoader("breakout", "breakoutLoaded", "/api/breakout-picks", 30, () => els.breakoutBody, renderBreakoutTable, "量价突破", 17);
 
 function renderReversalTable(rows) {
-  const r = filterAndSortRows(rows);
-  if (!r.length) { els.reversalBody.innerHTML = '<tr><td colspan="16" class="empty">暂无符合条件的超跌低波标的</td></tr>'; return; }
-  els.reversalBody.innerHTML = r.map(row => {
-    const pc = row.pct_chg >= 0 ? "positive" : "negative";
-    const s60 = row.sixty_day_pct >= 0 ? "positive" : "negative";
-    const r20 = row.ret_20d >= 0 ? "positive" : "negative";
-    return `
-      <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-        <td class="num">${row.rank}</td>
-        <td class="num">${escapeHtml(row.code)}</td>
-        <td>${escapeHtml(row.name)}</td>
-        <td>${escapeHtml(row.market_label)}</td>
-        <td class="num">${formatNumber(row.price, 3)}</td>
-        <td class="num ${pc}">${formatNumber(row.pct_chg, 2)}%</td>
-        <td class="num ${s60}">${formatNumber(row.sixty_day_pct, 2)}%</td>
-        <td class="num ${r20}">${formatNumber(row.ret_20d, 2)}%</td>
-        <td class="num">${formatNumber(row.volatility_20d, 2)}</td>
-        <td class="num">${formatNumber(row.turnover_rate, 2)}%</td>
-        <td class="num">${formatNumber(row.reversal_score, 1)}</td>
-        <td class="num">${formatNumber(row.lowvol_score, 1)}</td>
-        <td class="num">${formatNumber(row.calm_turnover_score, 1)}</td>
-        ${scoreCell(row)}
-        <td class="reasons">${explanationTags(row)}</td>
-      </tr>`;
-  }).join("");
-  bindSentimentRows(els.reversalBody);
+  renderStandardStrategyTable(rows, els.reversalBody, "暂无符合条件的超跌低波标的", {
+    liquidity: ["liquidity_score"],
+    momentum: ["reversal_score", "oversold_calm_score"],
+    trend: ["lowvol_score", "not_overextended_score"],
+    execution: ["calm_turnover_score"],
+  });
 }
 
 function renderSmallcapTable(rows, meta) {
-  const r = filterAndSortRows(rows);
-  if (!r.length) {
-    const note = meta && meta.note ? escapeHtml(meta.note) : "暂无满足护栏的小市值标的";
-    els.smallcapBody.innerHTML = `<tr><td colspan="14" class="empty">${note}</td></tr>`;
-    return;
-  }
-  els.smallcapBody.innerHTML = r.map(row => {
-    const pc = row.pct_chg >= 0 ? "positive" : "negative";
-    return `
-      <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-        <td class="num">${row.rank}</td>
-        <td class="num">${escapeHtml(row.code)}</td>
-        <td>${escapeHtml(row.name)}</td>
-        <td>${escapeHtml(row.market_label)}</td>
-        <td class="num">${formatNumber(row.price, 3)}</td>
-        <td class="num ${pc}">${formatNumber(row.pct_chg, 2)}%</td>
-        <td class="num">${formatNumber((row.float_market_cap || 0) / 1e8, 1)}</td>
-        <td class="num">${formatNumber(row.pe_dynamic, 1)}</td>
-        <td class="num">${formatNumber(row.pb, 2)}</td>
-        <td class="num">${formatNumber(row.turnover_rate, 2)}%</td>
-        <td class="num">${formatNumber(row.smallcap_score, 1)}</td>
-        <td class="num">${formatNumber(row.value_score, 1)}</td>
-        ${scoreCell(row)}
-        <td class="reasons">${explanationTags(row)}</td>
-      </tr>`;
-  }).join("");
-  bindSentimentRows(els.smallcapBody);
+  renderStandardStrategyTable(rows, els.smallcapBody, meta && meta.note ? meta.note : "暂无满足护栏的小市值标的", {
+    liquidity: ["liquidity_score"],
+    momentum: ["smallcap_score"],
+    trend: ["value_score", "oversold_calm_score"],
+    execution: ["not_overextended_score", "lowvol_score"],
+  });
 }
 
-function renderBreakoutTable(rows) {
-  const r = filterAndSortRows(rows);
-  if (!r.length) { els.breakoutBody.innerHTML = '<tr><td colspan="14" class="empty">暂无突破/多头排列标的（需开启历史因子）</td></tr>'; return; }
-  els.breakoutBody.innerHTML = r.map(row => {
-    const pc = row.pct_chg >= 0 ? "positive" : "negative";
-    const s60 = row.sixty_day_pct >= 0 ? "positive" : "negative";
-    return `
-      <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-        <td class="num">${row.rank}</td>
-        <td class="num">${escapeHtml(row.code)}</td>
-        <td>${escapeHtml(row.name)}</td>
-        <td>${escapeHtml(row.market_label)}</td>
-        <td class="num">${formatNumber(row.price, 3)}</td>
-        <td class="num ${pc}">${formatNumber(row.pct_chg, 2)}%</td>
-        <td class="num ${s60}">${formatNumber(row.sixty_day_pct, 2)}%</td>
-        <td>${row.ma_bull_aligned ? '<span class="tag strategy">多头</span>' : "-"}</td>
-        <td>${row.breakout_20d ? '<span class="tag strategy">新高</span>' : "-"}</td>
-        <td class="num">${formatNumber(row.vol_ma5_ratio, 2)}</td>
-        <td class="num">${formatNumber(row.breakout_strength, 1)}</td>
-        <td class="num">${formatNumber(row.volume_break_score, 1)}</td>
-        ${scoreCell(row)}
-        <td class="reasons">${explanationTags(row)}</td>
-      </tr>`;
-  }).join("");
-  bindSentimentRows(els.breakoutBody);
+function renderBreakoutTable(rows, meta = {}) {
+  renderStandardStrategyTable(
+    rows,
+    els.breakoutBody,
+    meta.note || "暂无突破/多头排列标的；若未开启历史因子，系统会使用实时强势兜底。",
+    {
+      liquidity: ["volume_break_score", "liquidity_score"],
+      momentum: ["momentum_score", "breakout_strength"],
+      trend: ["trend_score", "breakout_strength"],
+      execution: ["execution_score"],
+    },
+  );
 }
 
 
@@ -1396,7 +1735,7 @@ function renderSwingTable(rows) {
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
-        <td class="num">${escapeHtml(row.code)}</td>
+        ${codeCell(row)}
         <td>${escapeHtml(row.name)}</td>
         <td>${escapeHtml(row.market_label)}</td>
         <td class="num">${formatNumber(row.price, 3)}</td>
@@ -1406,9 +1745,9 @@ function renderSwingTable(rows) {
         <td class="num ${ret20Class}">${formatNumber(row.ret_20d, 2)}%</td>
         <td class="num">${formatNumber(row.ma20_gap, 2)}%</td>
         <td class="num">${formatMoney(row.turnover)}</td>
+        ${marketCapCell(row)}
         <td class="num">${formatNumber(row.momentum_score, 1)}</td>
         <td class="num">${formatNumber(row.trend_score, 1)}</td>
-        <td class="num">${formatNumber(row.liquidity_score, 1)}</td>
         ${scoreCell(row)}
         <td class="reasons">${explanation}</td>
       </tr>
@@ -1420,7 +1759,7 @@ function renderSwingTable(rows) {
 function renderPositionTable(rows) {
   const displayRows = filterAndSortRows(rows);
   if (!displayRows.length) {
-    els.positionBody.innerHTML = '<tr><td colspan="16" class="empty">暂无符合条件的中长期股票</td></tr>';
+    els.positionBody.innerHTML = '<tr><td colspan="17" class="empty">暂无符合条件的中长期股票</td></tr>';
     return;
   }
   els.positionBody.innerHTML = displayRows.map(row => {
@@ -1431,12 +1770,13 @@ function renderPositionTable(rows) {
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
-        <td class="num">${escapeHtml(row.code)}</td>
+        ${codeCell(row)}
         <td>${escapeHtml(row.name)}</td>
         <td>${escapeHtml(row.theme || "-")}</td>
         <td>${escapeHtml(row.market_label)}</td>
         <td class="num">${formatNumber(row.price, 3)}</td>
         <td class="num ${pctClass}">${formatNumber(row.pct_chg, 2)}%</td>
+        ${marketCapCell(row)}
         <td class="num ${sixtyClass}">${formatNumber(row.sixty_day_pct, 2)}%</td>
         <td class="num ${ytdClass}">${formatNumber(row.ytd_pct, 2)}%</td>
         <td class="num">${formatNumber(row.ma20_gap, 2)}%</td>
@@ -1458,10 +1798,42 @@ function renderValidationMetrics(metrics) {
   const real = Number(metrics.real_sample_count || 0);
   const replay = Number(metrics.replay_sample_count || 0);
   const horizon = metrics.primary_horizon_label || "主周期";
+  const winRate = metrics.win_rate_primary_net == null ? null : Number(metrics.win_rate_primary_net);
+  const avgReturn = metrics.avg_primary_return_net == null ? null : Number(metrics.avg_primary_return_net);
   els.validationSampleCount.textContent = outcome > sample ? `${sample}/${outcome}` : `${sample}`;
-  els.validationWinRate.textContent = metrics.win_rate_primary_net != null ? `${formatNumber(metrics.win_rate_primary_net, 1)}%` : "-";
-  els.validationHit3.textContent = `${real}/${replay}`;
-  els.validationAvgReturn.textContent = metrics.avg_primary_return_net != null ? `${horizon} ${formatNumber(metrics.avg_primary_return_net, 2)}%` : "-";
+  els.validationWinRate.textContent = winRate != null ? `${formatNumber(winRate, 1)}%` : "-";
+  els.validationHit3.textContent = `真 ${real} / 回 ${replay}`;
+  els.validationAvgReturn.textContent = avgReturn != null ? `${horizon} ${formatNumber(avgReturn, 2)}%` : "-";
+  renderValidationSimpleDecision({ sample, outcome, real, replay, winRate, avgReturn, horizon });
+}
+
+function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate, avgReturn, horizon }) {
+  if (!els.validationSimpleDecision) return;
+  let level = "neutral";
+  let text = "结论：暂无足够数据。先保存预测并等待回填结果。";
+  if (outcome <= 0 && sample <= 0) {
+    text = "结论：暂无回填结果。先让 daily_job 保存快照并回填未来收益；刚保存当天不会立刻有主周期样本。";
+  } else if (sample <= 0 && outcome > 0) {
+    text = `结论：已有 ${outcome} 条回填结果，但主周期样本还没成熟或不满足当前主口径，先不要看胜率。`;
+  } else if (sample < 30) {
+    text = `结论：先别信胜率。当前有效样本 ${sample} 条，少于 30 条，只能观察。`;
+  } else if (real < 10) {
+    level = "watch";
+    text = `结论：谨慎看。有效样本 ${sample} 条，但真实前瞻只有 ${real} 条，回放 ${replay} 条只能粗筛。`;
+  } else if (winRate == null || avgReturn == null) {
+    text = "结论：暂无净胜率或净收益，先回填结果。";
+  } else if (winRate >= 55 && avgReturn > 0) {
+    level = "good";
+    text = `结论：可观察，但不保证盈利。${horizon}扣成本净胜率 ${formatNumber(winRate, 1)}%，净收益 ${formatNumber(avgReturn, 2)}%。`;
+  } else if (winRate >= 50 && avgReturn >= 0) {
+    level = "watch";
+    text = `结论：一般，继续观察。${horizon}扣成本后只是略正，暂不建议提高权重。`;
+  } else {
+    level = "bad";
+    text = `结论：暂不加权。${horizon}扣成本表现偏弱，先不要依赖这个策略。`;
+  }
+  els.validationSimpleDecision.className = `validation-current-decision decision-${level}`;
+  els.validationSimpleDecision.textContent = text;
 }
 
 function renderValidationDates(rows) {
@@ -1637,6 +2009,19 @@ function rerenderCurrentTables() {
   if (state.techLoaded) {
     renderTechTable(state.lastRows.tech);
   }
+  if (state.chokepointLoaded) {
+    renderChainMap(state.chokepointIndustryMap, state.chokepointMeta || {});
+    renderChokepointTable(state.lastRows.chokepoint, state.chokepointMeta || {});
+  }
+  if (state.reversalLoaded) {
+    renderReversalTable(state.lastRows.reversal);
+  }
+  if (state.smallcapLoaded) {
+    renderSmallcapTable(state.lastRows.smallcap);
+  }
+  if (state.breakoutLoaded) {
+    renderBreakoutTable(state.lastRows.breakout);
+  }
   if (state.horizonLoaded) {
     renderSwingTable(state.lastRows.swing);
     renderPositionTable(state.lastRows.position);
@@ -1717,8 +2102,13 @@ function findLocalRow(code) {
     state.lastRows.longTerm,
     state.lastRows.tomorrow,
     state.lastRows.tech,
+    state.lastRows.chokepoint,
+    state.lastRows.reversal,
+    state.lastRows.smallcap,
+    state.lastRows.breakout,
     state.lastRows.swing,
     state.lastRows.position,
+    ...(state.chokepointIndustryMap || []).map(node => node.leaders || []),
   ];
   const matches = groups
     .flat()
@@ -1757,11 +2147,24 @@ function verdictBadge(verdict) {
   return `<span class="verdict verdict-${escapeHtml(verdict.tier)}">${escapeHtml(verdict.label || verdict.tier)}</span>${note}`;
 }
 
-// C3：表格综合分单元格 = verdict 徽章 + 数值。
-function scoreCell(row) {
+// C3：表格综合分单元格 = verdict 徽章 + “综合分 / 买入安全”。
+function scoreCell(row, entrySafetyValue = row.execution_score) {
   const badge = verdictBadge(row.verdict);
-  const number = `<div>${formatNumber(row.score, 1)}</div>`;
-  return `<td class="num score">${badge}${number}</td>`;
+  const score = scorePairValue(row.score, 1, "综合分");
+  const entry = scorePairValue(entrySafetyValue, 0, executionScoreHint(entrySafetyValue), "买安 ");
+  const separator = entry ? '<span class="score-pair-separator">/</span>' : "";
+  const number = `<div class="score-pair" title="综合分 / 买入安全">${score}${separator}${entry}</div>`;
+  const tier = row.verdict?.tier ? ` score-${escapeHtml(row.verdict.tier)}` : "";
+  return `<td class="num score${tier}">${badge}${number}</td>`;
+}
+
+function scorePairValue(value, digits, title, label = "") {
+  const num = Number(value);
+  const prefix = escapeHtml(label);
+  if (!Number.isFinite(num)) {
+    return `<span class="score-pair-value score-grade-empty" title="${escapeHtml(title || "暂无数据")}">${prefix}-</span>`;
+  }
+  return `<span class="score-pair-value ${scoreGradeClass(num)}" title="${escapeHtml(title || "")}">${prefix}${formatNumber(num, digits)}</span>`;
 }
 
 // C3：多空双进度条。优先用行顶层 bull_score/bear_score（A2），回退委员会字段。
@@ -1788,7 +2191,7 @@ function renderDetailRadar(row) {
     ["动量", row.momentum_score],
     ["趋势", row.trend_score],
     ["流动性", row.liquidity_score],
-    ["可执行", row.execution_score],
+    ["买安", row.execution_score],
     ["主题", row.theme_score],
     ["不过热", row.not_overextended_score],
   ];
@@ -1993,6 +2396,37 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+function closeGlossaryPopover() {
+  if (!els.glossaryPopover || els.glossaryPopover.hidden) {
+    return;
+  }
+  els.glossaryPopover.hidden = true;
+  els.glossaryToggle?.setAttribute("aria-expanded", "false");
+}
+
+function toggleGlossaryPopover() {
+  if (!els.glossaryPopover || !els.glossaryToggle) {
+    return;
+  }
+  const nextOpen = els.glossaryPopover.hidden;
+  els.glossaryPopover.hidden = !nextOpen;
+  els.glossaryToggle.setAttribute("aria-expanded", String(nextOpen));
+}
+
+els.glossaryToggle?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleGlossaryPopover();
+});
+els.glossaryPopover?.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+document.addEventListener("click", closeGlossaryPopover);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeGlossaryPopover();
+  }
+});
+
 els.refreshButton.addEventListener("click", loadRecommendations);
 els.stockPredictionBtn.addEventListener("click", loadStockPrediction);
 els.stockPredictionInput.addEventListener("keydown", (event) => {
@@ -2073,17 +2507,29 @@ els.tabButtons.forEach(button => {
     if (button.dataset.tab === "overviewPanel" && !state.overviewLoaded) {
       loadStrategyOverview();
     }
+    if (button.dataset.tab === "portfolioPanel" && !state.portfolioLoaded) {
+      loadPortfolio();
+    }
   });
 });
+els.loadPortfolioBtn.addEventListener("click", loadPortfolio);
+els.portfolioStrategySelect.addEventListener("change", loadPortfolio);
 els.saveSnapshotBtn.addEventListener("click", () => saveStrategySnapshot(els.saveStrategySelect.value));
 els.backfillValidationSamples.addEventListener("click", backfillValidationSamples);
-els.prefetchValidationHistory.addEventListener("click", prefetchHistoryAndUpdateValidation);
 els.updateValidation.addEventListener("click", updateValidationOutcomes);
 els.validationStrategySelect.addEventListener("change", () => {
   state.selectedValidation = { date: "", strategy: els.validationStrategySelect.value };
   loadValidation();
 });
 els.validationDaysSelect.addEventListener("change", loadValidation);
+document.querySelectorAll(".validation-advanced").forEach((details) => {
+  details.addEventListener("toggle", () => {
+    if (!details.open) return;
+    requestAnimationFrame(() => {
+      Object.values(state.charts).forEach((chart) => chart && !chart.isDisposed?.() && chart.resize());
+    });
+  });
+});
 els.closeDetails.addEventListener("click", () => {
   els.detailsPanel.hidden = true;
 });

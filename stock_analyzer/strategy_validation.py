@@ -24,6 +24,19 @@ PRIMARY_RETURN_BY_STRATEGY = {
     "smallcap_value_picks": ("signal_hold_20d_return", 20, "20日"),
 }
 
+EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY = {
+    "short_term": ("next_close_return", 1, "次日开盘入场"),
+    "tomorrow_picks": ("next_close_return", 1, "次日开盘入场"),
+    "reversal_picks": ("hold_5d_return", 5, "5日开盘入场"),
+    "swing_picks": ("hold_10d_return", 10, "10日开盘入场"),
+    "breakout_picks": ("hold_10d_return", 10, "10日开盘入场"),
+    "long_term": ("hold_20d_return", 20, "20日开盘入场"),
+    "position_picks": ("hold_20d_return", 20, "20日开盘入场"),
+    "tech_potential": ("hold_20d_return", 20, "20日开盘入场"),
+    "chokepoint_picks": ("hold_20d_return", 20, "20日开盘入场"),
+    "smallcap_value_picks": ("hold_20d_return", 20, "20日开盘入场"),
+}
+
 
 class StrategyValidationStore:
     def __init__(self, db_path: str) -> None:
@@ -43,7 +56,7 @@ class StrategyValidationStore:
         signal_date = signal_time[:10]
         rows = list(rows)
         saved = 0
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
             old_ids = conn.execute(
                 """
                 SELECT id
@@ -107,7 +120,7 @@ class StrategyValidationStore:
         if strategy_name:
             where = "WHERE strategy_name = ?"
             params.append(strategy_name)
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
             rows = conn.execute(
                 """
                 SELECT signal_date, strategy_name, COUNT(*) AS count, MAX(signal_time) AS signal_time
@@ -135,7 +148,7 @@ class StrategyValidationStore:
         if strategy_name:
             where += " AND s.strategy_name = ?"
             params.append(strategy_name)
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -160,7 +173,7 @@ class StrategyValidationStore:
         return [_row_to_dict(row) for row in rows]
 
     def latest_signal_rows(self, strategy_name: str) -> List[Dict[str, object]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
             row = conn.execute(
                 """
                 SELECT signal_date
@@ -184,6 +197,68 @@ class StrategyValidationStore:
         rows.sort(key=lambda item: int(item.get("rank") or 9999))
         return rows
 
+    def live_weight_samples(self, strategy_name: str, days: int = 120) -> List[Dict[str, object]]:
+        primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT s.signal_date, s.strategy_name, s.strategy_version, s.rank, s.code,
+                       s.name, s.score, s.turnover, s.market, s.raw_json,
+                       COALESCE(o.{primary_column}, 0) AS primary_return,
+                       COALESCE(o.signal_exit_return, o.exit_return, o.{primary_column}, 0) AS exit_return,
+                       COALESCE(o.future_days, 1) AS future_days
+                FROM strategy_signals s
+                JOIN strategy_outcomes o ON o.signal_id = s.id
+                WHERE s.strategy_name = ?
+                ORDER BY s.signal_date DESC, s.rank ASC
+                """.format(primary_column=primary_column),
+                (strategy_name,),
+            ).fetchall()
+        if not rows:
+            return []
+        dates: List[str] = []
+        selected: List[sqlite3.Row] = []
+        for row in rows:
+            if _is_replay_version(row["strategy_version"]):
+                continue
+            if int(row["future_days"] or 1) < primary_days:
+                continue
+            if row["signal_date"] not in dates:
+                if len(dates) >= max(1, int(days)):
+                    continue
+                dates.append(row["signal_date"])
+            if row["signal_date"] in dates:
+                selected.append(row)
+        samples: List[Dict[str, object]] = []
+        for row in selected:
+            try:
+                raw = json.loads(row["raw_json"] or "{}")
+            except Exception:
+                raw = {}
+            primary_return = coerce_number(row["primary_return"])
+            trade_cost = _execution_cost_pct(row)
+            samples.append(
+                {
+                    "signal_date": row["signal_date"],
+                    "strategy_name": row["strategy_name"],
+                    "strategy_version": row["strategy_version"],
+                    "rank": int(row["rank"] or 0),
+                    "code": normalize_code(row["code"]),
+                    "name": row["name"],
+                    "stored_score": coerce_number(row["score"]),
+                    "raw": raw if isinstance(raw, dict) else {},
+                    "primary_return": primary_return,
+                    "primary_return_net": round(primary_return - trade_cost, 4),
+                    "trade_cost_pct": trade_cost,
+                    "exit_return": coerce_number(row["exit_return"]),
+                    "future_days": int(row["future_days"] or 0),
+                    "primary_holding_days": primary_days,
+                    "primary_horizon_label": primary_label,
+                }
+            )
+        return samples
+
     def signal_codes(
         self,
         signal_date: str = "",
@@ -199,7 +274,7 @@ class StrategyValidationStore:
             where += " AND strategy_name = ?"
             params.append(strategy_name)
         params.append(max(1, int(limit)))
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -218,7 +293,13 @@ class StrategyValidationStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def update_outcomes(self, provider, signal_date: str = "", strategy_name: str = "") -> Dict[str, object]:
+    def update_outcomes(
+        self,
+        provider,
+        signal_date: str = "",
+        strategy_name: str = "",
+        codes: Optional[Iterable[str]] = None,
+    ) -> Dict[str, object]:
         where = "WHERE 1=1"
         params = []
         if signal_date:
@@ -227,7 +308,16 @@ class StrategyValidationStore:
         if strategy_name:
             where += " AND strategy_name = ?"
             params.append(strategy_name)
-        with sqlite3.connect(self.db_path) as conn:
+        normalized_codes: List[str] = []
+        for code in codes or []:
+            normalized = normalize_code(code)
+            if normalized:
+                normalized_codes.append(normalized)
+        if normalized_codes:
+            placeholders = ",".join("?" for _ in normalized_codes)
+            where += " AND code IN ({})".format(placeholders)
+            params.extend(normalized_codes)
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.row_factory = sqlite3.Row
             signals = conn.execute(
                 "SELECT * FROM strategy_signals {} ORDER BY signal_date DESC, rank ASC".format(where),
@@ -238,10 +328,15 @@ class StrategyValidationStore:
         skipped = 0
         for signal in signals:
             outcome = _compute_outcome(provider, signal)
+            if outcome and outcome.get("excluded"):
+                with sqlite3.connect(self.db_path, timeout=30) as conn:
+                    conn.execute("DELETE FROM strategy_outcomes WHERE signal_id = ?", (signal["id"],))
+                skipped += 1
+                continue
             if not outcome:
                 skipped += 1
                 continue
-            with sqlite3.connect(self.db_path) as conn:
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO strategy_outcomes
@@ -303,16 +398,20 @@ class StrategyValidationStore:
         if strategy_name:
             where += " AND s.strategy_name = ?"
             params.append(strategy_name)
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
                 SELECT s.signal_date, s.strategy_name, s.rank,
-                       s.strategy_version,
-                       COALESCE(o.signal_next_close_return, o.next_close_return) AS signal_next_close_return,
-                       o.next_close_return,
-                       COALESCE(o.signal_intraday_high_return, o.intraday_high_return) AS signal_intraday_high_return,
-                       COALESCE(o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_3d_return,
+                       s.strategy_version, s.turnover, s.market,
+	                       COALESCE(o.signal_next_close_return, o.next_close_return) AS signal_next_close_return,
+	                       o.next_close_return,
+	                       COALESCE(o.signal_intraday_high_return, o.intraday_high_return) AS signal_intraday_high_return,
+	                       o.hold_3d_return,
+	                       o.hold_5d_return,
+	                       o.hold_10d_return,
+	                       o.hold_20d_return,
+	                       COALESCE(o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_3d_return,
                        COALESCE(o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_5d_return,
                        COALESCE(o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_10d_return,
                        COALESCE(o.signal_hold_20d_return, o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_20d_return,
@@ -338,7 +437,7 @@ class StrategyValidationStore:
                 break
         rows = [dict(row) for row in rows]
         selected_all = [row for row in rows if row["signal_date"] in dates]
-        cost = coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25))
+        base_cost = coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25))
         if strategy_name:
             primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
         else:
@@ -347,10 +446,11 @@ class StrategyValidationStore:
             row_primary_column, row_primary_days, row_primary_label = _primary_return_config(
                 strategy_name or row["strategy_name"]
             )
+            row["_trade_cost_pct"] = _execution_cost_pct(row)
             row["_primary_return"] = coerce_number(row[row_primary_column])
-            row["_primary_return_net"] = round(row["_primary_return"] - cost, 4)
+            row["_primary_return_net"] = round(row["_primary_return"] - row["_trade_cost_pct"], 4)
             row["_exit_return"] = coerce_number(row.get("signal_exit_return"))
-            row["_exit_return_net"] = round(row["_exit_return"] - cost, 4)
+            row["_exit_return_net"] = round(row["_exit_return"] - row["_trade_cost_pct"], 4)
             row["_is_replay"] = _is_replay_version(row["strategy_version"])
             row["_primary_ready"] = int(row.get("future_days") or 1) >= row_primary_days
             row["_primary_holding_days"] = row_primary_days
@@ -372,7 +472,8 @@ class StrategyValidationStore:
             "primary_return_field": primary_column,
             "primary_holding_days": primary_days,
             "primary_horizon_label": primary_label,
-            "trade_cost_pct": cost,
+            "trade_cost_pct": base_cost,
+            "avg_trade_cost_pct": _avg(row["_trade_cost_pct"] for row in selected_all),
             "avg_next_close_return": _avg(row["signal_next_close_return"] for row in selected_all),
             "win_rate_next_close": _rate(row["signal_next_close_return"] > 0 for row in selected_all),
             "hit_3pct_rate": _rate(bool(row["signal_hit_3pct"]) for row in selected_all),
@@ -403,7 +504,7 @@ class StrategyValidationStore:
         return metrics
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS strategy_signals (
@@ -494,11 +595,17 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     if history is None or history.empty or "trade_date" not in history.columns:
         return None
     df = history.sort_values("trade_date").reset_index(drop=True)
+    df["prev_close"] = df["price"].shift(1)
     signal_date = str(signal["signal_date"]).replace("-", "")
     future = df[df["trade_date"].astype(str).str.replace("-", "", regex=False) > signal_date].reset_index(drop=True)
     if future.empty:
         return None
     first = future.iloc[0]
+    previous_rows = df[df["trade_date"].astype(str).str.replace("-", "", regex=False) <= signal_date]
+    previous_close = coerce_number(previous_rows.iloc[-1].get("price")) if not previous_rows.empty else coerce_number(first.get("prev_close"))
+    limit_pct = _daily_limit_pct(str(signal["code"]), str(_mapping_get(signal, "market", "")))
+    if _is_unbuyable_limit_up(first, previous_close, limit_pct):
+        return {"excluded": True, "skip_reason": "unbuyable_limit_up"}
     open_entry = coerce_number(first.get("open")) or coerce_number(first.get("price"))
     signal_entry = coerce_number(signal["price_at_signal"])
     close = coerce_number(first.get("price"))
@@ -518,8 +625,9 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     max_high = max(coerce_number(value) for value in window.get("high", pd.Series([high])).tolist())
     min_low = min(coerce_number(value) for value in window.get("low", pd.Series([low])).tolist())
     _, primary_days, _ = _primary_return_config(str(signal["strategy_name"]))
-    open_exit = simulate_exit(future, open_entry, holding_days=primary_days)
-    signal_exit = simulate_exit(future, signal_entry, holding_days=primary_days)
+    exit_policy = {"limit_down_pct": limit_pct}
+    open_exit = simulate_exit(future, open_entry, holding_days=primary_days, policy=exit_policy)
+    signal_exit = simulate_exit(future, signal_entry, holding_days=primary_days, policy=exit_policy)
     return {
         "next_trade_date": str(first.get("trade_date")),
         "future_days": future_days,
@@ -564,6 +672,11 @@ def _window_close(future: pd.DataFrame, days: int, fallback: float) -> float:
 
 
 def _primary_return_config(strategy_name: str):
+    if str(getattr(config, "VALIDATION_PRIMARY_ENTRY_MODE", "open")).lower() in ("open", "executable"):
+        return EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY.get(
+            strategy_name,
+            ("next_close_return", 1, "次日开盘入场"),
+        )
     return PRIMARY_RETURN_BY_STRATEGY.get(
         strategy_name,
         ("signal_next_close_return", 1, "次日"),
@@ -572,6 +685,59 @@ def _primary_return_config(strategy_name: str):
 
 def _is_replay_version(strategy_version: str) -> bool:
     return "replay" in str(strategy_version or "").lower()
+
+
+def _mapping_get(row, key: str, default=None):
+    if hasattr(row, "get"):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
+def _daily_limit_pct(code: str, market: str = "") -> float:
+    normalized = normalize_code(code)
+    market_text = str(market or "").lower()
+    if normalized.startswith(("300", "301", "688")) or "创业" in market_text or "科创" in market_text:
+        return 20.0
+    return 10.0
+
+
+def _is_unbuyable_limit_up(row, previous_close: float, limit_pct: float) -> bool:
+    prev = coerce_number(previous_close)
+    if prev <= 0:
+        return False
+    open_price = coerce_number(row.get("open")) or coerce_number(row.get("price"))
+    high = coerce_number(row.get("high")) or coerce_number(row.get("price"))
+    low = coerce_number(row.get("low")) or coerce_number(row.get("price"))
+    close = coerce_number(row.get("price")) or coerce_number(row.get("close"))
+    if min(open_price, high, low, close) <= 0:
+        return False
+    limit_price = prev * (1 + max(1.0, coerce_number(limit_pct, 10.0)) / 100.0)
+    # 近似一字涨停/封板：全天最低价仍贴近涨停价，认为真实买单无法成交。
+    return (
+        open_price >= limit_price * 0.995
+        and low >= limit_price * 0.995
+        and high <= limit_price * 1.01
+        and close >= limit_price * 0.995
+    )
+
+
+def _liquidity_slippage_pct(turnover: float) -> float:
+    amount = coerce_number(turnover)
+    if amount >= 1_000_000_000:
+        return coerce_number(getattr(config, "VALIDATION_SLIPPAGE_HIGH_TURNOVER_PCT", 0.05), 0.05)
+    if amount >= 300_000_000:
+        return coerce_number(getattr(config, "VALIDATION_SLIPPAGE_MID_TURNOVER_PCT", 0.12), 0.12)
+    if amount >= 100_000_000:
+        return coerce_number(getattr(config, "VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT", 0.25), 0.25)
+    return coerce_number(getattr(config, "VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT", 0.45), 0.45)
+
+
+def _execution_cost_pct(row) -> float:
+    base = coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25), 0.25)
+    return round(base + _liquidity_slippage_pct(coerce_number(_mapping_get(row, "turnover"))), 4)
 
 
 def _row_to_dict(row: sqlite3.Row) -> Dict[str, object]:

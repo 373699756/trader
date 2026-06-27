@@ -183,6 +183,98 @@ class MarketDataProvider:
         self.status.last_sentiment_refresh = datetime.now().isoformat(timespec="seconds")
         return news[:limit]
 
+    def get_share_unlock_events(self) -> List[Dict[str, object]]:
+        try:
+            ak = self._get_akshare()
+            for func_name in ("stock_restricted_release_summary_em", "stock_restricted_release_queue_em"):
+                try:
+                    df = getattr(ak, func_name)()
+                except Exception:
+                    continue
+                rows = _event_rows(
+                    df,
+                    code_keys=("代码", "股票代码", "证券代码"),
+                    date_keys=("解禁日期", "上市日期"),
+                    ratio_keys=("解禁比例", "解禁占比", "占总股本比例", "解禁数量占总股本比例"),
+                )
+                if rows:
+                    return rows
+        except Exception as exc:  # pragma: no cover - optional remote signal
+            self._record_sentiment_error("解禁数据失败: {}".format(exc))
+        return []
+
+    def get_pledge_risk(self) -> List[Dict[str, object]]:
+        if not config.TUSHARE_TOKEN:
+            return []
+        try:
+            pro = self._get_tushare_api(config.TUSHARE_TOKEN)
+            df = pro.pledge_stat()
+            return _event_rows(df, code_keys=("ts_code", "股票代码", "证券代码"), ratio_keys=("pledge_ratio", "质押比例"))
+        except Exception as exc:  # pragma: no cover - optional remote signal
+            self._record_sentiment_error("质押数据失败: {}".format(exc))
+            return []
+
+    def get_reduction_plans(self) -> List[Dict[str, object]]:
+        try:
+            ak = self._get_akshare()
+            for func_name in ("stock_share_reduce_holdings_cninfo", "stock_hold_control_cninfo"):
+                try:
+                    df = getattr(ak, func_name)()
+                except Exception:
+                    continue
+                rows = _event_rows(df, code_keys=("证券代码", "股票代码", "代码"), date_keys=("公告日期", "变动日期"))
+                if rows:
+                    return rows
+        except Exception as exc:  # pragma: no cover - optional remote signal
+            self._record_sentiment_error("减持数据失败: {}".format(exc))
+        return []
+
+    def get_financial_calendar(self) -> List[Dict[str, object]]:
+        try:
+            ak = self._get_akshare()
+            for func_name in ("stock_yjbb_em", "stock_yjyg_em"):
+                try:
+                    df = getattr(ak, func_name)()
+                except Exception:
+                    continue
+                rows = _event_rows(df, code_keys=("股票代码", "代码", "证券代码"), date_keys=("公告日期", "预约披露日期"))
+                if rows:
+                    return rows
+        except Exception as exc:  # pragma: no cover - optional remote signal
+            self._record_sentiment_error("财报日历失败: {}".format(exc))
+        return []
+
+    def get_fundamental_factors(self, codes: List[str] = None) -> Dict[str, Dict[str, object]]:
+        codes = [normalize_code(code) for code in (codes or []) if normalize_code(code)]
+        codes = codes[: max(1, int(getattr(config, "FUNDAMENTAL_FETCH_LIMIT", 200)))]
+        if not codes:
+            return {}
+        items: Dict[str, Dict[str, object]] = {}
+        if config.TUSHARE_TOKEN:
+            try:
+                pro = self._get_tushare_api(config.TUSHARE_TOKEN)
+                for code in codes:
+                    try:
+                        df = pro.fina_indicator(ts_code=_to_ts_code(code), limit=1)
+                    except Exception:
+                        continue
+                    _merge_fundamental_item(items, code, df)
+            except Exception as exc:  # pragma: no cover - optional remote signal
+                self._record_sentiment_error("Tushare 财务指标失败: {}".format(exc))
+        try:
+            ak = self._get_akshare()
+            for code in codes:
+                if code in items and items[code].get("roe"):
+                    continue
+                try:
+                    df = ak.stock_financial_analysis_indicator(symbol=code)
+                except Exception:
+                    continue
+                _merge_fundamental_item(items, code, df)
+        except Exception as exc:  # pragma: no cover - optional remote signal
+            self._record_sentiment_error("AKShare 财务指标失败: {}".format(exc))
+        return items
+
     def get_history(self, code: str, days: int = 90) -> pd.DataFrame:
         cached = self._history_cache.get(code, days)
         if not cached.empty and len(cached) >= min(days, 30) and self._history_cache.is_fresh(code):
@@ -198,6 +290,9 @@ class MarketDataProvider:
             if not cached.empty:
                 return cached
         return cached
+
+    def get_cached_history(self, code: str, days: int = 90) -> pd.DataFrame:
+        return self._history_cache.get(code, days)
 
     def prefetch_history(self, codes: List[str], days: int = 180, force: bool = False) -> Dict[str, object]:
         result = {
@@ -354,10 +449,14 @@ class TimedCache:
         self._value = value
         self._expires_at = time.time() + self.ttl_seconds
 
+    def clear(self):
+        self._value = None
+        self._expires_at = 0.0
+
 
 EASTMONEY_FIELDS = (
     "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,"
-    "f20,f21,f23,f24,f25,f22,f11,f62,f128,f136,f115,f152"
+    "f20,f21,f23,f24,f25,f22,f11,f62,f100,f128,f136,f115,f152"
 )
 EASTMONEY_COLUMN_MAP = {
     "f2": "最新价",
@@ -382,6 +481,7 @@ EASTMONEY_COLUMN_MAP = {
     "f23": "市净率",
     "f24": "60日涨跌幅",
     "f25": "年初至今涨跌幅",
+    "f100": "行业",
 }
 EASTMONEY_NUMERIC_COLUMNS = (
     "最新价",
@@ -560,6 +660,65 @@ def _extract_news_rows(
         if len(items) >= limit:
             break
     return items
+
+
+def _event_rows(
+    df: pd.DataFrame,
+    code_keys: Tuple[str, ...],
+    date_keys: Tuple[str, ...] = (),
+    ratio_keys: Tuple[str, ...] = (),
+) -> List[Dict[str, object]]:
+    if df is None or df.empty:
+        return []
+    rows: List[Dict[str, object]] = []
+    for _, row in df.iterrows():
+        code = _first_raw(row, code_keys)
+        if code in (None, ""):
+            continue
+        item: Dict[str, object] = {"code": normalize_code(code)}
+        date = _first_raw(row, date_keys)
+        ratio = _first_raw(row, ratio_keys)
+        if date not in (None, ""):
+            item["date"] = date
+        if ratio not in (None, ""):
+            item["unlock_ratio"] = ratio
+            item["pledge_ratio"] = ratio
+        rows.append(item)
+    return rows
+
+
+def _first_raw(row: pd.Series, columns: Tuple[str, ...]):
+    for column in columns:
+        if column in row and pd.notna(row[column]):
+            value = row[column]
+            if str(value).strip() not in ("", "-", "--", "nan"):
+                return value
+    return None
+
+
+def _merge_fundamental_item(items: Dict[str, Dict[str, object]], code: str, df: pd.DataFrame) -> None:
+    if df is None or df.empty:
+        return
+    row = df.iloc[0]
+    item = items.setdefault(code, {"code": code})
+    mappings = {
+        "roe": ("roe", "ROE", "净资产收益率", "净资产收益率(%)", "roe_dt"),
+        "gross_margin": ("gross_margin", "销售毛利率", "毛利率", "grossprofit_margin"),
+        "debt_ratio": ("debt_ratio", "资产负债率", "资产负债率(%)", "debt_to_assets"),
+        "earnings_surprise": ("earnings_surprise", "业绩变动幅度", "净利润增长率", "q_profit_yoy", "or_yoy"),
+        "rating_revision": ("rating_revision", "rating_revision", "预测调整", "盈利预测调整"),
+    }
+    for target, columns in mappings.items():
+        value = _first_raw(row, columns)
+        if value not in (None, ""):
+            item[target] = _to_float(value)
+
+
+def _to_ts_code(code: str) -> str:
+    code = normalize_code(code)
+    if code.startswith(("600", "601", "603", "605", "688")):
+        return "{}.SH".format(code)
+    return "{}.SZ".format(code)
 
 
 def _first_present(row: pd.Series, columns: Tuple[str, ...]) -> str:

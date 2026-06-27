@@ -25,18 +25,19 @@ def build_stock_prediction(
     strategy_metas: Dict[str, Dict[str, object]] = None,
     market_regime: Dict[str, object] = None,
     raw_quotes: pd.DataFrame = None,
+    fallback_history: pd.DataFrame = None,
+    fallback_error: str = "",
 ) -> Dict[str, object]:
     code = normalize_code(code)
     row = _candidate_row(code, candidates)
     if row is None:
         raw_row = _raw_quote_row(code, raw_quotes)
         if raw_row is None:
-            return {
-                "ok": False,
-                "code": code,
-                "error": "行情源没有返回该股票，可能是代码不存在、停牌、退市或当前免费行情源不可用。",
-            }
-        return _filtered_stock_prediction(code, raw_row, market_regime or {})
+            history_result = _history_stock_prediction(code, fallback_history, market_regime or {}, fallback_error)
+            if history_result is not None:
+                return history_result
+            return _missing_quote_prediction(code, market_regime or {}, fallback_error)
+        return _filtered_stock_prediction(code, raw_row, market_regime or {}, data_source="实时行情")
 
     strategy_metas = strategy_metas or {}
     market_regime = market_regime or {}
@@ -67,6 +68,7 @@ def build_stock_prediction(
         "volume_ratio": coerce_number(row.get("volume_ratio")),
         "sixty_day_pct": coerce_number(row.get("sixty_day_pct")),
         "ytd_pct": coerce_number(row.get("ytd_pct")),
+        "data_source": "实时行情",
         "market_regime": {
             "label": market_regime.get("label", "未知"),
             "score": market_regime.get("score", 50.0),
@@ -157,8 +159,121 @@ def _raw_quote_row(code: str, quotes: pd.DataFrame):
     return item
 
 
-def _filtered_stock_prediction(code: str, row: Dict[str, object], market_regime: Dict[str, object]) -> Dict[str, object]:
-    risks = _filter_risks(row)
+def _history_stock_prediction(
+    code: str,
+    history: pd.DataFrame,
+    market_regime: Dict[str, object],
+    fallback_error: str = "",
+) -> Dict[str, object]:
+    row = _history_quote_row(code, history)
+    if row is None:
+        return None
+    risks = [
+        "实时行情源未返回该股票，无法确认当前是否停牌、退市或可交易",
+        "使用历史行情兜底，缺少盘口、涨停板和最新成交状态",
+    ]
+    if fallback_error:
+        risks.append("实时行情兜底异常：{}".format(fallback_error))
+    return _filtered_stock_prediction(
+        code,
+        row,
+        market_regime,
+        extra_risks=risks,
+        data_source="历史行情兜底",
+        disclaimer="该结果基于历史行情兜底生成，实时交易状态不可确认；仅作风险诊断，不构成投资建议。",
+    )
+
+
+def _history_quote_row(code: str, history: pd.DataFrame):
+    if history is None or history.empty:
+        return None
+    try:
+        df = rename_known_columns(history.copy())
+    except Exception:
+        df = history.copy()
+    if "price" not in df.columns:
+        return None
+    df = df.reset_index(drop=True)
+    latest = df.iloc[-1].to_dict()
+    price = coerce_number(latest.get("price"))
+    if price <= 0:
+        return None
+    prev_price = coerce_number(df.iloc[-2].get("price")) if len(df) >= 2 else 0.0
+    pct = coerce_number(latest.get("pct_chg"))
+    if pct == 0.0 and prev_price > 0:
+        pct = (price / prev_price - 1.0) * 100.0
+    sixty_base = coerce_number(df.iloc[max(0, len(df) - 61)].get("price")) if len(df) >= 2 else 0.0
+    ytd_base = _history_ytd_base(df)
+    volume = coerce_number(latest.get("volume"))
+    volume_series = pd.to_numeric(df["volume"], errors="coerce").tail(6).fillna(0) if "volume" in df.columns else pd.Series(dtype=float)
+    volume_mean = float(volume_series.iloc[:-1].mean()) if len(volume_series) >= 2 else 0.0
+    return {
+        "code": code,
+        "name": str(latest.get("name", "")),
+        "market": market_type(code),
+        "market_label": _market_label(market_type(code)),
+        "price": price,
+        "pct_chg": pct,
+        "turnover": coerce_number(latest.get("turnover")),
+        "volume": volume,
+        "volume_ratio": volume / volume_mean if volume_mean > 0 else 0.0,
+        "sixty_day_pct": (price / sixty_base - 1.0) * 100.0 if sixty_base > 0 else 0.0,
+        "ytd_pct": (price / ytd_base - 1.0) * 100.0 if ytd_base > 0 else 0.0,
+        "high": coerce_number(latest.get("high")),
+        "low": coerce_number(latest.get("low")),
+        "open": coerce_number(latest.get("open")),
+    }
+
+
+def _history_ytd_base(df: pd.DataFrame) -> float:
+    if "trade_date" in df.columns:
+        dates = pd.to_datetime(df["trade_date"], errors="coerce")
+        if dates.notna().any():
+            latest_year = int(dates.dropna().iloc[-1].year)
+            same_year = df.loc[dates.dt.year == latest_year]
+            if not same_year.empty:
+                return coerce_number(same_year.iloc[0].get("price"))
+    return coerce_number(df.iloc[0].get("price"))
+
+
+def _missing_quote_prediction(code: str, market_regime: Dict[str, object], fallback_error: str = "") -> Dict[str, object]:
+    risks = [
+        "实时行情源没有返回该股票",
+        "历史行情也不可用，无法确认是否代码不存在、停牌、退市或免费源缺失",
+        "数据不足，不能给出正向预测，默认按高风险处理",
+    ]
+    if fallback_error:
+        risks.append("历史行情兜底失败：{}".format(fallback_error))
+    return _filtered_stock_prediction(
+        code,
+        {
+            "code": code,
+            "name": "",
+            "market": market_type(code),
+            "market_label": _market_label(market_type(code)),
+            "price": 0.0,
+            "pct_chg": 0.0,
+            "turnover": 0.0,
+            "volume_ratio": 0.0,
+            "sixty_day_pct": 0.0,
+            "ytd_pct": 0.0,
+        },
+        market_regime,
+        extra_risks=risks,
+        data_source="无可用行情",
+        disclaimer="实时行情和历史行情均不可用，系统只能给出高风险诊断；不构成投资建议。",
+    )
+
+
+def _filtered_stock_prediction(
+    code: str,
+    row: Dict[str, object],
+    market_regime: Dict[str, object],
+    extra_risks: List[str] = None,
+    data_source: str = "实时行情",
+    disclaimer: str = "",
+) -> Dict[str, object]:
+    risks = list(extra_risks or []) + _filter_risks(row)
     risk_score = _filter_risk_score(risks)
     label = "高风险/不建议参与" if risk_score >= 80 else "偏弱/风险较高" if risk_score >= 55 else "未入选推荐池"
     score = round(max(5.0, 48.0 - risk_score * 0.38), 2)
@@ -205,6 +320,7 @@ def _filtered_stock_prediction(code: str, row: Dict[str, object], market_regime:
         "volume_ratio": coerce_number(row.get("volume_ratio")),
         "sixty_day_pct": coerce_number(row.get("sixty_day_pct")),
         "ytd_pct": coerce_number(row.get("ytd_pct")),
+        "data_source": data_source,
         "market_regime": {
             "label": market_regime.get("label", "未知"),
             "score": market_regime.get("score", 50.0),
@@ -236,7 +352,7 @@ def _filtered_stock_prediction(code: str, row: Dict[str, object], market_regime:
         "missed_strategies": missed,
         "consensus": {},
         "risk_flags": risks,
-        "disclaimer": "该结果是风控诊断，不构成投资建议；被过滤股票默认不按推荐策略给正向评分。",
+        "disclaimer": disclaimer or "该结果是风控诊断，不构成投资建议；被过滤股票默认不按推荐策略给正向评分。",
     }
 
 
@@ -410,7 +526,10 @@ def _filter_risks(row: Dict[str, object]) -> List[str]:
 
 def _filter_risk_score(risks: List[str]) -> float:
     score = 35.0 + len(risks) * 10.0
-    high_risk_keywords = ("ST", "退市", "停牌", "无有效现价", "一字板", "流动性", "跌幅过大")
+    high_risk_keywords = (
+        "ST", "退市", "停牌", "无有效现价", "一字板", "流动性", "跌幅过大",
+        "实时行情源", "历史行情", "数据不足",
+    )
     if any(any(keyword in risk for keyword in high_risk_keywords) for risk in risks):
         score += 20.0
     if any("涨幅过高" in risk or "透支" in risk for risk in risks):

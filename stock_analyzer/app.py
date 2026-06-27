@@ -1,14 +1,25 @@
-from typing import Dict
+from datetime import datetime
+import threading
+import time
+from typing import Dict, List
 
 from flask import Flask, jsonify, render_template, request
+import pandas as pd
 
 from . import config
 from .backtest import parse_code_list, run_alphalite_backtest, run_rolling_alphalite_backtest
+from .event_risk import attach_event_risk, load_event_risk
+from .factor_ic import load_factor_ic
 from .factors import build_alphalite_factors, merge_alphalite
+from .fundamentals import attach_fundamental_factors, load_fundamentals
+from .paper_trading import PaperTradingStore
 from .providers import MarketDataProvider, TimedCache
+from .portfolio import build_portfolio
 from .prediction import build_stock_prediction
-from .normalization import normalize_code
+from .normalization import coerce_number, normalize_code
+from .selfcheck import factor_coverage
 from .scoring import (
+    CHOKEPOINT_INDUSTRY_LEADERS,
     SERENITY_REFERENCES,
     STRATEGY_LABELS,
     TRADING_AGENTS_REFERENCE,
@@ -27,6 +38,8 @@ from .scoring import (
 )
 from .sentiment import build_market_sentiment_index, score_stock_sentiment
 from .strategy_validation import StrategyValidationStore
+from .strategy_health import save_strategy_status, strategy_status
+from .snapshot import SNAPSHOT_STRATEGIES, run_snapshot
 from .validation_replay import backfill_strategy_validation_samples
 from .stability import TopKDropoutTracker
 
@@ -98,6 +111,9 @@ STRATEGY_CATALOG = (
     },
 )
 
+_VALIDATION_AUTO_WORKERS = set()
+_VALIDATION_AUTO_WORKERS_LOCK = threading.Lock()
+
 
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
@@ -110,6 +126,7 @@ def create_app() -> Flask:
     factors_cache = TimedCache(config.REFRESH_SECONDS * 30)
     stability_tracker = TopKDropoutTracker(config.STATE_PATH, keep_k=10, buffer_k=20)
     validation_store = StrategyValidationStore(config.VALIDATION_DB_PATH)
+    paper_store = PaperTradingStore(config.PAPER_TRADING_DB_PATH)
 
     # 验证指标按 (strategy, days) 缓存：每次 /api/recommendations 刷新会触发多次
     # validation_store.metrics() 的 sqlite JOIN，验证数据仅在手动更新时变化，
@@ -131,6 +148,143 @@ def create_app() -> Flask:
     def invalidate_metrics_cache():
         _metrics_cache.clear()
 
+    def _attach_event_risk_layer(candidates: pd.DataFrame) -> pd.DataFrame:
+        payload = load_event_risk(provider)
+        candidates = attach_event_risk(candidates, payload)
+        codes = candidates["code"].tolist() if candidates is not None and "code" in candidates.columns else []
+        return attach_fundamental_factors(candidates, load_fundamentals(provider, codes=codes))
+
+    auto_update_lock = threading.Lock()
+    auto_update_status = {
+        "enabled": bool(config.VALIDATION_AUTO_UPDATE_ENABLED),
+        "started": False,
+        "running": False,
+        "last_started_at": "",
+        "last_finished_at": "",
+        "last_error": "",
+        "last_result": {},
+        "next_run_after_seconds": config.VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS,
+    }
+
+    def _configured_auto_update_strategies() -> List[str]:
+        valid = [item["name"] for item in STRATEGY_CATALOG]
+        configured = [
+            item.strip()
+            for item in str(getattr(config, "VALIDATION_AUTO_UPDATE_STRATEGIES", "")).split(",")
+            if item.strip()
+        ]
+        selected = [item for item in configured if item in valid]
+        return selected or valid
+
+    def _code_batches(codes: List[str], batch_size: int) -> List[List[str]]:
+        size = max(1, int(batch_size))
+        return [codes[index:index + size] for index in range(0, len(codes), size)]
+
+    def _set_auto_update_status(**values):
+        with auto_update_lock:
+            auto_update_status.update(values)
+
+    def run_validation_auto_update_once() -> Dict[str, object]:
+        if not config.VALIDATION_AUTO_UPDATE_ENABLED:
+            return {"ok": True, "status": "disabled"}
+        with auto_update_lock:
+            if auto_update_status.get("running"):
+                return {"ok": True, "status": "already_running"}
+            auto_update_status["running"] = True
+            auto_update_status["last_started_at"] = datetime.now().isoformat(timespec="seconds")
+            auto_update_status["last_error"] = ""
+
+        started_at = datetime.now().isoformat(timespec="seconds")
+        result = {
+            "ok": True,
+            "started_at": started_at,
+            "strategies": [],
+            "totals": {"codes": 0, "batches": 0, "downloaded": 0, "cached": 0, "failed": 0, "updated": 0, "skipped": 0},
+        }
+        try:
+            max_codes = max(1, int(config.VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN))
+            batch_size = max(1, int(config.VALIDATION_AUTO_UPDATE_BATCH_SIZE))
+            days = max(30, int(config.VALIDATION_AUTO_UPDATE_HISTORY_DAYS))
+            for strategy in _configured_auto_update_strategies():
+                code_rows = validation_store.signal_codes(strategy_name=strategy, limit=max_codes)
+                codes = [row["code"] for row in code_rows if row.get("code")]
+                strategy_result = {
+                    "strategy": strategy,
+                    "code_count": len(codes),
+                    "batches": [],
+                    "updated": 0,
+                    "skipped": 0,
+                }
+                for batch_index, batch_codes in enumerate(_code_batches(codes, batch_size), start=1):
+                    prefetch = provider.prefetch_history(batch_codes, days=days, force=False)
+                    outcome = validation_store.update_outcomes(
+                        provider,
+                        strategy_name=strategy,
+                        codes=batch_codes,
+                    )
+                    batch_result = {
+                        "batch": batch_index,
+                        "code_count": len(batch_codes),
+                        "prefetch": prefetch,
+                        "outcome": outcome,
+                    }
+                    strategy_result["batches"].append(batch_result)
+                    strategy_result["updated"] += int(outcome.get("updated") or 0)
+                    strategy_result["skipped"] += int(outcome.get("skipped") or 0)
+                    result["totals"]["codes"] += len(batch_codes)
+                    result["totals"]["batches"] += 1
+                    result["totals"]["downloaded"] += int(prefetch.get("downloaded") or 0)
+                    result["totals"]["cached"] += int(prefetch.get("cached") or 0)
+                    result["totals"]["failed"] += int(prefetch.get("failed") or 0)
+                    result["totals"]["updated"] += int(outcome.get("updated") or 0)
+                    result["totals"]["skipped"] += int(outcome.get("skipped") or 0)
+                result["strategies"].append(strategy_result)
+            invalidate_metrics_cache()
+            factors_cache.clear()
+            result["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _set_auto_update_status(
+                running=False,
+                last_finished_at=result["finished_at"],
+                last_result=result,
+            )
+            return result
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
+            result["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _set_auto_update_status(
+                running=False,
+                last_finished_at=result["finished_at"],
+                last_error=str(exc),
+                last_result=result,
+            )
+            return result
+
+    def _start_validation_auto_update_worker() -> None:
+        if not config.VALIDATION_AUTO_UPDATE_ENABLED:
+            return
+        worker_key = "{}|{}".format(config.VALIDATION_DB_PATH, config.HISTORY_CACHE_PATH)
+        with _VALIDATION_AUTO_WORKERS_LOCK:
+            if worker_key in _VALIDATION_AUTO_WORKERS:
+                return
+            _VALIDATION_AUTO_WORKERS.add(worker_key)
+
+        def _worker_loop():
+            initial_delay = max(0, int(config.VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS))
+            if initial_delay:
+                time.sleep(initial_delay)
+            while True:
+                run_validation_auto_update_once()
+                interval = max(60, int(config.VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS))
+                _set_auto_update_status(next_run_after_seconds=interval)
+                time.sleep(interval)
+
+        _set_auto_update_status(started=True)
+        thread = threading.Thread(target=_worker_loop, name="validation-auto-update", daemon=True)
+        thread.start()
+
+    _start_validation_auto_update_worker()
+
     @app.route("/")
     def index():
         return render_template(
@@ -147,21 +301,23 @@ def create_app() -> Flask:
             if quotes is None:
                 quotes = provider.get_realtime_quotes()
                 quotes_cache.set(quotes)
-            candidates = prepare_candidates(quotes)
-            market_regime = build_market_regime(candidates)
+            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
+            market_regime = build_market_regime(candidates, breadth_source=quotes)
             strategies = []
             for item in STRATEGY_CATALOG:
                 metrics = cached_metrics(item["name"], days)
                 dates = validation_store.list_signal_dates(item["name"])
                 latest = dates[0] if dates else {}
+                status = _strategy_status(metrics)
                 strategies.append(
                     {
                         **item,
                         "metrics": metrics,
                         "latest_signal": latest,
-                        "status": _strategy_status(metrics),
+                        "status": status,
                     }
                 )
+            save_strategy_status({row["name"]: row["status"] for row in strategies})
             ranked = sorted(
                 strategies,
                 key=lambda row: (
@@ -185,6 +341,89 @@ def create_app() -> Flask:
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc), "health": provider.health()}), 502
 
+    @app.route("/api/portfolio")
+    def portfolio():
+        strategy = request.args.get("strategy", "tomorrow_picks")
+        if strategy not in SNAPSHOT_STRATEGIES:
+            strategy = "tomorrow_picks"
+        try:
+            rows = validation_store.latest_signal_rows(strategy)
+            performance = paper_store.performance(strategy, days=120)
+            market_regime = {}
+            try:
+                quotes = quotes_cache.get()
+                if quotes is None:
+                    quotes = provider.get_realtime_quotes()
+                    quotes_cache.set(quotes)
+                market_regime = build_market_regime(prepare_candidates(quotes), breadth_source=quotes)
+            except Exception:
+                market_regime = {}
+            result = build_portfolio(rows, market_regime=market_regime, performance=performance)
+            no_trade_reason = ""
+            if not rows:
+                no_trade_reason = "暂无保存快照，先在策略验证中保存该策略预测。"
+            elif not result["rows"]:
+                no_trade_reason = "最近快照没有可配置仓位的标的。"
+            elif result["summary"].get("constraints_feasible") is False:
+                no_trade_reason = "候选票或主题分散度不足，剩余仓位保留现金。"
+            return jsonify(
+                {
+                    "ok": True,
+                    "strategy": strategy,
+                    "data": result["rows"],
+                    "exposure": result["exposure"],
+                    "summary": result["summary"],
+                    "cash_weight": result["summary"].get("cash_pct", 100.0),
+                    "no_trade_reason": no_trade_reason,
+                    "empty_reason": no_trade_reason if not rows else "",
+                    "performance": performance,
+                    "market_regime": market_regime,
+                    "health": provider.health(),
+                    "disclaimer": "仅供研究，不构成投资建议。",
+                }
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc), "health": provider.health()}), 502
+
+    @app.route("/api/portfolio/performance")
+    def portfolio_performance():
+        strategy = request.args.get("strategy", "all")
+        if strategy != "all" and strategy not in SNAPSHOT_STRATEGIES:
+            strategy = "all"
+        days = _int_arg("days", 120, minimum=1, maximum=500)
+        try:
+            return jsonify(
+                {
+                    "ok": True,
+                    "strategy": strategy,
+                    "days": days,
+                    "performance": paper_store.performance(strategy, days=days),
+                    "health": provider.health(),
+                    "disclaimer": "纸面组合仅供研究，不构成投资建议。",
+                }
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc), "health": provider.health()}), 502
+
+    @app.route("/api/paper-trades")
+    def paper_trades():
+        strategy = request.args.get("strategy", "all")
+        if strategy != "all" and strategy not in SNAPSHOT_STRATEGIES:
+            strategy = "all"
+        limit = _int_arg("limit", 200, minimum=1, maximum=1000)
+        try:
+            return jsonify(
+                {
+                    "ok": True,
+                    "strategy": strategy,
+                    "data": paper_store.trades(strategy, limit=limit),
+                    "health": provider.health(),
+                    "disclaimer": "纸面交易仅供研究，不构成投资建议。",
+                }
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc), "health": provider.health()}), 502
+
     @app.route("/api/recommendations")
     def recommendations():
         top_n = _int_arg("top_n", 10, minimum=5, maximum=50)
@@ -197,9 +436,9 @@ def create_app() -> Flask:
             if quotes is None:
                 quotes = provider.get_realtime_quotes()
                 quotes_cache.set(quotes)
-            candidates = prepare_candidates(quotes)
+            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
             candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
-            market_regime = build_market_regime(candidates)
+            market_regime = build_market_regime(candidates, breadth_source=quotes)
 
             hot_ranks = hot_cache.get()
             if hot_ranks is None:
@@ -396,11 +635,32 @@ def create_app() -> Flask:
 
     @app.route("/api/health")
     def health():
+        coverage = {"row_count": 0, "avg_data_coverage": 0.0, "columns": {}, "degraded": True}
+        try:
+            quotes = quotes_cache.get()
+            if quotes is None:
+                quotes = provider.get_realtime_quotes()
+                quotes_cache.set(quotes)
+            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
+            candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
+            coverage = factor_coverage(candidates)
+        except Exception:
+            pass
         return jsonify(
             {
                 "ok": True,
                 "refresh_seconds": config.REFRESH_SECONDS,
                 "supported_markets": config.MARKET_LABELS,
+                "factor_coverage": coverage,
+                "event_risk": {
+                    "enabled": bool(config.ENABLE_EVENT_RISK),
+                    "status": load_event_risk(provider).get("status", "disabled"),
+                },
+                "factor_ic": {
+                    "enabled": bool(config.ENABLE_FUNDAMENTALS),
+                    "fundamentals_status": load_fundamentals(provider).get("status", "disabled"),
+                    "generated_at": load_factor_ic().get("generated_at", ""),
+                },
                 "health": provider.health(),
             }
         )
@@ -409,13 +669,18 @@ def create_app() -> Flask:
     def stock_prediction(code: str):
         normalized_code = code.strip()[:12]
         try:
+            quote_error = ""
             quotes = quotes_cache.get()
             if quotes is None:
-                quotes = provider.get_realtime_quotes()
-                quotes_cache.set(quotes)
-            candidates = prepare_candidates(quotes)
+                try:
+                    quotes = provider.get_realtime_quotes()
+                    quotes_cache.set(quotes)
+                except Exception as exc:
+                    quote_error = str(exc)
+                    quotes = pd.DataFrame()
+            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
             candidates = _attach_alphalite_factors_for_codes(provider, candidates, [normalized_code])
-            market_regime = build_market_regime(candidates)
+            market_regime = build_market_regime(candidates, breadth_source=quotes)
             top_n = max(1, len(candidates))
             dual_rows, dual_meta = score_dual_horizon_candidates(
                 candidates,
@@ -450,6 +715,16 @@ def create_app() -> Flask:
                 top_n=top_n,
                 market_regime=market_regime,
             )
+            fallback_history = None
+            fallback_error = ""
+            normalized_for_lookup = normalize_code(normalized_code)
+            if not _stock_exists_in_quotes(normalized_for_lookup, quotes):
+                try:
+                    fallback_history = provider.get_history(normalized_for_lookup, days=120)
+                except Exception as exc:
+                    fallback_error = str(exc)
+            if quote_error:
+                fallback_error = "; ".join(item for item in (quote_error, fallback_error) if item)
             result = build_stock_prediction(
                 normalized_code,
                 candidates,
@@ -473,9 +748,10 @@ def create_app() -> Flask:
                 },
                 market_regime=market_regime,
                 raw_quotes=quotes,
+                fallback_history=fallback_history,
+                fallback_error=fallback_error,
             )
-            status = 200 if result.get("ok") else 404
-            return jsonify({**result, "health": provider.health()}), status
+            return jsonify({**result, "health": provider.health()})
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc), "health": provider.health()}), 502
 
@@ -490,8 +766,8 @@ def create_app() -> Flask:
             if quotes is None:
                 quotes = provider.get_realtime_quotes()
                 quotes_cache.set(quotes)
-            candidates = prepare_candidates(quotes)
-            market_regime = build_market_regime(candidates)
+            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
+            market_regime = build_market_regime(candidates, breadth_source=quotes)
             rows, meta = score_tomorrow_candidates(
                 candidates,
                 top_n=top_n,
@@ -561,8 +837,8 @@ def create_app() -> Flask:
             if quotes is None:
                 quotes = provider.get_realtime_quotes()
                 quotes_cache.set(quotes)
-            candidates = prepare_candidates(quotes)
-            market_regime = build_market_regime(candidates)
+            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
+            market_regime = build_market_regime(candidates, breadth_source=quotes)
             rows, meta = score_tech_potential_candidates(
                 candidates,
                 top_n=top_n,
@@ -604,8 +880,8 @@ def create_app() -> Flask:
             if quotes is None:
                 quotes = provider.get_realtime_quotes()
                 quotes_cache.set(quotes)
-            candidates = prepare_candidates(quotes)
-            market_regime = build_market_regime(candidates)
+            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
+            market_regime = build_market_regime(candidates, breadth_source=quotes)
             rows, meta = score_chokepoint_candidates(
                 candidates,
                 top_n=top_n,
@@ -613,6 +889,9 @@ def create_app() -> Flask:
                 market_regime=market_regime,
             )
             meta["market_regime"] = market_regime
+            meta["industry_map"] = _chokepoint_industry_map(candidates, rows, quotes, market_regime)
+            if not rows:
+                meta["empty_reason"] = "当前实时候选股没有命中卡脖子上游关键词；免费行情的行业字段可能为空或过粗，先看下方行业目录和龙头状态。"
             _attach_validation_summary(rows, validation_store, "chokepoint_picks", metrics_fn=cached_metrics)
             return jsonify(
                 {
@@ -647,9 +926,9 @@ def create_app() -> Flask:
             if quotes is None:
                 quotes = provider.get_realtime_quotes()
                 quotes_cache.set(quotes)
-            candidates = prepare_candidates(quotes)
+            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
             candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
-            market_regime = build_market_regime(candidates)
+            market_regime = build_market_regime(candidates, breadth_source=quotes)
             rows, meta = score_swing_candidates(
                 candidates,
                 top_n=top_n,
@@ -691,9 +970,9 @@ def create_app() -> Flask:
             if quotes is None:
                 quotes = provider.get_realtime_quotes()
                 quotes_cache.set(quotes)
-            candidates = prepare_candidates(quotes)
+            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
             candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
-            market_regime = build_market_regime(candidates)
+            market_regime = build_market_regime(candidates, breadth_source=quotes)
             rows, meta = scorer(
                 candidates,
                 top_n=top_n,
@@ -747,9 +1026,9 @@ def create_app() -> Flask:
             if quotes is None:
                 quotes = provider.get_realtime_quotes()
                 quotes_cache.set(quotes)
-            candidates = prepare_candidates(quotes)
+            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
             candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
-            market_regime = build_market_regime(candidates)
+            market_regime = build_market_regime(candidates, breadth_source=quotes)
             rows, meta = score_position_candidates(
                 candidates,
                 top_n=top_n,
@@ -784,86 +1063,14 @@ def create_app() -> Flask:
     def strategy_snapshot():
         strategy = request.args.get("strategy", "tech_potential")
         market = request.args.get("market", "all")
-        if strategy not in ("tech_potential", "tomorrow_picks", "swing_picks", "position_picks", "chokepoint_picks", "reversal_picks", "smallcap_value_picks", "breakout_picks"):
+        if strategy not in SNAPSHOT_STRATEGIES:
             strategy = "tech_potential"
         if market not in ("all", "main", "chinext", "star"):
             market = "all"
         try:
-            quotes = quotes_cache.get()
-            if quotes is None:
-                quotes = provider.get_realtime_quotes()
-                quotes_cache.set(quotes)
-            candidates = prepare_candidates(quotes)
-            if strategy == "tomorrow_picks":
-                market_regime = build_market_regime(candidates)
-                rows, meta = score_tomorrow_candidates(
-                    candidates,
-                    top_n=50,
-                    market_filter=market,
-                    market_regime=market_regime,
-                )
-                version = meta.get("strategy_version", "tomorrow_picks_v2")
-            elif strategy == "swing_picks":
-                candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
-                market_regime = build_market_regime(candidates)
-                rows, meta = score_swing_candidates(
-                    candidates,
-                    top_n=30,
-                    market_filter=market,
-                    market_regime=market_regime,
-                )
-                version = meta.get("strategy_version", "swing_5_10d_v1")
-            elif strategy == "position_picks":
-                candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
-                market_regime = build_market_regime(candidates)
-                rows, meta = score_position_candidates(
-                    candidates,
-                    top_n=30,
-                    market_filter=market,
-                    market_regime=market_regime,
-                )
-                version = meta.get("strategy_version", "position_1_3m_v1")
-            elif strategy == "chokepoint_picks":
-                market_regime = build_market_regime(candidates)
-                rows, meta = score_chokepoint_candidates(
-                    candidates,
-                    top_n=30,
-                    market_filter=market,
-                    market_regime=market_regime,
-                )
-                version = meta.get("strategy_version", "chokepoint_v1")
-            elif strategy in ("reversal_picks", "smallcap_value_picks", "breakout_picks"):
-                candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
-                market_regime = build_market_regime(candidates)
-                scorer = {
-                    "reversal_picks": score_reversal_candidates,
-                    "smallcap_value_picks": score_smallcap_value_candidates,
-                    "breakout_picks": score_breakout_candidates,
-                }[strategy]
-                rows, meta = scorer(
-                    candidates,
-                    top_n=30,
-                    market_filter=market,
-                    market_regime=market_regime,
-                )
-                version = meta.get("strategy_version", strategy.replace("_picks", "_v1"))
-            else:
-                market_regime = build_market_regime(candidates)
-                rows, meta = score_tech_potential_candidates(
-                    candidates,
-                    top_n=50,
-                    market_filter=market,
-                    market_regime=market_regime,
-                )
-                version = "tech_potential_v1"
-            result = validation_store.save_signals(
-                strategy,
-                version,
-                meta["generated_at"],
-                rows,
-            )
+            result = run_snapshot(provider, validation_store, strategy, market=market)
             invalidate_metrics_cache()
-            return jsonify({"ok": True, "saved": result, "meta": meta, "health": provider.health()})
+            return jsonify({"ok": bool(result.get("ok")), **result, "health": provider.health()})
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc), "health": provider.health()}), 502
 
@@ -882,6 +1089,20 @@ def create_app() -> Flask:
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc), "health": provider.health()}), 502
 
+    @app.route("/api/strategy-validation/auto-update-status")
+    def strategy_validation_auto_update_status():
+        with auto_update_lock:
+            status = dict(auto_update_status)
+        status["config"] = {
+            "initial_delay_seconds": config.VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS,
+            "interval_seconds": config.VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS,
+            "batch_size": config.VALIDATION_AUTO_UPDATE_BATCH_SIZE,
+            "max_codes_per_run": config.VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN,
+            "history_days": config.VALIDATION_AUTO_UPDATE_HISTORY_DAYS,
+            "strategies": _configured_auto_update_strategies(),
+        }
+        return jsonify({"ok": True, "auto_update": status, "health": provider.health()})
+
     @app.route("/api/strategy-validation/prefetch-history", methods=["POST"])
     def strategy_validation_prefetch_history():
         signal_date = request.args.get("date", "")
@@ -898,6 +1119,8 @@ def create_app() -> Flask:
             )
             codes = [row["code"] for row in code_rows]
             prefetch = provider.prefetch_history(codes, days=days, force=force)
+            if int(prefetch.get("downloaded") or 0) > 0:
+                factors_cache.clear()
             outcome = None
             if update:
                 outcome = validation_store.update_outcomes(
@@ -936,6 +1159,8 @@ def create_app() -> Flask:
             codes = [row["code"] for row in code_rows]
             code_names = {row["code"]: row.get("name") or row["code"] for row in code_rows}
             prefetch = provider.prefetch_history(codes, days=days, force=force)
+            if int(prefetch.get("downloaded") or 0) > 0:
+                factors_cache.clear()
             replay = backfill_strategy_validation_samples(
                 provider,
                 validation_store,
@@ -1051,7 +1276,7 @@ def create_app() -> Flask:
                 quotes = quotes_cache.get()
                 if quotes is None:
                     quotes = provider.get_realtime_quotes()
-                candidates = prepare_candidates(quotes)
+                candidates = _attach_event_risk_layer(prepare_candidates(quotes))
                 codes = candidates.sort_values(["pct_chg", "turnover"], ascending=False).head(40)[
                     "code"
                 ].tolist()
@@ -1102,7 +1327,9 @@ def _candidate_code_rows(provider, quotes_cache: TimedCache, limit: int) -> list
     if quotes is None:
         quotes = provider.get_realtime_quotes()
         quotes_cache.set(quotes)
-    candidates = prepare_candidates(quotes)
+    candidates = attach_event_risk(prepare_candidates(quotes), load_event_risk(provider))
+    codes = candidates["code"].tolist() if candidates is not None and "code" in candidates.columns else []
+    candidates = attach_fundamental_factors(candidates, load_fundamentals(provider, codes=codes))
     if candidates.empty:
         return []
     sort_columns = [column for column in ("pct_chg", "turnover") if column in candidates.columns]
@@ -1120,6 +1347,188 @@ def _candidate_code_rows(provider, quotes_cache: TimedCache, limit: int) -> list
             }
         )
     return rows
+
+
+def _chokepoint_industry_map(candidates, rows, raw_quotes, market_regime):
+    row_lookup = {normalize_code(row.get("code")): row for row in rows or []}
+    raw_lookup = _quote_lookup(raw_quotes)
+    items = []
+    totals = {
+        "industry_count": 0,
+        "leader_count": 0,
+        "unique_leader_count": 0,
+        "recommended_count": 0,
+        "matched_count": 0,
+        "quote_available_count": 0,
+    }
+    unique_codes = set()
+    recommended_codes = set()
+    matched_codes = set()
+    quoted_codes = set()
+    for segment, leaders in CHOKEPOINT_INDUSTRY_LEADERS.items():
+        leader_rows = []
+        recommended_count = 0
+        for leader in leaders:
+            code = normalize_code(leader.get("code"))
+            scored = row_lookup.get(code)
+            quote = raw_lookup.get(code, {})
+            item = _leader_status(segment, leader, scored, quote, market_regime)
+            if item["recommendation"]["level"] in ("buy", "watch"):
+                recommended_count += 1
+                recommended_codes.add(code)
+            if item.get("matched"):
+                matched_codes.add(code)
+            if item.get("quote_available"):
+                quoted_codes.add(code)
+            unique_codes.add(code)
+            leader_rows.append(item)
+        items.append(
+            {
+                "segment": segment,
+                "leader_count": len(leader_rows),
+                "recommended_count": recommended_count,
+                "leaders": leader_rows,
+            }
+        )
+        totals["industry_count"] += 1
+        totals["leader_count"] += len(leader_rows)
+    totals["unique_leader_count"] = len(unique_codes)
+    totals["recommended_count"] = len(recommended_codes)
+    totals["matched_count"] = len(matched_codes)
+    totals["quote_available_count"] = len(quoted_codes)
+    for item in items:
+        item["totals"] = totals
+    return items
+
+
+def _quote_lookup(quotes) -> Dict[str, Dict[str, object]]:
+    if quotes is None or quotes.empty:
+        return {}
+    try:
+        from .normalization import rename_known_columns
+
+        df = rename_known_columns(quotes.copy())
+    except Exception:
+        df = quotes.copy()
+    if "code" not in df.columns:
+        return {}
+    df["code"] = df["code"].map(normalize_code)
+    lookup = {}
+    for _, row in df.iterrows():
+        lookup[str(row.get("code"))] = row.to_dict()
+    return lookup
+
+
+def _stock_exists_in_quotes(code: str, quotes) -> bool:
+    if quotes is None or quotes.empty:
+        return False
+    try:
+        from .normalization import rename_known_columns
+
+        df = rename_known_columns(quotes.copy())
+    except Exception:
+        df = quotes.copy()
+    if "code" not in df.columns:
+        return False
+    return normalize_code(code) in set(df["code"].map(normalize_code).astype(str))
+
+
+def _leader_status(segment: str, leader: Dict[str, object], scored: Dict[str, object], quote: Dict[str, object], market_regime: Dict[str, object]) -> Dict[str, object]:
+    code = normalize_code(leader.get("code"))
+    name = str((scored or {}).get("name") or (quote or {}).get("name") or leader.get("name") or "")
+    if scored:
+        profile = scored.get("serenity_profile") or {}
+        committee = scored.get("agent_committee") or {}
+        action = committee.get("final_action_label") or profile.get("action_label") or "观察"
+        recommendation = _leader_recommendation(
+            score=coerce_number(scored.get("score")),
+            risk=coerce_number(profile.get("risk_score"), 50.0),
+            action=action,
+            matched=True,
+        )
+        return {
+            "code": code,
+            "name": name,
+            "segment": segment,
+            "matched": True,
+            "quote_available": True,
+            "price": coerce_number(scored.get("price")),
+            "pct_chg": coerce_number(scored.get("pct_chg")),
+            "turnover": coerce_number(scored.get("turnover")),
+            "score": coerce_number(scored.get("score")),
+            "rank": scored.get("rank"),
+            "action_label": action,
+            "verdict": scored.get("verdict") or {},
+            "reasons": list(scored.get("reasons") or [])[:3],
+            "recommendation": recommendation,
+        }
+
+    if quote:
+        pct = coerce_number(quote.get("pct_chg"))
+        turnover = coerce_number(quote.get("turnover"))
+        risks = []
+        if turnover < config.MIN_TURNOVER:
+            risks.append("成交额不足")
+        if pct > config.MAX_RECOMMENDED_GAIN:
+            risks.append("当日涨幅过高")
+        if pct <= -8:
+            risks.append("当日跌幅过大")
+        if not risks:
+            risks.append("未命中卡脖子关键词或未进入当前策略榜")
+        action = "只观察" if risks else "等待确认"
+        return {
+            "code": code,
+            "name": name,
+            "segment": segment,
+            "matched": False,
+            "quote_available": True,
+            "price": coerce_number(quote.get("price")),
+            "pct_chg": pct,
+            "turnover": turnover,
+            "score": 0.0,
+            "rank": None,
+            "action_label": action,
+            "verdict": {},
+            "reasons": risks[:3],
+            "recommendation": {
+                "level": "avoid" if pct > config.MAX_RECOMMENDED_GAIN or turnover < config.MIN_TURNOVER else "observe",
+                "label": "不建议买入" if pct > config.MAX_RECOMMENDED_GAIN or turnover < config.MIN_TURNOVER else "仅观察",
+                "reason": "；".join(risks[:3]),
+            },
+        }
+
+    return {
+        "code": code,
+        "name": name,
+        "segment": segment,
+        "matched": False,
+        "quote_available": False,
+        "price": 0.0,
+        "pct_chg": 0.0,
+        "turnover": 0.0,
+        "score": 0.0,
+        "rank": None,
+        "action_label": "无行情",
+        "verdict": {},
+        "reasons": ["当前行情源未返回该股票"],
+        "recommendation": {
+            "level": "unknown",
+            "label": "无法判断",
+            "reason": "当前行情源未返回该股票，可能停牌、代码不在免费源或行情延迟。",
+        },
+    }
+
+
+def _leader_recommendation(score: float, risk: float, action: str, matched: bool) -> Dict[str, str]:
+    if not matched:
+        return {"level": "observe", "label": "仅观察", "reason": "未进入当前卡脖子策略榜。"}
+    if "风控否决" in action or "只观察" in action or risk >= 72:
+        return {"level": "avoid", "label": "不建议买入", "reason": "风险分偏高或风控动作偏谨慎。"}
+    if score >= 72 and risk <= 55 and ("批准" in action or "优先" in action):
+        return {"level": "buy", "label": "可加入买入观察", "reason": "已命中卡脖子策略且质量/风险组合较好；仍需仓位和止损。"}
+    if score >= 60 and risk <= 65:
+        return {"level": "watch", "label": "小仓观察", "reason": "有正向信号但不够强，等待回踩或更多确认。"}
+    return {"level": "observe", "label": "仅观察", "reason": "分数或风险收益比不足，暂不建议主动买入。"}
 
 
 def _sentiment_for_candidates(provider, cache: TimedCache, candidates) -> Dict[str, Dict[str, object]]:
@@ -1144,22 +1553,27 @@ def _sentiment_for_candidates(provider, cache: TimedCache, candidates) -> Dict[s
 def _attach_alphalite_factors(provider, cache: TimedCache, candidates):
     if not config.ENABLE_HISTORY_FACTORS or config.HISTORY_FACTOR_LIMIT <= 0:
         return candidates
-    cached = cache.get()
-    if cached is not None:
-        return merge_alphalite(candidates, cached)
     history_by_code = {}
     target_codes = candidates.sort_values(["pct_chg", "turnover"], ascending=False).head(
         config.HISTORY_FACTOR_LIMIT
     )["code"].tolist()
+    request_fetches = 0
+    max_request_fetches = max(0, int(getattr(config, "HISTORY_FACTORS_MAX_REQUEST_FETCHES", 8)))
+    fetch_on_request = bool(getattr(config, "HISTORY_FACTORS_FETCH_ON_REQUEST", False))
     for code in target_codes:
         try:
-            history = provider.get_history(code, days=90)
+            if hasattr(provider, "get_cached_history"):
+                history = provider.get_cached_history(code, days=90)
+            else:
+                history = None
+            if (history is None or history.empty) and fetch_on_request and request_fetches < max_request_fetches:
+                history = provider.get_history(code, days=90)
+                request_fetches += 1
         except Exception:
             continue
         if history is not None and not history.empty:
             history_by_code[code] = history
     factors = build_alphalite_factors(history_by_code)
-    cache.set(factors)
     return merge_alphalite(candidates, factors)
 
 
@@ -1232,17 +1646,4 @@ def _market_news(provider, cache: TimedCache):
 
 
 def _strategy_status(metrics: Dict[str, object]) -> Dict[str, str]:
-    sample_count = int(metrics.get("sample_count") or 0)
-    real_count = int(metrics.get("real_sample_count") or 0)
-    avg_return = float(metrics.get("real_avg_primary_return_net") or metrics.get("avg_primary_return_net") or 0)
-    win_rate = float(metrics.get("real_win_rate_primary_net") or metrics.get("win_rate_primary_net") or 0)
-    drawdown = float(metrics.get("avg_max_drawdown_3d") or 0)
-    if real_count < 10 and sample_count < 30:
-        return {"level": "pending", "label": "样本不足", "advice": "真实样本不足，回放只能粗筛；先保存并更新前瞻验证。"}
-    if real_count < 10:
-        return {"level": "pending", "label": "真实样本少", "advice": "回放样本已补足但真实样本不足，不能高权重采信。"}
-    if avg_return > 0.5 and win_rate >= 52 and drawdown > -8:
-        return {"level": "good", "label": "继续观察", "advice": "真实样本主周期净表现尚可，但仍需控制仓位。"}
-    if avg_return < 0 or drawdown <= -10:
-        return {"level": "bad", "label": "建议降权", "advice": "主周期净收益或回撤不理想，优先降低权重或暂停使用。"}
-    return {"level": "neutral", "label": "中性", "advice": "表现不突出，继续与其他策略对比。"}
+    return strategy_status(metrics)

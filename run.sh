@@ -47,8 +47,10 @@ printf '安装/更新依赖...\n'
 "$VENV_DIR/bin/python" -m pip install -r requirements.txt
 
 printf '\n启动看板: http://%s:%s\n' "$HOST" "$PORT"
+printf '历史因子: ENABLE_HISTORY_FACTORS=%s（可显式设为 0 关闭）\n' "${ENABLE_HISTORY_FACTORS:-1}"
 printf '按 Ctrl+C 停止。\n\n'
 
 export FLASK_RUN_HOST="$HOST"
 export FLASK_RUN_PORT="$PORT"
+export ENABLE_HISTORY_FACTORS="${ENABLE_HISTORY_FACTORS:-1}"
 exec "$VENV_DIR/bin/python" app.py

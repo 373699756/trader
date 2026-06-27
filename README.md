@@ -14,7 +14,7 @@
 - 长期评分偏 60 日/YTD 趋势、流动性、行业强度、舆情质量和风险过滤。
 - AlphaLite 历史因子增强：3/5/10/20 日动量、均线偏离、成交额放大、20 日突破、20 日波动率。
 - 市场状态识别：根据候选池涨跌广度、中位涨幅、强弱占比和振幅，区分偏进攻 / 均衡 / 偏防守环境。
-- 多策略共识榜：汇总短线、长线、明天预测、科技潜力、波段、中长期 6 套策略的重复入选股票。
+- 多策略共识榜：汇总短线、长线、明天预测、科技潜力、波段、中长期 6 套实时主策略的重复入选股票，保留 Top 30；卡脖子、反转低波、小市值价值、量价突破作为独立策略和验证对象。
 - Serenity Profile：结合 Serenity/chokepoint 瓶颈投资方法论、UZI-Skill 的结构化证据和当前本地因子，为每条推荐生成质量分、风险分、置信度、证据和动作建议。
 - TradingAgents 委员会：参考 `TauricResearch/TradingAgents` 的分析师、牛熊研究、交易员、风控和组合经理分层决策流，为每条推荐生成 `agent_committee`。
 - Verdict 评级阶梯：把裸 0-100 综合分映射为强烈关注/关注/观察/谨慎/回避，数据覆盖不足时强制降级并标注（参考 UZI-Skill / Buffett 评级思路）。
@@ -22,17 +22,21 @@
 - 过热乘法抑制：对短线/明天/科技/波段的最终分施加 `_not_overextended_score` 派生的乘法 damp，完全过热的票无法靠动量挤进前列。
 - 市况自适应权重：偏进攻市自动放大动量/趋势/突破/量能因子，偏防守市自动放大低波/质量/流动性因子；结果行输出 `regime_weight_profile` 解释当日权重画像。
 - 卡脖子主题倾斜：科技潜力策略加入 `_chokepoint_score`，奖励供给紧、尚未被重定价的上游/元件环节（Serenity / chokepoint 方法论）。
-- 卡脖子独立策略页：`/api/chokepoint-picks` 以 `_chokepoint_score` 为主导因子，只保留命中上游环节的票并按产业链环节（半导体设备/材料、封装/载板、EDA/IP、光器件、高端材料、精密零部件）归类，meta 附 `chain` 用于前端产业链全景图。
+- 卡脖子独立策略页：`/api/chokepoint-picks` 以 `_chokepoint_score` 为主导因子，只保留命中上游环节的票，并按先进光刻、半导体设备/材料、国产算力、玻璃基板、先进封装、工业软件、低轨星座等产业链环节归类；完整行业口径见 [`docs/strategies.md`](docs/strategies.md)。
 - 反转低波策略（`/api/reversal-picks`）：依据 A 股短线反转+低波动+高换手回避证据，挑超跌且不躁动的标的，含接飞刀风险惩罚。
 - 小市值价值策略（`/api/smallcap-value-picks`）：复用东方财富已到位的流通市值/PE/PB，低市值+低估值，含市值下限、亏损过滤、流动性与防守降权护栏（注意 2024 微盘崩盘尾风险）。
 - 量价突破策略（`/api/breakout-picks`）：均线多头排列（MA5>MA10>MA20>MA60）或 20 日新高 + 量能突破的趋势确认型选股。
 - 动量→反转修正开关：`short_term` 新增可回测的 `reversal_tilt`（默认关闭），用 `python -m stock_analyzer.calibrate --compare-momentum` 由回测决定是否启用及幅度。
 - 共识极化与可信度：多策略共识按跨策略分歧度做极化拉伸（一致拉伸、分歧压缩），并以各策略主周期净胜率作为可信度乘子，真实前瞻样本优先于历史回放样本。
-- 回测权重校准：`python -m stock_analyzer.calibrate` 以滚动回测胜率+平均收益为目标离线扫描 AlphaLite 信号权重，写入 `.runtime/weights.json` 供运行时覆盖。
+- AlphaLite 回测权重校准：`python -m stock_analyzer.calibrate` 以滚动回测胜率+平均收益为目标离线扫描 AlphaLite 信号权重。
+- 上线策略权重校准：`python -m stock_analyzer.calibrate --calibrate-live-weights all --dry-run` 直接读取真实验证样本，重算 `score_*_candidates` 的声明式权重，满足样本和改善阈值后写入 `.runtime/weights.json`。
 - TopK-Dropout 稳定榜单：展示新进、留存、连续上榜次数，减少刷新噪声。
 - SQLite 历史 K 线缓存：减少重复请求免费行情接口。
 - 止损/持有期退出模拟：策略验证和 AlphaLite 回测统一使用固定持有期 + 固定止损 + 止盈 + 移动止损，不再只按期末收盘价评估。
 - 滚动回测：按 AlphaLite 信号做多期 TopK 组合验证，输出胜率、累计收益、最大回撤、扣成本收益和退出原因。
+- 事件风险层：可选接入解禁、质押、减持和财报窗口风险，默认关闭；开启后高风险票会提高风险分、降级动作，必要时从硬过滤中剔除。
+- 组合总仓控制：组合约束页不再默认满仓，按市场状态和纸面组合回撤缩放总仓，并展示现金比例。
+- 基本面/因子 IC 框架：可选接入 ROE、毛利率、资产负债率、估值、业绩超预期和评级调整；`daily_job` 会基于真实样本刷新因子 IC，用来识别长期无效因子。
 - 点击股票可查看相关新闻、电报、关键词命中和舆情分。
 - 行情优先使用 AKShare；配置 `TUSHARE_TOKEN` 后可尝试 Tushare 降级。
 
@@ -42,13 +46,15 @@
 - 决策台首页：新增市场状态、操作建议、强共识数量、优先跟踪数量和共识风险均值，先给交易前判断，再进入个股。
 - 全局动作筛选和排序：支持按优先跟踪、小仓观察、等待确认、只观察过滤，并支持默认排名、质量、风险、综合分、成交额排序。
 - 右侧股票详情抽屉：点击任意股票先展示本地评分证据、质量/风险/置信度、共识来源和风险标签，再加载舆情新闻。
-- 策略验证工作台：按“保存预测 -> 选择样本 -> 更新结果 -> 查看批次明细”重排，降低操作路径复杂度。
-- 历史数据回填验证：策略验证页支持“下载历史并验证”，会先把已保存预测股票的日线写入 `.runtime/history_cache.sqlite3`，再批量更新验证结果。
+- 策略验证工作台：按“保存预测 -> 后台自动回填 -> 选择样本 -> 查看批次明细”重排，降低操作路径复杂度。
+- 历史数据自动回填验证：后台按策略和股票代码分批把已保存预测股票的日线写入 `.runtime/history_cache.sqlite3`，再批量更新验证结果；Web 不再放“下载历史并验证”按钮。
 - ECharts 图表可视化：决策台新增市场环境仪表盘与共识热度散点，详情抽屉新增策略子分雷达，策略验证页新增各策略主周期净胜率走势折线（消费 `/api/validation-overview`）；图表库离线不可用时优雅降级为提示文字。
 - 评级直观化：各策略表格综合分列改为 Verdict 评级徽章 + 数值，详情抽屉以多空双进度条呈现 `bull_score` / `bear_score`。
 - 现代深色仪表盘：整站改为深色主题（颜色全部收敛进 `:root` 语义变量 + ECharts 统一 `CHART_THEME`），保留 A 股红涨绿跌约定。
 - 卡脖子页：侧栏新增「卡脖子」tab，顶部按产业链环节展示代表票卡片（产业链全景图），下方为实时打分榜。
-- 策略验证页重做：顶部「记分牌」给每个策略一眼结论（主周期净胜率徽章 + 一句话可信度判断），左侧单按钮操作面板（保存预测 / 下载历史并验证）带就地成功/失败/进度反馈，右侧复盘区自动选中最新批次。
+- 策略验证页重做：顶部「记分牌」给每个策略一眼结论（主周期净胜率徽章 + 一句话可信度判断），左侧操作面板保留保存、回放和人工复核，历史 K 线下载改由后台自动分批执行，右侧复盘区自动选中最新批次。
+- 组合约束页：基于最近一次保存快照生成建议仓位，加入单票上限、主题/行业上限和现金保留提示，并展示纸面收益、最大回撤、净胜率和纸面交易数；该功能只约束仓位，不改变策略排序。
+- 组合总仓卡：展示 `gross_exposure_pct`、`cash_pct`、市况降仓因子、回撤降仓因子和触发原因，防止在偏防守市或纸面回撤扩大时机械满仓。
 
 ## 推荐策略
 
@@ -62,18 +68,21 @@
 
 该策略不保证收益，只是把多策略重复确认、风险优先和验证闭环放到同一个操作流程里。
 
+完整策略权重、过滤条件、适用市况、空榜原因、单票预测和验证周期见 [`docs/strategies.md`](docs/strategies.md)。
+
 ## TradingAgents 策略映射
 
 本项目没有复制或运行 `TauricResearch/TradingAgents` 的代码，也没有默认接入 LLM。当前采用确定性映射：
 
-- 技术分析师：读取动量、趋势、均线偏离、突破、执行性等字段。
+- 技术分析师：读取动量、趋势、均线偏离、突破、买入安全等字段。
 - 情绪分析师：读取舆情分和风险关键词。
-- 基本面代理：由于当前未接入财务/估值，使用行业强度、主题、流动性、不过热分作为代理。
+- 基本面代理：默认未启用财务/估值接口时，使用行业强度、主题、流动性、不过热分作为代理。
+- 基本面增强：开启 `ENABLE_FUNDAMENTALS=1` 后，会把质量、估值、业绩超预期和评级调整作为独立低相关 alpha 源；数据缺失时安全降级为代理分。
 - 新闻/市场环境：读取市场状态 `market_regime` 和策略顺逆风加减分。
 - 牛方研究员：汇总技术、情绪、流动性、主题和市场顺风证据。
 - 熊方研究员：汇总追高、透支、负面舆情、波动和流动性风险。
 - 交易员：把牛方分、熊方风险和市场环境转成可执行分。
-- 风控经理：对高涨幅、高量比、高换手、高振幅、涨幅透支和负面舆情做否决或压分。
+- 风控经理：对高量比、高换手、高振幅、当日追高和负面舆情做风险压分；阶段涨幅透支由 `overheat_damp` 统一硬门控。
 - 组合经理：生成最终 `final_score`、`stance` 和 `final_action_label`，并反向影响 Serenity Profile 和多策略共识排序。
 
 ## 开源参考
@@ -108,6 +117,18 @@ chmod +x run.sh
 PORT=5050 ./run.sh
 ```
 
+`run.sh` 会在部署层默认启用历史因子增强（`ENABLE_HISTORY_FACTORS=1`），但不修改 `config.py` 默认值；如需降级为纯实时代理，可显式运行：
+
+```bash
+ENABLE_HISTORY_FACTORS=0 ./run.sh
+```
+
+为避免量价突破等页面被免费行情源卡住，前台请求默认只读取 `.runtime/history_cache.sqlite3` 里的历史缓存，不会在页面加载时批量远程拉 K 线。缓存不足时，量价突破会使用实时涨幅、涨速、量比、成交额和 60 日趋势做兜底筛选。若确实要允许页面请求时少量远程补历史，可显式开启：
+
+```bash
+HISTORY_FACTORS_FETCH_ON_REQUEST=1 HISTORY_FACTORS_MAX_REQUEST_FETCHES=8 ./run.sh
+```
+
 手动运行：
 
 依赖当前 AKShare 版本，需要 Python 3.9 及以上；推荐 Python 3.11。若已有旧的 Python 3.8 虚拟环境，请先删除后重建。
@@ -130,10 +151,47 @@ export REFRESH_SECONDS=30
 export DEFAULT_TOP_N=20
 export MIN_TURNOVER=50000000
 export MAX_RECOMMENDED_GAIN=18.5
+export ENABLE_HISTORY_FACTORS=1
 export HISTORY_FACTOR_LIMIT=40
+export HISTORY_FACTORS_FETCH_ON_REQUEST=0
+export HISTORY_FACTORS_MAX_REQUEST_FETCHES=8
 export HISTORY_CACHE_PATH=.runtime/history_cache.sqlite3
 export HISTORY_CACHE_FRESHNESS_HOURS=18
 export VALIDATION_TRADE_COST_PCT=0.25
+export VALIDATION_PRIMARY_ENTRY_MODE=open
+export VALIDATION_SLIPPAGE_HIGH_TURNOVER_PCT=0.05
+export VALIDATION_SLIPPAGE_MID_TURNOVER_PCT=0.12
+export VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT=0.25
+export VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT=0.45
+export STRATEGY_DECAY_MIN_REAL_SAMPLES=20
+export STRATEGY_DECAY_WIN_RATE_FLOOR=42
+export STRATEGY_DECAY_AVG_RETURN_FLOOR=0
+export STRATEGY_RETIRE_WINRATE=48
+export PORTFOLIO_MAX_POSITIONS=10
+export PORTFOLIO_SINGLE_CAP=0.15
+export PORTFOLIO_THEME_CAP=0.35
+export PORTFOLIO_GROSS_RISK_ON=1.0
+export PORTFOLIO_GROSS_BALANCED=0.7
+export PORTFOLIO_GROSS_RISK_OFF=0.4
+export PORTFOLIO_DD_LEVEL_1=8.0
+export PORTFOLIO_DD_FACTOR_1=0.7
+export PORTFOLIO_DD_LEVEL_2=15.0
+export PORTFOLIO_DD_FACTOR_2=0.4
+export PAPER_TRADING_DB_PATH=.runtime/paper_trading.sqlite3
+export PAPER_TRADING_HISTORY_DAYS=220
+export PAPER_TRADING_SPREAD_CAPITAL_BY_HOLDING_DAYS=1
+export ENABLE_EVENT_RISK=0
+export EVENT_RISK_HARD_FILTER=0
+export EVENT_RISK_REDUCTION_LOOKBACK_DAYS=120
+export EVENT_RISK_CACHE_PATH=.runtime/event_risk.json
+export ENABLE_FUNDAMENTALS=0
+export FUNDAMENTAL_CACHE_PATH=.runtime/fundamentals.json
+export FACTOR_IC_PATH=.runtime/factor_ic.json
+export ENABLE_FACTOR_IC_WEIGHTING=0
+export FACTOR_IC_MIN_SAMPLES=30
+export FACTOR_IC_WEIGHT_BAND=0.3
+export CALIBRATE_WALK_FORWARD_FOLDS=4
+export CALIBRATE_MIN_COVERAGE=0.5
 export EXIT_STOP_LOSS_PCT=5.0
 export EXIT_TAKE_PROFIT_PCT=8.0
 export EXIT_TRAILING_STOP_PCT=4.0
@@ -145,11 +203,16 @@ export EXIT_TRAILING_STOP_PCT=4.0
 - `GET /api/sentiment/<code>?name=<股票名>`
 - `GET /api/backtest?codes=600000,000001&top_k=10&holding_days=3&mode=rolling`
 - `GET /api/backtest?codes=600000,000001&top_k=10&holding_days=3&mode=snapshot`
-- `POST /api/strategy-validation/prefetch-history?strategy=tomorrow_picks&date=2024-01-01&days=180&update=1`
+- `GET /api/strategy-validation/auto-update-status`
+- `POST /api/strategy-validation/snapshot?strategy=tomorrow_picks&market=all`
+- `POST /api/strategy-validation/prefetch-history?strategy=tomorrow_picks&date=2024-01-01&days=180&update=1`（兼容/内部接口，Web 不再提供按钮）
 - `GET /api/reversal-picks?top_n=30&market=all`
 - `GET /api/smallcap-value-picks?top_n=30&market=all`
 - `GET /api/breakout-picks?top_n=30&market=all`
 - `POST /api/strategy-validation/backfill-samples?strategy=tomorrow_picks&days=260&replay_days=20&top_n=30`
+- `GET /api/portfolio?strategy=tomorrow_picks`
+- `GET /api/portfolio/performance?strategy=tomorrow_picks&days=120`
+- `GET /api/paper-trades?strategy=tomorrow_picks&limit=200`
 - `GET /api/health`
 
 `market` 可选值：`all`、`main`、`chinext`、`star`。
@@ -168,19 +231,115 @@ export EXIT_TRAILING_STOP_PCT=4.0
 
 运行时会创建 `.runtime/recommendation_state.json` 保存稳定榜状态。
 
-运行时会创建 `.runtime/history_cache.sqlite3` 保存日线历史数据缓存；策略验证的“下载历史并验证”和“回放历史补样本”都会复用这个数据库，避免每次复盘都重新请求远程行情。
+运行时会创建 `.runtime/history_cache.sqlite3` 保存日线历史数据缓存；策略验证后台自动回填和“回放历史补样本”都会复用这个数据库，避免每次复盘都重新请求远程行情。
 
 ## 样本不足处理
 
 策略验证的“样本不足”指验证库里已经有结果、且已经走完该策略主周期的信号少于 30 条，不是单纯缺少K线。只下载历史K线只能更新已保存信号的结果，不能凭空增加过去的推荐样本。
 
-当前主评估口径是“主周期净收益/净胜率”，并会扣 `VALIDATION_TRADE_COST_PCT`（默认 0.25%）作为固定交易成本/滑点近似。不同策略的主周期不同：明天预测/短期看次日，反转低波看 5 日，波段/突破看 10 日，中长期/科技/卡脖子/小市值价值看 20 日。未来交易日不足时，该样本只计入 `outcome_sample_count`，不计入主样本 `sample_count`。
+当前主评估口径是“可执行主周期净收益/净胜率”：默认 `VALIDATION_PRIMARY_ENTRY_MODE=open`，按次日开盘入场计算主收益，并扣 `VALIDATION_TRADE_COST_PCT` 固定成本和成交额分档滑点。不同策略的主周期不同：明天预测/短期看次日，反转低波看 5 日，波段/突破看 10 日，中长期/科技/卡脖子/小市值价值看 20 日。未来交易日不足时，该样本只计入 `outcome_sample_count`，不计入主样本 `sample_count`。信号价收益仍会保留展示，但不再作为默认主评分口径。
 
-策略验证还会额外记录 `signal_exit_return` / `exit_reason` / `exit_days` / `exit_date`：按主周期窗口内的止损、止盈、移动止损或持有到期计算退出收益。默认参数是 5% 固定止损、8% 止盈、4% 移动止损，可用 `EXIT_STOP_LOSS_PCT`、`EXIT_TAKE_PROFIT_PCT`、`EXIT_TRAILING_STOP_PCT` 调整。该模型仍是日线近似：同一天同时触发止损和止盈时按保守顺序先算止损，且未精确模拟涨跌停不可成交和盘中滑点。
+策略验证还会额外记录 `signal_exit_return` / `exit_reason` / `exit_days` / `exit_date`：按主周期窗口内的止损、止盈、移动止损或持有到期计算退出收益。默认参数是 5% 固定止损、8% 止盈、4% 移动止损，可用 `EXIT_STOP_LOSS_PCT`、`EXIT_TAKE_PROFIT_PCT`、`EXIT_TRAILING_STOP_PCT` 调整。当前已加入可成交性近似：一字涨停/封板买不进的样本会跳过；封跌停止损会顺延到下一交易日开盘。纸面组合默认按持有期摊分每日新开资本，避免每天一组 10/20 日组合被当成不重叠满仓收益。
 
 当前提供两条路径：
 
-1. 真实样本：每天在盘后保存推荐，次日或后续交易日点击“下载历史并验证”/“仅更新当前批次”。这是最可信的前瞻记录。
+1. 真实样本：每天在盘后用 `daily_job` 保存推荐快照，后台会按策略和股票代码分批下载/复用历史 K 线并回填结果；“仅更新当前批次”只用于人工复核。这是最可信的前瞻记录。
 2. 离线补样本：点击“回放历史补样本”，系统会下载/复用日线历史，用当前量价规则模拟过去若干个交易日的信号，写入 `*_replay_v1` 版本并立即计算结果。该结果用于快速判断规则是否值得继续跟踪，不等同于真实历史曾经推荐过。
 
 默认回放参数为近 260 日历史、回放 20 个历史交易日、每个交易日保留 Top 30。回放样本仍归入原策略名称统计，因此可以快速把 `tomorrow_picks`、`swing_picks` 等策略从“样本不足”推进到可观察状态；同时明细里的 `strategy_version` 会标记为 `tomorrow_picks_replay_v1` 这类版本，便于和真实保存样本区分。共识权重优先采信真实前瞻样本；真实样本不足时只会轻度参考回放，避免回放结果虚高。
+
+策略共识已加入统一健康状态：真实样本不足为 `pending/probation` 并降权；真实样本数达到 `STRATEGY_DECAY_MIN_REAL_SAMPLES` 后，如果主周期净胜率低于 `STRATEGY_RETIRE_WINRATE` 或主周期净收益为负，该策略进入 `retired`，本轮共识权重置零。
+
+后台自动回填默认参数：
+
+- `VALIDATION_AUTO_UPDATE_ENABLED=1`：启用后台自动任务。
+- `VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS=180`：应用启动后延迟首轮，避免阻塞首屏。
+- `VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS=1800`：每 30 分钟执行一轮。
+- `VALIDATION_AUTO_UPDATE_BATCH_SIZE=40`：每批最多处理 40 只股票。
+- `VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN=160`：每个策略单轮最多处理 160 只股票。
+- `VALIDATION_AUTO_UPDATE_HISTORY_DAYS=220`：每只股票预取最近 220 日 K 线。
+- `VALIDATION_AUTO_UPDATE_STRATEGIES=`：默认覆盖全部验证策略；可填逗号分隔策略名限制范围。
+
+## 盘后自动任务
+
+不再通过 Web 按钮下载历史数据。真实前瞻样本建议用 CLI 在交易日盘后自动保存并回填：
+
+```bash
+.venv/bin/python -m stock_analyzer.daily_job --snapshot --strategy all --market all
+.venv/bin/python -m stock_analyzer.daily_job --update --strategy all
+.venv/bin/python -m stock_analyzer.daily_job --paper-trade --strategy all
+.venv/bin/python -m stock_analyzer.daily_job --factor-ic --strategy all
+```
+
+crontab 示例：
+
+```cron
+35 14 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --snapshot --strategy all --market all >> .runtime/daily_job.log 2>&1
+30 17 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --update --strategy all >> .runtime/daily_job.log 2>&1
+30 18 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --update --paper-trade --strategy all >> .runtime/daily_job.log 2>&1
+45 18 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --factor-ic --strategy all >> .runtime/daily_job.log 2>&1
+```
+
+第一条负责保存当日策略预测，第二条负责 T+1/T+多日结果回填，第三条在回填后同步纸面组合交易和组合净值，第四条刷新因子 IC。应用内后台分批任务仍会继续补 K 线和更新结果，cron 负责确保“每天都有真实预测样本入库”。
+
+## 上线后运营流程
+
+代码机制已经覆盖“样本入库 -> 结果回填 -> 纸面组合 -> 因子 IC -> walk-forward 校准”，但是否赚钱取决于真实样本和数据质量。上线后按以下顺序操作：
+
+1. 先挂 cron 持续攒样本。每天 14:35 保存当日预测，17:30 回填未来收益，18:30 更新纸面组合，18:45 刷新因子 IC。不要依赖人工点击 Web 按钮。
+2. 每天检查任务日志：
+
+```bash
+tail -n 100 .runtime/daily_job.log
+```
+
+3. 每天看 Web 三个位置：`策略验证` 看真实样本数、主周期净胜率和净收益；`组合约束` 看纸面收益、最大回撤和现金比例；`/api/health` 看事件风险、基本面和 IC 状态。
+4. 初期不要马上打开所有 alpha 开关，建议保持：
+
+```bash
+export ENABLE_EVENT_RISK=0
+export ENABLE_FUNDAMENTALS=0
+export ENABLE_FACTOR_IC_WEIGHTING=0
+```
+
+5. 如果有 Tushare token，先配置但不立即放开硬过滤：
+
+```bash
+export TUSHARE_TOKEN=你的token
+```
+
+6. 事件风险先软启用，观察解禁、质押、减持和财报窗口是否误伤：
+
+```bash
+export ENABLE_EVENT_RISK=1
+export EVENT_RISK_HARD_FILTER=0
+```
+
+确认数据质量稳定后，再考虑：
+
+```bash
+export EVENT_RISK_HARD_FILTER=1
+```
+
+7. 基本面因子后启用。只有确认财务字段覆盖率和更新频率可接受后，再设置：
+
+```bash
+export ENABLE_FUNDAMENTALS=1
+```
+
+8. IC 加权最后启用。至少等核心策略真实样本达到 30 条，更稳妥是 100 条以上，再考虑：
+
+```bash
+export ENABLE_FACTOR_IC_WEIGHTING=1
+export FACTOR_IC_MIN_SAMPLES=30
+```
+
+9. 权重校准先只跑 dry-run：
+
+```bash
+.venv/bin/python -m stock_analyzer.calibrate --calibrate-live-weights all --dry-run
+```
+
+只有当 OOS 改善稳定、多数 walk-forward fold 胜出、且纸面组合没有同步恶化时，才去掉 `--dry-run` 写入 `.runtime/weights.json`。
+
+核心原则：先攒真实前瞻样本，再验证数据源，再开启事件风险/基本面/IC 加权。代码就绪不等于策略已有 edge，任何开关都必须经过真实样本验证后再放大使用。

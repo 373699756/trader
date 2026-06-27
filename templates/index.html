@@ -10,7 +10,7 @@
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand-block">
-          <h1>A 股荐股工作台</h1>
+          <h1>工作台</h1>
           <p id="statusText">等待刷新</p>
         </div>
         <nav class="tabs side-nav" aria-label="榜单视图">
@@ -18,11 +18,12 @@
           <button class="tab-button" type="button" data-tab="todayPanel">今日推荐</button>
           <button class="tab-button" type="button" data-tab="tomorrowPanel">明天预测</button>
           <button class="tab-button" type="button" data-tab="horizonPanel">波段/中长期</button>
-          <button class="tab-button" type="button" data-tab="techPanel">科技潜力</button>
-          <button class="tab-button" type="button" data-tab="chokepointPanel">卡脖子</button>
+          <button class="tab-button" type="button" data-tab="techPanel">科技/主题</button>
           <button class="tab-button" type="button" data-tab="reversalPanel">反转低波</button>
           <button class="tab-button" type="button" data-tab="smallcapPanel">小市值价值</button>
           <button class="tab-button" type="button" data-tab="breakoutPanel">量价突破</button>
+          <button class="tab-button" type="button" data-tab="chokepointPanel">卡脖子</button>
+          <button class="tab-button" type="button" data-tab="portfolioPanel">组合约束</button>
           <button class="tab-button" type="button" data-tab="validationPanel">策略验证</button>
           <button class="tab-button" type="button" data-tab="strategyPanel">策略说明</button>
         </nav>
@@ -30,23 +31,11 @@
 
       <main class="workspace">
         <header class="topbar">
-          <section class="metrics status-strip">
-            <div>
-              <span>行情源</span>
-              <strong id="quoteSource">-</strong>
-            </div>
-            <div>
-              <span>舆情源</span>
-              <strong id="sentimentSource">-</strong>
-            </div>
-            <div>
-              <span>候选数</span>
-              <strong id="candidateCount">-</strong>
-            </div>
-            <div>
-              <span>市场舆情</span>
-              <strong id="marketSentiment">-</strong>
-            </div>
+          <section class="status-line" aria-label="数据状态">
+            <span>行情 <strong id="quoteSource">-</strong></span>
+            <span>舆情 <strong id="sentimentSource">-</strong></span>
+            <span>候选 <strong id="candidateCount">-</strong></span>
+            <span>市场 <strong id="marketSentiment">-</strong></span>
           </section>
           <div class="toolbar">
             <label>
@@ -78,6 +67,25 @@
                 <option value="turnover">成交额</option>
               </select>
             </label>
+            <div class="glossary-control">
+              <button id="glossaryToggle" type="button" aria-expanded="false" aria-controls="glossaryPopover">常见名词</button>
+              <div id="glossaryPopover" class="glossary-popover" hidden>
+                <div class="glossary-popover-head">
+                  <strong>常见股票名词</strong>
+                  <span>用于阅读榜单，不构成买卖建议</span>
+                </div>
+                <div class="glossary-popover-grid">
+                  <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
+                  <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
+                  <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
+                  <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
+                  <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
+                  <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
+                  <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
+                  <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
+                </div>
+              </div>
+            </div>
             <button id="refreshButton" type="button">刷新</button>
           </div>
         </header>
@@ -92,17 +100,14 @@
           <article class="decision-card">
             <span>强共识</span>
             <strong id="decisionConsensusCount">-</strong>
-            <p>2 个以上策略同时入选</p>
           </article>
           <article class="decision-card">
             <span>优先跟踪</span>
             <strong id="decisionPriorityCount">-</strong>
-            <p>低风险且质量较高</p>
           </article>
           <article class="decision-card">
             <span>平均风险</span>
             <strong id="decisionAvgRisk">-</strong>
-            <p>共识榜风险均值</p>
           </article>
         </section>
 
@@ -142,7 +147,7 @@
               <strong id="overviewDays">近20个保存日</strong>
             </div>
           </section>
-          <section class="market-regime-strip" aria-label="市场状态">
+          <section class="market-regime-strip overview-secondary" aria-label="市场状态">
             <div>
               <span>盘面状态</span>
               <strong id="overviewRegimeLabel">-</strong>
@@ -168,7 +173,7 @@
               <strong id="overviewRegimeAdvice">-</strong>
             </div>
           </section>
-          <div class="chart-row">
+          <div class="chart-row overview-secondary">
             <div class="chart-card">
               <h3>市场环境</h3>
               <div id="regimeGauge" class="chart-box"></div>
@@ -207,10 +212,10 @@
               </tbody>
             </table>
           </div>
-          <div class="strategy-overview-grid" id="strategyOverviewGrid">
+          <div class="strategy-overview-grid overview-secondary" id="strategyOverviewGrid">
             <div class="empty">加载中...</div>
           </div>
-          <div class="table-wrap">
+          <div class="table-wrap overview-secondary">
             <table>
               <thead>
                 <tr>
@@ -230,7 +235,7 @@
               </thead>
               <tbody id="strategyOverviewBody">
                 <tr>
-                  <td colspan="11" class="empty">加载中...</td>
+                  <td colspan="12" class="empty">加载中...</td>
                 </tr>
               </tbody>
             </table>
@@ -239,17 +244,33 @@
       </section>
 
       <section class="recommendation-grid tab-panel" id="todayPanel">
+        <section class="market-glossary" aria-label="常见股票名词解释">
+          <div class="market-glossary-head">
+            <h2>常见名词</h2>
+            <span>用于阅读下方榜单，不构成买卖建议</span>
+          </div>
+          <div class="market-glossary-grid">
+            <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
+            <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
+            <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
+            <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
+            <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
+            <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
+            <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
+            <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
+          </div>
+        </section>
         <div class="board">
           <div class="board-header">
             <h2>短期推荐 10 支</h2>
             <span>盘中强势 / 量价动能 / 舆情热度</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="rec-table slim-table rec-short">
               <thead>
                 <tr>
                   <th>排名</th>
-                  <th>代码</th>
+                  <th>股票</th>
                   <th>名称</th>
                   <th>市场</th>
                   <th>最新价</th>
@@ -258,11 +279,11 @@
                   <th>量比</th>
                   <th>换手</th>
                   <th>成交额</th>
+                  <th class="col-market-cap">总市值</th>
                   <th>行业</th>
                   <th>动能分</th>
                   <th>舆情分</th>
-                  <th>综合分</th>
-                  <th>稳定</th>
+                  <th class="col-score">综合/买安</th>
                   <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -281,11 +302,11 @@
             <span>中期趋势 / 流动性 / 板块质量 / 风险过滤</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="rec-table slim-table rec-long">
               <thead>
                 <tr>
                   <th>排名</th>
-                  <th>代码</th>
+                  <th>股票</th>
                   <th>名称</th>
                   <th>市场</th>
                   <th>最新价</th>
@@ -294,11 +315,11 @@
                   <th>年内</th>
                   <th>换手</th>
                   <th>成交额</th>
+                  <th class="col-market-cap">总市值</th>
                   <th>行业</th>
                   <th>趋势分</th>
                   <th>舆情分</th>
-                  <th>综合分</th>
-                  <th>稳定</th>
+                  <th class="col-score">综合/买安</th>
                   <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -313,6 +334,22 @@
       </section>
 
       <section class="tab-panel" id="tomorrowPanel">
+        <section class="market-glossary" aria-label="常见股票名词解释">
+          <div class="market-glossary-head">
+            <h2>常见名词</h2>
+            <span>用于阅读下方榜单，不构成买卖建议</span>
+          </div>
+          <div class="market-glossary-grid">
+            <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
+            <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
+            <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
+            <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
+            <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
+            <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
+            <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
+            <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
+          </div>
+        </section>
         <div class="board">
           <div class="board-header">
             <h2>明天预测 50 支</h2>
@@ -345,11 +382,11 @@
             </div>
           </section>
           <div class="table-wrap">
-            <table>
+            <table class="rec-table slim-table rec-tomorrow">
               <thead>
                 <tr>
                   <th>排名</th>
-                  <th>代码</th>
+                  <th>股票</th>
                   <th>名称</th>
                   <th>市场</th>
                   <th>最新价</th>
@@ -357,12 +394,12 @@
                   <th>量比</th>
                   <th>换手</th>
                   <th>成交额</th>
+                  <th class="col-market-cap">总市值</th>
                   <th>60日</th>
                   <th>流动性</th>
                   <th>动能</th>
                   <th>趋势</th>
-                  <th>执行性</th>
-                  <th>综合分</th>
+                  <th class="col-score">综合/买安</th>
                   <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -377,17 +414,33 @@
       </section>
 
       <section class="recommendation-grid tab-panel" id="horizonPanel">
+        <section class="market-glossary" aria-label="常见股票名词解释">
+          <div class="market-glossary-head">
+            <h2>常见名词</h2>
+            <span>用于阅读下方榜单，不构成买卖建议</span>
+          </div>
+          <div class="market-glossary-grid">
+            <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
+            <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
+            <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
+            <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
+            <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
+            <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
+            <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
+            <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
+          </div>
+        </section>
         <div class="board">
           <div class="board-header">
             <h2>波段 5-10 日 30 支</h2>
             <span>5/10/20日动量 / 均线位置 / 温和放量 / 流动性 / 风险扣分</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="rec-table slim-table rec-swing">
               <thead>
                 <tr>
                   <th>排名</th>
-                  <th>代码</th>
+                  <th>股票</th>
                   <th>名称</th>
                   <th>市场</th>
                   <th>最新价</th>
@@ -397,10 +450,10 @@
                   <th>20日</th>
                   <th>20日线</th>
                   <th>成交额</th>
+                  <th class="col-market-cap">总市值</th>
                   <th>动量</th>
                   <th>趋势</th>
-                  <th>流动性</th>
-                  <th>综合分</th>
+                  <th class="col-score">综合/买安</th>
                   <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -419,16 +472,17 @@
             <span>技术趋势版 / 未接入财务估值 / 趋势稳健 / 波动可控 / 涨幅未透支</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="rec-table slim-table rec-position">
               <thead>
                 <tr>
                   <th>排名</th>
-                  <th>代码</th>
+                  <th>股票</th>
                   <th>名称</th>
                   <th>方向</th>
                   <th>市场</th>
                   <th>最新价</th>
                   <th>今日涨跌</th>
+                  <th class="col-market-cap">总市值</th>
                   <th>60日</th>
                   <th>年内</th>
                   <th>20日线</th>
@@ -436,13 +490,13 @@
                   <th>趋势</th>
                   <th>稳健</th>
                   <th>流动性</th>
-                  <th>综合分</th>
+                  <th class="col-score">综合/买安</th>
                   <th>解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="positionBody">
                 <tr>
-                  <td colspan="16" class="empty">切换到本页后加载</td>
+                  <td colspan="17" class="empty">切换到本页后加载</td>
                 </tr>
               </tbody>
             </table>
@@ -451,31 +505,47 @@
       </section>
 
       <section class="tab-panel" id="techPanel">
+        <section class="market-glossary" aria-label="常见股票名词解释">
+          <div class="market-glossary-head">
+            <h2>常见名词</h2>
+            <span>用于阅读下方榜单，不构成买卖建议</span>
+          </div>
+          <div class="market-glossary-grid">
+            <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
+            <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
+            <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
+            <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
+            <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
+            <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
+            <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
+            <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
+          </div>
+        </section>
         <div class="board">
           <div class="board-header">
             <h2>科技发展方向潜力 50 支</h2>
             <span>AI / 算力 / 半导体 / 机器人 / 低空航天 / 智能汽车 / 新材料 / 医疗科技</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="rec-table slim-table rec-tech">
               <thead>
                 <tr>
-                  <th>排名</th>
-                  <th>代码</th>
-                  <th>名称</th>
-                  <th>方向</th>
-                  <th>市场</th>
-                  <th>最新价</th>
-                  <th>今日涨跌</th>
-                  <th>60日</th>
-                  <th>年内</th>
-                  <th>成交额</th>
-                  <th>主题</th>
-                  <th>启动</th>
-                  <th>未透支</th>
-                  <th>执行性</th>
-                  <th>综合分</th>
-                  <th>解释/风险/验证</th>
+	                  <th>排名</th>
+	                  <th>股票</th>
+	                  <th>名称</th>
+	                  <th>市场</th>
+	                  <th>最新价</th>
+	                  <th>今日涨跌</th>
+	                  <th>量比</th>
+	                  <th>换手率</th>
+	                  <th>成交额</th>
+	                  <th class="col-market-cap">总市值</th>
+	                  <th>60日</th>
+	                  <th>流动性</th>
+	                  <th>动能</th>
+	                  <th>趋势</th>
+	                  <th class="col-score">综合/买安</th>
+	                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="techBody">
@@ -489,6 +559,22 @@
       </section>
 
       <section class="tab-panel" id="chokepointPanel">
+        <section class="market-glossary" aria-label="常见股票名词解释">
+          <div class="market-glossary-head">
+            <h2>常见名词</h2>
+            <span>用于阅读下方榜单，不构成买卖建议</span>
+          </div>
+          <div class="market-glossary-grid">
+            <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
+            <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
+            <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
+            <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
+            <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
+            <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
+            <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
+            <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
+          </div>
+        </section>
         <div class="board">
           <div class="board-header">
             <h2>卡脖子 · 供应链上游</h2>
@@ -505,25 +591,25 @@
             <span>命中上游环节、实时打分排序</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="rec-table slim-table rec-chokepoint">
               <thead>
                 <tr>
-                  <th>排名</th>
-                  <th>代码</th>
-                  <th>名称</th>
-                  <th>环节</th>
-                  <th>市场</th>
-                  <th>最新价</th>
-                  <th>今日涨跌</th>
-                  <th>60日</th>
-                  <th>年内</th>
-                  <th>成交额</th>
-                  <th>卡脖子分</th>
-                  <th>启动</th>
-                  <th>未透支</th>
-                  <th>执行性</th>
-                  <th>综合分</th>
-                  <th>解释/风险/验证</th>
+	                  <th>排名</th>
+	                  <th>股票</th>
+	                  <th>名称</th>
+	                  <th>市场</th>
+	                  <th>最新价</th>
+	                  <th>今日涨跌</th>
+	                  <th>量比</th>
+	                  <th>换手率</th>
+	                  <th>成交额</th>
+	                  <th class="col-market-cap">总市值</th>
+	                  <th>60日</th>
+	                  <th>流动性</th>
+	                  <th>动能</th>
+	                  <th>趋势</th>
+	                  <th class="col-score">综合/买安</th>
+	                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="chokepointBody">
@@ -537,102 +623,197 @@
       </section>
 
       <section class="tab-panel" id="reversalPanel">
+        <section class="market-glossary" aria-label="常见股票名词解释">
+          <div class="market-glossary-head">
+            <h2>常见名词</h2>
+            <span>用于阅读下方榜单，不构成买卖建议</span>
+          </div>
+          <div class="market-glossary-grid">
+            <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
+            <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
+            <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
+            <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
+            <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
+            <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
+            <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
+            <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
+          </div>
+        </section>
         <div class="board">
           <div class="board-header">
             <h2>反转低波因子股</h2>
             <span>A股短线反转+低波动+高换手回避；超跌且不躁动者优先</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="rec-table slim-table rec-reversal">
               <thead>
                 <tr>
                   <th>排名</th>
-                  <th>代码</th>
-                  <th>名称</th>
-                  <th>市场</th>
-                  <th>最新价</th>
-                  <th>今日涨跌</th>
-                  <th>60日</th>
-                  <th>20日涨跌</th>
-                  <th>20日波动</th>
-                  <th>换手率</th>
-                  <th>反转分</th>
-                  <th>低波分</th>
-                  <th>换手分</th>
-                  <th>综合分</th>
-                  <th>解释/风险/验证</th>
-                </tr>
-              </thead>
-              <tbody id="reversalBody">
-                <tr><td colspan="15" class="empty">切换到本页后加载</td></tr>
-              </tbody>
+                  <th>股票</th>
+	                  <th>名称</th>
+	                  <th>市场</th>
+	                  <th>最新价</th>
+	                  <th>今日涨跌</th>
+	                  <th>量比</th>
+	                  <th>换手率</th>
+	                  <th>成交额</th>
+	                  <th class="col-market-cap">总市值</th>
+	                  <th>60日</th>
+	                  <th>流动性</th>
+	                  <th>动能</th>
+	                  <th>趋势</th>
+	                  <th class="col-score">综合/买安</th>
+	                  <th>解释/风险/验证</th>
+	                </tr>
+	              </thead>
+	              <tbody id="reversalBody">
+	                <tr><td colspan="16" class="empty">切换到本页后加载</td></tr>
+	              </tbody>
             </table>
           </div>
         </div>
       </section>
 
       <section class="tab-panel" id="smallcapPanel">
+        <section class="market-glossary" aria-label="常见股票名词解释">
+          <div class="market-glossary-head">
+            <h2>常见名词</h2>
+            <span>用于阅读下方榜单，不构成买卖建议</span>
+          </div>
+          <div class="market-glossary-grid">
+            <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
+            <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
+            <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
+            <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
+            <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
+            <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
+            <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
+            <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
+          </div>
+        </section>
         <div class="board">
           <div class="board-header">
             <h2>小市值价值股</h2>
             <span>低流通市值+低PE/PB；含市值下限/亏损过滤/防守降权护栏</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="rec-table slim-table rec-smallcap">
               <thead>
                 <tr>
                   <th>排名</th>
-                  <th>代码</th>
-                  <th>名称</th>
-                  <th>市场</th>
-                  <th>最新价</th>
-                  <th>今日涨跌</th>
-                  <th>流通市值(亿)</th>
-                  <th>PE</th>
-                  <th>PB</th>
-                  <th>换手率</th>
-                  <th>小市值分</th>
-                  <th>价值分</th>
-                  <th>综合分</th>
-                  <th>解释/风险/验证</th>
-                </tr>
-              </thead>
-              <tbody id="smallcapBody">
-                <tr><td colspan="14" class="empty">切换到本页后加载</td></tr>
-              </tbody>
+                  <th>股票</th>
+	                  <th>名称</th>
+	                  <th>市场</th>
+	                  <th>最新价</th>
+	                  <th>今日涨跌</th>
+	                  <th>量比</th>
+	                  <th>换手率</th>
+	                  <th>成交额</th>
+	                  <th class="col-market-cap">总市值</th>
+	                  <th>60日</th>
+	                  <th>流动性</th>
+	                  <th>动能</th>
+	                  <th>趋势</th>
+	                  <th class="col-score">综合/买安</th>
+	                  <th>解释/风险/验证</th>
+	                </tr>
+	              </thead>
+	              <tbody id="smallcapBody">
+	                <tr><td colspan="16" class="empty">切换到本页后加载</td></tr>
+	              </tbody>
             </table>
           </div>
         </div>
       </section>
 
       <section class="tab-panel" id="breakoutPanel">
+        <section class="market-glossary" aria-label="常见股票名词解释">
+          <div class="market-glossary-head">
+            <h2>常见名词</h2>
+            <span>用于阅读下方榜单，不构成买卖建议</span>
+          </div>
+          <div class="market-glossary-grid">
+            <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
+            <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
+            <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
+            <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
+            <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
+            <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
+            <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
+            <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
+          </div>
+        </section>
         <div class="board">
           <div class="board-header">
             <h2>量价突破·均线多头</h2>
             <span>均线多头排列或20日新高 + 量能突破的趋势确认</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="rec-table slim-table rec-breakout">
               <thead>
                 <tr>
                   <th>排名</th>
+                  <th>股票</th>
+	                  <th>名称</th>
+	                  <th>市场</th>
+	                  <th>最新价</th>
+	                  <th>今日涨跌</th>
+	                  <th>量能比</th>
+	                  <th>换手率</th>
+	                  <th>成交额</th>
+	                  <th class="col-market-cap">总市值</th>
+	                  <th>60日</th>
+	                  <th>流动性</th>
+	                  <th>动能</th>
+	                  <th>趋势</th>
+	                  <th class="col-score">综合/买安</th>
+	                  <th>解释/风险/验证</th>
+	                </tr>
+	              </thead>
+	              <tbody id="breakoutBody">
+	                <tr><td colspan="16" class="empty">切换到本页后加载</td></tr>
+	              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="portfolioPanel">
+        <div class="board">
+          <div class="board-header">
+            <h2>组合约束</h2>
+            <span>基于最近保存快照生成建议权重；只做仓位约束，不改变策略排序</span>
+          </div>
+          <div class="ops-row portfolio-controls">
+            <select id="portfolioStrategySelect">
+              <option value="tomorrow_picks">明天预测</option>
+              <option value="swing_picks">波段 5-10 日</option>
+              <option value="position_picks">中长期 1-3 月</option>
+              <option value="tech_potential">科技潜力</option>
+              <option value="chokepoint_picks">卡脖子</option>
+              <option value="reversal_picks">反转低波</option>
+              <option value="smallcap_value_picks">小市值价值</option>
+              <option value="breakout_picks">量价突破</option>
+            </select>
+            <button id="loadPortfolioBtn" class="primary-action" type="button">生成组合</button>
+          </div>
+          <div class="ops-status" id="portfolioStatus"></div>
+          <div class="portfolio-summary" id="portfolioSummary"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
                   <th>代码</th>
                   <th>名称</th>
-                  <th>市场</th>
-                  <th>最新价</th>
-                  <th>今日涨跌</th>
-                  <th>60日</th>
-                  <th>多头排列</th>
-                  <th>20日新高</th>
-                  <th>量能比</th>
-                  <th>突破强度</th>
-                  <th>量能突破</th>
-                  <th>综合分</th>
-                  <th>解释/风险/验证</th>
+                  <th>主题/行业</th>
+                  <th>质量</th>
+                  <th>风险</th>
+                  <th>建议权重</th>
+                  <th>动作</th>
                 </tr>
               </thead>
-              <tbody id="breakoutBody">
-                <tr><td colspan="14" class="empty">切换到本页后加载</td></tr>
+              <tbody id="portfolioBody">
+                <tr><td colspan="7" class="empty">选择策略后生成组合</td></tr>
               </tbody>
             </table>
           </div>
@@ -643,24 +824,39 @@
         <div class="board">
           <div class="board-header">
             <h2>策略验证</h2>
-            <span>一眼看清哪个策略能信，再保存预测、回填结果、复盘</span>
+            <span>先回答三件事：样本够不够、扣成本后是否赚钱、真实样本是否支持</span>
           </div>
 
-          <!-- 一眼结论：每策略一张记分牌（命中率徽章 + 一句话结论） -->
+          <div class="validation-guide">
+            <article>
+              <span>第一步</span>
+              <strong>先看样本数</strong>
+              <p>主样本少于 30 条，只能观察，不能相信胜率。</p>
+            </article>
+            <article>
+              <span>第二步</span>
+              <strong>再看净收益</strong>
+              <p>必须看扣成本后的主周期净收益，不看裸涨跌。</p>
+            </article>
+            <article>
+              <span>第三步</span>
+              <strong>最后看真实样本</strong>
+              <p>真实样本优先，回放样本只用来粗筛。</p>
+            </article>
+          </div>
+
+          <div class="validation-current-decision" id="validationSimpleDecision">
+            选择策略后，这里会给出一句话结论。
+          </div>
+
           <div class="scoreboard" id="validationScoreboard">
             <div class="empty">加载中...</div>
           </div>
 
-          <div class="chart-card chart-card-wide">
-            <h3>各策略主周期净胜率走势</h3>
-            <div id="validationLine" class="chart-box chart-box-tall"></div>
-          </div>
-
           <div class="validation-grid">
-            <!-- 左：操作面板 -->
             <aside class="validation-ops">
               <div class="ops-block">
-                <div class="ops-title">① 保存今日预测</div>
+                <div class="ops-title">日常操作：保存今天推荐</div>
                 <div class="ops-row">
                   <select id="saveStrategySelect">
                     <option value="tomorrow_picks">明天预测</option>
@@ -672,13 +868,13 @@
                     <option value="smallcap_value_picks">小市值价值</option>
                     <option value="breakout_picks">量价突破</option>
                   </select>
-                  <button id="saveSnapshotBtn" class="primary-action" type="button">保存</button>
+                  <button id="saveSnapshotBtn" class="primary-action" type="button">保存今天</button>
                 </div>
                 <div class="ops-status" id="saveStatus"></div>
               </div>
 
               <div class="ops-block">
-                <div class="ops-title">② 回填真实结果</div>
+                <div class="ops-title">查看哪个策略更可信</div>
                 <div class="ops-row">
                   <select id="validationStrategySelect">
                     <option value="">全部策略</option>
@@ -697,91 +893,96 @@
                     <option value="120">近120日</option>
                   </select>
                 </div>
-                <button id="backfillValidationSamples" class="primary-action wide" type="button">回放历史补样本</button>
-                <button id="prefetchValidationHistory" class="ghost-action wide" type="button">下载历史并验证</button>
-                <button id="updateValidation" class="ghost-action wide" type="button">仅更新当前批次</button>
-                <p class="ops-hint">“回放历史补样本”会用历史K线模拟过去信号，适合快速解决样本不足；真实可信度仍以每天保存的前瞻样本为准。</p>
+                <button id="updateValidation" class="primary-action wide" type="button">手动回填结果</button>
+                <button id="backfillValidationSamples" class="ghost-action wide" type="button">样本不足时做历史回放</button>
+                <p class="ops-hint">正常使用只需要挂 cron 自动保存和回填。这里的按钮用于临时补跑；历史回放只能粗筛，不能替代真实样本。</p>
                 <div class="ops-status" id="updateStatus"></div>
               </div>
             </aside>
 
-            <!-- 右：复盘（批次 + 明细，默认自动选最新批次） -->
-            <section class="validation-review">
+            <section class="validation-review validation-simple-review">
               <div class="validation-summary-row">
                 <div class="selected-validation">
-                  <span>当前明细</span>
+                  <span>当前查看</span>
                   <strong id="validationSelectionLabel">未选择日期</strong>
                 </div>
                 <div class="validation-score-card">
-                  <span>样本数</span>
+                  <span>有效样本</span>
                   <strong id="validationSampleCount">-</strong>
                 </div>
                 <div class="validation-score-card">
-                  <span>主周期净胜率</span>
+                  <span>扣成本净胜率</span>
                   <strong id="validationWinRate">-</strong>
                 </div>
                 <div class="validation-score-card">
-                  <span>真实/回放</span>
+                  <span>样本来源</span>
                   <strong id="validationHit3">-</strong>
                 </div>
                 <div class="validation-score-card">
-                  <span>主周期净收益</span>
+                  <span>扣成本净收益</span>
                   <strong id="validationAvgReturn">-</strong>
                 </div>
               </div>
 
-              <div class="validation-split">
-                <div class="validation-batches">
-                  <div class="section-label">保存批次（点击查看明细）</div>
-                  <div class="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>日期</th>
-                          <th>策略</th>
-                          <th>数量</th>
-                          <th>保存时间</th>
-                        </tr>
-                      </thead>
-                      <tbody id="validationDatesBody">
-                        <tr>
-                          <td colspan="4" class="empty">暂无保存记录</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+              <details class="validation-advanced">
+                <summary>展开高级复盘：走势、保存批次和每只股票明细</summary>
+                <div class="chart-card chart-card-wide">
+                  <h3>各策略主周期净胜率走势</h3>
+                  <div id="validationLine" class="chart-box chart-box-tall"></div>
                 </div>
+                <div class="validation-split">
+                  <div class="validation-batches">
+                    <div class="section-label">保存批次（点击查看明细）</div>
+                    <div class="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>日期</th>
+                            <th>策略</th>
+                            <th>数量</th>
+                            <th>保存时间</th>
+                          </tr>
+                        </thead>
+                        <tbody id="validationDatesBody">
+                          <tr>
+                            <td colspan="4" class="empty">暂无保存记录</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
 
-                <div class="validation-results">
-                  <div class="section-label">批次明细</div>
-                  <div class="table-wrap validation-detail">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>排名</th>
-                          <th>代码</th>
-                          <th>名称</th>
-                          <th>策略</th>
-                          <th>推荐价</th>
-                          <th>推收</th>
-                          <th>推高</th>
-                          <th>开收</th>
-                          <th>持有推收</th>
-                          <th>未来日</th>
-                          <th>3%命中</th>
-                          <th>5%命中</th>
-                          <th>理由</th>
-                        </tr>
-                      </thead>
-                      <tbody id="validationDetailBody">
-                        <tr>
-                          <td colspan="13" class="empty">选择左侧批次查看明细</td>
-                        </tr>
-                      </tbody>
-                    </table>
+                  <div class="validation-results">
+                    <div class="section-label">批次明细</div>
+                    <div class="table-wrap validation-detail">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>排名</th>
+                            <th>代码</th>
+                            <th>名称</th>
+                            <th>策略</th>
+                            <th>推荐价</th>
+                            <th>推收</th>
+                            <th>推高</th>
+                            <th>开收</th>
+                            <th>持有推收</th>
+                            <th>未来日</th>
+                            <th>3%命中</th>
+                            <th>5%命中</th>
+                            <th>理由</th>
+                          </tr>
+                        </thead>
+                        <tbody id="validationDetailBody">
+                          <tr>
+                            <td colspan="13" class="empty">选择左侧批次查看明细</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
-              </div>
+              </details>
             </section>
           </div>
         </div>
@@ -794,33 +995,121 @@
             <span>规则来源 / 权重 / 风险限制 / 验证方式</span>
           </div>
           <div class="strategy-notes">
-            <article>
-              <h3>推荐默认策略</h3>
-              <p>优先使用“强共识 + Agent 风控优先策略”：先看市场状态，再筛选 2 个以上策略共同入选、质量分较高、风险分较低、Agent 委员会未风控否决的股票。动作过滤建议选“优先跟踪”，排序选“风险最低”或“质量优先”。</p>
+            <article class="strategy-note-wide">
+              <span class="strategy-note-kicker">主工作流</span>
+              <h3>强共识 + Agent 风控优先</h3>
+              <p>先看市场状态，再看多策略共识、质量/风险分、评级和风控动作。主表用于快速筛选，不直接等同买入信号；点击股票后再看明细证据、新闻风险和验证表现。</p>
+              <ul>
+                <li><strong>优先：</strong>多个策略同时入选、质量分高、风险分低、Agent 动作不是“只观察”。</li>
+                <li><strong>解释列：</strong>评级看综合打分，覆盖看历史因子完整度，同类验证看相似信号的主周期净胜率和真/回放样本。</li>
+                <li><strong>排序：</strong>偏实盘优先用“风险最低”或“质量优先”；偏观察池可用“综合分”或“成交额”。</li>
+                <li><strong>底线：</strong>防守市、历史因子覆盖不足、真实前瞻样本少于 30 条时，只作为观察，不做重仓依据。</li>
+              </ul>
             </article>
             <article>
-              <h3>TradingAgents 映射</h3>
-              <p>参考 TauricResearch/TradingAgents 的分析师、牛熊研究、交易员、风控和组合经理流程，但不复制其代码、不默认接入 LLM。当前用本地量价、舆情、市场状态和风险字段生成 Agent 委员会分数与最终动作。</p>
+              <span class="strategy-note-kicker">盘中</span>
+              <h3>短期推荐</h3>
+              <p>主要看盘中涨幅、涨速、量比、换手、成交额和舆情热度，适合找当日资金正在关注的票。风险是容易追在情绪高点，所以要重点看追高、透支、失败原因和 Agent 动作。</p>
+              <ul>
+                <li><strong>关注字段：</strong>最新价、今日涨跌、涨速、量比、换手、成交额、总市值、动能分、舆情分。</li>
+                <li><strong>适用场景：</strong>盘中强势、成交放大但尚未明显涨停拥挤时，用来做短线观察池。</li>
+                <li><strong>验证口径：</strong>优先看同类信号 1-3 日主周期净胜率，真实样本不足时只做观察。</li>
+              </ul>
             </article>
             <article>
-              <h3>策略来源</h3>
-              <p>当前策略是本地启发式量化规则，不是训练好的收益预测模型。它来自常见短线量价逻辑：成交额、换手、量比、当日涨幅、趋势位置、执行性和风险扣分。</p>
+              <span class="strategy-note-kicker">趋势</span>
+              <h3>长期推荐</h3>
+              <p>偏中期趋势筛选，重视 60 日、年内表现、换手、成交额、趋势分和舆情分。它不是财务估值模型，更适合作为持仓候选和多策略共识来源。</p>
+              <ul>
+                <li><strong>关注字段：</strong>60 日、年内涨跌、成交额、总市值、趋势分、舆情分、综合分。</li>
+                <li><strong>适用场景：</strong>趋势已经形成但未极端透支，适合进入中期观察和共识比对。</li>
+                <li><strong>主要风险：</strong>缺少财务估值确认，若年内涨幅过高或风险分抬升，要降低权重。</li>
+              </ul>
             </article>
             <article>
-              <h3>14:30 明日潜力</h3>
-              <p>候选池按成交额优先，剔除 ST、退市、低成交额、涨停和近涨停。综合分约按流动性 30%、动能 28%、趋势 20%、执行性 22% 计算，并对高涨幅、高量比、高换手、高振幅、年内涨幅过大扣分。</p>
+              <span class="strategy-note-kicker">次日</span>
+              <h3>明天预测</h3>
+              <p>用于尾盘或收盘后筛选次日可能延续的标的，强调流动性、动能、趋势和买入安全。涨停、近涨停、量比过热、换手过高、短期涨幅透支会被过滤或扣分。</p>
+              <ul>
+                <li><strong>关注字段：</strong>最新价、今日涨跌、成交额、总市值、流动性、动能、趋势、买入安全。</li>
+                <li><strong>适用场景：</strong>尾盘复盘、次日计划和竞价前观察，优先找可买性较好的延续票。</li>
+                <li><strong>验证口径：</strong>重点看次日和 3 日表现，若真实样本少或因子覆盖不足，不提升评级。</li>
+              </ul>
             </article>
             <article>
+              <span class="strategy-note-kicker">5-10 日</span>
+              <h3>波段 5-10 日</h3>
+              <p>看 5/10/20 日动量、20 日线距离、温和放量和流动性，目标是趋势还在、但没有明显冲过头。震荡市容易假突破，优先参考 10 日主周期验证。</p>
+              <ul>
+                <li><strong>关注字段：</strong>5 日、10 日、20 日、20 日线、成交额、总市值、动量、趋势、流动性。</li>
+                <li><strong>适用场景：</strong>短线已经启动但还在均线支撑内，适合做 5-10 日跟踪。</li>
+                <li><strong>主要风险：</strong>震荡市突破失败率高，若 20 日线乖离过大或波动升高，优先降级。</li>
+              </ul>
+            </article>
+            <article>
+              <span class="strategy-note-kicker">1-3 月</span>
+              <h3>中长期 1-3 月</h3>
+              <p>看 60 日/YTD 趋势、20 日线位置、20 日波动、趋势分、稳健分和流动性，过滤明显透支或波动失控的票。当前仍是技术趋势版，不能替代财务、估值和业绩判断。</p>
+              <ul>
+                <li><strong>关注字段：</strong>今日涨跌、总市值、60 日、年内、20 日线、波动、趋势、稳健、流动性。</li>
+                <li><strong>适用场景：</strong>用于建立中长期候选池，再结合基本面、行业景气和仓位约束复核。</li>
+                <li><strong>验证口径：</strong>优先看 20-60 日前瞻样本，技术趋势版不单独作为持仓结论。</li>
+              </ul>
+            </article>
+            <article>
+              <span class="strategy-note-kicker">主题</span>
               <h3>科技潜力</h3>
-              <p>先匹配 AI/算力、半导体、机器人、低空航天、智能汽车、新材料、医疗科技等方向，再偏好尚未明显透支的个股。60日和年内涨幅过高会被过滤或扣分。</p>
+              <p>先匹配 AI、算力、半导体、机器人、低空航天、智能汽车、新材料、医疗科技等方向，再看主题分、启动分、未透支分和买入安全。主题热时容易拥挤，要结合 60 日、年内涨幅和风控原因。</p>
+              <ul>
+                <li><strong>关注字段：</strong>方向、总市值、主题分、启动、未透支、买入安全、综合分。</li>
+                <li><strong>适用场景：</strong>主题刚扩散、产业催化出现、龙头尚未全面加速时，用来扩展观察池。</li>
+                <li><strong>主要风险：</strong>题材识别会受名称和可用行业字段限制，主题过热时要看透支和舆情风险。</li>
+              </ul>
             </article>
             <article>
-              <h3>波段与中长期</h3>
-              <p>波段策略关注 5/10/20 日动量、均线位置和温和放量；中长期策略当前是技术趋势版，关注 60日/年内趋势、波动、流动性和涨幅透支，不包含财务、估值和业绩预测。</p>
+              <span class="strategy-note-kicker">供应链</span>
+              <h3>卡脖子</h3>
+              <p>围绕半导体设备、材料、光器件、工业软件、高端制造等上游环节，找供给紧、难替代、尚未充分重定价的标的。适合做主题观察池，不能只因题材稀缺就忽略流动性和涨幅透支。</p>
+              <ul>
+                <li><strong>关注字段：</strong>环节、总市值、成交额、卡脖子分、启动、未透支、买入安全。</li>
+                <li><strong>适用场景：</strong>产业链上游受关注、国产替代或供给瓶颈被重新定价时，优先看未透支环节。</li>
+                <li><strong>主要风险：</strong>行业龙头不等于买入建议，若流动性差、涨幅透支或只剩题材叙事，应只观察。</li>
+              </ul>
             </article>
             <article>
-              <h3>当前限制</h3>
-              <p>免费行情字段不稳定，行业/概念识别主要依赖名称和可用字段，存在误判。策略不会保证盈利，必须看“策略验证”里的真实命中率和收益后再决定是否保留。</p>
+              <span class="strategy-note-kicker">均值回复</span>
+              <h3>反转低波</h3>
+              <p>寻找短期超跌但没有失控、20 日波动较低、换手不过热的标的，适合观察均值回复机会。单边下跌和基本面恶化时容易继续走弱，必须看失败原因和验证净收益。</p>
+              <ul>
+                <li><strong>关注字段：</strong>总市值、60 日、20 日涨跌、20 日波动、换手率、反转分、低波分、换手分。</li>
+                <li><strong>适用场景：</strong>市场从急跌转为企稳，寻找跌多但未失控、波动收敛的修复候选。</li>
+                <li><strong>主要风险：</strong>下跌趋势未结束时会变成接飞刀，必须结合失败原因和主周期净收益。</li>
+              </ul>
+            </article>
+            <article>
+              <span class="strategy-note-kicker">风格因子</span>
+              <h3>小市值价值</h3>
+              <p>看流通市值、PE、PB、换手和价值分，同时设置市值下限、亏损过滤和流动性护栏。小市值可能波动极端、成交不连续，不适合单票重仓。</p>
+              <ul>
+                <li><strong>关注字段：</strong>总市值、流通市值、PE、PB、换手率、小市值分、价值分。</li>
+                <li><strong>适用场景：</strong>市场风险偏好稳定、低估值小市值重新活跃时，用于寻找分散型候选。</li>
+                <li><strong>主要风险：</strong>小市值尾部风险大，防守市况、低流动性、亏损或估值字段缺失时不应重仓。</li>
+              </ul>
+            </article>
+            <article>
+              <span class="strategy-note-kicker">趋势确认</span>
+              <h3>量价突破</h3>
+              <p>看均线多头排列、20 日新高、量能比、突破强度和量能突破分，适合确认趋势是否被资金重新定价。若只有实时兜底信号而缺历史因子，应降级观察。</p>
+              <ul>
+                <li><strong>关注字段：</strong>总市值、60 日、多头排列、20 日新高、量能比、突破强度、量能突破。</li>
+                <li><strong>适用场景：</strong>趋势从横盘转为放量突破，或均线多头后再次确认强度时使用。</li>
+                <li><strong>主要风险：</strong>假突破和缩量回落常见，历史因子不足或只有代理信号时只做观察。</li>
+              </ul>
+            </article>
+            <article class="strategy-note-wide">
+              <span class="strategy-note-kicker">验证与限制</span>
+              <h3>不能保证盈利</h3>
+              <p>策略是本地启发式规则，不是训练好的收益预测模型。解释列中的“同类验证”会展示相似信号在主周期上的净胜率、净均收益、真实样本和历史回放样本；真实样本更重要，回放样本只能辅助判断。历史因子覆盖不足会导致评级降级，即使后台正在自动更新，缺字段或更新未完成时仍可能显示覆盖不足。完整权重、过滤条件和验证周期见 docs/strategies.md。</p>
             </article>
           </div>
         </div>

@@ -16,6 +16,51 @@ def default_exit_policy(holding_days: int = 3) -> Dict[str, object]:
         "stop_loss_pct": coerce_number(getattr(config, "EXIT_STOP_LOSS_PCT", 5.0), 5.0),
         "take_profit_pct": coerce_number(getattr(config, "EXIT_TAKE_PROFIT_PCT", 8.0), 8.0),
         "trailing_stop_pct": coerce_number(getattr(config, "EXIT_TRAILING_STOP_PCT", 4.0), 4.0),
+        "limit_down_pct": 10.0,
+    }
+
+
+def _row_price(row: pd.Series, key: str, fallback_key: str = "price") -> float:
+    return coerce_number(row.get(key)) or coerce_number(row.get(fallback_key))
+
+
+def _is_sealed_limit_down(row: pd.Series, previous_close: float, limit_down_pct: float) -> bool:
+    prev = coerce_number(previous_close)
+    limit_pct = max(1.0, coerce_number(limit_down_pct, 10.0))
+    if prev <= 0:
+        return False
+    open_price = _row_price(row, "open")
+    high = _row_price(row, "high")
+    low = _row_price(row, "low")
+    close = _row_price(row, "price", "close")
+    if min(open_price, high, low, close) <= 0:
+        return False
+    limit_price = prev * (1 - limit_pct / 100.0)
+    # 日线只能近似：全天价格都贴近跌停价，视为无法按止损价卖出。
+    return high <= limit_price * 1.01 and low <= limit_price * 1.005 and close <= limit_price * 1.01
+
+
+def _delayed_exit_after_limit_down(
+    future: pd.DataFrame,
+    idx: int,
+    fallback_price: float,
+    reason: str,
+) -> Dict[str, object]:
+    next_idx = idx + 1
+    if next_idx < len(future):
+        next_row = future.iloc[next_idx]
+        exit_price = _row_price(next_row, "open") or _row_price(next_row, "price", "close") or fallback_price
+        return {
+            "exit_price": exit_price,
+            "exit_reason": "{}_limit_down_delayed".format(reason),
+            "exit_index": next_idx,
+            "exit_date": str(next_row.get("trade_date", "")),
+        }
+    return {
+        "exit_price": fallback_price,
+        "exit_reason": "{}_limit_down_unfilled".format(reason),
+        "exit_index": idx,
+        "exit_date": str(future.iloc[idx].get("trade_date", "")),
     }
 
 
@@ -35,18 +80,22 @@ def simulate_exit(
     stop_loss_pct = max(0.0, coerce_number(policy.get("stop_loss_pct")))
     take_profit_pct = max(0.0, coerce_number(policy.get("take_profit_pct")))
     trailing_stop_pct = max(0.0, coerce_number(policy.get("trailing_stop_pct")))
+    limit_down_pct = max(1.0, coerce_number(policy.get("limit_down_pct"), 10.0))
 
-    window = future.head(max_days).reset_index(drop=True)
+    full = future.reset_index(drop=True)
+    window = full.head(max_days)
     highest = entry
     exit_price = entry
     exit_reason = "hold_to_term"
     exit_index = 0
     exit_date = ""
+    previous_close = entry
 
     for idx, row in window.iterrows():
         high = coerce_number(row.get("high")) or coerce_number(row.get("price"))
         low = coerce_number(row.get("low")) or coerce_number(row.get("price"))
         close = coerce_number(row.get("price")) or coerce_number(row.get("close"))
+        row_prev_close = coerce_number(row.get("prev_close")) or previous_close
         if high > 0:
             highest = max(highest, high)
         stop_price = entry * (1 - stop_loss_pct / 100.0) if stop_loss_pct > 0 else 0.0
@@ -57,6 +106,13 @@ def simulate_exit(
         exit_date = str(row.get("trade_date", ""))
         exit_price = close
         if stop_price > 0 and low > 0 and low <= stop_price:
+            if _is_sealed_limit_down(row, row_prev_close, limit_down_pct):
+                delayed = _delayed_exit_after_limit_down(full, idx, close, "stop_loss")
+                exit_price = delayed["exit_price"]
+                exit_reason = delayed["exit_reason"]
+                exit_index = delayed["exit_index"]
+                exit_date = delayed["exit_date"]
+                break
             exit_price = stop_price
             exit_reason = "stop_loss"
             break
@@ -65,9 +121,18 @@ def simulate_exit(
             exit_reason = "take_profit"
             break
         if idx > 0 and trail_price > 0 and low > 0 and low <= trail_price:
+            if _is_sealed_limit_down(row, row_prev_close, limit_down_pct):
+                delayed = _delayed_exit_after_limit_down(full, idx, close, "trailing_stop")
+                exit_price = delayed["exit_price"]
+                exit_reason = delayed["exit_reason"]
+                exit_index = delayed["exit_index"]
+                exit_date = delayed["exit_date"]
+                break
             exit_price = trail_price
             exit_reason = "trailing_stop"
             break
+        if close > 0:
+            previous_close = close
 
     return {
         "ok": True,

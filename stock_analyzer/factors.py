@@ -22,6 +22,11 @@ ALPHALITE_COLUMNS = (
     "volatility_20d",
 )
 
+ALPHALITE_META_COLUMNS = (
+    "alphalite_factor_ready",
+    "alphalite_coverage",
+)
+
 
 def build_alphalite_factors(history_by_code: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     rows = []
@@ -30,7 +35,7 @@ def build_alphalite_factors(history_by_code: Dict[str, pd.DataFrame]) -> pd.Data
         if factors:
             rows.append(factors)
     if not rows:
-        return pd.DataFrame(columns=("code",) + ALPHALITE_COLUMNS)
+        return pd.DataFrame(columns=("code",) + ALPHALITE_COLUMNS + ALPHALITE_META_COLUMNS)
     return pd.DataFrame(rows)
 
 
@@ -72,6 +77,18 @@ def compute_alphalite_for_stock(code: str, history: pd.DataFrame) -> Dict[str, f
     avg_vol_5 = volume.tail(5).mean()
     latest_vol = volume.iloc[-1]
     vol_ma5_ratio = round(latest_vol / avg_vol_5, 4) if avg_vol_5 > 0 else 0.0
+    availability = {
+        "ret_3d": _period_available(close, 3),
+        "ret_5d": _period_available(close, 5),
+        "ret_10d": _period_available(close, 10),
+        "ret_20d": _period_available(close, 20),
+        "ma5_gap": _ma_available(close, 5),
+        "ma20_gap": _ma_available(close, 20),
+        "vol_amount_5d": len(turnover) >= 10 and prev_avg_amount_5 > 0,
+        "breakout_20d": len(high) >= 20 and high_20 > 0,
+        "volatility_20d": len(returns) >= 20,
+    }
+    coverage = sum(1 for value in availability.values() if value) / len(availability)
 
     return {
         "code": normalize_code(code),
@@ -89,6 +106,8 @@ def compute_alphalite_for_stock(code: str, history: pd.DataFrame) -> Dict[str, f
         "turnover_20d": round(coerce_number(turnover.tail(20).mean()), 4),
         "breakout_20d": 1.0 if high_20 > 0 and latest >= high_20 * 0.995 else 0.0,
         "volatility_20d": round(coerce_number(volatility_20), 4),
+        "alphalite_factor_ready": 1.0,
+        "alphalite_coverage": round(coverage, 4),
     }
 
 
@@ -100,7 +119,19 @@ def merge_alphalite(candidates: pd.DataFrame, factors: pd.DataFrame) -> pd.DataF
         if column not in df.columns:
             df[column] = 0.0
         df[column] = df[column].map(coerce_number)
+    for column in ALPHALITE_META_COLUMNS:
+        if column not in df.columns:
+            df[column] = 0.0
+        df[column] = df[column].map(coerce_number)
     return df
+
+
+def _period_available(close: pd.Series, days: int) -> bool:
+    return len(close) > days and close.iloc[-days - 1] > 0
+
+
+def _ma_available(close: pd.Series, window: int) -> bool:
+    return len(close) >= window and close.tail(window).mean() > 0
 
 
 def _period_return(close: pd.Series, days: int) -> float:
