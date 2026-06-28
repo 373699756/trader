@@ -14,7 +14,7 @@
 |---|---|---:|---:|---|
 | 短期推荐 | `short_term` | 盘中到次日 | 次日 | 盘中强势、动量、量价、人气和舆情 |
 | 长期推荐 | `long_term` | 数周到数月 | 20 日 | 技术趋势版中期趋势，基本面默认关闭可选启用 |
-| 明天预测 | `tomorrow_picks` | 次日 | 次日 | 14:30 后筛次日可能冲高且仍可买的票 |
+| 明天预测 | `tomorrow_picks` | 次日 | 次日 | 14:00 后筛次日可能冲高且仍可买的票 |
 | 波段 5-10 日 | `swing_picks` | 5-10 日 | 10 日 | 短周期趋势延续、温和放量、不过热 |
 | 中长期 1-3 月 | `position_picks` | 1-3 月 | 20 日 | 中期趋势、质量/估值可选因子、主题和流动性 |
 | 科技潜力 | `tech_potential` | 主题潜力 | 20 日 | 科技主题 + 早期趋势 + 未透支 |
@@ -108,7 +108,7 @@
 | 共识极化拉伸 | 策略一致时把分数向两端拉开，策略分歧时向 50 压缩 |
 | 策略可信度乘子 | 用策略验证的主周期净胜率/净收益调整权重；真实样本不足时只轻度参考回放；真实样本衰减触发后可降权或置零 |
 
-组合约束页不新增选股逻辑，只把最近一次保存快照转换成建议仓位：
+组合约束不新增选股逻辑，只把最近一次保存快照转换成建议仓位；当前 Web 入口暂时隐藏，能力保留在后端：
 
 | 约束 | 默认值 | 含义 |
 |---|---:|---|
@@ -232,18 +232,18 @@ Verdict 分档：
 
 ### 6.3 明天预测 `tomorrow_picks`
 
-目标是 14:30 后筛选次日可能冲高、但仍有可买性的股票。
+目标是 14:00 后筛选次日可能冲高、但仍有可买性的股票。
 
 | 维度 | 当前实现 |
 |---|---|
 | 周期 | 次日 |
-| 核心因子 | 成交额、换手率、当日涨幅、涨速、量比、60 日涨幅、YTD、振幅、买入安全 |
-| 默认权重 | 流动性 30%、动能 28%、趋势 20%、买入安全 22% |
+| 核心因子 | 成交额、换手率、温和涨幅、涨速、量比、60 日涨幅、YTD、振幅、买入安全、尾盘结构 |
+| 默认权重 | 流动性 24%、动能 22%、趋势 16%、买入安全 18%、尾盘结构 20% |
 | 买入安全 | 当日涨幅越接近可买上限，买入安全分越低；下跌票买入安全分低 |
-| 风险扣分 | 高涨幅、高振幅、高换手、高量比；YTD/阶段涨幅不再重复扣分，由 `overheat_damp` 统一处理 |
+| 风险扣分 | 高涨幅、高振幅、高换手、高量比、尾盘回落、日内透支、末段急拉/急跌；YTD/阶段涨幅由 `overheat_damp` 统一处理 |
 | 适合市况 | 下午资金承接强、有板块扩散的市场 |
 | 主要风险 | 次日低开、冲高回落、尾盘假拉升、涨停附近无法成交 |
-| 验证口径 | 次日净收益/净胜率 |
+| 验证口径 | 14:00 信号价到次日开盘/最高/最低/收盘的对比，主看次日收盘净收益/净胜率 |
 
 ### 6.4 波段 5-10 日 `swing_picks`
 
@@ -406,7 +406,7 @@ Verdict 分档：
 | `swing_picks`、`breakout_picks` | 10 日 |
 | `long_term`、`position_picks`、`tech_potential`、`chokepoint_picks`、`smallcap_value_picks` | 20 日 |
 
-默认主验证口径使用 `VALIDATION_PRIMARY_ENTRY_MODE=open`：按次日开盘可执行入场价计算主周期收益。信号价收益仍保留在明细里用于研究，但不再作为默认主评分口径，避免把 14:35 信号价当成必然可成交价。
+当前明天预测验证以 14:00 信号价作为尾盘计划入场价，对比次日开盘、最高、最低和收盘，并以真实前瞻样本的扣成本次日收盘收益作为主复盘口径。历史回放样本只显示为参考，不进入主记分牌、净胜率走势、次日对比和自动迭代。
 
 验证会扣 `VALIDATION_TRADE_COST_PCT` 固定成本，默认 0.25%；再按成交额分档追加滑点，使小市值/低成交额样本的净收益更保守。同时模拟退出规则：
 
@@ -438,7 +438,7 @@ Verdict 分档：
 
 ### 自动分批更新计划
 
-历史 K 线下载和已保存样本结果回填不再依赖 Web 按钮。真实样本入库由 `daily_job` 盘后 CLI 负责，K 线预取和结果回填由应用后台分批任务与 `daily_job --update` 共同完成：
+历史 K 线下载和已保存样本结果回填不再依赖 Web 按钮。真实样本入库默认由应用服务在交易日 15:00 自动保存；`daily_job --snapshot` 可作为外部兜底，K 线预取和结果回填由应用后台分批任务与 `daily_job --update` 共同完成：
 
 ```bash
 python -m stock_analyzer.daily_job --snapshot --strategy all --market all
@@ -448,7 +448,8 @@ python -m stock_analyzer.daily_job --paper-trade --strategy all
 
 | 阶段 | 处理方式 |
 |---|---|
-| 保存快照 | 交易日 14:35 左右执行 `daily_job --snapshot`，对全部策略调用同一套 `run_snapshot()` scorer 并写入 `strategy_validation.sqlite3` |
+| 保存快照 | 服务运行时交易日 15:00 自动保存 `tomorrow_picks`；若 15:00 后才启动服务，当天会补保存一次 |
+| 保存兜底 | 可保留 `daily_job --snapshot` cron；同一天同版本样本会替换旧样本，不会重复累计 |
 | 启动延迟 | 默认启动后 180 秒执行首轮，避免阻塞首页行情和策略加载 |
 | 策略扫描 | 默认遍历全部验证策略；可用 `VALIDATION_AUTO_UPDATE_STRATEGIES=tomorrow_picks,swing_picks` 限定 |
 | 代码收集 | 每个策略从已保存信号里取最近代码，单轮最多 `VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN=160` |
@@ -462,7 +463,7 @@ python -m stock_analyzer.daily_job --paper-trade --strategy all
 推荐 crontab：
 
 ```cron
-35 14 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --snapshot --strategy all --market all >> .runtime/daily_job.log 2>&1
+00 15 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --snapshot --strategy all --market all >> .runtime/daily_job.log 2>&1
 30 17 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --update --strategy all >> .runtime/daily_job.log 2>&1
 30 18 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --update --paper-trade --strategy all >> .runtime/daily_job.log 2>&1
 ```

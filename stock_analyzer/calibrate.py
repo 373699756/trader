@@ -170,6 +170,8 @@ def calibrate_live_weights(
     steps: int = 2,
     dry_run: bool = True,
 ) -> Dict[str, object]:
+    if strategy != "tomorrow_picks":
+        return {"ok": False, "strategy": strategy, "status": "unsupported_strategy", "supported_strategy": "tomorrow_picks"}
     if strategy not in STRATEGY_COMBINERS:
         return {"ok": False, "strategy": strategy, "status": "unknown_strategy"}
     store = StrategyValidationStore(db_path or config.VALIDATION_DB_PATH)

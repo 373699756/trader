@@ -17,7 +17,7 @@ def backfill_strategy_validation_samples(
     code_names: Dict[str, str] = None,
     days: int = 220,
     replay_days: int = 20,
-    top_n: int = 30,
+    top_n: int = 50,
     holding_days: int = 3,
     min_lookback: int = 30,
 ) -> Dict[str, object]:
@@ -81,7 +81,7 @@ def backfill_strategy_validation_samples(
         if not rows:
             skipped_dates += 1
             continue
-        signal_time = "{}T14:30:00".format(_display_date(trade_date_key))
+        signal_time = "{}T14:00:00".format(_display_date(trade_date_key))
         result = validation_store.save_signals(strategy_name, version, signal_time, rows)
         saved += int(result.get("saved") or 0)
         replaced += int(result.get("replaced") or 0)

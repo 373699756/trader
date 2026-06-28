@@ -360,7 +360,8 @@ _DEFAULT_WEIGHTS = {
         "sentiment": 0.13, "momentum": 0.07, "hot": 0.05,
     },
     "tomorrow_picks": {
-        "liquidity": 0.30, "momentum": 0.28, "trend": 0.20, "execution": 0.22,
+        "liquidity": 0.24, "momentum": 0.22, "trend": 0.16,
+        "execution": 0.18, "tail_setup": 0.20,
     },
     "swing_picks": {
         "momentum": 0.34, "trend": 0.26, "liquidity": 0.20,
@@ -449,6 +450,7 @@ STRATEGY_COMBINERS = {
             {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
             {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
             {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
+            {"component": "tail_setup_score", "weight_key": "tail_setup", "regime_key": "quality"},
         ),
     },
     "swing_picks": {
@@ -1206,8 +1208,8 @@ def score_tomorrow_candidates(
             "candidate_count": 0,
             "top_n": top_n,
             "market_filter": market_filter,
-            "analysis_window": "14:30",
-            "strategy_version": "tomorrow_picks_v2",
+            "analysis_window": "14:00",
+            "strategy_version": "tomorrow_picks_v3",
             "strategy_label": "明天预测",
             "policy": _tomorrow_policy(),
         }
@@ -1215,6 +1217,8 @@ def score_tomorrow_candidates(
     context = _score_context(df, {})
     rows: List[Dict[str, object]] = []
     for _, row in df.iterrows():
+        if _tomorrow_hard_reject(row):
+            continue
         pct_chg = coerce_number(row.get("pct_chg"))
         volume_ratio = coerce_number(row.get("volume_ratio"))
         turnover_rate = coerce_number(row.get("turnover_rate"))
@@ -1244,6 +1248,7 @@ def score_tomorrow_candidates(
             ) * 0.20
         )
         execution_score = _execution_score(row)
+        tail_setup_score = _tail_close_setup_score(row)
         risk_penalty_parts = _tomorrow_risk_penalty_parts(row)
         risk_penalty = _sum_penalty(risk_penalty_parts)
         regime_bonus = _market_regime_adjustment(row, market_regime, "tomorrow")
@@ -1254,6 +1259,7 @@ def score_tomorrow_candidates(
                 "momentum_score": momentum_score,
                 "trend_score": trend_score,
                 "execution_score": execution_score,
+                "tail_setup_score": tail_setup_score,
                 "risk_penalty": risk_penalty,
                 "regime_bonus": regime_bonus,
             },
@@ -1282,6 +1288,7 @@ def score_tomorrow_candidates(
                 "momentum_score": round(momentum_score, 2),
                 "trend_score": round(trend_score, 2),
                 "execution_score": round(execution_score, 2),
+                "tail_setup_score": round(tail_setup_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
                 "risk_penalty_parts": risk_penalty_parts,
                 "regime_bonus": round(regime_bonus, 2),
@@ -1296,6 +1303,7 @@ def score_tomorrow_candidates(
                     momentum_score,
                     trend_score,
                     execution_score,
+                    tail_setup_score,
                     risk_penalty,
                 ),
         }
@@ -1319,12 +1327,13 @@ def score_tomorrow_candidates(
     return rows[:top_n], {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "candidate_count": len(df),
+        "screened_count": len(rows),
         "top_n": top_n,
         "market_filter": market_filter,
-        "analysis_window": "14:30",
-        "strategy_version": "tomorrow_picks_v2",
+        "analysis_window": "14:00",
+        "strategy_version": "tomorrow_picks_v3",
         "strategy_label": "明天预测",
-        "strategy": "14:30 明天预测：剔除涨停/近涨停，综合成交额、换手、量比、当日强度、中期趋势和买入安全风险",
+        "strategy": "14:00 明天预测：面向尾盘买入、次日兑现，综合成交承接、温和动能、中期趋势、尾盘收盘结构和买入安全风险",
         "policy": _tomorrow_policy(),
     }
 
@@ -2369,7 +2378,8 @@ def _tomorrow_policy() -> Dict[str, object]:
         "growth_max_gain": config.MAX_BUYABLE_GAIN_GROWTH,
         "min_turnover": config.MIN_TURNOVER,
         "avoid_limit_up": True,
-        "risk_controls": ("高涨幅", "高量比", "高换手", "高振幅", "超涨damp硬门控"),
+        "entry_style": "尾盘买入，次日优先兑现",
+        "risk_controls": ("高涨幅", "高量比", "高换手", "高振幅", "尾盘回落", "高开透支", "超涨damp硬门控"),
     }
 
 
@@ -3105,6 +3115,107 @@ def _row_speed(row: pd.Series) -> float:
     return coerce_number(row.get("five_min_pct"))
 
 
+def _tail_close_setup_score(row: pd.Series) -> float:
+    """尾盘买入结构分：强但不过热、收盘承接好、次日不容易被高开透支。"""
+    pct = coerce_number(row.get("pct_chg"))
+    price = coerce_number(row.get("price"))
+    open_price = coerce_number(row.get("open"))
+    high = coerce_number(row.get("high"))
+    low = coerce_number(row.get("low"))
+    amplitude = coerce_number(row.get("amplitude"))
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+    turnover_rate = coerce_number(row.get("turnover_rate"))
+    speed = _row_speed(row)
+    market = row.get("market")
+    upper = config.MAX_BUYABLE_GAIN_GROWTH if market in ("chinext", "star") else config.MAX_BUYABLE_GAIN_MAIN
+
+    score = 50.0
+    if 1.2 <= pct <= min(upper * 0.72, 6.0):
+        score += 18
+    elif 0.3 <= pct < 1.2:
+        score += 6
+    elif pct > upper * 0.82:
+        score -= 18
+    elif pct <= 0:
+        score -= 12
+
+    if 1.2 <= volume_ratio <= 3.2:
+        score += 14
+    elif 3.2 < volume_ratio <= 4.5:
+        score += 4
+    elif volume_ratio > 4.5:
+        score -= 12
+    elif 0 < volume_ratio < 0.8:
+        score -= 8
+
+    if 2.0 <= turnover_rate <= 10.0:
+        score += 8
+    elif turnover_rate > 16.0:
+        score -= 8
+
+    close_location = _close_location(price, high, low)
+    if close_location >= 0.72:
+        score += 14
+    elif close_location >= 0.55:
+        score += 6
+    elif close_location < 0.35:
+        score -= 16
+
+    if open_price > 0 and price > 0:
+        intraday_gain = (price / open_price - 1.0) * 100.0
+        if 0.4 <= intraday_gain <= 4.5:
+            score += 8
+        elif intraday_gain < -1.0:
+            score -= 10
+
+    if 0 < amplitude <= 7.5:
+        score += 8
+    elif amplitude >= 11:
+        score -= 12
+
+    if -0.5 <= speed <= 1.8:
+        score += 6
+    elif speed > 3.0:
+        score -= 8
+    elif speed < -1.2:
+        score -= 10
+
+    return max(0.0, min(100.0, score))
+
+
+def _tomorrow_hard_reject(row: pd.Series) -> bool:
+    pct = coerce_number(row.get("pct_chg"))
+    market = row.get("market")
+    upper = config.MAX_BUYABLE_GAIN_GROWTH if market in ("chinext", "star") else config.MAX_BUYABLE_GAIN_MAIN
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+    amplitude = coerce_number(row.get("amplitude"))
+    turnover_rate = coerce_number(row.get("turnover_rate"))
+    speed = _row_speed(row)
+    close_location = _close_location(
+        coerce_number(row.get("price")),
+        coerce_number(row.get("high")),
+        coerce_number(row.get("low")),
+    )
+    if pct <= 0 or pct >= upper * 0.92:
+        return True
+    if volume_ratio >= 7.0 or amplitude >= 14.0 or turnover_rate >= 28.0:
+        return True
+    if close_location < 0.25:
+        return True
+    if speed > 4.5 or speed < -2.0:
+        return True
+    return False
+
+
+def _close_location(price: float, high: float, low: float) -> float:
+    price = coerce_number(price)
+    high = coerce_number(high)
+    low = coerce_number(low)
+    if price <= 0 or high <= low or low <= 0:
+        return 0.5
+    return max(0.0, min(1.0, (price - low) / (high - low)))
+
+
 def _hot_rank_score(rank) -> float:
     if not rank:
         return 50.0
@@ -3383,28 +3494,42 @@ def _sum_penalty(parts: Dict[str, float]) -> float:
 
 
 def _tomorrow_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
-    penalty = 0.0
     pct = coerce_number(row.get("pct_chg"))
     market = row.get("market")
     upper = config.MAX_BUYABLE_GAIN_GROWTH if market in ("chinext", "star") else config.MAX_BUYABLE_GAIN_MAIN
     amplitude = coerce_number(row.get("amplitude"))
     turnover_rate = coerce_number(row.get("turnover_rate"))
     volume_ratio = coerce_number(row.get("volume_ratio"))
+    price = coerce_number(row.get("price"))
+    high = coerce_number(row.get("high"))
+    low = coerce_number(row.get("low"))
+    open_price = coerce_number(row.get("open"))
+    speed = _row_speed(row)
     parts = {}
     if pct >= upper * 0.85:
-        parts["intraday_chase"] = 10
+        parts["intraday_chase"] = 12
     elif pct >= upper * 0.72:
-        parts["intraday_chase"] = 5
+        parts["intraday_chase"] = 7
     if amplitude >= 12:
-        parts["amplitude"] = 8
+        parts["amplitude"] = 10
+    elif amplitude >= 9.5:
+        parts["amplitude"] = 4
     if turnover_rate >= 18:
         parts["turnover_rate"] = 7
     elif turnover_rate >= 12:
         parts["turnover_rate"] = 3
     if volume_ratio >= 6:
-        parts["volume_ratio"] = 8
+        parts["volume_ratio"] = 10
     elif volume_ratio >= 4.5:
-        parts["volume_ratio"] = 4
+        parts["volume_ratio"] = 5
+    if high > low > 0 and _close_location(price, high, low) < 0.35:
+        parts["weak_tail_close"] = 8
+    if open_price > 0 and price > 0 and (price / open_price - 1.0) * 100.0 > 6.5:
+        parts["intraday_exhaustion"] = 6
+    if speed > 3.0:
+        parts["late_chase_speed"] = 5
+    elif speed < -1.2:
+        parts["late_fade"] = 6
     return parts
 
 
@@ -3703,6 +3828,7 @@ def _build_tomorrow_reasons(
     momentum_score: float,
     trend_score: float,
     execution_score: float,
+    tail_setup_score: float,
     risk_penalty: float,
 ) -> List[str]:
     reasons: List[str] = []
@@ -3712,6 +3838,9 @@ def _build_tomorrow_reasons(
     turnover = coerce_number(row.get("turnover"))
     sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
     amplitude = coerce_number(row.get("amplitude"))
+    high = coerce_number(row.get("high"))
+    low = coerce_number(row.get("low"))
+    close_location = _close_location(coerce_number(row.get("price")), high, low)
     if liquidity_score >= 72 or turnover >= 500000000:
         reasons.append("成交额靠前")
     if 1.2 <= volume_ratio <= 4.5:
@@ -3728,6 +3857,10 @@ def _build_tomorrow_reasons(
         reasons.append("中期趋势向上")
     if execution_score >= 75:
         reasons.append("买入安全较好")
+    if tail_setup_score >= 72:
+        reasons.append("尾盘结构适合次日兑现")
+    elif close_location < 0.35:
+        reasons.append("尾盘回落需谨慎")
     if amplitude >= 9:
         reasons.append("波动偏大")
     if risk_penalty >= 8:

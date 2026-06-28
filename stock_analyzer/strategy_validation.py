@@ -13,7 +13,7 @@ from .risk_rules import simulate_exit
 
 PRIMARY_RETURN_BY_STRATEGY = {
     "short_term": ("signal_next_close_return", 1, "次日"),
-    "tomorrow_picks": ("signal_next_close_return", 1, "次日"),
+    "tomorrow_picks": ("signal_next_close_return", 1, "尾盘买入次日"),
     "reversal_picks": ("signal_hold_5d_return", 5, "5日"),
     "swing_picks": ("signal_hold_10d_return", 10, "10日"),
     "breakout_picks": ("signal_hold_10d_return", 10, "10日"),
@@ -152,7 +152,8 @@ class StrategyValidationStore:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                SELECT s.*, o.next_trade_date, o.next_open_return, o.next_close_return,
+                SELECT s.*, o.next_trade_date, o.next_open, o.next_high, o.next_low, o.next_close,
+                       o.next_open_return, o.next_close_return,
                        o.intraday_high_return, o.hold_3d_return, o.hold_5d_return,
                        o.hold_10d_return, o.hold_20d_return, o.max_gain_3d,
                        o.max_drawdown_3d, o.hit_3pct, o.hit_5pct,
@@ -404,8 +405,10 @@ class StrategyValidationStore:
                 """
                 SELECT s.signal_date, s.strategy_name, s.rank,
                        s.strategy_version, s.turnover, s.market,
-	                       COALESCE(o.signal_next_close_return, o.next_close_return) AS signal_next_close_return,
-	                       o.next_close_return,
+                       COALESCE(o.signal_next_close_return, o.next_close_return) AS signal_next_close_return,
+                       o.next_open_return,
+                       o.next_close_return,
+                       o.next_low,
 	                       COALESCE(o.signal_intraday_high_return, o.intraday_high_return) AS signal_intraday_high_return,
 	                       o.hold_3d_return,
 	                       o.hold_5d_return,
@@ -456,50 +459,62 @@ class StrategyValidationStore:
             row["_primary_holding_days"] = row_primary_days
             row["_primary_horizon_label"] = row_primary_label
         selected = [row for row in selected_all if row["_primary_ready"]]
+        real_selected_all = [row for row in selected_all if not row["_is_replay"]]
+        replay_selected_all = [row for row in selected_all if row["_is_replay"]]
         real_rows = [row for row in selected if not row["_is_replay"]]
         replay_rows = [row for row in selected if row["_is_replay"]]
+        primary_rows = real_rows if strategy_name == "tomorrow_picks" else selected
+        primary_outcome_rows = real_selected_all if strategy_name == "tomorrow_picks" else selected_all
         primary_dates = []
-        for row in selected:
+        for row in primary_rows:
             if row["signal_date"] not in primary_dates:
                 primary_dates.append(row["signal_date"])
         metrics = {
-            "sample_count": len(selected),
-            "outcome_sample_count": len(selected_all),
+            "sample_count": len(primary_rows),
+            "outcome_sample_count": len(primary_outcome_rows),
+            "total_sample_count": len(selected),
+            "total_outcome_sample_count": len(selected_all),
             "real_sample_count": len(real_rows),
             "replay_sample_count": len(replay_rows),
+            "real_outcome_sample_count": len(real_selected_all),
+            "replay_outcome_sample_count": len(replay_selected_all),
             "day_count": len(primary_dates),
             "outcome_day_count": len(dates),
+            "primary_sample_scope": "real_only" if strategy_name == "tomorrow_picks" else "all",
             "primary_return_field": primary_column,
             "primary_holding_days": primary_days,
             "primary_horizon_label": primary_label,
             "trade_cost_pct": base_cost,
-            "avg_trade_cost_pct": _avg(row["_trade_cost_pct"] for row in selected_all),
-            "avg_next_close_return": _avg(row["signal_next_close_return"] for row in selected_all),
-            "win_rate_next_close": _rate(row["signal_next_close_return"] > 0 for row in selected_all),
-            "hit_3pct_rate": _rate(bool(row["signal_hit_3pct"]) for row in selected_all),
-            "hit_5pct_rate": _rate(bool(row["signal_hit_5pct"]) for row in selected_all),
-            "avg_intraday_high_return": _avg(row["signal_intraday_high_return"] for row in selected_all),
-            "avg_hold_3d_return": _avg(row["signal_hold_3d_return"] for row in selected),
-            "avg_hold_5d_return": _avg(row["signal_hold_5d_return"] for row in selected),
-            "avg_hold_10d_return": _avg(row["signal_hold_10d_return"] for row in selected),
-            "avg_hold_20d_return": _avg(row["signal_hold_20d_return"] for row in selected),
-            "avg_primary_return": _avg(row["_primary_return"] for row in selected),
-            "avg_primary_return_net": _avg(row["_primary_return_net"] for row in selected),
-            "win_rate_primary": _rate(row["_primary_return"] > 0 for row in selected),
-            "win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in selected),
-            "avg_exit_return": _avg(row["_exit_return"] for row in selected),
-            "avg_exit_return_net": _avg(row["_exit_return_net"] for row in selected),
-            "win_rate_exit_net": _rate(row["_exit_return_net"] > 0 for row in selected),
+            "avg_trade_cost_pct": _avg(row["_trade_cost_pct"] for row in primary_outcome_rows),
+            "avg_next_close_return": _avg(row["signal_next_close_return"] for row in primary_outcome_rows),
+            "win_rate_next_close": _rate(row["signal_next_close_return"] > 0 for row in primary_outcome_rows),
+            "hit_3pct_rate": _rate(bool(row["signal_hit_3pct"]) for row in primary_outcome_rows),
+            "hit_5pct_rate": _rate(bool(row["signal_hit_5pct"]) for row in primary_outcome_rows),
+            "avg_intraday_high_return": _avg(row["signal_intraday_high_return"] for row in primary_outcome_rows),
+            "avg_hold_3d_return": _avg(row["signal_hold_3d_return"] for row in primary_rows),
+            "avg_hold_5d_return": _avg(row["signal_hold_5d_return"] for row in primary_rows),
+            "avg_hold_10d_return": _avg(row["signal_hold_10d_return"] for row in primary_rows),
+            "avg_hold_20d_return": _avg(row["signal_hold_20d_return"] for row in primary_rows),
+            "avg_primary_return": _avg(row["_primary_return"] for row in primary_rows),
+            "avg_primary_return_net": _avg(row["_primary_return_net"] for row in primary_rows),
+            "win_rate_primary": _rate(row["_primary_return"] > 0 for row in primary_rows),
+            "win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in primary_rows),
+            "avg_exit_return": _avg(row["_exit_return"] for row in primary_rows),
+            "avg_exit_return_net": _avg(row["_exit_return_net"] for row in primary_rows),
+            "win_rate_exit_net": _rate(row["_exit_return_net"] > 0 for row in primary_rows),
             "real_avg_primary_return_net": _avg(row["_primary_return_net"] for row in real_rows),
             "real_win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in real_rows),
             "replay_avg_primary_return_net": _avg(row["_primary_return_net"] for row in replay_rows),
             "replay_win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in replay_rows),
-            "avg_max_drawdown_3d": _avg(row["signal_max_drawdown_3d"] for row in selected),
+            "avg_max_drawdown_3d": _avg(row["signal_max_drawdown_3d"] for row in primary_rows),
             "top10_avg_next_close_return": _avg(
-                row["signal_next_close_return"] for row in selected_all if row["rank"] <= 10
+                row["signal_next_close_return"] for row in primary_outcome_rows if row["rank"] <= 10
             ),
-            "avg_open_to_close_return": _avg(row["next_close_return"] for row in selected_all),
-            "daily": _daily_metrics(selected),
+            "avg_open_to_close_return": _avg(row["next_close_return"] for row in primary_outcome_rows),
+            "next_day_compare": _next_day_compare(primary_outcome_rows),
+            "replay_next_day_compare": _next_day_compare(replay_selected_all),
+            "daily": _daily_metrics(primary_rows),
+            "replay_daily": _daily_metrics(replay_rows),
         }
         return metrics
 
@@ -672,6 +687,8 @@ def _window_close(future: pd.DataFrame, days: int, fallback: float) -> float:
 
 
 def _primary_return_config(strategy_name: str):
+    if strategy_name == "tomorrow_picks":
+        return PRIMARY_RETURN_BY_STRATEGY["tomorrow_picks"]
     if str(getattr(config, "VALIDATION_PRIMARY_ENTRY_MODE", "open")).lower() in ("open", "executable"):
         return EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY.get(
             strategy_name,
@@ -747,6 +764,7 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
             item[key.replace("_json", "")] = json.loads(item.get(key) or "[]")
         except Exception:
             item[key.replace("_json", "")] = [] if key == "reasons_json" else {}
+    item["trade_cost_pct"] = _execution_cost_pct(item)
     return item
 
 
@@ -758,6 +776,31 @@ def _avg(values) -> float:
 def _rate(values) -> float:
     clean = list(values)
     return round(sum(1 for value in clean if value) / len(clean) * 100, 2) if clean else 0.0
+
+
+def _next_day_compare(rows: List[sqlite3.Row]) -> Dict[str, object]:
+    return {
+        "sample_count": len(rows),
+        "avg_signal_to_next_open": _avg(row["next_open_return"] for row in rows),
+        "avg_signal_to_next_close": _avg(row["signal_next_close_return"] for row in rows),
+        "win_rate_signal_to_next_close": _rate(row["signal_next_close_return"] > 0 for row in rows),
+        "avg_next_open_to_close": _avg(row["next_close_return"] for row in rows),
+        "win_rate_next_open_to_close": _rate(row["next_close_return"] > 0 for row in rows),
+        "avg_next_intraday_high_from_signal": _avg(row["signal_intraday_high_return"] for row in rows),
+        "avg_next_intraday_low_from_signal": _avg(_next_low_return_from_signal(row) for row in rows),
+        "hit_3pct_rate_from_signal": _rate(bool(row["signal_hit_3pct"]) for row in rows),
+        "hit_5pct_rate_from_signal": _rate(bool(row["signal_hit_5pct"]) for row in rows),
+        "avg_trade_cost_pct": _avg(row["_trade_cost_pct"] for row in rows),
+        "avg_signal_to_next_close_net": _avg(row["_primary_return_net"] for row in rows),
+    }
+
+
+def _next_low_return_from_signal(row) -> float:
+    entry = coerce_number(_mapping_get(row, "price_at_signal"))
+    low = coerce_number(_mapping_get(row, "next_low"))
+    if entry <= 0 or low <= 0:
+        return 0.0
+    return round((low / entry - 1.0) * 100.0, 4)
 
 
 def _daily_metrics(rows: List[sqlite3.Row]) -> List[Dict[str, object]]:

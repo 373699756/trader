@@ -1,4 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
+import os
 import threading
 import time
 from typing import Dict, List
@@ -48,9 +50,9 @@ STRATEGY_CATALOG = (
     {
         "name": "tomorrow_picks",
         "label": "明天预测",
-        "version": "tomorrow_picks_v2",
+        "version": "tomorrow_picks_v3",
         "horizon": "次日",
-        "goal": "14:30 后筛选次日可能冲高且仍可买的股票",
+        "goal": "14:00 后筛选适合尾盘买入、次日优先兑现的股票",
         "route": "/api/tomorrow-picks",
     },
     {
@@ -148,6 +150,69 @@ def create_app() -> Flask:
     def invalidate_metrics_cache():
         _metrics_cache.clear()
 
+    def _iteration_path() -> str:
+        return getattr(config, "TOMORROW_ITERATION_PATH", ".runtime/tomorrow_iteration.json")
+
+    def _iteration_can_apply(result: Dict[str, object]) -> bool:
+        return bool(result.get("ok")) and result.get("status") == "dry_run_improved"
+
+    def _iteration_reason(result: Dict[str, object]) -> str:
+        status = str(result.get("status") or "")
+        if status == "dry_run_improved":
+            return "样本外验证改善，允许人工应用。"
+        if status == "insufficient_samples":
+            return "有效样本不足，暂不允许自动修正。"
+        if status == "insufficient_factor_coverage":
+            return "因子覆盖不足，暂不允许自动修正。"
+        if status == "no_oos_improvement":
+            return "样本外没有稳定改善，保持当前权重。"
+        if status == "insufficient_oos_folds":
+            return "样本外折数不足，继续积累样本。"
+        if status == "written":
+            return "建议权重已写入并生效。"
+        if status == "dry_run":
+            return "当前权重未找到更优替代。"
+        return result.get("error") or "暂无可应用建议。"
+
+    def _current_tomorrow_weights() -> Dict[str, float]:
+        from .calibrate import _current_strategy_weights
+
+        return _current_strategy_weights("tomorrow_picks")
+
+    def _iteration_payload(result: Dict[str, object], applied: bool = False) -> Dict[str, object]:
+        payload = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "strategy": "tomorrow_picks",
+            "current_weights": (result.get("weights") or {}) if applied else _current_tomorrow_weights(),
+            "suggested_weights": result.get("weights") or {},
+            "can_apply": _iteration_can_apply(result),
+            "applied": applied,
+            "reason": _iteration_reason(result),
+            "result": result,
+        }
+        return payload
+
+    def _save_iteration_payload(payload: Dict[str, object]) -> None:
+        path = _iteration_path()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    def _load_iteration_payload() -> Dict[str, object]:
+        try:
+            with open(_iteration_path(), "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+    def _refresh_scoring_weights(weights: Dict[str, object]) -> None:
+        if not weights:
+            return
+        from . import scoring as scoring_module
+
+        scoring_module.WEIGHTS.setdefault("tomorrow_picks", {}).update(weights)
+
     def _attach_event_risk_layer(candidates: pd.DataFrame) -> pd.DataFrame:
         payload = load_event_risk(provider)
         candidates = attach_event_risk(candidates, payload)
@@ -167,14 +232,7 @@ def create_app() -> Flask:
     }
 
     def _configured_auto_update_strategies() -> List[str]:
-        valid = [item["name"] for item in STRATEGY_CATALOG]
-        configured = [
-            item.strip()
-            for item in str(getattr(config, "VALIDATION_AUTO_UPDATE_STRATEGIES", "")).split(",")
-            if item.strip()
-        ]
-        selected = [item for item in configured if item in valid]
-        return selected or valid
+        return ["tomorrow_picks"]
 
     def _code_batches(codes: List[str], batch_size: int) -> List[List[str]]:
         size = max(1, int(batch_size))
@@ -183,6 +241,82 @@ def create_app() -> Flask:
     def _set_auto_update_status(**values):
         with auto_update_lock:
             auto_update_status.update(values)
+
+    auto_snapshot_lock = threading.Lock()
+    auto_snapshot_status = {
+        "enabled": bool(config.VALIDATION_AUTO_SNAPSHOT_ENABLED),
+        "started": False,
+        "running": False,
+        "schedule_time": config.VALIDATION_AUTO_SNAPSHOT_TIME,
+        "market": config.VALIDATION_AUTO_SNAPSHOT_MARKET,
+        "last_attempt_date": "",
+        "last_started_at": "",
+        "last_finished_at": "",
+        "last_error": "",
+        "last_result": {},
+        "next_run_at": "",
+    }
+
+    def _set_auto_snapshot_status(**values):
+        with auto_snapshot_lock:
+            auto_snapshot_status.update(values)
+
+    def _auto_snapshot_time_parts() -> tuple:
+        raw = str(config.VALIDATION_AUTO_SNAPSHOT_TIME or "15:00").strip()
+        try:
+            hour_text, minute_text = raw.split(":", 1)
+            hour = min(23, max(0, int(hour_text)))
+            minute = min(59, max(0, int(minute_text)))
+            return hour, minute
+        except Exception:
+            return 15, 0
+
+    def _next_auto_snapshot_at(now: datetime) -> datetime:
+        hour, minute = _auto_snapshot_time_parts()
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now:
+            candidate = candidate + timedelta(days=1)
+        while candidate.weekday() >= 5:
+            candidate = candidate + timedelta(days=1)
+        return candidate
+
+    def run_validation_auto_snapshot_once() -> Dict[str, object]:
+        if not config.VALIDATION_AUTO_SNAPSHOT_ENABLED:
+            return {"ok": True, "status": "disabled"}
+        market = config.VALIDATION_AUTO_SNAPSHOT_MARKET
+        if market not in ("all", "main", "chinext", "star"):
+            market = "all"
+        with auto_snapshot_lock:
+            if auto_snapshot_status.get("running"):
+                return {"ok": True, "status": "already_running"}
+            auto_snapshot_status["running"] = True
+            auto_snapshot_status["last_started_at"] = datetime.now().isoformat(timespec="seconds")
+            auto_snapshot_status["last_error"] = ""
+
+        result = {"ok": True, "strategy": "tomorrow_picks", "market": market}
+        try:
+            snapshot_result = run_snapshot(provider, validation_store, "tomorrow_picks", market=market)
+            result.update(snapshot_result)
+            if not result.get("ok"):
+                raise RuntimeError(str(result.get("error") or "auto snapshot failed"))
+            invalidate_metrics_cache()
+            result["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _set_auto_snapshot_status(
+                running=False,
+                last_attempt_date=datetime.now().date().isoformat(),
+                last_finished_at=result["finished_at"],
+                last_result=result,
+            )
+            return result
+        except Exception as exc:
+            result.update({"ok": False, "error": str(exc), "finished_at": datetime.now().isoformat(timespec="seconds")})
+            _set_auto_snapshot_status(
+                running=False,
+                last_finished_at=result["finished_at"],
+                last_error=str(exc),
+                last_result=result,
+            )
+            return result
 
     def run_validation_auto_update_once() -> Dict[str, object]:
         if not config.VALIDATION_AUTO_UPDATE_ENABLED:
@@ -283,7 +417,41 @@ def create_app() -> Flask:
         thread = threading.Thread(target=_worker_loop, name="validation-auto-update", daemon=True)
         thread.start()
 
+    def _start_validation_auto_snapshot_worker() -> None:
+        if not config.VALIDATION_AUTO_SNAPSHOT_ENABLED:
+            return
+        worker_key = "snapshot|{}|{}|{}".format(
+            config.VALIDATION_DB_PATH,
+            config.VALIDATION_AUTO_SNAPSHOT_TIME,
+            config.VALIDATION_AUTO_SNAPSHOT_MARKET,
+        )
+        with _VALIDATION_AUTO_WORKERS_LOCK:
+            if worker_key in _VALIDATION_AUTO_WORKERS:
+                return
+            _VALIDATION_AUTO_WORKERS.add(worker_key)
+
+        def _worker_loop():
+            while True:
+                now = datetime.now()
+                hour, minute = _auto_snapshot_time_parts()
+                scheduled_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                today = now.date().isoformat()
+                with auto_snapshot_lock:
+                    last_attempt_date = auto_snapshot_status.get("last_attempt_date", "")
+                if now.weekday() < 5 and now >= scheduled_today and last_attempt_date != today:
+                    run_validation_auto_snapshot_once()
+                    now = datetime.now()
+                next_run_at = _next_auto_snapshot_at(now)
+                _set_auto_snapshot_status(next_run_at=next_run_at.isoformat(timespec="seconds"))
+                sleep_seconds = max(30, min(3600, int((next_run_at - now).total_seconds())))
+                time.sleep(sleep_seconds)
+
+        _set_auto_snapshot_status(started=True)
+        thread = threading.Thread(target=_worker_loop, name="validation-auto-snapshot", daemon=True)
+        thread.start()
+
     _start_validation_auto_update_worker()
+    _start_validation_auto_snapshot_worker()
 
     @app.route("/")
     def index():
@@ -304,7 +472,7 @@ def create_app() -> Flask:
             candidates = _attach_event_risk_layer(prepare_candidates(quotes))
             market_regime = build_market_regime(candidates, breadth_source=quotes)
             strategies = []
-            for item in STRATEGY_CATALOG:
+            for item in [row for row in STRATEGY_CATALOG if row["name"] == "tomorrow_picks"]:
                 metrics = cached_metrics(item["name"], days)
                 dates = validation_store.list_signal_dates(item["name"])
                 latest = dates[0] if dates else {}
@@ -387,9 +555,9 @@ def create_app() -> Flask:
 
     @app.route("/api/portfolio/performance")
     def portfolio_performance():
-        strategy = request.args.get("strategy", "all")
-        if strategy != "all" and strategy not in SNAPSHOT_STRATEGIES:
-            strategy = "all"
+        strategy = request.args.get("strategy", "tomorrow_picks")
+        if strategy not in SNAPSHOT_STRATEGIES:
+            strategy = "tomorrow_picks"
         days = _int_arg("days", 120, minimum=1, maximum=500)
         try:
             return jsonify(
@@ -407,9 +575,9 @@ def create_app() -> Flask:
 
     @app.route("/api/paper-trades")
     def paper_trades():
-        strategy = request.args.get("strategy", "all")
-        if strategy != "all" and strategy not in SNAPSHOT_STRATEGIES:
-            strategy = "all"
+        strategy = request.args.get("strategy", "tomorrow_picks")
+        if strategy not in SNAPSHOT_STRATEGIES:
+            strategy = "tomorrow_picks"
         limit = _int_arg("limit", 200, minimum=1, maximum=1000)
         try:
             return jsonify(
@@ -426,7 +594,7 @@ def create_app() -> Flask:
 
     @app.route("/api/recommendations")
     def recommendations():
-        top_n = _int_arg("top_n", 10, minimum=5, maximum=50)
+        top_n = _int_arg("top_n", 30, minimum=5, maximum=50)
         market = request.args.get("market", "all")
         if market not in ("all", "main", "chinext", "star"):
             market = "all"
@@ -557,7 +725,7 @@ def create_app() -> Flask:
                 "source_versions": {
                     "short_term": "dual_horizon_v2",
                     "long_term": "dual_horizon_v2",
-                    "tomorrow_picks": tomorrow_meta.get("strategy_version", "tomorrow_picks_v2"),
+                    "tomorrow_picks": tomorrow_meta.get("strategy_version", "tomorrow_picks_v3"),
                     "swing_picks": swing_meta.get("strategy_version", "swing_5_10d_v1"),
                     "position_picks": position_meta.get("strategy_version", "position_1_3m_v1"),
                     "tech_potential": tech_meta.get("strategy_version", "tech_potential_v1"),
@@ -596,7 +764,7 @@ def create_app() -> Flask:
                             "candidate_count": len(saved_rows),
                             "top_n": top_n,
                             "market_filter": market,
-                            "strategy": "实时行情不可用，显示最近保存的14:30预测",
+                            "strategy": "实时行情不可用，显示最近保存的14:00预测",
                             "fallback": "saved_snapshot",
                         },
                         "health": provider.health(),
@@ -798,8 +966,8 @@ def create_app() -> Flask:
                             "candidate_count": len(saved_rows),
                             "top_n": top_n,
                             "market_filter": market,
-                            "analysis_window": "14:30",
-                            "strategy_version": "tomorrow_picks_v2",
+                            "analysis_window": "14:00",
+                            "strategy_version": "tomorrow_picks_v3",
                             "strategy_label": "明天预测",
                             "strategy": "实时行情不可用，显示最近保存的明天预测",
                             "fallback": "saved_snapshot",
@@ -1061,10 +1229,10 @@ def create_app() -> Flask:
 
     @app.route("/api/strategy-validation/snapshot", methods=["POST"])
     def strategy_snapshot():
-        strategy = request.args.get("strategy", "tech_potential")
+        strategy = request.args.get("strategy", "tomorrow_picks")
         market = request.args.get("market", "all")
         if strategy not in SNAPSHOT_STRATEGIES:
-            strategy = "tech_potential"
+            strategy = "tomorrow_picks"
         if market not in ("all", "main", "chinext", "star"):
             market = "all"
         try:
@@ -1077,7 +1245,7 @@ def create_app() -> Flask:
     @app.route("/api/strategy-validation/update", methods=["POST"])
     def strategy_validation_update():
         signal_date = request.args.get("date", "")
-        strategy = request.args.get("strategy", "")
+        strategy = "tomorrow_picks"
         try:
             result = validation_store.update_outcomes(
                 provider,
@@ -1093,6 +1261,8 @@ def create_app() -> Flask:
     def strategy_validation_auto_update_status():
         with auto_update_lock:
             status = dict(auto_update_status)
+        with auto_snapshot_lock:
+            snapshot_status = dict(auto_snapshot_status)
         status["config"] = {
             "initial_delay_seconds": config.VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS,
             "interval_seconds": config.VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS,
@@ -1101,12 +1271,19 @@ def create_app() -> Flask:
             "history_days": config.VALIDATION_AUTO_UPDATE_HISTORY_DAYS,
             "strategies": _configured_auto_update_strategies(),
         }
-        return jsonify({"ok": True, "auto_update": status, "health": provider.health()})
+        snapshot_status["config"] = {
+            "enabled": bool(config.VALIDATION_AUTO_SNAPSHOT_ENABLED),
+            "time": config.VALIDATION_AUTO_SNAPSHOT_TIME,
+            "market": config.VALIDATION_AUTO_SNAPSHOT_MARKET,
+            "strategy": "tomorrow_picks",
+            "weekdays_only": True,
+        }
+        return jsonify({"ok": True, "auto_update": status, "auto_snapshot": snapshot_status, "health": provider.health()})
 
     @app.route("/api/strategy-validation/prefetch-history", methods=["POST"])
     def strategy_validation_prefetch_history():
         signal_date = request.args.get("date", "")
-        strategy = request.args.get("strategy", "")
+        strategy = "tomorrow_picks"
         days = _int_arg("days", 180, minimum=30, maximum=500)
         limit = _int_arg("limit", 500, minimum=1, maximum=2000)
         force = request.args.get("force", "0") in ("1", "true", "yes")
@@ -1143,9 +1320,7 @@ def create_app() -> Flask:
 
     @app.route("/api/strategy-validation/backfill-samples", methods=["POST"])
     def strategy_validation_backfill_samples():
-        strategy = request.args.get("strategy", "tomorrow_picks")
-        if strategy not in ("tomorrow_picks", "swing_picks", "position_picks", "tech_potential", "chokepoint_picks", "reversal_picks", "smallcap_value_picks", "breakout_picks"):
-            strategy = "tomorrow_picks"
+        strategy = "tomorrow_picks"
         days = _int_arg("days", 260, minimum=80, maximum=600)
         replay_days = _int_arg("replay_days", 20, minimum=1, maximum=80)
         top_n = _int_arg("top_n", 30, minimum=1, maximum=50)
@@ -1189,7 +1364,7 @@ def create_app() -> Flask:
 
     @app.route("/api/strategy-validation")
     def strategy_validation():
-        strategy = request.args.get("strategy", "")
+        strategy = "tomorrow_picks"
         days = _int_arg("days", 20, minimum=1, maximum=120)
         try:
             return jsonify(
@@ -1206,7 +1381,7 @@ def create_app() -> Flask:
     @app.route("/api/strategy-validation/daily")
     def strategy_validation_daily():
         signal_date = request.args.get("date", "")
-        strategy = request.args.get("strategy", "")
+        strategy = "tomorrow_picks"
         if not signal_date:
             return jsonify({"ok": False, "error": "缺少 date 参数"}), 400
         try:
@@ -1221,15 +1396,77 @@ def create_app() -> Flask:
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc), "health": provider.health()}), 502
 
+    @app.route("/api/tomorrow-iteration")
+    def tomorrow_iteration():
+        days = _int_arg("days", 120, minimum=30, maximum=240)
+        force = request.args.get("force", "0") in ("1", "true", "yes", "on")
+        try:
+            cached = _load_iteration_payload()
+            if cached and not force:
+                return jsonify({"ok": True, "iteration": cached, "health": provider.health()})
+            from .calibrate import calibrate_live_weights
+
+            result = calibrate_live_weights(
+                "tomorrow_picks",
+                db_path=config.VALIDATION_DB_PATH,
+                top_k=10,
+                days=days,
+                steps=2,
+                dry_run=True,
+            )
+            payload = _iteration_payload(result)
+            _save_iteration_payload(payload)
+            return jsonify({"ok": True, "iteration": payload, "health": provider.health()})
+        except Exception as exc:
+            cached = _load_iteration_payload()
+            return jsonify({"ok": False, "error": str(exc), "iteration": cached, "health": provider.health()}), 502
+
+    @app.route("/api/tomorrow-iteration/apply", methods=["POST"])
+    def tomorrow_iteration_apply():
+        days = _int_arg("days", 120, minimum=30, maximum=240)
+        try:
+            from .calibrate import calibrate_live_weights
+
+            dry_result = calibrate_live_weights(
+                "tomorrow_picks",
+                db_path=config.VALIDATION_DB_PATH,
+                top_k=10,
+                days=days,
+                steps=2,
+                dry_run=True,
+            )
+            dry_payload = _iteration_payload(dry_result)
+            if not dry_payload["can_apply"]:
+                _save_iteration_payload(dry_payload)
+                return jsonify(
+                    {
+                        "ok": False,
+                        "error": dry_payload["reason"],
+                        "iteration": dry_payload,
+                        "health": provider.health(),
+                    }
+                ), 409
+
+            written_result = calibrate_live_weights(
+                "tomorrow_picks",
+                db_path=config.VALIDATION_DB_PATH,
+                top_k=10,
+                days=days,
+                steps=2,
+                dry_run=False,
+            )
+            _refresh_scoring_weights(written_result.get("weights") or {})
+            payload = _iteration_payload(written_result, applied=written_result.get("status") == "written")
+            _save_iteration_payload(payload)
+            return jsonify({"ok": True, "iteration": payload, "health": provider.health()})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc), "iteration": _load_iteration_payload(), "health": provider.health()}), 502
+
     @app.route("/api/validation-overview")
     def validation_overview():
         """B3：各策略主周期净胜率时间序列 + 聚合指标，供前端折线图消费。"""
         days = _int_arg("days", 20, minimum=1, maximum=120)
-        strategies = [
-            "short_term", "long_term", "tomorrow_picks",
-            "swing_picks", "position_picks", "tech_potential", "chokepoint_picks",
-            "reversal_picks", "smallcap_value_picks", "breakout_picks",
-        ]
+        strategies = ["tomorrow_picks"]
         try:
             series = []
             for name in strategies:

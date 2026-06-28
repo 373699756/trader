@@ -35,7 +35,7 @@
 - 止损/持有期退出模拟：策略验证和 AlphaLite 回测统一使用固定持有期 + 固定止损 + 止盈 + 移动止损，不再只按期末收盘价评估。
 - 滚动回测：按 AlphaLite 信号做多期 TopK 组合验证，输出胜率、累计收益、最大回撤、扣成本收益和退出原因。
 - 事件风险层：可选接入解禁、质押、减持和财报窗口风险，默认关闭；开启后高风险票会提高风险分、降级动作，必要时从硬过滤中剔除。
-- 组合总仓控制：组合约束页不再默认满仓，按市场状态和纸面组合回撤缩放总仓，并展示现金比例。
+- 组合总仓控制：组合约束能力保留在后端，当前 Web 入口暂时隐藏；需要恢复时可重新打开组合约束页。
 - 基本面/因子 IC 框架：可选接入 ROE、毛利率、资产负债率、估值、业绩超预期和评级调整；`daily_job` 会基于真实样本刷新因子 IC，用来识别长期无效因子。
 - 点击股票可查看相关新闻、电报、关键词命中和舆情分。
 - 行情优先使用 AKShare；配置 `TUSHARE_TOKEN` 后可尝试 Tushare 降级。
@@ -53,8 +53,7 @@
 - 现代深色仪表盘：整站改为深色主题（颜色全部收敛进 `:root` 语义变量 + ECharts 统一 `CHART_THEME`），保留 A 股红涨绿跌约定。
 - 卡脖子页：侧栏新增「卡脖子」tab，顶部按产业链环节展示代表票卡片（产业链全景图），下方为实时打分榜。
 - 策略验证页重做：顶部「记分牌」给每个策略一眼结论（主周期净胜率徽章 + 一句话可信度判断），左侧操作面板保留保存、回放和人工复核，历史 K 线下载改由后台自动分批执行，右侧复盘区自动选中最新批次。
-- 组合约束页：基于最近一次保存快照生成建议仓位，加入单票上限、主题/行业上限和现金保留提示，并展示纸面收益、最大回撤、净胜率和纸面交易数；该功能只约束仓位，不改变策略排序。
-- 组合总仓卡：展示 `gross_exposure_pct`、`cash_pct`、市况降仓因子、回撤降仓因子和触发原因，防止在偏防守市或纸面回撤扩大时机械满仓。
+- 组合约束能力：基于最近一次保存快照生成建议仓位，加入单票上限、主题/行业上限和现金保留提示；当前 Web 入口暂时隐藏，避免干扰明天预测复盘主流程。
 
 ## 推荐策略
 
@@ -148,7 +147,7 @@ python app.py
 ```bash
 export TUSHARE_TOKEN=你的token
 export REFRESH_SECONDS=30
-export DEFAULT_TOP_N=20
+export DEFAULT_TOP_N=30
 export MIN_TURNOVER=50000000
 export MAX_RECOMMENDED_GAIN=18.5
 export ENABLE_HISTORY_FACTORS=1
@@ -199,7 +198,7 @@ export EXIT_TRAILING_STOP_PCT=4.0
 
 ## 接口
 
-- `GET /api/recommendations?top_n=10&market=all`
+- `GET /api/recommendations?top_n=30&market=all`
 - `GET /api/sentiment/<code>?name=<股票名>`
 - `GET /api/backtest?codes=600000,000001&top_k=10&holding_days=3&mode=rolling`
 - `GET /api/backtest?codes=600000,000001&top_k=10&holding_days=3&mode=snapshot`
@@ -209,7 +208,7 @@ export EXIT_TRAILING_STOP_PCT=4.0
 - `GET /api/reversal-picks?top_n=30&market=all`
 - `GET /api/smallcap-value-picks?top_n=30&market=all`
 - `GET /api/breakout-picks?top_n=30&market=all`
-- `POST /api/strategy-validation/backfill-samples?strategy=tomorrow_picks&days=260&replay_days=20&top_n=30`
+- `POST /api/strategy-validation/backfill-samples?strategy=tomorrow_picks&days=260&replay_days=20&top_n=50`
 - `GET /api/portfolio?strategy=tomorrow_picks`
 - `GET /api/portfolio/performance?strategy=tomorrow_picks&days=120`
 - `GET /api/paper-trades?strategy=tomorrow_picks&limit=200`
@@ -219,9 +218,9 @@ export EXIT_TRAILING_STOP_PCT=4.0
 
 `/api/recommendations` 会返回：
 
-- `recommendations.short_term`：短期 Top 10。
-- `recommendations.long_term`：长期 Top 10。
-- `data`：兼容字段，等同于短期 Top 10。
+- `recommendations.short_term`：短期 Top 30。
+- `recommendations.long_term`：长期 Top 30。
+- `data`：兼容字段，等同于短期 Top 30。
 - `meta.market_regime`：当前市场状态、广度、强弱分布和操作建议。
 - `recommendations.*[].serenity_profile`：单票质量、风险、置信度、证据和动作建议。
 - `recommendations.*[].agent_committee`：TradingAgents 风格委员会结论，包含技术/情绪/基本面代理/新闻环境/牛熊/交易员/风控/组合经理分数和最终动作。
@@ -237,7 +236,7 @@ export EXIT_TRAILING_STOP_PCT=4.0
 
 策略验证的“样本不足”指验证库里已经有结果、且已经走完该策略主周期的信号少于 30 条，不是单纯缺少K线。只下载历史K线只能更新已保存信号的结果，不能凭空增加过去的推荐样本。
 
-当前主评估口径是“可执行主周期净收益/净胜率”：默认 `VALIDATION_PRIMARY_ENTRY_MODE=open`，按次日开盘入场计算主收益，并扣 `VALIDATION_TRADE_COST_PCT` 固定成本和成交额分档滑点。不同策略的主周期不同：明天预测/短期看次日，反转低波看 5 日，波段/突破看 10 日，中长期/科技/卡脖子/小市值价值看 20 日。未来交易日不足时，该样本只计入 `outcome_sample_count`，不计入主样本 `sample_count`。信号价收益仍会保留展示，但不再作为默认主评分口径。
+当前策略验证已收敛为只验证“明天预测”：以 14:00 信号价作为尾盘计划入场价，对比次日开盘、最高、最低、收盘，并扣 `VALIDATION_TRADE_COST_PCT` 固定成本和成交额分档滑点。主记分牌、净胜率走势和次日对比只统计真实前瞻样本；回放样本单独显示为参考，不计入主判断。未来交易日不足时，该样本只计入 `outcome_sample_count`，不计入主样本 `sample_count`。其它实时策略仍可展示，但不再进入验证与自动修正闭环。
 
 策略验证还会额外记录 `signal_exit_return` / `exit_reason` / `exit_days` / `exit_date`：按主周期窗口内的止损、止盈、移动止损或持有到期计算退出收益。默认参数是 5% 固定止损、8% 止盈、4% 移动止损，可用 `EXIT_STOP_LOSS_PCT`、`EXIT_TAKE_PROFIT_PCT`、`EXIT_TRAILING_STOP_PCT` 调整。当前已加入可成交性近似：一字涨停/封板买不进的样本会跳过；封跌停止损会顺延到下一交易日开盘。纸面组合默认按持有期摊分每日新开资本，避免每天一组 10/20 日组合被当成不重叠满仓收益。
 
@@ -246,7 +245,7 @@ export EXIT_TRAILING_STOP_PCT=4.0
 1. 真实样本：每天在盘后用 `daily_job` 保存推荐快照，后台会按策略和股票代码分批下载/复用历史 K 线并回填结果；“仅更新当前批次”只用于人工复核。这是最可信的前瞻记录。
 2. 离线补样本：点击“回放历史补样本”，系统会下载/复用日线历史，用当前量价规则模拟过去若干个交易日的信号，写入 `*_replay_v1` 版本并立即计算结果。该结果用于快速判断规则是否值得继续跟踪，不等同于真实历史曾经推荐过。
 
-默认回放参数为近 260 日历史、回放 20 个历史交易日、每个交易日保留 Top 30。回放样本仍归入原策略名称统计，因此可以快速把 `tomorrow_picks`、`swing_picks` 等策略从“样本不足”推进到可观察状态；同时明细里的 `strategy_version` 会标记为 `tomorrow_picks_replay_v1` 这类版本，便于和真实保存样本区分。共识权重优先采信真实前瞻样本；真实样本不足时只会轻度参考回放，避免回放结果虚高。
+默认回放参数为近 260 日历史、回放 20 个历史交易日、每个交易日保留 Top 50。回放样本仍归入原策略名称统计；同时明细里的 `strategy_version` 会标记为 `tomorrow_picks_replay_v1`，便于和真实保存样本区分。真实前瞻样本优先，回放只用于冷启动粗筛，页面会标记为“回放参考”。
 
 策略共识已加入统一健康状态：真实样本不足为 `pending/probation` 并降权；真实样本数达到 `STRATEGY_DECAY_MIN_REAL_SAMPLES` 后，如果主周期净胜率低于 `STRATEGY_RETIRE_WINRATE` 或主周期净收益为负，该策略进入 `retired`，本轮共识权重置零。
 
@@ -259,10 +258,13 @@ export EXIT_TRAILING_STOP_PCT=4.0
 - `VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN=160`：每个策略单轮最多处理 160 只股票。
 - `VALIDATION_AUTO_UPDATE_HISTORY_DAYS=220`：每只股票预取最近 220 日 K 线。
 - `VALIDATION_AUTO_UPDATE_STRATEGIES=`：默认覆盖全部验证策略；可填逗号分隔策略名限制范围。
+- `VALIDATION_AUTO_SNAPSHOT_ENABLED=1`：启用服务内置的每日自动保存明天预测。
+- `VALIDATION_AUTO_SNAPSHOT_TIME=15:00`：交易日到点自动保存；如果服务在当天 15:00 后才启动，会补保存一次。
+- `VALIDATION_AUTO_SNAPSHOT_MARKET=all`：自动保存的市场范围。
 
 ## 盘后自动任务
 
-不再通过 Web 按钮下载历史数据。真实前瞻样本建议用 CLI 在交易日盘后自动保存并回填：
+不再通过 Web 按钮下载历史数据。应用服务默认会在交易日 15:00 自动保存当天“明天预测”样本，CLI 可作为外部兜底任务继续保留：
 
 ```bash
 .venv/bin/python -m stock_analyzer.daily_job --snapshot --strategy all --market all
@@ -274,26 +276,26 @@ export EXIT_TRAILING_STOP_PCT=4.0
 crontab 示例：
 
 ```cron
-35 14 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --snapshot --strategy all --market all >> .runtime/daily_job.log 2>&1
+00 15 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --snapshot --strategy all --market all >> .runtime/daily_job.log 2>&1
 30 17 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --update --strategy all >> .runtime/daily_job.log 2>&1
 30 18 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --update --paper-trade --strategy all >> .runtime/daily_job.log 2>&1
 45 18 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --factor-ic --strategy all >> .runtime/daily_job.log 2>&1
 ```
 
-第一条负责保存当日策略预测，第二条负责 T+1/T+多日结果回填，第三条在回填后同步纸面组合交易和组合净值，第四条刷新因子 IC。应用内后台分批任务仍会继续补 K 线和更新结果，cron 负责确保“每天都有真实预测样本入库”。
+第一条是自动保存的外部兜底；服务内置自动保存和 cron 重复执行时，同一天样本会替换旧样本，不会重复累计。第二条负责 T+1/T+多日结果回填，第三条在回填后同步纸面组合交易和组合净值，第四条刷新因子 IC。应用内后台分批任务仍会继续补 K 线和更新结果。
 
 ## 上线后运营流程
 
 代码机制已经覆盖“样本入库 -> 结果回填 -> 纸面组合 -> 因子 IC -> walk-forward 校准”，但是否赚钱取决于真实样本和数据质量。上线后按以下顺序操作：
 
-1. 先挂 cron 持续攒样本。每天 14:35 保存当日预测，17:30 回填未来收益，18:30 更新纸面组合，18:45 刷新因子 IC。不要依赖人工点击 Web 按钮。
+1. 先让服务持续攒真实样本。应用默认交易日 15:00 自动保存当日明天预测；cron 可作为外部兜底，17:30 回填未来收益，18:30 更新纸面组合，18:45 刷新因子 IC。
 2. 每天检查任务日志：
 
 ```bash
 tail -n 100 .runtime/daily_job.log
 ```
 
-3. 每天看 Web 三个位置：`策略验证` 看真实样本数、主周期净胜率和净收益；`组合约束` 看纸面收益、最大回撤和现金比例；`/api/health` 看事件风险、基本面和 IC 状态。
+3. 每天看 Web 两个位置：`明天预测` 看当天 50 支候选；`策略验证` 看真实样本数、次日净胜率、净收益和自动迭代建议。`/api/health` 用于检查事件风险、基本面和 IC 状态。
 4. 初期不要马上打开所有 alpha 开关，建议保持：
 
 ```bash

@@ -392,7 +392,24 @@ class ScoringTest(unittest.TestCase):
         self.assertIn("base_score", row)
         self.assertIn("raw_score", row)
         self.assertIn("overheat_damp", row)
+        self.assertIn("tail_setup_score", row)
         self.assertIn("risk_penalty_parts", row)
+
+    def test_tomorrow_rejects_weak_tail_close(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "尾盘强", "price": 10.8, "open": 10.2, "high": 11.0, "low": 10.0,
+                 "pct_chg": 4.0, "turnover": 8e8, "turnover_rate": 5, "volume_ratio": 2.0,
+                 "speed": 0.4, "sixty_day_pct": 12, "ytd_pct": 16, "amplitude": 6},
+                {"code": "600002", "name": "尾盘弱", "price": 10.2, "open": 10.6, "high": 11.0, "low": 10.0,
+                 "pct_chg": 3.0, "turnover": 8e8, "turnover_rate": 5, "volume_ratio": 2.0,
+                 "speed": -1.5, "sixty_day_pct": 12, "ytd_pct": 16, "amplitude": 6},
+            ]
+        )
+
+        rows, _ = score_tomorrow_candidates(prepare_candidates(quotes), top_n=10)
+
+        self.assertEqual([row["code"] for row in rows], ["600001"])
 
     def test_chokepoint_score_rewards_upstream_underpriced(self):
         from stock_analyzer.scoring import _chokepoint_score
@@ -736,7 +753,7 @@ class ScoringTest(unittest.TestCase):
         rows, meta = score_tomorrow_candidates(candidates, top_n=50)
 
         self.assertEqual({row["code"] for row in rows}, {"600001", "300001"})
-        self.assertEqual(meta["analysis_window"], "14:30")
+        self.assertEqual(meta["analysis_window"], "14:00")
         self.assertLessEqual(len(rows), 50)
         self.assertHasExplanationFields(rows[0], "tomorrow_picks")
 

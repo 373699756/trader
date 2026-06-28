@@ -143,6 +143,11 @@ const els = {
   validationWinRate: document.getElementById("validationWinRate"),
   validationHit3: document.getElementById("validationHit3"),
   validationAvgReturn: document.getElementById("validationAvgReturn"),
+  nextDayCompareGrid: document.getElementById("nextDayCompareGrid"),
+  iterationWeights: document.getElementById("iterationWeights"),
+  iterationStatus: document.getElementById("iterationStatus"),
+  refreshIterationBtn: document.getElementById("refreshIterationBtn"),
+  applyIterationBtn: document.getElementById("applyIterationBtn"),
   validationDatesBody: document.getElementById("validationDatesBody"),
   validationDetailBody: document.getElementById("validationDetailBody"),
   detailsPanel: document.getElementById("detailsPanel"),
@@ -157,7 +162,7 @@ async function loadRecommendations() {
   state.countdown = window.APP_CONFIG.refreshSeconds;
   setStatus("刷新中...");
   const params = new URLSearchParams({
-    top_n: "10",
+    top_n: "30",
     market: els.marketSelect.value,
   });
   try {
@@ -215,9 +220,9 @@ async function loadStrategyOverview() {
 
 async function loadValidation() {
   state.validationLoaded = true;
-  els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">加载中...</td></tr>';
+  els.validationDatesBody.innerHTML = '<tr><td colspan="3" class="empty">加载中...</td></tr>';
   const params = new URLSearchParams({
-    strategy: els.validationStrategySelect.value,
+    strategy: "tomorrow_picks",
     days: els.validationDaysSelect.value,
   });
   try {
@@ -230,12 +235,13 @@ async function loadValidation() {
     renderValidationDates(payload.dates || []);
     syncValidationSelection(payload.dates || []);
     loadValidationOverview();
+    loadTomorrowIteration();
     if (!els.updateStatus.textContent || els.updateStatus.textContent.includes("后台")) {
       loadValidationAutoUpdateStatus();
     }
     setStatus("策略验证已更新");
   } catch (err) {
-    els.validationDatesBody.innerHTML = `<tr><td colspan="4" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    els.validationDatesBody.innerHTML = `<tr><td colspan="3" class="empty">${escapeHtml(err.message)}</td></tr>`;
     setStatus(`策略验证加载失败：${err.message}`);
   }
 }
@@ -567,6 +573,7 @@ async function saveStrategySnapshot(strategy) {
     );
     loadStrategyOverview();
     loadValidation();
+    loadTomorrowIteration();
     state.portfolioLoaded = false;
     if (document.getElementById("portfolioPanel").classList.contains("active")) {
       els.portfolioStrategySelect.value = strategy;
@@ -584,10 +591,7 @@ async function updateValidationOutcomes() {
   btn.disabled = true;
   setOpsStatus(els.updateStatus, "更新中…", "pending");
   const params = new URLSearchParams();
-  const strategy = state.selectedValidation.strategy || els.validationStrategySelect.value;
-  if (strategy) {
-    params.set("strategy", strategy);
-  }
+  params.set("strategy", "tomorrow_picks");
   if (state.selectedValidation.date) {
     params.set("date", state.selectedValidation.date);
   }
@@ -601,6 +605,7 @@ async function updateValidationOutcomes() {
     setOpsStatus(els.updateStatus, `✓ 更新 ${payload.result.updated} 条 / 跳过 ${payload.result.skipped} 条`, "ok");
     loadStrategyOverview();
     loadValidation();
+    loadTomorrowIteration(true);
   } catch (err) {
     setOpsStatus(els.updateStatus, `✗ 更新失败：${err.message}`, "bad");
   } finally {
@@ -616,37 +621,156 @@ async function loadValidationAutoUpdateStatus() {
       return;
     }
     const status = payload.auto_update || {};
+    const snapshot = payload.auto_snapshot || {};
     const config = status.config || {};
+    const snapshotText = snapshotStatusText(snapshot);
     if (!status.enabled) {
-      setOpsStatus(els.updateStatus, "后台历史自动更新已关闭", "pending");
+      setOpsStatus(els.updateStatus, joinStatusText(["后台历史自动更新已关闭", snapshotText]), "pending");
       return;
     }
     if (status.running) {
-      setOpsStatus(els.updateStatus, "后台正在分批更新历史K线和验证结果…", "pending");
+      setOpsStatus(els.updateStatus, joinStatusText(["后台正在分批更新历史K线和验证结果…", snapshotText]), "pending");
       return;
     }
     const result = status.last_result || {};
     const totals = result.totals || {};
     if (status.last_error) {
-      setOpsStatus(els.updateStatus, `后台自动更新上次失败：${status.last_error}`, "bad");
+      setOpsStatus(els.updateStatus, joinStatusText([`后台自动更新上次失败：${status.last_error}`, snapshotText]), "bad");
       return;
     }
     if (status.last_finished_at) {
       setOpsStatus(
         els.updateStatus,
-        `后台自动更新 ${status.last_finished_at} 完成：批次 ${totals.batches || 0}，更新 ${totals.updated || 0}，缓存 ${totals.cached || 0}，下载 ${totals.downloaded || 0}，失败 ${totals.failed || 0}`,
+        joinStatusText([
+          `后台自动更新 ${status.last_finished_at} 完成：批次 ${totals.batches || 0}，更新 ${totals.updated || 0}，缓存 ${totals.cached || 0}，下载 ${totals.downloaded || 0}，失败 ${totals.failed || 0}`,
+          snapshotText,
+        ]),
         "ok"
       );
       return;
     }
     setOpsStatus(
       els.updateStatus,
-      `后台自动更新已启动：约 ${Math.round((config.initial_delay_seconds || 0) / 60)} 分钟后首轮，之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟分批更新`,
+      joinStatusText([
+        `后台自动更新已启动：约 ${Math.round((config.initial_delay_seconds || 0) / 60)} 分钟后首轮，之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟分批更新`,
+        snapshotText,
+      ]),
       "pending"
     );
   } catch (err) {
     /* 状态提示不影响验证主流程 */
   }
+}
+
+function joinStatusText(parts) {
+  return parts.filter(Boolean).join("；");
+}
+
+function snapshotStatusText(snapshot) {
+  if (!snapshot || snapshot.enabled === false) {
+    return "15:00 自动保存已关闭";
+  }
+  if (snapshot.running) {
+    return "正在自动保存今天明天预测";
+  }
+  if (snapshot.last_error) {
+    return `15:00 自动保存上次失败：${snapshot.last_error}`;
+  }
+  const saved = snapshot.last_result?.saved;
+  if (saved?.signal_date) {
+    return `已自动保存 ${saved.signal_date} 明天预测 ${saved.saved || 0} 条`;
+  }
+  if (snapshot.next_run_at) {
+    return `下次自动保存 ${snapshot.next_run_at}`;
+  }
+  return "15:00 自动保存已启动";
+}
+
+async function loadTomorrowIteration(force = false) {
+  if (!els.iterationWeights) return;
+  if (force) {
+    els.iterationStatus.textContent = "正在重新计算权重建议…";
+    els.applyIterationBtn.disabled = true;
+  }
+  const params = new URLSearchParams({ days: els.validationDaysSelect.value || "120" });
+  if (force) params.set("force", "1");
+  try {
+    const res = await fetch(`/api/tomorrow-iteration?${params.toString()}`);
+    const payload = await res.json();
+    if (!payload.ok) {
+      throw new Error(payload.error || "迭代建议生成失败");
+    }
+    renderTomorrowIteration(payload.iteration || {});
+  } catch (err) {
+    els.iterationStatus.textContent = `迭代建议不可用：${err.message}`;
+    els.iterationWeights.innerHTML = '<div class="empty">暂无迭代建议</div>';
+    els.applyIterationBtn.disabled = true;
+  }
+}
+
+async function applyTomorrowIteration() {
+  els.applyIterationBtn.disabled = true;
+  els.iterationStatus.textContent = "正在应用建议权重…";
+  const params = new URLSearchParams({ days: els.validationDaysSelect.value || "120" });
+  let applied = false;
+  try {
+    const res = await fetch(`/api/tomorrow-iteration/apply?${params.toString()}`, { method: "POST" });
+    const payload = await res.json();
+    if (!payload.ok) {
+      throw new Error(payload.error || "应用失败");
+    }
+    applied = true;
+    renderTomorrowIteration(payload.iteration || {});
+    setStatus("明天预测权重建议已应用");
+    loadTomorrowPicks();
+  } catch (err) {
+    els.iterationStatus.textContent = `应用失败：${err.message}`;
+  } finally {
+    if (!applied) {
+      loadTomorrowIteration(true);
+    }
+  }
+}
+
+function renderTomorrowIteration(iteration) {
+  const result = iteration.result || {};
+  const current = iteration.current_weights || {};
+  const suggested = iteration.suggested_weights || {};
+  const keys = Array.from(new Set([...Object.keys(current), ...Object.keys(suggested)]));
+  const sampleCount = result.sample_count ?? 0;
+  const improve = result.oos_improvement ?? result.improvement;
+  const status = iteration.reason || result.status || "暂无建议";
+  els.iterationStatus.textContent = `${status} 样本 ${sampleCount} 条，样本外改善 ${improve == null ? "-" : formatNumber(improve, 3)}。`;
+  els.applyIterationBtn.disabled = !iteration.can_apply;
+  if (!keys.length) {
+    els.iterationWeights.innerHTML = '<div class="empty">暂无可比较权重</div>';
+    return;
+  }
+  els.iterationWeights.innerHTML = keys.map((key) => {
+    const from = Number(current[key] ?? 0);
+    const to = Number(suggested[key] ?? from);
+    const diff = to - from;
+    return `
+      <div class="score-card ${diff === 0 ? "score-neutral" : diff > 0 ? "score-watch" : "score-good"}">
+        <div class="score-card-head">
+          <span class="score-strategy">${escapeHtml(weightLabel(key))}</span>
+          <span class="score-badge">${formatNumber(to * 100, 1)}%</span>
+        </div>
+        <div class="score-verdict">当前 ${formatNumber(from * 100, 1)}% · ${diff >= 0 ? "+" : ""}${formatNumber(diff * 100, 1)}%</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function weightLabel(key) {
+  const labels = {
+    liquidity: "流动性",
+    momentum: "动能",
+    trend: "趋势",
+    execution: "买入安全",
+    tail_setup: "尾盘结构",
+  };
+  return labels[key] || key;
 }
 
 async function backfillValidationSamples() {
@@ -655,12 +779,12 @@ async function backfillValidationSamples() {
   btn.disabled = true;
   btn.textContent = "回放中…";
   setOpsStatus(els.updateStatus, "正在下载K线并回放历史信号…（首次可能需要较久）", "pending");
-  const strategy = state.selectedValidation.strategy || els.validationStrategySelect.value || "tomorrow_picks";
+  const strategy = "tomorrow_picks";
   const params = new URLSearchParams({
     strategy,
     days: "260",
     replay_days: "20",
-    top_n: "30",
+    top_n: "50",
     holding_days: "3",
     limit: "120",
   });
@@ -689,6 +813,7 @@ async function backfillValidationSamples() {
     els.validationStrategySelect.value = strategy;
     loadStrategyOverview();
     loadValidation();
+    loadTomorrowIteration(true);
   } catch (err) {
     setOpsStatus(els.updateStatus, `✗ 回放失败：${err.message}`, "bad");
   } finally {
@@ -701,7 +826,7 @@ async function loadValidationDaily(date, strategy) {
   state.selectedValidation = { date, strategy };
   renderValidationSelection();
   markSelectedValidationRow();
-  els.validationDetailBody.innerHTML = '<tr><td colspan="13" class="empty">加载中...</td></tr>';
+  els.validationDetailBody.innerHTML = '<tr><td colspan="10" class="empty">加载中...</td></tr>';
   const params = new URLSearchParams({ date, strategy });
   try {
     const res = await fetch(`/api/strategy-validation/daily?${params.toString()}`);
@@ -711,7 +836,7 @@ async function loadValidationDaily(date, strategy) {
     }
     renderValidationDetail(payload.data || []);
   } catch (err) {
-    els.validationDetailBody.innerHTML = `<tr><td colspan="13" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    els.validationDetailBody.innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
@@ -1086,7 +1211,7 @@ function renderTomorrowPredictionStrip(payload) {
   const policy = meta.policy || {};
   const dataStatus = meta.fallback === "saved_snapshot" ? "保存快照" : (health.quotes_source || "实时行情");
   const minTurnover = policy.min_turnover != null ? formatMoney(policy.min_turnover) : "-";
-  els.tomorrowStrategyVersion.textContent = meta.strategy_version || "tomorrow_picks_v2";
+  els.tomorrowStrategyVersion.textContent = meta.strategy_version || "tomorrow_picks_v3";
   els.tomorrowDataStatus.textContent = dataStatus;
   els.tomorrowCandidateCount.textContent = meta.candidate_count ?? "-";
   els.tomorrowBuyableFilter.textContent = `主板≤${formatNumber(policy.main_max_gain, 1)}%，创/科≤${formatNumber(policy.growth_max_gain, 1)}%，成交额≥${minTurnover}`;
@@ -1804,7 +1929,75 @@ function renderValidationMetrics(metrics) {
   els.validationWinRate.textContent = winRate != null ? `${formatNumber(winRate, 1)}%` : "-";
   els.validationHit3.textContent = `真 ${real} / 回 ${replay}`;
   els.validationAvgReturn.textContent = avgReturn != null ? `${horizon} ${formatNumber(avgReturn, 2)}%` : "-";
+  renderNextDayCompare(metrics.next_day_compare || {}, metrics.replay_next_day_compare || {});
   renderValidationSimpleDecision({ sample, outcome, real, replay, winRate, avgReturn, horizon });
+}
+
+function renderNextDayCompare(compare, replayCompare = {}) {
+  if (!els.nextDayCompareGrid) return;
+  const cards = [
+    ["信号到次开", compare.avg_signal_to_next_open],
+    ["信号到次高", compare.avg_next_intraday_high_from_signal],
+    ["信号到次低", compare.avg_next_intraday_low_from_signal],
+    ["信号到次收", compare.avg_signal_to_next_close],
+    ["开盘到收盘", compare.avg_next_open_to_close],
+    ["扣成本净收", compare.avg_signal_to_next_close_net],
+    ["次收胜率", compare.win_rate_signal_to_next_close, "%"],
+    ["触达3%", compare.hit_3pct_rate_from_signal, "%"],
+  ];
+  if (!Number(compare.sample_count || 0)) {
+    if (Number(replayCompare.sample_count || 0)) {
+      els.nextDayCompareGrid.innerHTML = `
+        <div class="score-card score-neutral">
+          <div class="score-card-head">
+            <span class="score-strategy">真实样本</span>
+            <span class="score-badge">等待</span>
+          </div>
+          <div class="score-meta">暂无真实次日对比，回放只作参考</div>
+        </div>
+        <div class="score-card score-watch">
+          <div class="score-card-head">
+            <span class="score-strategy">回放参考净收</span>
+            <span class="score-badge ${numberClass(Number(replayCompare.avg_signal_to_next_close_net || 0))}">${formatNumber(replayCompare.avg_signal_to_next_close_net, 2)}%</span>
+          </div>
+          <div class="score-meta">回放样本 ${replayCompare.sample_count || 0} 条，不计入主判断</div>
+        </div>
+        <div class="score-card score-watch">
+          <div class="score-card-head">
+            <span class="score-strategy">回放参考胜率</span>
+            <span class="score-badge">${formatNumber(replayCompare.win_rate_signal_to_next_close, 1)}%</span>
+          </div>
+          <div class="score-meta">真实样本优先，继续等待自动保存回填</div>
+        </div>
+      `;
+      return;
+    }
+    els.nextDayCompareGrid.innerHTML = '<div class="empty">暂无次日对比数据</div>';
+    return;
+  }
+  const replayReference = Number(replayCompare.sample_count || 0)
+    ? `
+      <div class="score-card score-neutral">
+        <div class="score-card-head">
+          <span class="score-strategy">回放参考</span>
+          <span class="score-badge">${formatNumber(replayCompare.avg_signal_to_next_close_net, 2)}%</span>
+        </div>
+        <div class="score-meta">回放 ${replayCompare.sample_count || 0} 条，不计入主指标</div>
+      </div>
+    `
+    : "";
+  els.nextDayCompareGrid.innerHTML = cards.map(([label, value, suffix]) => {
+    const num = Number(value || 0);
+    return `
+      <div class="score-card ${num >= 0 ? "score-good" : "score-bad"}">
+        <div class="score-card-head">
+          <span class="score-strategy">${escapeHtml(label)}</span>
+          <span class="score-badge ${numberClass(num)}">${formatNumber(num, 2)}${suffix || "%"}</span>
+        </div>
+        <div class="score-meta">样本 ${compare.sample_count || 0} 条</div>
+      </div>
+    `;
+  }).join("") + replayReference;
 }
 
 function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate, avgReturn, horizon }) {
@@ -1812,7 +2005,11 @@ function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate
   let level = "neutral";
   let text = "结论：暂无足够数据。先保存预测并等待回填结果。";
   if (outcome <= 0 && sample <= 0) {
-    text = "结论：暂无回填结果。先让 daily_job 保存快照并回填未来收益；刚保存当天不会立刻有主周期样本。";
+    if (replay > 0) {
+      text = `结论：当前只有回放样本 ${replay} 条，不能作为主判断。继续等待 15:00 自动保存后的真实样本回填。`;
+    } else {
+      text = "结论：暂无真实回填结果。先让 15:00 自动保存快照并等待次日回填；刚保存当天不会立刻有主周期样本。";
+    }
   } else if (sample <= 0 && outcome > 0) {
     text = `结论：已有 ${outcome} 条回填结果，但主周期样本还没成熟或不满足当前主口径，先不要看胜率。`;
   } else if (sample < 30) {
@@ -1838,16 +2035,15 @@ function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate
 
 function renderValidationDates(rows) {
   if (!rows.length) {
-    els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">暂无保存记录</td></tr>';
-    els.validationDetailBody.innerHTML = '<tr><td colspan="13" class="empty">暂无可查看明细</td></tr>';
+    els.validationDatesBody.innerHTML = '<tr><td colspan="3" class="empty">暂无保存记录</td></tr>';
+    els.validationDetailBody.innerHTML = '<tr><td colspan="10" class="empty">暂无可查看明细</td></tr>';
     return;
   }
   els.validationDatesBody.innerHTML = rows.map(row => `
     <tr data-date="${escapeHtml(row.signal_date)}" data-strategy="${escapeHtml(row.strategy_name)}">
-      <td>${escapeHtml(row.signal_date)}</td>
-      <td>${escapeHtml(strategyLabel(row.strategy_name))}</td>
-      <td class="num">${row.count}</td>
-      <td>${escapeHtml(row.signal_time || "-")}</td>
+	      <td>${escapeHtml(row.signal_date)}</td>
+	      <td class="num">${row.count}</td>
+	      <td>${escapeHtml(row.signal_time || "-")}</td>
     </tr>
   `).join("");
   [...els.validationDatesBody.querySelectorAll("tr")].forEach(row => {
@@ -1858,33 +2054,31 @@ function renderValidationDates(rows) {
 
 function renderValidationDetail(rows) {
   if (!rows.length) {
-    els.validationDetailBody.innerHTML = '<tr><td colspan="13" class="empty">暂无明细</td></tr>';
+    els.validationDetailBody.innerHTML = '<tr><td colspan="10" class="empty">暂无明细</td></tr>';
     return;
   }
   els.validationDetailBody.innerHTML = rows.map(row => {
-    const reasons = (row.reasons || []).map(text => `<span class="tag">${escapeHtml(text)}</span>`).join("");
-    const signalClose = row.signal_next_close_return ?? row.next_close_return;
-    const signalHigh = row.signal_intraday_high_return ?? row.intraday_high_return;
-    const signalHold = primaryValidationReturn(row);
-    const holdLabel = primaryValidationLabel(row);
-    const closeClass = Number(signalClose || 0) >= 0 ? "positive" : "negative";
-    const openCloseClass = Number(row.next_close_return || 0) >= 0 ? "positive" : "negative";
-    const holdClass = Number(signalHold || 0) >= 0 ? "positive" : "negative";
+    const entry = Number(row.price_at_signal || 0);
+    const hasOutcome = Boolean(row.next_trade_date);
+    const nextOpen = hasOutcome ? Number(row.next_open || 0) : null;
+    const nextHigh = hasOutcome ? Number(row.next_high || 0) : null;
+    const nextLow = hasOutcome ? Number(row.next_low || 0) : null;
+    const nextClose = hasOutcome ? Number(row.next_close || 0) : null;
+    const net = hasOutcome ? Number(row.signal_next_close_return || 0) - Number(row.trade_cost_pct || 0) : null;
+    const profitable = hasOutcome && net > 0;
+    const priceText = (value) => value == null || value <= 0 ? "-" : formatNumber(value, 3);
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
         <td class="num">${escapeHtml(row.code)}</td>
         <td>${escapeHtml(row.name)}</td>
-        <td>${escapeHtml(strategyLabel(row.strategy_name))}</td>
-        <td class="num">${formatNumber(row.price_at_signal, 3)}</td>
-        <td class="num ${closeClass}">${signalClose == null ? "-" : `${formatNumber(signalClose, 2)}%`}</td>
-        <td class="num">${signalHigh == null ? "-" : `${formatNumber(signalHigh, 2)}%`}</td>
-        <td class="num ${openCloseClass}">${row.next_close_return == null ? "-" : `${formatNumber(row.next_close_return, 2)}%`}</td>
-        <td class="num ${holdClass}">${signalHold == null ? "-" : `${escapeHtml(holdLabel)} ${formatNumber(signalHold, 2)}%`}</td>
-        <td class="num">${row.future_days ?? "-"}</td>
-        <td>${Number(row.signal_hit_3pct ?? row.hit_3pct ?? 0) ? "是" : "否"}</td>
-        <td>${Number(row.signal_hit_5pct ?? row.hit_5pct ?? 0) ? "是" : "否"}</td>
-        <td class="reasons">${reasons}</td>
+        <td class="num">${formatNumber(entry, 3)}</td>
+        <td class="num ${hasOutcome ? numberClass(nextOpen - entry) : ""}">${priceText(nextOpen)}</td>
+        <td class="num ${hasOutcome ? numberClass(nextHigh - entry) : ""}">${priceText(nextHigh)}</td>
+        <td class="num ${hasOutcome ? numberClass(nextLow - entry) : ""}">${priceText(nextLow)}</td>
+        <td class="num ${hasOutcome ? numberClass(nextClose - entry) : ""}">${priceText(nextClose)}</td>
+        <td class="num ${hasOutcome ? numberClass(net) : ""}">${hasOutcome ? `${formatNumber(net, 2)}%` : "-"}</td>
+        <td>${hasOutcome ? (profitable ? "是" : "否") : "-"}</td>
       </tr>
     `;
   }).join("");
@@ -2517,6 +2711,8 @@ els.portfolioStrategySelect.addEventListener("change", loadPortfolio);
 els.saveSnapshotBtn.addEventListener("click", () => saveStrategySnapshot(els.saveStrategySelect.value));
 els.backfillValidationSamples.addEventListener("click", backfillValidationSamples);
 els.updateValidation.addEventListener("click", updateValidationOutcomes);
+els.refreshIterationBtn.addEventListener("click", () => loadTomorrowIteration(true));
+els.applyIterationBtn.addEventListener("click", applyTomorrowIteration);
 els.validationStrategySelect.addEventListener("change", () => {
   state.selectedValidation = { date: "", strategy: els.validationStrategySelect.value };
   loadValidation();
