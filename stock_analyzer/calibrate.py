@@ -66,12 +66,29 @@ def _load_history(codes: List[str], fetch: bool) -> Dict[str, pd.DataFrame]:
     return history_by_code
 
 
-def _objective(metrics: Dict[str, object]) -> float:
-    """目标函数：命中率为主，平均收益为辅。无有效交易则极低分。"""
+def _objective(
+    metrics: Dict[str, object],
+    strategy: str = "",
+) -> float:
+    """目标函数：命中率为主，平均收益为辅。无有效交易则极低分。
+
+    明日预测需要按主周期净收益评价（避免用信号口径的相对超额误导），
+    其他策略维持原有的「平均周期收益」口径。
+    """
     if not metrics:
         return -1e9
-    win_rate = float(metrics.get("win_rate", 0.0) or 0.0)
-    avg_return = float(metrics.get("avg_period_return", 0.0) or 0.0)
+    if strategy == "tomorrow_picks":
+        win_rate = float(metrics.get("absolute_win_rate", 0.0) or 0.0)
+        avg_return = float(metrics.get("absolute_avg_period_return", 0.0) or 0.0)
+        median_return = float(metrics.get("absolute_median_period_return", 0.0) or 0.0)
+        loss_quantile = float(metrics.get("absolute_loss_quantile_return", 0.0) or 0.0)
+        avg_drawdown = float(metrics.get("absolute_avg_max_drawdown", 0.0) or 0.0)
+        avg_open_gap = float(metrics.get("absolute_avg_next_open_return", 0.0) or 0.0)
+        downside_penalty = min(0.0, loss_quantile) * 1.6 + min(0.0, avg_drawdown) * 0.25
+        return win_rate + avg_return * 2.0 + median_return * 1.2 + avg_open_gap * 0.5 + downside_penalty
+    else:
+        win_rate = float(metrics.get("win_rate", 0.0) or 0.0)
+        avg_return = float(metrics.get("avg_period_return", 0.0) or 0.0)
     return win_rate + avg_return * 2.0
 
 
@@ -200,7 +217,7 @@ def calibrate_live_weights(
 
     current = _current_strategy_weights(strategy)
     baseline_metrics = _evaluate_live_samples(strategy, samples, current, top_k=top_k)
-    baseline_obj = _objective(baseline_metrics)
+    baseline_obj = _objective(baseline_metrics, strategy)
     fitted = _fit_weights(strategy, samples, top_k=top_k, steps=steps, initial=current)
     best = fitted["weights"]
     best_metrics = fitted["metrics"]
@@ -260,7 +277,7 @@ def _fit_weights(
 ) -> Dict[str, object]:
     best = _normalize_strategy_weights(strategy, copy.deepcopy(initial or _current_strategy_weights(strategy)))
     best_metrics = _evaluate_live_samples(strategy, samples, best, top_k=top_k)
-    best_obj = _objective(best_metrics)
+    best_obj = _objective(best_metrics, strategy)
     multipliers = (0.7, 1.0, 1.3)
     keys = _strategy_weight_keys(strategy)
     for _ in range(max(1, steps)):
@@ -273,7 +290,7 @@ def _fit_weights(
                 candidate[key] = coerce_number(candidate.get(key), 0.0) * mult
                 candidate = _normalize_strategy_weights(strategy, candidate)
                 metrics = _evaluate_live_samples(strategy, samples, candidate, top_k=top_k)
-                obj = _objective(metrics)
+                obj = _objective(metrics, strategy)
                 if obj > best_obj + 1e-9:
                     best, best_obj, best_metrics, improved = candidate, obj, metrics, True
         if not improved:
@@ -296,8 +313,8 @@ def _walk_forward_evaluate(
         fitted = _fit_weights(strategy, train_samples, top_k=top_k, steps=steps, initial=current)
         baseline_metrics = _evaluate_live_samples(strategy, test_samples, current, top_k=top_k)
         best_metrics = _evaluate_live_samples(strategy, test_samples, fitted["weights"], top_k=top_k)
-        baseline_obj = _objective(baseline_metrics)
-        best_obj = _objective(best_metrics)
+        baseline_obj = _objective(baseline_metrics, strategy)
+        best_obj = _objective(best_metrics, strategy)
         rows.append(
             {
                 "fold": index,
@@ -477,7 +494,10 @@ def _evaluate_live_samples(
         }
     wins = [coerce_number(sample.get("excess_return_net")) > 0 for sample in selected]
     absolute_wins = [coerce_number(sample.get("primary_return_net")) > 0 for sample in selected]
-    avg_return = sum(coerce_number(sample["primary_return_net"]) for sample in selected) / len(selected)
+    period_returns = [coerce_number(sample["primary_return_net"]) for sample in selected]
+    next_open_returns = [coerce_number(sample.get("next_open_return")) for sample in selected]
+    max_drawdowns = [coerce_number(sample.get("max_drawdown")) for sample in selected]
+    avg_return = sum(period_returns) / len(period_returns)
     avg_excess = sum(coerce_number(sample.get("excess_return_net")) for sample in selected) / len(selected)
     return {
         "sample_count": len(selected),
@@ -487,6 +507,10 @@ def _evaluate_live_samples(
         "avg_period_return": round(avg_excess, 4),
         "absolute_win_rate": round(sum(1 for value in absolute_wins if value) / len(absolute_wins) * 100, 2),
         "absolute_avg_period_return": round(avg_return, 4),
+        "absolute_median_period_return": round(_median(period_returns), 4),
+        "absolute_loss_quantile_return": round(_quantile(period_returns, 0.25), 4),
+        "absolute_avg_next_open_return": round(sum(next_open_returns) / len(next_open_returns), 4),
+        "absolute_avg_max_drawdown": round(sum(max_drawdowns) / len(max_drawdowns), 4),
     }
 
 
@@ -498,6 +522,15 @@ def _median(values: List[float]) -> float:
     if len(clean) % 2:
         return clean[mid]
     return (clean[mid - 1] + clean[mid]) / 2.0
+
+
+def _quantile(values: List[float], q: float) -> float:
+    clean = sorted(coerce_number(value) for value in values)
+    if not clean:
+        return 0.0
+    q = max(0.0, min(1.0, coerce_number(q)))
+    index = int((len(clean) - 1) * q)
+    return clean[index]
 
 
 def main() -> int:

@@ -283,7 +283,7 @@
                   <th>行业</th>
                   <th>动能分</th>
                   <th>舆情分</th>
-                  <th class="col-score">综合/买安</th>
+                  <th class="col-score">综合/买入安全</th>
                   <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -319,7 +319,7 @@
                   <th>行业</th>
                   <th>趋势分</th>
                   <th>舆情分</th>
-                  <th class="col-score">综合/买安</th>
+                  <th class="col-score">综合/买入安全</th>
                   <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -352,8 +352,8 @@
         </section>
         <div class="board">
           <div class="board-header">
-            <h2>明天预测 36 支</h2>
-            <span>剔除涨停 / 可买涨幅 / 成交额 / 换手 / 量能 / 趋势 / 风险扣分</span>
+            <h2>明天观察池 最多 36 支</h2>
+            <span>分数排序不是上涨概率；弱市和低分样本不会强行补满</span>
           </div>
           <section class="prediction-strip" aria-label="明天预测状态">
             <div>
@@ -381,6 +381,9 @@
               <strong id="tomorrowValidationHit3">-</strong>
             </div>
           </section>
+          <div class="prediction-caution" id="tomorrowPredictionCaution">
+            观察池不保证上涨；真实前瞻样本不足时只观察，不作为重仓依据。
+          </div>
           <div class="table-wrap">
             <table class="rec-table slim-table rec-tomorrow">
               <thead>
@@ -399,7 +402,7 @@
                   <th>流动性</th>
                   <th>动能</th>
                   <th>趋势</th>
-                  <th class="col-score">综合/买安</th>
+                  <th class="col-score">综合/买入安全</th>
                   <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -453,7 +456,7 @@
                   <th class="col-market-cap">总市值</th>
                   <th>动量</th>
                   <th>趋势</th>
-                  <th class="col-score">综合/买安</th>
+                  <th class="col-score">综合/买入安全</th>
                   <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -490,7 +493,7 @@
                   <th>趋势</th>
                   <th>稳健</th>
                   <th>流动性</th>
-                  <th class="col-score">综合/买安</th>
+                  <th class="col-score">综合/买入安全</th>
                   <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -544,7 +547,7 @@
 	                  <th>流动性</th>
 	                  <th>动能</th>
 	                  <th>趋势</th>
-	                  <th class="col-score">综合/买安</th>
+	                  <th class="col-score">综合/买入安全</th>
 	                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -608,7 +611,7 @@
 	                  <th>流动性</th>
 	                  <th>动能</th>
 	                  <th>趋势</th>
-	                  <th class="col-score">综合/买安</th>
+	                  <th class="col-score">综合/买入安全</th>
 	                  <th>解释/风险/验证</th>
                 </tr>
               </thead>
@@ -662,7 +665,7 @@
 	                  <th>流动性</th>
 	                  <th>动能</th>
 	                  <th>趋势</th>
-	                  <th class="col-score">综合/买安</th>
+	                  <th class="col-score">综合/买入安全</th>
 	                  <th>解释/风险/验证</th>
 	                </tr>
 	              </thead>
@@ -714,7 +717,7 @@
 	                  <th>流动性</th>
 	                  <th>动能</th>
 	                  <th>趋势</th>
-	                  <th class="col-score">综合/买安</th>
+	                  <th class="col-score">综合/买入安全</th>
 	                  <th>解释/风险/验证</th>
 	                </tr>
 	              </thead>
@@ -766,7 +769,7 @@
 	                  <th>流动性</th>
 	                  <th>动能</th>
 	                  <th>趋势</th>
-	                  <th class="col-score">综合/买安</th>
+	                  <th class="col-score">综合/买入安全</th>
 	                  <th>解释/风险/验证</th>
 	                </tr>
 	              </thead>
@@ -817,24 +820,19 @@
         <div class="board">
           <div class="board-header">
             <h2>明天预测复盘与迭代</h2>
-            <span>对比 14:00 预测与次日真实开高低收，审核后应用优化权重</span>
+            <span>对比 15:00 预测与次日真实开高低收，审核后应用优化权重</span>
           </div>
 
           <div class="validation-guide">
             <article>
               <span>复盘</span>
               <strong>次日真实涨跌</strong>
-              <p>直接看信号价到次日开盘、最高、最低和收盘。</p>
+              <p>只看明天预测和次日真实开高低收的对比。</p>
             </article>
             <article>
-              <span>收益</span>
+              <span>结论</span>
               <strong>扣成本净表现</strong>
-              <p>主看次日收盘净胜率和平均净收益。</p>
-            </article>
-            <article>
-              <span>迭代</span>
-              <strong>审核后应用</strong>
-              <p>系统给出权重建议，确认后才写入生效。</p>
+              <p>主看净胜率和净收益，回放样本只做参考。</p>
             </article>
           </div>
 
@@ -854,7 +852,12 @@
                   <select id="saveStrategySelect" hidden>
                     <option value="tomorrow_picks">明天预测</option>
                   </select>
-                  <button id="saveSnapshotBtn" class="primary-action" type="button">保存今天</button>
+                  <button
+                    id="saveSnapshotBtn"
+                    class="primary-action"
+                    type="button"
+                    title="保存当前时间口径下的明天预测快照，补充真实验证样本"
+                  >保存今天</button>
                 </div>
                 <div class="ops-row">
                   <select id="validationStrategySelect" hidden>
@@ -866,19 +869,42 @@
                     <option value="120">近120日</option>
                   </select>
                 </div>
-                <button id="updateValidation" class="primary-action wide" type="button">手动回填结果</button>
-                <button id="backfillValidationSamples" class="ghost-action wide" type="button">样本不足时做历史回放</button>
-                <p class="ops-hint">正常使用挂 daily_job 自动保存和回填；历史回放只用于粗筛。</p>
+                <button
+                  id="updateValidation"
+                  class="primary-action wide"
+                  type="button"
+                  title="对已选日期或全部保存日回填真实次日收益，不会改变排序逻辑"
+                >手动回填结果</button>
+                <p class="ops-hint">正常使用挂 daily_job 自动保存和回填；回放样本只做补样本，不替代真实样本。</p>
                 <div class="ops-status" id="saveStatus"></div>
                 <div class="ops-status" id="updateStatus"></div>
               </div>
 
-              <div class="ops-block">
-                <div class="ops-title">自动迭代建议</div>
-                <button id="refreshIterationBtn" class="ghost-action wide" type="button">刷新建议</button>
-                <button id="applyIterationBtn" class="primary-action wide" type="button" disabled>应用建议权重</button>
-                <p class="ops-hint" id="iterationStatus">等待生成建议。</p>
-              </div>
+              <details class="validation-advanced ops-block">
+                <summary>历史补样本 / 权重建议</summary>
+                <div class="ops-body">
+                  <button
+                    id="backfillValidationSamples"
+                    class="ghost-action wide"
+                    type="button"
+                    title="历史数据不足时补全回放样本，作为筛选器可用性参考，不会替代真实样本"
+                  >补历史样本</button>
+                  <button
+                    id="refreshIterationBtn"
+                    class="ghost-action wide"
+                    type="button"
+                    title="基于选中的日期范围样本重新计算因子权重建议（只做建议）"
+                  >刷新建议</button>
+                  <button
+                    id="applyIterationBtn"
+                    class="primary-action wide"
+                    type="button"
+                    disabled
+                    title="仅在建议通过样本外验证改善时可用，点击后生效新权重"
+                  >应用建议权重</button>
+                  <p class="ops-hint" id="iterationStatus">等待生成建议。</p>
+                </div>
+              </details>
             </aside>
 
             <section class="validation-review validation-simple-review">
@@ -905,15 +931,20 @@
                 </div>
               </div>
 
-              <div class="section-label">次日真实表现对比</div>
-              <div class="scoreboard" id="nextDayCompareGrid">
-                <div class="empty">暂无次日对比数据</div>
-              </div>
+              <details class="validation-advanced">
+                <summary>展开次日对比与权重建议</summary>
+                <div class="ops-body">
+                  <div class="section-label">次日真实表现对比</div>
+                  <div class="scoreboard" id="nextDayCompareGrid">
+                    <div class="empty">暂无次日对比数据</div>
+                  </div>
 
-              <div class="section-label">权重迭代建议</div>
-              <div class="scoreboard" id="iterationWeights">
-                <div class="empty">暂无迭代建议</div>
-              </div>
+                  <div class="section-label">权重迭代建议</div>
+                  <div class="scoreboard" id="iterationWeights">
+                    <div class="empty">暂无迭代建议</div>
+                  </div>
+                </div>
+              </details>
 
               <div class="chart-card chart-card-wide">
                 <h3>明天预测净胜率走势</h3>
@@ -946,30 +977,29 @@
                   <div class="section-label">股票次日明细</div>
                   <div class="table-wrap validation-detail">
                     <table>
-                      <thead>
-                        <tr>
-                          <th>排名</th>
-                          <th>类型</th>
-                          <th>代码</th>
-                          <th>名称</th>
-                          <th>信号价</th>
-                          <th>次开</th>
-                          <th>次高</th>
-                          <th>次低</th>
-                          <th>次收</th>
-                          <th>净收益</th>
-                          <th>盈利</th>
-                        </tr>
-                      </thead>
-                      <tbody id="validationDetailBody">
-                        <tr>
-                          <td colspan="11" class="empty">选择左侧批次查看明细</td>
-                        </tr>
-                      </tbody>
-                    </table>
+                        <thead>
+                          <tr>
+                            <th>排名</th>
+                            <th>类型</th>
+                            <th>代码</th>
+                            <th>名称</th>
+                            <th>次开</th>
+                            <th>次高</th>
+                            <th>次低</th>
+                            <th>次收</th>
+                            <th>净收益</th>
+                            <th>盈利</th>
+                          </tr>
+                        </thead>
+                        <tbody id="validationDetailBody">
+                          <tr>
+                            <td colspan="10" class="empty">选择左侧批次查看明细</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
-              </div>
             </section>
           </div>
         </div>
@@ -1016,10 +1046,10 @@
             <article>
               <span class="strategy-note-kicker">次日</span>
               <h3>明天预测</h3>
-              <p>用于尾盘或收盘后筛选次日可能延续的标的，强调流动性、动能、趋势和买入安全。涨停、近涨停、量比过热、换手过高、短期涨幅透支会被过滤或扣分。</p>
+              <p>用于收盘后筛选次日可能延续的标的，强调流动性、动能、趋势和买入安全。涨停、近涨停、量比过热、换手过高、短期涨幅透支会被过滤或扣分。</p>
               <ul>
                 <li><strong>关注字段：</strong>最新价、今日涨跌、成交额、总市值、流动性、动能、趋势、买入安全。</li>
-                <li><strong>适用场景：</strong>尾盘复盘、次日计划和竞价前观察，优先找可买性较好的延续票。</li>
+                <li><strong>适用场景：</strong>收盘后复盘、次日计划和竞价前观察，优先找可买性较好的延续票。</li>
                 <li><strong>验证口径：</strong>重点看次日和 3 日表现，若真实样本少或因子覆盖不足，不提升评级。</li>
               </ul>
             </article>

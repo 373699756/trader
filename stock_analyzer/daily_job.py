@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 
 from . import config
+from .strategy_validation import StrategyValidationStore
 
 
 def _save_iteration_payload(result, applied=False):

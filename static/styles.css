@@ -1153,6 +1153,17 @@ tbody tr.selected {
   line-height: 1.25;
 }
 
+.prediction-caution {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--tag-warn-bg);
+  color: var(--tag-warn-fg);
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .overview-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1770,7 +1781,7 @@ footer {
 /* ===== 策略验证页重做（P3） ===== */
 .validation-guide {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin: 4px 0 12px;
 }
@@ -1985,6 +1996,10 @@ footer {
 .validation-advanced[open] summary {
   margin-bottom: 14px;
 }
+.validation-advanced .ops-body {
+  display: block;
+  margin-top: 2px;
+}
 
 .portfolio-controls {
   max-width: 520px;
@@ -2047,6 +2062,9 @@ footer {
 @media (max-width: 1100px) {
   .validation-grid,
   .validation-split {
+    grid-template-columns: 1fr;
+  }
+  .validation-guide {
     grid-template-columns: 1fr;
   }
   .validation-summary-row {

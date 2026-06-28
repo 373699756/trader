@@ -115,6 +115,7 @@ const els = {
   tomorrowBuyableFilter: document.getElementById("tomorrowBuyableFilter"),
   tomorrowValidationSamples: document.getElementById("tomorrowValidationSamples"),
   tomorrowValidationHit3: document.getElementById("tomorrowValidationHit3"),
+  tomorrowPredictionCaution: document.getElementById("tomorrowPredictionCaution"),
   techBody: document.getElementById("techBody"),
   chokepointBody: document.getElementById("chokepointBody"),
   chokepointChainMap: document.getElementById("chokepointChainMap"),
@@ -769,7 +770,7 @@ function weightLabel(key) {
     momentum: "动能",
     trend: "趋势",
     execution: "买入安全",
-    tail_setup: "尾盘结构",
+    tail_setup: "收盘结构",
   };
   return labels[key] || key;
 }
@@ -827,7 +828,7 @@ async function loadValidationDaily(date, strategy) {
   state.selectedValidation = { date, strategy };
   renderValidationSelection();
   markSelectedValidationRow();
-  els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">加载中...</td></tr>';
+  els.validationDetailBody.innerHTML = '<tr><td colspan="10" class="empty">加载中...</td></tr>';
   const params = new URLSearchParams({ date, strategy });
   try {
     const res = await fetch(`/api/strategy-validation/daily?${params.toString()}`);
@@ -837,7 +838,7 @@ async function loadValidationDaily(date, strategy) {
     }
     renderValidationDetail(payload.data || []);
   } catch (err) {
-    els.validationDetailBody.innerHTML = `<tr><td colspan="11" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    els.validationDetailBody.innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
@@ -1212,10 +1213,20 @@ function renderTomorrowPredictionStrip(payload) {
   const policy = meta.policy || {};
   const dataStatus = meta.fallback === "saved_snapshot" ? "保存快照" : (health.quotes_source || "实时行情");
   const minTurnover = policy.min_turnover != null ? formatMoney(policy.min_turnover) : "-";
-  els.tomorrowStrategyVersion.textContent = meta.strategy_version || "tomorrow_picks_v3";
+  els.tomorrowStrategyVersion.textContent = meta.strategy_version || "tomorrow_picks_v4";
   els.tomorrowDataStatus.textContent = dataStatus;
-  els.tomorrowCandidateCount.textContent = meta.candidate_count ?? "-";
-  els.tomorrowBuyableFilter.textContent = `主板≤${formatNumber(policy.main_max_gain, 1)}%，创/科≤${formatNumber(policy.growth_max_gain, 1)}%，成交额≥${minTurnover}`;
+  const displayCount = meta.display_count ?? (payload.data || []).length;
+  const displayLimit = meta.display_limit ?? meta.top_n ?? "-";
+  els.tomorrowCandidateCount.textContent = `${meta.screened_count ?? meta.candidate_count ?? "-"} / 展示${displayCount}`;
+  els.tomorrowBuyableFilter.textContent = `最多${displayLimit}支，最低分≥${formatNumber(meta.min_score, 1)}；成交额≥${minTurnover}`;
+  if (els.tomorrowPredictionCaution) {
+    const primaryCount = meta.primary_watch_count ?? Math.min(10, displayCount || 0);
+    const backupCount = meta.backup_watch_count ?? Math.max(0, (displayCount || 0) - primaryCount);
+    const tierText = primaryCount > 0
+      ? `重点观察 ${primaryCount} 支，备选观察 ${backupCount} 支`
+      : `暂无重点观察，展示 ${backupCount || displayCount || 0} 支备选观察`;
+    els.tomorrowPredictionCaution.textContent = `${meta.score_note || "综合分不是上涨概率。"} ${meta.gate_reason || ""} ${tierText}；不保证上涨。`;
+  }
   els.tomorrowValidationSamples.textContent = "读取中";
   els.tomorrowValidationHit3.textContent = "读取中";
 }
@@ -1227,6 +1238,9 @@ function resetTomorrowPredictionStrip(message) {
   els.tomorrowBuyableFilter.textContent = "-";
   els.tomorrowValidationSamples.textContent = "-";
   els.tomorrowValidationHit3.textContent = "-";
+  if (els.tomorrowPredictionCaution) {
+    els.tomorrowPredictionCaution.textContent = "观察池不保证上涨；真实前瞻样本不足时只观察，不作为重仓依据。";
+  }
 }
 
 async function loadTomorrowValidationMetrics() {
@@ -1429,7 +1443,8 @@ function renderTomorrowTable(rows) {
   els.tomorrowBody.innerHTML = displayRows.map(row => {
     const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
     const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
-    const explanation = explanationTags(row);
+    const tier = row.tier_label ? `<span class="tag stable">${escapeHtml(row.tier_label)}</span>` : "";
+    const explanation = `${tier}${explanationTags(row)}`;
     return `
       <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
@@ -1937,14 +1952,10 @@ function renderValidationMetrics(metrics) {
 function renderNextDayCompare(compare, replayCompare = {}) {
   if (!els.nextDayCompareGrid) return;
   const cards = [
-    ["信号到次开", compare.avg_signal_to_next_open],
-    ["信号到次高", compare.avg_next_intraday_high_from_signal],
-    ["信号到次低", compare.avg_next_intraday_low_from_signal],
     ["信号到次收", compare.avg_signal_to_next_close],
     ["开盘到收盘", compare.avg_next_open_to_close],
     ["扣成本净收", compare.avg_signal_to_next_close_net],
     ["次收胜率", compare.win_rate_signal_to_next_close, "%"],
-    ["触达3%", compare.hit_3pct_rate_from_signal, "%"],
   ];
   if (!Number(compare.sample_count || 0)) {
     if (Number(replayCompare.sample_count || 0)) {
@@ -2037,7 +2048,7 @@ function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate
 function renderValidationDates(rows) {
   if (!rows.length) {
     els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">暂无保存记录</td></tr>';
-    els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">暂无可查看明细</td></tr>';
+    els.validationDetailBody.innerHTML = '<tr><td colspan="10" class="empty">暂无可查看明细</td></tr>';
     return;
   }
   els.validationDatesBody.innerHTML = rows.map(row => `
@@ -2056,17 +2067,17 @@ function renderValidationDates(rows) {
 
 function renderValidationDetail(rows) {
   if (!rows.length) {
-    els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">暂无明细</td></tr>';
+    els.validationDetailBody.innerHTML = '<tr><td colspan="10" class="empty">暂无明细</td></tr>';
     return;
   }
   els.validationDetailBody.innerHTML = rows.map(row => {
-    const entry = Number(row.price_at_signal || 0);
     const hasOutcome = Boolean(row.next_trade_date);
     const nextOpen = hasOutcome ? Number(row.next_open || 0) : null;
     const nextHigh = hasOutcome ? Number(row.next_high || 0) : null;
     const nextLow = hasOutcome ? Number(row.next_low || 0) : null;
     const nextClose = hasOutcome ? Number(row.next_close || 0) : null;
-    const net = hasOutcome ? Number(row.signal_next_close_return || 0) - Number(row.trade_cost_pct || 0) : null;
+    const signalPrice = Number(row.price_at_signal || 0);
+    const net = hasOutcome ? Number(row.next_close_return || 0) - Number(row.trade_cost_pct || 0) : null;
     const profitable = hasOutcome && net > 0;
     const priceText = (value) => value == null || value <= 0 ? "-" : formatNumber(value, 3);
     const isReplay = String(row.strategy_version || "").toLowerCase().includes("replay");
@@ -2076,11 +2087,10 @@ function renderValidationDetail(rows) {
         <td>${isReplay ? '<span class="tag warning">回放</span>' : '<span class="tag stable">真实</span>'}</td>
         <td class="num">${escapeHtml(row.code)}</td>
         <td>${escapeHtml(row.name)}</td>
-        <td class="num">${formatNumber(entry, 3)}</td>
-        <td class="num ${hasOutcome ? numberClass(nextOpen - entry) : ""}">${priceText(nextOpen)}</td>
-        <td class="num ${hasOutcome ? numberClass(nextHigh - entry) : ""}">${priceText(nextHigh)}</td>
-        <td class="num ${hasOutcome ? numberClass(nextLow - entry) : ""}">${priceText(nextLow)}</td>
-        <td class="num ${hasOutcome ? numberClass(nextClose - entry) : ""}">${priceText(nextClose)}</td>
+        <td class="num ${hasOutcome ? numberClass(nextOpen - signalPrice) : ""}">${priceText(nextOpen)}</td>
+        <td class="num ${hasOutcome ? numberClass(nextHigh - signalPrice) : ""}">${priceText(nextHigh)}</td>
+        <td class="num ${hasOutcome ? numberClass(nextLow - nextOpen) : ""}">${priceText(nextLow)}</td>
+        <td class="num ${hasOutcome ? numberClass(nextClose - nextOpen) : ""}">${priceText(nextClose)}</td>
         <td class="num ${hasOutcome ? numberClass(net) : ""}">${hasOutcome ? `${formatNumber(net, 2)}%` : "-"}</td>
         <td>${hasOutcome ? (profitable ? "是" : "否") : "-"}</td>
       </tr>
@@ -2361,7 +2371,7 @@ function verdictBadge(verdict) {
 function scoreCell(row, entrySafetyValue = row.execution_score) {
   const badge = verdictBadge(row.verdict);
   const score = scorePairValue(row.score, 1, "综合分");
-  const entry = scorePairValue(entrySafetyValue, 0, executionScoreHint(entrySafetyValue), "买安 ");
+  const entry = scorePairValue(entrySafetyValue, 0, executionScoreHint(entrySafetyValue), "买入安全 ");
   const separator = entry ? '<span class="score-pair-separator">/</span>' : "";
   const number = `<div class="score-pair" title="综合分 / 买入安全">${score}${separator}${entry}</div>`;
   const tier = row.verdict?.tier ? ` score-${escapeHtml(row.verdict.tier)}` : "";
@@ -2401,7 +2411,7 @@ function renderDetailRadar(row) {
     ["动量", row.momentum_score],
     ["趋势", row.trend_score],
     ["流动性", row.liquidity_score],
-    ["买安", row.execution_score],
+    ["买入安全", row.execution_score],
     ["主题", row.theme_score],
     ["不过热", row.not_overextended_score],
   ];

@@ -36,7 +36,7 @@ from stock_analyzer.scoring import (
 from stock_analyzer.sentiment import score_news_items
 from stock_analyzer.stability import TopKDropoutTracker
 from stock_analyzer.snapshot import run_snapshot
-from stock_analyzer.strategy_validation import StrategyValidationStore
+from stock_analyzer.strategy_validation import StrategyValidationStore, _primary_return_config
 from stock_analyzer.validation_replay import backfill_strategy_validation_samples
 
 
@@ -411,6 +411,102 @@ class ScoringTest(unittest.TestCase):
 
         self.assertEqual([row["code"] for row in rows], ["600001"])
 
+    def test_tomorrow_risk_off_keeps_requested_display_count(self):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600{:03d}".format(index),
+                    "name": "样本{}".format(index),
+                    "price": 10 + index * 0.1,
+                    "pct_chg": 2.0 + (index % 3) * 0.2,
+                    "turnover": 500000000 + index * 10000000,
+                    "turnover_rate": 4 + index % 5,
+                    "volume_ratio": 1.5 + (index % 4) * 0.2,
+                    "speed": 0.4,
+                    "sixty_day_pct": 12 + index,
+                    "ytd_pct": 16 + index,
+                    "amplitude": 4,
+                }
+                for index in range(40)
+            ]
+        )
+
+        rows, meta = score_tomorrow_candidates(
+            prepare_candidates(quotes),
+            top_n=36,
+            market_regime={"level": "risk_off", "label": "偏防守", "score": 38},
+        )
+
+        self.assertEqual(len(rows), 36)
+        self.assertEqual(meta["display_limit"], 36)
+        self.assertIn("补足", meta["gate_reason"])
+        self.assertIn(rows[0]["tier"], {"primary_watch", "backup_pool"})
+
+    def test_tomorrow_risk_off_falls_back_to_backup_watch_when_no_strict_match(self):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600{:03d}".format(index),
+                    "name": "低分样本{}".format(index),
+                    "price": 10,
+                    "pct_chg": 1.0,
+                    "turnover": 100000000,
+                    "turnover_rate": 2,
+                    "volume_ratio": 1.0,
+                    "speed": 0.0,
+                    "sixty_day_pct": 2,
+                    "ytd_pct": 3,
+                    "amplitude": 3,
+                }
+                for index in range(12)
+            ]
+        )
+
+        with patch("stock_analyzer.scoring._tomorrow_display_gate", return_value=(36, 101.0, "测试严格门控")):
+            rows, meta = score_tomorrow_candidates(
+                prepare_candidates(quotes),
+                top_n=36,
+                market_regime={"level": "risk_off", "label": "偏防守", "score": 38},
+            )
+
+        self.assertTrue(rows)
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(meta["primary_watch_count"], 0)
+        self.assertEqual(rows[0]["tier"], "backup_pool")
+        self.assertIn("备选观察", meta["gate_reason"])
+
+    def test_tomorrow_uses_backup_pool_when_strict_filter_rejects_everything(self):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600{:03d}".format(index),
+                    "name": "弱势备选{}".format(index),
+                    "price": 10,
+                    "pct_chg": -0.8,
+                    "turnover": 180000000 + index * 1000000,
+                    "turnover_rate": 2,
+                    "volume_ratio": 1.0,
+                    "speed": -0.2,
+                    "sixty_day_pct": 4,
+                    "ytd_pct": 6,
+                    "amplitude": 3,
+                }
+                for index in range(12)
+            ]
+        )
+
+        rows, meta = score_tomorrow_candidates(
+            prepare_candidates(quotes),
+            top_n=36,
+            market_regime={"level": "risk_off", "label": "偏防守", "score": 25},
+        )
+
+        self.assertTrue(rows)
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(meta["primary_watch_count"], 0)
+        self.assertEqual(rows[0]["tier"], "backup_pool")
+        self.assertIn("严格筛选为空", meta["gate_reason"])
+
     def test_chokepoint_score_rewards_upstream_underpriced(self):
         from stock_analyzer.scoring import _chokepoint_score
 
@@ -504,6 +600,22 @@ class ScoringTest(unittest.TestCase):
         )
 
         self.assertEqual(rel["decayed"], 0.0)
+
+    def test_strategy_status_does_not_fallback_when_real_metric_is_zero(self):
+        from stock_analyzer.strategy_health import strategy_status
+
+        status = strategy_status(
+            {
+                "sample_count": 80,
+                "real_sample_count": 25,
+                "real_win_rate_primary_net": 0.0,
+                "real_avg_primary_return_net": 0.0,
+                "win_rate_primary_net": 80.0,
+                "avg_primary_return_net": 2.0,
+            }
+        )
+
+        self.assertEqual(status["state"], "retired")
 
     def test_serenity_references_corrected_to_chokepoint(self):
         from stock_analyzer.scoring import SERENITY_REFERENCES
@@ -753,7 +865,7 @@ class ScoringTest(unittest.TestCase):
         rows, meta = score_tomorrow_candidates(candidates, top_n=50)
 
         self.assertEqual({row["code"] for row in rows}, {"600001", "300001"})
-        self.assertEqual(meta["analysis_window"], "14:00")
+        self.assertEqual(meta["analysis_window"], "15:00")
         self.assertLessEqual(len(rows), 50)
         self.assertHasExplanationFields(rows[0], "tomorrow_picks")
 
@@ -1122,6 +1234,18 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(second["rows"][0]["code"], "600002")
         self.assertEqual(second["rows"][0]["stability_status"], "retained")
         self.assertIn("600001", second["dropped"])
+
+    def test_topk_dropout_keeps_today_recommendation_count(self):
+        import tempfile
+
+        ranked_rows = [{"code": "600{:03d}".format(index), "score": 100 - index} for index in range(35)]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = TopKDropoutTracker("{}/state.json".format(tmpdir), keep_k=30, buffer_k=50)
+            result = tracker.update("short_term", ranked_rows)
+
+        self.assertEqual(len(result["rows"]), 30)
+        self.assertEqual(result["rows"][0]["code"], "600000")
+        self.assertEqual(result["rows"][-1]["code"], "600029")
 
     def test_backtest_returns_metrics_for_history_pool(self):
         history_by_code = {
@@ -1747,12 +1871,57 @@ class ScoringTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
-            result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")
+            with patch.object(config, "QUOTE_SNAPSHOT_MIN_ROWS", 1):
+                result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")
             dates = store.list_signal_dates("tomorrow_picks")
 
         self.assertTrue(result["ok"])
         self.assertGreater(result["saved"]["saved"], 0)
         self.assertEqual(dates[0]["strategy_name"], "tomorrow_picks")
+
+    def test_run_snapshot_rejects_local_quote_snapshot(self):
+        import tempfile
+        from datetime import datetime
+
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600{:03d}".format(index),
+                    "name": "样本{}".format(index),
+                    "price": 10,
+                    "pct_chg": 2,
+                    "speed": 0.4,
+                    "volume_ratio": 1.5,
+                    "turnover_rate": 4,
+                    "turnover": 200000000,
+                    "industry": "半导体",
+                    "sixty_day_pct": 12,
+                    "ytd_pct": 16,
+                    "amplitude": 4,
+                }
+                for index in range(60)
+            ]
+        )
+
+        class FakeProvider:
+            def get_realtime_quotes(self):
+                return quotes
+
+            def health(self):
+                return {
+                    "quotes_source": "本地快照",
+                    "last_quote_refresh": datetime.now().isoformat(timespec="seconds"),
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")
+            dates = store.list_signal_dates("tomorrow_picks")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["saved"]["saved"], 0)
+        self.assertEqual(dates, [])
+        self.assertIn("本地快照", result["error"])
 
     def test_live_weight_calibration_keeps_weights_when_samples_insufficient(self):
         import tempfile
@@ -1799,6 +1968,49 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(metrics["absolute_avg_period_return"], 5.0)
         self.assertEqual(metrics["win_rate"], 0.0)
         self.assertEqual(metrics["avg_period_return"], 0.0)
+
+    def test_tomorrow_objective_prefers_absolute_primary_metrics(self):
+        from stock_analyzer.calibrate import _objective
+
+        metrics = {
+            "win_rate": 88.0,
+            "avg_period_return": 4.0,
+            "absolute_win_rate": 62.0,
+            "absolute_avg_period_return": 1.5,
+        }
+
+        objective_tomorrow = _objective(metrics, "tomorrow_picks")
+        objective_default = _objective(metrics)
+
+        self.assertEqual(objective_tomorrow, 65.0)
+        self.assertEqual(objective_default, 96.0)
+        self.assertGreater(objective_default, objective_tomorrow)
+
+    def test_tomorrow_objective_penalizes_downside_distribution(self):
+        from stock_analyzer.calibrate import _objective
+
+        stable = {
+            "absolute_win_rate": 60.0,
+            "absolute_avg_period_return": 1.0,
+            "absolute_median_period_return": 0.8,
+            "absolute_loss_quantile_return": 0.2,
+            "absolute_avg_next_open_return": 0.1,
+            "absolute_avg_max_drawdown": -1.0,
+        }
+        fragile = {
+            **stable,
+            "absolute_loss_quantile_return": -4.0,
+            "absolute_avg_max_drawdown": -7.0,
+        }
+
+        self.assertGreater(_objective(stable, "tomorrow_picks"), _objective(fragile, "tomorrow_picks"))
+
+    def test_compare_momentum_keeps_generic_objective(self):
+        from stock_analyzer.calibrate import _objective
+
+        metrics = {"win_rate": 88.0, "avg_period_return": 4.0}
+
+        self.assertEqual(_objective(metrics), 96.0)
 
     def test_live_weight_calibration_requires_oos_improvement_to_write(self):
         import tempfile
@@ -2022,6 +2234,17 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(metrics["real_sample_count"], 1)
         self.assertEqual(metrics["replay_sample_count"], 1)
         self.assertEqual(metrics["primary_horizon_label"], "次日开盘入场")
+
+    def test_tomorrow_primary_return_config_forces_open_entry(self):
+        column, days, horizon = _primary_return_config("tomorrow_picks")
+        self.assertEqual(column, "next_close_return")
+        self.assertEqual(days, 1)
+        self.assertEqual(horizon, "次日开盘入场")
+        with patch.object(config, "VALIDATION_PRIMARY_ENTRY_MODE", "signal"):
+            column_signal, days_signal, horizon_signal = _primary_return_config("tomorrow_picks")
+            self.assertEqual(column_signal, "next_close_return")
+            self.assertEqual(days_signal, 1)
+            self.assertEqual(horizon_signal, "次日开盘入场")
 
     def test_long_horizon_validation_requires_mature_future_days(self):
         import tempfile

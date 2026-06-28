@@ -84,7 +84,7 @@ def backfill_strategy_validation_samples(
         if not rows:
             skipped_dates += 1
             continue
-        signal_time = "{}T14:00:00".format(_display_date(trade_date_key))
+        signal_time = "{}T{}".format(_display_date(trade_date_key), _replay_signal_time_tail())
         result = validation_store.save_signals(strategy_name, version, signal_time, rows)
         saved += int(result.get("saved") or 0)
         replaced += int(result.get("replaced") or 0)
@@ -325,3 +325,16 @@ def _display_date(date_key: str) -> str:
     if len(value) != 8:
         return value
     return "{}-{}-{}".format(value[:4], value[4:6], value[6:8])
+
+
+def _replay_signal_time_tail() -> str:
+    raw = str(getattr(config, "VALIDATION_AUTO_SNAPSHOT_TIME", "15:00")).strip() or "15:00"
+    if ":" not in raw:
+        return "15:00:00"
+    try:
+        hour_text, minute_text = raw.split(":", 1)
+        hour = max(0, min(23, int(hour_text)))
+        minute = max(0, min(59, int(minute_text)))
+        return "{:02d}:{:02d}:00".format(hour, minute)
+    except Exception:
+        return "15:00:00"

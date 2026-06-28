@@ -50,9 +50,9 @@ STRATEGY_CATALOG = (
     {
         "name": "tomorrow_picks",
         "label": "明天预测",
-        "version": "tomorrow_picks_v3",
+        "version": "tomorrow_picks_v4",
         "horizon": "次日",
-        "goal": "14:00 后筛选适合尾盘买入、次日优先兑现的股票",
+        "goal": "收盘后筛选次日可承接标的",
         "route": "/api/tomorrow-picks",
     },
     {
@@ -126,7 +126,11 @@ def create_app() -> Flask:
     market_news_cache = TimedCache(config.REFRESH_SECONDS * 3)
     sentiment_cache = TimedCache(config.REFRESH_SECONDS * 5)
     factors_cache = TimedCache(config.REFRESH_SECONDS * 30)
-    stability_tracker = TopKDropoutTracker(config.STATE_PATH, keep_k=10, buffer_k=20)
+    stability_tracker = TopKDropoutTracker(
+        config.STATE_PATH,
+        keep_k=max(config.DEFAULT_TOP_N, 30),
+        buffer_k=50,
+    )
     validation_store = StrategyValidationStore(config.VALIDATION_DB_PATH)
     paper_store = PaperTradingStore(config.PAPER_TRADING_DB_PATH)
 
@@ -257,6 +261,18 @@ def create_app() -> Flask:
         "last_result": {},
         "next_run_at": "",
     }
+
+    def _analysis_window() -> str:
+        raw = str(config.VALIDATION_AUTO_SNAPSHOT_TIME or "15:00").strip() or "15:00"
+        if ":" not in raw:
+            return "15:00"
+        try:
+            hour_text, minute_text = raw.split(":", 1)
+            hour = max(0, min(23, int(hour_text)))
+            minute = max(0, min(59, int(minute_text)))
+            return "{:02d}:{:02d}".format(hour, minute)
+        except Exception:
+            return "15:00"
 
     def _set_auto_snapshot_status(**values):
         with auto_snapshot_lock:
@@ -473,7 +489,7 @@ def create_app() -> Flask:
             candidates = _attach_event_risk_layer(prepare_candidates(quotes))
             market_regime = build_market_regime(candidates, breadth_source=quotes)
             strategies = []
-            for item in [row for row in STRATEGY_CATALOG if row["name"] == "tomorrow_picks"]:
+            for item in STRATEGY_CATALOG:
                 metrics = cached_metrics(item["name"], days)
                 dates = validation_store.list_signal_dates(item["name"])
                 latest = dates[0] if dates else {}
@@ -726,7 +742,7 @@ def create_app() -> Flask:
                 "source_versions": {
                     "short_term": "dual_horizon_v2",
                     "long_term": "dual_horizon_v2",
-                    "tomorrow_picks": tomorrow_meta.get("strategy_version", "tomorrow_picks_v3"),
+                    "tomorrow_picks": tomorrow_meta.get("strategy_version", "tomorrow_picks_v4"),
                     "swing_picks": swing_meta.get("strategy_version", "swing_5_10d_v1"),
                     "position_picks": position_meta.get("strategy_version", "position_1_3m_v1"),
                     "tech_potential": tech_meta.get("strategy_version", "tech_potential_v1"),
@@ -765,7 +781,7 @@ def create_app() -> Flask:
                             "candidate_count": len(saved_rows),
                             "top_n": top_n,
                             "market_filter": market,
-                            "strategy": "实时行情不可用，显示最近保存的14:00预测",
+                            "strategy": "实时行情不可用，显示最近保存的明天预测",
                             "fallback": "saved_snapshot",
                         },
                         "health": provider.health(),
@@ -965,11 +981,19 @@ def create_app() -> Flask:
                         "meta": {
                             "generated_at": "",
                             "candidate_count": len(saved_rows),
+                            "screened_count": len(saved_rows),
+                            "display_count": min(len(saved_rows), top_n),
+                            "display_limit": top_n,
+                            "min_score": 0.0,
+                            "gate_reason": "实时行情不可用，显示最近保存快照；不代表今日实时盘面。",
+                            "primary_watch_count": min(int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 10)), len(saved_rows), top_n),
                             "top_n": top_n,
                             "market_filter": market,
-                            "analysis_window": "14:00",
-                            "strategy_version": "tomorrow_picks_v3",
+                            "analysis_window": _analysis_window(),
+                            "strategy_version": "tomorrow_picks_v4",
                             "strategy_label": "明天预测",
+                            "prediction_type": "rank_score",
+                            "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
                             "strategy": "实时行情不可用，显示最近保存的明天预测",
                             "fallback": "saved_snapshot",
                             "policy": {

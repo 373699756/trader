@@ -13,7 +13,7 @@ from .risk_rules import simulate_exit
 
 PRIMARY_RETURN_BY_STRATEGY = {
     "short_term": ("signal_next_close_return", 1, "次日"),
-    "tomorrow_picks": ("signal_next_close_return", 1, "尾盘买入次日"),
+    "tomorrow_picks": ("next_close_return", 1, "次日开盘入场"),
     "reversal_picks": ("signal_hold_5d_return", 5, "5日"),
     "swing_picks": ("signal_hold_10d_return", 10, "10日"),
     "breakout_picks": ("signal_hold_10d_return", 10, "10日"),
@@ -212,6 +212,8 @@ class StrategyValidationStore:
                 SELECT s.signal_date, s.strategy_name, s.strategy_version, s.rank, s.code,
                        s.name, s.score, s.turnover, s.market, s.raw_json,
                        COALESCE(o.{primary_column}, 0) AS primary_return,
+                       COALESCE(o.next_open_return, 0) AS next_open_return,
+                       COALESCE(o.signal_max_drawdown_3d, o.max_drawdown_3d, 0) AS max_drawdown,
                        COALESCE(o.signal_exit_return, o.exit_return, o.{primary_column}, 0) AS exit_return,
                        COALESCE(o.future_days, 1) AS future_days
                 FROM strategy_signals s
@@ -256,6 +258,8 @@ class StrategyValidationStore:
                     "raw": raw if isinstance(raw, dict) else {},
                     "primary_return": primary_return,
                     "primary_return_net": round(primary_return - trade_cost, 4),
+                    "next_open_return": coerce_number(row["next_open_return"]),
+                    "max_drawdown": coerce_number(row["max_drawdown"]),
                     "trade_cost_pct": trade_cost,
                     "exit_return": coerce_number(row["exit_return"]),
                     "future_days": int(row["future_days"] or 0),
@@ -441,11 +445,7 @@ class StrategyValidationStore:
         window_rows = rows
         window_scope = "all"
         if strategy_name == "tomorrow_picks":
-            window_scope = "replay_fallback"
-            real_window_rows = [row for row in rows if not _is_replay_version(row["strategy_version"])]
-            if real_window_rows:
-                window_rows = real_window_rows
-                window_scope = "real_only"
+            window_scope = "mixed"
         dates = []
         for row in window_rows:
             if row["signal_date"] not in dates:
@@ -476,8 +476,8 @@ class StrategyValidationStore:
         replay_selected_all = [row for row in selected_all if row["_is_replay"]]
         real_rows = [row for row in selected if not row["_is_replay"]]
         replay_rows = [row for row in selected if row["_is_replay"]]
-        primary_rows = real_rows if strategy_name == "tomorrow_picks" else selected
-        primary_outcome_rows = real_selected_all if strategy_name == "tomorrow_picks" else selected_all
+        primary_rows = selected
+        primary_outcome_rows = selected_all
         primary_dates = []
         for row in primary_rows:
             if row["signal_date"] not in primary_dates:
@@ -493,7 +493,7 @@ class StrategyValidationStore:
             "replay_outcome_sample_count": len(replay_selected_all),
             "day_count": len(primary_dates),
             "outcome_day_count": len(dates),
-            "primary_sample_scope": "real_only" if strategy_name == "tomorrow_picks" else "all",
+            "primary_sample_scope": "real_only" if strategy_name == "tomorrow_picks" and real_rows else "replay_only" if strategy_name == "tomorrow_picks" and replay_rows else "all",
             "window_scope": window_scope,
             "primary_return_field": primary_column,
             "primary_holding_days": primary_days,
@@ -701,8 +701,6 @@ def _window_close(future: pd.DataFrame, days: int, fallback: float) -> float:
 
 
 def _primary_return_config(strategy_name: str):
-    if strategy_name == "tomorrow_picks":
-        return PRIMARY_RETURN_BY_STRATEGY["tomorrow_picks"]
     if str(getattr(config, "VALIDATION_PRIMARY_ENTRY_MODE", "open")).lower() in ("open", "executable"):
         return EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY.get(
             strategy_name,
