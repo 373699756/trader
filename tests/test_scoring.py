@@ -2235,6 +2235,54 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(metrics["replay_sample_count"], 1)
         self.assertEqual(metrics["primary_horizon_label"], "次日开盘入场")
 
+    def test_tomorrow_validation_primary_metrics_ignore_backup_pool(self):
+        import tempfile
+
+        histories = {
+            "600001": _validation_history("2024-01-01", future_days=3, final_price=10.6),
+            "600002": _validation_history("2024-01-01", future_days=3, final_price=9.7),
+        }
+
+        class FakeProvider:
+            def get_history(self, code, days=180):
+                return histories[code]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            store.save_signals(
+                "tomorrow_picks",
+                "tomorrow_picks_v4",
+                "2024-01-01T15:00:00",
+                [
+                    {
+                        "rank": 1,
+                        "code": "600001",
+                        "name": "重点样本",
+                        "price": 10,
+                        "score": 90,
+                        "tier": "primary_watch",
+                    },
+                    {
+                        "rank": 11,
+                        "code": "600002",
+                        "name": "备选样本",
+                        "price": 10,
+                        "score": 70,
+                        "tier": "backup_pool",
+                    },
+                ],
+            )
+            store.update_outcomes(FakeProvider(), strategy_name="tomorrow_picks")
+            metrics = store.metrics("tomorrow_picks", days=20)
+            samples = store.live_weight_samples("tomorrow_picks", days=20)
+
+        self.assertEqual(metrics["sample_count"], 1)
+        self.assertEqual(metrics["outcome_sample_count"], 1)
+        self.assertEqual(metrics["total_sample_count"], 2)
+        self.assertEqual(metrics["backup_sample_count"], 1)
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["code"], "600001")
+
     def test_tomorrow_primary_return_config_forces_open_entry(self):
         column, days, horizon = _primary_return_config("tomorrow_picks")
         self.assertEqual(column, "next_close_return")

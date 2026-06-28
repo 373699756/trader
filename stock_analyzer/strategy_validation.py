@@ -244,6 +244,8 @@ class StrategyValidationStore:
                 raw = json.loads(row["raw_json"] or "{}")
             except Exception:
                 raw = {}
+            if strategy_name == "tomorrow_picks" and not _is_primary_tomorrow_signal(row["rank"], raw):
+                continue
             primary_return = coerce_number(row["primary_return"])
             trade_cost = _execution_cost_pct(row)
             samples.append(
@@ -413,7 +415,7 @@ class StrategyValidationStore:
             rows = conn.execute(
                 """
                 SELECT s.signal_date, s.strategy_name, s.rank,
-                       s.strategy_version, s.turnover, s.market,
+                       s.strategy_version, s.turnover, s.market, s.raw_json,
                        COALESCE(o.signal_next_close_return, o.next_close_return) AS signal_next_close_return,
                        o.next_open_return,
                        o.next_close_return,
@@ -459,6 +461,12 @@ class StrategyValidationStore:
         else:
             primary_column, primary_days, primary_label = "strategy_primary_return", 0, "混合主周期"
         for row in selected_all:
+            try:
+                raw = json.loads(row.get("raw_json") or "{}")
+            except Exception:
+                raw = {}
+            row["_raw"] = raw if isinstance(raw, dict) else {}
+            row["_is_primary_tomorrow"] = _is_primary_tomorrow_signal(row.get("rank"), row["_raw"])
             row_primary_column, row_primary_days, row_primary_label = _primary_return_config(
                 strategy_name or row["strategy_name"]
             )
@@ -476,8 +484,12 @@ class StrategyValidationStore:
         replay_selected_all = [row for row in selected_all if row["_is_replay"]]
         real_rows = [row for row in selected if not row["_is_replay"]]
         replay_rows = [row for row in selected if row["_is_replay"]]
-        primary_rows = selected
-        primary_outcome_rows = selected_all
+        if strategy_name == "tomorrow_picks":
+            primary_rows = [row for row in selected if row["_is_primary_tomorrow"]]
+            primary_outcome_rows = [row for row in selected_all if row["_is_primary_tomorrow"]]
+        else:
+            primary_rows = selected
+            primary_outcome_rows = selected_all
         primary_dates = []
         for row in primary_rows:
             if row["signal_date"] not in primary_dates:
@@ -487,6 +499,8 @@ class StrategyValidationStore:
             "outcome_sample_count": len(primary_outcome_rows),
             "total_sample_count": len(selected),
             "total_outcome_sample_count": len(selected_all),
+            "backup_sample_count": len(selected) - len(primary_rows),
+            "backup_outcome_sample_count": len(selected_all) - len(primary_outcome_rows),
             "real_sample_count": len(real_rows),
             "replay_sample_count": len(replay_rows),
             "real_outcome_sample_count": len(real_selected_all),
@@ -767,6 +781,15 @@ def _liquidity_slippage_pct(turnover: float) -> float:
 def _execution_cost_pct(row) -> float:
     base = coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25), 0.25)
     return round(base + _liquidity_slippage_pct(coerce_number(_mapping_get(row, "turnover"))), 4)
+
+
+def _is_primary_tomorrow_signal(rank, raw: Dict[str, object]) -> bool:
+    if not isinstance(raw, dict):
+        raw = {}
+    tier = str(raw.get("tier") or "").strip()
+    if tier:
+        return tier == "primary_watch"
+    return int(coerce_number(rank)) <= int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 10))
 
 
 def _row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
