@@ -1305,6 +1305,14 @@ tbody tr.selected {
   margin-top: 0;
 }
 
+.validation-replay-row {
+  opacity: 0.72;
+}
+
+.validation-replay-row td {
+  background: rgba(245, 158, 11, 0.04);
+}
+
 .strategy-notes {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

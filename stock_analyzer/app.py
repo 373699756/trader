@@ -179,10 +179,11 @@ def create_app() -> Flask:
 
         return _current_strategy_weights("tomorrow_picks")
 
-    def _iteration_payload(result: Dict[str, object], applied: bool = False) -> Dict[str, object]:
+    def _iteration_payload(result: Dict[str, object], applied: bool = False, days: int = 120) -> Dict[str, object]:
         payload = {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "strategy": "tomorrow_picks",
+            "days": int(days),
             "current_weights": (result.get("weights") or {}) if applied else _current_tomorrow_weights(),
             "suggested_weights": result.get("weights") or {},
             "can_apply": _iteration_can_apply(result),
@@ -925,7 +926,7 @@ def create_app() -> Flask:
 
     @app.route("/api/tomorrow-picks")
     def tomorrow_picks():
-        top_n = _int_arg("top_n", 50, minimum=10, maximum=50)
+        top_n = _int_arg("top_n", config.TOMORROW_TOP_N, minimum=10, maximum=50)
         market = request.args.get("market", "all")
         if market not in ("all", "main", "chinext", "star"):
             market = "all"
@@ -1402,7 +1403,7 @@ def create_app() -> Flask:
         force = request.args.get("force", "0") in ("1", "true", "yes", "on")
         try:
             cached = _load_iteration_payload()
-            if cached and not force:
+            if cached and int(cached.get("days") or 0) == days and not force:
                 return jsonify({"ok": True, "iteration": cached, "health": provider.health()})
             from .calibrate import calibrate_live_weights
 
@@ -1414,7 +1415,7 @@ def create_app() -> Flask:
                 steps=2,
                 dry_run=True,
             )
-            payload = _iteration_payload(result)
+            payload = _iteration_payload(result, days=days)
             _save_iteration_payload(payload)
             return jsonify({"ok": True, "iteration": payload, "health": provider.health()})
         except Exception as exc:
@@ -1435,7 +1436,7 @@ def create_app() -> Flask:
                 steps=2,
                 dry_run=True,
             )
-            dry_payload = _iteration_payload(dry_result)
+            dry_payload = _iteration_payload(dry_result, days=days)
             if not dry_payload["can_apply"]:
                 _save_iteration_payload(dry_payload)
                 return jsonify(
@@ -1456,7 +1457,7 @@ def create_app() -> Flask:
                 dry_run=False,
             )
             _refresh_scoring_weights(written_result.get("weights") or {})
-            payload = _iteration_payload(written_result, applied=written_result.get("status") == "written")
+            payload = _iteration_payload(written_result, applied=written_result.get("status") == "written", days=days)
             _save_iteration_payload(payload)
             return jsonify({"ok": True, "iteration": payload, "health": provider.health()})
         except Exception as exc:

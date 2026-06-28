@@ -3,6 +3,7 @@ import os
 
 REFRESH_SECONDS = int(os.getenv("REFRESH_SECONDS", "30"))
 DEFAULT_TOP_N = int(os.getenv("DEFAULT_TOP_N", "30"))
+TOMORROW_TOP_N = int(os.getenv("TOMORROW_TOP_N", "36"))
 MIN_TURNOVER = float(os.getenv("MIN_TURNOVER", "50000000"))
 MAX_RECOMMENDED_GAIN = float(os.getenv("MAX_RECOMMENDED_GAIN", "12"))
 MAX_BUYABLE_GAIN_MAIN = float(os.getenv("MAX_BUYABLE_GAIN_MAIN", "6.5"))

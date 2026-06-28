@@ -208,7 +208,7 @@ export EXIT_TRAILING_STOP_PCT=4.0
 - `GET /api/reversal-picks?top_n=30&market=all`
 - `GET /api/smallcap-value-picks?top_n=30&market=all`
 - `GET /api/breakout-picks?top_n=30&market=all`
-- `POST /api/strategy-validation/backfill-samples?strategy=tomorrow_picks&days=260&replay_days=20&top_n=50`
+- `POST /api/strategy-validation/backfill-samples?strategy=tomorrow_picks&days=260&replay_days=20&top_n=36`
 - `GET /api/portfolio?strategy=tomorrow_picks`
 - `GET /api/portfolio/performance?strategy=tomorrow_picks&days=120`
 - `GET /api/paper-trades?strategy=tomorrow_picks&limit=200`
@@ -245,7 +245,7 @@ export EXIT_TRAILING_STOP_PCT=4.0
 1. 真实样本：每天在盘后用 `daily_job` 保存推荐快照，后台会按策略和股票代码分批下载/复用历史 K 线并回填结果；“仅更新当前批次”只用于人工复核。这是最可信的前瞻记录。
 2. 离线补样本：点击“回放历史补样本”，系统会下载/复用日线历史，用当前量价规则模拟过去若干个交易日的信号，写入 `*_replay_v1` 版本并立即计算结果。该结果用于快速判断规则是否值得继续跟踪，不等同于真实历史曾经推荐过。
 
-默认回放参数为近 260 日历史、回放 20 个历史交易日、每个交易日保留 Top 50。回放样本仍归入原策略名称统计；同时明细里的 `strategy_version` 会标记为 `tomorrow_picks_replay_v1`，便于和真实保存样本区分。真实前瞻样本优先，回放只用于冷启动粗筛，页面会标记为“回放参考”。
+默认回放参数为近 260 日历史、回放 20 个历史交易日、每个交易日保留 Top 36。回放样本仍归入原策略名称统计；同时明细里的 `strategy_version` 会标记为 `tomorrow_picks_replay_v1`，便于和真实保存样本区分。真实前瞻样本优先，回放只用于冷启动粗筛，页面会标记为“回放参考”。
 
 策略共识已加入统一健康状态：真实样本不足为 `pending/probation` 并降权；真实样本数达到 `STRATEGY_DECAY_MIN_REAL_SAMPLES` 后，如果主周期净胜率低于 `STRATEGY_RETIRE_WINRATE` 或主周期净收益为负，该策略进入 `retired`，本轮共识权重置零。
 
@@ -295,7 +295,7 @@ crontab 示例：
 tail -n 100 .runtime/daily_job.log
 ```
 
-3. 每天看 Web 两个位置：`明天预测` 看当天 50 支候选；`策略验证` 看真实样本数、次日净胜率、净收益和自动迭代建议。`/api/health` 用于检查事件风险、基本面和 IC 状态。
+3. 每天看 Web 两个位置：`明天预测` 看当天 36 支候选；`策略验证` 看真实样本数、次日净胜率、净收益和自动迭代建议。`/api/health` 用于检查事件风险、基本面和 IC 状态。
 4. 初期不要马上打开所有 alpha 开关，建议保持：
 
 ```bash

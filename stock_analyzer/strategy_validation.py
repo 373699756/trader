@@ -123,7 +123,9 @@ class StrategyValidationStore:
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             rows = conn.execute(
                 """
-                SELECT signal_date, strategy_name, COUNT(*) AS count, MAX(signal_time) AS signal_time
+                SELECT signal_date, strategy_name, COUNT(*) AS count, MAX(signal_time) AS signal_time,
+                       SUM(CASE WHEN lower(strategy_version) LIKE '%replay%' THEN 0 ELSE 1 END) AS real_count,
+                       SUM(CASE WHEN lower(strategy_version) LIKE '%replay%' THEN 1 ELSE 0 END) AS replay_count
                 FROM strategy_signals
                 {}
                 GROUP BY signal_date, strategy_name
@@ -138,6 +140,9 @@ class StrategyValidationStore:
                 "strategy_name": row[1],
                 "count": row[2],
                 "signal_time": row[3],
+                "real_count": row[4] or 0,
+                "replay_count": row[5] or 0,
+                "sample_type": "mixed" if (row[4] or 0) and (row[5] or 0) else ("replay" if (row[5] or 0) else "real"),
             }
             for row in rows
         ]
@@ -432,13 +437,21 @@ class StrategyValidationStore:
             ).fetchall()
         if not rows:
             return {"sample_count": 0, "daily": []}
+        rows = [dict(row) for row in rows]
+        window_rows = rows
+        window_scope = "all"
+        if strategy_name == "tomorrow_picks":
+            window_scope = "replay_fallback"
+            real_window_rows = [row for row in rows if not _is_replay_version(row["strategy_version"])]
+            if real_window_rows:
+                window_rows = real_window_rows
+                window_scope = "real_only"
         dates = []
-        for row in rows:
+        for row in window_rows:
             if row["signal_date"] not in dates:
                 dates.append(row["signal_date"])
             if len(dates) >= days:
                 break
-        rows = [dict(row) for row in rows]
         selected_all = [row for row in rows if row["signal_date"] in dates]
         base_cost = coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25))
         if strategy_name:
@@ -481,6 +494,7 @@ class StrategyValidationStore:
             "day_count": len(primary_dates),
             "outcome_day_count": len(dates),
             "primary_sample_scope": "real_only" if strategy_name == "tomorrow_picks" else "all",
+            "window_scope": window_scope,
             "primary_return_field": primary_column,
             "primary_holding_days": primary_days,
             "primary_horizon_label": primary_label,

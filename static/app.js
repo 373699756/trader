@@ -220,7 +220,7 @@ async function loadStrategyOverview() {
 
 async function loadValidation() {
   state.validationLoaded = true;
-  els.validationDatesBody.innerHTML = '<tr><td colspan="3" class="empty">加载中...</td></tr>';
+  els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">加载中...</td></tr>';
   const params = new URLSearchParams({
     strategy: "tomorrow_picks",
     days: els.validationDaysSelect.value,
@@ -241,7 +241,7 @@ async function loadValidation() {
     }
     setStatus("策略验证已更新");
   } catch (err) {
-    els.validationDatesBody.innerHTML = `<tr><td colspan="3" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    els.validationDatesBody.innerHTML = `<tr><td colspan="4" class="empty">${escapeHtml(err.message)}</td></tr>`;
     setStatus(`策略验证加载失败：${err.message}`);
   }
 }
@@ -740,7 +740,8 @@ function renderTomorrowIteration(iteration) {
   const sampleCount = result.sample_count ?? 0;
   const improve = result.oos_improvement ?? result.improvement;
   const status = iteration.reason || result.status || "暂无建议";
-  els.iterationStatus.textContent = `${status} 样本 ${sampleCount} 条，样本外改善 ${improve == null ? "-" : formatNumber(improve, 3)}。`;
+  const days = iteration.days || els.validationDaysSelect.value || "120";
+  els.iterationStatus.textContent = `${status} 近${days}日样本 ${sampleCount} 条，样本外改善 ${improve == null ? "-" : formatNumber(improve, 3)}。`;
   els.applyIterationBtn.disabled = !iteration.can_apply;
   if (!keys.length) {
     els.iterationWeights.innerHTML = '<div class="empty">暂无可比较权重</div>';
@@ -784,7 +785,7 @@ async function backfillValidationSamples() {
     strategy,
     days: "260",
     replay_days: "20",
-    top_n: "50",
+    top_n: "36",
     holding_days: "3",
     limit: "120",
   });
@@ -826,7 +827,7 @@ async function loadValidationDaily(date, strategy) {
   state.selectedValidation = { date, strategy };
   renderValidationSelection();
   markSelectedValidationRow();
-  els.validationDetailBody.innerHTML = '<tr><td colspan="10" class="empty">加载中...</td></tr>';
+  els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">加载中...</td></tr>';
   const params = new URLSearchParams({ date, strategy });
   try {
     const res = await fetch(`/api/strategy-validation/daily?${params.toString()}`);
@@ -836,7 +837,7 @@ async function loadValidationDaily(date, strategy) {
     }
     renderValidationDetail(payload.data || []);
   } catch (err) {
-    els.validationDetailBody.innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    els.validationDetailBody.innerHTML = `<tr><td colspan="11" class="empty">${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
@@ -867,7 +868,7 @@ async function loadTomorrowPicks() {
   state.tomorrowLoaded = true;
   els.tomorrowBody.innerHTML = '<tr><td colspan="16" class="empty">加载中...</td></tr>';
   const params = new URLSearchParams({
-    top_n: "50",
+    top_n: "36",
     market: els.marketSelect.value,
   });
   try {
@@ -2035,13 +2036,14 @@ function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate
 
 function renderValidationDates(rows) {
   if (!rows.length) {
-    els.validationDatesBody.innerHTML = '<tr><td colspan="3" class="empty">暂无保存记录</td></tr>';
-    els.validationDetailBody.innerHTML = '<tr><td colspan="10" class="empty">暂无可查看明细</td></tr>';
+    els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">暂无保存记录</td></tr>';
+    els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">暂无可查看明细</td></tr>';
     return;
   }
   els.validationDatesBody.innerHTML = rows.map(row => `
-    <tr data-date="${escapeHtml(row.signal_date)}" data-strategy="${escapeHtml(row.strategy_name)}">
+    <tr data-date="${escapeHtml(row.signal_date)}" data-strategy="${escapeHtml(row.strategy_name)}" data-sample-type="${escapeHtml(row.sample_type || "")}">
 	      <td>${escapeHtml(row.signal_date)}</td>
+	      <td>${validationSampleTypeBadge(row)}</td>
 	      <td class="num">${row.count}</td>
 	      <td>${escapeHtml(row.signal_time || "-")}</td>
     </tr>
@@ -2054,7 +2056,7 @@ function renderValidationDates(rows) {
 
 function renderValidationDetail(rows) {
   if (!rows.length) {
-    els.validationDetailBody.innerHTML = '<tr><td colspan="10" class="empty">暂无明细</td></tr>';
+    els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">暂无明细</td></tr>';
     return;
   }
   els.validationDetailBody.innerHTML = rows.map(row => {
@@ -2067,9 +2069,11 @@ function renderValidationDetail(rows) {
     const net = hasOutcome ? Number(row.signal_next_close_return || 0) - Number(row.trade_cost_pct || 0) : null;
     const profitable = hasOutcome && net > 0;
     const priceText = (value) => value == null || value <= 0 ? "-" : formatNumber(value, 3);
+    const isReplay = String(row.strategy_version || "").toLowerCase().includes("replay");
     return `
-      <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
+      <tr class="${isReplay ? "validation-replay-row" : ""}" data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
         <td class="num">${row.rank}</td>
+        <td>${isReplay ? '<span class="tag warning">回放</span>' : '<span class="tag stable">真实</span>'}</td>
         <td class="num">${escapeHtml(row.code)}</td>
         <td>${escapeHtml(row.name)}</td>
         <td class="num">${formatNumber(entry, 3)}</td>
@@ -2113,7 +2117,7 @@ function syncValidationSelection(rows) {
     row.strategy_name === state.selectedValidation.strategy
   );
   if (!exists) {
-    const first = rows[0];
+    const first = rows.find(row => Number(row.real_count || 0) > 0) || rows[0];
     state.selectedValidation = first
       ? { date: first.signal_date, strategy: first.strategy_name }
       : { date: "", strategy: "" };
@@ -2123,6 +2127,18 @@ function syncValidationSelection(rows) {
   if (state.selectedValidation.date && state.selectedValidation.strategy) {
     loadValidationDaily(state.selectedValidation.date, state.selectedValidation.strategy);
   }
+}
+
+function validationSampleTypeBadge(row) {
+  const real = Number(row.real_count || 0);
+  const replay = Number(row.replay_count || 0);
+  if (real > 0 && replay > 0) {
+    return `<span class="tag validation">真${real}/回${replay}</span>`;
+  }
+  if (real > 0) {
+    return `<span class="tag stable">真实</span>`;
+  }
+  return `<span class="tag warning">回放</span>`;
 }
 
 function renderValidationSelection() {

@@ -2,6 +2,7 @@ from typing import Dict, Iterable, List, Tuple
 
 import pandas as pd
 
+from . import config
 from .factors import compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code, rename_known_columns
 
@@ -17,7 +18,7 @@ def backfill_strategy_validation_samples(
     code_names: Dict[str, str] = None,
     days: int = 220,
     replay_days: int = 20,
-    top_n: int = 50,
+    top_n: int = None,
     holding_days: int = 3,
     min_lookback: int = 30,
 ) -> Dict[str, object]:
@@ -27,6 +28,8 @@ def backfill_strategy_validation_samples(
     前瞻预测记录。
     """
     strategy_name = strategy_name or "tomorrow_picks"
+    if top_n is None:
+        top_n = config.TOMORROW_TOP_N if strategy_name == "tomorrow_picks" else 30
     version = "{}_{}".format(strategy_name, REPLAY_VERSION_SUFFIX)
     names = {normalize_code(key): value for key, value in (code_names or {}).items()}
     unique_codes = _unique_codes(codes)

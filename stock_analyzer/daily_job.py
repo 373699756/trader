@@ -13,6 +13,7 @@ def _save_iteration_payload(result, applied=False):
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "strategy": "tomorrow_picks",
+        "days": 120,
         "current_weights": _current_strategy_weights("tomorrow_picks"),
         "suggested_weights": result.get("weights") or {},
         "can_apply": bool(result.get("ok")) and result.get("status") == "dry_run_improved",

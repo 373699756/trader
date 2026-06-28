@@ -2,6 +2,7 @@ from typing import Dict, Iterable, List
 
 from .event_risk import attach_event_risk, load_event_risk
 from .fundamentals import attach_fundamental_factors, load_fundamentals
+from . import config
 from .scoring import (
     build_market_regime,
     prepare_candidates,
@@ -31,6 +32,6 @@ def run_snapshots(provider, validation_store, strategies: Iterable[str], market:
 
 def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market: str, market_regime: Dict[str, object]):
     if strategy == "tomorrow_picks":
-        rows, meta = score_tomorrow_candidates(candidates, top_n=50, market_filter=market, market_regime=market_regime)
+        rows, meta = score_tomorrow_candidates(candidates, top_n=config.TOMORROW_TOP_N, market_filter=market, market_regime=market_regime)
         return rows, meta, meta.get("strategy_version", "tomorrow_picks_v3")
     raise KeyError("unsupported snapshot strategy: {}".format(strategy))
