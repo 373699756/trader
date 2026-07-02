@@ -25,6 +25,7 @@ import pandas as pd
 
 from . import config
 from .backtest import _DEFAULT_ALPHALITE_WEIGHTS, run_rolling_alphalite_backtest
+from .daily_data import load_history_frames
 from .history_cache import HistoryCache
 from .normalization import coerce_number, normalize_code
 from .scoring import STRATEGY_COMBINERS, WEIGHTS, _combine_details
@@ -32,6 +33,9 @@ from .strategy_validation import StrategyValidationStore
 
 
 def _cached_codes(db_path: str) -> List[str]:
+    market_codes = _market_data_codes(getattr(config, "MARKET_DATA_DB_PATH", ""))
+    if market_codes:
+        return market_codes
     if not os.path.exists(db_path):
         return []
     with sqlite3.connect(db_path) as conn:
@@ -42,9 +46,24 @@ def _cached_codes(db_path: str) -> List[str]:
     return [str(row[0]) for row in rows if row and row[0]]
 
 
+def _market_data_codes(db_path: str) -> List[str]:
+    if not db_path or not os.path.exists(db_path):
+        return []
+    with sqlite3.connect(db_path) as conn:
+        try:
+            rows = conn.execute("SELECT DISTINCT code FROM daily_bars").fetchall()
+        except sqlite3.OperationalError:
+            return []
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
 def _load_history(codes: List[str], fetch: bool) -> Dict[str, pd.DataFrame]:
     cache = HistoryCache(config.HISTORY_CACHE_PATH, config.HISTORY_CACHE_FRESHNESS_HOURS)
-    history_by_code: Dict[str, pd.DataFrame] = {}
+    history_by_code: Dict[str, pd.DataFrame] = load_history_frames(
+        getattr(config, "MARKET_DATA_DB_PATH", ""),
+        codes,
+        days=200,
+    )
     provider = None
     if fetch:
         # 仅在显式要求时才创建 provider 抓取，避免离线运行触网。
@@ -53,6 +72,8 @@ def _load_history(codes: List[str], fetch: bool) -> Dict[str, pd.DataFrame]:
         provider = MarketDataProvider()
     for code in codes:
         code = normalize_code(code)
+        if code in history_by_code:
+            continue
         history = cache.get(code, days=200)
         if (history is None or history.empty) and provider is not None:
             try:
@@ -69,6 +90,7 @@ def _load_history(codes: List[str], fetch: bool) -> Dict[str, pd.DataFrame]:
 def _objective(
     metrics: Dict[str, object],
     strategy: str = "",
+    direction_focused: bool = False,
 ) -> float:
     """目标函数：命中率为主，平均收益为辅。无有效交易则极低分。
 
@@ -85,11 +107,33 @@ def _objective(
         avg_drawdown = float(metrics.get("absolute_avg_max_drawdown", 0.0) or 0.0)
         avg_open_gap = float(metrics.get("absolute_avg_next_open_return", 0.0) or 0.0)
         downside_penalty = min(0.0, loss_quantile) * 1.6 + min(0.0, avg_drawdown) * 0.25
-        return win_rate + avg_return * 2.0 + median_return * 1.2 + avg_open_gap * 0.5 + downside_penalty
+        direction_weight = 3.0 if direction_focused else 2.0
+        return_weight = 0.6 if direction_focused else 2.0
+        median_weight = 0.2 if direction_focused else 1.2
+        open_gap_weight = 0.2 if direction_focused else 0.5
+        return (
+            win_rate * direction_weight
+            + avg_return * return_weight
+            + median_return * median_weight
+            + avg_open_gap * open_gap_weight
+            + downside_penalty
+        )
     else:
         win_rate = float(metrics.get("win_rate", 0.0) or 0.0)
         avg_return = float(metrics.get("avg_period_return", 0.0) or 0.0)
     return win_rate + avg_return * 2.0
+
+
+def _resolve_tomorrow_direction_focus(direction_focus) -> bool:
+    if direction_focus is None:
+        return bool(getattr(config, "CALIBRATE_TOMORROW_DIRECTION_FOCUSED", False))
+    return bool(direction_focus)
+
+
+def _tomorrow_direction_objective(metrics: Dict[str, object]) -> float:
+    if not metrics:
+        return -1e9
+    return _objective(metrics, strategy="tomorrow_picks", direction_focused=True)
 
 
 def _evaluate(history_by_code, weights, top_k, holding_days, lookback_days) -> Dict[str, object]:
@@ -186,6 +230,7 @@ def calibrate_live_weights(
     days: int = 120,
     steps: int = 2,
     dry_run: bool = True,
+    direction_focus=None,
 ) -> Dict[str, object]:
     if strategy != "tomorrow_picks":
         return {"ok": False, "strategy": strategy, "status": "unsupported_strategy", "supported_strategy": "tomorrow_picks"}
@@ -216,13 +261,21 @@ def calibrate_live_weights(
         }
 
     current = _current_strategy_weights(strategy)
+    direction_focus = _resolve_tomorrow_direction_focus(direction_focus)
     baseline_metrics = _evaluate_live_samples(strategy, samples, current, top_k=top_k)
-    baseline_obj = _objective(baseline_metrics, strategy)
-    fitted = _fit_weights(strategy, samples, top_k=top_k, steps=steps, initial=current)
+    baseline_obj = _objective(baseline_metrics, strategy, direction_focused=direction_focus)
+    fitted = _fit_weights(strategy, samples, top_k=top_k, steps=steps, initial=current, direction_focus=direction_focus)
     best = fitted["weights"]
     best_metrics = fitted["metrics"]
     best_obj = fitted["objective"]
-    walk_forward = _walk_forward_evaluate(strategy, samples, current, top_k=top_k, steps=steps)
+    walk_forward = _walk_forward_evaluate(
+        strategy,
+        samples,
+        current,
+        top_k=top_k,
+        steps=steps,
+        direction_focus=direction_focus,
+    )
 
     margin = float(getattr(config, "CALIBRATE_IMPROVE_MARGIN", 0.05))
     keys = _strategy_weight_keys(strategy)
@@ -237,6 +290,9 @@ def calibrate_live_weights(
         "best_metrics": best_metrics,
         "baseline_objective": round(baseline_obj, 4),
         "best_objective": round(best_obj, 4),
+        "objective_mode": "direction_focused" if direction_focus else "default",
+        "baseline_direction_objective": round(_tomorrow_direction_objective(baseline_metrics), 4),
+        "best_direction_objective": round(_tomorrow_direction_objective(best_metrics), 4),
         "improvement": round(best_obj - baseline_obj, 4),
         "oos_baseline_objective": walk_forward.get("baseline_oos_objective"),
         "oos_best_objective": walk_forward.get("best_oos_objective"),
@@ -274,10 +330,11 @@ def _fit_weights(
     top_k: int,
     steps: int,
     initial: Dict[str, float] = None,
+    direction_focus=None,
 ) -> Dict[str, object]:
     best = _normalize_strategy_weights(strategy, copy.deepcopy(initial or _current_strategy_weights(strategy)))
     best_metrics = _evaluate_live_samples(strategy, samples, best, top_k=top_k)
-    best_obj = _objective(best_metrics, strategy)
+    best_obj = _objective(best_metrics, strategy, direction_focused=_resolve_tomorrow_direction_focus(direction_focus))
     multipliers = (0.7, 1.0, 1.3)
     keys = _strategy_weight_keys(strategy)
     for _ in range(max(1, steps)):
@@ -290,7 +347,7 @@ def _fit_weights(
                 candidate[key] = coerce_number(candidate.get(key), 0.0) * mult
                 candidate = _normalize_strategy_weights(strategy, candidate)
                 metrics = _evaluate_live_samples(strategy, samples, candidate, top_k=top_k)
-                obj = _objective(metrics, strategy)
+                obj = _objective(metrics, strategy, direction_focused=_resolve_tomorrow_direction_focus(direction_focus))
                 if obj > best_obj + 1e-9:
                     best, best_obj, best_metrics, improved = candidate, obj, metrics, True
         if not improved:
@@ -304,17 +361,25 @@ def _walk_forward_evaluate(
     current: Dict[str, float],
     top_k: int,
     steps: int,
+    direction_focus=None,
 ) -> Dict[str, object]:
     folds = _walk_forward_splits(samples, int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)))
     if not folds:
         return {"ok": False, "status": "insufficient_oos_folds", "folds": [], "fold_count": 0}
     rows = []
     for index, (train_samples, test_samples, train_dates, test_dates) in enumerate(folds, start=1):
-        fitted = _fit_weights(strategy, train_samples, top_k=top_k, steps=steps, initial=current)
+        fitted = _fit_weights(
+            strategy,
+            train_samples,
+            top_k=top_k,
+            steps=steps,
+            initial=current,
+            direction_focus=direction_focus,
+        )
         baseline_metrics = _evaluate_live_samples(strategy, test_samples, current, top_k=top_k)
         best_metrics = _evaluate_live_samples(strategy, test_samples, fitted["weights"], top_k=top_k)
-        baseline_obj = _objective(baseline_metrics, strategy)
-        best_obj = _objective(best_metrics, strategy)
+        baseline_obj = _objective(baseline_metrics, strategy, direction_focused=_resolve_tomorrow_direction_focus(direction_focus))
+        best_obj = _objective(best_metrics, strategy, direction_focused=_resolve_tomorrow_direction_focus(direction_focus))
         rows.append(
             {
                 "fold": index,
@@ -499,12 +564,16 @@ def _evaluate_live_samples(
     max_drawdowns = [coerce_number(sample.get("max_drawdown")) for sample in selected]
     avg_return = sum(period_returns) / len(period_returns)
     avg_excess = sum(coerce_number(sample.get("excess_return_net")) for sample in selected) / len(selected)
+    win_count = sum(1 for value in absolute_wins if value)
+    loss_count = len(absolute_wins) - win_count
     return {
         "sample_count": len(selected),
         "candidate_sample_count": len(samples),
         "day_count": len(grouped),
         "win_rate": round(sum(1 for value in wins if value) / len(wins) * 100, 2),
         "avg_period_return": round(avg_excess, 4),
+        "absolute_win_count": win_count,
+        "absolute_loss_count": loss_count,
         "absolute_win_rate": round(sum(1 for value in absolute_wins if value) / len(absolute_wins) * 100, 2),
         "absolute_avg_period_return": round(avg_return, 4),
         "absolute_median_period_return": round(_median(period_returns), 4),

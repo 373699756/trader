@@ -35,7 +35,9 @@
             <span>行情 <strong id="quoteSource">-</strong></span>
             <span>舆情 <strong id="sentimentSource">-</strong></span>
             <span>候选 <strong id="candidateCount">-</strong></span>
+            <span>剔除 <strong id="hardFilterCount">-</strong></span>
             <span>市场 <strong id="marketSentiment">-</strong></span>
+            <span>黑名单 <strong id="riskBlacklistStatus">-</strong></span>
           </section>
           <div class="toolbar">
             <label>
@@ -819,20 +821,20 @@
       <section class="tab-panel" id="validationPanel">
         <div class="board">
           <div class="board-header">
-            <h2>明天预测复盘与迭代</h2>
-            <span>对比 15:00 预测与次日真实开高低收，审核后应用优化权重</span>
+            <h2>明天预测复盘</h2>
+            <span>对比昨日保存样本与今天实时锚点口径，先看涨跌方向，再看锚点到现在变化，给出下一步动作参考。</span>
           </div>
 
           <div class="validation-guide">
             <article>
               <span>复盘</span>
               <strong>次日真实涨跌</strong>
-              <p>只看明天预测和次日真实开高低收的对比。</p>
+              <p>先看锚点到现在的涨跌方向，再看锚点到现在变化幅度。</p>
             </article>
             <article>
               <span>结论</span>
-              <strong>扣成本净表现</strong>
-              <p>主看净胜率和净收益，回放样本只做参考。</p>
+              <strong>次日涨跌结论</strong>
+              <p>主看近期锚点样本次日涨跌方向，回放样本只作参考。</p>
             </article>
           </div>
 
@@ -849,62 +851,15 @@
               <div class="ops-block">
                 <div class="ops-title">日常操作</div>
                 <div class="ops-row">
-                  <select id="saveStrategySelect" hidden>
-                    <option value="tomorrow_picks">明天预测</option>
-                  </select>
-                  <button
-                    id="saveSnapshotBtn"
-                    class="primary-action"
-                    type="button"
-                    title="保存当前时间口径下的明天预测快照，补充真实验证样本"
-                  >保存今天</button>
-                </div>
-                <div class="ops-row">
-                  <select id="validationStrategySelect" hidden>
-                    <option value="tomorrow_picks">明天预测</option>
-                  </select>
                   <select id="validationDaysSelect">
                     <option value="20">近20日</option>
                     <option value="60">近60日</option>
                     <option value="120">近120日</option>
                   </select>
                 </div>
-                <button
-                  id="updateValidation"
-                  class="primary-action wide"
-                  type="button"
-                  title="对已选日期或全部保存日回填真实次日收益，不会改变排序逻辑"
-                >手动回填结果</button>
-                <p class="ops-hint">正常使用挂 daily_job 自动保存和回填；回放样本只做补样本，不替代真实样本。</p>
-                <div class="ops-status" id="saveStatus"></div>
+                <p class="ops-hint">后台每30分钟自动回填次日结果；无真实样本时会自动补齐再更新，不再需要手动按钮。</p>
                 <div class="ops-status" id="updateStatus"></div>
               </div>
-
-              <details class="validation-advanced ops-block">
-                <summary>历史补样本 / 权重建议</summary>
-                <div class="ops-body">
-                  <button
-                    id="backfillValidationSamples"
-                    class="ghost-action wide"
-                    type="button"
-                    title="历史数据不足时补全回放样本，作为筛选器可用性参考，不会替代真实样本"
-                  >补历史样本</button>
-                  <button
-                    id="refreshIterationBtn"
-                    class="ghost-action wide"
-                    type="button"
-                    title="基于选中的日期范围样本重新计算因子权重建议（只做建议）"
-                  >刷新建议</button>
-                  <button
-                    id="applyIterationBtn"
-                    class="primary-action wide"
-                    type="button"
-                    disabled
-                    title="仅在建议通过样本外验证改善时可用，点击后生效新权重"
-                  >应用建议权重</button>
-                  <p class="ops-hint" id="iterationStatus">等待生成建议。</p>
-                </div>
-              </details>
             </aside>
 
             <section class="validation-review validation-simple-review">
@@ -918,7 +873,7 @@
                   <strong id="validationSampleCount">-</strong>
                 </div>
                 <div class="validation-score-card">
-                  <span>扣成本净胜率</span>
+                  <span>次日方向命中率</span>
                   <strong id="validationWinRate">-</strong>
                 </div>
                 <div class="validation-score-card">
@@ -926,32 +881,22 @@
                   <strong id="validationHit3">-</strong>
                 </div>
                 <div class="validation-score-card">
-                  <span>扣成本净收益</span>
+                  <span>次日平均涨跌</span>
                   <strong id="validationAvgReturn">-</strong>
                 </div>
               </div>
 
-              <details class="validation-advanced">
-                <summary>展开次日对比与权重建议</summary>
-                <div class="ops-body">
-                  <div class="section-label">次日真实表现对比</div>
-                  <div class="scoreboard" id="nextDayCompareGrid">
-                    <div class="empty">暂无次日对比数据</div>
-                  </div>
-
-                  <div class="section-label">权重迭代建议</div>
-                  <div class="scoreboard" id="iterationWeights">
-                    <div class="empty">暂无迭代建议</div>
-                  </div>
-                </div>
-              </details>
-
-              <div class="chart-card chart-card-wide">
-                <h3>明天预测净胜率走势</h3>
-                <div id="validationLine" class="chart-box chart-box-tall"></div>
+              <div class="section-label">次日涨跌对比</div>
+              <div class="scoreboard" id="nextDayCompareGrid">
+                <div class="empty">暂无次日对比数据</div>
               </div>
 
-              <div class="validation-split">
+              <div class="validation-insight-grid">
+                <div class="chart-card validation-chart-card">
+                  <h3>明天预测次日方向命中率走势</h3>
+                  <div id="validationLine" class="chart-box chart-box-tall"></div>
+                </div>
+
                 <div class="validation-batches">
                   <div class="section-label">保存批次</div>
                   <div class="table-wrap">
@@ -972,36 +917,34 @@
                     </table>
                   </div>
                 </div>
+              </div>
 
-                <div class="validation-results">
-                  <div class="section-label">股票次日明细</div>
-                  <div class="table-wrap validation-detail">
-                    <table>
-                        <thead>
-                          <tr>
-                            <th>排名</th>
-                            <th>类型</th>
-                            <th>代码</th>
-                            <th>名称</th>
-                            <th>次开</th>
-                            <th>次高</th>
-                            <th>次低</th>
-                            <th>次收</th>
-                            <th>净收益</th>
-                            <th>盈利</th>
-                          </tr>
-                        </thead>
-                        <tbody id="validationDetailBody">
-                          <tr>
-                            <td colspan="10" class="empty">选择左侧批次查看明细</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
             </section>
           </div>
+
+        <div class="validation-results validation-results-wide">
+          <div class="section-label">股票次日明细</div>
+          <div class="table-wrap validation-detail">
+            <table>
+              <thead>
+                <tr>
+                  <th>排名</th>
+                  <th>类型</th>
+                  <th>股票</th>
+                  <th>锚点价格</th>
+                  <th>锚点涨跌</th>
+                  <th>今日涨跌</th>
+                  <th>锚点到现在</th>
+                </tr>
+              </thead>
+              <tbody id="validationDetailBody">
+                <tr>
+                  <td colspan="7" class="empty">选择左侧批次查看明细</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
         </div>
       </section>
 

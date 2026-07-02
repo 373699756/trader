@@ -18,9 +18,11 @@ from stock_analyzer.paper_trading import PaperTradingStore
 from stock_analyzer.portfolio import build_portfolio
 from stock_analyzer.providers import MarketDataProvider, _normalize_eastmoney_spot, _request_eastmoney_page
 from stock_analyzer.risk_rules import simulate_exit
+from stock_analyzer.risk_blacklist import attach_risk_blacklist, load_risk_blacklist
 from stock_analyzer.scoring import (
     build_market_regime,
     build_strategy_consensus,
+    candidate_filter_report,
     prepare_candidates,
     score_candidates,
     score_chokepoint_candidates,
@@ -95,6 +97,113 @@ class ScoringTest(unittest.TestCase):
         result = prepare_candidates(quotes)
 
         self.assertEqual(set(result["code"]), {"600001", "300001"})
+
+    def test_risk_blacklist_hard_filters_json_high_risk(self):
+        path = os.path.join("/tmp", "risk_blacklist_test.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "items": {
+                        "600001": {
+                            "name": "风险样本",
+                            "level": "critical",
+                            "category": "financial_fraud",
+                            "reason": "历史财务造假测试",
+                            "hard_exclude": True,
+                        }
+                    }
+                },
+                handle,
+                ensure_ascii=False,
+            )
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "风险样本", "price": 10, "pct_chg": 3, "turnover": 100000000},
+                {"code": "600002", "name": "正常样本", "price": 10, "pct_chg": 3, "turnover": 100000000},
+            ]
+        )
+        with patch.object(config, "RISK_BLACKLIST_PATH", path), patch.object(config, "RISK_BLACKLIST_CSV_PATH", ""), patch.object(config, "RISK_BLACKLIST_HARD_FILTER", True):
+            payload = load_risk_blacklist()
+            result = attach_risk_blacklist(prepare_candidates(quotes), payload)
+
+        self.assertEqual(set(result["code"]), {"600002"})
+        self.assertEqual(payload["items"]["600001"]["flags"][0]["label"], "历史财务造假测试")
+
+    def test_risk_blacklist_medium_marks_without_filtering(self):
+        path = os.path.join("/tmp", "risk_blacklist_test.csv")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("code,name,level,category,reason,hard_exclude\n")
+            handle.write("600001,风险样本,medium,negative_history,历史负面测试,false\n")
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "风险样本", "price": 10, "pct_chg": 3, "turnover": 100000000},
+            ]
+        )
+        with patch.object(config, "RISK_BLACKLIST_PATH", ""), patch.object(config, "RISK_BLACKLIST_CSV_PATH", path), patch.object(config, "RISK_BLACKLIST_HARD_FILTER", True):
+            payload = load_risk_blacklist()
+            result = attach_risk_blacklist(prepare_candidates(quotes), payload)
+
+        self.assertEqual(set(result["code"]), {"600001"})
+        self.assertEqual(result.iloc[0]["blacklist_risk_level"], "medium")
+        self.assertFalse(bool(result.iloc[0]["blacklist_hard_exclude"]))
+
+    def test_risk_blacklist_ignores_entries_without_code(self):
+        path = os.path.join("/tmp", "risk_blacklist_missing_code_test.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "items": [
+                        {
+                            "name": "缺代码样本",
+                            "level": "critical",
+                            "category": "financial_fraud",
+                            "reason": "缺少股票代码",
+                        }
+                    ]
+                },
+                handle,
+                ensure_ascii=False,
+            )
+
+        with patch.object(config, "RISK_BLACKLIST_PATH", path), patch.object(config, "RISK_BLACKLIST_CSV_PATH", ""), patch.object(config, "RISK_BLACKLIST_HARD_FILTER", True):
+            payload = load_risk_blacklist()
+
+        self.assertEqual(payload["items"], {})
+        self.assertEqual(payload["status"], "empty")
+
+    def test_risk_blacklist_noops_when_code_column_missing(self):
+        df = pd.DataFrame([{"name": "无代码样本", "price": 10}])
+
+        result = attach_risk_blacklist(df, {"status": "ok", "items": {}})
+
+        self.assertEqual(result.to_dict("records"), df.to_dict("records"))
+        self.assertIsNot(result, df)
+
+    def test_candidate_filter_report_matches_prepare_candidates(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "正常样本", "price": 10, "pct_chg": 3, "turnover": 100000000},
+                {"code": "430001", "name": "北交样本", "price": 10, "pct_chg": 3, "turnover": 100000000},
+                {"code": "600002", "name": "ST样本", "price": 10, "pct_chg": 3, "turnover": 100000000},
+                {"code": "600003", "name": "低流动", "price": 10, "pct_chg": 3, "turnover": 1000},
+                {"code": "600004", "name": "涨幅过高", "price": 10, "pct_chg": 13, "turnover": 100000000},
+                {"code": "600005", "name": "接近涨停", "price": 10, "pct_chg": 9.5, "turnover": 100000000},
+            ]
+        )
+
+        prepared = prepare_candidates(quotes)
+        report = candidate_filter_report(quotes)
+
+        self.assertEqual(report["raw_count"], len(quotes))
+        self.assertEqual(report["passed_count"], len(prepared))
+        self.assertEqual(report["rejected_count"], len(quotes) - len(prepared))
+        self.assertEqual(set(prepared["code"]), {"600001"})
+        reason_keys = {item["key"] for item in report["reasons"]}
+        self.assertIn("unsupported_code", reason_keys)
+        self.assertIn("special_treatment", reason_keys)
+        self.assertIn("min_turnover", reason_keys)
+        self.assertIn("max_gain", reason_keys)
+        self.assertIn("buyable_gain", reason_keys)
 
     def test_score_candidates_orders_by_combined_signal(self):
         quotes = pd.DataFrame(
@@ -226,6 +335,19 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(len(candidates), 2)
         self.assertEqual(regime["breadth_pct"], 50.0)
         self.assertLessEqual(regime["median_pct_chg"], 0.5)
+
+    def test_market_regime_reports_history_breadth_when_factors_exist(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "强势A", "price": 10, "pct_chg": 2, "turnover": 100000000, "amplitude": 4, "ma20_gap": 3, "alphalite_factor_ready": 1},
+                {"code": "600002", "name": "弱势B", "price": 10, "pct_chg": -1, "turnover": 100000000, "amplitude": 4, "ma20_gap": -2, "alphalite_factor_ready": 1},
+            ]
+        )
+
+        regime = build_market_regime(prepare_candidates(quotes))
+
+        self.assertEqual(regime["history_breadth20_pct"], 50.0)
+        self.assertEqual(regime["history_factor_coverage_pct"], 100.0)
 
     def test_build_strategy_consensus_collects_multi_strategy_overlap(self):
         rows = build_strategy_consensus(
@@ -506,6 +628,45 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(meta["primary_watch_count"], 0)
         self.assertEqual(rows[0]["tier"], "backup_pool")
         self.assertIn("严格筛选为空", meta["gate_reason"])
+
+    def test_tomorrow_weak_history_breadth_disables_primary_watch(self):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600{:03d}".format(index),
+                    "name": "弱宽度样本{}".format(index),
+                    "price": 10 + index * 0.1,
+                    "pct_chg": 2.5,
+                    "turnover": 500000000 + index * 10000000,
+                    "turnover_rate": 4,
+                    "volume_ratio": 1.8,
+                    "speed": 0.4,
+                    "sixty_day_pct": 12,
+                    "ytd_pct": 16,
+                    "amplitude": 4,
+                    "ret_5d": 2,
+                    "ret_10d": 4,
+                    "ret_20d": 6,
+                    "ma20_gap": -2 if index < 8 else 2,
+                    "vol_amount_5d": 1.5,
+                    "volatility_20d": 2,
+                    "alphalite_factor_ready": 1,
+                }
+                for index in range(12)
+            ]
+        )
+
+        rows, meta = score_tomorrow_candidates(
+            prepare_candidates(quotes),
+            top_n=12,
+            market_regime={"level": "risk_on", "label": "偏进攻", "score": 75},
+        )
+
+        self.assertTrue(rows)
+        self.assertEqual(meta["history_breadth20_pct"], 33.33)
+        self.assertEqual(meta["primary_watch_count"], 0)
+        self.assertEqual(rows[0]["tier"], "backup_pool")
+        self.assertIn("低于45%", meta["gate_reason"])
 
     def test_chokepoint_score_rewards_upstream_underpriced(self):
         from stock_analyzer.scoring import _chokepoint_score

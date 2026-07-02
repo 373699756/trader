@@ -15,6 +15,7 @@ from .normalization import (
     percentile_score,
 )
 from .event_risk import row_event_risk
+from .risk_blacklist import row_blacklist_risk
 from .strategy_health import strategy_status
 
 
@@ -39,6 +40,17 @@ STRATEGY_LABELS = {
     "reversal_picks": "反转低波",
     "smallcap_value_picks": "小市值价值",
     "breakout_picks": "量价突破",
+}
+
+HARD_FILTER_LABELS = {
+    "unsupported_code": "非主流A股代码",
+    "special_treatment": "ST/退市风险名称",
+    "positive_price": "无有效价格",
+    "min_turnover": "成交额不足",
+    "deep_drop": "跌幅过深",
+    "max_gain": "涨幅过高",
+    "buyable_gain": "接近涨停不可买",
+    "one_word_limit": "一字板/极端封板",
 }
 
 # Serenity 在量化语境中并不是某个软件库，而是 chokepoint / 瓶颈投资方法论
@@ -360,8 +372,8 @@ _DEFAULT_WEIGHTS = {
         "sentiment": 0.13, "momentum": 0.07, "hot": 0.05,
     },
     "tomorrow_picks": {
-        "liquidity": 0.24, "momentum": 0.22, "trend": 0.16,
-        "execution": 0.18, "tail_setup": 0.20,
+        "liquidity": 0.21, "momentum": 0.19, "trend": 0.15,
+        "historical_edge": 0.17, "execution": 0.14, "tail_setup": 0.14,
     },
     "swing_picks": {
         "momentum": 0.34, "trend": 0.26, "liquidity": 0.20,
@@ -449,6 +461,7 @@ STRATEGY_COMBINERS = {
             {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
             {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
             {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
+            {"component": "historical_edge_score", "weight_key": "historical_edge", "regime_key": "quality"},
             {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
             {"component": "tail_setup_score", "weight_key": "tail_setup", "regime_key": "quality"},
         ),
@@ -626,6 +639,34 @@ ALPHALITE_SIGNAL_COLUMNS = (
 def prepare_candidates(quotes: pd.DataFrame) -> pd.DataFrame:
     if quotes.empty:
         return quotes.copy()
+    df = _candidate_base_frame(quotes)
+    mask = _combine_candidate_masks(_candidate_filter_masks(df))
+    return df.loc[mask].reset_index(drop=True)
+
+
+def candidate_filter_report(quotes: pd.DataFrame) -> Dict[str, object]:
+    if quotes is None or quotes.empty:
+        return {"raw_count": 0, "passed_count": 0, "rejected_count": 0, "reasons": []}
+    df = _candidate_base_frame(quotes)
+    masks = _candidate_filter_masks(df)
+    remaining = pd.Series(True, index=df.index)
+    reasons = []
+    for key in HARD_FILTER_LABELS:
+        failed = remaining & ~masks[key]
+        count = int(failed.sum())
+        if count:
+            reasons.append({"key": key, "label": HARD_FILTER_LABELS[key], "count": count})
+        remaining &= masks[key]
+    passed_count = int(remaining.sum())
+    return {
+        "raw_count": int(len(df)),
+        "passed_count": passed_count,
+        "rejected_count": int(len(df) - passed_count),
+        "reasons": reasons,
+    }
+
+
+def _candidate_base_frame(quotes: pd.DataFrame) -> pd.DataFrame:
     df = quotes.copy()
     if "code" not in df.columns:
         raise ValueError("行情数据缺少代码字段")
@@ -668,16 +709,27 @@ def prepare_candidates(quotes: pd.DataFrame) -> pd.DataFrame:
                 break
         else:
             df["industry"] = ""
+    return df
 
-    mask = df["code"].map(is_supported_code)
-    mask &= ~df["name"].str.contains("ST|退", case=False, regex=True, na=False)
-    mask &= df["price"] > 0
-    mask &= df["turnover"] >= config.MIN_TURNOVER
-    mask &= df["pct_chg"] > -8
-    mask &= df["pct_chg"] <= config.MAX_RECOMMENDED_GAIN
-    mask &= df.apply(_is_buyable_gain, axis=1)
-    mask &= ~((df["high"] > 0) & (df["high"] == df["low"]) & (df["pct_chg"] > 8))
-    return df.loc[mask].reset_index(drop=True)
+
+def _candidate_filter_masks(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    return {
+        "unsupported_code": df["code"].map(is_supported_code),
+        "special_treatment": ~df["name"].str.contains("ST|退", case=False, regex=True, na=False),
+        "positive_price": df["price"] > 0,
+        "min_turnover": df["turnover"] >= config.MIN_TURNOVER,
+        "deep_drop": df["pct_chg"] > -8,
+        "max_gain": df["pct_chg"] <= config.MAX_RECOMMENDED_GAIN,
+        "buyable_gain": df.apply(_is_buyable_gain, axis=1),
+        "one_word_limit": ~((df["high"] > 0) & (df["high"] == df["low"]) & (df["pct_chg"] > 8)),
+    }
+
+
+def _combine_candidate_masks(masks: Dict[str, pd.Series]) -> pd.Series:
+    combined = None
+    for mask in masks.values():
+        combined = mask if combined is None else combined & mask
+    return combined
 
 
 def _is_buyable_gain(row: pd.Series) -> bool:
@@ -698,6 +750,9 @@ def build_market_regime(df: pd.DataFrame, breadth_source: pd.DataFrame = None) -
             "label": "未知",
             "score": 50.0,
             "breadth_pct": 0.0,
+            "history_breadth20_pct": 0.0,
+            "history_factor_coverage_pct": 0.0,
+            "history_ready_count": 0,
             "strong_pct": 0.0,
             "weak_pct": 0.0,
             "median_pct_chg": 0.0,
@@ -716,6 +771,7 @@ def build_market_regime(df: pd.DataFrame, breadth_source: pd.DataFrame = None) -
     median_pct_chg = round(coerce_number(pct_values.median()), 2) if len(pct_values) else 0.0
     avg_amplitude = round(coerce_number(amplitude_values.mean()), 2) if len(amplitude_values) else 0.0
     avg_turnover = round(coerce_number(turnover_values.mean()), 2) if len(turnover_values) else 0.0
+    history_breadth = _history_breadth_metrics(df)
 
     score = 50.0
     score += median_pct_chg * 7.5
@@ -759,6 +815,7 @@ def build_market_regime(df: pd.DataFrame, breadth_source: pd.DataFrame = None) -
         "label": label,
         "score": score,
         "breadth_pct": breadth_pct,
+        **history_breadth,
         "strong_pct": strong_pct,
         "weak_pct": weak_pct,
         "median_pct_chg": median_pct_chg,
@@ -790,6 +847,35 @@ def _market_regime_breadth_frame(quotes: pd.DataFrame) -> pd.DataFrame:
     mask &= ~df["name"].astype(str).str.contains("ST|退", case=False, regex=True, na=False)
     mask &= df["price"] > 0
     return df.loc[mask].reset_index(drop=True)
+
+
+def _history_breadth_metrics(df: pd.DataFrame) -> Dict[str, object]:
+    empty = {
+        "history_breadth20_pct": 0.0,
+        "history_factor_coverage_pct": 0.0,
+        "history_ready_count": 0,
+        "history_median_ret5": 0.0,
+        "history_median_ret20": 0.0,
+    }
+    if df is None or df.empty or "ma20_gap" not in df.columns:
+        return empty.copy()
+    ready = pd.Series([False] * len(df), index=df.index)
+    if "alphalite_factor_ready" in df.columns:
+        ready = ready | (finite_series(df, "alphalite_factor_ready") > 0)
+    ready = ready | (finite_series(df, "ma20_gap").abs() > 1e-12)
+    ready_df = df.loc[ready]
+    if ready_df.empty:
+        return empty.copy()
+    ma20_gap = finite_series(ready_df, "ma20_gap")
+    ret5 = finite_series(ready_df, "ret_5d")
+    ret20 = finite_series(ready_df, "ret_20d")
+    return {
+        "history_breadth20_pct": round(float((ma20_gap > 0).mean() * 100), 2),
+        "history_factor_coverage_pct": round(float(len(ready_df) / max(1, len(df)) * 100), 2),
+        "history_ready_count": int(len(ready_df)),
+        "history_median_ret5": round(coerce_number(ret5.median()), 2) if len(ret5) else 0.0,
+        "history_median_ret20": round(coerce_number(ret20.median()), 2) if len(ret20) else 0.0,
+    }
 
 
 def _stddev(values: List[float]) -> float:
@@ -1215,6 +1301,7 @@ def score_tomorrow_candidates(
             "policy": _tomorrow_policy(),
         }
 
+    market_regime = _market_regime_with_history(market_regime, df)
     context = _score_context(df, {})
     rows: List[Dict[str, object]] = []
     for _, row in df.iterrows():
@@ -1228,6 +1315,13 @@ def score_tomorrow_candidates(
         amplitude = coerce_number(row.get("amplitude"))
         sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
         ytd_pct = coerce_number(row.get("ytd_pct"))
+        ret_5d = coerce_number(row.get("ret_5d"))
+        ret_10d = coerce_number(row.get("ret_10d"))
+        ret_20d = coerce_number(row.get("ret_20d"))
+        ma20_gap = coerce_number(row.get("ma20_gap"))
+        vol_amount_5d = coerce_number(row.get("vol_amount_5d"))
+        volatility_20d = coerce_number(row.get("volatility_20d"))
+        breakout_20d = coerce_number(row.get("breakout_20d"))
 
         liquidity_score = (
             percentile_score(turnover, context["turnover_values"]) * 0.58
@@ -1250,6 +1344,7 @@ def score_tomorrow_candidates(
         )
         execution_score = _execution_score(row)
         tail_setup_score = _tail_close_setup_score(row)
+        historical_edge_score = _tomorrow_historical_edge_score(row, context)
         risk_penalty_parts = _tomorrow_risk_penalty_parts(row)
         risk_penalty = _sum_penalty(risk_penalty_parts)
         regime_bonus = _market_regime_adjustment(row, market_regime, "tomorrow")
@@ -1259,6 +1354,7 @@ def score_tomorrow_candidates(
                 "liquidity_score": liquidity_score,
                 "momentum_score": momentum_score,
                 "trend_score": trend_score,
+                "historical_edge_score": historical_edge_score,
                 "execution_score": execution_score,
                 "tail_setup_score": tail_setup_score,
                 "risk_penalty": risk_penalty,
@@ -1285,9 +1381,19 @@ def score_tomorrow_candidates(
                 "sixty_day_pct": round(sixty_day_pct, 2),
                 "ytd_pct": round(ytd_pct, 2),
                 "amplitude": round(amplitude, 2),
+                "ret_5d": round(ret_5d, 2),
+                "ret_10d": round(ret_10d, 2),
+                "ret_20d": round(ret_20d, 2),
+                "ma20_gap": round(ma20_gap, 2),
+                "vol_amount_5d": round(vol_amount_5d, 2),
+                "breakout_20d": bool(breakout_20d),
+                "volatility_20d": round(volatility_20d, 2),
+                "alphalite_factor_ready": round(coerce_number(row.get("alphalite_factor_ready")), 2),
+                "alphalite_coverage": round(coerce_number(row.get("alphalite_coverage")), 2),
                 "liquidity_score": round(liquidity_score, 2),
                 "momentum_score": round(momentum_score, 2),
                 "trend_score": round(trend_score, 2),
+                "historical_edge_score": round(historical_edge_score, 2),
                 "execution_score": round(execution_score, 2),
                 "tail_setup_score": round(tail_setup_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
@@ -1303,6 +1409,7 @@ def score_tomorrow_candidates(
                     liquidity_score,
                     momentum_score,
                     trend_score,
+                    historical_edge_score,
                     execution_score,
                     tail_setup_score,
                     risk_penalty,
@@ -1344,10 +1451,7 @@ def score_tomorrow_candidates(
                 break
         if len(display_rows) > strict_count:
             gate_reason = "{} 严格重点不足，已用备选观察补足展示。".format(gate_reason)
-    primary_watch_n = min(
-        int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 10)),
-        strict_count,
-    )
+    primary_watch_n = _tomorrow_primary_watch_limit(strict_count, market_regime)
     for rank, row in enumerate(display_rows, start=1):
         row["rank"] = rank
         if primary_watch_n > 0 and rank <= primary_watch_n:
@@ -1366,6 +1470,8 @@ def score_tomorrow_candidates(
         "display_limit": display_limit,
         "min_score": min_score,
         "gate_reason": gate_reason,
+        "history_breadth20_pct": coerce_number((market_regime or {}).get("history_breadth20_pct")),
+        "history_factor_coverage_pct": coerce_number((market_regime or {}).get("history_factor_coverage_pct")),
         "primary_watch_count": min(primary_watch_n, len(display_rows)),
         "backup_watch_count": max(0, len(display_rows) - min(primary_watch_n, len(display_rows))),
         "top_n": top_n,
@@ -2701,6 +2807,9 @@ def _attach_signal_explanation(
     event_risk = row_event_risk(row)
     if event_risk.get("flags"):
         failure_reasons.extend("事件风险:{}".format(flag.get("label", "")) for flag in event_risk["flags"][:3])
+    blacklist_risk = row_blacklist_risk(row)
+    if blacklist_risk.get("flags"):
+        failure_reasons.extend("黑名单风险:{}".format(flag.get("label", "")) for flag in blacklist_risk["flags"][:3])
     item.update(
         {
             "strategy_name": strategy_name,
@@ -2710,6 +2819,7 @@ def _attach_signal_explanation(
             "overextension": overextension,
             "failure_reasons": failure_reasons,
             "event_risk": event_risk,
+            "blacklist_risk": blacklist_risk,
         }
     )
     market_cap = coerce_number(row.get("market_cap"), None)
@@ -2743,7 +2853,8 @@ def _build_agent_committee(item: Dict[str, object], row: pd.Series) -> Dict[str,
     overextension = item.get("overextension") or {}
     risk_penalty = max(0.0, coerce_number(item.get("risk_penalty")))
     event_penalty = coerce_number((item.get("event_risk") or {}).get("penalty"))
-    risk_penalty += event_penalty
+    blacklist_penalty = coerce_number((item.get("blacklist_risk") or {}).get("penalty"))
+    risk_penalty += event_penalty + blacklist_penalty
     regime_bonus = coerce_number(item.get("regime_bonus"))
     risk_words = list(item.get("risk_words") or [])
 
@@ -2939,6 +3050,7 @@ def _build_serenity_profile(item: Dict[str, object], row: pd.Series) -> Dict[str
         + coerce_number(overextension.get("score")) * 10.0
         + max(0.0, coerce_number(item.get("risk_penalty"))) * 2.1
         + coerce_number((item.get("event_risk") or {}).get("penalty")) * 1.5
+        + coerce_number((item.get("blacklist_risk") or {}).get("penalty")) * 1.8
         + max(0.0, -regime_bonus) * 4.0
         + max(0.0, agent_risk_score - 62.0) * 0.35,
     )
@@ -2991,6 +3103,9 @@ def _build_serenity_profile(item: Dict[str, object], row: pd.Series) -> Dict[str
     event_risk = item.get("event_risk") or {}
     for flag in event_risk.get("flags", [])[:3]:
         risk_reasons.append("事件风险:{}".format(flag.get("label", "")))
+    blacklist_risk = item.get("blacklist_risk") or {}
+    for flag in blacklist_risk.get("flags", [])[:3]:
+        risk_reasons.append("黑名单风险:{}".format(flag.get("label", "")))
     if regime_bonus >= 2.5:
         evidence.insert(0, {"label": "市场状态顺风", "score": round(regime_bonus, 2), "level": "positive"})
     if committee.get("final_action_label"):
@@ -3275,7 +3390,41 @@ def _tomorrow_hard_reject(row: pd.Series) -> bool:
         return True
     if config.MIN_TURNOVER > 0 and turnover < config.MIN_TURNOVER:
         return True
+    if coerce_number(row.get("alphalite_factor_ready")) > 0:
+        ret_20d = coerce_number(row.get("ret_20d"))
+        ma20_gap = coerce_number(row.get("ma20_gap"))
+        volatility_20d = coerce_number(row.get("volatility_20d"))
+        if ret_20d < -18 or ma20_gap < -10 or volatility_20d > 10:
+            return True
     return False
+
+
+def _tomorrow_historical_edge_score(row: pd.Series, context: Dict[str, List[float]]) -> float:
+    if coerce_number(row.get("alphalite_factor_ready")) <= 0:
+        return 50.0
+    ret_5d = coerce_number(row.get("ret_5d"))
+    ret_10d = coerce_number(row.get("ret_10d"))
+    ret_20d = coerce_number(row.get("ret_20d"))
+    ma20_gap = coerce_number(row.get("ma20_gap"))
+    vol_amount_5d = coerce_number(row.get("vol_amount_5d"))
+    volatility_20d = coerce_number(row.get("volatility_20d"))
+    breakout_20d = coerce_number(row.get("breakout_20d"))
+    ma_bull_aligned = coerce_number(row.get("ma_bull_aligned"))
+    score = (
+        _optional_factor_score(ret_5d, context["ret_5d_values"]) * 0.18
+        + _optional_factor_score(ret_10d, context["ret_10d_values"]) * 0.18
+        + _optional_factor_score(ret_20d, context["ret_20d_values"]) * 0.20
+        + _optional_factor_score(ma20_gap, context["ma20_gap_values"]) * 0.14
+        + _optional_factor_score(vol_amount_5d, context["vol_amount_5d_values"]) * 0.12
+        + _optional_factor_score(
+            volatility_20d,
+            context["volatility_20d_values"],
+            higher_is_better=False,
+        ) * 0.12
+        + (72.0 if breakout_20d else 50.0) * 0.04
+        + (68.0 if ma_bull_aligned else 50.0) * 0.02
+    )
+    return max(0.0, min(100.0, score))
 
 
 def _tomorrow_backup_reject(row: pd.Series) -> bool:
@@ -3321,6 +3470,13 @@ def _tomorrow_backup_rows(
         amplitude = coerce_number(row.get("amplitude"))
         sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
         ytd_pct = coerce_number(row.get("ytd_pct"))
+        ret_5d = coerce_number(row.get("ret_5d"))
+        ret_10d = coerce_number(row.get("ret_10d"))
+        ret_20d = coerce_number(row.get("ret_20d"))
+        ma20_gap = coerce_number(row.get("ma20_gap"))
+        vol_amount_5d = coerce_number(row.get("vol_amount_5d"))
+        volatility_20d = coerce_number(row.get("volatility_20d"))
+        breakout_20d = coerce_number(row.get("breakout_20d"))
         liquidity_score = (
             percentile_score(turnover, context["turnover_values"]) * 0.58
             + percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.42
@@ -3338,6 +3494,7 @@ def _tomorrow_backup_rows(
         )
         execution_score = _execution_score(row)
         tail_setup_score = _tail_close_setup_score(row)
+        historical_edge_score = _tomorrow_historical_edge_score(row, context)
         risk_penalty_parts = _tomorrow_risk_penalty_parts(row)
         risk_penalty = _sum_penalty(risk_penalty_parts) + 6.0
         regime_bonus = _market_regime_adjustment(row, market_regime, "tomorrow")
@@ -3347,6 +3504,7 @@ def _tomorrow_backup_rows(
                 "liquidity_score": liquidity_score,
                 "momentum_score": momentum_score,
                 "trend_score": trend_score,
+                "historical_edge_score": historical_edge_score,
                 "execution_score": execution_score,
                 "tail_setup_score": tail_setup_score,
                 "risk_penalty": risk_penalty,
@@ -3373,9 +3531,19 @@ def _tomorrow_backup_rows(
             "sixty_day_pct": round(sixty_day_pct, 2),
             "ytd_pct": round(ytd_pct, 2),
             "amplitude": round(amplitude, 2),
+            "ret_5d": round(ret_5d, 2),
+            "ret_10d": round(ret_10d, 2),
+            "ret_20d": round(ret_20d, 2),
+            "ma20_gap": round(ma20_gap, 2),
+            "vol_amount_5d": round(vol_amount_5d, 2),
+            "breakout_20d": bool(breakout_20d),
+            "volatility_20d": round(volatility_20d, 2),
+            "alphalite_factor_ready": round(coerce_number(row.get("alphalite_factor_ready")), 2),
+            "alphalite_coverage": round(coerce_number(row.get("alphalite_coverage")), 2),
             "liquidity_score": round(liquidity_score, 2),
             "momentum_score": round(momentum_score, 2),
             "trend_score": round(trend_score, 2),
+            "historical_edge_score": round(historical_edge_score, 2),
             "execution_score": round(execution_score, 2),
             "tail_setup_score": round(tail_setup_score, 2),
             "risk_penalty": round(risk_penalty, 2),
@@ -3391,6 +3559,7 @@ def _tomorrow_backup_rows(
                 liquidity_score,
                 momentum_score,
                 trend_score,
+                historical_edge_score,
                 execution_score,
                 tail_setup_score,
                 risk_penalty,
@@ -3413,6 +3582,14 @@ def _tomorrow_display_gate(top_n: int, market_regime: Dict[str, object] = None) 
         return top_n, 0.0, "未提供市场环境，按请求上限展示。"
     level = market_regime.get("level") or "unknown"
     regime_score = coerce_number(market_regime.get("score"), 50.0)
+    history_breadth = coerce_number(market_regime.get("history_breadth20_pct"))
+    history_coverage = coerce_number(market_regime.get("history_factor_coverage_pct"))
+    if history_coverage >= 25:
+        if history_breadth > 55:
+            return top_n, 60.0, "历史20日均线宽度强于55%，允许重点观察但只保留少量主推。"
+        if history_breadth > 45:
+            return top_n, 68.0, "历史20日均线宽度处于45%-55%，只保留高分主推，其余为备选观察。"
+        return top_n, 78.0, "历史20日均线宽度低于45%，弱市不做主推，仅保留备选观察池。"
     if level == "risk_on":
         return top_n, 60.0, "偏进攻盘面，展示请求数量。"
     if level == "balanced":
@@ -3420,6 +3597,38 @@ def _tomorrow_display_gate(top_n: int, market_regime: Dict[str, object] = None) 
     if level == "risk_off":
         return top_n, 72.0, "偏防守盘面，重点观察不足时用备选观察补足。"
     return top_n, 70.0, "盘面状态不明确，重点观察不足时用备选观察补足。"
+
+
+def _market_regime_with_history(market_regime: Dict[str, object], df: pd.DataFrame) -> Dict[str, object]:
+    regime = dict(market_regime or {})
+    history_metrics = _history_breadth_metrics(df)
+    for key, value in history_metrics.items():
+        if key not in regime or coerce_number(regime.get(key)) <= 0:
+            regime[key] = value
+    return regime
+
+
+def _tomorrow_primary_watch_limit(strict_count: int, market_regime: Dict[str, object] = None) -> int:
+    if strict_count <= 0:
+        return 0
+    max_primary = max(0, int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 5)))
+    if max_primary <= 0:
+        return 0
+    regime = market_regime or {}
+    history_breadth = coerce_number(regime.get("history_breadth20_pct"))
+    history_coverage = coerce_number(regime.get("history_factor_coverage_pct"))
+    if history_coverage >= 25:
+        if history_breadth <= 45:
+            return 0
+        if history_breadth <= 55:
+            return min(strict_count, max_primary, 3)
+        return min(strict_count, max_primary)
+    level = regime.get("level") or "unknown"
+    if level == "risk_off":
+        return 0
+    if level == "balanced":
+        return min(strict_count, max_primary, 3)
+    return min(strict_count, max_primary)
 
 
 def _close_location(price: float, high: float, low: float) -> float:
@@ -3758,6 +3967,20 @@ def _tomorrow_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
         parts["late_fade"] = 7
     if close_location < 0.45:
         parts["weak_tail_close"] = max(parts.get("weak_tail_close", 0), 10)
+    if coerce_number(row.get("alphalite_factor_ready")) > 0:
+        ret_20d = coerce_number(row.get("ret_20d"))
+        ma20_gap = coerce_number(row.get("ma20_gap"))
+        volatility_20d = coerce_number(row.get("volatility_20d"))
+        if ret_20d < -12:
+            parts["history_downtrend"] = 8
+        elif ret_20d < -6:
+            parts["history_downtrend"] = 4
+        if ma20_gap < -6:
+            parts["ma20_break"] = 6
+        if volatility_20d > 8:
+            parts["history_volatility"] = 7
+        elif volatility_20d > 6:
+            parts["history_volatility"] = 3
     return parts
 
 
@@ -4068,6 +4291,7 @@ def _build_tomorrow_reasons(
     liquidity_score: float,
     momentum_score: float,
     trend_score: float,
+    historical_edge_score: float,
     execution_score: float,
     tail_setup_score: float,
     risk_penalty: float,
@@ -4096,6 +4320,10 @@ def _build_tomorrow_reasons(
         reasons.append("换手活跃")
     if trend_score >= 65 or sixty_day_pct >= 8:
         reasons.append("中期趋势向上")
+    if historical_edge_score >= 68:
+        reasons.append("历史量价结构占优")
+    elif coerce_number(row.get("alphalite_factor_ready")) > 0 and historical_edge_score < 45:
+        reasons.append("历史量价结构偏弱")
     if execution_score >= 75:
         reasons.append("买入安全较好")
     if tail_setup_score >= 72:

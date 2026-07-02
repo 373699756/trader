@@ -145,6 +145,21 @@
 
 事件风险进入三层：行级 `event_risk` 解释、Serenity `risk_score` 加分、Agent 风控理由。若开启 `EVENT_RISK_HARD_FILTER=1`，高危票可在候选阶段直接剔除。减持公告默认只看近 `EVENT_RISK_REDUCTION_LOOKBACK_DAYS=120` 天，解禁风险需要解禁比例字段。数据源失败或未开启时该层 no-op，并在 `/api/health` 标注状态。
 
+长期黑名单硬过滤默认开启，用于处理“历史财务造假、重大违法、重大处罚、审计无法表示意见、重大内控缺陷、长期严重负面信息”等不应进入推荐池的股票。维护文件为 `.runtime/risk_blacklist.json` 或 `.runtime/risk_blacklist.csv`，模板见 `docs/risk_blacklist.example.json` 和 `docs/risk_blacklist.example.csv`。该层与短期事件风险分离：事件风险处理未来/近期窗口，长期黑名单处理历史重大负面记录。
+
+| 字段 | 含义 |
+|---|---|
+| `code` | 6 位股票代码 |
+| `name` | 股票简称，辅助人工核对 |
+| `level` | `critical` / `high` 默认硬过滤，`medium` 默认只加风险 |
+| `category` | `financial_fraud`、`audit_opinion`、`major_penalty`、`negative_history` 等 |
+| `reason` | 风险原因，会展示为“黑名单风险” |
+| `source` | 证监会处罚、交易所纪律处分、公司公告、审计报告或可信新闻链接 |
+| `hard_exclude` | 是否强制剔除 |
+| `expires_at` | 可选，到期后自动忽略 |
+
+该黑名单层进入三层：候选池硬过滤、单票预测风险诊断、Serenity/Agent 风控扣分。即使关闭 `RISK_BLACKLIST_HARD_FILTER`，命中项仍会显著提高风险分并在解释中展示。
+
 基本面与因子 IC 框架默认关闭，开启 `ENABLE_FUNDAMENTALS=1` 后生效：
 
 | 因子 | 当前字段 |
@@ -450,7 +465,7 @@ python -m stock_analyzer.daily_job --paper-trade --strategy all
 |---|---|
 | 保存快照 | 服务运行时交易日 15:00 自动保存 `tomorrow_picks`；若 15:00 后才启动服务，当天会补保存一次 |
 | 保存兜底 | 可保留 `daily_job --snapshot` cron；同一天同版本样本会替换旧样本，不会重复累计 |
-| 启动延迟 | 默认启动后 180 秒执行首轮，避免阻塞首页行情和策略加载 |
+| 启动延迟 | 默认启动后 1800 秒（约 30 分钟）执行首轮，避免阻塞首页行情和策略加载 |
 | 策略扫描 | 默认遍历全部验证策略；可用 `VALIDATION_AUTO_UPDATE_STRATEGIES=tomorrow_picks,swing_picks` 限定 |
 | 代码收集 | 每个策略从已保存信号里取最近代码，单轮最多 `VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN=160` |
 | 分批下载 | 每批 `VALIDATION_AUTO_UPDATE_BATCH_SIZE=40` 只股票，先查 `.runtime/history_cache.sqlite3`，缺失或过期再请求行情源 |
@@ -533,6 +548,8 @@ python -m stock_analyzer.calibrate --calibrate-live-weights all --dry-run
 
 ## 12. 开源参考与借鉴范围
 
+完整优化路线图见 [`docs/strategy_optimization_plan.md`](strategy_optimization_plan.md)。该路线图明确了本阶段只优化荐股胜率、收益质量和风险过滤能力，暂不处理模拟执行和实盘下单。
+
 本工程直接依赖的主要开源库：
 
 | 项目 | 用途 |
@@ -548,6 +565,14 @@ python -m stock_analyzer.calibrate --calibrate-live-weights all --dry-run
 
 | 项目/方法 | 借鉴点 |
 |---|---|
+| [microsoft/qlib](https://github.com/microsoft/qlib) | AI-oriented 量化投研流程、Alpha158/Alpha360 因子体系、模型训练和回测一体化 |
+| [vnpy/vnpy](https://github.com/vnpy/vnpy) | 国内量化交易框架、因子工程、模型投研、风控和 Web 推送分层 |
+| [mementum/backtrader](https://github.com/mementum/backtrader) | 事件驱动回测、commission/slippage/analyzer 分层 |
+| [ricequant/rqalpha](https://github.com/ricequant/rqalpha) | 可扩展回测、模拟和分析框架设计 |
+| [QUANTAXIS/QUANTAXIS](https://github.com/QUANTAXIS/QUANTAXIS) | 本地数据仓、任务调度、回测、可视化和多账户架构 |
+| [AI4Finance-Foundation/FinRL](https://github.com/AI4Finance-Foundation/FinRL) | train-test-trade 流程、技术指标和 turbulence 风险指标；不优先引入 RL |
+| [bbfamily/abu](https://github.com/bbfamily/abu) | 股票、期货、期权、机器学习策略样例和形态信号组织 |
+| [shidenggui/easytrader](https://github.com/shidenggui/easytrader) | 未来执行层参考；当前不做模拟执行和实盘下单 |
 | [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) | 分析师、牛熊研究、交易员、风控、组合经理的分层决策流 |
 | [14H034160212/AlphaTrader](https://github.com/14H034160212/AlphaTrader) | Serenity / chokepoint 投资方法论，上溯供应链瓶颈 |
 | [wbh604/UZI-Skill](https://github.com/wbh604/UZI-Skill) | 结构化证据、数据覆盖门控、共识极化拉伸 |

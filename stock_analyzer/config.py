@@ -4,7 +4,7 @@ import os
 REFRESH_SECONDS = int(os.getenv("REFRESH_SECONDS", "30"))
 DEFAULT_TOP_N = int(os.getenv("DEFAULT_TOP_N", "30"))
 TOMORROW_TOP_N = int(os.getenv("TOMORROW_TOP_N", "36"))
-TOMORROW_PRIMARY_WATCH_N = int(os.getenv("TOMORROW_PRIMARY_WATCH_N", "10"))
+TOMORROW_PRIMARY_WATCH_N = int(os.getenv("TOMORROW_PRIMARY_WATCH_N", "5"))
 MIN_TURNOVER = float(os.getenv("MIN_TURNOVER", "50000000"))
 MAX_RECOMMENDED_GAIN = float(os.getenv("MAX_RECOMMENDED_GAIN", "12"))
 MAX_BUYABLE_GAIN_MAIN = float(os.getenv("MAX_BUYABLE_GAIN_MAIN", "6.5"))
@@ -33,13 +33,14 @@ HISTORY_FACTORS_FETCH_ON_REQUEST = os.getenv("HISTORY_FACTORS_FETCH_ON_REQUEST",
 HISTORY_FACTORS_MAX_REQUEST_FETCHES = int(os.getenv("HISTORY_FACTORS_MAX_REQUEST_FETCHES", "8"))
 HISTORY_CACHE_PATH = os.getenv("HISTORY_CACHE_PATH", ".runtime/history_cache.sqlite3")
 HISTORY_CACHE_FRESHNESS_HOURS = int(os.getenv("HISTORY_CACHE_FRESHNESS_HOURS", "18"))
+MARKET_DATA_DB_PATH = os.getenv("MARKET_DATA_DB_PATH", ".runtime/market_data.sqlite3")
 VALIDATION_AUTO_UPDATE_ENABLED = os.getenv("VALIDATION_AUTO_UPDATE_ENABLED", "1").lower() in (
     "1",
     "true",
     "yes",
     "on",
 )
-VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS = int(os.getenv("VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS", "180"))
+VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS = int(os.getenv("VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS", "1800"))
 VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS = int(os.getenv("VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS", "1800"))
 VALIDATION_AUTO_UPDATE_BATCH_SIZE = int(os.getenv("VALIDATION_AUTO_UPDATE_BATCH_SIZE", "40"))
 VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN = int(os.getenv("VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN", "160"))
@@ -98,6 +99,15 @@ EVENT_RISK_PENALTY_HIGH = float(os.getenv("EVENT_RISK_PENALTY_HIGH", "18.0"))
 EVENT_RISK_MAX_PENALTY = float(os.getenv("EVENT_RISK_MAX_PENALTY", "30.0"))
 EVENT_RISK_HARD_PENALTY = float(os.getenv("EVENT_RISK_HARD_PENALTY", "24.0"))
 EVENT_RISK_HARD_FILTER = os.getenv("EVENT_RISK_HARD_FILTER", "0").lower() in ("1", "true", "yes", "on")
+ENABLE_RISK_BLACKLIST = os.getenv("ENABLE_RISK_BLACKLIST", "1").lower() in ("1", "true", "yes", "on")
+RISK_BLACKLIST_PATH = os.getenv("RISK_BLACKLIST_PATH", ".runtime/risk_blacklist.json")
+RISK_BLACKLIST_CSV_PATH = os.getenv("RISK_BLACKLIST_CSV_PATH", ".runtime/risk_blacklist.csv")
+RISK_BLACKLIST_HARD_FILTER = os.getenv("RISK_BLACKLIST_HARD_FILTER", "1").lower() in ("1", "true", "yes", "on")
+RISK_BLACKLIST_HIGH_LEVELS = tuple(
+    item.strip().lower()
+    for item in os.getenv("RISK_BLACKLIST_HIGH_LEVELS", "high,critical").split(",")
+    if item.strip()
+)
 ENABLE_FUNDAMENTALS = os.getenv("ENABLE_FUNDAMENTALS", "0").lower() in ("1", "true", "yes", "on")
 FUNDAMENTAL_CACHE_PATH = os.getenv("FUNDAMENTAL_CACHE_PATH", ".runtime/fundamentals.json")
 FUNDAMENTAL_CACHE_HOURS = int(os.getenv("FUNDAMENTAL_CACHE_HOURS", "24"))
@@ -109,7 +119,7 @@ FACTOR_IC_WEIGHT_BAND = float(os.getenv("FACTOR_IC_WEIGHT_BAND", "0.3"))
 EXIT_STOP_LOSS_PCT = float(os.getenv("EXIT_STOP_LOSS_PCT", "5.0"))
 EXIT_TAKE_PROFIT_PCT = float(os.getenv("EXIT_TAKE_PROFIT_PCT", "8.0"))
 EXIT_TRAILING_STOP_PCT = float(os.getenv("EXIT_TRAILING_STOP_PCT", "4.0"))
-ENABLE_HISTORY_FACTORS = os.getenv("ENABLE_HISTORY_FACTORS", "0").lower() in ("1", "true", "yes", "on")
+ENABLE_HISTORY_FACTORS = os.getenv("ENABLE_HISTORY_FACTORS", "1").lower() in ("1", "true", "yes", "on")
 ENABLE_INLINE_SENTIMENT = os.getenv("ENABLE_INLINE_SENTIMENT", "0").lower() in ("1", "true", "yes", "on")
 ENABLE_MARKET_NEWS = os.getenv("ENABLE_MARKET_NEWS", "0").lower() in ("1", "true", "yes", "on")
 ENABLE_HOT_RANKS = os.getenv("ENABLE_HOT_RANKS", "0").lower() in ("1", "true", "yes", "on")
@@ -131,6 +141,12 @@ CALIBRATE_MIN_SAMPLES = int(os.getenv("CALIBRATE_MIN_SAMPLES", "30"))
 CALIBRATE_IMPROVE_MARGIN = float(os.getenv("CALIBRATE_IMPROVE_MARGIN", "0.05"))
 CALIBRATE_WALK_FORWARD_FOLDS = int(os.getenv("CALIBRATE_WALK_FORWARD_FOLDS", "4"))
 CALIBRATE_MIN_COVERAGE = float(os.getenv("CALIBRATE_MIN_COVERAGE", "0.5"))
+CALIBRATE_TOMORROW_DIRECTION_FOCUSED = os.getenv("CALIBRATE_TOMORROW_DIRECTION_FOCUSED", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # 小市值策略的流通市值下限（元），过滤纯壳/退市风险股。默认 8 亿。
 SMALLCAP_MIN_FLOAT_CAP = float(os.getenv("SMALLCAP_MIN_FLOAT_CAP", "800000000"))

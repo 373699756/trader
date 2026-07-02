@@ -86,6 +86,8 @@
 
 ## 开源参考
 
+完整的荐股优化路线图、阶段验收和 GitHub 参考路径见 [`docs/strategy_optimization_plan.md`](docs/strategy_optimization_plan.md)。
+
 本工程直接运行依赖的主要开源库：
 
 - [Flask](https://github.com/pallets/flask)：Web 服务和 API 路由。
@@ -97,9 +99,21 @@
 
 本轮策略优化参考了以下 GitHub 开源项目和方法论，未复制其代码：
 
+- [microsoft/qlib](https://github.com/microsoft/qlib)：参考 AI-oriented 量化投研流程、Alpha158/Alpha360 因子体系、模型训练和回测一体化。
+- [vnpy/vnpy](https://github.com/vnpy/vnpy)：参考国内量化交易框架、因子工程、模型投研、风控和 Web 推送分层。
+- [mementum/backtrader](https://github.com/mementum/backtrader)：参考事件驱动回测、commission/slippage/analyzer 分层。
+- [ricequant/rqalpha](https://github.com/ricequant/rqalpha)：参考可扩展回测、模拟和分析框架设计。
+- [QUANTAXIS/QUANTAXIS](https://github.com/QUANTAXIS/QUANTAXIS)：参考本地数据仓、任务调度、回测、可视化和多账户架构。
+- [AI4Finance-Foundation/FinRL](https://github.com/AI4Finance-Foundation/FinRL)：参考 train-test-trade 流程、技术指标和 turbulence 风险指标；本项目不优先引入 RL。
+- [bbfamily/abu](https://github.com/bbfamily/abu)：参考股票/期货/期权/机器学习策略样例、形态信号和多市场研究组织。
+- [shidenggui/easytrader](https://github.com/shidenggui/easytrader)：未来如需执行层，可参考同花顺、miniQMT、雪球组合对接；当前暂不做模拟执行和实盘下单。
 - [14H034160212/AlphaTrader](https://github.com/14H034160212/AlphaTrader)：参考 Serenity / chokepoint 投资方法论，上溯供应链瓶颈环节，偏向供给紧、难替代、尚未被充分重定价的上游主题。
 - [wbh604/UZI-Skill](https://github.com/wbh604/UZI-Skill)：参考结构化证据、数据覆盖自检门控和共识极化拉伸。
 - [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents)：参考多智能体投研分工、牛熊辩论、交易员、风控和组合经理审批流程，映射为本地 `agent_committee` 确定性评分。
+- [sngyai/Sequoia](https://github.com/sngyai/Sequoia)：参考日线量价、趋势和突破类技术选股思路。
+- [myhhub/stock](https://github.com/myhhub/stock)：参考 A 股数据处理和技术指标选股思路。
+- [hugo2046/QuantsPlaybook](https://github.com/hugo2046/QuantsPlaybook)：参考 A 股因子复现、反转、低波和换手等研究思路。
+- [UFund-Me/Qbot](https://github.com/UFund-Me/Qbot)：参考小市值因子、组合和风控讨论。
 
 ## 启动
 
@@ -130,7 +144,7 @@ HISTORY_FACTORS_FETCH_ON_REQUEST=1 HISTORY_FACTORS_MAX_REQUEST_FETCHES=8 ./run.s
 
 手动运行：
 
-依赖当前 AKShare 版本，需要 Python 3.9 及以上；推荐 Python 3.11。若已有旧的 Python 3.8 虚拟环境，请先删除后重建。
+依赖当前 AKShare/numpy/pandas 版本，需要 Python 3.9-3.11；推荐 Python 3.11。若已有其他版本虚拟环境，请先删除后重建。
 
 ```bash
 rm -rf .venv .venc
@@ -183,6 +197,10 @@ export ENABLE_EVENT_RISK=0
 export EVENT_RISK_HARD_FILTER=0
 export EVENT_RISK_REDUCTION_LOOKBACK_DAYS=120
 export EVENT_RISK_CACHE_PATH=.runtime/event_risk.json
+export ENABLE_RISK_BLACKLIST=1
+export RISK_BLACKLIST_PATH=.runtime/risk_blacklist.json
+export RISK_BLACKLIST_CSV_PATH=.runtime/risk_blacklist.csv
+export RISK_BLACKLIST_HARD_FILTER=1
 export ENABLE_FUNDAMENTALS=0
 export FUNDAMENTAL_CACHE_PATH=.runtime/fundamentals.json
 export FACTOR_IC_PATH=.runtime/factor_ic.json
@@ -232,6 +250,27 @@ export EXIT_TRAILING_STOP_PCT=4.0
 
 运行时会创建 `.runtime/history_cache.sqlite3` 保存日线历史数据缓存；策略验证后台自动回填和“回放历史补样本”都会复用这个数据库，避免每次复盘都重新请求远程行情。
 
+运行时也可维护 `.runtime/market_data.sqlite3` 作为更完整的本地日线库，供推荐页历史因子和离线回测校准读取：
+
+```bash
+.venv/bin/python -m stock_analyzer.market_data --summary
+.venv/bin/python -m stock_analyzer.market_data --download --limit 200 --days 720 --sleep 0.1
+```
+
+建议分批下载；`--limit` 会优先处理本地缺失或过期的股票。下载内容包括不复权日线、前复权日线、成交量、成交额和涨跌幅。
+
+明天预测会把 `.runtime/market_data.sqlite3` 里的历史因子接入盘面门控：当历史 20 日均线宽度低于 45% 时不输出主推买入，只保留备选观察池；45%-55% 时最多保留少量主推；高于 55% 时默认最多保留 5 只主推。页面仍展示完整观察名单，但只有 `tier=primary_watch` 的股票进入真实主样本统计和纸面交易重点。
+
+## 长期黑名单硬过滤
+
+系统默认启用长期黑名单过滤，用于剔除历史财务造假、重大违法、审计无法表示意见、重大内控缺陷、长期严重负面记录等股票。维护文件：
+
+- JSON：`.runtime/risk_blacklist.json`
+- CSV：`.runtime/risk_blacklist.csv`
+- 模板：[docs/risk_blacklist.example.json](docs/risk_blacklist.example.json)、[docs/risk_blacklist.example.csv](docs/risk_blacklist.example.csv)
+
+建议只录入有权威来源的记录，例如证监会处罚决定、交易所纪律处分、公司公告、审计报告或可信新闻链接。`level=high/critical` 且 `RISK_BLACKLIST_HARD_FILTER=1` 时会从所有推荐候选中硬剔除；`level=medium` 可用于仅提高风险分和解释，不做硬过滤。
+
 ## 样本不足处理
 
 策略验证的“样本不足”指验证库里已经有结果、且已经走完该策略主周期的信号少于 30 条，不是单纯缺少K线。只下载历史K线只能更新已保存信号的结果，不能凭空增加过去的推荐样本。
@@ -252,7 +291,7 @@ export EXIT_TRAILING_STOP_PCT=4.0
 后台自动回填默认参数：
 
 - `VALIDATION_AUTO_UPDATE_ENABLED=1`：启用后台自动任务。
-- `VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS=180`：应用启动后延迟首轮，避免阻塞首屏。
+- `VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS=1800`：应用启动后延迟约 30 分钟后首轮，避免阻塞首屏。
 - `VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS=1800`：每 30 分钟执行一轮。
 - `VALIDATION_AUTO_UPDATE_BATCH_SIZE=40`：每批最多处理 40 只股票。
 - `VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN=160`：每个策略单轮最多处理 160 只股票。

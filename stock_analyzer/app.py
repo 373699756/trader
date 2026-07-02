@@ -5,11 +5,12 @@ import threading
 import time
 from typing import Dict, List
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 import pandas as pd
 
 from . import config
 from .backtest import parse_code_list, run_alphalite_backtest, run_rolling_alphalite_backtest
+from .daily_data import load_history_frames
 from .event_risk import attach_event_risk, load_event_risk
 from .factor_ic import load_factor_ic
 from .factors import build_alphalite_factors, merge_alphalite
@@ -18,6 +19,7 @@ from .paper_trading import PaperTradingStore
 from .providers import MarketDataProvider, TimedCache
 from .portfolio import build_portfolio
 from .prediction import build_stock_prediction
+from .risk_blacklist import attach_risk_blacklist, blacklist_risk_for_code, load_risk_blacklist
 from .normalization import coerce_number, normalize_code
 from .selfcheck import factor_coverage
 from .scoring import (
@@ -27,6 +29,7 @@ from .scoring import (
     TRADING_AGENTS_REFERENCE,
     build_market_regime,
     build_strategy_consensus,
+    candidate_filter_report,
     prepare_candidates,
     score_position_candidates,
     score_chokepoint_candidates,
@@ -126,6 +129,7 @@ def create_app() -> Flask:
     market_news_cache = TimedCache(config.REFRESH_SECONDS * 3)
     sentiment_cache = TimedCache(config.REFRESH_SECONDS * 5)
     factors_cache = TimedCache(config.REFRESH_SECONDS * 30)
+    recommendations_lock = threading.Lock()
     stability_tracker = TopKDropoutTracker(
         config.STATE_PATH,
         keep_k=max(config.DEFAULT_TOP_N, 30),
@@ -135,7 +139,7 @@ def create_app() -> Flask:
     paper_store = PaperTradingStore(config.PAPER_TRADING_DB_PATH)
 
     # 验证指标按 (strategy, days) 缓存：每次 /api/recommendations 刷新会触发多次
-    # validation_store.metrics() 的 sqlite JOIN，验证数据仅在手动更新时变化，
+    # validation_store.metrics() 的 sqlite JOIN，验证数据通常随后台自动保存/回填更新，
     # 故在刷新周期内复用结果即可消除热路径上的重复查询。
     _metrics_cache: Dict[tuple, tuple] = {}
 
@@ -162,14 +166,16 @@ def create_app() -> Flask:
 
     def _iteration_reason(result: Dict[str, object]) -> str:
         status = str(result.get("status") or "")
+        mode = str(result.get("objective_mode") or "default")
+        mode_text = "方向先行" if mode == "direction_focused" else "平衡口径"
         if status == "dry_run_improved":
-            return "样本外验证改善，允许人工应用。"
+            return f"样本外验证改善（{mode_text}），允许人工应用。"
         if status == "insufficient_samples":
             return "有效样本不足，暂不允许自动修正。"
         if status == "insufficient_factor_coverage":
             return "因子覆盖不足，暂不允许自动修正。"
         if status == "no_oos_improvement":
-            return "样本外没有稳定改善，保持当前权重。"
+            return f"样本外没有稳定改善（{mode_text}），保持当前权重。"
         if status == "insufficient_oos_folds":
             return "样本外折数不足，继续积累样本。"
         if status == "written":
@@ -188,6 +194,9 @@ def create_app() -> Flask:
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "strategy": "tomorrow_picks",
             "days": int(days),
+            "objective_mode": result.get("objective_mode") or (
+                "direction_focused" if getattr(config, "CALIBRATE_TOMORROW_DIRECTION_FOCUSED", False) else "default"
+            ),
             "current_weights": (result.get("weights") or {}) if applied else _current_tomorrow_weights(),
             "suggested_weights": result.get("weights") or {},
             "can_apply": _iteration_can_apply(result),
@@ -221,6 +230,7 @@ def create_app() -> Flask:
     def _attach_event_risk_layer(candidates: pd.DataFrame) -> pd.DataFrame:
         payload = load_event_risk(provider)
         candidates = attach_event_risk(candidates, payload)
+        candidates = attach_risk_blacklist(candidates, load_risk_blacklist())
         codes = candidates["code"].tolist() if candidates is not None and "code" in candidates.columns else []
         return attach_fundamental_factors(candidates, load_fundamentals(provider, codes=codes))
 
@@ -470,6 +480,208 @@ def create_app() -> Flask:
     _start_validation_auto_update_worker()
     _start_validation_auto_snapshot_worker()
 
+    def _normalize_market(value: str) -> str:
+        return value if value in ("all", "main", "chinext", "star") else "all"
+
+    def _risk_blacklist_summary(payload: Dict[str, object]) -> Dict[str, object]:
+        payload = payload or {}
+        return {
+            "enabled": bool(getattr(config, "ENABLE_RISK_BLACKLIST", True)),
+            "hard_filter": bool(getattr(config, "RISK_BLACKLIST_HARD_FILTER", True)),
+            "status": payload.get("status", "missing"),
+            "item_count": len((payload.get("items") or {})),
+            "sources": payload.get("sources", []),
+            "error_count": len(payload.get("errors") or []),
+        }
+
+    def _recommendations_payload(top_n: int, market: str) -> tuple:
+        try:
+            with recommendations_lock:
+                blacklist_payload = load_risk_blacklist()
+                quotes = quotes_cache.get()
+                if quotes is None:
+                    quotes = provider.get_realtime_quotes()
+                    quotes_cache.set(quotes)
+                hard_filter_report = candidate_filter_report(quotes)
+                candidates = _attach_event_risk_layer(prepare_candidates(quotes))
+                candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
+                market_regime = build_market_regime(candidates, breadth_source=quotes)
+
+                hot_ranks = hot_cache.get()
+                if hot_ranks is None:
+                    if config.ENABLE_HOT_RANKS:
+                        try:
+                            hot_ranks = provider.get_hot_ranks()
+                        except Exception:
+                            hot_ranks = {}
+                    else:
+                        hot_ranks = {}
+                    hot_cache.set(hot_ranks)
+
+                industry_strength = industry_cache.get()
+                if industry_strength is None:
+                    if config.ENABLE_INDUSTRY_STRENGTH:
+                        try:
+                            industry_strength = provider.get_industry_strength()
+                        except Exception:
+                            industry_strength = {}
+                    else:
+                        industry_strength = {}
+                    industry_cache.set(industry_strength)
+
+                candidate_subset = candidates.sort_values("pct_chg", ascending=False).head(80)
+                sentiment_lookup = _sentiment_for_candidates(
+                    provider,
+                    sentiment_cache,
+                    candidate_subset[["code", "name"]].to_dict("records"),
+                )
+
+                recommendations_by_horizon, meta = score_dual_horizon_candidates(
+                    candidates,
+                    hot_ranks=hot_ranks,
+                    industry_strength=industry_strength,
+                    sentiment_lookup=sentiment_lookup,
+                    top_n=max(top_n, 30),
+                    market_filter=market,
+                    market_regime=market_regime,
+                )
+                tomorrow_rows, tomorrow_meta = score_tomorrow_candidates(
+                    candidates,
+                    top_n=30,
+                    market_filter=market,
+                    market_regime=market_regime,
+                )
+                swing_rows, swing_meta = score_swing_candidates(
+                    candidates,
+                    top_n=30,
+                    market_filter=market,
+                    market_regime=market_regime,
+                )
+                position_rows, position_meta = score_position_candidates(
+                    candidates,
+                    top_n=30,
+                    market_filter=market,
+                    market_regime=market_regime,
+                )
+                tech_rows, tech_meta = score_tech_potential_candidates(
+                    candidates,
+                    top_n=30,
+                    market_filter=market,
+                    market_regime=market_regime,
+                )
+                short_stability = stability_tracker.update("short_term", recommendations_by_horizon["short_term"])
+                long_stability = stability_tracker.update("long_term", recommendations_by_horizon["long_term"])
+                recommendations_by_horizon = {
+                    "short_term": short_stability["rows"][:top_n],
+                    "long_term": long_stability["rows"][:top_n],
+                }
+                _attach_validation_summary(recommendations_by_horizon["short_term"], validation_store, "short_term", metrics_fn=cached_metrics)
+                _attach_validation_summary(recommendations_by_horizon["long_term"], validation_store, "long_term", metrics_fn=cached_metrics)
+                meta["top_n"] = top_n
+                meta["risk_blacklist"] = _risk_blacklist_summary(blacklist_payload)
+                meta["hard_filter_report"] = hard_filter_report
+                meta["stability"] = {
+                    "short_term": {
+                        "new_entries": short_stability["new_entries"],
+                        "dropped": short_stability["dropped"],
+                        "retained": short_stability["retained"],
+                        "last_updated": short_stability["last_updated"],
+                    },
+                    "long_term": {
+                        "new_entries": long_stability["new_entries"],
+                        "dropped": long_stability["dropped"],
+                        "retained": long_stability["retained"],
+                        "last_updated": long_stability["last_updated"],
+                    },
+                }
+                meta["market_regime"] = market_regime
+                strategy_metrics = {}
+                for strategy_key in (
+                    "short_term", "long_term", "tomorrow_picks",
+                    "swing_picks", "position_picks", "tech_potential",
+                ):
+                    try:
+                        strategy_metrics[strategy_key] = cached_metrics(strategy_key, 20)
+                    except Exception:
+                        pass
+                consensus_rows = build_strategy_consensus(
+                    {
+                        "short_term": short_stability["rows"],
+                        "long_term": long_stability["rows"],
+                        "tomorrow_picks": tomorrow_rows,
+                        "swing_picks": swing_rows,
+                        "position_picks": position_rows,
+                        "tech_potential": tech_rows,
+                    },
+                    minimum_appearances=2,
+                    top_n=30,
+                    strategy_metrics=strategy_metrics,
+                )
+                meta["strategy_consensus"] = {
+                    "rows": consensus_rows,
+                    "strategy_count": 6,
+                    "serenity_references": SERENITY_REFERENCES,
+                    "trading_agents_reference": TRADING_AGENTS_REFERENCE,
+                    "source_versions": {
+                        "short_term": "dual_horizon_v2",
+                        "long_term": "dual_horizon_v2",
+                        "tomorrow_picks": tomorrow_meta.get("strategy_version", "tomorrow_picks_v4"),
+                        "swing_picks": swing_meta.get("strategy_version", "swing_5_10d_v1"),
+                        "position_picks": position_meta.get("strategy_version", "position_1_3m_v1"),
+                        "tech_potential": tech_meta.get("strategy_version", "tech_potential_v1"),
+                    },
+                }
+                consensus_lookup = {row["code"]: row for row in consensus_rows}
+                for horizon_name in ("short_term", "long_term"):
+                    for row in recommendations_by_horizon[horizon_name]:
+                        consensus = consensus_lookup.get(row.get("code"))
+                        if consensus:
+                            row["consensus_signal"] = consensus
+
+                market_news = _market_news(provider, market_news_cache)
+
+            return {
+                "ok": True,
+                "data": recommendations_by_horizon["short_term"],
+                "recommendations": recommendations_by_horizon,
+                "meta": meta,
+                "market_sentiment": build_market_sentiment_index(market_news),
+                "health": provider.health(),
+                "disclaimer": "仅供研究，不构成投资建议。",
+            }, 200
+        except Exception as exc:
+            saved_rows = validation_store.latest_signal_rows("tomorrow_picks")
+            if saved_rows:
+                _attach_validation_summary(saved_rows, validation_store, "tomorrow_picks", metrics_fn=cached_metrics)
+                return {
+                    "ok": True,
+                    "data": saved_rows[:top_n],
+                    "meta": {
+                        "generated_at": "",
+                        "candidate_count": len(saved_rows),
+                        "top_n": top_n,
+                        "market_filter": market,
+                        "strategy": "实时行情不可用，显示最近保存的明天预测",
+                        "fallback": "saved_snapshot",
+                        "risk_blacklist": _risk_blacklist_summary(load_risk_blacklist()),
+                        "hard_filter_report": {"raw_count": 0, "passed_count": len(saved_rows), "rejected_count": 0, "reasons": []},
+                    },
+                    "health": provider.health(),
+                    "disclaimer": "仅供研究，不构成投资建议。",
+                }, 200
+            return {
+                "ok": False,
+                "error": str(exc),
+                "health": provider.health(),
+                "disclaimer": "仅供研究，不构成投资建议。",
+            }, 502
+
+    def _sse_event(event: str, payload: Dict[str, object]) -> str:
+        return "event: {}\ndata: {}\n\n".format(
+            event,
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+
     @app.route("/")
     def index():
         return render_template(
@@ -546,7 +758,7 @@ def create_app() -> Flask:
             result = build_portfolio(rows, market_regime=market_regime, performance=performance)
             no_trade_reason = ""
             if not rows:
-                no_trade_reason = "暂无保存快照，先在策略验证中保存该策略预测。"
+                no_trade_reason = "暂无保存快照，请等待后台自动保存后再生成组合。"
             elif not result["rows"]:
                 no_trade_reason = "最近快照没有可配置仓位的标的。"
             elif result["summary"].get("constraints_feasible") is False:
@@ -612,193 +824,34 @@ def create_app() -> Flask:
     @app.route("/api/recommendations")
     def recommendations():
         top_n = _int_arg("top_n", 30, minimum=5, maximum=50)
-        market = request.args.get("market", "all")
-        if market not in ("all", "main", "chinext", "star"):
-            market = "all"
+        market = _normalize_market(request.args.get("market", "all"))
+        payload, status = _recommendations_payload(top_n, market)
+        if status == 200:
+            return jsonify(payload)
+        return jsonify(payload), status
 
-        try:
-            quotes = quotes_cache.get()
-            if quotes is None:
-                quotes = provider.get_realtime_quotes()
-                quotes_cache.set(quotes)
-            candidates = _attach_event_risk_layer(prepare_candidates(quotes))
-            candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
-            market_regime = build_market_regime(candidates, breadth_source=quotes)
+    @app.route("/api/recommendations/stream")
+    def recommendations_stream():
+        top_n = _int_arg("top_n", 30, minimum=5, maximum=50)
+        market = _normalize_market(request.args.get("market", "all"))
+        refresh_seconds = max(5, int(config.REFRESH_SECONDS))
 
-            hot_ranks = hot_cache.get()
-            if hot_ranks is None:
-                if config.ENABLE_HOT_RANKS:
-                    try:
-                        hot_ranks = provider.get_hot_ranks()
-                    except Exception:
-                        hot_ranks = {}
-                else:
-                    hot_ranks = {}
-                hot_cache.set(hot_ranks)
+        @stream_with_context
+        def generate():
+            yield "retry: 5000\n\n"
+            while True:
+                payload, status = _recommendations_payload(top_n, market)
+                yield _sse_event("recommendations" if status == 200 and payload.get("ok") else "recommendations-error", payload)
+                time.sleep(refresh_seconds)
 
-            industry_strength = industry_cache.get()
-            if industry_strength is None:
-                if config.ENABLE_INDUSTRY_STRENGTH:
-                    try:
-                        industry_strength = provider.get_industry_strength()
-                    except Exception:
-                        industry_strength = {}
-                else:
-                    industry_strength = {}
-                industry_cache.set(industry_strength)
-
-            candidate_subset = candidates.sort_values("pct_chg", ascending=False).head(80)
-            sentiment_lookup = _sentiment_for_candidates(
-                provider,
-                sentiment_cache,
-                candidate_subset[["code", "name"]].to_dict("records"),
-            )
-
-            recommendations_by_horizon, meta = score_dual_horizon_candidates(
-                candidates,
-                hot_ranks=hot_ranks,
-                industry_strength=industry_strength,
-                sentiment_lookup=sentiment_lookup,
-                top_n=max(top_n, 30),
-                market_filter=market,
-                market_regime=market_regime,
-            )
-            tomorrow_rows, tomorrow_meta = score_tomorrow_candidates(
-                candidates,
-                top_n=30,
-                market_filter=market,
-                market_regime=market_regime,
-            )
-            swing_rows, swing_meta = score_swing_candidates(
-                candidates,
-                top_n=30,
-                market_filter=market,
-                market_regime=market_regime,
-            )
-            position_rows, position_meta = score_position_candidates(
-                candidates,
-                top_n=30,
-                market_filter=market,
-                market_regime=market_regime,
-            )
-            tech_rows, tech_meta = score_tech_potential_candidates(
-                candidates,
-                top_n=30,
-                market_filter=market,
-                market_regime=market_regime,
-            )
-            short_stability = stability_tracker.update("short_term", recommendations_by_horizon["short_term"])
-            long_stability = stability_tracker.update("long_term", recommendations_by_horizon["long_term"])
-            recommendations_by_horizon = {
-                "short_term": short_stability["rows"][:top_n],
-                "long_term": long_stability["rows"][:top_n],
-            }
-            _attach_validation_summary(recommendations_by_horizon["short_term"], validation_store, "short_term", metrics_fn=cached_metrics)
-            _attach_validation_summary(recommendations_by_horizon["long_term"], validation_store, "long_term", metrics_fn=cached_metrics)
-            meta["top_n"] = top_n
-            meta["stability"] = {
-                "short_term": {
-                    "new_entries": short_stability["new_entries"],
-                    "dropped": short_stability["dropped"],
-                    "retained": short_stability["retained"],
-                    "last_updated": short_stability["last_updated"],
-                },
-                "long_term": {
-                    "new_entries": long_stability["new_entries"],
-                    "dropped": long_stability["dropped"],
-                    "retained": long_stability["retained"],
-                    "last_updated": long_stability["last_updated"],
-                },
-            }
-            meta["market_regime"] = market_regime
-            # B2：用各策略近期验证命中率作为共识可信度乘子（失败/无数据则空字典，安全回退）。
-            strategy_metrics = {}
-            for strategy_key in (
-                "short_term", "long_term", "tomorrow_picks",
-                "swing_picks", "position_picks", "tech_potential",
-            ):
-                try:
-                    strategy_metrics[strategy_key] = cached_metrics(strategy_key, 20)
-                except Exception:
-                    pass
-            consensus_rows = build_strategy_consensus(
-                {
-                    "short_term": short_stability["rows"],
-                    "long_term": long_stability["rows"],
-                    "tomorrow_picks": tomorrow_rows,
-                    "swing_picks": swing_rows,
-                    "position_picks": position_rows,
-                    "tech_potential": tech_rows,
-                },
-                minimum_appearances=2,
-                top_n=30,
-                strategy_metrics=strategy_metrics,
-            )
-            meta["strategy_consensus"] = {
-                "rows": consensus_rows,
-                "strategy_count": 6,
-                "serenity_references": SERENITY_REFERENCES,
-                "trading_agents_reference": TRADING_AGENTS_REFERENCE,
-                "source_versions": {
-                    "short_term": "dual_horizon_v2",
-                    "long_term": "dual_horizon_v2",
-                    "tomorrow_picks": tomorrow_meta.get("strategy_version", "tomorrow_picks_v4"),
-                    "swing_picks": swing_meta.get("strategy_version", "swing_5_10d_v1"),
-                    "position_picks": position_meta.get("strategy_version", "position_1_3m_v1"),
-                    "tech_potential": tech_meta.get("strategy_version", "tech_potential_v1"),
-                },
-            }
-            consensus_lookup = {row["code"]: row for row in consensus_rows}
-            for horizon_name in ("short_term", "long_term"):
-                for row in recommendations_by_horizon[horizon_name]:
-                    consensus = consensus_lookup.get(row.get("code"))
-                    if consensus:
-                        row["consensus_signal"] = consensus
-
-            market_news = _market_news(provider, market_news_cache)
-
-            return jsonify(
-                {
-                    "ok": True,
-                    "data": recommendations_by_horizon["short_term"],
-                    "recommendations": recommendations_by_horizon,
-                    "meta": meta,
-                    "market_sentiment": build_market_sentiment_index(market_news),
-                    "health": provider.health(),
-                    "disclaimer": "仅供研究，不构成投资建议。",
-                }
-            )
-        except Exception as exc:
-            saved_rows = validation_store.latest_signal_rows("tomorrow_picks")
-            if saved_rows:
-                _attach_validation_summary(saved_rows, validation_store, "tomorrow_picks", metrics_fn=cached_metrics)
-                return jsonify(
-                    {
-                        "ok": True,
-                        "data": saved_rows[:top_n],
-                        "meta": {
-                            "generated_at": "",
-                            "candidate_count": len(saved_rows),
-                            "top_n": top_n,
-                            "market_filter": market,
-                            "strategy": "实时行情不可用，显示最近保存的明天预测",
-                            "fallback": "saved_snapshot",
-                        },
-                        "health": provider.health(),
-                        "disclaimer": "仅供研究，不构成投资建议。",
-                    }
-                )
-            return (
-                jsonify(
-                    {
-                        "ok": False,
-                        "error": str(exc),
-                        "health": provider.health(),
-                        "disclaimer": "仅供研究，不构成投资建议。",
-                    }
-                ),
-                502,
-            )
+        return Response(
+            generate(),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.route("/api/sentiment/<code>")
     def sentiment(code: str):
@@ -821,6 +874,7 @@ def create_app() -> Flask:
     @app.route("/api/health")
     def health():
         coverage = {"row_count": 0, "avg_data_coverage": 0.0, "columns": {}, "degraded": True}
+        blacklist_payload = load_risk_blacklist()
         try:
             quotes = quotes_cache.get()
             if quotes is None:
@@ -841,6 +895,7 @@ def create_app() -> Flask:
                     "enabled": bool(config.ENABLE_EVENT_RISK),
                     "status": load_event_risk(provider).get("status", "disabled"),
                 },
+                "risk_blacklist": _risk_blacklist_summary(blacklist_payload),
                 "factor_ic": {
                     "enabled": bool(config.ENABLE_FUNDAMENTALS),
                     "fundamentals_status": load_fundamentals(provider).get("status", "disabled"),
@@ -952,6 +1007,7 @@ def create_app() -> Flask:
                 quotes = provider.get_realtime_quotes()
                 quotes_cache.set(quotes)
             candidates = _attach_event_risk_layer(prepare_candidates(quotes))
+            candidates = _attach_alphalite_factors(provider, factors_cache, candidates)
             market_regime = build_market_regime(candidates, breadth_source=quotes)
             rows, meta = score_tomorrow_candidates(
                 candidates,
@@ -1410,11 +1466,39 @@ def create_app() -> Flask:
         if not signal_date:
             return jsonify({"ok": False, "error": "缺少 date 参数"}), 400
         try:
+            rows = validation_store.signals_for_date(signal_date, strategy)
+            quote_lookup = {}
+            try:
+                quotes = quotes_cache.get()
+                if quotes is None:
+                    quotes = provider.get_realtime_quotes()
+                    quotes_cache.set(quotes)
+                quote_lookup = _quote_lookup(quotes)
+            except Exception:
+                quote_lookup = {}
+
+            for row in rows:
+                code = normalize_code(row.get("code", ""))
+                quote = quote_lookup.get(code, {})
+                current_price = coerce_number(quote.get("price"), None) if quote else None
+                current_pct_chg = coerce_number(quote.get("pct_chg"), None) if quote else None
+                signal_price = coerce_number(row.get("price_at_signal"), None)
+                anchor_to_now_return = None
+                if (
+                    current_price is not None
+                    and signal_price is not None
+                    and current_price > 0
+                    and signal_price > 0
+                ):
+                    anchor_to_now_return = round((current_price / signal_price - 1) * 100, 4)
+                row["current_price"] = current_price
+                row["current_pct_chg"] = current_pct_chg
+                row["anchor_to_now_return"] = anchor_to_now_return
             return jsonify(
                 {
                     "ok": True,
                     "date": signal_date,
-                    "data": validation_store.signals_for_date(signal_date, strategy),
+                    "data": rows,
                     "health": provider.health(),
                 }
             )
@@ -1425,6 +1509,10 @@ def create_app() -> Flask:
     def tomorrow_iteration():
         days = _int_arg("days", 120, minimum=30, maximum=240)
         force = request.args.get("force", "0") in ("1", "true", "yes", "on")
+        raw_direction_focus = request.args.get("direction_focus")
+        direction_focus = None
+        if raw_direction_focus is not None:
+            direction_focus = raw_direction_focus.lower() in ("1", "true", "yes", "on")
         try:
             cached = _load_iteration_payload()
             if cached and int(cached.get("days") or 0) == days and not force:
@@ -1438,6 +1526,7 @@ def create_app() -> Flask:
                 days=days,
                 steps=2,
                 dry_run=True,
+                direction_focus=direction_focus,
             )
             payload = _iteration_payload(result, days=days)
             _save_iteration_payload(payload)
@@ -1449,6 +1538,10 @@ def create_app() -> Flask:
     @app.route("/api/tomorrow-iteration/apply", methods=["POST"])
     def tomorrow_iteration_apply():
         days = _int_arg("days", 120, minimum=30, maximum=240)
+        raw_direction_focus = request.args.get("direction_focus")
+        direction_focus = None
+        if raw_direction_focus is not None:
+            direction_focus = raw_direction_focus.lower() in ("1", "true", "yes", "on")
         try:
             from .calibrate import calibrate_live_weights
 
@@ -1459,6 +1552,7 @@ def create_app() -> Flask:
                 days=days,
                 steps=2,
                 dry_run=True,
+                direction_focus=direction_focus,
             )
             dry_payload = _iteration_payload(dry_result, days=days)
             if not dry_payload["can_apply"]:
@@ -1479,6 +1573,7 @@ def create_app() -> Flask:
                 days=days,
                 steps=2,
                 dry_run=False,
+                direction_focus=direction_focus,
             )
             _refresh_scoring_weights(written_result.get("weights") or {})
             payload = _iteration_payload(written_result, applied=written_result.get("status") == "written", days=days)
@@ -1728,7 +1823,10 @@ def _leader_status(segment: str, leader: Dict[str, object], scored: Dict[str, ob
     if quote:
         pct = coerce_number(quote.get("pct_chg"))
         turnover = coerce_number(quote.get("turnover"))
+        blacklist_risk = blacklist_risk_for_code(code)
         risks = []
+        if blacklist_risk.get("flags"):
+            risks.extend("黑名单风险:{}".format(flag.get("label", "")) for flag in blacklist_risk["flags"][:2])
         if turnover < config.MIN_TURNOVER:
             risks.append("成交额不足")
         if pct > config.MAX_RECOMMENDED_GAIN:
@@ -1738,6 +1836,7 @@ def _leader_status(segment: str, leader: Dict[str, object], scored: Dict[str, ob
         if not risks:
             risks.append("未命中卡脖子关键词或未进入当前策略榜")
         action = "只观察" if risks else "等待确认"
+        avoid = blacklist_risk.get("hard_exclude") or pct > config.MAX_RECOMMENDED_GAIN or turnover < config.MIN_TURNOVER
         return {
             "code": code,
             "name": name,
@@ -1753,8 +1852,8 @@ def _leader_status(segment: str, leader: Dict[str, object], scored: Dict[str, ob
             "verdict": {},
             "reasons": risks[:3],
             "recommendation": {
-                "level": "avoid" if pct > config.MAX_RECOMMENDED_GAIN or turnover < config.MIN_TURNOVER else "observe",
-                "label": "不建议买入" if pct > config.MAX_RECOMMENDED_GAIN or turnover < config.MIN_TURNOVER else "仅观察",
+                "level": "avoid" if avoid else "observe",
+                "label": "不建议买入" if avoid else "仅观察",
                 "reason": "；".join(risks[:3]),
             },
         }
@@ -1819,10 +1918,13 @@ def _attach_alphalite_factors(provider, cache: TimedCache, candidates):
     target_codes = candidates.sort_values(["pct_chg", "turnover"], ascending=False).head(
         config.HISTORY_FACTOR_LIMIT
     )["code"].tolist()
+    history_by_code.update(_load_local_history_frames(target_codes, days=90))
     request_fetches = 0
     max_request_fetches = max(0, int(getattr(config, "HISTORY_FACTORS_MAX_REQUEST_FETCHES", 8)))
     fetch_on_request = bool(getattr(config, "HISTORY_FACTORS_FETCH_ON_REQUEST", False))
     for code in target_codes:
+        if code in history_by_code:
+            continue
         try:
             if hasattr(provider, "get_cached_history"):
                 history = provider.get_cached_history(code, days=90)
@@ -1850,8 +1952,10 @@ def _attach_alphalite_factors_for_codes(provider, candidates, codes):
     target &= set(candidates["code"].astype(str).tolist())
     if not target:
         return candidates
-    history_by_code = {}
+    history_by_code = _load_local_history_frames(target, days=90)
     for code in target:
+        if code in history_by_code:
+            continue
         try:
             history = provider.get_history(code, days=90)
         except Exception:
@@ -1861,6 +1965,13 @@ def _attach_alphalite_factors_for_codes(provider, candidates, codes):
     if not history_by_code:
         return candidates
     return merge_alphalite(candidates, build_alphalite_factors(history_by_code))
+
+
+def _load_local_history_frames(codes, days: int = 90) -> Dict[str, pd.DataFrame]:
+    try:
+        return load_history_frames(config.MARKET_DATA_DB_PATH, codes, days=days)
+    except Exception:
+        return {}
 
 
 def _attach_validation_summary(

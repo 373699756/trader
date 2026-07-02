@@ -4,6 +4,7 @@ import pandas as pd
 
 from . import config
 from .normalization import coerce_number, is_supported_code, market_type, normalize_code, rename_known_columns
+from .risk_blacklist import blacklist_risk_for_code
 from .scoring import STRATEGY_LABELS, build_strategy_consensus
 
 
@@ -273,8 +274,12 @@ def _filtered_stock_prediction(
     data_source: str = "实时行情",
     disclaimer: str = "",
 ) -> Dict[str, object]:
-    risks = list(extra_risks or []) + _filter_risks(row)
+    blacklist_risk = blacklist_risk_for_code(code)
+    blacklist_risks = ["黑名单风险:{}".format(flag.get("label", "历史重大负面风险")) for flag in blacklist_risk.get("flags", [])[:4]]
+    risks = blacklist_risks + list(extra_risks or []) + _filter_risks(row)
     risk_score = _filter_risk_score(risks)
+    if blacklist_risk.get("hard_exclude"):
+        risk_score = max(95.0, risk_score)
     label = "高风险/不建议参与" if risk_score >= 80 else "偏弱/风险较高" if risk_score >= 55 else "未入选推荐池"
     score = round(max(5.0, 48.0 - risk_score * 0.38), 2)
     confidence = round(min(95.0, 45.0 + risk_score * 0.45), 2)
@@ -352,6 +357,7 @@ def _filtered_stock_prediction(
         "missed_strategies": missed,
         "consensus": {},
         "risk_flags": risks,
+        "blacklist_risk": blacklist_risk,
         "disclaimer": disclaimer or "该结果是风控诊断，不构成投资建议；被过滤股票默认不按推荐策略给正向评分。",
     }
 
