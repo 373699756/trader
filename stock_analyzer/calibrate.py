@@ -25,7 +25,7 @@ import pandas as pd
 
 from . import config
 from .backtest import _DEFAULT_ALPHALITE_WEIGHTS, run_rolling_alphalite_backtest
-from .daily_data import load_history_frames
+from .daily_data import list_market_data_codes, load_history_frames
 from .history_cache import HistoryCache
 from .normalization import coerce_number, normalize_code
 from .scoring import STRATEGY_COMBINERS, WEIGHTS, _combine_details
@@ -47,14 +47,7 @@ def _cached_codes(db_path: str) -> List[str]:
 
 
 def _market_data_codes(db_path: str) -> List[str]:
-    if not db_path or not os.path.exists(db_path):
-        return []
-    with sqlite3.connect(db_path) as conn:
-        try:
-            rows = conn.execute("SELECT DISTINCT code FROM daily_bars").fetchall()
-        except sqlite3.OperationalError:
-            return []
-    return [str(row[0]) for row in rows if row and row[0]]
+    return list_market_data_codes(db_path)
 
 
 def _load_history(codes: List[str], fetch: bool) -> Dict[str, pd.DataFrame]:

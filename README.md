@@ -259,7 +259,17 @@ export EXIT_TRAILING_STOP_PCT=4.0
 
 建议分批下载；`--limit` 会优先处理本地缺失或过期的股票。下载内容包括不复权日线、前复权日线、成交量、成交额和涨跌幅。
 
-明天预测会把 `.runtime/market_data.sqlite3` 里的历史因子接入盘面门控：当历史 20 日均线宽度低于 45% 时不输出主推买入，只保留备选观察池；45%-55% 时最多保留少量主推；高于 55% 时默认最多保留 5 只主推。页面仍展示完整观察名单，但只有 `tier=primary_watch` 的股票进入真实主样本统计和纸面交易重点。
+如果要把 SQLite 按业务对象拆成多份小文件，直接把 `MARKET_DATA_DB_PATH` 配成目录而不是 `.sqlite3` 文件即可：
+
+```bash
+export MARKET_DATA_DB_PATH=.runtime/market_data
+.venv/bin/python -m stock_analyzer.market_data --download --limit 200 --days 720 --sleep 0.1
+.venv/bin/python -m stock_analyzer.market_data --summary
+```
+
+目录模式会把行情元数据/下载状态写入 `.runtime/market_data/market_data_meta.sqlite3`，把日线行情按板块和 5 位代码前缀写入 `market_data_bars_<板块>_<前缀>.sqlite3`，例如 `market_data_bars_main_60000.sqlite3`、`market_data_bars_chinext_30075.sqlite3`。推荐页历史因子、离线校准和 summary 都兼容这种目录模式。旧的单文件 `.runtime/market_data.sqlite3` 仍可继续使用。
+
+明天预测会把 `MARKET_DATA_DB_PATH` 指向的本地行情库里的历史因子接入盘面门控：当历史 20 日均线宽度低于 45% 时不输出主推买入，只保留备选观察池；45%-55% 时最多保留少量主推；高于 55% 时默认最多保留 5 只主推。页面仍展示完整观察名单，但只有 `tier=primary_watch` 的股票进入真实主样本统计和纸面交易重点。
 
 ## 长期黑名单硬过滤
 

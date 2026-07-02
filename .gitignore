@@ -1,6 +1,7 @@
 .venv/
 .venc/
 .runtime/downloads/
+.runtime/market_data.sqlite3
 .runtime/python-3.11/
 .agents/
 .codex/

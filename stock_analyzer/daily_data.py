@@ -2,6 +2,7 @@ import math
 import os
 import sqlite3
 from datetime import datetime
+from glob import glob
 from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
@@ -30,14 +31,23 @@ DAILY_BAR_COLUMNS = (
 class DailyMarketDataStore:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
-        directory = os.path.dirname(db_path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
+        self.sharded = not _is_sqlite_file(db_path)
+        if self.sharded:
+            os.makedirs(db_path, exist_ok=True)
+            self.meta_db_path = os.path.join(db_path, "market_data_meta.sqlite3")
+        else:
+            directory = os.path.dirname(db_path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            self.meta_db_path = db_path
         self._init_db()
 
     def latest_trade_date(self, code: str) -> str:
         code = normalize_code(code)
-        with sqlite3.connect(self.db_path) as conn:
+        db_path = self._bar_db_path_for_code(code)
+        if not os.path.exists(db_path):
+            return ""
+        with sqlite3.connect(db_path) as conn:
             row = conn.execute(
                 "SELECT MAX(trade_date) FROM daily_bars WHERE code = ?",
                 (code,),
@@ -62,7 +72,7 @@ class DailyMarketDataStore:
             )
         if not payload:
             return 0
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.meta_db_path) as conn:
             conn.executemany(
                 """
                 INSERT INTO stock_meta (code, name, market, is_active, updated_at)
@@ -90,7 +100,9 @@ class DailyMarketDataStore:
         rows = []
         for _, row in bars.iterrows():
             rows.append(tuple(row[column] for column in DAILY_BAR_COLUMNS) + (now,))
-        with sqlite3.connect(self.db_path) as conn:
+        db_path = self._bar_db_path_for_code(code)
+        self._init_bar_db(db_path)
+        with sqlite3.connect(db_path) as conn:
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO daily_bars
@@ -113,7 +125,7 @@ class DailyMarketDataStore:
     ) -> None:
         code = normalize_code(code)
         now = datetime.now().isoformat(timespec="seconds")
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.meta_db_path) as conn:
             existing = conn.execute(
                 "SELECT attempts FROM download_status WHERE code = ?",
                 (code,),
@@ -148,9 +160,32 @@ class DailyMarketDataStore:
             )
 
     def summary(self) -> Dict[str, object]:
-        with sqlite3.connect(self.db_path) as conn:
-            bar_count = conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
-            stock_count = conn.execute("SELECT COUNT(DISTINCT code) FROM daily_bars").fetchone()[0]
+        bar_count = 0
+        codes = set()
+        date_start = ""
+        date_end = ""
+        shard_count = 0
+        for db_path in self._bar_db_paths():
+            with sqlite3.connect(db_path) as conn:
+                shard_bars = conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
+                if shard_bars <= 0:
+                    continue
+                shard_count += 1
+                bar_count += int(shard_bars)
+                codes.update(
+                    row[0]
+                    for row in conn.execute("SELECT DISTINCT code FROM daily_bars").fetchall()
+                    if row and row[0]
+                )
+                date_range = conn.execute(
+                    "SELECT MIN(trade_date), MAX(trade_date) FROM daily_bars"
+                ).fetchone()
+                if date_range:
+                    if date_range[0] and (not date_start or date_range[0] < date_start):
+                        date_start = date_range[0]
+                    if date_range[1] and (not date_end or date_range[1] > date_end):
+                        date_end = date_range[1]
+        with sqlite3.connect(self.meta_db_path) as conn:
             status_rows = conn.execute(
                 """
                 SELECT status, COUNT(*)
@@ -158,20 +193,64 @@ class DailyMarketDataStore:
                 GROUP BY status
                 """
             ).fetchall()
-            date_range = conn.execute(
-                "SELECT MIN(trade_date), MAX(trade_date) FROM daily_bars"
-            ).fetchone()
         return {
             "db_path": self.db_path,
+            "sharded": self.sharded,
+            "shard_count": shard_count,
             "bar_count": int(bar_count),
-            "stock_count": int(stock_count),
-            "date_start": date_range[0] if date_range else "",
-            "date_end": date_range[1] if date_range else "",
+            "stock_count": len(codes),
+            "date_start": date_start,
+            "date_end": date_end,
             "status": {row[0]: int(row[1]) for row in status_rows},
         }
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        if not self.sharded:
+            self._init_bar_db(self.db_path)
+        with sqlite3.connect(self.meta_db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_meta (
+                    code TEXT PRIMARY KEY,
+                    name TEXT NOT NULL DEFAULT '',
+                    market TEXT NOT NULL DEFAULT '',
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS download_status (
+                    code TEXT PRIMARY KEY,
+                    name TEXT NOT NULL DEFAULT '',
+                    market TEXT NOT NULL DEFAULT '',
+                    last_trade_date TEXT NOT NULL DEFAULT '',
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT '',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+    def _bar_db_path_for_code(self, code: str) -> str:
+        if not self.sharded:
+            return self.db_path
+        return os.path.join(
+            self.db_path,
+            "market_data_bars_{}.sqlite3".format(_market_data_bucket(code)),
+        )
+
+    def _bar_db_paths(self) -> List[str]:
+        return _bar_db_paths(self.db_path)
+
+    def _init_bar_db(self, db_path: str) -> None:
+        directory = os.path.dirname(db_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with sqlite3.connect(db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS daily_bars (
@@ -202,17 +281,6 @@ class DailyMarketDataStore:
             )
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS stock_meta (
-                    code TEXT PRIMARY KEY,
-                    name TEXT NOT NULL DEFAULT '',
-                    market TEXT NOT NULL DEFAULT '',
-                    is_active INTEGER NOT NULL DEFAULT 1,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
                 CREATE TABLE IF NOT EXISTS download_status (
                     code TEXT PRIMARY KEY,
                     name TEXT NOT NULL DEFAULT '',
@@ -236,15 +304,11 @@ def load_history_frames(
     normalized_codes = list(dict.fromkeys(normalize_code(code) for code in codes if str(code).strip()))
     if not normalized_codes or not os.path.exists(db_path):
         return {}
-    placeholders = ",".join("?" for _ in normalized_codes)
-    with sqlite3.connect(db_path) as conn:
-        query = """
-            SELECT trade_date, code, open, high, low, close, volume, turnover, qfq_close, pct_chg
-            FROM daily_bars
-            WHERE code IN ({})
-            ORDER BY code ASC, trade_date ASC
-        """.format(placeholders)
-        history = pd.read_sql_query(query, conn, params=normalized_codes)
+    history = _read_daily_bars_for_codes(
+        db_path,
+        normalized_codes,
+        "trade_date, code, open, high, low, close, volume, turnover, qfq_close, pct_chg",
+    )
     if history.empty:
         return {}
 
@@ -268,15 +332,11 @@ def load_tomorrow_history_factors(
     normalized_codes = list(dict.fromkeys(normalize_code(code) for code in codes if str(code).strip()))
     if not normalized_codes or not os.path.exists(db_path):
         return pd.DataFrame()
-    placeholders = ",".join("?" for _ in normalized_codes)
-    with sqlite3.connect(db_path) as conn:
-        query = """
-            SELECT trade_date, code, close, qfq_close, turnover
-            FROM daily_bars
-            WHERE code IN ({})
-            ORDER BY code ASC, trade_date ASC
-        """.format(placeholders)
-        history = pd.read_sql_query(query, conn, params=normalized_codes)
+    history = _read_daily_bars_for_codes(
+        db_path,
+        normalized_codes,
+        "trade_date, code, close, qfq_close, turnover",
+    )
     if history.empty:
         return pd.DataFrame()
 
@@ -286,6 +346,20 @@ def load_tomorrow_history_factors(
         if factors:
             rows.append(factors)
     return pd.DataFrame(rows)
+
+
+def list_market_data_codes(db_path: str) -> List[str]:
+    if not db_path or not os.path.exists(db_path):
+        return []
+    codes = []
+    for path in _bar_db_paths(db_path):
+        with sqlite3.connect(path) as conn:
+            try:
+                rows = conn.execute("SELECT DISTINCT code FROM daily_bars").fetchall()
+            except sqlite3.OperationalError:
+                continue
+        codes.extend(str(row[0]) for row in rows if row and row[0])
+    return sorted(set(codes))
 
 
 def _tomorrow_factors_for_history(code: str, history: pd.DataFrame) -> Dict[str, object]:
@@ -355,6 +429,68 @@ def _history_return(close: pd.Series, days: int) -> float:
     if base <= 0 or latest <= 0:
         return 0.0
     return latest / base - 1
+
+
+def _read_daily_bars_for_codes(db_path: str, codes: List[str], columns: str) -> pd.DataFrame:
+    frames = []
+    for path, path_codes in _bar_db_paths_for_codes(db_path, codes).items():
+        if not os.path.exists(path):
+            continue
+        placeholders = ",".join("?" for _ in path_codes)
+        with sqlite3.connect(path) as conn:
+            query = """
+                SELECT {}
+                FROM daily_bars
+                WHERE code IN ({})
+                ORDER BY code ASC, trade_date ASC
+            """.format(columns, placeholders)
+            frames.append(pd.read_sql_query(query, conn, params=path_codes))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _bar_db_paths_for_codes(db_path: str, codes: List[str]) -> Dict[str, List[str]]:
+    if _is_sqlite_file(db_path):
+        return {db_path: codes}
+    grouped: Dict[str, List[str]] = {}
+    for code in codes:
+        path = os.path.join(
+            db_path,
+            "market_data_bars_{}.sqlite3".format(_market_data_bucket(code)),
+        )
+        grouped.setdefault(path, []).append(code)
+    return grouped
+
+
+def _bar_db_paths(db_path: str) -> List[str]:
+    if _is_sqlite_file(db_path):
+        return [db_path] if os.path.exists(db_path) else []
+    return sorted(
+        path
+        for path in glob(os.path.join(db_path, "market_data_bars_*.sqlite3"))
+        if os.path.isfile(path) and _is_current_bar_shard(path)
+    )
+
+
+def _is_sqlite_file(db_path: str) -> bool:
+    return os.path.splitext(db_path)[1].lower() in (".db", ".sqlite", ".sqlite3")
+
+
+def _market_data_bucket(code: str) -> str:
+    normalized = normalize_code(code)
+    market = market_type(normalized) or "other"
+    prefix = normalized[:5] if len(normalized) >= 5 else "misc"
+    return "{}_{}".format(market, prefix)
+
+
+def _is_current_bar_shard(path: str) -> bool:
+    basename = os.path.basename(path)
+    if not basename.startswith("market_data_bars_") or not basename.endswith(".sqlite3"):
+        return False
+    bucket = basename[len("market_data_bars_") : -len(".sqlite3")]
+    parts = bucket.rsplit("_", 1)
+    return len(parts) == 2 and (len(parts[1]) == 5 or parts[1] == "misc")
 
 
 def build_daily_bars(code: str, raw_history: pd.DataFrame, qfq_history: pd.DataFrame) -> pd.DataFrame:
