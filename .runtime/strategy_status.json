@@ -1,0 +1,53 @@
+{
+  "updated_at": "2026-07-02T14:45:59",
+  "strategies": {
+    "tomorrow_picks": {
+      "state": "pending",
+      "level": "pending",
+      "label": "样本不足",
+      "advice": "真实样本不足，回放只能粗筛；先保存并更新前瞻验证。"
+    },
+    "swing_picks": {
+      "state": "pending",
+      "level": "pending",
+      "label": "样本不足",
+      "advice": "真实样本不足，回放只能粗筛；先保存并更新前瞻验证。"
+    },
+    "position_picks": {
+      "state": "pending",
+      "level": "pending",
+      "label": "样本不足",
+      "advice": "真实样本不足，回放只能粗筛；先保存并更新前瞻验证。"
+    },
+    "tech_potential": {
+      "state": "pending",
+      "level": "pending",
+      "label": "样本不足",
+      "advice": "真实样本不足，回放只能粗筛；先保存并更新前瞻验证。"
+    },
+    "chokepoint_picks": {
+      "state": "pending",
+      "level": "pending",
+      "label": "样本不足",
+      "advice": "真实样本不足，回放只能粗筛；先保存并更新前瞻验证。"
+    },
+    "reversal_picks": {
+      "state": "pending",
+      "level": "pending",
+      "label": "样本不足",
+      "advice": "真实样本不足，回放只能粗筛；先保存并更新前瞻验证。"
+    },
+    "smallcap_value_picks": {
+      "state": "pending",
+      "level": "pending",
+      "label": "样本不足",
+      "advice": "真实样本不足，回放只能粗筛；先保存并更新前瞻验证。"
+    },
+    "breakout_picks": {
+      "state": "pending",
+      "level": "pending",
+      "label": "样本不足",
+      "advice": "真实样本不足，回放只能粗筛；先保存并更新前瞻验证。"
+    }
+  }
+}

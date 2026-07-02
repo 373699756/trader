@@ -1,6 +1,7 @@
 .venv/
 .venc/
-.runtime/
+.runtime/downloads/
+.runtime/python-3.11/
 .agents/
 .codex/
 __pycache__/
