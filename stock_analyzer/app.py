@@ -578,6 +578,14 @@ def create_app() -> Flask:
                     market_filter=market,
                     market_regime=market_regime,
                 )
+                try:
+                    _apply_tomorrow_validation_gate(
+                        tomorrow_rows,
+                        tomorrow_meta,
+                        cached_metrics("tomorrow_picks", 20),
+                    )
+                except Exception:
+                    pass
                 swing_rows, swing_meta = score_swing_candidates(
                     candidates,
                     top_n=30,
@@ -772,6 +780,14 @@ def create_app() -> Flask:
             strategy = "tomorrow_picks"
         try:
             rows = validation_store.latest_signal_rows(strategy)
+            validation_metrics = {}
+            if strategy == "tomorrow_picks":
+                try:
+                    validation_metrics = cached_metrics("tomorrow_picks", 20)
+                    rows = [dict(row) for row in rows]
+                    _apply_tomorrow_validation_gate(rows, {}, validation_metrics)
+                except Exception:
+                    validation_metrics = {}
             performance = paper_store.performance(strategy, days=120)
             market_regime = {}
             try:
@@ -801,6 +817,7 @@ def create_app() -> Flask:
                     "no_trade_reason": no_trade_reason,
                     "empty_reason": no_trade_reason if not rows else "",
                     "performance": performance,
+                    "validation_status": _strategy_status(validation_metrics) if validation_metrics else {},
                     "market_regime": market_regime,
                     "health": provider.health(),
                     "disclaimer": "仅供研究，不构成投资建议。",
@@ -1042,6 +1059,8 @@ def create_app() -> Flask:
                 market_filter=market,
                 market_regime=market_regime,
             )
+            metrics = cached_metrics("tomorrow_picks", 20)
+            _apply_tomorrow_validation_gate(rows, meta, metrics)
             meta["market_regime"] = market_regime
             _attach_validation_summary(rows, validation_store, "tomorrow_picks", metrics_fn=cached_metrics)
             return jsonify(
@@ -1057,35 +1076,44 @@ def create_app() -> Flask:
             saved_rows = validation_store.latest_signal_rows("tomorrow_picks")
             if saved_rows:
                 _attach_validation_summary(saved_rows, validation_store, "tomorrow_picks", metrics_fn=cached_metrics)
+                fallback_meta = {
+                    "generated_at": "",
+                    "candidate_count": len(saved_rows),
+                    "screened_count": len(saved_rows),
+                    "display_count": min(len(saved_rows), top_n),
+                    "display_limit": top_n,
+                    "min_score": 0.0,
+                    "gate_reason": "实时行情不可用，显示最近保存快照；不代表今日实时盘面。",
+                    "primary_watch_count": min(int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 10)), len(saved_rows), top_n),
+                    "top_n": top_n,
+                    "market_filter": market,
+                    "analysis_window": _analysis_window(),
+                    "strategy_version": "tomorrow_picks_v5",
+                    "strategy_label": "明天预测",
+                    "prediction_type": "rank_score",
+                    "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
+                    "strategy": "实时行情不可用，显示最近保存的明天预测",
+                    "fallback": "saved_snapshot",
+                    "policy": {
+                        "main_max_gain": config.MAX_BUYABLE_GAIN_MAIN,
+                        "growth_max_gain": config.MAX_BUYABLE_GAIN_GROWTH,
+                        "min_turnover": config.MIN_TURNOVER,
+                        "avoid_limit_up": True,
+                    },
+                }
+                try:
+                    _apply_tomorrow_validation_gate(
+                        saved_rows,
+                        fallback_meta,
+                        cached_metrics("tomorrow_picks", 20),
+                    )
+                except Exception:
+                    pass
                 return jsonify(
                     {
                         "ok": True,
                         "data": saved_rows[:top_n],
-                        "meta": {
-                            "generated_at": "",
-                            "candidate_count": len(saved_rows),
-                            "screened_count": len(saved_rows),
-                            "display_count": min(len(saved_rows), top_n),
-                            "display_limit": top_n,
-                            "min_score": 0.0,
-                            "gate_reason": "实时行情不可用，显示最近保存快照；不代表今日实时盘面。",
-                            "primary_watch_count": min(int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 10)), len(saved_rows), top_n),
-                            "top_n": top_n,
-                            "market_filter": market,
-                            "analysis_window": _analysis_window(),
-                            "strategy_version": "tomorrow_picks_v5",
-                            "strategy_label": "明天预测",
-                            "prediction_type": "rank_score",
-                            "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
-                            "strategy": "实时行情不可用，显示最近保存的明天预测",
-                            "fallback": "saved_snapshot",
-                            "policy": {
-                                "main_max_gain": config.MAX_BUYABLE_GAIN_MAIN,
-                                "growth_max_gain": config.MAX_BUYABLE_GAIN_GROWTH,
-                                "min_turnover": config.MIN_TURNOVER,
-                                "avoid_limit_up": True,
-                            },
-                        },
+                        "meta": fallback_meta,
                         "health": provider.health(),
                         "disclaimer": "仅供研究，不构成投资建议。",
                     }
@@ -2041,6 +2069,62 @@ def _attach_validation_summary(
     }
     for row in rows:
         row["similar_signal_stats"] = summary
+
+
+def _apply_tomorrow_validation_gate(
+    rows: List[Dict[str, object]],
+    meta: Dict[str, object],
+    metrics: Dict[str, object],
+) -> Dict[str, object]:
+    decision = _tomorrow_validation_gate_decision(metrics)
+    if meta is not None:
+        meta["validation_gate"] = decision
+    if not decision.get("blocked"):
+        return decision
+
+    reason = decision.get("reason") or "真实验证不达标，暂停重点观察"
+    for row in rows or []:
+        row["tier"] = "backup_pool"
+        row["tier_label"] = "备选观察"
+        reasons = row.setdefault("reasons", [])
+        if isinstance(reasons, list) and reason not in reasons:
+            reasons.append(reason)
+    if meta is not None:
+        meta["primary_watch_count"] = 0
+        meta["primary_gate_count"] = 0
+        current_reason = str(meta.get("gate_reason") or "").strip()
+        meta["gate_reason"] = "{} {}".format(current_reason, reason).strip()
+    return decision
+
+
+def _tomorrow_validation_gate_decision(metrics: Dict[str, object]) -> Dict[str, object]:
+    if not metrics:
+        return {"blocked": False, "reason": "", "state": "unknown"}
+    status = _strategy_status(metrics)
+    primary_outcomes = int(metrics.get("outcome_sample_count") or metrics.get("sample_count") or 0)
+    avg_net = coerce_number(metrics.get("avg_primary_return_net"))
+    win_net = coerce_number(metrics.get("win_rate_primary_net"))
+    decision = {
+        "blocked": False,
+        "reason": "",
+        "state": status.get("state", "unknown"),
+        "label": status.get("label", ""),
+        "outcome_sample_count": primary_outcomes,
+        "total_outcome_sample_count": int(metrics.get("total_outcome_sample_count") or 0),
+        "avg_primary_return_net": avg_net,
+        "win_rate_primary_net": win_net,
+        "real_sample_count": int(metrics.get("real_sample_count") or 0),
+        "real_avg_primary_return_net": coerce_number(metrics.get("real_avg_primary_return_net")),
+        "real_win_rate_primary_net": coerce_number(metrics.get("real_win_rate_primary_net")),
+    }
+    if status.get("state") == "retired":
+        decision["blocked"] = True
+        decision["reason"] = "验证退场：真实样本净胜率或净收益跌破阈值，暂停重点观察"
+        return decision
+    if primary_outcomes >= 2 and (avg_net < 0 or win_net < 50):
+        decision["blocked"] = True
+        decision["reason"] = "验证门控：最近重点观察净表现不达标，仅保留备选观察"
+    return decision
 
 
 def _market_news(provider, cache: TimedCache):

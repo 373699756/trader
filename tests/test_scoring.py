@@ -910,6 +910,47 @@ class ScoringTest(unittest.TestCase):
 
         self.assertEqual(status["state"], "retired")
 
+    def test_tomorrow_validation_gate_demotes_primary_when_retired(self):
+        from stock_analyzer.app import _apply_tomorrow_validation_gate
+
+        rows = [
+            {"code": "600001", "tier": "primary_watch", "tier_label": "重点观察", "reasons": []},
+            {"code": "600002", "tier": "backup_pool", "tier_label": "备选观察", "reasons": []},
+        ]
+        meta = {"primary_watch_count": 1, "primary_gate_count": 1, "gate_reason": "原始门控"}
+
+        decision = _apply_tomorrow_validation_gate(
+            rows,
+            meta,
+            {
+                "sample_count": 3,
+                "outcome_sample_count": 3,
+                "total_outcome_sample_count": 30,
+                "real_sample_count": 30,
+                "avg_primary_return_net": -0.8,
+                "win_rate_primary_net": 30.0,
+                "real_avg_primary_return_net": -0.4,
+                "real_win_rate_primary_net": 40.0,
+            },
+        )
+
+        self.assertTrue(decision["blocked"])
+        self.assertEqual(meta["primary_watch_count"], 0)
+        self.assertEqual({row["tier"] for row in rows}, {"backup_pool"})
+        self.assertIn("验证退场", rows[0]["reasons"][0])
+
+    def test_tomorrow_validation_gate_keeps_primary_without_outcomes(self):
+        from stock_analyzer.app import _apply_tomorrow_validation_gate
+
+        rows = [{"code": "600001", "tier": "primary_watch", "tier_label": "重点观察", "reasons": []}]
+        meta = {"primary_watch_count": 1, "primary_gate_count": 1}
+
+        decision = _apply_tomorrow_validation_gate(rows, meta, {})
+
+        self.assertFalse(decision["blocked"])
+        self.assertEqual(rows[0]["tier"], "primary_watch")
+        self.assertEqual(meta["primary_watch_count"], 1)
+
     def test_serenity_references_corrected_to_chokepoint(self):
         from stock_analyzer.scoring import SERENITY_REFERENCES
 
