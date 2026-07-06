@@ -15,9 +15,22 @@ def build_portfolio(
     max_pos = max(1, int(max_positions or getattr(config, "PORTFOLIO_MAX_POSITIONS", 10)))
     single = max(0.01, min(1.0, coerce_number(single_cap, getattr(config, "PORTFOLIO_SINGLE_CAP", 0.15))))
     theme_limit = max(single, min(1.0, coerce_number(theme_cap, getattr(config, "PORTFOLIO_THEME_CAP", 0.35))))
-    selected = [dict(row) for row in (rows or [])[:max_pos]]
+    input_rows = [dict(row) for row in (rows or [])]
+    eligible_rows = _eligible_portfolio_rows(input_rows)
+    selected = eligible_rows[:max_pos]
     if not selected:
-        return {"rows": [], "exposure": {}, "summary": {"position_count": 0, "total_weight": 0.0}}
+        return {
+            "rows": [],
+            "exposure": {},
+            "summary": {
+                "position_count": 0,
+                "total_weight": 0.0,
+                "cash_pct": 100.0,
+                "input_count": len(input_rows),
+                "excluded_count": len(input_rows) - len(eligible_rows),
+                "no_trade_reason": _portfolio_no_trade_reason(input_rows),
+            },
+        }
 
     raw_weights = [_raw_weight(row) for row in selected]
     weights = _project_weights(selected, raw_weights, single, theme_limit)
@@ -39,6 +52,8 @@ def build_portfolio(
             "position_count": len(selected),
             "total_weight": round(total * 100, 2),
             "cash_pct": round(max(0.0, 1.0 - total) * 100, 2),
+            "input_count": len(input_rows),
+            "excluded_count": len(input_rows) - len(eligible_rows),
             "gross_exposure_pct": round(gross["gross_exposure"] * 100, 2),
             "regime_factor": round(gross["regime_factor"], 4),
             "drawdown_factor": round(gross["drawdown_factor"], 4),
@@ -48,6 +63,21 @@ def build_portfolio(
             "constraints_feasible": constraints_feasible,
         },
     }
+
+
+def _eligible_portfolio_rows(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    has_tier = any(str(row.get("tier") or "").strip() for row in rows)
+    if not has_tier:
+        return rows
+    return [row for row in rows if str(row.get("tier") or "").strip() == "primary_watch"]
+
+
+def _portfolio_no_trade_reason(rows: List[Dict[str, object]]) -> str:
+    if not rows:
+        return "暂无保存快照，请等待后台自动保存后再生成组合。"
+    if any(str(row.get("tier") or "").strip() for row in rows):
+        return "最近快照没有重点观察标的，备选观察不参与组合分仓。"
+    return "最近快照没有可配置仓位的标的。"
 
 
 def _raw_weight(row: Dict[str, object]) -> float:

@@ -301,6 +301,7 @@ def load_history_frames(
     codes: Iterable[str],
     days: int = 90,
 ) -> Dict[str, pd.DataFrame]:
+    db_path = resolve_market_data_path(db_path)
     normalized_codes = list(dict.fromkeys(normalize_code(code) for code in codes if str(code).strip()))
     if not normalized_codes or not os.path.exists(db_path):
         return {}
@@ -329,6 +330,7 @@ def load_tomorrow_history_factors(
     codes: Iterable[str],
     days: int = 90,
 ) -> pd.DataFrame:
+    db_path = resolve_market_data_path(db_path)
     normalized_codes = list(dict.fromkeys(normalize_code(code) for code in codes if str(code).strip()))
     if not normalized_codes or not os.path.exists(db_path):
         return pd.DataFrame()
@@ -349,6 +351,7 @@ def load_tomorrow_history_factors(
 
 
 def list_market_data_codes(db_path: str) -> List[str]:
+    db_path = resolve_market_data_path(db_path)
     if not db_path or not os.path.exists(db_path):
         return []
     codes = []
@@ -360,6 +363,17 @@ def list_market_data_codes(db_path: str) -> List[str]:
                 continue
         codes.extend(str(row[0]) for row in rows if row and row[0])
     return sorted(set(codes))
+
+
+def resolve_market_data_path(db_path: str) -> str:
+    path = str(db_path or "").strip() or ".runtime/market_data.sqlite3"
+    if _market_data_path_has_bars(path):
+        return path
+    if _is_sqlite_file(path):
+        sibling_dir = os.path.splitext(path)[0]
+        if _market_data_path_has_bars(sibling_dir):
+            return sibling_dir
+    return path
 
 
 def _tomorrow_factors_for_history(code: str, history: pd.DataFrame) -> Dict[str, object]:
@@ -475,6 +489,20 @@ def _bar_db_paths(db_path: str) -> List[str]:
 
 def _is_sqlite_file(db_path: str) -> bool:
     return os.path.splitext(db_path)[1].lower() in (".db", ".sqlite", ".sqlite3")
+
+
+def _market_data_path_has_bars(db_path: str) -> bool:
+    if not db_path or not os.path.exists(db_path):
+        return False
+    for path in _bar_db_paths(db_path):
+        try:
+            with sqlite3.connect(path) as conn:
+                row = conn.execute("SELECT 1 FROM daily_bars LIMIT 1").fetchone()
+            if row:
+                return True
+        except sqlite3.Error:
+            continue
+    return False
 
 
 def _market_data_bucket(code: str) -> str:

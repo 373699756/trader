@@ -44,7 +44,7 @@ from .scoring import (
 from .sentiment import build_market_sentiment_index, score_stock_sentiment
 from .strategy_validation import StrategyValidationStore
 from .strategy_health import save_strategy_status, strategy_status
-from .snapshot import SNAPSHOT_STRATEGIES, run_snapshot
+from .snapshot import SNAPSHOT_STRATEGIES, run_snapshot, run_snapshots
 from .validation_replay import backfill_strategy_validation_samples
 from .stability import TopKDropoutTracker
 
@@ -249,8 +249,20 @@ def create_app() -> Flask:
     def _configured_auto_update_strategies() -> List[str]:
         raw = str(getattr(config, "VALIDATION_AUTO_UPDATE_STRATEGIES", "") or "").strip()
         if not raw:
-            return ["tomorrow_picks"]
+            return list(SNAPSHOT_STRATEGIES)
         requested = [item.strip() for item in raw.replace("，", ",").split(",") if item.strip()]
+        strategies = [item for item in requested if item in SNAPSHOT_STRATEGIES]
+        return strategies or ["tomorrow_picks"]
+
+    def _configured_auto_snapshot_strategies() -> List[str]:
+        raw = str(getattr(config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", "") or "").strip()
+        if not raw:
+            raw = str(getattr(config, "VALIDATION_AUTO_UPDATE_STRATEGIES", "") or "").strip()
+        if not raw:
+            return list(SNAPSHOT_STRATEGIES)
+        requested = [item.strip() for item in raw.replace("，", ",").split(",") if item.strip()]
+        if any(item.lower() == "all" for item in requested):
+            return list(SNAPSHOT_STRATEGIES)
         strategies = [item for item in requested if item in SNAPSHOT_STRATEGIES]
         return strategies or ["tomorrow_picks"]
 
@@ -331,12 +343,15 @@ def create_app() -> Flask:
             auto_snapshot_status["last_started_at"] = datetime.now().isoformat(timespec="seconds")
             auto_snapshot_status["last_error"] = ""
 
-        result = {"ok": True, "strategy": "tomorrow_picks", "market": market}
+        strategies = _configured_auto_snapshot_strategies()
+        result = {"ok": True, "strategies": strategies, "market": market, "snapshots": []}
         try:
-            snapshot_result = run_snapshot(provider, validation_store, "tomorrow_picks", market=market)
-            result.update(snapshot_result)
-            if not result.get("ok"):
-                raise RuntimeError(str(result.get("error") or "auto snapshot failed"))
+            snapshot_results = run_snapshots(provider, validation_store, strategies, market=market)
+            result["snapshots"] = snapshot_results
+            failed = [item for item in snapshot_results if not item.get("ok")]
+            result["ok"] = not failed
+            if failed:
+                raise RuntimeError("; ".join(str(item.get("error") or item.get("strategy")) for item in failed[:3]))
             invalidate_metrics_cache()
             result["finished_at"] = datetime.now().isoformat(timespec="seconds")
             _set_auto_snapshot_status(
@@ -458,10 +473,11 @@ def create_app() -> Flask:
     def _start_validation_auto_snapshot_worker() -> None:
         if not config.VALIDATION_AUTO_SNAPSHOT_ENABLED:
             return
-        worker_key = "snapshot|{}|{}|{}".format(
+        worker_key = "snapshot|{}|{}|{}|{}".format(
             config.VALIDATION_DB_PATH,
             config.VALIDATION_AUTO_SNAPSHOT_TIME,
             config.VALIDATION_AUTO_SNAPSHOT_MARKET,
+            getattr(config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", ""),
         )
         with _VALIDATION_AUTO_WORKERS_LOCK:
             if worker_key in _VALIDATION_AUTO_WORKERS:
@@ -771,7 +787,7 @@ def create_app() -> Flask:
             if not rows:
                 no_trade_reason = "暂无保存快照，请等待后台自动保存后再生成组合。"
             elif not result["rows"]:
-                no_trade_reason = "最近快照没有可配置仓位的标的。"
+                no_trade_reason = result["summary"].get("no_trade_reason") or "最近快照没有可配置仓位的标的。"
             elif result["summary"].get("constraints_feasible") is False:
                 no_trade_reason = "候选票或主题分散度不足，剩余仓位保留现金。"
             return jsonify(

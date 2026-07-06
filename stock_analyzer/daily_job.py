@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument("--factor-ic", action="store_true", help="基于真实验证样本刷新因子 IC 文件")
     parser.add_argument("--calibrate-live", action="store_true", help="基于明天预测真实验证样本校准权重")
     parser.add_argument("--write-weights", action="store_true", help="与 --calibrate-live 配合，确认写入 weights.json")
-    parser.add_argument("--strategy", default="tomorrow_picks", help="当前只支持 tomorrow_picks；all 会映射为 tomorrow_picks")
+    parser.add_argument("--strategy", default="all", help="策略名；all 表示所有快照策略")
     parser.add_argument("--market", default="all", choices=("all", "main", "chinext", "star"))
     args = parser.parse_args()
 
@@ -45,13 +45,13 @@ def main() -> int:
 
     from .paper_trading import PaperTradingStore
     from .providers import MarketDataProvider
-    from .snapshot import run_snapshots
+    from .snapshot import SNAPSHOT_STRATEGIES, run_snapshots
     from .strategy_validation import StrategyValidationStore
 
     provider = MarketDataProvider()
     store = StrategyValidationStore(config.VALIDATION_DB_PATH)
     paper_store = PaperTradingStore(config.PAPER_TRADING_DB_PATH)
-    strategies = ["tomorrow_picks"]
+    strategies = _parse_strategies(args.strategy, SNAPSHOT_STRATEGIES)
     payload = {"ok": True, "snapshot": [], "update": [], "paper_trade": [], "factor_ic": {}, "calibrate_live": {}}
 
     if args.snapshot:
@@ -91,6 +91,15 @@ def main() -> int:
 
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def _parse_strategies(raw: str, supported) -> list:
+    text = str(raw or "all").strip()
+    if not text or text.lower() == "all":
+        return list(supported)
+    requested = [item.strip() for item in text.replace("，", ",").split(",") if item.strip()]
+    strategies = [item for item in requested if item in supported]
+    return strategies or ["tomorrow_picks"]
 
 
 if __name__ == "__main__":
