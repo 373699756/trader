@@ -8,6 +8,7 @@ import pandas as pd
 from stock_analyzer import config
 from stock_analyzer.app import create_app
 from stock_analyzer.backtest import run_alphalite_backtest, run_rolling_alphalite_backtest
+from stock_analyzer.daily_data import DailyMarketDataStore, load_history_frames
 from stock_analyzer.event_risk import attach_event_risk, build_event_risk_map
 from stock_analyzer.factors import compute_alphalite_for_stock
 from stock_analyzer.factor_ic import compute_factor_ic
@@ -1508,6 +1509,68 @@ class ScoringTest(unittest.TestCase):
         self.assertGreater(factor["ret_20d"], 0)
         self.assertEqual(factor["breakout_20d"], 1.0)
 
+    def test_load_history_frames_falls_back_to_sibling_sharded_store(self):
+        import tempfile
+
+        raw = pd.DataFrame(
+            {
+                "trade_date": ["20240101", "20240102"],
+                "open": [10, 11],
+                "high": [10.5, 11.5],
+                "low": [9.8, 10.8],
+                "close": [10.2, 11.2],
+                "volume": [1000, 1200],
+                "turnover": [10000000, 12000000],
+                "pct_chg": [0.0, 9.8],
+            }
+        )
+        qfq = raw.copy()
+        qfq["open"] = [9, 10]
+        qfq["high"] = [9.5, 10.5]
+        qfq["low"] = [8.8, 9.8]
+        qfq["close"] = [9.2, 10.2]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            empty_sqlite = "{}/market_data.sqlite3".format(tmpdir)
+            sharded_dir = "{}/market_data".format(tmpdir)
+            DailyMarketDataStore(empty_sqlite)
+            store = DailyMarketDataStore(sharded_dir)
+            store.upsert_bars("600001", raw, qfq)
+
+            history = load_history_frames(empty_sqlite, ["600001"], days=90)
+
+        self.assertIn("600001", history)
+        self.assertEqual(len(history["600001"]), 2)
+        self.assertEqual(history["600001"].iloc[-1]["open"], 10)
+        self.assertEqual(history["600001"].iloc[-1]["price"], 10.2)
+
+    def test_market_data_fetch_history_falls_back_to_sina(self):
+        from stock_analyzer import market_data
+
+        class EmptyAk:
+            def stock_zh_a_hist(self, **kwargs):
+                raise RuntimeError("akshare failed")
+
+        sina_history = pd.DataFrame(
+            [
+                {
+                    "trade_date": "20240102",
+                    "open": 10,
+                    "close": 10.2,
+                    "high": 10.5,
+                    "low": 9.8,
+                    "volume": 1000,
+                    "turnover": 0,
+                    "pct_chg": 0,
+                }
+            ]
+        )
+        with patch("stock_analyzer.market_data._fetch_eastmoney_history", side_effect=RuntimeError("eastmoney failed")):
+            with patch("stock_analyzer.market_data._fetch_sina_history", return_value=sina_history) as sina:
+                history = market_data._fetch_history(EmptyAk(), "600001", "20240101", "20240131", "qfq")
+
+        self.assertEqual(history.iloc[0]["trade_date"], "20240102")
+        sina.assert_called_once_with("600001", "20240101", "20240131")
+
     def test_topk_dropout_marks_new_and_retained(self):
         import tempfile
 
@@ -1755,6 +1818,62 @@ class ScoringTest(unittest.TestCase):
         self.assertTrue(all(value <= 50.01 for value in result["exposure"].values()))
         self.assertTrue(result["summary"]["constraints_feasible"])
 
+    def test_build_portfolio_excludes_backup_pool_when_tiers_exist(self):
+        rows = [
+            {
+                "rank": 1,
+                "code": "600001",
+                "name": "备选A",
+                "score": 60,
+                "tier": "backup_pool",
+                "theme": "半导体",
+                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+            },
+            {
+                "rank": 2,
+                "code": "600002",
+                "name": "备选B",
+                "score": 58,
+                "tier": "backup_pool",
+                "theme": "算力",
+                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+            },
+        ]
+
+        result = build_portfolio(rows)
+
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["summary"]["cash_pct"], 100.0)
+        self.assertEqual(result["summary"]["excluded_count"], 2)
+        self.assertIn("备选观察不参与组合分仓", result["summary"]["no_trade_reason"])
+
+    def test_build_portfolio_keeps_primary_watch_when_tiers_exist(self):
+        rows = [
+            {
+                "rank": 1,
+                "code": "600001",
+                "name": "重点",
+                "score": 80,
+                "tier": "primary_watch",
+                "theme": "半导体",
+                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+            },
+            {
+                "rank": 2,
+                "code": "600002",
+                "name": "备选",
+                "score": 60,
+                "tier": "backup_pool",
+                "theme": "算力",
+                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+            },
+        ]
+
+        result = build_portfolio(rows, market_regime={"score": 80})
+
+        self.assertEqual([row["code"] for row in result["rows"]], ["600001"])
+        self.assertEqual(result["summary"]["excluded_count"], 1)
+
     def test_event_risk_can_hard_filter_and_tag_candidates(self):
         from datetime import datetime, timedelta
 
@@ -1925,6 +2044,12 @@ class ScoringTest(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertGreater(payload["ic"]["fundamental_quality_score"]["ic"], 0)
+
+    def test_daily_job_strategy_all_expands_supported_snapshots(self):
+        from stock_analyzer import daily_job
+        from stock_analyzer.snapshot import SNAPSHOT_STRATEGIES
+
+        self.assertEqual(daily_job._parse_strategies("all", SNAPSHOT_STRATEGIES), list(SNAPSHOT_STRATEGIES))
 
     def test_factor_ic_weighting_can_adjust_combiner_when_enabled(self):
         import json
@@ -3296,6 +3421,46 @@ class ScoringTest(unittest.TestCase):
 
         self.assertEqual(str(quotes.iloc[0]["code"]).zfill(6), "600001")
         self.assertEqual(provider.status.quotes_source, "本地快照")
+
+    def test_provider_get_history_uses_local_market_data(self):
+        import tempfile
+
+        raw = pd.DataFrame(
+            {
+                "trade_date": pd.date_range("2024-01-01", periods=35, freq="D").strftime("%Y%m%d"),
+                "open": [10 + i * 0.1 for i in range(35)],
+                "high": [10.5 + i * 0.1 for i in range(35)],
+                "low": [9.8 + i * 0.1 for i in range(35)],
+                "close": [10.2 + i * 0.1 for i in range(35)],
+                "volume": [1000 + i for i in range(35)],
+                "turnover": [10000000 + i * 10000 for i in range(35)],
+                "pct_chg": [0.1 for _ in range(35)],
+            }
+        )
+        original_market_path = config.MARKET_DATA_DB_PATH
+        original_cache_path = config.HISTORY_CACHE_PATH
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                config.MARKET_DATA_DB_PATH = "{}/market_data".format(tmpdir)
+                config.HISTORY_CACHE_PATH = "{}/history.sqlite3".format(tmpdir)
+                DailyMarketDataStore(config.MARKET_DATA_DB_PATH).upsert_bars("600001", raw, raw)
+                provider = MarketDataProvider()
+
+                def fail_fetch(code, days):
+                    raise AssertionError("network history should not be fetched")
+
+                provider._fetch_akshare_history = fail_fetch
+
+                history = provider.get_history("600001", days=30)
+                prefetch = provider.prefetch_history(["600001"], days=30)
+            finally:
+                config.MARKET_DATA_DB_PATH = original_market_path
+                config.HISTORY_CACHE_PATH = original_cache_path
+
+        self.assertEqual(len(history), 30)
+        self.assertEqual(history.iloc[-1]["trade_date"], "20240204")
+        self.assertEqual(prefetch["local"], 1)
+        self.assertEqual(prefetch["failed"], 0)
 
     def test_provider_falls_back_to_akshare_quotes_when_enabled(self):
         provider = MarketDataProvider()

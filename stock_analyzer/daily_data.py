@@ -308,7 +308,7 @@ def load_history_frames(
     history = _read_daily_bars_for_codes(
         db_path,
         normalized_codes,
-        "trade_date, code, open, high, low, close, volume, turnover, qfq_close, pct_chg",
+        "trade_date, code, open, high, low, close, volume, turnover, qfq_open, qfq_high, qfq_low, qfq_close, pct_chg",
     )
     if history.empty:
         return {}
@@ -316,9 +316,11 @@ def load_history_frames(
     result: Dict[str, pd.DataFrame] = {}
     for code, group in history.groupby("code"):
         df = group.tail(max(days, 6)).copy()
-        df["price"] = pd.to_numeric(df["qfq_close"], errors="coerce").fillna(0.0)
-        raw_close = pd.to_numeric(df["close"], errors="coerce").fillna(0.0)
-        df["price"] = df["price"].where(df["price"] > 0, raw_close)
+        for column in ("open", "high", "low", "close"):
+            raw_value = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
+            qfq_value = pd.to_numeric(df["qfq_{}".format(column)], errors="coerce").fillna(0.0)
+            df[column] = qfq_value.where(qfq_value > 0, raw_value)
+        df["price"] = df["close"]
         result[normalize_code(code)] = df[
             ["trade_date", "code", "open", "high", "low", "price", "volume", "turnover", "pct_chg"]
         ].reset_index(drop=True)

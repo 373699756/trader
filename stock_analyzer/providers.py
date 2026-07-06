@@ -8,6 +8,7 @@ import pandas as pd
 import requests
 
 from . import config
+from .daily_data import load_history_frames
 from .history_cache import HistoryCache
 from .normalization import normalize_code, rename_known_columns
 
@@ -276,29 +277,41 @@ class MarketDataProvider:
         return items
 
     def get_history(self, code: str, days: int = 90) -> pd.DataFrame:
-        cached = self._history_cache.get(code, days)
-        if not cached.empty and len(cached) >= min(days, 30) and self._history_cache.is_fresh(code):
+        normalized = normalize_code(code)
+        cached = self._history_cache.get(normalized, days)
+        if _usable_history(cached, days) and self._history_cache.is_fresh(normalized):
             return cached
+        local = self._load_local_history(normalized, days)
+        if _usable_history(local, days):
+            return local
         try:
-            fetched = self._fetch_akshare_history(code, days)
+            fetched = self._fetch_akshare_history(normalized, days)
         except Exception as exc:  # pragma: no cover - depends on remote services
-            self._record_sentiment_error("历史行情失败 {}: {}".format(code, exc))
-            return cached
+            self._record_sentiment_error("历史行情失败 {}: {}".format(normalized, exc))
+            return local if local is not None and not local.empty else cached
         if not fetched.empty:
-            self._history_cache.set(code, fetched)
-            cached = self._history_cache.get(code, days)
+            self._history_cache.set(normalized, fetched)
+            cached = self._history_cache.get(normalized, days)
             if not cached.empty:
                 return cached
-        return cached
+        return local if local is not None and not local.empty else cached
 
     def get_cached_history(self, code: str, days: int = 90) -> pd.DataFrame:
-        return self._history_cache.get(code, days)
+        normalized = normalize_code(code)
+        cached = self._history_cache.get(normalized, days)
+        if _usable_history(cached, days) and self._history_cache.is_fresh(normalized):
+            return cached
+        local = self._load_local_history(normalized, days)
+        if _usable_history(local, days):
+            return local
+        return cached if cached is not None and not cached.empty else local
 
     def prefetch_history(self, codes: List[str], days: int = 180, force: bool = False) -> Dict[str, object]:
         result = {
             "requested": len(codes),
             "downloaded": 0,
             "cached": 0,
+            "local": 0,
             "failed": 0,
             "errors": [],
         }
@@ -309,8 +322,13 @@ class MarketDataProvider:
                 continue
             seen.add(code)
             cached = self._history_cache.get(code, days)
-            if not force and not cached.empty and len(cached) >= min(days, 30) and self._history_cache.is_fresh(code):
+            if not force and _usable_history(cached, days) and self._history_cache.is_fresh(code):
                 result["cached"] += 1
+                continue
+            local = self._load_local_history(code, days)
+            if not force and _usable_history(local, days):
+                result["cached"] += 1
+                result["local"] += 1
                 continue
             try:
                 fetched = self._fetch_akshare_history(code, days)
@@ -319,10 +337,24 @@ class MarketDataProvider:
                 self._history_cache.set(code, fetched)
                 result["downloaded"] += 1
             except Exception as exc:  # pragma: no cover - depends on remote services
+                if not force and local is not None and not local.empty:
+                    result["cached"] += 1
+                    result["local"] += 1
+                    continue
                 result["failed"] += 1
                 result["errors"].append({"code": code, "error": str(exc)})
         result["unique_codes"] = len(seen)
         return result
+
+    def _load_local_history(self, code: str, days: int) -> pd.DataFrame:
+        try:
+            return load_history_frames(config.MARKET_DATA_DB_PATH, [code], days=days).get(
+                normalize_code(code),
+                pd.DataFrame(),
+            )
+        except Exception as exc:
+            self._record_sentiment_error("本地历史行情失败 {}: {}".format(code, exc))
+            return pd.DataFrame()
 
     def _fetch_akshare_history(self, code: str, days: int) -> pd.DataFrame:
         ak = self._get_akshare()
@@ -712,6 +744,10 @@ def _merge_fundamental_item(items: Dict[str, Dict[str, object]], code: str, df: 
         value = _first_raw(row, columns)
         if value not in (None, ""):
             item[target] = _to_float(value)
+
+
+def _usable_history(history: pd.DataFrame, days: int) -> bool:
+    return history is not None and not history.empty and len(history) >= min(days, 30)
 
 
 def _to_ts_code(code: str) -> str:

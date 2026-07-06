@@ -177,10 +177,15 @@ def _fetch_history(ak, code: str, start_date: str, end_date: str, adjust: str) -
         )
     except Exception as exc:
         errors.append("akshare: {}".format(exc))
+    else:
+        if df is not None and not df.empty:
+            return df
+        errors.append("akshare: empty")
+    try:
+        return _fetch_sina_history(code, start_date, end_date)
+    except Exception as exc:
+        errors.append("sina: {}".format(exc))
         raise RuntimeError("; ".join(errors))
-    if df is None or df.empty:
-        raise RuntimeError("; ".join(errors + ["akshare: empty"]))
-    return df
 
 
 def _fetch_eastmoney_history(code: str, start_date: str, end_date: str, adjust: str = "") -> pd.DataFrame:
@@ -219,6 +224,38 @@ def _fetch_eastmoney_history(code: str, start_date: str, end_date: str, adjust: 
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows)
+
+
+def _fetch_sina_history(code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    start = datetime.strptime(start_date, "%Y%m%d")
+    end = datetime.strptime(end_date, "%Y%m%d")
+    datalen = max(120, min(2000, (end - start).days + 10))
+    symbol = "{}{}".format("sh" if normalize_code(code).startswith(("5", "6", "9")) else "sz", normalize_code(code))
+    response = requests.get(
+        "https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketData.getKLineData",
+        params={"symbol": symbol, "scale": "240", "ma": "no", "datalen": str(datalen)},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not isinstance(rows, list) or not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "day" not in df.columns:
+        return pd.DataFrame()
+    df["trade_date"] = df["day"].astype(str).str.replace("-", "", regex=False)
+    df = df[(df["trade_date"] >= start_date) & (df["trade_date"] <= end_date)].copy()
+    if df.empty:
+        return pd.DataFrame()
+    for column in ("open", "high", "low", "close", "volume"):
+        if column not in df.columns:
+            df[column] = 0.0
+        df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
+    df = df.sort_values("trade_date").reset_index(drop=True)
+    df["turnover"] = 0.0
+    df["pct_chg"] = df["close"].pct_change().fillna(0.0) * 100
+    return df[["trade_date", "open", "close", "high", "low", "volume", "turnover", "pct_chg"]]
 
 
 def _fetch_eastmoney_universe() -> List[Dict[str, object]]:
