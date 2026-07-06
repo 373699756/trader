@@ -624,7 +624,7 @@ class ScoringTest(unittest.TestCase):
         )
 
         self.assertTrue(rows)
-        self.assertEqual(len(rows), 12)
+        self.assertLessEqual(len(rows), 12)
         self.assertEqual(meta["primary_watch_count"], 0)
         self.assertEqual(rows[0]["tier"], "backup_pool")
         self.assertIn("严格筛选为空", meta["gate_reason"])
@@ -667,6 +667,137 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(meta["primary_watch_count"], 0)
         self.assertEqual(rows[0]["tier"], "backup_pool")
         self.assertIn("低于45%", meta["gate_reason"])
+
+    def test_tomorrow_overheated_rows_stay_backup_only(self):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "300274",
+                    "name": "过热样本",
+                    "price": 10,
+                    "pct_chg": 4.0,
+                    "turnover": 1200000000,
+                    "turnover_rate": 8,
+                    "volume_ratio": 2.0,
+                    "speed": 0.4,
+                    "sixty_day_pct": 130,
+                    "ytd_pct": 180,
+                    "amplitude": 4,
+                    "industry": "电源设备",
+                    "ret_5d": 8,
+                    "ret_10d": 16,
+                    "ret_20d": 28,
+                    "ma20_gap": 12,
+                    "vol_amount_5d": 2.0,
+                    "volatility_20d": 3,
+                    "alphalite_factor_ready": 1,
+                },
+                {
+                    "code": "600001",
+                    "name": "强质量样本",
+                    "price": 11,
+                    "pct_chg": 4.8,
+                    "turnover": 2000000000,
+                    "turnover_rate": 9,
+                    "volume_ratio": 2.4,
+                    "speed": 0.8,
+                    "sixty_day_pct": 32,
+                    "ytd_pct": 45,
+                    "amplitude": 4,
+                    "industry": "通用设备",
+                    "ret_5d": 9,
+                    "ret_10d": 17,
+                    "ret_20d": 24,
+                    "ma20_gap": 10,
+                    "vol_amount_5d": 2.2,
+                    "volatility_20d": 2,
+                    "alphalite_factor_ready": 1,
+                },
+            ]
+        )
+
+        rows, meta = score_tomorrow_candidates(
+            prepare_candidates(quotes),
+            top_n=36,
+            market_regime={"level": "risk_on", "label": "偏进攻", "score": 75},
+        )
+
+        overheated = next(row for row in rows if row["code"] == "300274")
+        self.assertEqual(overheated["tier"], "backup_pool")
+        self.assertIn("过热抑制过强仅备选", overheated["reasons"])
+        self.assertEqual(meta["primary_watch_count"], 1)
+        self.assertGreaterEqual(meta["primary_ineligible_count"], 1)
+
+    def test_tomorrow_primary_watch_caps_same_theme(self):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600{:03d}".format(index),
+                    "name": "半导体样本{}".format(index),
+                    "price": 10 + index * 0.1,
+                    "pct_chg": 3.0 + index * 0.1,
+                    "turnover": 900000000 + index * 10000000,
+                    "turnover_rate": 5 + index,
+                    "volume_ratio": 1.8,
+                    "speed": 0.3,
+                    "sixty_day_pct": 18 + index,
+                    "ytd_pct": 24 + index,
+                    "amplitude": 4,
+                    "industry": "半导体",
+                    "ret_5d": 4,
+                    "ret_10d": 7,
+                    "ret_20d": 10,
+                    "ma20_gap": 4,
+                    "vol_amount_5d": 1.4,
+                    "volatility_20d": 2,
+                    "alphalite_factor_ready": 1,
+                }
+                for index in range(4)
+            ]
+        )
+
+        rows, meta = score_tomorrow_candidates(
+            prepare_candidates(quotes),
+            top_n=4,
+            market_regime={"level": "risk_on", "label": "偏进攻", "score": 75},
+        )
+
+        primary_rows = [row for row in rows if row["tier"] == "primary_watch"]
+        self.assertLessEqual(len(primary_rows), config.TOMORROW_MAX_PRIMARY_PER_THEME)
+        self.assertGreaterEqual(meta["theme_limited_count"], 1)
+        self.assertTrue(any("同主题重点观察已达上限" in row["reasons"] for row in rows))
+
+    def test_tomorrow_low_score_fill_remains_backup_pool(self):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600001",
+                    "name": "低分补足",
+                    "price": 10,
+                    "pct_chg": 1.0,
+                    "turnover": 120000000,
+                    "turnover_rate": 2,
+                    "volume_ratio": 1.0,
+                    "speed": 0.0,
+                    "sixty_day_pct": 2,
+                    "ytd_pct": 3,
+                    "amplitude": 3,
+                    "industry": "低分行业",
+                }
+            ]
+        )
+
+        with patch("stock_analyzer.scoring._tomorrow_display_gate", return_value=(36, 101.0, "测试严格门控")):
+            rows, meta = score_tomorrow_candidates(
+                prepare_candidates(quotes),
+                top_n=36,
+                market_regime={"level": "risk_on", "label": "偏进攻", "score": 75},
+            )
+
+        self.assertTrue(rows)
+        self.assertEqual(rows[0]["tier"], "backup_pool")
+        self.assertIn("未达重点分数线", rows[0]["reasons"])
+        self.assertEqual(meta["primary_watch_count"], 0)
 
     def test_chokepoint_score_rewards_upstream_underpriced(self):
         from stock_analyzer.scoring import _chokepoint_score
@@ -1570,6 +1701,37 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["code"], "600001")
         self.assertEqual(rows[0]["name"], "新样本")
+
+    def test_strategy_validation_reports_pending_outcomes(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            rows = [
+                {
+                    "rank": 1,
+                    "code": "600001",
+                    "name": "待回填",
+                    "market": "main",
+                    "price": 10,
+                    "pct_chg": 2,
+                    "turnover": 200000000,
+                    "volume_ratio": 1.5,
+                    "turnover_rate": 3,
+                    "sixty_day_pct": 8,
+                    "ytd_pct": 10,
+                    "score": 70,
+                    "tier": "primary_watch",
+                    "reasons": ["测试"],
+                }
+            ]
+
+            store.save_signals("tomorrow_picks", "tomorrow_picks_v4", "2024-01-01T14:30:00", rows)
+            metrics = store.metrics("tomorrow_picks", days=20)
+
+        self.assertEqual(metrics["signal_sample_count"], 1)
+        self.assertEqual(metrics["pending_outcome_count"], 1)
+        self.assertEqual(metrics["outcome_coverage_pct"], 0.0)
 
     def test_build_portfolio_respects_position_single_and_theme_caps(self):
         rows = [

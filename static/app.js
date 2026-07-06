@@ -126,6 +126,7 @@ const els = {
   tomorrowBuyableFilter: document.getElementById("tomorrowBuyableFilter"),
   tomorrowValidationSamples: document.getElementById("tomorrowValidationSamples"),
   tomorrowValidationHit3: document.getElementById("tomorrowValidationHit3"),
+  tomorrowGateStatus: document.getElementById("tomorrowGateStatus"),
   tomorrowPredictionCaution: document.getElementById("tomorrowPredictionCaution"),
   techBody: document.getElementById("techBody"),
   chokepointBody: document.getElementById("chokepointBody"),
@@ -143,14 +144,26 @@ const els = {
   updateStatus: document.getElementById("updateStatus"),
   validationScoreboard: document.getElementById("validationScoreboard"),
   validationSimpleDecision: document.getElementById("validationSimpleDecision"),
+  validationTitle: document.getElementById("validationTitle"),
+  validationSubtitle: document.getElementById("validationSubtitle"),
+  validationGuidePrimary: document.getElementById("validationGuidePrimary"),
+  validationStrategySelect: document.getElementById("validationStrategySelect"),
   validationDaysSelect: document.getElementById("validationDaysSelect"),
+  validationOpsHint: document.getElementById("validationOpsHint"),
   validationSelectionLabel: document.getElementById("validationSelectionLabel"),
   validationSampleCount: document.getElementById("validationSampleCount"),
+  validationWinRateLabel: document.getElementById("validationWinRateLabel"),
   validationWinRate: document.getElementById("validationWinRate"),
   validationHit3: document.getElementById("validationHit3"),
+  validationAvgReturnLabel: document.getElementById("validationAvgReturnLabel"),
   validationAvgReturn: document.getElementById("validationAvgReturn"),
+  validationExecutionSkipped: document.getElementById("validationExecutionSkipped"),
+  validationPendingOutcome: document.getElementById("validationPendingOutcome"),
+  nextDayCompareTitle: document.getElementById("nextDayCompareTitle"),
   nextDayCompareGrid: document.getElementById("nextDayCompareGrid"),
+  validationLineTitle: document.getElementById("validationLineTitle"),
   validationDatesBody: document.getElementById("validationDatesBody"),
+  validationDetailTitle: document.getElementById("validationDetailTitle"),
   validationDetailBody: document.getElementById("validationDetailBody"),
   detailsPanel: document.getElementById("detailsPanel"),
   detailsTitle: document.getElementById("detailsTitle"),
@@ -289,7 +302,7 @@ function connectRecommendationStream() {
 async function loadStrategyOverview() {
   state.overviewLoaded = true;
   els.strategyOverviewGrid.innerHTML = '<div class="empty">加载中...</div>';
-  els.strategyOverviewBody.innerHTML = '<tr><td colspan="12" class="empty">加载中...</td></tr>';
+  els.strategyOverviewBody.innerHTML = '<tr><td colspan="13" class="empty">加载中...</td></tr>';
   try {
     const res = await fetch("/api/strategy-overview?days=20");
     const payload = await res.json();
@@ -299,19 +312,22 @@ async function loadStrategyOverview() {
     renderStrategyOverview(payload);
   } catch (err) {
     els.strategyOverviewGrid.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
-    els.strategyOverviewBody.innerHTML = `<tr><td colspan="12" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    els.strategyOverviewBody.innerHTML = `<tr><td colspan="13" class="empty">${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
 async function loadValidation() {
   state.validationLoaded = true;
   els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">加载中...</td></tr>';
+  els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">选择左侧批次查看明细</td></tr>';
   const options = arguments[0] || {};
   const isSilent = Boolean(options.silent);
   const fromAutoRefresh = Boolean(options.fromAutoRefresh);
   const skipAutoOutcomeUpdate = Boolean(options.skipAutoOutcomeUpdate);
+  const strategy = currentValidationStrategy();
+  updateValidationChrome(strategy);
   const params = new URLSearchParams({
-    strategy: "tomorrow_picks",
+    strategy,
     days: els.validationDaysSelect.value,
   });
   try {
@@ -347,6 +363,55 @@ function isValidationPanelActive() {
   return Boolean(panel && panel.classList.contains("active"));
 }
 
+function currentValidationStrategy() {
+  return els.validationStrategySelect?.value || "tomorrow_picks";
+}
+
+function validationStrategyMeta(strategy) {
+  const label = strategyLabel(strategy);
+  if (strategy === "reversal_picks") {
+    return { label, horizon: "5日", focus: "反转低波样本", outcome: "5日净收益" };
+  }
+  if (["swing_picks", "breakout_picks"].includes(strategy)) {
+    return { label, horizon: "10日", focus: strategy === "swing_picks" ? "波段样本" : "突破样本", outcome: "10日净收益" };
+  }
+  if (["position_picks", "tech_potential", "chokepoint_picks", "smallcap_value_picks"].includes(strategy)) {
+    return { label, horizon: "20日", focus: "中周期样本", outcome: "20日净收益" };
+  }
+  return { label, horizon: "次日", focus: "次日样本", outcome: "次日净收益" };
+}
+
+function updateValidationChrome(strategy) {
+  const meta = validationStrategyMeta(strategy);
+  if (els.validationTitle) {
+    els.validationTitle.textContent = `${meta.label}复盘`;
+  }
+  if (els.validationSubtitle) {
+    els.validationSubtitle.textContent = `查看${meta.label}已保存样本、真实回填和回放表现，主看${meta.outcome}与执行状态。`;
+  }
+  if (els.validationGuidePrimary) {
+    els.validationGuidePrimary.textContent = `${meta.horizon}真实收益`;
+  }
+  if (els.validationOpsHint) {
+    els.validationOpsHint.textContent = `后台每30分钟自动回填${meta.horizon}结果；无真实样本时会自动补齐再更新。`;
+  }
+  if (els.validationWinRateLabel) {
+    els.validationWinRateLabel.textContent = `${meta.horizon}净胜率`;
+  }
+  if (els.validationAvgReturnLabel) {
+    els.validationAvgReturnLabel.textContent = `${meta.horizon}净收益`;
+  }
+  if (els.nextDayCompareTitle) {
+    els.nextDayCompareTitle.textContent = strategy === "tomorrow_picks" ? "次日涨跌对比" : "次日参考对比";
+  }
+  if (els.validationLineTitle) {
+    els.validationLineTitle.textContent = `${meta.label}${meta.horizon}净胜率走势`;
+  }
+  if (els.validationDetailTitle) {
+    els.validationDetailTitle.textContent = `${meta.label}股票主周期明细`;
+  }
+}
+
 function startValidationAutoRefreshLoop() {
   if (state.validationAutoRefreshTimer) {
     return;
@@ -380,16 +445,18 @@ async function autoFillMissingValidationOutcomes(metrics, dates) {
   if (!latestDate) {
     return;
   }
+  const strategy = currentValidationStrategy();
+  const refreshKey = `${strategy}:${latestDate}`;
   const now = Date.now();
-  if (state.validationAutoRefreshDate === latestDate && now - state.validationAutoRefreshAt < VALIDATION_AUTO_REFRESH_MS) {
+  if (state.validationAutoRefreshDate === refreshKey && now - state.validationAutoRefreshAt < VALIDATION_AUTO_REFRESH_MS) {
     return;
   }
   state.validationAutoRefreshInFlight = true;
-  state.validationAutoRefreshDate = latestDate;
+  state.validationAutoRefreshDate = refreshKey;
   state.validationAutoRefreshAt = now;
   try {
-    setOpsStatus(els.updateStatus, `检测到 ${latestDate} 无真实回填结果，已触发后台自动更新`, "pending");
-    const params = new URLSearchParams({ date: latestDate });
+    setOpsStatus(els.updateStatus, `检测到 ${strategyLabel(strategy)} ${latestDate} 无真实回填结果，已触发后台自动更新`, "pending");
+    const params = new URLSearchParams({ date: latestDate, strategy });
     const res = await fetch(`/api/strategy-validation/update?${params.toString()}`, {
       method: "POST",
     });
@@ -400,7 +467,7 @@ async function autoFillMissingValidationOutcomes(metrics, dates) {
     const result = payload.result || {};
     setOpsStatus(
       els.updateStatus,
-      `已触发 ${latestDate} 回填，新增 ${result.updated || 0} 条，跳过 ${result.skipped || 0} 条`,
+      `已触发 ${strategyLabel(strategy)} ${latestDate} 回填，新增 ${result.updated || 0} 条，跳过 ${result.skipped || 0} 条，执行跳过 ${result.execution_skipped || 0} 条`,
       "ok",
     );
     if (isValidationPanelActive()) {
@@ -447,7 +514,8 @@ async function loadPortfolio() {
 // C2-4：各策略主周期方向命中率走势折线 + 顶部一眼结论记分牌。
 async function loadValidationOverview() {
   try {
-    const res = await fetch(`/api/validation-overview?days=${els.validationDaysSelect.value}`);
+    const selected = currentValidationStrategy();
+    const res = await fetch(`/api/validation-overview?days=${els.validationDaysSelect.value}&strategy=${encodeURIComponent(selected)}`);
     const payload = await res.json();
     if (!payload.ok) return;
     renderValidationScoreboard(payload.series || []);
@@ -461,7 +529,7 @@ async function loadValidationOverview() {
 function renderValidationScoreboard(series) {
   if (!els.validationScoreboard) return;
   if (!series.length) {
-    els.validationScoreboard.innerHTML = '<div class="empty">暂无验证数据。后台会每30分钟自动保存明天预测并回填真实结果。</div>';
+    els.validationScoreboard.innerHTML = '<div class="empty">暂无验证数据。后台会每30分钟自动保存策略快照并回填真实结果。</div>';
     return;
   }
   els.validationScoreboard.innerHTML = series
@@ -796,7 +864,7 @@ async function loadValidationDaily(date, strategy) {
   state.selectedValidation = { date, strategy };
   renderValidationSelection();
   markSelectedValidationRow();
-  els.validationDetailBody.innerHTML = '<tr><td colspan="7" class="empty">加载中...</td></tr>';
+  els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">加载中...</td></tr>';
   const params = new URLSearchParams({ date, strategy });
   try {
     const res = await fetch(`/api/strategy-validation/daily?${params.toString()}`);
@@ -806,7 +874,7 @@ async function loadValidationDaily(date, strategy) {
     }
     renderValidationDetail(payload.data || []);
   } catch (err) {
-    els.validationDetailBody.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    els.validationDetailBody.innerHTML = `<tr><td colspan="11" class="empty">${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
@@ -1007,7 +1075,7 @@ function renderStrategyOverview(payload) {
 
   if (!strategies.length) {
     els.strategyOverviewGrid.innerHTML = '<div class="empty">暂无策略</div>';
-    els.strategyOverviewBody.innerHTML = '<tr><td colspan="12" class="empty">暂无策略</td></tr>';
+    els.strategyOverviewBody.innerHTML = '<tr><td colspan="13" class="empty">暂无策略</td></tr>';
     return;
   }
 
@@ -1024,6 +1092,7 @@ function renderStrategyOverview(payload) {
         <div class="strategy-card-metrics">
           <div><span>样本</span><strong>${metrics.sample_count ?? 0}</strong></div>
           <div><span>真/回</span><strong>${metrics.real_sample_count ?? 0}/${metrics.replay_sample_count ?? 0}</strong></div>
+          <div><span>跳过</span><strong class="${Number(metrics.execution_skipped_count || 0) ? "risk-text" : ""}">${metrics.execution_skipped_count ?? 0}</strong></div>
           <div><span>${escapeHtml(metrics.primary_horizon_label || "主周期")}净</span><strong>${formatPercent(metrics.avg_primary_return_net)}</strong></div>
         </div>
         <div class="strategy-status">${escapeHtml(status.label || "待验证")}</div>
@@ -1041,6 +1110,7 @@ function renderStrategyOverview(payload) {
         <td>${escapeHtml(row.horizon)}</td>
         <td class="num">${metrics.sample_count ?? 0}</td>
         <td class="num">${metrics.real_sample_count ?? 0}/${metrics.replay_sample_count ?? 0}</td>
+        <td class="num ${Number(metrics.execution_skipped_count || 0) ? "risk-text" : ""}">${metrics.execution_skipped_count ?? 0}</td>
         <td class="num ${numberClass(metrics.avg_primary_return_net)}">${formatPercent(metrics.avg_primary_return_net)}</td>
         <td class="num">${formatPercent(metrics.win_rate_primary_net)}</td>
         <td class="num ${numberClass(metrics.real_avg_primary_return_net)}">${formatPercent(metrics.real_avg_primary_return_net)}</td>
@@ -1271,19 +1341,28 @@ function renderTomorrowPredictionStrip(payload) {
   const policy = meta.policy || {};
   const dataStatus = meta.fallback === "saved_snapshot" ? "保存快照" : (health.quotes_source || "实时行情");
   const minTurnover = policy.min_turnover != null ? formatMoney(policy.min_turnover) : "-";
-  els.tomorrowStrategyVersion.textContent = meta.strategy_version || "tomorrow_picks_v4";
+  els.tomorrowStrategyVersion.textContent = meta.strategy_version || "tomorrow_picks_v5";
   els.tomorrowDataStatus.textContent = dataStatus;
   const displayCount = meta.display_count ?? (payload.data || []).length;
   const displayLimit = meta.display_limit ?? meta.top_n ?? "-";
   els.tomorrowCandidateCount.textContent = `${meta.screened_count ?? meta.candidate_count ?? "-"} / 展示${displayCount}`;
-  els.tomorrowBuyableFilter.textContent = `最多${displayLimit}支，最低分≥${formatNumber(meta.min_score, 1)}；成交额≥${minTurnover}`;
+  const displayMin = meta.display_min_score ?? meta.min_score;
+  els.tomorrowBuyableFilter.textContent = `最多${displayLimit}支，展示≥${formatNumber(displayMin, 1)}；成交额≥${minTurnover}`;
+  if (els.tomorrowGateStatus) {
+    const primaryMin = meta.primary_min_score ?? meta.min_score;
+    const themeCap = meta.theme_cap ?? "-";
+    const downgraded = Number(meta.primary_ineligible_count || 0) + Number(meta.theme_limited_count || 0);
+    els.tomorrowGateStatus.textContent = `重点≥${formatNumber(primaryMin, 1)}；同题材≤${themeCap}；降级${downgraded}`;
+    els.tomorrowGateStatus.className = downgraded ? "warning-text" : "";
+  }
   if (els.tomorrowPredictionCaution) {
     const primaryCount = meta.primary_watch_count ?? Math.min(5, displayCount || 0);
     const backupCount = meta.backup_watch_count ?? Math.max(0, (displayCount || 0) - primaryCount);
+    const themeText = meta.theme_limited_count ? `；同主题降级 ${meta.theme_limited_count} 支` : "";
     const tierText = primaryCount > 0
       ? `重点观察 ${primaryCount} 支，备选观察 ${backupCount} 支`
       : `暂无重点观察，展示 ${backupCount || displayCount || 0} 支备选观察`;
-    els.tomorrowPredictionCaution.textContent = `${meta.score_note || "综合分不是上涨概率。"} ${meta.gate_reason || ""} ${tierText}；不保证上涨。`;
+    els.tomorrowPredictionCaution.textContent = `${meta.score_note || "综合分不是上涨概率。"} ${meta.gate_reason || ""} ${tierText}${themeText}；不保证上涨。`;
   }
   els.tomorrowValidationSamples.textContent = "读取中";
   els.tomorrowValidationHit3.textContent = "读取中";
@@ -1296,6 +1375,10 @@ function resetTomorrowPredictionStrip(message) {
   els.tomorrowBuyableFilter.textContent = "-";
   els.tomorrowValidationSamples.textContent = "-";
   els.tomorrowValidationHit3.textContent = "-";
+  if (els.tomorrowGateStatus) {
+    els.tomorrowGateStatus.textContent = "-";
+    els.tomorrowGateStatus.className = "";
+  }
   if (els.tomorrowPredictionCaution) {
     els.tomorrowPredictionCaution.textContent = "观察池不保证上涨；真实前瞻样本不足时只观察，不作为重仓依据。";
   }
@@ -1309,7 +1392,9 @@ async function loadTomorrowValidationMetrics() {
       throw new Error(payload.error || "接口返回异常");
     }
     const metrics = payload.metrics || {};
-    els.tomorrowValidationSamples.textContent = metrics.sample_count ?? "0";
+    const sample = Number(metrics.sample_count || 0);
+    const pending = Number(metrics.pending_outcome_count || 0);
+    els.tomorrowValidationSamples.textContent = pending ? `${sample} / 待${pending}` : `${sample}`;
     els.tomorrowValidationHit3.textContent = metrics.win_rate_primary_net != null ? `${formatNumber(metrics.win_rate_primary_net, 1)}%` : "-";
   } catch (err) {
     els.tomorrowValidationSamples.textContent = "-";
@@ -1996,6 +2081,9 @@ function renderValidationMetrics(metrics) {
   const outcome = Number(metrics.outcome_sample_count || 0);
   const real = Number(metrics.real_sample_count || 0);
   const replay = Number(metrics.replay_sample_count || 0);
+  const executionSkipped = Number(metrics.execution_skipped_count || 0);
+  const pendingOutcome = Number(metrics.pending_outcome_count || 0);
+  const coverage = metrics.outcome_coverage_pct == null ? null : Number(metrics.outcome_coverage_pct);
   const horizon = metrics.primary_horizon_label || "主周期";
   const winRate = metrics.win_rate_primary_net == null ? null : Number(metrics.win_rate_primary_net);
   const avgReturn = metrics.avg_primary_return_net == null ? null : Number(metrics.avg_primary_return_net);
@@ -2003,8 +2091,17 @@ function renderValidationMetrics(metrics) {
   els.validationWinRate.textContent = winRate != null ? `${formatNumber(winRate, 1)}%` : "-";
   els.validationHit3.textContent = `真 ${real} / 回 ${replay}`;
   els.validationAvgReturn.textContent = avgReturn != null ? `${horizon} ${formatNumber(avgReturn, 2)}%` : "-";
+  if (els.validationExecutionSkipped) {
+    els.validationExecutionSkipped.textContent = executionSkipped ? `${executionSkipped}` : "0";
+    els.validationExecutionSkipped.className = executionSkipped ? "risk-text" : "";
+  }
+  if (els.validationPendingOutcome) {
+    const coverageText = coverage != null ? ` / ${formatNumber(coverage, 0)}%` : "";
+    els.validationPendingOutcome.textContent = pendingOutcome ? `${pendingOutcome}${coverageText}` : `0${coverageText}`;
+    els.validationPendingOutcome.className = pendingOutcome ? "warning-text" : "";
+  }
   renderNextDayCompare(metrics.next_day_compare || {}, metrics.replay_next_day_compare || {});
-  renderValidationSimpleDecision({ sample, outcome, real, replay, winRate, avgReturn, horizon });
+  renderValidationSimpleDecision({ sample, outcome, real, replay, winRate, avgReturn, horizon, executionSkipped, pendingOutcome });
 }
 
 function renderNextDayCompare(compare, replayCompare = {}) {
@@ -2070,11 +2167,13 @@ function renderNextDayCompare(compare, replayCompare = {}) {
   }).join("") + replayReference;
 }
 
-function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate, avgReturn, horizon }) {
+function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate, avgReturn, horizon, executionSkipped, pendingOutcome }) {
   if (!els.validationSimpleDecision) return;
   let level = "neutral";
   let text = "结论：数据正在更新，先关注锚点方向与锚点到现在变化。";
-  if (outcome <= 0 && sample <= 0) {
+  if (Number(pendingOutcome || 0) > 0 && sample <= 0) {
+    text = `结论：还有 ${pendingOutcome} 条信号待回填，当前先不要用胜率下结论。`;
+  } else if (outcome <= 0 && sample <= 0) {
     if (replay > 0) {
       text = `结论：当前仅有回放样本 ${replay} 条，不能作为主判断；请等待快照与实时回填。`;
     } else {
@@ -2089,15 +2188,17 @@ function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate
     text = `结论：谨慎看。有效样本 ${sample} 条，但真实前瞻只有 ${real} 条，回放 ${replay} 条只能粗筛。`;
   } else if (winRate == null || avgReturn == null) {
     text = "结论：统计字段不完整，等待自动更新结果。";
+  } else if (Number(executionSkipped || 0) > 0 && sample < 30) {
+    text = `结论：先观察。当前有效样本 ${sample} 条，另有 ${executionSkipped} 条不可执行/被剔除样本，先不要据此加权。`;
   } else if (winRate >= 55 && avgReturn > 0) {
     level = "good";
-    text = `结论：可观察。${horizon}次日方向命中率 ${formatNumber(winRate, 1)}%，次日平均涨跌 ${formatNumber(avgReturn, 2)}%。`;
+    text = `结论：可观察。${horizon}净胜率 ${formatNumber(winRate, 1)}%，${horizon}平均净收益 ${formatNumber(avgReturn, 2)}%。`;
   } else if (winRate >= 50 && avgReturn >= 0) {
     level = "watch";
-    text = `结论：一般，继续观察。${horizon}方向不弱不强，暂不建议提高权重。`;
+    text = `结论：一般，继续观察。${horizon}表现不弱不强，暂不建议提高权重。`;
   } else {
     level = "bad";
-    text = `结论：暂不加权。${horizon}次日表现偏弱，先不要依赖这个策略。`;
+    text = `结论：暂不加权。${horizon}表现偏弱，先不要依赖这个策略。`;
   }
   els.validationSimpleDecision.className = `validation-current-decision decision-${level}`;
   els.validationSimpleDecision.textContent = text;
@@ -2106,7 +2207,7 @@ function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate
 function renderValidationDates(rows) {
   if (!rows.length) {
     els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">暂无保存记录</td></tr>';
-    els.validationDetailBody.innerHTML = '<tr><td colspan="7" class="empty">暂无可查看明细</td></tr>';
+    els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">暂无可查看明细</td></tr>';
     return;
   }
   els.validationDatesBody.innerHTML = rows.map(row => `
@@ -2125,7 +2226,7 @@ function renderValidationDates(rows) {
 
 function renderValidationDetail(rows) {
   if (!rows.length) {
-    els.validationDetailBody.innerHTML = '<tr><td colspan="7" class="empty">暂无明细</td></tr>';
+    els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">暂无明细</td></tr>';
     return;
   }
   els.validationDetailBody.innerHTML = rows.map(row => {
@@ -2133,6 +2234,12 @@ function renderValidationDetail(rows) {
     const anchorChange = row.pct_chg_at_signal;
     const todayChange = row.current_pct_chg;
     const anchorToNow = row.anchor_to_now_return;
+    const primaryLabel = primaryValidationLabel(row);
+    const primaryReturn = primaryValidationReturn(row);
+    const tradeCost = row.trade_cost_pct;
+    const skipReason = validationSkipReason(row.skip_reason);
+    const executionText = skipReason || (row.outcome_updated_at ? "已回填" : "待回填");
+    const executionClass = skipReason ? "risk" : row.outcome_updated_at ? "stable" : "warning";
     const isReplay = String(row.strategy_version || "").toLowerCase().includes("replay");
     const pctText = (value) => {
       const num = Number(value);
@@ -2149,12 +2256,24 @@ function renderValidationDetail(rows) {
         </td>
         <td class="num">${anchorPriceText}</td>
         <td class="num ${numberClass(anchorChange)}">${pctText(anchorChange)}</td>
+        <td>${escapeHtml(primaryLabel)}</td>
+        <td class="num ${numberClass(primaryReturn)}">${pctText(primaryReturn)}</td>
+        <td class="num">${tradeCost != null ? `${formatNumber(tradeCost, 2)}%` : "-"}</td>
+        <td><span class="tag ${executionClass}">${escapeHtml(executionText)}</span></td>
         <td class="num ${numberClass(todayChange)}">${pctText(todayChange)}</td>
         <td class="num ${numberClass(anchorToNow)}">${pctText(anchorToNow)}</td>
       </tr>
     `;
   }).join("");
   bindSentimentRows(els.validationDetailBody);
+}
+
+function validationSkipReason(value) {
+  const reason = String(value || "").trim();
+  if (!reason) return "";
+  if (reason === "unbuyable_limit_up") return "涨停不可买";
+  if (reason === "excluded") return "执行剔除";
+  return reason;
 }
 
 function primaryValidationLabel(row) {
@@ -2791,6 +2910,11 @@ els.tabButtons.forEach(button => {
 });
 els.loadPortfolioBtn.addEventListener("click", loadPortfolio);
 els.portfolioStrategySelect.addEventListener("change", loadPortfolio);
+els.validationStrategySelect?.addEventListener("change", () => {
+  state.selectedValidation = { date: "", strategy: "" };
+  state.validationAutoRefreshDate = "";
+  loadValidation();
+});
 els.validationDaysSelect.addEventListener("change", loadValidation);
 els.closeDetails.addEventListener("click", () => {
   els.detailsPanel.hidden = true;

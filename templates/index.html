@@ -225,8 +225,9 @@
                   <th>版本</th>
                   <th>周期</th>
                   <th>主样本</th>
-                  <th>真/回</th>
-                  <th>主周期净收益</th>
+	                  <th>真/回</th>
+	                  <th>跳过</th>
+	                  <th>主周期净收益</th>
                   <th>净胜率</th>
                   <th>真实净收益</th>
                   <th>平均回撤</th>
@@ -237,7 +238,7 @@
               </thead>
               <tbody id="strategyOverviewBody">
                 <tr>
-                  <td colspan="12" class="empty">加载中...</td>
+	                  <td colspan="13" class="empty">加载中...</td>
                 </tr>
               </tbody>
             </table>
@@ -381,6 +382,10 @@
             <div>
               <span>主周期净胜率</span>
               <strong id="tomorrowValidationHit3">-</strong>
+            </div>
+            <div>
+              <span>风控门槛</span>
+              <strong id="tomorrowGateStatus">-</strong>
             </div>
           </section>
           <div class="prediction-caution" id="tomorrowPredictionCaution">
@@ -790,9 +795,16 @@
             <span>基于最近保存快照生成建议权重；只做仓位约束，不改变策略排序</span>
           </div>
           <div class="ops-row portfolio-controls">
-            <select id="portfolioStrategySelect">
-              <option value="tomorrow_picks">明天预测</option>
-            </select>
+	            <select id="portfolioStrategySelect">
+	              <option value="tomorrow_picks">明天预测</option>
+	              <option value="swing_picks">波段 5-10 日</option>
+	              <option value="position_picks">中长期 1-3 月</option>
+	              <option value="tech_potential">科技潜力</option>
+	              <option value="chokepoint_picks">卡脖子</option>
+	              <option value="reversal_picks">反转低波</option>
+	              <option value="smallcap_value_picks">小市值价值</option>
+	              <option value="breakout_picks">量价突破</option>
+	            </select>
             <button id="loadPortfolioBtn" class="primary-action" type="button">生成组合</button>
           </div>
           <div class="ops-status" id="portfolioStatus"></div>
@@ -820,27 +832,27 @@
 
       <section class="tab-panel" id="validationPanel">
         <div class="board">
-          <div class="board-header">
-            <h2>明天预测复盘</h2>
-            <span>对比昨日保存样本与今天实时锚点口径，先看涨跌方向，再看锚点到现在变化，给出下一步动作参考。</span>
-          </div>
+	          <div class="board-header">
+	            <h2 id="validationTitle">策略验证复盘</h2>
+	            <span id="validationSubtitle">按策略查看已保存样本、真实回填和回放表现，先看主周期净收益，再看单票执行状态。</span>
+	          </div>
 
           <div class="validation-guide">
             <article>
-              <span>复盘</span>
-              <strong>次日真实涨跌</strong>
-              <p>先看锚点到现在的涨跌方向，再看锚点到现在变化幅度。</p>
-            </article>
-            <article>
-              <span>结论</span>
-              <strong>次日涨跌结论</strong>
-              <p>主看近期锚点样本次日涨跌方向，回放样本只作参考。</p>
-            </article>
-          </div>
+	              <span>复盘</span>
+	              <strong id="validationGuidePrimary">主周期真实收益</strong>
+	              <p>先看保存信号在对应周期内的净收益，再看是否存在不可执行样本。</p>
+	            </article>
+	            <article>
+	              <span>结论</span>
+	              <strong>真实样本优先</strong>
+	              <p>真实前瞻样本优先，历史回放只作参考；样本不足时不提升策略权重。</p>
+	            </article>
+	          </div>
 
-          <div class="validation-current-decision" id="validationSimpleDecision">
-            明天预测复盘加载后，这里会给出一句话结论。
-          </div>
+	          <div class="validation-current-decision" id="validationSimpleDecision">
+	            策略验证加载后，这里会给出一句话结论。
+	          </div>
 
           <div class="scoreboard" id="validationScoreboard">
             <div class="empty">加载中...</div>
@@ -849,17 +861,27 @@
           <div class="validation-grid">
             <aside class="validation-ops">
               <div class="ops-block">
-                <div class="ops-title">日常操作</div>
-                <div class="ops-row">
-                  <select id="validationDaysSelect">
-                    <option value="20">近20日</option>
-                    <option value="60">近60日</option>
-                    <option value="120">近120日</option>
-                  </select>
-                </div>
-                <p class="ops-hint">后台每30分钟自动回填次日结果；无真实样本时会自动补齐再更新，不再需要手动按钮。</p>
-                <div class="ops-status" id="updateStatus"></div>
-              </div>
+	                <div class="ops-title">日常操作</div>
+	                <div class="ops-row">
+	                  <select id="validationStrategySelect">
+	                    <option value="tomorrow_picks">明天预测</option>
+	                    <option value="swing_picks">波段 5-10 日</option>
+	                    <option value="position_picks">中长期 1-3 月</option>
+	                    <option value="tech_potential">科技潜力</option>
+	                    <option value="chokepoint_picks">卡脖子</option>
+	                    <option value="reversal_picks">反转低波</option>
+	                    <option value="smallcap_value_picks">小市值价值</option>
+	                    <option value="breakout_picks">量价突破</option>
+	                  </select>
+	                  <select id="validationDaysSelect">
+	                    <option value="20">近20日</option>
+	                    <option value="60">近60日</option>
+	                    <option value="120">近120日</option>
+	                  </select>
+	                </div>
+	                <p class="ops-hint" id="validationOpsHint">后台每30分钟自动回填结果；无真实样本时会自动补齐再更新，不再需要手动按钮。</p>
+	                <div class="ops-status" id="updateStatus"></div>
+	              </div>
             </aside>
 
             <section class="validation-review validation-simple-review">
@@ -872,30 +894,38 @@
                   <span>有效样本</span>
                   <strong id="validationSampleCount">-</strong>
                 </div>
-                <div class="validation-score-card">
-                  <span>次日方向命中率</span>
-                  <strong id="validationWinRate">-</strong>
-                </div>
+	                <div class="validation-score-card">
+	                  <span id="validationWinRateLabel">主周期净胜率</span>
+	                  <strong id="validationWinRate">-</strong>
+	                </div>
                 <div class="validation-score-card">
                   <span>样本来源</span>
                   <strong id="validationHit3">-</strong>
                 </div>
+	                <div class="validation-score-card">
+	                  <span id="validationAvgReturnLabel">主周期净收益</span>
+	                  <strong id="validationAvgReturn">-</strong>
+	                </div>
                 <div class="validation-score-card">
-                  <span>次日平均涨跌</span>
-                  <strong id="validationAvgReturn">-</strong>
+                  <span>执行跳过</span>
+                  <strong id="validationExecutionSkipped">-</strong>
                 </div>
+	                <div class="validation-score-card">
+	                  <span>待回填</span>
+	                  <strong id="validationPendingOutcome">-</strong>
+	                </div>
               </div>
 
-              <div class="section-label">次日涨跌对比</div>
-              <div class="scoreboard" id="nextDayCompareGrid">
-                <div class="empty">暂无次日对比数据</div>
-              </div>
+	              <div class="section-label" id="nextDayCompareTitle">次日涨跌对比</div>
+	              <div class="scoreboard" id="nextDayCompareGrid">
+	                <div class="empty">暂无次日对比数据</div>
+	              </div>
 
               <div class="validation-insight-grid">
-                <div class="chart-card validation-chart-card">
-                  <h3>明天预测次日方向命中率走势</h3>
-                  <div id="validationLine" class="chart-box chart-box-tall"></div>
-                </div>
+	                <div class="chart-card validation-chart-card">
+	                  <h3 id="validationLineTitle">策略主周期净胜率走势</h3>
+	                  <div id="validationLine" class="chart-box chart-box-tall"></div>
+	                </div>
 
                 <div class="validation-batches">
                   <div class="section-label">保存批次</div>
@@ -922,26 +952,30 @@
             </section>
           </div>
 
-        <div class="validation-results validation-results-wide">
-          <div class="section-label">股票次日明细</div>
-          <div class="table-wrap validation-detail">
-            <table>
-              <thead>
-                <tr>
-                  <th>排名</th>
-                  <th>类型</th>
-                  <th>股票</th>
-                  <th>锚点价格</th>
-                  <th>锚点涨跌</th>
-                  <th>今日涨跌</th>
-                  <th>锚点到现在</th>
-                </tr>
-              </thead>
-              <tbody id="validationDetailBody">
-                <tr>
-                  <td colspan="7" class="empty">选择左侧批次查看明细</td>
-                </tr>
-              </tbody>
+	        <div class="validation-results validation-results-wide">
+	          <div class="section-label" id="validationDetailTitle">股票主周期明细</div>
+	          <div class="table-wrap validation-detail">
+	            <table>
+	              <thead>
+	                <tr>
+	                  <th>排名</th>
+	                  <th>类型</th>
+	                  <th>股票</th>
+	                  <th>锚点价格</th>
+	                  <th>锚点涨跌</th>
+	                  <th>主周期</th>
+	                  <th>主周期收益</th>
+	                  <th>交易成本</th>
+	                  <th>执行状态</th>
+	                  <th>今日涨跌</th>
+	                  <th>锚点到现在</th>
+	                </tr>
+	              </thead>
+	              <tbody id="validationDetailBody">
+	                <tr>
+	                  <td colspan="11" class="empty">选择左侧批次查看明细</td>
+	                </tr>
+	              </tbody>
             </table>
           </div>
         </div>

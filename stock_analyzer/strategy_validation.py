@@ -67,6 +67,10 @@ class StrategyValidationStore:
             ).fetchall()
             if old_ids:
                 conn.executemany(
+                    "DELETE FROM strategy_execution_skips WHERE signal_id = ?",
+                    [(row[0],) for row in old_ids],
+                )
+                conn.executemany(
                     "DELETE FROM strategy_outcomes WHERE signal_id = ?",
                     [(row[0],) for row in old_ids],
                 )
@@ -168,9 +172,11 @@ class StrategyValidationStore:
                        o.signal_hold_5d_return, o.signal_hold_10d_return, o.signal_hold_20d_return,
                        o.exit_return, o.signal_exit_return, o.exit_reason, o.exit_days, o.exit_date,
                        o.future_days,
-                       o.updated_at AS outcome_updated_at
+                       o.updated_at AS outcome_updated_at,
+                       k.skip_reason, k.updated_at AS skip_updated_at
                 FROM strategy_signals s
                 LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
+                LEFT JOIN strategy_execution_skips k ON k.signal_id = s.id
                 {}
                 ORDER BY s.strategy_name ASC, s.rank ASC
                 """.format(where),
@@ -338,17 +344,33 @@ class StrategyValidationStore:
 
         updated = 0
         skipped = 0
+        execution_skipped = 0
         for signal in signals:
             outcome = _compute_outcome(provider, signal)
             if outcome and outcome.get("excluded"):
                 with sqlite3.connect(self.db_path, timeout=30) as conn:
                     conn.execute("DELETE FROM strategy_outcomes WHERE signal_id = ?", (signal["id"],))
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO strategy_execution_skips
+                        (signal_id, code, skip_reason, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            signal["id"],
+                            signal["code"],
+                            str(outcome.get("skip_reason") or "excluded"),
+                            datetime.now().isoformat(timespec="seconds"),
+                        ),
+                    )
                 skipped += 1
+                execution_skipped += 1
                 continue
             if not outcome:
                 skipped += 1
                 continue
             with sqlite3.connect(self.db_path, timeout=30) as conn:
+                conn.execute("DELETE FROM strategy_execution_skips WHERE signal_id = ?", (signal["id"],))
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO strategy_outcomes
@@ -402,9 +424,10 @@ class StrategyValidationStore:
                     ),
                 )
             updated += 1
-        return {"updated": updated, "skipped": skipped}
+        return {"updated": updated, "skipped": skipped, "execution_skipped": execution_skipped}
 
     def metrics(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
+        signal_status = self.signal_status_counts(strategy_name=strategy_name, days=days)
         where = "WHERE o.signal_id IS NOT NULL"
         params = []
         if strategy_name:
@@ -441,8 +464,14 @@ class StrategyValidationStore:
                 """.format(where),
                 params,
             ).fetchall()
+        execution_skipped_count = self.execution_skip_count(strategy_name=strategy_name, days=days)
         if not rows:
-            return {"sample_count": 0, "daily": []}
+            return {
+                "sample_count": 0,
+                "execution_skipped_count": execution_skipped_count,
+                **signal_status,
+                "daily": [],
+            }
         rows = [dict(row) for row in rows]
         window_rows = rows
         window_scope = "all"
@@ -543,8 +572,103 @@ class StrategyValidationStore:
             "replay_next_day_compare": _next_day_compare(replay_selected_all),
             "daily": _daily_metrics(primary_rows),
             "replay_daily": _daily_metrics(replay_rows),
+            "execution_skipped_count": execution_skipped_count,
+            **signal_status,
         }
         return metrics
+
+    def signal_status_counts(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
+        where = "WHERE 1=1"
+        params: List[object] = []
+        if strategy_name:
+            where += " AND strategy_name = ?"
+            params.append(strategy_name)
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            dates = [
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT signal_date
+                    FROM strategy_signals
+                    {}
+                    ORDER BY signal_date DESC
+                    LIMIT ?
+                    """.format(where),
+                    [*params, max(1, int(days))],
+                ).fetchall()
+            ]
+            if not dates:
+                return {
+                    "signal_sample_count": 0,
+                    "pending_outcome_count": 0,
+                    "outcome_coverage_pct": None,
+                }
+            placeholders = ",".join("?" for _ in dates)
+            count_where = "WHERE s.signal_date IN ({})".format(placeholders)
+            count_params: List[object] = list(dates)
+            if strategy_name:
+                count_where += " AND s.strategy_name = ?"
+                count_params.append(strategy_name)
+            row = conn.execute(
+                """
+                SELECT
+                  COUNT(*) AS signal_count,
+                  SUM(CASE WHEN o.signal_id IS NULL AND k.signal_id IS NULL THEN 1 ELSE 0 END) AS pending_count,
+                  SUM(CASE WHEN o.signal_id IS NOT NULL THEN 1 ELSE 0 END) AS outcome_count
+                FROM strategy_signals s
+                LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
+                LEFT JOIN strategy_execution_skips k ON k.signal_id = s.id
+                {}
+                """.format(count_where),
+                count_params,
+            ).fetchone()
+        signal_count = int((row[0] if row else 0) or 0)
+        pending_count = int((row[1] if row else 0) or 0)
+        outcome_count = int((row[2] if row else 0) or 0)
+        coverage = round(outcome_count / signal_count * 100.0, 2) if signal_count > 0 else None
+        return {
+            "signal_sample_count": signal_count,
+            "pending_outcome_count": pending_count,
+            "outcome_coverage_pct": coverage,
+        }
+
+    def execution_skip_count(self, strategy_name: str = "", days: int = 20) -> int:
+        where = "WHERE 1=1"
+        params: List[object] = []
+        if strategy_name:
+            where += " AND s.strategy_name = ?"
+            params.append(strategy_name)
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT s.signal_date
+                FROM strategy_signals s
+                JOIN strategy_execution_skips k ON k.signal_id = s.id
+                {}
+                ORDER BY s.signal_date DESC
+                LIMIT ?
+                """.format(where),
+                [*params, max(1, int(days))],
+            ).fetchall()
+            dates = [row[0] for row in rows]
+            if not dates:
+                return 0
+            placeholders = ",".join("?" for _ in dates)
+            count_where = "WHERE s.signal_date IN ({})".format(placeholders)
+            count_params: List[object] = list(dates)
+            if strategy_name:
+                count_where += " AND s.strategy_name = ?"
+                count_params.append(strategy_name)
+            row = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM strategy_signals s
+                JOIN strategy_execution_skips k ON k.signal_id = s.id
+                {}
+                """.format(count_where),
+                count_params,
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
 
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path, timeout=30) as conn:
@@ -598,6 +722,17 @@ class StrategyValidationStore:
                     max_drawdown_3d REAL NOT NULL DEFAULT 0,
                     hit_3pct INTEGER NOT NULL DEFAULT 0,
                     hit_5pct INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(signal_id) REFERENCES strategy_signals(id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS strategy_execution_skips (
+                    signal_id INTEGER PRIMARY KEY,
+                    code TEXT NOT NULL,
+                    skip_reason TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(signal_id) REFERENCES strategy_signals(id)
                 )

@@ -100,6 +100,8 @@ def _objective(
         avg_drawdown = float(metrics.get("absolute_avg_max_drawdown", 0.0) or 0.0)
         avg_open_gap = float(metrics.get("absolute_avg_next_open_return", 0.0) or 0.0)
         downside_penalty = min(0.0, loss_quantile) * 1.6 + min(0.0, avg_drawdown) * 0.25
+        if not direction_focused:
+            return win_rate + avg_return * 2.0 + downside_penalty
         direction_weight = 3.0 if direction_focused else 2.0
         return_weight = 0.6 if direction_focused else 2.0
         median_weight = 0.2 if direction_focused else 1.2

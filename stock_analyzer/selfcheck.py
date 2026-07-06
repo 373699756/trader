@@ -21,15 +21,21 @@ def factor_coverage(candidates: pd.DataFrame) -> Dict[str, object]:
     total = len(candidates)
     columns = {}
     row_coverages = []
-    coverage_series = (
-        candidates["alphalite_coverage"]
-        if "alphalite_coverage" in candidates.columns
-        else pd.Series([0.0] * total)
+    ready_series = (
+        candidates["alphalite_factor_ready"].map(lambda value: coerce_number(value) > 0)
+        if "alphalite_factor_ready" in candidates.columns
+        else pd.Series([False] * total, index=candidates.index)
     )
     for _, row in candidates.iterrows():
         row_coverages.append(max(0.0, min(1.0, coerce_number(row.get("alphalite_coverage")))))
     for column in ALPHALITE_SIGNAL_COLUMNS:
-        nonzero = coverage_series.map(lambda value: coerce_number(value) > 0).sum()
+        if column not in candidates.columns:
+            columns[column] = 0.0
+            continue
+        nonzero = (
+            ready_series
+            & candidates[column].map(lambda value: abs(coerce_number(value)) > 1e-12)
+        ).sum()
         columns[column] = round(nonzero / total, 4) if total else 0.0
     avg = sum(row_coverages) / len(row_coverages) if row_coverages else 0.0
     return {

@@ -1290,7 +1290,7 @@ tbody tr.selected {
 
 .strategy-card-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1330,7 +1330,7 @@ tbody tr.selected {
 
 .validation-detail table {
   width: 100%;
-  min-width: 680px;
+  min-width: 980px;
 }
 
 .validation-batches table {
@@ -1716,7 +1716,13 @@ footer {
   margin: 14px 0 18px;
 }
 .overview-secondary {
-  display: none;
+  display: block;
+}
+
+.market-regime-strip.overview-secondary,
+.chart-row.overview-secondary,
+.strategy-overview-grid.overview-secondary {
+  display: grid;
 }
 .chart-card {
   background: var(--panel);
@@ -1965,11 +1971,13 @@ footer {
 }
 .ops-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
 }
 .ops-row select {
   flex: 1;
+  min-width: 150px;
 }
 .primary-action {
   background: var(--accent);
@@ -2037,11 +2045,9 @@ footer {
 }
 .validation-summary-row strong {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   font-size: 16px;
   line-height: 1.2;
-  white-space: nowrap;
 }
 .validation-insight-grid {
   display: grid;

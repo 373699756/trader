@@ -1296,7 +1296,7 @@ def score_tomorrow_candidates(
             "top_n": top_n,
             "market_filter": market_filter,
             "analysis_window": analysis_window,
-            "strategy_version": "tomorrow_picks_v4",
+            "strategy_version": "tomorrow_picks_v5",
             "strategy_label": "明天预测",
             "policy": _tomorrow_policy(),
         }
@@ -1435,8 +1435,16 @@ def score_tomorrow_candidates(
     if allow_backup_fill and not rows and display_limit > 0:
         rows = _tomorrow_backup_rows(df, context, market_regime)
         gate_reason = "{} 严格筛选为空，已切换为备选观察池。".format(gate_reason)
-    display_rows = [row for row in rows if row["score"] >= min_score][:display_limit]
+    backup_min_score = coerce_number(getattr(config, "TOMORROW_BACKUP_MIN_SCORE", 45.0), 45.0)
+    display_floor = min(min_score, backup_min_score) if allow_backup_fill else min_score
+    display_rows = _limit_tomorrow_display_concentration(
+        [row for row in rows if row["score"] >= display_floor],
+        display_limit,
+    )
+    strict_display_count = len([row for row in display_rows if row["score"] >= min_score])
     strict_count = len(display_rows)
+    if allow_backup_fill and strict_display_count < strict_count:
+        gate_reason = "{} 严格重点不足，已用备选观察补足展示。".format(gate_reason)
     if allow_backup_fill and len(display_rows) < display_limit:
         selected_codes = {row["code"] for row in display_rows}
         backup_rows = rows if rows else _tomorrow_backup_rows(df, context, market_regime)
@@ -1445,23 +1453,55 @@ def score_tomorrow_candidates(
         for row in backup_rows:
             if row["code"] in selected_codes:
                 continue
+            if coerce_number(row.get("score")) < backup_min_score:
+                continue
+            if not _tomorrow_display_theme_allowed(display_rows, row):
+                _append_unique_reason(row, "同主题展示已达上限")
+                continue
             display_rows.append(row)
             selected_codes.add(row["code"])
             if len(display_rows) >= display_limit:
                 break
         if len(display_rows) > strict_count:
             gate_reason = "{} 严格重点不足，已用备选观察补足展示。".format(gate_reason)
-    primary_watch_n = _tomorrow_primary_watch_limit(strict_count, market_regime)
+    primary_watch_n = _tomorrow_primary_watch_limit(
+        len([row for row in display_rows if row["score"] >= min_score]),
+        market_regime,
+    )
+    primary_assigned = 0
+    primary_theme_counts: Dict[str, int] = {}
+    theme_limited_count = 0
+    ineligible_count = 0
     for rank, row in enumerate(display_rows, start=1):
         row["rank"] = rank
-        if primary_watch_n > 0 and rank <= primary_watch_n:
+        eligible, eligibility_reasons = _tomorrow_primary_eligibility(row, min_score)
+        if eligibility_reasons:
+            for reason in eligibility_reasons:
+                _append_unique_reason(row, reason)
+        theme_key = _tomorrow_theme_key(row)
+        theme_allowed = _theme_count_allowed(
+            primary_theme_counts,
+            theme_key,
+            getattr(config, "TOMORROW_MAX_PRIMARY_PER_THEME", 2),
+        )
+        if primary_watch_n > 0 and eligible and primary_assigned < primary_watch_n and theme_allowed:
             row["tier"] = "primary_watch"
             row["tier_label"] = "重点观察"
+            primary_assigned += 1
+            primary_theme_counts[theme_key] = primary_theme_counts.get(theme_key, 0) + 1
         else:
             row["tier"] = "backup_pool"
             row["tier_label"] = "备选观察"
+            if not eligible:
+                ineligible_count += 1
+            elif primary_watch_n <= 0:
+                _append_unique_reason(row, "盘面门控仅备选")
+            elif not theme_allowed:
+                theme_limited_count += 1
+                _append_unique_reason(row, "同主题重点观察已达上限")
         row["prediction_type"] = "rank_score"
         row["score_note"] = "综合分用于排序，不是上涨概率或预期收益率。"
+    theme_distribution = _tomorrow_theme_distribution(display_rows)
     return display_rows, {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "candidate_count": len(df),
@@ -1469,15 +1509,27 @@ def score_tomorrow_candidates(
         "display_count": len(display_rows),
         "display_limit": display_limit,
         "min_score": min_score,
+        "display_min_score": display_floor,
+        "backup_min_score": backup_min_score,
+        "primary_min_score": max(
+            min_score,
+            coerce_number(getattr(config, "TOMORROW_PRIMARY_MIN_SCORE", 68.0), 68.0),
+        ),
         "gate_reason": gate_reason,
         "history_breadth20_pct": coerce_number((market_regime or {}).get("history_breadth20_pct")),
         "history_factor_coverage_pct": coerce_number((market_regime or {}).get("history_factor_coverage_pct")),
-        "primary_watch_count": min(primary_watch_n, len(display_rows)),
-        "backup_watch_count": max(0, len(display_rows) - min(primary_watch_n, len(display_rows))),
+        "primary_watch_count": primary_assigned,
+        "backup_watch_count": max(0, len(display_rows) - primary_assigned),
+        "primary_gate_count": primary_watch_n,
+        "primary_ineligible_count": ineligible_count,
+        "theme_limited_count": theme_limited_count,
+        "theme_cap": getattr(config, "TOMORROW_MAX_PRIMARY_PER_THEME", 2),
+        "display_theme_cap": getattr(config, "TOMORROW_MAX_DISPLAY_PER_THEME", 5),
+        "theme_distribution": theme_distribution,
         "top_n": top_n,
         "market_filter": market_filter,
         "analysis_window": analysis_window,
-        "strategy_version": "tomorrow_picks_v4",
+        "strategy_version": "tomorrow_picks_v5",
         "strategy_label": "明天预测",
         "prediction_type": "rank_score",
         "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
@@ -3629,6 +3681,110 @@ def _tomorrow_primary_watch_limit(strict_count: int, market_regime: Dict[str, ob
     if level == "balanced":
         return min(strict_count, max_primary, 3)
     return min(strict_count, max_primary)
+
+
+def _tomorrow_theme_key(row: Dict[str, object]) -> str:
+    theme = str(row.get("theme") or "").strip()
+    if theme:
+        return theme
+    industry = str(row.get("industry") or "").strip()
+    if industry:
+        return industry
+    code = str(row.get("code") or "").strip()
+    return "未分类:{}".format(code or "unknown")
+
+
+def _theme_count_allowed(counts: Dict[str, int], theme_key: str, cap) -> bool:
+    limit = int(coerce_number(cap, 0))
+    if limit <= 0:
+        return True
+    return counts.get(theme_key, 0) < limit
+
+
+def _tomorrow_display_theme_allowed(rows: List[Dict[str, object]], row: Dict[str, object]) -> bool:
+    limit = int(coerce_number(getattr(config, "TOMORROW_MAX_DISPLAY_PER_THEME", 5), 5))
+    if limit <= 0:
+        return True
+    key = _tomorrow_theme_key(row)
+    return sum(1 for item in rows if _tomorrow_theme_key(item) == key) < limit
+
+
+def _limit_tomorrow_display_concentration(
+    rows: List[Dict[str, object]],
+    limit: int,
+) -> List[Dict[str, object]]:
+    selected: List[Dict[str, object]] = []
+    skipped: List[Dict[str, object]] = []
+    theme_counts: Dict[str, int] = {}
+    theme_cap = int(coerce_number(getattr(config, "TOMORROW_MAX_DISPLAY_PER_THEME", 5), 5))
+    for row in rows:
+        if len(selected) >= limit:
+            break
+        key = _tomorrow_theme_key(row)
+        if theme_cap > 0 and theme_counts.get(key, 0) >= theme_cap:
+            _append_unique_reason(row, "同主题展示已达上限")
+            skipped.append(row)
+            continue
+        selected.append(row)
+        theme_counts[key] = theme_counts.get(key, 0) + 1
+    if len(selected) >= limit:
+        return selected
+    for row in skipped:
+        if len(selected) >= limit:
+            break
+        if row in selected:
+            continue
+        selected.append(row)
+    return selected[:limit]
+
+
+def _append_unique_reason(row: Dict[str, object], reason: str) -> None:
+    text = str(reason or "").strip()
+    if not text:
+        return
+    reasons = list(row.get("reasons") or [])
+    if text not in reasons:
+        reasons.append(text)
+    row["reasons"] = reasons[:8]
+
+
+def _tomorrow_theme_distribution(rows: List[Dict[str, object]]) -> Dict[str, int]:
+    distribution: Dict[str, int] = {}
+    for row in rows:
+        key = _tomorrow_theme_key(row)
+        distribution[key] = distribution.get(key, 0) + 1
+    return dict(sorted(distribution.items(), key=lambda item: (-item[1], item[0]))[:8])
+
+
+def _tomorrow_primary_eligibility(row: Dict[str, object], gate_min_score: float) -> Tuple[bool, List[str]]:
+    reasons: List[str] = []
+    score = coerce_number(row.get("score"))
+    primary_min_score = max(
+        coerce_number(gate_min_score),
+        coerce_number(getattr(config, "TOMORROW_PRIMARY_MIN_SCORE", 68.0), 68.0),
+    )
+    if score < primary_min_score:
+        reasons.append("未达重点分数线")
+    risk_penalty = coerce_number(row.get("risk_penalty"))
+    max_risk_penalty = coerce_number(getattr(config, "TOMORROW_PRIMARY_MAX_RISK_PENALTY", 12.0), 12.0)
+    if risk_penalty > max_risk_penalty:
+        reasons.append("风险扣分超主推阈值")
+    overheat_damp = coerce_number(row.get("overheat_damp"), 1.0)
+    min_overheat_damp = coerce_number(getattr(config, "TOMORROW_PRIMARY_MIN_OVERHEAT_DAMP", 0.72), 0.72)
+    if overheat_damp < min_overheat_damp:
+        reasons.append("过热抑制过强仅备选")
+    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+    ytd_pct = coerce_number(row.get("ytd_pct"))
+    max_sixty = coerce_number(getattr(config, "TOMORROW_PRIMARY_MAX_SIXTY_DAY_PCT", 90.0), 90.0)
+    max_ytd = coerce_number(getattr(config, "TOMORROW_PRIMARY_MAX_YTD_PCT", 130.0), 130.0)
+    historical_edge = coerce_number(row.get("historical_edge_score"))
+    tail_setup = coerce_number(row.get("tail_setup_score"))
+    strong_edge = historical_edge >= 78 and tail_setup >= 72 and risk_penalty <= max_risk_penalty * 0.75
+    if sixty_day_pct > max_sixty and not strong_edge:
+        reasons.append("60日涨幅过高仅备选")
+    if ytd_pct > max_ytd and not strong_edge:
+        reasons.append("年内涨幅过高仅备选")
+    return not reasons, reasons
 
 
 def _close_location(price: float, high: float, low: float) -> float:

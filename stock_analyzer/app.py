@@ -10,7 +10,7 @@ import pandas as pd
 
 from . import config
 from .backtest import parse_code_list, run_alphalite_backtest, run_rolling_alphalite_backtest
-from .daily_data import load_history_frames
+from .daily_data import list_market_data_codes, load_history_frames
 from .event_risk import attach_event_risk, load_event_risk
 from .factor_ic import load_factor_ic
 from .factors import build_alphalite_factors, merge_alphalite
@@ -53,7 +53,7 @@ STRATEGY_CATALOG = (
     {
         "name": "tomorrow_picks",
         "label": "明天预测",
-        "version": "tomorrow_picks_v4",
+        "version": "tomorrow_picks_v5",
         "horizon": "次日",
         "goal": "收盘后筛选次日可承接标的",
         "route": "/api/tomorrow-picks",
@@ -247,7 +247,18 @@ def create_app() -> Flask:
     }
 
     def _configured_auto_update_strategies() -> List[str]:
-        return ["tomorrow_picks"]
+        raw = str(getattr(config, "VALIDATION_AUTO_UPDATE_STRATEGIES", "") or "").strip()
+        if not raw:
+            return ["tomorrow_picks"]
+        requested = [item.strip() for item in raw.replace("，", ",").split(",") if item.strip()]
+        strategies = [item for item in requested if item in SNAPSHOT_STRATEGIES]
+        return strategies or ["tomorrow_picks"]
+
+    def _validation_strategy(default: str = "tomorrow_picks") -> str:
+        strategy = request.args.get("strategy", default)
+        if strategy not in SNAPSHOT_STRATEGIES:
+            strategy = default if default in SNAPSHOT_STRATEGIES else "tomorrow_picks"
+        return strategy
 
     def _code_batches(codes: List[str], batch_size: int) -> List[List[str]]:
         size = max(1, int(batch_size))
@@ -625,7 +636,7 @@ def create_app() -> Flask:
                     "source_versions": {
                         "short_term": "dual_horizon_v2",
                         "long_term": "dual_horizon_v2",
-                        "tomorrow_picks": tomorrow_meta.get("strategy_version", "tomorrow_picks_v4"),
+                        "tomorrow_picks": tomorrow_meta.get("strategy_version", "tomorrow_picks_v5"),
                         "swing_picks": swing_meta.get("strategy_version", "swing_5_10d_v1"),
                         "position_picks": position_meta.get("strategy_version", "position_1_3m_v1"),
                         "tech_potential": tech_meta.get("strategy_version", "tech_potential_v1"),
@@ -1046,7 +1057,7 @@ def create_app() -> Flask:
                             "top_n": top_n,
                             "market_filter": market,
                             "analysis_window": _analysis_window(),
-                            "strategy_version": "tomorrow_picks_v4",
+                            "strategy_version": "tomorrow_picks_v5",
                             "strategy_label": "明天预测",
                             "prediction_type": "rank_score",
                             "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
@@ -1326,7 +1337,7 @@ def create_app() -> Flask:
     @app.route("/api/strategy-validation/update", methods=["POST"])
     def strategy_validation_update():
         signal_date = request.args.get("date", "")
-        strategy = "tomorrow_picks"
+        strategy = _validation_strategy()
         try:
             result = validation_store.update_outcomes(
                 provider,
@@ -1364,7 +1375,7 @@ def create_app() -> Flask:
     @app.route("/api/strategy-validation/prefetch-history", methods=["POST"])
     def strategy_validation_prefetch_history():
         signal_date = request.args.get("date", "")
-        strategy = "tomorrow_picks"
+        strategy = _validation_strategy()
         days = _int_arg("days", 180, minimum=30, maximum=500)
         limit = _int_arg("limit", 500, minimum=1, maximum=2000)
         force = request.args.get("force", "0") in ("1", "true", "yes")
@@ -1401,7 +1412,7 @@ def create_app() -> Flask:
 
     @app.route("/api/strategy-validation/backfill-samples", methods=["POST"])
     def strategy_validation_backfill_samples():
-        strategy = "tomorrow_picks"
+        strategy = _validation_strategy()
         days = _int_arg("days", 260, minimum=80, maximum=600)
         replay_days = _int_arg("replay_days", 20, minimum=1, maximum=80)
         top_n = _int_arg("top_n", 30, minimum=1, maximum=50)
@@ -1445,12 +1456,13 @@ def create_app() -> Flask:
 
     @app.route("/api/strategy-validation")
     def strategy_validation():
-        strategy = "tomorrow_picks"
+        strategy = _validation_strategy()
         days = _int_arg("days", 20, minimum=1, maximum=120)
         try:
             return jsonify(
                 {
                     "ok": True,
+                    "strategy": strategy,
                     "dates": validation_store.list_signal_dates(strategy),
                     "metrics": validation_store.metrics(strategy, days=days),
                     "health": provider.health(),
@@ -1462,7 +1474,7 @@ def create_app() -> Flask:
     @app.route("/api/strategy-validation/daily")
     def strategy_validation_daily():
         signal_date = request.args.get("date", "")
-        strategy = "tomorrow_picks"
+        strategy = _validation_strategy()
         if not signal_date:
             return jsonify({"ok": False, "error": "缺少 date 参数"}), 400
         try:
@@ -1586,7 +1598,14 @@ def create_app() -> Flask:
     def validation_overview():
         """B3：各策略主周期净胜率时间序列 + 聚合指标，供前端折线图消费。"""
         days = _int_arg("days", 20, minimum=1, maximum=120)
-        strategies = ["tomorrow_picks"]
+        requested = request.args.get("strategy", "")
+        if requested:
+            strategies = [item.strip() for item in requested.replace("，", ",").split(",") if item.strip()]
+            strategies = [item for item in strategies if item in SNAPSHOT_STRATEGIES]
+        else:
+            strategies = list(SNAPSHOT_STRATEGIES)
+        if not strategies:
+            strategies = ["tomorrow_picks"]
         try:
             series = []
             for name in strategies:
@@ -1629,6 +1648,8 @@ def create_app() -> Flask:
     def backtest():
         codes = parse_code_list(request.args.get("codes", ""))
         if not codes:
+            codes = list_market_data_codes(config.MARKET_DATA_DB_PATH)[:500]
+        if not codes:
             try:
                 quotes = quotes_cache.get()
                 if quotes is None:
@@ -1644,8 +1665,10 @@ def create_app() -> Flask:
         lookback_days = _int_arg("lookback_days", 30, minimum=20, maximum=120)
         rebalance_step = _int_arg("rebalance_step", 1, minimum=1, maximum=20)
         mode = request.args.get("mode", "rolling")
-        history_by_code = {}
+        history_by_code = _load_local_history_frames(codes[:500], days=160)
         for code in codes[:60]:
+            if code in history_by_code:
+                continue
             try:
                 history = provider.get_history(code, days=160)
             except Exception:
