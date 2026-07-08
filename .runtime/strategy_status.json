@@ -1,11 +1,11 @@
 {
-  "updated_at": "2026-07-02T14:45:59",
+  "updated_at": "2026-07-07T14:58:05",
   "strategies": {
     "tomorrow_picks": {
-      "state": "pending",
-      "level": "pending",
-      "label": "样本不足",
-      "advice": "真实样本不足，回放只能粗筛；先保存并更新前瞻验证。"
+      "state": "retired",
+      "level": "bad",
+      "label": "自动退场",
+      "advice": "真实样本主周期净胜率或净收益跌破退场阈值，强共识中暂停采信。"
     },
     "swing_picks": {
       "state": "pending",

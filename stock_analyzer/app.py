@@ -3,12 +3,13 @@ import json
 import os
 import threading
 import time
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 import pandas as pd
 
 from . import config
+from .deepseek_client import rerank_candidates, review_strategy_validation
 from .backtest import parse_code_list, run_alphalite_backtest, run_rolling_alphalite_backtest
 from .daily_data import list_market_data_codes, load_history_frames
 from .event_risk import attach_event_risk, load_event_risk
@@ -73,46 +74,6 @@ STRATEGY_CATALOG = (
         "horizon": "1-3月",
         "goal": "技术趋势版中长期候选，偏好趋势稳健、波动可控、涨幅未透支",
         "route": "/api/position-picks",
-    },
-    {
-        "name": "tech_potential",
-        "label": "科技潜力",
-        "version": "tech_potential_v1",
-        "horizon": "主题潜力",
-        "goal": "匹配科技方向并过滤前期涨幅明显透支的股票",
-        "route": "/api/tech-potential",
-    },
-    {
-        "name": "chokepoint_picks",
-        "label": "卡脖子",
-        "version": "chokepoint_v1",
-        "horizon": "供应链上游",
-        "goal": "上溯供应链，挖掘供给最紧、最难替代、尚未被重定价的卡脖子环节",
-        "route": "/api/chokepoint-picks",
-    },
-    {
-        "name": "reversal_picks",
-        "label": "反转低波",
-        "version": "reversal_v1",
-        "horizon": "1-2周",
-        "goal": "A股短线反转+低波动+高换手回避，挖掘超跌且不躁动的标的",
-        "route": "/api/reversal-picks",
-    },
-    {
-        "name": "smallcap_value_picks",
-        "label": "小市值价值",
-        "version": "smallcap_value_v1",
-        "horizon": "1-3月",
-        "goal": "低流通市值+低PE/PB，含市值下限、亏损过滤、流动性与防守降权护栏",
-        "route": "/api/smallcap-value-picks",
-    },
-    {
-        "name": "breakout_picks",
-        "label": "量价突破",
-        "version": "breakout_v1",
-        "horizon": "5-10日",
-        "goal": "均线多头排列或20日新高 + 量能突破的趋势确认型选股",
-        "route": "/api/breakout-picks",
     },
 )
 
@@ -521,6 +482,88 @@ def create_app() -> Flask:
             "error_count": len(payload.get("errors") or []),
         }
 
+    def _deepseek_rerank_disabled_strategies() -> set:
+        raw = str(getattr(config, "DEEPSEEK_RERANK_DISABLED_STRATEGIES", "") or "").strip()
+        if not raw:
+            return set()
+        return {item.strip() for item in raw.replace("，", ",").split(",") if item.strip()}
+
+    def _apply_deepseek_rerank(strategy_name: str, rows: List[Dict[str, object]], market_filter: str) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+        if not rows:
+            return rows, {"enabled": False, "status": "empty"}
+        if not getattr(config, "ENABLE_DEEPSEEK_RUNTIME", False):
+            return rows, {
+                "enabled": False,
+                "status": "runtime_disabled",
+                "strategy": strategy_name,
+                "reason": "DeepSeek runtime is disabled; local rules are used only.",
+            }
+        disabled_strategies = _deepseek_rerank_disabled_strategies()
+        if strategy_name in disabled_strategies or "all" in disabled_strategies:
+            return rows, {
+                "enabled": False,
+                "status": "strategy_rerank_disabled",
+                "strategy": strategy_name,
+                "reason": "DeepSeek rerank is disabled for this strategy route.",
+            }
+        try:
+            return rerank_candidates(rows=rows, strategy_name=strategy_name, market_filter=market_filter)
+        except Exception as exc:
+            return rows, {
+                "enabled": False,
+                "status": "fallback",
+                "strategy": strategy_name,
+                "error": str(exc),
+            }
+
+    def _attach_factor_snapshots(samples: List[Dict[str, object]]) -> List[Dict[str, object]]:
+        if not samples:
+            return samples
+        from .factor_snapshot import FactorSnapshotStore
+
+        try:
+            store = FactorSnapshotStore(config.FACTOR_SNAPSHOT_DB_PATH)
+            lookup = store.lookup(samples)
+        except Exception:
+            return samples
+        if not lookup:
+            return samples
+        enriched = []
+        for sample in samples:
+            item = dict(sample)
+            signal_date = str(item.get("signal_date") or "").strip()[:10].replace("-", "")
+            code = normalize_code(item.get("code"))
+            factors = lookup.get((signal_date, code))
+            if factors:
+                item["factor_snapshot"] = factors
+            enriched.append(item)
+        return enriched
+
+    def _deepseek_validation_review(strategy_name: str, metrics: Dict[str, object], days: int) -> Dict[str, object]:
+        if not getattr(config, "ENABLE_DEEPSEEK_RUNTIME", False):
+            return {
+                "enabled": False,
+                "status": "runtime_disabled",
+                "strategy": strategy_name,
+                "reason": "DeepSeek runtime is disabled; validation uses local metrics only.",
+            }
+        try:
+            samples = validation_store.live_weight_samples(strategy_name, days=max(20, min(days, 60)))
+            samples = _attach_factor_snapshots(samples)
+            return review_strategy_validation(
+                strategy_name=strategy_name,
+                metrics=metrics,
+                samples=samples,
+                days=days,
+            )
+        except Exception as exc:
+            return {
+                "enabled": False,
+                "status": "fallback",
+                "strategy": strategy_name,
+                "error": str(exc),
+            }
+
     def _recommendations_payload(top_n: int, market: str) -> tuple:
         try:
             with recommendations_lock:
@@ -572,11 +615,26 @@ def create_app() -> Flask:
                     market_filter=market,
                     market_regime=market_regime,
                 )
+                recommendations_by_horizon["short_term"], short_deepseek_meta = _apply_deepseek_rerank(
+                    "short_term",
+                    recommendations_by_horizon["short_term"],
+                    market,
+                )
+                recommendations_by_horizon["long_term"], long_deepseek_meta = _apply_deepseek_rerank(
+                    "long_term",
+                    recommendations_by_horizon["long_term"],
+                    market,
+                )
                 tomorrow_rows, tomorrow_meta = score_tomorrow_candidates(
                     candidates,
                     top_n=30,
                     market_filter=market,
                     market_regime=market_regime,
+                )
+                tomorrow_rows, tomorrow_deepseek_meta = _apply_deepseek_rerank(
+                    "tomorrow_picks",
+                    tomorrow_rows,
+                    market,
                 )
                 try:
                     _apply_tomorrow_validation_gate(
@@ -592,18 +650,14 @@ def create_app() -> Flask:
                     market_filter=market,
                     market_regime=market_regime,
                 )
+                swing_rows, swing_deepseek_meta = _apply_deepseek_rerank("swing_picks", swing_rows, market)
                 position_rows, position_meta = score_position_candidates(
                     candidates,
                     top_n=30,
                     market_filter=market,
                     market_regime=market_regime,
                 )
-                tech_rows, tech_meta = score_tech_potential_candidates(
-                    candidates,
-                    top_n=30,
-                    market_filter=market,
-                    market_regime=market_regime,
-                )
+                position_rows, position_deepseek_meta = _apply_deepseek_rerank("position_picks", position_rows, market)
                 short_stability = stability_tracker.update("short_term", recommendations_by_horizon["short_term"])
                 long_stability = stability_tracker.update("long_term", recommendations_by_horizon["long_term"])
                 recommendations_by_horizon = {
@@ -629,11 +683,21 @@ def create_app() -> Flask:
                         "last_updated": long_stability["last_updated"],
                     },
                 }
+                meta["deepseek"] = {
+                    "short_term": short_deepseek_meta,
+                    "long_term": long_deepseek_meta,
+                    "tomorrow_picks": tomorrow_deepseek_meta,
+                    "swing_picks": swing_deepseek_meta,
+                    "position_picks": position_deepseek_meta,
+                }
+                tomorrow_meta["deepseek"] = tomorrow_deepseek_meta
+                swing_meta["deepseek"] = swing_deepseek_meta
+                position_meta["deepseek"] = position_deepseek_meta
                 meta["market_regime"] = market_regime
                 strategy_metrics = {}
                 for strategy_key in (
                     "short_term", "long_term", "tomorrow_picks",
-                    "swing_picks", "position_picks", "tech_potential",
+                    "swing_picks", "position_picks",
                 ):
                     try:
                         strategy_metrics[strategy_key] = cached_metrics(strategy_key, 20)
@@ -646,7 +710,6 @@ def create_app() -> Flask:
                         "tomorrow_picks": tomorrow_rows,
                         "swing_picks": swing_rows,
                         "position_picks": position_rows,
-                        "tech_potential": tech_rows,
                     },
                     minimum_appearances=2,
                     top_n=30,
@@ -654,7 +717,7 @@ def create_app() -> Flask:
                 )
                 meta["strategy_consensus"] = {
                     "rows": consensus_rows,
-                    "strategy_count": 6,
+                    "strategy_count": 5,
                     "serenity_references": SERENITY_REFERENCES,
                     "trading_agents_reference": TRADING_AGENTS_REFERENCE,
                     "source_versions": {
@@ -663,7 +726,6 @@ def create_app() -> Flask:
                         "tomorrow_picks": tomorrow_meta.get("strategy_version", "tomorrow_picks_v5"),
                         "swing_picks": swing_meta.get("strategy_version", "swing_5_10d_v1"),
                         "position_picks": position_meta.get("strategy_version", "position_1_3m_v1"),
-                        "tech_potential": tech_meta.get("strategy_version", "tech_potential_v1"),
                     },
                 }
                 consensus_lookup = {row["code"]: row for row in consensus_rows}
@@ -974,31 +1036,26 @@ def create_app() -> Flask:
                 top_n=top_n,
                 market_regime=market_regime,
             )
+            dual_rows["short_term"], short_deepseek_meta = _apply_deepseek_rerank("short_term", dual_rows.get("short_term", []), "all")
+            dual_rows["long_term"], long_deepseek_meta = _apply_deepseek_rerank("long_term", dual_rows.get("long_term", []), "all")
             tomorrow_rows, tomorrow_meta = score_tomorrow_candidates(
                 candidates,
                 top_n=top_n,
                 market_regime=market_regime,
             )
+            tomorrow_rows, tomorrow_deepseek_meta = _apply_deepseek_rerank("tomorrow_picks", tomorrow_rows, "all")
             swing_rows, swing_meta = score_swing_candidates(
                 candidates,
                 top_n=top_n,
                 market_regime=market_regime,
             )
+            swing_rows, swing_deepseek_meta = _apply_deepseek_rerank("swing_picks", swing_rows, "all")
             position_rows, position_meta = score_position_candidates(
                 candidates,
                 top_n=top_n,
                 market_regime=market_regime,
             )
-            tech_rows, tech_meta = score_tech_potential_candidates(
-                candidates,
-                top_n=top_n,
-                market_regime=market_regime,
-            )
-            chokepoint_rows, chokepoint_meta = score_chokepoint_candidates(
-                candidates,
-                top_n=top_n,
-                market_regime=market_regime,
-            )
+            position_rows, position_deepseek_meta = _apply_deepseek_rerank("position_picks", position_rows, "all")
             fallback_history = None
             fallback_error = ""
             normalized_for_lookup = normalize_code(normalized_code)
@@ -1018,17 +1075,13 @@ def create_app() -> Flask:
                     "tomorrow_picks": tomorrow_rows,
                     "swing_picks": swing_rows,
                     "position_picks": position_rows,
-                    "tech_potential": tech_rows,
-                    "chokepoint_picks": chokepoint_rows,
                 },
                 strategy_metas={
-                    "short_term": dual_meta,
-                    "long_term": dual_meta,
-                    "tomorrow_picks": tomorrow_meta,
-                    "swing_picks": swing_meta,
-                    "position_picks": position_meta,
-                    "tech_potential": tech_meta,
-                    "chokepoint_picks": chokepoint_meta,
+                    "short_term": {**dual_meta, "deepseek": short_deepseek_meta},
+                    "long_term": {**dual_meta, "deepseek": long_deepseek_meta},
+                    "tomorrow_picks": {**tomorrow_meta, "deepseek": tomorrow_deepseek_meta},
+                    "swing_picks": {**swing_meta, "deepseek": swing_deepseek_meta},
+                    "position_picks": {**position_meta, "deepseek": position_deepseek_meta},
                 },
                 market_regime=market_regime,
                 raw_quotes=quotes,
@@ -1059,6 +1112,8 @@ def create_app() -> Flask:
                 market_filter=market,
                 market_regime=market_regime,
             )
+            rows, deepseek_meta = _apply_deepseek_rerank("tomorrow_picks", rows, market)
+            meta["deepseek"] = deepseek_meta
             metrics = cached_metrics("tomorrow_picks", 20)
             _apply_tomorrow_validation_gate(rows, meta, metrics)
             meta["market_regime"] = market_regime
@@ -1149,7 +1204,9 @@ def create_app() -> Flask:
                 market_filter=market,
                 market_regime=market_regime,
             )
+            rows, deepseek_meta = _apply_deepseek_rerank("tech_potential", rows, market)
             meta["market_regime"] = market_regime
+            meta["deepseek"] = deepseek_meta
             _attach_validation_summary(rows, validation_store, "tech_potential", metrics_fn=cached_metrics)
             return jsonify(
                 {
@@ -1192,7 +1249,9 @@ def create_app() -> Flask:
                 market_filter=market,
                 market_regime=market_regime,
             )
+            rows, deepseek_meta = _apply_deepseek_rerank("chokepoint_picks", rows, market)
             meta["market_regime"] = market_regime
+            meta["deepseek"] = deepseek_meta
             meta["industry_map"] = _chokepoint_industry_map(candidates, rows, quotes, market_regime)
             if not rows:
                 meta["empty_reason"] = "当前实时候选股没有命中卡脖子上游关键词；免费行情的行业字段可能为空或过粗，先看下方行业目录和龙头状态。"
@@ -1239,7 +1298,9 @@ def create_app() -> Flask:
                 market_filter=market,
                 market_regime=market_regime,
             )
+            rows, deepseek_meta = _apply_deepseek_rerank("swing_picks", rows, market)
             meta["market_regime"] = market_regime
+            meta["deepseek"] = deepseek_meta
             _attach_validation_summary(rows, validation_store, "swing_picks", metrics_fn=cached_metrics)
             return jsonify(
                 {
@@ -1283,7 +1344,9 @@ def create_app() -> Flask:
                 market_filter=market,
                 market_regime=market_regime,
             )
+            rows, deepseek_meta = _apply_deepseek_rerank(strategy_name, rows, market)
             meta["market_regime"] = market_regime
+            meta["deepseek"] = deepseek_meta
             _attach_validation_summary(rows, validation_store, strategy_name, metrics_fn=cached_metrics)
             return jsonify(
                 {
@@ -1339,7 +1402,9 @@ def create_app() -> Flask:
                 market_filter=market,
                 market_regime=market_regime,
             )
+            rows, deepseek_meta = _apply_deepseek_rerank("position_picks", rows, market)
             meta["market_regime"] = market_regime
+            meta["deepseek"] = deepseek_meta
             _attach_validation_summary(rows, validation_store, "position_picks", metrics_fn=cached_metrics)
             return jsonify(
                 {
@@ -1503,12 +1568,14 @@ def create_app() -> Flask:
         strategy = _validation_strategy()
         days = _int_arg("days", 20, minimum=1, maximum=120)
         try:
+            metrics = validation_store.metrics(strategy, days=days)
             return jsonify(
                 {
                     "ok": True,
                     "strategy": strategy,
                     "dates": validation_store.list_signal_dates(strategy),
-                    "metrics": validation_store.metrics(strategy, days=days),
+                    "metrics": metrics,
+                    "deepseek_review": _deepseek_validation_review(strategy, metrics, days),
                     "health": provider.health(),
                 }
             )

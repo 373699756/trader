@@ -18,11 +18,6 @@
           <button class="tab-button" type="button" data-tab="todayPanel">今日推荐</button>
           <button class="tab-button" type="button" data-tab="tomorrowPanel">明天预测</button>
           <button class="tab-button" type="button" data-tab="horizonPanel">波段/中长期</button>
-          <button class="tab-button" type="button" data-tab="techPanel">科技/主题</button>
-          <button class="tab-button" type="button" data-tab="reversalPanel">反转低波</button>
-          <button class="tab-button" type="button" data-tab="smallcapPanel">小市值价值</button>
-          <button class="tab-button" type="button" data-tab="breakoutPanel">量价突破</button>
-          <button class="tab-button" type="button" data-tab="chokepointPanel">卡脖子</button>
           <button class="tab-button" type="button" data-tab="portfolioPanel" hidden>组合约束</button>
           <button class="tab-button" type="button" data-tab="validationPanel">策略验证</button>
           <button class="tab-button" type="button" data-tab="strategyPanel">策略说明</button>
@@ -108,7 +103,7 @@
             <strong id="decisionPriorityCount">-</strong>
           </article>
           <article class="decision-card">
-            <span>平均风险</span>
+            <span>低风险候选</span>
             <strong id="decisionAvgRisk">-</strong>
           </article>
         </section>
@@ -116,7 +111,7 @@
         <section class="stock-predictor board" aria-label="单票涨跌预测">
           <div class="board-header">
             <h2>输入股票代码预测涨跌</h2>
-            <span>同时输出短期与长期倾向，复用短线、明天、波段、中长期、科技、卡脖子策略</span>
+            <span>同时输出短期与长期倾向，复用短线、明天、波段、中长期策略</span>
           </div>
           <div class="stock-predictor-form">
             <input id="stockPredictionInput" type="text" inputmode="numeric" maxlength="12" placeholder="例如 600000 / 300750 / 688981" />
@@ -128,27 +123,9 @@
 
         <div class="board">
           <div class="board-header">
-            <h2>策略总览</h2>
-            <span>先看策略是否有效，再看具体股票</span>
+            <h2>市场与共识</h2>
+            <span>先看盘面环境和多策略共识，再看具体股票</span>
           </div>
-          <section class="overview-summary">
-            <div>
-              <span>当前最佳</span>
-              <strong id="overviewBestStrategy">-</strong>
-            </div>
-            <div>
-              <span>已验证策略</span>
-              <strong id="overviewVerifiedCount">-</strong>
-            </div>
-            <div>
-              <span>总验证样本</span>
-              <strong id="overviewSampleCount">-</strong>
-            </div>
-            <div>
-              <span>观察周期</span>
-              <strong id="overviewDays">近20个保存日</strong>
-            </div>
-          </section>
           <section class="market-regime-strip overview-secondary" aria-label="市场状态">
             <div>
               <span>盘面状态</span>
@@ -181,13 +158,13 @@
               <div id="regimeGauge" class="chart-box"></div>
             </div>
             <div class="chart-card">
-              <h3>共识热度（出现次数 × 共识分，气泡=一致性）</h3>
+              <h3>共识热度（出现次数 × 推荐强度）</h3>
               <div id="consensusScatter" class="chart-box"></div>
             </div>
           </div>
           <div class="board-header">
-            <h2>多策略共识</h2>
-            <span>优先看 2 个以上策略同时入选的标的</span>
+            <h2>共识推荐</h2>
+            <span>只看多个策略同时入选的主要买入理由</span>
           </div>
           <div class="table-wrap">
             <table>
@@ -198,47 +175,14 @@
                   <th>市场</th>
                   <th>共识级别</th>
                   <th>出现次数</th>
-                  <th>平均排名</th>
-                  <th>平均分</th>
-                  <th>质量</th>
-                  <th>风险</th>
-                  <th>共识分</th>
                   <th>动作</th>
                   <th>来自策略</th>
+                  <th>主要推荐因素</th>
                 </tr>
               </thead>
               <tbody id="strategyConsensusBody">
                 <tr>
-                  <td colspan="12" class="empty">加载中...</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="strategy-overview-grid overview-secondary" id="strategyOverviewGrid">
-            <div class="empty">加载中...</div>
-          </div>
-          <div class="table-wrap overview-secondary">
-            <table>
-              <thead>
-                <tr>
-                  <th>策略</th>
-                  <th>版本</th>
-                  <th>周期</th>
-                  <th>主样本</th>
-	                  <th>真/回</th>
-	                  <th>跳过</th>
-	                  <th>主周期净收益</th>
-                  <th>净胜率</th>
-                  <th>真实净收益</th>
-                  <th>平均回撤</th>
-                  <th>最近保存</th>
-                  <th>状态</th>
-                  <th>建议</th>
-                </tr>
-              </thead>
-              <tbody id="strategyOverviewBody">
-                <tr>
-	                  <td colspan="13" class="empty">加载中...</td>
+                  <td colspan="8" class="empty">加载中...</td>
                 </tr>
               </tbody>
             </table>
@@ -514,7 +458,7 @@
         </div>
       </section>
 
-      <section class="tab-panel" id="techPanel">
+      <section class="tab-panel" id="techPanel" hidden>
         <section class="market-glossary" aria-label="常见股票名词解释">
           <div class="market-glossary-head">
             <h2>常见名词</h2>
@@ -568,7 +512,7 @@
         </div>
       </section>
 
-      <section class="tab-panel" id="chokepointPanel">
+      <section class="tab-panel" id="chokepointPanel" hidden>
         <section class="market-glossary" aria-label="常见股票名词解释">
           <div class="market-glossary-head">
             <h2>常见名词</h2>
@@ -632,7 +576,7 @@
         </div>
       </section>
 
-      <section class="tab-panel" id="reversalPanel">
+      <section class="tab-panel" id="reversalPanel" hidden>
         <section class="market-glossary" aria-label="常见股票名词解释">
           <div class="market-glossary-head">
             <h2>常见名词</h2>
@@ -684,7 +628,7 @@
         </div>
       </section>
 
-      <section class="tab-panel" id="smallcapPanel">
+      <section class="tab-panel" id="smallcapPanel" hidden>
         <section class="market-glossary" aria-label="常见股票名词解释">
           <div class="market-glossary-head">
             <h2>常见名词</h2>
@@ -736,7 +680,7 @@
         </div>
       </section>
 
-      <section class="tab-panel" id="breakoutPanel">
+      <section class="tab-panel" id="breakoutPanel" hidden>
         <section class="market-glossary" aria-label="常见股票名词解释">
           <div class="market-glossary-head">
             <h2>常见名词</h2>
@@ -799,11 +743,6 @@
 	              <option value="tomorrow_picks">明天预测</option>
 	              <option value="swing_picks">波段 5-10 日</option>
 	              <option value="position_picks">中长期 1-3 月</option>
-	              <option value="tech_potential">科技潜力</option>
-	              <option value="chokepoint_picks">卡脖子</option>
-	              <option value="reversal_picks">反转低波</option>
-	              <option value="smallcap_value_picks">小市值价值</option>
-	              <option value="breakout_picks">量价突破</option>
 	            </select>
             <button id="loadPortfolioBtn" class="primary-action" type="button">生成组合</button>
           </div>
@@ -853,6 +792,10 @@
 	          <div class="validation-current-decision" id="validationSimpleDecision">
 	            策略验证加载后，这里会给出一句话结论。
 	          </div>
+
+          <div class="validation-current-decision decision-neutral" id="validationDeepseekReview">
+            DeepSeek 复盘建议将在明天预测/今日推荐样本足够时显示。
+          </div>
 
           <div class="scoreboard" id="validationScoreboard">
             <div class="empty">加载中...</div>
@@ -1048,56 +991,6 @@
                 <li><strong>关注字段：</strong>今日涨跌、总市值、60 日、年内、20 日线、波动、趋势、稳健、流动性。</li>
                 <li><strong>适用场景：</strong>用于建立中长期候选池，再结合基本面、行业景气和仓位约束复核。</li>
                 <li><strong>验证口径：</strong>优先看 20-60 日前瞻样本，技术趋势版不单独作为持仓结论。</li>
-              </ul>
-            </article>
-            <article>
-              <span class="strategy-note-kicker">主题</span>
-              <h3>科技潜力</h3>
-              <p>先匹配 AI、算力、半导体、机器人、低空航天、智能汽车、新材料、医疗科技等方向，再看主题分、启动分、未透支分和买入安全。主题热时容易拥挤，要结合 60 日、年内涨幅和风控原因。</p>
-              <ul>
-                <li><strong>关注字段：</strong>方向、总市值、主题分、启动、未透支、买入安全、综合分。</li>
-                <li><strong>适用场景：</strong>主题刚扩散、产业催化出现、龙头尚未全面加速时，用来扩展观察池。</li>
-                <li><strong>主要风险：</strong>题材识别会受名称和可用行业字段限制，主题过热时要看透支和舆情风险。</li>
-              </ul>
-            </article>
-            <article>
-              <span class="strategy-note-kicker">供应链</span>
-              <h3>卡脖子</h3>
-              <p>围绕半导体设备、材料、光器件、工业软件、高端制造等上游环节，找供给紧、难替代、尚未充分重定价的标的。适合做主题观察池，不能只因题材稀缺就忽略流动性和涨幅透支。</p>
-              <ul>
-                <li><strong>关注字段：</strong>环节、总市值、成交额、卡脖子分、启动、未透支、买入安全。</li>
-                <li><strong>适用场景：</strong>产业链上游受关注、国产替代或供给瓶颈被重新定价时，优先看未透支环节。</li>
-                <li><strong>主要风险：</strong>行业龙头不等于买入建议，若流动性差、涨幅透支或只剩题材叙事，应只观察。</li>
-              </ul>
-            </article>
-            <article>
-              <span class="strategy-note-kicker">均值回复</span>
-              <h3>反转低波</h3>
-              <p>寻找短期超跌但没有失控、20 日波动较低、换手不过热的标的，适合观察均值回复机会。单边下跌和基本面恶化时容易继续走弱，必须看失败原因和验证净收益。</p>
-              <ul>
-                <li><strong>关注字段：</strong>总市值、60 日、20 日涨跌、20 日波动、换手率、反转分、低波分、换手分。</li>
-                <li><strong>适用场景：</strong>市场从急跌转为企稳，寻找跌多但未失控、波动收敛的修复候选。</li>
-                <li><strong>主要风险：</strong>下跌趋势未结束时会变成接飞刀，必须结合失败原因和主周期净收益。</li>
-              </ul>
-            </article>
-            <article>
-              <span class="strategy-note-kicker">风格因子</span>
-              <h3>小市值价值</h3>
-              <p>看流通市值、PE、PB、换手和价值分，同时设置市值下限、亏损过滤和流动性护栏。小市值可能波动极端、成交不连续，不适合单票重仓。</p>
-              <ul>
-                <li><strong>关注字段：</strong>总市值、流通市值、PE、PB、换手率、小市值分、价值分。</li>
-                <li><strong>适用场景：</strong>市场风险偏好稳定、低估值小市值重新活跃时，用于寻找分散型候选。</li>
-                <li><strong>主要风险：</strong>小市值尾部风险大，防守市况、低流动性、亏损或估值字段缺失时不应重仓。</li>
-              </ul>
-            </article>
-            <article>
-              <span class="strategy-note-kicker">趋势确认</span>
-              <h3>量价突破</h3>
-              <p>看均线多头排列、20 日新高、量能比、突破强度和量能突破分，适合确认趋势是否被资金重新定价。若只有实时兜底信号而缺历史因子，应降级观察。</p>
-              <ul>
-                <li><strong>关注字段：</strong>总市值、60 日、多头排列、20 日新高、量能比、突破强度、量能突破。</li>
-                <li><strong>适用场景：</strong>趋势从横盘转为放量突破，或均线多头后再次确认强度时使用。</li>
-                <li><strong>主要风险：</strong>假突破和缩量回落常见，历史因子不足或只有代理信号时只做观察。</li>
               </ul>
             </article>
             <article class="strategy-note-wide">

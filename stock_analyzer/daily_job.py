@@ -33,6 +33,7 @@ def main() -> int:
     parser.add_argument("--snapshot", action="store_true", help="保存策略当日预测快照")
     parser.add_argument("--update", action="store_true", help="回填已保存快照的未来收益")
     parser.add_argument("--paper-trade", action="store_true", help="根据最近保存快照生成/更新纸面组合交易")
+    parser.add_argument("--factor-snapshot", action="store_true", help="基于本地 market_data 生成 Qlib 风格因子快照表")
     parser.add_argument("--factor-ic", action="store_true", help="基于真实验证样本刷新因子 IC 文件")
     parser.add_argument("--calibrate-live", action="store_true", help="基于明天预测真实验证样本校准权重")
     parser.add_argument("--write-weights", action="store_true", help="与 --calibrate-live 配合，确认写入 weights.json")
@@ -40,8 +41,8 @@ def main() -> int:
     parser.add_argument("--market", default="all", choices=("all", "main", "chinext", "star"))
     args = parser.parse_args()
 
-    if not args.snapshot and not args.update and not args.paper_trade and not args.factor_ic and not args.calibrate_live:
-        parser.error("至少指定 --snapshot、--update、--paper-trade、--factor-ic 或 --calibrate-live")
+    if not args.snapshot and not args.update and not args.paper_trade and not args.factor_snapshot and not args.factor_ic and not args.calibrate_live:
+        parser.error("至少指定 --snapshot、--update、--paper-trade、--factor-snapshot、--factor-ic 或 --calibrate-live")
 
     from .paper_trading import PaperTradingStore
     from .providers import MarketDataProvider
@@ -52,7 +53,7 @@ def main() -> int:
     store = StrategyValidationStore(config.VALIDATION_DB_PATH)
     paper_store = PaperTradingStore(config.PAPER_TRADING_DB_PATH)
     strategies = _parse_strategies(args.strategy, SNAPSHOT_STRATEGIES)
-    payload = {"ok": True, "snapshot": [], "update": [], "paper_trade": [], "factor_ic": {}, "calibrate_live": {}}
+    payload = {"ok": True, "snapshot": [], "update": [], "paper_trade": [], "factor_snapshot": {}, "factor_ic": {}, "calibrate_live": {}}
 
     if args.snapshot:
         payload["snapshot"] = run_snapshots(provider, store, strategies, market=args.market)
@@ -60,11 +61,21 @@ def main() -> int:
         for strategy in strategies:
             result = store.update_outcomes(provider, strategy_name=strategy)
             payload["update"].append({"strategy": strategy, "result": result})
+        args.factor_snapshot = True
         args.factor_ic = True
     if args.paper_trade:
         for strategy in strategies:
             result = paper_store.run_paper_trade(provider, store, strategy)
             payload["paper_trade"].append({"strategy": strategy, "result": result})
+    if args.factor_snapshot:
+        from .factor_snapshot import build_factor_snapshots
+
+        payload["factor_snapshot"] = build_factor_snapshots(
+            config.MARKET_DATA_DB_PATH,
+            config.FACTOR_SNAPSHOT_DB_PATH,
+            days=config.FACTOR_SNAPSHOT_HISTORY_DAYS,
+            batch_size=config.FACTOR_SNAPSHOT_BATCH_SIZE,
+        )
     if args.factor_ic:
         from .factor_ic import compute_factor_ic, save_factor_ic
 

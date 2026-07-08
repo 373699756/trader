@@ -269,6 +269,12 @@ export MARKET_DATA_DB_PATH=.runtime/market_data
 
 目录模式会把行情元数据/下载状态写入 `.runtime/market_data/market_data_meta.sqlite3`，把日线行情按板块和 5 位代码前缀写入 `market_data_bars_<板块>_<前缀>.sqlite3`，例如 `market_data_bars_main_60000.sqlite3`、`market_data_bars_chinext_30075.sqlite3`。推荐页历史因子、离线校准和 summary 都兼容这种目录模式。旧的单文件 `.runtime/market_data.sqlite3` 仍可继续使用。
 
+第一版 Qlib 风格因子快照表会把本地日线库计算出的 AlphaLite 因子写入 `.runtime/factor_snapshots.sqlite3` 的 `factor_snapshots` 表，主键为 `trade_date + code + factor_set`。当前先保存 3/5/10/20 日收益、均线偏离、量能、突破、波动率和覆盖率，供后续模型训练、DeepSeek 复盘和样本外验证统一读取。策略回溯里的 DeepSeek 复盘会按信号日期和股票代码读取这些快照，并把关键字段压缩进复盘样本，用于生成可验证的降权规则：
+
+```bash
+.venv/bin/python -m stock_analyzer.daily_job --factor-snapshot
+```
+
 明天预测会把 `MARKET_DATA_DB_PATH` 指向的本地行情库里的历史因子接入盘面门控：当历史 20 日均线宽度低于 45% 时不输出主推买入，只保留备选观察池；45%-55% 时最多保留少量主推；高于 55% 时默认最多保留 5 只主推。页面仍展示完整观察名单，但只有 `tier=primary_watch` 的股票进入真实主样本统计和纸面交易重点。
 
 ## 长期黑名单硬过滤
@@ -319,6 +325,7 @@ export MARKET_DATA_DB_PATH=.runtime/market_data
 .venv/bin/python -m stock_analyzer.daily_job --snapshot --strategy all --market all
 .venv/bin/python -m stock_analyzer.daily_job --update --strategy all
 .venv/bin/python -m stock_analyzer.daily_job --paper-trade --strategy all
+.venv/bin/python -m stock_analyzer.daily_job --factor-snapshot
 .venv/bin/python -m stock_analyzer.daily_job --factor-ic --strategy all
 ```
 
@@ -328,10 +335,11 @@ crontab 示例：
 00 15 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --snapshot --strategy all --market all >> .runtime/daily_job.log 2>&1
 30 17 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --update --strategy all >> .runtime/daily_job.log 2>&1
 30 18 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --update --paper-trade --strategy all >> .runtime/daily_job.log 2>&1
+40 18 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --factor-snapshot >> .runtime/daily_job.log 2>&1
 45 18 * * 1-5 cd /home/cp/Public/trader && .venv/bin/python -m stock_analyzer.daily_job --factor-ic --strategy all >> .runtime/daily_job.log 2>&1
 ```
 
-第一条是自动保存的外部兜底；服务内置自动保存和 cron 重复执行时，同一天样本会替换旧样本，不会重复累计。第二条负责 T+1/T+多日结果回填，第三条在回填后同步纸面组合交易和组合净值，第四条刷新因子 IC。应用内后台分批任务仍会继续补 K 线和更新结果。
+第一条是自动保存的外部兜底；服务内置自动保存和 cron 重复执行时，同一天样本会替换旧样本，不会重复累计。第二条负责 T+1/T+多日结果回填，第三条在回填后同步纸面组合交易和组合净值，第四条刷新因子快照表，第五条刷新因子 IC。应用内后台分批任务仍会继续补 K 线和更新结果。
 
 ## 上线后运营流程
 

@@ -1,8 +1,8 @@
-# Python >=3.9 required. The current AKShare dependency set does not resolve on Python 3.8.
+# Python >=3.9 required. Current pinned versions were too old for CPython 3.14 wheels.
 akshare>=1.14.0
 Flask>=2.2,<3.1
-numpy>=1.24,<2
-pandas>=1.3,<2.1
+numpy>=1.24,<3
+pandas>=1.5,<3
 requests>=2.22.0
 tushare>=1.2.89
 pytest>=7,<9

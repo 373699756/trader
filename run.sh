@@ -6,7 +6,7 @@ VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-5000}"
 PYTHON_MIN_MINOR="${PYTHON_MIN_MINOR:-9}"
-PYTHON_MAX_MINOR="${PYTHON_MAX_MINOR:-11}"
+PYTHON_MAX_MINOR="${PYTHON_MAX_MINOR:-14}"
 
 # 代理模式:
 #   auto: 优先沿用已有环境变量；否则自动扫描本机/WSL 常见代理端口
@@ -21,6 +21,7 @@ SKIP_PROXY_CHECK="${SKIP_PROXY_CHECK:-0}"
 
 PIP_TIMEOUT="${PIP_TIMEOUT:-60}"
 PIP_RETRIES="${PIP_RETRIES:-5}"
+PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-}"
 
 cd "$ROOT_DIR"
 
@@ -238,7 +239,7 @@ version = sys.version_info
 if version.major != 3 or version.minor < min_minor or version.minor > max_minor:
     raise SystemExit(
         f"当前 Python 版本为 {version.major}.{version.minor}.{version.micro}，"
-        f"本项目依赖要求 Python 3.{min_minor}-3.{max_minor}，推荐 Python 3.11。\n"
+        f"本项目依赖要求 Python 3.{min_minor}-3.{max_minor}，推荐 Python 3.{max_minor}。\n"
         "请先安装兼容的 Python 后重试；如果已有旧虚拟环境，请删除后重建。"
     )
 PY
@@ -297,7 +298,7 @@ ensure_venv() {
 
   python_bin="$(find_python || true)"
   if [ -z "$python_bin" ]; then
-    printf '未找到 Python。请安装 Python 3.9-3.11，推荐 Python 3.11。\n' >&2
+    printf '未找到 Python。请安装兼容版本 Python 3.%s-3.%s，推荐 3.%s。\n' "$PYTHON_MIN_MINOR" "$PYTHON_MAX_MINOR" "$PYTHON_MAX_MINOR" >&2
     exit 1
   fi
 
@@ -321,9 +322,25 @@ pip_install() {
     pip_args+=(--proxy "$PIP_PROXY")
   fi
 
+  if [ -n "${PIP_ONLY_BINARY:-}" ]; then
+    pip_args+=(--only-binary "$PIP_ONLY_BINARY")
+  fi
+
   printf '安装/更新依赖...\n'
   "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --upgrade pip
-  "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --prefer-binary -r requirements.txt
+  "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --upgrade setuptools wheel
+
+  if "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --prefer-binary -r requirements.txt; then
+    return 0
+  fi
+
+  printf '首次安装失败，重试一次：关闭构建隔离后再次安装（适配 Python 3.14）。\n'
+  if "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --no-build-isolation --prefer-binary -r requirements.txt; then
+    return 0
+  fi
+
+  printf '再次失败，尝试允许写入受限环境（外部管理环境兼容）。\n'
+  "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --break-system-packages --no-build-isolation --prefer-binary -r requirements.txt
 }
 
 mkdir -p "$ROOT_DIR/.runtime"

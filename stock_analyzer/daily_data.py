@@ -461,6 +461,7 @@ def _read_daily_bars_for_codes(db_path: str, codes: List[str], columns: str) -> 
                 ORDER BY code ASC, trade_date ASC
             """.format(columns, placeholders)
             frames.append(pd.read_sql_query(query, conn, params=path_codes))
+    frames = [frame for frame in frames if not frame.empty and frame.notna().any().any()]
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)

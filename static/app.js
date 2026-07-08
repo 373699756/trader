@@ -144,6 +144,7 @@ const els = {
   updateStatus: document.getElementById("updateStatus"),
   validationScoreboard: document.getElementById("validationScoreboard"),
   validationSimpleDecision: document.getElementById("validationSimpleDecision"),
+  validationDeepseekReview: document.getElementById("validationDeepseekReview"),
   validationTitle: document.getElementById("validationTitle"),
   validationSubtitle: document.getElementById("validationSubtitle"),
   validationGuidePrimary: document.getElementById("validationGuidePrimary"),
@@ -239,7 +240,7 @@ async function loadRecommendations() {
     const message = `<tr><td colspan="16" class="empty">${escapeHtml(err.message)}</td></tr>`;
     els.shortTermBody.innerHTML = message;
     els.longTermBody.innerHTML = message;
-    els.strategyConsensusBody.innerHTML = '<tr><td colspan="12" class="empty">加载失败</td></tr>';
+    els.strategyConsensusBody.innerHTML = '<tr><td colspan="8" class="empty">加载失败</td></tr>';
     setStatus(`刷新失败：${err.message}`);
   }
 }
@@ -337,6 +338,7 @@ async function loadValidation() {
       throw new Error(payload.error || "接口返回异常");
     }
     renderValidationMetrics(payload.metrics || {});
+    renderValidationDeepseekReview(payload.deepseek_review || {});
     renderValidationDates(payload.dates || []);
     syncValidationSelection(payload.dates || []);
     loadValidationOverview();
@@ -1067,11 +1069,14 @@ function renderStrategyOverview(payload) {
   const marketRegime = payload.market_regime || {};
   const verifiedCount = strategies.filter(row => Number(row.metrics?.sample_count || 0) > 0).length;
   const sampleCount = strategies.reduce((sum, row) => sum + Number(row.metrics?.sample_count || 0), 0);
+  renderOverviewRegime(Object.keys(marketRegime).length ? marketRegime : state.marketRegime);
+  if (!els.strategyOverviewGrid || !els.strategyOverviewBody || !els.overviewBestStrategy) {
+    return;
+  }
   els.overviewBestStrategy.textContent = best ? best.label : "暂无";
   els.overviewVerifiedCount.textContent = `${verifiedCount}/${strategies.length}`;
   els.overviewSampleCount.textContent = sampleCount;
   els.overviewDays.textContent = `近${payload.days || 20}个保存日`;
-  renderOverviewRegime(Object.keys(marketRegime).length ? marketRegime : state.marketRegime);
 
   if (!strategies.length) {
     els.strategyOverviewGrid.innerHTML = '<div class="empty">暂无策略</div>';
@@ -1266,7 +1271,7 @@ function renderRegimeGauge(regime) {
 function renderStrategyConsensus(rows) {
   const displayRows = filterAndSortRows(rows, { consensus: true });
   if (!displayRows.length) {
-    els.strategyConsensusBody.innerHTML = '<tr><td colspan="12" class="empty">暂无 2 策略以上共识标的</td></tr>';
+    els.strategyConsensusBody.innerHTML = '<tr><td colspan="8" class="empty">暂无 2 策略以上共识标的</td></tr>';
     return;
   }
   els.strategyConsensusBody.innerHTML = displayRows.map(row => `
@@ -1276,20 +1281,49 @@ function renderStrategyConsensus(rows) {
       <td>${escapeHtml(row.market_label || "-")}</td>
       <td><span class="tag ${row.level === "high" ? "strategy" : row.level === "medium" ? "validation" : "stable"}">${escapeHtml(row.label || "-")}</span></td>
       <td class="num">${row.appearances}/${row.strategy_count}</td>
-      <td class="num">${formatNumber(row.avg_rank, 2)}</td>
-      <td class="num">${formatNumber(row.avg_score, 1)}</td>
-      <td class="num">${formatNumber(row.avg_quality, 1)}</td>
-      <td class="num ${riskNumberClass(row.avg_risk)}">${formatNumber(row.avg_risk, 1)}</td>
-      <td class="num score">${formatNumber(row.consensus_score, 1)}</td>
       <td><span class="tag ${actionTagClass(row.action_label)}">${escapeHtml(row.action_label || "-")}</span></td>
       <td class="reasons">${(row.strategies || []).map(text => `<span class="tag stable">${escapeHtml(text)}</span>`).join("")}</td>
+      <td class="reasons">${consensusReasonTags(row)}</td>
     </tr>
   `).join("");
   bindSentimentRows(els.strategyConsensusBody);
   renderConsensusScatter(displayRows);
 }
 
-// C2-3：共识热度散点。x=出现次数, y=共识分, 气泡大小=一致性(agreement)。
+function consensusReasonTags(row) {
+  const tags = [];
+  const added = new Set();
+  const add = (text, cls = "") => {
+    const value = String(text || "").trim();
+    if (!value || added.has(value) || tags.length >= 4) return;
+    added.add(value);
+    tags.push(`<span class="tag ${cls}">${escapeHtml(value)}</span>`);
+  };
+  const appearances = Number(row.appearances || 0);
+  if (appearances >= 2) {
+    add(`${appearances}个策略同时入选`, "stable");
+  }
+  (row.evidence || []).forEach((text) => {
+    const value = String(text || "");
+    if (value.includes("弱") || value.includes("风险")) return;
+    add(value, "stable");
+  });
+  if (row.theme) {
+    add(row.theme, "strategy");
+  }
+  if (isPriorityAction(row.action_label)) {
+    add(row.action_label, "strategy");
+  }
+  if (tags.length < 2) {
+    (row.strategies || []).slice(0, 2).forEach(text => add(`${text}入选`, "stable"));
+  }
+  if (!tags.length) {
+    add(row.label || "共识入选", "stable");
+  }
+  return tags.join("");
+}
+
+// C2-3：共识热度散点。x=出现次数, y=推荐强度, 气泡大小=一致性(agreement)。
 function renderConsensusScatter(rows) {
   const data = (rows || []).map((row) => ({
     name: row.name,
@@ -1303,10 +1337,10 @@ function renderConsensusScatter(rows) {
     grid: { left: 44, right: 18, top: 18, bottom: 34 },
     tooltip: {
       formatter: (p) =>
-        `${escapeHtml(p.data.name)}<br/>出现 ${p.value[0]} 次<br/>共识分 ${p.value[1].toFixed(1)}<br/>一致性 ${(p.value[2] * 100).toFixed(0)}%`,
+        `${escapeHtml(p.data.name)}<br/>出现 ${p.value[0]} 次<br/>推荐强度 ${p.value[1].toFixed(1)}<br/>一致性 ${(p.value[2] * 100).toFixed(0)}%`,
     },
     xAxis: { name: "出现次数", min: 0, minInterval: 1, axisLine: { lineStyle: { color: CHART_THEME.axis } } },
-    yAxis: { name: "共识分", min: 0, max: 100, axisLine: { lineStyle: { color: CHART_THEME.axis } } },
+    yAxis: { name: "推荐强度", min: 0, max: 100, axisLine: { lineStyle: { color: CHART_THEME.axis } } },
     series: [
       {
         type: "scatter",
@@ -1324,15 +1358,10 @@ function renderConsensusScatter(rows) {
 function renderDecisionDesk(rows) {
   const consensusRows = rows || [];
   const priorityRows = consensusRows.filter(row => isPriorityAction(row.action_label));
-  const riskValues = consensusRows
-    .map(row => Number(row.avg_risk))
-    .filter(Number.isFinite);
-  const avgRisk = riskValues.length
-    ? riskValues.reduce((sum, value) => sum + value, 0) / riskValues.length
-    : null;
+  const lowRiskRows = consensusRows.filter(row => Number(row.avg_risk) <= 45);
   els.decisionConsensusCount.textContent = consensusRows.length;
   els.decisionPriorityCount.textContent = priorityRows.length;
-  els.decisionAvgRisk.textContent = avgRisk == null ? "-" : formatNumber(avgRisk, 1);
+  els.decisionAvgRisk.textContent = lowRiskRows.length || "-";
 }
 
 function renderTomorrowPredictionStrip(payload) {
@@ -1404,67 +1433,29 @@ async function loadTomorrowValidationMetrics() {
 
 function explanationTags(row) {
   const tags = [];
-  const strategy = row.strategy_label || strategyLabel(row.strategy_name) || "-";
-  const signal = row.signal_label ? ` / ${row.signal_label}` : "";
-  tags.push(`<span class="tag strategy">策略:${escapeHtml(strategy)}${escapeHtml(signal)}</span>`);
+  const added = new Set();
+  const pushTag = (label, text, cls = "") => {
+    const value = String(text || "").trim();
+    if (!value || added.has(`${label}:${value}`) || tags.length >= 5) return;
+    added.add(`${label}:${value}`);
+    tags.push(`<span class="tag ${cls}">${escapeHtml(label)}:${escapeHtml(value)}</span>`);
+  };
+
   if (row.consensus_signal) {
     const consensus = row.consensus_signal;
-    tags.push(
-      `<span class="tag validation">共识:${escapeHtml(consensus.label || "-")} ${escapeHtml(String(consensus.appearances || 0))}/${escapeHtml(String(consensus.strategy_count || 0))}</span>`
-    );
+    pushTag("共识", `${consensus.label || "-"} ${consensus.appearances || 0}/${consensus.strategy_count || 0}`, "stable");
   }
+
+  (row.deepseek_profit_flags || []).slice(0, 2).forEach(text => pushTag("次日优势", text, "stable"));
+  (row.reasons || []).slice(0, 3).forEach(text => pushTag("推荐", text));
+
   const profile = row.serenity_profile || {};
-  const quality = profile.quality_score ?? row.avg_quality ?? row.score;
-  const risk = profile.risk_score ?? row.avg_risk;
-  const confidence = profile.confidence_score ?? row.avg_confidence;
-  const coverage = profile.data_coverage;
-  const verdict = row.verdict || {};
-  const committee = row.agent_committee || {};
-  const action = rowActionLabel(row) || profile.action_label || "-";
-  if (verdict.label) {
-    tags.push(`<span class="tag validation">评级:${escapeHtml(verdict.label)}</span>`);
+  (profile.evidence || []).slice(0, 1).forEach(item => pushTag("证据", item.label || "-", "stable"));
+
+  if (!tags.length) {
+    pushTag("推荐", "综合分靠前");
   }
-  if (quality != null) {
-    tags.push(`<span class="tag ${actionTagClass(action)}">动作:${escapeHtml(action)} 质量${formatNumber(quality, 1)}</span>`);
-  }
-  if (confidence != null) {
-    tags.push(`<span class="tag stable">置信:${formatNumber(confidence, 1)}</span>`);
-  }
-  if (coverage != null) {
-    tags.push(`<span class="tag validation">覆盖:${formatNumber(Number(coverage) * 100, 0)}%</span>`);
-  }
-  if (verdict.note) {
-    tags.push(`<span class="tag warning">降级:${escapeHtml(verdict.note)}</span>`);
-  }
-  if (committee.final_action_label) {
-    tags.push(`<span class="tag validation">Agent:${escapeHtml(committee.final_action_label)}</span>`);
-  }
-  tags.push(similarSignalStatsTag(row.similar_signal_stats));
-  (profile.evidence || []).slice(0, 2).forEach(item => {
-    tags.push(`<span class="tag stable">证据:${escapeHtml(item.label || "-")}</span>`);
-  });
-  if (risk != null) {
-    const level = Number(risk) >= 70 ? "高" : Number(risk) >= 50 ? "中" : "低";
-    const cls = Number(risk) >= 70 ? "risk" : Number(risk) >= 50 ? "warning" : "stable";
-    tags.push(`<span class="tag ${cls}">风险:${level}</span>`);
-  } else if (row.chase_risk || row.overextension) {
-    tags.push(riskTag("风险", row.chase_risk || row.overextension));
-  }
-  (row.reasons || []).slice(0, 3).forEach(text => {
-    tags.push(`<span class="tag">推荐:${escapeHtml(text)}</span>`);
-  });
-  (profile.risk_reasons || []).slice(0, 2).forEach(text => {
-    tags.push(`<span class="tag risk">风控:${escapeHtml(text)}</span>`);
-  });
-  tags.push(riskTag("追高", row.chase_risk));
-  tags.push(riskTag("透支", row.overextension));
-  (row.failure_reasons || []).slice(0, 3).forEach(text => {
-    tags.push(`<span class="tag risk">失败:${escapeHtml(text)}</span>`);
-  });
-  (row.risk_words || []).slice(0, 2).forEach(text => {
-    tags.push(`<span class="tag risk">舆情:${escapeHtml(text)}</span>`);
-  });
-  return tags.filter(Boolean).join("");
+  return tags.join("");
 }
 
 function riskTag(prefix, risk) {  if (!risk) {
@@ -2204,6 +2195,50 @@ function renderValidationSimpleDecision({ sample, outcome, real, replay, winRate
   els.validationSimpleDecision.textContent = text;
 }
 
+function renderValidationDeepseekReview(review) {
+  if (!els.validationDeepseekReview) return;
+  if (!review || review.enabled === false) {
+    const status = review?.status || "disabled";
+    els.validationDeepseekReview.className = "validation-current-decision decision-neutral";
+    els.validationDeepseekReview.textContent = status === "strategy_not_supported"
+      ? "DeepSeek 复盘暂不支持该策略。"
+      : status === "runtime_disabled"
+      ? "DeepSeek 复盘本地已关闭，当前只使用本地验证指标。"
+      : "DeepSeek 复盘暂未启用。";
+    return;
+  }
+  if (review.status === "fallback") {
+    els.validationDeepseekReview.className = "validation-current-decision decision-watch";
+    els.validationDeepseekReview.textContent = `DeepSeek 复盘暂不可用：${review.error || "接口回退"}`;
+    return;
+  }
+  const avoid = Array.isArray(review.avoid_conditions) ? review.avoid_conditions.slice(0, 4) : [];
+  const filters = Array.isArray(review.suggested_filters) ? review.suggested_filters.slice(0, 4) : [];
+  const penalties = Array.isArray(review.suggested_penalties) ? review.suggested_penalties.slice(0, 3) : [];
+  const rules = Array.isArray(review.rule_candidates) ? review.rule_candidates.slice(0, 3) : [];
+  const penaltyText = penalties
+    .map(item => `${escapeHtml(item.condition || "-")} 扣${escapeHtml(String(item.penalty ?? "-"))}`)
+    .join("；");
+  const ruleText = rules
+    .map(item => {
+      const field = item.field || "-";
+      const operator = item.operator || "";
+      const threshold = item.threshold ?? "-";
+      const penalty = item.penalty ?? "-";
+      const reason = item.reason ? `：${item.reason}` : "";
+      return `${escapeHtml(field)} ${escapeHtml(operator)} ${escapeHtml(String(threshold))} 扣${escapeHtml(String(penalty))}${escapeHtml(reason)}`;
+    })
+    .join("；");
+  els.validationDeepseekReview.className = "validation-current-decision decision-watch";
+  els.validationDeepseekReview.innerHTML = `
+    <strong>DeepSeek 反推荐复盘：</strong>${escapeHtml(review.summary || review.decision || "暂无总结")}
+    ${avoid.length ? `<br><span>规避条件：${avoid.map(escapeHtml).join("；")}</span>` : ""}
+    ${filters.length ? `<br><span>建议过滤：${filters.map(escapeHtml).join("；")}</span>` : ""}
+    ${penaltyText ? `<br><span>建议扣分：${penaltyText}</span>` : ""}
+    ${ruleText ? `<br><span>规则候选：${ruleText}</span>` : ""}
+  `;
+}
+
 function renderValidationDates(rows) {
   if (!rows.length) {
     els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">暂无保存记录</td></tr>';
@@ -2546,13 +2581,12 @@ function verdictBadge(verdict) {
 
 // C3：表格综合分单元格 = verdict 徽章 + “综合分 / 买入安全”。
 function scoreCell(row, entrySafetyValue = row.execution_score) {
-  const badge = verdictBadge(row.verdict);
   const score = scorePairValue(row.score, 1, "综合分");
   const entry = scorePairValue(entrySafetyValue, 0, executionScoreHint(entrySafetyValue), "买入安全 ");
   const separator = entry ? '<span class="score-pair-separator">/</span>' : "";
   const number = `<div class="score-pair" title="综合分 / 买入安全">${score}${separator}${entry}</div>`;
   const tier = row.verdict?.tier ? ` score-${escapeHtml(row.verdict.tier)}` : "";
-  return `<td class="num score${tier}">${badge}${number}</td>`;
+  return `<td class="num score${tier}">${number}</td>`;
 }
 
 function scorePairValue(value, digits, title, label = "") {

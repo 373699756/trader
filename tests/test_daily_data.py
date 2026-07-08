@@ -3,6 +3,7 @@ import os
 import pandas as pd
 
 from stock_analyzer.daily_data import DailyMarketDataStore, list_market_data_codes, load_history_frames
+from stock_analyzer.factor_snapshot import FactorSnapshotStore, build_factor_snapshots
 
 
 def _history(code):
@@ -32,6 +33,26 @@ def _history(code):
             },
         ]
     )
+
+
+def _long_history(code, rows=30):
+    data = []
+    for index in range(rows):
+        close = 10 + index * 0.2
+        data.append(
+            {
+                "trade_date": "202401{:02d}".format(index + 1),
+                "code": code,
+                "open": close - 0.1,
+                "high": close + 0.2,
+                "low": close - 0.2,
+                "close": close,
+                "volume": 1000 + index * 10,
+                "turnover": (1000 + index * 10) * close,
+                "pct_chg": 0 if index == 0 else 2,
+            }
+        )
+    return pd.DataFrame(data)
 
 
 def test_market_data_store_can_use_business_object_shards(tmp_path):
@@ -76,3 +97,42 @@ def test_market_data_code_listing_ignores_old_shard_names(tmp_path):
 
     assert list_market_data_codes(str(db_dir)) == ["600000"]
     assert store.summary()["stock_count"] == 1
+
+
+def test_factor_snapshots_build_from_market_data(tmp_path):
+    market_dir = tmp_path / "market_data"
+    snapshot_db = tmp_path / "factor_snapshots.sqlite3"
+    store = DailyMarketDataStore(str(market_dir))
+    assert store.upsert_bars("600000", _long_history("600000"), _long_history("600000")) == 30
+    assert store.upsert_bars("300750", _long_history("300750"), _long_history("300750")) == 30
+
+    result = build_factor_snapshots(
+        str(market_dir),
+        str(snapshot_db),
+        days=30,
+        batch_size=1,
+    )
+
+    assert result["ok"] is True
+    assert result["requested"] == 2
+    assert result["saved"] == 2
+    assert result["summary"]["row_count"] == 2
+    assert result["summary"]["stock_count"] == 2
+
+    latest = FactorSnapshotStore(str(snapshot_db)).latest(limit=5)
+    assert len(latest) == 2
+    assert latest[0]["trade_date"] == "20240130"
+    assert "ret_20d" in latest[0]["factors"]
+    lookup = FactorSnapshotStore(str(snapshot_db)).lookup(
+        [
+            {"signal_date": "2024-01-30", "code": "600000"},
+            {"trade_date": "20240130", "code": "300750"},
+            {"signal_date": "2024-01-29", "code": "600000"},
+        ]
+    )
+    assert sorted(lookup) == [("20240130", "300750"), ("20240130", "600000")]
+    assert "ma20_gap" in lookup[("20240130", "600000")]
+
+    second = build_factor_snapshots(str(market_dir), str(snapshot_db), days=30)
+    assert second["saved"] == 2
+    assert second["summary"]["row_count"] == 2
