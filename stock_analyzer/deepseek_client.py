@@ -1062,7 +1062,7 @@ def review_strategy_validation(
     last_error = ""
     attempt = 0
     retry_count = int(config.get("validation_retry_count", 0))
-    timeout_seconds = float(config.get("validation_timeout_seconds", config["timeout_seconds"]))
+    timeout_seconds = min(6.0, float(config.get("validation_timeout_seconds", config["timeout_seconds"])))
     timed_out = False
     while attempt <= retry_count:
         attempt += 1
@@ -1119,3 +1119,4 @@ def review_strategy_validation(
         "usage": usage,
         **parsed,
     }
+

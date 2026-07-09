@@ -9,8 +9,8 @@ from flask import Flask, Response, jsonify, render_template, request, stream_wit
 import pandas as pd
 
 from . import config
-from .deepseek_client import review_strategy_validation
 from .app_runtime_support import (
+    deepseek_stock_prediction_review,
     deepseek_validation_review,
     risk_blacklist_summary,
 )
@@ -1036,6 +1036,9 @@ def create_app() -> Flask:
                 fallback_history=fallback_history,
                 fallback_error=fallback_error,
             )
+            deepseek_requested = request.args.get("deepseek", "1").lower() not in ("0", "false", "no", "off")
+            if deepseek_requested and bool(result.get("ok")):
+                result["optimization"] = deepseek_stock_prediction_review(result)
             result_ok = bool(result.get("ok"))
             result_payload = dict(result)
             result_payload.pop("ok", None)

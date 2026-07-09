@@ -3,6 +3,8 @@ from typing import Dict, List, Tuple
 from . import config
 from .deepseek_client import rerank_candidates, review_strategy_validation
 from .normalization import normalize_code
+from .stock_optimization import review_stock_prediction
+from .strategies import storage_strategy_name
 
 
 def risk_blacklist_summary(payload: Dict[str, object]) -> Dict[str, object]:
@@ -136,3 +138,35 @@ def deepseek_validation_review(
             "strategy": strategy_name,
             "error": str(exc),
         }
+
+
+def deepseek_stock_prediction_review(
+    prediction_payload: Dict[str, object],
+) -> Dict[str, object]:
+    if not getattr(config, "ENABLE_DEEPSEEK_RUNTIME", False):
+        return {
+            "enabled": False,
+            "status": "runtime_disabled",
+            "strategy": _primary_prediction_strategy(prediction_payload),
+            "reason": "DeepSeek runtime is disabled; stock prediction uses local rules only.",
+        }
+    try:
+        return review_stock_prediction(
+            prediction_payload,
+            strategy_name=_primary_prediction_strategy(prediction_payload),
+        )
+    except Exception as exc:
+        return {
+            "enabled": False,
+            "status": "fallback",
+            "strategy": _primary_prediction_strategy(prediction_payload),
+            "error": str(exc),
+        }
+
+
+def _primary_prediction_strategy(prediction_payload: Dict[str, object]) -> str:
+    strategy_hits = (prediction_payload or {}).get("strategy_hits") or []
+    if strategy_hits:
+        first_hit = strategy_hits[0] or {}
+        return storage_strategy_name(str(first_hit.get("strategy_name") or "short_term"))
+    return "short_term"
