@@ -398,11 +398,21 @@ def create_app() -> Flask:
             entry = recommendation_cache.get(_recommendation_cache_key(top_n, market))
         return dict(entry) if entry else None
 
-    def _remember_horizon_payload(strategy: str, top_n: int, market: str, payload: Dict[str, object]) -> Dict[str, object]:
+    def _remember_horizon_payload(
+        strategy: str,
+        top_n: int,
+        market: str,
+        payload: Dict[str, object],
+        *,
+        saved_at: str = "",
+        saved_at_ts: float | None = None,
+        source: str = "live",
+    ) -> Dict[str, object]:
         cached = {
             "payload": payload,
-            "saved_at": datetime.now().isoformat(timespec="seconds"),
-            "saved_at_ts": time.time(),
+            "saved_at": saved_at or datetime.now().isoformat(timespec="seconds"),
+            "saved_at_ts": float(saved_at_ts if saved_at_ts is not None else time.time()),
+            "source": source,
         }
         with horizon_cache_lock:
             horizon_cache[_horizon_cache_key(strategy, top_n, market)] = cached
@@ -412,32 +422,6 @@ def create_app() -> Flask:
         with horizon_cache_lock:
             entry = horizon_cache.get(_horizon_cache_key(strategy, top_n, market))
         return dict(entry) if entry else None
-
-    def _horizon_snapshot_path(strategy: str) -> str:
-        base_path = str(getattr(config, "RECOMMENDATION_SNAPSHOT_PATH", ".runtime/latest_recommendations.json"))
-        root, ext = os.path.splitext(base_path)
-        if not ext:
-            ext = ".json"
-        return f"{root}.{strategy}{ext}"
-
-    def _horizon_snapshot_entry(strategy: str, top_n: int, market: str) -> Dict[str, object] | None:
-        snapshot = load_recommendation_snapshot(
-            _horizon_snapshot_path(strategy),
-            max_age_seconds=0,
-            expected_market=market,
-            expected_top_n=top_n,
-        )
-        if not snapshot.get("ok"):
-            return None
-        return _remember_horizon_payload(
-            strategy,
-            top_n,
-            market,
-            dict(snapshot.get("payload") or {}),
-        ) | {
-            "saved_at": str(snapshot.get("saved_at") or ""),
-            "saved_at_ts": time.time() - float(snapshot.get("age_seconds") or 0.0),
-        }
 
     def _snapshot_entry(top_n: int, market: str) -> Dict[str, object] | None:
         snapshot = load_recommendation_snapshot(
@@ -487,7 +471,6 @@ def create_app() -> Flask:
             data=rows,
             meta=meta,
         )
-        save_recommendation_snapshot(_horizon_snapshot_path(strategy), payload)
         return _remember_horizon_payload(strategy, top_n, market, payload)["payload"]
 
     def _refresh_validation_rows_if_needed(
@@ -797,6 +780,45 @@ def create_app() -> Flask:
         worker.start()
         return True
 
+    def _saved_horizon_payload(strategy: str, top_n: int, market: str) -> Dict[str, object] | None:
+        saved_rows = validation_store.latest_signal_rows(strategy)
+        if not saved_rows:
+            return None
+        if strategy == "tomorrow_picks":
+            return saved_tomorrow_fallback_payload(
+                saved_rows=saved_rows,
+                top_n=top_n,
+                market=market,
+                detailed=True,
+                validation_store=validation_store,
+                cached_metrics_fn=cached_metrics,
+                load_risk_blacklist_fn=load_risk_blacklist,
+                analysis_window_fn=lambda: analysis_window(config.VALIDATION_AUTO_SNAPSHOT_TIME),
+                provider_health_fn=provider.health,
+                research_disclaimer_fn=_research_disclaimer,
+            )
+        attach_validation_summary(saved_rows, validation_store, strategy, metrics_fn=cached_metrics)
+        return response_payload(
+            provider.health,
+            _research_disclaimer,
+            ok=True,
+            include_disclaimer=True,
+            data=saved_rows[:top_n],
+            meta={
+                "generated_at": "",
+                "candidate_count": len(saved_rows),
+                "screened_count": len(saved_rows),
+                "display_count": min(len(saved_rows), top_n),
+                "display_limit": top_n,
+                "top_n": top_n,
+                "market_filter": market,
+                "strategy_version": "swing_picks_v1",
+                "strategy_label": "2-5天推荐",
+                "strategy": "后台刷新中，先显示最近保存的 2-5 天推荐",
+                "fallback": "saved_snapshot",
+            },
+        )
+
     def _horizon_payload(strategy: str, top_n: int, market: str) -> tuple:
         refresh_after_seconds = max(5, int(config.REFRESH_SECONDS))
         entry = _cached_horizon_entry(strategy, top_n, market)
@@ -806,13 +828,39 @@ def create_app() -> Flask:
             payload["snapshot"] = {
                 "saved_at": entry.get("saved_at", ""),
                 "age_seconds": round(age_seconds, 2),
-                "source": "memory_cache",
+                "source": entry.get("source", "memory_cache"),
             }
             if age_seconds >= refresh_after_seconds:
                 _schedule_horizon_refresh(strategy, top_n, market)
             return payload, 200
-        payload = _build_horizon_payload(strategy, top_n, market)
-        return dict(payload), 200
+        _schedule_horizon_refresh(strategy, top_n, market)
+        payload = _saved_horizon_payload(strategy, top_n, market)
+        if payload is not None:
+            payload["snapshot"] = {
+                "saved_at": "",
+                "age_seconds": None,
+                "source": "saved_snapshot",
+            }
+            return payload, 200
+        return response_payload(
+            provider.health,
+            _research_disclaimer,
+            ok=True,
+            include_disclaimer=True,
+            data=[],
+            meta={
+                "generated_at": "",
+                "candidate_count": 0,
+                "display_count": 0,
+                "display_limit": top_n,
+                "top_n": top_n,
+                "market_filter": market,
+                "strategy_label": "明天推荐" if strategy == "tomorrow_picks" else "2-5天推荐",
+                "strategy": "后台刷新中",
+                "fallback": "async_refresh_pending",
+            },
+            snapshot={"saved_at": "", "age_seconds": None, "source": "async_refresh_pending"},
+        ), 200
 
     def _sse_event(event: str, payload: Dict[str, object]) -> str:
         return "event: {}\ndata: {}\n\n".format(
