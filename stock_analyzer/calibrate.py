@@ -30,6 +30,7 @@ from .history_cache import HistoryCache
 from .normalization import coerce_number, normalize_code
 from .scoring import STRATEGY_COMBINERS, WEIGHTS, _combine_details
 from .strategy_validation import StrategyValidationStore
+from .deepseek_rules import rule_field_value, rule_matches
 
 
 def _cached_codes(db_path: str) -> List[str]:
@@ -317,6 +318,282 @@ def calibrate_live_weights(
     result["status"] = "written"
     result["path"] = config.WEIGHTS_OVERRIDE_PATH
     return result
+
+
+def evaluate_deepseek_rule(
+    strategy: str,
+    rule: Dict[str, object],
+    samples: List[Dict[str, object]],
+    top_k: int = 10,
+    dry_run: bool = True,
+    direction_focus=None,
+) -> Dict[str, object]:
+    if strategy not in STRATEGY_COMBINERS:
+        return {"ok": False, "strategy": strategy, "status": "unknown_strategy"}
+    samples = [sample for sample in samples if isinstance(sample, dict)]
+    if not samples:
+        return {"ok": True, "strategy": strategy, "status": "insufficient_samples", "sample_count": 0}
+    current = _current_strategy_weights(strategy)
+    direction_focus = _resolve_tomorrow_direction_focus(direction_focus)
+    folds = _walk_forward_splits(samples, int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)))
+    if not folds:
+        return {"ok": False, "strategy": strategy, "status": "insufficient_oos_folds", "folds": [], "fold_count": 0}
+    rows = []
+    for index, (_, test_samples, train_dates, test_dates) in enumerate(folds, start=1):
+        baseline_metrics = _evaluate_live_samples(strategy, test_samples, current, top_k=top_k)
+        rule_metrics = _evaluate_live_samples_with_rule(strategy, test_samples, current, top_k=top_k, rule=rule)
+        baseline_obj = _objective(baseline_metrics, strategy, direction_focused=direction_focus)
+        rule_obj = _objective(rule_metrics, strategy, direction_focused=direction_focus)
+        rows.append(
+            {
+                "fold": index,
+                "train_start": train_dates[0],
+                "train_end": train_dates[-1],
+                "test_start": test_dates[0],
+                "test_end": test_dates[-1],
+                "test_sample_count": len(test_samples),
+                "baseline_oos_objective": round(baseline_obj, 4),
+                "rule_oos_objective": round(rule_obj, 4),
+                "oos_improvement": round(rule_obj - baseline_obj, 4),
+            }
+        )
+    improvements = [coerce_number(row["oos_improvement"]) for row in rows]
+    baseline_values = [coerce_number(row["baseline_oos_objective"]) for row in rows]
+    rule_values = [coerce_number(row["rule_oos_objective"]) for row in rows]
+    margin = float(getattr(config, "CALIBRATE_IMPROVE_MARGIN", 0.05))
+    baseline_oos = round(sum(baseline_values) / len(baseline_values), 4)
+    rule_oos = round(sum(rule_values) / len(rule_values), 4)
+    positive_folds = sum(1 for value in improvements if value > 0)
+    fold_count = len(rows)
+    can_apply = rule_oos > baseline_oos + margin and positive_folds > fold_count // 2
+    result = {
+        "ok": True,
+        "strategy": strategy,
+        "status": "oos_passed" if can_apply else "shadow_only",
+        "sample_count": len(samples),
+        "top_k": top_k,
+        "rule": _compact_rule(rule),
+        "baseline_oos_objective": baseline_oos,
+        "rule_oos_objective": rule_oos,
+        "oos_improvement": round(rule_oos - baseline_oos, 4),
+        "positive_folds": positive_folds,
+        "fold_count": fold_count,
+        "margin": margin,
+        "can_apply": can_apply,
+        "dry_run": bool(dry_run),
+        "folds": rows,
+    }
+    if can_apply and not dry_run:
+        _write_weights_override({"deepseek_rules": {strategy: [_compact_rule(rule)]}})
+        result["status"] = "written"
+        result["path"] = config.WEIGHTS_OVERRIDE_PATH
+    return result
+
+
+def calibrate_blend_alpha(
+    strategy: str,
+    samples: List[Dict[str, object]],
+    top_k: int = 10,
+    alphas=None,
+    dry_run: bool = True,
+    direction_focus=None,
+    write_alpha_zero: bool = False,
+) -> Dict[str, object]:
+    if strategy not in STRATEGY_COMBINERS:
+        return {"ok": False, "strategy": strategy, "status": "unknown_strategy"}
+    samples = [sample for sample in samples if _sample_has_deepseek_scores(sample)]
+    if len(samples) < 3:
+        return {"ok": True, "strategy": strategy, "status": "insufficient_samples", "sample_count": len(samples)}
+    alpha_grid = [float(value) for value in (alphas or (0.0, 0.15, 0.3, 0.45))]
+    direction_focus = _resolve_tomorrow_direction_focus(direction_focus)
+    folds = _walk_forward_splits(samples, int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)))
+    if not folds:
+        return {"ok": False, "strategy": strategy, "status": "insufficient_oos_folds", "folds": [], "fold_count": 0}
+    rows = []
+    for index, (train_samples, test_samples, train_dates, test_dates) in enumerate(folds, start=1):
+        train_scores = [
+            (alpha, _objective(_evaluate_alpha_samples(strategy, train_samples, alpha, top_k), strategy, direction_focused=direction_focus))
+            for alpha in alpha_grid
+        ]
+        best_alpha, train_obj = max(train_scores, key=lambda item: item[1])
+        baseline_metrics = _evaluate_alpha_samples(strategy, test_samples, 0.0, top_k)
+        best_metrics = _evaluate_alpha_samples(strategy, test_samples, best_alpha, top_k)
+        baseline_obj = _objective(baseline_metrics, strategy, direction_focused=direction_focus)
+        best_obj = _objective(best_metrics, strategy, direction_focused=direction_focus)
+        rows.append(
+            {
+                "fold": index,
+                "train_start": train_dates[0],
+                "train_end": train_dates[-1],
+                "test_start": test_dates[0],
+                "test_end": test_dates[-1],
+                "best_alpha": round(best_alpha, 4),
+                "train_objective": round(train_obj, 4),
+                "baseline_oos_objective": round(baseline_obj, 4),
+                "best_oos_objective": round(best_obj, 4),
+                "oos_improvement": round(best_obj - baseline_obj, 4),
+            }
+        )
+    improvements = [coerce_number(row["oos_improvement"]) for row in rows]
+    baseline_values = [coerce_number(row["baseline_oos_objective"]) for row in rows]
+    best_values = [coerce_number(row["best_oos_objective"]) for row in rows]
+    alpha_votes: Dict[float, int] = {}
+    for row in rows:
+        alpha = coerce_number(row.get("best_alpha"), 0.0)
+        alpha_votes[alpha] = alpha_votes.get(alpha, 0) + 1
+    selected_alpha = sorted(alpha_votes.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    margin = float(getattr(config, "CALIBRATE_IMPROVE_MARGIN", 0.05))
+    baseline_oos = round(sum(baseline_values) / len(baseline_values), 4)
+    best_oos = round(sum(best_values) / len(best_values), 4)
+    positive_folds = sum(1 for value in improvements if value > 0)
+    fold_count = len(rows)
+    can_apply = best_oos > baseline_oos + margin and positive_folds > fold_count // 2
+    if not can_apply:
+        selected_alpha = 0.0
+    result = {
+        "ok": True,
+        "strategy": strategy,
+        "status": "oos_passed" if can_apply else "alpha_zero",
+        "sample_count": len(samples),
+        "top_k": top_k,
+        "alpha_grid": alpha_grid,
+        "selected_alpha": round(selected_alpha, 4),
+        "baseline_oos_objective": baseline_oos,
+        "best_oos_objective": best_oos,
+        "oos_improvement": round(best_oos - baseline_oos, 4),
+        "positive_folds": positive_folds,
+        "fold_count": fold_count,
+        "margin": margin,
+        "can_apply": can_apply,
+        "dry_run": bool(dry_run),
+        "folds": rows,
+    }
+    write_zero = bool(write_alpha_zero) and bool(getattr(config, "DEEPSEEK_WRITE_ALPHA_ZERO", True))
+    should_write_alpha = (can_apply and not dry_run) or (selected_alpha == 0.0 and write_zero)
+    if should_write_alpha:
+        _write_weights_override({"deepseek_blend_alpha": {strategy: round(selected_alpha, 4)}})
+        result["status"] = "written" if can_apply else "alpha_zero_written"
+        result["path"] = config.WEIGHTS_OVERRIDE_PATH
+    return result
+
+
+def _evaluate_live_samples_with_rule(
+    strategy: str,
+    samples: List[Dict[str, object]],
+    weights: Dict[str, float],
+    top_k: int,
+    rule: Dict[str, object],
+) -> Dict[str, object]:
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    penalty = max(0.0, coerce_number(rule.get("penalty"), 0.0))
+    for sample in samples:
+        raw = sample.get("raw") or {}
+        components = _live_components(raw)
+        combined = _combine_details(
+            components,
+            strategy,
+            weights={**WEIGHTS, strategy: weights},
+            row=pd.Series(raw),
+            regime_weight_profile=raw.get("regime_weight_profile") or {},
+        )
+        enriched = dict(sample)
+        enriched["recomputed_score"] = combined["score"] - (penalty if _rule_matches(sample, rule) else 0.0)
+        grouped.setdefault(str(sample.get("signal_date")), []).append(enriched)
+    return _metrics_from_ranked_groups(grouped, top_k)
+
+
+def _metrics_from_ranked_groups(grouped: Dict[str, List[Dict[str, object]]], top_k: int) -> Dict[str, object]:
+    selected: List[Dict[str, object]] = []
+    for rows in grouped.values():
+        benchmark = _median([coerce_number(item.get("primary_return_net")) for item in rows])
+        for item in rows:
+            item["benchmark_return_net"] = benchmark
+            item["excess_return_net"] = coerce_number(item.get("primary_return_net")) - benchmark
+        ranked = sorted(rows, key=lambda item: coerce_number(item.get("recomputed_score")), reverse=True)
+        selected.extend(ranked[: max(1, int(top_k))])
+    if not selected:
+        return {
+            "sample_count": 0,
+            "win_rate": 0.0,
+            "avg_period_return": 0.0,
+            "absolute_win_rate": 0.0,
+            "absolute_avg_period_return": 0.0,
+        }
+    wins = [coerce_number(sample.get("excess_return_net")) > 0 for sample in selected]
+    absolute_wins = [coerce_number(sample.get("primary_return_net")) > 0 for sample in selected]
+    period_returns = [coerce_number(sample["primary_return_net"]) for sample in selected]
+    next_open_returns = [coerce_number(sample.get("next_open_return")) for sample in selected]
+    max_drawdowns = [coerce_number(sample.get("max_drawdown")) for sample in selected]
+    avg_return = sum(period_returns) / len(period_returns)
+    avg_excess = sum(coerce_number(sample.get("excess_return_net")) for sample in selected) / len(selected)
+    win_count = sum(1 for value in absolute_wins if value)
+    loss_count = len(absolute_wins) - win_count
+    return {
+        "sample_count": len(selected),
+        "candidate_sample_count": sum(len(rows) for rows in grouped.values()),
+        "day_count": len(grouped),
+        "win_rate": round(sum(1 for value in wins if value) / len(wins) * 100, 2),
+        "avg_period_return": round(avg_excess, 4),
+        "absolute_win_count": win_count,
+        "absolute_loss_count": loss_count,
+        "absolute_win_rate": round(sum(1 for value in absolute_wins if value) / len(absolute_wins) * 100, 2),
+        "absolute_avg_period_return": round(avg_return, 4),
+        "absolute_median_period_return": round(_median(period_returns), 4),
+        "absolute_loss_quantile_return": round(_quantile(period_returns, 0.25), 4),
+        "absolute_avg_next_open_return": round(sum(next_open_returns) / len(next_open_returns), 4),
+        "absolute_avg_max_drawdown": round(sum(max_drawdowns) / len(max_drawdowns), 4),
+    }
+
+
+def _compact_rule(rule: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "field": str(rule.get("field") or ""),
+        "operator": str(rule.get("operator") or ""),
+        "threshold": rule.get("threshold"),
+        "penalty": coerce_number(rule.get("penalty"), 0.0),
+        "reason": str(rule.get("reason") or ""),
+    }
+
+
+def _rule_matches(sample: Dict[str, object], rule: Dict[str, object]) -> bool:
+    return rule_matches(sample, rule)
+
+
+def _rule_field_value(sample: Dict[str, object], field: str):
+    return rule_field_value(sample, field)
+
+
+def _sample_has_deepseek_scores(sample: Dict[str, object]) -> bool:
+    raw = sample.get("raw") or {}
+    return isinstance(raw, dict) and (
+        raw.get("deepseek_rank_score") is not None
+        or raw.get("deepseek_horizon_score") is not None
+        or raw.get("tomorrow_up_score") is not None
+        or raw.get("local_rank") is not None
+    )
+
+
+def _evaluate_alpha_samples(strategy: str, samples: List[Dict[str, object]], alpha: float, top_k: int) -> Dict[str, object]:
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    for sample in samples:
+        raw = sample.get("raw") or {}
+        item = dict(sample)
+        item["recomputed_score"] = _alpha_rank_score(sample, alpha)
+        grouped.setdefault(str(sample.get("signal_date")), []).append(item)
+    return _metrics_from_ranked_groups(grouped, top_k)
+
+
+def _alpha_rank_score(sample: Dict[str, object], alpha: float) -> float:
+    raw = sample.get("raw") or {}
+    base = coerce_number(raw.get("score"), coerce_number(sample.get("stored_score"), 0.0))
+    if alpha <= 0:
+        local_rank = coerce_number(raw.get("local_rank"), 0.0)
+        if local_rank > 0:
+            return 100000.0 - local_rank
+        return base
+    horizon = coerce_number(raw.get("deepseek_horizon_score"), coerce_number(raw.get("tomorrow_up_score"), base))
+    penalty = coerce_number(raw.get("deepseek_penalty"), 0.0)
+    return (1.0 - alpha) * base + alpha * horizon - penalty
 
 
 def _fit_weights(

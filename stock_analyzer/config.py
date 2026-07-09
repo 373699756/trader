@@ -33,6 +33,7 @@ STATE_PATH = os.getenv("STATE_PATH", ".runtime/recommendation_state.json")
 RECOMMENDATION_SNAPSHOT_PATH = os.getenv("RECOMMENDATION_SNAPSHOT_PATH", ".runtime/latest_recommendations.json")
 RECOMMENDATION_SNAPSHOT_MAX_AGE_SECONDS = int(os.getenv("RECOMMENDATION_SNAPSHOT_MAX_AGE_SECONDS", "300"))
 STRATEGY_STATUS_PATH = os.getenv("STRATEGY_STATUS_PATH", ".runtime/strategy_status.json")
+DEEPSEEK_ATTRIBUTION_PATH = os.getenv("DEEPSEEK_ATTRIBUTION_PATH", ".runtime/deepseek_attribution.json")
 QUOTE_SNAPSHOT_PATH = os.getenv("QUOTE_SNAPSHOT_PATH", ".runtime/latest_quotes.json")
 QUOTE_SNAPSHOT_MAX_AGE_SECONDS = int(os.getenv("QUOTE_SNAPSHOT_MAX_AGE_SECONDS", "21600"))
 QUOTE_SNAPSHOT_MIN_ROWS = int(os.getenv("QUOTE_SNAPSHOT_MIN_ROWS", "50"))
@@ -88,6 +89,12 @@ ENABLE_DEEPSEEK_RUNTIME = os.getenv("ENABLE_DEEPSEEK_RUNTIME", "1").lower() in (
     "on",
 )
 DEEPSEEK_RERANK_DISABLED_STRATEGIES = os.getenv("DEEPSEEK_RERANK_DISABLED_STRATEGIES", "")
+DEEPSEEK_WRITE_ALPHA_ZERO = os.getenv("DEEPSEEK_WRITE_ALPHA_ZERO", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 VALIDATION_TRADE_COST_PCT = float(os.getenv("VALIDATION_TRADE_COST_PCT", "0.25"))
 VALIDATION_PRIMARY_ENTRY_MODE = os.getenv("VALIDATION_PRIMARY_ENTRY_MODE", "open").lower()
 VALIDATION_SLIPPAGE_HIGH_TURNOVER_PCT = float(os.getenv("VALIDATION_SLIPPAGE_HIGH_TURNOVER_PCT", "0.05"))
@@ -117,6 +124,8 @@ PAPER_TRADING_SPREAD_CAPITAL_BY_HOLDING_DAYS = os.getenv("PAPER_TRADING_SPREAD_C
     "yes",
     "on",
 )
+ENABLE_STANCE_TRACKING = os.getenv("ENABLE_STANCE_TRACKING", "0").lower() in ("1", "true", "yes", "on")
+STANCE_TRACKING_HOLDING_DAYS = int(os.getenv("STANCE_TRACKING_HOLDING_DAYS", "5"))
 ENABLE_EVENT_RISK = os.getenv("ENABLE_EVENT_RISK", "0").lower() in ("1", "true", "yes", "on")
 EVENT_RISK_CACHE_PATH = os.getenv("EVENT_RISK_CACHE_PATH", ".runtime/event_risk.json")
 EVENT_RISK_CACHE_HOURS = int(os.getenv("EVENT_RISK_CACHE_HOURS", "24"))
@@ -159,6 +168,32 @@ EXIT_TRAILING_STOP_PCT = float(os.getenv("EXIT_TRAILING_STOP_PCT", "4.0"))
 ENABLE_HISTORY_FACTORS = os.getenv("ENABLE_HISTORY_FACTORS", "0").lower() in ("1", "true", "yes", "on")
 ENABLE_INLINE_SENTIMENT = os.getenv("ENABLE_INLINE_SENTIMENT", "0").lower() in ("1", "true", "yes", "on")
 ENABLE_MARKET_NEWS = os.getenv("ENABLE_MARKET_NEWS", "0").lower() in ("1", "true", "yes", "on")
+ENABLE_DEEPSEEK_NEWS_CONTEXT = os.getenv("ENABLE_DEEPSEEK_NEWS_CONTEXT", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+DEEPSEEK_NEWS_CACHE_PATH = os.getenv("DEEPSEEK_NEWS_CACHE_PATH", ".runtime/deepseek_news_context.json")
+NEWS_CACHE_HOURS = int(os.getenv("NEWS_CACHE_HOURS", "6"))
+DEEPSEEK_NEWS_CONTEXT_LIMIT = int(os.getenv("DEEPSEEK_NEWS_CONTEXT_LIMIT", "3"))
+DEEPSEEK_NEWS_CACHE_MAX_ENTRIES = int(os.getenv("DEEPSEEK_NEWS_CACHE_MAX_ENTRIES", "1000"))
+DEEPSEEK_CASCADE_FILTER_ENABLED = os.getenv("DEEPSEEK_CASCADE_FILTER_ENABLED", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+DEEPSEEK_CASCADE_MAX_REVIEW = int(os.getenv("DEEPSEEK_CASCADE_MAX_REVIEW", "8"))
+ENABLE_DEEPSEEK_MARKET_GATE = os.getenv("ENABLE_DEEPSEEK_MARKET_GATE", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+DEEPSEEK_MARKET_GATE_CACHE_PATH = os.getenv("DEEPSEEK_MARKET_GATE_CACHE_PATH", ".runtime/deepseek_market_gate.json")
+DEEPSEEK_MARKET_GATE_MIN_SIZE_FACTOR = float(os.getenv("DEEPSEEK_MARKET_GATE_MIN_SIZE_FACTOR", "0.25"))
+DEEPSEEK_MARKET_GATE_RISK_OFF_SCORE_BONUS = float(os.getenv("DEEPSEEK_MARKET_GATE_RISK_OFF_SCORE_BONUS", "5"))
 ENABLE_HOT_RANKS = os.getenv("ENABLE_HOT_RANKS", "0").lower() in ("1", "true", "yes", "on")
 ENABLE_INDUSTRY_STRENGTH = os.getenv("ENABLE_INDUSTRY_STRENGTH", "0").lower() in (
     "1",

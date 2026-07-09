@@ -38,10 +38,13 @@ class StrategyValidationStore:
         strategy_version: str,
         signal_time: str,
         rows: Iterable[Dict[str, object]],
+        deepseek_shadow_rows: Optional[Iterable[Dict[str, object]]] = None,
     ) -> Dict[str, object]:
         signal_date = signal_time[:10]
         rows = list(rows)
+        deepseek_shadow_rows = list(deepseek_shadow_rows or [])
         saved = 0
+        shadow_saved = 0
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.execute(
                 """
@@ -72,6 +75,19 @@ class StrategyValidationStore:
                     WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
                     """
                 delete_params = (strategy_name, strategy_version, signal_date)
+                old_shadow_ids = conn.execute(
+                    """
+                    SELECT id
+                    FROM strategy_deepseek_shadow_signals
+                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                    """,
+                    (strategy_name, strategy_version, signal_date),
+                ).fetchall()
+                shadow_delete_sql = """
+                    DELETE FROM strategy_deepseek_shadow_signals
+                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                    """
+                shadow_delete_params = (strategy_name, strategy_version, signal_date)
             else:
                 old_ids = conn.execute(
                     """
@@ -86,6 +102,19 @@ class StrategyValidationStore:
                     WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
                     """
                 delete_params = (strategy_name, signal_date)
+                old_shadow_ids = conn.execute(
+                    """
+                    SELECT id
+                    FROM strategy_deepseek_shadow_signals
+                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                    """,
+                    (strategy_name, signal_date),
+                ).fetchall()
+                shadow_delete_sql = """
+                    DELETE FROM strategy_deepseek_shadow_signals
+                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                    """
+                shadow_delete_params = (strategy_name, signal_date)
             if old_ids:
                 conn.executemany(
                     "DELETE FROM strategy_execution_skips WHERE signal_id = ?",
@@ -96,6 +125,12 @@ class StrategyValidationStore:
                     [(row[0],) for row in old_ids],
                 )
                 conn.execute(delete_sql, delete_params)
+            if old_shadow_ids:
+                conn.executemany(
+                    "DELETE FROM strategy_deepseek_shadow_outcomes WHERE shadow_id = ?",
+                    [(row[0],) for row in old_shadow_ids],
+                )
+                conn.execute(shadow_delete_sql, shadow_delete_params)
             for row in rows:
                 code = normalize_code(row.get("code"))
                 rank = int(row.get("rank") or 0)
@@ -131,7 +166,57 @@ class StrategyValidationStore:
                     ),
                 )
                 saved += 1
-        return {"signal_date": signal_date, "saved": saved, "replaced": len(old_ids)}
+            for row in deepseek_shadow_rows:
+                code = normalize_code(row.get("code"))
+                if not code:
+                    continue
+                rank = int(coerce_number(row.get("rank"), coerce_number(row.get("local_rank"), 0)) or 0)
+                local_rank = int(coerce_number(row.get("local_rank"), rank) or 0)
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO strategy_deepseek_shadow_signals
+                    (strategy_name, strategy_version, signal_date, signal_time, rank, local_rank, code, name,
+                     market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
+                     turnover_rate, sixty_day_pct, ytd_pct, score, deepseek_rank_score, deepseek_action,
+                     deepseek_veto, deepseek_penalty, filter_reason, raw_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        strategy_name,
+                        strategy_version,
+                        signal_date,
+                        signal_time,
+                        rank,
+                        local_rank,
+                        code,
+                        str(row.get("name", "")),
+                        str(row.get("market_label") or row.get("market") or ""),
+                        str(row.get("theme", "")),
+                        coerce_number(row.get("price")),
+                        coerce_number(row.get("pct_chg")),
+                        coerce_number(row.get("turnover")),
+                        coerce_number(row.get("volume_ratio")),
+                        coerce_number(row.get("turnover_rate")),
+                        coerce_number(row.get("sixty_day_pct")),
+                        coerce_number(row.get("ytd_pct")),
+                        coerce_number(row.get("score")),
+                        coerce_number(row.get("deepseek_rank_score")),
+                        str(row.get("deepseek_action") or ""),
+                        1 if row.get("deepseek_veto") else 0,
+                        coerce_number(row.get("deepseek_penalty")),
+                        str(row.get("deepseek_filter_reason") or ""),
+                        json.dumps(row, ensure_ascii=False),
+                        datetime.now().isoformat(timespec="seconds"),
+                    ),
+                )
+                shadow_saved += 1
+        return {
+            "signal_date": signal_date,
+            "saved": saved,
+            "replaced": len(old_ids),
+            "deepseek_shadow_saved": shadow_saved,
+            "deepseek_shadow_replaced": len(old_shadow_ids),
+        }
 
     def list_signal_dates(self, strategy_name: str = "") -> List[Dict[str, object]]:
         where = ""
@@ -261,7 +346,24 @@ class StrategyValidationStore:
                 """.format(placeholders),
                 allowed,
             )
-        return {"deleted_signals": deleted_signals, "deleted_batches": int(batch_result.rowcount or 0)}
+            shadow_ids = conn.execute(
+                """
+                SELECT id
+                FROM strategy_deepseek_shadow_signals
+                WHERE strategy_name NOT IN ({})
+                """.format(placeholders),
+                allowed,
+            ).fetchall()
+            deleted_shadow = len(shadow_ids)
+            if shadow_ids:
+                id_rows = [(row[0],) for row in shadow_ids]
+                conn.executemany("DELETE FROM strategy_deepseek_shadow_outcomes WHERE shadow_id = ?", id_rows)
+                conn.executemany("DELETE FROM strategy_deepseek_shadow_signals WHERE id = ?", id_rows)
+        return {
+            "deleted_signals": deleted_signals,
+            "deleted_batches": int(batch_result.rowcount or 0),
+            "deleted_deepseek_shadow_signals": deleted_shadow,
+        }
 
     def save_tuning_run(
         self,
@@ -541,7 +643,92 @@ class StrategyValidationStore:
                     ),
                 )
             updated += 1
-        return {"updated": updated, "skipped": skipped, "execution_skipped": execution_skipped}
+        shadow = self.update_deepseek_shadow_outcomes(
+            provider,
+            signal_date=signal_date,
+            strategy_name=strategy_name,
+            codes=normalized_codes,
+        )
+        return {
+            "updated": updated,
+            "skipped": skipped,
+            "execution_skipped": execution_skipped,
+            "deepseek_shadow_updated": shadow["updated"],
+            "deepseek_shadow_skipped": shadow["skipped"],
+        }
+
+    def update_deepseek_shadow_outcomes(
+        self,
+        provider,
+        signal_date: str = "",
+        strategy_name: str = "",
+        codes: Optional[Iterable[str]] = None,
+    ) -> Dict[str, int]:
+        where = "WHERE 1=1"
+        params: List[object] = []
+        if signal_date:
+            where += " AND signal_date = ?"
+            params.append(signal_date)
+        if strategy_name:
+            where += " AND strategy_name = ?"
+            params.append(strategy_name)
+        normalized_codes: List[str] = []
+        for code in codes or []:
+            normalized = normalize_code(code)
+            if normalized:
+                normalized_codes.append(normalized)
+        if normalized_codes:
+            placeholders = ",".join("?" for _ in normalized_codes)
+            where += " AND code IN ({})".format(placeholders)
+            params.extend(normalized_codes)
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            shadow_rows = conn.execute(
+                "SELECT * FROM strategy_deepseek_shadow_signals {} ORDER BY signal_date DESC, local_rank ASC".format(where),
+                params,
+            ).fetchall()
+
+        updated = 0
+        skipped = 0
+        for shadow in shadow_rows:
+            outcome = _compute_outcome(provider, shadow)
+            if not outcome or outcome.get("excluded"):
+                skipped += 1
+                continue
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO strategy_deepseek_shadow_outcomes
+                    (shadow_id, code, next_trade_date, future_days, next_open, next_close,
+                     next_close_return, hold_3d_return, hold_5d_return, hold_10d_return, hold_20d_return,
+                     signal_next_close_return, signal_hold_3d_return, signal_hold_5d_return,
+                     signal_hold_10d_return, signal_hold_20d_return, exit_return, signal_exit_return, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        shadow["id"],
+                        shadow["code"],
+                        outcome["next_trade_date"],
+                        outcome["future_days"],
+                        outcome["next_open"],
+                        outcome["next_close"],
+                        outcome["next_close_return"],
+                        outcome["hold_3d_return"],
+                        outcome["hold_5d_return"],
+                        outcome["hold_10d_return"],
+                        outcome["hold_20d_return"],
+                        outcome["signal_next_close_return"],
+                        outcome["signal_hold_3d_return"],
+                        outcome["signal_hold_5d_return"],
+                        outcome["signal_hold_10d_return"],
+                        outcome["signal_hold_20d_return"],
+                        outcome["exit_return"],
+                        outcome["signal_exit_return"],
+                        datetime.now().isoformat(timespec="seconds"),
+                    ),
+                )
+            updated += 1
+        return {"updated": updated, "skipped": skipped}
 
     def metrics(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
         signal_status = self.signal_status_counts(strategy_name=strategy_name, days=days)
@@ -694,6 +881,137 @@ class StrategyValidationStore:
         }
         return metrics
 
+    def deepseek_attribution(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
+        strategy_name = str(strategy_name or "").strip()
+        if not strategy_name:
+            return {"status": "missing_strategy", "sample_count": 0, "days": int(days or 0)}
+        primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            signal_rows = conn.execute(
+                """
+                SELECT s.signal_date, s.strategy_name, s.rank, s.strategy_version,
+                       s.turnover, s.market, s.raw_json,
+                       0 AS deepseek_shadow_signal,
+                       COALESCE(o.{primary_column}, 0) AS primary_return,
+                       COALESCE(o.future_days, 1) AS future_days
+                FROM strategy_signals s
+                JOIN strategy_outcomes o ON o.signal_id = s.id
+                WHERE s.strategy_name = ?
+                ORDER BY s.signal_date DESC, s.rank ASC
+                """.format(primary_column=primary_column),
+                (strategy_name,),
+            ).fetchall()
+            shadow_rows = conn.execute(
+                """
+                SELECT s.signal_date, s.strategy_name, s.rank, s.strategy_version,
+                       s.turnover, s.market, s.raw_json,
+                       1 AS deepseek_shadow_signal,
+                       COALESCE(o.{primary_column}, 0) AS primary_return,
+                       COALESCE(o.future_days, 1) AS future_days
+                FROM strategy_deepseek_shadow_signals s
+                JOIN strategy_deepseek_shadow_outcomes o ON o.shadow_id = s.id
+                WHERE s.strategy_name = ?
+                ORDER BY s.signal_date DESC, s.local_rank ASC
+                """.format(primary_column=primary_column),
+                (strategy_name,),
+            ).fetchall()
+        rows = list(signal_rows) + list(shadow_rows)
+        rows.sort(
+            key=lambda row: (
+                str(row["signal_date"] or ""),
+                -int(coerce_number(row["rank"], 0) or 0),
+            ),
+            reverse=True,
+        )
+        if not rows:
+            result = {
+                "status": "empty",
+                "strategy": strategy_name,
+                "days": int(days or 0),
+                "sample_count": 0,
+                "primary_horizon_label": primary_label,
+            }
+            _write_deepseek_attribution_snapshot(strategy_name, result)
+            return result
+
+        selected_dates: List[str] = []
+        for row in rows:
+            date = row["signal_date"]
+            if date not in selected_dates:
+                selected_dates.append(date)
+            if len(selected_dates) >= max(1, int(days)):
+                break
+
+        selected: List[Dict[str, object]] = []
+        for row in rows:
+            if row["signal_date"] not in selected_dates:
+                continue
+            item = dict(row)
+            try:
+                raw = json.loads(item.get("raw_json") or "{}")
+            except Exception:
+                raw = {}
+            item["_raw"] = raw if isinstance(raw, dict) else {}
+            item["_is_replay"] = _is_replay_version(item["strategy_version"])
+            item["_primary_ready"] = int(item.get("future_days") or 1) >= primary_days
+            item["_is_primary_tomorrow"] = _is_primary_tomorrow_signal(item.get("rank"), item["_raw"])
+            item["_trade_cost_pct"] = _execution_cost_pct(item)
+            item["_primary_return"] = coerce_number(item.get("primary_return"))
+            item["_primary_return_net"] = round(item["_primary_return"] - item["_trade_cost_pct"], 4)
+            item["_deepseek_shadow_signal"] = bool(item.get("deepseek_shadow_signal"))
+            selected.append(item)
+
+        primary_rows = [row for row in selected if row["_primary_ready"]]
+        if strategy_name == "tomorrow_picks":
+            primary_rows = [row for row in primary_rows if row["_is_primary_tomorrow"]]
+        attribution_rows = [row for row in primary_rows if _has_deepseek_review(row.get("_raw"))]
+        real_rows = [row for row in attribution_rows if not row["_is_replay"]]
+        replay_rows = [row for row in attribution_rows if row["_is_replay"]]
+        covered_rows = [row for row in attribution_rows if _deepseek_covered(row.get("_raw"))]
+        shadow_rows = [row for row in attribution_rows if row.get("_deepseek_shadow_signal")]
+        selected_rows = [row for row in attribution_rows if not row.get("_deepseek_shadow_signal")]
+        avoid_veto_rows = [row for row in attribution_rows if _deepseek_avoid_or_veto(row.get("_raw"))]
+        priority_rows = [row for row in attribution_rows if _deepseek_action(row.get("_raw")) == "priority"]
+        watch_rows = [row for row in attribution_rows if _deepseek_action(row.get("_raw")) == "watch"]
+        min_real_samples = 10
+        status = "ok"
+        if not attribution_rows:
+            status = "no_deepseek_samples"
+        elif len(real_rows) < min_real_samples:
+            status = "insufficient_real_samples"
+        counterfactual = _deepseek_counterfactual_topn(strategy_name, attribution_rows)
+        priority_vs_watch = _deepseek_group_delta(priority_rows, watch_rows)
+        result = {
+            "status": status,
+            "strategy": strategy_name,
+            "days": int(days or 0),
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "primary_horizon_label": primary_label,
+            "min_real_samples": min_real_samples,
+            "sample_count": len(attribution_rows),
+            "real_sample_count": len(real_rows),
+            "replay_sample_count": len(replay_rows),
+            "covered_sample_count": len(covered_rows),
+            "selected_sample_count": len(selected_rows),
+            "shadow_sample_count": len(shadow_rows),
+            "covered_ratio_pct": round(len(covered_rows) / len(attribution_rows) * 100, 2) if attribution_rows else 0.0,
+            "local_rank_sample_count": sum(1 for row in attribution_rows if _deepseek_local_rank(row) > 0),
+            "reordered_sample_count": sum(1 for row in attribution_rows if _deepseek_local_rank(row) > 0 and _deepseek_local_rank(row) != int(row.get("rank") or 0)),
+            "blend_alpha_avg": _avg(_deepseek_blend_alpha(row.get("_raw")) for row in attribution_rows if _deepseek_blend_alpha(row.get("_raw")) is not None),
+            "avoid_veto": _return_summary(avoid_veto_rows),
+            "shadow_avoid_veto": _return_summary([row for row in avoid_veto_rows if row.get("_deepseek_shadow_signal")]),
+            "priority": _return_summary(priority_rows),
+            "watch": _return_summary(watch_rows),
+            "priority_vs_watch": priority_vs_watch,
+            "counterfactual_topn": counterfactual,
+            "notes": [
+                "avoid/veto 包含正式入选与 DeepSeek gate 剔除后的 shadow 候选；正式策略胜率仍只按入选信号计算。",
+            ],
+        }
+        _write_deepseek_attribution_snapshot(strategy_name, result)
+        return result
+
     def signal_status_counts(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
         where = "WHERE 1=1"
         params: List[object] = []
@@ -787,6 +1105,261 @@ class StrategyValidationStore:
             ).fetchone()
         return int(row[0] or 0) if row else 0
 
+    def save_market_gate_review(self, market_gate: Dict[str, object], market_filter: str = "all") -> Dict[str, object]:
+        if not isinstance(market_gate, dict) or not market_gate.get("enabled"):
+            return {"saved": 0, "status": "disabled"}
+        now = str(market_gate.get("generated_at") or datetime.now().isoformat(timespec="seconds"))
+        review_date = now[:10]
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute(
+                """
+                INSERT INTO deepseek_market_gate_reviews
+                (review_date, review_time, market_filter, regime, size_factor, confidence, status, source, reason,
+                 context_json, result_json, counts_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(review_date, market_filter) DO UPDATE SET
+                  review_time=excluded.review_time,
+                  regime=excluded.regime,
+                  size_factor=excluded.size_factor,
+                  confidence=excluded.confidence,
+                  status=excluded.status,
+                  source=excluded.source,
+                  reason=excluded.reason,
+                  context_json=excluded.context_json,
+                  result_json=excluded.result_json,
+                  counts_json=excluded.counts_json,
+                  created_at=excluded.created_at
+                """,
+                (
+                    review_date,
+                    now,
+                    str(market_filter or "all"),
+                    str(market_gate.get("regime") or ""),
+                    coerce_number(market_gate.get("size_factor"), 1.0),
+                    coerce_number(market_gate.get("confidence"), 0.0),
+                    str(market_gate.get("status") or ""),
+                    str(market_gate.get("source") or ""),
+                    str(market_gate.get("reason") or "")[:500],
+                    json.dumps(market_gate.get("context") or {}, ensure_ascii=False),
+                    json.dumps(market_gate, ensure_ascii=False),
+                    json.dumps(market_gate.get("counts") or {}, ensure_ascii=False),
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+        return {"saved": 1, "status": "saved", "review_date": review_date}
+
+    def market_gate_metrics(self, days: int = 120) -> Dict[str, object]:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            reviews = conn.execute(
+                """
+                SELECT *
+                FROM deepseek_market_gate_reviews
+                ORDER BY review_date DESC, id DESC
+                LIMIT ?
+                """,
+                (max(1, int(days)),),
+            ).fetchall()
+            if not reviews:
+                return {"sample_count": 0, "outcome_sample_count": 0, "hit_rate": 0.0, "by_regime": {}}
+            review_dates = [row["review_date"] for row in reviews]
+            placeholders = ",".join("?" for _ in review_dates)
+            outcome_rows = conn.execute(
+                """
+                SELECT s.signal_date, s.strategy_name, s.strategy_version, s.rank, s.turnover, s.market, s.raw_json,
+                       COALESCE(o.next_close_return, 0) AS next_close_return,
+                       COALESCE(o.signal_next_close_return, o.next_close_return, 0) AS signal_next_close_return,
+                       COALESCE(o.hold_3d_return, 0) AS hold_3d_return,
+                       COALESCE(o.hold_5d_return, o.hold_3d_return, 0) AS hold_5d_return,
+                       COALESCE(o.hold_10d_return, o.hold_5d_return, o.hold_3d_return, 0) AS hold_10d_return,
+                       COALESCE(o.hold_20d_return, o.hold_10d_return, o.hold_5d_return, o.hold_3d_return, 0) AS hold_20d_return,
+                       COALESCE(o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_3d_return,
+                       COALESCE(o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_5d_return,
+                       COALESCE(o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_10d_return,
+                       COALESCE(o.signal_hold_20d_return, o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, 0) AS signal_hold_20d_return,
+                       COALESCE(o.future_days, 1) AS future_days
+                FROM strategy_signals s
+                JOIN strategy_outcomes o ON o.signal_id = s.id
+                WHERE s.signal_date IN ({})
+                """.format(placeholders),
+                review_dates,
+            ).fetchall()
+
+        outcome_by_date: Dict[str, List[float]] = {}
+        for row in outcome_rows:
+            try:
+                raw = json.loads(row["raw_json"] or "{}")
+            except Exception:
+                raw = {}
+            if row["strategy_name"] == "tomorrow_picks" and not _is_primary_tomorrow_signal(row["rank"], raw):
+                continue
+            primary_column, primary_days, _ = _primary_return_config(row["strategy_name"])
+            if int(row["future_days"] or 1) < primary_days:
+                continue
+            outcome_by_date.setdefault(str(row["signal_date"]), []).append(
+                round(coerce_number(row[primary_column]) - _execution_cost_pct(row), 4)
+            )
+
+        review_items = []
+        by_regime: Dict[str, List[Dict[str, object]]] = {}
+        for review in reviews:
+            returns = outcome_by_date.get(str(review["review_date"]), [])
+            outcome = _market_gate_outcome_summary(returns)
+            item = {
+                "review_date": review["review_date"],
+                "market_filter": review["market_filter"],
+                "regime": review["regime"],
+                "size_factor": coerce_number(review["size_factor"], 1.0),
+                "confidence": coerce_number(review["confidence"], 0.0),
+                "status": review["status"],
+                "source": review["source"],
+                "reason": review["reason"],
+                **outcome,
+            }
+            item["hit"] = _market_gate_hit(str(review["regime"] or ""), outcome.get("actual_regime", "unknown"))
+            review_items.append(item)
+            by_regime.setdefault(str(review["regime"] or "unknown"), []).append(item)
+        outcome_items = [item for item in review_items if item["outcome_sample_count"] > 0 and item["hit"] is not None]
+        return {
+            "sample_count": len(review_items),
+            "outcome_sample_count": len(outcome_items),
+            "hit_rate": _rate(item["hit"] for item in outcome_items),
+            "by_regime": {
+                regime: {
+                    "sample_count": len(items),
+                    "outcome_sample_count": sum(1 for item in items if item["outcome_sample_count"] > 0),
+                    "avg_primary_return_net": _avg(
+                        item.get("avg_primary_return_net") for item in items if item["outcome_sample_count"] > 0
+                    ),
+                    "hit_rate": _rate(item["hit"] for item in items if item["hit"] is not None),
+                }
+                for regime, items in by_regime.items()
+            },
+            "recent": review_items[:20],
+        }
+
+    def save_stock_prediction_snapshot(self, payload: Dict[str, object]) -> Dict[str, object]:
+        optimization = payload.get("optimization") or {}
+        if not isinstance(optimization, dict) or not optimization:
+            return {"saved": 0, "status": "missing_optimization"}
+        code = normalize_code(payload.get("code"))
+        if not code:
+            return {"saved": 0, "status": "missing_code"}
+        now = datetime.now().isoformat(timespec="seconds")
+        prediction_date = now[:10]
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute(
+                """
+                INSERT INTO stock_prediction_snapshots
+                (prediction_date, prediction_time, code, name, price_at_signal, stance, bias, timing,
+                 optimization_json, prediction_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(prediction_date, code) DO UPDATE SET
+                  prediction_time=excluded.prediction_time,
+                  name=excluded.name,
+                  price_at_signal=excluded.price_at_signal,
+                  stance=excluded.stance,
+                  bias=excluded.bias,
+                  timing=excluded.timing,
+                  optimization_json=excluded.optimization_json,
+                  prediction_json=excluded.prediction_json,
+                  created_at=excluded.created_at
+                """,
+                (
+                    prediction_date,
+                    now,
+                    code,
+                    str(payload.get("name") or ""),
+                    coerce_number(payload.get("price")),
+                    str(optimization.get("stance") or ""),
+                    str(optimization.get("bias") or ""),
+                    str(optimization.get("timing") or ""),
+                    json.dumps(optimization, ensure_ascii=False),
+                    json.dumps(payload, ensure_ascii=False),
+                    now,
+                ),
+            )
+        return {"saved": 1, "status": "saved", "prediction_date": prediction_date, "code": code}
+
+    def update_stock_prediction_outcomes(self, provider, days: int = 120) -> Dict[str, object]:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT s.*
+                FROM stock_prediction_snapshots s
+                LEFT JOIN stock_prediction_outcomes o ON o.snapshot_id = s.id
+                WHERE o.snapshot_id IS NULL
+                ORDER BY s.prediction_date DESC, s.id DESC
+                LIMIT ?
+                """,
+                (max(1, int(days)),),
+            ).fetchall()
+        updated = 0
+        skipped = 0
+        for row in rows:
+            outcome = _compute_stance_outcome(provider, row)
+            if not outcome:
+                skipped += 1
+                continue
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO stock_prediction_outcomes
+                    (snapshot_id, code, next_trade_date, future_days, next_open, next_close,
+                     next_close_return, exit_return, exit_reason, exit_days, exit_date, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["id"],
+                        row["code"],
+                        outcome["next_trade_date"],
+                        outcome["future_days"],
+                        outcome["next_open"],
+                        outcome["next_close"],
+                        outcome["next_close_return"],
+                        outcome["exit_return"],
+                        outcome["exit_reason"],
+                        outcome["exit_days"],
+                        outcome["exit_date"],
+                        datetime.now().isoformat(timespec="seconds"),
+                    ),
+                )
+            updated += 1
+        return {"updated": updated, "skipped": skipped}
+
+    def stance_metrics(self, days: int = 120) -> Dict[str, object]:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT s.prediction_date, s.code, s.name, s.stance, s.bias, s.timing,
+                       o.next_close_return, o.exit_return, o.exit_reason, o.future_days
+                FROM stock_prediction_snapshots s
+                JOIN stock_prediction_outcomes o ON o.snapshot_id = s.id
+                ORDER BY s.prediction_date DESC, s.id DESC
+                LIMIT ?
+                """,
+                (max(1, int(days)) * 20,),
+            ).fetchall()
+        groups: Dict[str, List[Dict[str, object]]] = {}
+        for row in rows:
+            item = dict(row)
+            groups.setdefault(str(item.get("stance") or "unknown"), []).append(item)
+        return {
+            "sample_count": len(rows),
+            "by_stance": {
+                stance: {
+                    "sample_count": len(items),
+                    "avg_next_close_return": _avg(item.get("next_close_return") for item in items),
+                    "win_rate_next_close": _rate(coerce_number(item.get("next_close_return")) > 0 for item in items),
+                    "avg_exit_return": _avg(item.get("exit_return") for item in items),
+                    "win_rate_exit": _rate(coerce_number(item.get("exit_return")) > 0 for item in items),
+                }
+                for stance, items in groups.items()
+            },
+        }
+
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.execute(
@@ -868,6 +1441,86 @@ class StrategyValidationStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS strategy_deepseek_shadow_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    strategy_name TEXT NOT NULL,
+                    strategy_version TEXT NOT NULL,
+                    signal_date TEXT NOT NULL,
+                    signal_time TEXT NOT NULL,
+                    rank INTEGER NOT NULL DEFAULT 0,
+                    local_rank INTEGER NOT NULL DEFAULT 0,
+                    code TEXT NOT NULL,
+                    name TEXT NOT NULL DEFAULT '',
+                    market TEXT NOT NULL DEFAULT '',
+                    theme TEXT NOT NULL DEFAULT '',
+                    price_at_signal REAL NOT NULL DEFAULT 0,
+                    pct_chg_at_signal REAL NOT NULL DEFAULT 0,
+                    turnover REAL NOT NULL DEFAULT 0,
+                    volume_ratio REAL NOT NULL DEFAULT 0,
+                    turnover_rate REAL NOT NULL DEFAULT 0,
+                    sixty_day_pct REAL NOT NULL DEFAULT 0,
+                    ytd_pct REAL NOT NULL DEFAULT 0,
+                    score REAL NOT NULL DEFAULT 0,
+                    deepseek_rank_score REAL NOT NULL DEFAULT 0,
+                    deepseek_action TEXT NOT NULL DEFAULT '',
+                    deepseek_veto INTEGER NOT NULL DEFAULT 0,
+                    deepseek_penalty REAL NOT NULL DEFAULT 0,
+                    filter_reason TEXT NOT NULL DEFAULT '',
+                    raw_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(strategy_name, strategy_version, signal_date, code)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS strategy_deepseek_shadow_outcomes (
+                    shadow_id INTEGER PRIMARY KEY,
+                    code TEXT NOT NULL,
+                    next_trade_date TEXT NOT NULL,
+                    future_days INTEGER NOT NULL DEFAULT 1,
+                    next_open REAL NOT NULL DEFAULT 0,
+                    next_close REAL NOT NULL DEFAULT 0,
+                    next_close_return REAL NOT NULL DEFAULT 0,
+                    hold_3d_return REAL NOT NULL DEFAULT 0,
+                    hold_5d_return REAL NOT NULL DEFAULT 0,
+                    hold_10d_return REAL NOT NULL DEFAULT 0,
+                    hold_20d_return REAL NOT NULL DEFAULT 0,
+                    signal_next_close_return REAL NOT NULL DEFAULT 0,
+                    signal_hold_3d_return REAL NOT NULL DEFAULT 0,
+                    signal_hold_5d_return REAL NOT NULL DEFAULT 0,
+                    signal_hold_10d_return REAL NOT NULL DEFAULT 0,
+                    signal_hold_20d_return REAL NOT NULL DEFAULT 0,
+                    exit_return REAL NOT NULL DEFAULT 0,
+                    signal_exit_return REAL NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(shadow_id) REFERENCES strategy_deepseek_shadow_signals(id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS deepseek_market_gate_reviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    review_date TEXT NOT NULL,
+                    review_time TEXT NOT NULL,
+                    market_filter TEXT NOT NULL DEFAULT 'all',
+                    regime TEXT NOT NULL DEFAULT '',
+                    size_factor REAL NOT NULL DEFAULT 1,
+                    confidence REAL NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL DEFAULT '',
+                    context_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    counts_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(review_date, market_filter)
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_strategy_signals_date ON strategy_signals(signal_date)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_date ON strategy_signals(strategy_name, signal_date DESC)"
@@ -886,6 +1539,15 @@ class StrategyValidationStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_strategy_execution_skips_code ON strategy_execution_skips(code)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deepseek_shadow_strategy_date ON strategy_deepseek_shadow_signals(strategy_name, signal_date DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deepseek_shadow_code ON strategy_deepseek_shadow_signals(code)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deepseek_market_gate_date ON deepseek_market_gate_reviews(review_date DESC)"
             )
             existing_columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(strategy_outcomes)").fetchall()
@@ -942,6 +1604,50 @@ class StrategyValidationStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_strategy_tuning_runs_strategy_time ON strategy_tuning_runs(strategy_name, run_time DESC)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_prediction_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prediction_date TEXT NOT NULL,
+                    prediction_time TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    name TEXT NOT NULL DEFAULT '',
+                    price_at_signal REAL NOT NULL DEFAULT 0,
+                    stance TEXT NOT NULL DEFAULT '',
+                    bias TEXT NOT NULL DEFAULT '',
+                    timing TEXT NOT NULL DEFAULT '',
+                    optimization_json TEXT NOT NULL,
+                    prediction_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(prediction_date, code)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_prediction_outcomes (
+                    snapshot_id INTEGER PRIMARY KEY,
+                    code TEXT NOT NULL,
+                    next_trade_date TEXT NOT NULL,
+                    future_days INTEGER NOT NULL DEFAULT 1,
+                    next_open REAL NOT NULL DEFAULT 0,
+                    next_close REAL NOT NULL DEFAULT 0,
+                    next_close_return REAL NOT NULL DEFAULT 0,
+                    exit_return REAL NOT NULL DEFAULT 0,
+                    exit_reason TEXT NOT NULL DEFAULT '',
+                    exit_days INTEGER NOT NULL DEFAULT 0,
+                    exit_date TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(snapshot_id) REFERENCES stock_prediction_snapshots(id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stock_prediction_snapshots_date ON stock_prediction_snapshots(prediction_date DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stock_prediction_snapshots_code ON stock_prediction_snapshots(code)"
             )
 
 
@@ -1017,6 +1723,59 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
         "exit_days": signal_exit.get("exit_days", open_exit.get("exit_days", 0)),
         "exit_date": signal_exit.get("exit_date", open_exit.get("exit_date", "")),
     }
+
+
+def _compute_stance_outcome(provider, snapshot: sqlite3.Row) -> Optional[Dict[str, object]]:
+    try:
+        history = provider.get_history(snapshot["code"], days=180)
+    except Exception:
+        return None
+    if history is None or history.empty or "trade_date" not in history.columns:
+        return None
+    df = history.sort_values("trade_date").reset_index(drop=True)
+    signal_date = str(snapshot["prediction_date"]).replace("-", "")
+    future = df[df["trade_date"].astype(str).str.replace("-", "", regex=False) > signal_date].reset_index(drop=True)
+    if future.empty:
+        return None
+    first = future.iloc[0]
+    entry = coerce_number(first.get("open")) or coerce_number(first.get("price"))
+    if entry <= 0:
+        entry = coerce_number(snapshot["price_at_signal"])
+    close = coerce_number(first.get("price")) or coerce_number(first.get("close"))
+    if entry <= 0 or close <= 0:
+        return None
+    try:
+        optimization = json.loads(snapshot["optimization_json"] or "{}")
+    except Exception:
+        optimization = {}
+    holding_days = max(1, int(getattr(config, "STANCE_TRACKING_HOLDING_DAYS", 5)))
+    policy = _stance_exit_policy(optimization, holding_days)
+    exit_result = simulate_exit(future, entry, holding_days=holding_days, policy=policy)
+    return {
+        "next_trade_date": str(first.get("trade_date")),
+        "future_days": len(future),
+        "next_open": round(entry, 4),
+        "next_close": round(close, 4),
+        "next_close_return": round((close / entry - 1) * 100, 4),
+        "exit_return": coerce_number(exit_result.get("exit_return")),
+        "exit_reason": str(exit_result.get("exit_reason") or ""),
+        "exit_days": int(exit_result.get("exit_days") or 0),
+        "exit_date": str(exit_result.get("exit_date") or ""),
+    }
+
+
+def _stance_exit_policy(optimization: Dict[str, object], holding_days: int) -> Dict[str, object]:
+    policy = {"holding_days": holding_days}
+    for source_key, target_key in (
+        ("stop_loss_pct", "stop_loss_pct"),
+        ("take_profit_pct", "take_profit_pct"),
+        ("trailing_stop_pct", "trailing_stop_pct"),
+    ):
+        value = optimization.get(source_key) if isinstance(optimization, dict) else None
+        number = coerce_number(value, 0.0)
+        if number > 0:
+            policy[target_key] = number
+    return policy
 
 
 def _window_close(future: pd.DataFrame, days: int, fallback: float) -> float:
@@ -1137,6 +1896,195 @@ def _avg(values) -> float:
 def _rate(values) -> float:
     clean = list(values)
     return round(sum(1 for value in clean if value) / len(clean) * 100, 2) if clean else 0.0
+
+
+def _deepseek_action(raw: Dict[str, object]) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("deepseek_action") or "").strip().lower()
+
+
+def _has_deepseek_review(raw: Dict[str, object]) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    return any(
+        key in raw
+        for key in (
+            "deepseek_action",
+            "deepseek_veto",
+            "deepseek_penalty",
+            "deepseek_rank_score",
+            "deepseek_score",
+            "rerank_source",
+        )
+    )
+
+
+def _deepseek_covered(raw: Dict[str, object]) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    if "deepseek_covered" in raw:
+        return bool(raw.get("deepseek_covered"))
+    return raw.get("deepseek_score") is not None or str(raw.get("rerank_source") or "") == "deepseek"
+
+
+def _deepseek_avoid_or_veto(raw: Dict[str, object]) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    return bool(raw.get("deepseek_veto")) or _deepseek_action(raw) == "avoid"
+
+
+def _deepseek_local_rank(row: Dict[str, object]) -> int:
+    raw = row.get("_raw") if isinstance(row, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return int(coerce_number(raw.get("local_rank"), 0) or 0)
+
+
+def _deepseek_blend_alpha(raw: Dict[str, object]):
+    if not isinstance(raw, dict):
+        return None
+    if "deepseek_blend_alpha" in raw:
+        return coerce_number(raw.get("deepseek_blend_alpha"))
+    if "blend_alpha" in raw:
+        return coerce_number(raw.get("blend_alpha"))
+    return None
+
+
+def _return_summary(rows: List[Dict[str, object]]) -> Dict[str, object]:
+    return {
+        "sample_count": len(rows),
+        "avg_primary_return_net": _avg(row.get("_primary_return_net") for row in rows),
+        "win_rate_primary_net": _rate(coerce_number(row.get("_primary_return_net")) > 0 for row in rows),
+    }
+
+
+def _market_gate_outcome_summary(returns: List[float]) -> Dict[str, object]:
+    clean = [coerce_number(value) for value in returns]
+    avg_return = _avg(clean)
+    win_rate = _rate(value > 0 for value in clean)
+    if not clean:
+        actual_regime = "unknown"
+    elif avg_return < 0 or win_rate < 45:
+        actual_regime = "risk_off"
+    elif avg_return > 0.3 and win_rate >= 55:
+        actual_regime = "risk_on"
+    else:
+        actual_regime = "balanced"
+    return {
+        "outcome_sample_count": len(clean),
+        "avg_primary_return_net": avg_return,
+        "win_rate_primary_net": win_rate,
+        "actual_regime": actual_regime,
+    }
+
+
+def _market_gate_hit(expected_regime: str, actual_regime: str):
+    expected = str(expected_regime or "").strip().lower()
+    actual = str(actual_regime or "").strip().lower()
+    if actual == "unknown" or expected not in {"risk_on", "balanced", "risk_off"}:
+        return None
+    if expected == "balanced":
+        return actual == "balanced"
+    return expected == actual
+
+
+def _deepseek_group_delta(
+    priority_rows: List[Dict[str, object]],
+    watch_rows: List[Dict[str, object]],
+) -> Dict[str, object]:
+    priority = _return_summary(priority_rows)
+    watch = _return_summary(watch_rows)
+    return {
+        "priority_sample_count": priority["sample_count"],
+        "watch_sample_count": watch["sample_count"],
+        "priority_win_rate_primary_net": priority["win_rate_primary_net"],
+        "watch_win_rate_primary_net": watch["win_rate_primary_net"],
+        "win_rate_delta_pct": round(priority["win_rate_primary_net"] - watch["win_rate_primary_net"], 2),
+        "avg_return_delta_pct": round(priority["avg_primary_return_net"] - watch["avg_primary_return_net"], 4),
+    }
+
+
+def _deepseek_counterfactual_topn(strategy_name: str, rows: List[Dict[str, object]]) -> Dict[str, object]:
+    rows_with_local_rank = [row for row in rows if _deepseek_local_rank(row) > 0]
+    if not rows_with_local_rank:
+        return {
+            "sample_count": 0,
+            "day_count": 0,
+            "top_n": 0,
+            "local_avg_primary_return_net": 0.0,
+            "deepseek_avg_primary_return_net": 0.0,
+            "avg_return_delta_pct": 0.0,
+            "local_win_rate_primary_net": 0.0,
+            "deepseek_win_rate_primary_net": 0.0,
+            "win_rate_delta_pct": 0.0,
+            "status": "missing_local_rank",
+        }
+    top_n = _deepseek_counterfactual_n(strategy_name)
+    by_date: Dict[str, List[Dict[str, object]]] = {}
+    for row in rows_with_local_rank:
+        by_date.setdefault(str(row.get("signal_date") or ""), []).append(row)
+    local_selected: List[Dict[str, object]] = []
+    deepseek_selected: List[Dict[str, object]] = []
+    for date_rows in by_date.values():
+        selected_rows = [row for row in date_rows if not row.get("_deepseek_shadow_signal")]
+        count = min(top_n, len(date_rows))
+        selected_count = min(top_n, len(selected_rows))
+        if count <= 0:
+            continue
+        local_selected.extend(
+            sorted(date_rows, key=lambda item: (_deepseek_local_rank(item), int(item.get("rank") or 9999)))[:count]
+        )
+        deepseek_selected.extend(sorted(selected_rows, key=lambda item: int(item.get("rank") or 9999))[:selected_count])
+    local_summary = _return_summary(local_selected)
+    deepseek_summary = _return_summary(deepseek_selected)
+    return {
+        "sample_count": len(deepseek_selected),
+        "day_count": len(by_date),
+        "top_n": top_n,
+        "local_avg_primary_return_net": local_summary["avg_primary_return_net"],
+        "deepseek_avg_primary_return_net": deepseek_summary["avg_primary_return_net"],
+        "avg_return_delta_pct": round(
+            deepseek_summary["avg_primary_return_net"] - local_summary["avg_primary_return_net"],
+            4,
+        ),
+        "local_win_rate_primary_net": local_summary["win_rate_primary_net"],
+        "deepseek_win_rate_primary_net": deepseek_summary["win_rate_primary_net"],
+        "win_rate_delta_pct": round(
+            deepseek_summary["win_rate_primary_net"] - local_summary["win_rate_primary_net"],
+            2,
+        ),
+        "status": "ok" if deepseek_selected else "empty",
+    }
+
+
+def _deepseek_counterfactual_n(strategy_name: str) -> int:
+    if strategy_name == "tomorrow_picks":
+        return max(1, int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 5)))
+    return max(1, min(10, int(getattr(config, "RECOMMENDATION_DISPLAY_LIMIT", 18))))
+
+
+def _write_deepseek_attribution_snapshot(strategy_name: str, result: Dict[str, object]) -> None:
+    path = str(getattr(config, "DEEPSEEK_ATTRIBUTION_PATH", ".runtime/deepseek_attribution.json") or "").strip()
+    if not path:
+        return
+    try:
+        existing = {}
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                existing = loaded
+        existing[strategy_name] = result
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(existing, handle, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp_path, path)
+    except Exception:
+        return
 
 
 def _next_day_compare(rows: List[sqlite3.Row]) -> Dict[str, object]:

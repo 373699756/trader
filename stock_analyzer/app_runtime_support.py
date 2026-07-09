@@ -1,7 +1,7 @@
 from typing import Dict, List, Tuple
 
 from . import config
-from .deepseek_client import rerank_candidates, review_strategy_validation
+from .deepseek_client import rerank_candidates, rerank_candidates_batch, review_strategy_validation
 from .normalization import normalize_code
 from .stock_optimization import review_stock_prediction
 from .strategies import storage_strategy_name
@@ -59,6 +59,59 @@ def apply_deepseek_rerank(
         }
 
 
+def apply_deepseek_rerank_batch(
+    rows_by_strategy: Dict[str, List[Dict[str, object]]],
+    market_filter: str,
+) -> Tuple[Dict[str, List[Dict[str, object]]], Dict[str, Dict[str, object]]]:
+    rows_by_strategy = {
+        storage_strategy_name(strategy): list(rows or [])
+        for strategy, rows in (rows_by_strategy or {}).items()
+    }
+    if not getattr(config, "ENABLE_DEEPSEEK_RUNTIME", False):
+        return rows_by_strategy, {
+            strategy: {
+                "enabled": False,
+                "status": "runtime_disabled",
+                "strategy": strategy,
+                "reason": "DeepSeek runtime is disabled; local rules are used only.",
+            }
+            for strategy in rows_by_strategy
+        }
+    disabled_strategies = deepseek_rerank_disabled_strategies()
+    active = {}
+    meta = {}
+    for strategy, rows in rows_by_strategy.items():
+        if not rows:
+            meta[strategy] = {"enabled": False, "status": "empty", "strategy": strategy}
+        elif strategy in disabled_strategies or "all" in disabled_strategies:
+            meta[strategy] = {
+                "enabled": False,
+                "status": "strategy_rerank_disabled",
+                "strategy": strategy,
+                "reason": "DeepSeek rerank is disabled for this strategy route.",
+            }
+        else:
+            active[strategy] = rows
+    if not active:
+        return rows_by_strategy, meta
+    try:
+        reranked, batch_meta = rerank_candidates_batch(active, market_filter=market_filter)
+        result_rows = dict(rows_by_strategy)
+        result_rows.update(reranked)
+        meta.update(batch_meta)
+        return result_rows, meta
+    except Exception as exc:
+        for strategy in active:
+            meta[strategy] = {
+                "enabled": False,
+                "status": "fallback",
+                "strategy": strategy,
+                "source": "deepseek_batch",
+                "error": str(exc),
+            }
+        return rows_by_strategy, meta
+
+
 def skipped_deepseek_meta(
     strategy_name: str,
     *,
@@ -78,11 +131,17 @@ def finalize_deepseek_meta(
     rows: List[Dict[str, object]],
     deepseek_meta: Dict[str, object],
 ) -> None:
-    meta["deepseek"] = deepseek_meta
+    meta["deepseek"] = _public_deepseek_meta(deepseek_meta)
     meta["display_count"] = len(rows)
     meta["deepseek_filtered_count"] = int(deepseek_meta.get("filtered") or 0)
     if deepseek_meta.get("filter_reasons"):
         meta["deepseek_filter_reasons"] = deepseek_meta.get("filter_reasons")
+
+
+def _public_deepseek_meta(deepseek_meta: Dict[str, object]) -> Dict[str, object]:
+    item = dict(deepseek_meta or {})
+    item.pop("filtered_rows", None)
+    return item
 
 
 def attach_factor_snapshots(samples: List[Dict[str, object]]) -> List[Dict[str, object]]:

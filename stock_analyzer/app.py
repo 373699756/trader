@@ -22,6 +22,7 @@ from .app_response_support import (
 )
 from .backtest import parse_code_list, run_alphalite_backtest, run_rolling_alphalite_backtest
 from .daily_data import list_market_data_codes
+from .deepseek_client import review_strategy_validation  # compatibility alias for existing tests/local imports
 from .event_risk import attach_event_risk, load_event_risk
 from .factor_ic import load_factor_ic
 from .fundamentals import attach_fundamental_factors, load_fundamentals
@@ -120,6 +121,7 @@ def create_app() -> Flask:
     # validation_store.metrics() 的 sqlite JOIN，验证数据通常随后台自动保存/回填更新，
     # 故在刷新周期内复用结果即可消除热路径上的重复查询。
     _metrics_cache: Dict[tuple, tuple] = {}
+    _validation_summary_cache: Dict[tuple, tuple] = {}
 
     def cached_metrics(strategy_name: str, days: int):
         import time
@@ -135,6 +137,38 @@ def create_app() -> Flask:
 
     def invalidate_metrics_cache():
         _metrics_cache.clear()
+        _validation_summary_cache.clear()
+
+    def cached_strategy_validation_summary(strategy_name: str, days: int):
+        import time
+
+        key = (strategy_name, days)
+        hit = _validation_summary_cache.get(key)
+        now = time.time()
+        if hit is not None and now < hit[1]:
+            return hit[0]
+        metrics = cached_metrics(strategy_name, days)
+        deepseek_attribution_by_strategy = {
+            item: validation_store.deepseek_attribution(item, days=days)
+            for item in config.SNAPSHOT_STRATEGIES
+        }
+        latest_tuning = validation_store.latest_tuning_run(strategy_name)
+        saved_deepseek_review = (latest_tuning.get("deepseek") or {}) if latest_tuning else {}
+        value = {
+            "metrics": metrics,
+            "deepseek_attribution": deepseek_attribution_by_strategy.get(strategy_name, {}),
+            "deepseek_attribution_by_strategy": deepseek_attribution_by_strategy,
+            "deepseek_market_gate": validation_store.market_gate_metrics(days=days),
+            "deepseek_review": saved_deepseek_review
+            or {
+                "enabled": False,
+                "status": "not_requested",
+                "strategy": strategy_name,
+                "reason": "DeepSeek validation review only runs from tuning POST or scheduled end-of-day jobs.",
+            },
+        }
+        _validation_summary_cache[key] = (value, now + min(float(config.REFRESH_SECONDS), 30.0))
+        return value
 
     def _iteration_path() -> str:
         return getattr(config, "TOMORROW_ITERATION_PATH", ".runtime/tomorrow_iteration.json")
@@ -675,6 +709,12 @@ def create_app() -> Flask:
                 validation_store,
                 cached_metrics,
             )
+            try:
+                market_gate = meta.get("deepseek_market_gate") if isinstance(meta, dict) else {}
+                if isinstance(market_gate, dict) and market_gate.get("enabled"):
+                    validation_store.save_market_gate_review(market_gate, market_filter=market)
+            except Exception:
+                pass
             recommendations_by_horizon = {"short_term": short_display_rows}
 
             payload = {
@@ -1036,13 +1076,35 @@ def create_app() -> Flask:
                 fallback_history=fallback_history,
                 fallback_error=fallback_error,
             )
-            deepseek_requested = request.args.get("deepseek", "1").lower() not in ("0", "false", "no", "off")
+            deepseek_requested = request.args.get("deepseek", "0").lower() in ("1", "true", "yes", "on")
             if deepseek_requested and bool(result.get("ok")):
                 result["optimization"] = deepseek_stock_prediction_review(result)
+            if bool(getattr(config, "ENABLE_STANCE_TRACKING", False)) and bool(result.get("ok")):
+                try:
+                    result["stance_tracking"] = validation_store.save_stock_prediction_snapshot(result)
+                except Exception as exc:
+                    result["stance_tracking"] = {"saved": 0, "status": "error", "error": str(exc)}
             result_ok = bool(result.get("ok"))
             result_payload = dict(result)
             result_payload.pop("ok", None)
             return _json_response(ok=result_ok, **result_payload)
+        except Exception as exc:
+            return _error_response(exc)
+
+    @app.route("/api/stock-prediction/stance-validation")
+    def stock_prediction_stance_validation():
+        days = _int_arg("days", 120, minimum=1, maximum=500)
+        try:
+            return _json_response(ok=True, enabled=bool(getattr(config, "ENABLE_STANCE_TRACKING", False)), metrics=validation_store.stance_metrics(days=days))
+        except Exception as exc:
+            return _error_response(exc)
+
+    @app.route("/api/stock-prediction/stance-validation/update", methods=["POST"])
+    def stock_prediction_stance_validation_update():
+        days = _int_arg("days", 120, minimum=1, maximum=500)
+        try:
+            result = validation_store.update_stock_prediction_outcomes(provider, days=days)
+            return _json_response(ok=True, enabled=bool(getattr(config, "ENABLE_STANCE_TRACKING", False)), result=result)
         except Exception as exc:
             return _error_response(exc)
 
@@ -1217,13 +1279,12 @@ def create_app() -> Flask:
             light = request.args.get("light", "0").lower() in ("1", "true", "yes", "on")
             if light:
                 return _json_response(ok=True, include_health=False, strategy=strategy, dates=dates)
-            metrics = cached_metrics(strategy, days)
+            summary = cached_strategy_validation_summary(strategy, days)
             return _json_response(
                 ok=True,
                 strategy=strategy,
                 dates=dates,
-                metrics=metrics,
-                deepseek_review=deepseek_validation_review(validation_store, strategy, metrics, days),
+                **summary,
             )
         except Exception as exc:
             return _error_response(exc)
@@ -1242,6 +1303,7 @@ def create_app() -> Flask:
                 )
             use_deepseek = request.args.get("deepseek", "1").lower() not in ("0", "false", "no", "off")
             tuning_result = run_validation_tuning_once([strategy], days=days, use_deepseek=use_deepseek)
+            invalidate_metrics_cache()
             latest = validation_store.latest_tuning_run(strategy)
             plan = latest.get("plan") or {}
             return _json_response(

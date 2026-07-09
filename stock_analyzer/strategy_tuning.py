@@ -82,12 +82,19 @@ def build_strategy_tuning_plan(
     suggestions.extend(_deepseek_rule_suggestions(deepseek_review or {}))
 
     gate_passed = all(item["passed"] for item in gates)
+    deepseek_upgrade = _deepseek_applicable_upgrade(deepseek_review or {})
     can_apply = False
+    shadow_mode = True
     status = "shadow_only"
     reason = "建议先进入影子验证，不直接改正式策略。"
     if not gate_passed:
         status = "blocked"
         reason = "未通过自动应用门控，只保存为调参建议。"
+    elif deepseek_upgrade:
+        can_apply = True
+        shadow_mode = False
+        status = "ready_for_confirmation"
+        reason = "DeepSeek 候选已通过 OOS 门槛，可进入人工确认采纳。"
 
     return {
         "ok": True,
@@ -97,7 +104,7 @@ def build_strategy_tuning_plan(
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "status": status,
         "can_apply": can_apply,
-        "shadow_mode": True,
+        "shadow_mode": shadow_mode,
         "reason": reason,
         "issues": _unique(issues),
         "suggestions": suggestions,
@@ -173,12 +180,28 @@ def _deepseek_rule_suggestions(review: Dict[str, object]) -> List[Dict[str, obje
                     "operator": rule.get("operator"),
                     "threshold": rule.get("threshold"),
                     "penalty": rule.get("penalty"),
+                    "can_apply": bool(rule.get("can_apply")),
+                    "oos_improvement": (rule.get("oos_evaluation") or {}).get("oos_improvement"),
+                    "positive_folds": (rule.get("oos_evaluation") or {}).get("positive_folds"),
+                    "fold_count": (rule.get("oos_evaluation") or {}).get("fold_count"),
                 },
                 str(rule.get("reason") or "DeepSeek 建议进入影子规则验证。"),
                 source="deepseek",
             )
         )
     return result
+
+
+def _deepseek_applicable_upgrade(review: Dict[str, object]) -> bool:
+    if not isinstance(review, dict):
+        return False
+    for rule in review.get("rule_candidates") or []:
+        if isinstance(rule, dict) and rule.get("can_apply"):
+            return True
+    alpha = review.get("blend_alpha_calibration")
+    if isinstance(alpha, dict) and alpha.get("can_apply"):
+        return True
+    return False
 
 
 def _suggest(parameter: str, value, reason: str, source: str = "local") -> Dict[str, object]:

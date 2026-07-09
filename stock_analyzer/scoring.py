@@ -17,6 +17,7 @@ from .normalization import (
 from .event_risk import row_event_risk
 from .risk_blacklist import row_blacklist_risk
 from .strategy_health import strategy_status
+from .deepseek_rules import apply_rule_penalty
 
 
 TECH_THEMES = {
@@ -687,6 +688,12 @@ def build_market_regime(df: pd.DataFrame, breadth_source: pd.DataFrame = None) -
     breadth_pct = round(float((pct_values > 0).mean() * 100), 2) if len(pct_values) else 0.0
     strong_pct = round(float((pct_values >= 3).mean() * 100), 2) if len(pct_values) else 0.0
     weak_pct = round(float((pct_values <= -3).mean() * 100), 2) if len(pct_values) else 0.0
+    breadth_total = int(len(pct_values))
+    up_count = int((pct_values > 0).sum()) if len(pct_values) else 0
+    down_count = int((pct_values < 0).sum()) if len(pct_values) else 0
+    limit_up_count = int((pct_values >= 9.5).sum()) if len(pct_values) else 0
+    limit_down_count = int((pct_values <= -9.5).sum()) if len(pct_values) else 0
+    avg_pct_chg = round(coerce_number(pct_values.mean()), 4) if len(pct_values) else 0.0
     median_pct_chg = round(coerce_number(pct_values.median()), 2) if len(pct_values) else 0.0
     avg_amplitude = round(coerce_number(amplitude_values.mean()), 2) if len(amplitude_values) else 0.0
     avg_turnover = round(coerce_number(turnover_values.mean()), 2) if len(turnover_values) else 0.0
@@ -734,6 +741,12 @@ def build_market_regime(df: pd.DataFrame, breadth_source: pd.DataFrame = None) -
         "label": label,
         "score": score,
         "breadth_pct": breadth_pct,
+        "breadth_sample_count": breadth_total,
+        "up_count": up_count,
+        "down_count": down_count,
+        "limit_up_count": limit_up_count,
+        "limit_down_count": limit_down_count,
+        "avg_pct_chg": avg_pct_chg,
         **history_breadth,
         "strong_pct": strong_pct,
         "weak_pct": weak_pct,
@@ -927,14 +940,17 @@ def score_today_candidates(
     short_rows: List[Dict[str, object]] = []
     for _, row in df.iterrows():
         short_rows.append(
-            _score_row(
-                row,
-                hot_ranks=hot_ranks,
-                industry_strength=industry_strength,
-                sentiment_lookup=sentiment_lookup,
-                context=context,
-                horizon="short",
-                market_regime=market_regime,
+            apply_rule_penalty(
+                "short_term",
+                _score_row(
+                    row,
+                    hot_ranks=hot_ranks,
+                    industry_strength=industry_strength,
+                    sentiment_lookup=sentiment_lookup,
+                    context=context,
+                    horizon="short",
+                    market_regime=market_regime,
+                ),
             )
         )
 
@@ -1094,6 +1110,7 @@ def score_tomorrow_candidates(
                     risk_penalty,
                 ),
         }
+        item = apply_rule_penalty("tomorrow_picks", item)
         rows.append(
             _with_regime_reason(
                 _attach_signal_explanation(
@@ -1295,6 +1312,7 @@ def score_swing_candidates(
             "horizon": "swing",
             "reasons": _build_swing_reasons(row, momentum_score, trend_score, liquidity_score, risk_penalty),
         })
+        item = apply_rule_penalty("swing_picks", item)
         rows.append(
             _with_regime_reason(
                 _attach_signal_explanation(item, row, "swing_picks", "2-5天推荐", "短周期延续"),

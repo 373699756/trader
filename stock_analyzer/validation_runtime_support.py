@@ -126,6 +126,8 @@ def run_validation_tuning_once(
                 "enabled": False,
                 "status": "skipped",
             }
+            if use_deepseek:
+                deepseek_review = _attach_deepseek_oos_evaluations(validation_store, strategy, deepseek_review, days)
             plan = build_strategy_tuning_plan(
                 strategy_name=strategy,
                 metrics=metrics,
@@ -149,6 +151,47 @@ def run_validation_tuning_once(
             result["runs"].append({"ok": False, "strategy": strategy, "error": str(exc)})
     result["finished_at"] = datetime.now().isoformat(timespec="seconds")
     return result
+
+
+def _attach_deepseek_oos_evaluations(
+    validation_store,
+    strategy: str,
+    deepseek_review: Dict[str, object],
+    days: int,
+) -> Dict[str, object]:
+    if not isinstance(deepseek_review, dict) or not deepseek_review.get("rule_candidates"):
+        return deepseek_review
+    try:
+        from .calibrate import calibrate_blend_alpha, evaluate_deepseek_rule
+
+        samples = validation_store.live_weight_samples(strategy, days=max(60, int(days)))
+        top_k = 5 if strategy == "tomorrow_picks" else 10
+        evaluations = []
+        next_rules = []
+        for rule in (deepseek_review.get("rule_candidates") or [])[:4]:
+            if not isinstance(rule, dict):
+                continue
+            evaluation = evaluate_deepseek_rule(strategy, rule, samples, top_k=top_k, dry_run=True)
+            enriched_rule = dict(rule)
+            enriched_rule["oos_evaluation"] = evaluation
+            enriched_rule["can_apply"] = bool(evaluation.get("can_apply"))
+            evaluations.append(evaluation)
+            next_rules.append(enriched_rule)
+        result = dict(deepseek_review)
+        result["rule_candidates"] = next_rules
+        result["rule_evaluations"] = evaluations
+        result["blend_alpha_calibration"] = calibrate_blend_alpha(
+            strategy,
+            samples,
+            top_k=top_k,
+            dry_run=True,
+            write_alpha_zero=bool(getattr(config, "DEEPSEEK_WRITE_ALPHA_ZERO", True)),
+        )
+        return result
+    except Exception as exc:
+        result = dict(deepseek_review)
+        result["oos_error"] = str(exc)
+        return result
 
 
 def run_validation_auto_snapshot_once(

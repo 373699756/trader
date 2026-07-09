@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -411,6 +412,43 @@ class ScoringTest(unittest.TestCase):
         self.assertIn("overheat_damp", row)
         self.assertIn("tail_setup_score", row)
         self.assertIn("risk_penalty_parts", row)
+
+    def test_tomorrow_consumes_oos_deepseek_rules_from_weights(self):
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "会被规则扣分", "price": 10.6, "open": 10.1, "high": 10.8, "low": 10.0,
+                 "pct_chg": 4.2, "turnover": 9e8, "turnover_rate": 5, "volume_ratio": 2.0,
+                 "speed": 0.4, "sixty_day_pct": 18, "ytd_pct": 20, "amplitude": 5},
+                {"code": "600002", "name": "规则未命中", "price": 10.3, "open": 10.1, "high": 10.5, "low": 10.0,
+                 "pct_chg": 2.0, "turnover": 8e8, "turnover_rate": 4, "volume_ratio": 1.6,
+                 "speed": 0.2, "sixty_day_pct": 8, "ytd_pct": 12, "amplitude": 4},
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "weights.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "deepseek_rules": {
+                            "tomorrow_picks": [
+                                {"field": "pct_chg", "operator": ">", "threshold": 3, "penalty": 40, "reason": "涨幅过热OOS验证弱"}
+                            ]
+                        }
+                    },
+                    handle,
+                    ensure_ascii=False,
+                )
+            with patch.object(config, "WEIGHTS_OVERRIDE_PATH", path), patch(
+                "stock_analyzer.scoring._tomorrow_display_gate",
+                return_value=(2, 0.0, "测试展示全部候选"),
+            ):
+                rows, _ = score_tomorrow_candidates(prepare_candidates(quotes), top_n=2)
+
+        self.assertEqual(rows[0]["code"], "600002")
+        penalized = next(row for row in rows if row["code"] == "600001")
+        self.assertEqual(penalized["deepseek_rule_penalty"], 40)
+        self.assertEqual(penalized["score_before_deepseek_rules"], round(penalized["score"] + 40, 2))
+        self.assertIn("deepseek_rules_matched", penalized)
 
     def test_tomorrow_rejects_weak_tail_close(self):
         quotes = pd.DataFrame(

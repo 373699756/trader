@@ -1,10 +1,110 @@
 import unittest
 from unittest.mock import patch
 
+import pandas as pd
+
+from stock_analyzer import config
 from stock_analyzer import recommendation_runtime_support as support
 
 
 class RecommendationRuntimeSupportTest(unittest.TestCase):
+    def test_market_gate_risk_off_shrinks_rows_and_applies_tomorrow_threshold(self):
+        rows = {
+            "short_term": [{"code": str(index), "score": 80} for index in range(10)],
+            "tomorrow_picks": [
+                {"code": "a", "score": 80},
+                {"code": "b", "score": 70},
+                {"code": "c", "score": 60},
+            ],
+            "swing_picks": [{"code": str(index), "score": 75} for index in range(5)],
+        }
+        with patch.object(config, "TOMORROW_PRIMARY_MIN_SCORE", 68.0), patch.object(
+            config, "DEEPSEEK_MARKET_GATE_RISK_OFF_SCORE_BONUS", 5.0
+        ):
+            gated, counts = support._apply_market_gate(rows, {"regime": "risk_off", "size_factor": 0.4})
+
+        self.assertEqual(len(gated["short_term"]), 4)
+        self.assertEqual([row["code"] for row in gated["tomorrow_picks"]], ["a"])
+        self.assertEqual(len(gated["swing_picks"]), 2)
+        self.assertEqual(counts["tomorrow_picks"], {"before": 3, "after": 1})
+
+    def test_market_gate_context_prefers_full_market_breadth_over_candidate_pool(self):
+        candidates = pd.DataFrame(
+            [
+                {"code": "600001", "pct_chg": 5.0, "turnover": 100},
+                {"code": "600002", "pct_chg": 4.0, "turnover": 100},
+            ]
+        )
+        context = support._market_gate_context(
+            candidates,
+            {
+                "breadth_sample_count": 100,
+                "up_count": 25,
+                "down_count": 70,
+                "limit_up_count": 1,
+                "limit_down_count": 3,
+                "avg_pct_chg": -0.8,
+                "median_pct_chg": -1.0,
+            },
+        )
+
+        self.assertEqual(context["breadth_source"], "full_market_snapshot")
+        self.assertEqual(context["sample_count"], 100)
+        self.assertEqual(context["up_ratio_pct"], 25.0)
+        self.assertEqual(context["down_ratio_pct"], 70.0)
+        self.assertEqual(context["limit_down_count"], 3)
+
+    def test_build_recommendation_horizons_uses_one_batch_rerank(self):
+        with patch.object(
+            support,
+            "score_today_picks",
+            return_value=({"short_term": [{"code": "A", "score": 90}]}, {"strategy_version": "today_v1"}),
+        ), patch.object(
+            support,
+            "score_tomorrow_picks",
+            return_value=([{"code": "B", "score": 88}], {"strategy_version": "tomorrow_v1"}),
+        ), patch.object(
+            support,
+            "score_swing_2_5d_picks",
+            return_value=([{"code": "C", "score": 86}], {"strategy_version": "swing_v1"}),
+        ), patch.object(
+            support,
+            "apply_deepseek_rerank_batch",
+            return_value=(
+                {
+                    "short_term": [{"code": "A", "score": 91}],
+                    "tomorrow_picks": [{"code": "B", "score": 89}],
+                    "swing_picks": [{"code": "C", "score": 87}],
+                },
+                {
+                    "short_term": {"status": "ok", "source": "deepseek_batch"},
+                    "tomorrow_picks": {"status": "ok", "source": "deepseek_batch"},
+                    "swing_picks": {"status": "ok", "source": "deepseek_batch"},
+                },
+            ),
+        ) as batch, patch.object(
+            support,
+            "apply_deepseek_rerank",
+            side_effect=AssertionError("single-strategy rerank should not be used"),
+        ), patch.object(config, "ENABLE_DEEPSEEK_MARKET_GATE", False):
+            rows, _, meta = support.build_recommendation_horizons(
+                candidates=None,
+                top_n=5,
+                market="all",
+                market_regime={},
+                hot_ranks={},
+                industry_strength={},
+                sentiment_lookup={},
+                cached_metrics_fn=lambda strategy, days: {"sample_count": 0},
+                apply_deepseek=True,
+            )
+
+        batch.assert_called_once()
+        self.assertEqual(rows["short_term"][0]["score"], 91)
+        self.assertEqual(meta["short_term"]["source"], "deepseek_batch")
+        self.assertEqual(meta["tomorrow_picks"]["source"], "deepseek_batch")
+        self.assertEqual(meta["swing_picks"]["source"], "deepseek_batch")
+
     def test_prediction_strategy_rows_respects_short_term_override(self):
         with patch.object(
             support,
@@ -76,4 +176,3 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
         self.assertEqual(meta["market_regime"]["label"], "偏强")
         self.assertEqual(meta["stability"]["short_term"]["new_entries"], ["000001"])
         self.assertEqual(meta["display_theme_cap"], 3)
-

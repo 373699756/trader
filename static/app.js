@@ -24,6 +24,7 @@ const state = {
     strategy: "",
   },
   validationMetrics: {},
+  deepseekAttributionByStrategy: {},
   validationCache: {},
   validationDailyCache: {},
   validationRequestSeq: 0,
@@ -114,6 +115,8 @@ const els = {
   validationWinRate: document.getElementById("validationWinRate"),
   validationAvgReturnLabel: document.getElementById("validationAvgReturnLabel"),
   validationAvgReturn: document.getElementById("validationAvgReturn"),
+  validationDeepseekAttribution: document.getElementById("validationDeepseekAttribution"),
+  validationDeepseekMarketGate: document.getElementById("validationDeepseekMarketGate"),
   tuningStatus: document.getElementById("tuningStatus"),
   generateTuningBtn: document.getElementById("generateTuningBtn"),
   validationDatesBody: document.getElementById("validationDatesBody"),
@@ -348,6 +351,9 @@ async function loadValidationMetrics(strategy, days, requestSeq, cacheKey, optio
       state.validationMetrics = payload.metrics;
       renderValidationMetrics(payload.metrics);
     }
+    state.deepseekAttributionByStrategy = payload.deepseek_attribution_by_strategy || {};
+    renderValidationDeepseekAttribution(state.deepseekAttributionByStrategy);
+    renderValidationDeepseekMarketGate(payload.deepseek_market_gate || {});
     renderValidationDeepseekReview(payload.deepseek_review || {});
     if (!options.skipAutoOutcomeUpdate) {
       autoFillMissingValidationOutcomes(payload.metrics || {}, payload.dates || []);
@@ -362,6 +368,13 @@ function applyValidationPayload(payload) {
   if (payload.metrics) {
     state.validationMetrics = payload.metrics || {};
     renderValidationMetrics(state.validationMetrics);
+  }
+  if (payload.deepseek_attribution_by_strategy) {
+    state.deepseekAttributionByStrategy = payload.deepseek_attribution_by_strategy || {};
+    renderValidationDeepseekAttribution(state.deepseekAttributionByStrategy);
+  }
+  if (payload.deepseek_market_gate) {
+    renderValidationDeepseekMarketGate(payload.deepseek_market_gate || {});
   }
   renderValidationDates(payload.dates || []);
   syncValidationSelection(payload.dates || []);
@@ -573,7 +586,7 @@ async function loadStockPredictionWithMode(mode = "combined") {
     els.stockPredictionStatus,
     mode === "optimization"
       ? "正在结合本地预测和 DeepSeek 生成策略优化建议…"
-      : "正在读取当前行情并结合 DeepSeek 生成个股策略建议…",
+      : "正在读取当前行情并生成本地预测…",
     "pending"
   );
   setOpsStatus(
@@ -582,7 +595,8 @@ async function loadStockPredictionWithMode(mode = "combined") {
     mode === "optimization" ? "pending" : ""
   );
   try {
-    const res = await fetch(`/api/stock-prediction/${encodeURIComponent(code)}`);
+    const params = mode === "optimization" ? "?deepseek=1" : "";
+    const res = await fetch(`/api/stock-prediction/${encodeURIComponent(code)}${params}`);
     const payload = await res.json();
     if (!payload.ok) {
       throw new Error(payload.error || "无法给出预测");
@@ -590,7 +604,11 @@ async function loadStockPredictionWithMode(mode = "combined") {
     renderStockPrediction(payload, mode);
     setOpsStatus(
       els.stockPredictionStatus,
-      payload.optimization?.enabled === false ? "预测已更新，DeepSeek 未启用。" : "预测和优化建议已更新。",
+      mode === "optimization"
+        ? payload.optimization?.enabled === false
+          ? "预测已更新，DeepSeek 未启用。"
+          : "预测和优化建议已更新。"
+        : "本地预测已更新。",
       "ok"
     );
     setOpsStatus(
@@ -1223,6 +1241,112 @@ function renderSwingTable(rows) {
       rowScore: RecommendationUtils.rowScore,
     }),
   });
+}
+
+function renderValidationDeepseekAttribution(attributionByStrategy) {
+  if (!els.validationDeepseekAttribution) return;
+  const strategies = ["short_term", "tomorrow_picks", "swing_picks"];
+  const cards = strategies.map(strategy => {
+    const item = attributionByStrategy?.[strategy] || {};
+    const counter = item.counterfactual_topn || {};
+    const priorityDelta = item.priority_vs_watch || {};
+    const avoid = item.avoid_veto || {};
+    const sortDelta = Number(counter.avg_return_delta_pct);
+    const winDelta = Number(counter.win_rate_delta_pct);
+    const priorityWinDelta = Number(priorityDelta.win_rate_delta_pct);
+    const notes = Array.isArray(item.notes) ? item.notes.slice(0, 1) : [];
+    return `
+      <div class="deepseek-attribution-card">
+        <div class="deepseek-attribution-head">
+          <strong>${escapeHtml(strategyLabel(strategy))}</strong>
+          <span class="tag ${deepseekAttributionTagClass(item.status)}">${escapeHtml(deepseekAttributionStatusText(item.status))}</span>
+        </div>
+        <div class="deepseek-attribution-stats">
+          <div><span>真实/全部</span><strong>${Number(item.real_sample_count || 0)}/${Number(item.sample_count || 0)}</strong></div>
+          <div><span>覆盖</span><strong>${formatNumber(item.covered_ratio_pct, 1)}%</strong></div>
+          <div><span>alpha</span><strong>${formatNumber(item.blend_alpha_avg, 2)}</strong></div>
+        </div>
+        <div class="deepseek-attribution-lines">
+          <div><span>排序净收益增益</span><strong class="${numberClass(sortDelta)}">${formatSignedPct(sortDelta)}</strong></div>
+          <div><span>排序净胜率增益</span><strong class="${numberClass(winDelta)}">${formatSignedPct(winDelta)}</strong></div>
+          <div><span>priority-watch 净胜率差</span><strong class="${numberClass(priorityWinDelta)}">${formatSignedPct(priorityWinDelta)}</strong></div>
+          <div><span>avoid/veto 平均净收益</span><strong class="${numberClass(avoid.avg_primary_return_net)}">${formatSignedPct(avoid.avg_primary_return_net)}</strong></div>
+        </div>
+        <div class="deepseek-attribution-foot">
+          <span>local top${Number(counter.top_n || 0)} vs DeepSeek top${Number(counter.top_n || 0)}</span>
+          <span>重排 ${Number(item.reordered_sample_count || 0)} 条</span>
+        </div>
+        ${notes.length ? `<div class="deepseek-attribution-warning">${escapeHtml(notes[0])}</div>` : ""}
+      </div>
+    `;
+  }).join("");
+  els.validationDeepseekAttribution.innerHTML = cards || '<div class="empty">暂无 DeepSeek 归因数据</div>';
+}
+
+function renderValidationDeepseekMarketGate(metrics) {
+  if (!els.validationDeepseekMarketGate) return;
+  const sampleCount = Number(metrics?.sample_count || 0);
+  if (!sampleCount) {
+    els.validationDeepseekMarketGate.innerHTML = '<div class="empty">暂无大盘 Gate 验证数据</div>';
+    return;
+  }
+  const recent = Array.isArray(metrics.recent) ? (metrics.recent[0] || {}) : {};
+  const avgReturn = Number(recent.avg_primary_return_net);
+  const hit = recent.hit === true ? "命中" : recent.hit === false ? "偏离" : "待回填";
+  const hitClass = recent.hit === true ? "stable" : recent.hit === false ? "warning" : "muted";
+  els.validationDeepseekMarketGate.innerHTML = `
+    <div class="deepseek-market-gate-card">
+      <div class="deepseek-attribution-head">
+        <strong>大盘 Gate</strong>
+        <span class="tag ${hitClass}">${hit}</span>
+      </div>
+      <div class="deepseek-attribution-stats">
+        <div><span>回填/判断</span><strong>${Number(metrics.outcome_sample_count || 0)}/${sampleCount}</strong></div>
+        <div><span>命中率</span><strong>${formatNumber(metrics.hit_rate, 1)}%</strong></div>
+        <div><span>最近 regime</span><strong>${escapeHtml(marketGateRegimeText(recent.regime))}</strong></div>
+      </div>
+      <div class="deepseek-attribution-lines">
+        <div><span>缩量系数</span><strong>${formatNumber(recent.size_factor, 2)}</strong></div>
+        <div><span>同日平均净收益</span><strong class="${numberClass(avgReturn)}">${formatSignedPct(avgReturn)}</strong></div>
+        <div><span>实际状态</span><strong>${escapeHtml(marketGateRegimeText(recent.actual_regime))}</strong></div>
+      </div>
+    </div>
+  `;
+}
+
+function marketGateRegimeText(regime) {
+  if (regime === "risk_on") return "risk_on";
+  if (regime === "risk_off") return "risk_off";
+  if (regime === "balanced") return "balanced";
+  if (regime === "unknown") return "待回填";
+  return regime || "-";
+}
+
+function deepseekAttributionStatusText(status) {
+  if (status === "ok") return "可评估";
+  if (status === "insufficient_real_samples") return "样本不足";
+  if (status === "no_deepseek_samples") return "无归因样本";
+  if (status === "empty") return "暂无回填";
+  if (status === "missing_strategy") return "缺少策略";
+  return status || "未计算";
+}
+
+function deepseekAttributionTagClass(status) {
+  if (status === "ok") return "stable";
+  if (status === "insufficient_real_samples") return "warning";
+  if (status === "no_deepseek_samples" || status === "empty") return "muted";
+  return "validation";
+}
+
+function formatSignedPct(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "-";
+  const sign = num > 0 ? "+" : "";
+  return `${sign}${formatNumber(num, 2)}%`;
+}
+
+function renderValidationDeepseekReview(review) {
+  state.latestDeepseekReview = review || {};
 }
 
 function renderValidationMetrics(metrics) {

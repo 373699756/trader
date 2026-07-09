@@ -21,6 +21,7 @@ from .deepseek_client import (
     _unique_strings,
     _write_cache,
 )
+from .normalization import coerce_number
 from .strategies.types import storage_strategy_name
 
 
@@ -67,8 +68,10 @@ def review_stock_prediction(
             "role": "system",
             "content": (
                 "你是A股个股交易策略优化助手。请只输出 JSON，不要 Markdown。"
-                "输出字段: summary、stance、bias、timing、reasoning、entry_plan、risk_controls、strategy_adjustments、avoid_conditions。"
+                "输出字段: summary、stance、bias、timing、reasoning、entry_plan、risk_controls、strategy_adjustments、avoid_conditions、"
+                "stop_loss_pct、take_profit_pct、trailing_stop_pct。"
                 "entry_plan、risk_controls、strategy_adjustments、avoid_conditions 都必须是字符串数组。"
+                "stop_loss_pct/take_profit_pct/trailing_stop_pct 是以入场价为基准的百分比数字，无法判断时给 null。"
                 "stance 只能是 buy_trial、watch_only、hold_or_wait、avoid_chase。"
                 "bias 只能是 bullish、neutral、bearish。timing 只能是 now、pullback、breakout_confirm、observe。"
             ),
@@ -152,6 +155,9 @@ def review_stock_prediction(
         "risk_controls": _unique_strings(parsed.get("risk_controls", []))[:4] if isinstance(parsed.get("risk_controls"), list) else [],
         "strategy_adjustments": _unique_strings(parsed.get("strategy_adjustments", []))[:5] if isinstance(parsed.get("strategy_adjustments"), list) else [],
         "avoid_conditions": _unique_strings(parsed.get("avoid_conditions", []))[:4] if isinstance(parsed.get("avoid_conditions"), list) else [],
+        "stop_loss_pct": _coerce_optional_pct(parsed.get("stop_loss_pct")),
+        "take_profit_pct": _coerce_optional_pct(parsed.get("take_profit_pct")),
+        "trailing_stop_pct": _coerce_optional_pct(parsed.get("trailing_stop_pct")),
     }
     if config.get("cache_enabled", True):
         cache = _read_cache(str(config["cache_path"]))
@@ -178,6 +184,15 @@ def review_stock_prediction(
         "usage": usage,
         **normalized,
     }
+
+
+def _coerce_optional_pct(value):
+    if value in (None, "", "null"):
+        return None
+    number = coerce_number(value, float("nan"))
+    if number != number or number < 0:
+        return None
+    return round(number, 4)
 
 
 def _stock_prediction_review_payload(

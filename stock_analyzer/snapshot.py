@@ -52,7 +52,13 @@ def run_snapshot(provider, validation_store, strategy: str, market: str = "all")
                 "saved": {"saved": 0, "replaced": 0},
                 "meta": meta,
             }
-    saved = validation_store.save_signals(strategy, version, meta["generated_at"], rows)
+    saved = validation_store.save_signals(
+        strategy,
+        version,
+        meta["generated_at"],
+        rows,
+        deepseek_shadow_rows=deepseek_meta.get("filtered_rows") or [],
+    )
     return {"ok": True, "strategy": strategy, "saved": saved, "meta": meta}
 
 

@@ -20,6 +20,7 @@ from .deepseek.event_score import (
 )
 from .normalization import coerce_number, normalize_code
 from .strategies.types import storage_strategy_name
+from .deepseek_rules import rule_penalty_for_row
 from . import config
 
 
@@ -133,12 +134,36 @@ def _coerce_env_config() -> Dict[str, object]:
         "validation_retry_count": max(0, _env_int("DEEPSEEK_VALIDATION_RETRY_COUNT", 0)),
         "retry_base_delay": max(0.2, _env_float("DEEPSEEK_RETRY_BASE_DELAY", 0.8)),
         "blend_alpha": max(0.0, min(1.0, _env_float("DEEPSEEK_BLEND_ALPHA", 0.30))),
+        "batch_review_limit": max(5, min(15, _env_int("DEEPSEEK_BATCH_REVIEW_LIMIT", 15))),
+        "cascade_filter_enabled": bool(getattr(config, "DEEPSEEK_CASCADE_FILTER_ENABLED", True)),
+        "cascade_max_review": max(3, min(15, int(getattr(config, "DEEPSEEK_CASCADE_MAX_REVIEW", 8)))),
         "strategies": _coerce_strategies("DEEPSEEK_STRATEGIES"),
         "pro_strategies": _coerce_strategies("DEEPSEEK_PRO_STRATEGIES"),
         "cache_enabled": _env_bool("DEEPSEEK_CACHE_ENABLED", True),
         "cache_path": _resolve_project_path(os.getenv("DEEPSEEK_CACHE_PATH", ".runtime/deepseek_cache.json")),
         "cache_ttl_seconds": max(0, _env_int("DEEPSEEK_CACHE_TTL_SECONDS", 86400)),
     }
+
+
+def _strategy_blend_alpha(strategy_name: str, default: float) -> float:
+    path = str(getattr(config, "WEIGHTS_OVERRIDE_PATH", ".runtime/weights.json") or "")
+    if not path or not os.path.exists(path):
+        return max(0.0, min(1.0, float(default)))
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        alpha_map = payload.get("deepseek_blend_alpha") if isinstance(payload, dict) else {}
+        value = alpha_map.get(strategy_name) if isinstance(alpha_map, dict) else None
+        if value is None:
+            return max(0.0, min(1.0, float(default)))
+        return max(0.0, min(1.0, coerce_number(value, default)))
+    except Exception:
+        return max(0.0, min(1.0, float(default)))
+
+
+def _batch_max_tokens(candidate_count: int, configured_max_tokens: int) -> int:
+    needed = 300 + max(0, int(candidate_count)) * 150
+    return max(900, int(configured_max_tokens), needed)
 
 
 def _safe_parse_json(text: str):
@@ -247,6 +272,209 @@ def _unique_strings(values: List[object]) -> List[str]:
     return result
 
 
+_ANNOUNCEMENT_KEYWORDS = (
+    "业绩预告",
+    "业绩预增",
+    "业绩预亏",
+    "减持",
+    "增持",
+    "解禁",
+    "问询函",
+    "监管函",
+    "质押",
+    "立案",
+    "处罚",
+    "诉讼",
+    "并购",
+    "重组",
+    "中标",
+    "订单",
+)
+
+
+def _news_context_enabled() -> bool:
+    return bool(getattr(config, "ENABLE_DEEPSEEK_NEWS_CONTEXT", False))
+
+
+def _attach_news_context(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    if not rows or not _news_context_enabled():
+        return rows
+    try:
+        from .providers import MarketDataProvider
+        from .sentiment import score_news_items
+
+        provider = MarketDataProvider()
+        cache = _read_news_cache()
+        limit = max(1, int(getattr(config, "DEEPSEEK_NEWS_CONTEXT_LIMIT", 6)))
+        enriched: List[Dict[str, object]] = []
+        cache, changed = _prune_news_cache(cache)
+        for row in rows:
+            item = dict(row)
+            code = normalize_code(item.get("code"))
+            if not code:
+                enriched.append(item)
+                continue
+            cached = _cached_news_context(cache.get(code), limit)
+            if cached is None:
+                try:
+                    news_items = provider.get_stock_news(code, name=str(item.get("name") or ""), limit=limit)
+                except Exception as exc:
+                    news_items = []
+                    item["news_context_status"] = "error"
+                    item["news_context_error"] = str(exc)[:120]
+                scored = score_news_items(news_items)
+                cached = {
+                    "fetched_at": time.time(),
+                    "recent_news": _compact_news_items(scored.get("items") or news_items, limit),
+                    "news_sentiment": _compact_news_sentiment(scored),
+                }
+                cache[code] = cached
+                changed = True
+            item["recent_news"] = cached.get("recent_news", [])
+            item["news_sentiment"] = cached.get("news_sentiment", {})
+            item["announcement_flags"] = _announcement_flags(item, item.get("recent_news") or [], item.get("news_sentiment") or {})
+            item["news_context_status"] = item.get("news_context_status") or "ok"
+            enriched.append(item)
+        if changed:
+            _write_news_cache(cache)
+        return enriched
+    except Exception:
+        return rows
+
+
+def _cached_news_context(entry: object, limit: int):
+    if not isinstance(entry, dict):
+        return None
+    fetched_at = coerce_number(entry.get("fetched_at"), 0.0)
+    max_age = max(0, int(getattr(config, "NEWS_CACHE_HOURS", 6))) * 3600
+    if max_age > 0 and (time.time() - fetched_at) > max_age:
+        return None
+    return {
+        "fetched_at": fetched_at,
+        "recent_news": list(entry.get("recent_news") or [])[:limit],
+        "news_sentiment": dict(entry.get("news_sentiment") or {}),
+    }
+
+
+def _prune_news_cache(cache: Dict[str, object]) -> Tuple[Dict[str, object], bool]:
+    if not isinstance(cache, dict) or not cache:
+        return {}, False
+    now = time.time()
+    max_age = max(0, int(getattr(config, "NEWS_CACHE_HOURS", 6))) * 3600
+    max_entries = max(0, int(getattr(config, "DEEPSEEK_NEWS_CACHE_MAX_ENTRIES", 1000)))
+    items = []
+    changed = False
+    for code, entry in cache.items():
+        if not isinstance(entry, dict):
+            changed = True
+            continue
+        fetched_at = coerce_number(entry.get("fetched_at"), 0.0)
+        if max_age > 0 and fetched_at > 0 and now - fetched_at > max_age:
+            changed = True
+            continue
+        items.append((str(code), entry, fetched_at))
+    if max_entries > 0 and len(items) > max_entries:
+        items.sort(key=lambda item: item[2], reverse=True)
+        items = items[:max_entries]
+        changed = True
+    return {code: entry for code, entry, _ in items}, changed
+
+
+def _compact_news_items(items: List[Dict[str, object]], limit: int) -> List[Dict[str, object]]:
+    compact = []
+    for item in items[:limit]:
+        title = str(item.get("title") or item.get("content") or "").strip()
+        if not title:
+            continue
+        compact.append(
+            {
+                "title": title[:60],
+                "source": str(item.get("source") or "")[:20],
+                "publish_time": str(item.get("publish_time") or item.get("time") or "")[:32],
+                "trigger_words": list(item.get("trigger_words") or [])[:6],
+            }
+        )
+    return compact
+
+
+def _compact_news_sentiment(scored: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "score": coerce_number(scored.get("score"), 50.0),
+        "summary": str(scored.get("summary") or "")[:120],
+        "trigger_words": list(scored.get("trigger_words") or [])[:8],
+        "risk_words": list(scored.get("risk_words") or [])[:8],
+    }
+
+
+def _announcement_flags(row: Dict[str, object], news_items: List[Dict[str, object]], sentiment: Dict[str, object]) -> List[str]:
+    flags: List[object] = []
+    raw_event_flags = row.get("event_risk_flags") or []
+    if isinstance(raw_event_flags, list):
+        for flag in raw_event_flags:
+            if isinstance(flag, dict):
+                flags.append(flag.get("label"))
+            else:
+                flags.append(flag)
+    flags.extend(sentiment.get("risk_words") or [])
+    for news in news_items or []:
+        title = str(news.get("title") or "")
+        for keyword in _ANNOUNCEMENT_KEYWORDS:
+            if keyword in title:
+                flags.append(keyword)
+    return _unique_strings(flags)[:10]
+
+
+def _read_news_cache() -> Dict[str, object]:
+    path = str(getattr(config, "DEEPSEEK_NEWS_CACHE_PATH", ".runtime/deepseek_news_context.json") or "")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_news_cache(cache: Dict[str, object]) -> None:
+    path = str(getattr(config, "DEEPSEEK_NEWS_CACHE_PATH", ".runtime/deepseek_news_context.json") or "")
+    if not path:
+        return
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(cache, handle, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp_path, path)
+    except Exception:
+        return
+
+
+def _merge_review_context(rows: List[Dict[str, object]], pool: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    if not rows or not pool:
+        return rows
+    context_by_code = {}
+    for item in pool:
+        code = normalize_code(item.get("code"))
+        if not code:
+            continue
+        context_by_code[code] = {
+            key: item.get(key)
+            for key in ("recent_news", "announcement_flags", "news_sentiment", "news_context_status", "news_context_error")
+            if key in item
+        }
+    if not context_by_code:
+        return rows
+    merged = []
+    for row in rows:
+        item = dict(row)
+        context = context_by_code.get(normalize_code(item.get("code")))
+        if context:
+            item.update(context)
+        merged.append(item)
+    return merged
+
+
 _NEXT_DAY_LOSS_FACTORS = (
     "今日涨幅过大或接近涨停但未形成稳定承接",
     "高位放量、量比过热、换手过热，可能是资金分歧或兑现",
@@ -269,48 +497,140 @@ _NEXT_DAY_PROFIT_FACTORS = (
 )
 
 
+def _payload_number(value, default: float = 0.0, digits: int = 1):
+    number = coerce_number(value, default)
+    if abs(number) >= 1000000:
+        return int(round(number))
+    if digits <= 0:
+        return int(round(number))
+    return round(number, digits)
+
+
+def _payload_strings(values, limit: int = 4) -> List[str]:
+    result = []
+    for value in values or []:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text[:40])
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _payload_news(items) -> List[Dict[str, object]]:
+    compact = []
+    for item in (items or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("content") or "").strip()[:60]
+        if not title:
+            continue
+        compact.append(
+            {
+                "title": title,
+                "source": str(item.get("source") or "")[:20],
+                "time": str(item.get("publish_time") or item.get("time") or "")[:16],
+            }
+        )
+    return compact
+
+
+def _payload_news_sentiment(payload) -> Dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "score": _payload_number(payload.get("score"), 50.0, 0),
+        "risk_words": _payload_strings(payload.get("risk_words"), 4),
+        "trigger_words": _payload_strings(payload.get("trigger_words"), 4),
+    }
+
+
 def _request_payload(strategy_name: str, candidates: List[Dict[str, object]], market_filter: str) -> List[Dict[str, object]]:
     return [
         {
             "code": row.get("code", ""),
             "name": row.get("name", ""),
-            "score": coerce_number(row.get("score"), 0.0),
-            "base_score": coerce_number(row.get("base_score"), 0.0),
-            "raw_score": coerce_number(row.get("raw_score"), 0.0),
-            "pct_chg": coerce_number(row.get("pct_chg"), 0.0),
-            "speed": coerce_number(row.get("speed"), 0.0),
-            "five_min_pct": coerce_number(row.get("five_min_pct"), 0.0),
-            "volume_ratio": coerce_number(row.get("volume_ratio"), 0.0),
-            "turnover_rate": coerce_number(row.get("turnover_rate"), 0.0),
-            "turnover": coerce_number(row.get("turnover"), 0.0),
-            "amplitude": coerce_number(row.get("amplitude"), 0.0),
-            "sixty_day_pct": coerce_number(row.get("sixty_day_pct"), 0.0),
-            "ytd_pct": coerce_number(row.get("ytd_pct"), 0.0),
-            "ret_5d": coerce_number(row.get("ret_5d"), 0.0),
-            "ret_10d": coerce_number(row.get("ret_10d"), 0.0),
-            "ret_20d": coerce_number(row.get("ret_20d"), 0.0),
-            "ma20_gap": coerce_number(row.get("ma20_gap"), 0.0),
-            "vol_amount_5d": coerce_number(row.get("vol_amount_5d"), 0.0),
+            "score": _payload_number(row.get("score"), 0.0, 0),
+            "pct_chg": _payload_number(row.get("pct_chg"), 0.0, 1),
+            "speed": _payload_number(row.get("speed"), 0.0, 1),
+            "volume_ratio": _payload_number(row.get("volume_ratio"), 0.0, 1),
+            "turnover_rate": _payload_number(row.get("turnover_rate"), 0.0, 1),
+            "turnover": _payload_number(row.get("turnover"), 0.0, 0),
+            "amplitude": _payload_number(row.get("amplitude"), 0.0, 1),
+            "sixty_day_pct": _payload_number(row.get("sixty_day_pct"), 0.0, 1),
+            "ret_5d": _payload_number(row.get("ret_5d"), 0.0, 1),
+            "ret_10d": _payload_number(row.get("ret_10d"), 0.0, 1),
+            "ret_20d": _payload_number(row.get("ret_20d"), 0.0, 1),
+            "ma20_gap": _payload_number(row.get("ma20_gap"), 0.0, 1),
+            "vol_amount_5d": _payload_number(row.get("vol_amount_5d"), 0.0, 1),
             "breakout_20d": bool(row.get("breakout_20d")),
-            "volatility_20d": coerce_number(row.get("volatility_20d"), 0.0),
-            "liquidity_score": coerce_number(row.get("liquidity_score"), 0.0),
-            "momentum_score": coerce_number(row.get("momentum_score"), 0.0),
-            "trend_score": coerce_number(row.get("trend_score"), 0.0),
-            "historical_edge_score": coerce_number(row.get("historical_edge_score"), 0.0),
-            "execution_score": coerce_number(row.get("execution_score"), 0.0),
-            "tail_setup_score": coerce_number(row.get("tail_setup_score"), 0.0),
-            "risk_penalty": coerce_number(row.get("risk_penalty"), 0.0),
+            "volatility_20d": _payload_number(row.get("volatility_20d"), 0.0, 1),
+            "liquidity_score": _payload_number(row.get("liquidity_score"), 0.0, 0),
+            "momentum_score": _payload_number(row.get("momentum_score"), 0.0, 0),
+            "trend_score": _payload_number(row.get("trend_score"), 0.0, 0),
+            "historical_edge_score": _payload_number(row.get("historical_edge_score"), 0.0, 0),
+            "execution_score": _payload_number(row.get("execution_score"), 0.0, 0),
+            "tail_setup_score": _payload_number(row.get("tail_setup_score"), 0.0, 0),
+            "risk_penalty": _payload_number(row.get("risk_penalty"), 0.0, 0),
             "risk_penalty_parts": row.get("risk_penalty_parts", {}),
-            "overheat_damp": coerce_number(row.get("overheat_damp"), 1.0),
-            "failure_reasons": row.get("failure_reasons", []),
+            "overheat_damp": _payload_number(row.get("overheat_damp"), 1.0, 2),
+            "failure_reasons": _payload_strings(row.get("failure_reasons"), 3),
             "market": str(row.get("market", "")),
-            "market_label": str(row.get("market_label", "")),
-            "industry": str(row.get("industry", "")),
             "theme": str(row.get("theme", "")),
-            "reasons": row.get("reasons", []),
+            "reasons": _payload_strings(row.get("reasons"), 4),
+            "recent_news": _payload_news(row.get("recent_news")),
+            "announcement_flags": _payload_strings(row.get("announcement_flags"), 5),
+            "news_sentiment": _payload_news_sentiment(row.get("news_sentiment")),
         }
         for row in candidates
     ]
+
+
+def _row_has_llm_edge_context(row: Dict[str, object]) -> bool:
+    if row.get("recent_news") or row.get("announcement_flags"):
+        return True
+    news_sentiment = row.get("news_sentiment") if isinstance(row.get("news_sentiment"), dict) else {}
+    if news_sentiment.get("risk_words") or news_sentiment.get("trigger_words"):
+        return True
+    if coerce_number(news_sentiment.get("score"), 50.0) <= 45 or coerce_number(news_sentiment.get("score"), 50.0) >= 62:
+        return True
+    event_risk = row.get("event_risk") if isinstance(row.get("event_risk"), dict) else {}
+    blacklist_risk = row.get("blacklist_risk") if isinstance(row.get("blacklist_risk"), dict) else {}
+    if event_risk.get("flags") or blacklist_risk.get("flags"):
+        return True
+    if row.get("event_risk_flags") or row.get("risk_words"):
+        return True
+    return False
+
+
+def _row_is_llm_ambiguous(row: Dict[str, object]) -> bool:
+    score = coerce_number(row.get("score"), 0.0)
+    risk_penalty = coerce_number(row.get("risk_penalty"), 0.0)
+    overheat_damp = coerce_number(row.get("overheat_damp"), 1.0)
+    if score < 45:
+        return False
+    if 55 <= score <= 88:
+        return True
+    if risk_penalty >= 8 or overheat_damp < 0.88:
+        return score <= 94
+    return False
+
+
+def _select_batch_review_pool(rows: List[Dict[str, object]], batch_limit: int, config: Dict[str, object]) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    rows = [dict(row) for row in rows[: min(batch_limit, len(rows))] if isinstance(row, dict)]
+    if not rows or not config.get("cascade_filter_enabled", True):
+        return rows, {"enabled": False, "input_count": len(rows), "selected_count": len(rows)}
+    max_review = min(len(rows), int(config.get("cascade_max_review") or 8), int(batch_limit))
+    selected = [row for row in rows if _row_has_llm_edge_context(row) and _row_is_llm_ambiguous(row)]
+    selected = selected[:max_review]
+    skipped = max(0, len(rows) - len(selected))
+    return selected, {
+        "enabled": True,
+        "input_count": len(rows),
+        "selected_count": len(selected),
+        "skipped_local_confident": skipped,
+        "max_review": max_review,
+    }
 
 
 def _next_day_factor_review(row: Dict[str, object]) -> Dict[str, object]:
@@ -486,7 +806,8 @@ def _build_messages(strategy_name: str, candidates: List[Dict[str, object]], mar
                 "horizon_up_score 表示策略主周期内上涨/跑赢倾向；如果看起来强但容易回落，请提高 penalty 或 action=avoid。\n"
                 "短周期亏钱因素必须逐项考虑: {loss_factors}\n"
                 "短周期赚钱因素必须逐项考虑: {profit_factors}\n"
-                "主题类策略必须判断 theme_truth_score，事件/公告/财报风险较高时提高 event_risk_score 和 penalty。\n"
+                "主题类策略必须判断 theme_truth_score；如果 recent_news 没有具体标题依据，必须视为题材待证实并降低 theme_truth_score。\n"
+                "announcement_flags/news_sentiment 是真实新闻与事件输入，减持、解禁、质押、问询函、监管函等风险命中时提高 event_risk_score 和 penalty。\n"
                 "如果亏钱因素明显多于赚钱因素，必须 action=avoid 或提高 penalty；如果赚钱因素多但存在追高风险，action=watch。\n"
                 "输出 JSON 示例: {{\"results\":[{{\"code\":\"600519\",\"llm_score\":87.4,\"horizon_up_score\":74,\"action\":\"watch\","
                 "\"veto\":false,\"penalty\":8,\"reason\":\"...\",\"risk_flags\":[\"涨幅透支\"],\"event_type\":\"业绩\","
@@ -499,7 +820,12 @@ def _build_messages(strategy_name: str, candidates: List[Dict[str, object]], mar
                     market=market_filter,
                     loss_factors="；".join(_NEXT_DAY_LOSS_FACTORS),
                     profit_factors="；".join(_NEXT_DAY_PROFIT_FACTORS),
-                    pool=json.dumps(_request_payload(strategy_name, candidates, market_filter), ensure_ascii=False),
+                    pool=json.dumps(
+                        _request_payload(strategy_name, candidates, market_filter),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
                 )
             ),
         },
@@ -608,13 +934,37 @@ def _merge_ranking_rows(
                 "event_risk_score": round(_clamp(coerce_number(item.get("event_risk_score"), 50.0), 0.0, 100.0), 2),
             }
 
+    local_order = sorted(
+        enumerate(rows),
+        key=lambda pair: (
+            -coerce_number(pair[1].get("score"), 0.0),
+            int(coerce_number(pair[1].get("rank"), pair[0] + 1) or pair[0] + 1),
+            pair[0],
+        ),
+    )
+    local_rank_by_index = {original_index: rank for rank, (original_index, _) in enumerate(local_order, start=1)}
+
     merged: List[Dict[str, object]] = []
-    for row in rows:
+    for local_index, row in enumerate(rows, start=1):
         next_row = dict(row)
         factor_review = _next_day_factor_review(next_row)
         code = normalize_code(str(next_row.get("code", "")).strip())
         base_score = coerce_number(next_row.get("score"), 0.0)
+        if next_row.get("deepseek_rule_penalty") is not None and next_row.get("deepseek_rules_matched") is not None:
+            rule_penalty = 0.0
+            matched_rules = list(next_row.get("deepseek_rules_matched") or [])
+        else:
+            rule_penalty, matched_rules = rule_penalty_for_row(strategy_name, next_row)
         llm_item = llm_by_code.get(code)
+        # P0 归因：记录 rerank 前的本地名次与本次混合参数，随 raw_json 落库，
+        # 供 strategy_validation.deepseek_attribution 做反事实排序增益与 alpha 自适应。
+        local_rank = local_rank_by_index.get(local_index - 1, local_index)
+        next_row["local_rank"] = local_rank
+        next_row["deepseek_covered"] = bool(llm_item)
+        next_row["deepseek_blend_alpha"] = round(float(blend_alpha), 4)
+        next_row["blend_alpha"] = round(float(blend_alpha), 4)
+        next_row["deepseek_rule_penalty"] = coerce_number(next_row.get("deepseek_rule_penalty"), 0.0) + rule_penalty
+        next_row["deepseek_rules_matched"] = matched_rules
         if llm_item:
             llm_score = coerce_number(llm_item.get("llm_score"), base_score)
             up_score = coerce_number(llm_item.get("tomorrow_up_score"), llm_score)
@@ -633,7 +983,7 @@ def _merge_ranking_rows(
                 0.0,
                 45.0,
             )
-            combined = round((1.0 - blend_alpha) * base_score + blend_alpha * up_score - penalty, 2)
+            combined = round((1.0 - blend_alpha) * base_score + blend_alpha * up_score - penalty - rule_penalty, 2)
             if llm_item.get("veto") or factor_review.get("veto"):
                 combined -= 50.0
             next_row["deepseek_score"] = llm_score
@@ -683,7 +1033,10 @@ def _merge_ranking_rows(
             next_row["deepseek_catalyst_strength"] = None
             next_row["deepseek_time_sensitivity"] = "长期"
             next_row["deepseek_already_priced_in"] = False
-            next_row["deepseek_rank_score"] = round(base_score - coerce_number(factor_review.get("penalty"), 0.0), 2)
+            next_row["deepseek_rank_score"] = round(
+                base_score - coerce_number(factor_review.get("penalty"), 0.0) - rule_penalty,
+                2,
+            )
         merged.append(next_row)
 
     gated = []
@@ -705,6 +1058,7 @@ def _merge_ranking_rows(
         "total": len(rows),
         "filtered": len(filtered),
         "filtered_codes": [row.get("code") for row in filtered[:8]],
+        "filtered_rows": _compact_filtered_rows(filtered),
         "filter_reasons": _filter_reason_counts(filtered),
     }
 
@@ -732,6 +1086,62 @@ def _filter_reason_counts(rows: List[Dict[str, object]]) -> Dict[str, int]:
     return counts
 
 
+def _compact_filtered_rows(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    keys = (
+        "rank",
+        "local_rank",
+        "code",
+        "name",
+        "market",
+        "market_label",
+        "theme",
+        "price",
+        "pct_chg",
+        "turnover",
+        "volume_ratio",
+        "turnover_rate",
+        "sixty_day_pct",
+        "ytd_pct",
+        "score",
+        "reasons",
+        "tier",
+        "deepseek_covered",
+        "deepseek_blend_alpha",
+        "blend_alpha",
+        "deepseek_score",
+        "deepseek_horizon_score",
+        "tomorrow_up_score",
+        "deepseek_action",
+        "deepseek_veto",
+        "deepseek_penalty",
+        "deepseek_rule_penalty",
+        "deepseek_rules_matched",
+        "deepseek_rank_score",
+        "deepseek_reason",
+        "deepseek_filter_reason",
+        "deepseek_risk_flags",
+        "deepseek_profit_flags",
+        "deepseek_catalyst_score",
+        "deepseek_theme_truth_score",
+        "deepseek_event_risk_score",
+        "deepseek_event_score",
+        "deepseek_event_bonus",
+        "deepseek_event_penalty",
+        "deepseek_event_type",
+        "deepseek_sentiment",
+        "deepseek_catalyst_strength",
+        "deepseek_time_sensitivity",
+        "deepseek_already_priced_in",
+        "rerank_source",
+    )
+    result = []
+    for row in rows:
+        item = {key: row.get(key) for key in keys if key in row}
+        item["deepseek_shadow_signal"] = True
+        result.append(item)
+    return result
+
+
 def rerank_candidates(
     rows: List[Dict[str, object]],
     strategy_name: str,
@@ -756,16 +1166,19 @@ def rerank_candidates(
     pool = [dict(row) for row in rows[:review_limit] if isinstance(row, dict)]
     if not pool:
         return rows, {"enabled": True, "status": "no_valid_pool", "requested": total}
+    pool = _attach_news_context(pool)
+    rows = _merge_review_context(rows, pool)
 
     use_pro = str(strategy_name) in config["pro_strategies"]
     selected_model = str(config["pro_model"] if use_pro else config["model"])
     model_tier = "pro" if use_pro else "base"
+    blend_alpha = _strategy_blend_alpha(strategy_name, float(config["blend_alpha"]))
     cache_key = _cache_key(
         strategy_name,
         market_filter,
         selected_model,
         pool,
-        float(config["blend_alpha"]),
+        blend_alpha,
     )
     if config.get("cache_enabled", True):
         cache = _read_cache(str(config["cache_path"]))
@@ -773,7 +1186,7 @@ def rerank_candidates(
         if _cache_entry_valid(entry, int(config["cache_ttl_seconds"])):
             results = _extract_results(entry.get("parsed") if isinstance(entry, dict) else {})
             if results:
-                merged_rows, coverage = _merge_ranking_rows(rows, results, float(config["blend_alpha"]), strategy_name)
+                merged_rows, coverage = _merge_ranking_rows(rows, results, blend_alpha, strategy_name)
                 return merged_rows, {
                     "enabled": True,
                     "status": "cache_hit",
@@ -783,11 +1196,13 @@ def rerank_candidates(
                     "covered": coverage.get("covered", 0),
                     "filtered": coverage.get("filtered", 0),
                     "filtered_codes": coverage.get("filtered_codes", []),
+                    "filtered_rows": coverage.get("filtered_rows", []),
                     "filter_reasons": coverage.get("filter_reasons", {}),
                     "source": "deepseek_cache",
                     "model": selected_model,
                     "model_tier": model_tier,
                     "base_model": config["model"],
+                    "blend_alpha": blend_alpha,
                     "cache_key": cache_key[:12],
                     "cached_at": entry.get("cached_at"),
                     "usage": entry.get("usage", {}),
@@ -854,7 +1269,7 @@ def rerank_candidates(
         }
 
     results = _extract_results(parsed)
-    merged_rows, coverage = _merge_ranking_rows(rows, results, float(config["blend_alpha"]), strategy_name)
+    merged_rows, coverage = _merge_ranking_rows(rows, results, blend_alpha, strategy_name)
     if config.get("cache_enabled", True):
         cache = _read_cache(str(config["cache_path"]))
         cache[cache_key] = {
@@ -878,17 +1293,496 @@ def rerank_candidates(
         "covered": coverage.get("covered", 0),
         "filtered": coverage.get("filtered", 0),
         "filtered_codes": coverage.get("filtered_codes", []),
+        "filtered_rows": coverage.get("filtered_rows", []),
         "filter_reasons": coverage.get("filter_reasons", {}),
         "source": "deepseek_chat",
         "model": payload["model"],
         "model_tier": model_tier,
         "base_model": config["model"],
+        "blend_alpha": blend_alpha,
         "cache_key": cache_key[:12],
         "attempts": attempt,
         "usage": usage,
         "cost_hint": usage,
     }
     return merged_rows, meta
+
+
+def rerank_candidates_batch(
+    rows_by_strategy: Dict[str, List[Dict[str, object]]],
+    market_filter: str = "all",
+) -> Tuple[Dict[str, List[Dict[str, object]]], Dict[str, Dict[str, object]]]:
+    config = _coerce_env_config()
+    normalized_rows = {
+        storage_strategy_name(strategy): list(rows or [])
+        for strategy, rows in (rows_by_strategy or {}).items()
+    }
+    result_rows = {strategy: list(rows or []) for strategy, rows in normalized_rows.items()}
+    meta_by_strategy: Dict[str, Dict[str, object]] = {}
+
+    if not config.get("enabled", False):
+        return result_rows, {
+            strategy: {"enabled": False, "status": "disabled", "strategy": strategy}
+            for strategy in result_rows
+        }
+    if config["api_key"] == "":
+        return result_rows, {
+            strategy: {"enabled": False, "status": "missing_api_key", "strategy": strategy}
+            for strategy in result_rows
+        }
+
+    active_payloads = []
+    active_rows: Dict[str, List[Dict[str, object]]] = {}
+    active_alphas: Dict[str, float] = {}
+    active_cascade: Dict[str, Dict[str, object]] = {}
+    batch_limit = min(int(config["review_limit"]), int(config.get("batch_review_limit") or 15))
+    for strategy_name, rows in normalized_rows.items():
+        total = len(rows)
+        if strategy_name not in _SUPPORTED_STRATEGIES:
+            meta_by_strategy[strategy_name] = {"enabled": False, "status": "strategy_not_supported", "strategy": strategy_name}
+            continue
+        if config["strategies"] and strategy_name not in config["strategies"]:
+            meta_by_strategy[strategy_name] = {"enabled": False, "status": "strategy_not_enabled", "strategy": strategy_name}
+            continue
+        if total < 3:
+            meta_by_strategy[strategy_name] = {
+                "enabled": True,
+                "status": "insufficient_rows",
+                "strategy": strategy_name,
+                "requested": total,
+            }
+            continue
+        blend_alpha = _strategy_blend_alpha(strategy_name, float(config["blend_alpha"]))
+        if blend_alpha <= 0:
+            meta_by_strategy[strategy_name] = {
+                "enabled": True,
+                "status": "alpha_zero_skipped",
+                "strategy": strategy_name,
+                "requested": total,
+                "review_limit": 0,
+                "blend_alpha": 0.0,
+                "reason": "OOS归因判定 DeepSeek 无增益，跳过批量 payload 以节省输入 token。",
+            }
+            continue
+        scan_pool = [dict(row) for row in rows[: min(batch_limit, total)] if isinstance(row, dict)]
+        if not scan_pool:
+            meta_by_strategy[strategy_name] = {
+                "enabled": True,
+                "status": "no_valid_pool",
+                "strategy": strategy_name,
+                "requested": total,
+            }
+            continue
+        scan_pool = _attach_news_context(scan_pool)
+        pool, cascade_meta = _select_batch_review_pool(scan_pool, batch_limit, config)
+        if not pool:
+            meta_by_strategy[strategy_name] = {
+                "enabled": True,
+                "status": "local_confident_skipped",
+                "strategy": strategy_name,
+                "requested": total,
+                "review_limit": 0,
+                "blend_alpha": blend_alpha,
+                "cascade_filter": cascade_meta,
+                "reason": "候选缺少事件/新闻模糊点，本地高置信直接放行，未发送 DeepSeek。",
+            }
+            continue
+        result_rows[strategy_name] = _merge_review_context(rows, pool)
+        active_rows[strategy_name] = result_rows[strategy_name]
+        active_alphas[strategy_name] = blend_alpha
+        active_cascade[strategy_name] = cascade_meta
+        candidates_payload = _request_payload(strategy_name, pool, market_filter)
+        active_payloads.append(
+            {
+                "strategy": strategy_name,
+                "horizon": _strategy_context(strategy_name)["horizon"],
+                "focus": _strategy_context(strategy_name)["focus"],
+                "review_limit": len(pool),
+                "cascade_filter": cascade_meta,
+                "candidates": candidates_payload,
+            }
+        )
+
+    if not active_payloads:
+        return result_rows, meta_by_strategy
+
+    selected_model = str(config["model"])
+    model_tier = "base"
+    request_input = {
+        "schema": _CACHE_SCHEMA_VERSION,
+        "kind": "batch_rerank",
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "market": market_filter,
+        "model": selected_model,
+        "strategies": active_payloads,
+        "blend_alpha": active_alphas,
+    }
+    cache_key = _batch_cache_key(request_input)
+    if config.get("cache_enabled", True):
+        cache = _read_cache(str(config["cache_path"]))
+        entry = cache.get(cache_key)
+        if _cache_entry_valid(entry, int(config["cache_ttl_seconds"])):
+            parsed = entry.get("parsed") if isinstance(entry, dict) else {}
+            results_by_strategy = _extract_batch_results(parsed, active_rows.keys())
+            if results_by_strategy:
+                for strategy_name, rows in active_rows.items():
+                    results = results_by_strategy.get(strategy_name)
+                    if results is None:
+                        meta_by_strategy[strategy_name] = {
+                            "enabled": True,
+                            "status": "no_strategy_result",
+                            "strategy": strategy_name,
+                            "source": "deepseek_cache",
+                        }
+                        continue
+                    merged, coverage = _merge_ranking_rows(rows, results, active_alphas[strategy_name], strategy_name)
+                    result_rows[strategy_name] = merged
+                    meta_by_strategy[strategy_name] = _rerank_meta_from_coverage(
+                        strategy_name,
+                        len(rows),
+                        min(batch_limit, len(rows)),
+                        coverage,
+                        source="deepseek_batch_cache",
+                        model=selected_model,
+                        model_tier=model_tier,
+                        blend_alpha=active_alphas[strategy_name],
+                        cache_key=cache_key[:12],
+                        cached_at=entry.get("cached_at"),
+                        usage=entry.get("usage", {}),
+                        cascade_filter=active_cascade.get(strategy_name),
+                    )
+                return result_rows, meta_by_strategy
+
+    total_review_candidates = sum(int(payload.get("review_limit") or 0) for payload in active_payloads)
+    messages = _build_batch_messages(request_input)
+    payload = {
+        "model": selected_model,
+        "messages": messages,
+        "temperature": 0.12,
+        "max_tokens": _batch_max_tokens(total_review_candidates, int(config["max_tokens"])),
+        "response_format": {"type": "json_object"},
+    }
+    url = _deepseek_chat_url(config["base_url"])
+    headers = {
+        "Authorization": f"Bearer {config['api_key']}",
+        "Content-Type": "application/json",
+    }
+    parsed = None
+    usage = {}
+    last_error = ""
+    attempt = 0
+    while attempt <= int(config["retry_count"]):
+        attempt += 1
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=float(config["timeout_seconds"]))
+            if response.status_code in (429, 500, 502, 503, 504) and attempt <= int(config["retry_count"]):
+                last_error = "可重试响应码: {}".format(response.status_code)
+                time.sleep((2**(attempt - 1)) * float(config["retry_base_delay"]))
+                continue
+            response.raise_for_status()
+            raw = response.json()
+            usage = raw.get("usage", {}) if isinstance(raw, dict) else {}
+            content = ((raw.get("choices") or [{}])[0].get("message", {}) or {}).get("content", "")
+            parsed = _safe_parse_json(str(content))
+            if parsed is not None:
+                break
+            last_error = "响应无法解析 JSON"
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt <= int(config["retry_count"]):
+                time.sleep((2**(attempt - 1)) * float(config["retry_base_delay"]))
+            else:
+                break
+
+    if parsed is None:
+        for strategy_name, rows in active_rows.items():
+            meta_by_strategy[strategy_name] = {
+                "enabled": True,
+                "status": "fallback",
+                "strategy": strategy_name,
+                "source": "deepseek_batch",
+                "error": last_error,
+                "requested": len(rows),
+                "review_limit": min(batch_limit, len(rows)),
+            }
+        return result_rows, meta_by_strategy
+
+    if config.get("cache_enabled", True):
+        cache = _read_cache(str(config["cache_path"]))
+        cache[cache_key] = {
+            "schema": _CACHE_SCHEMA_VERSION,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "cached_at": time.time(),
+            "kind": "batch_rerank",
+            "market": market_filter,
+            "model": selected_model,
+            "model_tier": model_tier,
+            "parsed": parsed,
+            "usage": usage,
+        }
+        _write_cache(str(config["cache_path"]), cache)
+
+    results_by_strategy = _extract_batch_results(parsed, active_rows.keys())
+    for strategy_name, rows in active_rows.items():
+        results = results_by_strategy.get(strategy_name)
+        if results is None:
+            meta_by_strategy[strategy_name] = {
+                "enabled": True,
+                "status": "no_strategy_result",
+                "strategy": strategy_name,
+                "source": "deepseek_batch",
+                "requested": len(rows),
+                "review_limit": min(batch_limit, len(rows)),
+            }
+            continue
+        merged, coverage = _merge_ranking_rows(rows, results, active_alphas[strategy_name], strategy_name)
+        result_rows[strategy_name] = merged
+        meta_by_strategy[strategy_name] = _rerank_meta_from_coverage(
+            strategy_name,
+            len(rows),
+            min(batch_limit, len(rows)),
+            coverage,
+            source="deepseek_batch",
+            model=selected_model,
+            model_tier=model_tier,
+            blend_alpha=active_alphas[strategy_name],
+            cache_key=cache_key[:12],
+            usage=usage,
+            attempts=attempt,
+            cascade_filter=active_cascade.get(strategy_name),
+        )
+    return result_rows, meta_by_strategy
+
+
+def _rerank_meta_from_coverage(
+    strategy_name: str,
+    total: int,
+    review_limit: int,
+    coverage: Dict[str, object],
+    *,
+    source: str,
+    model: str,
+    model_tier: str,
+    blend_alpha: float,
+    cache_key: str,
+    cached_at=None,
+    usage=None,
+    attempts=None,
+    cascade_filter=None,
+) -> Dict[str, object]:
+    meta = {
+        "enabled": True,
+        "status": "cache_hit" if "cache" in source else "ok",
+        "strategy": strategy_name,
+        "requested": total,
+        "review_limit": review_limit,
+        "covered": coverage.get("covered", 0),
+        "filtered": coverage.get("filtered", 0),
+        "filtered_codes": coverage.get("filtered_codes", []),
+        "filtered_rows": coverage.get("filtered_rows", []),
+        "filter_reasons": coverage.get("filter_reasons", {}),
+        "source": source,
+        "model": model,
+        "model_tier": model_tier,
+        "base_model": model,
+        "blend_alpha": blend_alpha,
+        "cache_key": cache_key,
+        "usage": usage or {},
+        "cost_hint": {"cached": True} if "cache" in source else (usage or {}),
+    }
+    if cached_at is not None:
+        meta["cached_at"] = cached_at
+    if attempts is not None:
+        meta["attempts"] = attempts
+    if cascade_filter is not None:
+        meta["cascade_filter"] = cascade_filter
+    return meta
+
+
+def _batch_cache_key(request_input: Dict[str, object]) -> str:
+    raw = json.dumps(request_input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _build_batch_messages(request_input: Dict[str, object]) -> List[Dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是A股短线多策略复核器。请只输出 JSON，不要 Markdown。"
+                "一次处理多个策略，必须按策略分别返回 results。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "请对输入中的每个策略候选池做复核。输出格式必须是 "
+                "{\"strategies\":{\"short_term\":{\"results\":[...]},\"tomorrow_picks\":{\"results\":[...]},\"swing_picks\":{\"results\":[...]}}}。"
+                "每个 result 字段同单策略复核: code、llm_score、horizon_up_score、action、veto、penalty、reason、risk_flags、"
+                "event_type、sentiment、catalyst_strength、time_sensitivity、already_priced_in、catalyst_score、theme_truth_score、event_risk_score。"
+                "只评价输入候选，不新增股票；优先识别追高、流动性、事件风险和催化剂真实性。"
+                "输入: "
+                + json.dumps(request_input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            ),
+        },
+    ]
+
+
+def _extract_batch_results(parsed: object, strategies) -> Dict[str, List[Dict[str, object]]]:
+    strategy_set = {storage_strategy_name(strategy) for strategy in strategies}
+    data = parsed if isinstance(parsed, dict) else {}
+    result: Dict[str, List[Dict[str, object]]] = {}
+    grouped = data.get("strategies") if isinstance(data, dict) else {}
+    if isinstance(grouped, dict):
+        for strategy, payload in grouped.items():
+            normalized = storage_strategy_name(strategy)
+            if normalized not in strategy_set:
+                continue
+            if isinstance(payload, dict):
+                result[normalized] = _extract_results(payload)
+            elif isinstance(payload, list):
+                result[normalized] = [item for item in payload if isinstance(item, dict)]
+    flat = data.get("results") if isinstance(data, dict) else []
+    if isinstance(flat, list):
+        for item in flat:
+            if not isinstance(item, dict):
+                continue
+            normalized = storage_strategy_name(str(item.get("strategy") or item.get("strategy_name") or ""))
+            if normalized not in strategy_set:
+                continue
+            next_item = dict(item)
+            next_item.pop("strategy", None)
+            next_item.pop("strategy_name", None)
+            result.setdefault(normalized, []).append(next_item)
+    return result
+
+
+def review_market_regime(context: Dict[str, object]) -> Dict[str, object]:
+    if not getattr(config, "ENABLE_DEEPSEEK_MARKET_GATE", False):
+        return {"enabled": False, "status": "disabled"}
+    local_result = _local_market_gate(context or {})
+    if _local_market_gate_decisive(local_result):
+        return {
+            "enabled": True,
+            "status": "ok",
+            "source": "local_market_gate",
+            "decision_path": "local_decisive",
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            **local_result,
+        }
+    ds_config = _coerce_env_config()
+    if not ds_config.get("enabled", False):
+        return {"enabled": False, "status": "deepseek_disabled"}
+    if ds_config["api_key"] == "":
+        return {"enabled": False, "status": "missing_api_key"}
+    cache_path = str(getattr(config, "DEEPSEEK_MARKET_GATE_CACHE_PATH", ".runtime/deepseek_market_gate.json"))
+    cache_key = datetime.now().strftime("%Y-%m-%d")
+    cache = _read_cache(cache_path)
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict) and cached.get("schema") == _CACHE_SCHEMA_VERSION:
+        return {**cached.get("result", {}), "source": "deepseek_market_gate_cache", "cache_key": cache_key}
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是A股短线交易的大盘风控复核器。只做当天是否适合出手的风险判断，"
+                "不要推荐个股。必须输出JSON。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "请基于以下市场上下文判断今日短线推荐是否需要收缩。"
+                "输出字段: regime(risk_on/balanced/risk_off), size_factor(0-1), confidence(0-100), reason。"
+                "risk_off 表示建议明显减少推荐数量；balanced 表示轻微收缩或正常；risk_on 表示正常展示。"
+                "上下文: {context}"
+            ).format(context=json.dumps(context or {}, ensure_ascii=False, sort_keys=True)),
+        },
+    ]
+    payload = {
+        "model": ds_config["model"],
+        "messages": messages,
+        "temperature": 0.05,
+        "max_tokens": min(max(120, int(ds_config.get("max_tokens") or 800)), 500),
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        response = requests.post(
+            _deepseek_chat_url(str(ds_config["base_url"])),
+            headers={
+                "Authorization": f"Bearer {ds_config['api_key']}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=float(ds_config["timeout_seconds"]),
+        )
+        response.raise_for_status()
+        raw = response.json()
+        content = ((raw.get("choices") or [{}])[0].get("message", {}) or {}).get("content", "")
+        parsed = _safe_parse_json(str(content)) or {}
+        result = _coerce_market_gate_result(parsed)
+        result.update(
+            {
+                "enabled": True,
+                "status": "ok",
+                "source": "deepseek_market_gate",
+                "model": payload["model"],
+                "usage": raw.get("usage", {}) if isinstance(raw, dict) else {},
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        cache[cache_key] = {"schema": _CACHE_SCHEMA_VERSION, "date": cache_key, "result": result}
+        _write_cache(cache_path, cache)
+        return result
+    except Exception as exc:
+        return {"enabled": True, "status": "fallback", "error": str(exc), **local_result}
+
+
+def _coerce_market_gate_result(parsed: object) -> Dict[str, object]:
+    data = parsed if isinstance(parsed, dict) else {}
+    regime = str(data.get("regime") or data.get("market_regime") or "balanced").strip().lower()
+    if regime not in {"risk_on", "balanced", "risk_off"}:
+        regime = "balanced"
+    default_factor = 1.0 if regime == "risk_on" else 0.7 if regime == "balanced" else 0.4
+    min_factor = max(0.0, min(1.0, coerce_number(getattr(config, "DEEPSEEK_MARKET_GATE_MIN_SIZE_FACTOR", 0.25), 0.25)))
+    size_factor = _clamp(coerce_number(data.get("size_factor"), default_factor), min_factor, 1.0)
+    return {
+        "regime": regime,
+        "size_factor": round(size_factor, 3),
+        "confidence": round(_clamp(coerce_number(data.get("confidence"), 50.0), 0.0, 100.0), 2),
+        "reason": str(data.get("reason") or data.get("summary") or "")[:240],
+    }
+
+
+def _local_market_gate(context: Dict[str, object]) -> Dict[str, object]:
+    up_ratio = coerce_number(context.get("up_ratio_pct"), 50.0)
+    limit_up_count = coerce_number(context.get("limit_up_count"), 0.0)
+    avg_pct = coerce_number(context.get("avg_pct_chg"), 0.0)
+    if up_ratio < 35 or avg_pct < -1.2:
+        regime = "risk_off"
+        factor = coerce_number(getattr(config, "PORTFOLIO_GROSS_RISK_OFF", 0.4), 0.4)
+        reason = "本地大盘宽度偏弱，自动收缩推荐数量。"
+    elif up_ratio > 58 and limit_up_count >= 20 and avg_pct > 0.5:
+        regime = "risk_on"
+        factor = coerce_number(getattr(config, "PORTFOLIO_GROSS_RISK_ON", 1.0), 1.0)
+        reason = "本地大盘宽度较强，维持推荐数量。"
+    else:
+        regime = "balanced"
+        factor = coerce_number(getattr(config, "PORTFOLIO_GROSS_BALANCED", 0.7), 0.7)
+        reason = "本地大盘中性，轻微收缩推荐数量。"
+    min_factor = max(0.0, min(1.0, coerce_number(getattr(config, "DEEPSEEK_MARKET_GATE_MIN_SIZE_FACTOR", 0.25), 0.25)))
+    return {
+        "regime": regime,
+        "size_factor": round(_clamp(factor, min_factor, 1.0), 3),
+        "confidence": 45.0,
+        "reason": reason,
+        "source": "local_market_gate",
+    }
+
+
+def _local_market_gate_decisive(result: Dict[str, object]) -> bool:
+    return str((result or {}).get("regime") or "").strip().lower() in {"risk_on", "risk_off"}
 
 
 def _validation_sample_payload(samples: List[Dict[str, object]], limit: int = 8) -> Dict[str, object]:
@@ -1119,4 +2013,3 @@ def review_strategy_validation(
         "usage": usage,
         **parsed,
     }
-
