@@ -4330,7 +4330,7 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(provider.status.quotes_source, "东方财富直连")
         self.assertEqual(provider.status.errors, [])
 
-    def test_provider_fails_fast_when_direct_quotes_fail_by_default(self):
+    def test_provider_fails_fast_when_quote_fallback_disabled(self):
         import tempfile
 
         provider = MarketDataProvider()
@@ -4341,18 +4341,21 @@ class ScoringTest(unittest.TestCase):
         provider._fetch_eastmoney_quotes = fail
 
         original_path = config.QUOTE_SNAPSHOT_PATH
+        original_fallback = config.ALLOW_SLOW_QUOTE_FALLBACK
         with tempfile.TemporaryDirectory() as tmpdir:
             config.QUOTE_SNAPSHOT_PATH = "{}/missing.json".format(tmpdir)
+            config.ALLOW_SLOW_QUOTE_FALLBACK = False
             try:
                 with self.assertRaises(RuntimeError):
                     provider.get_realtime_quotes()
             finally:
                 config.QUOTE_SNAPSHOT_PATH = original_path
+                config.ALLOW_SLOW_QUOTE_FALLBACK = original_fallback
 
         self.assertEqual(provider.status.quotes_source, "unavailable")
         self.assertIn("东方财富直连行情失败", provider.status.errors[0])
 
-    def test_provider_uses_quote_snapshot_when_direct_quotes_fail(self):
+    def test_provider_uses_quote_snapshot_when_live_quote_sources_fail(self):
         import tempfile
 
         provider = MarketDataProvider()
@@ -4364,20 +4367,30 @@ class ScoringTest(unittest.TestCase):
             raise RuntimeError("eastmoney failed")
 
         provider._fetch_eastmoney_quotes = fail
+        provider._fetch_akshare_quotes = fail
+        provider._fetch_sina_quotes = fail
         original_path = config.QUOTE_SNAPSHOT_PATH
         original_min_rows = config.QUOTE_SNAPSHOT_MIN_ROWS
+        original_fallback = config.ALLOW_SLOW_QUOTE_FALLBACK
+        original_token = config.TUSHARE_TOKEN
         with tempfile.TemporaryDirectory() as tmpdir:
             config.QUOTE_SNAPSHOT_PATH = "{}/quotes.json".format(tmpdir)
             config.QUOTE_SNAPSHOT_MIN_ROWS = 1
+            config.ALLOW_SLOW_QUOTE_FALLBACK = True
+            config.TUSHARE_TOKEN = ""
             provider._save_quote_snapshot(snapshot)
             try:
                 quotes = provider.get_realtime_quotes()
             finally:
                 config.QUOTE_SNAPSHOT_PATH = original_path
                 config.QUOTE_SNAPSHOT_MIN_ROWS = original_min_rows
+                config.ALLOW_SLOW_QUOTE_FALLBACK = original_fallback
+                config.TUSHARE_TOKEN = original_token
 
         self.assertEqual(str(quotes.iloc[0]["code"]).zfill(6), "600001")
         self.assertEqual(provider.status.quotes_source, "本地快照")
+        self.assertTrue(any("AKShare 行情失败" in error for error in provider.status.errors))
+        self.assertFalse(any("Tushare 行情失败" in error for error in provider.status.errors))
 
     def test_provider_get_history_uses_local_market_data(self):
         import tempfile

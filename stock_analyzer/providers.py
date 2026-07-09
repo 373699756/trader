@@ -37,58 +37,45 @@ class MarketDataProvider:
         errors = []
         try:
             df = self._fetch_eastmoney_quotes()
-            self.status.quotes_source = "东方财富直连"
-            self.status.last_quote_refresh = datetime.now().isoformat(timespec="seconds")
-            self.status.errors = []
-            self._save_quote_snapshot(df)
-            return df
+            return self._accept_realtime_quotes(df, "东方财富直连", errors)
         except Exception as exc:  # pragma: no cover - depends on remote services
             errors.append("东方财富直连行情失败: {}".format(exc))
 
-        if not config.ALLOW_SLOW_QUOTE_FALLBACK:
-            snapshot = self._load_quote_snapshot()
-            if snapshot is not None and not snapshot.empty:
-                self.status.quotes_source = "本地快照"
-                self.status.last_quote_refresh = snapshot.attrs.get("snapshot_mtime") or datetime.now().isoformat(timespec="seconds")
-                self.status.errors = errors
-                return snapshot
-            self.status.quotes_source = "unavailable"
-            self.status.errors = errors
-            raise RuntimeError("; ".join(errors))
+        if config.ALLOW_SLOW_QUOTE_FALLBACK:
+            for source, fetcher, error_prefix in (
+                ("AKShare 东方财富", self._fetch_akshare_quotes, "AKShare 行情失败"),
+                ("AKShare 新浪", self._fetch_sina_quotes, "新浪行情失败"),
+            ):
+                try:
+                    df = fetcher()
+                    return self._accept_realtime_quotes(df, source, errors)
+                except Exception as exc:  # pragma: no cover - depends on remote services
+                    errors.append("{}: {}".format(error_prefix, exc))
 
-        try:
-            df = self._fetch_akshare_quotes()
-            self.status.quotes_source = "AKShare 东方财富"
-            self.status.last_quote_refresh = datetime.now().isoformat(timespec="seconds")
-            self.status.errors = errors
-            self._save_quote_snapshot(df)
-            return df
-        except Exception as exc:  # pragma: no cover - depends on remote services
-            errors.append("AKShare 行情失败: {}".format(exc))
+            if config.TUSHARE_TOKEN:
+                try:
+                    df = self._fetch_tushare_quotes()
+                    return self._accept_realtime_quotes(df, "Tushare", errors)
+                except Exception as exc:  # pragma: no cover - depends on remote services
+                    errors.append("Tushare 行情失败: {}".format(exc))
 
-        try:
-            df = self._fetch_sina_quotes()
-            self.status.quotes_source = "AKShare 新浪"
-            self.status.last_quote_refresh = datetime.now().isoformat(timespec="seconds")
+        snapshot = self._load_quote_snapshot()
+        if snapshot is not None and not snapshot.empty:
+            self.status.quotes_source = "本地快照"
+            self.status.last_quote_refresh = snapshot.attrs.get("snapshot_mtime") or datetime.now().isoformat(timespec="seconds")
             self.status.errors = errors
-            self._save_quote_snapshot(df)
-            return df
-        except Exception as exc:  # pragma: no cover - depends on remote services
-            errors.append("新浪行情失败: {}".format(exc))
-
-        try:
-            df = self._fetch_tushare_quotes()
-            self.status.quotes_source = "Tushare"
-            self.status.last_quote_refresh = datetime.now().isoformat(timespec="seconds")
-            self.status.errors = errors
-            self._save_quote_snapshot(df)
-            return df
-        except Exception as exc:  # pragma: no cover - depends on remote services
-            errors.append("Tushare 行情失败: {}".format(exc))
+            return snapshot
 
         self.status.quotes_source = "unavailable"
         self.status.errors = errors
         raise RuntimeError("; ".join(errors))
+
+    def _accept_realtime_quotes(self, df: pd.DataFrame, source: str, errors: List[str]) -> pd.DataFrame:
+        self.status.quotes_source = source
+        self.status.last_quote_refresh = datetime.now().isoformat(timespec="seconds")
+        self.status.errors = list(errors)
+        self._save_quote_snapshot(df)
+        return df
 
     def get_hot_ranks(self) -> Dict[str, int]:
         ak = self._get_akshare()

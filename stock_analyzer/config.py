@@ -33,7 +33,7 @@ MAX_RECOMMENDED_GAIN = float(os.getenv("MAX_RECOMMENDED_GAIN", "12"))
 MAX_BUYABLE_GAIN_MAIN = float(os.getenv("MAX_BUYABLE_GAIN_MAIN", "6.5"))
 MAX_BUYABLE_GAIN_GROWTH = float(os.getenv("MAX_BUYABLE_GAIN_GROWTH", "10"))
 TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
-ALLOW_SLOW_QUOTE_FALLBACK = os.getenv("ALLOW_SLOW_QUOTE_FALLBACK", "0").lower() in (
+ALLOW_SLOW_QUOTE_FALLBACK = os.getenv("ALLOW_SLOW_QUOTE_FALLBACK", "1").lower() in (
     "1",
     "true",
     "yes",
