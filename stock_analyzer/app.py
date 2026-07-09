@@ -481,8 +481,35 @@ def create_app() -> Flask:
         candidates, market_regime = _candidates_with_regime_from_quotes(quotes, attach_codes=attach_codes)
         return quotes, candidates, market_regime
 
+    def _safe_provider_health() -> Dict[str, object]:
+        try:
+            health = provider.health()
+        except Exception as exc:
+            return {"quotes_source": "unavailable", "errors": ["provider_health_failed: {}".format(exc)]}
+        return dict(health) if isinstance(health, dict) else {"status": str(health)}
+
+    def _provider_health_with_factor_coverage(
+        candidates: pd.DataFrame = None,
+        coverage: Dict[str, object] = None,
+    ) -> Dict[str, object]:
+        health = _safe_provider_health()
+        if coverage is None and candidates is not None:
+            try:
+                coverage = factor_coverage(candidates)
+            except Exception:
+                coverage = None
+        if coverage is not None:
+            health["factor_coverage"] = coverage
+            coverage_alerts = coverage.get("alerts") if isinstance(coverage, dict) else []
+            if coverage_alerts:
+                alerts = list(health.get("alerts") or [])
+                alerts.extend(coverage_alerts)
+                health["alerts"] = alerts
+        return health
+
     def _build_horizon_payload(strategy: str, top_n: int, market: str) -> Dict[str, object]:
         _, candidates, market_regime = _live_candidates_with_regime()
+        coverage = factor_coverage(candidates)
         rows, meta, _ = scored_strategy_rows(
             strategy,
             candidates,
@@ -497,8 +524,9 @@ def create_app() -> Flask:
         else:
             attach_validation_summary(rows, validation_store, "swing_picks", metrics_fn=cached_metrics)
         meta["market_regime"] = market_regime
+        meta["factor_coverage"] = coverage
         payload = response_payload(
-            provider.health,
+            lambda: _provider_health_with_factor_coverage(coverage=coverage),
             _research_disclaimer,
             ok=True,
             include_disclaimer=True,
@@ -685,6 +713,7 @@ def create_app() -> Flask:
             hot_ranks = context["hot_ranks"]
             industry_strength = context["industry_strength"]
             sentiment_lookup = context["sentiment_lookup"]
+            coverage = factor_coverage(candidates)
 
             recommendations_by_horizon, meta, deepseek_meta_by_strategy = build_recommendation_horizons(
                 candidates,
@@ -709,6 +738,7 @@ def create_app() -> Flask:
                 validation_store,
                 cached_metrics,
             )
+            meta["factor_coverage"] = coverage
             try:
                 market_gate = meta.get("deepseek_market_gate") if isinstance(meta, dict) else {}
                 if isinstance(market_gate, dict) and market_gate.get("enabled"):
@@ -723,7 +753,7 @@ def create_app() -> Flask:
                 "recommendations": recommendations_by_horizon,
                 "meta": meta,
                 "market_sentiment": _cached_market_sentiment(),
-                "health": provider.health(),
+                "health": _provider_health_with_factor_coverage(coverage=coverage),
                 "disclaimer": _research_disclaimer(),
             }
             _schedule_snapshot_save(payload)
@@ -801,6 +831,27 @@ def create_app() -> Flask:
         key = _horizon_cache_key(strategy, top_n, market)
         try:
             _build_horizon_payload(strategy, top_n, market)
+        except Exception as exc:
+            payload = response_payload(
+                _safe_provider_health,
+                _research_disclaimer,
+                ok=False,
+                include_disclaimer=True,
+                error=str(exc),
+                data=[],
+                meta={
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    "candidate_count": 0,
+                    "display_count": 0,
+                    "display_limit": top_n,
+                    "top_n": top_n,
+                    "market_filter": market,
+                    "strategy_label": "明天推荐" if strategy == "tomorrow_picks" else "2-5天推荐",
+                    "strategy": "实时行情刷新失败",
+                    "fallback": "live_refresh_failed",
+                },
+            )
+            _remember_horizon_payload(strategy, top_n, market, payload, source="live_refresh_failed")
         finally:
             with horizon_cache_lock:
                 horizon_refreshing.discard(key)
@@ -975,7 +1026,16 @@ def create_app() -> Flask:
 
     @app.route("/api/health")
     def health():
-        coverage = {"row_count": 0, "avg_data_coverage": 0.0, "columns": {}, "degraded": True}
+        coverage = {
+            "row_count": 0,
+            "avg_data_coverage": 0.0,
+            "alphalite_ready_ratio": 0.0,
+            "alphalite_not_ready_ratio": 1.0,
+            "alphalite_zero_coverage_ratio": 1.0,
+            "columns": {},
+            "degraded": True,
+            "alerts": [],
+        }
         blacklist_payload = load_risk_blacklist()
         try:
             quotes = _current_quotes()
@@ -983,6 +1043,7 @@ def create_app() -> Flask:
             coverage = factor_coverage(candidates)
         except Exception:
             pass
+        provider_health = _provider_health_with_factor_coverage(coverage=coverage)
         return jsonify(
             {
                 "ok": True,
@@ -999,7 +1060,7 @@ def create_app() -> Flask:
                     "fundamentals_status": load_fundamentals(provider).get("status", "disabled"),
                     "generated_at": load_factor_ic().get("generated_at", ""),
                 },
-                "health": provider.health(),
+                "health": provider_health,
             }
         )
 

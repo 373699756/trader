@@ -28,7 +28,8 @@ cd "$ROOT_DIR"
 usage() {
   cat <<'EOF'
 用法:
-  ./run.sh
+  ./run.sh [serve]
+  ./run.sh after-close [daily_job 参数]
 
 常用环境变量:
   PORT=5050 ./run.sh
@@ -38,6 +39,8 @@ usage() {
   PROXY_SCHEME=socks5h PROXY_PORT=1080 ./run.sh     # 仅在确认 pip 支持 socks 时使用
   INTERNET_CHECK_URLS="https://pypi.org/simple/pip/" ./run.sh
   SKIP_PROXY_CHECK=1 ./run.sh                        # 明确跳过启动前外网检查
+  ./run.sh after-close --strategy all                 # 收盘后下载日线、快照、回填、刷新因子
+  ./run.sh after-close --market-data-limit 500         # 分批下载，适合普通办公 PC
 
 默认会自动探测 127.0.0.1、WSL nameserver、host.docker.internal 的常见代理端口。
 EOF
@@ -47,6 +50,25 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
   exit 0
 fi
+
+RUN_MODE="${1:-serve}"
+case "$RUN_MODE" in
+  serve|app)
+    if [ "$#" -gt 0 ]; then
+      shift
+    fi
+    ;;
+  after-close|daily-job)
+    if [ "$#" -gt 0 ]; then
+      shift
+    fi
+    ;;
+  *)
+    printf '未知运行模式: %s\n\n' "$RUN_MODE" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
 
 clear_proxy_env() {
   unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
@@ -348,17 +370,35 @@ configure_proxy
 show_proxy_env
 printf '\n'
 
+VENV_ALREADY_READY=0
+if [ -x "$VENV_DIR/bin/python" ]; then
+  VENV_ALREADY_READY=1
+fi
 ensure_venv
-check_internet_connectivity "$VENV_DIR/bin/python"
-pip_install
-
-printf '\n启动看板: http://%s:%s\n' "$HOST" "$PORT"
-printf '历史因子: ENABLE_HISTORY_FACTORS=%s（可显式设为 1 开启）\n' "${ENABLE_HISTORY_FACTORS:-0}"
-printf '按 Ctrl+C 停止。\n\n'
+if { [ "$RUN_MODE" = "after-close" ] || [ "$RUN_MODE" = "daily-job" ]; } \
+  && [ "$VENV_ALREADY_READY" = "1" ] \
+  && [ "${AFTER_CLOSE_INSTALL_DEPS:-0}" != "1" ]; then
+  printf '盘后模式: 已检测到虚拟环境，跳过依赖安装检查。\n'
+else
+  check_internet_connectivity "$VENV_DIR/bin/python"
+  pip_install
+fi
 
 export HOST
 export PORT
 export FLASK_RUN_HOST="$HOST"
 export FLASK_RUN_PORT="$PORT"
-export ENABLE_HISTORY_FACTORS="${ENABLE_HISTORY_FACTORS:-0}"
+
+if [ "$RUN_MODE" = "after-close" ] || [ "$RUN_MODE" = "daily-job" ]; then
+  export ENABLE_HISTORY_FACTORS="${ENABLE_HISTORY_FACTORS:-1}"
+  printf '\n运行盘后流水线: market_data --download -> daily_job snapshot/update/factors\n'
+  printf '历史因子: ENABLE_HISTORY_FACTORS=%s\n\n' "$ENABLE_HISTORY_FACTORS"
+  exec "$VENV_DIR/bin/python" -m stock_analyzer.daily_job --after-close "$@"
+fi
+
+printf '\n启动看板: http://%s:%s\n' "$HOST" "$PORT"
+printf '历史因子: ENABLE_HISTORY_FACTORS=%s（可显式设为 0 关闭）\n' "${ENABLE_HISTORY_FACTORS:-1}"
+printf '按 Ctrl+C 停止。\n\n'
+
+export ENABLE_HISTORY_FACTORS="${ENABLE_HISTORY_FACTORS:-1}"
 exec "$VENV_DIR/bin/python" app.py

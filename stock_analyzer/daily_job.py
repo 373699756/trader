@@ -30,6 +30,8 @@ def _save_iteration_payload(result, applied=False):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="盘后每日任务：保存策略快照并回填验证结果")
+    parser.add_argument("--after-close", action="store_true", help="收盘后完整流水线：下载日线、保存快照、回填、刷新因子快照和 IC")
+    parser.add_argument("--download-market-data", action="store_true", help="先下载缺失或过期的本地日线历史")
     parser.add_argument("--snapshot", action="store_true", help="保存策略当日预测快照")
     parser.add_argument("--update", action="store_true", help="回填已保存快照的未来收益")
     parser.add_argument("--paper-trade", action="store_true", help="根据最近保存快照生成/更新纸面组合交易")
@@ -42,10 +44,24 @@ def main() -> int:
     parser.add_argument("--restore-validation", default="", help="从指定备份文件还原荐股验证数据库；还原前会自动备份当前库")
     parser.add_argument("--strategy", default="all", help="策略名；all 表示所有快照策略")
     parser.add_argument("--market", default="all", choices=("all", "main", "chinext", "star"))
+    parser.add_argument("--market-data-codes", default="", help="传给 market_data 的逗号分隔代码；留空则全市场")
+    parser.add_argument("--market-data-days", type=int, default=720, help="传给 market_data 的回溯自然日窗口")
+    parser.add_argument("--market-data-limit", type=int, default=0, help="传给 market_data 的本次处理股票数上限")
+    parser.add_argument("--market-data-sleep", type=float, default=0.15, help="传给 market_data 的单票下载间隔秒数")
+    parser.add_argument("--market-data-force", action="store_true", help="传给 market_data，强制重抓已有数据")
+    parser.add_argument("--market-data-include-st", action="store_true", help="传给 market_data，股票池包含 ST/退市名称")
     args = parser.parse_args()
+
+    if args.after_close:
+        args.download_market_data = True
+        args.snapshot = True
+        args.update = True
+        args.factor_snapshot = True
+        args.factor_ic = True
 
     if not any(
         (
+            args.download_market_data,
             args.snapshot,
             args.update,
             args.paper_trade,
@@ -82,6 +98,7 @@ def main() -> int:
     strategies = _parse_strategies(args.strategy, SNAPSHOT_STRATEGIES)
     payload = {
         "ok": True,
+        "market_data": {},
         "snapshot": [],
         "update": [],
         "paper_trade": [],
@@ -91,6 +108,28 @@ def main() -> int:
         "backup_validation": {},
     }
 
+    if args.download_market_data:
+        from .market_data import download_market_data
+
+        try:
+            payload["market_data"] = download_market_data(
+                codes=_parse_code_list(args.market_data_codes),
+                days=max(1, int(args.market_data_days or 720)),
+                limit=max(0, int(args.market_data_limit or 0)),
+                force=bool(args.market_data_force),
+                include_st=bool(args.market_data_include_st),
+                sleep_seconds=max(0.0, float(args.market_data_sleep or 0.0)),
+            )
+        except Exception as exc:
+            payload["ok"] = False
+            payload["market_data"] = {"ok": False, "error": str(exc)}
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 1
+        if not _market_data_has_usable_rows(payload["market_data"]):
+            payload["ok"] = False
+            payload["error"] = "market_data_unavailable"
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 1
     if args.snapshot:
         payload["snapshot"] = run_snapshots(provider, store, strategies, market=args.market)
         args.backup_validation = True
@@ -157,6 +196,28 @@ def _parse_strategies(raw: str, supported) -> list:
     requested = [item.strip() for item in text.replace("，", ",").split(",") if item.strip()]
     strategies = [item for item in requested if item in supported]
     return strategies or ["tomorrow_picks"]
+
+
+def _parse_code_list(raw: str) -> list:
+    return [item.strip() for item in str(raw or "").replace("，", ",").split(",") if item.strip()]
+
+
+def _market_data_has_usable_rows(result) -> bool:
+    if not isinstance(result, dict):
+        return False
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    return (
+        _as_int(result.get("downloaded")) > 0
+        or _as_int(result.get("skipped")) > 0
+        or _as_int(summary.get("bar_count")) > 0
+    )
+
+
+def _as_int(value) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
 
 
 if __name__ == "__main__":

@@ -63,16 +63,24 @@ def saved_tomorrow_fallback_payload(
     research_disclaimer_fn,
 ) -> Dict[str, object]:
     attach_validation_summary(saved_rows, validation_store, "tomorrow_picks", metrics_fn=cached_metrics_fn)
+    display_limit = min(
+        max(0, int(top_n or 0)),
+        max(0, int(getattr(config, "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", top_n or 0))),
+    )
+    display_rows = saved_rows[:display_limit]
     if not detailed:
         return response_payload(
             provider_health_fn,
             research_disclaimer_fn,
             ok=True,
             include_disclaimer=True,
-            data=saved_rows[:top_n],
+            data=display_rows,
             meta={
                 "generated_at": "",
                 "candidate_count": len(saved_rows),
+                "display_count": len(display_rows),
+                "display_limit": display_limit,
+                "display_cap": getattr(config, "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", display_limit),
                 "top_n": top_n,
                 "market_filter": market,
                 "strategy": "实时行情不可用，显示最近保存的明天推荐",
@@ -86,11 +94,12 @@ def saved_tomorrow_fallback_payload(
         "generated_at": "",
         "candidate_count": len(saved_rows),
         "screened_count": len(saved_rows),
-        "display_count": min(len(saved_rows), top_n),
-        "display_limit": top_n,
+        "display_count": len(display_rows),
+        "display_limit": display_limit,
+        "display_cap": getattr(config, "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", display_limit),
         "min_score": 0.0,
         "gate_reason": "实时行情不可用，显示最近保存快照；不代表今日实时盘面。",
-        "primary_watch_count": min(int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 10)), len(saved_rows), top_n),
+        "primary_watch_count": min(int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 10)), len(display_rows)),
         "top_n": top_n,
         "market_filter": market,
         "analysis_window": analysis_window_fn(),
@@ -98,6 +107,7 @@ def saved_tomorrow_fallback_payload(
         "strategy_label": "明天推荐",
         "prediction_type": "rank_score",
         "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
+        "holding_discipline": "次日了结，不隔夜持有到第3天",
         "strategy": "实时行情不可用，显示最近保存的明天推荐",
         "fallback": "saved_snapshot",
         "policy": {
@@ -120,6 +130,6 @@ def saved_tomorrow_fallback_payload(
         research_disclaimer_fn,
         ok=True,
         include_disclaimer=True,
-        data=saved_rows[:top_n],
+        data=display_rows,
         meta=fallback_meta,
     )

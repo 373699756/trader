@@ -118,12 +118,13 @@ window.TraderRecommendationRenderers = {
       ...(row.sell_risk?.reasons || []),
     ], 4);
     const validationTexts = this.uniqueReasonTexts([
+      row.holding_discipline,
       row.trade_action_stats?.sample_count ? this.tradeActionSummary(row, helpers) : "",
       row.exit_action_stats?.sample_count ? this.exitActionSummary(row, helpers) : "",
       row.decision_calibration?.label,
       row.sell_risk_calibration?.label,
       row.similar_signal_stats?.sample_count ? this.decisionCalibrationSummary(row, helpers) : "",
-    ], 3);
+    ], 4);
 
     const lines = [
       this.reasonLine(`解释：${explanationTexts.join("；") || "暂无"}`, "", helpers),

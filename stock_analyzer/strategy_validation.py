@@ -1676,6 +1676,16 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
         return None
     if signal_entry <= 0:
         signal_entry = open_entry
+    if str(_mapping_get(signal, "strategy_name", "")) == "tomorrow_picks":
+        high_open_pct = (open_entry / signal_entry - 1.0) * 100.0 if signal_entry > 0 else 0.0
+        high_open_skip_pct = coerce_number(getattr(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 3.0), 3.0)
+        if high_open_pct > high_open_skip_pct:
+            return {
+                "excluded": True,
+                "skip_reason": "tomorrow_high_open_chase",
+                "next_open_return": round(high_open_pct, 4),
+                "threshold_pct": round(high_open_skip_pct, 4),
+            }
     future_days = len(future)
     window = future.head(3)
     last = window.iloc[-1]

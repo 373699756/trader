@@ -80,11 +80,19 @@ def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market
         rows = rows_by_horizon.get("short_term", [])
         return rows, meta, "short_term_v1"
     scorers = {
-        "tomorrow_picks": (score_tomorrow_picks, config.TOMORROW_TOP_N),
-        "swing_picks": (score_swing_2_5d_picks, getattr(config, "RECOMMENDATION_DISPLAY_LIMIT", 18)),
+        "tomorrow_picks": (
+            score_tomorrow_picks,
+            getattr(config, "TOMORROW_SNAPSHOT_TOP_N", config.TOMORROW_TOP_N),
+            {"display_cap": 0},
+        ),
+        "swing_picks": (
+            score_swing_2_5d_picks,
+            getattr(config, "RECOMMENDATION_DISPLAY_LIMIT", 18),
+            {},
+        ),
     }
-    scorer, top_n = scorers[strategy]
-    rows, meta = scorer(candidates, top_n=top_n, market_filter=market, market_regime=market_regime)
+    scorer, top_n, extra_kwargs = scorers[strategy]
+    rows, meta = scorer(candidates, top_n=top_n, market_filter=market, market_regime=market_regime, **extra_kwargs)
     return rows, meta, meta.get("strategy_version", strategy)
 
 

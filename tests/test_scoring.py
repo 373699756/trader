@@ -362,6 +362,26 @@ class ScoringTest(unittest.TestCase):
         row = pd.Series({"alphalite_coverage": 0.67, "ret_20d": 0.0, "breakout_20d": 0.0})
         self.assertAlmostEqual(_data_coverage(row), 0.67)
 
+    def test_factor_coverage_alerts_when_alphalite_is_silent(self):
+        from stock_analyzer.selfcheck import factor_coverage
+
+        candidates = pd.DataFrame(
+            [
+                {"code": "600001", "alphalite_factor_ready": 0, "alphalite_coverage": 0.0},
+                {"code": "600002", "alphalite_factor_ready": 0, "alphalite_coverage": 0.0},
+                {"code": "600003", "alphalite_factor_ready": 1, "alphalite_coverage": 1.0, "ret_20d": 2.0},
+            ]
+        )
+
+        with patch.object(config, "FACTOR_COVERAGE_ALERT_ZERO_RATIO", 0.30):
+            coverage = factor_coverage(candidates)
+
+        alert_codes = {alert["code"] for alert in coverage["alerts"]}
+        self.assertTrue(coverage["degraded"])
+        self.assertEqual(coverage["alphalite_ready_ratio"], 0.3333)
+        self.assertIn("alphalite_coverage_zero", alert_codes)
+        self.assertIn("alphalite_factor_not_ready", alert_codes)
+
     def test_overheat_damp_suppresses_extended_names(self):
         from stock_analyzer.scoring import _apply_overheat_damp, _overheat_damp_multiplier
 
@@ -490,6 +510,7 @@ class ScoringTest(unittest.TestCase):
             prepare_candidates(quotes),
             top_n=36,
             market_regime={"level": "risk_off", "label": "偏防守", "score": 38},
+            display_cap=0,
         )
 
         self.assertLessEqual(len(rows), 18)
@@ -498,6 +519,86 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(meta["display_limit"], 36)
         self.assertIn("不足则不推荐", meta["gate_reason"])
         self.assertIn(rows[0]["tier"], {"primary_watch", "backup_pool"})
+
+    def test_tomorrow_default_display_cap_can_be_overridden_for_snapshots(self):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600{:03d}".format(index),
+                    "name": "展示样本{}".format(index),
+                    "price": 10 + index * 0.1,
+                    "pct_chg": 2.0 + (index % 4) * 0.2,
+                    "turnover": 500000000 + index * 10000000,
+                    "turnover_rate": 4,
+                    "volume_ratio": 1.5,
+                    "speed": 0.2,
+                    "sixty_day_pct": 12,
+                    "ytd_pct": 18,
+                    "amplitude": 4,
+                    "industry": "行业{}".format(index),
+                }
+                for index in range(20)
+            ]
+        )
+        candidates = prepare_candidates(quotes)
+
+        with patch("stock_analyzer.scoring._tomorrow_display_gate", return_value=(20, 0.0, "测试展示全部候选")):
+            display_rows, display_meta = score_tomorrow_candidates(candidates, top_n=20)
+            snapshot_rows, snapshot_meta = score_tomorrow_candidates(candidates, top_n=20, display_cap=0)
+
+        self.assertLessEqual(len(display_rows), config.TOMORROW_RECOMMENDATION_DISPLAY_LIMIT)
+        self.assertEqual(display_meta["display_limit"], config.TOMORROW_RECOMMENDATION_DISPLAY_LIMIT)
+        self.assertGreater(len(snapshot_rows), len(display_rows))
+        self.assertEqual(snapshot_meta["display_limit"], 20)
+        self.assertEqual(snapshot_meta["display_cap"], 0)
+
+    def test_tomorrow_mid_gain_weak_close_penalty_marks_row(self):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600001",
+                    "name": "弱收盘",
+                    "price": 10.4,
+                    "open": 10.1,
+                    "high": 11.0,
+                    "low": 10.0,
+                    "pct_chg": 5.2,
+                    "turnover": 600000000,
+                    "turnover_rate": 2.5,
+                    "volume_ratio": 1.6,
+                    "speed": 0.2,
+                    "sixty_day_pct": 4,
+                    "ytd_pct": 8,
+                    "amplitude": 6,
+                },
+                {
+                    "code": "600002",
+                    "name": "强收盘",
+                    "price": 10.85,
+                    "open": 10.1,
+                    "high": 11.0,
+                    "low": 10.0,
+                    "pct_chg": 5.2,
+                    "turnover": 600000000,
+                    "turnover_rate": 2.5,
+                    "volume_ratio": 1.6,
+                    "speed": 0.2,
+                    "sixty_day_pct": 4,
+                    "ytd_pct": 8,
+                    "amplitude": 6,
+                },
+            ]
+        )
+
+        with patch("stock_analyzer.scoring._tomorrow_display_gate", return_value=(2, 0.0, "测试展示全部候选")):
+            rows, _ = score_tomorrow_candidates(prepare_candidates(quotes), top_n=2, display_cap=0)
+
+        weak = next(row for row in rows if row["code"] == "600001")
+        strong = next(row for row in rows if row["code"] == "600002")
+        self.assertEqual(weak["risk_penalty_parts"]["mid_gain_weak_close"], config.TOMORROW_MID_GAIN_WEAK_CLOSE_PENALTY)
+        self.assertTrue(weak["mid_gain_weak_close_flag"])
+        self.assertIn("4-7%涨幅且尾盘承接不足", weak["reasons"])
+        self.assertNotIn("mid_gain_weak_close", strong["risk_penalty_parts"])
 
     def test_tomorrow_risk_off_can_return_empty_when_no_strict_match(self):
         quotes = pd.DataFrame(
@@ -1517,6 +1618,34 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(rows[0]["horizon"], "swing")
         self.assertHasExplanationFields(rows[0], "swing_picks")
 
+    def test_swing_degrades_when_history_factor_coverage_is_missing(self):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600{:03d}".format(index),
+                    "name": "降级样本{}".format(index),
+                    "price": 10 + index * 0.1,
+                    "pct_chg": 2.0,
+                    "volume_ratio": 1.6,
+                    "turnover_rate": 4,
+                    "turnover": 500000000 + index * 10000000,
+                    "sixty_day_pct": 12,
+                    "ytd_pct": 18,
+                    "amplitude": 4,
+                }
+                for index in range(16)
+            ]
+        )
+
+        with patch.object(config, "SWING_RECOMMENDATION_MIN_SCORE", 0):
+            rows, meta = score_swing_candidates(prepare_candidates(quotes), top_n=16)
+
+        self.assertTrue(meta["factor_degraded"])
+        self.assertEqual(meta["history_factor_ready_ratio"], 0.0)
+        self.assertLessEqual(meta["display_count"], config.SWING_DEGRADED_DISPLAY_LIMIT)
+        self.assertTrue(all(row.get("factor_degraded") for row in rows))
+        self.assertTrue(any("历史因子覆盖不足" in reason for reason in rows[0]["reasons"]))
+
     @unittest.skip("旧中长期策略已下线，当前只保留今天/明天/2-5天三策略")
     def test_position_candidates_filter_overextended_and_mark_limitation(self):
         quotes = pd.DataFrame(
@@ -2215,6 +2344,104 @@ class ScoringTest(unittest.TestCase):
 
         self.assertEqual(daily_job._parse_strategies("all", SNAPSHOT_STRATEGIES), list(SNAPSHOT_STRATEGIES))
 
+    def test_daily_job_after_close_runs_market_data_pipeline(self):
+        import io
+        import sys
+        from contextlib import redirect_stdout
+        from stock_analyzer import daily_job
+
+        calls = []
+
+        class FakeStore:
+            def __init__(self, path):
+                self.path = path
+
+            def update_outcomes(self, provider, strategy_name=""):
+                calls.append(("update", strategy_name))
+                return {"updated": 0}
+
+            def live_weight_samples(self, strategy_name, days=120):
+                return []
+
+        def fake_download_market_data(**kwargs):
+            calls.append(("download", kwargs.get("limit")))
+            return {"ok": True, "downloaded": 1, "failed": 0}
+
+        def fake_run_snapshots(provider, store, strategies, market="all"):
+            calls.append(("snapshot", tuple(strategies)))
+            return [{"ok": True}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            argv = ["daily_job", "--after-close", "--strategy", "tomorrow_picks", "--market-data-limit", "3"]
+            with patch.object(sys, "argv", argv), patch.object(
+                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
+            ), patch(
+                "stock_analyzer.market_data.download_market_data",
+                side_effect=fake_download_market_data,
+            ), patch(
+                "stock_analyzer.strategy_validation.StrategyValidationStore",
+                FakeStore,
+            ), patch(
+                "stock_analyzer.providers.MarketDataProvider",
+                return_value=object(),
+            ), patch(
+                "stock_analyzer.snapshot.run_snapshots",
+                side_effect=fake_run_snapshots,
+            ), patch(
+                "stock_analyzer.factor_snapshot.build_factor_snapshots",
+                return_value={"ok": True, "count": 0},
+            ), patch(
+                "stock_analyzer.factor_ic.compute_factor_ic",
+                return_value={"sample_count": 0, "ic": {}},
+            ), patch(
+                "stock_analyzer.factor_ic.save_factor_ic",
+                return_value=None,
+            ), patch(
+                "stock_analyzer.validation_backup.backup_validation_db",
+                return_value={"ok": True},
+            ):
+                with redirect_stdout(io.StringIO()) as stdout:
+                    result = daily_job.main()
+            payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(result, 0)
+        self.assertEqual(calls[0], ("download", 3))
+        self.assertIn(("snapshot", ("tomorrow_picks",)), calls)
+        self.assertIn(("update", "tomorrow_picks"), calls)
+        self.assertEqual(payload["market_data"]["downloaded"], 1)
+
+    def test_daily_job_after_close_fails_when_market_data_empty(self):
+        import io
+        import sys
+        from contextlib import redirect_stdout
+        from stock_analyzer import daily_job
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            argv = ["daily_job", "--after-close", "--strategy", "tomorrow_picks"]
+            with patch.object(sys, "argv", argv), patch.object(
+                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
+            ), patch(
+                "stock_analyzer.market_data.download_market_data",
+                return_value={
+                    "ok": True,
+                    "requested": 3,
+                    "downloaded": 0,
+                    "skipped": 0,
+                    "failed": 3,
+                    "summary": {"bar_count": 0},
+                },
+            ), patch(
+                "stock_analyzer.snapshot.run_snapshots",
+                side_effect=AssertionError("should not save snapshots without usable market data"),
+            ):
+                with redirect_stdout(io.StringIO()) as stdout:
+                    result = daily_job.main()
+            payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(result, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "market_data_unavailable")
+
     def test_validation_backup_roundtrip_restores_database(self):
         import tempfile
         from stock_analyzer.strategy_validation import StrategyValidationStore
@@ -2532,6 +2759,79 @@ class ScoringTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertGreater(result["saved"]["saved"], 0)
         self.assertEqual(dates[0]["strategy_name"], "tomorrow_picks")
+
+    def test_snapshot_tomorrow_keeps_wide_validation_candidates(self):
+        from stock_analyzer.snapshot import _score_snapshot_strategy
+
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600{:03d}".format(index),
+                    "name": "宽样本{}".format(index),
+                    "price": 10 + index * 0.1,
+                    "pct_chg": 2.0 + (index % 4) * 0.2,
+                    "speed": 0.2,
+                    "volume_ratio": 1.5,
+                    "turnover_rate": 4,
+                    "turnover": 500000000 + index * 10000000,
+                    "industry": "宽样本行业{}".format(index),
+                    "sixty_day_pct": 12,
+                    "ytd_pct": 18,
+                    "amplitude": 4,
+                }
+                for index in range(12)
+            ]
+        )
+        candidates = prepare_candidates(quotes)
+
+        with patch.object(config, "TOMORROW_SNAPSHOT_TOP_N", 12), patch.object(
+            config, "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", 4
+        ), patch("stock_analyzer.scoring._tomorrow_display_gate", return_value=(12, 0.0, "测试展示全部候选")):
+            rows, meta, version = _score_snapshot_strategy(
+                None,
+                candidates,
+                quotes,
+                "tomorrow_picks",
+                "all",
+                {"level": "risk_on", "label": "偏进攻", "score": 75},
+            )
+
+        self.assertEqual(version, "tomorrow_picks_v5")
+        self.assertGreater(len(rows), config.TOMORROW_RECOMMENDATION_DISPLAY_LIMIT)
+        self.assertEqual(meta["top_n"], 12)
+        self.assertEqual(meta["display_cap"], 0)
+        self.assertEqual(meta["display_limit"], 12)
+
+    def test_saved_tomorrow_fallback_uses_display_cap_not_wide_snapshot_count(self):
+        from stock_analyzer.app_response_support import saved_tomorrow_fallback_payload
+
+        class FakeStore:
+            def live_weight_samples(self, strategy_name, days=60):
+                return []
+
+        saved_rows = [
+            {"rank": index + 1, "code": "600{:03d}".format(index), "name": "保存样本{}".format(index), "score": 90 - index}
+            for index in range(12)
+        ]
+
+        with patch.object(config, "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", 4):
+            payload = saved_tomorrow_fallback_payload(
+                saved_rows=saved_rows,
+                top_n=12,
+                market="all",
+                detailed=True,
+                validation_store=FakeStore(),
+                cached_metrics_fn=lambda strategy, days: {"sample_count": 0},
+                load_risk_blacklist_fn=lambda: {},
+                analysis_window_fn=lambda: "15:00",
+                provider_health_fn=lambda: {},
+                research_disclaimer_fn=lambda: "",
+            )
+
+        self.assertEqual(len(payload["data"]), 4)
+        self.assertEqual(payload["meta"]["candidate_count"], 12)
+        self.assertEqual(payload["meta"]["display_count"], 4)
+        self.assertEqual(payload["meta"]["display_limit"], 4)
 
     def test_run_snapshot_rejects_local_quote_snapshot_when_disabled(self):
         import tempfile
@@ -2912,7 +3212,8 @@ class ScoringTest(unittest.TestCase):
                 "2024-01-01T14:30:00",
                 [{"rank": 1, "code": "600001", "name": "样本", "price": 10, "score": 90}],
             )
-            update = store.update_outcomes(FakeProvider(), signal_date="2024-01-01", strategy_name="tomorrow_picks")
+            with patch.object(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 50.0):
+                update = store.update_outcomes(FakeProvider(), signal_date="2024-01-01", strategy_name="tomorrow_picks")
             rows = store.signals_for_date("2024-01-01", "tomorrow_picks")
             metrics = store.metrics("tomorrow_picks", days=20)
 
@@ -2987,6 +3288,36 @@ class ScoringTest(unittest.TestCase):
         outcome = _compute_outcome(FakeProvider(), signal)
         self.assertTrue(outcome["excluded"])
         self.assertEqual(outcome["skip_reason"], "unbuyable_limit_up")
+
+    def test_strategy_validation_skips_tomorrow_high_open_chase(self):
+        from stock_analyzer.strategy_validation import _compute_outcome
+
+        class FakeProvider:
+            def get_history(self, code, days=180):
+                return pd.DataFrame(
+                    {
+                        "trade_date": ["20240101", "20240102", "20240103"],
+                        "open": [10.0, 10.31, 10.2],
+                        "high": [10.1, 10.5, 10.4],
+                        "low": [9.9, 10.1, 10.0],
+                        "price": [10.0, 10.2, 10.3],
+                    }
+                )
+
+        signal = {
+            "code": "600001",
+            "signal_date": "2024-01-01",
+            "price_at_signal": 10.0,
+            "strategy_name": "tomorrow_picks",
+            "market": "main",
+        }
+
+        with patch.object(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 3.0):
+            outcome = _compute_outcome(FakeProvider(), signal)
+
+        self.assertTrue(outcome["excluded"])
+        self.assertEqual(outcome["skip_reason"], "tomorrow_high_open_chase")
+        self.assertGreater(outcome["next_open_return"], 3.0)
 
     def test_validation_execution_cost_uses_liquidity_slippage(self):
         from stock_analyzer.strategy_validation import _execution_cost_pct
@@ -3189,6 +3520,8 @@ class ScoringTest(unittest.TestCase):
             )
             with patch.object(config, "VALIDATION_DB_PATH", validation_path), patch.object(
                 config, "STATE_PATH", "{}/state.json".format(tmpdir)
+            ), patch.object(
+                config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 50.0
             ), patch(
                 "stock_analyzer.providers.MarketDataProvider.prefetch_history",
                 return_value={"requested": 1, "unique_codes": 1, "downloaded": 1, "cached": 0, "failed": 0, "errors": []},
@@ -3553,6 +3886,71 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(payload["prediction"]["direction"], "down")
         self.assertIn("历史行情也不可用", "；".join(payload["risk_flags"]))
         self.assertEqual(payload["strategy_hits"], [])
+
+    def test_health_endpoint_exposes_factor_coverage_alerts_in_provider_health(self):
+        import tempfile
+
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "样本A", "price": 10, "pct_chg": 2, "turnover": 500000000},
+                {"code": "600002", "name": "样本B", "price": 11, "pct_chg": 1, "turnover": 450000000},
+                {"code": "600003", "name": "样本C", "price": 12, "pct_chg": 3, "turnover": 550000000},
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(config, "STATE_PATH", "{}/state.json".format(tmpdir)), patch.object(
+                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
+            ), patch.object(config, "VALIDATION_AUTO_UPDATE_ENABLED", False), patch.object(
+                config, "FACTOR_COVERAGE_ALERT_ZERO_RATIO", 0.30
+            ), patch(
+                "stock_analyzer.app.MarketDataProvider.get_realtime_quotes",
+                return_value=quotes,
+            ), patch(
+                "stock_analyzer.app.MarketDataProvider.health",
+                return_value={"quotes_source": "测试行情"},
+            ):
+                app = create_app()
+                response = app.test_client().get("/api/health")
+
+        payload = response.get_json()
+        alert_codes = {alert["code"] for alert in payload["health"]["alerts"]}
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["factor_coverage"]["degraded"])
+        self.assertIn("alphalite_coverage_zero", alert_codes)
+        self.assertIn("factor_coverage", payload["health"])
+
+    def test_horizon_refresh_failure_is_cached_without_thread_traceback(self):
+        import tempfile
+        import time
+
+        def fail_quotes(self):
+            raise RuntimeError("东方财富直连行情失败: disconnected")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(config, "STATE_PATH", "{}/state.json".format(tmpdir)), patch.object(
+                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
+            ), patch.object(config, "VALIDATION_AUTO_UPDATE_ENABLED", False), patch(
+                "stock_analyzer.app.MarketDataProvider.get_realtime_quotes",
+                fail_quotes,
+            ), patch(
+                "stock_analyzer.app.MarketDataProvider.health",
+                return_value={"quotes_source": "测试行情", "errors": []},
+            ):
+                app = create_app()
+                client = app.test_client()
+                first = client.get("/api/tomorrow-picks?top_n=18&market=all")
+                for _ in range(20):
+                    time.sleep(0.05)
+                    second = client.get("/api/tomorrow-picks?top_n=18&market=all")
+                    payload = second.get_json()
+                    if payload.get("meta", {}).get("fallback") == "live_refresh_failed":
+                        break
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(payload["meta"]["fallback"], "live_refresh_failed")
+        self.assertFalse(payload["ok"])
+        self.assertIn("东方财富直连行情失败", payload["error"])
 
     def test_strategy_validation_daily_summary_ignores_pending_outcomes(self):
         import tempfile

@@ -980,6 +980,7 @@ def score_tomorrow_candidates(
     top_n: int = 50,
     market_filter: str = "all",
     market_regime: Dict[str, object] = None,
+    display_cap: int = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
@@ -1093,12 +1094,14 @@ def score_tomorrow_candidates(
                 "tail_setup_score": round(tail_setup_score, 2),
                 "risk_penalty": round(risk_penalty, 2),
                 "risk_penalty_parts": risk_penalty_parts,
+                "mid_gain_weak_close_flag": bool(risk_penalty_parts.get("mid_gain_weak_close")),
                 "regime_bonus": round(regime_bonus, 2),
                 "regime_weight_profile": regime_profile,
                 "base_score": round(combined["base_score"], 2),
                 "raw_score": round(combined["raw_score"], 2),
                 "overheat_damp": round(combined["overheat_damp"], 4),
                 "score": round(max(0.0, min(100.0, final_score)), 2),
+                "holding_discipline": "次日了结，不隔夜持有到第3天",
                 "reasons": _build_tomorrow_reasons(
                     row,
                     liquidity_score,
@@ -1127,6 +1130,10 @@ def score_tomorrow_candidates(
 
     rows.sort(key=lambda item: item["score"], reverse=True)
     display_limit, min_score, gate_reason = _tomorrow_display_gate(top_n, market_regime)
+    if display_cap is None:
+        display_cap = int(coerce_number(getattr(config, "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", 8), 8))
+    if int(display_cap or 0) > 0:
+        display_limit = min(display_limit, int(display_cap))
     display_floor = min_score
     display_candidates = [row for row in rows if row["score"] >= display_floor]
     display_rows = _limit_tomorrow_display_concentration(
@@ -1180,6 +1187,7 @@ def score_tomorrow_candidates(
         "screened_count": len(rows),
         "display_count": len(display_rows),
         "display_limit": display_limit,
+        "display_cap": display_cap,
         "min_score": min_score,
         "display_min_score": display_floor,
         "primary_min_score": max(
@@ -1205,6 +1213,7 @@ def score_tomorrow_candidates(
         "strategy_label": "明天推荐",
         "prediction_type": "rank_score",
         "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
+        "holding_discipline": "次日了结，不隔夜持有到第3天",
         "strategy": "{} 明天推荐：面向收盘后次日承接，优先保留成交承接、温和动能、中期趋势、收盘结构和买入安全的票".format(
             analysis_window,
         ),
@@ -1229,6 +1238,14 @@ def score_swing_candidates(
     if df.empty:
         return [], _horizon_meta(top_n, market_filter, 0, "swing_2_5d_v1", "2-5天推荐")
 
+    if "alphalite_factor_ready" in df.columns:
+        history_factor_ratio = round(float((finite_series(df, "alphalite_factor_ready") > 0).mean()), 4)
+    else:
+        history_factor_ratio = 0.0
+    factor_degraded = history_factor_ratio < coerce_number(
+        getattr(config, "SWING_MIN_HISTORY_FACTOR_COVERAGE", 0.30),
+        0.30,
+    )
     context = _score_context(df, {})
     rows: List[Dict[str, object]] = []
     for _, row in df.iterrows():
@@ -1324,14 +1341,25 @@ def score_swing_candidates(
     rows.sort(key=lambda item: item["score"], reverse=True)
     min_score = coerce_number(getattr(config, "SWING_RECOMMENDATION_MIN_SCORE", 60.0), 60.0)
     eligible_rows = [row for row in rows if coerce_number(row.get("score")) >= min_score]
-    for rank, row in enumerate(eligible_rows[:top_n], start=1):
+    display_limit = int(top_n)
+    if factor_degraded:
+        display_limit = min(display_limit, int(getattr(config, "SWING_DEGRADED_DISPLAY_LIMIT", 8)))
+        for row in eligible_rows[:display_limit]:
+            _append_unique_reason(row, "历史因子覆盖不足，2-5天策略降级观察")
+            row["factor_degraded"] = True
+    for rank, row in enumerate(eligible_rows[:display_limit], start=1):
         row["rank"] = rank
     meta = _horizon_meta(top_n, market_filter, len(df), "swing_2_5d_v1", "2-5天推荐")
     meta["eligible_count"] = len(eligible_rows)
-    meta["display_count"] = len(eligible_rows[:top_n])
+    meta["display_count"] = len(eligible_rows[:display_limit])
+    meta["display_limit"] = display_limit
     meta["min_score"] = min_score
+    meta["history_factor_ready_ratio"] = history_factor_ratio
+    meta["factor_degraded"] = factor_degraded
+    if factor_degraded:
+        meta["degraded_reason"] = "历史因子覆盖不足，2-5天趋势延续因子降级；仅供观察。"
     meta["strategy"] = "2-5天推荐：偏好短周期趋势延续、温和放量、站上短均线、流动性足且涨幅未透支"
-    return eligible_rows[:top_n], meta
+    return eligible_rows[:display_limit], meta
 
 
 def score_position_candidates(
@@ -3691,8 +3719,17 @@ def _tomorrow_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
     elif volume_ratio >= 4:
         parts["volume_ratio"] = 5
 
+    has_close_range = price > 0 and high > low and low > 0
     close_location = _close_location(price, high, low)
-    if close_location < 0.35:
+    mid_gain_min = coerce_number(getattr(config, "TOMORROW_MID_GAIN_MIN_PCT", 4.5), 4.5)
+    mid_gain_max = coerce_number(getattr(config, "TOMORROW_MID_GAIN_MAX_PCT", 7.0), 7.0)
+    weak_close_line = coerce_number(getattr(config, "TOMORROW_MID_GAIN_WEAK_CLOSE_LOCATION", 0.6), 0.6)
+    if has_close_range and mid_gain_min <= pct < mid_gain_max and close_location < weak_close_line:
+        parts["mid_gain_weak_close"] = coerce_number(
+            getattr(config, "TOMORROW_MID_GAIN_WEAK_CLOSE_PENALTY", 7.0),
+            7.0,
+        )
+    if has_close_range and close_location < 0.35:
         parts["weak_tail_close"] = 8
     if open_price > 0 and price > 0:
         gain = (price / open_price - 1.0) * 100.0
@@ -3707,7 +3744,7 @@ def _tomorrow_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
         parts["late_chase_speed"] = 6
     elif speed < -1.2:
         parts["late_fade"] = 7
-    if close_location < 0.45:
+    if has_close_range and close_location < 0.45:
         parts["weak_tail_close"] = max(parts.get("weak_tail_close", 0), 10)
     if coerce_number(row.get("alphalite_factor_ready")) > 0:
         ret_20d = coerce_number(row.get("ret_20d"))
@@ -4047,7 +4084,9 @@ def _build_tomorrow_reasons(
     amplitude = coerce_number(row.get("amplitude"))
     high = coerce_number(row.get("high"))
     low = coerce_number(row.get("low"))
-    close_location = _close_location(coerce_number(row.get("price")), high, low)
+    price = coerce_number(row.get("price"))
+    has_close_range = price > 0 and high > low and low > 0
+    close_location = _close_location(price, high, low)
     if liquidity_score >= 72 or turnover >= 500000000:
         reasons.append("成交额靠前")
     if 1.2 <= volume_ratio <= 4.5:
@@ -4070,8 +4109,10 @@ def _build_tomorrow_reasons(
         reasons.append("买入安全较好")
     if tail_setup_score >= 72:
         reasons.append("收盘结构适合次日兑现")
-    elif close_location < 0.35:
+    elif has_close_range and close_location < 0.35:
         reasons.append("收盘回落需谨慎")
+    if has_close_range and risk_penalty >= 6 and 4.5 <= pct < 7 and close_location < 0.6:
+        reasons.append("4-7%涨幅且尾盘承接不足")
     if amplitude >= 9:
         reasons.append("波动偏大")
     if risk_penalty >= 8:

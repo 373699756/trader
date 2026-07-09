@@ -86,6 +86,7 @@ const els = {
   quoteSource: document.getElementById("quoteSource"),
   sentimentSource: document.getElementById("sentimentSource"),
   candidateCount: document.getElementById("candidateCount"),
+  factorCoverageStatus: document.getElementById("factorCoverageStatus"),
   hardFilterCount: document.getElementById("hardFilterCount"),
   marketSentiment: document.getElementById("marketSentiment"),
   riskBlacklistStatus: document.getElementById("riskBlacklistStatus"),
@@ -1102,9 +1103,41 @@ function renderMetrics(payload) {
   els.quoteSource.textContent = health.quotes_source || "-";
   els.sentimentSource.textContent = health.sentiment_source || "-";
   els.candidateCount.textContent = meta.candidate_count ?? "-";
+  renderFactorCoverageStatus(health.factor_coverage || meta.factor_coverage || payload.factor_coverage);
   renderHardFilterStatus(meta.hard_filter_report);
   els.marketSentiment.textContent = marketSentiment.score ? `${marketSentiment.score}` : "-";
   renderRiskBlacklistStatus(meta.risk_blacklist || payload.risk_blacklist);
+}
+
+function renderFactorCoverageStatus(coverage) {
+  if (!els.factorCoverageStatus) return;
+  let text = "-";
+  let level = "neutral";
+  let title = "暂无历史因子覆盖率信息";
+  if (coverage) {
+    const alerts = Array.isArray(coverage.alerts) ? coverage.alerts : [];
+    const readyPct = Number(coverage.alphalite_ready_ratio || 0) * 100;
+    const zeroPct = Number(coverage.alphalite_zero_coverage_ratio || 0) * 100;
+    title = `ready ${formatNumber(readyPct, 1)}%，zero ${formatNumber(zeroPct, 1)}%`;
+    if (alerts.length) {
+      text = `告警${alerts.length}`;
+      level = "error";
+      title = alerts.map(item => item.message || item.code || "因子覆盖率异常").join("；");
+    } else if (coverage.degraded) {
+      text = "降级";
+      level = "warn";
+    } else if (coverage.history_factors_enabled === false) {
+      text = "关闭";
+      level = "warn";
+      title = "历史因子未开启，2-5天和明日历史类因子不会参与打分。";
+    } else {
+      text = `${formatNumber(readyPct, 0)}%`;
+      level = "ok";
+    }
+  }
+  els.factorCoverageStatus.textContent = text;
+  els.factorCoverageStatus.dataset.level = level;
+  els.factorCoverageStatus.title = title;
 }
 
 function renderHardFilterStatus(report) {
