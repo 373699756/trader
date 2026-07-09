@@ -8,21 +8,14 @@
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand-block">
-          <h1>工作台</h1>
-          <p id="statusText">等待刷新</p>
-        </div>
-        <nav class="tabs side-nav" aria-label="榜单视图">
-          <button class="tab-button active" type="button" data-tab="overviewPanel">决策台</button>
-          <button class="tab-button" type="button" data-tab="todayPanel">推荐池</button>
-          <button class="tab-button" type="button" data-tab="validationPanel">策略验证</button>
-        </nav>
-      </aside>
-
       <main class="workspace">
         <header class="topbar">
+          <nav class="tabs top-nav" aria-label="榜单视图">
+            <button class="tab-button active" type="button" data-tab="todayPanel">推荐池</button>
+            <button class="tab-button" type="button" data-tab="validationPanel">策略验证</button>
+          </nav>
           <section class="status-line" aria-label="数据状态">
+            <span class="status-text-wrap"><strong id="statusText">等待刷新</strong></span>
             <span>行情 <strong id="quoteSource">-</strong></span>
             <span>舆情 <strong id="sentimentSource">-</strong></span>
             <span>候选 <strong id="candidateCount">-</strong></span>
@@ -31,118 +24,18 @@
             <span>黑名单 <strong id="riskBlacklistStatus">-</strong></span>
           </section>
           <div class="toolbar">
-            <label>
-              市场
-              <select id="marketSelect">
-                <option value="all">A股（沪深/创业/科创）</option>
-                <option value="main">主板</option>
-                <option value="chinext">创业板</option>
-                <option value="star">科创板</option>
-              </select>
-            </label>
-            <label>
-              动作
-              <select id="actionFilterSelect">
-                <option value="all">全部</option>
-                <option value="priority">优先跟踪</option>
-                <option value="watch">小仓观察</option>
-                <option value="wait">等待确认</option>
-                <option value="observe">只观察</option>
-              </select>
-            </label>
-            <label>
-              排序
-              <select id="sortSelect">
-                <option value="rank">默认排名</option>
-                <option value="quality">质量优先</option>
-                <option value="risk">风险最低</option>
-                <option value="score">综合分</option>
-                <option value="turnover">成交额</option>
-              </select>
-            </label>
-            <div class="glossary-control">
-              <button id="glossaryToggle" type="button" aria-expanded="false" aria-controls="glossaryPopover">常见名词</button>
-              <div id="glossaryPopover" class="glossary-popover" hidden>
-                <div class="glossary-popover-head">
-                  <strong>常见股票名词</strong>
-                  <span>用于阅读榜单，不构成买卖建议</span>
-                </div>
-                <div class="glossary-popover-grid">
-                  <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
-                  <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
-                  <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
-                  <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
-                  <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
-                  <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
-                  <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
-                  <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
-                </div>
-              </div>
-            </div>
             <button id="refreshButton" type="button">刷新</button>
           </div>
         </header>
 
-      <section class="tab-panel active" id="overviewPanel">
-        <section class="decision-desk" aria-label="今日决策台">
-          <article class="decision-hero">
-            <span>今日工作流</span>
-            <strong id="decisionRegimeLabel">-</strong>
-            <p id="decisionAdvice">等待行情刷新</p>
-          </article>
-          <article class="decision-card">
-            <span>强共识</span>
-            <strong id="decisionConsensusCount">-</strong>
-          </article>
-          <article class="decision-card">
-            <span>优先跟踪</span>
-            <strong id="decisionPriorityCount">-</strong>
-          </article>
-          <article class="decision-card">
-            <span>低风险候选</span>
-            <strong id="decisionAvgRisk">-</strong>
-          </article>
-        </section>
-
-        <section class="stock-predictor board" aria-label="单票涨跌预测">
-          <div class="board-header">
-            <h2>输入股票代码预测涨跌</h2>
-            <span>输出短线、明天和波段倾向</span>
-          </div>
-          <div class="stock-predictor-form">
-            <input id="stockPredictionInput" type="text" inputmode="numeric" maxlength="12" placeholder="例如 600000 / 300750 / 688981" />
-            <button id="stockPredictionBtn" class="primary-action" type="button">预测</button>
-          </div>
-          <div class="ops-status" id="stockPredictionStatus"></div>
-          <div id="stockPredictionResult" class="stock-prediction-result" hidden></div>
-        </section>
-
-      </section>
-
-      <section class="recommendation-grid tab-panel" id="todayPanel">
-        <section class="market-glossary" aria-label="常见股票名词解释">
-          <div class="market-glossary-head">
-            <h2>常见名词</h2>
-            <span>用于阅读下方榜单，不构成买卖建议</span>
-          </div>
-          <div class="market-glossary-grid">
-            <span><strong>PE</strong>市盈率，股价相对盈利的估值；低 PE 不一定便宜，要看盈利是否稳定。</span>
-            <span><strong>PB</strong>市净率，股价相对净资产的估值；常用于银行、周期、资产重行业。</span>
-            <span><strong>总市值</strong>股价乘总股本，反映公司整体市场规模。</span>
-            <span><strong>流通市值</strong>可交易股份对应市值，比总市值更影响短线资金容量。</span>
-            <span><strong>换手率</strong>成交量相对流通股本，越高代表交易越活跃，也可能过热。</span>
-            <span><strong>量比</strong>当前成交强度相对近期平均，放量启动时会升高。</span>
-            <span><strong>成交额</strong>实际成交金额，衡量流动性和资金参与度。</span>
-            <span><strong>综合分</strong>系统按量价、趋势、主题、风控和验证合成的筛选分，不等于买入结论。</span>
-          </div>
-        </section>
+      <section class="recommendation-grid tab-panel active" id="todayPanel">
         <section class="rec-pool-control board" aria-label="推荐池筛选">
-          <div class="board-header">
-            <h2>推荐池</h2>
-            <span>合并次日、短线和波段候选</span>
+          <div class="recommendation-action-summary">
+            <div id="recommendationActionSummary">
+              <div class="empty">等待推荐池数据...</div>
+            </div>
           </div>
           <div class="pool-tabs" role="tablist" aria-label="推荐周期筛选">
-            <button class="pool-tab" type="button" data-pool-filter="all">全部</button>
             <button class="pool-tab active" type="button" data-pool-filter="today">今天</button>
             <button class="pool-tab" type="button" data-pool-filter="next">明天</button>
             <button class="pool-tab" type="button" data-pool-filter="swing">2-5天</button>
@@ -167,13 +60,14 @@
                   <th>行业</th>
                   <th>动能分</th>
                   <th>舆情分</th>
-                  <th class="col-score">综合/买入安全</th>
-                  <th>解释/风险/验证</th>
+                  <th class="col-score">操作评分</th>
+                  <th class="col-action">动作</th>
+                  <th class="col-reasons">解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="shortTermBody">
                 <tr>
-                  <td colspan="16" class="empty">加载中...</td>
+                  <td colspan="17" class="empty">加载中...</td>
                 </tr>
               </tbody>
             </table>
@@ -198,13 +92,14 @@
                   <th>流动性</th>
                   <th>动能</th>
                   <th>趋势</th>
-                  <th class="col-score">综合/买入安全</th>
-                  <th>解释/风险/验证</th>
+                  <th class="col-score">操作评分</th>
+                  <th class="col-action">动作</th>
+                  <th class="col-reasons">解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="tomorrowBody">
                 <tr>
-                  <td colspan="16" class="empty">切换到本页后加载</td>
+                  <td colspan="17" class="empty">切换到本页后加载</td>
                 </tr>
               </tbody>
             </table>
@@ -229,13 +124,14 @@
                   <th class="col-market-cap">总市值</th>
                   <th>动量</th>
                   <th>趋势</th>
-                  <th class="col-score">综合/买入安全</th>
-                  <th>解释/风险/验证</th>
+                  <th class="col-score">操作评分</th>
+                  <th class="col-action">动作</th>
+                  <th class="col-reasons">解释/风险/验证</th>
                 </tr>
               </thead>
               <tbody id="swingBody">
                 <tr>
-                  <td colspan="16" class="empty">切换到本页后加载</td>
+                  <td colspan="17" class="empty">切换到本页后加载</td>
                 </tr>
               </tbody>
             </table>
@@ -267,22 +163,33 @@
             </div>
           </div>
 
-          <div class="validation-current-decision" id="validationSimpleDecision">
-            策略验证加载后，这里会给出一句话结论。
+          <div class="validation-tools-row">
+            <section class="tool-action-card" aria-label="分析与优化操作">
+              <div class="tool-action-block">
+                <div class="tool-action-row">
+                  <input id="stockPredictionInput" type="text" inputmode="numeric" maxlength="12" placeholder="股票代码" />
+                  <button id="stockPredictionBtn" class="primary-action" type="button">预测</button>
+                </div>
+                <div class="ops-status" id="stockPredictionStatus"></div>
+              </div>
+              <div class="tool-action-divider" aria-hidden="true"></div>
+              <div class="tool-action-block">
+                <div class="tool-action-row tool-action-row-secondary">
+                  <button id="generateTuningBtn" class="primary-action" type="button">DeepSeek 优化建议</button>
+                </div>
+                <div class="ops-status" id="tuningStatus"></div>
+              </div>
+            </section>
+
+            <section class="tool-result-card tool-result-card-shared" aria-label="结果显示">
+              <div id="toolResultPane" class="tool-result-pane">
+                <div class="empty">点击左侧按钮后在这里显示结果</div>
+              </div>
+            </section>
           </div>
 
-          <div class="strategy-tuning-panel">
-            <div class="strategy-tuning-head">
-              <div>
-                <span>DeepSeek 策略优化</span>
-                <strong id="tuningTitle">影子调参</strong>
-              </div>
-              <button id="generateTuningBtn" type="button">生成优化建议</button>
-            </div>
-            <div class="ops-status" id="tuningStatus">只生成建议并保存记录，不自动改正式策略。</div>
-            <div class="strategy-tuning-body" id="tuningBody">
-              <div class="empty">暂无调参建议</div>
-            </div>
+          <div class="validation-current-decision" id="validationSimpleDecision">
+            策略验证加载后，这里会给出一句话结论。
           </div>
 
           <div class="validation-summary-row validation-summary-compact">
@@ -370,16 +277,6 @@
       </section>
 
       </main>
-
-      <section class="details detail-drawer" id="detailsPanel" hidden>
-        <div class="details-header">
-          <h2 id="detailsTitle">舆情详情</h2>
-          <button id="closeDetails" type="button">关闭</button>
-        </div>
-        <div id="detailsSummary" class="details-summary"></div>
-        <div id="detailRadar" class="chart-box chart-box-radar"></div>
-        <div id="newsList" class="news-list"></div>
-      </section>
     </div>
 
     <footer>
@@ -397,6 +294,11 @@
       src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
       onerror="window.__echartsFailed = true"
     ></script>
+    <script src="{{ url_for('static', filename='validation-ui.js') }}"></script>
+    <script src="{{ url_for('static', filename='validation-renderers.js') }}"></script>
+    <script src="{{ url_for('static', filename='recommendation-utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='recommendation-renderers.js') }}"></script>
+    <script src="{{ url_for('static', filename='recommendation-tables.js') }}"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
   </body>
 </html>

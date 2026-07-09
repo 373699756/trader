@@ -5,7 +5,7 @@ import pandas as pd
 from . import config
 from .normalization import coerce_number, is_supported_code, market_type, normalize_code, rename_known_columns
 from .risk_blacklist import blacklist_risk_for_code
-from .scoring import STRATEGY_LABELS, build_strategy_consensus
+from .scoring import STRATEGY_LABELS
 
 
 HORIZON_STRATEGIES = {
@@ -54,8 +54,7 @@ def build_stock_prediction(
     }
     hits = horizons["short"]["strategy_hits"] + horizons["long"]["strategy_hits"]
     missed = horizons["short"]["missed_strategies"] + horizons["long"]["missed_strategies"]
-    consensus_rows = build_strategy_consensus(_ordered_strategy_rows(strategy_rows), minimum_appearances=1, top_n=50)
-    consensus = _find_row(code, consensus_rows) or {}
+    consensus = _prediction_consensus_from_hits(hits)
     verdict = _prediction_verdict(row, hits, consensus, market_regime)
     return {
         "ok": True,
@@ -103,17 +102,20 @@ def _build_horizon_prediction(
             hit["horizon_label"] = HORIZON_LABELS[horizon]
             hits.append(hit)
         else:
+            missed_reason = str(
+                (strategy_metas.get(strategy_name) or {}).get("missed_reason")
+                or "未进入该策略候选榜或被策略条件过滤"
+            )
             missed.append(
                 {
                     "horizon": horizon,
                     "horizon_label": HORIZON_LABELS[horizon],
                     "strategy_name": strategy_name,
                     "strategy_label": STRATEGY_LABELS.get(strategy_name, strategy_name),
-                    "reason": "未进入该策略候选榜或被策略条件过滤",
+                    "reason": missed_reason,
                 }
             )
-    consensus_rows = build_strategy_consensus(rows_for_horizon, minimum_appearances=1, top_n=50)
-    consensus = _find_row(code, consensus_rows) or {}
+    consensus = _prediction_consensus_from_hits(hits)
     return {
         "horizon": horizon,
         "label": HORIZON_LABELS[horizon],
@@ -122,17 +124,6 @@ def _build_horizon_prediction(
         "missed_strategies": missed,
         "consensus": consensus,
     }
-
-
-def _ordered_strategy_rows(strategy_rows: Dict[str, List[Dict[str, object]]]) -> Dict[str, List[Dict[str, object]]]:
-    ordered = {}
-    for name in HORIZON_STRATEGIES["short"] + HORIZON_STRATEGIES["long"]:
-        if name in strategy_rows:
-            ordered[name] = strategy_rows[name]
-    for name, rows in strategy_rows.items():
-        if name not in ordered:
-            ordered[name] = rows
-    return ordered
 
 
 def _candidate_row(code: str, candidates: pd.DataFrame):
@@ -367,6 +358,31 @@ def _find_row(code: str, rows: List[Dict[str, object]]) -> Dict[str, object]:
         if normalize_code(row.get("code")) == code:
             return row
     return {}
+
+
+def _prediction_consensus_from_hits(hits: List[Dict[str, object]]) -> Dict[str, object]:
+    if not hits:
+        return {}
+    strategies = []
+    horizons = []
+    for item in hits:
+        strategy_label = str(item.get("strategy_label") or "")
+        horizon_label = str(item.get("horizon_label") or "")
+        if strategy_label and strategy_label not in strategies:
+            strategies.append(strategy_label)
+        if horizon_label and horizon_label not in horizons:
+            horizons.append(horizon_label)
+    avg_score = sum(coerce_number(item.get("score"), 0.0) for item in hits) / max(len(hits), 1)
+    avg_risk = sum(coerce_number(item.get("risk_score"), 50.0) for item in hits) / max(len(hits), 1)
+    return {
+        "appearances": len(hits),
+        "strategy_count": len(strategies),
+        "label": "{}策略命中".format(len(hits)),
+        "strategies": strategies,
+        "horizons": horizons,
+        "avg_score": round(avg_score, 2),
+        "avg_risk": round(avg_risk, 2),
+    }
 
 
 def _strategy_hit(

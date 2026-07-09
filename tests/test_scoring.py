@@ -23,7 +23,6 @@ from stock_analyzer.risk_blacklist import attach_risk_blacklist, load_risk_black
 from stock_analyzer.recommendation_snapshot import load_recommendation_snapshot, save_recommendation_snapshot
 from stock_analyzer.scoring import (
     build_market_regime,
-    build_strategy_consensus,
     candidate_filter_report,
     limit_theme_concentration,
     prepare_candidates,
@@ -344,95 +343,6 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(regime["history_breadth20_pct"], 50.0)
         self.assertEqual(regime["history_factor_coverage_pct"], 100.0)
 
-    def test_build_strategy_consensus_collects_multi_strategy_overlap(self):
-        rows = build_strategy_consensus(
-            {
-                "short_term": [{"code": "600001", "name": "共识样本", "rank": 1, "score": 92, "market_label": "主板"}],
-                "swing_picks": [
-                    {
-                        "code": "600001",
-                        "name": "共识样本",
-                        "rank": 3,
-                        "score": 88,
-                        "market_label": "主板",
-                        "serenity_profile": {"quality_score": 82, "risk_score": 30, "confidence_score": 75},
-                        "agent_committee": {"final_score": 70, "final_action_label": "交易员小仓试单"},
-                    }
-                ],
-                "tomorrow_picks": [
-                    {
-                        "code": "600001",
-                        "name": "共识样本",
-                        "rank": 2,
-                        "score": 85,
-                        "market_label": "主板",
-                        "serenity_profile": {
-                            "quality_score": 80,
-                            "risk_score": 35,
-                            "confidence_score": 72,
-                            "evidence": [{"label": "动量强"}],
-                            "action_label": "优先跟踪",
-                        },
-                        "agent_committee": {
-                            "final_score": 78,
-                            "final_action_label": "组合经理批准",
-                        },
-                    }
-                ],
-            },
-            minimum_appearances=2,
-            top_n=10,
-        )
-
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["code"], "600001")
-        self.assertEqual(rows[0]["appearances"], 3)
-        self.assertIn("今天推荐", rows[0]["strategies"])
-        self.assertIn("2-5天推荐", rows[0]["strategies"])
-        self.assertIn("avg_quality", rows[0])
-        self.assertIn("avg_risk", rows[0])
-        self.assertIn("avg_agent_score", rows[0])
-        self.assertIn("组合经理批准", rows[0]["agent_actions"])
-        self.assertIn("action_label", rows[0])
-        self.assertIn("动量强", rows[0]["evidence"])
-
-    def test_build_strategy_consensus_can_keep_thirty_rows(self):
-        base_rows = []
-        second_rows = []
-        for index in range(35):
-            code = "600{:03d}".format(index + 1)
-            base_rows.append(
-                {
-                    "code": code,
-                    "name": "共识{}".format(index + 1),
-                    "rank": index + 1,
-                    "score": 90 - index * 0.2,
-                    "market_label": "主板",
-                    "serenity_profile": {"quality_score": 75, "risk_score": 35, "confidence_score": 70},
-                    "agent_committee": {"final_score": 72, "final_action_label": "组合经理批准"},
-                }
-            )
-            second_rows.append(
-                {
-                    "code": code,
-                    "name": "共识{}".format(index + 1),
-                    "rank": index + 2,
-                    "score": 88 - index * 0.2,
-                    "market_label": "主板",
-                    "serenity_profile": {"quality_score": 73, "risk_score": 38, "confidence_score": 68},
-                    "agent_committee": {"final_score": 70, "final_action_label": "交易员小仓试单"},
-                }
-            )
-
-        rows = build_strategy_consensus(
-            {"short_term": base_rows, "tomorrow_picks": second_rows},
-            minimum_appearances=2,
-            top_n=30,
-        )
-
-        self.assertEqual(len(rows), 30)
-        self.assertEqual(rows[0]["code"], "600001")
-
     def test_verdict_tier_bands_and_coverage_gate(self):
         from stock_analyzer.scoring import _verdict_tier
 
@@ -450,16 +360,6 @@ class ScoringTest(unittest.TestCase):
 
         row = pd.Series({"alphalite_coverage": 0.67, "ret_20d": 0.0, "breakout_20d": 0.0})
         self.assertAlmostEqual(_data_coverage(row), 0.67)
-
-    def test_consensus_stretch_rewards_agreement(self):
-        from stock_analyzer.scoring import _consensus_stretch
-
-        # 同一基础分，高一致性应被拉得比低一致性更高（>50 区间）。
-        high = _consensus_stretch(80, 1.0)
-        low = _consensus_stretch(80, 0.0)
-        self.assertGreater(high, low)
-        self.assertGreater(high, 80)
-        self.assertLess(low, 80)
 
     def test_overheat_damp_suppresses_extended_names(self):
         from stock_analyzer.scoring import _apply_overheat_damp, _overheat_damp_multiplier
@@ -883,67 +783,6 @@ class ScoringTest(unittest.TestCase):
         self.assertIn("factor_correlation", meta)
         self.assertIn("reversal_lowvol", meta["factor_correlation"])
 
-    def test_strategy_reliability_from_win_rate(self):
-        from stock_analyzer.scoring import _strategy_reliability
-
-        rel = _strategy_reliability(
-            {
-                "a": {"sample_count": 18, "win_rate_next_close": 70, "avg_next_close_return": 1.0},
-                "b": {"sample_count": 18, "win_rate_next_close": 30, "avg_next_close_return": -1.0},
-                "c": {},  # 无命中率 → 不产生乘子
-            }
-        )
-        self.assertGreater(rel["a"], 1.0)
-        self.assertLess(rel["b"], 1.0)
-        self.assertNotIn("c", rel)
-
-    def test_strategy_reliability_prefers_real_forward_samples(self):
-        from stock_analyzer.scoring import _strategy_reliability
-
-        rel = _strategy_reliability(
-            {
-                "real_good_replay_bad": {
-                    "sample_count": 80,
-                    "real_sample_count": 12,
-                    "replay_sample_count": 68,
-                    "real_win_rate_primary_net": 62,
-                    "real_avg_primary_return_net": 1.2,
-                    "win_rate_primary_net": 38,
-                    "avg_primary_return_net": -1.5,
-                },
-                "real_bad_replay_good": {
-                    "sample_count": 80,
-                    "real_sample_count": 12,
-                    "replay_sample_count": 68,
-                    "real_win_rate_primary_net": 42,
-                    "real_avg_primary_return_net": -0.8,
-                    "win_rate_primary_net": 72,
-                    "avg_primary_return_net": 2.5,
-                },
-            }
-        )
-
-        self.assertGreater(rel["real_good_replay_bad"], rel["real_bad_replay_good"])
-        self.assertLess(rel["real_good_replay_bad"], 1.0)
-        self.assertLess(rel["real_bad_replay_good"], 1.0)
-
-    def test_strategy_reliability_can_zero_decayed_real_strategy(self):
-        from stock_analyzer.scoring import _strategy_reliability
-
-        rel = _strategy_reliability(
-            {
-                "decayed": {
-                    "sample_count": 30,
-                    "real_sample_count": 25,
-                    "replay_sample_count": 0,
-                    "real_win_rate_primary_net": 35,
-                    "real_avg_primary_return_net": -0.4,
-                }
-            }
-        )
-
-        self.assertEqual(rel["decayed"], 0.0)
-
     def test_strategy_status_does_not_fallback_when_real_metric_is_zero(self):
         from stock_analyzer.strategy_health import strategy_status
 
@@ -1068,9 +907,9 @@ class ScoringTest(unittest.TestCase):
         import tempfile
 
         cases = [
-            {"thresholds": {"consensus_stretch_k": 0}},
             {"thresholds": {"verdict": 80}},
             {"thresholds": {"min_data_coverage": -1}},
+            {"thresholds": {"overheat_damp_floor": 2}},
         ]
         for bad in cases:
             with tempfile.TemporaryDirectory() as tmp:
@@ -1081,9 +920,9 @@ class ScoringTest(unittest.TestCase):
                     import stock_analyzer.scoring as scoring
 
                     _, thresholds = scoring._load_weight_overrides()
-                    self.assertGreater(thresholds["consensus_stretch_k"], 0)
                     self.assertIsInstance(thresholds["verdict"], dict)
                     self.assertTrue(0.0 <= thresholds["min_data_coverage"] <= 1.0)
+                    self.assertTrue(0.0 <= thresholds["overheat_damp_floor"] <= 1.0)
 
     @unittest.skip("旧卡脖子策略已下线，当前只保留今天/明天/2-5天三策略")
     def test_chokepoint_candidates_filter_and_chain(self):
@@ -1382,6 +1221,103 @@ class ScoringTest(unittest.TestCase):
 
         self.assertIn("alphalite_factor_ready", enriched.columns)
         self.assertEqual(enriched.iloc[0]["alphalite_factor_ready"], 0.0)
+
+    def test_alphalite_attach_reuses_factor_cache_for_same_history(self):
+        from stock_analyzer.app import TimedCache, _attach_alphalite_factors
+
+        quotes = pd.DataFrame(
+            [
+                {"code": "600001", "name": "样本", "price": 20, "pct_chg": 3.0, "turnover": 9e8,
+                 "turnover_rate": 7, "volume_ratio": 2.0, "sixty_day_pct": 18, "amplitude": 5},
+            ]
+        )
+        history = pd.DataFrame(
+            [
+                {"trade_date": "20260701", "code": "600001", "price": 18.0, "high": 18.2, "turnover": 8e8, "volume": 1000},
+                {"trade_date": "20260702", "code": "600001", "price": 19.0, "high": 19.2, "turnover": 8.5e8, "volume": 1100},
+                {"trade_date": "20260703", "code": "600001", "price": 20.0, "high": 20.2, "turnover": 9e8, "volume": 1200},
+                {"trade_date": "20260704", "code": "600001", "price": 20.5, "high": 20.6, "turnover": 9.2e8, "volume": 1300},
+                {"trade_date": "20260705", "code": "600001", "price": 20.8, "high": 21.0, "turnover": 9.4e8, "volume": 1400},
+                {"trade_date": "20260706", "code": "600001", "price": 21.0, "high": 21.1, "turnover": 9.6e8, "volume": 1500},
+            ]
+        )
+        cache = TimedCache(60)
+
+        class LocalProvider:
+            def get_cached_history(self, code, days=90):
+                return pd.DataFrame()
+
+        with patch.object(config, "ENABLE_HISTORY_FACTORS", True), patch.object(
+            config, "HISTORY_FACTORS_FETCH_ON_REQUEST", False
+        ), patch(
+            "stock_analyzer.app_support.load_local_history_frames",
+            return_value={"600001": history},
+        ), patch(
+            "stock_analyzer.app_support.build_alphalite_factors",
+            wraps=__import__("stock_analyzer.app_support", fromlist=["build_alphalite_factors"]).build_alphalite_factors,
+        ) as build_mock:
+            first = _attach_alphalite_factors(LocalProvider(), cache, prepare_candidates(quotes))
+            second = _attach_alphalite_factors(LocalProvider(), cache, prepare_candidates(quotes))
+
+        self.assertEqual(build_mock.call_count, 1)
+        self.assertEqual(first.iloc[0]["alphalite_factor_ready"], second.iloc[0]["alphalite_factor_ready"])
+
+    def test_sentiment_for_candidates_returns_stale_cache_without_blocking(self):
+        from stock_analyzer.app_support import sentiment_for_candidates
+        from stock_analyzer.providers import TimedCache
+
+        cache = TimedCache(60)
+        cache.set(
+            {
+                "entries": {
+                    "600001": {
+                        "value": {"score": 71.0, "summary": "旧缓存", "risk_words": []},
+                        "expires_at": 1.0,
+                    }
+                },
+                "refreshing": set(),
+            }
+        )
+
+        with patch.object(config, "ENABLE_INLINE_SENTIMENT", True), patch(
+            "stock_analyzer.app_support.threading.Thread.start",
+            return_value=None,
+        ) as start_mock, patch(
+            "stock_analyzer.app_support.score_stock_sentiment",
+            side_effect=AssertionError("stale cache should be returned immediately"),
+        ):
+            lookup = sentiment_for_candidates(
+                object(),
+                cache,
+                [{"code": "600001", "name": "样本"}],
+            )
+
+        self.assertEqual(lookup["600001"]["score"], 71.0)
+        self.assertEqual(lookup["600001"]["summary"], "旧缓存")
+        self.assertEqual(start_mock.call_count, 1)
+
+    def test_sentiment_for_candidates_returns_placeholder_for_missing_cache(self):
+        from stock_analyzer.app_support import sentiment_for_candidates
+        from stock_analyzer.providers import TimedCache
+
+        cache = TimedCache(60)
+
+        with patch.object(config, "ENABLE_INLINE_SENTIMENT", True), patch(
+            "stock_analyzer.app_support.threading.Thread.start",
+            return_value=None,
+        ) as start_mock, patch(
+            "stock_analyzer.app_support.score_stock_sentiment",
+            side_effect=AssertionError("missing cache should not block on sync sentiment fetch"),
+        ):
+            lookup = sentiment_for_candidates(
+                object(),
+                cache,
+                [{"code": "600001", "name": "样本"}],
+            )
+
+        self.assertEqual(lookup["600001"]["score"], 50.0)
+        self.assertEqual(lookup["600001"]["summary"], "舆情刷新中")
+        self.assertEqual(start_mock.call_count, 1)
 
     @unittest.skip("旧量价突破策略已下线，当前只保留今天/明天/2-5天三策略")
     def test_regime_adaptive_weights_boost_breakout_in_risk_on(self):
@@ -3338,7 +3274,7 @@ class ScoringTest(unittest.TestCase):
         self.assertGreaterEqual(payload["metrics"]["sample_count"], 4)
         self.assertEqual(payload["replay"]["version"], "tomorrow_picks_replay_v1")
 
-    def test_recommendations_endpoint_returns_market_regime_and_consensus(self):
+    def test_recommendations_endpoint_returns_market_regime(self):
         import tempfile
 
         quotes = pd.DataFrame(
@@ -3397,20 +3333,9 @@ class ScoringTest(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["meta"]["market_regime"]["level"], "risk_on")
-        self.assertTrue(payload["meta"]["strategy_consensus"]["rows"])
-        consensus = payload["meta"]["strategy_consensus"]["rows"][0]
-        self.assertEqual(consensus["code"], "600001")
-        self.assertGreaterEqual(consensus["appearances"], 2)
-        self.assertIn("avg_quality", consensus)
-        self.assertIn("avg_risk", consensus)
-        self.assertIn("avg_agent_score", consensus)
-        self.assertIn("trading_agents_reference", payload["meta"]["strategy_consensus"])
-        self.assertEqual(
-            payload["meta"]["strategy_consensus"]["trading_agents_reference"]["repo"],
-            "TauricResearch/TradingAgents",
-        )
+        self.assertNotIn("strategy_consensus", payload["meta"])
         self.assertEqual(payload["recommendations"]["short_term"][0]["code"], "600001")
-        self.assertIn("consensus_signal", payload["recommendations"]["short_term"][0])
+        self.assertNotIn("consensus_signal", payload["recommendations"]["short_term"][0])
         self.assertIn("serenity_profile", payload["recommendations"]["short_term"][0])
         self.assertIn("agent_committee", payload["recommendations"]["short_term"][0])
 
@@ -3664,46 +3589,6 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(payload["summary"]["down_count"], 0)
         self.assertGreater(payload["summary"]["win_rate"], 0)
 
-    def test_strategy_overview_endpoint_returns_market_regime(self):
-        import tempfile
-
-        quotes = pd.DataFrame(
-            [
-                {
-                    "code": "600001",
-                    "name": "芯片科技",
-                    "price": 12,
-                    "pct_chg": 3.2,
-                    "volume_ratio": 1.8,
-                    "turnover_rate": 5,
-                    "turnover": 700000000,
-                    "industry": "半导体",
-                    "sixty_day_pct": 18,
-                    "ytd_pct": 32,
-                    "amplitude": 5,
-                }
-            ]
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.object(config, "STATE_PATH", "{}/state.json".format(tmpdir)), patch.object(
-                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
-            ), patch(
-                "stock_analyzer.app.MarketDataProvider.get_realtime_quotes",
-                return_value=quotes,
-            ):
-                app = create_app()
-                client = app.test_client()
-                response = client.get("/api/strategy-overview?days=20")
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["market_regime"]["label"], "偏进攻")
-        self.assertEqual(len(payload["strategies"]), 3)
-        for name in ("short_term", "tomorrow_picks", "swing_picks"):
-            self.assertIn(name, [s["name"] for s in payload["strategies"]])
-
     def test_chokepoint_endpoint_returns_industry_map_when_no_matches(self):
         import tempfile
 
@@ -3794,6 +3679,171 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(mismatch.get_json()["snapshot"]["status"], "market_mismatch")
         self.assertEqual(matched.status_code, 200)
         self.assertEqual(matched.get_json()["recommendations"]["short_term"][0]["code"], "600001")
+
+    def test_recommendations_prefers_cached_snapshot_before_live_recompute(self):
+        import tempfile
+
+        payload = {
+            "ok": True,
+            "data": [{"code": "600001", "name": "快照样本"}],
+            "recommendations": {"short_term": [{"code": "600001", "name": "快照样本"}]},
+            "meta": {"market_filter": "all", "top_n": 18},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot_path = os.path.join(tmpdir, "latest.json")
+            save_recommendation_snapshot(snapshot_path, payload)
+            with patch.object(config, "RECOMMENDATION_SNAPSHOT_PATH", snapshot_path), patch.object(
+                config, "VALIDATION_DB_PATH", os.path.join(tmpdir, "validation.sqlite3")
+            ), patch.object(config, "DEFAULT_TOP_N", 18), patch.object(
+                config, "RECOMMENDATION_MAX_TOP_N", 18
+            ), patch.object(
+                config, "REFRESH_SECONDS", 30
+            ), patch(
+                "stock_analyzer.app.threading.Thread.start",
+                return_value=None,
+            ), patch(
+                "stock_analyzer.app.MarketDataProvider.get_realtime_quotes",
+                side_effect=AssertionError("should not recompute live quotes when snapshot is fresh"),
+            ):
+                app = create_app()
+                client = app.test_client()
+                response = client.get("/api/recommendations?market=all&top_n=18")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["recommendations"]["short_term"][0]["code"], "600001")
+        self.assertEqual(body["snapshot"]["source"], "disk_snapshot")
+
+    def test_recommendations_cold_start_returns_local_rows_before_deepseek_refresh(self):
+        import tempfile
+        import time
+
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600001",
+                    "name": "芯片设备",
+                    "price": 12,
+                    "pct_chg": 3.2,
+                    "speed": 1.5,
+                    "volume_ratio": 1.8,
+                    "turnover_rate": 5,
+                    "turnover": 700000000,
+                    "industry": "半导体设备",
+                    "sixty_day_pct": 18,
+                    "ytd_pct": 32,
+                    "amplitude": 5,
+                },
+                {
+                    "code": "600002",
+                    "name": "普通样本",
+                    "price": 9,
+                    "pct_chg": 0.8,
+                    "speed": 0.2,
+                    "volume_ratio": 1.1,
+                    "turnover_rate": 2,
+                    "turnover": 120000000,
+                    "industry": "银行",
+                    "sixty_day_pct": 6,
+                    "ytd_pct": 8,
+                    "amplitude": 3,
+                },
+            ]
+        )
+
+        def slow_rerank(rows, strategy_name, market_filter):
+            time.sleep(0.2)
+            return rows, {"enabled": True, "status": "ok", "strategy": strategy_name}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(config, "STATE_PATH", "{}/state.json".format(tmpdir)), patch.object(
+                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
+            ), patch.object(config, "RECOMMENDATION_SNAPSHOT_PATH", "{}/latest.json".format(tmpdir)), patch.object(
+                config, "ENABLE_INLINE_SENTIMENT", False
+            ), patch.object(
+                config, "ENABLE_MARKET_NEWS", False
+            ), patch.object(
+                config, "ENABLE_HISTORY_FACTORS", False
+            ), patch.object(
+                config, "ENABLE_HOT_RANKS", False
+            ), patch.object(
+                config, "ENABLE_INDUSTRY_STRENGTH", False
+            ), patch.object(
+                config, "ENABLE_DEEPSEEK_RUNTIME", True
+            ), patch(
+                "stock_analyzer.app.MarketDataProvider.get_realtime_quotes",
+                return_value=quotes,
+            ), patch(
+                "stock_analyzer.app_runtime_support.rerank_candidates",
+                side_effect=slow_rerank,
+            ), patch(
+                "stock_analyzer.app.threading.Thread.start",
+                return_value=None,
+            ):
+                app = create_app()
+                client = app.test_client()
+                response = client.get("/api/recommendations?top_n=10&market=all")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["snapshot"]["stage"], "local_only")
+        self.assertEqual(payload["meta"]["deepseek"]["short_term"]["status"], "async_pending")
+        self.assertEqual(payload["meta"]["deepseek"]["tomorrow_picks"]["status"], "async_pending")
+        self.assertEqual(payload["meta"]["deepseek"]["swing_picks"]["status"], "async_pending")
+
+    def test_recommendations_does_not_save_snapshot_synchronously(self):
+        import tempfile
+
+        quotes = pd.DataFrame(
+            [
+                {
+                    "code": "600001",
+                    "name": "芯片设备",
+                    "price": 12,
+                    "pct_chg": 3.2,
+                    "speed": 1.5,
+                    "volume_ratio": 1.8,
+                    "turnover_rate": 5,
+                    "turnover": 700000000,
+                    "industry": "半导体设备",
+                    "sixty_day_pct": 18,
+                    "ytd_pct": 32,
+                    "amplitude": 5,
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(config, "STATE_PATH", "{}/state.json".format(tmpdir)), patch.object(
+                config, "VALIDATION_DB_PATH", "{}/validation.sqlite3".format(tmpdir)
+            ), patch.object(config, "RECOMMENDATION_SNAPSHOT_PATH", "{}/latest.json".format(tmpdir)), patch.object(
+                config, "ENABLE_INLINE_SENTIMENT", False
+            ), patch.object(
+                config, "ENABLE_MARKET_NEWS", False
+            ), patch.object(
+                config, "ENABLE_HISTORY_FACTORS", False
+            ), patch.object(
+                config, "ENABLE_HOT_RANKS", False
+            ), patch.object(
+                config, "ENABLE_INDUSTRY_STRENGTH", False
+            ), patch(
+                "stock_analyzer.app.MarketDataProvider.get_realtime_quotes",
+                return_value=quotes,
+            ), patch(
+                "stock_analyzer.app.save_recommendation_snapshot",
+                side_effect=AssertionError("snapshot save should be async"),
+            ), patch(
+                "stock_analyzer.app.threading.Thread.start",
+                return_value=None,
+            ):
+                app = create_app()
+                client = app.test_client()
+                response = client.get("/api/recommendations?top_n=10&market=all")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["ok"])
 
     def test_eastmoney_normalization_maps_required_quote_fields(self):
         raw = pd.DataFrame(

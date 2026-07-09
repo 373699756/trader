@@ -418,6 +418,14 @@ _DEFAULT_WEIGHTS = {
             "quality": 1.04,
         },
     },
+    "decision_score": {
+        "base_score": 0.32,
+        "execution_score": 0.20,
+        "quality_score": 0.18,
+        "confidence_score": 0.12,
+        "committee_score": 0.10,
+        "risk_guard": 0.08,
+    },
 }
 
 
@@ -477,8 +485,6 @@ _DEFAULT_THRESHOLDS = {
     "min_data_coverage": 0.5,
     # 过热乘法抑制下限（_not_overextended_score/100 的地板）。
     "overheat_damp_floor": 0.6,
-    # 共识极化拉伸系数（一致→拉伸，分歧→压缩）。
-    "consensus_stretch_k": 1.3,
 }
 
 
@@ -506,10 +512,7 @@ def _load_weight_overrides() -> Tuple[Dict[str, object], Dict[str, object]]:
                         default.update(value)
                     continue
                 thresholds[key] = value
-            # 关键数值阈值兜底，避免非法值（如 k<=0 触发除零）打挂打分流程。
-            k = thresholds.get("consensus_stretch_k")
-            if not isinstance(k, (int, float)) or k <= 0:
-                thresholds["consensus_stretch_k"] = _DEFAULT_THRESHOLDS["consensus_stretch_k"]
+            # 关键数值阈值兜底，避免非法值打挂打分流程。
             cov = thresholds.get("min_data_coverage")
             if not isinstance(cov, (int, float)) or not (0.0 <= cov <= 1.0):
                 thresholds["min_data_coverage"] = _DEFAULT_THRESHOLDS["min_data_coverage"]
@@ -801,235 +804,6 @@ def _stddev(values: List[float]) -> float:
     mean = sum(nums) / len(nums)
     variance = sum((v - mean) ** 2 for v in nums) / len(nums)
     return variance ** 0.5
-
-
-def _consensus_stretch(score: float, agreement: float) -> float:
-    """A3：以 50 为中心做极化拉伸。
-
-    agreement≈1（策略高度一致）→ 把分数朝两端推；agreement≈0（互相打架）→ 朝 50 压缩。
-    k 取 THRESHOLDS.consensus_stretch_k（默认 1.3）。
-    """
-    k = coerce_number(THRESHOLDS.get("consensus_stretch_k"), 1.3)
-    if k <= 0:  # 防御非法覆盖导致的除零
-        k = 1.3
-    # gain 在 [1/k, k] 之间随一致性线性变化。
-    gain = (1.0 / k) + (k - 1.0 / k) * max(0.0, min(1.0, agreement))
-    return 50.0 + (score - 50.0) * gain
-
-
-def _strategy_reliability(strategy_metrics: Dict[str, Dict[str, object]]) -> Dict[str, float]:
-    """B2：把各策略真实样本净表现折成可信度乘子。
-
-    优先使用真实前瞻样本的主周期净胜率/净收益；真实样本不足时才轻度参考
-    回放样本，避免历史回放把共识权重虚高。
-    """
-    reliability: Dict[str, float] = {}
-    if not strategy_metrics:
-        return reliability
-    for name, metrics in strategy_metrics.items():
-        if not isinstance(metrics, dict):
-            continue
-        real_samples = int(metrics.get("real_sample_count") or 0)
-        replay_samples = int(metrics.get("replay_sample_count") or 0)
-        total_samples = int(metrics.get("sample_count") or 0)
-        health = strategy_status(metrics)
-        health_state = health.get("state")
-        health_weight = 1.0
-        if health_state == "retired":
-            reliability[name] = 0.0
-            continue
-        if health_state == "probation":
-            health_weight = max(0.0, min(1.0, coerce_number(getattr(config, "STRATEGY_DECAY_SOFT_WEIGHT", 0.5), 0.5)))
-        if real_samples >= 10:
-            win_rate = metrics.get("real_win_rate_primary_net")
-            avg_return = metrics.get("real_avg_primary_return_net")
-            confidence = min(1.0, real_samples / 30.0)
-        elif total_samples >= 20 and replay_samples > 0:
-            win_rate = metrics.get("win_rate_primary_net")
-            avg_return = metrics.get("avg_primary_return_net")
-            confidence = min(0.45, total_samples / 120.0)
-        else:
-            win_rate = metrics.get("win_rate_next_close")
-            avg_return = metrics.get("avg_next_close_return")
-            confidence = min(0.35, total_samples / 60.0) if total_samples else 0.0
-        if win_rate is None or confidence <= 0:
-            continue
-        win_component = (coerce_number(win_rate) - 50.0) / 10.0 * 0.04
-        return_component = coerce_number(avg_return) * 0.015
-        multiplier = 1.0 + (win_component + return_component) * confidence
-        reliability[name] = max(0.0, min(1.2, multiplier * health_weight))
-    return reliability
-
-
-def build_strategy_consensus(
-    strategy_rows: Dict[str, List[Dict[str, object]]],
-    minimum_appearances: int = 2,
-    top_n: int = 10,
-    strategy_metrics: Dict[str, Dict[str, object]] = None,
-) -> List[Dict[str, object]]:
-    available_strategies = [name for name, rows in strategy_rows.items() if rows]
-    strategy_count = len(available_strategies)
-    if strategy_count <= 0:
-        return []
-
-    # B2：把各策略的历史命中率折成可信度乘子（0.8~1.2），命中率高的策略票更被采信。
-    reliability = _strategy_reliability(strategy_metrics)
-
-    merged: Dict[str, Dict[str, object]] = {}
-    for strategy_name, rows in strategy_rows.items():
-        if not rows:
-            continue
-        strategy_label = STRATEGY_LABELS.get(strategy_name, strategy_name)
-        weight = reliability.get(strategy_name, 1.0)
-        if weight <= 0:
-            continue
-        for row in rows[:top_n]:
-            code = str(row.get("code") or "").strip()
-            if not code:
-                continue
-            item = merged.setdefault(
-                code,
-                {
-                    "code": code,
-                    "name": str(row.get("name", "")),
-                    "market_label": str(row.get("market_label", row.get("market", ""))),
-                    "theme": str(row.get("theme", "")),
-                    "appearances": 0,
-                    "rank_total": 0.0,
-                    "score_total": 0.0,
-                    "quality_total": 0.0,
-                    "confidence_total": 0.0,
-                    "risk_total": 0.0,
-                    "agent_total": 0.0,
-                    "best_rank": 999.0,
-                    "strategies": [],
-                    "strategy_names": [],
-                    "evidence": [],
-                    "actions": [],
-                    "agent_actions": [],
-                    "member_scores": [],
-                    "reliability_total": 0.0,
-                },
-            )
-            profile = row.get("serenity_profile") or {}
-            committee = row.get("agent_committee") or {}
-            item["appearances"] += 1
-            item["rank_total"] += coerce_number(row.get("rank"), 99.0)
-            item["score_total"] += coerce_number(row.get("score"))
-            item["quality_total"] += coerce_number(profile.get("quality_score"), row.get("score"))
-            item["confidence_total"] += coerce_number(profile.get("confidence_score"), 50.0)
-            item["risk_total"] += coerce_number(profile.get("risk_score"), 50.0)
-            item["agent_total"] += coerce_number(committee.get("final_score"), profile.get("quality_score", row.get("score")))
-            item["best_rank"] = min(coerce_number(item.get("best_rank"), 999.0), coerce_number(row.get("rank"), 99.0))
-            item["member_scores"].append(coerce_number(row.get("score")))
-            item["reliability_total"] += weight
-            if strategy_label not in item["strategies"]:
-                item["strategies"].append(strategy_label)
-            if strategy_name not in item["strategy_names"]:
-                item["strategy_names"].append(strategy_name)
-            if not item.get("theme") and row.get("theme"):
-                item["theme"] = str(row.get("theme"))
-            for evidence in profile.get("evidence", [])[:2]:
-                text = str(evidence.get("label", ""))
-                if text and text not in item["evidence"]:
-                    item["evidence"].append(text)
-            action = str(profile.get("action_label", ""))
-            if action and action not in item["actions"]:
-                item["actions"].append(action)
-            agent_action = str(committee.get("final_action_label", ""))
-            if agent_action and agent_action not in item["agent_actions"]:
-                item["agent_actions"].append(agent_action)
-
-    rows: List[Dict[str, object]] = []
-    for item in merged.values():
-        appearances = int(item["appearances"])
-        if appearances < minimum_appearances:
-            continue
-        avg_rank = item["rank_total"] / max(appearances, 1)
-        avg_score = item["score_total"] / max(appearances, 1)
-        avg_quality = item["quality_total"] / max(appearances, 1)
-        avg_confidence = item["confidence_total"] / max(appearances, 1)
-        avg_risk = item["risk_total"] / max(appearances, 1)
-        avg_agent_score = item["agent_total"] / max(appearances, 1)
-        ratio = round(appearances / strategy_count * 100, 2)
-        if appearances >= 4:
-            level, label = "high", "强共识"
-        elif appearances >= 3:
-            level, label = "medium", "中共识"
-        else:
-            level, label = "low", "弱共识"
-
-        # A3：跨策略分数离散度 → 一致性。一致(低离散)拉伸、分歧(高离散)压缩。
-        member_scores = item.get("member_scores") or [avg_score]
-        dispersion = _stddev(member_scores)
-        agreement = round(max(0.0, min(1.0, 1.0 - dispersion / 25.0)), 3)
-        # B2：可信度均值（>1 表示该票多来自高命中率策略）。
-        reliability_avg = item["reliability_total"] / max(appearances, 1)
-
-        base_consensus = (
-            avg_score * 0.32
-            + avg_quality * 0.25
-            + avg_confidence * 0.15
-            + avg_agent_score * 0.12
-            + (110.0 - avg_rank * 8.0) * 0.16
-            - max(0.0, avg_risk - 55.0) * 0.35
-        )
-        consensus_score = round(
-            max(0.0, min(100.0, _consensus_stretch(base_consensus, agreement) * reliability_avg)),
-            2,
-        )
-        action_label = _consensus_action(label, avg_quality, avg_confidence, avg_risk, avg_agent_score)
-        rows.append(
-            {
-                "code": item["code"],
-                "name": item["name"],
-                "market_label": item["market_label"],
-                "theme": item["theme"],
-                "appearances": appearances,
-                "strategy_count": strategy_count,
-                "consensus_ratio": ratio,
-                "best_rank": int(item["best_rank"]),
-                "avg_rank": round(avg_rank, 2),
-                "avg_score": round(avg_score, 2),
-                "avg_quality": round(avg_quality, 2),
-                "avg_confidence": round(avg_confidence, 2),
-                "avg_risk": round(avg_risk, 2),
-                "avg_agent_score": round(avg_agent_score, 2),
-                "dispersion": round(dispersion, 2),
-                "agreement": agreement,
-                "reliability": round(reliability_avg, 3),
-                "consensus_score": consensus_score,
-                "level": level,
-                "label": label,
-                "action_label": action_label,
-                "evidence": item["evidence"][:4],
-                "actions": item["actions"][:3],
-                "agent_actions": item["agent_actions"][:3],
-                "strategies": item["strategies"],
-                "strategy_names": item["strategy_names"],
-            }
-        )
-
-    rows.sort(
-        key=lambda item: (
-            item["appearances"],
-            item["consensus_score"],
-            -item["avg_risk"],
-            -item["avg_rank"],
-        ),
-        reverse=True,
-    )
-    return rows[:top_n]
-
-
-def _consensus_action(label: str, quality: float, confidence: float, risk: float, agent_score: float = 50.0) -> str:
-    if risk >= 72:
-        return "只观察"
-    if quality >= 72 and confidence >= 62 and risk <= 48 and agent_score >= 66:
-        return "{}优先".format(label)
-    if quality >= 62 and risk <= 58 and agent_score >= 56:
-        return "小仓跟踪"
-    return "等待确认"
 
 
 def score_candidates(
@@ -2472,6 +2246,10 @@ def _attach_signal_explanation(
     item["agent_committee"] = _build_agent_committee(item, row)
     profile = _build_serenity_profile(item, row)
     item["serenity_profile"] = profile
+    item["decision_score"] = _decision_score(item, profile)
+    item["sell_risk"] = _sell_risk(item, row, profile)
+    item["trade_action"] = _trade_action(item, profile)
+    item["exit_action"] = _exit_action(item, profile)
 
     # A2：把牛熊双分提升到行顶层，便于前端双进度条直接读取，
     # 复用 agent_committee 已算好的 bull/bear（避免重复实现）。
@@ -2481,7 +2259,7 @@ def _attach_signal_explanation(
 
     # A1 + A4：verdict 评级 + 数据覆盖硬门控。
     item["verdict"] = _verdict_tier(
-        item.get("score"),
+        item.get("decision_score", item.get("score")),
         profile.get("risk_score"),
         coerce_number(profile.get("data_coverage"), 0.0),
     )
@@ -2773,6 +2551,158 @@ def _build_serenity_profile(item: Dict[str, object], row: pd.Series) -> Dict[str
         "evidence": evidence[:5],
         "risk_reasons": _unique_strings(risk_reasons)[:5],
         "source": "借鉴 Serenity 系列库的结构化证据与 TradingAgents 的多角色投研决策流。",
+    }
+
+
+def _decision_score(item: Dict[str, object], profile: Dict[str, object]) -> float:
+    committee = item.get("agent_committee") or {}
+    base_score = coerce_number(item.get("score"), 0.0)
+    execution_score = coerce_number(item.get("execution_score"), 50.0)
+    quality_score = coerce_number(profile.get("quality_score"), base_score)
+    confidence_score = coerce_number(profile.get("confidence_score"), 50.0)
+    committee_score = coerce_number(committee.get("final_score"), 50.0)
+    risk_score = coerce_number(profile.get("risk_score"), 50.0)
+    weights = WEIGHTS.get("decision_score") or {}
+    score = (
+        base_score * coerce_number(weights.get("base_score"), 0.32)
+        + execution_score * coerce_number(weights.get("execution_score"), 0.20)
+        + quality_score * coerce_number(weights.get("quality_score"), 0.18)
+        + confidence_score * coerce_number(weights.get("confidence_score"), 0.12)
+        + committee_score * coerce_number(weights.get("committee_score"), 0.10)
+        + max(0.0, 100.0 - risk_score) * coerce_number(weights.get("risk_guard"), 0.08)
+    )
+    return round(max(0.0, min(100.0, score)), 2)
+
+
+def _sell_risk(item: Dict[str, object], row: pd.Series, profile: Dict[str, object]) -> Dict[str, object]:
+    reasons: List[str] = []
+    score = 8.0
+    pct = coerce_number(row.get("pct_chg"))
+    speed = coerce_number(row.get("speed"), coerce_number(row.get("five_min_pct")))
+    close_location = _close_location(
+        coerce_number(row.get("price")),
+        coerce_number(row.get("high")),
+        coerce_number(row.get("low")),
+    )
+    risk_score = coerce_number(profile.get("risk_score"), 0.0)
+    execution_score = coerce_number(item.get("execution_score"), 50.0)
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+
+    if pct >= 7.0:
+        score += 26.0
+        reasons.append("当日涨幅过高，适合防冲高回落")
+    elif pct >= 4.5:
+        score += 16.0
+        reasons.append("短线已有明显涨幅，注意兑现压力")
+
+    if speed <= -1.2:
+        score += 18.0
+        reasons.append("盘中转弱，存在回落风险")
+    elif speed <= -0.5:
+        score += 10.0
+        reasons.append("涨速回落，追价性价比下降")
+
+    if close_location < 0.32:
+        score += 22.0
+        reasons.append("收盘位置偏低，尾盘承接弱")
+    elif close_location < 0.45:
+        score += 12.0
+        reasons.append("尾盘承接一般")
+
+    if risk_score >= 72:
+        score += 20.0
+        reasons.append("综合风险偏高")
+    elif risk_score >= 58:
+        score += 10.0
+        reasons.append("风险开始抬升")
+
+    if execution_score <= 60:
+        score += 10.0
+        reasons.append("当前执行性一般")
+
+    if volume_ratio >= 4.5 and pct >= 4.0:
+        score += 8.0
+        reasons.append("放量冲高，次日分歧概率上升")
+
+    score = max(0.0, min(100.0, score))
+    if score >= 65:
+        level, label = "high", "高"
+    elif score >= 40:
+        level, label = "medium", "中"
+    else:
+        level, label = "low", "低"
+    return {
+        "score": round(score, 2),
+        "level": level,
+        "label": label,
+        "reasons": reasons[:3],
+    }
+
+
+def _trade_action(item: Dict[str, object], profile: Dict[str, object]) -> Dict[str, object]:
+    decision_score = coerce_number(item.get("decision_score"), item.get("score"))
+    sell_risk = item.get("sell_risk") or {}
+    sell_risk_score = coerce_number(sell_risk.get("score"), 50.0)
+    risk_score = coerce_number(profile.get("risk_score"), 50.0)
+    confidence = coerce_number(profile.get("confidence_score"), 50.0)
+    verdict_tier = str((item.get("verdict") or {}).get("tier") or "")
+
+    action = "watch_only"
+    label = "只观察"
+    position = 0.0
+    reason = "当前信号更适合观察，等待更好的买点。"
+
+    if decision_score >= 78 and sell_risk_score <= 38 and risk_score <= 42 and confidence >= 60 and verdict_tier in ("strong_buy", "buy", "watch"):
+        action = "buy_confirmed"
+        label = "确认买入"
+        position = 1.0
+        reason = "操作分高且风险可控，可按计划仓位执行。"
+    elif decision_score >= 68 and sell_risk_score <= 55 and risk_score <= 58:
+        action = "buy_small"
+        label = "小仓试单"
+        position = 0.35
+        reason = "信号偏多但仍有波动风险，宜先小仓验证。"
+    elif sell_risk_score >= 72 or risk_score >= 72:
+        action = "avoid_chase"
+        label = "避免追高"
+        position = 0.0
+        reason = "风险或过热信号偏强，不适合主动追价。"
+
+    return {
+        "action": action,
+        "label": label,
+        "position_size": position,
+        "reason": reason,
+    }
+
+
+def _exit_action(item: Dict[str, object], profile: Dict[str, object]) -> Dict[str, object]:
+    sell_risk = item.get("sell_risk") or {}
+    sell_risk_score = coerce_number(sell_risk.get("score"), 50.0)
+    risk_score = coerce_number(profile.get("risk_score"), 50.0)
+    decision_score = coerce_number(item.get("decision_score"), item.get("score"))
+
+    action = "hold"
+    label = "继续持有"
+    reason = "当前未出现明确的减仓或止损信号。"
+
+    if sell_risk_score >= 82 or risk_score >= 80:
+        action = "stop_loss"
+        label = "止损/退出"
+        reason = "风险显著抬升，优先保护本金。"
+    elif sell_risk_score >= 68:
+        action = "take_profit"
+        label = "逢高兑现"
+        reason = "短线兑现压力较大，适合主动锁定利润。"
+    elif sell_risk_score >= 52 or decision_score < 58:
+        action = "trim"
+        label = "减仓观察"
+        reason = "优势减弱，宜降低仓位继续跟踪。"
+
+    return {
+        "action": action,
+        "label": label,
+        "reason": reason,
     }
 
 
