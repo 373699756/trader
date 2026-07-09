@@ -64,6 +64,35 @@ class DeepSeekClientTest(unittest.TestCase):
         self.assertEqual(meta["status"], "strategy_not_supported")
         post.assert_not_called()
 
+    def test_coerce_model_supports_only_v4_models(self):
+        self.assertEqual(
+            deepseek_client._coerce_model("deepseek-v4-flash", "deepseek-v4-flash"),
+            "deepseek-v4-flash",
+        )
+        self.assertEqual(
+            deepseek_client._coerce_model("deepseek-v4-pro", "deepseek-v4-pro"),
+            "deepseek-v4-pro",
+        )
+        self.assertEqual(
+            deepseek_client._coerce_model("unsupported", "deepseek-v4-flash"),
+            "deepseek-v4-flash",
+        )
+
+    def test_coerce_base_url_supports_root_path(self):
+        self.assertEqual(deepseek_client._coerce_base_url("https://api.deepseek.com"), "https://api.deepseek.com")
+
+    def test_coerce_env_config_accepts_canonical_strategy_names(self):
+        env = {
+            "DEEPSEEK_ENABLED": "1",
+            "DEEPSEEK_API_KEY": "test-key",
+            "DEEPSEEK_STRATEGIES": "today_picks,swing_2_5d_picks",
+            "DEEPSEEK_PRO_STRATEGIES": "swing_2_5d_picks",
+        }
+        with patch.dict(os.environ, env, clear=False), patch.object(deepseek_client, "_load_dotenv_if_needed"):
+            config = deepseek_client._coerce_env_config()
+        self.assertEqual(config["strategies"], ["short_term", "swing_picks"])
+        self.assertEqual(config["pro_strategies"], ["swing_picks"])
+
     def test_safe_parse_json_tolerates_wrapped_model_output(self):
         parsed = deepseek_client._safe_parse_json(
             "下面是JSON:\n```json\n{\"decision\":\"watch\",\"rule_candidates\":[{\"field\":\"factor_snapshot.ret_20d\",}],}\n```\n请参考"
@@ -94,6 +123,11 @@ class DeepSeekClientTest(unittest.TestCase):
                                         "catalyst_score": 66,
                                         "theme_truth_score": 72,
                                         "event_risk_score": 18,
+                                        "event_type": "业绩",
+                                        "sentiment": 1,
+                                        "catalyst_strength": 84,
+                                        "time_sensitivity": "明天",
+                                        "already_priced_in": False,
                                     },
                                     {
                                         "code": "000002",
@@ -119,20 +153,80 @@ class DeepSeekClientTest(unittest.TestCase):
             "DEEPSEEK_API_KEY": "test-key",
             "DEEPSEEK_CACHE_ENABLED": "0",
             "DEEPSEEK_RETRY_COUNT": "0",
+            "DEEPSEEK_STRATEGIES": "swing_picks",
             "DEEPSEEK_VALIDATION_TIMEOUT_SECONDS": "6",
             "DEEPSEEK_VALIDATION_RETRY_COUNT": "0",
         }
         with patch.dict(os.environ, env, clear=False), patch.object(deepseek_client, "_load_dotenv_if_needed"), patch(
             "stock_analyzer.deepseek_client.requests.post", return_value=response
         ):
-            rows, meta = deepseek_client.rerank_candidates(self._rows(), "tech_potential")
+            rows, meta = deepseek_client.rerank_candidates(self._rows(), "swing_picks")
         self.assertEqual(meta["status"], "ok")
         top = rows[0]
         self.assertEqual(top["code"], "000001")
-        self.assertEqual(top["deepseek_horizon_score"], 94.8)
+        self.assertEqual(top["deepseek_horizon_score"], 96.97)
+        self.assertEqual(top["deepseek_event_score"], 76.06)
+        self.assertEqual(top["deepseek_event_bonus"], 2.17)
+        self.assertEqual(top["deepseek_event_penalty"], 0.0)
         self.assertEqual(top["deepseek_catalyst_score"], 66)
         self.assertEqual(top["deepseek_theme_truth_score"], 72)
         self.assertEqual(top["deepseek_event_risk_score"], 18)
+        self.assertEqual(top["deepseek_event_type"], "业绩")
+        self.assertEqual(top["deepseek_sentiment"], 1)
+        self.assertEqual(top["deepseek_catalyst_strength"], 84)
+        self.assertEqual(top["deepseek_time_sensitivity"], "明天")
+        self.assertFalse(top["deepseek_already_priced_in"])
+        self.assertNotIn("000002", [row["code"] for row in rows])
+        self.assertEqual(meta["filtered"], 1)
+
+    def test_rerank_filters_high_penalty_without_veto(self):
+        response = MagicMock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "results": [
+                                    {
+                                        "code": "000001",
+                                        "llm_score": 80,
+                                        "horizon_up_score": 80,
+                                        "action": "watch",
+                                        "veto": False,
+                                        "penalty": 30,
+                                        "reason": "风险过高但未否决",
+                                        "risk_flags": ["事件风险高"],
+                                    }
+                                ]
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 12},
+        }
+        env = {
+            "DEEPSEEK_ENABLED": "1",
+            "DEEPSEEK_API_KEY": "test-key",
+            "DEEPSEEK_CACHE_ENABLED": "0",
+            "DEEPSEEK_RETRY_COUNT": "0",
+            "DEEPSEEK_STRATEGIES": "swing_picks",
+        }
+        rows = self._rows() + [
+            {"code": "000004", "name": "样本D", "score": 55, "pct_chg": 0.5},
+            {"code": "000005", "name": "样本E", "score": 54, "pct_chg": 0.2},
+        ]
+        with patch.dict(os.environ, env, clear=False), patch.object(deepseek_client, "_load_dotenv_if_needed"), patch(
+            "stock_analyzer.deepseek_client.requests.post", return_value=response
+        ):
+            output_rows, meta = deepseek_client.rerank_candidates(rows, "swing_picks")
+        self.assertNotIn("000001", [row["code"] for row in output_rows])
+        self.assertIn("000001", meta["filtered_codes"])
+        self.assertGreaterEqual(meta["filter_reasons"].get("deepseek_penalty_high", 0), 1)
 
     def test_validation_review_supports_swing_strategy_rules(self):
         response = MagicMock()
@@ -171,6 +265,7 @@ class DeepSeekClientTest(unittest.TestCase):
             "DEEPSEEK_API_KEY": "test-key",
             "DEEPSEEK_CACHE_ENABLED": "0",
             "DEEPSEEK_RETRY_COUNT": "0",
+            "DEEPSEEK_STRATEGIES": "swing_picks",
             "DEEPSEEK_VALIDATION_TIMEOUT_SECONDS": "6",
             "DEEPSEEK_VALIDATION_RETRY_COUNT": "0",
         }
@@ -196,11 +291,34 @@ class DeepSeekClientTest(unittest.TestCase):
         self.assertEqual(review["rule_candidates"][0]["field"], "turnover_rate")
         request_payload = post.call_args.kwargs["json"]
         self.assertEqual(post.call_args.kwargs["timeout"], 6.0)
-        self.assertIn("5-10日", request_payload["messages"][1]["content"])
+        self.assertIn("2-5日", request_payload["messages"][1]["content"])
         self.assertIn('"factor_snapshot"', request_payload["messages"][1]["content"])
         self.assertIn('"ret_20d": 12.3457', request_payload["messages"][1]["content"])
         self.assertNotIn('"ignored"', request_payload["messages"][1]["content"])
         self.assertGreaterEqual(request_payload["max_tokens"], 700)
+
+    def test_rerank_request_uses_official_chat_endpoint(self):
+        response = MagicMock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({"results": []})}}],
+            "usage": {"total_tokens": 1},
+        }
+        env = {
+            "DEEPSEEK_ENABLED": "1",
+            "DEEPSEEK_API_KEY": "test-key",
+            "DEEPSEEK_CACHE_ENABLED": "0",
+            "DEEPSEEK_RETRY_COUNT": "0",
+            "DEEPSEEK_STRATEGIES": "swing_2_5d_picks",
+        }
+        with patch.dict(os.environ, env, clear=False), patch.object(deepseek_client, "_load_dotenv_if_needed"), patch(
+            "stock_analyzer.deepseek_client.requests.post", return_value=response
+        ) as post:
+            _, meta = deepseek_client.rerank_candidates(self._rows(), "swing_2_5d_picks")
+        called_url = post.call_args.args[0] if post.call_args.args else post.call_args.kwargs.get("url")
+        self.assertEqual(called_url, "https://api.deepseek.com/chat/completions")
+        self.assertEqual(meta["strategy"], "swing_picks")
 
     def test_validation_review_reports_timeout_status(self):
         env = {
@@ -232,51 +350,17 @@ class DeepSeekClientTest(unittest.TestCase):
         self.assertEqual(payload["deepseek_review"]["status"], "runtime_disabled")
         review.assert_not_called()
 
-    def test_hidden_strategy_route_skips_deepseek_rerank(self):
+    def test_hidden_strategy_route_is_removed(self):
         from stock_analyzer import config
         from stock_analyzer.app import create_app
 
-        provider = MagicMock()
-        provider.get_realtime_quotes.return_value = pd.DataFrame([{"code": "000001", "name": "样本A"}])
-        provider.health.return_value = {}
-        candidates = pd.DataFrame([{"code": "000001", "name": "样本A", "pct_chg": 3, "turnover": 80000000}])
-        rows = [{"code": "000001", "name": "样本A", "score": 80}]
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "validation.sqlite3")
-            with patch.object(config, "VALIDATION_DB_PATH", db_path), patch.object(
-                config, "ENABLE_DEEPSEEK_RUNTIME", True
-            ), patch.object(
-                config, "DEEPSEEK_RERANK_DISABLED_STRATEGIES", "tech_potential,chokepoint_picks"
-            ), patch(
-                "stock_analyzer.app.MarketDataProvider", return_value=provider
-            ), patch(
-                "stock_analyzer.app.prepare_candidates", return_value=candidates
-            ), patch(
-                "stock_analyzer.app.load_event_risk", return_value={}
-            ), patch(
-                "stock_analyzer.app.attach_event_risk", side_effect=lambda frame, payload: frame
-            ), patch(
-                "stock_analyzer.app.load_risk_blacklist", return_value={}
-            ), patch(
-                "stock_analyzer.app.attach_risk_blacklist", side_effect=lambda frame, payload: frame
-            ), patch(
-                "stock_analyzer.app.load_fundamentals", return_value={}
-            ), patch(
-                "stock_analyzer.app.attach_fundamental_factors", side_effect=lambda frame, payload: frame
-            ), patch(
-                "stock_analyzer.app.build_market_regime", return_value={}
-            ), patch(
-                "stock_analyzer.app.score_tech_potential_candidates", return_value=(rows, {"strategy_version": "tech_test"})
-            ), patch(
-                "stock_analyzer.app.rerank_candidates"
-            ) as rerank:
+            with patch.object(config, "VALIDATION_DB_PATH", db_path), patch.object(config, "VALIDATION_AUTO_UPDATE_ENABLED", False):
                 app = create_app()
                 app.config["TESTING"] = True
                 response = app.test_client().get("/api/tech-potential?top_n=10")
-        self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
-        self.assertEqual(payload["meta"]["deepseek"]["status"], "strategy_rerank_disabled")
-        rerank.assert_not_called()
+        self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":

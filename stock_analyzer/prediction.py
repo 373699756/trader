@@ -10,7 +10,7 @@ from .scoring import STRATEGY_LABELS, build_strategy_consensus
 
 HORIZON_STRATEGIES = {
     "short": ("short_term", "tomorrow_picks", "swing_picks"),
-    "long": ("long_term", "position_picks", "tech_potential", "chokepoint_picks"),
+    "long": (),
 }
 
 HORIZON_LABELS = {

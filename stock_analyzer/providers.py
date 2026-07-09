@@ -49,7 +49,7 @@ class MarketDataProvider:
             snapshot = self._load_quote_snapshot()
             if snapshot is not None and not snapshot.empty:
                 self.status.quotes_source = "本地快照"
-                self.status.last_quote_refresh = datetime.now().isoformat(timespec="seconds")
+                self.status.last_quote_refresh = snapshot.attrs.get("snapshot_mtime") or datetime.now().isoformat(timespec="seconds")
                 self.status.errors = errors
                 return snapshot
             self.status.quotes_source = "unavailable"
@@ -455,7 +455,8 @@ class MarketDataProvider:
         try:
             if not path.exists():
                 return None
-            age = time.time() - path.stat().st_mtime
+            stat = path.stat()
+            age = time.time() - stat.st_mtime
             if age > config.QUOTE_SNAPSHOT_MAX_AGE_SECONDS:
                 return None
             df = pd.read_json(path)
@@ -463,6 +464,7 @@ class MarketDataProvider:
             return None
         if df.empty or len(df) < config.QUOTE_SNAPSHOT_MIN_ROWS:
             return None
+        df.attrs["snapshot_mtime"] = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
         return df
 
 

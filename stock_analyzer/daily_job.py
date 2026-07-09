@@ -37,26 +37,63 @@ def main() -> int:
     parser.add_argument("--factor-ic", action="store_true", help="基于真实验证样本刷新因子 IC 文件")
     parser.add_argument("--calibrate-live", action="store_true", help="基于明天预测真实验证样本校准权重")
     parser.add_argument("--write-weights", action="store_true", help="与 --calibrate-live 配合，确认写入 weights.json")
+    parser.add_argument("--backup-validation", action="store_true", help="备份荐股验证数据库")
+    parser.add_argument("--list-validation-backups", action="store_true", help="列出荐股验证数据库备份")
+    parser.add_argument("--restore-validation", default="", help="从指定备份文件还原荐股验证数据库；还原前会自动备份当前库")
     parser.add_argument("--strategy", default="all", help="策略名；all 表示所有快照策略")
     parser.add_argument("--market", default="all", choices=("all", "main", "chinext", "star"))
     args = parser.parse_args()
 
-    if not args.snapshot and not args.update and not args.paper_trade and not args.factor_snapshot and not args.factor_ic and not args.calibrate_live:
-        parser.error("至少指定 --snapshot、--update、--paper-trade、--factor-snapshot、--factor-ic 或 --calibrate-live")
+    if not any(
+        (
+            args.snapshot,
+            args.update,
+            args.paper_trade,
+            args.factor_snapshot,
+            args.factor_ic,
+            args.calibrate_live,
+            args.backup_validation,
+            args.list_validation_backups,
+            bool(args.restore_validation),
+        )
+    ):
+        parser.error("至少指定一个任务参数")
 
-    from .paper_trading import PaperTradingStore
+    from .validation_backup import backup_validation_db, list_validation_backups, restore_validation_db
+
+    if args.list_validation_backups:
+        print(json.dumps({"ok": True, "backups": list_validation_backups(config.VALIDATION_BACKUP_PATH)}, ensure_ascii=False, indent=2))
+        return 0
+    if args.restore_validation:
+        payload = restore_validation_db(
+            args.restore_validation,
+            config.VALIDATION_DB_PATH,
+            config.VALIDATION_BACKUP_PATH,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0 if payload.get("ok") else 1
+
     from .providers import MarketDataProvider
     from .snapshot import SNAPSHOT_STRATEGIES, run_snapshots
     from .strategy_validation import StrategyValidationStore
 
     provider = MarketDataProvider()
     store = StrategyValidationStore(config.VALIDATION_DB_PATH)
-    paper_store = PaperTradingStore(config.PAPER_TRADING_DB_PATH)
     strategies = _parse_strategies(args.strategy, SNAPSHOT_STRATEGIES)
-    payload = {"ok": True, "snapshot": [], "update": [], "paper_trade": [], "factor_snapshot": {}, "factor_ic": {}, "calibrate_live": {}}
+    payload = {
+        "ok": True,
+        "snapshot": [],
+        "update": [],
+        "paper_trade": [],
+        "factor_snapshot": {},
+        "factor_ic": {},
+        "calibrate_live": {},
+        "backup_validation": {},
+    }
 
     if args.snapshot:
         payload["snapshot"] = run_snapshots(provider, store, strategies, market=args.market)
+        args.backup_validation = True
     if args.update:
         for strategy in strategies:
             result = store.update_outcomes(provider, strategy_name=strategy)
@@ -64,6 +101,9 @@ def main() -> int:
         args.factor_snapshot = True
         args.factor_ic = True
     if args.paper_trade:
+        from .paper_trading import PaperTradingStore
+
+        paper_store = PaperTradingStore(config.PAPER_TRADING_DB_PATH)
         for strategy in strategies:
             result = paper_store.run_paper_trade(provider, store, strategy)
             payload["paper_trade"].append({"strategy": strategy, "result": result})
@@ -98,6 +138,12 @@ def main() -> int:
         payload["tomorrow_iteration"] = _save_iteration_payload(
             payload["calibrate_live"],
             applied=payload["calibrate_live"].get("status") == "written",
+        )
+    if args.backup_validation:
+        payload["backup_validation"] = backup_validation_db(
+            config.VALIDATION_DB_PATH,
+            config.VALIDATION_BACKUP_PATH,
+            label="daily_job",
         )
 
     print(json.dumps(payload, ensure_ascii=False, indent=2))

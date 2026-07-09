@@ -14,27 +14,13 @@ from .risk_rules import simulate_exit
 PRIMARY_RETURN_BY_STRATEGY = {
     "short_term": ("signal_next_close_return", 1, "次日"),
     "tomorrow_picks": ("next_close_return", 1, "次日开盘入场"),
-    "reversal_picks": ("signal_hold_5d_return", 5, "5日"),
-    "swing_picks": ("signal_hold_10d_return", 10, "10日"),
-    "breakout_picks": ("signal_hold_10d_return", 10, "10日"),
-    "long_term": ("signal_hold_20d_return", 20, "20日"),
-    "position_picks": ("signal_hold_20d_return", 20, "20日"),
-    "tech_potential": ("signal_hold_20d_return", 20, "20日"),
-    "chokepoint_picks": ("signal_hold_20d_return", 20, "20日"),
-    "smallcap_value_picks": ("signal_hold_20d_return", 20, "20日"),
+    "swing_picks": ("signal_hold_5d_return", 5, "5日"),
 }
 
 EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY = {
     "short_term": ("next_close_return", 1, "次日开盘入场"),
     "tomorrow_picks": ("next_close_return", 1, "次日开盘入场"),
-    "reversal_picks": ("hold_5d_return", 5, "5日开盘入场"),
-    "swing_picks": ("hold_10d_return", 10, "10日开盘入场"),
-    "breakout_picks": ("hold_10d_return", 10, "10日开盘入场"),
-    "long_term": ("hold_20d_return", 20, "20日开盘入场"),
-    "position_picks": ("hold_20d_return", 20, "20日开盘入场"),
-    "tech_potential": ("hold_20d_return", 20, "20日开盘入场"),
-    "chokepoint_picks": ("hold_20d_return", 20, "20日开盘入场"),
-    "smallcap_value_picks": ("hold_20d_return", 20, "20日开盘入场"),
+    "swing_picks": ("hold_5d_return", 5, "5日开盘入场"),
 }
 
 
@@ -57,14 +43,49 @@ class StrategyValidationStore:
         rows = list(rows)
         saved = 0
         with sqlite3.connect(self.db_path, timeout=30) as conn:
-            old_ids = conn.execute(
+            conn.execute(
                 """
-                SELECT id
-                FROM strategy_signals
-                WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                INSERT OR REPLACE INTO strategy_signal_batches
+                (strategy_name, strategy_version, signal_date, signal_time, saved_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (strategy_name, strategy_version, signal_date),
-            ).fetchall()
+                (
+                    strategy_name,
+                    strategy_version,
+                    signal_date,
+                    signal_time,
+                    len(rows),
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            if "replay" in str(strategy_version or "").lower():
+                old_ids = conn.execute(
+                    """
+                    SELECT id
+                    FROM strategy_signals
+                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                    """,
+                    (strategy_name, strategy_version, signal_date),
+                ).fetchall()
+                delete_sql = """
+                    DELETE FROM strategy_signals
+                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                    """
+                delete_params = (strategy_name, strategy_version, signal_date)
+            else:
+                old_ids = conn.execute(
+                    """
+                    SELECT id
+                    FROM strategy_signals
+                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                    """,
+                    (strategy_name, signal_date),
+                ).fetchall()
+                delete_sql = """
+                    DELETE FROM strategy_signals
+                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                    """
+                delete_params = (strategy_name, signal_date)
             if old_ids:
                 conn.executemany(
                     "DELETE FROM strategy_execution_skips WHERE signal_id = ?",
@@ -74,13 +95,7 @@ class StrategyValidationStore:
                     "DELETE FROM strategy_outcomes WHERE signal_id = ?",
                     [(row[0],) for row in old_ids],
                 )
-                conn.execute(
-                    """
-                    DELETE FROM strategy_signals
-                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
-                    """,
-                    (strategy_name, strategy_version, signal_date),
-                )
+                conn.execute(delete_sql, delete_params)
             for row in rows:
                 code = normalize_code(row.get("code"))
                 rank = int(row.get("rank") or 0)
@@ -122,18 +137,22 @@ class StrategyValidationStore:
         where = ""
         params = []
         if strategy_name:
-            where = "WHERE strategy_name = ?"
+            where = "WHERE b.strategy_name = ?"
             params.append(strategy_name)
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             rows = conn.execute(
                 """
-                SELECT signal_date, strategy_name, COUNT(*) AS count, MAX(signal_time) AS signal_time,
-                       SUM(CASE WHEN lower(strategy_version) LIKE '%replay%' THEN 0 ELSE 1 END) AS real_count,
-                       SUM(CASE WHEN lower(strategy_version) LIKE '%replay%' THEN 1 ELSE 0 END) AS replay_count
-                FROM strategy_signals
+                SELECT b.signal_date, b.strategy_name, COALESCE(COUNT(s.id), 0) AS count, MAX(b.signal_time) AS signal_time,
+                       COALESCE(SUM(CASE WHEN s.id IS NOT NULL AND lower(s.strategy_version) LIKE '%replay%' THEN 0 WHEN s.id IS NOT NULL THEN 1 ELSE 0 END), 0) AS real_count,
+                       COALESCE(SUM(CASE WHEN s.id IS NOT NULL AND lower(s.strategy_version) LIKE '%replay%' THEN 1 ELSE 0 END), 0) AS replay_count
+                FROM strategy_signal_batches b
+                LEFT JOIN strategy_signals s
+                  ON s.strategy_name = b.strategy_name
+                 AND s.signal_date = b.signal_date
+                 AND s.strategy_version = b.strategy_version
                 {}
-                GROUP BY signal_date, strategy_name
-                ORDER BY signal_date DESC, strategy_name ASC
+                GROUP BY b.signal_date, b.strategy_name
+                ORDER BY b.signal_date DESC, b.strategy_name ASC
                 LIMIT 120
                 """.format(where),
                 params,
@@ -146,7 +165,13 @@ class StrategyValidationStore:
                 "signal_time": row[3],
                 "real_count": row[4] or 0,
                 "replay_count": row[5] or 0,
-                "sample_type": "mixed" if (row[4] or 0) and (row[5] or 0) else ("replay" if (row[5] or 0) else "real"),
+                "sample_type": (
+                    "empty"
+                    if not (row[2] or 0)
+                    else "mixed"
+                    if (row[4] or 0) and (row[5] or 0)
+                    else ("replay" if (row[5] or 0) else "real")
+                ),
             }
             for row in rows
         ]
@@ -189,7 +214,7 @@ class StrategyValidationStore:
             row = conn.execute(
                 """
                 SELECT signal_date
-                FROM strategy_signals
+                FROM strategy_signal_batches
                 WHERE strategy_name = ?
                 ORDER BY signal_date DESC, signal_time DESC
                 LIMIT 1
@@ -208,6 +233,98 @@ class StrategyValidationStore:
                 rows.append(item)
         rows.sort(key=lambda item: int(item.get("rank") or 9999))
         return rows
+
+    def prune_strategies(self, allowed_strategies: Iterable[str]) -> Dict[str, int]:
+        allowed = [str(item) for item in allowed_strategies if str(item or "").strip()]
+        if not allowed:
+            return {"deleted_signals": 0, "deleted_batches": 0}
+        placeholders = ",".join("?" for _ in allowed)
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            old_ids = conn.execute(
+                """
+                SELECT id
+                FROM strategy_signals
+                WHERE strategy_name NOT IN ({})
+                """.format(placeholders),
+                allowed,
+            ).fetchall()
+            deleted_signals = len(old_ids)
+            if old_ids:
+                id_rows = [(row[0],) for row in old_ids]
+                conn.executemany("DELETE FROM strategy_execution_skips WHERE signal_id = ?", id_rows)
+                conn.executemany("DELETE FROM strategy_outcomes WHERE signal_id = ?", id_rows)
+                conn.executemany("DELETE FROM strategy_signals WHERE id = ?", id_rows)
+            batch_result = conn.execute(
+                """
+                DELETE FROM strategy_signal_batches
+                WHERE strategy_name NOT IN ({})
+                """.format(placeholders),
+                allowed,
+            )
+        return {"deleted_signals": deleted_signals, "deleted_batches": int(batch_result.rowcount or 0)}
+
+    def save_tuning_run(
+        self,
+        strategy_name: str,
+        days: int,
+        plan: Dict[str, object],
+        metrics: Dict[str, object],
+        deepseek_review: Dict[str, object],
+    ) -> Dict[str, object]:
+        now = datetime.now().isoformat(timespec="seconds")
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO strategy_tuning_runs
+                (strategy_name, run_time, days, status, can_apply, shadow_mode,
+                 plan_json, metrics_json, deepseek_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    strategy_name,
+                    now,
+                    int(days),
+                    str(plan.get("status", "")),
+                    1 if plan.get("can_apply") else 0,
+                    1 if plan.get("shadow_mode") else 0,
+                    json.dumps(plan, ensure_ascii=False),
+                    json.dumps(metrics or {}, ensure_ascii=False),
+                    json.dumps(deepseek_review or {}, ensure_ascii=False),
+                    now,
+                ),
+            )
+            run_id = int(cursor.lastrowid)
+        return {"id": run_id, "run_time": now}
+
+    def latest_tuning_run(self, strategy_name: str) -> Dict[str, object]:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT *
+                FROM strategy_tuning_runs
+                WHERE strategy_name = ?
+                ORDER BY run_time DESC, id DESC
+                LIMIT 1
+                """,
+                (strategy_name,),
+            ).fetchone()
+        return _tuning_row_to_dict(row) if row else {}
+
+    def list_tuning_runs(self, strategy_name: str, limit: int = 10) -> List[Dict[str, object]]:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM strategy_tuning_runs
+                WHERE strategy_name = ?
+                ORDER BY run_time DESC, id DESC
+                LIMIT ?
+                """,
+                (strategy_name, max(1, int(limit))),
+            ).fetchall()
+        return [_tuning_row_to_dict(row) for row in rows]
 
     def live_weight_samples(self, strategy_name: str, days: int = 120) -> List[Dict[str, object]]:
         primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
@@ -674,6 +791,19 @@ class StrategyValidationStore:
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS strategy_signal_batches (
+                    strategy_name TEXT NOT NULL,
+                    strategy_version TEXT NOT NULL,
+                    signal_date TEXT NOT NULL,
+                    signal_time TEXT NOT NULL,
+                    saved_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(strategy_name, signal_date, strategy_version)
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS strategy_signals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     strategy_name TEXT NOT NULL,
@@ -739,6 +869,24 @@ class StrategyValidationStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_strategy_signals_date ON strategy_signals(signal_date)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_date ON strategy_signals(strategy_name, signal_date DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_date_rank ON strategy_signals(strategy_name, signal_date DESC, rank)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_version_date ON strategy_signals(strategy_name, strategy_version, signal_date)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_signal_batches_strategy_date ON strategy_signal_batches(strategy_name, signal_date DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_outcomes_code ON strategy_outcomes(code)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_execution_skips_code ON strategy_execution_skips(code)"
+            )
             existing_columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(strategy_outcomes)").fetchall()
             }
@@ -766,6 +914,35 @@ class StrategyValidationStore:
             for column, column_type in outcome_columns.items():
                 if column not in existing_columns:
                     conn.execute("ALTER TABLE strategy_outcomes ADD COLUMN {} {}".format(column, column_type))
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO strategy_signal_batches
+                (strategy_name, strategy_version, signal_date, signal_time, saved_count, created_at)
+                SELECT strategy_name, strategy_version, signal_date, MAX(signal_time), COUNT(*), MIN(created_at)
+                FROM strategy_signals
+                GROUP BY strategy_name, strategy_version, signal_date
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS strategy_tuning_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    strategy_name TEXT NOT NULL,
+                    run_time TEXT NOT NULL,
+                    days INTEGER NOT NULL DEFAULT 20,
+                    status TEXT NOT NULL DEFAULT '',
+                    can_apply INTEGER NOT NULL DEFAULT 0,
+                    shadow_mode INTEGER NOT NULL DEFAULT 1,
+                    plan_json TEXT NOT NULL,
+                    metrics_json TEXT NOT NULL,
+                    deepseek_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_tuning_runs_strategy_time ON strategy_tuning_runs(strategy_name, run_time DESC)"
+            )
 
 
 def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object]]:
@@ -935,6 +1112,20 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
         except Exception:
             item[key.replace("_json", "")] = [] if key == "reasons_json" else {}
     item["trade_cost_pct"] = _execution_cost_pct(item)
+    return item
+
+
+def _tuning_row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
+    item = dict(row)
+    for key in ("plan_json", "metrics_json", "deepseek_json"):
+        target = key.replace("_json", "")
+        try:
+            item[target] = json.loads(item.get(key) or "{}")
+        except Exception:
+            item[target] = {}
+        item.pop(key, None)
+    item["can_apply"] = bool(item.get("can_apply"))
+    item["shadow_mode"] = bool(item.get("shadow_mode"))
     return item
 
 

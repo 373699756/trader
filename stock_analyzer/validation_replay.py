@@ -8,6 +8,7 @@ from .normalization import coerce_number, normalize_code, rename_known_columns
 
 
 REPLAY_VERSION_SUFFIX = "replay_v1"
+SUPPORTED_REPLAY_STRATEGIES = {"short_term", "tomorrow_picks", "swing_picks"}
 
 
 def backfill_strategy_validation_samples(
@@ -28,8 +29,21 @@ def backfill_strategy_validation_samples(
     前瞻预测记录。
     """
     strategy_name = strategy_name or "tomorrow_picks"
+    if strategy_name not in SUPPORTED_REPLAY_STRATEGIES:
+        return {
+            "ok": False,
+            "error": "unsupported_strategy",
+            "strategy": strategy_name,
+            "version": "replay_v1",
+            "requested_codes": len(unique_codes),
+            "usable_codes": 0,
+            "saved": 0,
+            "replaced": 0,
+            "date_count": 0,
+            "outcome": {"updated": 0, "skipped": 0},
+        }
     if top_n is None:
-        top_n = config.TOMORROW_TOP_N if strategy_name == "tomorrow_picks" else 30
+        top_n = config.TOMORROW_TOP_N if strategy_name == "tomorrow_picks" else getattr(config, "RECOMMENDATION_DISPLAY_LIMIT", 18)
     version = "{}_{}".format(strategy_name, REPLAY_VERSION_SUFFIX)
     names = {normalize_code(key): value for key, value in (code_names or {}).items()}
     unique_codes = _unique_codes(codes)
@@ -241,17 +255,9 @@ def _strategy_replay_score(strategy_name: str, factor: Dict[str, float]) -> Tupl
         raw = ret_3d * 0.22 + ret_5d * 0.26 + ma5_gap * 0.12 + volume * 1.8 + breakout * 4.5 - volatility * 0.32
     elif strategy_name == "swing_picks":
         raw = ret_5d * 0.18 + ret_10d * 0.24 + ret_20d * 0.12 + ma20_gap * 0.12 + volume * 1.4 + breakout * 3.5 - volatility * 0.28
-    elif strategy_name == "position_picks":
-        raw = ret_10d * 0.10 + ret_20d * 0.20 + ma20_gap * 0.18 + volume * 1.0 + breakout * 2.8 - volatility * 0.38
-    elif strategy_name == "reversal_picks":
-        # 反转：近期跌得多(-ret_20d) + 低波动 占优。
-        raw = -ret_20d * 0.26 - ret_5d * 0.10 - volatility * 0.55
-    elif strategy_name == "smallcap_value_picks":
-        # 历史回放看不到市值/估值，用低波动+温和反转作代理（标注于 reasons）。
-        raw = -ret_20d * 0.14 - volatility * 0.50 + ret_10d * 0.05
-    elif strategy_name == "breakout_picks":
-        # 突破：多头排列 + 创新高 + 量能突破。
-        raw = ma_bull * 6.0 + breakout * 5.0 + max(0.0, vol_ma5 - 1.0) * 4.0 + ret_10d * 0.16 + ma20_gap * 0.14 - volatility * 0.20
+    elif strategy_name == "short_term":
+        # 盘中策略回放：偏向短线执行和流动性，但保持轻量。
+        raw = ret_3d * 0.18 + ret_5d * 0.28 + ret_10d * 0.10 + ma5_gap * 0.08 + volume * 1.8 + breakout * 3.0 - volatility * 0.24
     else:
         raw = ret_5d * 0.16 + ret_10d * 0.20 + ret_20d * 0.16 + ma20_gap * 0.10 + volume * 1.3 + breakout * 3.2 - volatility * 0.30
     return raw, round(max(0.0, min(100.0, 50.0 + raw)), 4)
@@ -269,12 +275,12 @@ def _replay_reasons(strategy_name: str, factor: Dict[str, float]) -> List[str]:
         reasons.append("近5日成交额放大")
     if coerce_number(factor.get("volatility_20d")) >= 4:
         reasons.append("波动偏高，需降仓位")
-    if strategy_name in ("tech_potential", "chokepoint_picks"):
-        reasons.append("主题/新闻因子无法历史还原，按量价代理")
-    if strategy_name == "smallcap_value_picks":
-        reasons.append("市值/估值无法历史还原，按低波动+反转代理")
-    if strategy_name == "reversal_picks" and coerce_number(factor.get("ret_20d")) < 0:
-        reasons.append("近20日超跌，反转候选")
+    if strategy_name == "short_term":
+        reasons.append("今日盘中策略使用量价反应打分")
+    if strategy_name == "swing_picks":
+        reasons.append("2-5天策略强调趋势和量能延续")
+    if strategy_name == "tomorrow_picks":
+        reasons.append("次日候选强调收盘回看与次日延续")
     return reasons[:5]
 
 

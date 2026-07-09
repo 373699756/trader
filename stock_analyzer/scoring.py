@@ -20,8 +20,16 @@ from .strategy_health import strategy_status
 
 
 TECH_THEMES = {
-    "AI/算力": ("人工智能", "AI", "智能", "算力", "数据", "云", "软件", "信息", "数字", "模型"),
-    "半导体": ("半导体", "芯片", "集成", "晶", "微", "芯", "硅", "封装", "存储", "光刻"),
+    "AI/算力": ("人工智能", "AI", "智能", "算力", "数据", "云", "软件", "信息", "数字", "模型", "曙光", "寒武纪", "服务器"),
+    "光通信/CPO": ("光模块", "CPO", "光通信", "光器件", "光迅", "新易盛", "中际旭创", "天孚", "亨通光电", "中兴通讯"),
+    "半导体": ("半导体", "芯片", "集成", "晶", "微", "芯", "硅", "封装", "存储", "光刻", "华天科技", "全志科技", "北方华创"),
+    "信创/基础软件": ("信创", "操作系统", "数据库", "中间件", "中国长城", "中国软件", "太极股份"),
+    "传媒游戏/互联网": ("游戏", "传媒", "互联网", "巨人网络", "昆仑万维", "三七互娱", "完美世界"),
+    "军工/船舶": ("军工", "船舶", "中船", "中国船舶", "航发", "航空", "航天"),
+    "电力/公用事业": ("电力", "水电", "核电", "火电", "长江电力", "华能", "国电", "公用事业"),
+    "高端装备/激光": ("激光", "华工科技", "锐科", "大族", "高端装备"),
+    "显示面板/消费电子": ("面板", "显示", "京东方", "TCL科技", "视源", "消费电子"),
+    "新能源/锂电光伏": ("锂", "电池", "光伏", "硅料", "多氟多", "天华新能", "TCL中环", "新能源"),
     "机器人/智能制造": ("机器人", "自动化", "机床", "装备", "制造", "工业", "控制", "传感"),
     "低空/商业航天": ("航空", "航天", "导航", "无人机", "低空", "雷达", "飞行"),
     "智能汽车/车联网": ("汽车", "车联", "激光", "毫米波", "电驱", "电控", "线控", "座舱"),
@@ -30,16 +38,9 @@ TECH_THEMES = {
 }
 
 STRATEGY_LABELS = {
-    "short_term": "短期推荐",
-    "long_term": "长期推荐",
-    "tomorrow_picks": "明天预测",
-    "tech_potential": "科技潜力",
-    "swing_picks": "波段 5-10 日",
-    "position_picks": "中长期 1-3 月",
-    "chokepoint_picks": "卡脖子",
-    "reversal_picks": "反转低波",
-    "smallcap_value_picks": "小市值价值",
-    "breakout_picks": "量价突破",
+    "short_term": "今天推荐",
+    "tomorrow_picks": "明天推荐",
+    "swing_picks": "2-5天推荐",
 }
 
 HARD_FILTER_LABELS = {
@@ -356,52 +357,39 @@ TRADING_AGENTS_REFERENCE = {
     "adopted": "借鉴分析师团队、牛熊研究辩论、交易员、风控和组合经理的分层决策流",
 }
 
-# 可调权重/阈值集中在此，便于回测校准脚本（calibrate.py）离线扫描后写入
-# .runtime/weights.json 覆盖，无需改动代码。键路径与下方各策略 final 组合一一对应。
+# 三策略重构：仅保留「今天 / 明天 / 2-5天」。
+# 权重集中在这里，便于回测校准脚本（calibrate.py）离线扫描后写入
+# .runtime/weights.json 覆盖，无需改动代码。
 _DEFAULT_WEIGHTS = {
     "short_term": {
-        "momentum": 0.55, "liquidity": 0.15, "industry": 0.08,
-        "hot": 0.07, "sentiment": 0.15,
+        # 对应「今天策略」本地初筛：35%动量、25%量价、20%舆情/事件代理、10%板块、10%风控校正。
+        # DeepSeek 的结构化事件分在 rerank 阶段单独进入 deepseek_rank_score。
+        "momentum": 0.35,
+        "liquidity": 0.25,
+        "industry": 0.10,
+        "sentiment": 0.20,
+        "risk_guard": 0.10,
         # 反转修正项：A股短线证据显示动量偏弱、反转占优。reversal_tilt>0 时，
         # 对“近期涨太多”按比例减分（0 = 关闭，保持原动量行为）。由 calibrate
         # --compare-momentum 回测决定是否启用及幅度，写入 .runtime/weights.json。
         "reversal_tilt": 0.0,
     },
-    "long_term": {
-        "trend": 0.42, "liquidity": 0.20, "industry": 0.13,
-        "sentiment": 0.13, "momentum": 0.07, "hot": 0.05,
-    },
     "tomorrow_picks": {
-        "liquidity": 0.21, "momentum": 0.19, "trend": 0.15,
-        "historical_edge": 0.17, "execution": 0.14, "tail_setup": 0.14,
+        # 对应「明天策略」本地初筛：30%量能/承接、20%动量验证、20%历史承接、15%执行、15%尾盘结构。
+        # DeepSeek 的事件持续性在 rerank 阶段单独进入 deepseek_rank_score。
+        "liquidity": 0.30,
+        "momentum": 0.20,
+        "execution": 0.15,
+        "tail_setup": 0.15,
+        "historical_edge": 0.20,
     },
     "swing_picks": {
-        "momentum": 0.34, "trend": 0.26, "liquidity": 0.20,
-        "execution": 0.12, "not_overextended": 0.08,
-    },
-    "position_picks": {
-        "trend": 0.34, "quality": 0.26, "liquidity": 0.20,
-        "theme": 0.12, "execution": 0.08,
-    },
-    "tech_potential": {
-        "theme": 0.24, "chokepoint": 0.10, "liquidity": 0.18,
-        "early_trend": 0.20, "not_overextended": 0.14,
-        "volume": 0.08, "execution": 0.06,
-    },
-    "chokepoint_picks": {
-        "chokepoint": 0.34, "liquidity": 0.20, "early_trend": 0.18,
-        "not_overextended": 0.14, "execution": 0.08, "volume": 0.06,
-    },
-    "reversal_picks": {
-        "oversold_calm": 0.50, "calm_turnover": 0.22, "liquidity": 0.28,
-    },
-    "smallcap_value_picks": {
-        "smallcap": 0.34, "value": 0.22, "liquidity": 0.20,
-        "oversold_calm": 0.24,
-    },
-    "breakout_picks": {
-        "momentum": 0.30, "breakout": 0.26, "volume": 0.18,
-        "trend": 0.16, "execution": 0.10,
+        # 对应「2-5天策略」：30%趋势、25%题材/延续性、20%板块轮动、15%量能、10%风险收益结构
+        "momentum": 0.30,
+        "trend": 0.25,
+        "liquidity": 0.20,
+        "execution": 0.15,
+        "not_overextended": 0.10,
     },
     "regime_profiles": {
         "risk_on": {
@@ -440,19 +428,8 @@ STRATEGY_COMBINERS = {
             {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
             {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
             {"component": "industry_score", "weight_key": "industry"},
-            {"component": "hot_score", "weight_key": "hot"},
             {"component": "sentiment_score", "weight_key": "sentiment"},
-        ),
-    },
-    "long_term": {
-        "apply_damp": True,
-        "terms": (
-            {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
-            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
-            {"component": "industry_score", "weight_key": "industry"},
-            {"component": "sentiment_score", "weight_key": "sentiment"},
-            {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
-            {"component": "hot_score", "weight_key": "hot"},
+            {"component": "risk_guard_score", "weight_key": "risk_guard", "regime_key": "quality"},
         ),
     },
     "tomorrow_picks": {
@@ -460,7 +437,6 @@ STRATEGY_COMBINERS = {
         "terms": (
             {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
             {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
-            {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
             {"component": "historical_edge_score", "weight_key": "historical_edge", "regime_key": "quality"},
             {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
             {"component": "tail_setup_score", "weight_key": "tail_setup", "regime_key": "quality"},
@@ -474,66 +450,6 @@ STRATEGY_COMBINERS = {
             {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
             {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
             {"component": "not_overextended_score", "weight_key": "not_overextended", "regime_key": "quality"},
-        ),
-    },
-    "position_picks": {
-        "apply_damp": True,
-        "terms": (
-            {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
-            {"component": "quality_proxy_score", "weight_key": "quality", "regime_key": "quality"},
-            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
-            {"component": "theme_score", "weight_key": "theme"},
-            {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
-        ),
-    },
-    "tech_potential": {
-        "apply_damp": True,
-        "terms": (
-            {"component": "theme_score", "weight_key": "theme"},
-            {"component": "chokepoint_score", "weight_key": "chokepoint"},
-            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
-            {"component": "early_trend_score", "weight_key": "early_trend", "regime_key": "trend"},
-            {"component": "not_overextended_score", "weight_key": "not_overextended", "regime_key": "quality"},
-            {"component": "volume_score", "weight_key": "volume", "regime_key": "volume"},
-            {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
-        ),
-    },
-    "chokepoint_picks": {
-        "apply_damp": True,
-        "terms": (
-            {"component": "chokepoint_score", "weight_key": "chokepoint"},
-            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
-            {"component": "early_trend_score", "weight_key": "early_trend", "regime_key": "trend"},
-            {"component": "not_overextended_score", "weight_key": "not_overextended", "regime_key": "quality"},
-            {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
-            {"component": "volume_score", "weight_key": "volume", "regime_key": "volume"},
-        ),
-    },
-    "reversal_picks": {
-        "apply_damp": False,
-        "terms": (
-            {"component": "oversold_calm_score", "weight_key": "oversold_calm"},
-            {"component": "calm_turnover_score", "weight_key": "calm_turnover", "regime_key": "quality"},
-            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
-        ),
-    },
-    "smallcap_value_picks": {
-        "apply_damp": True,
-        "terms": (
-            {"component": "smallcap_score", "weight_key": "smallcap"},
-            {"component": "value_score", "weight_key": "value"},
-            {"component": "liquidity_score", "weight_key": "liquidity", "regime_key": "liquidity"},
-            {"component": "oversold_calm_score", "weight_key": "oversold_calm", "regime_key": "lowvol"},
-        ),
-    },
-    "breakout_picks": {
-        "apply_damp": True,
-        "terms": (
-            {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},
-            {"component": "breakout_strength", "weight_key": "breakout", "regime_key": "breakout"},
-            {"component": "volume_break_score", "weight_key": "volume", "regime_key": "volume"},
-            {"component": "trend_score", "weight_key": "trend", "regime_key": "trend"},
-            {"component": "execution_score", "weight_key": "execution", "regime_key": "quality"},
         ),
     },
 }
@@ -1214,7 +1130,7 @@ def score_candidates(
     return rows[:top_n], meta
 
 
-def score_dual_horizon_candidates(
+def score_today_candidates(
     df: pd.DataFrame,
     hot_ranks: Dict[str, int],
     industry_strength: Dict[str, float],
@@ -1226,7 +1142,7 @@ def score_dual_horizon_candidates(
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
     if df.empty:
-        return {"short_term": [], "long_term": []}, {
+        return {"short_term": []}, {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "candidate_count": 0,
             "top_n": top_n,
@@ -1235,7 +1151,6 @@ def score_dual_horizon_candidates(
 
     context = _score_context(df, industry_strength)
     short_rows: List[Dict[str, object]] = []
-    long_rows: List[Dict[str, object]] = []
     for _, row in df.iterrows():
         short_rows.append(
             _score_row(
@@ -1248,36 +1163,26 @@ def score_dual_horizon_candidates(
                 market_regime=market_regime,
             )
         )
-        long_rows.append(
-            _score_row(
-                row,
-                hot_ranks=hot_ranks,
-                industry_strength=industry_strength,
-                sentiment_lookup=sentiment_lookup,
-                context=context,
-                horizon="long",
-                market_regime=market_regime,
-            )
-        )
 
     short_rows.sort(key=lambda item: item["score"], reverse=True)
-    long_rows.sort(key=lambda item: item["score"], reverse=True)
-    for rank, row in enumerate(short_rows[:top_n], start=1):
-        row["rank"] = rank
-    for rank, row in enumerate(long_rows[:top_n], start=1):
+    min_score = coerce_number(getattr(config, "TODAY_RECOMMENDATION_MIN_SCORE", 60.0), 60.0)
+    eligible_rows = [row for row in short_rows if coerce_number(row.get("score")) >= min_score]
+    for rank, row in enumerate(eligible_rows[:top_n], start=1):
         row["rank"] = rank
 
     meta = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "candidate_count": len(df),
+        "eligible_count": len(eligible_rows),
+        "display_count": len(eligible_rows[:top_n]),
+        "min_score": min_score,
         "top_n": top_n,
         "market_filter": market_filter,
         "strategy": {
             "short_term": "盘中强势：涨跌幅、涨速、量比、换手、热度、舆情",
-            "long_term": "趋势稳健：60日/YTD趋势、流动性、板块、舆情、风险惩罚",
         },
     }
-    return {"short_term": short_rows[:top_n], "long_term": long_rows[:top_n]}, meta
+    return {"short_term": eligible_rows[:top_n]}, meta
 
 
 def score_tomorrow_candidates(
@@ -1297,7 +1202,7 @@ def score_tomorrow_candidates(
             "market_filter": market_filter,
             "analysis_window": analysis_window,
             "strategy_version": "tomorrow_picks_v5",
-            "strategy_label": "明天预测",
+            "strategy_label": "明天推荐",
             "policy": _tomorrow_policy(),
         }
 
@@ -1421,7 +1326,7 @@ def score_tomorrow_candidates(
                     item,
                     row,
                     "tomorrow_picks",
-                    "明天预测",
+                    "明天推荐",
                     "次日冲高",
                 ),
                 market_regime,
@@ -1431,39 +1336,14 @@ def score_tomorrow_candidates(
 
     rows.sort(key=lambda item: item["score"], reverse=True)
     display_limit, min_score, gate_reason = _tomorrow_display_gate(top_n, market_regime)
-    allow_backup_fill = display_limit >= int(getattr(config, "TOMORROW_TOP_N", 36))
-    if allow_backup_fill and not rows and display_limit > 0:
-        rows = _tomorrow_backup_rows(df, context, market_regime)
-        gate_reason = "{} 严格筛选为空，已切换为备选观察池。".format(gate_reason)
-    backup_min_score = coerce_number(getattr(config, "TOMORROW_BACKUP_MIN_SCORE", 45.0), 45.0)
-    display_floor = min(min_score, backup_min_score) if allow_backup_fill else min_score
+    display_floor = min_score
+    display_candidates = [row for row in rows if row["score"] >= display_floor]
     display_rows = _limit_tomorrow_display_concentration(
-        [row for row in rows if row["score"] >= display_floor],
+        display_candidates,
         display_limit,
     )
+    display_theme_limited_count = max(0, len(display_candidates) - len(display_rows))
     strict_display_count = len([row for row in display_rows if row["score"] >= min_score])
-    strict_count = len(display_rows)
-    if allow_backup_fill and strict_display_count < strict_count:
-        gate_reason = "{} 严格重点不足，已用备选观察补足展示。".format(gate_reason)
-    if allow_backup_fill and len(display_rows) < display_limit:
-        selected_codes = {row["code"] for row in display_rows}
-        backup_rows = rows if rows else _tomorrow_backup_rows(df, context, market_regime)
-        if rows:
-            backup_rows = backup_rows + _tomorrow_backup_rows(df, context, market_regime)
-        for row in backup_rows:
-            if row["code"] in selected_codes:
-                continue
-            if coerce_number(row.get("score")) < backup_min_score:
-                continue
-            if not _tomorrow_display_theme_allowed(display_rows, row):
-                _append_unique_reason(row, "同主题展示已达上限")
-                continue
-            display_rows.append(row)
-            selected_codes.add(row["code"])
-            if len(display_rows) >= display_limit:
-                break
-        if len(display_rows) > strict_count:
-            gate_reason = "{} 严格重点不足，已用备选观察补足展示。".format(gate_reason)
     primary_watch_n = _tomorrow_primary_watch_limit(
         len([row for row in display_rows if row["score"] >= min_score]),
         market_regime,
@@ -1505,12 +1385,12 @@ def score_tomorrow_candidates(
     return display_rows, {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "candidate_count": len(df),
+        "strict_candidate_count": len(rows),
         "screened_count": len(rows),
         "display_count": len(display_rows),
         "display_limit": display_limit,
         "min_score": min_score,
         "display_min_score": display_floor,
-        "backup_min_score": backup_min_score,
         "primary_min_score": max(
             min_score,
             coerce_number(getattr(config, "TOMORROW_PRIMARY_MIN_SCORE", 68.0), 68.0),
@@ -1523,6 +1403,7 @@ def score_tomorrow_candidates(
         "primary_gate_count": primary_watch_n,
         "primary_ineligible_count": ineligible_count,
         "theme_limited_count": theme_limited_count,
+        "display_theme_limited_count": display_theme_limited_count,
         "theme_cap": getattr(config, "TOMORROW_MAX_PRIMARY_PER_THEME", 2),
         "display_theme_cap": getattr(config, "TOMORROW_MAX_DISPLAY_PER_THEME", 5),
         "theme_distribution": theme_distribution,
@@ -1530,318 +1411,13 @@ def score_tomorrow_candidates(
         "market_filter": market_filter,
         "analysis_window": analysis_window,
         "strategy_version": "tomorrow_picks_v5",
-        "strategy_label": "明天预测",
+        "strategy_label": "明天推荐",
         "prediction_type": "rank_score",
         "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
-        "strategy": "{} 明天预测：面向收盘后次日承接，优先保留成交承接、温和动能、中期趋势、收盘结构和买入安全的票".format(
+        "strategy": "{} 明天推荐：面向收盘后次日承接，优先保留成交承接、温和动能、中期趋势、收盘结构和买入安全的票".format(
             analysis_window,
         ),
         "policy": _tomorrow_policy(),
-    }
-
-
-def score_tech_potential_candidates(
-    df: pd.DataFrame,
-    top_n: int = 50,
-    market_filter: str = "all",
-    market_regime: Dict[str, object] = None,
-) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
-    if market_filter in ("main", "chinext", "star"):
-        df = df[df["market"] == market_filter].copy()
-    df = df[
-        (finite_series(df, "sixty_day_pct") <= 90)
-        & (finite_series(df, "ytd_pct") <= 150)
-        & (finite_series(df, "sixty_day_pct") >= -25)
-    ].copy()
-    if df.empty:
-        return [], {
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "candidate_count": 0,
-            "top_n": top_n,
-            "market_filter": market_filter,
-        }
-
-    context = _score_context(df, {})
-    rows: List[Dict[str, object]] = []
-    for _, row in df.iterrows():
-        theme, theme_score = _tech_theme_score(row)
-        if theme_score <= 0:
-            continue
-        pct_chg = coerce_number(row.get("pct_chg"))
-        turnover = coerce_number(row.get("turnover"))
-        turnover_rate = coerce_number(row.get("turnover_rate"))
-        volume_ratio = coerce_number(row.get("volume_ratio"))
-        sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
-        ytd_pct = coerce_number(row.get("ytd_pct"))
-        amplitude = coerce_number(row.get("amplitude"))
-
-        liquidity_score = (
-            percentile_score(turnover, context["turnover_values"]) * 0.62
-            + percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.38
-        )
-        early_trend_score = _early_trend_score(row)
-        volume_score = _balanced_volume_score(volume_ratio)
-        valuation_proxy_score = _not_overextended_score(row)
-        execution_score = _execution_score(row)
-        chokepoint_score, chokepoint_hits = _chokepoint_score(row)
-        risk_penalty_parts = _tech_potential_risk_penalty_parts(row)
-        risk_penalty = _sum_penalty(risk_penalty_parts)
-        regime_bonus = _market_regime_adjustment(row, market_regime, "tech")
-        regime_profile = _regime_weight_profile(market_regime, ["liquidity", "trend", "volume", "quality"])
-        combined = _combine_details(
-            {
-                "theme_score": theme_score,
-                "chokepoint_score": chokepoint_score,
-                "liquidity_score": liquidity_score,
-                "early_trend_score": early_trend_score,
-                "not_overextended_score": valuation_proxy_score,
-                "volume_score": volume_score,
-                "execution_score": execution_score,
-                "risk_penalty": risk_penalty,
-                "regime_bonus": regime_bonus,
-            },
-            "tech_potential",
-            market_regime=market_regime,
-            row=row,
-        )
-        final_score = combined["score"]
-        item = {
-                "code": row["code"],
-                "name": str(row.get("name", "")),
-                "market": row.get("market", "main"),
-                "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
-                "industry": str(row.get("industry", "") or ""),
-                "theme": theme,
-                "market_cap": round(coerce_number(row.get("market_cap")), 2),
-                "float_market_cap": round(coerce_number(row.get("float_market_cap")), 2),
-                "price": round(coerce_number(row.get("price")), 3),
-                "pct_chg": round(pct_chg, 2),
-                "volume_ratio": round(volume_ratio, 2),
-                "turnover_rate": round(turnover_rate, 2),
-                "turnover": round(turnover, 2),
-                "sixty_day_pct": round(sixty_day_pct, 2),
-                "ytd_pct": round(ytd_pct, 2),
-                "amplitude": round(amplitude, 2),
-                "theme_score": round(theme_score, 2),
-                "chokepoint_score": round(chokepoint_score, 2),
-                "chokepoint_hits": chokepoint_hits,
-                "liquidity_score": round(liquidity_score, 2),
-                "early_trend_score": round(early_trend_score, 2),
-                "not_overextended_score": round(valuation_proxy_score, 2),
-                "volume_score": round(volume_score, 2),
-                "execution_score": round(execution_score, 2),
-                "risk_penalty": round(risk_penalty, 2),
-                "risk_penalty_parts": risk_penalty_parts,
-                "regime_bonus": round(regime_bonus, 2),
-                "regime_weight_profile": regime_profile,
-                "base_score": round(combined["base_score"], 2),
-                "raw_score": round(combined["raw_score"], 2),
-                "overheat_damp": round(combined["overheat_damp"], 4),
-                "score": round(max(0.0, min(100.0, final_score)), 2),
-                "reasons": _build_tech_potential_reasons(
-                    row,
-                    theme,
-                    early_trend_score,
-                    valuation_proxy_score,
-                    liquidity_score,
-                    risk_penalty,
-                ),
-        }
-        rows.append(
-            _with_regime_reason(
-                _attach_signal_explanation(
-                    item,
-                    row,
-                    "tech_potential",
-                    "科技潜力",
-                    "科技主题潜力",
-                ),
-                market_regime,
-                regime_bonus,
-            )
-        )
-
-    rows.sort(key=lambda item: item["score"], reverse=True)
-    for rank, row in enumerate(rows[:top_n], start=1):
-        row["rank"] = rank
-    return rows[:top_n], {
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "candidate_count": len(df),
-        "matched_count": len(rows),
-        "top_n": top_n,
-        "market_filter": market_filter,
-        "strategy": "科技潜力：匹配前沿科技方向，排除涨幅透支，偏好刚启动、流动性足、买入安全较好的潜力股",
-    }
-
-
-def score_chokepoint_candidates(
-    df: pd.DataFrame,
-    top_n: int = 30,
-    market_filter: str = "all",
-    market_regime: Dict[str, object] = None,
-) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
-    """卡脖子策略：以 _chokepoint_score 为主导，挑供给紧、难替代、尚未被重定价的上游环节。
-
-    与科技潜力的区别：chokepoint 是主导因子（0.34）而非副权重，且只保留命中上游关键词的票，
-    并把命中词归类到产业链环节（chain_segment），meta 里附 chain 用于前端产业链全景图。
-    """
-    if market_filter in ("main", "chinext", "star"):
-        df = df[df["market"] == market_filter].copy()
-    df = df[
-        (finite_series(df, "sixty_day_pct") <= 90)
-        & (finite_series(df, "ytd_pct") <= 150)
-        & (finite_series(df, "sixty_day_pct") >= -25)
-    ].copy()
-    if df.empty:
-        return [], {
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "candidate_count": 0,
-            "matched_count": 0,
-            "top_n": top_n,
-            "market_filter": market_filter,
-            "chain": [],
-        }
-
-    context = _score_context(df, {})
-    rows: List[Dict[str, object]] = []
-    for _, row in df.iterrows():
-        chokepoint_score, chokepoint_hits = _chokepoint_score(row)
-        if not chokepoint_hits:
-            continue  # 只保留真正落在卡脖子环节的票
-        pct_chg = coerce_number(row.get("pct_chg"))
-        turnover = coerce_number(row.get("turnover"))
-        turnover_rate = coerce_number(row.get("turnover_rate"))
-        volume_ratio = coerce_number(row.get("volume_ratio"))
-        sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
-        ytd_pct = coerce_number(row.get("ytd_pct"))
-        amplitude = coerce_number(row.get("amplitude"))
-        chain_segment = _chain_segment(chokepoint_hits)
-
-        liquidity_score = (
-            percentile_score(turnover, context["turnover_values"]) * 0.62
-            + percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.38
-        )
-        early_trend_score = _early_trend_score(row)
-        volume_score = _balanced_volume_score(volume_ratio)
-        not_overextended_score = _not_overextended_score(row)
-        execution_score = _execution_score(row)
-        risk_penalty_parts = _tech_potential_risk_penalty_parts(row)
-        risk_penalty = _sum_penalty(risk_penalty_parts)
-        regime_bonus = _market_regime_adjustment(row, market_regime, "tech")
-        regime_profile = _regime_weight_profile(market_regime, ["liquidity", "trend", "volume", "quality"])
-        combined = _combine_details(
-            {
-                "chokepoint_score": chokepoint_score,
-                "liquidity_score": liquidity_score,
-                "early_trend_score": early_trend_score,
-                "not_overextended_score": not_overextended_score,
-                "execution_score": execution_score,
-                "volume_score": volume_score,
-                "risk_penalty": risk_penalty,
-                "regime_bonus": regime_bonus,
-            },
-            "chokepoint_picks",
-            market_regime=market_regime,
-            row=row,
-        )
-        final_score = combined["score"]
-        item = {
-                "code": row["code"],
-                "name": str(row.get("name", "")),
-                "market": row.get("market", "main"),
-                "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
-                "industry": str(row.get("industry", "") or ""),
-                "theme": chain_segment,
-                "chain_segment": chain_segment,
-                "market_cap": round(coerce_number(row.get("market_cap")), 2),
-                "float_market_cap": round(coerce_number(row.get("float_market_cap")), 2),
-                "price": round(coerce_number(row.get("price")), 3),
-                "pct_chg": round(pct_chg, 2),
-                "volume_ratio": round(volume_ratio, 2),
-                "turnover_rate": round(turnover_rate, 2),
-                "turnover": round(turnover, 2),
-                "sixty_day_pct": round(sixty_day_pct, 2),
-                "ytd_pct": round(ytd_pct, 2),
-                "amplitude": round(amplitude, 2),
-                "chokepoint_score": round(chokepoint_score, 2),
-                "chokepoint_hits": chokepoint_hits,
-                "liquidity_score": round(liquidity_score, 2),
-                "early_trend_score": round(early_trend_score, 2),
-                "not_overextended_score": round(not_overextended_score, 2),
-                "volume_score": round(volume_score, 2),
-                "execution_score": round(execution_score, 2),
-                "risk_penalty": round(risk_penalty, 2),
-                "risk_penalty_parts": risk_penalty_parts,
-                "regime_bonus": round(regime_bonus, 2),
-                "regime_weight_profile": regime_profile,
-                "base_score": round(combined["base_score"], 2),
-                "raw_score": round(combined["raw_score"], 2),
-                "overheat_damp": round(combined["overheat_damp"], 4),
-                "score": round(max(0.0, min(100.0, final_score)), 2),
-                "reasons": [
-                    "卡脖子环节：{}".format(chain_segment),
-                    "命中：{}".format("、".join(chokepoint_hits)),
-                ],
-        }
-        rows.append(
-            _with_regime_reason(
-                _attach_signal_explanation(
-                    item,
-                    row,
-                    "chokepoint_picks",
-                    "卡脖子",
-                    "卡脖子上游",
-                ),
-                market_regime,
-                regime_bonus,
-            )
-        )
-
-    rows.sort(key=lambda item: item["score"], reverse=True)
-    for rank, row in enumerate(rows[:top_n], start=1):
-        row["rank"] = rank
-
-    # 产业链全景：按环节分组，每组列出当日命中该环节的 top 票（即使没进总 top_n）。
-    chain_map: Dict[str, List[Dict[str, object]]] = {}
-    for row in rows:
-        chain_map.setdefault(row["chain_segment"], []).append(row)
-    chain = []
-    for node in CHOKEPOINT_CHAIN:
-        members = chain_map.get(node["segment"], [])
-        chain.append({
-            "segment": node["segment"],
-            "count": len(members),
-            "picks": [
-                {
-                    "code": m["code"],
-                    "name": m["name"],
-                    "score": m["score"],
-                    "verdict": m.get("verdict"),
-                    "pct_chg": m["pct_chg"],
-                }
-                for m in members[:6]
-            ],
-        })
-    other = chain_map.get("其他上游", [])
-    if other:
-        chain.append({
-            "segment": "其他上游",
-            "count": len(other),
-            "picks": [
-                {"code": m["code"], "name": m["name"], "score": m["score"], "verdict": m.get("verdict"), "pct_chg": m["pct_chg"]}
-                for m in other[:6]
-            ],
-        })
-
-    return rows[:top_n], {
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "candidate_count": len(df),
-        "matched_count": len(rows),
-        "top_n": top_n,
-        "market_filter": market_filter,
-        "strategy_version": "chokepoint_v1",
-        "strategy": "卡脖子：上溯供应链，挖掘供给最紧、最难替代、尚未被重定价的上游环节",
-        "chain": chain,
     }
 
 
@@ -1860,7 +1436,7 @@ def score_swing_candidates(
         & (finite_series(df, "sixty_day_pct") >= -18)
     ].copy()
     if df.empty:
-        return [], _horizon_meta(top_n, market_filter, 0, "swing_5_10d_v1", "波段 5-10 日")
+        return [], _horizon_meta(top_n, market_filter, 0, "swing_2_5d_v1", "2-5天推荐")
 
     context = _score_context(df, {})
     rows: List[Dict[str, object]] = []
@@ -1947,18 +1523,23 @@ def score_swing_candidates(
         })
         rows.append(
             _with_regime_reason(
-                _attach_signal_explanation(item, row, "swing_picks", "波段 5-10 日", "波段延续"),
+                _attach_signal_explanation(item, row, "swing_picks", "2-5天推荐", "短周期延续"),
                 market_regime,
                 regime_bonus,
             )
         )
 
     rows.sort(key=lambda item: item["score"], reverse=True)
-    for rank, row in enumerate(rows[:top_n], start=1):
+    min_score = coerce_number(getattr(config, "SWING_RECOMMENDATION_MIN_SCORE", 60.0), 60.0)
+    eligible_rows = [row for row in rows if coerce_number(row.get("score")) >= min_score]
+    for rank, row in enumerate(eligible_rows[:top_n], start=1):
         row["rank"] = rank
-    meta = _horizon_meta(len(rows[:top_n]), market_filter, len(df), "swing_5_10d_v1", "波段 5-10 日")
-    meta["strategy"] = "波段 5-10 日：偏好5/10/20日趋势延续、温和放量、站上短均线、流动性足且涨幅未透支"
-    return rows[:top_n], meta
+    meta = _horizon_meta(top_n, market_filter, len(df), "swing_2_5d_v1", "2-5天推荐")
+    meta["eligible_count"] = len(eligible_rows)
+    meta["display_count"] = len(eligible_rows[:top_n])
+    meta["min_score"] = min_score
+    meta["strategy"] = "2-5天推荐：偏好短周期趋势延续、温和放量、站上短均线、流动性足且涨幅未透支"
+    return eligible_rows[:top_n], meta
 
 
 def score_position_candidates(
@@ -1967,6 +1548,7 @@ def score_position_candidates(
     market_filter: str = "all",
     market_regime: Dict[str, object] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    raise ValueError("position_picks 已下线；当前只支持 short_term、tomorrow_picks、swing_picks")
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
     df = df[
@@ -2095,6 +1677,7 @@ def score_reversal_candidates(
     market_filter: str = "all",
     market_regime: Dict[str, object] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    raise ValueError("reversal_picks 已下线；当前只支持 short_term、tomorrow_picks、swing_picks")
     """反转·低波·高换手回避因子股。
 
     依据 A 股横截面证据（短线反转 + 低波动 + 高换手未来弱）。主导因子：
@@ -2204,6 +1787,7 @@ def score_smallcap_value_candidates(
     market_filter: str = "all",
     market_regime: Dict[str, object] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    raise ValueError("smallcap_value_picks 已下线；当前只支持 short_term、tomorrow_picks、swing_picks")
     """小市值·价值股。A股历史最强因子之一，但带 2024 微盘崩盘尾风险 → 多重护栏。"""
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
@@ -2318,6 +1902,7 @@ def score_breakout_candidates(
     market_filter: str = "all",
     market_regime: Dict[str, object] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    raise ValueError("breakout_picks 已下线；当前只支持 short_term、tomorrow_picks、swing_picks")
     """量价突破·均线多头。经典技术派趋势确认：多头排列或20日新高 + 量能突破。"""
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
@@ -2721,6 +2306,7 @@ def _score_row(
             risk_penalty_parts["near_limit_up"] = 5
         risk_penalty = _sum_penalty(risk_penalty_parts)
         reasons = _build_reasons(row, industry_pct, hot_rank, sentiment)
+    risk_guard_score = max(0.0, min(100.0, 100.0 - risk_penalty * 3.2))
     combined = _combine_details(
         {
             "momentum_score": momentum_score,
@@ -2729,6 +2315,7 @@ def _score_row(
             "industry_score": industry_score,
             "hot_score": hot_score,
             "sentiment_score": sentiment_score,
+            "risk_guard_score": risk_guard_score,
             "risk_penalty": risk_penalty,
             "regime_bonus": regime_bonus,
         },
@@ -2744,6 +2331,7 @@ def _score_row(
         "market": row.get("market", "main"),
         "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
         "industry": industry,
+        "theme": _infer_theme_from_row(row) or industry,
         "price": round(coerce_number(row.get("price")), 3),
         "pct_chg": round(pct_chg, 2),
         "speed": round(coerce_number(row.get("speed")), 2),
@@ -2771,6 +2359,7 @@ def _score_row(
         "execution_score": round(execution_score, 2),
         "industry_score": round(industry_score, 2),
         "sentiment_score": round(sentiment_score, 2),
+        "risk_guard_score": round(risk_guard_score, 2),
         "risk_penalty": round(risk_penalty, 2),
         "risk_penalty_parts": risk_penalty_parts,
         "regime_bonus": round(regime_bonus, 2),
@@ -3606,7 +3195,7 @@ def _tomorrow_backup_rows(
             "raw_score": round(combined["raw_score"], 2),
             "overheat_damp": round(combined["overheat_damp"], 4),
             "score": round(final_score, 2),
-            "reasons": ["备选观察：严格明天预测为空"] + _build_tomorrow_reasons(
+            "reasons": ["备选观察：严格明天推荐为空"] + _build_tomorrow_reasons(
                 row,
                 liquidity_score,
                 momentum_score,
@@ -3619,7 +3208,7 @@ def _tomorrow_backup_rows(
         }
         rows.append(
             _with_regime_reason(
-                _attach_signal_explanation(item, row, "tomorrow_picks", "明天预测", "备选观察"),
+                _attach_signal_explanation(item, row, "tomorrow_picks", "明天推荐", "备选观察"),
                 market_regime,
                 regime_bonus,
             )
@@ -3631,24 +3220,24 @@ def _tomorrow_backup_rows(
 def _tomorrow_display_gate(top_n: int, market_regime: Dict[str, object] = None) -> Tuple[int, float, str]:
     top_n = max(0, int(top_n or 0))
     if not market_regime:
-        return top_n, 0.0, "未提供市场环境，按请求上限展示。"
+        return top_n, 60.0, "未提供市场环境，只展示达到默认分数门槛的候选。"
     level = market_regime.get("level") or "unknown"
     regime_score = coerce_number(market_regime.get("score"), 50.0)
     history_breadth = coerce_number(market_regime.get("history_breadth20_pct"))
     history_coverage = coerce_number(market_regime.get("history_factor_coverage_pct"))
     if history_coverage >= 25:
         if history_breadth > 55:
-            return top_n, 60.0, "历史20日均线宽度强于55%，允许重点观察但只保留少量主推。"
+            return top_n, 60.0, "历史20日均线宽度强于55%，只展示达到分数门槛的候选。"
         if history_breadth > 45:
-            return top_n, 68.0, "历史20日均线宽度处于45%-55%，只保留高分主推，其余为备选观察。"
-        return top_n, 78.0, "历史20日均线宽度低于45%，弱市不做主推，仅保留备选观察池。"
+            return top_n, 68.0, "历史20日均线宽度处于45%-55%，只展示较高分候选。"
+        return top_n, 78.0, "历史20日均线宽度低于45%，弱市只展示高分候选；不足则不推荐。"
     if level == "risk_on":
-        return top_n, 60.0, "偏进攻盘面，展示请求数量。"
+        return top_n, 60.0, "偏进攻盘面，只展示达到分数门槛的候选。"
     if level == "balanced":
-        return top_n, 66.0, "均衡震荡盘面，重点观察不足时用备选观察补足。"
+        return top_n, 66.0, "均衡震荡盘面，只展示达到分数门槛的候选。"
     if level == "risk_off":
-        return top_n, 72.0, "偏防守盘面，重点观察不足时用备选观察补足。"
-    return top_n, 70.0, "盘面状态不明确，重点观察不足时用备选观察补足。"
+        return top_n, 72.0, "偏防守盘面，只展示达到分数门槛的候选；不足则不推荐。"
+    return top_n, 70.0, "盘面状态不明确，只展示达到分数门槛的候选。"
 
 
 def _market_regime_with_history(market_regime: Dict[str, object], df: pd.DataFrame) -> Dict[str, object]:
@@ -3690,8 +3279,73 @@ def _tomorrow_theme_key(row: Dict[str, object]) -> str:
     industry = str(row.get("industry") or "").strip()
     if industry:
         return industry
+    inferred = _infer_theme_from_row(row)
+    if inferred:
+        return inferred
     code = str(row.get("code") or "").strip()
     return "未分类:{}".format(code or "unknown")
+
+
+def limit_theme_concentration(
+    rows: List[Dict[str, object]],
+    limit: int,
+    cap: int = None,
+) -> Tuple[List[Dict[str, object]], int]:
+    display_limit = max(0, int(limit or 0))
+    theme_cap = int(coerce_number(cap, getattr(config, "RECOMMENDATION_MAX_DISPLAY_PER_THEME", 3)))
+    return _theme_round_robin(rows, display_limit, theme_cap)
+
+
+def _infer_theme_from_row(row: Dict[str, object]) -> str:
+    haystack = "{} {}".format(row.get("name", ""), row.get("industry", "")).upper()
+    if not haystack.strip():
+        return ""
+    for segment in CHOKEPOINT_CHAIN:
+        if any(str(keyword).upper() in haystack for keyword in segment.get("keywords", ())):
+            return str(segment.get("segment") or "").strip()
+    for theme, keywords in TECH_THEMES.items():
+        if any(str(keyword).upper() in haystack for keyword in keywords):
+            return theme
+    return ""
+
+
+def _theme_round_robin(
+    rows: List[Dict[str, object]],
+    limit: int,
+    cap: int,
+) -> Tuple[List[Dict[str, object]], int]:
+    display_limit = max(0, int(limit or 0))
+    if display_limit <= 0:
+        return [], len(rows or [])
+    theme_cap = int(coerce_number(cap, 0))
+    if theme_cap <= 0:
+        return list(rows or [])[:display_limit], max(0, len(rows or []) - display_limit)
+    groups: Dict[str, List[Dict[str, object]]] = {}
+    theme_order: List[str] = []
+    for row in rows or []:
+        key = _tomorrow_theme_key(row)
+        if key not in groups:
+            groups[key] = []
+            theme_order.append(key)
+        groups[key].append(row)
+    selected: List[Dict[str, object]] = []
+    round_index = 0
+    while len(selected) < display_limit:
+        added = False
+        for key in theme_order:
+            group = groups.get(key) or []
+            if round_index >= min(len(group), theme_cap):
+                continue
+            selected.append(group[round_index])
+            added = True
+            if len(selected) >= display_limit:
+                break
+        if not added:
+            break
+        round_index += 1
+    limited_by_theme = sum(max(0, len(group) - theme_cap) for group in groups.values())
+    limited_by_limit = max(0, sum(min(len(group), theme_cap) for group in groups.values()) - len(selected))
+    return selected, limited_by_theme + limited_by_limit
 
 
 def _theme_count_allowed(counts: Dict[str, int], theme_key: str, cap) -> bool:
@@ -3713,28 +3367,12 @@ def _limit_tomorrow_display_concentration(
     rows: List[Dict[str, object]],
     limit: int,
 ) -> List[Dict[str, object]]:
-    selected: List[Dict[str, object]] = []
-    skipped: List[Dict[str, object]] = []
-    theme_counts: Dict[str, int] = {}
     theme_cap = int(coerce_number(getattr(config, "TOMORROW_MAX_DISPLAY_PER_THEME", 5), 5))
+    selected, _ = _theme_round_robin(rows, limit, theme_cap)
+    selected_ids = {id(row) for row in selected}
     for row in rows:
-        if len(selected) >= limit:
-            break
-        key = _tomorrow_theme_key(row)
-        if theme_cap > 0 and theme_counts.get(key, 0) >= theme_cap:
-            _append_unique_reason(row, "同主题展示已达上限")
-            skipped.append(row)
-            continue
-        selected.append(row)
-        theme_counts[key] = theme_counts.get(key, 0) + 1
-    if len(selected) >= limit:
-        return selected
-    for row in skipped:
-        if len(selected) >= limit:
-            break
-        if row in selected:
-            continue
-        selected.append(row)
+        if id(row) not in selected_ids:
+            _append_unique_reason(row, "行业/主题分散展示未入选")
     return selected[:limit]
 
 
@@ -4545,7 +4183,7 @@ def _build_swing_reasons(
     volume_ratio = coerce_number(row.get("volume_ratio"))
     vol_amount_5d = coerce_number(row.get("vol_amount_5d"))
     if momentum_score >= 68:
-        reasons.append("5-10日动量靠前")
+        reasons.append("2-5天动量靠前")
     if ret_5d > 0 or ret_10d > 0:
         reasons.append("短周期收益转强")
     if ret_20d > 0 or trend_score >= 65:

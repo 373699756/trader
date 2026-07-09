@@ -11,67 +11,40 @@ from typing import Dict, List, Tuple
 
 import requests
 
+from .deepseek.event_score import (
+    coerce_already_priced_in as _coerce_already_priced_in,
+    coerce_catalyst_strength as _coerce_catalyst_strength,
+    coerce_sentiment as _coerce_sentiment,
+    coerce_time_sensitivity as _coerce_time_sensitivity,
+    deepseek_event_adjustment as _deepseek_event_adjustment,
+)
 from .normalization import coerce_number, normalize_code
+from .strategies.types import storage_strategy_name
+from . import config
 
 
 _DOTENV_LOADED = False
-_DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+_DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 _CACHE_SCHEMA_VERSION = 1
-_SUPPORTED_STRATEGIES = {
-    "short_term",
-    "long_term",
-    "tomorrow_picks",
-    "swing_picks",
-    "position_picks",
-    "tech_potential",
-    "chokepoint_picks",
-    "reversal_picks",
-    "smallcap_value_picks",
-    "breakout_picks",
-}
+_SUPPORTED_DEEPSEEK_BASE_MODELS = (
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+)
+_SUPPORTED_STRATEGIES = set(config.SNAPSHOT_STRATEGIES)
 _STRATEGY_CONTEXT = {
     "short_term": {
         "horizon": "盘中到次日",
-        "focus": "短线强势能否延续，重点识别追高、兑现和冲高回落风险",
-    },
-    "long_term": {
-        "horizon": "20日以上",
-        "focus": "中期趋势和质量代理是否稳健，重点识别涨幅透支、趋势破位和基本面/事件风险",
+        "focus": "今日短线动量与量价能否延续到次日，重点识别追高、兑现和冲高回落风险",
     },
     "tomorrow_picks": {
         "horizon": "次日",
         "focus": "次日开盘后到收盘能否承接，重点识别尾盘假拉升、近涨停不可买和次日兑现风险",
     },
     "swing_picks": {
-        "horizon": "5-10日",
-        "focus": "波段趋势延续和量价配合，重点识别假突破、高位横盘和短周期过热",
-    },
-    "position_picks": {
-        "horizon": "20日以上",
-        "focus": "中期趋势、流动性和质量代理，重点识别波动放大、财报/事件风险和趋势失效",
-    },
-    "tech_potential": {
-        "horizon": "20日左右",
-        "focus": "科技主题是否真实且尚未充分透支，重点识别蹭概念、主题拥挤和兑现慢",
-    },
-    "chokepoint_picks": {
-        "horizon": "20日左右",
-        "focus": "是否处于产业链上游瓶颈环节，重点识别关键词误判、题材透支和流动性不足",
-    },
-    "reversal_picks": {
-        "horizon": "5日左右",
-        "focus": "超跌修复是否成立，重点识别接飞刀、趋势性下跌和基本面恶化",
-    },
-    "smallcap_value_picks": {
-        "horizon": "20日左右",
-        "focus": "小市值价值因子是否有流动性和估值支撑，重点识别壳风险、低流动性和尾部踩踏",
-    },
-    "breakout_picks": {
-        "horizon": "10日左右",
-        "focus": "量价突破是否有效，重点识别假突破、缩量回落和高位放量兑现",
+        "horizon": "2-5日",
+        "focus": "2-5天短周期趋势延续和量价配合，重点识别假突破、高位横盘和短周期过热",
     },
 }
-
 
 def _project_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -140,7 +113,7 @@ def _coerce_strategies(env_name: str) -> List[str]:
     raw = os.getenv(env_name, "").strip()
     if not raw:
         return []
-    return [item.strip() for item in raw.replace("，", ",").split(",") if item.strip()]
+    return [storage_strategy_name(item) for item in raw.replace("，", ",").split(",") if item.strip()]
 
 
 def _coerce_env_config() -> Dict[str, object]:
@@ -148,10 +121,10 @@ def _coerce_env_config() -> Dict[str, object]:
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     return {
         "enabled": _env_bool("DEEPSEEK_ENABLED", bool(api_key)),
-        "base_url": (os.getenv("DEEPSEEK_BASE_URL", _DEFAULT_DEEPSEEK_BASE_URL).strip() or _DEFAULT_DEEPSEEK_BASE_URL).rstrip("/"),
+        "base_url": _coerce_base_url(os.getenv("DEEPSEEK_BASE_URL", _DEFAULT_DEEPSEEK_BASE_URL)),
         "api_key": api_key,
-        "model": (os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash").strip() or "deepseek-v4-flash"),
-        "pro_model": (os.getenv("DEEPSEEK_PRO_MODEL", "deepseek-v4-pro").strip() or "deepseek-v4-pro"),
+        "model": _coerce_model(os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"), "deepseek-v4-flash"),
+        "pro_model": _coerce_model(os.getenv("DEEPSEEK_PRO_MODEL", "deepseek-v4-pro"), "deepseek-v4-pro"),
         "review_limit": max(5, _env_int("DEEPSEEK_REVIEW_LIMIT", 20)),
         "max_tokens": max(80, _env_int("DEEPSEEK_MAX_TOKENS", 800)),
         "timeout_seconds": max(2.0, _env_float("DEEPSEEK_TIMEOUT_SECONDS", 12.0)),
@@ -227,6 +200,32 @@ def _coerce_action(value: object, score: float, penalty: float, veto: bool) -> s
     if penalty >= 8 or score < 70:
         return "watch"
     return "priority"
+
+
+def _coerce_model(name: str, default: str) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return default
+    text = text.lower()
+    if text in _SUPPORTED_DEEPSEEK_BASE_MODELS:
+        return text
+    return default
+
+
+def _coerce_base_url(value: str) -> str:
+    url = str(value or "").strip().rstrip("/")
+    if not url:
+        return _DEFAULT_DEEPSEEK_BASE_URL.rstrip("/")
+    lower = url.lower()
+    if lower.endswith("/chat/completions"):
+        return url[: -len("/chat/completions")].rstrip("/") or _DEFAULT_DEEPSEEK_BASE_URL.rstrip("/")
+    if lower.endswith("/v1"):
+        return url[: -len("/v1")].rstrip("/") or _DEFAULT_DEEPSEEK_BASE_URL.rstrip("/")
+    return url
+
+
+def _deepseek_chat_url(base_url: str) -> str:
+    return f"{_coerce_base_url(base_url).rstrip('/')}/chat/completions"
 
 
 def _strategy_context(strategy_name: str) -> Dict[str, str]:
@@ -469,7 +468,8 @@ def _build_messages(strategy_name: str, candidates: List[Dict[str, object]], mar
             "role": "system",
             "content": "你是A股研究助手。请只输出 JSON，不要解释、不要 Markdown。"
             "输出必须包含 results 数组，每个元素包含 code、llm_score(0-100)、horizon_up_score(0-100)、action、veto、penalty、reason、risk_flags。"
-            "可选字段 catalyst_score、theme_truth_score、event_risk_score 都是0-100。"
+            "可选字段 event_type、sentiment(-2~2)、catalyst_strength(0-100)、time_sensitivity、already_priced_in、catalyst_score、"
+            "theme_truth_score、event_risk_score（都是0-100，except sentiment/flag）。"
             "action 只能是 priority、watch、avoid；penalty 是0-30扣分；risk_flags 是字符串数组，最多3项。",
         },
         {
@@ -478,14 +478,20 @@ def _build_messages(strategy_name: str, candidates: List[Dict[str, object]], mar
                 "策略: {strategy}\n"
                 "策略周期: {horizon}\n"
                 "复核重点: {focus}\n"
-                "市场: {market}\n"
+                "市场: {market}，仅聚焦A股（主板/创业板/科创板）\n"
                 "请重点做风险复核和反推荐，不要直接替代本地量化分数。\n"
+                "先输出结构化事件字段，再输出复核判断：\n"
+                "event_type（业绩/订单/政策/并购/涨价/监管/传闻/未知）、sentiment(-2~2)、"
+                "catalyst_strength(0-100)、time_sensitivity(今天/明天/2-5天/长期)、already_priced_in(true/false)。\n"
                 "horizon_up_score 表示策略主周期内上涨/跑赢倾向；如果看起来强但容易回落，请提高 penalty 或 action=avoid。\n"
                 "短周期亏钱因素必须逐项考虑: {loss_factors}\n"
                 "短周期赚钱因素必须逐项考虑: {profit_factors}\n"
                 "主题类策略必须判断 theme_truth_score，事件/公告/财报风险较高时提高 event_risk_score 和 penalty。\n"
                 "如果亏钱因素明显多于赚钱因素，必须 action=avoid 或提高 penalty；如果赚钱因素多但存在追高风险，action=watch。\n"
-                "输出 JSON 示例: {{\"results\":[{{\"code\":\"600519\",\"llm_score\":87.4,\"horizon_up_score\":74,\"action\":\"watch\",\"veto\":false,\"penalty\":8,\"reason\":\"...\",\"risk_flags\":[\"涨幅透支\"],\"catalyst_score\":55,\"theme_truth_score\":50,\"event_risk_score\":35}}]}}\n"
+                "输出 JSON 示例: {{\"results\":[{{\"code\":\"600519\",\"llm_score\":87.4,\"horizon_up_score\":74,\"action\":\"watch\","
+                "\"veto\":false,\"penalty\":8,\"reason\":\"...\",\"risk_flags\":[\"涨幅透支\"],\"event_type\":\"业绩\","
+                "\"sentiment\":1,\"catalyst_strength\":78,\"time_sensitivity\":\"明天\",\"already_priced_in\":false,"
+                "\"catalyst_score\":55,\"theme_truth_score\":50,\"event_risk_score\":35}}]}}\n"
                 "候选池: {pool}".format(
                     strategy=strategy_name,
                     horizon=context["horizon"],
@@ -553,7 +559,12 @@ def _cache_entry_valid(entry: Dict[str, object], ttl_seconds: int) -> bool:
     return cached_at > 0 and (time.time() - cached_at) <= ttl_seconds
 
 
-def _merge_ranking_rows(rows: List[Dict[str, object]], llm_records: List[Dict[str, object]], blend_alpha: float) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+def _merge_ranking_rows(
+    rows: List[Dict[str, object]],
+    llm_records: List[Dict[str, object]],
+    blend_alpha: float,
+    strategy_name: str,
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     llm_by_code = {}
     for item in llm_records:
         code = normalize_code(str(item.get("code", "")).strip())
@@ -568,6 +579,11 @@ def _merge_ranking_rows(rows: List[Dict[str, object]], llm_records: List[Dict[st
             up_score = coerce_number(item.get("tomorrow_up_score"), llm_score)
             up_score = coerce_number(item.get("horizon_up_score"), up_score)
             penalty = _clamp(coerce_number(item.get("penalty"), 0.0), 0.0, 30.0)
+            penalty = _clamp(
+                penalty + (3.0 if _coerce_already_priced_in(item.get("already_priced_in")) else 0.0) + max(0.0, -_coerce_sentiment(item.get("sentiment"))),
+                0.0,
+                30.0,
+            )
             veto = _coerce_bool(item.get("veto"))
             action = _coerce_action(item.get("action"), up_score, penalty, veto)
             if action == "avoid":
@@ -582,6 +598,11 @@ def _merge_ranking_rows(rows: List[Dict[str, object]], llm_records: List[Dict[st
                 "penalty": round(penalty, 2),
                 "reason": str(item.get("reason", "")).strip(),
                 "risk_flags": risk_flags,
+                "event_type": str(item.get("event_type", "")).strip(),
+                "sentiment": _coerce_sentiment(item.get("sentiment")),
+                "catalyst_strength": _coerce_catalyst_strength(item.get("catalyst_strength")),
+                "time_sensitivity": _coerce_time_sensitivity(item.get("time_sensitivity")),
+                "already_priced_in": _coerce_bool(item.get("already_priced_in")),
                 "catalyst_score": round(_clamp(coerce_number(item.get("catalyst_score"), 50.0), 0.0, 100.0), 2),
                 "theme_truth_score": round(_clamp(coerce_number(item.get("theme_truth_score"), 50.0), 0.0, 100.0), 2),
                 "event_risk_score": round(_clamp(coerce_number(item.get("event_risk_score"), 50.0), 0.0, 100.0), 2),
@@ -597,9 +618,17 @@ def _merge_ranking_rows(rows: List[Dict[str, object]], llm_records: List[Dict[st
         if llm_item:
             llm_score = coerce_number(llm_item.get("llm_score"), base_score)
             up_score = coerce_number(llm_item.get("tomorrow_up_score"), llm_score)
-            up_score = _clamp(up_score + min(coerce_number(factor_review.get("bonus"), 0.0), 8.0) * 0.35, 0.0, 100.0)
+            event_adjustment = _deepseek_event_adjustment(strategy_name, llm_item)
+            up_score = _clamp(
+                up_score
+                + min(coerce_number(factor_review.get("bonus"), 0.0), 8.0) * 0.35
+                + coerce_number(event_adjustment.get("bonus"), 0.0),
+                0.0,
+                100.0,
+            )
             penalty = _clamp(
                 coerce_number(llm_item.get("penalty"), 0.0)
+                + coerce_number(event_adjustment.get("penalty"), 0.0)
                 + coerce_number(factor_review.get("penalty"), 0.0),
                 0.0,
                 45.0,
@@ -623,6 +652,14 @@ def _merge_ranking_rows(rows: List[Dict[str, object]], llm_records: List[Dict[st
             next_row["deepseek_catalyst_score"] = llm_item.get("catalyst_score")
             next_row["deepseek_theme_truth_score"] = llm_item.get("theme_truth_score")
             next_row["deepseek_event_risk_score"] = llm_item.get("event_risk_score")
+            next_row["deepseek_event_score"] = event_adjustment.get("event_score")
+            next_row["deepseek_event_bonus"] = event_adjustment.get("bonus")
+            next_row["deepseek_event_penalty"] = event_adjustment.get("penalty")
+            next_row["deepseek_event_type"] = llm_item.get("event_type") or ""
+            next_row["deepseek_sentiment"] = llm_item.get("sentiment")
+            next_row["deepseek_catalyst_strength"] = llm_item.get("catalyst_strength")
+            next_row["deepseek_time_sensitivity"] = llm_item.get("time_sensitivity")
+            next_row["deepseek_already_priced_in"] = bool(llm_item.get("already_priced_in"))
             next_row["deepseek_rank_score"] = combined
             next_row["rerank_source"] = "deepseek"
         else:
@@ -638,13 +675,61 @@ def _merge_ranking_rows(rows: List[Dict[str, object]], llm_records: List[Dict[st
             next_row["deepseek_catalyst_score"] = None
             next_row["deepseek_theme_truth_score"] = None
             next_row["deepseek_event_risk_score"] = None
+            next_row["deepseek_event_score"] = None
+            next_row["deepseek_event_bonus"] = 0.0
+            next_row["deepseek_event_penalty"] = 0.0
+            next_row["deepseek_event_type"] = ""
+            next_row["deepseek_sentiment"] = 0.0
+            next_row["deepseek_catalyst_strength"] = None
+            next_row["deepseek_time_sensitivity"] = "长期"
+            next_row["deepseek_already_priced_in"] = False
             next_row["deepseek_rank_score"] = round(base_score - coerce_number(factor_review.get("penalty"), 0.0), 2)
         merged.append(next_row)
 
-    merged.sort(key=lambda item: coerce_number(item.get("deepseek_rank_score"), 0.0), reverse=True)
-    for rank, row in enumerate(merged, start=1):
+    gated = []
+    filtered = []
+    for row in merged:
+        keep, reason = _deepseek_gate_decision(row)
+        if keep:
+            gated.append(row)
+        else:
+            next_row = dict(row)
+            next_row["deepseek_filter_reason"] = reason
+            filtered.append(next_row)
+
+    gated.sort(key=lambda item: coerce_number(item.get("deepseek_rank_score"), 0.0), reverse=True)
+    for rank, row in enumerate(gated, start=1):
         row["rank"] = rank
-    return merged, {"covered": len(llm_by_code), "total": len(rows)}
+    return gated, {
+        "covered": len(llm_by_code),
+        "total": len(rows),
+        "filtered": len(filtered),
+        "filtered_codes": [row.get("code") for row in filtered[:8]],
+        "filter_reasons": _filter_reason_counts(filtered),
+    }
+
+
+def _deepseek_gate_decision(row: Dict[str, object]) -> Tuple[bool, str]:
+    rank_score = coerce_number(row.get("deepseek_rank_score"), coerce_number(row.get("score"), 0.0))
+    penalty = coerce_number(row.get("deepseek_penalty"), 0.0)
+    action = str(row.get("deepseek_action") or "").lower()
+    if row.get("deepseek_veto"):
+        return False, "deepseek_veto"
+    if penalty >= 30:
+        return False, "deepseek_penalty_high"
+    if action == "avoid" and penalty >= 15:
+        return False, "deepseek_avoid"
+    if rank_score < 45:
+        return False, "deepseek_rank_score_low"
+    return True, ""
+
+
+def _filter_reason_counts(rows: List[Dict[str, object]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for row in rows:
+        reason = str(row.get("deepseek_filter_reason") or "unknown")
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
 
 
 def rerank_candidates(
@@ -652,6 +737,7 @@ def rerank_candidates(
     strategy_name: str,
     market_filter: str = "all",
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    strategy_name = storage_strategy_name(strategy_name)
     config = _coerce_env_config()
     if not config.get("enabled", False):
         return rows, {"enabled": False, "status": "disabled"}
@@ -687,7 +773,7 @@ def rerank_candidates(
         if _cache_entry_valid(entry, int(config["cache_ttl_seconds"])):
             results = _extract_results(entry.get("parsed") if isinstance(entry, dict) else {})
             if results:
-                merged_rows, coverage = _merge_ranking_rows(rows, results, float(config["blend_alpha"]))
+                merged_rows, coverage = _merge_ranking_rows(rows, results, float(config["blend_alpha"]), strategy_name)
                 return merged_rows, {
                     "enabled": True,
                     "status": "cache_hit",
@@ -695,6 +781,9 @@ def rerank_candidates(
                     "requested": total,
                     "review_limit": review_limit,
                     "covered": coverage.get("covered", 0),
+                    "filtered": coverage.get("filtered", 0),
+                    "filtered_codes": coverage.get("filtered_codes", []),
+                    "filter_reasons": coverage.get("filter_reasons", {}),
                     "source": "deepseek_cache",
                     "model": selected_model,
                     "model_tier": model_tier,
@@ -706,7 +795,7 @@ def rerank_candidates(
                 }
 
     messages = _build_messages(strategy_name, pool, market_filter)
-    url = f"{config['base_url'].rstrip('/')}/chat/completions"
+    url = _deepseek_chat_url(config["base_url"])
     headers = {
         "Authorization": f"Bearer {config['api_key']}",
         "Content-Type": "application/json",
@@ -765,7 +854,7 @@ def rerank_candidates(
         }
 
     results = _extract_results(parsed)
-    merged_rows, coverage = _merge_ranking_rows(rows, results, float(config["blend_alpha"]))
+    merged_rows, coverage = _merge_ranking_rows(rows, results, float(config["blend_alpha"]), strategy_name)
     if config.get("cache_enabled", True):
         cache = _read_cache(str(config["cache_path"]))
         cache[cache_key] = {
@@ -787,6 +876,9 @@ def rerank_candidates(
         "requested": total,
         "review_limit": review_limit,
         "covered": coverage.get("covered", 0),
+        "filtered": coverage.get("filtered", 0),
+        "filtered_codes": coverage.get("filtered_codes", []),
+        "filter_reasons": coverage.get("filter_reasons", {}),
         "source": "deepseek_chat",
         "model": payload["model"],
         "model_tier": model_tier,
@@ -864,6 +956,7 @@ def review_strategy_validation(
     samples: List[Dict[str, object]],
     days: int = 20,
 ) -> Dict[str, object]:
+    strategy_name = storage_strategy_name(strategy_name)
     config = _coerce_env_config()
     if not config.get("enabled", False):
         return {"enabled": False, "status": "disabled"}
@@ -959,7 +1052,7 @@ def review_strategy_validation(
         "max_tokens": max(700, int(config["max_tokens"])),
         "response_format": {"type": "json_object"},
     }
-    url = f"{config['base_url'].rstrip('/')}/chat/completions"
+    url = _deepseek_chat_url(config["base_url"])
     headers = {
         "Authorization": f"Bearer {config['api_key']}",
         "Content-Type": "application/json",

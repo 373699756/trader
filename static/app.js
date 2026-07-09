@@ -10,39 +10,32 @@ const state = {
   renderFingerprints: {},
   lastRows: {
     shortTerm: [],
-    longTerm: [],
     consensus: [],
     tomorrow: [],
-    tech: [],
-    chokepoint: [],
-    reversal: [],
-    smallcap: [],
-    breakout: [],
     swing: [],
-    position: [],
   },
   tomorrowLoaded: false,
-  techLoaded: false,
-  chokepointLoaded: false,
-  reversalLoaded: false,
-  smallcapLoaded: false,
-  breakoutLoaded: false,
   horizonLoaded: false,
   overviewLoaded: false,
   validationLoaded: false,
-  portfolioLoaded: false,
   marketRegime: {},
-  chokepointIndustryMap: [],
-  chokepointMeta: {},
-  chokepointActiveSegment: "all",
   selectedValidation: {
     date: "",
     strategy: "",
   },
+  validationMetrics: {},
+  validationCache: {},
+  validationDailyCache: {},
+  validationRequestSeq: 0,
+  validationDailyRequestSeq: 0,
+  validationQuotesRequestSeq: 0,
+  validationDateRows: [],
+  validationDatePage: 0,
   charts: {},
 };
 
 const VALIDATION_AUTO_REFRESH_MS = 30 * 60 * 1000;
+const VALIDATION_DATE_PAGE_SIZE = 5;
 
 // 深色图表主题：ECharts 选项里的轴线/文字/分隔/正负色集中在此，配合深色背景。
 const CHART_THEME = {
@@ -95,6 +88,8 @@ const els = {
   refreshButton: document.getElementById("refreshButton"),
   tabButtons: document.querySelectorAll(".tab-button"),
   tabPanels: document.querySelectorAll(".tab-panel"),
+  poolTabs: document.querySelectorAll(".pool-tab"),
+  poolGroups: document.querySelectorAll(".rec-pool-group"),
   decisionRegimeLabel: document.getElementById("decisionRegimeLabel"),
   decisionAdvice: document.getElementById("decisionAdvice"),
   decisionConsensusCount: document.getElementById("decisionConsensusCount"),
@@ -118,29 +113,8 @@ const els = {
   strategyOverviewGrid: document.getElementById("strategyOverviewGrid"),
   strategyOverviewBody: document.getElementById("strategyOverviewBody"),
   shortTermBody: document.getElementById("shortTermBody"),
-  longTermBody: document.getElementById("longTermBody"),
   tomorrowBody: document.getElementById("tomorrowBody"),
-  tomorrowStrategyVersion: document.getElementById("tomorrowStrategyVersion"),
-  tomorrowDataStatus: document.getElementById("tomorrowDataStatus"),
-  tomorrowCandidateCount: document.getElementById("tomorrowCandidateCount"),
-  tomorrowBuyableFilter: document.getElementById("tomorrowBuyableFilter"),
-  tomorrowValidationSamples: document.getElementById("tomorrowValidationSamples"),
-  tomorrowValidationHit3: document.getElementById("tomorrowValidationHit3"),
-  tomorrowGateStatus: document.getElementById("tomorrowGateStatus"),
-  tomorrowPredictionCaution: document.getElementById("tomorrowPredictionCaution"),
-  techBody: document.getElementById("techBody"),
-  chokepointBody: document.getElementById("chokepointBody"),
-  chokepointChainMap: document.getElementById("chokepointChainMap"),
-  reversalBody: document.getElementById("reversalBody"),
-  smallcapBody: document.getElementById("smallcapBody"),
-  breakoutBody: document.getElementById("breakoutBody"),
-  portfolioStrategySelect: document.getElementById("portfolioStrategySelect"),
-  loadPortfolioBtn: document.getElementById("loadPortfolioBtn"),
-  portfolioStatus: document.getElementById("portfolioStatus"),
-  portfolioSummary: document.getElementById("portfolioSummary"),
-  portfolioBody: document.getElementById("portfolioBody"),
   swingBody: document.getElementById("swingBody"),
-  positionBody: document.getElementById("positionBody"),
   updateStatus: document.getElementById("updateStatus"),
   validationScoreboard: document.getElementById("validationScoreboard"),
   validationSimpleDecision: document.getElementById("validationSimpleDecision"),
@@ -149,6 +123,7 @@ const els = {
   validationSubtitle: document.getElementById("validationSubtitle"),
   validationGuidePrimary: document.getElementById("validationGuidePrimary"),
   validationStrategySelect: document.getElementById("validationStrategySelect"),
+  validationStrategyTabs: document.querySelectorAll(".validation-strategy-tab"),
   validationDaysSelect: document.getElementById("validationDaysSelect"),
   validationOpsHint: document.getElementById("validationOpsHint"),
   validationSelectionLabel: document.getElementById("validationSelectionLabel"),
@@ -160,10 +135,18 @@ const els = {
   validationAvgReturn: document.getElementById("validationAvgReturn"),
   validationExecutionSkipped: document.getElementById("validationExecutionSkipped"),
   validationPendingOutcome: document.getElementById("validationPendingOutcome"),
+  tuningTitle: document.getElementById("tuningTitle"),
+  tuningStatus: document.getElementById("tuningStatus"),
+  tuningBody: document.getElementById("tuningBody"),
+  generateTuningBtn: document.getElementById("generateTuningBtn"),
   nextDayCompareTitle: document.getElementById("nextDayCompareTitle"),
   nextDayCompareGrid: document.getElementById("nextDayCompareGrid"),
   validationLineTitle: document.getElementById("validationLineTitle"),
   validationDatesBody: document.getElementById("validationDatesBody"),
+  validationDatesPager: document.getElementById("validationDatesPager"),
+  validationDatesPrev: document.getElementById("validationDatesPrev"),
+  validationDatesNext: document.getElementById("validationDatesNext"),
+  validationDatesPageLabel: document.getElementById("validationDatesPageLabel"),
   validationDetailTitle: document.getElementById("validationDetailTitle"),
   validationDetailBody: document.getElementById("validationDetailBody"),
   detailsPanel: document.getElementById("detailsPanel"),
@@ -192,17 +175,14 @@ function applyRecommendationsPayload(payload) {
   }
   const recommendations = payload.recommendations || {};
   const shortTerm = recommendations.short_term || payload.data || [];
-  const longTerm = recommendations.long_term || [];
   const consensus = payload.meta?.strategy_consensus?.rows || [];
   const marketRegime = payload.meta?.market_regime || {};
   const shouldRenderTables = rememberFingerprint("recommendations", {
     shortTerm,
-    longTerm,
     consensus,
     marketRegime,
   });
   state.lastRows.shortTerm = shortTerm;
-  state.lastRows.longTerm = longTerm;
   state.lastRows.consensus = consensus;
   state.marketRegime = marketRegime;
   renderMetrics(payload);
@@ -213,9 +193,6 @@ function applyRecommendationsPayload(payload) {
   }
   if (state.tomorrowLoaded) {
     loadTomorrowPicks({ background: true });
-  }
-  if (state.techLoaded) {
-    loadTechPotential({ background: true });
   }
   if (state.horizonLoaded) {
     loadHorizonPicks({ background: true });
@@ -229,7 +206,7 @@ function applyRecommendationsPayload(payload) {
 async function loadRecommendations() {
   setStatus("刷新中...");
   const params = new URLSearchParams({
-    top_n: "30",
+    top_n: String(window.APP_CONFIG.defaultTopN || 18),
     market: els.marketSelect.value,
   });
   try {
@@ -239,9 +216,31 @@ async function loadRecommendations() {
   } catch (err) {
     const message = `<tr><td colspan="16" class="empty">${escapeHtml(err.message)}</td></tr>`;
     els.shortTermBody.innerHTML = message;
-    els.longTermBody.innerHTML = message;
-    els.strategyConsensusBody.innerHTML = '<tr><td colspan="8" class="empty">加载失败</td></tr>';
+    if (els.strategyConsensusBody) {
+      els.strategyConsensusBody.innerHTML = '<tr><td colspan="8" class="empty">加载失败</td></tr>';
+    }
     setStatus(`刷新失败：${err.message}`);
+  }
+}
+
+async function loadLatestRecommendationSnapshot() {
+  const params = new URLSearchParams({
+    top_n: String(window.APP_CONFIG.defaultTopN || 18),
+    market: els.marketSelect.value,
+    max_age: String(window.APP_CONFIG.recommendationSnapshotMaxAgeSeconds || 300),
+  });
+  try {
+    const res = await fetch(`/api/recommendations/latest?${params.toString()}`);
+    if (!res.ok) {
+      return false;
+    }
+    const payload = await res.json();
+    applyRecommendationsPayload(payload);
+    const savedAt = payload.snapshot?.saved_at || payload.meta?.generated_at || "最近快照";
+    setStatus(`已加载快照 ${savedAt}，等待实时更新...`);
+    return true;
+  } catch (err) {
+    return false;
   }
 }
 
@@ -266,7 +265,7 @@ function connectRecommendationStream() {
     return;
   }
   const params = new URLSearchParams({
-    top_n: "30",
+    top_n: String(window.APP_CONFIG.defaultTopN || 18),
     market: els.marketSelect.value,
   });
   const source = new EventSource(`/api/recommendations/stream?${params.toString()}`);
@@ -300,8 +299,16 @@ function connectRecommendationStream() {
   };
 }
 
+async function startRecommendationStreamWithSnapshot() {
+  await loadLatestRecommendationSnapshot();
+  connectRecommendationStream();
+}
+
 async function loadStrategyOverview() {
   state.overviewLoaded = true;
+  if (!els.strategyOverviewGrid || !els.strategyOverviewBody) {
+    return;
+  }
   els.strategyOverviewGrid.innerHTML = '<div class="empty">加载中...</div>';
   els.strategyOverviewBody.innerHTML = '<tr><td colspan="13" class="empty">加载中...</td></tr>';
   try {
@@ -319,32 +326,42 @@ async function loadStrategyOverview() {
 
 async function loadValidation() {
   state.validationLoaded = true;
-  els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">加载中...</td></tr>';
-  els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">选择左侧批次查看明细</td></tr>';
   const options = arguments[0] || {};
   const isSilent = Boolean(options.silent);
   const fromAutoRefresh = Boolean(options.fromAutoRefresh);
   const skipAutoOutcomeUpdate = Boolean(options.skipAutoOutcomeUpdate);
   const strategy = currentValidationStrategy();
   updateValidationChrome(strategy);
+  const cacheKey = `${strategy}:${els.validationDaysSelect.value}`;
+  const cached = state.validationCache[cacheKey];
+  if (cached) {
+    applyValidationPayload(cached);
+  } else {
+    els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">加载中...</td></tr>';
+    els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">选择左侧批次查看明细</td></tr>';
+  }
   const params = new URLSearchParams({
     strategy,
     days: els.validationDaysSelect.value,
+    light: "1",
   });
+  const requestSeq = ++state.validationRequestSeq;
   try {
     const res = await fetch(`/api/strategy-validation?${params.toString()}`);
     const payload = await res.json();
     if (!payload.ok) {
       throw new Error(payload.error || "接口返回异常");
     }
-    renderValidationMetrics(payload.metrics || {});
-    renderValidationDeepseekReview(payload.deepseek_review || {});
-    renderValidationDates(payload.dates || []);
-    syncValidationSelection(payload.dates || []);
-    loadValidationOverview();
-    if (!skipAutoOutcomeUpdate) {
-      autoFillMissingValidationOutcomes(payload.metrics || {}, payload.dates || []);
+    if (requestSeq !== state.validationRequestSeq || strategy !== currentValidationStrategy()) {
+      return;
     }
+    state.validationCache[cacheKey] = payload;
+    applyValidationPayload(payload);
+    window.setTimeout(() => {
+      loadValidationMetrics(strategy, els.validationDaysSelect.value, requestSeq, cacheKey, {
+        skipAutoOutcomeUpdate,
+      });
+    }, 80);
     if (!els.updateStatus.textContent || els.updateStatus.textContent.includes("后台")) {
       loadValidationAutoUpdateStatus();
     }
@@ -355,9 +372,132 @@ async function loadValidation() {
       startValidationAutoRefreshLoop();
     }
   } catch (err) {
+    if (requestSeq !== state.validationRequestSeq) {
+      return;
+    }
     els.validationDatesBody.innerHTML = `<tr><td colspan="4" class="empty">${escapeHtml(err.message)}</td></tr>`;
     setStatus(`策略验证加载失败：${err.message}`);
   }
+}
+
+async function loadValidationMetrics(strategy, days, requestSeq, cacheKey, options = {}) {
+  const params = new URLSearchParams({ strategy, days });
+  try {
+    const res = await fetch(`/api/strategy-validation?${params.toString()}`);
+    const payload = await res.json();
+    if (!payload.ok) {
+      return;
+    }
+    if (requestSeq !== state.validationRequestSeq || strategy !== currentValidationStrategy()) {
+      return;
+    }
+    state.validationCache[cacheKey] = payload;
+    if (payload.metrics) {
+      state.validationMetrics = payload.metrics;
+      renderValidationMetrics(payload.metrics);
+    }
+    renderValidationDeepseekReview(payload.deepseek_review || {});
+    if (!options.skipAutoOutcomeUpdate) {
+      autoFillMissingValidationOutcomes(payload.metrics || {}, payload.dates || []);
+    }
+    loadTuningLatest(strategy);
+    loadValidationOverview();
+  } catch (err) {
+    /* 指标慢或失败不影响批次列表和明细查看 */
+  }
+}
+
+function applyValidationPayload(payload) {
+  if (payload.metrics) {
+    state.validationMetrics = payload.metrics || {};
+    renderValidationMetrics(state.validationMetrics);
+  }
+  if (payload.deepseek_review) {
+    renderValidationDeepseekReview(payload.deepseek_review || {});
+  }
+  renderValidationDates(payload.dates || []);
+  syncValidationSelection(payload.dates || []);
+}
+
+async function loadTuningLatest(strategy = currentValidationStrategy()) {
+  if (!els.tuningBody) return;
+  const params = new URLSearchParams({ strategy });
+  try {
+    const res = await fetch(`/api/strategy-validation/tuning?${params.toString()}`);
+    const payload = await res.json();
+    if (!payload.ok || strategy !== currentValidationStrategy()) {
+      return;
+    }
+    renderTuningRun(payload.latest || null, strategy);
+  } catch (err) {
+    /* 调参建议不影响验证主流程 */
+  }
+}
+
+async function generateTuningPlan() {
+  const strategy = currentValidationStrategy();
+  const days = els.validationDaysSelect.value;
+  if (!els.tuningBody || !els.generateTuningBtn) return;
+  els.generateTuningBtn.disabled = true;
+  setOpsStatus(els.tuningStatus, "正在生成影子调参建议…", "pending");
+  const params = new URLSearchParams({ strategy, days });
+  try {
+    const res = await fetch(`/api/strategy-validation/tuning?${params.toString()}`, { method: "POST" });
+    const payload = await res.json();
+    if (!payload.ok) {
+      throw new Error(payload.error || "接口返回异常");
+    }
+    renderTuningRun(payload.latest || { plan: payload.plan, run_time: payload.saved?.run_time }, strategy);
+    setOpsStatus(els.tuningStatus, "已保存影子调参建议，正式策略未修改。", "ok");
+  } catch (err) {
+    setOpsStatus(els.tuningStatus, `生成失败：${err.message}`, "bad");
+  } finally {
+    els.generateTuningBtn.disabled = false;
+  }
+}
+
+function renderTuningRun(run, strategy = currentValidationStrategy()) {
+  if (!els.tuningBody) return;
+  if (els.tuningTitle) {
+    els.tuningTitle.textContent = `${strategyLabel(strategy)}影子调参`;
+  }
+  const plan = run?.plan || run || null;
+  if (!plan || !Object.keys(plan).length) {
+    els.tuningBody.innerHTML = '<div class="empty">暂无调参建议</div>';
+    return;
+  }
+  const issues = (plan.issues || []).slice(0, 4);
+  const suggestions = (plan.suggestions || []).slice(0, 6);
+  const gate = plan.gate || {};
+  const gateItems = (gate.items || []).slice(0, 4);
+  const statusText = plan.can_apply
+    ? "允许应用"
+    : plan.shadow_mode
+    ? "影子验证"
+    : "仅记录";
+  els.tuningBody.innerHTML = `
+    <div class="tuning-line">
+      <strong>${escapeHtml(statusText)}</strong>
+      <span>${escapeHtml(plan.reason || "-")}</span>
+      <span>${escapeHtml(plan.generated_at || run?.run_time || "")}</span>
+    </div>
+    <div class="tuning-tags">
+      ${issues.length ? issues.map(item => `<span class="tag warning">${escapeHtml(item)}</span>`).join("") : '<span class="tag muted">暂无主要问题</span>'}
+    </div>
+    <div class="tuning-tags">
+      ${suggestions.length ? suggestions.map(item => `<span class="tag validation">${escapeHtml(item.parameter)}：${escapeHtml(formatTuningValue(item.value))}</span>`).join("") : '<span class="tag muted">暂无参数建议</span>'}
+    </div>
+    <div class="tuning-tags">
+      ${gateItems.map(item => `<span class="tag ${item.passed ? "stable" : "risk"}">${escapeHtml(item.name)} ${item.passed ? "通过" : "阻断"}</span>`).join("")}
+    </div>
+  `;
+}
+
+function formatTuningValue(value) {
+  if (value && typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value ?? "-");
 }
 
 function isValidationPanelActive() {
@@ -366,25 +506,28 @@ function isValidationPanelActive() {
 }
 
 function currentValidationStrategy() {
-  return els.validationStrategySelect?.value || "tomorrow_picks";
+  return els.validationStrategySelect?.value || "short_term";
+}
+
+function syncValidationStrategyTabs(strategy) {
+  els.validationStrategyTabs.forEach(button => {
+    const isActive = button.dataset.validationStrategy === strategy;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
 }
 
 function validationStrategyMeta(strategy) {
   const label = strategyLabel(strategy);
-  if (strategy === "reversal_picks") {
-    return { label, horizon: "5日", focus: "反转低波样本", outcome: "5日净收益" };
-  }
-  if (["swing_picks", "breakout_picks"].includes(strategy)) {
-    return { label, horizon: "10日", focus: strategy === "swing_picks" ? "波段样本" : "突破样本", outcome: "10日净收益" };
-  }
-  if (["position_picks", "tech_potential", "chokepoint_picks", "smallcap_value_picks"].includes(strategy)) {
-    return { label, horizon: "20日", focus: "中周期样本", outcome: "20日净收益" };
+  if (strategy === "swing_picks") {
+    return { label, horizon: "5日", focus: "2-5天样本", outcome: "5日净收益" };
   }
   return { label, horizon: "次日", focus: "次日样本", outcome: "次日净收益" };
 }
 
 function updateValidationChrome(strategy) {
   const meta = validationStrategyMeta(strategy);
+  syncValidationStrategyTabs(strategy);
   if (els.validationTitle) {
     els.validationTitle.textContent = `${meta.label}复盘`;
   }
@@ -457,7 +600,7 @@ async function autoFillMissingValidationOutcomes(metrics, dates) {
   state.validationAutoRefreshDate = refreshKey;
   state.validationAutoRefreshAt = now;
   try {
-    setOpsStatus(els.updateStatus, `检测到 ${strategyLabel(strategy)} ${latestDate} 无真实回填结果，已触发后台自动更新`, "pending");
+    setOpsStatus(els.updateStatus, `检测到 ${strategyLabel(strategy)} ${latestDate} 无真实验证结果，正在回填收益`, "pending");
     const params = new URLSearchParams({ date: latestDate, strategy });
     const res = await fetch(`/api/strategy-validation/update?${params.toString()}`, {
       method: "POST",
@@ -479,37 +622,6 @@ async function autoFillMissingValidationOutcomes(metrics, dates) {
     setOpsStatus(els.updateStatus, `自动回填失败：${escapeHtml(err.message)}`, "bad");
   } finally {
     state.validationAutoRefreshInFlight = false;
-  }
-}
-
-async function loadPortfolio() {
-  state.portfolioLoaded = true;
-  const strategy = els.portfolioStrategySelect.value || "tomorrow_picks";
-  els.portfolioSummary.innerHTML = '<div class="empty">组合生成中...</div>';
-  els.portfolioBody.innerHTML = '<tr><td colspan="7" class="empty">组合生成中...</td></tr>';
-  setOpsStatus(els.portfolioStatus, "正在读取最近保存快照并执行仓位约束…", "pending");
-  try {
-    const params = new URLSearchParams({ strategy });
-    const res = await fetch(`/api/portfolio?${params.toString()}`);
-    const payload = await res.json();
-    if (!payload.ok) {
-      throw new Error(payload.error || "组合接口返回异常");
-    }
-    renderPortfolio(payload);
-    const count = Number(payload.summary?.position_count || 0);
-    if (!count) {
-      setOpsStatus(els.portfolioStatus, payload.no_trade_reason || payload.empty_reason || "暂无可生成组合的保存快照。", "pending");
-      return;
-    }
-    if (payload.summary?.constraints_feasible === false) {
-      setOpsStatus(els.portfolioStatus, payload.no_trade_reason || "标的或主题分散度不足，剩余权重保留为现金，不强行顶破约束。", "pending");
-      return;
-    }
-    setOpsStatus(els.portfolioStatus, `已按 ${strategyLabel(strategy)} 最近快照生成 ${count} 只组合。`, "ok");
-  } catch (err) {
-    els.portfolioSummary.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
-    els.portfolioBody.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(err.message)}</td></tr>`;
-    setOpsStatus(els.portfolioStatus, `组合生成失败：${err.message}`, "bad");
   }
 }
 
@@ -698,7 +810,6 @@ function renderStockPrediction(payload) {
     </div>
     <div class="prediction-horizons">
       ${renderPredictionHorizonCard(horizons.short, "short")}
-      ${renderPredictionHorizonCard(horizons.long, "long")}
     </div>
     <div class="prediction-facts">
       <div><span>最新价</span><strong>${formatNumber(payload.price, 3)}</strong></div>
@@ -801,24 +912,24 @@ async function loadValidationAutoUpdateStatus() {
     const config = status.config || {};
     const snapshotText = snapshotStatusText(snapshot);
     if (!status.enabled) {
-      setOpsStatus(els.updateStatus, joinStatusText(["后台历史自动更新已关闭", snapshotText]), "pending");
+      setOpsStatus(els.updateStatus, joinStatusText(["14:30 后自动保存荐股快照已关闭", snapshotText]), "pending");
       return;
     }
     if (status.running) {
-      setOpsStatus(els.updateStatus, joinStatusText(["后台正在分批更新历史K线和验证结果…", snapshotText]), "pending");
+      setOpsStatus(els.updateStatus, joinStatusText(["正在保存今天/明天/2-5天荐股快照…", snapshotText]), "pending");
       return;
     }
     const result = status.last_result || {};
-    const totals = result.totals || {};
     if (status.last_error) {
-      setOpsStatus(els.updateStatus, joinStatusText([`后台自动更新上次失败：${status.last_error}`, snapshotText]), "bad");
+      setOpsStatus(els.updateStatus, joinStatusText([`荐股快照自动保存上次失败：${status.last_error}`, snapshotText]), "bad");
       return;
     }
     if (status.last_finished_at) {
+      const savedText = snapshotSaveText(result);
       setOpsStatus(
         els.updateStatus,
         joinStatusText([
-          `后台自动更新 ${status.last_finished_at} 完成：批次 ${totals.batches || 0}，更新 ${totals.updated || 0}，缓存 ${totals.cached || 0}，下载 ${totals.downloaded || 0}，失败 ${totals.failed || 0}`,
+          `荐股快照 ${status.last_finished_at} 已保存${savedText ? `：${savedText}` : ""}`,
           snapshotText,
         ]),
         "ok"
@@ -828,7 +939,7 @@ async function loadValidationAutoUpdateStatus() {
     setOpsStatus(
       els.updateStatus,
       joinStatusText([
-        `后台自动更新已启动：约 ${Math.round((config.initial_delay_seconds || 0) / 60)} 分钟后首轮，之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟分批更新`,
+        `自动保存已启动：${config.start_time || "14:30"} 之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟保存今天/明天/2-5天荐股快照`,
         snapshotText,
       ]),
       "pending"
@@ -844,75 +955,101 @@ function joinStatusText(parts) {
 
 function snapshotStatusText(snapshot) {
   if (!snapshot || snapshot.enabled === false) {
-    return "15:00 自动保存已关闭";
+    return "荐股快照自动保存已关闭";
   }
   if (snapshot.running) {
-    return "正在自动保存今天明天预测";
+    return "正在保存今天/明天/2-5天荐股快照";
   }
   if (snapshot.last_error) {
-    return `15:00 自动保存上次失败：${snapshot.last_error}`;
+    return `荐股快照自动保存上次失败：${snapshot.last_error}`;
   }
-  const saved = snapshot.last_result?.saved;
-  if (saved?.signal_date) {
-    return `已自动保存 ${saved.signal_date} 明天预测 ${saved.saved || 0} 条`;
+  const snapshots = snapshot.last_result?.snapshots || [];
+  const savedParts = snapshots
+    .filter(item => item && item.ok && item.saved)
+    .map(item => `${strategyLabel(item.strategy)} ${item.saved.saved || 0}条`);
+  if (savedParts.length) {
+    const signalDate = snapshots.find(item => item?.saved?.signal_date)?.saved?.signal_date || "";
+    const tuningText = snapshot.last_tuning_date
+      ? `；DeepSeek复盘 ${snapshot.last_tuning_date} 已生成`
+      : "";
+    return `已自动保存 ${signalDate} ${savedParts.join(" / ")}${tuningText}`;
   }
   if (snapshot.next_run_at) {
     return `下次自动保存 ${snapshot.next_run_at}`;
   }
-  return "15:00 自动保存已启动";
+  return "荐股快照自动保存已启动";
+}
+
+function snapshotSaveText(result) {
+  const snapshots = result?.snapshots || [];
+  return snapshots
+    .filter(item => item && item.ok && item.saved)
+    .map(item => `${strategyLabel(item.strategy)} ${item.saved.saved || 0}条`)
+    .join(" / ");
 }
 
 async function loadValidationDaily(date, strategy) {
   state.selectedValidation = { date, strategy };
   renderValidationSelection();
   markSelectedValidationRow();
-  els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">加载中...</td></tr>';
+  const cacheKey = `${strategy}:${date}`;
+  const cached = state.validationDailyCache[cacheKey];
+  if (cached) {
+    renderValidationDetail(cached.data || []);
+    renderValidationBatchSummary(cached.data || [], date, strategy, cached.summary || null);
+  } else {
+    els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">加载中...</td></tr>';
+  }
   const params = new URLSearchParams({ date, strategy });
+  const requestSeq = ++state.validationDailyRequestSeq;
   try {
     const res = await fetch(`/api/strategy-validation/daily?${params.toString()}`);
     const payload = await res.json();
     if (!payload.ok) {
       throw new Error(payload.error || "接口返回异常");
     }
+    if (
+      requestSeq !== state.validationDailyRequestSeq ||
+      state.selectedValidation.date !== date ||
+      state.selectedValidation.strategy !== strategy
+    ) {
+      return;
+    }
+    state.validationDailyCache[cacheKey] = payload;
     renderValidationDetail(payload.data || []);
+    renderValidationBatchSummary(payload.data || [], date, strategy, payload.summary || null);
+    if ((payload.data || []).length) {
+      refreshValidationDailyQuotes(date, strategy, cacheKey);
+    }
   } catch (err) {
+    if (requestSeq !== state.validationDailyRequestSeq) {
+      return;
+    }
     els.validationDetailBody.innerHTML = `<tr><td colspan="11" class="empty">${escapeHtml(err.message)}</td></tr>`;
+    renderValidationBatchSummary([], date, strategy);
   }
 }
 
-async function loadTechPotential(options = {}) {
-  state.techLoaded = true;
-  const background = Boolean(options.background);
-  if (!background || !hasRows(state.lastRows.tech)) {
-    els.techBody.innerHTML = '<tr><td colspan="16" class="empty">加载中...</td></tr>';
-  }
-  const params = new URLSearchParams({
-    top_n: "50",
-    market: els.marketSelect.value,
-  });
+async function refreshValidationDailyQuotes(date, strategy, cacheKey) {
+  const requestSeq = ++state.validationQuotesRequestSeq;
+  const params = new URLSearchParams({ date, strategy, quotes: "1" });
   try {
-    const res = await fetch(`/api/tech-potential?${params.toString()}`);
+    const res = await fetch(`/api/strategy-validation/daily?${params.toString()}`);
     const payload = await res.json();
     if (!payload.ok) {
       throw new Error(payload.error || "接口返回异常");
     }
-    const rows = payload.data || [];
-    const shouldRender = rememberFingerprint("tech", rows);
-    state.lastRows.tech = rows;
-    renderMetrics({ health: payload.health, meta: payload.meta, market_sentiment: {} });
-    if (shouldRender) {
-      renderTechTable(state.lastRows.tech);
+    if (
+      requestSeq !== state.validationQuotesRequestSeq ||
+      state.selectedValidation.date !== date ||
+      state.selectedValidation.strategy !== strategy
+    ) {
+      return;
     }
-    if (!background) {
-      setStatus(`科技潜力榜更新时间 ${payload.meta.generated_at}`);
-    }
+    state.validationDailyCache[cacheKey] = payload;
+    patchValidationQuoteColumns(payload.data || []);
   } catch (err) {
-    if (!background || !hasRows(state.lastRows.tech)) {
-      els.techBody.innerHTML = `<tr><td colspan="16" class="empty">${escapeHtml(err.message)}</td></tr>`;
-    }
-    if (!background) {
-      setStatus(`科技潜力榜加载失败：${err.message}`);
-    }
+    /* 实时行情补列失败不影响批次明细查看 */
   }
 }
 
@@ -923,7 +1060,7 @@ async function loadTomorrowPicks(options = {}) {
     els.tomorrowBody.innerHTML = '<tr><td colspan="16" class="empty">加载中...</td></tr>';
   }
   const params = new URLSearchParams({
-    top_n: "36",
+    top_n: String(window.APP_CONFIG.defaultTopN || 18),
     market: els.marketSelect.value,
   });
   try {
@@ -937,22 +1074,18 @@ async function loadTomorrowPicks(options = {}) {
     state.lastRows.tomorrow = rows;
     renderMetrics({ health: payload.health, meta: payload.meta, market_sentiment: {} });
     if (shouldRender) {
-      renderTomorrowPredictionStrip(payload);
       renderTomorrowTable(state.lastRows.tomorrow);
     }
     if (!background) {
-      loadTomorrowValidationMetrics();
-    }
-    if (!background) {
-      setStatus(`明天预测更新时间 ${payload.meta.generated_at || "最近快照"}`);
+      setStatus(`明天推荐更新时间 ${payload.meta.generated_at || "最近快照"}`);
     }
   } catch (err) {
+    state.tomorrowLoaded = false;
     if (!background || !hasRows(state.lastRows.tomorrow)) {
       els.tomorrowBody.innerHTML = `<tr><td colspan="16" class="empty">${escapeHtml(err.message)}</td></tr>`;
-      resetTomorrowPredictionStrip(err.message);
     }
     if (!background) {
-      setStatus(`明天预测加载失败：${err.message}`);
+      setStatus(`明天推荐加载失败：${err.message}`);
     }
   }
 }
@@ -963,51 +1096,33 @@ async function loadHorizonPicks(options = {}) {
   if (!background || !hasRows(state.lastRows.swing)) {
     els.swingBody.innerHTML = '<tr><td colspan="16" class="empty">加载中...</td></tr>';
   }
-  if (!background || !hasRows(state.lastRows.position)) {
-    els.positionBody.innerHTML = '<tr><td colspan="17" class="empty">加载中...</td></tr>';
-  }
   const params = new URLSearchParams({
-    top_n: "30",
+    top_n: String(window.APP_CONFIG.defaultTopN || 18),
     market: els.marketSelect.value,
   });
   try {
-    const [swingRes, positionRes] = await Promise.all([
-      fetch(`/api/swing-picks?${params.toString()}`),
-      fetch(`/api/position-picks?${params.toString()}`),
-    ]);
+    const swingRes = await fetch(`/api/swing-picks?${params.toString()}`);
     const swingPayload = await swingRes.json();
-    const positionPayload = await positionRes.json();
     if (!swingPayload.ok) {
       throw new Error(swingPayload.error || "波段接口返回异常");
     }
-    if (!positionPayload.ok) {
-      throw new Error(positionPayload.error || "中长期接口返回异常");
-    }
     const swingRows = swingPayload.data || [];
-    const positionRows = positionPayload.data || [];
     const shouldRenderSwing = rememberFingerprint("swing", swingRows);
-    const shouldRenderPosition = rememberFingerprint("position", positionRows);
     state.lastRows.swing = swingRows;
-    state.lastRows.position = positionRows;
     renderMetrics({ health: swingPayload.health, meta: swingPayload.meta, market_sentiment: {} });
     if (shouldRenderSwing) {
       renderSwingTable(state.lastRows.swing);
     }
-    if (shouldRenderPosition) {
-      renderPositionTable(state.lastRows.position);
-    }
     if (!background) {
-      setStatus(`波段/中长期更新时间 ${swingPayload.meta.generated_at}`);
+      setStatus(`2-5天更新时间 ${swingPayload.meta.generated_at}`);
     }
   } catch (err) {
+    state.horizonLoaded = false;
     if (!background || !hasRows(state.lastRows.swing)) {
       els.swingBody.innerHTML = `<tr><td colspan="16" class="empty">${escapeHtml(err.message)}</td></tr>`;
     }
-    if (!background || !hasRows(state.lastRows.position)) {
-      els.positionBody.innerHTML = `<tr><td colspan="17" class="empty">${escapeHtml(err.message)}</td></tr>`;
-    }
     if (!background) {
-      setStatus(`波段/中长期加载失败：${err.message}`);
+      setStatus(`2-5天加载失败：${err.message}`);
     }
   }
 }
@@ -1128,106 +1243,15 @@ function renderStrategyOverview(payload) {
   }).join("");
 }
 
-function renderPortfolio(payload) {
-  const rows = payload.data || [];
-  const summary = payload.summary || {};
-  const perf = payload.performance?.metrics || {};
-  const exposure = payload.exposure || {};
-  const exposureTags = Object.entries(exposure).length
-    ? Object.entries(exposure)
-        .map(([theme, weight]) => `<span class="portfolio-chip">${escapeHtml(theme)} ${formatNumber(weight, 1)}%</span>`)
-        .join("")
-    : '<span class="portfolio-chip muted">暂无主题暴露</span>';
-  els.portfolioSummary.innerHTML = `
-    <div class="portfolio-summary-card">
-      <span>策略</span>
-      <strong>${escapeHtml(strategyLabel(payload.strategy))}</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>持仓数</span>
-      <strong>${summary.position_count ?? 0}</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>总仓位</span>
-      <strong>${formatNumber(summary.total_weight, 1)}%</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>现金保留</span>
-      <strong>${formatNumber(summary.cash_pct, 1)}%</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>总仓上限</span>
-      <strong>${formatNumber(summary.gross_exposure_pct, 1)}%</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>市况系数</span>
-      <strong>${formatNumber(summary.regime_factor, 2)}</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>回撤系数</span>
-      <strong>${formatNumber(summary.drawdown_factor, 2)}</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>单票上限</span>
-      <strong>${formatNumber(summary.single_cap_pct, 1)}%</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>主题上限</span>
-      <strong>${formatNumber(summary.theme_cap_pct, 1)}%</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>纸面收益</span>
-      <strong class="${numberClass(perf.total_return_pct)}">${formatNumber(perf.total_return_pct, 2)}%</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>最大回撤</span>
-      <strong class="${numberClass(perf.max_drawdown_pct)}">${formatNumber(perf.max_drawdown_pct, 2)}%</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>净胜率</span>
-      <strong>${formatNumber(perf.win_rate_pct, 1)}%</strong>
-    </div>
-    <div class="portfolio-summary-card">
-      <span>纸面交易</span>
-      <strong>${perf.closed_count ?? 0}/${perf.trade_count ?? 0}</strong>
-    </div>
-    <div class="portfolio-exposure">
-      <span>主题暴露</span>
-      <div>${exposureTags}</div>
-      <small>${(summary.gross_reasons || []).map(text => escapeHtml(text)).join("；")}</small>
-    </div>
-  `;
-  if (!rows.length) {
-    els.portfolioBody.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(payload.empty_reason || "暂无保存快照")}</td></tr>`;
-    return;
-  }
-  els.portfolioBody.innerHTML = rows.map(row => {
-    const profile = row.serenity_profile || {};
-    const quality = profile.quality_score ?? row.avg_quality ?? row.score;
-    const risk = profile.risk_score ?? row.avg_risk ?? row.risk_score;
-    const action = rowActionLabel(row) || profile.action_label || "等待确认";
-    return `
-      <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-        <td class="num">${escapeHtml(row.code)}</td>
-        <td>${escapeHtml(row.name)}</td>
-        <td>${escapeHtml(row.portfolio_theme || row.theme || row.industry || "-")}</td>
-        <td class="num">${formatNumber(quality, 1)}</td>
-        <td class="num ${riskNumberClass(risk)}">${formatNumber(risk, 1)}</td>
-        <td class="num score">${formatNumber(row.suggested_weight, 2)}%</td>
-        <td><span class="tag ${actionTagClass(action)}">${escapeHtml(action)}</span></td>
-      </tr>
-    `;
-  }).join("");
-  bindSentimentRows(els.portfolioBody);
-}
-
 function renderOverviewRegime(regime) {
-  els.overviewRegimeLabel.textContent = regime.label || "-";
-  els.overviewRegimeScore.textContent = regime.score != null ? formatNumber(regime.score, 1) : "-";
-  els.overviewRegimeBreadth.textContent = regime.breadth_pct != null ? `${formatNumber(regime.breadth_pct, 1)}%` : "-";
-  els.overviewRegimeMedian.textContent = regime.median_pct_chg != null ? `${formatNumber(regime.median_pct_chg, 2)}%` : "-";
-  els.overviewRegimeStrong.textContent = regime.strong_pct != null ? `${formatNumber(regime.strong_pct, 1)}%` : "-";
-  els.overviewRegimeAdvice.textContent = regime.advice || "-";
+  if (els.overviewRegimeLabel) {
+    els.overviewRegimeLabel.textContent = regime.label || "-";
+    els.overviewRegimeScore.textContent = regime.score != null ? formatNumber(regime.score, 1) : "-";
+    els.overviewRegimeBreadth.textContent = regime.breadth_pct != null ? `${formatNumber(regime.breadth_pct, 1)}%` : "-";
+    els.overviewRegimeMedian.textContent = regime.median_pct_chg != null ? `${formatNumber(regime.median_pct_chg, 2)}%` : "-";
+    els.overviewRegimeStrong.textContent = regime.strong_pct != null ? `${formatNumber(regime.strong_pct, 1)}%` : "-";
+    els.overviewRegimeAdvice.textContent = regime.advice || "-";
+  }
   els.decisionRegimeLabel.textContent = regime.label || "-";
   els.decisionAdvice.textContent = regime.advice || "等待行情刷新";
   renderRegimeGauge(regime);
@@ -1269,6 +1293,9 @@ function renderRegimeGauge(regime) {
 }
 
 function renderStrategyConsensus(rows) {
+  if (!els.strategyConsensusBody) {
+    return;
+  }
   const displayRows = filterAndSortRows(rows, { consensus: true });
   if (!displayRows.length) {
     els.strategyConsensusBody.innerHTML = '<tr><td colspan="8" class="empty">暂无 2 策略以上共识标的</td></tr>';
@@ -1364,73 +1391,6 @@ function renderDecisionDesk(rows) {
   els.decisionAvgRisk.textContent = lowRiskRows.length || "-";
 }
 
-function renderTomorrowPredictionStrip(payload) {
-  const health = payload.health || {};
-  const meta = payload.meta || {};
-  const policy = meta.policy || {};
-  const dataStatus = meta.fallback === "saved_snapshot" ? "保存快照" : (health.quotes_source || "实时行情");
-  const minTurnover = policy.min_turnover != null ? formatMoney(policy.min_turnover) : "-";
-  els.tomorrowStrategyVersion.textContent = meta.strategy_version || "tomorrow_picks_v5";
-  els.tomorrowDataStatus.textContent = dataStatus;
-  const displayCount = meta.display_count ?? (payload.data || []).length;
-  const displayLimit = meta.display_limit ?? meta.top_n ?? "-";
-  els.tomorrowCandidateCount.textContent = `${meta.screened_count ?? meta.candidate_count ?? "-"} / 展示${displayCount}`;
-  const displayMin = meta.display_min_score ?? meta.min_score;
-  els.tomorrowBuyableFilter.textContent = `最多${displayLimit}支，展示≥${formatNumber(displayMin, 1)}；成交额≥${minTurnover}`;
-  if (els.tomorrowGateStatus) {
-    const primaryMin = meta.primary_min_score ?? meta.min_score;
-    const themeCap = meta.theme_cap ?? "-";
-    const downgraded = Number(meta.primary_ineligible_count || 0) + Number(meta.theme_limited_count || 0);
-    els.tomorrowGateStatus.textContent = `重点≥${formatNumber(primaryMin, 1)}；同题材≤${themeCap}；降级${downgraded}`;
-    els.tomorrowGateStatus.className = downgraded ? "warning-text" : "";
-  }
-  if (els.tomorrowPredictionCaution) {
-    const primaryCount = meta.primary_watch_count ?? Math.min(5, displayCount || 0);
-    const backupCount = meta.backup_watch_count ?? Math.max(0, (displayCount || 0) - primaryCount);
-    const themeText = meta.theme_limited_count ? `；同主题降级 ${meta.theme_limited_count} 支` : "";
-    const tierText = primaryCount > 0
-      ? `重点观察 ${primaryCount} 支，备选观察 ${backupCount} 支`
-      : `暂无重点观察，展示 ${backupCount || displayCount || 0} 支备选观察`;
-    els.tomorrowPredictionCaution.textContent = `${meta.score_note || "综合分不是上涨概率。"} ${meta.gate_reason || ""} ${tierText}${themeText}；不保证上涨。`;
-  }
-  els.tomorrowValidationSamples.textContent = "读取中";
-  els.tomorrowValidationHit3.textContent = "读取中";
-}
-
-function resetTomorrowPredictionStrip(message) {
-  els.tomorrowStrategyVersion.textContent = "-";
-  els.tomorrowDataStatus.textContent = message || "-";
-  els.tomorrowCandidateCount.textContent = "-";
-  els.tomorrowBuyableFilter.textContent = "-";
-  els.tomorrowValidationSamples.textContent = "-";
-  els.tomorrowValidationHit3.textContent = "-";
-  if (els.tomorrowGateStatus) {
-    els.tomorrowGateStatus.textContent = "-";
-    els.tomorrowGateStatus.className = "";
-  }
-  if (els.tomorrowPredictionCaution) {
-    els.tomorrowPredictionCaution.textContent = "观察池不保证上涨；真实前瞻样本不足时只观察，不作为重仓依据。";
-  }
-}
-
-async function loadTomorrowValidationMetrics() {
-  try {
-    const res = await fetch("/api/strategy-validation?strategy=tomorrow_picks&days=20");
-    const payload = await res.json();
-    if (!payload.ok) {
-      throw new Error(payload.error || "接口返回异常");
-    }
-    const metrics = payload.metrics || {};
-    const sample = Number(metrics.sample_count || 0);
-    const pending = Number(metrics.pending_outcome_count || 0);
-    els.tomorrowValidationSamples.textContent = pending ? `${sample} / 待${pending}` : `${sample}`;
-    els.tomorrowValidationHit3.textContent = metrics.win_rate_primary_net != null ? `${formatNumber(metrics.win_rate_primary_net, 1)}%` : "-";
-  } catch (err) {
-    els.tomorrowValidationSamples.textContent = "-";
-    els.tomorrowValidationHit3.textContent = "-";
-  }
-}
-
 function explanationTags(row) {
   const tags = [];
   const added = new Set();
@@ -1446,6 +1406,21 @@ function explanationTags(row) {
     pushTag("共识", `${consensus.label || "-"} ${consensus.appearances || 0}/${consensus.strategy_count || 0}`, "stable");
   }
 
+  if (row.rerank_source === "deepseek" || row.deepseek_action) {
+    const actionLabel = row.deepseek_action === "priority"
+      ? "优先"
+      : row.deepseek_action === "avoid"
+      ? "回避"
+      : row.deepseek_action === "watch"
+      ? "观察"
+      : "复核";
+    const cls = row.deepseek_action === "priority" ? "stable" : row.deepseek_action === "avoid" ? "risk" : "warning";
+    pushTag("DeepSeek", `${actionLabel} ${formatNumber(row.deepseek_rank_score, 1)}`, cls);
+  }
+  (row.deepseek_risk_flags || []).slice(0, 2).forEach(text => pushTag("DS风险", text, "warning"));
+  if (row.deepseek_reason) {
+    pushTag("DS理由", row.deepseek_reason, row.deepseek_action === "avoid" ? "risk" : "validation");
+  }
   (row.deepseek_profit_flags || []).slice(0, 2).forEach(text => pushTag("次日优势", text, "stable"));
   (row.reasons || []).slice(0, 3).forEach(text => pushTag("推荐", text));
 
@@ -1481,7 +1456,7 @@ function similarSignalStatsTag(stats) {
 }
 
 function rowIndustryLabel(row) {
-  return row.industry || "行业未知";
+  return row.industry || row.theme || "行业未知";
 }
 
 function codeCell(row) {
@@ -1520,7 +1495,7 @@ function renderShortTermTable(rows) {
         <td class="num">${formatNumber(row.turnover_rate, 2)}%</td>
         <td class="num">${formatMoney(row.turnover)}</td>
         ${marketCapCell(row)}
-        <td>${escapeHtml(row.industry || "-")}</td>
+        <td>${escapeHtml(row.industry || row.theme || "-")}</td>
         <td class="num">${formatNumber(row.momentum_score, 1)}</td>
         <td class="num">${formatNumber(row.sentiment_score, 1)}</td>
         ${scoreCell(row)}
@@ -1530,42 +1505,6 @@ function renderShortTermTable(rows) {
   }).join("");
 
   bindSentimentRows(els.shortTermBody);
-}
-
-function renderLongTermTable(rows) {
-  const displayRows = filterAndSortRows(rows);
-  if (!displayRows.length) {
-    els.longTermBody.innerHTML = '<tr><td colspan="16" class="empty">暂无符合条件的股票</td></tr>';
-    return;
-  }
-  els.longTermBody.innerHTML = displayRows.map(row => {
-    const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
-    const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
-    const ytdClass = row.ytd_pct >= 0 ? "positive" : "negative";
-    const explanation = `${stabilityTag(row)}${explanationTags(row)}`;
-    return `
-      <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-        <td class="num">${row.rank}</td>
-        ${codeCell(row)}
-        <td>${escapeHtml(row.name)}</td>
-        <td>${escapeHtml(row.market_label)}</td>
-        <td class="num">${formatNumber(row.price, 3)}</td>
-        <td class="num ${pctClass}">${formatNumber(row.pct_chg, 2)}%</td>
-        <td class="num ${sixtyClass}">${formatNumber(row.sixty_day_pct, 2)}%</td>
-        <td class="num ${ytdClass}">${formatNumber(row.ytd_pct, 2)}%</td>
-        <td class="num">${formatNumber(row.turnover_rate, 2)}%</td>
-        <td class="num">${formatMoney(row.turnover)}</td>
-        ${marketCapCell(row)}
-        <td>${escapeHtml(row.industry || "-")}</td>
-        <td class="num">${formatNumber(row.trend_score, 1)}</td>
-        <td class="num">${formatNumber(row.sentiment_score, 1)}</td>
-        ${scoreCell(row)}
-        <td class="reasons">${explanation}</td>
-      </tr>
-    `;
-  }).join("");
-
-  bindSentimentRows(els.longTermBody);
 }
 
 function renderTomorrowTable(rows) {
@@ -1604,401 +1543,10 @@ function renderTomorrowTable(rows) {
   bindSentimentRows(els.tomorrowBody);
 }
 
-function renderTechTable(rows) {
-  renderStandardStrategyTable(rows, els.techBody, "暂无符合条件的科技潜力股票", {
-    liquidity: ["liquidity_score"],
-    momentum: ["theme_score", "chokepoint_score"],
-    trend: ["early_trend_score", "not_overextended_score"],
-    execution: ["execution_score"],
-  });
-}
-
-function renderStandardStrategyTable(rows, bodyEl, emptyMessage, scoreKeys = {}) {
-  const displayRows = filterAndSortRows(rows);
-  if (!displayRows.length) {
-    bodyEl.innerHTML = `<tr><td colspan="16" class="empty">${escapeHtml(emptyMessage)}</td></tr>`;
-    return;
-  }
-  bodyEl.innerHTML = displayRows.map((row, index) => standardStrategyRow(row, index, scoreKeys)).join("");
-  bindSentimentRows(bodyEl);
-}
-
-function standardStrategyRow(row, index, scoreKeys = {}) {
-  const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
-  const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
-  const executionKeys = scoreKeys.execution || ["execution_score"];
-  const executionValue = strategyScoreValue(row, executionKeys);
-  return `
-    <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-      <td class="num">${row.rank || index + 1}</td>
-      ${codeCell(row)}
-      <td>${escapeHtml(row.name)}</td>
-      <td>${escapeHtml(row.market_label || "-")}</td>
-      <td class="num">${formatNumber(row.price, 3)}</td>
-      <td class="num ${pctClass}">${formatNumber(row.pct_chg, 2)}%</td>
-      <td class="num">${formatNumber(row.volume_ratio, 2)}</td>
-      <td class="num">${formatNumber(row.turnover_rate, 2)}%</td>
-      <td class="num">${formatMoney(row.turnover)}</td>
-      ${marketCapCell(row)}
-      <td class="num ${sixtyClass}">${formatNumber(row.sixty_day_pct, 2)}%</td>
-      <td class="num">${formatStrategyScore(row, scoreKeys.liquidity || ["liquidity_score"])}</td>
-      <td class="num">${formatStrategyScore(row, scoreKeys.momentum || ["momentum_score"])}</td>
-      <td class="num">${formatStrategyScore(row, scoreKeys.trend || ["trend_score"])}</td>
-      ${scoreCell(row, executionValue)}
-      <td class="reasons">${explanationTags(row)}</td>
-    </tr>`;
-}
-
-function formatStrategyScore(row, keys) {
-  const value = strategyScoreValue(row, keys);
-  return value === undefined ? "-" : formatNumber(value, 1);
-}
-
-function strategyScoreValue(row, keys) {
-  for (const key of keys || []) {
-    if (row[key] === undefined || row[key] === null || row[key] === "") continue;
-    return row[key];
-  }
-  return undefined;
-}
-
-function scoreGradeClass(value) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return "score-grade-empty";
-  if (num >= 80) return "score-grade-high";
-  if (num >= 70) return "score-grade-mid";
-  if (num >= 55) return "score-grade-low";
-  return "score-grade-bad";
-}
-
-function executionScoreHint(value) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return "买入安全：暂无数据";
-  if (num >= 80) return "买入安全高：涨幅未明显过热，当前追高风险较低";
-  if (num >= 70) return "买入安全中：仍可观察，但不要追高";
-  if (num >= 55) return "买入安全偏低：涨幅靠近风控区，谨慎";
-  return "买入安全低：当前不适合追买或缺少上涨确认";
-}
-
-async function loadChokepointPicks() {
-  state.chokepointLoaded = true;
-  els.chokepointBody.innerHTML = '<tr><td colspan="16" class="empty">加载中...</td></tr>';
-  els.chokepointChainMap.innerHTML = '<div class="empty">加载中...</div>';
-  const params = new URLSearchParams({ top_n: "30", market: els.marketSelect.value });
-  try {
-    const res = await fetch(`/api/chokepoint-picks?${params.toString()}`);
-    const payload = await res.json();
-    if (!payload.ok) {
-      throw new Error(payload.error || "接口返回异常");
-    }
-    state.lastRows.chokepoint = payload.data || [];
-    state.chokepointIndustryMap = payload.meta?.industry_map || [];
-    state.chokepointMeta = payload.meta || {};
-    renderMetrics({ health: payload.health, meta: payload.meta, market_sentiment: {} });
-    renderChainMap(state.chokepointIndustryMap, payload.meta || {});
-    renderChokepointTable(state.lastRows.chokepoint, payload.meta || {});
-    setStatus(`卡脖子榜更新时间 ${payload.meta.generated_at}`);
-  } catch (err) {
-    els.chokepointBody.innerHTML = `<tr><td colspan="16" class="empty">${escapeHtml(err.message)}</td></tr>`;
-    els.chokepointChainMap.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
-    setStatus(`卡脖子榜加载失败：${err.message}`);
-  }
-}
-
-// 产业链/行业目录：固定展示关键上游环节和代表龙头，点击行业 Tab 联动下方榜单。
-function renderChainMap(industryMap, meta = {}) {
-  const groups = industryMap || [];
-  if (!groups.length) {
-    els.chokepointChainMap.innerHTML = `<div class="empty">${escapeHtml(meta.empty_reason || "暂无行业目录数据")}</div>`;
-    return;
-  }
-  if (
-    state.chokepointActiveSegment !== "all" &&
-    !groups.some(node => node.segment === state.chokepointActiveSegment)
-  ) {
-    state.chokepointActiveSegment = "all";
-  }
-
-  const totals = groups[0]?.totals || {};
-  const totalLeaders = Number(totals.unique_leader_count ?? groups.reduce((sum, node) => sum + Number(node.leader_count || 0), 0));
-  const totalIndustries = Number(totals.industry_count ?? groups.length);
-  const totalRecommended = Number(totals.recommended_count ?? groups.reduce((sum, node) => sum + Number(node.recommended_count || 0), 0));
-  const totalMatched = Number(totals.matched_count ?? 0);
-  const totalQuoted = Number(totals.quote_available_count ?? 0);
-  const active = state.chokepointActiveSegment || "all";
-  const selectedGroups = active === "all"
-    ? groups
-    : groups.filter(node => node.segment === active);
-  const rawLeaderRows = selectedGroups
-    .flatMap(node => (node.leaders || []).map(leader => ({ ...leader, chain_segment: node.segment })))
-    .sort(compareChokepointLeaders);
-  const leaderRows = active === "all" ? uniqueChokepointLeaders(rawLeaderRows) : rawLeaderRows;
-  const matchedCount = active === "all" ? totalMatched : leaderRows.filter(row => row.matched).length;
-  const quoteCount = active === "all" ? totalQuoted : leaderRows.filter(row => row.quote_available).length;
-  const buyWatchCount = active === "all" ? totalRecommended : leaderRows.filter(row => ["buy", "watch"].includes(row.recommendation?.level)).length;
-  const selectedTitle = active === "all" ? "全部卡脖子行业" : active;
-  const note = active === "all"
-    ? (meta.empty_reason || "点击行业 Tab 查看该环节龙头；龙头股只代表产业地位，不等于买入建议。")
-    : "列表优先展示命中策略或可观察标的；未命中会直接给出不推荐或仅观察原因。";
-  const tabs = [
-    `
-      <button class="industry-tab ${active === "all" ? "is-active" : ""}" type="button" data-segment="all">
-        <span>全部</span>
-        <strong>${totalLeaders}</strong>
-        <small>${totalIndustries}行业 · ${totalRecommended}可买/观察</small>
-      </button>
-    `,
-    ...groups.map(node => `
-      <button class="industry-tab ${active === node.segment ? "is-active" : ""}" type="button" data-segment="${escapeHtml(node.segment)}">
-        <span>${escapeHtml(node.segment)}</span>
-        <strong>${node.leader_count || 0}</strong>
-        <small>${node.recommended_count || 0}/${node.leader_count || 0}</small>
-      </button>
-    `),
-  ].join("");
-  const leaders = leaderRows.length
-    ? leaderRows.map(renderChokepointLeaderRow).join("")
-    : `<div class="empty">该行业暂无龙头目录</div>`;
-
-  els.chokepointChainMap.innerHTML = `
-    <div class="industry-browser">
-      <div class="industry-tabs" role="tablist" aria-label="卡脖子行业切换">${tabs}</div>
-      <div class="industry-panel">
-        <div class="industry-panel-head">
-          <div>
-            <h3>${escapeHtml(selectedTitle)}</h3>
-            <p>${escapeHtml(note)}</p>
-          </div>
-          <div class="industry-stats">
-            <div><span>龙头股</span><strong>${leaderRows.length}</strong></div>
-            <div><span>可买/观察</span><strong>${buyWatchCount}</strong></div>
-            <div><span>命中策略</span><strong>${matchedCount}</strong></div>
-            <div><span>有行情</span><strong>${quoteCount}</strong></div>
-          </div>
-        </div>
-        <div class="leader-list">
-          <div class="leader-list-head">
-            <span>行业/股票</span>
-            <span>实时状态</span>
-            <span>系统动作</span>
-            <span>原因</span>
-          </div>
-          ${leaders}
-        </div>
-      </div>
-    </div>`;
-  bindChokepointIndustryMap();
-}
-
-function uniqueChokepointLeaders(rows) {
-  const byCode = new Map();
-  (rows || []).forEach(row => {
-    const key = String(row.code || "");
-    const current = byCode.get(key);
-    if (!current) {
-      byCode.set(key, { ...row, segments: [row.chain_segment || row.segment].filter(Boolean) });
-      return;
-    }
-    const mergedSegments = new Set([...(current.segments || []), row.chain_segment || row.segment].filter(Boolean));
-    const better = compareChokepointLeaders(row, current) < 0 ? row : current;
-    byCode.set(key, {
-      ...current,
-      ...better,
-      chain_segment: [...mergedSegments].join(" / "),
-      segments: [...mergedSegments],
-    });
-  });
-  return [...byCode.values()].sort(compareChokepointLeaders);
-}
-
-function bindChokepointIndustryMap() {
-  [...els.chokepointChainMap.querySelectorAll(".industry-tab")].forEach(node => {
-    node.addEventListener("click", () => {
-      state.chokepointActiveSegment = node.dataset.segment || "all";
-      renderChainMap(state.chokepointIndustryMap, state.chokepointMeta || {});
-      renderChokepointTable(state.lastRows.chokepoint, state.chokepointMeta || {});
-    });
-  });
-  [...els.chokepointChainMap.querySelectorAll(".leader-row")].forEach(item => {
-    item.addEventListener("click", event => {
-      event.stopPropagation();
-      showSentiment(item.dataset.code, item.dataset.name);
-    });
-  });
-}
-
-function renderChokepointLeaderRow(row) {
-  const rec = row.recommendation || {};
-  const pctClass = Number(row.pct_chg || 0) >= 0 ? "positive" : "negative";
-  const matched = row.matched ? "命中策略" : row.quote_available ? "未命中策略" : "无行情";
-  const status = row.quote_available
-    ? `${formatNumber(row.price, 3)} / <span class="${pctClass}">${formatNumber(row.pct_chg, 2)}%</span>`
-    : "无行情";
-  return `
-    <div class="leader-row" data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-      <div class="leader-main">
-        <span class="leader-segment">${escapeHtml(row.chain_segment || row.segment || "-")}</span>
-        <strong>${escapeHtml(row.name)}</strong>
-        <small>${escapeHtml(row.code)}</small>
-      </div>
-      <div class="leader-market">
-        <span>${status}</span>
-        <small>${row.quote_available ? formatMoney(row.turnover) : "-"}</small>
-      </div>
-      <div class="leader-action">
-        <span class="tag ${row.matched ? "strategy" : "stable"}">${escapeHtml(matched)}</span>
-        <span class="tag recommend-${escapeHtml(rec.level || "unknown")}">${escapeHtml(rec.label || "无法判断")}</span>
-      </div>
-      <div class="leader-reason">${escapeHtml(rec.reason || (row.reasons || []).join("；") || "-")}</div>
-    </div>`;
-}
-
-function compareChokepointLeaders(left, right) {
-  const levelRank = { buy: 0, watch: 1, observe: 2, avoid: 3, unknown: 4 };
-  const leftLevel = levelRank[left.recommendation?.level || "unknown"] ?? 9;
-  const rightLevel = levelRank[right.recommendation?.level || "unknown"] ?? 9;
-  if (leftLevel !== rightLevel) return leftLevel - rightLevel;
-  if (Boolean(left.matched) !== Boolean(right.matched)) return left.matched ? -1 : 1;
-  if (Boolean(left.quote_available) !== Boolean(right.quote_available)) return left.quote_available ? -1 : 1;
-  return Number(right.score || 0) - Number(left.score || 0);
-}
-
-function renderChokepointTable(rows, meta = {}) {
-  const activeSegment = state.chokepointActiveSegment || "all";
-  const scopedRows = activeSegment === "all"
-    ? rows
-    : (rows || []).filter(row => row.chain_segment === activeSegment);
-  const displayRows = filterAndSortRows(scopedRows);
-  if (!displayRows.length) {
-    const fallbackRows = chokepointLeaderFallbackRows(activeSegment);
-    if (fallbackRows.length) {
-      renderChokepointLeaderFallback(fallbackRows, activeSegment, meta);
-      return;
-    }
-    const scopeText = activeSegment === "all" ? "" : `「${escapeHtml(activeSegment)}」`;
-    const reason = meta.empty_reason || "该环节当前没有股票同时满足上游关键词、流动性和风险过滤条件。";
-    els.chokepointBody.innerHTML = `<tr><td colspan="16" class="empty">${scopeText}暂无命中卡脖子策略的股票。${escapeHtml(reason)}</td></tr>`;
-    return;
-  }
-  els.chokepointBody.innerHTML = displayRows.map((row, index) => standardStrategyRow(row, index, {
-    liquidity: ["liquidity_score"],
-    momentum: ["chokepoint_score"],
-    trend: ["early_trend_score", "not_overextended_score"],
-    execution: ["execution_score"],
-  })).join("");
-  bindSentimentRows(els.chokepointBody);
-}
-
-function chokepointLeaderFallbackRows(activeSegment) {
-  const groups = state.chokepointIndustryMap || [];
-  const selected = activeSegment === "all"
-    ? groups
-    : groups.filter(node => node.segment === activeSegment);
-  return selected.flatMap(node => (node.leaders || []).map(leader => ({ ...leader, chain_segment: node.segment })));
-}
-
-function renderChokepointLeaderFallback(rows, activeSegment, meta = {}) {
-  const title = activeSegment === "all" ? "行业龙头观察榜" : `「${escapeHtml(activeSegment)}」龙头观察榜`;
-  const reason = meta.empty_reason || "当前没有股票命中卡脖子策略，以下为行业龙头实时状态，不等同于推荐买入。";
-  els.chokepointBody.innerHTML = `
-    <tr>
-      <td colspan="16" class="empty">${title}：${escapeHtml(reason)}</td>
-    </tr>
-	    ${rows.map((row, index) => {
-	      const rec = row.recommendation || {};
-	      const pctClass = Number(row.pct_chg || 0) >= 0 ? "positive" : "negative";
-	      const matched = row.matched ? "命中策略" : row.quote_available ? "未命中策略" : "无行情";
-	      return `
-	        <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-	          <td class="num">${index + 1}</td>
-	          ${codeCell(row)}
-	          <td>${escapeHtml(row.name)}</td>
-	          <td>${escapeHtml(row.market_label || "-")}</td>
-	          <td class="num">${row.quote_available ? formatNumber(row.price, 3) : "-"}</td>
-	          <td class="num ${pctClass}">${row.quote_available ? `${formatNumber(row.pct_chg, 2)}%` : "-"}</td>
-	          <td class="num">${row.quote_available ? formatNumber(row.volume_ratio, 2) : "-"}</td>
-	          <td class="num">${row.quote_available ? `${formatNumber(row.turnover_rate, 2)}%` : "-"}</td>
-	          <td class="num">${row.quote_available ? formatMoney(row.turnover) : "-"}</td>
-	          ${marketCapCell(row)}
-	          <td class="num">${row.quote_available ? `${formatNumber(row.sixty_day_pct, 2)}%` : "-"}</td>
-	          <td class="num">-</td>
-	          <td class="num">-</td>
-	          <td class="num">-</td>
-	          <td class="num">-</td>
-	          <td><span class="tag recommend-${escapeHtml(rec.level || "unknown")}">${escapeHtml(rec.label || "无法判断")}</span></td>
-	          <td class="reasons">
-	            <span class="tag stable">${escapeHtml(matched)}</span>
-	            <span class="tag stable">${escapeHtml(row.chain_segment || row.segment || "-")}</span>
-	            <span class="tag recommend-${escapeHtml(rec.level || "unknown")}">${escapeHtml(rec.reason || "-")}</span>
-	          </td>
-	        </tr>`;
-    }).join("")}
-  `;
-  bindSentimentRows(els.chokepointBody);
-}
-
-// ===== 新增盈利策略页（反转低波 / 小市值价值 / 量价突破） =====
-function makeFactorLoader(stateKey, loadedKey, endpoint, topN, bodyEl, renderFn, label, colSpan = 16) {
-  return async function () {
-    state[loadedKey] = true;
-    bodyEl().innerHTML = `<tr><td colspan="${colSpan}" class="empty">加载中...</td></tr>`;
-    const params = new URLSearchParams({ top_n: String(topN), market: els.marketSelect.value });
-    try {
-      const res = await fetch(`${endpoint}?${params.toString()}`);
-      const payload = await res.json();
-      if (!payload.ok) throw new Error(payload.error || "接口返回异常");
-      state.lastRows[stateKey] = payload.data || [];
-      renderMetrics({ health: payload.health, meta: payload.meta, market_sentiment: {} });
-      renderFn(state.lastRows[stateKey], payload.meta || {});
-      setStatus(`${label}更新时间 ${payload.meta.generated_at}`);
-    } catch (err) {
-      bodyEl().innerHTML = `<tr><td colspan="${colSpan}" class="empty">${escapeHtml(err.message)}</td></tr>`;
-      setStatus(`${label}加载失败：${err.message}`);
-    }
-  };
-}
-
-const loadReversalPicks = makeFactorLoader("reversal", "reversalLoaded", "/api/reversal-picks", 30, () => els.reversalBody, renderReversalTable, "反转低波", 17);
-const loadSmallcapPicks = makeFactorLoader("smallcap", "smallcapLoaded", "/api/smallcap-value-picks", 30, () => els.smallcapBody, renderSmallcapTable, "小市值价值", 17);
-const loadBreakoutPicks = makeFactorLoader("breakout", "breakoutLoaded", "/api/breakout-picks", 30, () => els.breakoutBody, renderBreakoutTable, "量价突破", 17);
-
-function renderReversalTable(rows) {
-  renderStandardStrategyTable(rows, els.reversalBody, "暂无符合条件的超跌低波标的", {
-    liquidity: ["liquidity_score"],
-    momentum: ["reversal_score", "oversold_calm_score"],
-    trend: ["lowvol_score", "not_overextended_score"],
-    execution: ["calm_turnover_score"],
-  });
-}
-
-function renderSmallcapTable(rows, meta) {
-  renderStandardStrategyTable(rows, els.smallcapBody, meta && meta.note ? meta.note : "暂无满足护栏的小市值标的", {
-    liquidity: ["liquidity_score"],
-    momentum: ["smallcap_score"],
-    trend: ["value_score", "oversold_calm_score"],
-    execution: ["not_overextended_score", "lowvol_score"],
-  });
-}
-
-function renderBreakoutTable(rows, meta = {}) {
-  renderStandardStrategyTable(
-    rows,
-    els.breakoutBody,
-    meta.note || "暂无突破/多头排列标的；若未开启历史因子，系统会使用实时强势兜底。",
-    {
-      liquidity: ["volume_break_score", "liquidity_score"],
-      momentum: ["momentum_score", "breakout_strength"],
-      trend: ["trend_score", "breakout_strength"],
-      execution: ["execution_score"],
-    },
-  );
-}
-
-
 function renderSwingTable(rows) {
   const displayRows = filterAndSortRows(rows);
   if (!displayRows.length) {
-    els.swingBody.innerHTML = '<tr><td colspan="16" class="empty">暂无符合条件的波段股票</td></tr>';
+    els.swingBody.innerHTML = '<tr><td colspan="16" class="empty">暂无符合条件的2-5天股票</td></tr>';
     return;
   }
   els.swingBody.innerHTML = displayRows.map(row => {
@@ -2031,42 +1579,6 @@ function renderSwingTable(rows) {
   bindSentimentRows(els.swingBody);
 }
 
-function renderPositionTable(rows) {
-  const displayRows = filterAndSortRows(rows);
-  if (!displayRows.length) {
-    els.positionBody.innerHTML = '<tr><td colspan="17" class="empty">暂无符合条件的中长期股票</td></tr>';
-    return;
-  }
-  els.positionBody.innerHTML = displayRows.map(row => {
-    const pctClass = row.pct_chg >= 0 ? "positive" : "negative";
-    const sixtyClass = row.sixty_day_pct >= 0 ? "positive" : "negative";
-    const ytdClass = row.ytd_pct >= 0 ? "positive" : "negative";
-    const explanation = explanationTags(row);
-    return `
-      <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-        <td class="num">${row.rank}</td>
-        ${codeCell(row)}
-        <td>${escapeHtml(row.name)}</td>
-        <td>${escapeHtml(row.theme || "-")}</td>
-        <td>${escapeHtml(row.market_label)}</td>
-        <td class="num">${formatNumber(row.price, 3)}</td>
-        <td class="num ${pctClass}">${formatNumber(row.pct_chg, 2)}%</td>
-        ${marketCapCell(row)}
-        <td class="num ${sixtyClass}">${formatNumber(row.sixty_day_pct, 2)}%</td>
-        <td class="num ${ytdClass}">${formatNumber(row.ytd_pct, 2)}%</td>
-        <td class="num">${formatNumber(row.ma20_gap, 2)}%</td>
-        <td class="num">${formatNumber(row.volatility_20d, 2)}%</td>
-        <td class="num">${formatNumber(row.trend_score, 1)}</td>
-        <td class="num">${formatNumber(row.quality_proxy_score, 1)}</td>
-        <td class="num">${formatNumber(row.liquidity_score, 1)}</td>
-        ${scoreCell(row)}
-        <td class="reasons">${explanation}</td>
-      </tr>
-    `;
-  }).join("");
-  bindSentimentRows(els.positionBody);
-}
-
 function renderValidationMetrics(metrics) {
   const sample = Number(metrics.sample_count || 0);
   const outcome = Number(metrics.outcome_sample_count || 0);
@@ -2080,7 +1592,9 @@ function renderValidationMetrics(metrics) {
   const avgReturn = metrics.avg_primary_return_net == null ? null : Number(metrics.avg_primary_return_net);
   els.validationSampleCount.textContent = outcome > sample ? `${sample}/${outcome}` : `${sample}`;
   els.validationWinRate.textContent = winRate != null ? `${formatNumber(winRate, 1)}%` : "-";
-  els.validationHit3.textContent = `真 ${real} / 回 ${replay}`;
+  if (els.validationHit3) {
+    els.validationHit3.textContent = `真 ${real} / 回 ${replay}`;
+  }
   els.validationAvgReturn.textContent = avgReturn != null ? `${horizon} ${formatNumber(avgReturn, 2)}%` : "-";
   if (els.validationExecutionSkipped) {
     els.validationExecutionSkipped.textContent = executionSkipped ? `${executionSkipped}` : "0";
@@ -2091,8 +1605,59 @@ function renderValidationMetrics(metrics) {
     els.validationPendingOutcome.textContent = pendingOutcome ? `${pendingOutcome}${coverageText}` : `0${coverageText}`;
     els.validationPendingOutcome.className = pendingOutcome ? "warning-text" : "";
   }
-  renderNextDayCompare(metrics.next_day_compare || {}, metrics.replay_next_day_compare || {});
   renderValidationSimpleDecision({ sample, outcome, real, replay, winRate, avgReturn, horizon, executionSkipped, pendingOutcome });
+}
+
+function renderValidationBatchSummary(rows, date, strategy, summary = null) {
+  const meta = validationStrategyMeta(strategy);
+  const localSummary = summary || validationBatchSummaryFromRows(rows);
+  const sample = Number(localSummary.sample_count || 0);
+  const up = Number(localSummary.up_count || 0);
+  const down = Number(localSummary.down_count || 0);
+  const flat = Number(localSummary.flat_count || 0);
+  const pending = Number(localSummary.pending_count || 0);
+  const winRate = localSummary.win_rate == null ? null : Number(localSummary.win_rate);
+  const avgReturn = localSummary.avg_return == null ? null : Number(localSummary.avg_return);
+  if (els.validationSelectionLabel) {
+    els.validationSelectionLabel.textContent = date
+      ? `${date} ${strategyLabel(strategy)}`
+      : `未选择${meta.label}批次`;
+  }
+  if (els.validationSampleCount) {
+    els.validationSampleCount.textContent = pending > 0 ? `${sample}（待回填${pending}）` : `${sample}`;
+  }
+  if (els.validationWinRate) {
+    const flatText = flat > 0 ? ` / 平${flat}` : "";
+    els.validationWinRate.textContent = winRate == null
+      ? (pending > 0 ? `-（待回填${pending}）` : "-")
+      : `${formatNumber(winRate, 1)}%（涨${up} / 跌${down}${flatText}）`;
+  }
+  if (els.validationAvgReturn) {
+    els.validationAvgReturn.textContent = avgReturn == null ? "-" : `${formatNumber(avgReturn, 2)}%`;
+    els.validationAvgReturn.className = avgReturn == null ? "" : numberClass(avgReturn);
+  }
+}
+
+function validationBatchSummaryFromRows(rows) {
+  const validRows = (rows || [])
+    .map(row => ({ row, netReturn: primaryValidationNetReturn(row) }))
+    .filter(item =>
+      Number.isFinite(item.netReturn) &&
+      item.row.outcome_updated_at &&
+      !validationSkipReason(item.row.skip_reason)
+    );
+  const sample = validRows.length;
+  const up = validRows.filter(item => item.netReturn > 0).length;
+  const down = validRows.filter(item => item.netReturn < 0).length;
+  const flat = sample - up - down;
+  return {
+    sample_count: sample,
+    up_count: up,
+    down_count: down,
+    flat_count: flat,
+    win_rate: sample > 0 ? (up / sample) * 100 : null,
+    avg_return: sample > 0 ? validRows.reduce((sum, item) => sum + item.netReturn, 0) / sample : null,
+  };
 }
 
 function renderNextDayCompare(compare, replayCompare = {}) {
@@ -2240,12 +1805,33 @@ function renderValidationDeepseekReview(review) {
 }
 
 function renderValidationDates(rows) {
+  state.validationDateRows = rows || [];
   if (!rows.length) {
     els.validationDatesBody.innerHTML = '<tr><td colspan="4" class="empty">暂无保存记录</td></tr>';
     els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">暂无可查看明细</td></tr>';
+    state.selectedValidation = { date: "", strategy: currentValidationStrategy() };
+    renderValidationBatchSummary([], "", currentValidationStrategy());
+    updateValidationDatesPager();
     return;
   }
-  els.validationDatesBody.innerHTML = rows.map(row => `
+  clampValidationDatePage();
+  renderValidationDatePage();
+}
+
+function validationDatePageCount() {
+  return Math.max(1, Math.ceil(state.validationDateRows.length / VALIDATION_DATE_PAGE_SIZE));
+}
+
+function clampValidationDatePage() {
+  const maxPage = validationDatePageCount() - 1;
+  state.validationDatePage = Math.min(Math.max(0, state.validationDatePage), maxPage);
+}
+
+function renderValidationDatePage() {
+  clampValidationDatePage();
+  const start = state.validationDatePage * VALIDATION_DATE_PAGE_SIZE;
+  const pageRows = state.validationDateRows.slice(start, start + VALIDATION_DATE_PAGE_SIZE);
+  els.validationDatesBody.innerHTML = pageRows.map(row => `
     <tr data-date="${escapeHtml(row.signal_date)}" data-strategy="${escapeHtml(row.strategy_name)}" data-sample-type="${escapeHtml(row.sample_type || "")}">
 	      <td>${escapeHtml(row.signal_date)}</td>
 	      <td>${validationSampleTypeBadge(row)}</td>
@@ -2257,6 +1843,48 @@ function renderValidationDates(rows) {
     row.addEventListener("click", () => loadValidationDaily(row.dataset.date, row.dataset.strategy));
   });
   markSelectedValidationRow();
+  updateValidationDatesPager();
+}
+
+function updateValidationDatesPager() {
+  if (!els.validationDatesPager) return;
+  const totalRows = state.validationDateRows.length;
+  const totalPages = validationDatePageCount();
+  const hasMultiplePages = totalRows > VALIDATION_DATE_PAGE_SIZE;
+  els.validationDatesPager.hidden = !totalRows;
+  if (els.validationDatesPageLabel) {
+    els.validationDatesPageLabel.textContent = totalRows
+      ? `${state.validationDatePage + 1}/${totalPages} 共${totalRows}条`
+      : "0/0";
+  }
+  if (els.validationDatesPrev) {
+    els.validationDatesPrev.disabled = !hasMultiplePages || state.validationDatePage <= 0;
+  }
+  if (els.validationDatesNext) {
+    els.validationDatesNext.disabled = !hasMultiplePages || state.validationDatePage >= totalPages - 1;
+  }
+}
+
+function moveValidationDatePage(delta) {
+  state.validationDatePage += delta;
+  clampValidationDatePage();
+  renderValidationDatePage();
+}
+
+function syncValidationDatePageToSelection() {
+  const index = state.validationDateRows.findIndex(row =>
+    row.signal_date === state.selectedValidation.date &&
+    row.strategy_name === state.selectedValidation.strategy
+  );
+  if (index < 0) return;
+  const nextPage = Math.floor(index / VALIDATION_DATE_PAGE_SIZE);
+  if (nextPage !== state.validationDatePage) {
+    state.validationDatePage = nextPage;
+    renderValidationDatePage();
+  } else {
+    markSelectedValidationRow();
+    updateValidationDatesPager();
+  }
 }
 
 function renderValidationDetail(rows) {
@@ -2295,12 +1923,29 @@ function renderValidationDetail(rows) {
         <td class="num ${numberClass(primaryReturn)}">${pctText(primaryReturn)}</td>
         <td class="num">${tradeCost != null ? `${formatNumber(tradeCost, 2)}%` : "-"}</td>
         <td><span class="tag ${executionClass}">${escapeHtml(executionText)}</span></td>
-        <td class="num ${numberClass(todayChange)}">${pctText(todayChange)}</td>
-        <td class="num ${numberClass(anchorToNow)}">${pctText(anchorToNow)}</td>
+        <td class="num ${numberClass(todayChange)}" data-validation-field="current_pct_chg">${pctText(todayChange)}</td>
+        <td class="num ${numberClass(anchorToNow)}" data-validation-field="anchor_to_now_return">${pctText(anchorToNow)}</td>
       </tr>
     `;
   }).join("");
   bindSentimentRows(els.validationDetailBody);
+}
+
+function patchValidationQuoteColumns(rows) {
+  const lookup = new Map((rows || []).map(row => [String(row.code || ""), row]));
+  [...els.validationDetailBody.querySelectorAll("tr[data-code]")].forEach(tr => {
+    const row = lookup.get(String(tr.dataset.code || ""));
+    if (!row) return;
+    updateValidationPctCell(tr.querySelector('[data-validation-field="current_pct_chg"]'), row.current_pct_chg);
+    updateValidationPctCell(tr.querySelector('[data-validation-field="anchor_to_now_return"]'), row.anchor_to_now_return);
+  });
+}
+
+function updateValidationPctCell(cell, value) {
+  if (!cell) return;
+  const num = Number(value);
+  cell.className = `num ${numberClass(num)}`;
+  cell.textContent = Number.isFinite(num) ? `${formatNumber(num, 2)}%` : "-";
 }
 
 function validationSkipReason(value) {
@@ -2313,24 +1958,25 @@ function validationSkipReason(value) {
 
 function primaryValidationLabel(row) {
   const strategy = row.strategy_name || "";
-  if (strategy === "reversal_picks") return "5日";
-  if (["swing_picks", "breakout_picks"].includes(strategy)) return "10日";
-  if (["long_term", "position_picks", "tech_potential", "chokepoint_picks", "smallcap_value_picks"].includes(strategy)) return "20日";
+  if (strategy === "swing_picks") return "5日";
   return "次日";
 }
 
 function primaryValidationReturn(row) {
   const strategy = row.strategy_name || "";
-  if (strategy === "reversal_picks") {
+  if (strategy === "swing_picks") {
     return row.signal_hold_5d_return ?? row.hold_5d_return ?? row.signal_hold_3d_return ?? row.hold_3d_return;
   }
-  if (["swing_picks", "breakout_picks"].includes(strategy)) {
-    return row.signal_hold_10d_return ?? row.hold_10d_return ?? row.signal_hold_5d_return ?? row.hold_5d_return;
-  }
-  if (["long_term", "position_picks", "tech_potential", "chokepoint_picks", "smallcap_value_picks"].includes(strategy)) {
-    return row.signal_hold_20d_return ?? row.hold_20d_return ?? row.signal_hold_10d_return ?? row.hold_10d_return;
-  }
   return row.signal_next_close_return ?? row.next_close_return;
+}
+
+function primaryValidationNetReturn(row) {
+  const rawValue = primaryValidationReturn(row);
+  if (rawValue === null || rawValue === undefined || rawValue === "") return null;
+  const rawReturn = Number(rawValue);
+  if (!Number.isFinite(rawReturn)) return null;
+  const tradeCost = Number(row.trade_cost_pct);
+  return Number.isFinite(tradeCost) ? rawReturn - tradeCost : rawReturn;
 }
 
 function syncValidationSelection(rows) {
@@ -2345,7 +1991,7 @@ function syncValidationSelection(rows) {
       : { date: "", strategy: "" };
   }
   renderValidationSelection();
-  markSelectedValidationRow();
+  syncValidationDatePageToSelection();
   if (state.selectedValidation.date && state.selectedValidation.strategy) {
     loadValidationDaily(state.selectedValidation.date, state.selectedValidation.strategy);
   }
@@ -2354,6 +2000,10 @@ function syncValidationSelection(rows) {
 function validationSampleTypeBadge(row) {
   const real = Number(row.real_count || 0);
   const replay = Number(row.replay_count || 0);
+  const count = Number(row.count || 0);
+  if (row.sample_type === "empty" || (!count && !real && !replay)) {
+    return `<span class="tag muted">空批次</span>`;
+  }
   if (real > 0 && replay > 0) {
     return `<span class="tag validation">真${real}/回${replay}</span>`;
   }
@@ -2365,7 +2015,7 @@ function validationSampleTypeBadge(row) {
 
 function renderValidationSelection() {
   if (!state.selectedValidation.date) {
-    els.validationSelectionLabel.textContent = "未选择日期";
+    els.validationSelectionLabel.textContent = `未选择${strategyLabel(currentValidationStrategy())}批次`;
     return;
   }
   els.validationSelectionLabel.textContent = `${state.selectedValidation.date} ${strategyLabel(state.selectedValidation.strategy)}`;
@@ -2434,29 +2084,11 @@ function rerenderCurrentTables() {
   renderStrategyConsensus(state.lastRows.consensus);
   renderDecisionDesk(state.lastRows.consensus);
   renderShortTermTable(state.lastRows.shortTerm);
-  renderLongTermTable(state.lastRows.longTerm);
   if (state.tomorrowLoaded) {
     renderTomorrowTable(state.lastRows.tomorrow);
   }
-  if (state.techLoaded) {
-    renderTechTable(state.lastRows.tech);
-  }
-  if (state.chokepointLoaded) {
-    renderChainMap(state.chokepointIndustryMap, state.chokepointMeta || {});
-    renderChokepointTable(state.lastRows.chokepoint, state.chokepointMeta || {});
-  }
-  if (state.reversalLoaded) {
-    renderReversalTable(state.lastRows.reversal);
-  }
-  if (state.smallcapLoaded) {
-    renderSmallcapTable(state.lastRows.smallcap);
-  }
-  if (state.breakoutLoaded) {
-    renderBreakoutTable(state.lastRows.breakout);
-  }
   if (state.horizonLoaded) {
     renderSwingTable(state.lastRows.swing);
-    renderPositionTable(state.lastRows.position);
   }
 }
 
@@ -2531,16 +2163,8 @@ function findLocalRow(code) {
   const groups = [
     state.lastRows.consensus,
     state.lastRows.shortTerm,
-    state.lastRows.longTerm,
     state.lastRows.tomorrow,
-    state.lastRows.tech,
-    state.lastRows.chokepoint,
-    state.lastRows.reversal,
-    state.lastRows.smallcap,
-    state.lastRows.breakout,
     state.lastRows.swing,
-    state.lastRows.position,
-    ...(state.chokepointIndustryMap || []).map(node => node.leaders || []),
   ];
   const matches = groups
     .flat()
@@ -2584,7 +2208,10 @@ function scoreCell(row, entrySafetyValue = row.execution_score) {
   const score = scorePairValue(row.score, 1, "综合分");
   const entry = scorePairValue(entrySafetyValue, 0, executionScoreHint(entrySafetyValue), "买入安全 ");
   const separator = entry ? '<span class="score-pair-separator">/</span>' : "";
-  const number = `<div class="score-pair" title="综合分 / 买入安全">${score}${separator}${entry}</div>`;
+  const deepseek = row.deepseek_rank_score != null
+    ? `<span class="score-pair-separator">/</span>${scorePairValue(row.deepseek_rank_score, 1, "DeepSeek复核后最终分", "DS ")}`
+    : "";
+  const number = `<div class="score-pair" title="综合分 / 买入安全 / DeepSeek复核分">${score}${separator}${entry}${deepseek}</div>`;
   const tier = row.verdict?.tier ? ` score-${escapeHtml(row.verdict.tier)}` : "";
   return `<td class="num score${tier}">${number}</td>`;
 }
@@ -2799,16 +2426,9 @@ function stabilityTag(row) {
 }
 
 function strategyLabel(value) {
-  if (value === "short_term") return "短期推荐";
-  if (value === "long_term") return "长期推荐";
-  if (value === "tech_potential") return "科技潜力";
-  if (value === "tomorrow_picks") return "明天预测";
-  if (value === "swing_picks") return "波段 5-10 日";
-  if (value === "position_picks") return "中长期 1-3 月";
-  if (value === "chokepoint_picks") return "卡脖子";
-  if (value === "reversal_picks") return "反转低波";
-  if (value === "smallcap_value_picks") return "小市值价值";
-  if (value === "breakout_picks") return "量价突破";
+  if (value === "short_term") return "今天推荐";
+  if (value === "tomorrow_picks") return "明天推荐";
+  if (value === "swing_picks") return "2-5天推荐";
   return value || "-";
 }
 
@@ -2838,6 +2458,31 @@ function toggleGlossaryPopover() {
   els.glossaryToggle.setAttribute("aria-expanded", String(nextOpen));
 }
 
+function activePoolFilter() {
+  return document.querySelector(".pool-tab.active")?.dataset.poolFilter || "all";
+}
+
+function applyRecommendationPoolFilter(filter = activePoolFilter()) {
+  els.poolTabs.forEach(tab => {
+    tab.classList.toggle("active", tab.dataset.poolFilter === filter);
+  });
+  els.poolGroups.forEach(group => {
+    const matched = filter === "all" || group.dataset.poolGroup === filter;
+    group.hidden = !matched;
+  });
+}
+
+function ensureRecommendationPoolData(options = {}) {
+  const background = Boolean(options.background);
+  const filter = activePoolFilter();
+  if ((filter === "all" || filter === "next") && !state.tomorrowLoaded) {
+    loadTomorrowPicks({ background });
+  }
+  if ((filter === "all" || filter === "swing") && !state.horizonLoaded) {
+    loadHorizonPicks({ background });
+  }
+}
+
 els.glossaryToggle?.addEventListener("click", (event) => {
   event.stopPropagation();
   toggleGlossaryPopover();
@@ -2852,7 +2497,7 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-els.refreshButton.addEventListener("click", connectRecommendationStream);
+els.refreshButton.addEventListener("click", startRecommendationStreamWithSnapshot);
 els.stockPredictionBtn.addEventListener("click", loadStockPrediction);
 els.stockPredictionInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -2861,37 +2506,25 @@ els.stockPredictionInput.addEventListener("keydown", (event) => {
 });
 els.marketSelect.addEventListener("change", () => {
   state.tomorrowLoaded = false;
-  state.techLoaded = false;
-  state.chokepointLoaded = false;
-  state.reversalLoaded = false;
-  state.smallcapLoaded = false;
-  state.breakoutLoaded = false;
   state.horizonLoaded = false;
-  connectRecommendationStream();
-  if (document.getElementById("tomorrowPanel").classList.contains("active")) {
-    loadTomorrowPicks();
+  if (document.getElementById("todayPanel")?.classList.contains("active")) {
+    startRecommendationStreamWithSnapshot();
+  } else {
+    stopRecommendationStream();
   }
-  if (document.getElementById("techPanel").classList.contains("active")) {
-    loadTechPotential();
-  }
-  if (document.getElementById("chokepointPanel").classList.contains("active")) {
-    loadChokepointPicks();
-  }
-  if (document.getElementById("reversalPanel").classList.contains("active")) {
-    loadReversalPicks();
-  }
-  if (document.getElementById("smallcapPanel").classList.contains("active")) {
-    loadSmallcapPicks();
-  }
-  if (document.getElementById("breakoutPanel").classList.contains("active")) {
-    loadBreakoutPicks();
-  }
-  if (document.getElementById("horizonPanel").classList.contains("active")) {
-    loadHorizonPicks();
+  applyRecommendationPoolFilter();
+  if (document.getElementById("todayPanel")?.classList.contains("active")) {
+    ensureRecommendationPoolData();
   }
 });
 els.actionFilterSelect.addEventListener("change", rerenderCurrentTables);
 els.sortSelect.addEventListener("change", rerenderCurrentTables);
+els.poolTabs.forEach(button => {
+  button.addEventListener("click", () => {
+    applyRecommendationPoolFilter(button.dataset.poolFilter || "all");
+    ensureRecommendationPoolData();
+  });
+});
 els.tabButtons.forEach(button => {
   button.addEventListener("click", () => {
     els.tabButtons.forEach(item => item.classList.toggle("active", item === button));
@@ -2905,26 +2538,12 @@ els.tabButtons.forEach(button => {
         }
       });
     });
-    if (button.dataset.tab === "tomorrowPanel" && !state.tomorrowLoaded) {
-      loadTomorrowPicks();
-    }
-    if (button.dataset.tab === "techPanel" && !state.techLoaded) {
-      loadTechPotential();
-    }
-    if (button.dataset.tab === "chokepointPanel" && !state.chokepointLoaded) {
-      loadChokepointPicks();
-    }
-    if (button.dataset.tab === "reversalPanel" && !state.reversalLoaded) {
-      loadReversalPicks();
-    }
-    if (button.dataset.tab === "smallcapPanel" && !state.smallcapLoaded) {
-      loadSmallcapPicks();
-    }
-    if (button.dataset.tab === "breakoutPanel" && !state.breakoutLoaded) {
-      loadBreakoutPicks();
-    }
-    if (button.dataset.tab === "horizonPanel" && !state.horizonLoaded) {
-      loadHorizonPicks();
+    if (button.dataset.tab === "todayPanel") {
+      startRecommendationStreamWithSnapshot();
+      applyRecommendationPoolFilter();
+      ensureRecommendationPoolData();
+    } else {
+      stopRecommendationStream();
     }
     if (button.dataset.tab === "validationPanel" && !state.validationLoaded) {
       loadValidation();
@@ -2937,22 +2556,38 @@ els.tabButtons.forEach(button => {
     if (button.dataset.tab === "overviewPanel" && !state.overviewLoaded) {
       loadStrategyOverview();
     }
-    if (button.dataset.tab === "portfolioPanel" && !state.portfolioLoaded) {
-      loadPortfolio();
-    }
   });
 });
-els.loadPortfolioBtn.addEventListener("click", loadPortfolio);
-els.portfolioStrategySelect.addEventListener("change", loadPortfolio);
 els.validationStrategySelect?.addEventListener("change", () => {
   state.selectedValidation = { date: "", strategy: "" };
   state.validationAutoRefreshDate = "";
+  state.validationDatePage = 0;
+  renderTuningRun(null, currentValidationStrategy());
   loadValidation();
 });
-els.validationDaysSelect.addEventListener("change", loadValidation);
+els.validationStrategyTabs.forEach(button => {
+  button.addEventListener("click", () => {
+    const strategy = button.dataset.validationStrategy || "short_term";
+    if (els.validationStrategySelect) {
+      els.validationStrategySelect.value = strategy;
+    }
+    state.selectedValidation = { date: "", strategy: "" };
+    state.validationAutoRefreshDate = "";
+    state.validationDatePage = 0;
+    renderTuningRun(null, strategy);
+    loadValidation();
+  });
+});
+els.generateTuningBtn?.addEventListener("click", generateTuningPlan);
+els.validationDatesPrev?.addEventListener("click", () => moveValidationDatePage(-1));
+els.validationDatesNext?.addEventListener("click", () => moveValidationDatePage(1));
+els.validationDaysSelect.addEventListener("change", () => {
+  state.validationDatePage = 0;
+  loadValidation();
+});
 els.closeDetails.addEventListener("click", () => {
   els.detailsPanel.hidden = true;
 });
 
-connectRecommendationStream();
-loadStrategyOverview();
+applyRecommendationPoolFilter();
+startRecommendationStreamWithSnapshot();

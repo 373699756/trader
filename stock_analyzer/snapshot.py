@@ -6,34 +6,19 @@ from .factors import build_alphalite_factors, merge_alphalite
 from .fundamentals import attach_fundamental_factors, load_fundamentals
 from . import config
 from .daily_data import load_history_frames
-from .normalization import normalize_code
+from .normalization import coerce_number, normalize_code
 from .scoring import (
     build_market_regime,
     prepare_candidates,
-    score_breakout_candidates,
-    score_chokepoint_candidates,
-    score_position_candidates,
-    score_reversal_candidates,
-    score_smallcap_value_candidates,
-    score_swing_candidates,
-    score_tech_potential_candidates,
-    score_tomorrow_candidates,
 )
+from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks, storage_strategy_name
 
 
-SNAPSHOT_STRATEGIES = (
-    "tomorrow_picks",
-    "swing_picks",
-    "position_picks",
-    "tech_potential",
-    "chokepoint_picks",
-    "reversal_picks",
-    "smallcap_value_picks",
-    "breakout_picks",
-)
+SNAPSHOT_STRATEGIES = tuple(config.SNAPSHOT_STRATEGIES)
 
 
 def run_snapshot(provider, validation_store, strategy: str, market: str = "all") -> Dict[str, object]:
+    strategy = storage_strategy_name(strategy)
     if strategy not in SNAPSHOT_STRATEGIES:
         return {"ok": False, "strategy": strategy, "error": "unknown_strategy"}
     quotes = provider.get_realtime_quotes()
@@ -46,6 +31,27 @@ def run_snapshot(provider, validation_store, strategy: str, market: str = "all")
     candidates = _attach_snapshot_history_factors(provider, candidates)
     market_regime = build_market_regime(candidates, breadth_source=quotes)
     rows, meta, version = _score_snapshot_strategy(provider, candidates, quotes, strategy, market, market_regime)
+    rows, deepseek_meta = _apply_snapshot_deepseek_rerank(rows, strategy, market)
+    meta["deepseek"] = deepseek_meta
+    meta["display_count"] = len(rows)
+    meta["deepseek_filtered_count"] = int(deepseek_meta.get("filtered") or 0)
+    if deepseek_meta.get("filter_reasons"):
+        meta["deepseek_filter_reasons"] = deepseek_meta.get("filter_reasons")
+    if _after_close_anchor_time(meta["generated_at"]):
+        rows, close_anchor = _apply_close_anchor_prices(provider, rows, meta["generated_at"], quotes)
+        meta["close_anchor"] = {
+            "enabled": True,
+            **close_anchor,
+            "time": getattr(config, "VALIDATION_CLOSE_ANCHOR_TIME", "15:00"),
+        }
+        if close_anchor["count"] < close_anchor["total"]:
+            return {
+                "ok": False,
+                "strategy": strategy,
+                "error": "15:00后收盘锚点不完整，拒绝保存为回溯锚点。",
+                "saved": {"saved": 0, "replaced": 0},
+                "meta": meta,
+            }
     saved = validation_store.save_signals(strategy, version, meta["generated_at"], rows)
     return {"ok": True, "strategy": strategy, "saved": saved, "meta": meta}
 
@@ -55,19 +61,48 @@ def run_snapshots(provider, validation_store, strategies: Iterable[str], market:
 
 
 def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market: str, market_regime: Dict[str, object]):
+    if strategy == "short_term":
+        rows_by_horizon, meta = score_today_picks(
+            candidates,
+            hot_ranks={},
+            industry_strength={},
+            sentiment_lookup={},
+            top_n=getattr(config, "RECOMMENDATION_DISPLAY_LIMIT", 18),
+            market_filter=market,
+            market_regime=market_regime,
+        )
+        rows = rows_by_horizon.get("short_term", [])
+        return rows, meta, "short_term_v1"
     scorers = {
-        "tomorrow_picks": (score_tomorrow_candidates, config.TOMORROW_TOP_N),
-        "swing_picks": (score_swing_candidates, 30),
-        "position_picks": (score_position_candidates, 30),
-        "tech_potential": (score_tech_potential_candidates, 50),
-        "chokepoint_picks": (score_chokepoint_candidates, 30),
-        "reversal_picks": (score_reversal_candidates, 30),
-        "smallcap_value_picks": (score_smallcap_value_candidates, 30),
-        "breakout_picks": (score_breakout_candidates, 30),
+        "tomorrow_picks": (score_tomorrow_picks, config.TOMORROW_TOP_N),
+        "swing_picks": (score_swing_2_5d_picks, getattr(config, "RECOMMENDATION_DISPLAY_LIMIT", 18)),
     }
     scorer, top_n = scorers[strategy]
     rows, meta = scorer(candidates, top_n=top_n, market_filter=market, market_regime=market_regime)
     return rows, meta, meta.get("strategy_version", strategy)
+
+
+def _apply_snapshot_deepseek_rerank(rows: List[Dict[str, object]], strategy: str, market: str):
+    if not rows:
+        return rows, {"enabled": False, "status": "empty"}
+    if not getattr(config, "ENABLE_DEEPSEEK_RUNTIME", False):
+        return rows, {"enabled": False, "status": "runtime_disabled", "strategy": strategy}
+    disabled = _deepseek_rerank_disabled_strategies()
+    if strategy in disabled or "all" in disabled:
+        return rows, {"enabled": False, "status": "strategy_rerank_disabled", "strategy": strategy}
+    try:
+        from .deepseek_client import rerank_candidates
+
+        return rerank_candidates(rows=rows, strategy_name=strategy, market_filter=market)
+    except Exception as exc:
+        return rows, {"enabled": False, "status": "fallback", "strategy": strategy, "error": str(exc)}
+
+
+def _deepseek_rerank_disabled_strategies() -> set:
+    raw = str(getattr(config, "DEEPSEEK_RERANK_DISABLED_STRATEGIES", "") or "").strip()
+    if not raw:
+        return set()
+    return {item.strip() for item in raw.replace("，", ",").split(",") if item.strip()}
 
 
 def _attach_snapshot_history_factors(provider, candidates):
@@ -104,6 +139,116 @@ def _attach_snapshot_history_factors(provider, candidates):
     return merge_alphalite(candidates, build_alphalite_factors(history_by_code))
 
 
+def _apply_close_anchor_prices(provider, rows: List[Dict[str, object]], signal_time: str, quotes):
+    if not rows or not _after_close_anchor_time(signal_time):
+        return rows, {"count": 0, "total": len(rows or []), "missing": []}
+    signal_date = str(signal_time or "")[:10]
+    quote_anchors = _quote_anchor_lookup(quotes)
+    allow_quote_fallback = _allow_quote_close_fallback(provider, signal_time)
+    anchored: List[Dict[str, object]] = []
+    missing: List[str] = []
+    for row in rows:
+        item = dict(row)
+        code = normalize_code(item.get("code"))
+        close_price, pct_chg = _history_anchor_for_date(provider, code, signal_date)
+        source = "history_close" if close_price > 0 else ""
+        if close_price <= 0 and allow_quote_fallback:
+            quote_anchor = quote_anchors.get(code, {})
+            close_price = coerce_number(quote_anchor.get("price"))
+            pct_chg = coerce_number(quote_anchor.get("pct_chg"))
+            source = "quote_close" if close_price > 0 else ""
+        if close_price > 0:
+            item["price"] = round(close_price, 4)
+            item["pct_chg"] = round(pct_chg, 4)
+            item["anchor_price_source"] = source
+            item["anchor_price_time"] = signal_time
+        else:
+            missing.append(code or str(item.get("code") or ""))
+        anchored.append(item)
+    return anchored, {"count": len(anchored) - len(missing), "total": len(anchored), "missing": missing[:10]}
+
+
+def _after_close_anchor_time(signal_time: str) -> bool:
+    raw_time = str(signal_time or "")
+    if "T" not in raw_time:
+        return False
+    try:
+        stamp = datetime.fromisoformat(raw_time)
+    except ValueError:
+        return False
+    hour, minute = _time_parts(getattr(config, "VALIDATION_CLOSE_ANCHOR_TIME", "15:00"), (15, 0))
+    close_at = stamp.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return stamp >= close_at
+
+
+def _time_parts(value: str, fallback: tuple) -> tuple:
+    raw = str(value or "").strip()
+    try:
+        hour_text, minute_text = raw.split(":", 1)
+        return min(23, max(0, int(hour_text))), min(59, max(0, int(minute_text)))
+    except Exception:
+        return fallback
+
+
+def _quote_anchor_lookup(quotes) -> Dict[str, Dict[str, float]]:
+    if quotes is None or getattr(quotes, "empty", True) or "code" not in quotes.columns:
+        return {}
+    lookup: Dict[str, Dict[str, float]] = {}
+    for _, row in quotes.iterrows():
+        code = normalize_code(row.get("code"))
+        price = coerce_number(row.get("price"))
+        if code and price > 0:
+            lookup[code] = {"price": price, "pct_chg": coerce_number(row.get("pct_chg"))}
+    return lookup
+
+
+def _history_anchor_for_date(provider, code: str, signal_date: str):
+    if not code or not signal_date:
+        return 0.0, 0.0
+    target = signal_date.replace("-", "")
+    try:
+        history = provider.get_history(code, days=10)
+    except Exception:
+        return 0.0, 0.0
+    if history is None or history.empty or "trade_date" not in history.columns:
+        return 0.0, 0.0
+    history = history.copy()
+    history["_date"] = history["trade_date"].astype(str).str.replace("-", "", regex=False)
+    history = history.sort_values("_date").reset_index(drop=True)
+    today = history[history["_date"] == target]
+    if today.empty:
+        return 0.0, 0.0
+    today_index = int(today.index[-1])
+    row = history.iloc[today_index]
+    close_price = coerce_number(row.get("price") if "price" in history.columns else row.get("close"))
+    pct_chg = coerce_number(row.get("pct_chg")) if "pct_chg" in history.columns else 0.0
+    if not pct_chg and today_index > 0:
+        prev = history.iloc[today_index - 1]
+        prev_close = coerce_number(prev.get("price") if "price" in history.columns else prev.get("close"))
+        if close_price > 0 and prev_close > 0:
+            pct_chg = round((close_price / prev_close - 1) * 100, 4)
+    return close_price, pct_chg
+
+
+def _allow_quote_close_fallback(provider, signal_time: str) -> bool:
+    health_fn = getattr(provider, "health", None)
+    if not callable(health_fn):
+        return True
+    health = health_fn() or {}
+    source = str(health.get("quotes_source") or "")
+    if "快照" not in source:
+        return True
+    refreshed = health.get("last_quote_refresh")
+    try:
+        refreshed_at = datetime.fromisoformat(str(refreshed))
+        stamp = datetime.fromisoformat(str(signal_time))
+    except Exception:
+        return False
+    hour, minute = _time_parts(getattr(config, "VALIDATION_CLOSE_ANCHOR_TIME", "15:00"), (15, 0))
+    close_at = stamp.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return refreshed_at >= close_at
+
+
 def _quote_freshness_error(provider, quotes) -> str:
     if quotes is None or quotes.empty:
         return "行情为空，拒绝保存明天预测快照。"
@@ -117,7 +262,7 @@ def _quote_freshness_error(provider, quotes) -> str:
     source = str(health.get("quotes_source") or "")
     if not source or source == "unavailable":
         return "行情来源不可用，拒绝保存明天预测快照。"
-    if "快照" in source:
+    if "快照" in source and not getattr(config, "VALIDATION_ALLOW_LOCAL_QUOTE_SNAPSHOT", False):
         return "当前行情来自本地快照，拒绝保存为今日真实预测。"
     refreshed = health.get("last_quote_refresh")
     if not refreshed:
