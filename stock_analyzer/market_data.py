@@ -310,14 +310,14 @@ def _eastmoney_get(path: str, params: Dict[str, str], hosts: Iterable[str]) -> D
                 try:
                     with requests.Session() as session:
                         session.trust_env = trust_env
-                        response = session.get(
+                        with session.get(
                             "{}://{}{}".format(scheme, host, path),
                             params=params,
                             headers=headers,
                             timeout=10,
-                        )
-                    response.raise_for_status()
-                    payload = response.json()
+                        ) as response:
+                            response.raise_for_status()
+                            payload = response.json()
                 except Exception as exc:
                     last_error = exc
                     continue

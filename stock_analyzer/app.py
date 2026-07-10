@@ -5,7 +5,7 @@ import threading
 import time
 from typing import Dict, List, Tuple
 
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask import Flask, Response, jsonify, render_template, request
 import pandas as pd
 
 from . import config
@@ -965,12 +965,6 @@ def create_app() -> Flask:
             snapshot={"saved_at": "", "age_seconds": None, "source": "async_refresh_pending"},
         ), 200
 
-    def _sse_event(event: str, payload: Dict[str, object]) -> str:
-        return "event: {}\ndata: {}\n\n".format(
-            event,
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-        )
-
     @app.route("/")
     def index():
         return render_template(
@@ -1015,26 +1009,7 @@ def create_app() -> Flask:
 
     @app.route("/api/recommendations/stream")
     def recommendations_stream():
-        top_n = _int_arg("top_n", config.DEFAULT_TOP_N, minimum=0, maximum=config.RECOMMENDATION_MAX_TOP_N)
-        market = _normalize_market(request.args.get("market", "all"))
-        refresh_seconds = max(5, int(config.REFRESH_SECONDS))
-
-        @stream_with_context
-        def generate():
-            yield "retry: 5000\n\n"
-            while True:
-                payload, status = _recommendations_payload(top_n, market)
-                yield _sse_event("recommendations" if status == 200 and payload.get("ok") else "recommendations-error", payload)
-                time.sleep(refresh_seconds)
-
-        return Response(
-            generate(),
-            mimetype="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        return Response(status=204, headers={"Cache-Control": "no-cache"})
 
     @app.route("/api/health")
     def health():

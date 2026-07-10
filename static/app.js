@@ -224,51 +224,20 @@ function stopRecommendationStream() {
     clearTimeout(state.streamRetryTimer);
     state.streamRetryTimer = null;
   }
+  if (state.timer) {
+    clearInterval(state.timer);
+    state.timer = null;
+  }
 }
 
 function connectRecommendationStream() {
   stopRecommendationStream();
-  clearInterval(state.timer);
   state.countdown = window.APP_CONFIG.refreshSeconds;
-  if (!window.EventSource) {
-    setStatus("浏览器不支持后端推送，改用手动刷新");
-    loadRecommendations();
-    return;
-  }
-  const params = new URLSearchParams({
-    top_n: String(window.APP_CONFIG.defaultTopN || 18),
-    market: DEFAULT_MARKET,
-  });
-  const source = new EventSource(`/api/recommendations/stream?${params.toString()}`);
-  state.eventSource = source;
-  setStatus("已连接后端推送，等待数据...");
+  setStatus("已启用定时刷新，等待数据...");
   startPushStatusCountdown();
-  source.addEventListener("recommendations", (event) => {
-    try {
-      const payload = JSON.parse(event.data);
-      applyRecommendationsPayload(payload);
-      state.countdown = window.APP_CONFIG.refreshSeconds;
-    } catch (err) {
-      setStatus(`推送数据解析失败：${err.message}`);
-    }
-  });
-  source.addEventListener("recommendations-error", (event) => {
-    try {
-      const payload = JSON.parse(event.data);
-      setStatus(`后端推送失败：${payload.error || "接口返回异常"}`);
-    } catch (err) {
-      setStatus(`后端推送失败：${err.message}`);
-    }
-  });
-  source.onerror = () => {
-    setStatus("后端推送连接中断，正在重连...");
-    source.close();
-    if (state.eventSource === source) {
-      state.eventSource = null;
-      loadRecommendations();
-      state.streamRetryTimer = setTimeout(connectRecommendationStream, 3000);
-    }
-  };
+  state.timer = setInterval(() => {
+    void loadRecommendations();
+  }, Math.max(5, window.APP_CONFIG.refreshSeconds || 30) * 1000);
 }
 
 async function startRecommendationStreamWithSnapshot() {
