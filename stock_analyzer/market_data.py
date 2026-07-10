@@ -231,14 +231,14 @@ def _fetch_sina_history(code: str, start_date: str, end_date: str) -> pd.DataFra
     end = datetime.strptime(end_date, "%Y%m%d")
     datalen = max(120, min(2000, (end - start).days + 10))
     symbol = "{}{}".format("sh" if normalize_code(code).startswith(("5", "6", "9")) else "sz", normalize_code(code))
-    response = requests.get(
+    with requests.get(
         "https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketData.getKLineData",
         params={"symbol": symbol, "scale": "240", "ma": "no", "datalen": str(datalen)},
         headers={"User-Agent": "Mozilla/5.0"},
         timeout=10,
-    )
-    response.raise_for_status()
-    rows = response.json()
+    ) as response:
+        response.raise_for_status()
+        rows = response.json()
     if not isinstance(rows, list) or not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)

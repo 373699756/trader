@@ -118,13 +118,13 @@ def review_stock_prediction(
     while attempt <= retry_count:
         attempt += 1
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=timeout_seconds)
-            if response.status_code in (429, 500, 502, 503, 504) and attempt <= retry_count:
-                last_error = "可重试响应码: {}".format(response.status_code)
-                time.sleep((2 ** (attempt - 1)) * float(config["retry_base_delay"]))
-                continue
-            response.raise_for_status()
-            raw = response.json()
+            with requests.post(url, headers=headers, json=payload, timeout=timeout_seconds) as response:
+                if response.status_code in (429, 500, 502, 503, 504) and attempt <= retry_count:
+                    last_error = "可重试响应码: {}".format(response.status_code)
+                    time.sleep((2 ** (attempt - 1)) * float(config["retry_base_delay"]))
+                    continue
+                response.raise_for_status()
+                raw = response.json()
             usage = raw.get("usage", {}) if isinstance(raw, dict) else {}
             content = (raw.get("choices") or [{}])[0].get("message", {}).get("content", "")
             parsed = _safe_parse_json(str(content))
