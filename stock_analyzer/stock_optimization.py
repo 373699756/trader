@@ -67,20 +67,25 @@ def review_stock_prediction(
         {
             "role": "system",
             "content": (
-                "你是A股个股交易策略优化助手。请只输出 JSON，不要 Markdown。"
-                "输出字段: summary、stance、bias、timing、reasoning、entry_plan、risk_controls、strategy_adjustments、avoid_conditions、"
+                "你是A股个股量化走势分析与交易策略复核助手。请只输出 JSON，不要 Markdown。"
+                "输出字段: summary、bias、next_day_outlook、swing_outlook、up_probability、stance、timing、reasoning、entry_plan、risk_controls、strategy_adjustments、avoid_conditions、"
                 "stop_loss_pct、take_profit_pct、trailing_stop_pct。"
                 "entry_plan、risk_controls、strategy_adjustments、avoid_conditions 都必须是字符串数组。"
                 "stop_loss_pct/take_profit_pct/trailing_stop_pct 是以入场价为基准的百分比数字，无法判断时给 null。"
                 "stance 只能是 buy_trial、watch_only、hold_or_wait、avoid_chase。"
                 "bias 只能是 bullish、neutral、bearish。timing 只能是 now、pullback、breakout_confirm、observe。"
+                "next_day_outlook 和 swing_outlook 各用不超过18字描述方向与节奏；up_probability 是0到100的数字。"
+                "summary 限一句且不超过50字；reasoning、entry_plan、risk_controls、strategy_adjustments 各最多2条，"
+                "avoid_conditions 最多3条。只保留会改变交易决策的信息。"
             ),
         },
         {
             "role": "user",
             "content": (
-                "请基于本地量化预测结果，对这只股票给出更实用的策略优化建议。"
-                "重点不是重复涨跌判断，而是回答现在该怎么做、怎么试单、什么情况下不能追。"
+                "请结合实时涨跌、5/10/20日收益、均线偏离、量能、动量、趋势、市场环境和本地量化结果，独立预测该股走势。"
+                "先判断次日与2-5日更可能上涨、震荡还是回落，再复核交易策略。"
+                "未进入推荐股票池只能作为策略覆盖背景，绝不能直接等同于看跌或高风险，也不能替代走势分析。"
+                "当技术数据有限时应降低概率置信，但仍要根据现有量价数据给出方向研判。"
                 "策略周期: {horizon}。复核重点: {focus}。"
                 "必须结合以下亏钱因素: {loss_factors}。"
                 "同时参考赚钱因素: {profit_factors}。"
@@ -112,7 +117,7 @@ def review_stock_prediction(
     usage = {}
     last_error = ""
     attempt = 0
-    retry_count = int(config.get("validation_retry_count", 0))
+    retry_count = max(1, int(config.get("validation_retry_count", 0)))
     timeout_seconds = min(6.0, float(config.get("validation_timeout_seconds", config["timeout_seconds"])))
     timed_out = False
     while attempt <= retry_count:
@@ -149,12 +154,15 @@ def review_stock_prediction(
         "summary": str(parsed.get("summary", "")).strip(),
         "stance": str(parsed.get("stance", "")).strip().lower(),
         "bias": str(parsed.get("bias", "")).strip().lower(),
+        "next_day_outlook": str(parsed.get("next_day_outlook", "")).strip()[:60],
+        "swing_outlook": str(parsed.get("swing_outlook", "")).strip()[:60],
+        "up_probability": _coerce_probability(parsed.get("up_probability")),
         "timing": str(parsed.get("timing", "")).strip().lower(),
-        "reasoning": _unique_strings(parsed.get("reasoning", []))[:4] if isinstance(parsed.get("reasoning"), list) else [],
-        "entry_plan": _unique_strings(parsed.get("entry_plan", []))[:4] if isinstance(parsed.get("entry_plan"), list) else [],
-        "risk_controls": _unique_strings(parsed.get("risk_controls", []))[:4] if isinstance(parsed.get("risk_controls"), list) else [],
-        "strategy_adjustments": _unique_strings(parsed.get("strategy_adjustments", []))[:5] if isinstance(parsed.get("strategy_adjustments"), list) else [],
-        "avoid_conditions": _unique_strings(parsed.get("avoid_conditions", []))[:4] if isinstance(parsed.get("avoid_conditions"), list) else [],
+        "reasoning": _unique_strings(parsed.get("reasoning", []))[:2] if isinstance(parsed.get("reasoning"), list) else [],
+        "entry_plan": _unique_strings(parsed.get("entry_plan", []))[:2] if isinstance(parsed.get("entry_plan"), list) else [],
+        "risk_controls": _unique_strings(parsed.get("risk_controls", []))[:2] if isinstance(parsed.get("risk_controls"), list) else [],
+        "strategy_adjustments": _unique_strings(parsed.get("strategy_adjustments", []))[:2] if isinstance(parsed.get("strategy_adjustments"), list) else [],
+        "avoid_conditions": _unique_strings(parsed.get("avoid_conditions", []))[:3] if isinstance(parsed.get("avoid_conditions"), list) else [],
         "stop_loss_pct": _coerce_optional_pct(parsed.get("stop_loss_pct")),
         "take_profit_pct": _coerce_optional_pct(parsed.get("take_profit_pct")),
         "trailing_stop_pct": _coerce_optional_pct(parsed.get("trailing_stop_pct")),
@@ -195,6 +203,15 @@ def _coerce_optional_pct(value):
     return round(number, 4)
 
 
+def _coerce_probability(value):
+    if value in (None, "", "null"):
+        return None
+    number = coerce_number(value, float("nan"))
+    if number != number:
+        return None
+    return round(max(0.0, min(100.0, number)), 2)
+
+
 def _stock_prediction_review_payload(
     prediction_payload: Dict[str, object],
     strategy_name: str,
@@ -223,6 +240,7 @@ def _stock_prediction_review_payload(
         "sixty_day_pct": prediction_payload.get("sixty_day_pct"),
         "ytd_pct": prediction_payload.get("ytd_pct"),
         "data_source": prediction_payload.get("data_source", ""),
+        "technical_factors": prediction_payload.get("technical_factors") or {},
         "prediction": {
             "label": prediction.get("label", ""),
             "direction": prediction.get("direction", ""),
@@ -259,13 +277,9 @@ def _stock_prediction_review_payload(
             for item in hits[:4]
             if isinstance(item, dict)
         ],
-        "missed_strategies": [
-            {
-                "strategy_label": item.get("strategy_label", ""),
-                "horizon_label": item.get("horizon_label", ""),
-                "reason": item.get("reason", ""),
-            }
-            for item in missed[:3]
-            if isinstance(item, dict)
-        ],
+        "pool_coverage": {
+            "hit_count": len(hits),
+            "missed_count": len(missed),
+            "note": "股票池覆盖情况不代表走势方向",
+        },
     }

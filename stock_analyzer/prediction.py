@@ -68,6 +68,7 @@ def build_stock_prediction(
         "volume_ratio": coerce_number(row.get("volume_ratio")),
         "sixty_day_pct": coerce_number(row.get("sixty_day_pct")),
         "ytd_pct": coerce_number(row.get("ytd_pct")),
+        "technical_factors": _technical_factor_snapshot(row),
         "data_source": "实时行情",
         "market_regime": {
             "label": market_regime.get("label", "未知"),
@@ -316,6 +317,7 @@ def _filtered_stock_prediction(
         "volume_ratio": coerce_number(row.get("volume_ratio")),
         "sixty_day_pct": coerce_number(row.get("sixty_day_pct")),
         "ytd_pct": coerce_number(row.get("ytd_pct")),
+        "technical_factors": _technical_factor_snapshot(row),
         "data_source": data_source,
         "market_regime": {
             "label": market_regime.get("label", "未知"),
@@ -351,6 +353,28 @@ def _filtered_stock_prediction(
         "blacklist_risk": blacklist_risk,
         "disclaimer": disclaimer or "该结果是风控诊断，不构成投资建议；被过滤股票默认不按推荐策略给正向评分。",
     }
+
+
+def _technical_factor_snapshot(row: Dict[str, object]) -> Dict[str, float]:
+    fields = (
+        "ret_5d",
+        "ret_10d",
+        "ret_20d",
+        "ma5_gap",
+        "ma20_gap",
+        "vol_ma5_ratio",
+        "volatility_20d",
+        "momentum_score",
+        "trend_score",
+        "liquidity_score",
+    )
+    snapshot = {}
+    for field in fields:
+        value = pd.to_numeric(row.get(field), errors="coerce")
+        if pd.isna(value):
+            continue
+        snapshot[field] = round(float(value), 3)
+    return snapshot
 
 
 def _find_row(code: str, rows: List[Dict[str, object]]) -> Dict[str, object]:

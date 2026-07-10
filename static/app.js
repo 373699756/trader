@@ -364,10 +364,6 @@ async function loadTuningLatest(strategy = currentValidationStrategy()) {
   }
 }
 
-async function generateTuningPlan() {
-  await loadStockOptimization();
-}
-
 function renderTuningRun(run, strategy = currentValidationStrategy()) {
   if (!els.toolResultPane) return;
   const plan = run?.plan || run || null;
@@ -527,14 +523,14 @@ function renderToolResult(html) {
 }
 
 async function loadStockPrediction() {
-  await loadStockPredictionWithMode("combined");
+  await loadStockPredictionWithMode("prediction");
 }
 
 async function loadStockOptimization() {
-  await loadStockPredictionWithMode("optimization");
+  await loadStockPredictionWithMode("validation");
 }
 
-async function loadStockPredictionWithMode(mode = "combined") {
+async function loadStockPredictionWithMode(mode) {
   const raw = els.stockPredictionInput.value.trim();
   const code = raw.replace(/\D/g, "").slice(0, 6);
   if (code.length !== 6) {
@@ -543,52 +539,36 @@ async function loadStockPredictionWithMode(mode = "combined") {
     return;
   }
   const label = els.stockPredictionBtn.textContent;
-  const tuningLabel = els.generateTuningBtn?.textContent || "";
+  const tuningLabel = els.generateTuningBtn.textContent;
   els.stockPredictionBtn.disabled = true;
-  els.stockPredictionBtn.textContent = mode === "optimization" ? "分析中…" : "预测中…";
-  if (els.generateTuningBtn) {
-    els.generateTuningBtn.disabled = true;
-    if (mode === "optimization") {
-      els.generateTuningBtn.textContent = "分析中…";
-    }
-  }
+  els.generateTuningBtn.disabled = true;
+  if (mode === "prediction") els.stockPredictionBtn.textContent = "预测中…";
+  if (mode === "validation") els.generateTuningBtn.textContent = "验证中…";
   setOpsStatus(
     els.stockPredictionStatus,
-    mode === "optimization"
-      ? "正在结合本地预测和 DeepSeek 生成策略优化建议…"
-      : "正在读取当前行情并生成本地预测…",
+    mode === "prediction" ? "正在结合量价因子与 DeepSeek 研判走势…" : "正在读取走势预测并复核执行策略…",
     "pending"
   );
-  setOpsStatus(
-    els.tuningStatus,
-    mode === "optimization" ? "正在生成个股优化建议…" : "",
-    mode === "optimization" ? "pending" : ""
-  );
+  setOpsStatus(els.tuningStatus, mode === "validation" ? "DeepSeek 策略验证中…" : "", mode === "validation" ? "pending" : "");
   try {
-    const params = mode === "optimization" ? "?deepseek=1" : "";
-    const res = await fetch(`/api/stock-prediction/${encodeURIComponent(code)}${params}`);
+    const res = await fetch(`/api/stock-prediction/${encodeURIComponent(code)}?deepseek=1`);
     const payload = await res.json();
     if (!payload.ok) {
       throw new Error(payload.error || "无法给出预测");
     }
-    renderStockPrediction(payload, mode);
+    renderStockPrediction(payload);
+    const deepseekReady = predictionOptimizationReady(payload.optimization);
     setOpsStatus(
       els.stockPredictionStatus,
-      mode === "optimization"
-        ? payload.optimization?.enabled === false
-          ? "预测已更新，DeepSeek 未启用。"
-          : "预测和优化建议已更新。"
-        : "本地预测已更新。",
-      "ok"
+      deepseekReady ? "DeepSeek 联合走势预测已更新。" : "本地预测已更新，DeepSeek 暂不可用。",
+      deepseekReady ? "ok" : "bad"
     );
     setOpsStatus(
       els.tuningStatus,
-      payload.optimization?.enabled === false
-        ? "DeepSeek 未启用，仅显示本地预测。"
-        : mode === "optimization"
-        ? "个股优化建议已更新。"
+      mode === "validation"
+        ? deepseekReady ? "DeepSeek 策略验证已更新。" : "DeepSeek 策略验证暂不可用。"
         : "",
-      payload.optimization?.enabled === false ? "bad" : mode === "optimization" ? "ok" : ""
+      mode === "validation" ? deepseekReady ? "ok" : "bad" : ""
     );
   } catch (err) {
     renderToolResult(`
@@ -598,157 +578,119 @@ async function loadStockPredictionWithMode(mode = "combined") {
       </div>
     `);
     setOpsStatus(els.stockPredictionStatus, `预测失败：${err.message}`, "bad");
-    if (mode === "optimization") {
-      setOpsStatus(els.tuningStatus, `生成失败：${err.message}`, "bad");
-    }
+    if (mode === "validation") setOpsStatus(els.tuningStatus, `验证失败：${err.message}`, "bad");
   } finally {
     els.stockPredictionBtn.disabled = false;
+    els.generateTuningBtn.disabled = false;
     els.stockPredictionBtn.textContent = label;
-    if (els.generateTuningBtn) {
-      els.generateTuningBtn.disabled = false;
-      els.generateTuningBtn.textContent = tuningLabel;
-    }
+    els.generateTuningBtn.textContent = tuningLabel;
   }
 }
 
-function renderStockPrediction(payload, mode = "combined") {
+function renderStockPrediction(payload) {
   const p = payload.prediction || {};
-  const cls = predictionClass(p.direction);
-  const horizons = payload.horizons || {};
-  const hits = payload.strategy_hits || [];
-  const missed = payload.missed_strategies || [];
-  const riskFlags = payload.risk_flags || [];
+  const deepseekReady = predictionOptimizationReady(payload.optimization);
   const optimization = payload.optimization || null;
-  const hitRows = hits.length
-    ? hits.map(item => `
-        <tr>
-          <td>${escapeHtml(item.horizon_label || "-")}</td>
-          <td>${escapeHtml(item.strategy_label)}</td>
-          <td class="num">${item.rank ?? "-"}</td>
-          <td class="num">${formatNumber(item.score, 1)}</td>
-          <td class="num">${formatNumber(item.direction_score, 1)}</td>
-          <td class="num">${formatNumber(item.risk_score, 1)}</td>
-          <td>${escapeHtml(item.action || "-")}</td>
-          <td class="reasons">${stockPredictionTags(item)}</td>
-        </tr>
-      `).join("")
-    : '<tr><td colspan="8" class="empty">未命中任何策略</td></tr>';
-  const missedTags = missed.length
-    ? missed.map(item => `<span class="tag stable">${escapeHtml(item.horizon_label || "-")} / ${escapeHtml(item.strategy_label)}：${escapeHtml(item.reason)}</span>`).join("")
-    : '<span class="tag strategy">全部适用策略已命中或参与评分</span>';
+  const cls = predictionClass(deepseekReady ? optimization.bias : p.direction);
+  const hits = payload.strategy_hits || [];
+  const riskFlags = payload.risk_flags || [];
+  const actionItems = deepseekReady
+    ? uniquePredictionTexts(optimization.entry_plan, optimization.strategy_adjustments).slice(0, 2)
+    : uniquePredictionTexts(hits.map(item => item.action), [p.advice]).slice(0, 2);
+  const evidenceItems = uniquePredictionTexts(
+    deepseekReady ? optimization.reasoning : [],
+    hits.flatMap(item => item.reasons || [])
+  ).slice(0, 2);
+  const riskItems = uniquePredictionTexts(
+    deepseekReady ? optimization.risk_controls : [],
+    deepseekReady ? optimization.avoid_conditions : [],
+    riskFlags
+  ).slice(0, 3);
+  const summary = deepseekReady && optimization.summary ? optimization.summary : p.advice;
+  const sourceLabel = deepseekReady ? "本地量化 + DeepSeek" : "本地量化";
+  const nextDayOutlook = deepseekReady ? optimization.next_day_outlook || stockPredictionBias(optimization.bias) : p.label;
+  const swingOutlook = deepseekReady ? optimization.swing_outlook || stockPredictionBias(optimization.bias) : "待确认";
+  const upProbability = deepseekReady && Number.isFinite(Number(optimization.up_probability))
+    ? `${formatNumber(optimization.up_probability, 0)}%`
+    : "-";
   renderToolResult(`
-    <div class="prediction-head prediction-${cls} prediction-overall">
-      <div>
-        <span>${escapeHtml(payload.code)} ${escapeHtml(payload.name || "")}</span>
-        <strong>综合：${escapeHtml(p.label || "-")}</strong>
-        <p>${escapeHtml(p.advice || "")}</p>
-      </div>
-      <div class="prediction-score">
-        <span>方向分</span>
-        <strong>${formatNumber(p.score, 1)}</strong>
-      </div>
-      <div class="prediction-score">
-        <span>置信度</span>
-        <strong>${formatNumber(p.confidence, 1)}%</strong>
-      </div>
-      <div class="prediction-score">
-        <span>风险</span>
-        <strong>${escapeHtml(riskLevelLabel(p.risk_level))}</strong>
-      </div>
-    </div>
-    <div class="prediction-horizons">
-      ${renderPredictionHorizonCard(horizons.short, "short")}
-    </div>
-    <div class="prediction-facts">
-      <div><span>最新价</span><strong>${formatNumber(payload.price, 3)}</strong></div>
-      <div><span>今日涨跌</span><strong class="${numberClass(payload.pct_chg)}">${formatNumber(payload.pct_chg, 2)}%</strong></div>
-      <div><span>成交额</span><strong>${formatMoney(payload.turnover)}</strong></div>
-      <div><span>量比</span><strong>${formatNumber(payload.volume_ratio, 2)}</strong></div>
-      <div><span>60日</span><strong class="${numberClass(payload.sixty_day_pct)}">${formatNumber(payload.sixty_day_pct, 2)}%</strong></div>
-      <div><span>数据源</span><strong>${escapeHtml(payload.data_source || "实时行情")}</strong></div>
-      <div><span>盘面</span><strong>${escapeHtml(payload.market_regime?.label || "-")}</strong></div>
-    </div>
-    ${riskFlags.length ? `
-      <div class="prediction-section prediction-risk-flags">
-        <h3>${payload.filtered ? "未入选原因 / 风险点" : "风险点"}</h3>
-        <div class="prediction-tags">
-          ${riskFlags.map(text => `<span class="tag risk">${escapeHtml(text)}</span>`).join("")}
+    <div class="stock-prediction-result prediction-${cls}">
+      <header class="prediction-head">
+        <div class="prediction-title-row">
+          <span>${escapeHtml(payload.code)} ${escapeHtml(payload.name || "")} · ${formatNumber(payload.price, 3)} · ${formatNumber(payload.pct_chg, 2)}%</span>
+          <span class="prediction-source ${deepseekReady ? "is-deepseek" : ""}">${escapeHtml(sourceLabel)}</span>
         </div>
+        <div class="prediction-verdict">
+          <strong>${escapeHtml(deepseekReady ? stockPredictionBias(optimization.bias) : p.label || "-")}</strong>
+          <div class="prediction-inline-metrics">
+            <span>本地量化 ${formatNumber(p.score, 1)}</span>
+            ${deepseekReady ? `<span>DeepSeek 上涨概率 ${upProbability}</span>` : `<span>置信 ${formatNumber(p.confidence, 1)}%</span>`}
+            <span>${deepseekReady ? escapeHtml(stockOptimizationStance(optimization.stance)) : `风险 ${escapeHtml(riskLevelLabel(p.risk_level))}`}</span>
+          </div>
+        </div>
+        <p>${escapeHtml(summary || "暂无有效诊断结论")}</p>
+      </header>
+      <div class="prediction-levels">
+        ${renderPredictionLevel("次日走势", nextDayOutlook, "text")}
+        ${renderPredictionLevel("2-5日走势", swingOutlook, "text")}
+        ${renderPredictionLevel("上涨概率", upProbability)}
+        ${renderPredictionLevel("策略验证", deepseekReady ? `${stockOptimizationStance(optimization.stance)} · ${stockOptimizationTiming(optimization.timing)}` : "待验证", "text")}
       </div>
-    ` : ""}
-    <div class="prediction-section">
-      <h3>策略命中</h3>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>周期</th>
-              <th>策略</th>
-              <th>排名</th>
-              <th>策略分</th>
-              <th>方向分</th>
-              <th>风险</th>
-              <th>动作</th>
-              <th>证据/风险</th>
-            </tr>
-          </thead>
-          <tbody>${hitRows}</tbody>
-        </table>
+      <div class="prediction-diagnosis-grid">
+        ${renderPredictionDiagnosis("操作", actionItems, "action")}
+        ${renderPredictionDiagnosis("依据", evidenceItems, "evidence")}
+        ${renderPredictionDiagnosis("风险", riskItems, "risk")}
       </div>
+      ${!deepseekReady ? '<div class="prediction-model-note">DeepSeek 未返回有效结果，本次仅展示本地量化诊断。</div>' : ""}
+      <p class="prediction-disclaimer">${escapeHtml(payload.data_source || "实时行情")} · ${escapeHtml(payload.disclaimer || "")}</p>
     </div>
-    <div class="prediction-section">
-      <h3>未命中策略</h3>
-      <div class="prediction-tags">${missedTags}</div>
-    </div>
-    ${renderPredictionOptimization(optimization, mode)}
-    <p class="prediction-disclaimer">${escapeHtml(payload.disclaimer || "")}</p>
   `);
 }
 
-function renderPredictionOptimization(optimization, mode = "combined") {
-  if (!optimization) {
-    return "";
-  }
-  if (optimization.enabled === false) {
-    return `
-      <div class="prediction-section">
-        <h3>DeepSeek</h3>
-        <div class="prediction-tags">
-          <span class="tag muted">当前未启用，暂只显示本地预测结果</span>
-        </div>
-      </div>
-    `;
-  }
-  if (optimization.status && !["ok", "cache_hit"].includes(optimization.status)) {
-    return `
-      <div class="prediction-section">
-        <h3>${mode === "optimization" ? "优化建议" : "DeepSeek 优化建议"}</h3>
-        <div class="prediction-tags">
-          <span class="tag warning">DeepSeek 暂时未返回有效建议</span>
-          ${optimization.error ? `<span class="tag muted">${escapeHtml(optimization.error)}</span>` : ""}
-        </div>
-      </div>
-    `;
-  }
-  const reasoning = (optimization.reasoning || []).map(text => `<span class="tag stable">${escapeHtml(text)}</span>`).join("");
-  const entryPlan = (optimization.entry_plan || []).map(text => `<span class="tag validation">${escapeHtml(text)}</span>`).join("");
-  const adjustments = (optimization.strategy_adjustments || []).map(text => `<span class="tag strategy">${escapeHtml(text)}</span>`).join("");
-  const riskControls = (optimization.risk_controls || []).map(text => `<span class="tag warning">${escapeHtml(text)}</span>`).join("");
-  const avoids = (optimization.avoid_conditions || []).map(text => `<span class="tag risk">${escapeHtml(text)}</span>`).join("");
+function predictionOptimizationReady(optimization) {
+  return Boolean(optimization?.enabled && ["ok", "cache_hit"].includes(optimization.status));
+}
+
+function stockPredictionBias(bias) {
+  const map = {
+    bullish: "短线偏强",
+    up: "短线偏强",
+    bearish: "短线偏弱",
+    down: "短线偏弱",
+    neutral: "震荡待确认",
+  };
+  return map[bias] || "走势待确认";
+}
+
+function uniquePredictionTexts(...groups) {
+  const seen = new Set();
+  return groups.flat().filter(text => {
+    const normalized = String(text || "").trim();
+    if (!normalized || normalized === "-") return false;
+    if (seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  }).map(text => String(text).trim());
+}
+
+function renderPredictionLevel(label, value, valueType = "number") {
   return `
-    <div class="prediction-section">
-      <h3>${mode === "optimization" ? "优化建议" : "DeepSeek 优化建议"}</h3>
-      <div class="tuning-line">
-        <strong>${escapeHtml(optimization.summary || "-")}</strong>
-        <span>${escapeHtml(stockOptimizationStance(optimization.stance))}</span>
-        <span>${escapeHtml(stockOptimizationTiming(optimization.timing))}</span>
-      </div>
-      ${reasoning ? `<div class="tuning-tags">${reasoning}</div>` : ""}
-      ${entryPlan ? `<div class="tuning-tags">${entryPlan}</div>` : ""}
-      ${adjustments ? `<div class="tuning-tags">${adjustments}</div>` : ""}
-      ${riskControls ? `<div class="tuning-tags">${riskControls}</div>` : ""}
-      ${avoids ? `<div class="tuning-tags">${avoids}</div>` : ""}
+    <div class="prediction-level ${valueType === "text" ? "is-text" : ""}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value || "-")}</strong>
     </div>
+  `;
+}
+
+function renderPredictionDiagnosis(label, items, tone) {
+  const rows = items.length
+    ? items.map(text => `<li>${escapeHtml(text)}</li>`).join("")
+    : "<li>暂无明确有效信号</li>";
+  return `
+    <section class="prediction-diagnosis prediction-diagnosis-${tone}">
+      <h3>${escapeHtml(label)}</h3>
+      <ul>${rows}</ul>
+    </section>
   `;
 }
 
@@ -772,40 +714,9 @@ function stockOptimizationTiming(timing) {
   return map[timing] || "时机待确认";
 }
 
-function renderPredictionHorizonCard(horizon, fallback) {
-  const item = horizon || {};
-  const p = item.prediction || {};
-  const cls = predictionClass(p.direction);
-  const hitCount = (item.strategy_hits || []).length;
-  return `
-    <article class="prediction-horizon-card prediction-${cls}">
-      <span>${escapeHtml(item.label || (fallback === "long" ? "长期" : "短期"))}</span>
-      <strong>${escapeHtml(p.label || "-")}</strong>
-      <p>${escapeHtml(p.advice || "")}</p>
-      <div class="prediction-horizon-metrics">
-        <span>方向 ${formatNumber(p.score, 1)}</span>
-        <span>置信 ${formatNumber(p.confidence, 1)}%</span>
-        <span>命中 ${hitCount}</span>
-        <span>风险 ${escapeHtml(riskLevelLabel(p.risk_level))}</span>
-      </div>
-    </article>
-  `;
-}
-
-function stockPredictionTags(item) {
-  const tags = [];
-  (item.reasons || []).slice(0, 3).forEach(text => tags.push(`<span class="tag strategy">${escapeHtml(text)}</span>`));
-  (item.failure_reasons || []).slice(0, 3).forEach(text => tags.push(`<span class="tag risk">${escapeHtml(text)}</span>`));
-  const verdict = item.verdict?.label;
-  if (verdict) {
-    tags.push(`<span class="tag validation">${escapeHtml(verdict)}</span>`);
-  }
-  return tags.join("") || '<span class="tag stable">暂无额外证据</span>';
-}
-
 function predictionClass(direction) {
-  if (direction === "up") return "up";
-  if (direction === "down") return "down";
+  if (direction === "up" || direction === "bullish") return "up";
+  if (direction === "down" || direction === "bearish") return "down";
   return "neutral";
 }
 
@@ -1665,6 +1576,7 @@ els.stockPredictionInput.addEventListener("keydown", (event) => {
     loadStockPrediction();
   }
 });
+els.generateTuningBtn?.addEventListener("click", loadStockOptimization);
 els.poolTabs.forEach(button => {
   button.addEventListener("click", () => {
     applyRecommendationPoolFilter(button.dataset.poolFilter || "today");
@@ -1718,7 +1630,6 @@ els.validationStrategyTabs.forEach(button => {
     loadValidation();
   });
 });
-els.generateTuningBtn?.addEventListener("click", generateTuningPlan);
 els.validationDatesPrev?.addEventListener("click", () => moveValidationDatePage(-1));
 els.validationDatesNext?.addEventListener("click", () => moveValidationDatePage(1));
 els.validationDaysSelect.addEventListener("change", () => {

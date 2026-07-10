@@ -588,10 +588,6 @@ button:hover {
   font-size: 13px;
 }
 
-.tool-action-row-secondary {
-  justify-content: center;
-}
-
 .tool-action-row-secondary button {
   min-width: 112px;
 }
@@ -644,164 +640,173 @@ button:hover {
 }
 
 .prediction-head {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) repeat(3, minmax(100px, 140px));
-  gap: 12px;
-  padding: 14px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
+  border-left-width: 3px;
   border-radius: 8px;
   background: var(--panel-2);
 }
 
-.prediction-head > div:first-child span,
-.prediction-score span,
-.prediction-facts span {
-  display: block;
+.prediction-title-row,
+.prediction-verdict,
+.prediction-inline-metrics {
+  display: flex;
+  align-items: center;
+}
+
+.prediction-title-row {
+  justify-content: space-between;
+  gap: 8px;
   color: var(--muted);
   font-size: 12px;
 }
 
-.prediction-head strong {
-  display: block;
-  margin: 4px 0;
-  font-size: 24px;
-}
-
-.prediction-head p {
-  margin: 0;
-  color: var(--muted);
-  line-height: 1.5;
-}
-
-.prediction-up {
-  border-color: rgba(240, 102, 106, 0.5);
-}
-
-.prediction-up > div:first-child strong {
-  color: var(--positive);
-}
-
-.prediction-horizon-card.prediction-up strong {
-  color: var(--positive);
-}
-
-.prediction-down {
-  border-color: rgba(63, 179, 127, 0.5);
-}
-
-.prediction-down > div:first-child strong {
-  color: var(--negative);
-}
-
-.prediction-horizon-card.prediction-down strong {
-  color: var(--negative);
-}
-
-.prediction-neutral > div:first-child strong {
-  color: var(--warning);
-}
-
-.prediction-horizon-card.prediction-neutral strong {
-  color: var(--warning);
-}
-
-.prediction-score {
-  padding: 10px;
-  background: var(--panel);
-  border-radius: 6px;
-}
-
-.prediction-score strong {
-  font-size: 22px;
-}
-
-.prediction-horizons {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 10px;
-}
-
-.prediction-horizon-card {
-  padding: 12px;
-  background: var(--panel-2);
+.prediction-source {
+  padding: 2px 6px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 4px;
 }
 
-.prediction-horizon-card > span {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
+.prediction-source.is-deepseek {
+  color: var(--accent);
+  border-color: rgba(79, 140, 247, 0.45);
+  background: rgba(79, 140, 247, 0.08);
 }
 
-.prediction-horizon-card strong {
-  display: block;
-  margin: 4px 0;
+.prediction-verdict {
+  gap: 14px;
+  margin-top: 5px;
+}
+
+.prediction-verdict strong {
   font-size: 20px;
 }
 
-.prediction-horizon-card p {
-  margin: 0;
-  min-height: 40px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.prediction-horizon-metrics {
-  display: flex;
+.prediction-inline-metrics {
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 4px 12px;
 }
 
-.prediction-horizon-metrics span {
-  padding: 3px 7px;
-  color: var(--chip-fg);
-  background: var(--chip-bg);
-  border-radius: 999px;
+.prediction-inline-metrics span,
+.prediction-level span {
+  color: var(--muted);
   font-size: 12px;
 }
 
-.prediction-facts {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 10px;
+.prediction-head p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
-.prediction-facts div,
-.prediction-empty {
-  padding: 10px;
+.stock-prediction-result.prediction-up .prediction-head {
+  border-color: rgba(240, 102, 106, 0.5);
+}
+
+.stock-prediction-result.prediction-up .prediction-verdict strong {
+  color: var(--positive);
+}
+
+.stock-prediction-result.prediction-down .prediction-head {
+  border-color: rgba(63, 179, 127, 0.5);
+}
+
+.stock-prediction-result.prediction-down .prediction-verdict strong {
+  color: var(--negative);
+}
+
+.stock-prediction-result.prediction-neutral .prediction-verdict strong {
+  color: var(--warning);
+}
+
+.prediction-levels {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--line);
+}
+
+.prediction-level {
+  min-width: 0;
+  padding: 7px 9px;
+  background: var(--panel-2);
+}
+
+.prediction-level span {
+  display: block;
+}
+
+.prediction-level strong {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prediction-level.is-text strong {
+  font-size: 13px;
+}
+
+.prediction-diagnosis-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.prediction-diagnosis {
+  min-width: 0;
+  padding: 8px 10px;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 6px;
 }
 
-.prediction-facts strong {
-  display: block;
-  margin-top: 4px;
+.prediction-diagnosis h3 {
+  margin: 0 0 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.prediction-section {
-  margin-top: 12px;
+.prediction-diagnosis-action h3 {
+  color: var(--accent);
 }
 
-.prediction-section h3 {
-  margin: 0 0 8px;
-  font-size: 14px;
+.prediction-diagnosis-risk h3 {
+  color: var(--warning);
 }
 
-.prediction-tags {
-  line-height: 1.7;
+.prediction-diagnosis ul {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.prediction-diagnosis li + li {
+  margin-top: 3px;
+}
+
+.prediction-model-note {
+  margin-top: 7px;
+  color: var(--warning);
+  font-size: 12px;
 }
 
 .prediction-disclaimer {
-  margin: 10px 0 0;
+  margin: 7px 0 0;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .board-header {
@@ -1665,12 +1670,6 @@ footer {
     width: 100%;
   }
 
-  .prediction-head,
-  .prediction-facts,
-  .prediction-horizons {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .overview-summary,
   .market-regime-strip,
   .validation-guide {
@@ -1716,11 +1715,16 @@ footer {
   .market-regime-strip,
   .validation-guide,
   .validation-tools-row,
-  .prediction-head,
-  .prediction-facts,
-  .prediction-horizons,
+  .prediction-levels,
+  .prediction-diagnosis-grid,
   .stock-predictor-form {
     grid-template-columns: 1fr;
+  }
+
+  .prediction-verdict {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
   }
 
   .validation-summary-row {
