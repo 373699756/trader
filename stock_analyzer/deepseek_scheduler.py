@@ -244,10 +244,10 @@ def _schedule_profile(now: datetime) -> Dict[str, object]:
         return {"allow_window": False, "status": "non_trading_day"}
     current = now.time()
     if clock_time(9, 30) <= current < clock_time(11, 30):
-        slot = _bucket_slot(now, 10)
+        slot = _bucket_slot(now, 30)
         return _profile(slot, "base", getattr(config, "DEEPSEEK_EARLY_REVIEW_LIMIT", 4))
     if clock_time(13, 0) <= current < clock_time(14, 30):
-        slot = _bucket_slot(now, 10)
+        slot = _bucket_slot(now, 30)
         return _profile(slot, "base", getattr(config, "DEEPSEEK_EARLY_REVIEW_LIMIT", 4))
     if clock_time(14, 30) <= current < clock_time(15, 0):
         profile = _profile("late", "base", getattr(config, "DEEPSEEK_LATE_FLASH_REVIEW_LIMIT", 6))

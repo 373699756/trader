@@ -1237,18 +1237,18 @@ def rerank_candidates(
     while attempt <= int(config["retry_count"]):
         attempt += 1
         try:
-            with requests.post(
+            response = requests.post(
                 url,
                 headers=headers,
                 json=payload,
                 timeout=float(config["timeout_seconds"]),
-            ) as response:
-                if response.status_code in (429, 500, 502, 503, 504) and attempt <= int(config["retry_count"]):
-                    last_error = "可重试响应码: {}".format(response.status_code)
-                    time.sleep((2**(attempt - 1)) * float(config["retry_base_delay"]))
-                    continue
-                response.raise_for_status()
-                raw = response.json()
+            )
+            if response.status_code in (429, 500, 502, 503, 504) and attempt <= int(config["retry_count"]):
+                last_error = "可重试响应码: {}".format(response.status_code)
+                time.sleep((2**(attempt - 1)) * float(config["retry_base_delay"]))
+                continue
+            response.raise_for_status()
+            raw = response.json()
             usage = raw.get("usage", {}) if isinstance(raw, dict) else {}
             content = (
                 (raw.get("choices") or [{}])[0]
@@ -1485,13 +1485,13 @@ def rerank_candidates_batch(
     while attempt <= int(config["retry_count"]):
         attempt += 1
         try:
-            with requests.post(url, headers=headers, json=payload, timeout=float(config["timeout_seconds"])) as response:
-                if response.status_code in (429, 500, 502, 503, 504) and attempt <= int(config["retry_count"]):
-                    last_error = "可重试响应码: {}".format(response.status_code)
-                    time.sleep((2**(attempt - 1)) * float(config["retry_base_delay"]))
-                    continue
-                response.raise_for_status()
-                raw = response.json()
+            response = requests.post(url, headers=headers, json=payload, timeout=float(config["timeout_seconds"]))
+            if response.status_code in (429, 500, 502, 503, 504) and attempt <= int(config["retry_count"]):
+                last_error = "可重试响应码: {}".format(response.status_code)
+                time.sleep((2**(attempt - 1)) * float(config["retry_base_delay"]))
+                continue
+            response.raise_for_status()
+            raw = response.json()
             usage = raw.get("usage", {}) if isinstance(raw, dict) else {}
             content = ((raw.get("choices") or [{}])[0].get("message", {}) or {}).get("content", "")
             parsed = _safe_parse_json(str(content))
@@ -1719,7 +1719,7 @@ def review_market_regime(context: Dict[str, object]) -> Dict[str, object]:
         "response_format": {"type": "json_object"},
     }
     try:
-        with requests.post(
+        response = requests.post(
             _deepseek_chat_url(str(ds_config["base_url"])),
             headers={
                 "Authorization": f"Bearer {ds_config['api_key']}",
@@ -1727,9 +1727,9 @@ def review_market_regime(context: Dict[str, object]) -> Dict[str, object]:
             },
             json=payload,
             timeout=float(ds_config["timeout_seconds"]),
-        ) as response:
-            response.raise_for_status()
-            raw = response.json()
+        )
+        response.raise_for_status()
+        raw = response.json()
         content = ((raw.get("choices") or [{}])[0].get("message", {}) or {}).get("content", "")
         parsed = _safe_parse_json(str(content)) or {}
         result = _coerce_market_gate_result(parsed)
@@ -1972,13 +1972,13 @@ def review_strategy_validation(
     while attempt <= retry_count:
         attempt += 1
         try:
-            with requests.post(url, headers=headers, json=payload, timeout=timeout_seconds) as response:
-                if response.status_code in (429, 500, 502, 503, 504) and attempt <= retry_count:
-                    last_error = "可重试响应码: {}".format(response.status_code)
-                    time.sleep((2**(attempt - 1)) * float(config["retry_base_delay"]))
-                    continue
-                response.raise_for_status()
-                raw = response.json()
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout_seconds)
+            if response.status_code in (429, 500, 502, 503, 504) and attempt <= retry_count:
+                last_error = "可重试响应码: {}".format(response.status_code)
+                time.sleep((2**(attempt - 1)) * float(config["retry_base_delay"]))
+                continue
+            response.raise_for_status()
+            raw = response.json()
             usage = raw.get("usage", {}) if isinstance(raw, dict) else {}
             content = (raw.get("choices") or [{}])[0].get("message", {}).get("content", "")
             parsed = _safe_parse_json(str(content))

@@ -364,6 +364,10 @@ def attach_validation_summary(
         "avg_primary_return_net": metrics.get("avg_primary_return_net"),
         "real_win_rate_primary_net": metrics.get("real_win_rate_primary_net"),
         "real_avg_primary_return_net": metrics.get("real_avg_primary_return_net"),
+        "real_avg_primary_return_net_ci95_low": metrics.get("real_avg_primary_return_net_ci95_low"),
+        "real_avg_primary_return_net_ci95_high": metrics.get("real_avg_primary_return_net_ci95_high"),
+        "real_win_rate_primary_net_ci95_low": metrics.get("real_win_rate_primary_net_ci95_low"),
+        "real_portfolio_max_drawdown_pct": metrics.get("real_portfolio_max_drawdown_pct"),
         "primary_horizon_label": metrics.get("primary_horizon_label"),
         "hit_3pct_rate": metrics.get("hit_3pct_rate"),
         "avg_next_close_return": metrics.get("avg_next_close_return"),
@@ -525,7 +529,9 @@ def strategy_validation_gate_decision(
     win_net = coerce_number(metrics.get("win_rate_primary_net"))
     real_avg_net = coerce_number(metrics.get("real_avg_primary_return_net"))
     real_win_net = coerce_number(metrics.get("real_win_rate_primary_net"))
-    drawdown_value = metrics.get("real_avg_max_drawdown_primary")
+    drawdown_value = metrics.get("real_portfolio_max_drawdown_pct")
+    if drawdown_value is None:
+        drawdown_value = metrics.get("real_avg_max_drawdown_primary")
     if drawdown_value is None:
         drawdown_value = metrics.get("avg_max_drawdown_primary", metrics.get("avg_max_drawdown_3d"))
     avg_drawdown = coerce_number(drawdown_value)
@@ -544,6 +550,9 @@ def strategy_validation_gate_decision(
         "real_day_count": int(metrics.get("real_day_count") or 0),
         "real_avg_primary_return_net": real_avg_net,
         "real_win_rate_primary_net": real_win_net,
+        "real_avg_primary_return_net_ci95_low": metrics.get("real_avg_primary_return_net_ci95_low"),
+        "real_win_rate_primary_net_ci95_low": metrics.get("real_win_rate_primary_net_ci95_low"),
+        "real_portfolio_max_drawdown_pct": metrics.get("real_portfolio_max_drawdown_pct"),
         "avg_max_drawdown_primary": avg_drawdown,
     }
     if status.get("state") == "retired":
@@ -565,18 +574,39 @@ def strategy_validation_gate_decision(
         )
         return decision
     min_win_rate = coerce_number(getattr(config, "STRATEGY_VALIDATION_MIN_WIN_RATE", 50.0), 50.0)
+    ci_low_raw = metrics.get("real_avg_primary_return_net_ci95_low")
+    ci_low = coerce_number(ci_low_raw) if ci_low_raw is not None else None
     drawdown_floor = coerce_number(
         getattr(config, "STRATEGY_VALIDATION_MAX_AVG_DRAWDOWN_PCT", -8.0),
         -8.0,
     )
     if real_days >= min_real_days and (
-        real_avg_net <= 0 or real_win_net < min_win_rate or avg_drawdown <= drawdown_floor
+        real_avg_net <= 0
+        or real_win_net < min_win_rate
+        or avg_drawdown <= drawdown_floor
+        or (
+            bool(getattr(config, "STRATEGY_VALIDATION_REQUIRE_POSITIVE_CI", True))
+            and ci_low is not None
+            and ci_low <= 0
+        )
     ):
         decision["blocked"] = True
         decision["reason"] = "验证门控：最近真实交易日组合净表现或回撤不达标，仅保留备选观察"
         return decision
     decision["validated"] = True
     return decision
+
+
+def validation_gate_window_days() -> int:
+    min_real_days = int(
+        getattr(
+            config,
+            "STRATEGY_DECAY_MIN_REAL_DAYS",
+            getattr(config, "STRATEGY_DECAY_MIN_REAL_SAMPLES", 60),
+        )
+    )
+    configured = int(getattr(config, "STRATEGY_VALIDATION_GATE_WINDOW_DAYS", 120))
+    return max(min_real_days, configured)
 
 
 def tomorrow_validation_gate_decision(metrics: Dict[str, object]) -> Dict[str, object]:

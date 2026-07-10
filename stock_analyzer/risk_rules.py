@@ -45,11 +45,20 @@ def _delayed_exit_after_limit_down(
     idx: int,
     fallback_price: float,
     reason: str,
+    limit_down_pct: float,
 ) -> Dict[str, object]:
-    next_idx = idx + 1
-    if next_idx < len(future):
+    previous_close = _row_price(future.iloc[idx], "price", "close") or fallback_price
+    last_index = idx
+    last_price = fallback_price
+    for next_idx in range(idx + 1, len(future)):
         next_row = future.iloc[next_idx]
-        exit_price = _row_price(next_row, "open") or _row_price(next_row, "price", "close") or fallback_price
+        last_index = next_idx
+        last_price = _row_price(next_row, "price", "close") or last_price
+        row_previous_close = coerce_number(next_row.get("prev_close")) or previous_close
+        if _is_sealed_limit_down(next_row, row_previous_close, limit_down_pct):
+            previous_close = last_price
+            continue
+        exit_price = _row_price(next_row, "open") or last_price
         return {
             "exit_price": exit_price,
             "exit_reason": "{}_limit_down_delayed".format(reason),
@@ -57,10 +66,10 @@ def _delayed_exit_after_limit_down(
             "exit_date": str(next_row.get("trade_date", "")),
         }
     return {
-        "exit_price": fallback_price,
+        "exit_price": last_price,
         "exit_reason": "{}_limit_down_unfilled".format(reason),
-        "exit_index": idx,
-        "exit_date": str(future.iloc[idx].get("trade_date", "")),
+        "exit_index": last_index,
+        "exit_date": str(future.iloc[last_index].get("trade_date", "")),
     }
 
 
@@ -92,28 +101,29 @@ def simulate_exit(
     previous_close = entry
 
     for idx, row in window.iterrows():
+        open_price = coerce_number(row.get("open")) or coerce_number(row.get("price"))
         high = coerce_number(row.get("high")) or coerce_number(row.get("price"))
         low = coerce_number(row.get("low")) or coerce_number(row.get("price"))
         close = coerce_number(row.get("price")) or coerce_number(row.get("close"))
         row_prev_close = coerce_number(row.get("prev_close")) or previous_close
-        if high > 0:
-            highest = max(highest, high)
+        prior_highest = highest
         stop_price = entry * (1 - stop_loss_pct / 100.0) if stop_loss_pct > 0 else 0.0
         take_price = entry * (1 + take_profit_pct / 100.0) if take_profit_pct > 0 else 0.0
-        trail_price = highest * (1 - trailing_stop_pct / 100.0) if trailing_stop_pct > 0 else 0.0
+        # 日线无法判断当日高点和低点的先后顺序，移动止损只使用前一日已确认的最高价。
+        trail_price = prior_highest * (1 - trailing_stop_pct / 100.0) if trailing_stop_pct > 0 else 0.0
 
         exit_index = idx
         exit_date = str(row.get("trade_date", ""))
         exit_price = close
         if stop_price > 0 and low > 0 and low <= stop_price:
             if _is_sealed_limit_down(row, row_prev_close, limit_down_pct):
-                delayed = _delayed_exit_after_limit_down(full, idx, close, "stop_loss")
+                delayed = _delayed_exit_after_limit_down(full, idx, close, "stop_loss", limit_down_pct)
                 exit_price = delayed["exit_price"]
                 exit_reason = delayed["exit_reason"]
                 exit_index = delayed["exit_index"]
                 exit_date = delayed["exit_date"]
                 break
-            exit_price = stop_price
+            exit_price = open_price if 0 < open_price < stop_price else stop_price
             exit_reason = "stop_loss"
             break
         if take_price > 0 and high >= take_price:
@@ -122,15 +132,17 @@ def simulate_exit(
             break
         if idx > 0 and trail_price > 0 and low > 0 and low <= trail_price:
             if _is_sealed_limit_down(row, row_prev_close, limit_down_pct):
-                delayed = _delayed_exit_after_limit_down(full, idx, close, "trailing_stop")
+                delayed = _delayed_exit_after_limit_down(full, idx, close, "trailing_stop", limit_down_pct)
                 exit_price = delayed["exit_price"]
                 exit_reason = delayed["exit_reason"]
                 exit_index = delayed["exit_index"]
                 exit_date = delayed["exit_date"]
                 break
-            exit_price = trail_price
+            exit_price = open_price if 0 < open_price < trail_price else trail_price
             exit_reason = "trailing_stop"
             break
+        if high > 0:
+            highest = max(highest, high)
         if close > 0:
             previous_close = close
 

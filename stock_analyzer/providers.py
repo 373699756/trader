@@ -620,14 +620,14 @@ def _request_eastmoney_page(params: Dict[str, str]) -> Dict[str, object]:
                 try:
                     with requests.Session() as session:
                         session.trust_env = trust_env
-                        with session.get(
+                        response = session.get(
                             url,
                             params=params,
                             headers=headers,
                             timeout=config.EASTMONEY_TIMEOUT_SECONDS,
-                        ) as response:
-                            response.raise_for_status()
-                            payload = response.json()
+                        )
+                        response.raise_for_status()
+                        payload = response.json()
                 except Exception as exc:
                     last_error = exc
                     continue

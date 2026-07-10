@@ -38,7 +38,13 @@ def build_strategy_tuning_plan(
     pending_count = int(coerce_number(metrics.get("pending_outcome_count"), 0))
     win_rate = _first_number(metrics, "real_win_rate_primary_net", "win_rate_primary_net")
     avg_return = _first_number(metrics, "real_avg_primary_return_net", "avg_primary_return_net")
-    drawdown = _first_number(metrics, "real_avg_max_drawdown_primary", "avg_max_drawdown_primary")
+    drawdown = _first_number(
+        metrics,
+        "real_portfolio_max_drawdown_pct",
+        "real_avg_max_drawdown_primary",
+        "avg_max_drawdown_primary",
+    )
+    avg_return_ci_low = _first_number(metrics, "real_avg_primary_return_net_ci95_low")
     latest = dates[0] if dates else {}
     latest_count = int(coerce_number(latest.get("count"), 0))
     current_weights = dict(WEIGHTS.get(strategy_name, {}))
@@ -78,6 +84,16 @@ def build_strategy_tuning_plan(
     elif avg_return <= 0:
         issues.append("平均净收益为负，应优先减少追高和过热样本。")
     gates.append(_gate("positive_avg_net_return", avg_return is not None and avg_return > 0, avg_return, "> 0", "主周期平均净收益必须为正。"))
+    if bool(getattr(config, "STRATEGY_VALIDATION_REQUIRE_POSITIVE_CI", True)):
+        gates.append(
+            _gate(
+                "positive_avg_net_return_ci95_low",
+                avg_return_ci_low is not None and avg_return_ci_low > 0,
+                avg_return_ci_low,
+                "> 0",
+                "主周期日组合净收益的95%置信下界必须为正。",
+            )
+        )
 
     min_win_rate = coerce_number(getattr(config, "STRATEGY_VALIDATION_MIN_WIN_RATE", 50.0), 50.0)
     gates.append(_gate("min_net_win_rate", win_rate is not None and win_rate >= min_win_rate, win_rate, min_win_rate, "真实交易日净胜率必须达标。"))
@@ -85,7 +101,7 @@ def build_strategy_tuning_plan(
         getattr(config, "STRATEGY_VALIDATION_MAX_AVG_DRAWDOWN_PCT", -8.0),
         -8.0,
     )
-    gates.append(_gate("max_primary_drawdown", drawdown is not None and drawdown > drawdown_floor, drawdown, "> {}".format(drawdown_floor), "主周期平均回撤不得突破硬限制。"))
+    gates.append(_gate("max_primary_drawdown", drawdown is not None and drawdown > drawdown_floor, drawdown, "> {}".format(drawdown_floor), "真实日组合最大回撤不得突破硬限制。"))
 
     if latest and latest_count == 0:
         issues.append("最新批次为空，说明当前门槛下没有合格标的；空推荐本身可以保留。")

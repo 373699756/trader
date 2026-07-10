@@ -18,6 +18,7 @@ from .app_response_support import (
     error_payload,
     response_payload,
     saved_tomorrow_fallback_payload,
+    saved_swing_fallback_payload,
     snapshot_fallback_payload,
 )
 from .backtest import parse_code_list, run_alphalite_backtest, run_rolling_alphalite_backtest
@@ -59,6 +60,7 @@ from .app_support import (
     sentiment_for_candidates,
     stock_exists_in_quotes,
     strategy_validation_gate_decision,
+    validation_gate_window_days,
     validation_batch_summary,
 )
 from .strategies import storage_strategy_name
@@ -521,7 +523,7 @@ def create_app() -> Flask:
             market_regime=market_regime,
         )
         try:
-            metrics = cached_metrics(strategy, 20)
+            metrics = cached_metrics(strategy, validation_gate_window_days())
             apply_strategy_validation_gate(strategy, rows, meta, metrics)
         except Exception as exc:
             reason = "验证指标读取失败，暂停执行并仅保留备选：{}".format(exc)
@@ -641,7 +643,7 @@ def create_app() -> Flask:
     def _set_auto_snapshot_status(**values):
         set_status(auto_snapshot_lock, auto_snapshot_status, **values)
 
-    def run_validation_tuning_once(strategies: List[str], days: int = 20, use_deepseek: bool = True) -> Dict[str, object]:
+    def run_validation_tuning_once(strategies: List[str], days: int = 120, use_deepseek: bool = True) -> Dict[str, object]:
         return run_validation_tuning_once_support(
             validation_store,
             cached_metrics,
@@ -671,13 +673,28 @@ def create_app() -> Flask:
         )
 
     def run_validation_auto_update_once() -> Dict[str, object]:
+        def update_incomplete_outcomes() -> Dict[str, object]:
+            updates = []
+            ok = True
+            for strategy in _configured_auto_snapshot_strategies():
+                try:
+                    outcome = validation_store.update_outcomes(
+                        provider,
+                        strategy_name=strategy,
+                        only_incomplete=True,
+                    )
+                    updates.append({"strategy": strategy, "result": outcome})
+                except Exception as exc:
+                    ok = False
+                    updates.append({"strategy": strategy, "error": str(exc)})
+            invalidate_metrics_cache()
+            return {"ok": ok, "updates": updates}
+
         return run_validation_auto_update_once_support(
             auto_update_lock=auto_update_lock,
             auto_update_status=auto_update_status,
-            auto_snapshot_status=auto_snapshot_status,
             set_auto_update_status=_set_auto_update_status,
-            set_auto_snapshot_status=_set_auto_snapshot_status,
-            run_validation_auto_snapshot_once_fn=run_validation_auto_snapshot_once,
+            run_validation_outcome_update_once_fn=update_incomplete_outcomes,
         )
 
     def _normalize_market(value: str) -> str:
@@ -898,26 +915,14 @@ def create_app() -> Flask:
                 provider_health_fn=provider.health,
                 research_disclaimer_fn=_research_disclaimer,
             )
-        attach_validation_summary(saved_rows, validation_store, strategy, metrics_fn=cached_metrics)
-        return response_payload(
-            provider.health,
-            _research_disclaimer,
-            ok=True,
-            include_disclaimer=True,
-            data=saved_rows[:top_n],
-            meta={
-                "generated_at": "",
-                "candidate_count": len(saved_rows),
-                "screened_count": len(saved_rows),
-                "display_count": min(len(saved_rows), top_n),
-                "display_limit": top_n,
-                "top_n": top_n,
-                "market_filter": market,
-                "strategy_version": "swing_picks_v1",
-                "strategy_label": "2-5日持有",
-                "strategy": "后台刷新中，先显示最近保存的2-5日持有推荐",
-                "fallback": "saved_snapshot",
-            },
+        return saved_swing_fallback_payload(
+            saved_rows=saved_rows,
+            top_n=top_n,
+            market=market,
+            validation_store=validation_store,
+            cached_metrics_fn=cached_metrics,
+            provider_health_fn=provider.health,
+            research_disclaimer_fn=_research_disclaimer,
         )
 
     def _horizon_payload(strategy: str, top_n: int, market: str) -> tuple:

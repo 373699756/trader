@@ -273,7 +273,7 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
                 cached_metrics_fn=lambda strategy, days: {
                     "strategy_name": strategy,
                     "real_sample_count": 20,
-                    "real_day_count": 20,
+                    "real_day_count": 60,
                     "real_avg_primary_return_net": -1.0,
                     "real_win_rate_primary_net": 20.0,
                 },

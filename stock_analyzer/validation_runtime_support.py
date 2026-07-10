@@ -231,7 +231,11 @@ def run_validation_auto_snapshot_once(
         with auto_snapshot_lock:
             last_tuning_date = str(auto_snapshot_status.get("last_tuning_date") or "")
         if now.weekday() < 5 and after_auto_snapshot_time(now, config.VALIDATION_AUTO_SNAPSHOT_TIME) and last_tuning_date != now.date().isoformat():
-            tuning_result = run_validation_tuning_once_fn(strategies, days=20, use_deepseek=True)
+            tuning_days = max(
+                int(getattr(config, "STRATEGY_DECAY_MIN_REAL_DAYS", 60)),
+                int(getattr(config, "STRATEGY_VALIDATION_GATE_WINDOW_DAYS", 120)),
+            )
+            tuning_result = run_validation_tuning_once_fn(strategies, days=tuning_days, use_deepseek=True)
             result["tuning"] = tuning_result
             set_auto_snapshot_status(
                 last_tuning_date=now.date().isoformat(),
@@ -265,10 +269,8 @@ def run_validation_auto_update_once(
     *,
     auto_update_lock,
     auto_update_status: Dict[str, object],
-    auto_snapshot_status: Dict[str, object],
     set_auto_update_status: Callable[..., None],
-    set_auto_snapshot_status: Callable[..., None],
-    run_validation_auto_snapshot_once_fn: Callable[[], Dict[str, object]],
+    run_validation_outcome_update_once_fn: Callable[[], Dict[str, object]],
 ) -> Dict[str, object]:
     if not config.VALIDATION_AUTO_UPDATE_ENABLED:
         return {"ok": True, "status": "disabled"}
@@ -280,13 +282,13 @@ def run_validation_auto_update_once(
         auto_update_status["last_error"] = ""
 
     started_at = datetime.now().isoformat(timespec="seconds")
-    result = {"ok": True, "started_at": started_at, "mode": "recommendation_snapshot", "snapshots": []}
+    result = {"ok": True, "started_at": started_at, "mode": "outcome_update", "updates": []}
     try:
-        snapshot_result = run_validation_auto_snapshot_once_fn()
-        result.update(snapshot_result)
-        result["mode"] = "recommendation_snapshot"
+        update_result = run_validation_outcome_update_once_fn()
+        result.update(update_result)
+        result["mode"] = "outcome_update"
         if not result.get("ok"):
-            raise RuntimeError(str(result.get("error") or result.get("status") or "荐股快照保存失败"))
+            raise RuntimeError(str(result.get("error") or result.get("status") or "荐股结果回填失败"))
         result["finished_at"] = datetime.now().isoformat(timespec="seconds")
         set_auto_update_status(
             running=False,
@@ -299,12 +301,6 @@ def run_validation_auto_update_once(
         result["error"] = str(exc)
         result["finished_at"] = datetime.now().isoformat(timespec="seconds")
         set_auto_update_status(
-            running=False,
-            last_finished_at=result["finished_at"],
-            last_error=str(exc),
-            last_result=result,
-        )
-        set_auto_snapshot_status(
             running=False,
             last_finished_at=result["finished_at"],
             last_error=str(exc),

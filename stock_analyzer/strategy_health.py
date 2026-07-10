@@ -23,7 +23,9 @@ def strategy_status(metrics: Dict[str, object]) -> Dict[str, str]:
     mixed_win_rate = (metrics or {}).get("win_rate_primary_net")
     avg_return = coerce_number(real_avg_return if real_avg_return is not None else mixed_avg_return)
     win_rate = coerce_number(real_win_rate if real_win_rate is not None else mixed_win_rate)
-    drawdown_value = metrics.get("real_avg_max_drawdown_primary")
+    drawdown_value = metrics.get("real_portfolio_max_drawdown_pct")
+    if drawdown_value is None:
+        drawdown_value = metrics.get("real_avg_max_drawdown_primary")
     if drawdown_value is None:
         drawdown_value = metrics.get("avg_max_drawdown_primary", metrics.get("avg_max_drawdown_3d"))
     drawdown = coerce_number(drawdown_value)
@@ -54,7 +56,18 @@ def strategy_status(metrics: Dict[str, object]) -> Dict[str, str]:
             "label": "真实样本少",
             "advice": "回放样本已补足但真实样本不足，不能高权重采信。",
         }
-    if win_rate < retire_winrate or avg_return <= 0 or drawdown <= drawdown_floor:
+    ci_low_raw = metrics.get("real_avg_primary_return_net_ci95_low")
+    ci_low = coerce_number(ci_low_raw) if ci_low_raw is not None else None
+    if (
+        win_rate < retire_winrate
+        or avg_return <= 0
+        or drawdown <= drawdown_floor
+        or (
+            bool(getattr(config, "STRATEGY_VALIDATION_REQUIRE_POSITIVE_CI", True))
+            and ci_low is not None
+            and ci_low <= 0
+        )
+    ):
         return {
             "state": "retired",
             "level": "bad",

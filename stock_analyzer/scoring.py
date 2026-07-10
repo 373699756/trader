@@ -1116,7 +1116,7 @@ def score_tomorrow_candidates(
                 "raw_score": round(combined["raw_score"], 2),
                 "overheat_damp": round(combined["overheat_damp"], 4),
                 "score": round(max(0.0, min(100.0, final_score)), 2),
-                "holding_discipline": "尾盘确认后入场，主验证周期为次日收盘；高开超过阈值不追",
+                "holding_discipline": "盘后确认候选，次日开盘入场；高开超过阈值不追",
                 "profit_window": "次日",
                 "reasons": _build_tomorrow_reasons(
                     row,
@@ -1268,11 +1268,11 @@ def score_tomorrow_candidates(
         "strategy_label": "明日优先",
         "prediction_type": "rank_score",
         "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
-        "holding_discipline": "尾盘确认后入场，主验证周期为次日收盘；高开超过阈值不追",
+        "holding_discipline": "盘后确认候选，次日开盘入场；高开超过阈值不追",
         "profit_window": "次日",
         "recommendation_class": "next_day_priority",
         "recommendation_class_label": "明日优先",
-        "strategy": "{} 明日优先：面向尾盘确认后至次日收盘的正收益机会，优先保留成交承接、温和动能、收盘结构和买入安全的票".format(
+        "strategy": "{} 明日优先：盘后形成候选，面向次日开盘至收盘的正收益机会，优先保留成交承接、温和动能、收盘结构和买入安全的票".format(
             analysis_window,
         ),
         "policy": _tomorrow_policy(),

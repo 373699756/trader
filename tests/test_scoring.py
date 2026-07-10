@@ -1131,7 +1131,7 @@ class ScoringTest(unittest.TestCase):
         status = strategy_status(
             {
                 "sample_count": 80,
-                "real_sample_count": 25,
+                "real_sample_count": 60,
                 "real_win_rate_primary_net": 0.0,
                 "real_avg_primary_return_net": 0.0,
                 "win_rate_primary_net": 80.0,
@@ -1205,7 +1205,7 @@ class ScoringTest(unittest.TestCase):
                 "sample_count": 80,
                 "day_count": 40,
                 "real_sample_count": 40,
-                "real_day_count": 20,
+                "real_day_count": 60,
                 "avg_primary_return_net": -2.0,
                 "win_rate_primary_net": 10.0,
                 "real_avg_primary_return_net": 0.6,
@@ -1233,7 +1233,8 @@ class ScoringTest(unittest.TestCase):
                 "sample_count": 3,
                 "outcome_sample_count": 3,
                 "total_outcome_sample_count": 30,
-                "real_sample_count": 30,
+                "real_sample_count": 60,
+                "real_day_count": 60,
                 "avg_primary_return_net": -0.8,
                 "win_rate_primary_net": 30.0,
                 "real_avg_primary_return_net": -0.4,
@@ -1274,7 +1275,7 @@ class ScoringTest(unittest.TestCase):
                 "sample_count": 20,
                 "day_count": 20,
                 "real_sample_count": 20,
-                "real_day_count": 20,
+                "real_day_count": 60,
                 "real_avg_primary_return_net": -1.0,
                 "real_win_rate_primary_net": 20.0,
             },
@@ -1303,8 +1304,8 @@ class ScoringTest(unittest.TestCase):
         decision = strategy_validation_gate_decision(
             {
                 "strategy_name": "swing_picks",
-                "day_count": 20,
-                "real_day_count": 20,
+                "day_count": 60,
+                "real_day_count": 60,
                 "real_avg_primary_return_net": 0.8,
                 "real_win_rate_primary_net": 60.0,
                 "real_avg_max_drawdown_primary": -9.0,
@@ -1313,6 +1314,39 @@ class ScoringTest(unittest.TestCase):
 
         self.assertTrue(decision["blocked"])
         self.assertIn("回撤", decision["reason"])
+
+    def test_strategy_validation_gate_requires_positive_return_confidence_bound(self):
+        from stock_analyzer.app_support import strategy_validation_gate_decision
+
+        decision = strategy_validation_gate_decision(
+            {
+                "strategy_name": "tomorrow_picks",
+                "day_count": 60,
+                "real_day_count": 60,
+                "real_avg_primary_return_net": 0.4,
+                "real_avg_primary_return_net_ci95_low": -0.1,
+                "real_win_rate_primary_net": 55.0,
+                "real_portfolio_max_drawdown_pct": -3.0,
+            }
+        )
+
+        self.assertTrue(decision["blocked"])
+        self.assertEqual(decision["real_avg_primary_return_net_ci95_low"], -0.1)
+
+    def test_validation_statistics_report_confidence_and_compounded_drawdown(self):
+        from stock_analyzer.strategy_validation import _mean_confidence_interval, _portfolio_max_drawdown
+
+        low, high = _mean_confidence_interval([0.5, 1.0, 1.5, 2.0])
+        drawdown = _portfolio_max_drawdown(
+            [
+                {"signal_date": "2024-01-01", "avg_primary_return_net": 10.0},
+                {"signal_date": "2024-01-02", "avg_primary_return_net": -20.0},
+            ]
+        )
+
+        self.assertLess(low, 1.25)
+        self.assertGreater(high, 1.25)
+        self.assertAlmostEqual(drawdown, -20.0)
 
     def test_serenity_references_corrected_to_chokepoint(self):
         from stock_analyzer.scoring import SERENITY_REFERENCES
@@ -2233,7 +2267,7 @@ class ScoringTest(unittest.TestCase):
             pd.DataFrame(
                 [
                     {"trade_date": "20240102", "high": 10.7, "low": 10.2, "price": 10.6},
-                    {"trade_date": "20240103", "high": 10.8, "low": 10.3, "price": 10.4},
+                    {"trade_date": "20240103", "high": 10.8, "low": 10.2, "price": 10.4},
                 ]
             ),
             entry_price=10,
@@ -2264,6 +2298,46 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(result["exit_reason"], "stop_loss_limit_down_delayed")
         self.assertEqual(result["exit_days"], 2)
         self.assertAlmostEqual(result["exit_price"], 8.8)
+
+    def test_simulate_exit_uses_open_when_price_gaps_through_stop(self):
+        result = simulate_exit(
+            pd.DataFrame(
+                [
+                    {
+                        "trade_date": "20240102",
+                        "prev_close": 10.0,
+                        "open": 9.2,
+                        "high": 9.4,
+                        "low": 9.0,
+                        "price": 9.3,
+                    }
+                ]
+            ),
+            entry_price=10,
+            holding_days=1,
+        )
+
+        self.assertEqual(result["exit_reason"], "stop_loss")
+        self.assertAlmostEqual(result["exit_price"], 9.2)
+        self.assertAlmostEqual(result["exit_return"], -8.0)
+
+    def test_simulate_exit_waits_through_consecutive_sealed_limit_down_days(self):
+        result = simulate_exit(
+            pd.DataFrame(
+                [
+                    {"trade_date": "20240102", "prev_close": 10.0, "open": 9.0, "high": 9.05, "low": 9.0, "price": 9.0},
+                    {"trade_date": "20240103", "prev_close": 9.0, "open": 8.1, "high": 8.15, "low": 8.1, "price": 8.1},
+                    {"trade_date": "20240104", "prev_close": 8.1, "open": 8.0, "high": 8.3, "low": 7.9, "price": 8.2},
+                ]
+            ),
+            entry_price=10,
+            holding_days=1,
+            policy={"limit_down_pct": 10},
+        )
+
+        self.assertEqual(result["exit_reason"], "stop_loss_limit_down_delayed")
+        self.assertEqual(result["exit_days"], 3)
+        self.assertAlmostEqual(result["exit_price"], 8.0)
 
     def test_backtest_uses_exit_rule_before_fixed_holding_period(self):
         prices = [10 + i * 0.1 for i in range(60)]
@@ -3642,7 +3716,7 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(result["status"], "insufficient_factor_coverage")
         self.assertEqual(result["avg_data_coverage"], 0.0)
 
-    def test_strategy_validation_uses_signal_price_returns(self):
+    def test_strategy_validation_uses_next_open_returns(self):
         import tempfile
 
         class FakeProvider:
@@ -3673,15 +3747,15 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(update["updated"], 1)
         self.assertAlmostEqual(rows[0]["signal_next_close_return"], 25.0)
         self.assertAlmostEqual(rows[0]["next_close_return"], 4.1667)
-        self.assertEqual(metrics["avg_next_close_return"], 25.0)
+        self.assertAlmostEqual(metrics["avg_next_close_return"], 4.1667)
         self.assertEqual(metrics["hit_3pct_rate"], 100.0)
-        self.assertEqual(metrics["primary_horizon_label"], "尾盘入场至次日收盘")
-        self.assertEqual(metrics["primary_return_field"], "signal_next_close_return")
+        self.assertEqual(metrics["primary_horizon_label"], "次日开盘至收盘")
+        self.assertEqual(metrics["primary_return_field"], "next_close_return")
         self.assertGreater(metrics["win_rate_1_5d_exit_net"], 0)
-        self.assertEqual(metrics["avg_primary_return"], 25.0)
+        self.assertAlmostEqual(metrics["avg_primary_return"], 4.1667)
         self.assertAlmostEqual(
             metrics["avg_primary_return_net"],
-            25.0 - metrics["avg_trade_cost_pct"],
+            4.1667 - metrics["avg_trade_cost_pct"],
         )
 
     def test_strategy_validation_stores_exit_rule_outcome(self):
@@ -3717,7 +3791,7 @@ class ScoringTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["avg_exit_return"], -5.0)
         self.assertAlmostEqual(metrics["avg_exit_return_net"], -5.0 - metrics["avg_trade_cost_pct"])
 
-    def test_strategy_validation_keeps_limit_up_after_tail_entry(self):
+    def test_strategy_validation_skips_unbuyable_limit_up_at_next_open(self):
         from stock_analyzer.strategy_validation import _compute_outcome
 
         class FakeProvider:
@@ -3741,10 +3815,10 @@ class ScoringTest(unittest.TestCase):
         }
 
         outcome = _compute_outcome(FakeProvider(), signal)
-        self.assertNotIn("excluded", outcome)
-        self.assertAlmostEqual(outcome["signal_exit_return"], 8.0)
+        self.assertTrue(outcome["excluded"])
+        self.assertEqual(outcome["skip_reason"], "unbuyable_limit_up")
 
-    def test_strategy_validation_keeps_high_open_after_tail_entry(self):
+    def test_strategy_validation_skips_high_open_chase(self):
         from stock_analyzer.strategy_validation import _compute_outcome
 
         class FakeProvider:
@@ -3770,8 +3844,8 @@ class ScoringTest(unittest.TestCase):
         with patch.object(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 3.0):
             outcome = _compute_outcome(FakeProvider(), signal)
 
-        self.assertNotIn("excluded", outcome)
-        self.assertAlmostEqual(outcome["signal_exit_return"], 0.8)
+        self.assertTrue(outcome["excluded"])
+        self.assertEqual(outcome["skip_reason"], "tomorrow_high_open_chase")
         self.assertGreater(outcome["next_open_return"], 3.0)
 
     def test_validation_execution_cost_uses_liquidity_slippage(self):
@@ -3817,7 +3891,7 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(metrics["outcome_sample_count"], 2)
         self.assertEqual(metrics["real_sample_count"], 1)
         self.assertEqual(metrics["replay_sample_count"], 1)
-        self.assertEqual(metrics["primary_horizon_label"], "尾盘入场至次日收盘")
+        self.assertEqual(metrics["primary_horizon_label"], "次日开盘至收盘")
 
     def test_tomorrow_validation_primary_metrics_ignore_backup_pool(self):
         import tempfile
@@ -3983,16 +4057,64 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(metrics["signal_sample_count"], 1)
         self.assertEqual(metrics["pending_outcome_count"], 1)
 
-    def test_tomorrow_primary_return_config_uses_tail_entry_next_close(self):
+    def test_only_incomplete_outcome_update_skips_mature_rows(self):
+        import tempfile
+
+        histories = {
+            "600001": _validation_history("2024-01-01", future_days=6, final_price=10.8),
+            "600002": _validation_history("2024-02-01", future_days=6, final_price=10.6),
+        }
+
+        class FakeProvider:
+            def __init__(self):
+                self.calls = []
+
+            def get_history(self, code, days=180):
+                self.calls.append(code)
+                return histories[code]
+
+        provider = FakeProvider()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            store.save_signals(
+                "tomorrow_picks",
+                config.TOMORROW_STRATEGY_VERSION,
+                "2024-01-01T15:00:00",
+                [{"rank": 1, "code": "600001", "name": "成熟", "price": 10, "score": 90}],
+            )
+            store.update_outcomes(provider, strategy_name="tomorrow_picks")
+            provider.calls.clear()
+            mature_update = store.update_outcomes(
+                provider,
+                strategy_name="tomorrow_picks",
+                only_incomplete=True,
+            )
+            store.save_signals(
+                "tomorrow_picks",
+                config.TOMORROW_STRATEGY_VERSION,
+                "2024-02-01T15:00:00",
+                [{"rank": 1, "code": "600002", "name": "待回填", "price": 10, "score": 90}],
+            )
+            pending_update = store.update_outcomes(
+                provider,
+                strategy_name="tomorrow_picks",
+                only_incomplete=True,
+            )
+
+        self.assertEqual(mature_update["updated"], 0)
+        self.assertEqual(pending_update["updated"], 1)
+        self.assertEqual(provider.calls, ["600002"])
+
+    def test_tomorrow_primary_return_config_uses_next_open_to_close(self):
         column, days, horizon = _primary_return_config("tomorrow_picks")
-        self.assertEqual(column, "signal_next_close_return")
+        self.assertEqual(column, "next_close_return")
         self.assertEqual(days, 1)
-        self.assertEqual(horizon, "尾盘入场至次日收盘")
+        self.assertEqual(horizon, "次日开盘至收盘")
         with patch.object(config, "VALIDATION_PRIMARY_ENTRY_MODE", "signal"):
             column_signal, days_signal, horizon_signal = _primary_return_config("tomorrow_picks")
-            self.assertEqual(column_signal, "signal_next_close_return")
+            self.assertEqual(column_signal, "next_close_return")
             self.assertEqual(days_signal, 1)
-            self.assertEqual(horizon_signal, "尾盘入场至次日收盘")
+            self.assertEqual(horizon_signal, "次日开盘至收盘")
 
     def test_swing_validation_requires_mature_future_days(self):
         import tempfile
@@ -4024,7 +4146,7 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(update["updated"], 2)
         self.assertEqual(len(rows), 2)
         self.assertEqual(metrics["primary_holding_days"], 5)
-        self.assertEqual(metrics["primary_horizon_label"], "尾盘入场2-5日可执行退出")
+        self.assertEqual(metrics["primary_horizon_label"], "次日开盘后2-5日可执行退出")
         self.assertEqual(metrics["outcome_sample_count"], 2)
         self.assertEqual(metrics["sample_count"], 1)
         self.assertEqual(metrics["real_sample_count"], 1)

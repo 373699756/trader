@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -15,8 +16,8 @@ from .runtime_json import atomic_write_json
 
 PRIMARY_RETURN_BY_STRATEGY = {
     "short_term": ("signal_next_close_return", 1, "盘中观察至次日收盘（辅助）"),
-    "tomorrow_picks": ("signal_next_close_return", 1, "尾盘入场至次日收盘"),
-    "swing_picks": ("signal_exit_return", 5, "尾盘入场2-5日可执行退出"),
+    "tomorrow_picks": ("next_close_return", 1, "次日开盘至收盘"),
+    "swing_picks": ("exit_return", 5, "次日开盘后2-5日可执行退出"),
 }
 
 EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY = {
@@ -27,8 +28,8 @@ EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY = {
 def current_strategy_version(strategy_name: str) -> str:
     return {
         "short_term": str(getattr(config, "SHORT_TERM_STRATEGY_VERSION", "short_term_v2_observation")),
-        "tomorrow_picks": str(getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v8_next_day")),
-        "swing_picks": str(getattr(config, "SWING_STRATEGY_VERSION", "swing_2_5d_v2_signal_exit")),
+        "tomorrow_picks": str(getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v9_next_open")),
+        "swing_picks": str(getattr(config, "SWING_STRATEGY_VERSION", "swing_2_5d_v3_next_open_exit")),
     }.get(str(strategy_name or ""), "")
 
 
@@ -473,6 +474,8 @@ class StrategyValidationStore:
 
     def live_weight_samples(self, strategy_name: str, days: int = 120) -> List[Dict[str, object]]:
         primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
+        drawdown_column = "signal_max_drawdown_3d" if strategy_name == "short_term" else "max_drawdown_3d"
+        exit_column = "signal_exit_return" if strategy_name == "short_term" else "exit_return"
         version_filter = ""
         params = [strategy_name]
         current_version = current_strategy_version(strategy_name)
@@ -487,8 +490,8 @@ class StrategyValidationStore:
                        s.name, s.score, s.turnover, s.market, s.raw_json,
                        COALESCE(o.{primary_column}, 0) AS primary_return,
                        COALESCE(o.next_open_return, 0) AS next_open_return,
-                       COALESCE(o.signal_max_drawdown_3d, o.max_drawdown_3d, 0) AS max_drawdown,
-                       COALESCE(o.signal_exit_return, o.exit_return, o.{primary_column}, 0) AS exit_return,
+                       COALESCE(o.{drawdown_column}, 0) AS max_drawdown,
+                       COALESCE(o.{exit_column}, o.{primary_column}, 0) AS exit_return,
                        COALESCE(o.exit_reason, '') AS exit_reason,
                        COALESCE(o.exit_days, 0) AS exit_days,
                        COALESCE(o.future_days, 1) AS future_days
@@ -496,7 +499,12 @@ class StrategyValidationStore:
                 JOIN strategy_outcomes o ON o.signal_id = s.id
                 WHERE s.strategy_name = ? {version_filter}
                 ORDER BY s.signal_date DESC, s.rank ASC
-                """.format(primary_column=primary_column, version_filter=version_filter),
+                """.format(
+                    primary_column=primary_column,
+                    drawdown_column=drawdown_column,
+                    exit_column=exit_column,
+                    version_filter=version_filter,
+                ),
                 params,
             ).fetchall()
         if not rows:
@@ -587,6 +595,7 @@ class StrategyValidationStore:
         signal_date: str = "",
         strategy_name: str = "",
         codes: Optional[Iterable[str]] = None,
+        only_incomplete: bool = False,
     ) -> Dict[str, object]:
         where = "WHERE 1=1"
         params = []
@@ -605,6 +614,30 @@ class StrategyValidationStore:
             placeholders = ",".join("?" for _ in normalized_codes)
             where += " AND code IN ({})".format(placeholders)
             params.extend(normalized_codes)
+        if only_incomplete:
+            where += """
+                AND signal_date < ?
+                AND NOT EXISTS (
+                    SELECT 1 FROM strategy_execution_skips k WHERE k.signal_id = strategy_signals.id
+                )
+                AND (
+                    NOT EXISTS (
+                        SELECT 1 FROM strategy_outcomes o WHERE o.signal_id = strategy_signals.id
+                    )
+                    OR (
+                        strategy_name IN ('tomorrow_picks', 'swing_picks')
+                        AND COALESCE((
+                            SELECT o.future_days FROM strategy_outcomes o
+                            WHERE o.signal_id = strategy_signals.id
+                        ), 0) < 5
+                        AND COALESCE((
+                            SELECT o.exit_reason FROM strategy_outcomes o
+                            WHERE o.signal_id = strategy_signals.id
+                        ), '') IN ('', 'hold_to_term')
+                    )
+                )
+            """
+            params.append(datetime.now().date().isoformat())
         with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             signals = conn.execute(
@@ -806,19 +839,24 @@ class StrategyValidationStore:
                        o.next_open_return,
                        o.next_close_return,
                        o.next_low,
-	                       COALESCE(o.signal_intraday_high_return, o.intraday_high_return) AS signal_intraday_high_return,
-	                       o.hold_3d_return,
-	                       o.hold_5d_return,
-	                       o.hold_10d_return,
-	                       o.hold_20d_return,
-	                       COALESCE(o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_3d_return,
+                       o.intraday_high_return AS open_intraday_high_return,
+                       COALESCE(o.signal_intraday_high_return, o.intraday_high_return) AS signal_intraday_high_return,
+                       o.hold_3d_return,
+                       o.hold_5d_return,
+                       o.hold_10d_return,
+                       o.hold_20d_return,
+                       COALESCE(o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_3d_return,
                        COALESCE(o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_5d_return,
                        COALESCE(o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_10d_return,
                        COALESCE(o.signal_hold_20d_return, o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_20d_return,
                        COALESCE(o.signal_exit_return, o.exit_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_exit_return,
+                       o.exit_return AS exit_return,
                        COALESCE(o.exit_reason, '') AS exit_reason,
                        COALESCE(o.exit_days, 0) AS exit_days,
                        COALESCE(o.signal_max_drawdown_3d, o.max_drawdown_3d) AS signal_max_drawdown_3d,
+                       o.max_drawdown_3d AS open_max_drawdown_primary,
+                       o.hit_3pct AS open_hit_3pct,
+                       o.hit_5pct AS open_hit_5pct,
                        COALESCE(o.signal_hit_3pct, o.hit_3pct) AS signal_hit_3pct,
                        COALESCE(o.signal_hit_5pct, o.hit_5pct) AS signal_hit_5pct,
                        COALESCE(o.future_days, 1) AS future_days
@@ -871,6 +909,10 @@ class StrategyValidationStore:
                 "weak_next_day_1_5d_sample_count": 0,
                 "avg_max_drawdown_primary": 0.0,
                 "real_avg_max_drawdown_primary": 0.0,
+                "real_avg_primary_return_net_ci95_low": None,
+                "real_avg_primary_return_net_ci95_high": None,
+                "real_win_rate_primary_net_ci95_low": None,
+                "real_portfolio_max_drawdown_pct": 0.0,
                 "execution_skipped_count": execution_skipped_count,
                 **signal_status,
                 "daily": [],
@@ -890,6 +932,7 @@ class StrategyValidationStore:
             primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
         else:
             primary_column, primary_days, primary_label = "strategy_primary_return", 0, "混合主周期"
+        next_day_column = "signal_next_close_return" if strategy_name == "short_term" else "next_close_return"
         for row in selected_all:
             try:
                 raw = json.loads(row.get("raw_json") or "{}")
@@ -908,11 +951,29 @@ class StrategyValidationStore:
             row["_primary_return"] = coerce_number(row[row_primary_column])
             row["_primary_return_net"] = round(row["_primary_return"] - row["_trade_cost_pct"], 4)
             row["_next_day_return_net"] = round(
-                coerce_number(row.get("signal_next_close_return")) - row["_trade_cost_pct"],
+                coerce_number(row.get(next_day_column)) - row["_trade_cost_pct"],
                 4,
             )
-            row["_exit_return"] = coerce_number(row.get("signal_exit_return"))
+            row["_next_day_return"] = coerce_number(row.get(next_day_column))
+            uses_signal_entry = (strategy_name or row["strategy_name"]) == "short_term"
+            drawdown_key = "signal_max_drawdown_3d" if uses_signal_entry else "open_max_drawdown_primary"
+            row["_primary_drawdown"] = coerce_number(row.get(drawdown_key))
+            row["_exit_return"] = coerce_number(
+                row.get("signal_exit_return" if uses_signal_entry else "exit_return")
+            )
             row["_exit_return_net"] = round(row["_exit_return"] - row["_trade_cost_pct"], 4)
+            row["_intraday_high_return"] = coerce_number(
+                row.get("signal_intraday_high_return" if uses_signal_entry else "open_intraday_high_return")
+            )
+            row["_hit_3pct"] = bool(row.get("signal_hit_3pct" if uses_signal_entry else "open_hit_3pct"))
+            row["_hit_5pct"] = bool(row.get("signal_hit_5pct" if uses_signal_entry else "open_hit_5pct"))
+            for holding_days in (3, 5, 10, 20):
+                key = (
+                    "signal_hold_{}d_return".format(holding_days)
+                    if uses_signal_entry
+                    else "hold_{}d_return".format(holding_days)
+                )
+                row["_hold_{}d_return".format(holding_days)] = coerce_number(row.get(key))
             row["_is_replay"] = _is_replay_version(row["strategy_version"])
             row["_primary_ready"] = _outcome_ready(row, row_primary_days)
             row["_exit_ready"] = _outcome_ready(row, _exit_holding_days(strategy_name or row["strategy_name"]))
@@ -938,6 +999,9 @@ class StrategyValidationStore:
         ]
         real_daily = _daily_metrics(real_rows)
         replay_daily = _daily_metrics(replay_rows)
+        real_daily_returns = [coerce_number(row.get("avg_primary_return_net")) for row in real_daily]
+        real_return_ci = _mean_confidence_interval(real_daily_returns)
+        real_win_ci_low = _wilson_lower_bound([value > 0 for value in real_daily_returns])
         primary_dates = []
         for row in primary_rows:
             if row["signal_date"] not in primary_dates:
@@ -970,15 +1034,15 @@ class StrategyValidationStore:
             "primary_horizon_label": primary_label,
             "trade_cost_pct": base_cost,
             "avg_trade_cost_pct": _avg(row["_trade_cost_pct"] for row in primary_outcome_rows),
-            "avg_next_close_return": _avg(row["signal_next_close_return"] for row in primary_outcome_rows),
-            "win_rate_next_close": _rate(row["signal_next_close_return"] > 0 for row in primary_outcome_rows),
-            "hit_3pct_rate": _rate(bool(row["signal_hit_3pct"]) for row in primary_outcome_rows),
-            "hit_5pct_rate": _rate(bool(row["signal_hit_5pct"]) for row in primary_outcome_rows),
-            "avg_intraday_high_return": _avg(row["signal_intraday_high_return"] for row in primary_outcome_rows),
-            "avg_hold_3d_return": _avg(row["signal_hold_3d_return"] for row in primary_rows),
-            "avg_hold_5d_return": _avg(row["signal_hold_5d_return"] for row in primary_rows),
-            "avg_hold_10d_return": _avg(row["signal_hold_10d_return"] for row in primary_rows),
-            "avg_hold_20d_return": _avg(row["signal_hold_20d_return"] for row in primary_rows),
+            "avg_next_close_return": _avg(row["_next_day_return"] for row in primary_outcome_rows),
+            "win_rate_next_close": _rate(row["_next_day_return"] > 0 for row in primary_outcome_rows),
+            "hit_3pct_rate": _rate(row["_hit_3pct"] for row in primary_outcome_rows),
+            "hit_5pct_rate": _rate(row["_hit_5pct"] for row in primary_outcome_rows),
+            "avg_intraday_high_return": _avg(row["_intraday_high_return"] for row in primary_outcome_rows),
+            "avg_hold_3d_return": _avg(row["_hold_3d_return"] for row in primary_rows),
+            "avg_hold_5d_return": _avg(row["_hold_5d_return"] for row in primary_rows),
+            "avg_hold_10d_return": _avg(row["_hold_10d_return"] for row in primary_rows),
+            "avg_hold_20d_return": _avg(row["_hold_20d_return"] for row in primary_rows),
             "avg_primary_return": _avg(row["_primary_return"] for row in primary_rows),
             "avg_primary_return_net": _avg(row["_primary_return_net"] for row in primary_rows),
             "win_rate_primary": _rate(row["_primary_return"] > 0 for row in primary_rows),
@@ -997,13 +1061,17 @@ class StrategyValidationStore:
             "win_rate_exit_net": _rate(row["_exit_return_net"] > 0 for row in auxiliary_exit_rows),
             "real_avg_primary_return_net": _avg(row["avg_primary_return_net"] for row in real_daily),
             "real_win_rate_primary_net": _rate(row["avg_primary_return_net"] > 0 for row in real_daily),
+            "real_avg_primary_return_net_ci95_low": real_return_ci[0],
+            "real_avg_primary_return_net_ci95_high": real_return_ci[1],
+            "real_win_rate_primary_net_ci95_low": real_win_ci_low,
+            "real_portfolio_max_drawdown_pct": _portfolio_max_drawdown(real_daily),
             "replay_avg_primary_return_net": _avg(row["avg_primary_return_net"] for row in replay_daily),
             "replay_win_rate_primary_net": _rate(row["avg_primary_return_net"] > 0 for row in replay_daily),
-            "avg_max_drawdown_3d": _avg(row["signal_max_drawdown_3d"] for row in primary_rows),
-            "avg_max_drawdown_primary": _avg(row["signal_max_drawdown_3d"] for row in primary_rows),
-            "real_avg_max_drawdown_primary": _avg(row["signal_max_drawdown_3d"] for row in real_rows),
+            "avg_max_drawdown_3d": _avg(row["_primary_drawdown"] for row in primary_rows),
+            "avg_max_drawdown_primary": _avg(row["_primary_drawdown"] for row in primary_rows),
+            "real_avg_max_drawdown_primary": _avg(row["_primary_drawdown"] for row in real_rows),
             "top10_avg_next_close_return": _avg(
-                row["signal_next_close_return"] for row in primary_outcome_rows if row["rank"] <= 10
+                row["_next_day_return"] for row in primary_outcome_rows if row["rank"] <= 10
             ),
             "avg_open_to_close_return": _avg(row["next_close_return"] for row in primary_outcome_rows),
             "next_day_compare": _next_day_compare(primary_outcome_rows),
@@ -1836,7 +1904,11 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     limit_pct = _daily_limit_pct(str(signal["code"]), str(_mapping_get(signal, "market", "")))
     strategy_name = str(_mapping_get(signal, "strategy_name", ""))
     primary_return_field, primary_days, _ = _primary_return_config(strategy_name)
-    if primary_return_field == "next_close_return" and _is_unbuyable_limit_up(first, previous_close, limit_pct):
+    if strategy_name in {"tomorrow_picks", "swing_picks"} and _is_unbuyable_limit_up(
+        first,
+        previous_close,
+        limit_pct,
+    ):
         return {"excluded": True, "skip_reason": "unbuyable_limit_up"}
     open_entry = coerce_number(first.get("open")) or coerce_number(first.get("price"))
     signal_entry = coerce_number(signal["price_at_signal"])
@@ -1847,7 +1919,7 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
         return None
     if signal_entry <= 0:
         signal_entry = open_entry
-    if strategy_name == "tomorrow_picks" and primary_return_field == "next_close_return":
+    if strategy_name == "tomorrow_picks":
         high_open_pct = (open_entry / signal_entry - 1.0) * 100.0 if signal_entry > 0 else 0.0
         high_open_skip_pct = coerce_number(getattr(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 3.0), 3.0)
         if high_open_pct > high_open_skip_pct:
@@ -2121,6 +2193,43 @@ def _avg(values) -> float:
     return round(sum(clean) / len(clean), 4) if clean else 0.0
 
 
+def _mean_confidence_interval(values, z_score: float = 1.96):
+    clean = [coerce_number(value) for value in values if value is not None]
+    if len(clean) < 2:
+        return None, None
+    mean = sum(clean) / len(clean)
+    variance = sum((value - mean) ** 2 for value in clean) / (len(clean) - 1)
+    margin = max(0.0, coerce_number(z_score, 1.96)) * math.sqrt(variance / len(clean))
+    return round(mean - margin, 4), round(mean + margin, 4)
+
+
+def _wilson_lower_bound(values, z_score: float = 1.96):
+    clean = [bool(value) for value in values]
+    if not clean:
+        return None
+    count = len(clean)
+    successes = sum(1 for value in clean if value)
+    proportion = successes / count
+    z = max(0.0, coerce_number(z_score, 1.96))
+    denominator = 1 + z * z / count
+    center = proportion + z * z / (2 * count)
+    spread = z * math.sqrt((proportion * (1 - proportion) + z * z / (4 * count)) / count)
+    return round(max(0.0, (center - spread) / denominator) * 100.0, 2)
+
+
+def _portfolio_max_drawdown(daily_rows: List[Dict[str, object]]) -> float:
+    equity = 1.0
+    peak = 1.0
+    max_drawdown = 0.0
+    for row in sorted(daily_rows or [], key=lambda item: str(item.get("signal_date") or "")):
+        daily_return = coerce_number(row.get("avg_primary_return_net")) / 100.0
+        equity *= max(0.0, 1.0 + daily_return)
+        peak = max(peak, equity)
+        if peak > 0:
+            max_drawdown = min(max_drawdown, (equity / peak - 1.0) * 100.0)
+    return round(max_drawdown, 4)
+
+
 def _rate(values) -> float:
     clean = list(values)
     return round(sum(1 for value in clean if value) / len(clean) * 100, 2) if clean else 0.0
@@ -2344,11 +2453,11 @@ def _daily_metrics(rows: List[sqlite3.Row]) -> List[Dict[str, object]]:
             {
                 "signal_date": date,
                 "sample_count": len(items),
-                "avg_next_close_return": _avg(row["signal_next_close_return"] for row in items),
-                "win_rate_next_close": _rate(row["signal_next_close_return"] > 0 for row in items),
-                "hit_3pct_rate": _rate(bool(row["signal_hit_3pct"]) for row in items),
-                "hit_5pct_rate": _rate(bool(row["signal_hit_5pct"]) for row in items),
-                "avg_hold_3d_return": _avg(row["signal_hold_3d_return"] for row in items),
+                "avg_next_close_return": _avg(row["_next_day_return"] for row in items),
+                "win_rate_next_close": _rate(row["_next_day_return"] > 0 for row in items),
+                "hit_3pct_rate": _rate(row["_hit_3pct"] for row in items),
+                "hit_5pct_rate": _rate(row["_hit_5pct"] for row in items),
+                "avg_hold_3d_return": _avg(row["_hold_3d_return"] for row in items),
                 "avg_primary_return": _avg(row["_primary_return"] for row in items),
                 "avg_primary_return_net": _avg(row["_primary_return_net"] for row in items),
                 "win_rate_primary": _rate(row["_primary_return"] > 0 for row in items),

@@ -17,6 +17,7 @@ from .app_support import (
     attach_validation_summary,
     demote_strategy_rows_to_backup,
     demote_tomorrow_rows_to_backup,
+    validation_gate_window_days,
 )
 from .scoring import limit_theme_concentration
 from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks
@@ -90,7 +91,7 @@ def prediction_strategy_rows(
             apply_tomorrow_validation_gate(
                 tomorrow_rows,
                 tomorrow_meta,
-                cached_metrics_fn("tomorrow_picks", 20),
+                cached_metrics_fn("tomorrow_picks", validation_gate_window_days()),
             )
         except Exception as exc:
             reason = "验证指标读取失败，暂停重点观察并仅保留备选：{}".format(exc)
@@ -183,7 +184,7 @@ def build_recommendation_horizons(
         apply_tomorrow_validation_gate(
             tomorrow_rows,
             tomorrow_meta,
-            cached_metrics_fn("tomorrow_picks", 20),
+            cached_metrics_fn("tomorrow_picks", validation_gate_window_days()),
         )
     except Exception as exc:
         reason = "验证指标读取失败，暂停重点观察并仅保留备选：{}".format(exc)
@@ -218,7 +219,7 @@ def _apply_validation_gate_safe(
     cached_metrics_fn,
 ) -> Dict[str, object]:
     try:
-        metrics = cached_metrics_fn(strategy_name, 20)
+        metrics = cached_metrics_fn(strategy_name, validation_gate_window_days())
         if strategy_name == "tomorrow_picks":
             return apply_tomorrow_validation_gate(rows, meta, metrics)
         return apply_strategy_validation_gate(strategy_name, rows, meta, metrics)

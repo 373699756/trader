@@ -39,29 +39,36 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
 
     def test_run_validation_auto_update_once_resets_statuses_on_failure(self):
         auto_update_status = {"running": False, "last_started_at": "", "last_error": "", "last_result": {}}
-        auto_snapshot_status = {"running": True, "last_error": "", "last_result": {}}
         update_calls = []
-        snapshot_calls = []
 
         def set_auto_update_status(**values):
             auto_update_status.update(values)
             update_calls.append(values)
 
-        def set_auto_snapshot_status(**values):
-            auto_snapshot_status.update(values)
-            snapshot_calls.append(values)
-
         result = support.run_validation_auto_update_once(
             auto_update_lock=type("L", (), {"__enter__": lambda self: self, "__exit__": lambda self, *args: False})(),
             auto_update_status=auto_update_status,
-            auto_snapshot_status=auto_snapshot_status,
             set_auto_update_status=set_auto_update_status,
-            set_auto_snapshot_status=set_auto_snapshot_status,
-            run_validation_auto_snapshot_once_fn=lambda: {"ok": False, "status": "boom"},
+            run_validation_outcome_update_once_fn=lambda: {"ok": False, "status": "boom"},
         )
 
         self.assertFalse(result["ok"])
         self.assertEqual(auto_update_status["running"], False)
-        self.assertEqual(auto_snapshot_status["running"], False)
         self.assertTrue(update_calls)
-        self.assertTrue(snapshot_calls)
+
+    def test_run_validation_auto_update_once_runs_outcome_update_not_snapshot(self):
+        auto_update_status = {"running": False}
+
+        result = support.run_validation_auto_update_once(
+            auto_update_lock=type("L", (), {"__enter__": lambda self: self, "__exit__": lambda self, *args: False})(),
+            auto_update_status=auto_update_status,
+            set_auto_update_status=lambda **values: auto_update_status.update(values),
+            run_validation_outcome_update_once_fn=lambda: {
+                "ok": True,
+                "updates": [{"strategy": "tomorrow_picks", "result": {"updated": 2}}],
+            },
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mode"], "outcome_update")
+        self.assertEqual(result["updates"][0]["result"]["updated"], 2)
