@@ -6,6 +6,8 @@ import time
 from datetime import datetime
 from typing import Dict
 
+from .runtime_json import atomic_write_json
+
 
 def save_recommendation_snapshot(path: str, payload: Dict[str, object]) -> Dict[str, object]:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -15,10 +17,7 @@ def save_recommendation_snapshot(path: str, payload: Dict[str, object]) -> Dict[
         "saved_at_ts": time.time(),
         "payload": payload,
     }
-    temp_path = f"{path}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as handle:
-        json.dump(snapshot, handle, ensure_ascii=False, separators=(",", ":"))
-    os.replace(temp_path, path)
+    atomic_write_json(path, snapshot, ensure_ascii=False, separators=(",", ":"))
     return {"ok": True, "path": path, "bytes": os.path.getsize(path)}
 
 

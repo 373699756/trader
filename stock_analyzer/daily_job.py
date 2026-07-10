@@ -1,9 +1,9 @@
 import argparse
 import json
-import os
 from datetime import datetime
 
 from . import config
+from .runtime_json import atomic_write_json
 from .strategy_validation import StrategyValidationStore
 
 
@@ -22,9 +22,7 @@ def _save_iteration_payload(result, applied=False):
         "reason": result.get("status", ""),
         "result": result,
     }
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    atomic_write_json(path, payload, ensure_ascii=False, indent=2)
     return payload
 
 
@@ -95,12 +93,10 @@ def main() -> int:
 
     provider = MarketDataProvider()
     store = StrategyValidationStore(config.VALIDATION_DB_PATH)
-    strategy_defaults = (
-        config.ACTIVE_STRATEGIES
-        if str(args.strategy or "all").strip().lower() == "all"
-        else SNAPSHOT_STRATEGIES
+    validation_strategies, executable_strategies = _task_strategy_sets(
+        args.strategy,
+        SNAPSHOT_STRATEGIES,
     )
-    strategies = _parse_strategies(args.strategy, strategy_defaults)
     payload = {
         "ok": True,
         "market_data": {},
@@ -136,10 +132,10 @@ def main() -> int:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 1
     if args.snapshot:
-        payload["snapshot"] = run_snapshots(provider, store, strategies, market=args.market)
+        payload["snapshot"] = run_snapshots(provider, store, validation_strategies, market=args.market)
         args.backup_validation = True
     if args.update:
-        for strategy in strategies:
+        for strategy in validation_strategies:
             result = store.update_outcomes(provider, strategy_name=strategy)
             payload["update"].append({"strategy": strategy, "result": result})
         args.factor_snapshot = True
@@ -148,7 +144,7 @@ def main() -> int:
         from .paper_trading import PaperTradingStore
 
         paper_store = PaperTradingStore(config.PAPER_TRADING_DB_PATH)
-        for strategy in strategies:
+        for strategy in executable_strategies:
             result = paper_store.run_paper_trade(provider, store, strategy)
             payload["paper_trade"].append({"strategy": strategy, "result": result})
     if args.factor_snapshot:
@@ -164,7 +160,7 @@ def main() -> int:
         from .factor_ic import compute_factor_ic, save_factor_ic
 
         samples = []
-        for strategy in strategies:
+        for strategy in executable_strategies:
             samples.extend(store.live_weight_samples(strategy, days=120))
         factor_payload = compute_factor_ic(samples)
         save_factor_ic(factor_payload)
@@ -201,6 +197,16 @@ def _parse_strategies(raw: str, supported) -> list:
     requested = [item.strip() for item in text.replace("，", ",").split(",") if item.strip()]
     strategies = [item for item in requested if item in supported]
     return strategies or ["tomorrow_picks"]
+
+
+def _task_strategy_sets(raw: str, supported) -> tuple:
+    text = str(raw or "all").strip()
+    if not text or text.lower() == "all":
+        validation = [item for item in config.AUTO_SNAPSHOT_STRATEGIES if item in supported]
+        executable = [item for item in config.ACTIVE_STRATEGIES if item in supported]
+        return validation, executable
+    selected = _parse_strategies(text, supported)
+    return selected, selected
 
 
 def _parse_code_list(raw: str) -> list:

@@ -1,11 +1,11 @@
 import json
-import os
 import threading
 from datetime import datetime, time as clock_time
 from typing import Dict, List, Tuple
 
 from . import config
 from .normalization import coerce_number, normalize_code
+from .runtime_json import atomic_write_json
 
 
 _STATE_LOCK = threading.Lock()
@@ -349,11 +349,7 @@ def _write_state(state: Dict[str, object]) -> None:
     if not path:
         return
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        temporary = "{}.tmp".format(path)
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, ensure_ascii=False, separators=(",", ":"), default=_json_value)
-        os.replace(temporary, path)
+        atomic_write_json(path, state, ensure_ascii=False, separators=(",", ":"), default=_json_value)
     except Exception:
         return
 

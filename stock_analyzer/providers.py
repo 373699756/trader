@@ -11,6 +11,7 @@ from . import config
 from .daily_data import load_history_frames
 from .history_cache import HistoryCache
 from .normalization import normalize_code, rename_known_columns
+from .runtime_json import atomic_write_text
 
 
 @dataclass
@@ -452,12 +453,11 @@ class MarketDataProvider:
             return
         path = Path(config.QUOTE_SNAPSHOT_PATH)
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
             snapshot = df.copy()
             quote_timestamp = str((df.attrs or {}).get("quote_timestamp") or "").strip()
             if quote_timestamp:
                 snapshot["__quote_timestamp"] = quote_timestamp
-            snapshot.to_json(path, orient="records", force_ascii=False)
+            atomic_write_text(path, snapshot.to_json(orient="records", force_ascii=False))
         except Exception:
             return
 

@@ -35,6 +35,7 @@ from .recommendation_runtime_support import (
     prediction_strategy_rows,
     scored_strategy_rows,
 )
+from .runtime_json import atomic_write_json
 from .recommendation_snapshot import load_recommendation_snapshot, save_recommendation_snapshot
 from .risk_blacklist import attach_risk_blacklist, load_risk_blacklist
 from .normalization import coerce_number, normalize_code
@@ -82,7 +83,7 @@ from .validation_runtime_support import (
 )
 
 
-ACTIVE_SNAPSHOT_STRATEGIES = tuple(config.ACTIVE_STRATEGIES)
+DEFAULT_AUTO_SNAPSHOT_STRATEGIES = tuple(config.AUTO_SNAPSHOT_STRATEGIES)
 
 _VALIDATION_AUTO_WORKERS = set()
 _VALIDATION_AUTO_WORKERS_LOCK = threading.Lock()
@@ -224,10 +225,7 @@ def create_app() -> Flask:
         return payload
 
     def _save_iteration_payload(payload: Dict[str, object]) -> None:
-        path = _iteration_path()
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        atomic_write_json(_iteration_path(), payload, ensure_ascii=False, indent=2)
 
     def _load_iteration_payload() -> Dict[str, object]:
         try:
@@ -608,7 +606,7 @@ def create_app() -> Flask:
     }
 
     def _configured_auto_snapshot_strategies() -> List[str]:
-        return configured_auto_snapshot_strategies(ACTIVE_SNAPSHOT_STRATEGIES, SNAPSHOT_STRATEGIES)
+        return configured_auto_snapshot_strategies(DEFAULT_AUTO_SNAPSHOT_STRATEGIES, SNAPSHOT_STRATEGIES)
 
     def _validation_strategy(default: str = "short_term") -> str:
         strategy = storage_strategy_name(request.args.get("strategy", default))

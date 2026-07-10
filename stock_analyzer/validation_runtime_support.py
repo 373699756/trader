@@ -9,15 +9,15 @@ from .validation_backup import backup_validation_db
 
 
 def configured_auto_snapshot_strategies(
-    active_snapshot_strategies,
+    default_snapshot_strategies,
     snapshot_strategies,
 ) -> List[str]:
     raw = str(getattr(config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", "") or "").strip()
     if not raw:
-        return list(active_snapshot_strategies)
+        return list(default_snapshot_strategies)
     requested = [item.strip() for item in raw.replace("，", ",").split(",") if item.strip()]
     if any(item.lower() == "all" for item in requested):
-        return list(active_snapshot_strategies)
+        return list(default_snapshot_strategies)
     strategies = [item for item in requested if item in snapshot_strategies]
     return strategies or ["tomorrow_picks"]
 

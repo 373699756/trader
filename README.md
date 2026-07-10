@@ -52,7 +52,7 @@ ENABLE_DEEPSEEK_RUNTIME=1 ./run.sh
 ## 数据与备份
 
 - 验证数据库：`.runtime/strategy_validation.sqlite3`
-- 自动备份目录：`.runtime/backups`
+- 自动备份文件：`.runtime/strategy_validation.backup.sqlite3`
 - 备份列表：`.venv/bin/python -m stock_analyzer.daily_job --list-validation-backups`
 - 还原备份：`.venv/bin/python -m stock_analyzer.daily_job --restore-validation <backup-file>`
 

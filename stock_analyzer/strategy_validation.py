@@ -10,6 +10,7 @@ import pandas as pd
 from . import config
 from .normalization import coerce_number, normalize_code
 from .risk_rules import simulate_exit
+from .runtime_json import atomic_write_json
 
 
 PRIMARY_RETURN_BY_STRATEGY = {
@@ -2303,13 +2304,7 @@ def _write_deepseek_attribution_snapshot(strategy_name: str, result: Dict[str, o
             if isinstance(loaded, dict):
                 existing = loaded
         existing[strategy_name] = result
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        tmp_path = f"{path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(existing, handle, ensure_ascii=False, separators=(",", ":"))
-        os.replace(tmp_path, path)
+        atomic_write_json(path, existing, ensure_ascii=False, separators=(",", ":"))
     except Exception:
         return
 

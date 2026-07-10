@@ -29,6 +29,7 @@ from .backtest import _DEFAULT_ALPHALITE_WEIGHTS, run_rolling_alphalite_backtest
 from .daily_data import list_market_data_codes, load_history_frames
 from .history_cache import HistoryCache
 from .normalization import coerce_number, normalize_code
+from .runtime_json import atomic_write_json
 from .scoring import STRATEGY_COMBINERS, WEIGHTS, _combine_details
 from .strategy_validation import StrategyValidationStore
 from .deepseek_rules import rule_field_value, rule_matches
@@ -1005,8 +1006,7 @@ def _write_weights_override(patch: Dict[str, object]) -> None:
                     payload[key][sub_k] = sub_v
         else:
             payload[key] = value
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    atomic_write_json(path, payload, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":

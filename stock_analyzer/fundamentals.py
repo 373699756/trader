@@ -8,6 +8,7 @@ import pandas as pd
 
 from . import config
 from .normalization import coerce_number, finite_series, normalize_code, percentile_score
+from .runtime_json import atomic_write_json
 
 
 FUNDAMENTAL_COLUMNS = (
@@ -153,8 +154,6 @@ def _load_cache() -> Dict[str, object]:
 def _save_cache(payload: Dict[str, object]) -> None:
     path = getattr(config, "FUNDAMENTAL_CACHE_PATH", ".runtime/fundamentals.json")
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        atomic_write_json(path, payload, ensure_ascii=False, indent=2)
     except Exception:
         return

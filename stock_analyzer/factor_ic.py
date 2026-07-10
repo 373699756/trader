@@ -1,5 +1,4 @@
 import json
-import os
 from datetime import datetime
 from typing import Dict, Iterable, List
 
@@ -7,6 +6,7 @@ import pandas as pd
 
 from . import config
 from .normalization import coerce_number
+from .runtime_json import atomic_write_json
 
 
 DEFAULT_FACTOR_KEYS = (
@@ -55,9 +55,7 @@ def compute_factor_ic(samples: Iterable[Dict[str, object]], factor_keys: Iterabl
 def save_factor_ic(payload: Dict[str, object]) -> None:
     path = getattr(config, "FACTOR_IC_PATH", ".runtime/factor_ic.json")
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        atomic_write_json(path, payload, ensure_ascii=False, indent=2)
     except Exception:
         return
 

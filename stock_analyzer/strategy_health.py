@@ -1,10 +1,10 @@
 import json
-import os
 from datetime import datetime
 from typing import Dict
 
 from . import config
 from .normalization import coerce_number
+from .runtime_json import atomic_write_json
 
 
 def strategy_status(metrics: Dict[str, object]) -> Dict[str, str]:
@@ -78,13 +78,11 @@ def strategy_status(metrics: Dict[str, object]) -> Dict[str, str]:
 
 def save_strategy_status(status_by_strategy: Dict[str, Dict[str, object]], path: str = "") -> None:
     target = path or getattr(config, "STRATEGY_STATUS_PATH", ".runtime/strategy_status.json")
-    os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
     payload = {
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "strategies": status_by_strategy,
     }
-    with open(target, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    atomic_write_json(target, payload, ensure_ascii=False, indent=2)
 
 
 def load_strategy_status(path: str = "") -> Dict[str, Dict[str, object]]:

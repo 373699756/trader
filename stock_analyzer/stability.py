@@ -3,6 +3,8 @@ import os
 from datetime import datetime
 from typing import Dict, List
 
+from .runtime_json import atomic_write_json
+
 
 class TopKDropoutTracker:
     def __init__(self, state_path: str, keep_k: int = 10, buffer_k: int = 20) -> None:
@@ -63,6 +65,4 @@ class TopKDropoutTracker:
         return data if isinstance(data, dict) else {}
 
     def _save(self, state: Dict[str, object]) -> None:
-        os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
-        with open(self.state_path, "w", encoding="utf-8") as file:
-            json.dump(state, file, ensure_ascii=False, indent=2)
+        atomic_write_json(self.state_path, state, ensure_ascii=False, indent=2)

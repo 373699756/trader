@@ -301,3 +301,4 @@ ACTIVE_STRATEGIES = (
     "tomorrow_picks",
     "swing_picks",
 )
+AUTO_SNAPSHOT_STRATEGIES = SNAPSHOT_STRATEGIES

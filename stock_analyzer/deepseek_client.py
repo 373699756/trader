@@ -19,6 +19,7 @@ from .deepseek.event_score import (
     deepseek_event_adjustment as _deepseek_event_adjustment,
 )
 from .normalization import coerce_number, normalize_code
+from .runtime_json import atomic_write_json
 from .strategies.types import storage_strategy_name
 from .deepseek_rules import rule_penalty_for_row
 from . import config
@@ -439,13 +440,7 @@ def _write_news_cache(cache: Dict[str, object]) -> None:
     if not path:
         return
     try:
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        tmp_path = f"{path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(cache, handle, ensure_ascii=False, separators=(",", ":"))
-        os.replace(tmp_path, path)
+        atomic_write_json(path, cache, ensure_ascii=False, separators=(",", ":"))
     except Exception:
         return
 
@@ -863,11 +858,7 @@ def _read_cache(path: str) -> Dict[str, object]:
 
 def _write_cache(path: str, cache: Dict[str, object]) -> None:
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        tmp_path = f"{path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(cache, handle, ensure_ascii=False, separators=(",", ":"))
-        os.replace(tmp_path, path)
+        atomic_write_json(path, cache, ensure_ascii=False, separators=(",", ":"))
     except Exception:
         return
 

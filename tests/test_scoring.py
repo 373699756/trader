@@ -2783,7 +2783,19 @@ class ScoringTest(unittest.TestCase):
         from stock_analyzer import daily_job
         from stock_analyzer.snapshot import SNAPSHOT_STRATEGIES
 
-        self.assertEqual(daily_job._parse_strategies("all", config.ACTIVE_STRATEGIES), list(config.ACTIVE_STRATEGIES))
+        validation, executable = daily_job._task_strategy_sets("all", SNAPSHOT_STRATEGIES)
+
+        self.assertEqual(validation, list(config.AUTO_SNAPSHOT_STRATEGIES))
+        self.assertEqual(executable, list(config.ACTIVE_STRATEGIES))
+
+    def test_daily_job_explicit_strategy_applies_to_validation_and_execution_tasks(self):
+        from stock_analyzer import daily_job
+        from stock_analyzer.snapshot import SNAPSHOT_STRATEGIES
+
+        validation, executable = daily_job._task_strategy_sets("short_term", SNAPSHOT_STRATEGIES)
+
+        self.assertEqual(validation, ["short_term"])
+        self.assertEqual(executable, ["short_term"])
 
     def test_daily_job_after_close_runs_market_data_pipeline(self):
         import io
@@ -4176,9 +4188,9 @@ class ScoringTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "unsupported_strategy")
 
-    def test_auto_snapshot_excludes_intraday_observation_strategy(self):
+    def test_auto_snapshot_includes_intraday_observation_without_making_it_executable(self):
+        self.assertIn("short_term", config.AUTO_SNAPSHOT_STRATEGIES)
         self.assertNotIn("short_term", config.ACTIVE_STRATEGIES)
-        self.assertIn("short_term", config.SNAPSHOT_STRATEGIES)
 
     def test_backfill_samples_endpoint_grows_validation_sample_count(self):
         import tempfile

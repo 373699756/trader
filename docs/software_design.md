@@ -210,7 +210,7 @@ GET /api/recommendations
 | `.runtime/weights.json` | 人工确认后的权重和策略 alpha 覆盖 |
 | `.runtime/risk_blacklist.json/.csv` | 用户维护的风险黑名单 |
 
-运行时文件不应作为源码回滚依据；数据库 schema 变更必须使用幂等建表或 `ALTER` 迁移。
+JSON 用于单份最新状态、可重建缓存和人工可读配置；SQLite 用于持续增长、需要按日期或股票查询的历史数据。运行时文件不应纳入源码版本控制或作为源码回滚依据；数据库 schema 变更必须使用幂等建表或 `ALTER` 迁移。
 
 ## 9. 自动任务
 
@@ -218,7 +218,7 @@ GET /api/recommendations
 
 - 自动收益回填默认开启，从14:30开始按600秒间隔运行。
 - 自动快照默认开启，15:00后使用收盘锚点。
-- 默认生产策略集合 `ACTIVE_STRATEGIES` 只有 `tomorrow_picks` 和 `swing_picks`；盘中观察不自动保存为可执行样本。
+- 可执行生产策略集合 `ACTIVE_STRATEGIES` 只有 `tomorrow_picks` 和 `swing_picks`；自动快照集合 `AUTO_SNAPSHOT_STRATEGIES` 还包含 `short_term`，盘中观察保存为辅助验证样本但不形成买入指令。
 - 收盘锚点不完整时拒绝把该批次保存为正式回溯锚点。
 - DeepSeek 验证复盘按新增真实交易日节流，默认每新增5日才允许再次调用。
 
@@ -233,7 +233,7 @@ GET /api/recommendations
 完整流水线按顺序执行：
 
 1. 下载或更新历史日线。
-2. 保存明日优先和2-5日持有快照。
+2. 保存盘中观察、明日优先和2-5日持有快照。
 3. 回填已成熟收益和执行跳过。
 4. 刷新因子快照。
 5. 刷新因子 IC。

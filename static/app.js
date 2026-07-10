@@ -737,13 +737,14 @@ async function loadValidationAutoUpdateStatus() {
     const status = payload.auto_update || {};
     const snapshot = payload.auto_snapshot || {};
     const config = status.config || {};
-    const snapshotText = snapshotStatusText(snapshot);
+    const strategiesText = validationSnapshotStrategiesText(config.strategies);
+    const snapshotText = snapshotStatusText(snapshot, config.strategies);
     if (!status.enabled) {
       setOpsStatus(els.updateStatus, joinStatusText(["14:30 后自动保存荐股快照已关闭", snapshotText]), "pending");
       return;
     }
     if (status.running) {
-      setOpsStatus(els.updateStatus, joinStatusText(["正在保存明日优先/2-5日持有荐股快照…", snapshotText]), "pending");
+      setOpsStatus(els.updateStatus, joinStatusText([`正在保存${strategiesText}快照…`, snapshotText]), "pending");
       return;
     }
     const result = status.last_result || {};
@@ -766,7 +767,7 @@ async function loadValidationAutoUpdateStatus() {
     setOpsStatus(
       els.updateStatus,
       joinStatusText([
-        `自动保存已启动：${config.start_time || "14:30"} 之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟保存明日优先/2-5日持有荐股快照`,
+        `自动保存已启动：${config.start_time || "14:30"} 之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟保存${strategiesText}快照`,
         snapshotText,
       ]),
       "pending"
@@ -780,12 +781,15 @@ function joinStatusText(parts) {
   return parts.filter(Boolean).join("；");
 }
 
-function snapshotStatusText(snapshot) {
+function snapshotStatusText(snapshot, configuredStrategies = []) {
   if (!snapshot || snapshot.enabled === false) {
     return "荐股快照自动保存已关闭";
   }
   if (snapshot.running) {
-    return "正在保存明日优先/2-5日持有荐股快照";
+    const strategies = configuredStrategies.length
+      ? configuredStrategies
+      : snapshot.last_result?.strategies || [];
+    return `正在保存${validationSnapshotStrategiesText(strategies)}快照`;
   }
   if (snapshot.last_error) {
     return `荐股快照自动保存上次失败：${snapshot.last_error}`;
@@ -1522,6 +1526,11 @@ function strategyLabel(value) {
   if (value === "tomorrow_picks") return "明日优先";
   if (value === "swing_picks") return "2-5日持有";
   return value || "-";
+}
+
+function validationSnapshotStrategiesText(strategies) {
+  const labels = [...new Set((Array.isArray(strategies) ? strategies : []).map(strategyLabel).filter(Boolean))];
+  return labels.length ? labels.join("/") : "策略验证";
 }
 
 function escapeHtml(value) {

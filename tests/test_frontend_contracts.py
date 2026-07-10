@@ -101,6 +101,14 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn('id="generateTuningBtn" class="primary-action" type="button">DeepSeek 策略验证</button>', template_source)
         self.assertIn('class="tool-action-divider"', template_source)
 
+    def test_validation_snapshot_status_uses_backend_strategy_list(self):
+        with open("static/app.js", encoding="utf-8") as source:
+            app_source = source.read()
+
+        self.assertIn("validationSnapshotStrategiesText(config.strategies)", app_source)
+        self.assertIn("snapshotStatusText(snapshot, config.strategies)", app_source)
+        self.assertNotIn("三类策略验证快照", app_source)
+
 
 if __name__ == "__main__":
     unittest.main()
