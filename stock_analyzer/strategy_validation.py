@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional
 
@@ -35,6 +36,16 @@ def current_replay_strategy_version(strategy_name: str) -> str:
     return "{}_{}".format(str(strategy_name or ""), suffix) if strategy_name else ""
 
 
+@contextmanager
+def _connect_validation_db(db_path: str):
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
 class StrategyValidationStore:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
@@ -56,7 +67,7 @@ class StrategyValidationStore:
         deepseek_shadow_rows = list(deepseek_shadow_rows or [])
         saved = 0
         shadow_saved = 0
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO strategy_signal_batches
@@ -235,7 +246,7 @@ class StrategyValidationStore:
         if strategy_name:
             where = "WHERE b.strategy_name = ?"
             params.append(strategy_name)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT b.signal_date, b.strategy_name, COALESCE(COUNT(s.id), 0) AS count, MAX(b.signal_time) AS signal_time,
@@ -278,7 +289,7 @@ class StrategyValidationStore:
         if replay_version:
             where = "strategy_name = ? AND (lower(strategy_version) NOT LIKE '%replay%' OR strategy_version = ?)"
             params.append(replay_version)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT DISTINCT signal_date FROM strategy_signal_batches WHERE {}".format(where),
                 params,
@@ -291,7 +302,7 @@ class StrategyValidationStore:
         if strategy_name:
             where += " AND s.strategy_name = ?"
             params.append(strategy_name)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -319,7 +330,7 @@ class StrategyValidationStore:
         return [_row_to_dict(row) for row in rows]
 
     def latest_signal_rows(self, strategy_name: str) -> List[Dict[str, object]]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT signal_date, strategy_version
@@ -355,7 +366,7 @@ class StrategyValidationStore:
         if not allowed:
             return {"deleted_signals": 0, "deleted_batches": 0}
         placeholders = ",".join("?" for _ in allowed)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             old_ids = conn.execute(
                 """
                 SELECT id
@@ -405,7 +416,7 @@ class StrategyValidationStore:
         deepseek_review: Dict[str, object],
     ) -> Dict[str, object]:
         now = datetime.now().isoformat(timespec="seconds")
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO strategy_tuning_runs
@@ -430,7 +441,7 @@ class StrategyValidationStore:
         return {"id": run_id, "run_time": now}
 
     def latest_tuning_run(self, strategy_name: str) -> Dict[str, object]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
@@ -445,7 +456,7 @@ class StrategyValidationStore:
         return _tuning_row_to_dict(row) if row else {}
 
     def list_tuning_runs(self, strategy_name: str, limit: int = 10) -> List[Dict[str, object]]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -467,7 +478,7 @@ class StrategyValidationStore:
         if current_version:
             version_filter = " AND s.strategy_version = ?"
             params.append(current_version)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -550,7 +561,7 @@ class StrategyValidationStore:
             where += " AND strategy_name = ?"
             params.append(strategy_name)
         params.append(max(1, int(limit)))
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -593,7 +604,7 @@ class StrategyValidationStore:
             placeholders = ",".join("?" for _ in normalized_codes)
             where += " AND code IN ({})".format(placeholders)
             params.extend(normalized_codes)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             signals = conn.execute(
                 "SELECT * FROM strategy_signals {} ORDER BY signal_date DESC, rank ASC".format(where),
@@ -606,7 +617,7 @@ class StrategyValidationStore:
         for signal in signals:
             outcome = _compute_outcome(provider, signal)
             if outcome and outcome.get("excluded"):
-                with sqlite3.connect(self.db_path, timeout=30) as conn:
+                with _connect_validation_db(self.db_path) as conn:
                     conn.execute("DELETE FROM strategy_outcomes WHERE signal_id = ?", (signal["id"],))
                     conn.execute(
                         """
@@ -627,7 +638,7 @@ class StrategyValidationStore:
             if not outcome:
                 skipped += 1
                 continue
-            with sqlite3.connect(self.db_path, timeout=30) as conn:
+            with _connect_validation_db(self.db_path) as conn:
                 conn.execute("DELETE FROM strategy_execution_skips WHERE signal_id = ?", (signal["id"],))
                 conn.execute(
                     """
@@ -720,7 +731,7 @@ class StrategyValidationStore:
             placeholders = ",".join("?" for _ in normalized_codes)
             where += " AND code IN ({})".format(placeholders)
             params.extend(normalized_codes)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             shadow_rows = conn.execute(
                 "SELECT * FROM strategy_deepseek_shadow_signals {} ORDER BY signal_date DESC, local_rank ASC".format(where),
@@ -734,7 +745,7 @@ class StrategyValidationStore:
             if not outcome or outcome.get("excluded"):
                 skipped += 1
                 continue
-            with sqlite3.connect(self.db_path, timeout=30) as conn:
+            with _connect_validation_db(self.db_path) as conn:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO strategy_deepseek_shadow_outcomes
@@ -784,7 +795,7 @@ class StrategyValidationStore:
         if current_version:
             where += " AND (s.strategy_version = ? OR s.strategy_version = ?)"
             params.extend((current_version, current_replay_strategy_version(strategy_name)))
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -1015,7 +1026,7 @@ class StrategyValidationStore:
         if current_version:
             version_filter = " AND (s.strategy_version = ? OR s.strategy_version = ?)"
             query_params.extend((current_version, current_replay_strategy_version(strategy_name)))
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             signal_rows = conn.execute(
                 """
@@ -1158,7 +1169,7 @@ class StrategyValidationStore:
         if strategy_version:
             where += " AND strategy_version = ?"
             params.append(strategy_version)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             dates = [
                 row[0]
                 for row in conn.execute(
@@ -1224,7 +1235,7 @@ class StrategyValidationStore:
         if strategy_version:
             where += " AND s.strategy_version = ?"
             params.append(strategy_version)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT DISTINCT s.signal_date
@@ -1264,7 +1275,7 @@ class StrategyValidationStore:
             return {"saved": 0, "status": "disabled"}
         now = str(market_gate.get("generated_at") or datetime.now().isoformat(timespec="seconds"))
         review_date = now[:10]
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO deepseek_market_gate_reviews
@@ -1303,7 +1314,7 @@ class StrategyValidationStore:
         return {"saved": 1, "status": "saved", "review_date": review_date}
 
     def market_gate_metrics(self, days: int = 120) -> Dict[str, object]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             reviews = conn.execute(
                 """
@@ -1404,7 +1415,7 @@ class StrategyValidationStore:
             return {"saved": 0, "status": "missing_code"}
         now = datetime.now().isoformat(timespec="seconds")
         prediction_date = now[:10]
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO stock_prediction_snapshots
@@ -1439,7 +1450,7 @@ class StrategyValidationStore:
         return {"saved": 1, "status": "saved", "prediction_date": prediction_date, "code": code}
 
     def update_stock_prediction_outcomes(self, provider, days: int = 120) -> Dict[str, object]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -1459,7 +1470,7 @@ class StrategyValidationStore:
             if not outcome:
                 skipped += 1
                 continue
-            with sqlite3.connect(self.db_path, timeout=30) as conn:
+            with _connect_validation_db(self.db_path) as conn:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO stock_prediction_outcomes
@@ -1486,7 +1497,7 @@ class StrategyValidationStore:
         return {"updated": updated, "skipped": skipped}
 
     def stance_metrics(self, days: int = 120) -> Dict[str, object]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -1518,7 +1529,7 @@ class StrategyValidationStore:
         }
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_validation_db(self.db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS strategy_signal_batches (

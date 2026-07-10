@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 import os
 import sqlite3
 from datetime import datetime
@@ -16,6 +17,16 @@ from .strategy_validation import (
     _is_unbuyable_limit_up,
     _primary_return_config,
 )
+
+
+@contextmanager
+def _connect_paper_db(db_path: str):
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 class PaperTradingStore:
@@ -101,7 +112,7 @@ class PaperTradingStore:
             where = "WHERE strategy_name = ?"
             params.append(strategy_name)
         params.append(max(1, int(limit)))
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_paper_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -123,7 +134,7 @@ class PaperTradingStore:
         trade: Dict[str, object],
     ) -> None:
         now = datetime.now().isoformat(timespec="seconds")
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_paper_db(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO paper_trades
@@ -175,7 +186,7 @@ class PaperTradingStore:
             )
 
     def _recompute_nav(self, strategy_name: str) -> None:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_paper_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -191,7 +202,7 @@ class PaperTradingStore:
             event_date = str(row["exit_date"] or row["signal_date"])
             grouped.setdefault(event_date, []).append(row)
 
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_paper_db(self.db_path) as conn:
             conn.execute("DELETE FROM portfolio_nav WHERE strategy_name = ?", (strategy_name,))
 
         nav = 100.0
@@ -238,7 +249,7 @@ class PaperTradingStore:
         max_drawdown_pct: float = 0.0,
     ) -> None:
         now = datetime.now().isoformat(timespec="seconds")
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_paper_db(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO portfolio_nav
@@ -284,7 +295,7 @@ class PaperTradingStore:
         if strategy_name and strategy_name != "all":
             where = "WHERE strategy_name = ?"
             params.append(strategy_name)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_paper_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -299,12 +310,12 @@ class PaperTradingStore:
         return [dict(row) for row in rows]
 
     def _strategy_names(self) -> List[str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_paper_db(self.db_path) as conn:
             rows = conn.execute("SELECT DISTINCT strategy_name FROM portfolio_nav ORDER BY strategy_name").fetchall()
         return [str(row[0]) for row in rows if row and row[0]]
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_paper_db(self.db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS paper_trades (

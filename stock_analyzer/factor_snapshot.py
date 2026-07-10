@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime
 import json
 import os
@@ -11,6 +12,16 @@ import pandas as pd
 from .daily_data import list_market_data_codes, load_history_frames
 from .factors import ALPHALITE_COLUMNS, ALPHALITE_META_COLUMNS, compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code
+
+
+@contextmanager
+def _connect_factor_db(db_path: str):
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 FACTOR_SET = "alphalite_v1"
@@ -49,7 +60,7 @@ class FactorSnapshotStore:
         columns_sql = ", ".join(FACTOR_COLUMNS)
         placeholders = ", ".join(["?"] * (3 + len(FACTOR_COLUMNS) + 2))
         update_sql = ", ".join("{} = excluded.{}".format(column, column) for column in FACTOR_COLUMNS)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_factor_db(self.db_path) as conn:
             conn.executemany(
                 """
                 INSERT INTO factor_snapshots
@@ -69,7 +80,7 @@ class FactorSnapshotStore:
         return len(payload)
 
     def latest(self, factor_set: str = FACTOR_SET, limit: int = 50) -> List[Dict[str, object]]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_factor_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -96,7 +107,7 @@ class FactorSnapshotStore:
         codes = sorted({key[1] for key in keys})
         date_placeholders = ", ".join(["?"] * len(dates))
         code_placeholders = ", ".join(["?"] * len(codes))
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_factor_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -120,7 +131,7 @@ class FactorSnapshotStore:
         return result
 
     def summary(self) -> Dict[str, object]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_factor_db(self.db_path) as conn:
             total = conn.execute("SELECT COUNT(*) FROM factor_snapshots").fetchone()[0]
             codes = conn.execute("SELECT COUNT(DISTINCT code) FROM factor_snapshots").fetchone()[0]
             date_range = conn.execute("SELECT MIN(trade_date), MAX(trade_date) FROM factor_snapshots").fetchone()
@@ -143,7 +154,7 @@ class FactorSnapshotStore:
 
     def _init_db(self) -> None:
         column_defs = ",\n                    ".join("{} REAL NOT NULL DEFAULT 0".format(column) for column in FACTOR_COLUMNS)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_factor_db(self.db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS factor_snapshots (

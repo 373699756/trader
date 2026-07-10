@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from typing import Dict, List
 
@@ -76,5 +77,10 @@ def prune_validation_backups(backup_dir: str, keep: int = 30) -> List[str]:
 
 
 def _sqlite_backup(source_path: str, target_path: str) -> None:
-    with sqlite3.connect(source_path, timeout=30) as source, sqlite3.connect(target_path, timeout=30) as target:
+    with (
+        closing(sqlite3.connect(source_path, timeout=30)) as source,
+        closing(sqlite3.connect(target_path, timeout=30)) as target,
+        source,
+        target,
+    ):
         source.backup(target)

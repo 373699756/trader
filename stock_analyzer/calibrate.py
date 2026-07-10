@@ -19,6 +19,7 @@ import copy
 import json
 import os
 import sqlite3
+from contextlib import closing
 from typing import Dict, List
 
 import pandas as pd
@@ -39,7 +40,7 @@ def _cached_codes(db_path: str) -> List[str]:
         return market_codes
     if not os.path.exists(db_path):
         return []
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         try:
             rows = conn.execute("SELECT DISTINCT code FROM daily_history").fetchall()
         except sqlite3.OperationalError:

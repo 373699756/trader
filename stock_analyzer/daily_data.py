@@ -1,4 +1,5 @@
 import math
+from contextlib import contextmanager
 import os
 import sqlite3
 from datetime import datetime
@@ -8,6 +9,16 @@ from typing import Dict, Iterable, List, Optional
 import pandas as pd
 
 from .normalization import coerce_number, market_type, normalize_code, rename_known_columns
+
+
+@contextmanager
+def _connect_market_db(db_path: str):
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 DAILY_BAR_COLUMNS = (
@@ -47,7 +58,7 @@ class DailyMarketDataStore:
         db_path = self._bar_db_path_for_code(code)
         if not os.path.exists(db_path):
             return ""
-        with sqlite3.connect(db_path) as conn:
+        with _connect_market_db(db_path) as conn:
             row = conn.execute(
                 "SELECT MAX(trade_date) FROM daily_bars WHERE code = ?",
                 (code,),
@@ -72,7 +83,7 @@ class DailyMarketDataStore:
             )
         if not payload:
             return 0
-        with sqlite3.connect(self.meta_db_path) as conn:
+        with _connect_market_db(self.meta_db_path) as conn:
             conn.executemany(
                 """
                 INSERT INTO stock_meta (code, name, market, is_active, updated_at)
@@ -102,7 +113,7 @@ class DailyMarketDataStore:
             rows.append(tuple(row[column] for column in DAILY_BAR_COLUMNS) + (now,))
         db_path = self._bar_db_path_for_code(code)
         self._init_bar_db(db_path)
-        with sqlite3.connect(db_path) as conn:
+        with _connect_market_db(db_path) as conn:
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO daily_bars
@@ -125,7 +136,7 @@ class DailyMarketDataStore:
     ) -> None:
         code = normalize_code(code)
         now = datetime.now().isoformat(timespec="seconds")
-        with sqlite3.connect(self.meta_db_path) as conn:
+        with _connect_market_db(self.meta_db_path) as conn:
             existing = conn.execute(
                 "SELECT attempts FROM download_status WHERE code = ?",
                 (code,),
@@ -166,7 +177,7 @@ class DailyMarketDataStore:
         date_end = ""
         shard_count = 0
         for db_path in self._bar_db_paths():
-            with sqlite3.connect(db_path) as conn:
+            with _connect_market_db(db_path) as conn:
                 shard_bars = conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
                 if shard_bars <= 0:
                     continue
@@ -185,7 +196,7 @@ class DailyMarketDataStore:
                         date_start = date_range[0]
                     if date_range[1] and (not date_end or date_range[1] > date_end):
                         date_end = date_range[1]
-        with sqlite3.connect(self.meta_db_path) as conn:
+        with _connect_market_db(self.meta_db_path) as conn:
             status_rows = conn.execute(
                 """
                 SELECT status, COUNT(*)
@@ -207,7 +218,7 @@ class DailyMarketDataStore:
     def _init_db(self) -> None:
         if not self.sharded:
             self._init_bar_db(self.db_path)
-        with sqlite3.connect(self.meta_db_path) as conn:
+        with _connect_market_db(self.meta_db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS stock_meta (
@@ -250,7 +261,7 @@ class DailyMarketDataStore:
         directory = os.path.dirname(db_path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        with sqlite3.connect(db_path) as conn:
+        with _connect_market_db(db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS daily_bars (
@@ -358,7 +369,7 @@ def list_market_data_codes(db_path: str) -> List[str]:
         return []
     codes = []
     for path in _bar_db_paths(db_path):
-        with sqlite3.connect(path) as conn:
+        with _connect_market_db(path) as conn:
             try:
                 rows = conn.execute("SELECT DISTINCT code FROM daily_bars").fetchall()
             except sqlite3.OperationalError:
@@ -453,7 +464,7 @@ def _read_daily_bars_for_codes(db_path: str, codes: List[str], columns: str) -> 
         if not os.path.exists(path):
             continue
         placeholders = ",".join("?" for _ in path_codes)
-        with sqlite3.connect(path) as conn:
+        with _connect_market_db(path) as conn:
             query = """
                 SELECT {}
                 FROM daily_bars
@@ -499,7 +510,7 @@ def _market_data_path_has_bars(db_path: str) -> bool:
         return False
     for path in _bar_db_paths(db_path):
         try:
-            with sqlite3.connect(path) as conn:
+            with _connect_market_db(path) as conn:
                 row = conn.execute("SELECT 1 FROM daily_bars LIMIT 1").fetchone()
             if row:
                 return True

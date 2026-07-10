@@ -1,9 +1,20 @@
 import os
+from contextlib import contextmanager
 import sqlite3
 from datetime import datetime, timedelta
 import pandas as pd
 
 from .normalization import coerce_number, normalize_code, rename_known_columns
+
+
+@contextmanager
+def _connect_history_db(db_path: str):
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 class HistoryCache:
@@ -21,7 +32,7 @@ class HistoryCache:
 
     def get(self, code: str, days: int) -> pd.DataFrame:
         code = normalize_code(code)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_history_db(self.db_path) as conn:
             df = pd.read_sql_query(
                 """
                 SELECT trade_date, code, open, high, low, price, turnover, volume
@@ -38,7 +49,7 @@ class HistoryCache:
 
     def is_fresh(self, code: str) -> bool:
         code = normalize_code(code)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_history_db(self.db_path) as conn:
             row = conn.execute(
                 "SELECT MAX(updated_at) FROM daily_history WHERE code = ?",
                 (code,),
@@ -72,7 +83,7 @@ class HistoryCache:
             )
             for _, row in df.iterrows()
         ]
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_history_db(self.db_path) as conn:
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO daily_history
@@ -83,7 +94,7 @@ class HistoryCache:
             )
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with _connect_history_db(self.db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS daily_history (
