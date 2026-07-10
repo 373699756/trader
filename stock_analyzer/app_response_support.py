@@ -67,7 +67,21 @@ def saved_tomorrow_fallback_payload(
         max(0, int(top_n or 0)),
         max(0, int(getattr(config, "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", top_n or 0))),
     )
+    validation_meta = {
+        "gate_reason": "实时行情不可用，显示最近保存快照；不代表今日实时盘面。",
+        **_saved_tomorrow_tier_counts(saved_rows),
+    }
+    try:
+        apply_tomorrow_validation_gate(
+            saved_rows,
+            validation_meta,
+            cached_metrics_fn("tomorrow_picks", 20),
+        )
+    except Exception:
+        pass
     display_rows = saved_rows[:display_limit]
+    tier_counts = _saved_tomorrow_tier_counts(display_rows)
+    strategy_version = _saved_tomorrow_strategy_version(saved_rows)
     if not detailed:
         return response_payload(
             provider_health_fn,
@@ -81,9 +95,14 @@ def saved_tomorrow_fallback_payload(
                 "display_count": len(display_rows),
                 "display_limit": display_limit,
                 "display_cap": getattr(config, "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", display_limit),
+                "primary_watch_count": tier_counts["primary_watch_count"],
+                "backup_watch_count": tier_counts["backup_watch_count"],
                 "top_n": top_n,
                 "market_filter": market,
-                "strategy": "实时行情不可用，显示最近保存的明天推荐",
+                "strategy_version": strategy_version,
+                "gate_reason": validation_meta.get("gate_reason", ""),
+                "validation_gate": validation_meta.get("validation_gate", {}),
+                "strategy": "实时行情不可用，显示最近保存的明日优先推荐",
                 "fallback": "saved_snapshot",
                 "risk_blacklist": risk_blacklist_summary(load_risk_blacklist_fn()),
                 "hard_filter_report": {"raw_count": 0, "passed_count": len(saved_rows), "rejected_count": 0, "reasons": []},
@@ -98,18 +117,23 @@ def saved_tomorrow_fallback_payload(
         "display_limit": display_limit,
         "display_cap": getattr(config, "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", display_limit),
         "min_score": 0.0,
-        "gate_reason": "实时行情不可用，显示最近保存快照；不代表今日实时盘面。",
-        "primary_watch_count": min(int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 10)), len(display_rows)),
+        "gate_reason": validation_meta.get("gate_reason", ""),
+        "primary_watch_count": tier_counts["primary_watch_count"],
+        "backup_watch_count": tier_counts["backup_watch_count"],
         "top_n": top_n,
         "market_filter": market,
         "analysis_window": analysis_window_fn(),
-        "strategy_version": "tomorrow_picks_v5",
-        "strategy_label": "明天推荐",
+        "strategy_version": strategy_version,
+        "strategy_label": "明日优先",
         "prediction_type": "rank_score",
         "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
-        "holding_discipline": "次日了结，不隔夜持有到第3天",
-        "strategy": "实时行情不可用，显示最近保存的明天推荐",
+        "holding_discipline": "尾盘确认后入场，主验证周期为次日收盘；高开超过阈值不追",
+        "profit_window": "次日",
+        "recommendation_class": "next_day_priority",
+        "recommendation_class_label": "明日优先",
+        "strategy": "实时行情不可用，显示最近保存的明日优先推荐",
         "fallback": "saved_snapshot",
+        "validation_gate": validation_meta.get("validation_gate", {}),
         "policy": {
             "main_max_gain": config.MAX_BUYABLE_GAIN_MAIN,
             "growth_max_gain": config.MAX_BUYABLE_GAIN_GROWTH,
@@ -117,14 +141,6 @@ def saved_tomorrow_fallback_payload(
             "avoid_limit_up": True,
         },
     }
-    try:
-        apply_tomorrow_validation_gate(
-            saved_rows,
-            fallback_meta,
-            cached_metrics_fn("tomorrow_picks", 20),
-        )
-    except Exception:
-        pass
     return response_payload(
         provider_health_fn,
         research_disclaimer_fn,
@@ -133,3 +149,24 @@ def saved_tomorrow_fallback_payload(
         data=display_rows,
         meta=fallback_meta,
     )
+
+
+def _saved_tomorrow_strategy_version(rows: List[Dict[str, object]]) -> str:
+    for row in rows or []:
+        version = str(row.get("strategy_version") or "").strip()
+        if version:
+            return version
+    return str(getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v8_next_day"))
+
+
+def _saved_tomorrow_tier_counts(rows: List[Dict[str, object]]) -> Dict[str, int]:
+    rows = list(rows or [])
+    has_tiers = any(str(row.get("tier") or "").strip() for row in rows)
+    if has_tiers:
+        primary = sum(1 for row in rows if row.get("tier") == "primary_watch")
+    else:
+        primary = min(int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 10)), len(rows))
+    return {
+        "primary_watch_count": primary,
+        "backup_watch_count": max(0, len(rows) - primary),
+    }

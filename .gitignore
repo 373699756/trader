@@ -4,6 +4,7 @@
 .runtime/downloads/
 .runtime/backups/
 .runtime/latest_recommendations.json
+.runtime/deepseek_schedule.json
 *.sqlite3
 .runtime/market_data.sqlite3
 .runtime/python-3.11/

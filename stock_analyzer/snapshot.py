@@ -1,11 +1,12 @@
 from datetime import datetime
 from typing import Dict, Iterable, List
 
+from . import config
+from .app_runtime_support import apply_deepseek_rerank, finalize_deepseek_meta
+from .daily_data import load_history_frames
 from .event_risk import attach_event_risk, load_event_risk
 from .factors import build_alphalite_factors, merge_alphalite
 from .fundamentals import attach_fundamental_factors, load_fundamentals
-from . import config
-from .daily_data import load_history_frames
 from .normalization import coerce_number, normalize_code
 from .scoring import (
     build_market_regime,
@@ -32,11 +33,7 @@ def run_snapshot(provider, validation_store, strategy: str, market: str = "all")
     market_regime = build_market_regime(candidates, breadth_source=quotes)
     rows, meta, version = _score_snapshot_strategy(provider, candidates, quotes, strategy, market, market_regime)
     rows, deepseek_meta = _apply_snapshot_deepseek_rerank(rows, strategy, market)
-    meta["deepseek"] = deepseek_meta
-    meta["display_count"] = len(rows)
-    meta["deepseek_filtered_count"] = int(deepseek_meta.get("filtered") or 0)
-    if deepseek_meta.get("filter_reasons"):
-        meta["deepseek_filter_reasons"] = deepseek_meta.get("filter_reasons")
+    finalize_deepseek_meta(meta, rows, deepseek_meta)
     if _after_close_anchor_time(meta["generated_at"]):
         rows, close_anchor = _apply_close_anchor_prices(provider, rows, meta["generated_at"], quotes)
         meta["close_anchor"] = {
@@ -78,7 +75,7 @@ def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market
             market_regime=market_regime,
         )
         rows = rows_by_horizon.get("short_term", [])
-        return rows, meta, "short_term_v1"
+        return rows, meta, config.SHORT_TERM_STRATEGY_VERSION
     scorers = {
         "tomorrow_picks": (
             score_tomorrow_picks,
@@ -97,19 +94,7 @@ def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market
 
 
 def _apply_snapshot_deepseek_rerank(rows: List[Dict[str, object]], strategy: str, market: str):
-    if not rows:
-        return rows, {"enabled": False, "status": "empty"}
-    if not getattr(config, "ENABLE_DEEPSEEK_RUNTIME", False):
-        return rows, {"enabled": False, "status": "runtime_disabled", "strategy": strategy}
-    disabled = _deepseek_rerank_disabled_strategies()
-    if strategy in disabled or "all" in disabled:
-        return rows, {"enabled": False, "status": "strategy_rerank_disabled", "strategy": strategy}
-    try:
-        from .deepseek_client import rerank_candidates
-
-        return rerank_candidates(rows=rows, strategy_name=strategy, market_filter=market)
-    except Exception as exc:
-        return rows, {"enabled": False, "status": "fallback", "strategy": strategy, "error": str(exc)}
+    return apply_deepseek_rerank(strategy, rows, market)
 
 
 def _deepseek_rerank_disabled_strategies() -> set:

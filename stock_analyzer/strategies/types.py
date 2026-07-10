@@ -22,9 +22,9 @@ LEGACY_STRATEGY_NAMES = {
 }
 
 STRATEGY_LABELS = {
-    TODAY_PICKS: "今天推荐",
-    TOMORROW_PICKS: "明天推荐",
-    SWING_2_5D_PICKS: "2-5天推荐",
+    TODAY_PICKS: "盘中强势观察",
+    TOMORROW_PICKS: "明日优先",
+    SWING_2_5D_PICKS: "2-5日持有",
 }
 
 
@@ -35,4 +35,3 @@ def canonical_strategy_name(strategy_name: str) -> str:
 def storage_strategy_name(strategy_name: str) -> str:
     canonical = canonical_strategy_name(strategy_name)
     return LEGACY_STRATEGY_NAMES.get(canonical, canonical)
-

@@ -71,8 +71,10 @@ class MarketDataProvider:
         raise RuntimeError("; ".join(errors))
 
     def _accept_realtime_quotes(self, df: pd.DataFrame, source: str, errors: List[str]) -> pd.DataFrame:
+        refresh_time = datetime.now().isoformat(timespec="seconds")
+        df.attrs.setdefault("quote_timestamp", refresh_time)
         self.status.quotes_source = source
-        self.status.last_quote_refresh = datetime.now().isoformat(timespec="seconds")
+        self.status.last_quote_refresh = refresh_time
         self.status.errors = list(errors)
         self._save_quote_snapshot(df)
         return df
@@ -265,8 +267,8 @@ class MarketDataProvider:
 
     def get_history(self, code: str, days: int = 90) -> pd.DataFrame:
         normalized = normalize_code(code)
-        cached = self._history_cache.get(normalized, days)
-        if _usable_history(cached, days) and self._history_cache.is_fresh(normalized):
+        cached, cache_fresh = self._read_history_cache(normalized, days)
+        if _usable_history(cached, days) and cache_fresh:
             return cached
         local = self._load_local_history(normalized, days)
         if _usable_history(local, days):
@@ -277,16 +279,17 @@ class MarketDataProvider:
             self._record_sentiment_error("历史行情失败 {}: {}".format(normalized, exc))
             return local if local is not None and not local.empty else cached
         if not fetched.empty:
-            self._history_cache.set(normalized, fetched)
-            cached = self._history_cache.get(normalized, days)
-            if not cached.empty:
-                return cached
+            if self._write_history_cache(normalized, fetched):
+                refreshed, _ = self._read_history_cache(normalized, days)
+                if refreshed is not None and not refreshed.empty:
+                    return refreshed
+            return fetched.tail(days).reset_index(drop=True)
         return local if local is not None and not local.empty else cached
 
     def get_cached_history(self, code: str, days: int = 90) -> pd.DataFrame:
         normalized = normalize_code(code)
-        cached = self._history_cache.get(normalized, days)
-        if _usable_history(cached, days) and self._history_cache.is_fresh(normalized):
+        cached, cache_fresh = self._read_history_cache(normalized, days)
+        if _usable_history(cached, days) and cache_fresh:
             return cached
         local = self._load_local_history(normalized, days)
         if _usable_history(local, days):
@@ -308,8 +311,8 @@ class MarketDataProvider:
             if not code or code in seen:
                 continue
             seen.add(code)
-            cached = self._history_cache.get(code, days)
-            if not force and _usable_history(cached, days) and self._history_cache.is_fresh(code):
+            cached, cache_fresh = self._read_history_cache(code, days)
+            if not force and _usable_history(cached, days) and cache_fresh:
                 result["cached"] += 1
                 continue
             local = self._load_local_history(code, days)
@@ -321,7 +324,8 @@ class MarketDataProvider:
                 fetched = self._fetch_akshare_history(code, days)
                 if fetched is None or fetched.empty:
                     raise RuntimeError("历史行情为空")
-                self._history_cache.set(code, fetched)
+                if not self._write_history_cache(code, fetched):
+                    raise RuntimeError("历史行情已下载但缓存写入失败")
                 result["downloaded"] += 1
             except Exception as exc:  # pragma: no cover - depends on remote services
                 if not force and local is not None and not local.empty:
@@ -332,6 +336,22 @@ class MarketDataProvider:
                 result["errors"].append({"code": code, "error": str(exc)})
         result["unique_codes"] = len(seen)
         return result
+
+    def _read_history_cache(self, code: str, days: int) -> Tuple[pd.DataFrame, bool]:
+        try:
+            cached = self._history_cache.get(code, days)
+            return cached, self._history_cache.is_fresh(code)
+        except Exception as exc:
+            self._record_sentiment_error("历史缓存读取失败 {}: {}".format(code, exc))
+            return pd.DataFrame(), False
+
+    def _write_history_cache(self, code: str, history: pd.DataFrame) -> bool:
+        try:
+            self._history_cache.set(code, history)
+            return True
+        except Exception as exc:
+            self._record_sentiment_error("历史缓存写入失败 {}: {}".format(code, exc))
+            return False
 
     def _load_local_history(self, code: str, days: int) -> pd.DataFrame:
         try:
@@ -433,7 +453,11 @@ class MarketDataProvider:
         path = Path(config.QUOTE_SNAPSHOT_PATH)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            df.to_json(path, orient="records", force_ascii=False)
+            snapshot = df.copy()
+            quote_timestamp = str((df.attrs or {}).get("quote_timestamp") or "").strip()
+            if quote_timestamp:
+                snapshot["__quote_timestamp"] = quote_timestamp
+            snapshot.to_json(path, orient="records", force_ascii=False)
         except Exception:
             return
 
@@ -451,6 +475,11 @@ class MarketDataProvider:
             return None
         if df.empty or len(df) < config.QUOTE_SNAPSHOT_MIN_ROWS:
             return None
+        if "__quote_timestamp" in df.columns:
+            timestamps = [str(value).strip() for value in df["__quote_timestamp"].dropna().tolist() if str(value).strip()]
+            if timestamps:
+                df.attrs["quote_timestamp"] = timestamps[0]
+            df = df.drop(columns=["__quote_timestamp"])
         df.attrs["snapshot_mtime"] = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
         return df
 
@@ -477,7 +506,7 @@ class TimedCache:
 
 EASTMONEY_FIELDS = (
     "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,"
-    "f20,f21,f23,f24,f25,f22,f11,f62,f100,f128,f136,f115,f152"
+    "f20,f21,f23,f24,f25,f22,f11,f62,f100,f124,f128,f136,f115,f152"
 )
 EASTMONEY_COLUMN_MAP = {
     "f2": "最新价",
@@ -503,6 +532,7 @@ EASTMONEY_COLUMN_MAP = {
     "f24": "60日涨跌幅",
     "f25": "年初至今涨跌幅",
     "f100": "行业",
+    "f124": "行情时间戳",
 }
 EASTMONEY_NUMERIC_COLUMNS = (
     "最新价",
@@ -645,7 +675,12 @@ def _normalize_eastmoney_spot(raw: pd.DataFrame) -> pd.DataFrame:
             df[column] = 0.0
     for column in EASTMONEY_NUMERIC_COLUMNS:
         df[column] = pd.to_numeric(df[column], errors="coerce")
-    return df[columns].reset_index(drop=True)
+    result = df[columns].reset_index(drop=True)
+    timestamp_source = df["行情时间戳"] if "行情时间戳" in df.columns else pd.Series(dtype=float)
+    timestamps = pd.to_numeric(timestamp_source, errors="coerce").dropna()
+    if not timestamps.empty and float(timestamps.max()) > 0:
+        result.attrs["quote_timestamp"] = datetime.fromtimestamp(float(timestamps.max())).isoformat(timespec="seconds")
+    return result
 
 
 def _extract_news_rows(

@@ -2,9 +2,12 @@ window.TraderValidationUI = {
   validationStrategyMeta(strategy, strategyLabel) {
     const label = strategyLabel(strategy);
     if (strategy === "swing_picks") {
-      return { label, horizon: "5日", focus: "2-5天样本", outcome: "5日净收益" };
+      return { label, horizon: "2-5日退出", focus: "2-5日持有样本", outcome: "2-5日退出净收益" };
     }
-    return { label, horizon: "次日", focus: "次日样本", outcome: "次日净收益" };
+    if (strategy === "short_term") {
+      return { label, horizon: "次日辅助", focus: "盘中观察样本", outcome: "次日辅助表现" };
+    }
+    return { label, horizon: "次日", focus: "明日优先样本", outcome: "次日净收益" };
   },
 
   validationBatchSummaryFromRows(rows, helpers) {
@@ -33,10 +36,16 @@ window.TraderValidationUI = {
   renderValidationSimpleDecision(target, data, helpers) {
     if (!target) return;
     const { formatNumber } = helpers;
-    const { sample, outcome, real, replay, winRate, avgReturn, horizon, executionSkipped, pendingOutcome } = data;
+    const {
+      strategy, sample, outcome, replay, realDayCount, winRate, avgReturn,
+      horizon, pendingOutcome, validationGate,
+    } = data;
     let level = "neutral";
     let text = "结论：数据正在更新，先关注锚点方向与锚点到现在变化。";
-    if (Number(pendingOutcome || 0) > 0 && sample <= 0) {
+    if (strategy === "short_term") {
+      level = "watch";
+      text = "结论：盘中观察仅用于发现强势股，仓位固定为0，不作为可执行荐股；次日数据只做辅助归因。";
+    } else if (Number(pendingOutcome || 0) > 0 && sample <= 0) {
       text = `结论：还有 ${pendingOutcome} 条信号待回填，当前先不要用胜率下结论。`;
     } else if (outcome <= 0 && sample <= 0) {
       if (replay > 0) {
@@ -46,24 +55,20 @@ window.TraderValidationUI = {
       }
     } else if (sample <= 0 && outcome > 0) {
       text = `结论：已有 ${outcome} 条回填结果，但主周期样本未成熟，先不要据此下结论。`;
-    } else if (sample < 30) {
-      text = `结论：先别信胜率。当前有效样本 ${sample} 条，少于 30 条，只能观察。`;
-    } else if (real < 10) {
-      level = "watch";
-      text = `结论：谨慎看。有效样本 ${sample} 条，但真实前瞻只有 ${real} 条，回放 ${replay} 条只能粗筛。`;
+    } else if (validationGate?.blocked) {
+      level = validationGate.state === "retired" ? "bad" : "watch";
+      text = `结论：${validationGate.reason || "组合验证门控未通过，仅保留备选观察"}；仓位0。`;
     } else if (winRate == null || avgReturn == null) {
       text = "结论：统计字段不完整，等待自动更新结果。";
-    } else if (Number(executionSkipped || 0) > 0 && sample < 30) {
-      text = `结论：先观察。当前有效样本 ${sample} 条，另有 ${executionSkipped} 条不可执行/被剔除样本，先不要据此加权。`;
-    } else if (winRate >= 55 && avgReturn > 0) {
-      level = "good";
-      text = `结论：可观察。${horizon}净胜率 ${formatNumber(winRate, 1)}%，${horizon}平均净收益 ${formatNumber(avgReturn, 2)}%。`;
-    } else if (winRate >= 50 && avgReturn >= 0) {
+    } else if (!validationGate?.validated) {
       level = "watch";
-      text = `结论：一般，继续观察。${horizon}表现不弱不强，暂不建议提高权重。`;
+      text = `结论：验证门控状态尚未确认，真实${realDayCount}日；当前只观察，不提高权重。`;
+    } else if (winRate >= 55) {
+      level = "good";
+      text = `结论：通过执行门控。真实${realDayCount}日，${horizon}净胜率 ${formatNumber(winRate, 1)}%，平均净收益 ${formatNumber(avgReturn, 2)}%。`;
     } else {
-      level = "bad";
-      text = `结论：暂不加权。${horizon}表现偏弱，先不要依赖这个策略。`;
+      level = "watch";
+      text = `结论：通过最低执行门控但不加权。真实${realDayCount}日，${horizon}净胜率 ${formatNumber(winRate, 1)}%，平均净收益 ${formatNumber(avgReturn, 2)}%。`;
     }
     target.className = `validation-current-decision decision-${level}`;
     target.textContent = text;

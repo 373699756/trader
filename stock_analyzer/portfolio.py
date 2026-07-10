@@ -66,6 +66,7 @@ def build_portfolio(
 
 
 def _eligible_portfolio_rows(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    rows = [row for row in rows if row.get("execution_allowed") is not False]
     has_tier = any(str(row.get("tier") or "").strip() for row in rows)
     if not has_tier:
         return rows

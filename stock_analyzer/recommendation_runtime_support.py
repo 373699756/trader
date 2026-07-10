@@ -11,7 +11,13 @@ from .app_runtime_support import (
     risk_blacklist_summary,
     skipped_deepseek_meta,
 )
-from .app_support import apply_tomorrow_validation_gate, attach_validation_summary
+from .app_support import (
+    apply_strategy_validation_gate,
+    apply_tomorrow_validation_gate,
+    attach_validation_summary,
+    demote_strategy_rows_to_backup,
+    demote_tomorrow_rows_to_backup,
+)
 from .scoring import limit_theme_concentration
 from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks
 
@@ -57,6 +63,7 @@ def prediction_strategy_rows(
     sentiment_lookup: Dict[str, Dict[str, object]],
     short_term_rows_override: List[Dict[str, object]] = None,
     short_term_meta_override: Dict[str, object] = None,
+    cached_metrics_fn=None,
 ) -> Tuple[Dict[str, List[Dict[str, object]]], Dict[str, Dict[str, object]]]:
     today_rows, today_meta = score_today_picks(
         candidates,
@@ -71,28 +78,46 @@ def prediction_strategy_rows(
     if short_term_rows_override is not None:
         short_rows = list(short_term_rows_override)
 
-    tomorrow_rows, tomorrow_meta, tomorrow_deepseek_meta = scored_strategy_rows(
+    tomorrow_rows, tomorrow_meta, _ = scored_strategy_rows(
         "tomorrow_picks",
         candidates,
         top_n=top_n,
         market="all",
         market_regime=market_regime,
     )
-    swing_rows, swing_meta, swing_deepseek_meta = scored_strategy_rows(
+    if callable(cached_metrics_fn):
+        try:
+            apply_tomorrow_validation_gate(
+                tomorrow_rows,
+                tomorrow_meta,
+                cached_metrics_fn("tomorrow_picks", 20),
+            )
+        except Exception as exc:
+            reason = "验证指标读取失败，暂停重点观察并仅保留备选：{}".format(exc)
+            tomorrow_meta["validation_gate"] = {
+                "state": "unavailable",
+                "blocked": True,
+                "allows_backup": True,
+                "reason": reason,
+            }
+            demote_tomorrow_rows_to_backup(tomorrow_rows, tomorrow_meta, reason)
+    swing_rows, swing_meta, _ = scored_strategy_rows(
         "swing_picks",
         candidates,
         top_n=top_n,
         market="all",
         market_regime=market_regime,
     )
+    if callable(cached_metrics_fn):
+        _apply_validation_gate_safe("swing_picks", swing_rows, swing_meta, cached_metrics_fn)
     return {
         "short_term": short_rows,
         "tomorrow_picks": tomorrow_rows,
         "swing_picks": swing_rows,
     }, {
         "short_term": {**today_meta, "deepseek": short_deepseek_meta, **(short_term_meta_override or {})},
-        "tomorrow_picks": {**tomorrow_meta, "deepseek": tomorrow_deepseek_meta},
-        "swing_picks": {**swing_meta, "deepseek": swing_deepseek_meta},
+        "tomorrow_picks": tomorrow_meta,
+        "swing_picks": swing_meta,
     }
 
 
@@ -160,9 +185,17 @@ def build_recommendation_horizons(
             tomorrow_meta,
             cached_metrics_fn("tomorrow_picks", 20),
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        reason = "验证指标读取失败，暂停重点观察并仅保留备选：{}".format(exc)
+        tomorrow_meta["validation_gate"] = {
+            "state": "unavailable",
+            "blocked": True,
+            "allows_backup": True,
+            "reason": reason,
+        }
+        demote_tomorrow_rows_to_backup(tomorrow_rows, tomorrow_meta, reason)
     finalize_deepseek_meta(swing_meta, swing_rows, swing_deepseek_meta)
+    _apply_validation_gate_safe("swing_picks", swing_rows, swing_meta, cached_metrics_fn)
 
     recommendations_by_horizon["tomorrow_picks"] = tomorrow_rows
     recommendations_by_horizon["swing_picks"] = swing_rows
@@ -176,6 +209,32 @@ def build_recommendation_horizons(
         "tomorrow_picks": tomorrow_deepseek_meta,
         "swing_picks": swing_deepseek_meta,
     }
+
+
+def _apply_validation_gate_safe(
+    strategy_name: str,
+    rows: List[Dict[str, object]],
+    meta: Dict[str, object],
+    cached_metrics_fn,
+) -> Dict[str, object]:
+    try:
+        metrics = cached_metrics_fn(strategy_name, 20)
+        if strategy_name == "tomorrow_picks":
+            return apply_tomorrow_validation_gate(rows, meta, metrics)
+        return apply_strategy_validation_gate(strategy_name, rows, meta, metrics)
+    except Exception as exc:
+        reason = "验证指标读取失败，暂停执行并仅保留备选：{}".format(exc)
+        meta["validation_gate"] = {
+            "state": "unavailable",
+            "blocked": True,
+            "allows_backup": True,
+            "reason": reason,
+        }
+        if strategy_name == "tomorrow_picks":
+            demote_tomorrow_rows_to_backup(rows, meta, reason)
+        else:
+            demote_strategy_rows_to_backup(strategy_name, rows, meta, reason)
+        return meta["validation_gate"]
 
 
 def _review_market_gate(candidates: pd.DataFrame, market_regime: Dict[str, object], apply_deepseek: bool) -> Dict[str, object]:

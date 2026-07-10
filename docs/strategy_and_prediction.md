@@ -1,659 +1,212 @@
-# 荐股策略与股票预测
+# 荐股策略与预测说明
 
-本文档只讲两类内容：
+本文档是荐股业务规则的唯一说明，内容以当前代码为准。软件架构、接口、数据文件和运行方式见 [software_design.md](software_design.md)。
 
-- 三类荐股策略：今天、明天、2-5天
-- 个股预测与 DeepSeek 优化建议
+所有结果仅用于研究，不构成投资建议，也不保证盈利。系统能保证的是策略口径可追溯、结果可回填、未通过验证时禁止执行，不能保证未来收益。
 
-不再按“某天改了什么”拆分，只保留当前实现。
+## 1. 策略总览
 
-所有结果只用于研究，不构成投资建议，也不保证盈利。
+| 页面名称 | 内部存储名 | 当前版本 | 主验证周期 | 执行定位 |
+|---|---|---|---|---|
+| 盘中强势观察 | `short_term` | `short_term_v2_observation` | 次日表现仅辅助 | 永久零仓位观察池 |
+| 明日优先 | `tomorrow_picks` | `tomorrow_picks_v8_next_day` | 信号价至次日收盘 | 尾盘确认后的次日策略 |
+| 2-5日持有 | `swing_picks` | `swing_2_5d_v2_signal_exit` | 信号价至动态退出 | 最多持有5个交易日 |
 
-## 目录
+代码中的规范名称是 `today_picks`、`tomorrow_picks`、`swing_2_5d_picks`，SQLite 和现有接口继续使用上表的内部存储名。映射定义在 [strategies/types.py](../stock_analyzer/strategies/types.py)。
 
-- [阅读导航](#阅读导航)
-- [关键文件索引](#关键文件索引)
-- [1. 当前启用策略](#1-当前启用策略)
-- [2. 三类荐股策略](#2-三类荐股策略)
-- [3. 三类荐股如何结合 DeepSeek](#3-三类荐股如何结合-deepseek)
-- [4. 策略验证阶段的 DeepSeek](#4-策略验证阶段的-deepseek)
-- [5. 个股预测](#5-个股预测)
-- [6. 自动保存与回溯](#6-自动保存与回溯)
-- [7. 判断策略是否靠谱](#7-判断策略是否靠谱)
-- [8. 后续优化路线](#8-后续优化路线)
-- [9. 常见坑](#9-常见坑)
+推荐数量是上限，不是必须凑满。严格池没有结果时，系统会尝试展示通过基础安全过滤的备选；备选始终 `execution_allowed=false`、仓位为0。只有基础候选本身为空时才返回空列表。
 
-## 阅读导航
+## 2. 公共候选链路
 
-`当前实现`
+三类结果共享以下前置处理：
 
-- 1. 当前启用策略
-- 2. 三类荐股策略
-- 3. 三类荐股如何结合 DeepSeek
-- 4. 策略验证阶段的 DeepSeek
-- 5. 个股预测
-- 6. 自动保存与回溯
-- 7. 判断策略是否靠谱
+1. 行情标准化，只保留支持的沪深主板、创业板和科创板代码。
+2. 排除 ST、退市、停牌、无有效价格和低流动性股票。
+3. 合并历史量价因子、事件风险、基本面、行业强度、热度和舆情等可用数据。
+4. 计算市场状态，按 `risk_on`、`balanced`、`risk_off` 调整分数和组合暴露。
+5. 本地策略评分后执行硬过滤、过热抑制和主题集中度限制。
+6. 可选 DeepSeek 复核只在本地候选池内降权、否决或调整排序，不新增股票。
+7. 最后应用真实验证门控；门控失败时保留展示，但全部降为零仓位备选。
 
-`后续规划`
+历史因子由 `ENABLE_HISTORY_FACTORS=1` 默认开启，包括 3/5/10/20 日收益、均线偏离、成交额变化、突破和波动率等。请求缺少缓存时只后台分批预热，不阻塞推荐接口。历史因子覆盖不足会在健康状态中报警；2-5日持有策略还会直接降级为不可执行。
 
-- 8. 后续优化路线
+## 3. 盘中强势观察
 
-## 关键文件索引
+入口是 `score_today_picks(...)`，核心实现位于 [scoring.py](../stock_analyzer/scoring.py)。
 
-策略与推荐主链：
+### 3.1 目标与因子
 
-- [stock_analyzer/app.py](/home/c/linux/trader/stock_analyzer/app.py:643)
-- [stock_analyzer/recommendation_runtime_support.py](/home/c/linux/trader/stock_analyzer/recommendation_runtime_support.py:17)
-- [stock_analyzer/app_runtime_support.py](/home/c/linux/trader/stock_analyzer/app_runtime_support.py:29)
-- [stock_analyzer/deepseek_client.py](/home/c/linux/trader/stock_analyzer/deepseek_client.py:735)
+用于发现当日盘中已经走强、但尚未明显透支的股票，主要观察：
 
-本地策略与评分：
+- 当日涨跌幅、涨速、五分钟变化、量比、换手和成交额。
+- 短周期动量、行业强度、热度和舆情。
+- 高涨幅、高量比、高换手、冲高回落和事件风险。
 
-- [stock_analyzer/scoring.py](/home/c/linux/trader/stock_analyzer/scoring.py:1)
-- [stock_analyzer/strategies/__init__.py](/home/c/linux/trader/stock_analyzer/strategies/__init__.py:1)
+最低分默认由 `TODAY_RECOMMENDATION_MIN_SCORE=60` 控制，页面展示上限由通用推荐上限控制。
 
-个股预测与优化：
+### 3.2 执行约束
 
-- [stock_analyzer/prediction.py](/home/c/linux/trader/stock_analyzer/prediction.py:18)
-- [stock_analyzer/stock_optimization.py](/home/c/linux/trader/stock_analyzer/stock_optimization.py:1)
+当前系统没有分钟级同日入场和退出验证，因此该策略只承担观察功能：
 
-## 1. 当前启用策略
+- 所有行都标记为 `intraday_observation`。
+- `execution_allowed=false`，`trade_action.position_size=0`。
+- 不进入默认自动快照和生产执行门控。
+- 次日收益只用于辅助归因，不能证明盘中买入策略有效。
 
-| 中文名 | 策略名 | 推荐上限 | 主验证周期 | 定位 |
-|---|---|---:|---:|---|
-| 今天推荐 | `short_term` | 18 | 次日 | 盘中强势、量价、人气和风险过滤 |
-| 明天推荐 | `tomorrow_picks` | 18 | 次日 | 收盘后筛次日延续和买入安全 |
-| 2-5 天推荐 | `swing_picks` | 18 | 2-5 日 | 短周期趋势延续、温和放量、不过热 |
+## 4. 明日优先
 
-推荐数量是上限，不是必须凑满。门槛下没有合格标的时，允许空推荐。
+入口是 `score_tomorrow_picks(...)`，目标是从尾盘结构、成交承接、温和动能和买入安全中筛选次日机会。
 
-## 2. 三类荐股策略
+### 4.1 分时模式
 
-### 2.1 共同过滤
+策略按行情时间分成两个阶段：
 
-三类策略先经过同一批基础过滤：
+- `09:30 <= 时间 < 14:30`：放宽部分早盘阈值，收盘结构因子使用中性值。结果仅供盘中观察，全部仓位为0，不能提前当作尾盘买入信号。
+- `14:30 <= 时间`：恢复严格尾盘过滤和收盘结构评分，重新确认是否能进入重点观察。
 
-- 只看沪深主板、创业板、科创板常见 A 股代码。
-- 排除 ST、退市、停牌、无有效现价。
-- 排除成交额低于 `MIN_TURNOVER` 的低流动性股票。
-- 排除极端下跌、涨停附近不可买、明显一字板或过热不可交易样本。
-- 默认按行业/主题做集中度限制，避免推荐结果全压在单一行业。
+放宽模式只解决早盘数据不完整导致候选池为空的问题，不代表降低最终执行标准。
 
-历史因子默认关闭；开启 `ENABLE_HISTORY_FACTORS=1` 后，会额外使用 3/5/10/20 日动量、均线偏离、成交额放大、20 日突破、波动率等指标。
+### 4.2 评分与风险
 
-### 2.2 今天推荐 `short_term`
+主要正向因素：
 
-目标：找当天盘中已经走强、但还没有明显透支的短线候选。
+- 流动性：成交额、换手率。
+- 动能：温和涨幅、涨速、量比、60日相对强度。
+- 趋势：60日和年内位置、振幅控制。
+- 尾盘结构：收盘位置、日内承接、假拉升风险。
+- 历史边际：近期收益、均线、突破和波动率。
 
-主要因素：
+主要风险控制：
 
-- 当日涨幅、涨速、量比、成交额。
-- 短周期动量和成交额变化。
-- 行业强度、热度、舆情。
-- 追高、过热、高换手、负面舆情风险。
+- 接近涨停、极端量比、极端换手、过高振幅和速度异常直接过滤。
+- 默认对涨幅 `4.5%-7%` 且收盘位置低于 `0.6` 的股票增加7分风险惩罚。
+- 重点观察默认最低分68，风险惩罚、过热抑制、60日和年内涨幅还要通过额外门槛。
+- 单一主题最多2只重点观察，页面同主题最多5只。
 
-适用场景：
+### 4.3 主推与备选
 
-- 市场偏强或有清晰主线时更有效。
-- 偏防守市只作为观察池，不应因为分高直接追。
+- 页面最多展示8只，最多5只进入重点观察。
+- 严格池为空时调用备选池，不返回一张看似“系统没运行”的空表。
+- 备选池仍执行基础流动性、过热、涨停风险、振幅和历史风险过滤。
+- 备选只用于继续观察，仓位固定为0。
+- 验证快照可保存最多36只宽候选，用于积累样本；页面收窄不应导致验证样本同时收窄。
 
-验证口径：
+### 4.4 执行与收益口径
 
-- 保存当日候选。
-- 次日回填行情。
-- 重点看次日上涨个数、下跌个数、方向胜率和平均表现。
+执行假设是尾盘信号价入场，主指标为 `signal_next_close_return`，即信号价到下一交易日收盘的收益，扣除双边成本与流动性滑点后统计净收益。
 
-### 2.3 明天推荐 `tomorrow_picks`
+以下情况从可执行样本中剔除：
 
-目标：在收盘前后筛出次日更可能延续、同时仍有买入安全的股票。
+- 次日涨停或一字板导致不可买。
+- 次日开盘相对信号价高开超过 `TOMORROW_HIGH_OPEN_SKIP_PCT`，默认3%，避免追高回落。
 
-主要因素：
+系统还保留最多5日的动态退出收益作为辅助统计，用于观察“次日偏弱后2-5日转正”的比例，但它不是明日优先的主门控指标。
 
-- 成交额、换手率、温和涨幅、涨速、量比。
-- 收盘结构、日内承接、买入安全。
-- 60 日和年内涨幅是否透支。
-- 高振幅、高换手、高量比、尾盘假拉升风险。
+## 5. 2-5日持有
 
-适用场景：
+入口是 `score_swing_2_5d_picks(...)`，目标是寻找短周期趋势仍在、放量温和、没有明显透支的候选。
 
-- 15:00 后结合收盘锚点更可靠。
-- 如果只有少数股票满足条件，少推荐或空推荐优于硬凑数量。
+### 5.1 评分重点
 
-验证口径：
+- 5/10/20日收益和均线位置。
+- 成交额、换手、量比和成交额变化。
+- 突破、波动率、振幅和过热程度。
+- 市场状态、行业扩散和主题集中度。
 
-- 保存当天的明天推荐批次。
-- 以保存锚点价和次日行情核验方向。
-- 页面展示有效样本、次日净胜率、涨跌个数和平均表现。
+默认最低分是60。历史因子可用率低于 `SWING_MIN_HISTORY_FACTOR_COVERAGE=0.30` 时，最多展示8只降级候选，但全部禁止执行；这避免策略在核心趋势因子缺失时退化成单纯按当日成交量选股。
 
-### 2.4 2-5 天推荐 `swing_picks`
+### 5.2 动态退出
 
-目标：找短周期趋势还在、放量温和、没有明显过热的候选。
+主指标是 `signal_exit_return`，从尾盘信号价开始模拟，最多持有5个交易日：
 
-主要因素：
+- 止盈：`+8%`。
+- 止损：`-5%`。
+- 移动止损回撤：`4%`。
+- 未触发条件时在期限结束退出。
 
-- 3/5/10 日动量、短均线趋势。
-- 温和放量、成交额和流动性。
-- 不过热分、波动和振幅控制。
-- 行业扩散和市场状态。
+统计结果扣除交易成本和按流动性估算的滑点。页面的“2-5日退出”必须优先读取 `signal_exit_return`，不能用固定第5日收盘收益替代动态退出结果。
 
-适用场景：
+## 6. 分层与执行语义
 
-- 适合趋势延续和主线扩散行情。
-- 对单日涨速不如今天/明天策略敏感，更重视持续性。
+推荐行的核心字段：
 
-验证口径：
-
-- 保存当天 2-5 天候选。
-- 后续回填短周期表现。
-- 重点看持有期方向胜率、平均收益和风险暴露。
-
-## 3. 三类荐股如何结合 DeepSeek
-
-DeepSeek 在三类荐股里的角色，不是替代本地策略，而是做两件事：
-
-1. 候选排序复核
-2. 策略验证复盘与影子调参建议
-
-整体流程：
-
-```text
-本地策略先生成候选
-  -> DeepSeek 对候选做风险复核和排序调整
-  -> 输出今天 / 明天 / 2-5天推荐
-  -> 保存快照并回填真实结果
-  -> 策略验证阶段再由 DeepSeek 做复盘和影子调参
-```
-
-### 3.1 代码入口
-
-主入口：
-
-- [stock_analyzer/recommendation_runtime_support.py](/home/c/linux/trader/stock_analyzer/recommendation_runtime_support.py:17)
-- [stock_analyzer/app_runtime_support.py](/home/c/linux/trader/stock_analyzer/app_runtime_support.py:29)
-- [stock_analyzer/deepseek_client.py](/home/c/linux/trader/stock_analyzer/deepseek_client.py:735)
-
-三类推荐总入口调用链：
-
-```text
-/api/recommendations
-  -> _recommendations_payload()
-  -> _build_recommendations_payload()
-  -> build_recommendation_horizons()
-  -> apply_deepseek_rerank()
-  -> rerank_candidates()
-```
-
-明天 / 2-5 天单独入口调用链：
-
-```text
-/api/tomorrow-picks 或 /api/swing-picks
-  -> _horizon_payload()
-  -> _build_horizon_payload()
-  -> scored_strategy_rows()
-  -> apply_deepseek_rerank()
-  -> rerank_candidates()
-```
-
-### 3.2 各策略如何接入
-
-今天推荐 `short_term`：
-
-- `score_today_picks(...)` 先产本地候选
-- `apply_deepseek_rerank("short_term", ...)`
-- DeepSeek 重点看追高、盘中过热、冲高回落风险
-
-明天推荐 `tomorrow_picks`：
-
-- `score_tomorrow_picks(...)` 先产本地候选
-- `apply_deepseek_rerank("tomorrow_picks", ...)`
-- `apply_tomorrow_validation_gate(...)` 再结合验证样本门控
-- DeepSeek 重点看尾盘假拉升、涨停附近不可买、次日兑现风险
-
-2-5 天推荐 `swing_picks`：
-
-- `score_swing_2_5d_picks(...)` 先产本地候选
-- `apply_deepseek_rerank("swing_picks", ...)`
-- DeepSeek 重点看假突破、高位横盘、2-5 天过热透支
-
-### 3.3 候选复核逻辑
-
-统一入口：
-
-```python
-apply_deepseek_rerank(strategy_name, rows, market_filter)
-```
-
-职责：
-
-1. 检查 `ENABLE_DEEPSEEK_RUNTIME`
-2. 检查 `DEEPSEEK_RERANK_DISABLED_STRATEGIES`
-3. 调用 `rerank_candidates(...)`
-4. 失败时回退本地排序
-
-### 3.4 DeepSeek 读取哪些候选字段
-
-候选结构化输入来自 [stock_analyzer/deepseek_client.py](/home/c/linux/trader/stock_analyzer/deepseek_client.py:274) 的 `_request_payload(...)`。
-
-主要字段包括：
-
-- `code`
-- `name`
-- `score`
-- `pct_chg`
-- `speed`
-- `volume_ratio`
-- `turnover_rate`
-- `turnover`
-- `amplitude`
-- `sixty_day_pct`
-- `ytd_pct`
-- `ret_5d`
-- `ret_10d`
-- `ret_20d`
-- `ma20_gap`
-- `volatility_20d`
-- `liquidity_score`
-- `momentum_score`
-- `trend_score`
-- `historical_edge_score`
-- `execution_score`
-- `tail_setup_score`
-- `risk_penalty`
-- `failure_reasons`
-- `industry`
-- `theme`
-- `reasons`
-
-### 3.5 融合与剔除
-
-DeepSeek 结果和本地结果的融合在 [stock_analyzer/deepseek_client.py](/home/c/linux/trader/stock_analyzer/deepseek_client.py:557) 的 `_merge_ranking_rows(...)`。
-
-会生成：
-
-- `deepseek_rank_score`
-- `deepseek_action`
-- `deepseek_penalty`
-- `deepseek_reason`
-- `deepseek_risk_flags`
-- `deepseek_profit_flags`
-- `deepseek_veto`
-
-高风险候选还会通过 `_deepseek_gate_decision(...)` 被直接过滤，而不只是排后面。
-
-### 3.6 降级逻辑
-
-DeepSeek 不可用时，系统仍然可以产出三类推荐。
-
-降级路径包括：
-
-- runtime 未开启
-- API key 缺失
-- 某策略被禁用 rerank
-- DeepSeek 超时
-- DeepSeek 返回无法解析
-- DeepSeek 调用异常
-
-此时行为是：
-
-- 保留本地候选和本地排序
-- 在 `meta.deepseek` 中记录状态
-- 不中断推荐主流程
-
-## 4. 策略验证阶段的 DeepSeek
-
-荐股阶段之外，DeepSeek 还有第二条链路：验证复盘。
-
-入口在 [stock_analyzer/app_runtime_support.py](/home/c/linux/trader/stock_analyzer/app_runtime_support.py:102)：
-
-```python
-deepseek_validation_review(validation_store, strategy_name, metrics, days)
-```
-
-它会：
-
-1. 读取验证样本 `live_weight_samples(...)`
-2. 附加因子快照 `attach_factor_snapshots(...)`
-3. 调用 `review_strategy_validation(...)`
-
-真正的 DeepSeek 复盘函数在 [stock_analyzer/deepseek_client.py](/home/c/linux/trader/stock_analyzer/deepseek_client.py:953)。
-
-输出：
-
-- `decision`
-- `avoid_conditions`
-- `suggested_filters`
-- `suggested_penalties`
-- `summary`
-- `rule_candidates`
-
-这些建议只作为影子调参使用，不自动改正式策略。
-
-当前影子调参方向：
-
-| 策略 | 表现偏弱时优先建议 |
+| 字段 | 含义 |
 |---|---|
-| 今天推荐 | 增加反转修正，降低过热样本权重 |
-| 明天推荐 | 提高最低分，放大追高/回落风险惩罚，限制行业集中 |
-| 2-5 天推荐 | 提高不过热权重，降低单纯动量追高权重 |
+| `tier=primary_watch` | 通过当前策略和验证门控的重点观察 |
+| `tier=backup_pool` | 可展示但不可执行的备选 |
+| `execution_allowed` | 是否允许进入后续组合构建 |
+| `trade_action.position_size` | 建议仓位；备选和盘中观察必须为0 |
+| `recommendation_class` | `intraday_observation`、`next_day_priority` 或 `hold_2_5d` |
+| `profit_window` | 仅盘中观察、次日或2-5个交易日 |
 
-## 5. 个股预测
+前端以 `execution_allowed` 和仓位为最终准则。即使旧缓存残留了“买入”文本，只要 `execution_allowed=false`，页面也必须显示“备选观察、仓位0、不执行”。组合构建同样排除这些行。
 
-个股预测主链路对应接口：
+## 7. 真实验证门控
 
-- [stock_analyzer/app.py](/home/c/linux/trader/stock_analyzer/app.py:965) `/api/stock-prediction/<code>`
+生产门控只适用于明日优先和2-5日持有，计算逻辑位于 [app_support.py](../stock_analyzer/app_support.py) 和 [strategy_validation.py](../stock_analyzer/strategy_validation.py)。
 
-目标不是让 DeepSeek 直接替代本地预测，而是：
+全部条件同时满足才允许重点推荐：
 
-- 先用本地量化规则给出个股涨跌倾向和策略命中证据
-- 再把这份结构化预测结果交给 DeepSeek 做二次复核
-- DeepSeek 重点回答“现在怎么做”，而不是重新算一遍涨跌
+1. 当前策略版本至少有20个真实前瞻交易日。
+2. 真实交易日主周期平均净收益大于0。
+3. 真实交易日净胜率不低于50%。
+4. 主周期平均最大回撤优于默认硬限制 `-8%`。
 
-因此最终输出分成两层：
-
-- 本地预测：方向、置信度、风险、命中策略、未命中原因
-- DeepSeek 优化：小仓试单 / 只观察 / 等确认 / 不追价，以及对应的入场、风控、规避条件
-
-### 5.1 模块边界
-
-- 路由层：
-  - [stock_analyzer/app.py](/home/c/linux/trader/stock_analyzer/app.py:965)
-- 预测编排层：
-  - [stock_analyzer/recommendation_runtime_support.py](/home/c/linux/trader/stock_analyzer/recommendation_runtime_support.py:49)
-- 本地预测聚合层：
-  - [stock_analyzer/prediction.py](/home/c/linux/trader/stock_analyzer/prediction.py:18)
-- runtime 支撑层：
-  - [stock_analyzer/app_runtime_support.py](/home/c/linux/trader/stock_analyzer/app_runtime_support.py:142)
-- 个股优化层：
-  - [stock_analyzer/stock_optimization.py](/home/c/linux/trader/stock_analyzer/stock_optimization.py:1)
-
-### 5.2 调用链
-
-```text
-前端输入股票代码
-  -> GET /api/stock-prediction/<code>
-  -> app.py: stock_prediction()
-  -> recommendation_runtime_support.py: prediction_strategy_rows()
-  -> prediction.py: build_stock_prediction()
-  -> app_runtime_support.py: deepseek_stock_prediction_review()
-  -> stock_optimization.py: review_stock_prediction()
-  -> 返回 prediction + optimization
-```
-
-### 5.3 本地预测如何形成
-
-`stock_prediction()` 的核心步骤：
-
-1. 读取实时行情 `quotes`
-2. 生成候选池 `candidates` 和市场环境 `market_regime`
-3. 拉舆情分、热门度、行业强度等辅助信息
-4. 调 `prediction_strategy_rows(...)` 生成三类策略结果
-5. 调 `build_stock_prediction(...)` 输出本地预测结果
-
-本地预测会输出这些关键字段：
-
-- `prediction`
-- `horizons`
-- `strategy_hits`
-- `missed_strategies`
-- `market_regime`
-- `price`
-- `pct_chg`
-- `turnover`
-- `volume_ratio`
-- `sixty_day_pct`
-
-如果候选池里没有这只股票：
-
-- 先尝试实时行情兜底
-- 再尝试历史行情兜底
-- 最后返回“被过滤/无法判断”的本地结果
-
-### 5.4 个股预测如何接入 DeepSeek
-
-路由挂接点在 [stock_analyzer/app.py](/home/c/linux/trader/stock_analyzer/app.py:1035)：
-
-```python
-deepseek_requested = request.args.get("deepseek", "1").lower() not in ("0", "false", "no", "off")
-if deepseek_requested and bool(result.get("ok")):
-    result["optimization"] = deepseek_stock_prediction_review(result)
-```
-
-`deepseek_stock_prediction_review(...)` 会：
-
-1. 检查 `ENABLE_DEEPSEEK_RUNTIME`
-2. 根据 `strategy_hits` 推断当前个股更接近哪类策略
-3. 捕获异常并返回统一降级结果
-
-主策略推断逻辑：
-
-- 优先取第一条 `strategy_hit.strategy_name`
-- 再用 `storage_strategy_name(...)` 归一化
-- 如果没有命中任何策略，默认按 `short_term` 处理
-
-### 5.5 DeepSeek 输入 payload
-
-`review_stock_prediction(...)` 会先调 `_stock_prediction_review_payload(...)`，位置在 [stock_analyzer/stock_optimization.py](/home/c/linux/trader/stock_analyzer/stock_optimization.py:178)。
-
-传给 DeepSeek 的核心字段包括：
-
-- 股票基础信息：
-  - `code`
-  - `name`
-  - `market`
-  - `market_label`
-- 实时量价信息：
-  - `price`
-  - `pct_chg`
-  - `turnover`
-  - `volume_ratio`
-  - `sixty_day_pct`
-  - `ytd_pct`
-- 本地综合预测：
-  - `prediction.label`
-  - `prediction.direction`
-  - `prediction.score`
-  - `prediction.confidence`
-  - `prediction.risk_level`
-  - `prediction.advice`
-- 短周期结论：
-  - `short_horizon`
-- 市场环境：
-  - `market_regime`
-- 证据和反证：
-  - `strategy_hits`
-  - `missed_strategies`
-  - `risk_flags`
+门控读取失败也按失败处理。失败、样本不足或策略退场都不会隐藏整张表，而是将候选降为备选观察并把仓位清零。
 
-### 5.6 DeepSeek 输出什么
+交易成本基准为 `VALIDATION_TRADE_COST_PCT=0.25%`，再按成交额档位增加滑点。门控优先使用真实交易日聚合指标，历史回放不计入真实日门槛。
 
-当前 prompt 要求输出这些字段：
+## 8. 历史回放与调参
 
-- `summary`
-- `stance`
-- `bias`
-- `timing`
-- `reasoning`
-- `entry_plan`
-- `risk_controls`
-- `strategy_adjustments`
-- `avoid_conditions`
-
-其中 `stance` 只允许：
-
-- `buy_trial`
-- `watch_only`
-- `hold_or_wait`
-- `avoid_chase`
-
-前端会映射成：
-
-- `buy_trial` -> `小仓试单`
-- `watch_only` -> `只观察`
-- `hold_or_wait` -> `等确认`
-- `avoid_chase` -> `不追价`
-
-### 5.7 缓存、超时、降级
-
-个股优化有自己的缓存、超时和 fallback：
-
-- 按压缩 payload 计算 `cache_key`
-- 命中缓存时直接返回 `cache_hit`
-- 超时时间上限为 6 秒
-- 遇到 429 / 500 / 502 / 503 / 504 会按配置重试
-- 解析失败或超时则返回降级状态
-
-降级时，`optimization` 可能变成：
-
-- `runtime_disabled`
-- `disabled`
-- `missing_api_key`
-- `strategy_not_enabled`
-- `timeout`
-- `fallback`
-
-## 6. 自动保存与回溯
+生产回放版本为 `replay_v2_production`，只支持明日优先和2-5日持有。回放会重新构造历史横截面，并调用当前生产评分、硬过滤和分层逻辑；旧回放版本不进入当前指标。
 
-默认配置：
+回放只有历史量价数据，缺少当时完整盘口、新闻和真实执行条件，因此只能粗筛，不能替代真实前瞻样本。
 
-- `VALIDATION_AUTO_UPDATE_START_TIME=14:30`
-- `VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS=600`
-- `VALIDATION_AUTO_SNAPSHOT_TIME=15:00`
-- `VALIDATION_CLOSE_ANCHOR_TIME=15:00`
+权重校准使用 walk-forward OOS：
 
-运行逻辑：
+- 至少30个有效交易日才允许自动评估参数应用。
+- 至少20个真实交易日。
+- 平均净收益、净胜率和回撤门控必须通过。
+- OOS 改善超过配置边际且多数 fold 为正，才允许写入权重覆盖文件。
+- 因子 IC 至少30个样本后才允许启用自动加权。
 
-1. 14:30 后自动保存三类推荐快照
-2. 每次保存会覆盖同一天同策略的旧批次，只保留当天最后一次
-3. 如果某策略当天没有合格股票，也保存为空批次
-4. 15:00 后保存必须使用真实收盘锚点；锚点不完整则拒绝保存
-5. 保存成功后自动备份验证数据库
+## 9. DeepSeek 的角色与费用控制
 
-## 7. 判断策略是否靠谱
+DeepSeek 是本地规则后的风险增强层，不是收益保证器：
 
-不要只看一天，也不要只看推荐数量。
+- 可以输出 `priority`、`watch`、`avoid`、`veto`、风险惩罚和理由。
+- 只复核本地候选，不扫全市场、不新增股票。
+- 默认融合权重 `DEEPSEEK_BLEND_ALPHA=0.15`；可按策略从 `.runtime/weights.json` 覆盖。
+- 归因结果不为正时应降低对应策略 alpha，必要时降到0，只保留本地策略。
+- 新闻上下文和 DeepSeek 大盘门控默认关闭，只有真实归因支持后才应开启。
 
-优先看：
+默认调度只覆盖 `tomorrow_picks`：
 
-- 真实前瞻样本数量是否够
-- 有效样本是否已回填完成
-- 次日或主周期胜率是否持续高于 50%
-- 平均收益是否扣除成本后仍为正
-- 行业是否过度集中
-- 空推荐是否来自合理风控，而不是数据缺失
+- 09:30-11:30、13:00-14:30：最多每半小时一个槽位，使用基础模型并限制候选数。
+- 14:30-15:00：按请求和候选变化调用，不固定死时刻；相同候选复用结果，最短间隔默认300秒。
+- 每日总调用上限默认11次，Pro上限1次。
+- 推荐页缓存、同槽结果和候选签名相同的结果会复用。
+- 验证页 GET 不触发 DeepSeek；盘后验证复盘只有新增至少5个真实交易日才再次调用。
 
-样本不足时，策略只能观察；DeepSeek 建议也只能作为影子调参记录。
+三策略总入口可使用一次批量 rerank，减少重复 prompt 和公共候选字段。DeepSeek 故障、超时、限额或未配置密钥时全部降级到本地结果。
 
----
+## 10. 个股预测
 
-## 8. 后续优化路线
+`GET /api/stock-prediction/<code>` 聚合股票是否进入三类候选、市场状态、风险和多策略共识，输出的是方向倾向，不是目标价保证。
 
-本节是规划项，不等于当前代码已经全部实现。
+处理顺序：
 
-阅读口径：
+1. 优先使用实时标准候选。
+2. 股票被基础过滤时返回过滤原因和风险诊断。
+3. 实时源缺失时可用历史行情兜底，但明确标记无法确认当前交易状态。
+4. 默认只运行本地预测；请求参数 `deepseek=1` 时才生成 DeepSeek 优化建议。
 
-- 前面 1-7 节描述当前实现。
-- 本节描述后续优化方向。
-- 如果某项尚未在代码中出现，以这里的规划表述为准，不应当理解为“已经上线”。
-- 如果某项标注为“已基本落地”，表示当前代码已有对应能力，但仍可能存在体验、参数或稳定性上的继续优化空间。
-- 如果某项标注为“尚未系统完成”或“尚未开始”，表示它仍然是路线图，而不是已交付能力。
+`ENABLE_STANCE_TRACKING=1` 时，优化建议中的 stance 会保存并按最多5日动态退出回填。该开关默认关闭，未开启时不能把个股 stance 当成已经验证的信号。
 
-本路线只覆盖当前三类荐股策略：今天推荐、明天推荐、2-5 天推荐。其他历史页面不作为当前优化目标。
+## 11. 维护规则
 
-### 8.1 目标
-
-目标不是继续增加榜单，而是让三类推荐更可验证、更少追高、更少行业扎堆，并用真实样本持续迭代。
-
-核心闭环：
-
-```text
-本地策略生成候选
-  -> DeepSeek 复核风险和排序
-  -> 保存当天三类推荐快照
-  -> 回填真实行情结果
-  -> 策略验证统计表现
-  -> DeepSeek 生成影子调参建议
-  -> 人工确认后再改正式策略
-```
-
-### 8.2 可借鉴思路
-
-| 来源 | 当前只借鉴的点 |
-|---|---|
-| Qlib | 因子快照、样本外验证、训练/验证/回测分层 |
-| vn.py | 数据、策略、风控、展示分层 |
-| Backtrader / RQAlpha | 统一成本、滑点、持有期和分析器口径 |
-| QUANTAXIS | 本地数据仓和定时任务 |
-| FinRL | train-test-trade 流程和 turbulence 风险思想，不优先引入 RL |
-| TradingAgents | 研究、交易、风控、组合经理式分层判断 |
-| UZI-Skill | 结构化证据、数据覆盖门控、共识极化 |
-| Sequoia / myhhub/stock / QuantsPlaybook | A 股日线量价、反转、低波、换手和趋势因子 |
-| Qbot | 风控和暴露控制讨论 |
-
-这些仓库只作为方法参考，不复制代码。
-
-### 8.3 路线状态
-
-`已基本落地，继续巩固`
-
-`P0：验证库稳定`
-
-- 只保留三类策略验证数据。
-- 空批次也保存，避免页面误显示昨日数据。
-- 同一天同策略只保留最后一次批次。
-- 查询默认先轻量加载日期，再异步加载指标和 DeepSeek 复盘。
-
-`已基本落地，继续观察`
-
-`P1：DeepSeek 复盘可用`
-
-- 每天 15:00 后自动运行一次复盘。
-- 策略验证页支持手动生成复盘。
-- 复盘输出问题、样本门控、行业集中、过热风险和影子调参建议。
-- 建议只保存，不自动应用。
-
-`尚未系统完成，属于下一阶段优化`
-
-`P2：三策略分开优化`
-
-- 今天推荐：减少高量比、高换手、高涨幅追高样本。
-- 明天推荐：强化收盘承接、买入安全和行业分散。
-- 2-5 天推荐：强化不过热、趋势延续和波动控制。
-
-`尚未开始，属于后续规划`
-
-`P3：样本足够后再模型化`
-
-当真实前瞻样本足够后，再考虑轻量模型：
-
-- 明天推荐优先做 `model_1d`。
-- 2-5 天推荐做 `model_2_5d`。
-- 今天推荐先保持规则策略和 DeepSeek 复核，不急于模型化。
-
-模型必须样本外优于现有规则才允许上线。
-
-### 8.4 不做事项
-
-- 不做实盘下单。
-- 不做模拟组合入口。
-- 不做全市场分钟级训练。
-- 不优先做强化学习。
-- 不恢复无关隐藏页面。
-- 不让 DeepSeek 自动改正式权重。
-
-### 8.5 验收标准
-
-- 策略验证页切换今天、明天、2-5 天不卡顿。
-- 每天能看到三类策略当天最后一次保存批次。
-- 0 推荐显示为空批次，不串到旧日期。
-- 胜率、涨跌个数、平均表现都来自数据库回填结果。
-- DeepSeek 复盘每天最多自动生成一次，可手动刷新。
-- 调参建议明确标记为影子建议。
-
-## 9. 常见坑
-
-- 不要把“DeepSeek 候选 rerank”和“个股预测优化建议”混为一条链路。前者服务三类荐股，后者服务单只股票分析。
-- `short_term`、`tomorrow_picks`、`swing_picks` 的策略周期不同，DeepSeek 复核上下文也不同；调 prompt 或解释结果时不要混用。
-- 明天推荐和 2-5 天推荐在页面上可能先显示最近保存结果或空占位，这不等于策略本身没跑出来，要结合 `fallback` / `snapshot.source` 看。
-- 个股预测结果里的 `optimization` 是增强层，不是本地预测主结论；DeepSeek 超时或禁用时，仍应以本地 `prediction` 为主。
-- 文档里的“后续优化路线”是规划，不等于当前已经落地；判断现状时只看前面 `1-7` 节。
+- 策略名称、版本、主收益字段或退出参数变化时，必须同步更新本文档和对应测试。
+- 页面展示口径、验证口径和后端门控必须使用同一主收益字段。
+- 新策略版本不能混入旧版本指标；回放与真实样本必须分开统计。
+- 任何参数优化先 shadow、再 OOS、最后人工确认，不允许 DeepSeek 直接修改正式权重。
+- 评估策略时至少报告净收益、真实日净胜率、最大回撤、样本交易日数和执行跳过数，不能只看单票最高收益。

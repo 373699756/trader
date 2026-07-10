@@ -1,14 +1,15 @@
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List
 
 import pandas as pd
 
 from . import config
 from .factors import compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code, rename_known_columns
+from .scoring import build_market_regime, prepare_candidates, score_swing_candidates, score_tomorrow_candidates
 
 
-REPLAY_VERSION_SUFFIX = "replay_v1"
-SUPPORTED_REPLAY_STRATEGIES = {"short_term", "tomorrow_picks", "swing_picks"}
+REPLAY_VERSION_SUFFIX = str(getattr(config, "VALIDATION_REPLAY_VERSION_SUFFIX", "replay_v2_production"))
+SUPPORTED_REPLAY_STRATEGIES = {"tomorrow_picks", "swing_picks"}
 
 
 def backfill_strategy_validation_samples(
@@ -29,12 +30,13 @@ def backfill_strategy_validation_samples(
     前瞻预测记录。
     """
     strategy_name = strategy_name or "tomorrow_picks"
+    unique_codes = _unique_codes(codes)
     if strategy_name not in SUPPORTED_REPLAY_STRATEGIES:
         return {
             "ok": False,
             "error": "unsupported_strategy",
             "strategy": strategy_name,
-            "version": "replay_v1",
+            "version": REPLAY_VERSION_SUFFIX,
             "requested_codes": len(unique_codes),
             "usable_codes": 0,
             "saved": 0,
@@ -46,7 +48,6 @@ def backfill_strategy_validation_samples(
         top_n = config.TOMORROW_TOP_N if strategy_name == "tomorrow_picks" else getattr(config, "RECOMMENDATION_DISPLAY_LIMIT", 18)
     version = "{}_{}".format(strategy_name, REPLAY_VERSION_SUFFIX)
     names = {normalize_code(key): value for key, value in (code_names or {}).items()}
-    unique_codes = _unique_codes(codes)
     histories = _load_histories(provider, unique_codes, days)
     if not histories:
         return {
@@ -62,8 +63,9 @@ def backfill_strategy_validation_samples(
             "outcome": {"updated": 0, "skipped": 0},
         }
 
-    existing_dates = _existing_signal_keys(validation_store, strategy_name)
-    eligible_dates = _eligible_signal_dates(histories, min_lookback, holding_days)
+    existing_dates = _existing_signal_keys(validation_store, strategy_name, version)
+    required_future_days = max(int(holding_days or 0), _required_future_days(strategy_name))
+    eligible_dates = _eligible_signal_dates(histories, min_lookback, required_future_days)
     eligible_dates = [value for value in eligible_dates if value not in existing_dates]
     selected_dates = eligible_dates[-max(1, int(replay_days)) :]
     if not selected_dates:
@@ -92,7 +94,7 @@ def backfill_strategy_validation_samples(
             trade_date_key,
             names,
             top_n=top_n,
-            holding_days=holding_days,
+            holding_days=required_future_days,
             min_lookback=min_lookback,
         )
         if not rows:
@@ -118,7 +120,7 @@ def backfill_strategy_validation_samples(
         "dates": saved_dates,
         "existing_date_count": len(existing_dates),
         "outcome": outcome,
-        "note": "历史回放样本仅使用量价因子，用于快速补样本，不等同于真实前瞻预测。",
+        "note": "历史回放复用当前生产评分与分层，但仅有历史量价字段，不能替代真实前瞻预测。",
     }
 
 
@@ -196,7 +198,7 @@ def _rank_replay_rows(
     holding_days: int,
     min_lookback: int,
 ) -> List[Dict[str, object]]:
-    rows = []
+    candidate_rows = []
     for code, history in histories.items():
         past = history[history["_trade_date_key"] <= trade_date_key].reset_index(drop=True)
         future = history[history["_trade_date_key"] > trade_date_key]
@@ -209,58 +211,66 @@ def _rank_replay_rows(
         price = coerce_number(latest.get("price"))
         if price <= 0:
             continue
-        raw_signal, score = _strategy_replay_score(strategy_name, factor)
-        rows.append(
+        previous_close = coerce_number(past.iloc[-2].get("price")) if len(past) > 1 else price
+        high = coerce_number(latest.get("high")) or price
+        low = coerce_number(latest.get("low")) or price
+        amplitude = ((high - low) / previous_close * 100.0) if previous_close > 0 else 0.0
+        candidate_rows.append(
             {
-                "rank": 0,
                 "code": code,
                 "name": names.get(code) or code,
-                "market_label": _market_label(code),
-                "theme": "历史量价回放",
                 "price": round(price, 4),
+                "open": coerce_number(latest.get("open")) or price,
+                "high": high,
+                "low": low,
+                "prev_close": previous_close,
                 "pct_chg": _one_day_return(past),
                 "turnover": coerce_number(latest.get("turnover")),
-                "volume_ratio": coerce_number(factor.get("vol_amount_5d")),
+                "volume": coerce_number(latest.get("volume")),
+                "volume_ratio": (
+                    coerce_number(factor.get("vol_ma5_ratio"))
+                    or coerce_number(factor.get("vol_amount_5d"))
+                    or 1.0
+                ),
                 "turnover_rate": 0.0,
+                "amplitude": round(amplitude, 4),
                 "sixty_day_pct": _period_return(past["price"], 60),
                 "ytd_pct": _period_return(past["price"], min(len(past) - 1, 120)),
-                "score": score,
-                "replay_signal": round(raw_signal, 4),
-                "strategy_version": "{}_{}".format(strategy_name, REPLAY_VERSION_SUFFIX),
-                "replay": True,
-                "reasons": _replay_reasons(strategy_name, factor),
-                "alphalite_factor": factor,
+                "trade_date": "{}T15:00:00".format(_display_date(trade_date_key)),
+                "industry": "历史量价回放",
+                **factor,
             }
         )
-    rows.sort(key=lambda item: (item["score"], item["replay_signal"]), reverse=True)
-    selected = rows[: max(1, int(top_n))]
-    for index, row in enumerate(selected, start=1):
-        row["rank"] = index
-    return selected
-
-
-def _strategy_replay_score(strategy_name: str, factor: Dict[str, float]) -> Tuple[float, float]:
-    ret_3d = coerce_number(factor.get("ret_3d"))
-    ret_5d = coerce_number(factor.get("ret_5d"))
-    ret_10d = coerce_number(factor.get("ret_10d"))
-    ret_20d = coerce_number(factor.get("ret_20d"))
-    ma5_gap = coerce_number(factor.get("ma5_gap"))
-    ma20_gap = coerce_number(factor.get("ma20_gap"))
-    volume = coerce_number(factor.get("vol_amount_5d"))
-    breakout = coerce_number(factor.get("breakout_20d"))
-    volatility = coerce_number(factor.get("volatility_20d"))
-    ma_bull = coerce_number(factor.get("ma_bull_aligned"))
-    vol_ma5 = coerce_number(factor.get("vol_ma5_ratio"))
+    if not candidate_rows:
+        return []
+    candidates = prepare_candidates(pd.DataFrame(candidate_rows))
+    if candidates.empty:
+        return []
+    market_regime = build_market_regime(candidates, breadth_source=candidates)
     if strategy_name == "tomorrow_picks":
-        raw = ret_3d * 0.22 + ret_5d * 0.26 + ma5_gap * 0.12 + volume * 1.8 + breakout * 4.5 - volatility * 0.32
-    elif strategy_name == "swing_picks":
-        raw = ret_5d * 0.18 + ret_10d * 0.24 + ret_20d * 0.12 + ma20_gap * 0.12 + volume * 1.4 + breakout * 3.5 - volatility * 0.28
-    elif strategy_name == "short_term":
-        # 盘中策略回放：偏向短线执行和流动性，但保持轻量。
-        raw = ret_3d * 0.18 + ret_5d * 0.28 + ret_10d * 0.10 + ma5_gap * 0.08 + volume * 1.8 + breakout * 3.0 - volatility * 0.24
+        selected, _ = score_tomorrow_candidates(
+            candidates,
+            top_n=max(1, int(top_n)),
+            market_regime=market_regime,
+            display_cap=0,
+        )
     else:
-        raw = ret_5d * 0.16 + ret_10d * 0.20 + ret_20d * 0.16 + ma20_gap * 0.10 + volume * 1.3 + breakout * 3.2 - volatility * 0.30
-    return raw, round(max(0.0, min(100.0, 50.0 + raw)), 4)
+        selected, _ = score_swing_candidates(
+            candidates,
+            top_n=max(1, int(top_n)),
+            market_regime=market_regime,
+        )
+    result = []
+    for row in selected:
+        item = dict(row)
+        item["strategy_version"] = "{}_{}".format(strategy_name, REPLAY_VERSION_SUFFIX)
+        item["replay"] = True
+        item["replay_source"] = "production_scorer"
+        item["reasons"] = _unique_reasons(
+            list(item.get("reasons") or []) + _replay_reasons(strategy_name, item)
+        )
+        result.append(item)
+    return result
 
 
 def _replay_reasons(strategy_name: str, factor: Dict[str, float]) -> List[str]:
@@ -284,13 +294,29 @@ def _replay_reasons(strategy_name: str, factor: Dict[str, float]) -> List[str]:
     return reasons[:5]
 
 
-def _existing_signal_keys(validation_store, strategy_name: str) -> set:
+def _existing_signal_keys(validation_store, strategy_name: str, replay_version: str = "") -> set:
     try:
+        if hasattr(validation_store, "existing_validation_dates"):
+            dates = validation_store.existing_validation_dates(strategy_name, replay_version)
+            return {_date_key(value) for value in dates if _date_key(value)}
         dates = validation_store.list_signal_dates(strategy_name)
     except Exception:
         return set()
     keys = [_date_key(row.get("signal_date")) for row in dates]
     return {value for value in keys if value}
+
+
+def _required_future_days(strategy_name: str) -> int:
+    return 5 if strategy_name in {"tomorrow_picks", "swing_picks"} else 1
+
+
+def _unique_reasons(values: Iterable[str]) -> List[str]:
+    result = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result[:8]
 
 
 def _one_day_return(history: pd.DataFrame) -> float:

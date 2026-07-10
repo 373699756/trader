@@ -27,7 +27,7 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
                 store = StrategyValidationStore(db_path)
                 store.save_signals(
                     "tomorrow_picks",
-                    "tomorrow_picks_v1",
+                    config.TOMORROW_STRATEGY_VERSION,
                     "2026-01-02T15:01:00",
                     [
                         _row("000001", 1, 2, "priority"),
@@ -36,7 +36,7 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
                 )
                 store.save_signals(
                     "tomorrow_picks",
-                    "tomorrow_picks_v1",
+                    config.TOMORROW_STRATEGY_VERSION,
                     "2026-01-03T15:01:00",
                     [
                         _row("000003", 1, 1, "watch"),
@@ -78,7 +78,7 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
                 store = StrategyValidationStore(db_path)
                 saved = store.save_signals(
                     "tomorrow_picks",
-                    "tomorrow_picks_v1",
+                    config.TOMORROW_STRATEGY_VERSION,
                     "2026-01-02T15:01:00",
                     [_row("000001", 1, 2, "priority")],
                     deepseek_shadow_rows=[
@@ -180,10 +180,21 @@ def _insert_outcomes(db_path, returns_by_code):
             conn.execute(
                 """
                 INSERT OR REPLACE INTO strategy_outcomes
-                (signal_id, code, next_trade_date, future_days, next_close_return, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (signal_id, code, next_trade_date, future_days, next_close_return,
+                 signal_next_close_return, signal_exit_return, exit_return, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (signal_id, code, signal_date, 1, next_return, "2026-01-04T15:00:00"),
+                (
+                    signal_id,
+                    code,
+                    signal_date,
+                    5,
+                    next_return,
+                    next_return,
+                    next_return,
+                    next_return,
+                    "2026-01-04T15:00:00",
+                ),
             )
 
 
@@ -194,11 +205,11 @@ class _FakeProvider:
         close = 10.2 if code == "000001" else 9.6
         return pd.DataFrame(
             {
-                "trade_date": ["20260102", "20260103"],
-                "open": [10.0, 10.0],
-                "high": [10.1, max(10.0, close)],
-                "low": [9.9, min(10.0, close)],
-                "price": [10.0, close],
+                "trade_date": ["20260102", "20260103", "20260104", "20260105", "20260106", "20260107"],
+                "open": [10.0] * 6,
+                "high": [10.1] + [max(10.0, close)] * 5,
+                "low": [9.9] + [min(10.0, close)] * 5,
+                "price": [10.0] + [close] * 5,
             }
         )
 

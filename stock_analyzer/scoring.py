@@ -39,9 +39,9 @@ TECH_THEMES = {
 }
 
 STRATEGY_LABELS = {
-    "short_term": "今天推荐",
-    "tomorrow_picks": "明天推荐",
-    "swing_picks": "2-5天推荐",
+    "short_term": "盘中强势观察",
+    "tomorrow_picks": "明日优先",
+    "swing_picks": "2-5日持有",
 }
 
 HARD_FILTER_LABELS = {
@@ -561,7 +561,9 @@ def prepare_candidates(quotes: pd.DataFrame) -> pd.DataFrame:
         return quotes.copy()
     df = _candidate_base_frame(quotes)
     mask = _combine_candidate_masks(_candidate_filter_masks(df))
-    return df.loc[mask].reset_index(drop=True)
+    result = df.loc[mask].reset_index(drop=True)
+    result.attrs.update(quotes.attrs)
+    return result
 
 
 def candidate_filter_report(quotes: pd.DataFrame) -> Dict[str, object]:
@@ -934,6 +936,8 @@ def score_today_candidates(
             "candidate_count": 0,
             "top_n": top_n,
             "market_filter": market_filter,
+            "strategy_version": config.SHORT_TERM_STRATEGY_VERSION,
+            "strategy_label": "盘中强势观察",
         }
 
     context = _score_context(df, industry_strength)
@@ -959,6 +963,11 @@ def score_today_candidates(
     eligible_rows = [row for row in short_rows if coerce_number(row.get("score")) >= min_score]
     for rank, row in enumerate(eligible_rows[:top_n], start=1):
         row["rank"] = rank
+        mark_backup_watch(row, label="盘中强势观察", reason="今日策略尚无同日可执行验证，暂不形成买入指令")
+        row["observation_mode"] = "intraday_strength"
+        row["recommendation_class"] = "intraday_observation"
+        row["recommendation_class_label"] = "盘中强势观察"
+        row["profit_window"] = "仅盘中观察"
 
     meta = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -968,8 +977,13 @@ def score_today_candidates(
         "min_score": min_score,
         "top_n": top_n,
         "market_filter": market_filter,
+        "strategy_version": config.SHORT_TERM_STRATEGY_VERSION,
+        "strategy_label": "盘中强势观察",
+        "recommendation_class": "intraday_observation",
+        "recommendation_class_label": "盘中强势观察",
+        "execution_allowed": False,
         "strategy": {
-            "short_term": "盘中强势：涨跌幅、涨速、量比、换手、热度、舆情",
+            "short_term": "盘中强势观察：涨跌幅、涨速、量比、换手、热度、舆情；同日验证补齐前仓位为0",
         },
     }
     return {"short_term": eligible_rows[:top_n]}, meta
@@ -985,6 +999,7 @@ def score_tomorrow_candidates(
     if market_filter in ("main", "chinext", "star"):
         df = df[df["market"] == market_filter].copy()
     analysis_window = _tomorrow_analysis_window()
+    intraday_relaxed = _tomorrow_intraday_relaxed_mode(quote_time=_tomorrow_quote_time(df))
     if df.empty:
         return [], {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -992,8 +1007,8 @@ def score_tomorrow_candidates(
             "top_n": top_n,
             "market_filter": market_filter,
             "analysis_window": analysis_window,
-            "strategy_version": "tomorrow_picks_v5",
-            "strategy_label": "明天推荐",
+            "strategy_version": config.TOMORROW_STRATEGY_VERSION,
+            "strategy_label": "明日优先",
             "policy": _tomorrow_policy(),
         }
 
@@ -1001,7 +1016,7 @@ def score_tomorrow_candidates(
     context = _score_context(df, {})
     rows: List[Dict[str, object]] = []
     for _, row in df.iterrows():
-        if _tomorrow_hard_reject(row):
+        if _tomorrow_hard_reject(row, intraday_relaxed=intraday_relaxed):
             continue
         pct_chg = coerce_number(row.get("pct_chg"))
         volume_ratio = coerce_number(row.get("volume_ratio"))
@@ -1039,9 +1054,9 @@ def score_tomorrow_candidates(
             ) * 0.20
         )
         execution_score = _execution_score(row)
-        tail_setup_score = _tail_close_setup_score(row)
+        tail_setup_score = 50.0 if intraday_relaxed else _tail_close_setup_score(row)
         historical_edge_score = _tomorrow_historical_edge_score(row, context)
-        risk_penalty_parts = _tomorrow_risk_penalty_parts(row)
+        risk_penalty_parts = _tomorrow_risk_penalty_parts(row, provisional=intraday_relaxed)
         risk_penalty = _sum_penalty(risk_penalty_parts)
         regime_bonus = _market_regime_adjustment(row, market_regime, "tomorrow")
         regime_profile = _regime_weight_profile(market_regime, ["liquidity", "momentum", "trend", "quality"])
@@ -1101,7 +1116,8 @@ def score_tomorrow_candidates(
                 "raw_score": round(combined["raw_score"], 2),
                 "overheat_damp": round(combined["overheat_damp"], 4),
                 "score": round(max(0.0, min(100.0, final_score)), 2),
-                "holding_discipline": "次日了结，不隔夜持有到第3天",
+                "holding_discipline": "尾盘确认后入场，主验证周期为次日收盘；高开超过阈值不追",
+                "profit_window": "次日",
                 "reasons": _build_tomorrow_reasons(
                     row,
                     liquidity_score,
@@ -1120,7 +1136,7 @@ def score_tomorrow_candidates(
                     item,
                     row,
                     "tomorrow_picks",
-                    "明天推荐",
+                    "明日优先",
                     "次日冲高",
                 ),
                 market_regime,
@@ -1129,20 +1145,43 @@ def score_tomorrow_candidates(
         )
 
     rows.sort(key=lambda item: item["score"], reverse=True)
-    display_limit, min_score, gate_reason = _tomorrow_display_gate(top_n, market_regime)
+    display_limit, min_score, gate_reason = _tomorrow_display_gate(
+        top_n,
+        market_regime,
+        intraday_relaxed=intraday_relaxed,
+    )
     if display_cap is None:
         display_cap = int(coerce_number(getattr(config, "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", 8), 8))
     if int(display_cap or 0) > 0:
         display_limit = min(display_limit, int(display_cap))
     display_floor = min_score
     display_candidates = [row for row in rows if row["score"] >= display_floor]
-    display_rows = _limit_tomorrow_display_concentration(
-        display_candidates,
-        display_limit,
-    )
+    display_rows = _limit_tomorrow_display_concentration(display_candidates, display_limit)
     display_theme_limited_count = max(0, len(display_candidates) - len(display_rows))
+    fallback_mode = ""
+    backup_candidate_count = 0
+    backup_min_score = coerce_number(getattr(config, "TOMORROW_BACKUP_MIN_SCORE", 45.0), 45.0)
+    if not display_rows and top_n > 0:
+        backup_rows = _tomorrow_backup_rows(
+            df,
+            context,
+            market_regime=market_regime,
+            provisional=intraday_relaxed,
+        )
+        backup_candidates = [row for row in backup_rows if row["score"] >= backup_min_score]
+        backup_candidate_count = len(backup_candidates)
+        display_rows = _limit_tomorrow_display_concentration(backup_candidates, display_limit)
+        display_theme_limited_count = max(0, len(backup_candidates) - len(display_rows))
+        if display_rows:
+            fallback_mode = "backup_pool"
+            display_floor = backup_min_score
+            gate_reason = "{} 严格明日优先池为空，降级显示备选观察。".format(gate_reason).strip()
+    if intraday_relaxed:
+        gate_reason = "{} 14:30 前结果仅作盘中观察，仓位为 0，尾盘需重新确认。".format(
+            gate_reason
+        ).strip()
     strict_display_count = len([row for row in display_rows if row["score"] >= min_score])
-    primary_watch_n = _tomorrow_primary_watch_limit(
+    primary_watch_n = 0 if fallback_mode or intraday_relaxed else _tomorrow_primary_watch_limit(
         len([row for row in display_rows if row["score"] >= min_score]),
         market_regime,
     )
@@ -1152,6 +1191,14 @@ def score_tomorrow_candidates(
     ineligible_count = 0
     for rank, row in enumerate(display_rows, start=1):
         row["rank"] = rank
+        if intraday_relaxed:
+            _mark_tomorrow_intraday_watch(row)
+            continue
+        if fallback_mode:
+            mark_tomorrow_backup_watch(row, reason="严格明日优先池为空，降级为备选观察")
+            row["prediction_type"] = "rank_score"
+            row["score_note"] = "综合分用于排序，不是上涨概率或预期收益率。"
+            continue
         eligible, eligibility_reasons = _tomorrow_primary_eligibility(row, min_score)
         if eligibility_reasons:
             for reason in eligibility_reasons:
@@ -1165,11 +1212,13 @@ def score_tomorrow_candidates(
         if primary_watch_n > 0 and eligible and primary_assigned < primary_watch_n and theme_allowed:
             row["tier"] = "primary_watch"
             row["tier_label"] = "重点观察"
+            row["execution_allowed"] = True
+            row["recommendation_class"] = "next_day_priority"
+            row["recommendation_class_label"] = "明日优先"
+            row["profit_window"] = "次日"
             primary_assigned += 1
             primary_theme_counts[theme_key] = primary_theme_counts.get(theme_key, 0) + 1
         else:
-            row["tier"] = "backup_pool"
-            row["tier_label"] = "备选观察"
             if not eligible:
                 ineligible_count += 1
             elif primary_watch_n <= 0:
@@ -1177,6 +1226,7 @@ def score_tomorrow_candidates(
             elif not theme_allowed:
                 theme_limited_count += 1
                 _append_unique_reason(row, "同主题重点观察已达上限")
+            mark_tomorrow_backup_watch(row)
         row["prediction_type"] = "rank_score"
         row["score_note"] = "综合分用于排序，不是上涨概率或预期收益率。"
     theme_distribution = _tomorrow_theme_distribution(display_rows)
@@ -1190,6 +1240,9 @@ def score_tomorrow_candidates(
         "display_cap": display_cap,
         "min_score": min_score,
         "display_min_score": display_floor,
+        "backup_min_score": backup_min_score,
+        "backup_candidate_count": backup_candidate_count,
+        "fallback_mode": fallback_mode,
         "primary_min_score": max(
             min_score,
             coerce_number(getattr(config, "TOMORROW_PRIMARY_MIN_SCORE", 68.0), 68.0),
@@ -1208,13 +1261,18 @@ def score_tomorrow_candidates(
         "theme_distribution": theme_distribution,
         "top_n": top_n,
         "market_filter": market_filter,
+        "intraday_relaxed_mode": intraday_relaxed,
+        "provisional_mode": "intraday_watch" if intraday_relaxed else "",
         "analysis_window": analysis_window,
-        "strategy_version": "tomorrow_picks_v5",
-        "strategy_label": "明天推荐",
+        "strategy_version": config.TOMORROW_STRATEGY_VERSION,
+        "strategy_label": "明日优先",
         "prediction_type": "rank_score",
         "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
-        "holding_discipline": "次日了结，不隔夜持有到第3天",
-        "strategy": "{} 明天推荐：面向收盘后次日承接，优先保留成交承接、温和动能、中期趋势、收盘结构和买入安全的票".format(
+        "holding_discipline": "尾盘确认后入场，主验证周期为次日收盘；高开超过阈值不追",
+        "profit_window": "次日",
+        "recommendation_class": "next_day_priority",
+        "recommendation_class_label": "明日优先",
+        "strategy": "{} 明日优先：面向尾盘确认后至次日收盘的正收益机会，优先保留成交承接、温和动能、收盘结构和买入安全的票".format(
             analysis_window,
         ),
         "policy": _tomorrow_policy(),
@@ -1236,7 +1294,7 @@ def score_swing_candidates(
         & (finite_series(df, "sixty_day_pct") >= -18)
     ].copy()
     if df.empty:
-        return [], _horizon_meta(top_n, market_filter, 0, "swing_2_5d_v1", "2-5天推荐")
+        return [], _horizon_meta(top_n, market_filter, 0, config.SWING_STRATEGY_VERSION, "2-5日持有")
 
     if "alphalite_factor_ready" in df.columns:
         history_factor_ratio = round(float((finite_series(df, "alphalite_factor_ready") > 0).mean()), 4)
@@ -1332,7 +1390,7 @@ def score_swing_candidates(
         item = apply_rule_penalty("swing_picks", item)
         rows.append(
             _with_regime_reason(
-                _attach_signal_explanation(item, row, "swing_picks", "2-5天推荐", "短周期延续"),
+                _attach_signal_explanation(item, row, "swing_picks", "2-5日持有", "短周期延续"),
                 market_regime,
                 regime_bonus,
             )
@@ -1347,18 +1405,31 @@ def score_swing_candidates(
         for row in eligible_rows[:display_limit]:
             _append_unique_reason(row, "历史因子覆盖不足，2-5天策略降级观察")
             row["factor_degraded"] = True
+            mark_backup_watch(row, reason="历史因子覆盖不足，2-5日策略禁用执行")
     for rank, row in enumerate(eligible_rows[:display_limit], start=1):
         row["rank"] = rank
-    meta = _horizon_meta(top_n, market_filter, len(df), "swing_2_5d_v1", "2-5天推荐")
+        if not factor_degraded:
+            row["tier"] = "primary_watch"
+            row["tier_label"] = "2-5日持有"
+            row["execution_allowed"] = True
+            row["recommendation_class"] = "hold_2_5d"
+            row["recommendation_class_label"] = "2-5日持有"
+            row["profit_window"] = "2-5个交易日"
+    meta = _horizon_meta(top_n, market_filter, len(df), config.SWING_STRATEGY_VERSION, "2-5日持有")
     meta["eligible_count"] = len(eligible_rows)
     meta["display_count"] = len(eligible_rows[:display_limit])
     meta["display_limit"] = display_limit
     meta["min_score"] = min_score
     meta["history_factor_ready_ratio"] = history_factor_ratio
     meta["factor_degraded"] = factor_degraded
+    meta["primary_watch_count"] = 0 if factor_degraded else len(eligible_rows[:display_limit])
+    meta["backup_watch_count"] = len(eligible_rows[:display_limit]) if factor_degraded else 0
+    meta["recommendation_class"] = "hold_2_5d"
+    meta["recommendation_class_label"] = "2-5日持有"
+    meta["profit_window"] = "2-5个交易日"
     if factor_degraded:
         meta["degraded_reason"] = "历史因子覆盖不足，2-5天趋势延续因子降级；仅供观察。"
-    meta["strategy"] = "2-5天推荐：偏好短周期趋势延续、温和放量、站上短均线、流动性足且涨幅未透支"
+    meta["strategy"] = "2-5日持有：偏好短周期趋势延续、温和放量、站上短均线、流动性足且涨幅未透支"
     return eligible_rows[:display_limit], meta
 
 
@@ -1986,6 +2057,8 @@ def _tomorrow_policy() -> Dict[str, object]:
         "min_turnover": config.MIN_TURNOVER,
         "avoid_limit_up": True,
         "entry_style": "收盘后筛选，次日承接优先",
+        "intraday_relax_start": getattr(config, "TOMORROW_INTRADAY_RELAX_START", "09:30"),
+        "intraday_relax_until": getattr(config, "TOMORROW_INTRADAY_RELAX_UNTIL", "14:30"),
         "risk_controls": ("高涨幅", "高量比", "高换手", "高振幅", "收盘回落", "高开透支", "超涨damp硬门控"),
     }
 
@@ -2940,10 +3013,10 @@ def _tail_close_setup_score(row: pd.Series) -> float:
         score += 6
     elif close_location >= 0.52:
         score += 2
-    elif close_location < 0.45:
-        score -= 16
     elif close_location < 0.30:
         score -= 28
+    elif close_location < 0.45:
+        score -= 16
 
     if open_price > 0 and price > 0:
         intraday_gain = (price / open_price - 1.0) * 100.0
@@ -2975,7 +3048,7 @@ def _tail_close_setup_score(row: pd.Series) -> float:
     return max(0.0, min(100.0, score))
 
 
-def _tomorrow_hard_reject(row: pd.Series) -> bool:
+def _tomorrow_hard_reject(row: pd.Series, intraday_relaxed: bool = False) -> bool:
     pct = coerce_number(row.get("pct_chg"))
     market = row.get("market")
     upper = config.MAX_BUYABLE_GAIN_GROWTH if market in ("chinext", "star") else config.MAX_BUYABLE_GAIN_MAIN
@@ -2989,21 +3062,29 @@ def _tomorrow_hard_reject(row: pd.Series) -> bool:
         coerce_number(row.get("high")),
         coerce_number(row.get("low")),
     )
-    if pct <= 0.6 or pct >= upper * 0.88:
+    pct_floor = 0.3 if intraday_relaxed else 0.6
+    pct_ceiling = upper * 0.88
+    volume_ratio_floor = 0.75 if intraday_relaxed else 0.9
+    volume_ratio_ceiling = 5.0
+    turnover_rate_floor = 0.8 if intraday_relaxed else 1.5
+    amplitude_ceiling = 12.0
+    speed_high = 4.2
+    speed_low = -2.2
+    if pct <= pct_floor or pct >= pct_ceiling:
         return True
-    if volume_ratio < 0.9 or volume_ratio >= 5.0:
+    if volume_ratio < volume_ratio_floor or volume_ratio >= volume_ratio_ceiling:
         return True
-    if turnover_rate > 0 and turnover_rate < 1.5:
+    if turnover_rate > 0 and turnover_rate < turnover_rate_floor:
         return True
     if turnover_rate >= 20.0:
         return True
-    if amplitude >= 12.0:
+    if amplitude >= amplitude_ceiling:
         return True
-    if close_location < 0.25:
+    if not intraday_relaxed and close_location < 0.25:
         return True
     if _near_limit_up_risk(row) and turnover_rate < 8.0:
         return True
-    if speed > 4.2 or speed < -2.2:
+    if speed > speed_high or speed < speed_low:
         return True
     if config.MIN_TURNOVER > 0 and turnover < config.MIN_TURNOVER:
         return True
@@ -3053,20 +3134,36 @@ def _tomorrow_backup_reject(row: pd.Series) -> bool:
     turnover_rate = coerce_number(row.get("turnover_rate"))
     turnover = coerce_number(row.get("turnover"))
     speed = _row_speed(row)
-    if pct <= -3.5 or pct >= upper * 0.95:
+    close_location = _close_location(
+        coerce_number(row.get("price")),
+        coerce_number(row.get("high")),
+        coerce_number(row.get("low")),
+    )
+    if pct <= -1.0 or pct >= upper * 0.88:
         return True
-    if volume_ratio < 0.5 or volume_ratio >= 6.5:
+    if volume_ratio < 0.65 or volume_ratio >= 5.0:
         return True
-    if turnover_rate > 0 and turnover_rate < 0.6:
+    if turnover_rate > 0 and turnover_rate < 0.8:
         return True
-    if turnover_rate >= 25.0:
+    if turnover_rate >= 20.0:
         return True
-    if amplitude >= 14.5:
+    if amplitude >= 12.0:
         return True
-    if speed > 5.0 or speed < -3.5:
+    if speed > 4.2 or speed < -2.2:
+        return True
+    if close_location < 0.15:
+        return True
+    if _near_limit_up_risk(row) and turnover_rate < 8.0:
         return True
     if config.MIN_TURNOVER > 0 and turnover < config.MIN_TURNOVER:
         return True
+    if coerce_number(row.get("alphalite_factor_ready")) > 0:
+        if (
+            coerce_number(row.get("ret_20d")) < -18
+            or coerce_number(row.get("ma20_gap")) < -10
+            or coerce_number(row.get("volatility_20d")) > 10
+        ):
+            return True
     return False
 
 
@@ -3074,6 +3171,7 @@ def _tomorrow_backup_rows(
     df: pd.DataFrame,
     context: Dict[str, List[float]],
     market_regime: Dict[str, object] = None,
+    provisional: bool = False,
 ) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     for _, row in df.iterrows():
@@ -3110,9 +3208,9 @@ def _tomorrow_backup_rows(
             + _optional_factor_score(amplitude, context["amplitude_values"], higher_is_better=False) * 0.15
         )
         execution_score = _execution_score(row)
-        tail_setup_score = _tail_close_setup_score(row)
+        tail_setup_score = 50.0 if provisional else _tail_close_setup_score(row)
         historical_edge_score = _tomorrow_historical_edge_score(row, context)
-        risk_penalty_parts = _tomorrow_risk_penalty_parts(row)
+        risk_penalty_parts = _tomorrow_risk_penalty_parts(row, provisional=provisional)
         risk_penalty = _sum_penalty(risk_penalty_parts) + 6.0
         regime_bonus = _market_regime_adjustment(row, market_regime, "tomorrow")
         regime_profile = _regime_weight_profile(market_regime, ["liquidity", "momentum", "trend", "quality"])
@@ -3171,7 +3269,7 @@ def _tomorrow_backup_rows(
             "raw_score": round(combined["raw_score"], 2),
             "overheat_damp": round(combined["overheat_damp"], 4),
             "score": round(final_score, 2),
-            "reasons": ["备选观察：严格明天推荐为空"] + _build_tomorrow_reasons(
+            "reasons": ["备选观察：严格明日优先池为空"] + _build_tomorrow_reasons(
                 row,
                 liquidity_score,
                 momentum_score,
@@ -3182,9 +3280,10 @@ def _tomorrow_backup_rows(
                 risk_penalty,
             ),
         }
+        item = apply_rule_penalty("tomorrow_picks", item)
         rows.append(
             _with_regime_reason(
-                _attach_signal_explanation(item, row, "tomorrow_picks", "明天推荐", "备选观察"),
+                _attach_signal_explanation(item, row, "tomorrow_picks", "明日优先", "备选观察"),
                 market_regime,
                 regime_bonus,
             )
@@ -3193,14 +3292,34 @@ def _tomorrow_backup_rows(
     return rows
 
 
-def _tomorrow_display_gate(top_n: int, market_regime: Dict[str, object] = None) -> Tuple[int, float, str]:
+def _tomorrow_display_gate(
+    top_n: int,
+    market_regime: Dict[str, object] = None,
+    intraday_relaxed: bool = False,
+) -> Tuple[int, float, str]:
     top_n = max(0, int(top_n or 0))
     if not market_regime:
+        if intraday_relaxed:
+            return top_n, 56.0, "14:30 前早盘模式，默认展示线放宽到 56 分。"
         return top_n, 60.0, "未提供市场环境，只展示达到默认分数门槛的候选。"
     level = market_regime.get("level") or "unknown"
     regime_score = coerce_number(market_regime.get("score"), 50.0)
     history_breadth = coerce_number(market_regime.get("history_breadth20_pct"))
     history_coverage = coerce_number(market_regime.get("history_factor_coverage_pct"))
+    if intraday_relaxed:
+        if history_coverage >= 25:
+            if history_breadth > 55:
+                return top_n, 56.0, "14:30 前早盘模式，历史宽度强，展示线放宽到 56 分。"
+            if history_breadth > 45:
+                return top_n, 64.0, "14:30 前早盘模式，历史宽度中性，展示线放宽到 64 分。"
+            return top_n, 72.0, "14:30 前早盘模式，历史宽度偏弱，仍需较高分数。"
+        if level == "risk_on":
+            return top_n, 56.0, "14:30 前早盘模式，偏进攻盘面展示线放宽到 56 分。"
+        if level == "balanced":
+            return top_n, 60.0, "14:30 前早盘模式，均衡盘面展示线放宽到 60 分。"
+        if level == "risk_off":
+            return top_n, 66.0, "14:30 前早盘模式，偏防守盘面展示线放宽到 66 分。"
+        return top_n, 62.0, "14:30 前早盘模式，盘面不明确时展示线放宽到 62 分。"
     if history_coverage >= 25:
         if history_breadth > 55:
             return top_n, 60.0, "历史20日均线宽度强于55%，只展示达到分数门槛的候选。"
@@ -3360,6 +3479,75 @@ def _append_unique_reason(row: Dict[str, object], reason: str) -> None:
     if text not in reasons:
         reasons.append(text)
     row["reasons"] = reasons[:8]
+
+
+def mark_backup_watch(
+    row: Dict[str, object],
+    label: str = "备选观察",
+    reason: str = "",
+) -> None:
+    row["tier"] = "backup_pool"
+    row["tier_label"] = label
+    row["execution_allowed"] = False
+    row["recommendation_class"] = "backup"
+    row["recommendation_class_label"] = label
+    row["profit_window"] = "不执行"
+    row["trade_action"] = {
+        "action": "watch_only",
+        "label": "只观察",
+        "position_size": 0.0,
+        "reason": "{}不形成可执行买入指令。".format(label),
+    }
+    row["exit_action"] = {
+        "action": "wait_confirmation",
+        "label": "等待确认",
+        "reason": "当前仅作观察，等待可执行信号。",
+    }
+    committee = dict(row.get("agent_committee") or {})
+    committee["stance"] = "wait"
+    committee["final_action_label"] = label
+    row["agent_committee"] = committee
+    profile = dict(row.get("serenity_profile") or {})
+    profile["level"] = "neutral"
+    profile["action_label"] = label
+    evidence = []
+    for item in profile.get("evidence") or []:
+        next_item = dict(item)
+        if str(next_item.get("label") or "").startswith("Agent委员会:"):
+            next_item["label"] = "Agent委员会:{}".format(label)
+            next_item["level"] = "neutral"
+        evidence.append(next_item)
+    profile["evidence"] = evidence
+    row["serenity_profile"] = profile
+    verdict = dict(row.get("verdict") or {})
+    verdict["tier"] = "watch"
+    verdict["label"] = label
+    verdict["note"] = "{}不形成可执行推荐".format(label)
+    row["verdict"] = verdict
+    if row.get("deepseek_action") not in (None, "avoid"):
+        row["deepseek_action"] = "watch"
+    if reason:
+        _append_unique_reason(row, reason)
+
+
+def mark_tomorrow_backup_watch(
+    row: Dict[str, object],
+    label: str = "备选观察",
+    reason: str = "",
+) -> None:
+    mark_backup_watch(row, label=label, reason=reason)
+
+
+def _mark_tomorrow_intraday_watch(row: Dict[str, object]) -> None:
+    mark_tomorrow_backup_watch(row, label="盘中观察")
+    row["observation_mode"] = "intraday_provisional"
+    row["signal_label"] = "盘中观察"
+    row["holding_discipline"] = "盘中候选不执行，14:30 后重新确认"
+    row["trade_action"]["reason"] = "14:30 前为盘中候选，等待尾盘确认后再决定。"
+    row["exit_action"]["reason"] = "盘中候选尚未形成尾盘信号。"
+    _append_unique_reason(row, "14:30 前仅盘中观察，不作为重点推荐")
+    row["prediction_type"] = "rank_score"
+    row["score_note"] = "盘中综合分仅用于候选排序，不是上涨概率或交易指令。"
 
 
 def _tomorrow_theme_distribution(rows: List[Dict[str, object]]) -> Dict[str, int]:
@@ -3687,7 +3875,7 @@ def _sum_penalty(parts: Dict[str, float]) -> float:
     return round(sum(max(0.0, coerce_number(value)) for value in parts.values()), 2)
 
 
-def _tomorrow_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
+def _tomorrow_risk_penalty_parts(row: pd.Series, provisional: bool = False) -> Dict[str, float]:
     pct = coerce_number(row.get("pct_chg"))
     market = row.get("market")
     upper = config.MAX_BUYABLE_GAIN_GROWTH if market in ("chinext", "star") else config.MAX_BUYABLE_GAIN_MAIN
@@ -3724,12 +3912,12 @@ def _tomorrow_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
     mid_gain_min = coerce_number(getattr(config, "TOMORROW_MID_GAIN_MIN_PCT", 4.5), 4.5)
     mid_gain_max = coerce_number(getattr(config, "TOMORROW_MID_GAIN_MAX_PCT", 7.0), 7.0)
     weak_close_line = coerce_number(getattr(config, "TOMORROW_MID_GAIN_WEAK_CLOSE_LOCATION", 0.6), 0.6)
-    if has_close_range and mid_gain_min <= pct < mid_gain_max and close_location < weak_close_line:
+    if not provisional and has_close_range and mid_gain_min <= pct < mid_gain_max and close_location < weak_close_line:
         parts["mid_gain_weak_close"] = coerce_number(
             getattr(config, "TOMORROW_MID_GAIN_WEAK_CLOSE_PENALTY", 7.0),
             7.0,
         )
-    if has_close_range and close_location < 0.35:
+    if not provisional and has_close_range and close_location < 0.35:
         parts["weak_tail_close"] = 8
     if open_price > 0 and price > 0:
         gain = (price / open_price - 1.0) * 100.0
@@ -3744,7 +3932,7 @@ def _tomorrow_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
         parts["late_chase_speed"] = 6
     elif speed < -1.2:
         parts["late_fade"] = 7
-    if has_close_range and close_location < 0.45:
+    if not provisional and has_close_range and close_location < 0.45:
         parts["weak_tail_close"] = max(parts.get("weak_tail_close", 0), 10)
     if coerce_number(row.get("alphalite_factor_ready")) > 0:
         ret_20d = coerce_number(row.get("ret_20d"))
@@ -3774,6 +3962,58 @@ def _tomorrow_analysis_window() -> str:
         return "{:02d}:{:02d}".format(hour, minute)
     except Exception:
         return "15:00"
+
+
+def _tomorrow_intraday_relaxed_mode(now: datetime = None, quote_time: datetime = None) -> bool:
+    current = now or datetime.now()
+    if current.weekday() >= 5:
+        return False
+    if quote_time is not None and quote_time.date() != current.date():
+        return False
+    start = _time_parts(getattr(config, "TOMORROW_INTRADAY_RELAX_START", "09:30"), (9, 30))
+    cutoff = _time_parts(getattr(config, "TOMORROW_INTRADAY_RELAX_UNTIL", "14:30"), (14, 30))
+    current_time = (current.hour, current.minute)
+    return start <= current_time < cutoff
+
+
+def _tomorrow_quote_time(df: pd.DataFrame) -> datetime:
+    if df is None:
+        return None
+    if "trade_date" in df.columns:
+        for value in df["trade_date"].dropna().tolist():
+            parsed = _parse_datetime_value(value)
+            if parsed is not None:
+                return parsed
+    for key in ("quote_timestamp", "snapshot_mtime"):
+        parsed = _parse_datetime_value((df.attrs or {}).get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_datetime_value(value) -> datetime:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if len(raw) == 8 and raw.isdigit():
+            return datetime.strptime(raw, "%Y%m%d")
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _time_parts(value: str, fallback: Tuple[int, int]) -> Tuple[int, int]:
+    raw = str(value or "").strip()
+    if ":" not in raw:
+        return fallback
+    try:
+        hour_text, minute_text = raw.split(":", 1)
+        hour = max(0, min(23, int(hour_text)))
+        minute = max(0, min(59, int(minute_text)))
+        return hour, minute
+    except Exception:
+        return fallback
 
 
 def _apply_overheat_damp(final_score: float, row: pd.Series) -> float:

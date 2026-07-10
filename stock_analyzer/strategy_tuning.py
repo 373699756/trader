@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List
 
+from . import config
 from .normalization import coerce_number
 from .scoring import WEIGHTS
 
@@ -10,9 +11,9 @@ from .scoring import WEIGHTS
 SUPPORTED_TUNING_STRATEGIES = ("short_term", "tomorrow_picks", "swing_picks")
 
 _STRATEGY_LABELS = {
-    "short_term": "今天推荐",
-    "tomorrow_picks": "明天推荐",
-    "swing_picks": "2-5天推荐",
+    "short_term": "盘中强势观察",
+    "tomorrow_picks": "明日优先",
+    "swing_picks": "2-5日持有",
 }
 
 
@@ -31,12 +32,13 @@ def build_strategy_tuning_plan(
             "error": "unsupported_strategy",
         }
 
-    sample_count = int(coerce_number(metrics.get("sample_count"), 0))
-    real_count = int(coerce_number(metrics.get("real_sample_count"), 0))
-    replay_count = int(coerce_number(metrics.get("replay_sample_count"), 0))
+    sample_count = int(coerce_number(metrics.get("day_count"), 0))
+    real_count = int(coerce_number(metrics.get("real_day_count"), 0))
+    replay_count = int(coerce_number(metrics.get("replay_day_count"), 0))
     pending_count = int(coerce_number(metrics.get("pending_outcome_count"), 0))
     win_rate = _first_number(metrics, "real_win_rate_primary_net", "win_rate_primary_net")
     avg_return = _first_number(metrics, "real_avg_primary_return_net", "avg_primary_return_net")
+    drawdown = _first_number(metrics, "real_avg_max_drawdown_primary", "avg_max_drawdown_primary")
     latest = dates[0] if dates else {}
     latest_count = int(coerce_number(latest.get("count"), 0))
     current_weights = dict(WEIGHTS.get(strategy_name, {}))
@@ -46,16 +48,17 @@ def build_strategy_tuning_plan(
     gates: List[Dict[str, object]] = []
 
     if sample_count < 30:
-        gates.append(_gate("min_sample_count", False, sample_count, 30, "有效样本不足，不能自动应用。"))
-        issues.append("有效样本少，先影子运行，不直接改正式策略。")
+        gates.append(_gate("min_day_count", False, sample_count, 30, "有效交易日不足，不能自动应用。"))
+        issues.append("有效交易日少，先影子运行，不直接改正式策略。")
     else:
-        gates.append(_gate("min_sample_count", True, sample_count, 30, "有效样本达到最低门槛。"))
+        gates.append(_gate("min_day_count", True, sample_count, 30, "有效交易日达到最低门槛。"))
 
-    if real_count < 10:
-        gates.append(_gate("min_real_sample_count", False, real_count, 10, "真实前瞻样本不足。"))
+    min_real_days = int(getattr(config, "STRATEGY_DECAY_MIN_REAL_DAYS", 20))
+    if real_count < min_real_days:
+        gates.append(_gate("min_real_day_count", False, real_count, min_real_days, "真实前瞻交易日不足。"))
         issues.append("真实样本不足，回放只能做粗筛。")
     else:
-        gates.append(_gate("min_real_sample_count", True, real_count, 10, "真实样本达到最低门槛。"))
+        gates.append(_gate("min_real_day_count", True, real_count, min_real_days, "真实交易日达到最低门槛。"))
 
     if pending_count > 0:
         gates.append(_gate("no_pending_outcomes", False, pending_count, 0, "仍有样本待回填，先不应用。"))
@@ -72,8 +75,17 @@ def build_strategy_tuning_plan(
 
     if avg_return is None:
         issues.append("平均净收益尚未形成有效统计。")
-    elif avg_return < 0:
+    elif avg_return <= 0:
         issues.append("平均净收益为负，应优先减少追高和过热样本。")
+    gates.append(_gate("positive_avg_net_return", avg_return is not None and avg_return > 0, avg_return, "> 0", "主周期平均净收益必须为正。"))
+
+    min_win_rate = coerce_number(getattr(config, "STRATEGY_VALIDATION_MIN_WIN_RATE", 50.0), 50.0)
+    gates.append(_gate("min_net_win_rate", win_rate is not None and win_rate >= min_win_rate, win_rate, min_win_rate, "真实交易日净胜率必须达标。"))
+    drawdown_floor = coerce_number(
+        getattr(config, "STRATEGY_VALIDATION_MAX_AVG_DRAWDOWN_PCT", -8.0),
+        -8.0,
+    )
+    gates.append(_gate("max_primary_drawdown", drawdown is not None and drawdown > drawdown_floor, drawdown, "> {}".format(drawdown_floor), "主周期平均回撤不得突破硬限制。"))
 
     if latest and latest_count == 0:
         issues.append("最新批次为空，说明当前门槛下没有合格标的；空推荐本身可以保留。")
@@ -95,6 +107,11 @@ def build_strategy_tuning_plan(
         shadow_mode = False
         status = "ready_for_confirmation"
         reason = "DeepSeek 候选已通过 OOS 门槛，可进入人工确认采纳。"
+    if strategy_name == "short_term":
+        can_apply = False
+        shadow_mode = True
+        status = "observation_only"
+        reason = "盘中强势策略没有同日可执行验证，仅允许观察和影子分析。"
 
     return {
         "ok": True,
@@ -114,12 +131,13 @@ def build_strategy_tuning_plan(
             "items": gates,
         },
         "metrics_snapshot": {
-            "sample_count": sample_count,
-            "real_sample_count": real_count,
-            "replay_sample_count": replay_count,
+            "day_count": sample_count,
+            "real_day_count": real_count,
+            "replay_day_count": replay_count,
             "pending_outcome_count": pending_count,
             "win_rate_primary_net": win_rate,
             "avg_primary_return_net": avg_return,
+            "avg_max_drawdown_primary": drawdown,
             "latest_signal_date": latest.get("signal_date", ""),
             "latest_signal_count": latest_count,
         },
@@ -134,7 +152,7 @@ def _strategy_suggestions(strategy_name: str, win_rate, avg_return, latest_count
     if strategy_name == "tomorrow_picks":
         if weak:
             return [
-                _suggest("min_score", "+2", "提高明天推荐最低分，减少弱承接样本。"),
+                _suggest("min_score", "+2", "提高明日优先最低分，减少弱承接样本。"),
                 _suggest("risk_penalty_multiplier", "1.15", "放大追高、过热、回落风险惩罚。"),
                 _suggest("theme_cap", "2", "限制单行业集中，避免单一题材误伤。"),
             ]
@@ -148,7 +166,7 @@ def _strategy_suggestions(strategy_name: str, win_rate, avg_return, latest_count
                 _suggest("overheat_penalty", "+10%", "降低高涨幅、高换手、高量比样本权重。"),
             ]
         if empty:
-            return [_suggest("shadow_min_score", "-1", "仅影子验证轻微放宽今天推荐门槛。")]
+            return [_suggest("shadow_min_score", "-1", "仅影子分析轻微放宽盘中观察门槛。")]
         return [_suggest("keep", "no_change", "当前先保持参数，继续观察。")]
     if strategy_name == "swing_picks":
         if weak:

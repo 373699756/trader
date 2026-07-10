@@ -8,9 +8,13 @@ from .normalization import coerce_number, normalize_code, rename_known_columns
 
 class HistoryCache:
     def __init__(self, db_path: str, freshness_hours: int = 18) -> None:
-        self.db_path = db_path
+        raw_path = os.path.expandvars(os.path.expanduser(str(db_path or "").strip()))
+        if not raw_path:
+            raise ValueError("history cache database path is empty")
+        # sqlite resolves relative paths on every connect; keep the path stable if cwd changes later.
+        self.db_path = os.path.abspath(raw_path)
         self.freshness_hours = freshness_hours
-        directory = os.path.dirname(db_path)
+        directory = os.path.dirname(self.db_path)
         if directory:
             os.makedirs(directory, exist_ok=True)
         self._init_db()

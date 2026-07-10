@@ -2,6 +2,11 @@ from typing import Dict, List, Tuple
 
 from . import config
 from .deepseek_client import rerank_candidates, rerank_candidates_batch, review_strategy_validation
+from .deepseek_scheduler import (
+    reuse_scheduled_deepseek_result,
+    save_scheduled_deepseek_result,
+    scheduled_deepseek_decision,
+)
 from .normalization import normalize_code
 from .stock_optimization import review_stock_prediction
 from .strategies import storage_strategy_name
@@ -48,8 +53,26 @@ def apply_deepseek_rerank(
             "strategy": strategy_name,
             "reason": "DeepSeek rerank is disabled for this strategy route.",
         }
+    decision = scheduled_deepseek_decision(strategy_name, rows)
+    if decision.get("enabled") and not decision.get("allow_call"):
+        return reuse_scheduled_deepseek_result(strategy_name, rows, decision)
     try:
-        return rerank_candidates(rows=rows, strategy_name=strategy_name, market_filter=market_filter)
+        reranked, meta = rerank_candidates(
+            rows=rows,
+            strategy_name=strategy_name,
+            market_filter=market_filter,
+            model_tier_override=str(decision.get("model_tier") or ""),
+            review_limit_override=int(decision.get("review_limit") or 0),
+        )
+        if decision.get("enabled"):
+            meta["schedule"] = {
+                "status": decision.get("status", ""),
+                "slot": decision.get("slot", ""),
+                "model_tier": decision.get("model_tier", ""),
+                "reused": False,
+            }
+            save_scheduled_deepseek_result(strategy_name, reranked, meta, decision)
+        return reranked, meta
     except Exception as exc:
         return rows, {
             "enabled": False,
@@ -80,6 +103,8 @@ def apply_deepseek_rerank_batch(
     disabled_strategies = deepseek_rerank_disabled_strategies()
     active = {}
     meta = {}
+    schedule_decisions = {}
+    result_rows = dict(rows_by_strategy)
     for strategy, rows in rows_by_strategy.items():
         if not rows:
             meta[strategy] = {"enabled": False, "status": "empty", "strategy": strategy}
@@ -91,14 +116,47 @@ def apply_deepseek_rerank_batch(
                 "reason": "DeepSeek rerank is disabled for this strategy route.",
             }
         else:
-            active[strategy] = rows
+            decision = scheduled_deepseek_decision(strategy, rows)
+            schedule_decisions[strategy] = decision
+            if decision.get("enabled") and not decision.get("allow_call"):
+                reused_rows, reused_meta = reuse_scheduled_deepseek_result(strategy, rows, decision)
+                result_rows[strategy] = reused_rows
+                meta[strategy] = reused_meta
+            else:
+                active[strategy] = rows
     if not active:
-        return rows_by_strategy, meta
+        return result_rows, meta
     try:
-        reranked, batch_meta = rerank_candidates_batch(active, market_filter=market_filter)
-        result_rows = dict(rows_by_strategy)
+        scheduled_decisions = [
+            decision for strategy, decision in schedule_decisions.items() if strategy in active and decision.get("enabled")
+        ]
+        model_tier = str(scheduled_decisions[0].get("model_tier") or "") if len(scheduled_decisions) == 1 else ""
+        review_limit = int(scheduled_decisions[0].get("review_limit") or 0) if len(scheduled_decisions) == 1 else 0
+        reranked, batch_meta = rerank_candidates_batch(
+            active,
+            market_filter=market_filter,
+            model_tier_override=model_tier,
+            review_limit_override=review_limit,
+        )
         result_rows.update(reranked)
         meta.update(batch_meta)
+        for strategy in active:
+            decision = schedule_decisions.get(strategy) or {}
+            if not decision.get("enabled"):
+                continue
+            strategy_meta = meta.setdefault(strategy, {})
+            strategy_meta["schedule"] = {
+                "status": decision.get("status", ""),
+                "slot": decision.get("slot", ""),
+                "model_tier": decision.get("model_tier", ""),
+                "reused": False,
+            }
+            save_scheduled_deepseek_result(
+                strategy,
+                result_rows.get(strategy, []),
+                strategy_meta,
+                decision,
+            )
         return result_rows, meta
     except Exception as exc:
         for strategy in active:
@@ -133,9 +191,28 @@ def finalize_deepseek_meta(
 ) -> None:
     meta["deepseek"] = _public_deepseek_meta(deepseek_meta)
     meta["display_count"] = len(rows)
+    sync_tomorrow_tier_meta(meta, rows)
     meta["deepseek_filtered_count"] = int(deepseek_meta.get("filtered") or 0)
     if deepseek_meta.get("filter_reasons"):
         meta["deepseek_filter_reasons"] = deepseek_meta.get("filter_reasons")
+
+
+def sync_tomorrow_tier_meta(
+    meta: Dict[str, object],
+    rows: List[Dict[str, object]],
+) -> None:
+    if not isinstance(meta, dict):
+        return
+    strategy_version = str(meta.get("strategy_version") or "")
+    if not strategy_version.startswith("tomorrow_picks") and meta.get("strategy_label") not in {
+        "明日优先",
+        "明天推荐",
+    }:
+        return
+    primary_count = sum(1 for row in rows or [] if row.get("tier") == "primary_watch")
+    meta["display_count"] = len(rows or [])
+    meta["primary_watch_count"] = primary_count
+    meta["backup_watch_count"] = max(0, len(rows or []) - primary_count)
 
 
 def _public_deepseek_meta(deepseek_meta: Dict[str, object]) -> Dict[str, object]:
@@ -181,6 +258,19 @@ def deepseek_validation_review(
             "strategy": strategy_name,
             "reason": "DeepSeek runtime is disabled; validation uses local metrics only.",
         }
+    min_new_days = max(1, int(getattr(config, "DEEPSEEK_VALIDATION_REVIEW_MIN_NEW_DAYS", 5)))
+    current_real_days = int(metrics.get("real_day_count") or 0)
+    last_review_days = _latest_completed_deepseek_review_days(validation_store, strategy_name)
+    if current_real_days < min_new_days or current_real_days - last_review_days < min_new_days:
+        return {
+            "enabled": False,
+            "status": "cadence_deferred",
+            "strategy": strategy_name,
+            "real_day_count": current_real_days,
+            "last_review_real_day_count": last_review_days,
+            "min_new_real_days": min_new_days,
+            "reason": "真实验证样本尚未新增足够交易日，复用本地门控并暂缓 DeepSeek 盘后复盘。",
+        }
     try:
         samples = validation_store.live_weight_samples(strategy_name, days=max(20, min(days, 60)))
         samples = attach_factor_snapshots(samples)
@@ -197,6 +287,22 @@ def deepseek_validation_review(
             "strategy": strategy_name,
             "error": str(exc),
         }
+
+
+def _latest_completed_deepseek_review_days(validation_store, strategy_name: str) -> int:
+    try:
+        runs = validation_store.list_tuning_runs(strategy_name, limit=30)
+    except Exception:
+        return 0
+    for run in runs or []:
+        review = run.get("deepseek") if isinstance(run, dict) else {}
+        if not isinstance(review, dict):
+            continue
+        if review.get("status") not in {"ok", "cache_hit"}:
+            continue
+        metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
+        return int(metrics.get("real_day_count") or 0)
+    return 0
 
 
 def deepseek_stock_prediction_review(

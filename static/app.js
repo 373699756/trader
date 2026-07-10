@@ -350,7 +350,7 @@ async function loadValidationMetrics(strategy, days, requestSeq, cacheKey, optio
     state.validationCache[cacheKey] = payload;
     if (payload.metrics) {
       state.validationMetrics = payload.metrics;
-      renderValidationMetrics(payload.metrics);
+      renderValidationMetrics(payload.metrics, payload.validation_gate || {});
     }
     state.deepseekAttributionByStrategy = payload.deepseek_attribution_by_strategy || {};
     renderValidationDeepseekAttribution(state.deepseekAttributionByStrategy);
@@ -368,7 +368,7 @@ async function loadValidationMetrics(strategy, days, requestSeq, cacheKey, optio
 function applyValidationPayload(payload) {
   if (payload.metrics) {
     state.validationMetrics = payload.metrics || {};
-    renderValidationMetrics(state.validationMetrics);
+    renderValidationMetrics(state.validationMetrics, payload.validation_gate || {});
   }
   if (payload.deepseek_attribution_by_strategy) {
     state.deepseekAttributionByStrategy = payload.deepseek_attribution_by_strategy || {};
@@ -863,7 +863,7 @@ async function loadValidationAutoUpdateStatus() {
       return;
     }
     if (status.running) {
-      setOpsStatus(els.updateStatus, joinStatusText(["正在保存今天/明天/2-5天荐股快照…", snapshotText]), "pending");
+      setOpsStatus(els.updateStatus, joinStatusText(["正在保存明日优先/2-5日持有荐股快照…", snapshotText]), "pending");
       return;
     }
     const result = status.last_result || {};
@@ -886,7 +886,7 @@ async function loadValidationAutoUpdateStatus() {
     setOpsStatus(
       els.updateStatus,
       joinStatusText([
-        `自动保存已启动：${config.start_time || "14:30"} 之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟保存今天/明天/2-5天荐股快照`,
+        `自动保存已启动：${config.start_time || "14:30"} 之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟保存明日优先/2-5日持有荐股快照`,
         snapshotText,
       ]),
       "pending"
@@ -905,7 +905,7 @@ function snapshotStatusText(snapshot) {
     return "荐股快照自动保存已关闭";
   }
   if (snapshot.running) {
-    return "正在保存今天/明天/2-5天荐股快照";
+    return "正在保存明日优先/2-5日持有荐股快照";
   }
   if (snapshot.last_error) {
     return `荐股快照自动保存上次失败：${snapshot.last_error}`;
@@ -1010,7 +1010,7 @@ async function loadTomorrowPicks(options = {}) {
   if (hasCachedRows) {
     renderTomorrowTable(state.lastRows.tomorrow);
     if (!background) {
-      setStatus("明天推荐已显示，后台用 DeepSeek 刷新中...");
+      setStatus("明日优先已显示，后台用 DeepSeek 刷新中...");
     }
   } else {
     els.tomorrowBody.innerHTML = '<tr><td colspan="17" class="empty">加载中...</td></tr>';
@@ -1034,7 +1034,7 @@ async function loadTomorrowPicks(options = {}) {
         renderTomorrowTable(state.lastRows.tomorrow);
       }
       if (!background) {
-        setStatus(`明天推荐更新时间 ${payload.meta.generated_at || "最近快照"}`);
+        setStatus(`明日优先更新时间 ${payload.meta.generated_at || "最近快照"}`);
       }
     } catch (err) {
       state.tomorrowLoaded = false;
@@ -1042,7 +1042,7 @@ async function loadTomorrowPicks(options = {}) {
         els.tomorrowBody.innerHTML = `<tr><td colspan="17" class="empty">${escapeHtml(err.message)}</td></tr>`;
       }
       if (!background) {
-        setStatus(`明天推荐加载失败：${err.message}`);
+        setStatus(`明日优先加载失败：${err.message}`);
       }
     } finally {
       state.tomorrowLoading = null;
@@ -1079,7 +1079,7 @@ async function loadHorizonPicks(options = {}) {
         renderSwingTable(state.lastRows.swing);
       }
       if (!background) {
-        setStatus(`2-5天更新时间 ${swingPayload.meta.generated_at}`);
+        setStatus(`2-5日持有更新时间 ${swingPayload.meta.generated_at}`);
       }
     } catch (err) {
       state.horizonLoaded = false;
@@ -1087,7 +1087,7 @@ async function loadHorizonPicks(options = {}) {
         els.swingBody.innerHTML = `<tr><td colspan="17" class="empty">${escapeHtml(err.message)}</td></tr>`;
       }
       if (!background) {
-        setStatus(`2-5天加载失败：${err.message}`);
+        setStatus(`2-5日持有加载失败：${err.message}`);
       }
     } finally {
       state.horizonLoading = null;
@@ -1129,7 +1129,7 @@ function renderFactorCoverageStatus(coverage) {
     } else if (coverage.history_factors_enabled === false) {
       text = "关闭";
       level = "warn";
-      title = "历史因子未开启，2-5天和明日历史类因子不会参与打分。";
+      title = "历史因子未开启，明日优先和2-5日持有的历史类因子不会参与打分。";
     } else {
       text = `${formatNumber(readyPct, 0)}%`;
       level = "ok";
@@ -1258,7 +1258,7 @@ function renderSwingTable(rows) {
     sortMode: DEFAULT_SORT_MODE,
   });
   if (!displayRows.length) {
-    els.swingBody.innerHTML = '<tr><td colspan="17" class="empty">暂无符合条件的2-5天股票</td></tr>';
+    els.swingBody.innerHTML = '<tr><td colspan="17" class="empty">暂无符合条件的2-5日持有股票</td></tr>';
     return;
   }
   els.swingBody.innerHTML = RecommendationTables.renderSwingTableRows(displayRows, {
@@ -1382,23 +1382,29 @@ function renderValidationDeepseekReview(review) {
   state.latestDeepseekReview = review || {};
 }
 
-function renderValidationMetrics(metrics) {
+function renderValidationMetrics(metrics, validationGate = {}) {
+  const strategy = metrics.strategy_name || currentValidationStrategy();
   const sample = Number(metrics.sample_count || 0);
   const outcome = Number(metrics.outcome_sample_count || 0);
-  const real = Number(metrics.real_sample_count || 0);
   const replay = Number(metrics.replay_sample_count || 0);
-  const executionSkipped = Number(metrics.execution_skipped_count || 0);
+  const realDayCount = Number(metrics.real_day_count || 0);
   const pendingOutcome = Number(metrics.pending_outcome_count || 0);
-  const coverage = metrics.outcome_coverage_pct == null ? null : Number(metrics.outcome_coverage_pct);
   const horizon = metrics.primary_horizon_label || "主周期";
-  const winRate = metrics.win_rate_primary_net == null ? null : Number(metrics.win_rate_primary_net);
-  const avgReturn = metrics.avg_primary_return_net == null ? null : Number(metrics.avg_primary_return_net);
-  els.validationSampleCount.textContent = outcome > sample ? `${sample}/${outcome}` : `${sample}`;
+  const winRateValue = metrics.real_win_rate_primary_net ?? metrics.win_rate_primary_net;
+  const avgReturnValue = metrics.real_avg_primary_return_net ?? metrics.avg_primary_return_net;
+  const winRate = winRateValue == null ? null : Number(winRateValue);
+  const avgReturn = avgReturnValue == null ? null : Number(avgReturnValue);
+  const drawdownValue = metrics.real_avg_max_drawdown_primary ?? metrics.avg_max_drawdown_primary;
+  const drawdown = drawdownValue == null ? null : Number(drawdownValue);
+  els.validationSampleCount.textContent = `${realDayCount}日 / ${sample}条`;
   els.validationWinRate.textContent = winRate != null ? `${formatNumber(winRate, 1)}%` : "-";
   els.validationAvgReturn.textContent = avgReturn != null ? `${horizon} ${formatNumber(avgReturn, 2)}%` : "-";
   ValidationUI.renderValidationSimpleDecision(
     els.validationSimpleDecision,
-    { sample, outcome, real, replay, winRate, avgReturn, horizon, executionSkipped, pendingOutcome },
+    {
+      strategy, sample, outcome, replay, realDayCount, winRate, avgReturn, drawdown,
+      horizon, pendingOutcome, validationGate,
+    },
     { formatNumber },
   );
 }
@@ -1632,9 +1638,9 @@ function numberClass(value) {
 }
 
 function strategyLabel(value) {
-  if (value === "short_term") return "今天推荐";
-  if (value === "tomorrow_picks") return "明天推荐";
-  if (value === "swing_picks") return "2-5天推荐";
+  if (value === "short_term") return "盘中观察";
+  if (value === "tomorrow_picks") return "明日优先";
+  if (value === "swing_picks") return "2-5日持有";
   return value || "-";
 }
 

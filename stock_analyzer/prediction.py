@@ -363,25 +363,36 @@ def _find_row(code: str, rows: List[Dict[str, object]]) -> Dict[str, object]:
 def _prediction_consensus_from_hits(hits: List[Dict[str, object]]) -> Dict[str, object]:
     if not hits:
         return {}
+    actionable_hits = [item for item in hits if not item.get("observation_only")]
+    observation_hits = [item for item in hits if item.get("observation_only")]
     strategies = []
     horizons = []
-    for item in hits:
+    observation_strategies = []
+    for item in actionable_hits:
         strategy_label = str(item.get("strategy_label") or "")
         horizon_label = str(item.get("horizon_label") or "")
         if strategy_label and strategy_label not in strategies:
             strategies.append(strategy_label)
         if horizon_label and horizon_label not in horizons:
             horizons.append(horizon_label)
-    avg_score = sum(coerce_number(item.get("score"), 0.0) for item in hits) / max(len(hits), 1)
-    avg_risk = sum(coerce_number(item.get("risk_score"), 50.0) for item in hits) / max(len(hits), 1)
+    for item in observation_hits:
+        strategy_label = str(item.get("strategy_label") or "")
+        if strategy_label and strategy_label not in observation_strategies:
+            observation_strategies.append(strategy_label)
+    avg_score = sum(coerce_number(item.get("score"), 0.0) for item in actionable_hits) / max(len(actionable_hits), 1)
+    avg_risk = sum(coerce_number(item.get("risk_score"), 50.0) for item in actionable_hits) / max(
+        len(actionable_hits), 1
+    )
     return {
-        "appearances": len(hits),
+        "appearances": len(actionable_hits),
+        "observation_appearances": len(observation_hits),
         "strategy_count": len(strategies),
-        "label": "{}策略命中".format(len(hits)),
+        "label": "{}策略命中".format(len(actionable_hits)) if actionable_hits else "仅备选观察",
         "strategies": strategies,
+        "observation_strategies": observation_strategies,
         "horizons": horizons,
-        "avg_score": round(avg_score, 2),
-        "avg_risk": round(avg_risk, 2),
+        "avg_score": round(avg_score, 2) if actionable_hits else 0.0,
+        "avg_risk": round(avg_risk, 2) if actionable_hits else 0.0,
     }
 
 
@@ -392,6 +403,12 @@ def _strategy_hit(
 ) -> Dict[str, object]:
     profile = row.get("serenity_profile") or {}
     committee = row.get("agent_committee") or {}
+    tier = str(row.get("tier") or "")
+    observation_only = strategy_name == "tomorrow_picks" and (
+        tier == "backup_pool"
+        or row.get("observation_mode") == "intraday_provisional"
+        or row.get("execution_allowed") is False
+    )
     return {
         "strategy_name": strategy_name,
         "strategy_label": STRATEGY_LABELS.get(strategy_name, strategy_name),
@@ -409,6 +426,10 @@ def _strategy_hit(
         "reasons": list(row.get("reasons") or [])[:4],
         "failure_reasons": list(row.get("failure_reasons") or [])[:4],
         "strategy_version": meta.get("strategy_version", ""),
+        "tier": tier,
+        "tier_label": str(row.get("tier_label") or ""),
+        "execution_allowed": bool(row.get("execution_allowed", not observation_only)),
+        "observation_only": observation_only,
     }
 
 
@@ -441,6 +462,22 @@ def _prediction_verdict(
             "risk_level": "unknown",
         }
 
+    actionable_hits = [item for item in hits if not item.get("observation_only")]
+    if not actionable_hits:
+        avg_risk = sum(coerce_number(item.get("risk_score"), 50.0) for item in hits) / len(hits)
+        return {
+            "direction": "neutral",
+            "label": "备选观察/不构成推荐",
+            "confidence": 20.0,
+            "score": 45.0,
+            "risk_level": "high" if avg_risk >= 70 else "medium" if avg_risk >= 50 else "unknown",
+            "avg_risk": round(avg_risk, 2),
+            "appearances": 0,
+            "observation_appearances": len(hits),
+            "advice": "当前仅命中零仓位备选观察，不计入正向策略共识；等待正式收盘信号和验证门控恢复。",
+        }
+
+    hits = actionable_hits
     avg_direction = sum(item["direction_score"] for item in hits) / len(hits)
     avg_risk = sum(item["risk_score"] for item in hits) / len(hits)
     appearances = int(consensus.get("appearances") or len(hits))

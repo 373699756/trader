@@ -47,11 +47,18 @@ window.TraderRecommendationRenderers = {
   actionColumn(row, helpers) {
     const { formatNumber } = helpers;
     const tradeAction = row.trade_action || {};
-    const tradeIntent = this.tradeActionIntent(tradeAction.action);
-    const tradeNote = Number(row.trade_action_stats?.sample_count || 0)
-      ? `${formatNumber(row.trade_action_stats.sample_count, 0)}样本`
-      : "样本不足";
-    return this.actionLine(tradeIntent, tradeAction.label || tradeIntent.label, tradeNote, helpers);
+    const positionSize = Number(tradeAction.position_size);
+    const executionBlocked = row.execution_allowed === false || (Number.isFinite(positionSize) && positionSize <= 0);
+    const tradeIntent = executionBlocked
+      ? this.tradeActionIntent("watch_only")
+      : this.tradeActionIntent(tradeAction.action);
+    const detail = executionBlocked ? (row.tier_label || "备选观察") : (tradeAction.label || tradeIntent.label);
+    const tradeNote = executionBlocked
+      ? "仓位0 · 不执行"
+      : Number(row.trade_action_stats?.sample_count || 0)
+        ? `${formatNumber(row.trade_action_stats.sample_count, 0)}样本`
+        : "样本不足";
+    return this.actionLine(tradeIntent, detail, tradeNote, helpers);
   },
 
   calibrationMetric(stats, primaryKey, fallbackKey) {
@@ -214,7 +221,7 @@ window.TraderRecommendationRenderers = {
       counts.get(action).push(row);
     });
     if (!counts.size) {
-      const emptyText = key === "exit_action" ? "暂无明确卖点" : "暂无动作样本";
+      const emptyText = key === "exit_action" ? "暂无明确卖点" : "暂无可执行买入";
       return `<div class="action-summary-card"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(emptyText)}</span></div>`;
     }
     const lines = [...counts.entries()]
@@ -244,7 +251,7 @@ window.TraderRecommendationRenderers = {
   actionableSummary(rows, helpers) {
     const openRows = this.topActionRows(rows, (row) => {
       const action = row?.trade_action?.action;
-      return action === "buy_confirmed" || action === "buy_small";
+      return row?.execution_allowed !== false && (action === "buy_confirmed" || action === "buy_small");
     }, helpers);
     const chaseRiskRows = this.topActionRows(rows, (row) => {
       const tradeAction = row?.trade_action?.action;
@@ -291,6 +298,7 @@ window.TraderRecommendationRenderers = {
   renderRecommendationActionSummaryHtml(rows, helpers) {
     const { escapeHtml } = helpers;
     const summaryLines = this.actionableSummary(rows, helpers);
+    const executableRows = (rows || []).filter(row => row?.execution_allowed !== false);
     const openLine = this.findSummaryLine(summaryLines, "可开仓") || summaryLines[0] || {
       title: "当前结论",
       text: "暂无明确开仓优势，先观察量价是否继续强化，再决定是否参与。",
@@ -303,7 +311,7 @@ window.TraderRecommendationRenderers = {
         </div>
       `)
       .join("");
-    const buyCard = this.actionSummaryCard("买入动作", rows, "trade_action", (row, count) => {
+    const buyCard = this.actionSummaryCard("买入动作", executableRows, "trade_action", (row, count) => {
       const action = row.trade_action || {};
       const intent = this.tradeActionIntent(action.action);
       return `

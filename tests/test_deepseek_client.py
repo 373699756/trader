@@ -37,6 +37,50 @@ class DeepSeekClientTest(unittest.TestCase):
             {"code": "000003", "name": "样本C", "score": 60, "pct_chg": 1},
         ]
 
+    def test_intraday_provisional_rows_cannot_be_promoted_by_rerank(self):
+        rows = [
+            {
+                **self._rows()[0],
+                "observation_mode": "intraday_provisional",
+                "trade_action": {"action": "watch_only", "position_size": 0.0},
+            }
+        ]
+        llm_records = [
+            {
+                "code": "000001",
+                "llm_score": 95,
+                "tomorrow_up_score": 95,
+                "action": "priority",
+                "penalty": 0,
+                "veto": False,
+                "reason": "模型看多",
+            }
+        ]
+
+        merged, _ = deepseek_client._merge_ranking_rows(rows, llm_records, 0.3, "tomorrow_picks")
+
+        self.assertEqual(merged[0]["deepseek_action"], "watch")
+        self.assertIn("盘中候选仅观察", merged[0]["deepseek_reason"])
+
+    def test_backup_rows_cannot_be_promoted_by_rerank(self):
+        rows = [{**self._rows()[0], "tier": "backup_pool", "tier_label": "备选观察"}]
+        llm_records = [
+            {
+                "code": "000001",
+                "llm_score": 95,
+                "tomorrow_up_score": 95,
+                "action": "priority",
+                "penalty": 0,
+                "veto": False,
+                "reason": "模型看多",
+            }
+        ]
+
+        merged, _ = deepseek_client._merge_ranking_rows(rows, llm_records, 0.3, "tomorrow_picks")
+
+        self.assertEqual(merged[0]["deepseek_action"], "watch")
+        self.assertIn("备选候选仅观察", merged[0]["deepseek_reason"])
+
     def test_rerank_returns_missing_key_without_calling_api(self):
         env = {
             "DEEPSEEK_ENABLED": "1",
@@ -217,8 +261,8 @@ class DeepSeekClientTest(unittest.TestCase):
         self.assertEqual(top["code"], "000001")
         self.assertEqual(top["local_rank"], 2)
         self.assertTrue(top["deepseek_covered"])
-        self.assertEqual(top["deepseek_blend_alpha"], 0.3)
-        self.assertEqual(top["blend_alpha"], 0.3)
+        self.assertEqual(top["deepseek_blend_alpha"], 0.15)
+        self.assertEqual(top["blend_alpha"], 0.15)
         self.assertEqual(top["deepseek_horizon_score"], 96.97)
         self.assertEqual(top["deepseek_event_score"], 76.06)
         self.assertEqual(top["deepseek_event_bonus"], 2.17)

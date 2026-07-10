@@ -4,10 +4,77 @@ from unittest.mock import patch
 import pandas as pd
 
 from stock_analyzer import config
+from stock_analyzer import app_runtime_support as app_runtime
+from stock_analyzer.app_runtime_support import finalize_deepseek_meta
 from stock_analyzer import recommendation_runtime_support as support
 
 
 class RecommendationRuntimeSupportTest(unittest.TestCase):
+    def test_validation_review_waits_for_enough_new_real_days(self):
+        class Store:
+            def list_tuning_runs(self, strategy, limit=30):
+                return [
+                    {
+                        "metrics": {"real_day_count": 7},
+                        "deepseek": {"status": "ok"},
+                    }
+                ]
+
+        with patch.object(config, "DEEPSEEK_VALIDATION_REVIEW_MIN_NEW_DAYS", 5), patch.object(
+            app_runtime,
+            "review_strategy_validation",
+            side_effect=AssertionError("review should be deferred"),
+        ):
+            result = app_runtime.deepseek_validation_review(
+                Store(),
+                "tomorrow_picks",
+                {"real_day_count": 10},
+                20,
+            )
+
+        self.assertEqual(result["status"], "cadence_deferred")
+        self.assertEqual(result["last_review_real_day_count"], 7)
+
+    def test_validation_review_runs_after_five_new_real_days(self):
+        class Store:
+            def list_tuning_runs(self, strategy, limit=30):
+                return [{"metrics": {"real_day_count": 7}, "deepseek": {"status": "ok"}}]
+
+            def live_weight_samples(self, strategy, days=60):
+                return []
+
+        with patch.object(config, "DEEPSEEK_VALIDATION_REVIEW_MIN_NEW_DAYS", 5), patch.object(
+            app_runtime,
+            "review_strategy_validation",
+            return_value={"enabled": True, "status": "ok"},
+        ) as review:
+            result = app_runtime.deepseek_validation_review(
+                Store(),
+                "tomorrow_picks",
+                {"real_day_count": 12},
+                20,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        review.assert_called_once()
+
+    def test_finalize_deepseek_meta_recounts_tomorrow_tiers_after_filtering(self):
+        meta = {
+            "strategy_version": config.TOMORROW_STRATEGY_VERSION,
+            "primary_watch_count": 2,
+            "backup_watch_count": 1,
+        }
+
+        finalize_deepseek_meta(
+            meta,
+            [{"code": "600001", "tier": "backup_pool"}],
+            {"status": "ok", "filtered": 2},
+        )
+
+        self.assertEqual(meta["display_count"], 1)
+        self.assertEqual(meta["primary_watch_count"], 0)
+        self.assertEqual(meta["backup_watch_count"], 1)
+
     def test_market_gate_risk_off_shrinks_rows_and_applies_tomorrow_threshold(self):
         rows = {
             "short_term": [{"code": str(index), "score": 80} for index in range(10)],
@@ -105,6 +172,38 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
         self.assertEqual(meta["tomorrow_picks"]["source"], "deepseek_batch")
         self.assertEqual(meta["swing_picks"]["source"], "deepseek_batch")
 
+    def test_build_recommendation_horizons_fails_safe_when_validation_metrics_are_unavailable(self):
+        with patch.object(
+            support,
+            "score_today_picks",
+            return_value=({"short_term": []}, {"strategy_version": "today_v1"}),
+        ), patch.object(
+            support,
+            "score_tomorrow_picks",
+            return_value=(
+                [{"code": "T1", "score": 88, "tier": "primary_watch", "reasons": []}],
+                {"strategy_version": config.TOMORROW_STRATEGY_VERSION},
+            ),
+        ), patch.object(
+            support,
+            "score_swing_2_5d_picks",
+            return_value=([], {"strategy_version": "swing_v1"}),
+        ), patch.object(config, "ENABLE_DEEPSEEK_MARKET_GATE", False):
+            rows, _, _ = support.build_recommendation_horizons(
+                candidates=None,
+                top_n=5,
+                market="all",
+                market_regime={},
+                hot_ranks={},
+                industry_strength={},
+                sentiment_lookup={},
+                cached_metrics_fn=lambda strategy, days: (_ for _ in ()).throw(RuntimeError("db locked")),
+                apply_deepseek=False,
+            )
+
+        self.assertEqual(rows["tomorrow_picks"][0]["tier"], "backup_pool")
+        self.assertFalse(rows["tomorrow_picks"][0]["execution_allowed"])
+
     def test_prediction_strategy_rows_respects_short_term_override(self):
         with patch.object(
             support,
@@ -138,6 +237,91 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
         self.assertEqual(metas["short_term"]["missed_reason"], "展示裁剪未入榜")
         self.assertEqual(metas["tomorrow_picks"]["strategy_version"], "tomorrow_v1")
         self.assertEqual(metas["swing_picks"]["strategy_version"], "swing_v1")
+
+    def test_prediction_strategy_rows_applies_tomorrow_validation_gate(self):
+        tomorrow_rows = [
+            {
+                "code": "T1",
+                "tier": "primary_watch",
+                "tier_label": "重点观察",
+                "reasons": [],
+            }
+        ]
+        with patch.object(
+            support,
+            "score_today_picks",
+            return_value=({"short_term": []}, {"strategy_version": "today_v1"}),
+        ), patch.object(
+            support,
+            "apply_deepseek_rerank",
+            return_value=([], {"status": "empty"}),
+        ), patch.object(
+            support,
+            "scored_strategy_rows",
+            side_effect=[
+                (tomorrow_rows, {"strategy_version": config.TOMORROW_STRATEGY_VERSION}, {"status": "ok"}),
+                ([], {"strategy_version": "swing_v1"}, {"status": "empty"}),
+            ],
+        ):
+            rows, metas = support.prediction_strategy_rows(
+                candidates=None,
+                top_n=5,
+                market_regime={},
+                hot_ranks={},
+                industry_strength={},
+                sentiment_lookup={},
+                cached_metrics_fn=lambda strategy, days: {
+                    "strategy_name": strategy,
+                    "real_sample_count": 20,
+                    "real_day_count": 20,
+                    "real_avg_primary_return_net": -1.0,
+                    "real_win_rate_primary_net": 20.0,
+                },
+            )
+
+        self.assertEqual(rows["tomorrow_picks"][0]["tier"], "backup_pool")
+        self.assertFalse(rows["tomorrow_picks"][0]["execution_allowed"])
+        self.assertTrue(metas["tomorrow_picks"]["validation_gate"]["blocked"])
+
+    def test_prediction_strategy_rows_fails_safe_when_validation_metrics_are_unavailable(self):
+        tomorrow_rows = [
+            {
+                "code": "T1",
+                "tier": "primary_watch",
+                "tier_label": "重点观察",
+                "reasons": [],
+            }
+        ]
+        with patch.object(
+            support,
+            "score_today_picks",
+            return_value=({"short_term": []}, {"strategy_version": "today_v1"}),
+        ), patch.object(
+            support,
+            "apply_deepseek_rerank",
+            return_value=([], {"status": "empty"}),
+        ), patch.object(
+            support,
+            "scored_strategy_rows",
+            side_effect=[
+                (tomorrow_rows, {"strategy_version": config.TOMORROW_STRATEGY_VERSION}, {"status": "ok"}),
+                ([], {"strategy_version": "swing_v1"}, {"status": "empty"}),
+            ],
+        ):
+            rows, metas = support.prediction_strategy_rows(
+                candidates=None,
+                top_n=5,
+                market_regime={},
+                hot_ranks={},
+                industry_strength={},
+                sentiment_lookup={},
+                cached_metrics_fn=lambda strategy, days: (_ for _ in ()).throw(RuntimeError("db locked")),
+            )
+
+        self.assertEqual(rows["tomorrow_picks"][0]["tier"], "backup_pool")
+        self.assertFalse(rows["tomorrow_picks"][0]["execution_allowed"])
+        self.assertEqual(metas["tomorrow_picks"]["validation_gate"]["state"], "unavailable")
+        self.assertTrue(metas["tomorrow_picks"]["validation_gate"]["blocked"])
 
     def test_finalize_recommendation_payload_meta_adds_stability_and_blacklist_summary(self):
         meta = {}

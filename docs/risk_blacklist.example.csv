@@ -1,4 +1,0 @@
-code,name,level,category,reason,source,date,hard_exclude,expires_at
-000000,示例股票A,critical,financial_fraud,历史财务造假或重大违法强制退市风险示例,证监会处罚决定/交易所纪律处分/公司公告链接,2024-01-01,true,
-000001,示例股票B,high,audit_opinion,审计报告无法表示意见或重大内控缺陷示例,年报/审计报告链接,2024-04-30,true,
-000002,示例股票C,medium,negative_history,历史重大负面舆情仅提高风险分示例,权威新闻/公告链接,2024-06-30,false,2027-06-30

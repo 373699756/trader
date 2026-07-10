@@ -1,389 +1,316 @@
 # 软件设计与运行说明
 
-本文档说明这个软件当前的整体结构、页面组成、数据流、接口、异步刷新和验证保存逻辑。
+本文档是系统架构、接口、数据、调度和运维的唯一说明。荐股规则、收益口径和执行门控见 [strategy_and_prediction.md](strategy_and_prediction.md)。
 
-## 目录
+## 1. 系统边界
 
-- [关键文件索引](#关键文件索引)
-- [1. 软件目标](#1-软件目标)
-- [2. 页面结构](#2-页面结构)
-- [3. 核心模块划分](#3-核心模块划分)
-- [4. 推荐页数据流](#4-推荐页数据流)
-- [5. 明天 / 2-5天单独接口](#5-明天--2-5天单独接口)
-- [6. 策略验证页数据流](#6-策略验证页数据流)
-- [7. 保存逻辑](#7-保存逻辑)
-- [8. 数据与备份](#8-数据与备份)
-- [9. 常用接口](#9-常用接口)
-- [10. 启动与环境变量](#10-启动与环境变量)
-- [11. 当前实现原则](#11-当前实现原则)
-- [12. 常见坑](#12-常见坑)
+项目是一个本地 Flask 看板，负责：
 
-## 关键文件索引
+- 获取和标准化 A 股实时行情与历史日线。
+- 生成盘中观察、明日优先和2-5日持有结果。
+- 可选调用 DeepSeek 做候选风险复核。
+- 保存信号、回填真实收益、执行验证门控和 OOS 调参。
+- 提供个股预测、验证复盘、数据备份和盘后流水线。
 
-后端入口与编排：
+系统不负责实盘下单，也不提供收益保证。
 
-- [stock_analyzer/app.py](/home/c/linux/trader/stock_analyzer/app.py:1)
-- [stock_analyzer/app_runtime_support.py](/home/c/linux/trader/stock_analyzer/app_runtime_support.py:1)
-- [stock_analyzer/recommendation_runtime_support.py](/home/c/linux/trader/stock_analyzer/recommendation_runtime_support.py:1)
-- [stock_analyzer/validation_runtime_support.py](/home/c/linux/trader/stock_analyzer/validation_runtime_support.py:1)
+## 2. 目录与模块
 
-策略与预测：
+### 2.1 HTTP 与运行时编排
 
-- [stock_analyzer/scoring.py](/home/c/linux/trader/stock_analyzer/scoring.py:1)
-- [stock_analyzer/prediction.py](/home/c/linux/trader/stock_analyzer/prediction.py:1)
-- [stock_analyzer/stock_optimization.py](/home/c/linux/trader/stock_analyzer/stock_optimization.py:1)
-- [stock_analyzer/deepseek_client.py](/home/c/linux/trader/stock_analyzer/deepseek_client.py:1)
+| 文件 | 职责 |
+|---|---|
+| [app.py](../stock_analyzer/app.py) | Flask 初始化、路由、缓存、后台刷新和接口响应 |
+| [recommendation_runtime_support.py](../stock_analyzer/recommendation_runtime_support.py) | 三策略编排、批量 DeepSeek、市场 gate、验证 gate |
+| [app_runtime_support.py](../stock_analyzer/app_runtime_support.py) | DeepSeek 接入、复盘节奏、元数据收口 |
+| [app_response_support.py](../stock_analyzer/app_response_support.py) | 统一响应和保存快照兜底 |
+| [validation_runtime_support.py](../stock_analyzer/validation_runtime_support.py) | 自动快照、回填和调参 worker |
 
-页面与前端：
+### 2.2 策略与预测
 
-- [templates/index.html](/home/c/linux/trader/templates/index.html:1)
-- [static/app.js](/home/c/linux/trader/static/app.js:1)
-- [static/styles.css](/home/c/linux/trader/static/styles.css:1)
+| 文件 | 职责 |
+|---|---|
+| [scoring.py](../stock_analyzer/scoring.py) | 候选准备、评分、过滤、分层和风险解释 |
+| [strategies/](../stock_analyzer/strategies) | 三策略稳定入口和名称映射 |
+| [prediction.py](../stock_analyzer/prediction.py) | 个股本地预测与多策略共识 |
+| [stock_optimization.py](../stock_analyzer/stock_optimization.py) | 个股 DeepSeek 优化建议结构 |
+| [portfolio.py](../stock_analyzer/portfolio.py) | 组合仓位、主题和市场暴露限制 |
 
-## 1. 软件目标
+### 2.3 数据与验证
 
-本项目是一个本地 Flask 看板，用公开行情数据生成 A 股推荐候选，并把推荐结果保存到验证库里做持续复盘。
+| 文件 | 职责 |
+|---|---|
+| [providers.py](../stock_analyzer/providers.py) | 实时行情、历史行情和数据源健康状态 |
+| [market_data.py](../stock_analyzer/market_data.py) | 本地历史日线下载和存储 |
+| [factors.py](../stock_analyzer/factors.py) | 历史量价因子计算 |
+| [factor_snapshot.py](../stock_analyzer/factor_snapshot.py) | 因子快照生成 |
+| [factor_ic.py](../stock_analyzer/factor_ic.py) | 因子 IC 统计 |
+| [strategy_validation.py](../stock_analyzer/strategy_validation.py) | 信号、收益、跳过记录、DeepSeek 归因和 stance 数据库 |
+| [validation_replay.py](../stock_analyzer/validation_replay.py) | 当前生产逻辑的历史回放 |
+| [calibrate.py](../stock_analyzer/calibrate.py) | walk-forward OOS 权重校准 |
 
-结果只用于研究，不构成投资建议，也不保证盈利。
+### 2.4 DeepSeek
 
-当前保留功能：
+| 文件 | 职责 |
+|---|---|
+| [deepseek_client.py](../stock_analyzer/deepseek_client.py) | API 配置、缓存、批量复核、JSON 解析和降级 |
+| [deepseek_scheduler.py](../stock_analyzer/deepseek_scheduler.py) | 交易时段槽位、按需调用、每日限额和结果复用 |
+| [deepseek_rules.py](../stock_analyzer/deepseek_rules.py) | 已确认规则的结构化应用 |
 
-- 三类荐股：今天推荐、明天推荐、2-5 天推荐
-- 每类最多展示 18 支；如果没有满足条件的股票，可以空推荐
-- 策略验证：按日期查看历史保存批次、样本表现、股票明细
-- 自动保存：交易日 14:30 后按配置间隔保存当天三类推荐，15:00 后使用收盘价作为锚点
-- DeepSeek：参与三类推荐的候选复核、风险降权、剔除理由、每日复盘和影子调参建议
-- 个股预测：输入股票代码，返回本地预测和 DeepSeek 优化建议
+### 2.5 前端
 
-## 2. 页面结构
+| 文件 | 职责 |
+|---|---|
+| [templates/index.html](../templates/index.html) | 推荐池和策略验证页面骨架 |
+| [static/app.js](../static/app.js) | 请求、状态、缓存和页面交互 |
+| [static/recommendation-renderers.js](../static/recommendation-renderers.js) | 推荐动作与解释渲染 |
+| [static/recommendation-tables.js](../static/recommendation-tables.js) | 三策略表格行渲染 |
+| [static/validation-ui.js](../static/validation-ui.js) | 验证结论和策略标签 |
+| [static/validation-renderers.js](../static/validation-renderers.js) | 验证批次与收益字段渲染 |
+| [static/styles.css](../static/styles.css) | 页面布局和状态样式 |
 
-当前 UI 只有两个主页面：
+## 3. 页面结构
 
-- 推荐池
-- 策略验证
+系统只有两个主面板：
 
-模板文件：
+### 3.1 推荐池
 
-- [templates/index.html](/home/c/linux/trader/templates/index.html:1)
+- 顶部显示行情源、候选数、历史因子覆盖、硬过滤、大盘和风险黑名单状态。
+- 动作汇总只统计 `execution_allowed=true` 的可执行买入动作。
+- 三个周期页签是“盘中观察”“明日优先”“2-5日持有”。
+- 严格池为空或验证门控失败时仍可显示备选，但动作列明确显示“仓位0、不执行”。
 
-### 2.1 推荐池
+### 3.2 策略验证
 
-推荐池页面当前结构：
+- 切换策略和20/60/120日统计窗口。
+- 显示当前策略后端 `validation_gate` 的一句话结论。
+- 指标优先使用真实交易日聚合口径，并同时显示真实日数和样本条数。
+- 查看保存批次、真实/回放类型、主收益、成本、执行跳过和锚点变化。
+- 股票预测与 DeepSeek 优化结果共用工具结果区。
 
-- 顶部状态条
-- 顶部动作汇总区 `recommendationActionSummary`
-- 周期切换按钮：
-  - `今天`
-  - `明天`
-  - `2-5天`
-- 三组表格：
-  - `shortTermBody`
-  - `tomorrowBody`
-  - `swingBody`
-
-### 2.2 策略验证
-
-策略验证页当前结构：
-
-- 顶部策略切换
-- 统计窗口选择
-- 顶部工具区
-- 当前批次一句话结论
-- 统计卡片
-- 保存批次分页
-- 股票明细表
-
-其中顶部工具区已经改成双列：
-
-- 左列：
-  - 股票代码输入
-  - `预测`
-  - `DeepSeek 优化建议`
-- 右列：
-  - 共享结果区 `toolResultPane`
-
-也就是说，预测结果和优化建议统一显示在同一个结果区域，不再拆成两个独立结果卡。
-
-## 3. 核心模块划分
-
-### 3.1 路由与页面入口
-
-文件：
-
-- [stock_analyzer/app.py](/home/c/linux/trader/stock_analyzer/app.py:1)
-
-职责：
-
-- Flask 应用初始化
-- HTTP 路由
-- 推荐页数据入口
-- horizon 接口入口
-- 策略验证接口入口
-- 个股预测接口入口
-
-### 3.2 推荐编排层
-
-文件：
-
-- [stock_analyzer/recommendation_runtime_support.py](/home/c/linux/trader/stock_analyzer/recommendation_runtime_support.py:1)
-
-职责：
-
-- 三类本地策略调用
-- DeepSeek rerank 挂接
-- 推荐结果分 horizon 组织
-- 推荐 meta 汇总
-
-### 3.3 运行时支撑层
-
-文件：
-
-- [stock_analyzer/app_runtime_support.py](/home/c/linux/trader/stock_analyzer/app_runtime_support.py:1)
-
-职责：
-
-- DeepSeek rerank 接入与降级
-- DeepSeek 验证复盘接入与降级
-- 个股预测优化接入与降级
-- 风险黑名单摘要等 runtime 级辅助逻辑
-
-### 3.4 本地预测与个股优化
-
-文件：
-
-- [stock_analyzer/prediction.py](/home/c/linux/trader/stock_analyzer/prediction.py:1)
-- [stock_analyzer/stock_optimization.py](/home/c/linux/trader/stock_analyzer/stock_optimization.py:1)
-
-职责：
-
-- 本地个股预测聚合
-- 个股 DeepSeek 优化建议
-
-### 3.5 DeepSeek 客户端
-
-文件：
-
-- [stock_analyzer/deepseek_client.py](/home/c/linux/trader/stock_analyzer/deepseek_client.py:1)
-
-职责：
-
-- DeepSeek 运行时配置
-- 缓存与 JSON 解析
-- 候选池 rerank
-- 策略验证复盘
-
-### 3.6 前端
-
-文件：
-
-- [static/app.js](/home/c/linux/trader/static/app.js:1)
-- [static/styles.css](/home/c/linux/trader/static/styles.css:1)
-
-职责：
-
-- 页面切换
-- 推荐池按钮切换
-- 推荐表格渲染
-- 策略验证页异步加载
-- 顶部工具区交互
-- 共享结果区渲染
-
-## 4. 推荐页数据流
+## 4. 推荐请求数据流
 
 ### 4.1 总入口
 
-接口：
-
-- `GET /api/recommendations?top_n=18&market=all`
-
-主链路：
-
 ```text
-/api/recommendations
-  -> _recommendations_payload()
-  -> _build_recommendations_payload(include_deepseek=False 或 True)
+GET /api/recommendations
+  -> 读取内存缓存或本地推荐快照
+  -> 无可用结果时先同步生成纯本地候选
+  -> 后台刷新历史因子、DeepSeek 和完整元数据
   -> build_recommendation_horizons()
-  -> 返回推荐结果和 meta
+  -> 应用市场 gate、策略验证 gate 和响应收口
 ```
 
-### 4.2 为什么推荐页能先快返回
+推荐接口不应同步等待所有慢数据。缓存或快照存在时立即返回，并在过期、阶段不完整或行情变化后调度后台刷新。
 
-推荐总入口不是每次都同步等 DeepSeek。
+### 4.2 单策略入口
 
-当前逻辑是：
+`/api/tomorrow-picks` 和 `/api/swing-picks` 的读取优先级：
 
-1. 如果已有缓存 / 快照，先直接返回
-2. 后台异步刷新真正带 DeepSeek 的结果
-3. 首次没有 ready 结果时，先用 `include_deepseek=False` 返回本地结果
-4. 再调度后台刷新 DeepSeek 版结果
+1. 当前进程的 horizon 缓存。
+2. 最近保存的验证快照。
+3. 返回 `async_refresh_pending` 空占位，同时后台刷新。
 
-也就是：
+明日优先保存快照兜底也必须重新应用当前验证门控，不能让旧重点推荐绕过新门控。
 
-```text
-先返回本地结果
-  -> 后台异步算带 DeepSeek 的推荐
-  -> 下次请求命中 ready 缓存
-```
+### 4.3 SSE
 
-## 5. 明天 / 2-5天单独接口
+`/api/recommendations/stream` 推送推荐快照变化。前端仍保留普通 HTTP 加载和定时刷新，SSE 不是唯一可用路径。
 
-接口：
+## 5. 缓存与并发
 
-- `GET /api/tomorrow-picks?top_n=18&market=all`
-- `GET /api/swing-picks?top_n=18&market=all`
+系统使用进程内锁和后台线程避免重复慢请求：
 
-主逻辑在 [stock_analyzer/app.py](/home/c/linux/trader/stock_analyzer/app.py:821) 的 `_horizon_payload(...)`。
+- 推荐总入口和 horizon 接口分别维护缓存、刷新中集合和快照信息。
+- 同一缓存键只允许一个后台刷新线程。
+- 验证指标按策略和窗口短时缓存；信号保存或收益回填后必须失效。
+- 历史因子请求只同步读取本地库，缺失代码最多分批调度后台下载。
+- DeepSeek 使用磁盘响应缓存和交易日调度状态，候选签名未变化时复用上次结果。
 
-当前返回优先级：
+所有后台失败都应写入 `health`、`meta` 或状态字段，不允许未捕获线程异常中断主请求。
 
-1. 先读内存缓存
-2. 没有缓存则立即调度后台刷新
-3. 如果有最近保存的验证记录，则先返回保存结果
-4. 如果保存结果也没有，则返回空列表 + `async_refresh_pending`
+## 6. HTTP 接口
 
-因此这两个接口允许：
+### 6.1 推荐与健康
 
-- 先显示最近保存结果
-- 后台再异步刷新
-- 没数据时先空占位，但不中断页面
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/` | 页面入口 |
+| GET | `/api/recommendations` | 三策略总结果 |
+| GET | `/api/recommendations/latest` | 最近推荐快照 |
+| GET | `/api/recommendations/stream` | SSE 推荐更新 |
+| GET | `/api/tomorrow-picks` | 明日优先单策略 |
+| GET | `/api/swing-picks` | 2-5日持有单策略 |
+| GET | `/api/health` | 数据源、因子和 DeepSeek 调度状态 |
 
-当前 fallback/source 可能出现：
+常用参数是 `top_n` 和 `market=all|main|chinext|star`。`top_n` 还会受服务端展示上限约束。
 
-- `memory_cache`
-- `saved_snapshot`
-- `async_refresh_pending`
+### 6.2 个股预测
 
-## 6. 策略验证页数据流
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/stock-prediction/<code>` | 本地个股预测；`deepseek=1` 才请求优化建议 |
+| GET | `/api/stock-prediction/stance-validation` | stance 回填统计 |
+| POST | `/api/stock-prediction/stance-validation/update` | 更新 stance 结果 |
 
-### 6.1 验证对象
+### 6.3 策略验证
 
-只验证三类荐股策略：
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/strategy-validation` | 批次列表、指标、后端门控和 DeepSeek 归因 |
+| GET | `/api/strategy-validation/daily` | 某日股票明细 |
+| POST | `/api/strategy-validation/snapshot` | 手动保存策略快照 |
+| POST | `/api/strategy-validation/update` | 回填真实收益 |
+| GET | `/api/strategy-validation/auto-update-status` | 自动任务状态 |
+| POST | `/api/strategy-validation/prefetch-history` | 预取历史行情 |
+| POST | `/api/strategy-validation/backfill-samples` | 生成生产逻辑回放样本 |
+| GET/POST | `/api/strategy-validation/tuning` | 查看或生成影子调参建议 |
 
-- `short_term`
-- `tomorrow_picks`
-- `swing_picks`
+`GET /api/strategy-validation` 不触发 DeepSeek 复盘，只返回已保存的复盘结果。
 
-页面顶部三个按钮切换策略后，以下内容都必须联动：
+### 6.4 研究接口
 
-- 日期批次
-- 统计卡片
-- 股票明细
-- DeepSeek 复盘
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/tomorrow-iteration` | 明日策略校准 dry-run |
+| POST | `/api/tomorrow-iteration/apply` | 显式应用通过门控的迭代结果 |
+| GET | `/api/backtest` | 独立 AlphaLite 研究回测 |
 
-### 6.2 顶部工具区
+`/api/backtest` 返回 `scope=alphalite_research` 和 `production_strategy_validation=false`，不能替代生产策略验证。
 
-顶部工具区当前是共享结果模式：
+## 7. 验证数据库
 
-- 左侧两个动作入口：
-  - `预测`
-  - `DeepSeek 优化建议`
-- 右侧统一结果区：
-  - `toolResultPane`
+默认数据库是 `.runtime/strategy_validation.sqlite3`，由 `StrategyValidationStore` 幂等初始化。主要数据域：
 
-这部分的目的是：
+- `strategy_signal_batches`：策略、版本和信号时间批次。
+- `strategy_signals`：股票、排名、信号价格和完整 `raw_json`。
+- `strategy_outcomes`：次日、固定持有期、动态退出和回撤结果。
+- `strategy_execution_skips`：涨停不可买、高开追涨等执行剔除。
+- `strategy_deepseek_shadow_signals/outcomes`：被 DeepSeek 剔除样本的反事实结果。
+- `deepseek_market_gate_reviews`：大盘判断及事后命中率。
+- `strategy_tuning_runs`：本地指标、DeepSeek 复盘和调参门控。
+- `stock_prediction_snapshots/outcomes`：可选的个股 stance 跟踪。
 
-- 避免重复卡片
-- 让预测结果和优化建议都落在同一个阅读区域
-- 保持顶部区域稳定，不因结果类型切换出现明显跳动
+策略指标必须隔离当前生产版本、当前回放版本和旧版本。真实样本、回放样本、主推样本和备选样本分别统计。
 
-### 6.3 异步加载要求
+## 8. 本地文件
 
-策略验证页的性能目标：
+| 路径 | 内容 |
+|---|---|
+| `.runtime/latest_quotes.json` | 最近行情快照 |
+| `.runtime/latest_recommendations.json` | 最近推荐快照 |
+| `.runtime/recommendation_state.json` | 推荐稳定性状态 |
+| `.runtime/market_data.sqlite3` | 历史日线 |
+| `.runtime/history_cache.sqlite3` | 按需历史缓存 |
+| `.runtime/factor_snapshots.sqlite3` | 因子快照 |
+| `.runtime/factor_ic.json` | 因子 IC |
+| `.runtime/deepseek_cache.json` | DeepSeek 响应缓存 |
+| `.runtime/deepseek_schedule.json` | 当日调用槽位、限额和用量 |
+| `.runtime/deepseek_attribution.json` | DeepSeek 归因摘要 |
+| `.runtime/weights.json` | 人工确认后的权重和策略 alpha 覆盖 |
+| `.runtime/risk_blacklist.json/.csv` | 用户维护的风险黑名单 |
 
-- 页面刷新进入策略验证时，先轻量加载日期批次
-- 指标、明细、DeepSeek 复盘异步加载
-- 切换今天、明天、2-5 天不应重新跑荐股流
-- 几十条验证数据不应出现 30 秒级等待
+运行时文件不应作为源码回滚依据；数据库 schema 变更必须使用幂等建表或 `ALTER` 迁移。
 
-当前还允许：
+## 9. 自动任务
 
-- 明天 / 2-5 天如果实时结果尚未完成，先显示最近保存结果或空占位，并标记后台刷新中
+### 9.1 进程内 worker
 
-## 7. 保存逻辑
+- 自动收益回填默认开启，从14:30开始按600秒间隔运行。
+- 自动快照默认开启，15:00后使用收盘锚点。
+- 默认生产策略集合 `ACTIVE_STRATEGIES` 只有 `tomorrow_picks` 和 `swing_picks`；盘中观察不自动保存为可执行样本。
+- 收盘锚点不完整时拒绝把该批次保存为正式回溯锚点。
+- DeepSeek 验证复盘按新增真实交易日节流，默认每新增5日才允许再次调用。
 
-验证库只保存三类策略：
+### 9.2 盘后流水线
 
-- `short_term`
-- `tomorrow_picks`
-- `swing_picks`
-
-保存逻辑：
-
-- 14:30 后自动按配置间隔保存三类推荐快照
-- 同一天同策略只保留最后一次批次
-- 每类最多保存 18 支；不满足条件可以保存 0 支空批次
-- 15:00 后运行时，使用当天收盘价作为锚点
-- 如果 15:00 后无法取得收盘锚点，拒绝保存为真实回溯锚点
-- 保存成功后自动备份验证数据库
-
-## 8. 数据与备份
-
-- 验证数据库：`.runtime/strategy_validation.sqlite3`
-- 自动备份目录：`.runtime/backups`
-- 备份列表：`.venv/bin/python -m stock_analyzer.daily_job --list-validation-backups`
-- 还原备份：`.venv/bin/python -m stock_analyzer.daily_job --restore-validation <backup-file>`
-
-## 9. 常用接口
-
-- `GET /api/recommendations?top_n=18&market=all`
-- `GET /api/tomorrow-picks?top_n=18&market=all`
-- `GET /api/swing-picks?top_n=18&market=all`
-- `GET /api/stock-prediction/<code>`
-- `GET /api/strategy-validation?strategy=tomorrow_picks`
-- `GET /api/strategy-validation/tuning?strategy=tomorrow_picks`
-- `POST /api/strategy-validation/tuning?strategy=tomorrow_picks`
-
-其中 `market=all` 表示 A 股主板+创业板+科创板。
-
-## 10. 启动与环境变量
-
-启动：
+推荐使用：
 
 ```bash
-chmod +x run.sh
+./run.sh after-close --strategy all
+```
+
+完整流水线按顺序执行：
+
+1. 下载或更新历史日线。
+2. 保存明日优先和2-5日持有快照。
+3. 回填已成熟收益和执行跳过。
+4. 刷新因子快照。
+5. 刷新因子 IC。
+6. 备份验证数据库。
+
+普通办公 PC 可用 `--market-data-limit` 分批下载，避免一次处理全市场。
+
+## 10. DeepSeek 运行配置
+
+DeepSeek 配置同时受 [config.py](../stock_analyzer/config.py) 和环境变量控制。关键默认值：
+
+```text
+ENABLE_DEEPSEEK_RUNTIME=1
+DEEPSEEK_ENABLED=<存在 API key 时自动开启>
+DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_PRO_MODEL=deepseek-v4-pro
+DEEPSEEK_BLEND_ALPHA=0.15
+DEEPSEEK_BATCH_REVIEW_LIMIT=15
+DEEPSEEK_CACHE_ENABLED=1
+DEEPSEEK_CACHE_TTL_SECONDS=86400
+DEEPSEEK_SCHEDULE_ENABLED=1
+DEEPSEEK_SCHEDULE_STRATEGIES=tomorrow_picks
+DEEPSEEK_DAILY_CALL_CAP=11
+DEEPSEEK_DAILY_PRO_CALL_CAP=1
+ENABLE_DEEPSEEK_NEWS_CONTEXT=0
+ENABLE_DEEPSEEK_MARKET_GATE=0
+```
+
+调度规则：早盘和午后14:30前按半小时槽位，14:30-15:00按需调用并设置最短间隔。每日计数、模型层级、token 用量和最近结果保存在调度状态文件中。
+
+## 11. 启动、备份与恢复
+
+启动服务：
+
+```bash
 ./run.sh
 ```
 
-默认地址：
+默认地址是 `http://127.0.0.1:5000`。`run.sh` 使用项目 `.venv`，并负责代理探测和依赖环境检查。
 
-```text
-http://127.0.0.1:5000
-```
-
-常用环境变量：
+验证库备份：
 
 ```bash
-PORT=5050 ./run.sh
-ENABLE_HISTORY_FACTORS=1 ./run.sh
-VALIDATION_AUTO_SNAPSHOT_TIME=15:00 ./run.sh
-VALIDATION_AUTO_UPDATE_START_TIME=14:30 ./run.sh
-VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS=600 ./run.sh
-ENABLE_DEEPSEEK_RUNTIME=1 ./run.sh
+.venv/bin/python -m stock_analyzer.daily_job --backup-validation
+.venv/bin/python -m stock_analyzer.daily_job --list-validation-backups
 ```
 
-DeepSeek 接口约定：
+恢复前会自动备份当前数据库：
 
-- `DEEPSEEK_BASE_URL`
-- `DEEPSEEK_MODEL`
-- `DEEPSEEK_PRO_MODEL`
+```bash
+.venv/bin/python -m stock_analyzer.daily_job --restore-validation <backup-file>
+```
 
-当前仅使用 DeepSeek v4 系列（`deepseek-v4-flash`、`deepseek-v4-pro`）。
+不要直接覆盖正在使用的 SQLite 文件，也不要删除 `.runtime` 来解决指标不一致；应先确认策略版本、批次和迁移状态。
 
-## 11. 当前实现原则
+## 12. 测试与维护
 
-这套软件当前遵循三条原则：
+完整测试：
 
-1. 本地策略先出结果，DeepSeek 只做增强层
-2. 页面优先可用，异步补齐慢结果
-3. 验证与调参只做影子建议，不自动改正式策略
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q
+```
 
-## 12. 常见坑
+前端 JavaScript 语法检查：
 
-- 前端 `res.json()` 报错，不一定是前端问题。很多时候是后端抛异常后返回了 HTML 500 页面，前端把 HTML 当 JSON 解析才报错。
-- 策略验证页如果出现 `JSON.parse` / `unexpected character`，先直接检查对应接口是否真的返回 `application/json`。
-- `app.py` 里如果删掉类似 `storage_strategy_name` 这类规范化函数的导入，常见表现不是页面白屏，而是某个接口 silently 变成 Werkzeug 调试页。
-- 推荐页和验证页很多地方是“先轻量返回，再异步刷新”，所以“先看到空占位 / 最近保存结果”不一定是错，先看接口返回里的 `snapshot.source` / `fallback`。
-- DeepSeek 相关问题优先区分三层：
-  - runtime 是否开启
-  - 是否命中缓存 / fallback
-  - 是候选 rerank 问题，还是验证复盘问题，还是个股优化问题
+```bash
+node --check static/app.js
+node --check static/recommendation-renderers.js
+node --check static/validation-ui.js
+node --check static/validation-renderers.js
+```
+
+维护要求：
+
+- 路由、配置默认值、策略名称或数据流变化时更新本文档。
+- 业务收益和执行规则只写入 `strategy_and_prediction.md`，不要在本文档复制第二套解释。
+- 新增慢调用必须有缓存、超时、并发去重和本地降级。
+- 新增验证字段必须同时覆盖保存、回填、指标、接口、前端和测试。
+- 不允许验证页 GET 隐式触发收费调用。
+- 不允许旧缓存文本绕过 `execution_allowed`、验证门控或组合过滤。

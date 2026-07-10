@@ -23,6 +23,7 @@ from .app_response_support import (
 from .backtest import parse_code_list, run_alphalite_backtest, run_rolling_alphalite_backtest
 from .daily_data import list_market_data_codes
 from .deepseek_client import review_strategy_validation  # compatibility alias for existing tests/local imports
+from .deepseek_scheduler import deepseek_schedule_status
 from .event_risk import attach_event_risk, load_event_risk
 from .factor_ic import load_factor_ic
 from .fundamentals import attach_fundamental_factors, load_fundamentals
@@ -46,14 +47,17 @@ from .scoring import (
 from .app_support import (
     attach_alphalite_factors,
     attach_alphalite_factors_for_codes,
+    apply_strategy_validation_gate,
     apply_tomorrow_validation_gate,
     attach_validation_summary,
     candidate_code_rows,
+    demote_strategy_rows_to_backup,
     load_local_history_frames,
     market_news as fetch_market_news,
     quote_lookup,
     sentiment_for_candidates,
     stock_exists_in_quotes,
+    strategy_validation_gate_decision,
     validation_batch_summary,
 )
 from .strategies import storage_strategy_name
@@ -78,7 +82,7 @@ from .validation_runtime_support import (
 )
 
 
-ACTIVE_SNAPSHOT_STRATEGIES = tuple(config.SNAPSHOT_STRATEGIES)
+ACTIVE_SNAPSHOT_STRATEGIES = tuple(config.ACTIVE_STRATEGIES)
 
 _VALIDATION_AUTO_WORKERS = set()
 _VALIDATION_AUTO_WORKERS_LOCK = threading.Lock()
@@ -156,6 +160,7 @@ def create_app() -> Flask:
         saved_deepseek_review = (latest_tuning.get("deepseek") or {}) if latest_tuning else {}
         value = {
             "metrics": metrics,
+            "validation_gate": strategy_validation_gate_decision(metrics, strategy_name),
             "deepseek_attribution": deepseek_attribution_by_strategy.get(strategy_name, {}),
             "deepseek_attribution_by_strategy": deepseek_attribution_by_strategy,
             "deepseek_market_gate": validation_store.market_gate_metrics(days=days),
@@ -517,12 +522,19 @@ def create_app() -> Flask:
             market=market,
             market_regime=market_regime,
         )
-        if strategy == "tomorrow_picks":
-            metrics = cached_metrics("tomorrow_picks", 20)
-            apply_tomorrow_validation_gate(rows, meta, metrics)
-            attach_validation_summary(rows, validation_store, "tomorrow_picks", metrics_fn=cached_metrics)
-        else:
-            attach_validation_summary(rows, validation_store, "swing_picks", metrics_fn=cached_metrics)
+        try:
+            metrics = cached_metrics(strategy, 20)
+            apply_strategy_validation_gate(strategy, rows, meta, metrics)
+        except Exception as exc:
+            reason = "验证指标读取失败，暂停执行并仅保留备选：{}".format(exc)
+            meta["validation_gate"] = {
+                "state": "unavailable",
+                "blocked": True,
+                "allows_backup": True,
+                "reason": reason,
+            }
+            demote_strategy_rows_to_backup(strategy, rows, meta, reason)
+        attach_validation_summary(rows, validation_store, strategy, metrics_fn=cached_metrics)
         meta["market_regime"] = market_regime
         meta["factor_coverage"] = coverage
         payload = response_payload(
@@ -846,7 +858,7 @@ def create_app() -> Flask:
                     "display_limit": top_n,
                     "top_n": top_n,
                     "market_filter": market,
-                    "strategy_label": "明天推荐" if strategy == "tomorrow_picks" else "2-5天推荐",
+                    "strategy_label": "明日优先" if strategy == "tomorrow_picks" else "2-5日持有",
                     "strategy": "实时行情刷新失败",
                     "fallback": "live_refresh_failed",
                 },
@@ -904,8 +916,8 @@ def create_app() -> Flask:
                 "top_n": top_n,
                 "market_filter": market,
                 "strategy_version": "swing_picks_v1",
-                "strategy_label": "2-5天推荐",
-                "strategy": "后台刷新中，先显示最近保存的 2-5 天推荐",
+                "strategy_label": "2-5日持有",
+                "strategy": "后台刷新中，先显示最近保存的2-5日持有推荐",
                 "fallback": "saved_snapshot",
             },
         )
@@ -946,7 +958,7 @@ def create_app() -> Flask:
                 "display_limit": top_n,
                 "top_n": top_n,
                 "market_filter": market,
-                "strategy_label": "明天推荐" if strategy == "tomorrow_picks" else "2-5天推荐",
+                "strategy_label": "明日优先" if strategy == "tomorrow_picks" else "2-5日持有",
                 "strategy": "后台刷新中",
                 "fallback": "async_refresh_pending",
             },
@@ -1060,6 +1072,7 @@ def create_app() -> Flask:
                     "fundamentals_status": load_fundamentals(provider).get("status", "disabled"),
                     "generated_at": load_factor_ic().get("generated_at", ""),
                 },
+                "deepseek_schedule": deepseek_schedule_status(),
                 "health": provider_health,
             }
         )
@@ -1116,6 +1129,7 @@ def create_app() -> Flask:
                 sentiment_lookup=prediction_sentiment_lookup,
                 short_term_rows_override=short_term_snapshot_rows,
                 short_term_meta_override=short_term_snapshot_meta,
+                cached_metrics_fn=cached_metrics,
             )
             fallback_history = None
             fallback_error = ""
@@ -1519,6 +1533,9 @@ def create_app() -> Flask:
                 lookback_days=lookback_days,
                 rebalance_step=rebalance_step,
             )
+        result["scope"] = "alphalite_research"
+        result["production_strategy_validation"] = False
+        result["warning"] = "独立 AlphaLite 研究回测，不代表明日优先或2-5日生产策略收益。"
         return jsonify(result)
 
     return app

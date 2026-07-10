@@ -133,7 +133,7 @@ def _coerce_env_config() -> Dict[str, object]:
         "validation_timeout_seconds": max(3.0, _env_float("DEEPSEEK_VALIDATION_TIMEOUT_SECONDS", 10.0)),
         "validation_retry_count": max(0, _env_int("DEEPSEEK_VALIDATION_RETRY_COUNT", 0)),
         "retry_base_delay": max(0.2, _env_float("DEEPSEEK_RETRY_BASE_DELAY", 0.8)),
-        "blend_alpha": max(0.0, min(1.0, _env_float("DEEPSEEK_BLEND_ALPHA", 0.30))),
+        "blend_alpha": max(0.0, min(1.0, _env_float("DEEPSEEK_BLEND_ALPHA", 0.15))),
         "batch_review_limit": max(5, min(15, _env_int("DEEPSEEK_BATCH_REVIEW_LIMIT", 15))),
         "cascade_filter_enabled": bool(getattr(config, "DEEPSEEK_CASCADE_FILTER_ENABLED", True)),
         "cascade_max_review": max(3, min(15, int(getattr(config, "DEEPSEEK_CASCADE_MAX_REVIEW", 8)))),
@@ -1037,6 +1037,17 @@ def _merge_ranking_rows(
                 base_score - coerce_number(factor_review.get("penalty"), 0.0) - rule_penalty,
                 2,
             )
+        is_observation = (
+            next_row.get("tier") == "backup_pool"
+            or next_row.get("observation_mode") == "intraday_provisional"
+        )
+        if is_observation and next_row.get("deepseek_action") != "avoid":
+            next_row["deepseek_action"] = "watch"
+            observation_label = "盘中候选" if next_row.get("observation_mode") == "intraday_provisional" else "备选候选"
+            next_row["deepseek_reason"] = "{}仅观察；{}".format(
+                observation_label,
+                str(next_row.get("deepseek_reason") or "等待14:30后确认")
+            )
         merged.append(next_row)
 
     gated = []
@@ -1146,6 +1157,8 @@ def rerank_candidates(
     rows: List[Dict[str, object]],
     strategy_name: str,
     market_filter: str = "all",
+    model_tier_override: str = "",
+    review_limit_override: int = 0,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     strategy_name = storage_strategy_name(strategy_name)
     config = _coerce_env_config()
@@ -1159,7 +1172,8 @@ def rerank_candidates(
         return rows, {"enabled": False, "status": "strategy_not_enabled", "strategy": strategy_name}
 
     total = len(rows)
-    review_limit = min(int(config["review_limit"]), total)
+    configured_review_limit = int(review_limit_override or config["review_limit"])
+    review_limit = min(configured_review_limit, total)
     if total < 3:
         return rows, {"enabled": True, "status": "insufficient_rows", "requested": total}
 
@@ -1169,7 +1183,9 @@ def rerank_candidates(
     pool = _attach_news_context(pool)
     rows = _merge_review_context(rows, pool)
 
-    use_pro = str(strategy_name) in config["pro_strategies"]
+    use_pro = model_tier_override == "pro" or (
+        model_tier_override not in {"base", "pro"} and str(strategy_name) in config["pro_strategies"]
+    )
     selected_model = str(config["pro_model"] if use_pro else config["model"])
     model_tier = "pro" if use_pro else "base"
     blend_alpha = _strategy_blend_alpha(strategy_name, float(config["blend_alpha"]))
@@ -1311,6 +1327,8 @@ def rerank_candidates(
 def rerank_candidates_batch(
     rows_by_strategy: Dict[str, List[Dict[str, object]]],
     market_filter: str = "all",
+    model_tier_override: str = "",
+    review_limit_override: int = 0,
 ) -> Tuple[Dict[str, List[Dict[str, object]]], Dict[str, Dict[str, object]]]:
     config = _coerce_env_config()
     normalized_rows = {
@@ -1335,7 +1353,8 @@ def rerank_candidates_batch(
     active_rows: Dict[str, List[Dict[str, object]]] = {}
     active_alphas: Dict[str, float] = {}
     active_cascade: Dict[str, Dict[str, object]] = {}
-    batch_limit = min(int(config["review_limit"]), int(config.get("batch_review_limit") or 15))
+    configured_review_limit = int(review_limit_override or config["review_limit"])
+    batch_limit = min(configured_review_limit, int(config.get("batch_review_limit") or 15))
     for strategy_name, rows in normalized_rows.items():
         total = len(rows)
         if strategy_name not in _SUPPORTED_STRATEGIES:
@@ -1406,8 +1425,9 @@ def rerank_candidates_batch(
     if not active_payloads:
         return result_rows, meta_by_strategy
 
-    selected_model = str(config["model"])
-    model_tier = "base"
+    use_pro = model_tier_override == "pro"
+    selected_model = str(config["pro_model"] if use_pro else config["model"])
+    model_tier = "pro" if use_pro else "base"
     request_input = {
         "schema": _CACHE_SCHEMA_VERSION,
         "kind": "batch_rerank",

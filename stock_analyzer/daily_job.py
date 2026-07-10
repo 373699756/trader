@@ -95,7 +95,12 @@ def main() -> int:
 
     provider = MarketDataProvider()
     store = StrategyValidationStore(config.VALIDATION_DB_PATH)
-    strategies = _parse_strategies(args.strategy, SNAPSHOT_STRATEGIES)
+    strategy_defaults = (
+        config.ACTIVE_STRATEGIES
+        if str(args.strategy or "all").strip().lower() == "all"
+        else SNAPSHOT_STRATEGIES
+    )
+    strategies = _parse_strategies(args.strategy, strategy_defaults)
     payload = {
         "ok": True,
         "market_data": {},

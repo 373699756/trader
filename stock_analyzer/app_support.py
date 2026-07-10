@@ -12,12 +12,14 @@ from .fundamentals import attach_fundamental_factors, load_fundamentals
 from .normalization import coerce_number
 from .normalization import normalize_code, rename_known_columns
 from .risk_blacklist import attach_risk_blacklist, load_risk_blacklist
-from .scoring import prepare_candidates
+from .scoring import mark_backup_watch, prepare_candidates
 from .sentiment import score_stock_sentiment
 from .strategy_health import strategy_status
 from .strategy_validation import StrategyValidationStore, _primary_return_config
 
 _SENTIMENT_CACHE_LOCK = threading.Lock()
+_HISTORY_REFRESH_LOCK = threading.Lock()
+_HISTORY_REFRESHING = set()
 
 
 def load_local_history_frames(codes, days: int = 90) -> Dict[str, pd.DataFrame]:
@@ -118,9 +120,9 @@ def attach_alphalite_factors(provider, cache, candidates):
         config.HISTORY_FACTOR_LIMIT
     )["code"].tolist()
     history_by_code.update(load_local_history_frames(target_codes, days=90))
-    request_fetches = 0
     max_request_fetches = max(0, int(getattr(config, "HISTORY_FACTORS_MAX_REQUEST_FETCHES", 8)))
     fetch_on_request = bool(getattr(config, "HISTORY_FACTORS_FETCH_ON_REQUEST", False))
+    missing_codes = []
     for code in target_codes:
         if code in history_by_code:
             continue
@@ -129,15 +131,59 @@ def attach_alphalite_factors(provider, cache, candidates):
                 history = provider.get_cached_history(code, days=90)
             else:
                 history = None
-            if (history is None or history.empty) and fetch_on_request and request_fetches < max_request_fetches:
-                history = provider.get_history(code, days=90)
-                request_fetches += 1
         except Exception:
             continue
         if history is not None and not history.empty:
             history_by_code[code] = history
+        else:
+            missing_codes.append(code)
+    if fetch_on_request and max_request_fetches > 0:
+        _schedule_history_factor_refresh(provider, missing_codes[:max_request_fetches])
     factors = _cached_alphalite_factors(cache, history_by_code)
     return merge_alphalite(candidates, factors)
+
+
+def _schedule_history_factor_refresh(provider, codes) -> None:
+    queued = []
+    with _HISTORY_REFRESH_LOCK:
+        for value in codes or []:
+            code = normalize_code(value)
+            if not code or code in _HISTORY_REFRESHING:
+                continue
+            _HISTORY_REFRESHING.add(code)
+            queued.append(code)
+    if not queued:
+        return
+    worker = threading.Thread(
+        target=_refresh_history_factor_entries,
+        args=(provider, queued),
+        name="history-factor-refresh",
+        daemon=True,
+    )
+    worker.start()
+
+
+def _refresh_history_factor_entries(provider, codes) -> None:
+    try:
+        if hasattr(provider, "prefetch_history"):
+            provider.prefetch_history(codes, days=90)
+        else:
+            for code in codes:
+                try:
+                    provider.get_history(code, days=90)
+                except Exception:
+                    continue
+    except Exception as exc:
+        recorder = getattr(provider, "_record_sentiment_error", None)
+        if callable(recorder):
+            try:
+                recorder("后台历史因子刷新失败: {}".format(exc))
+            except Exception:
+                pass
+    finally:
+        with _HISTORY_REFRESH_LOCK:
+            for code in codes:
+                _HISTORY_REFRESHING.discard(normalize_code(code))
 
 
 def attach_alphalite_factors_for_codes(provider, candidates, codes):
@@ -460,15 +506,33 @@ def validation_batch_summary(rows: List[Dict[str, object]], strategy_name: str) 
     }
 
 
-def tomorrow_validation_gate_decision(metrics: Dict[str, object]) -> Dict[str, object]:
+def strategy_validation_gate_decision(
+    metrics: Dict[str, object],
+    strategy_name: str = "",
+) -> Dict[str, object]:
     if not metrics:
-        return {"blocked": False, "reason": "", "state": "unknown"}
+        return {
+            "blocked": True,
+            "allows_backup": True,
+            "validated": False,
+            "reason": "验证样本不足，暂不形成可执行推荐，仅保留备选观察",
+            "state": "pending",
+        }
+    strategy_name = str(strategy_name or metrics.get("strategy_name") or "")
     status = strategy_status(metrics)
     primary_outcomes = int(metrics.get("outcome_sample_count") or metrics.get("sample_count") or 0)
     avg_net = coerce_number(metrics.get("avg_primary_return_net"))
     win_net = coerce_number(metrics.get("win_rate_primary_net"))
+    real_avg_net = coerce_number(metrics.get("real_avg_primary_return_net"))
+    real_win_net = coerce_number(metrics.get("real_win_rate_primary_net"))
+    drawdown_value = metrics.get("real_avg_max_drawdown_primary")
+    if drawdown_value is None:
+        drawdown_value = metrics.get("avg_max_drawdown_primary", metrics.get("avg_max_drawdown_3d"))
+    avg_drawdown = coerce_number(drawdown_value)
     decision = {
         "blocked": False,
+        "allows_backup": True,
+        "validated": False,
         "reason": "",
         "state": status.get("state", "unknown"),
         "label": status.get("label", ""),
@@ -477,16 +541,64 @@ def tomorrow_validation_gate_decision(metrics: Dict[str, object]) -> Dict[str, o
         "avg_primary_return_net": avg_net,
         "win_rate_primary_net": win_net,
         "real_sample_count": int(metrics.get("real_sample_count") or 0),
-        "real_avg_primary_return_net": coerce_number(metrics.get("real_avg_primary_return_net")),
-        "real_win_rate_primary_net": coerce_number(metrics.get("real_win_rate_primary_net")),
+        "real_day_count": int(metrics.get("real_day_count") or 0),
+        "real_avg_primary_return_net": real_avg_net,
+        "real_win_rate_primary_net": real_win_net,
+        "avg_max_drawdown_primary": avg_drawdown,
     }
     if status.get("state") == "retired":
         decision["blocked"] = True
-        decision["reason"] = "验证退场：真实样本净胜率或净收益跌破阈值，暂停重点观察"
+        decision["reason"] = "验证退场：真实交易日净收益、净胜率或主周期回撤不达标，暂停执行，允许备选观察"
         return decision
-    if primary_outcomes >= 2 and (avg_net < 0 or win_net < 50):
+    min_real_days = int(
+        getattr(
+            config,
+            "STRATEGY_DECAY_MIN_REAL_DAYS",
+            getattr(config, "STRATEGY_DECAY_MIN_REAL_SAMPLES", 20),
+        )
+    )
+    real_days = int(metrics.get("real_day_count") or 0)
+    if real_days < min_real_days:
         decision["blocked"] = True
-        decision["reason"] = "验证门控：最近重点观察净表现不达标，仅保留备选观察"
+        decision["reason"] = "真实验证不足{}个交易日，暂不形成可执行推荐，仅保留备选观察".format(
+            min_real_days
+        )
+        return decision
+    min_win_rate = coerce_number(getattr(config, "STRATEGY_VALIDATION_MIN_WIN_RATE", 50.0), 50.0)
+    drawdown_floor = coerce_number(
+        getattr(config, "STRATEGY_VALIDATION_MAX_AVG_DRAWDOWN_PCT", -8.0),
+        -8.0,
+    )
+    if real_days >= min_real_days and (
+        real_avg_net <= 0 or real_win_net < min_win_rate or avg_drawdown <= drawdown_floor
+    ):
+        decision["blocked"] = True
+        decision["reason"] = "验证门控：最近真实交易日组合净表现或回撤不达标，仅保留备选观察"
+        return decision
+    decision["validated"] = True
+    return decision
+
+
+def tomorrow_validation_gate_decision(metrics: Dict[str, object]) -> Dict[str, object]:
+    return strategy_validation_gate_decision(metrics, "tomorrow_picks")
+
+
+def apply_strategy_validation_gate(
+    strategy_name: str,
+    rows: List[Dict[str, object]],
+    meta: Dict[str, object],
+    metrics: Dict[str, object],
+) -> Dict[str, object]:
+    decision = strategy_validation_gate_decision(metrics, strategy_name)
+    if meta is not None:
+        meta["validation_gate"] = decision
+    if decision.get("blocked"):
+        demote_strategy_rows_to_backup(
+            strategy_name,
+            rows,
+            meta,
+            decision.get("reason") or "真实验证不达标，暂停执行",
+        )
     return decision
 
 
@@ -495,25 +607,33 @@ def apply_tomorrow_validation_gate(
     meta: Dict[str, object],
     metrics: Dict[str, object],
 ) -> Dict[str, object]:
-    decision = tomorrow_validation_gate_decision(metrics)
-    if meta is not None:
-        meta["validation_gate"] = decision
-    if not decision.get("blocked"):
-        return decision
+    return apply_strategy_validation_gate("tomorrow_picks", rows, meta, metrics)
 
-    reason = decision.get("reason") or "真实验证不达标，暂停重点观察"
+
+def demote_strategy_rows_to_backup(
+    strategy_name: str,
+    rows: List[Dict[str, object]],
+    meta: Dict[str, object],
+    reason: str,
+) -> None:
     for row in rows or []:
-        row["tier"] = "backup_pool"
-        row["tier_label"] = "备选观察"
-        reasons = row.setdefault("reasons", [])
-        if isinstance(reasons, list) and reason not in reasons:
-            reasons.append(reason)
+        label = "盘中观察" if row.get("observation_mode") == "intraday_provisional" else "备选观察"
+        mark_backup_watch(row, label=label, reason=reason)
     if meta is not None:
         meta["primary_watch_count"] = 0
+        meta["backup_watch_count"] = len(rows or [])
         meta["primary_gate_count"] = 0
         current_reason = str(meta.get("gate_reason") or "").strip()
         meta["gate_reason"] = "{} {}".format(current_reason, reason).strip()
-    return decision
+        meta["validation_strategy"] = strategy_name
+
+
+def demote_tomorrow_rows_to_backup(
+    rows: List[Dict[str, object]],
+    meta: Dict[str, object],
+    reason: str,
+) -> None:
+    demote_strategy_rows_to_backup("tomorrow_picks", rows, meta, reason)
 
 
 def market_news(provider, cache) -> List[Dict[str, object]]:

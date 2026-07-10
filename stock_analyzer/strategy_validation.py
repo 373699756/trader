@@ -12,16 +12,27 @@ from .risk_rules import simulate_exit
 
 
 PRIMARY_RETURN_BY_STRATEGY = {
-    "short_term": ("signal_next_close_return", 1, "次日"),
-    "tomorrow_picks": ("next_close_return", 1, "次日开盘入场"),
-    "swing_picks": ("signal_hold_5d_return", 5, "5日"),
+    "short_term": ("signal_next_close_return", 1, "盘中观察至次日收盘（辅助）"),
+    "tomorrow_picks": ("signal_next_close_return", 1, "尾盘入场至次日收盘"),
+    "swing_picks": ("signal_exit_return", 5, "尾盘入场2-5日可执行退出"),
 }
 
 EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY = {
-    "short_term": ("next_close_return", 1, "次日开盘入场"),
-    "tomorrow_picks": ("next_close_return", 1, "次日开盘入场"),
-    "swing_picks": ("hold_5d_return", 5, "5日开盘入场"),
+    **PRIMARY_RETURN_BY_STRATEGY,
 }
+
+
+def current_strategy_version(strategy_name: str) -> str:
+    return {
+        "short_term": str(getattr(config, "SHORT_TERM_STRATEGY_VERSION", "short_term_v2_observation")),
+        "tomorrow_picks": str(getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v8_next_day")),
+        "swing_picks": str(getattr(config, "SWING_STRATEGY_VERSION", "swing_2_5d_v2_signal_exit")),
+    }.get(str(strategy_name or ""), "")
+
+
+def current_replay_strategy_version(strategy_name: str) -> str:
+    suffix = str(getattr(config, "VALIDATION_REPLAY_VERSION_SUFFIX", "replay_v2_production"))
+    return "{}_{}".format(str(strategy_name or ""), suffix) if strategy_name else ""
 
 
 class StrategyValidationStore:
@@ -261,6 +272,19 @@ class StrategyValidationStore:
             for row in rows
         ]
 
+    def existing_validation_dates(self, strategy_name: str, replay_version: str = "") -> List[str]:
+        where = "strategy_name = ? AND lower(strategy_version) NOT LIKE '%replay%'"
+        params = [strategy_name]
+        if replay_version:
+            where = "strategy_name = ? AND (lower(strategy_version) NOT LIKE '%replay%' OR strategy_version = ?)"
+            params.append(replay_version)
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT signal_date FROM strategy_signal_batches WHERE {}".format(where),
+                params,
+            ).fetchall()
+        return [str(row[0]) for row in rows if row and row[0]]
+
     def signals_for_date(self, signal_date: str, strategy_name: str = "") -> List[Dict[str, object]]:
         where = "WHERE s.signal_date = ?"
         params = [signal_date]
@@ -298,9 +322,9 @@ class StrategyValidationStore:
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             row = conn.execute(
                 """
-                SELECT signal_date
+                SELECT signal_date, strategy_version
                 FROM strategy_signal_batches
-                WHERE strategy_name = ?
+                WHERE strategy_name = ? AND lower(strategy_version) NOT LIKE '%replay%'
                 ORDER BY signal_date DESC, signal_time DESC
                 LIMIT 1
                 """,
@@ -308,13 +332,20 @@ class StrategyValidationStore:
             ).fetchone()
         if not row:
             return []
-        signals = self.signals_for_date(row[0], strategy_name)
+        signal_date, strategy_version = row
+        signals = [
+            signal
+            for signal in self.signals_for_date(signal_date, strategy_name)
+            if signal.get("strategy_version") == strategy_version
+        ]
         rows = []
         for signal in signals:
             raw = signal.get("raw") or {}
             if isinstance(raw, dict):
                 item = raw.copy()
                 item["rank"] = signal.get("rank")
+                item["strategy_version"] = signal.get("strategy_version")
+                item["signal_date"] = signal.get("signal_date")
                 rows.append(item)
         rows.sort(key=lambda item: int(item.get("rank") or 9999))
         return rows
@@ -430,6 +461,12 @@ class StrategyValidationStore:
 
     def live_weight_samples(self, strategy_name: str, days: int = 120) -> List[Dict[str, object]]:
         primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
+        version_filter = ""
+        params = [strategy_name]
+        current_version = current_strategy_version(strategy_name)
+        if current_version:
+            version_filter = " AND s.strategy_version = ?"
+            params.append(current_version)
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -440,13 +477,15 @@ class StrategyValidationStore:
                        COALESCE(o.next_open_return, 0) AS next_open_return,
                        COALESCE(o.signal_max_drawdown_3d, o.max_drawdown_3d, 0) AS max_drawdown,
                        COALESCE(o.signal_exit_return, o.exit_return, o.{primary_column}, 0) AS exit_return,
+                       COALESCE(o.exit_reason, '') AS exit_reason,
+                       COALESCE(o.exit_days, 0) AS exit_days,
                        COALESCE(o.future_days, 1) AS future_days
                 FROM strategy_signals s
                 JOIN strategy_outcomes o ON o.signal_id = s.id
-                WHERE s.strategy_name = ?
+                WHERE s.strategy_name = ? {version_filter}
                 ORDER BY s.signal_date DESC, s.rank ASC
-                """.format(primary_column=primary_column),
-                (strategy_name,),
+                """.format(primary_column=primary_column, version_filter=version_filter),
+                params,
             ).fetchall()
         if not rows:
             return []
@@ -455,7 +494,7 @@ class StrategyValidationStore:
         for row in rows:
             if _is_replay_version(row["strategy_version"]):
                 continue
-            if int(row["future_days"] or 1) < primary_days:
+            if not _outcome_ready(row, primary_days):
                 continue
             if row["signal_date"] not in dates:
                 if len(dates) >= max(1, int(days)):
@@ -469,7 +508,7 @@ class StrategyValidationStore:
                 raw = json.loads(row["raw_json"] or "{}")
             except Exception:
                 raw = {}
-            if strategy_name == "tomorrow_picks" and not _is_primary_tomorrow_signal(row["rank"], raw):
+            if not _is_primary_validation_signal(strategy_name, row["rank"], raw):
                 continue
             primary_return = coerce_number(row["primary_return"])
             trade_cost = _execution_cost_pct(row)
@@ -731,12 +770,20 @@ class StrategyValidationStore:
         return {"updated": updated, "skipped": skipped}
 
     def metrics(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
-        signal_status = self.signal_status_counts(strategy_name=strategy_name, days=days)
+        current_version = current_strategy_version(strategy_name)
+        signal_status = self.signal_status_counts(
+            strategy_name=strategy_name,
+            days=days,
+            strategy_version=current_version,
+        )
         where = "WHERE o.signal_id IS NOT NULL"
         params = []
         if strategy_name:
             where += " AND s.strategy_name = ?"
             params.append(strategy_name)
+        if current_version:
+            where += " AND (s.strategy_version = ? OR s.strategy_version = ?)"
+            params.extend((current_version, current_replay_strategy_version(strategy_name)))
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -757,6 +804,8 @@ class StrategyValidationStore:
                        COALESCE(o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_10d_return,
                        COALESCE(o.signal_hold_20d_return, o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_20d_return,
                        COALESCE(o.signal_exit_return, o.exit_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_exit_return,
+                       COALESCE(o.exit_reason, '') AS exit_reason,
+                       COALESCE(o.exit_days, 0) AS exit_days,
                        COALESCE(o.signal_max_drawdown_3d, o.max_drawdown_3d) AS signal_max_drawdown_3d,
                        COALESCE(o.signal_hit_3pct, o.hit_3pct) AS signal_hit_3pct,
                        COALESCE(o.signal_hit_5pct, o.hit_5pct) AS signal_hit_5pct,
@@ -768,19 +817,55 @@ class StrategyValidationStore:
                 """.format(where),
                 params,
             ).fetchall()
-        execution_skipped_count = self.execution_skip_count(strategy_name=strategy_name, days=days)
+        execution_skipped_count = self.execution_skip_count(
+            strategy_name=strategy_name,
+            days=days,
+            strategy_version=current_version,
+        )
         if not rows:
+            if strategy_name:
+                primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
+            else:
+                primary_column, primary_days, primary_label = "strategy_primary_return", 0, "混合主周期"
             return {
+                "strategy_name": strategy_name,
+                "strategy_version": current_version,
                 "sample_count": 0,
+                "outcome_sample_count": 0,
+                "total_sample_count": 0,
+                "total_outcome_sample_count": 0,
+                "backup_sample_count": 0,
+                "backup_outcome_sample_count": 0,
+                "real_sample_count": 0,
+                "replay_sample_count": 0,
+                "real_outcome_sample_count": 0,
+                "replay_outcome_sample_count": 0,
+                "real_total_sample_count": 0,
+                "replay_total_sample_count": 0,
+                "real_backup_sample_count": 0,
+                "replay_backup_sample_count": 0,
+                "real_day_count": 0,
+                "replay_day_count": 0,
+                "day_count": 0,
+                "primary_return_field": primary_column,
+                "primary_holding_days": primary_days,
+                "primary_horizon_label": primary_label,
+                "avg_next_day_return_net": 0.0,
+                "win_rate_next_day_net": 0.0,
+                "avg_1_5d_exit_return_net": 0.0,
+                "win_rate_1_5d_exit_net": 0.0,
+                "positive_2_5d_after_weak_next_day_rate": 0.0,
+                "auxiliary_exit_sample_count": 0,
+                "weak_next_day_1_5d_sample_count": 0,
+                "avg_max_drawdown_primary": 0.0,
+                "real_avg_max_drawdown_primary": 0.0,
                 "execution_skipped_count": execution_skipped_count,
                 **signal_status,
                 "daily": [],
             }
         rows = [dict(row) for row in rows]
         window_rows = rows
-        window_scope = "all"
-        if strategy_name == "tomorrow_picks":
-            window_scope = "mixed"
+        window_scope = "mixed" if current_version else "all"
         dates = []
         for row in window_rows:
             if row["signal_date"] not in dates:
@@ -799,35 +884,55 @@ class StrategyValidationStore:
             except Exception:
                 raw = {}
             row["_raw"] = raw if isinstance(raw, dict) else {}
-            row["_is_primary_tomorrow"] = _is_primary_tomorrow_signal(row.get("rank"), row["_raw"])
+            row["_is_primary_signal"] = _is_primary_validation_signal(
+                strategy_name or row["strategy_name"],
+                row.get("rank"),
+                row["_raw"],
+            )
             row_primary_column, row_primary_days, row_primary_label = _primary_return_config(
                 strategy_name or row["strategy_name"]
             )
             row["_trade_cost_pct"] = _execution_cost_pct(row)
             row["_primary_return"] = coerce_number(row[row_primary_column])
             row["_primary_return_net"] = round(row["_primary_return"] - row["_trade_cost_pct"], 4)
+            row["_next_day_return_net"] = round(
+                coerce_number(row.get("signal_next_close_return")) - row["_trade_cost_pct"],
+                4,
+            )
             row["_exit_return"] = coerce_number(row.get("signal_exit_return"))
             row["_exit_return_net"] = round(row["_exit_return"] - row["_trade_cost_pct"], 4)
             row["_is_replay"] = _is_replay_version(row["strategy_version"])
-            row["_primary_ready"] = int(row.get("future_days") or 1) >= row_primary_days
+            row["_primary_ready"] = _outcome_ready(row, row_primary_days)
+            row["_exit_ready"] = _outcome_ready(row, _exit_holding_days(strategy_name or row["strategy_name"]))
             row["_primary_holding_days"] = row_primary_days
             row["_primary_horizon_label"] = row_primary_label
         selected = [row for row in selected_all if row["_primary_ready"]]
-        real_selected_all = [row for row in selected_all if not row["_is_replay"]]
+        primary_rows = [row for row in selected if row["_is_primary_signal"]]
+        primary_outcome_rows = [row for row in selected_all if row["_is_primary_signal"]]
+        auxiliary_exit_rows = [row for row in primary_outcome_rows if row["_exit_ready"]]
+        weak_next_day_exit_rows = [row for row in auxiliary_exit_rows if row["_next_day_return_net"] <= 0]
         replay_selected_all = [row for row in selected_all if row["_is_replay"]]
-        real_rows = [row for row in selected if not row["_is_replay"]]
-        replay_rows = [row for row in selected if row["_is_replay"]]
-        if strategy_name == "tomorrow_picks":
-            primary_rows = [row for row in selected if row["_is_primary_tomorrow"]]
-            primary_outcome_rows = [row for row in selected_all if row["_is_primary_tomorrow"]]
-        else:
-            primary_rows = selected
-            primary_outcome_rows = selected_all
+        real_rows = [row for row in primary_rows if not row["_is_replay"]]
+        replay_rows = [row for row in primary_rows if row["_is_replay"]]
+        real_primary_outcome_rows = [row for row in primary_outcome_rows if not row["_is_replay"]]
+        replay_primary_outcome_rows = [row for row in primary_outcome_rows if row["_is_replay"]]
+        real_primary_ids = {id(row) for row in real_rows}
+        replay_primary_ids = {id(row) for row in replay_rows}
+        real_backup_rows = [
+            row for row in selected if not row["_is_replay"] and id(row) not in real_primary_ids
+        ]
+        replay_backup_rows = [
+            row for row in selected if row["_is_replay"] and id(row) not in replay_primary_ids
+        ]
+        real_daily = _daily_metrics(real_rows)
+        replay_daily = _daily_metrics(replay_rows)
         primary_dates = []
         for row in primary_rows:
             if row["signal_date"] not in primary_dates:
                 primary_dates.append(row["signal_date"])
         metrics = {
+            "strategy_name": strategy_name,
+            "strategy_version": current_version,
             "sample_count": len(primary_rows),
             "outcome_sample_count": len(primary_outcome_rows),
             "total_sample_count": len(selected),
@@ -836,11 +941,17 @@ class StrategyValidationStore:
             "backup_outcome_sample_count": len(selected_all) - len(primary_outcome_rows),
             "real_sample_count": len(real_rows),
             "replay_sample_count": len(replay_rows),
-            "real_outcome_sample_count": len(real_selected_all),
-            "replay_outcome_sample_count": len(replay_selected_all),
+            "real_outcome_sample_count": len(real_primary_outcome_rows),
+            "replay_outcome_sample_count": len(replay_primary_outcome_rows),
+            "real_total_sample_count": len([row for row in selected if not row["_is_replay"]]),
+            "replay_total_sample_count": len([row for row in selected if row["_is_replay"]]),
+            "real_backup_sample_count": len(real_backup_rows),
+            "replay_backup_sample_count": len(replay_backup_rows),
+            "real_day_count": len(real_daily),
+            "replay_day_count": len(replay_daily),
             "day_count": len(primary_dates),
             "outcome_day_count": len(dates),
-            "primary_sample_scope": "real_only" if strategy_name == "tomorrow_picks" and real_rows else "replay_only" if strategy_name == "tomorrow_picks" and replay_rows else "all",
+            "primary_sample_scope": "real_only" if current_version and real_rows else "replay_only" if current_version and replay_rows else "all",
             "window_scope": window_scope,
             "primary_return_field": primary_column,
             "primary_holding_days": primary_days,
@@ -860,14 +971,25 @@ class StrategyValidationStore:
             "avg_primary_return_net": _avg(row["_primary_return_net"] for row in primary_rows),
             "win_rate_primary": _rate(row["_primary_return"] > 0 for row in primary_rows),
             "win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in primary_rows),
-            "avg_exit_return": _avg(row["_exit_return"] for row in primary_rows),
-            "avg_exit_return_net": _avg(row["_exit_return_net"] for row in primary_rows),
-            "win_rate_exit_net": _rate(row["_exit_return_net"] > 0 for row in primary_rows),
-            "real_avg_primary_return_net": _avg(row["_primary_return_net"] for row in real_rows),
-            "real_win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in real_rows),
-            "replay_avg_primary_return_net": _avg(row["_primary_return_net"] for row in replay_rows),
-            "replay_win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in replay_rows),
+            "avg_next_day_return_net": _avg(row["_next_day_return_net"] for row in primary_outcome_rows),
+            "win_rate_next_day_net": _rate(row["_next_day_return_net"] > 0 for row in primary_outcome_rows),
+            "avg_1_5d_exit_return_net": _avg(row["_exit_return_net"] for row in auxiliary_exit_rows),
+            "win_rate_1_5d_exit_net": _rate(row["_exit_return_net"] > 0 for row in auxiliary_exit_rows),
+            "auxiliary_exit_sample_count": len(auxiliary_exit_rows),
+            "positive_2_5d_after_weak_next_day_rate": _rate(
+                row["_exit_return_net"] > 0 for row in weak_next_day_exit_rows
+            ),
+            "weak_next_day_1_5d_sample_count": len(weak_next_day_exit_rows),
+            "avg_exit_return": _avg(row["_exit_return"] for row in auxiliary_exit_rows),
+            "avg_exit_return_net": _avg(row["_exit_return_net"] for row in auxiliary_exit_rows),
+            "win_rate_exit_net": _rate(row["_exit_return_net"] > 0 for row in auxiliary_exit_rows),
+            "real_avg_primary_return_net": _avg(row["avg_primary_return_net"] for row in real_daily),
+            "real_win_rate_primary_net": _rate(row["avg_primary_return_net"] > 0 for row in real_daily),
+            "replay_avg_primary_return_net": _avg(row["avg_primary_return_net"] for row in replay_daily),
+            "replay_win_rate_primary_net": _rate(row["avg_primary_return_net"] > 0 for row in replay_daily),
             "avg_max_drawdown_3d": _avg(row["signal_max_drawdown_3d"] for row in primary_rows),
+            "avg_max_drawdown_primary": _avg(row["signal_max_drawdown_3d"] for row in primary_rows),
+            "real_avg_max_drawdown_primary": _avg(row["signal_max_drawdown_3d"] for row in real_rows),
             "top10_avg_next_close_return": _avg(
                 row["signal_next_close_return"] for row in primary_outcome_rows if row["rank"] <= 10
             ),
@@ -875,7 +997,8 @@ class StrategyValidationStore:
             "next_day_compare": _next_day_compare(primary_outcome_rows),
             "replay_next_day_compare": _next_day_compare(replay_selected_all),
             "daily": _daily_metrics(primary_rows),
-            "replay_daily": _daily_metrics(replay_rows),
+            "real_daily": real_daily,
+            "replay_daily": replay_daily,
             "execution_skipped_count": execution_skipped_count,
             **signal_status,
         }
@@ -886,6 +1009,12 @@ class StrategyValidationStore:
         if not strategy_name:
             return {"status": "missing_strategy", "sample_count": 0, "days": int(days or 0)}
         primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
+        version_filter = ""
+        query_params = [strategy_name]
+        current_version = current_strategy_version(strategy_name)
+        if current_version:
+            version_filter = " AND (s.strategy_version = ? OR s.strategy_version = ?)"
+            query_params.extend((current_version, current_replay_strategy_version(strategy_name)))
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.row_factory = sqlite3.Row
             signal_rows = conn.execute(
@@ -897,10 +1026,10 @@ class StrategyValidationStore:
                        COALESCE(o.future_days, 1) AS future_days
                 FROM strategy_signals s
                 JOIN strategy_outcomes o ON o.signal_id = s.id
-                WHERE s.strategy_name = ?
+                WHERE s.strategy_name = ? {version_filter}
                 ORDER BY s.signal_date DESC, s.rank ASC
-                """.format(primary_column=primary_column),
-                (strategy_name,),
+                """.format(primary_column=primary_column, version_filter=version_filter),
+                query_params,
             ).fetchall()
             shadow_rows = conn.execute(
                 """
@@ -911,10 +1040,10 @@ class StrategyValidationStore:
                        COALESCE(o.future_days, 1) AS future_days
                 FROM strategy_deepseek_shadow_signals s
                 JOIN strategy_deepseek_shadow_outcomes o ON o.shadow_id = s.id
-                WHERE s.strategy_name = ?
+                WHERE s.strategy_name = ? {version_filter}
                 ORDER BY s.signal_date DESC, s.local_rank ASC
-                """.format(primary_column=primary_column),
-                (strategy_name,),
+                """.format(primary_column=primary_column, version_filter=version_filter),
+                query_params,
             ).fetchall()
         rows = list(signal_rows) + list(shadow_rows)
         rows.sort(
@@ -955,7 +1084,11 @@ class StrategyValidationStore:
             item["_raw"] = raw if isinstance(raw, dict) else {}
             item["_is_replay"] = _is_replay_version(item["strategy_version"])
             item["_primary_ready"] = int(item.get("future_days") or 1) >= primary_days
-            item["_is_primary_tomorrow"] = _is_primary_tomorrow_signal(item.get("rank"), item["_raw"])
+            item["_is_primary_signal"] = _is_primary_validation_signal(
+                strategy_name,
+                item.get("rank"),
+                item["_raw"],
+            )
             item["_trade_cost_pct"] = _execution_cost_pct(item)
             item["_primary_return"] = coerce_number(item.get("primary_return"))
             item["_primary_return_net"] = round(item["_primary_return"] - item["_trade_cost_pct"], 4)
@@ -963,8 +1096,7 @@ class StrategyValidationStore:
             selected.append(item)
 
         primary_rows = [row for row in selected if row["_primary_ready"]]
-        if strategy_name == "tomorrow_picks":
-            primary_rows = [row for row in primary_rows if row["_is_primary_tomorrow"]]
+        primary_rows = [row for row in primary_rows if row["_is_primary_signal"]]
         attribution_rows = [row for row in primary_rows if _has_deepseek_review(row.get("_raw"))]
         real_rows = [row for row in attribution_rows if not row["_is_replay"]]
         replay_rows = [row for row in attribution_rows if row["_is_replay"]]
@@ -1012,12 +1144,20 @@ class StrategyValidationStore:
         _write_deepseek_attribution_snapshot(strategy_name, result)
         return result
 
-    def signal_status_counts(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
+    def signal_status_counts(
+        self,
+        strategy_name: str = "",
+        days: int = 20,
+        strategy_version: str = "",
+    ) -> Dict[str, object]:
         where = "WHERE 1=1"
         params: List[object] = []
         if strategy_name:
             where += " AND strategy_name = ?"
             params.append(strategy_name)
+        if strategy_version:
+            where += " AND strategy_version = ?"
+            params.append(strategy_version)
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             dates = [
                 row[0]
@@ -1044,6 +1184,9 @@ class StrategyValidationStore:
             if strategy_name:
                 count_where += " AND s.strategy_name = ?"
                 count_params.append(strategy_name)
+            if strategy_version:
+                count_where += " AND s.strategy_version = ?"
+                count_params.append(strategy_version)
             row = conn.execute(
                 """
                 SELECT
@@ -1067,12 +1210,20 @@ class StrategyValidationStore:
             "outcome_coverage_pct": coverage,
         }
 
-    def execution_skip_count(self, strategy_name: str = "", days: int = 20) -> int:
+    def execution_skip_count(
+        self,
+        strategy_name: str = "",
+        days: int = 20,
+        strategy_version: str = "",
+    ) -> int:
         where = "WHERE 1=1"
         params: List[object] = []
         if strategy_name:
             where += " AND s.strategy_name = ?"
             params.append(strategy_name)
+        if strategy_version:
+            where += " AND s.strategy_version = ?"
+            params.append(strategy_version)
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             rows = conn.execute(
                 """
@@ -1094,6 +1245,9 @@ class StrategyValidationStore:
             if strategy_name:
                 count_where += " AND s.strategy_name = ?"
                 count_params.append(strategy_name)
+            if strategy_version:
+                count_where += " AND s.strategy_version = ?"
+                count_params.append(strategy_version)
             row = conn.execute(
                 """
                 SELECT COUNT(*)
@@ -1177,6 +1331,9 @@ class StrategyValidationStore:
                        COALESCE(o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_5d_return,
                        COALESCE(o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_10d_return,
                        COALESCE(o.signal_hold_20d_return, o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, 0) AS signal_hold_20d_return,
+                       COALESCE(o.signal_exit_return, o.exit_return, o.signal_hold_5d_return, o.hold_5d_return, 0) AS signal_exit_return,
+                       COALESCE(o.exit_reason, '') AS exit_reason,
+                       COALESCE(o.exit_days, 0) AS exit_days,
                        COALESCE(o.future_days, 1) AS future_days
                 FROM strategy_signals s
                 JOIN strategy_outcomes o ON o.signal_id = s.id
@@ -1194,7 +1351,7 @@ class StrategyValidationStore:
             if row["strategy_name"] == "tomorrow_picks" and not _is_primary_tomorrow_signal(row["rank"], raw):
                 continue
             primary_column, primary_days, _ = _primary_return_config(row["strategy_name"])
-            if int(row["future_days"] or 1) < primary_days:
+            if not _outcome_ready(row, primary_days):
                 continue
             outcome_by_date.setdefault(str(row["signal_date"]), []).append(
                 round(coerce_number(row[primary_column]) - _execution_cost_pct(row), 4)
@@ -1665,7 +1822,9 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     previous_rows = df[df["trade_date"].astype(str).str.replace("-", "", regex=False) <= signal_date]
     previous_close = coerce_number(previous_rows.iloc[-1].get("price")) if not previous_rows.empty else coerce_number(first.get("prev_close"))
     limit_pct = _daily_limit_pct(str(signal["code"]), str(_mapping_get(signal, "market", "")))
-    if _is_unbuyable_limit_up(first, previous_close, limit_pct):
+    strategy_name = str(_mapping_get(signal, "strategy_name", ""))
+    primary_return_field, primary_days, _ = _primary_return_config(strategy_name)
+    if primary_return_field == "next_close_return" and _is_unbuyable_limit_up(first, previous_close, limit_pct):
         return {"excluded": True, "skip_reason": "unbuyable_limit_up"}
     open_entry = coerce_number(first.get("open")) or coerce_number(first.get("price"))
     signal_entry = coerce_number(signal["price_at_signal"])
@@ -1676,7 +1835,7 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
         return None
     if signal_entry <= 0:
         signal_entry = open_entry
-    if str(_mapping_get(signal, "strategy_name", "")) == "tomorrow_picks":
+    if strategy_name == "tomorrow_picks" and primary_return_field == "next_close_return":
         high_open_pct = (open_entry / signal_entry - 1.0) * 100.0 if signal_entry > 0 else 0.0
         high_open_skip_pct = coerce_number(getattr(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 3.0), 3.0)
         if high_open_pct > high_open_skip_pct:
@@ -1687,7 +1846,7 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
                 "threshold_pct": round(high_open_skip_pct, 4),
             }
     future_days = len(future)
-    window = future.head(3)
+    window = future.head(max(1, primary_days))
     last = window.iloc[-1]
     hold_3d_close = coerce_number(last.get("price"))
     hold_5d_close = _window_close(future, 5, close)
@@ -1695,10 +1854,10 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     hold_20d_close = _window_close(future, 20, hold_10d_close)
     max_high = max(coerce_number(value) for value in window.get("high", pd.Series([high])).tolist())
     min_low = min(coerce_number(value) for value in window.get("low", pd.Series([low])).tolist())
-    _, primary_days, _ = _primary_return_config(str(signal["strategy_name"]))
-    exit_policy = {"limit_down_pct": limit_pct}
-    open_exit = simulate_exit(future, open_entry, holding_days=primary_days, policy=exit_policy)
-    signal_exit = simulate_exit(future, signal_entry, holding_days=primary_days, policy=exit_policy)
+    exit_days = _exit_holding_days(strategy_name)
+    exit_policy = _strategy_exit_policy(strategy_name, exit_days, limit_pct)
+    open_exit = simulate_exit(future, open_entry, holding_days=exit_days, policy=exit_policy)
+    signal_exit = simulate_exit(future, signal_entry, holding_days=exit_days, policy=exit_policy)
     return {
         "next_trade_date": str(first.get("trade_date")),
         "future_days": future_days,
@@ -1796,15 +1955,49 @@ def _window_close(future: pd.DataFrame, days: int, fallback: float) -> float:
 
 
 def _primary_return_config(strategy_name: str):
-    if str(getattr(config, "VALIDATION_PRIMARY_ENTRY_MODE", "open")).lower() in ("open", "executable"):
-        return EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY.get(
-            strategy_name,
-            ("next_close_return", 1, "次日开盘入场"),
-        )
     return PRIMARY_RETURN_BY_STRATEGY.get(
         strategy_name,
         ("signal_next_close_return", 1, "次日"),
     )
+
+
+def _strategy_exit_policy(strategy_name: str, holding_days: int, limit_down_pct: float) -> Dict[str, object]:
+    policy = {"holding_days": holding_days, "limit_down_pct": limit_down_pct}
+    if strategy_name not in {"tomorrow_picks", "swing_picks"}:
+        return policy
+    prefix = "TOMORROW_AUXILIARY" if strategy_name == "tomorrow_picks" else "SWING_VALIDATION"
+    policy.update(
+        {
+            "take_profit_pct": max(
+                0.0,
+                coerce_number(getattr(config, "{}_TAKE_PROFIT_PCT".format(prefix), 8.0), 8.0),
+            ),
+            "stop_loss_pct": max(
+                0.0,
+                coerce_number(getattr(config, "{}_STOP_LOSS_PCT".format(prefix), 5.0), 5.0),
+            ),
+            "trailing_stop_pct": max(
+                0.0,
+                coerce_number(getattr(config, "{}_TRAILING_STOP_PCT".format(prefix), 4.0), 4.0),
+            ),
+        }
+    )
+    return policy
+
+
+def _exit_holding_days(strategy_name: str) -> int:
+    if strategy_name in {"tomorrow_picks", "swing_picks"}:
+        return 5
+    return _primary_return_config(strategy_name)[1]
+
+
+def _outcome_ready(row, holding_days: int) -> bool:
+    future_days = int(_mapping_get(row, "future_days", 1) or 1)
+    if future_days >= max(1, int(holding_days or 1)):
+        return True
+    exit_reason = str(_mapping_get(row, "exit_reason", "") or "")
+    exit_days = int(_mapping_get(row, "exit_days", 0) or 0)
+    return exit_reason not in {"", "hold_to_term"} and 0 < exit_days <= future_days
 
 
 def _is_replay_version(strategy_version: str) -> bool:
@@ -1871,6 +2064,19 @@ def _is_primary_tomorrow_signal(rank, raw: Dict[str, object]) -> bool:
     if tier:
         return tier == "primary_watch"
     return int(coerce_number(rank)) <= int(getattr(config, "TOMORROW_PRIMARY_WATCH_N", 10))
+
+
+def _is_primary_validation_signal(strategy_name: str, rank, raw: Dict[str, object]) -> bool:
+    if not isinstance(raw, dict):
+        raw = {}
+    if raw.get("execution_allowed") is False:
+        return False
+    tier = str(raw.get("tier") or "").strip()
+    if tier:
+        return tier == "primary_watch"
+    if strategy_name == "tomorrow_picks":
+        return _is_primary_tomorrow_signal(rank, raw)
+    return True
 
 
 def _row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
