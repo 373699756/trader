@@ -108,6 +108,96 @@ class DeepSeekClientTest(unittest.TestCase):
         self.assertEqual(meta["status"], "strategy_not_supported")
         post.assert_not_called()
 
+    def test_rerank_skips_non_executable_candidates_before_api(self):
+        env = {
+            "DEEPSEEK_ENABLED": "1",
+            "DEEPSEEK_API_KEY": "test-key",
+            "DEEPSEEK_CACHE_ENABLED": "0",
+            "DEEPSEEK_RETRY_COUNT": "0",
+            "DEEPSEEK_STRATEGIES": "swing_picks",
+        }
+        rows = [
+            {**self._rows()[0], "tier": "backup_pool", "execution_allowed": False},
+            {**self._rows()[1], "observation_mode": "intraday_provisional"},
+            {
+                **self._rows()[2],
+                "trade_action": {"action": "watch_only", "position_size": 0.0},
+            },
+        ]
+        with patch.dict(os.environ, env, clear=False), patch.object(deepseek_client, "_load_dotenv_if_needed"), patch(
+            "stock_analyzer.deepseek_client.requests.post"
+        ) as post:
+            output_rows, meta = deepseek_client.rerank_candidates(rows, "swing_picks")
+
+        self.assertEqual(output_rows, rows)
+        self.assertEqual(meta["status"], "no_executable_review_candidates")
+        self.assertEqual(meta["review_policy"]["dropped_non_executable"], 3)
+        post.assert_not_called()
+
+    def test_pro_rerank_only_sends_boundary_candidates(self):
+        response = MagicMock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {"results": [{"code": "000002", "llm_score": 92, "horizon_up_score": 88}]},
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 20},
+        }
+        env = {
+            "DEEPSEEK_ENABLED": "1",
+            "DEEPSEEK_API_KEY": "test-key",
+            "DEEPSEEK_CACHE_ENABLED": "0",
+            "DEEPSEEK_RETRY_COUNT": "0",
+            "DEEPSEEK_STRATEGIES": "swing_picks",
+        }
+        rows = [
+            {**self._rows()[0], "code": "000001", "score": 96},
+            {**self._rows()[1], "code": "000002", "score": 94, "risk_penalty": 9},
+            {**self._rows()[2], "code": "000003", "score": 80, "tier": "backup_pool"},
+        ]
+        with patch.dict(os.environ, env, clear=False), patch.object(deepseek_client, "_load_dotenv_if_needed"), patch(
+            "stock_analyzer.deepseek_client.requests.post", return_value=response
+        ) as post:
+            _, meta = deepseek_client.rerank_candidates(rows, "swing_picks", model_tier_override="pro")
+
+        self.assertEqual(meta["status"], "ok")
+        self.assertEqual(meta["model_tier"], "pro")
+        self.assertEqual(meta["review_limit"], 1)
+        content = post.call_args.kwargs["json"]["messages"][1]["content"]
+        self.assertIn('"code":"000002"', content)
+        self.assertNotIn('"code":"000001"', content)
+        self.assertNotIn('"code":"000003"', content)
+
+    def test_pro_rerank_skips_api_when_no_boundary_samples(self):
+        env = {
+            "DEEPSEEK_ENABLED": "1",
+            "DEEPSEEK_API_KEY": "test-key",
+            "DEEPSEEK_CACHE_ENABLED": "0",
+            "DEEPSEEK_RETRY_COUNT": "0",
+            "DEEPSEEK_STRATEGIES": "swing_picks",
+        }
+        rows = [
+            {**self._rows()[0], "code": "000001", "score": 96},
+            {**self._rows()[1], "code": "000002", "score": 50},
+            {**self._rows()[2], "code": "000003", "score": 47},
+        ]
+        with patch.dict(os.environ, env, clear=False), patch.object(deepseek_client, "_load_dotenv_if_needed"), patch(
+            "stock_analyzer.deepseek_client.requests.post"
+        ) as post:
+            output_rows, meta = deepseek_client.rerank_candidates(rows, "swing_picks", model_tier_override="pro")
+
+        self.assertEqual(output_rows, rows)
+        self.assertEqual(meta["status"], "no_pro_boundary_samples")
+        post.assert_not_called()
+
     def test_coerce_model_supports_only_v4_models(self):
         self.assertEqual(
             deepseek_client._coerce_model("deepseek-v4-flash", "deepseek-v4-flash"),

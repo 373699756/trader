@@ -6,6 +6,7 @@ from . import config
 from .factors import compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code, rename_known_columns
 from .risk_rules import simulate_exit
+from .strategy_validation import _execution_cost_pct
 
 
 # AlphaLite 信号权重。calibrate.py 离线扫描后写入 .runtime/weights.json 的
@@ -280,17 +281,7 @@ def _alphalite_signal(factor: Dict[str, float], weights: Dict[str, float] = None
 def _backtest_trade_cost_pct(turnover: float, cost_rate: float = None) -> float:
     if cost_rate is not None:
         return coerce_number(cost_rate) * 100.0
-    base = coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25), 0.25)
-    amount = coerce_number(turnover)
-    if amount >= 1_000_000_000:
-        slip = coerce_number(getattr(config, "VALIDATION_SLIPPAGE_HIGH_TURNOVER_PCT", 0.05), 0.05)
-    elif amount >= 300_000_000:
-        slip = coerce_number(getattr(config, "VALIDATION_SLIPPAGE_MID_TURNOVER_PCT", 0.12), 0.12)
-    elif amount >= 100_000_000:
-        slip = coerce_number(getattr(config, "VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT", 0.25), 0.25)
-    else:
-        slip = coerce_number(getattr(config, "VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT", 0.45), 0.45)
-    return round(base + slip, 4)
+    return _execution_cost_pct({"turnover": turnover})
 
 
 def _trade_date(history: pd.DataFrame, index: int) -> str:

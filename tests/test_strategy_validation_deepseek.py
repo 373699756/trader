@@ -30,8 +30,8 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
                     config.TOMORROW_STRATEGY_VERSION,
                     "2026-01-02T15:01:00",
                     [
-                        _row("000001", 1, 2, "priority"),
-                        _row("000002", 2, 1, "watch"),
+                        _row("000001", 1, 2, "priority", _token_usage("call-insufficient")),
+                        _row("000002", 2, 1, "watch", _token_usage("call-insufficient")),
                     ],
                 )
                 store.save_signals(
@@ -39,8 +39,8 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
                     config.TOMORROW_STRATEGY_VERSION,
                     "2026-01-03T15:01:00",
                     [
-                        _row("000003", 1, 1, "watch"),
-                        _row("000004", 2, 2, "priority"),
+                        _row("000003", 1, 1, "watch", _token_usage("call-insufficient")),
+                        _row("000004", 2, 2, "priority", _token_usage("call-insufficient")),
                     ],
                 )
                 _insert_outcomes(db_path, {"000001": 4.0, "000002": -2.0, "000003": 1.0, "000004": 3.0})
@@ -59,6 +59,9 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
         self.assertEqual(attribution["counterfactual_topn"]["deepseek_avg_primary_return_net"], 2.5)
         self.assertEqual(attribution["counterfactual_topn"]["avg_return_delta_pct"], 3.0)
         self.assertEqual(attribution["counterfactual_topn"]["win_rate_delta_pct"], 50.0)
+        self.assertGreater(attribution["value_per_1k_tokens"], 0)
+        self.assertEqual(attribution["budget_recommendation"]["action"], "observe")
+        self.assertFalse(attribution["worth_expanding_budget"])
 
     def test_deepseek_attribution_includes_gate_filtered_shadow_rows(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -107,6 +110,67 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
         self.assertEqual(attribution["counterfactual_topn"]["deepseek_avg_primary_return_net"], 2.0)
         self.assertEqual(attribution["counterfactual_topn"]["avg_return_delta_pct"], 6.0)
 
+    def test_deepseek_attribution_reports_token_value_and_expand_recommendation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "validation.sqlite3")
+            attribution_path = os.path.join(tmpdir, "deepseek_attribution.json")
+            with _patched_validation_config(attribution_path):
+                store = StrategyValidationStore(db_path)
+                rows = []
+                returns_by_code = {}
+                for idx in range(10):
+                    code = f"{idx + 1:06d}"
+                    rows.append(_row(code, idx + 1, idx + 1, "avoid", _token_usage("call-positive")))
+                    returns_by_code[code] = -1.0
+                store.save_signals(
+                    "tomorrow_picks",
+                    config.TOMORROW_STRATEGY_VERSION,
+                    "2026-01-02T15:01:00",
+                    rows,
+                )
+                _insert_outcomes(db_path, returns_by_code)
+
+                attribution = store.deepseek_attribution("tomorrow_picks", days=20)
+
+        self.assertEqual(attribution["status"], "ok")
+        self.assertEqual(attribution["token_cost"]["call_count"], 1)
+        self.assertEqual(attribution["token_cost"]["total_tokens"], 1000.0)
+        self.assertEqual(attribution["token_value"]["skipped_loss_saved_pct"], 10.0)
+        self.assertEqual(attribution["token_value"]["false_positive_profit_loss_pct"], 0.0)
+        self.assertEqual(attribution["token_value"]["net_value_pct_points"], 10.0)
+        self.assertEqual(attribution["value_per_1k_tokens"], 10.0)
+        self.assertEqual(attribution["budget_recommendation"]["action"], "expand")
+        self.assertTrue(attribution["worth_expanding_budget"])
+
+    def test_deepseek_attribution_shrinks_scope_when_value_per_token_is_non_positive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "validation.sqlite3")
+            attribution_path = os.path.join(tmpdir, "deepseek_attribution.json")
+            with _patched_validation_config(attribution_path):
+                store = StrategyValidationStore(db_path)
+                rows = []
+                returns_by_code = {}
+                for idx in range(10):
+                    code = f"{idx + 1:06d}"
+                    rows.append(_row(code, idx + 1, idx + 1, "avoid", _token_usage("call-negative")))
+                    returns_by_code[code] = 1.0
+                store.save_signals(
+                    "tomorrow_picks",
+                    config.TOMORROW_STRATEGY_VERSION,
+                    "2026-01-02T15:01:00",
+                    rows,
+                )
+                _insert_outcomes(db_path, returns_by_code)
+
+                attribution = store.deepseek_attribution("tomorrow_picks", days=20)
+
+        self.assertEqual(attribution["status"], "ok")
+        self.assertEqual(attribution["token_value"]["skipped_loss_saved_pct"], 0.0)
+        self.assertEqual(attribution["token_value"]["false_positive_profit_loss_pct"], 10.0)
+        self.assertEqual(attribution["value_per_1k_tokens"], -10.0)
+        self.assertEqual(attribution["budget_recommendation"]["action"], "shrink")
+        self.assertFalse(attribution["worth_expanding_budget"])
+
     def test_market_gate_metrics_scores_review_against_outcomes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "validation.sqlite3")
@@ -151,8 +215,39 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
         self.assertTrue(metrics["recent"][0]["hit"])
 
 
-def _row(code, rank, local_rank, action):
+def _patched_validation_config(attribution_path):
+    return patch.multiple(
+        config,
+        DEEPSEEK_ATTRIBUTION_PATH=attribution_path,
+        TOMORROW_PRIMARY_WATCH_N=1,
+        VALIDATION_TRADE_COST_PCT=0.0,
+        VALIDATION_SLIPPAGE_HIGH_TURNOVER_PCT=0.0,
+        VALIDATION_SLIPPAGE_MID_TURNOVER_PCT=0.0,
+        VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT=0.0,
+        VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT=0.0,
+    )
+
+
+def _token_usage(call_id):
     return {
+        "deepseek_call_id": call_id,
+        "deepseek_call_source": "deepseek_batch",
+        "deepseek_usage": {"prompt_tokens": 600, "completion_tokens": 400, "total_tokens": 1000},
+        "deepseek_cost_hint": {
+            "prompt_tokens": 600,
+            "completion_tokens": 400,
+            "total_tokens": 1000,
+            "billable_total_tokens": 1000,
+            "estimated_cost": 0.0,
+            "cached": False,
+        },
+        "deepseek_total_tokens": 1000,
+        "deepseek_billable_tokens": 1000,
+    }
+
+
+def _row(code, rank, local_rank, action, extra=None):
+    row = {
         "code": code,
         "name": code,
         "rank": rank,
@@ -170,6 +265,9 @@ def _row(code, rank, local_rank, action):
         "blend_alpha": 0.3,
         "rerank_source": "deepseek",
     }
+    if extra:
+        row.update(extra)
+    return row
 
 
 def _insert_outcomes(db_path, returns_by_code):

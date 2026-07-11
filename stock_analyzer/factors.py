@@ -2,6 +2,7 @@ from typing import Dict
 
 import pandas as pd
 
+from . import config
 from .normalization import coerce_number, normalize_code, rename_known_columns
 
 
@@ -20,6 +21,13 @@ ALPHALITE_COLUMNS = (
     "turnover_20d",
     "breakout_20d",
     "volatility_20d",
+    "close_vs_vwap",
+    "upper_wick_ratio",
+    "lower_wick_ratio",
+    "price_position_20d",
+    "consecutive_up_days",
+    "consecutive_down_days",
+    "amplitude_5d_mean",
 )
 
 ALPHALITE_META_COLUMNS = (
@@ -46,7 +54,7 @@ def compute_alphalite_for_stock(code: str, history: pd.DataFrame) -> Dict[str, f
     if "code" not in df.columns:
         df["code"] = code
     df["code"] = df["code"].map(normalize_code)
-    for column in ("price", "close", "high", "low", "turnover", "volume"):
+    for column in ("price", "close", "open", "high", "low", "turnover", "volume"):
         if column not in df.columns:
             df[column] = 0.0
         df[column] = df[column].map(coerce_number)
@@ -54,7 +62,9 @@ def compute_alphalite_for_stock(code: str, history: pd.DataFrame) -> Dict[str, f
         close = df["price"]
     else:
         close = df["close"]
+    open_price = df["open"] if "open" in df.columns and df["open"].abs().sum() > 0 else close
     high = df["high"] if "high" in df.columns else close
+    low = df["low"] if "low" in df.columns and df["low"].abs().sum() > 0 else close
     turnover = df["turnover"] if "turnover" in df.columns else pd.Series([0.0] * len(df))
     volume = df["volume"] if "volume" in df.columns else turnover
     if len(close) < 6 or close.iloc[-1] <= 0:
@@ -89,6 +99,7 @@ def compute_alphalite_for_stock(code: str, history: pd.DataFrame) -> Dict[str, f
         "volatility_20d": len(returns) >= 20,
     }
     coverage = sum(1 for value in availability.values() if value) / len(availability)
+    enhanced = _enhanced_factors(open_price, high, low, close) if getattr(config, "ENABLE_ENHANCED_FACTORS", False) else _empty_enhanced_factors()
 
     return {
         "code": normalize_code(code),
@@ -106,6 +117,7 @@ def compute_alphalite_for_stock(code: str, history: pd.DataFrame) -> Dict[str, f
         "turnover_20d": round(coerce_number(turnover.tail(20).mean()), 4),
         "breakout_20d": 1.0 if high_20 > 0 and latest >= high_20 * 0.995 else 0.0,
         "volatility_20d": round(coerce_number(volatility_20), 4),
+        **enhanced,
         "alphalite_factor_ready": 1.0,
         "alphalite_coverage": round(coverage, 4),
     }
@@ -157,3 +169,81 @@ def _ratio(value: float, base: float) -> float:
     if base <= 0:
         return 0.0
     return round(value / base, 4)
+
+
+def _enhanced_factors(
+    open_price: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+) -> Dict[str, float]:
+    latest_close = coerce_number(close.iloc[-1]) if len(close) else 0.0
+    latest_high = coerce_number(high.iloc[-1]) if len(high) else latest_close
+    latest_low = coerce_number(low.iloc[-1]) if len(low) else latest_close
+    latest_open = coerce_number(open_price.iloc[-1]) if len(open_price) else latest_close
+    typical = (latest_high + latest_low + latest_close) / 3.0
+    close_vs_vwap = (latest_close / typical - 1.0) * 100 if typical > 0 else 0.0
+    daily_range = latest_high - latest_low
+    if daily_range > 0:
+        upper_wick_ratio = (latest_high - max(latest_open, latest_close)) / daily_range
+        lower_wick_ratio = (min(latest_open, latest_close) - latest_low) / daily_range
+    else:
+        upper_wick_ratio = 0.0
+        lower_wick_ratio = 0.0
+    high_20 = high.tail(20).max() if len(high) >= 20 else high.max()
+    low_20 = low.tail(20).min() if len(low) >= 20 else low.min()
+    price_position_20d = (latest_close - low_20) / (high_20 - low_20) * 100 if high_20 > low_20 else 50.0
+    streak = _consecutive_direction(close)
+    return {
+        "close_vs_vwap": round(coerce_number(close_vs_vwap), 4),
+        "upper_wick_ratio": round(max(0.0, min(1.0, coerce_number(upper_wick_ratio))), 4),
+        "lower_wick_ratio": round(max(0.0, min(1.0, coerce_number(lower_wick_ratio))), 4),
+        "price_position_20d": round(max(0.0, min(100.0, coerce_number(price_position_20d))), 4),
+        "consecutive_up_days": float(streak.get("up", 0)),
+        "consecutive_down_days": float(streak.get("down", 0)),
+        "amplitude_5d_mean": round(_amplitude_mean(high, low, close, 5), 4),
+    }
+
+
+def _empty_enhanced_factors() -> Dict[str, float]:
+    return {
+        "close_vs_vwap": 0.0,
+        "upper_wick_ratio": 0.0,
+        "lower_wick_ratio": 0.0,
+        "price_position_20d": 0.0,
+        "consecutive_up_days": 0.0,
+        "consecutive_down_days": 0.0,
+        "amplitude_5d_mean": 0.0,
+    }
+
+
+def _consecutive_direction(close: pd.Series) -> Dict[str, int]:
+    values = [coerce_number(value) for value in close.tolist()]
+    up = 0
+    down = 0
+    for idx in range(len(values) - 1, 0, -1):
+        if values[idx] > values[idx - 1]:
+            if down:
+                break
+            up += 1
+            continue
+        if values[idx] < values[idx - 1]:
+            if up:
+                break
+            down += 1
+            continue
+        break
+    return {"up": up, "down": down}
+
+
+def _amplitude_mean(high: pd.Series, low: pd.Series, close: pd.Series, window: int) -> float:
+    if len(high) <= 1 or len(low) <= 1 or len(close) <= 1:
+        return 0.0
+    values = []
+    start = max(1, len(close) - max(1, int(window)))
+    for idx in range(start, len(close)):
+        prev_close = coerce_number(close.iloc[idx - 1])
+        if prev_close <= 0:
+            continue
+        values.append((coerce_number(high.iloc[idx]) - coerce_number(low.iloc[idx])) / prev_close * 100.0)
+    return sum(values) / len(values) if values else 0.0

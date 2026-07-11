@@ -1,0 +1,274 @@
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import pandas as pd
+
+from stock_analyzer import config
+from stock_analyzer.strategy_validation import StrategyValidationStore, _primary_return_config, validation_baseline_config
+
+
+def _validation_history(start_date: str, future_days: int, final_price: float) -> pd.DataFrame:
+    dates = pd.date_range(start_date, periods=future_days + 1, freq="D").strftime("%Y%m%d").tolist()
+    future_prices = [
+        10 + (final_price - 10) * (idx + 1) / max(1, future_days)
+        for idx in range(future_days)
+    ]
+    prices = [10] + future_prices
+    return pd.DataFrame(
+        {
+            "trade_date": dates,
+            "open": prices,
+            "high": [price * 1.01 for price in prices],
+            "low": [price * 0.99 for price in prices],
+            "price": prices,
+        }
+    )
+
+
+class ValidationRepositoryRuntimeTest(unittest.TestCase):
+    def test_strategy_validation_replaces_same_day_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            first = [
+                {"rank": 1, "code": "600001", "name": "old", "price": 10, "score": 80},
+                {"rank": 2, "code": "600002", "name": "replace", "price": 12, "score": 70},
+            ]
+            second = [{"rank": 1, "code": "600001", "name": "new", "price": 11, "score": 90}]
+
+            store.save_signals("tomorrow_picks", "tomorrow_picks_v2", "2024-01-01T14:30:00", first)
+            result = store.save_signals("tomorrow_picks", "tomorrow_picks_v3", "2024-01-01T14:31:00", second)
+            rows = store.signals_for_date("2024-01-01", "tomorrow_picks")
+
+        self.assertEqual(result["replaced"], 2)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["code"], "600001")
+        self.assertEqual(rows[0]["name"], "new")
+
+    def test_strategy_validation_reports_pending_outcomes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            store.save_signals(
+                "tomorrow_picks",
+                config.TOMORROW_STRATEGY_VERSION,
+                "2024-01-01T14:30:00",
+                [
+                    {
+                        "rank": 1,
+                        "code": "600001",
+                        "name": "pending",
+                        "market": "main",
+                        "price": 10,
+                        "pct_chg": 2,
+                        "turnover": 200000000,
+                        "volume_ratio": 1.5,
+                        "turnover_rate": 3,
+                        "sixty_day_pct": 8,
+                        "ytd_pct": 10,
+                        "score": 70,
+                        "tier": "primary_watch",
+                        "reasons": ["test"],
+                    }
+                ],
+            )
+            metrics = store.metrics("tomorrow_picks", days=20)
+
+        self.assertEqual(metrics["signal_sample_count"], 1)
+        self.assertEqual(metrics["pending_outcome_count"], 1)
+        self.assertEqual(metrics["outcome_coverage_pct"], 0.0)
+
+    def test_strategy_validation_uses_next_open_returns(self):
+        class FakeProvider:
+            def get_history(self, code, days=180):
+                return pd.DataFrame(
+                    {
+                        "trade_date": ["20240101", "20240102", "20240103", "20240104"],
+                        "open": [10, 12, 12.5, 13],
+                        "high": [10.5, 13, 13.2, 13.6],
+                        "low": [9.8, 11.8, 12.0, 12.7],
+                        "price": [10, 12.5, 13.0, 13.5],
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            store.save_signals(
+                "tomorrow_picks",
+                config.TOMORROW_STRATEGY_VERSION,
+                "2024-01-01T14:30:00",
+                [{"rank": 1, "code": "600001", "name": "sample", "price": 10, "score": 90}],
+            )
+            with patch.object(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 50.0):
+                update = store.update_outcomes(FakeProvider(), signal_date="2024-01-01", strategy_name="tomorrow_picks")
+            rows = store.signals_for_date("2024-01-01", "tomorrow_picks")
+            metrics = store.metrics("tomorrow_picks", days=20)
+
+        self.assertEqual(update["updated"], 1)
+        self.assertAlmostEqual(rows[0]["signal_next_close_return"], 25.0)
+        self.assertAlmostEqual(rows[0]["next_close_return"], 4.1667)
+        self.assertAlmostEqual(metrics["avg_next_close_return"], 4.1667)
+        self.assertEqual(metrics["primary_return_field"], "next_close_return")
+        self.assertEqual(metrics["validation_baseline_id"], metrics["validation_baseline"]["baseline_id"])
+
+    def test_strategy_validation_persists_outcome_validation_baseline(self):
+        class FakeProvider:
+            def get_history(self, code, days=180):
+                return _validation_history("2024-01-01", future_days=3, final_price=10.6)
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False
+        ), patch.object(config, "ENABLE_MARKET_IMPACT", False), patch.object(
+            config, "ENABLE_SURVIVORSHIP_CORRECTION", False
+        ):
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            store.save_signals(
+                "tomorrow_picks",
+                config.TOMORROW_STRATEGY_VERSION,
+                "2024-01-01T14:30:00",
+                [{"rank": 1, "code": "600001", "name": "sample", "price": 10, "score": 90}],
+            )
+            store.update_outcomes(FakeProvider(), signal_date="2024-01-01", strategy_name="tomorrow_picks")
+            rows = store.signals_for_date("2024-01-01", "tomorrow_picks")
+            metrics = store.metrics("tomorrow_picks", days=20)
+            samples = store.live_weight_samples("tomorrow_picks", days=20)
+            expected_baseline_id = validation_baseline_config("tomorrow_picks")["baseline_id"]
+
+        self.assertEqual(rows[0]["validation_baseline_id"], expected_baseline_id)
+        self.assertIn(expected_baseline_id, rows[0]["validation_baseline_json"])
+        self.assertEqual(metrics["current_baseline_outcome_count"], 1)
+        self.assertEqual(metrics["raw_outcome_sample_count"], 1)
+        self.assertEqual(samples[0]["validation_baseline_id"], expected_baseline_id)
+        self.assertEqual(rows[0]["stored_primary_return_field"], "next_close_return")
+
+    def test_strategy_validation_excludes_mismatched_validation_baseline_until_backfilled(self):
+        class FakeProvider:
+            def get_history(self, code, days=180):
+                return _validation_history("2024-01-01", future_days=3, final_price=10.6)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            store.save_signals(
+                "tomorrow_picks",
+                config.TOMORROW_STRATEGY_VERSION,
+                "2024-01-01T14:30:00",
+                [{"rank": 1, "code": "600001", "name": "legacy", "price": 10, "score": 90}],
+            )
+            with patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False), patch.object(
+                config, "ENABLE_MARKET_IMPACT", False
+            ), patch.object(config, "ENABLE_SURVIVORSHIP_CORRECTION", False):
+                legacy_update = store.update_outcomes(
+                    FakeProvider(),
+                    signal_date="2024-01-01",
+                    strategy_name="tomorrow_picks",
+                )
+            with patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", True), patch.object(
+                config, "ENABLE_MARKET_IMPACT", False
+            ), patch.object(config, "ENABLE_SURVIVORSHIP_CORRECTION", False), patch.object(
+                config, "EXPECTED_RETURN_MIN_REAL_DAYS", 60
+            ):
+                metrics_before = store.metrics("tomorrow_picks", days=20)
+                status_before = store.validation_baseline_status("tomorrow_picks", days=20)
+                samples_before = store.live_weight_samples("tomorrow_picks", days=20)
+                backfill_update = store.update_outcomes(
+                    FakeProvider(),
+                    strategy_name="tomorrow_picks",
+                    only_incomplete=True,
+                )
+                metrics_after = store.metrics("tomorrow_picks", days=20)
+                status_after = store.validation_baseline_status("tomorrow_picks", days=20)
+                rows_after = store.signals_for_date("2024-01-01", "tomorrow_picks")
+
+        self.assertEqual(legacy_update["updated"], 1)
+        self.assertEqual(metrics_before["sample_count"], 0)
+        self.assertEqual(metrics_before["legacy_baseline_outcome_count"], 1)
+        self.assertEqual(status_before["status"], "needs_backfill")
+        self.assertEqual(samples_before, [])
+        self.assertEqual(backfill_update["updated"], 1)
+        self.assertEqual(metrics_after["sample_count"], 1)
+        self.assertFalse(status_after["needs_backfill"])
+        self.assertIn("tail", rows_after[0]["validation_baseline_id"])
+
+    def test_strategy_validation_survivorship_correction_keeps_stale_no_future_sample(self):
+        class FakeProvider:
+            def get_history(self, code, days=180):
+                return pd.DataFrame(
+                    {
+                        "trade_date": ["20240101"],
+                        "open": [10.0],
+                        "high": [10.2],
+                        "low": [9.8],
+                        "price": [10.0],
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            store.save_signals(
+                "tomorrow_picks",
+                config.TOMORROW_STRATEGY_VERSION,
+                "2024-01-01T15:00:00",
+                [{"rank": 1, "code": "600001", "name": "stale", "price": 10, "score": 90}],
+            )
+            with patch.object(config, "ENABLE_SURVIVORSHIP_CORRECTION", True), patch.object(
+                config, "SURVIVORSHIP_CORRECTION_STALE_DAYS", 0
+            ), patch.object(config, "DELISTED_DEFAULT_LOSS_PCT", -30.0):
+                update = store.update_outcomes(FakeProvider(), signal_date="2024-01-01", strategy_name="tomorrow_picks")
+                rows = store.signals_for_date("2024-01-01", "tomorrow_picks")
+                metrics = store.metrics("tomorrow_picks", days=20)
+
+        self.assertEqual(update["updated"], 1)
+        self.assertEqual(rows[0]["survivorship_corrected"], 1)
+        self.assertEqual(rows[0]["correction_reason"], "survivorship_no_future_default_loss")
+        self.assertAlmostEqual(rows[0]["next_close_return"], -30.0)
+        self.assertEqual(metrics["survivorship_corrected_count"], 1)
+        self.assertEqual(metrics["survivor_sample_count"], 0)
+
+    def test_validation_execution_cost_uses_liquidity_tail_auction_and_market_impact(self):
+        from stock_analyzer.strategy_validation import _execution_cost_pct, market_impact_cost_pct, tail_auction_slippage_pct
+
+        liquid = _execution_cost_pct({"turnover": 1_500_000_000})
+        illiquid = _execution_cost_pct({"turnover": 50_000_000})
+
+        self.assertGreater(illiquid, liquid)
+        self.assertGreater(illiquid, config.VALIDATION_TRADE_COST_PCT)
+
+        row = {"turnover": 100_000_000, "adv_20d": 100_000_000, "suggested_weight": 10}
+        with patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False), patch.object(
+            config, "ENABLE_MARKET_IMPACT", False
+        ):
+            baseline = _execution_cost_pct(row)
+        with patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", True), patch.object(
+            config, "TAIL_AUCTION_LIQUIDITY_RATIO", 0.05
+        ), patch.object(config, "TAIL_AUCTION_MAX_EXTRA_SLIPPAGE_PCT", 0.8), patch.object(
+            config, "VALIDATION_PORTFOLIO_CAPITAL", 1_000_000
+        ), patch.object(
+            config, "ENABLE_MARKET_IMPACT", False
+        ):
+            adjusted = _execution_cost_pct(row)
+            tail_with_base = tail_auction_slippage_pct(row, base_slippage=0.2)
+        with patch.object(config, "ENABLE_MARKET_IMPACT", True), patch.object(
+            config, "VALIDATION_PORTFOLIO_CAPITAL", 10_000_000
+        ), patch.object(config, "MARKET_IMPACT_COEFFICIENT", 0.1), patch.object(
+            config, "MARKET_IMPACT_MAX_COST_PCT", 5.0
+        ), patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False):
+            impact = market_impact_cost_pct(row)
+            impact_adjusted = _execution_cost_pct(row)
+
+        self.assertGreater(adjusted, baseline)
+        self.assertGreaterEqual(tail_with_base, 0.2)
+        self.assertGreater(impact, 0)
+        self.assertAlmostEqual(impact_adjusted, baseline + impact)
+
+    def test_tomorrow_primary_return_config_uses_next_open_to_close(self):
+        column, days, horizon = _primary_return_config("tomorrow_picks")
+        self.assertEqual(column, "next_close_return")
+        self.assertEqual(days, 1)
+        self.assertEqual(horizon, "次日开盘至收盘")
+        with patch.object(config, "VALIDATION_PRIMARY_ENTRY_MODE", "signal"):
+            column_signal, days_signal, horizon_signal = _primary_return_config("tomorrow_picks")
+            self.assertEqual(column_signal, "next_close_return")
+            self.assertEqual(days_signal, 1)
+            self.assertEqual(horizon_signal, "次日开盘至收盘")
+
+if __name__ == "__main__":
+    unittest.main()

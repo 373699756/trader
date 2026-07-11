@@ -12,6 +12,10 @@ from . import config
 from .normalization import coerce_number, normalize_code
 from .risk_rules import simulate_exit
 from .runtime_json import atomic_write_json
+from .validation_outcomes import StrategyOutcomeService
+from .validation_repository import ValidationRepository
+from .validation_schema import ValidationSchemaManager
+from .validation_services import ValidationBaselineService, ValidationMetricsService
 
 
 PRIMARY_RETURN_BY_STRATEGY = {
@@ -54,7 +58,12 @@ class StrategyValidationStore:
         directory = os.path.dirname(db_path)
         if directory:
             os.makedirs(directory, exist_ok=True)
+        self.schema = ValidationSchemaManager(_connect_validation_db, self.db_path)
         self._init_db()
+        self.repository = ValidationRepository(_connect_validation_db, self.db_path)
+        self.outcomes = StrategyOutcomeService(self)
+        self.metrics_service = ValidationMetricsService(self)
+        self.baseline_service = ValidationBaselineService(self)
 
     def save_signals(
         self,
@@ -64,350 +73,28 @@ class StrategyValidationStore:
         rows: Iterable[Dict[str, object]],
         deepseek_shadow_rows: Optional[Iterable[Dict[str, object]]] = None,
     ) -> Dict[str, object]:
-        signal_date = signal_time[:10]
-        rows = list(rows)
-        deepseek_shadow_rows = list(deepseek_shadow_rows or [])
-        saved = 0
-        shadow_saved = 0
-        with _connect_validation_db(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO strategy_signal_batches
-                (strategy_name, strategy_version, signal_date, signal_time, saved_count, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    strategy_name,
-                    strategy_version,
-                    signal_date,
-                    signal_time,
-                    len(rows),
-                    datetime.now().isoformat(timespec="seconds"),
-                ),
-            )
-            if "replay" in str(strategy_version or "").lower():
-                old_ids = conn.execute(
-                    """
-                    SELECT id
-                    FROM strategy_signals
-                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
-                    """,
-                    (strategy_name, strategy_version, signal_date),
-                ).fetchall()
-                delete_sql = """
-                    DELETE FROM strategy_signals
-                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
-                    """
-                delete_params = (strategy_name, strategy_version, signal_date)
-                old_shadow_ids = conn.execute(
-                    """
-                    SELECT id
-                    FROM strategy_deepseek_shadow_signals
-                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
-                    """,
-                    (strategy_name, strategy_version, signal_date),
-                ).fetchall()
-                shadow_delete_sql = """
-                    DELETE FROM strategy_deepseek_shadow_signals
-                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
-                    """
-                shadow_delete_params = (strategy_name, strategy_version, signal_date)
-            else:
-                old_ids = conn.execute(
-                    """
-                    SELECT id
-                    FROM strategy_signals
-                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
-                    """,
-                    (strategy_name, signal_date),
-                ).fetchall()
-                delete_sql = """
-                    DELETE FROM strategy_signals
-                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
-                    """
-                delete_params = (strategy_name, signal_date)
-                old_shadow_ids = conn.execute(
-                    """
-                    SELECT id
-                    FROM strategy_deepseek_shadow_signals
-                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
-                    """,
-                    (strategy_name, signal_date),
-                ).fetchall()
-                shadow_delete_sql = """
-                    DELETE FROM strategy_deepseek_shadow_signals
-                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
-                    """
-                shadow_delete_params = (strategy_name, signal_date)
-            if old_ids:
-                conn.executemany(
-                    "DELETE FROM strategy_execution_skips WHERE signal_id = ?",
-                    [(row[0],) for row in old_ids],
-                )
-                conn.executemany(
-                    "DELETE FROM strategy_outcomes WHERE signal_id = ?",
-                    [(row[0],) for row in old_ids],
-                )
-                conn.execute(delete_sql, delete_params)
-            if old_shadow_ids:
-                conn.executemany(
-                    "DELETE FROM strategy_deepseek_shadow_outcomes WHERE shadow_id = ?",
-                    [(row[0],) for row in old_shadow_ids],
-                )
-                conn.execute(shadow_delete_sql, shadow_delete_params)
-            for row in rows:
-                code = normalize_code(row.get("code"))
-                rank = int(row.get("rank") or 0)
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO strategy_signals
-                    (strategy_name, strategy_version, signal_date, signal_time, rank, code, name,
-                     market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
-                     turnover_rate, sixty_day_pct, ytd_pct, score, reasons_json, raw_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        strategy_name,
-                        strategy_version,
-                        signal_date,
-                        signal_time,
-                        rank,
-                        code,
-                        str(row.get("name", "")),
-                        str(row.get("market_label") or row.get("market") or ""),
-                        str(row.get("theme", "")),
-                        coerce_number(row.get("price")),
-                        coerce_number(row.get("pct_chg")),
-                        coerce_number(row.get("turnover")),
-                        coerce_number(row.get("volume_ratio")),
-                        coerce_number(row.get("turnover_rate")),
-                        coerce_number(row.get("sixty_day_pct")),
-                        coerce_number(row.get("ytd_pct")),
-                        coerce_number(row.get("score")),
-                        json.dumps(row.get("reasons", []), ensure_ascii=False),
-                        json.dumps(row, ensure_ascii=False),
-                        datetime.now().isoformat(timespec="seconds"),
-                    ),
-                )
-                saved += 1
-            for row in deepseek_shadow_rows:
-                code = normalize_code(row.get("code"))
-                if not code:
-                    continue
-                rank = int(coerce_number(row.get("rank"), coerce_number(row.get("local_rank"), 0)) or 0)
-                local_rank = int(coerce_number(row.get("local_rank"), rank) or 0)
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO strategy_deepseek_shadow_signals
-                    (strategy_name, strategy_version, signal_date, signal_time, rank, local_rank, code, name,
-                     market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
-                     turnover_rate, sixty_day_pct, ytd_pct, score, deepseek_rank_score, deepseek_action,
-                     deepseek_veto, deepseek_penalty, filter_reason, raw_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        strategy_name,
-                        strategy_version,
-                        signal_date,
-                        signal_time,
-                        rank,
-                        local_rank,
-                        code,
-                        str(row.get("name", "")),
-                        str(row.get("market_label") or row.get("market") or ""),
-                        str(row.get("theme", "")),
-                        coerce_number(row.get("price")),
-                        coerce_number(row.get("pct_chg")),
-                        coerce_number(row.get("turnover")),
-                        coerce_number(row.get("volume_ratio")),
-                        coerce_number(row.get("turnover_rate")),
-                        coerce_number(row.get("sixty_day_pct")),
-                        coerce_number(row.get("ytd_pct")),
-                        coerce_number(row.get("score")),
-                        coerce_number(row.get("deepseek_rank_score")),
-                        str(row.get("deepseek_action") or ""),
-                        1 if row.get("deepseek_veto") else 0,
-                        coerce_number(row.get("deepseek_penalty")),
-                        str(row.get("deepseek_filter_reason") or ""),
-                        json.dumps(row, ensure_ascii=False),
-                        datetime.now().isoformat(timespec="seconds"),
-                    ),
-                )
-                shadow_saved += 1
-        return {
-            "signal_date": signal_date,
-            "saved": saved,
-            "replaced": len(old_ids),
-            "deepseek_shadow_saved": shadow_saved,
-            "deepseek_shadow_replaced": len(old_shadow_ids),
-        }
+        return self.repository.save_signals(
+            strategy_name,
+            strategy_version,
+            signal_time,
+            rows,
+            deepseek_shadow_rows=deepseek_shadow_rows,
+        )
 
     def list_signal_dates(self, strategy_name: str = "") -> List[Dict[str, object]]:
-        where = ""
-        params = []
-        if strategy_name:
-            where = "WHERE b.strategy_name = ?"
-            params.append(strategy_name)
-        with _connect_validation_db(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT b.signal_date, b.strategy_name, COALESCE(COUNT(s.id), 0) AS count, MAX(b.signal_time) AS signal_time,
-                       COALESCE(SUM(CASE WHEN s.id IS NOT NULL AND lower(s.strategy_version) LIKE '%replay%' THEN 0 WHEN s.id IS NOT NULL THEN 1 ELSE 0 END), 0) AS real_count,
-                       COALESCE(SUM(CASE WHEN s.id IS NOT NULL AND lower(s.strategy_version) LIKE '%replay%' THEN 1 ELSE 0 END), 0) AS replay_count
-                FROM strategy_signal_batches b
-                LEFT JOIN strategy_signals s
-                  ON s.strategy_name = b.strategy_name
-                 AND s.signal_date = b.signal_date
-                 AND s.strategy_version = b.strategy_version
-                {}
-                GROUP BY b.signal_date, b.strategy_name
-                ORDER BY b.signal_date DESC, b.strategy_name ASC
-                LIMIT 120
-                """.format(where),
-                params,
-            ).fetchall()
-        return [
-            {
-                "signal_date": row[0],
-                "strategy_name": row[1],
-                "count": row[2],
-                "signal_time": row[3],
-                "real_count": row[4] or 0,
-                "replay_count": row[5] or 0,
-                "sample_type": (
-                    "empty"
-                    if not (row[2] or 0)
-                    else "mixed"
-                    if (row[4] or 0) and (row[5] or 0)
-                    else ("replay" if (row[5] or 0) else "real")
-                ),
-            }
-            for row in rows
-        ]
+        return self.repository.list_signal_dates(strategy_name=strategy_name)
 
     def existing_validation_dates(self, strategy_name: str, replay_version: str = "") -> List[str]:
-        where = "strategy_name = ? AND lower(strategy_version) NOT LIKE '%replay%'"
-        params = [strategy_name]
-        if replay_version:
-            where = "strategy_name = ? AND (lower(strategy_version) NOT LIKE '%replay%' OR strategy_version = ?)"
-            params.append(replay_version)
-        with _connect_validation_db(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT signal_date FROM strategy_signal_batches WHERE {}".format(where),
-                params,
-            ).fetchall()
-        return [str(row[0]) for row in rows if row and row[0]]
+        return self.repository.existing_validation_dates(strategy_name, replay_version=replay_version)
 
     def signals_for_date(self, signal_date: str, strategy_name: str = "") -> List[Dict[str, object]]:
-        where = "WHERE s.signal_date = ?"
-        params = [signal_date]
-        if strategy_name:
-            where += " AND s.strategy_name = ?"
-            params.append(strategy_name)
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT s.*, o.next_trade_date, o.next_open, o.next_high, o.next_low, o.next_close,
-                       o.next_open_return, o.next_close_return,
-                       o.intraday_high_return, o.hold_3d_return, o.hold_5d_return,
-                       o.hold_10d_return, o.hold_20d_return, o.max_gain_3d,
-                       o.max_drawdown_3d, o.hit_3pct, o.hit_5pct,
-                       o.signal_next_close_return, o.signal_intraday_high_return,
-                       o.signal_hold_3d_return, o.signal_max_gain_3d,
-                       o.signal_max_drawdown_3d, o.signal_hit_3pct, o.signal_hit_5pct,
-                       o.signal_hold_5d_return, o.signal_hold_10d_return, o.signal_hold_20d_return,
-                       o.exit_return, o.signal_exit_return, o.exit_reason, o.exit_days, o.exit_date,
-                       o.future_days,
-                       o.updated_at AS outcome_updated_at,
-                       k.skip_reason, k.updated_at AS skip_updated_at
-                FROM strategy_signals s
-                LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
-                LEFT JOIN strategy_execution_skips k ON k.signal_id = s.id
-                {}
-                ORDER BY s.strategy_name ASC, s.rank ASC
-                """.format(where),
-                params,
-            ).fetchall()
-        return [_row_to_dict(row) for row in rows]
+        return self.repository.signals_for_date(signal_date, strategy_name=strategy_name)
 
     def latest_signal_rows(self, strategy_name: str) -> List[Dict[str, object]]:
-        with _connect_validation_db(self.db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT signal_date, strategy_version
-                FROM strategy_signal_batches
-                WHERE strategy_name = ? AND lower(strategy_version) NOT LIKE '%replay%'
-                ORDER BY signal_date DESC, signal_time DESC
-                LIMIT 1
-                """,
-                (strategy_name,),
-            ).fetchone()
-        if not row:
-            return []
-        signal_date, strategy_version = row
-        signals = [
-            signal
-            for signal in self.signals_for_date(signal_date, strategy_name)
-            if signal.get("strategy_version") == strategy_version
-        ]
-        rows = []
-        for signal in signals:
-            raw = signal.get("raw") or {}
-            if isinstance(raw, dict):
-                item = raw.copy()
-                item["rank"] = signal.get("rank")
-                item["strategy_version"] = signal.get("strategy_version")
-                item["signal_date"] = signal.get("signal_date")
-                rows.append(item)
-        rows.sort(key=lambda item: int(item.get("rank") or 9999))
-        return rows
+        return self.repository.latest_signal_rows(strategy_name)
 
     def prune_strategies(self, allowed_strategies: Iterable[str]) -> Dict[str, int]:
-        allowed = [str(item) for item in allowed_strategies if str(item or "").strip()]
-        if not allowed:
-            return {"deleted_signals": 0, "deleted_batches": 0}
-        placeholders = ",".join("?" for _ in allowed)
-        with _connect_validation_db(self.db_path) as conn:
-            old_ids = conn.execute(
-                """
-                SELECT id
-                FROM strategy_signals
-                WHERE strategy_name NOT IN ({})
-                """.format(placeholders),
-                allowed,
-            ).fetchall()
-            deleted_signals = len(old_ids)
-            if old_ids:
-                id_rows = [(row[0],) for row in old_ids]
-                conn.executemany("DELETE FROM strategy_execution_skips WHERE signal_id = ?", id_rows)
-                conn.executemany("DELETE FROM strategy_outcomes WHERE signal_id = ?", id_rows)
-                conn.executemany("DELETE FROM strategy_signals WHERE id = ?", id_rows)
-            batch_result = conn.execute(
-                """
-                DELETE FROM strategy_signal_batches
-                WHERE strategy_name NOT IN ({})
-                """.format(placeholders),
-                allowed,
-            )
-            shadow_ids = conn.execute(
-                """
-                SELECT id
-                FROM strategy_deepseek_shadow_signals
-                WHERE strategy_name NOT IN ({})
-                """.format(placeholders),
-                allowed,
-            ).fetchall()
-            deleted_shadow = len(shadow_ids)
-            if shadow_ids:
-                id_rows = [(row[0],) for row in shadow_ids]
-                conn.executemany("DELETE FROM strategy_deepseek_shadow_outcomes WHERE shadow_id = ?", id_rows)
-                conn.executemany("DELETE FROM strategy_deepseek_shadow_signals WHERE id = ?", id_rows)
-        return {
-            "deleted_signals": deleted_signals,
-            "deleted_batches": int(batch_result.rowcount or 0),
-            "deleted_deepseek_shadow_signals": deleted_shadow,
-        }
+        return self.repository.prune_strategies(allowed_strategies)
 
     def save_tuning_run(
         self,
@@ -417,143 +104,16 @@ class StrategyValidationStore:
         metrics: Dict[str, object],
         deepseek_review: Dict[str, object],
     ) -> Dict[str, object]:
-        now = datetime.now().isoformat(timespec="seconds")
-        with _connect_validation_db(self.db_path) as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO strategy_tuning_runs
-                (strategy_name, run_time, days, status, can_apply, shadow_mode,
-                 plan_json, metrics_json, deepseek_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    strategy_name,
-                    now,
-                    int(days),
-                    str(plan.get("status", "")),
-                    1 if plan.get("can_apply") else 0,
-                    1 if plan.get("shadow_mode") else 0,
-                    json.dumps(plan, ensure_ascii=False),
-                    json.dumps(metrics or {}, ensure_ascii=False),
-                    json.dumps(deepseek_review or {}, ensure_ascii=False),
-                    now,
-                ),
-            )
-            run_id = int(cursor.lastrowid)
-        return {"id": run_id, "run_time": now}
+        return self.repository.save_tuning_run(strategy_name, days, plan, metrics, deepseek_review)
 
     def latest_tuning_run(self, strategy_name: str) -> Dict[str, object]:
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                """
-                SELECT *
-                FROM strategy_tuning_runs
-                WHERE strategy_name = ?
-                ORDER BY run_time DESC, id DESC
-                LIMIT 1
-                """,
-                (strategy_name,),
-            ).fetchone()
-        return _tuning_row_to_dict(row) if row else {}
+        return self.repository.latest_tuning_run(strategy_name)
 
     def list_tuning_runs(self, strategy_name: str, limit: int = 10) -> List[Dict[str, object]]:
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM strategy_tuning_runs
-                WHERE strategy_name = ?
-                ORDER BY run_time DESC, id DESC
-                LIMIT ?
-                """,
-                (strategy_name, max(1, int(limit))),
-            ).fetchall()
-        return [_tuning_row_to_dict(row) for row in rows]
+        return self.repository.list_tuning_runs(strategy_name, limit=limit)
 
     def live_weight_samples(self, strategy_name: str, days: int = 120) -> List[Dict[str, object]]:
-        primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
-        drawdown_column = "signal_max_drawdown_3d" if strategy_name == "short_term" else "max_drawdown_3d"
-        exit_column = "signal_exit_return" if strategy_name == "short_term" else "exit_return"
-        version_filter = ""
-        params = [strategy_name]
-        current_version = current_strategy_version(strategy_name)
-        if current_version:
-            version_filter = " AND s.strategy_version = ?"
-            params.append(current_version)
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT s.signal_date, s.strategy_name, s.strategy_version, s.rank, s.code,
-                       s.name, s.score, s.turnover, s.market, s.raw_json,
-                       COALESCE(o.{primary_column}, 0) AS primary_return,
-                       COALESCE(o.next_open_return, 0) AS next_open_return,
-                       COALESCE(o.{drawdown_column}, 0) AS max_drawdown,
-                       COALESCE(o.{exit_column}, o.{primary_column}, 0) AS exit_return,
-                       COALESCE(o.exit_reason, '') AS exit_reason,
-                       COALESCE(o.exit_days, 0) AS exit_days,
-                       COALESCE(o.future_days, 1) AS future_days
-                FROM strategy_signals s
-                JOIN strategy_outcomes o ON o.signal_id = s.id
-                WHERE s.strategy_name = ? {version_filter}
-                ORDER BY s.signal_date DESC, s.rank ASC
-                """.format(
-                    primary_column=primary_column,
-                    drawdown_column=drawdown_column,
-                    exit_column=exit_column,
-                    version_filter=version_filter,
-                ),
-                params,
-            ).fetchall()
-        if not rows:
-            return []
-        dates: List[str] = []
-        selected: List[sqlite3.Row] = []
-        for row in rows:
-            if _is_replay_version(row["strategy_version"]):
-                continue
-            if not _outcome_ready(row, primary_days):
-                continue
-            if row["signal_date"] not in dates:
-                if len(dates) >= max(1, int(days)):
-                    continue
-                dates.append(row["signal_date"])
-            if row["signal_date"] in dates:
-                selected.append(row)
-        samples: List[Dict[str, object]] = []
-        for row in selected:
-            try:
-                raw = json.loads(row["raw_json"] or "{}")
-            except Exception:
-                raw = {}
-            if not _is_primary_validation_signal(strategy_name, row["rank"], raw):
-                continue
-            primary_return = coerce_number(row["primary_return"])
-            trade_cost = _execution_cost_pct(row)
-            samples.append(
-                {
-                    "signal_date": row["signal_date"],
-                    "strategy_name": row["strategy_name"],
-                    "strategy_version": row["strategy_version"],
-                    "rank": int(row["rank"] or 0),
-                    "code": normalize_code(row["code"]),
-                    "name": row["name"],
-                    "stored_score": coerce_number(row["score"]),
-                    "raw": raw if isinstance(raw, dict) else {},
-                    "primary_return": primary_return,
-                    "primary_return_net": round(primary_return - trade_cost, 4),
-                    "next_open_return": coerce_number(row["next_open_return"]),
-                    "max_drawdown": coerce_number(row["max_drawdown"]),
-                    "trade_cost_pct": trade_cost,
-                    "exit_return": coerce_number(row["exit_return"]),
-                    "future_days": int(row["future_days"] or 0),
-                    "primary_holding_days": primary_days,
-                    "primary_horizon_label": primary_label,
-                }
-            )
-        return samples
+        return self.repository.live_weight_samples(strategy_name, days=days)
 
     def signal_codes(
         self,
@@ -561,33 +121,7 @@ class StrategyValidationStore:
         strategy_name: str = "",
         limit: int = 500,
     ) -> List[Dict[str, object]]:
-        where = "WHERE 1=1"
-        params: List[object] = []
-        if signal_date:
-            where += " AND signal_date = ?"
-            params.append(signal_date)
-        if strategy_name:
-            where += " AND strategy_name = ?"
-            params.append(strategy_name)
-        params.append(max(1, int(limit)))
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT code,
-                       MAX(name) AS name,
-                       COUNT(*) AS signal_count,
-                       MAX(signal_date) AS latest_signal_date,
-                       MIN(rank) AS best_rank
-                FROM strategy_signals
-                {}
-                GROUP BY code
-                ORDER BY latest_signal_date DESC, best_rank ASC
-                LIMIT ?
-                """.format(where),
-                params,
-            ).fetchall()
-        return [dict(row) for row in rows]
+        return self.repository.signal_codes(signal_date=signal_date, strategy_name=strategy_name, limit=limit)
 
     def update_outcomes(
         self,
@@ -597,149 +131,13 @@ class StrategyValidationStore:
         codes: Optional[Iterable[str]] = None,
         only_incomplete: bool = False,
     ) -> Dict[str, object]:
-        where = "WHERE 1=1"
-        params = []
-        if signal_date:
-            where += " AND signal_date = ?"
-            params.append(signal_date)
-        if strategy_name:
-            where += " AND strategy_name = ?"
-            params.append(strategy_name)
-        normalized_codes: List[str] = []
-        for code in codes or []:
-            normalized = normalize_code(code)
-            if normalized:
-                normalized_codes.append(normalized)
-        if normalized_codes:
-            placeholders = ",".join("?" for _ in normalized_codes)
-            where += " AND code IN ({})".format(placeholders)
-            params.extend(normalized_codes)
-        if only_incomplete:
-            where += """
-                AND signal_date < ?
-                AND NOT EXISTS (
-                    SELECT 1 FROM strategy_execution_skips k WHERE k.signal_id = strategy_signals.id
-                )
-                AND (
-                    NOT EXISTS (
-                        SELECT 1 FROM strategy_outcomes o WHERE o.signal_id = strategy_signals.id
-                    )
-                    OR (
-                        strategy_name IN ('tomorrow_picks', 'swing_picks')
-                        AND COALESCE((
-                            SELECT o.future_days FROM strategy_outcomes o
-                            WHERE o.signal_id = strategy_signals.id
-                        ), 0) < 5
-                        AND COALESCE((
-                            SELECT o.exit_reason FROM strategy_outcomes o
-                            WHERE o.signal_id = strategy_signals.id
-                        ), '') IN ('', 'hold_to_term')
-                    )
-                )
-            """
-            params.append(datetime.now().date().isoformat())
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            signals = conn.execute(
-                "SELECT * FROM strategy_signals {} ORDER BY signal_date DESC, rank ASC".format(where),
-                params,
-            ).fetchall()
-
-        updated = 0
-        skipped = 0
-        execution_skipped = 0
-        for signal in signals:
-            outcome = _compute_outcome(provider, signal)
-            if outcome and outcome.get("excluded"):
-                with _connect_validation_db(self.db_path) as conn:
-                    conn.execute("DELETE FROM strategy_outcomes WHERE signal_id = ?", (signal["id"],))
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO strategy_execution_skips
-                        (signal_id, code, skip_reason, updated_at)
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (
-                            signal["id"],
-                            signal["code"],
-                            str(outcome.get("skip_reason") or "excluded"),
-                            datetime.now().isoformat(timespec="seconds"),
-                        ),
-                    )
-                skipped += 1
-                execution_skipped += 1
-                continue
-            if not outcome:
-                skipped += 1
-                continue
-            with _connect_validation_db(self.db_path) as conn:
-                conn.execute("DELETE FROM strategy_execution_skips WHERE signal_id = ?", (signal["id"],))
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO strategy_outcomes
-                    (signal_id, code, next_trade_date, future_days, next_open, next_high, next_low, next_close,
-                     next_open_return, next_close_return, intraday_high_return, hold_3d_return,
-                     hold_5d_return, hold_10d_return, hold_20d_return,
-                     max_gain_3d, max_drawdown_3d, hit_3pct, hit_5pct,
-                     signal_next_close_return, signal_intraday_high_return, signal_hold_3d_return,
-                     signal_hold_5d_return, signal_hold_10d_return, signal_hold_20d_return,
-                     signal_max_gain_3d, signal_max_drawdown_3d, signal_hit_3pct, signal_hit_5pct,
-                     exit_return, signal_exit_return, exit_reason, exit_days, exit_date,
-                     updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        signal["id"],
-                        signal["code"],
-                        outcome["next_trade_date"],
-                        outcome["future_days"],
-                        outcome["next_open"],
-                        outcome["next_high"],
-                        outcome["next_low"],
-                        outcome["next_close"],
-                        outcome["next_open_return"],
-                        outcome["next_close_return"],
-                        outcome["intraday_high_return"],
-                        outcome["hold_3d_return"],
-                        outcome["hold_5d_return"],
-                        outcome["hold_10d_return"],
-                        outcome["hold_20d_return"],
-                        outcome["max_gain_3d"],
-                        outcome["max_drawdown_3d"],
-                        int(outcome["hit_3pct"]),
-                        int(outcome["hit_5pct"]),
-                        outcome["signal_next_close_return"],
-                        outcome["signal_intraday_high_return"],
-                        outcome["signal_hold_3d_return"],
-                        outcome["signal_hold_5d_return"],
-                        outcome["signal_hold_10d_return"],
-                        outcome["signal_hold_20d_return"],
-                        outcome["signal_max_gain_3d"],
-                        outcome["signal_max_drawdown_3d"],
-                        int(outcome["signal_hit_3pct"]),
-                        int(outcome["signal_hit_5pct"]),
-                        outcome["exit_return"],
-                        outcome["signal_exit_return"],
-                        outcome["exit_reason"],
-                        outcome["exit_days"],
-                        outcome["exit_date"],
-                        datetime.now().isoformat(timespec="seconds"),
-                    ),
-                )
-            updated += 1
-        shadow = self.update_deepseek_shadow_outcomes(
+        return self.outcomes.update_outcomes(
             provider,
             signal_date=signal_date,
             strategy_name=strategy_name,
-            codes=normalized_codes,
+            codes=codes,
+            only_incomplete=only_incomplete,
         )
-        return {
-            "updated": updated,
-            "skipped": skipped,
-            "execution_skipped": execution_skipped,
-            "deepseek_shadow_updated": shadow["updated"],
-            "deepseek_shadow_skipped": shadow["skipped"],
-        }
 
     def update_deepseek_shadow_outcomes(
         self,
@@ -748,481 +146,18 @@ class StrategyValidationStore:
         strategy_name: str = "",
         codes: Optional[Iterable[str]] = None,
     ) -> Dict[str, int]:
-        where = "WHERE 1=1"
-        params: List[object] = []
-        if signal_date:
-            where += " AND signal_date = ?"
-            params.append(signal_date)
-        if strategy_name:
-            where += " AND strategy_name = ?"
-            params.append(strategy_name)
-        normalized_codes: List[str] = []
-        for code in codes or []:
-            normalized = normalize_code(code)
-            if normalized:
-                normalized_codes.append(normalized)
-        if normalized_codes:
-            placeholders = ",".join("?" for _ in normalized_codes)
-            where += " AND code IN ({})".format(placeholders)
-            params.extend(normalized_codes)
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            shadow_rows = conn.execute(
-                "SELECT * FROM strategy_deepseek_shadow_signals {} ORDER BY signal_date DESC, local_rank ASC".format(where),
-                params,
-            ).fetchall()
-
-        updated = 0
-        skipped = 0
-        for shadow in shadow_rows:
-            outcome = _compute_outcome(provider, shadow)
-            if not outcome or outcome.get("excluded"):
-                skipped += 1
-                continue
-            with _connect_validation_db(self.db_path) as conn:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO strategy_deepseek_shadow_outcomes
-                    (shadow_id, code, next_trade_date, future_days, next_open, next_close,
-                     next_close_return, hold_3d_return, hold_5d_return, hold_10d_return, hold_20d_return,
-                     signal_next_close_return, signal_hold_3d_return, signal_hold_5d_return,
-                     signal_hold_10d_return, signal_hold_20d_return, exit_return, signal_exit_return, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        shadow["id"],
-                        shadow["code"],
-                        outcome["next_trade_date"],
-                        outcome["future_days"],
-                        outcome["next_open"],
-                        outcome["next_close"],
-                        outcome["next_close_return"],
-                        outcome["hold_3d_return"],
-                        outcome["hold_5d_return"],
-                        outcome["hold_10d_return"],
-                        outcome["hold_20d_return"],
-                        outcome["signal_next_close_return"],
-                        outcome["signal_hold_3d_return"],
-                        outcome["signal_hold_5d_return"],
-                        outcome["signal_hold_10d_return"],
-                        outcome["signal_hold_20d_return"],
-                        outcome["exit_return"],
-                        outcome["signal_exit_return"],
-                        datetime.now().isoformat(timespec="seconds"),
-                    ),
-                )
-            updated += 1
-        return {"updated": updated, "skipped": skipped}
+        return self.outcomes.update_deepseek_shadow_outcomes(
+            provider,
+            signal_date=signal_date,
+            strategy_name=strategy_name,
+            codes=codes,
+        )
 
     def metrics(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
-        current_version = current_strategy_version(strategy_name)
-        signal_status = self.signal_status_counts(
-            strategy_name=strategy_name,
-            days=days,
-            strategy_version=current_version,
-        )
-        where = "WHERE o.signal_id IS NOT NULL"
-        params = []
-        if strategy_name:
-            where += " AND s.strategy_name = ?"
-            params.append(strategy_name)
-        if current_version:
-            where += " AND (s.strategy_version = ? OR s.strategy_version = ?)"
-            params.extend((current_version, current_replay_strategy_version(strategy_name)))
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT s.signal_date, s.strategy_name, s.rank,
-                       s.strategy_version, s.turnover, s.market, s.raw_json,
-                       COALESCE(o.signal_next_close_return, o.next_close_return) AS signal_next_close_return,
-                       o.next_open_return,
-                       o.next_close_return,
-                       o.next_low,
-                       o.intraday_high_return AS open_intraday_high_return,
-                       COALESCE(o.signal_intraday_high_return, o.intraday_high_return) AS signal_intraday_high_return,
-                       o.hold_3d_return,
-                       o.hold_5d_return,
-                       o.hold_10d_return,
-                       o.hold_20d_return,
-                       COALESCE(o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_3d_return,
-                       COALESCE(o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_5d_return,
-                       COALESCE(o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_10d_return,
-                       COALESCE(o.signal_hold_20d_return, o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_hold_20d_return,
-                       COALESCE(o.signal_exit_return, o.exit_return, o.signal_hold_3d_return, o.hold_3d_return) AS signal_exit_return,
-                       o.exit_return AS exit_return,
-                       COALESCE(o.exit_reason, '') AS exit_reason,
-                       COALESCE(o.exit_days, 0) AS exit_days,
-                       COALESCE(o.signal_max_drawdown_3d, o.max_drawdown_3d) AS signal_max_drawdown_3d,
-                       o.max_drawdown_3d AS open_max_drawdown_primary,
-                       o.hit_3pct AS open_hit_3pct,
-                       o.hit_5pct AS open_hit_5pct,
-                       COALESCE(o.signal_hit_3pct, o.hit_3pct) AS signal_hit_3pct,
-                       COALESCE(o.signal_hit_5pct, o.hit_5pct) AS signal_hit_5pct,
-                       COALESCE(o.future_days, 1) AS future_days
-                FROM strategy_signals s
-                JOIN strategy_outcomes o ON o.signal_id = s.id
-                {}
-                ORDER BY s.signal_date DESC, s.rank ASC
-                """.format(where),
-                params,
-            ).fetchall()
-        execution_skipped_count = self.execution_skip_count(
-            strategy_name=strategy_name,
-            days=days,
-            strategy_version=current_version,
-        )
-        if not rows:
-            if strategy_name:
-                primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
-            else:
-                primary_column, primary_days, primary_label = "strategy_primary_return", 0, "混合主周期"
-            return {
-                "strategy_name": strategy_name,
-                "strategy_version": current_version,
-                "sample_count": 0,
-                "outcome_sample_count": 0,
-                "total_sample_count": 0,
-                "total_outcome_sample_count": 0,
-                "backup_sample_count": 0,
-                "backup_outcome_sample_count": 0,
-                "real_sample_count": 0,
-                "replay_sample_count": 0,
-                "real_outcome_sample_count": 0,
-                "replay_outcome_sample_count": 0,
-                "real_total_sample_count": 0,
-                "replay_total_sample_count": 0,
-                "real_backup_sample_count": 0,
-                "replay_backup_sample_count": 0,
-                "real_day_count": 0,
-                "replay_day_count": 0,
-                "day_count": 0,
-                "primary_return_field": primary_column,
-                "primary_holding_days": primary_days,
-                "primary_horizon_label": primary_label,
-                "avg_next_day_return_net": 0.0,
-                "win_rate_next_day_net": 0.0,
-                "avg_1_5d_exit_return_net": 0.0,
-                "win_rate_1_5d_exit_net": 0.0,
-                "positive_2_5d_after_weak_next_day_rate": 0.0,
-                "auxiliary_exit_sample_count": 0,
-                "weak_next_day_1_5d_sample_count": 0,
-                "avg_max_drawdown_primary": 0.0,
-                "real_avg_max_drawdown_primary": 0.0,
-                "real_avg_primary_return_net_ci95_low": None,
-                "real_avg_primary_return_net_ci95_high": None,
-                "real_win_rate_primary_net_ci95_low": None,
-                "real_portfolio_max_drawdown_pct": 0.0,
-                "execution_skipped_count": execution_skipped_count,
-                **signal_status,
-                "daily": [],
-            }
-        rows = [dict(row) for row in rows]
-        window_rows = rows
-        window_scope = "mixed" if current_version else "all"
-        dates = []
-        for row in window_rows:
-            if row["signal_date"] not in dates:
-                dates.append(row["signal_date"])
-            if len(dates) >= days:
-                break
-        selected_all = [row for row in rows if row["signal_date"] in dates]
-        base_cost = coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25))
-        if strategy_name:
-            primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
-        else:
-            primary_column, primary_days, primary_label = "strategy_primary_return", 0, "混合主周期"
-        next_day_column = "signal_next_close_return" if strategy_name == "short_term" else "next_close_return"
-        for row in selected_all:
-            try:
-                raw = json.loads(row.get("raw_json") or "{}")
-            except Exception:
-                raw = {}
-            row["_raw"] = raw if isinstance(raw, dict) else {}
-            row["_is_primary_signal"] = _is_primary_validation_signal(
-                strategy_name or row["strategy_name"],
-                row.get("rank"),
-                row["_raw"],
-            )
-            row_primary_column, row_primary_days, row_primary_label = _primary_return_config(
-                strategy_name or row["strategy_name"]
-            )
-            row["_trade_cost_pct"] = _execution_cost_pct(row)
-            row["_primary_return"] = coerce_number(row[row_primary_column])
-            row["_primary_return_net"] = round(row["_primary_return"] - row["_trade_cost_pct"], 4)
-            row["_next_day_return_net"] = round(
-                coerce_number(row.get(next_day_column)) - row["_trade_cost_pct"],
-                4,
-            )
-            row["_next_day_return"] = coerce_number(row.get(next_day_column))
-            uses_signal_entry = (strategy_name or row["strategy_name"]) == "short_term"
-            drawdown_key = "signal_max_drawdown_3d" if uses_signal_entry else "open_max_drawdown_primary"
-            row["_primary_drawdown"] = coerce_number(row.get(drawdown_key))
-            row["_exit_return"] = coerce_number(
-                row.get("signal_exit_return" if uses_signal_entry else "exit_return")
-            )
-            row["_exit_return_net"] = round(row["_exit_return"] - row["_trade_cost_pct"], 4)
-            row["_intraday_high_return"] = coerce_number(
-                row.get("signal_intraday_high_return" if uses_signal_entry else "open_intraday_high_return")
-            )
-            row["_hit_3pct"] = bool(row.get("signal_hit_3pct" if uses_signal_entry else "open_hit_3pct"))
-            row["_hit_5pct"] = bool(row.get("signal_hit_5pct" if uses_signal_entry else "open_hit_5pct"))
-            for holding_days in (3, 5, 10, 20):
-                key = (
-                    "signal_hold_{}d_return".format(holding_days)
-                    if uses_signal_entry
-                    else "hold_{}d_return".format(holding_days)
-                )
-                row["_hold_{}d_return".format(holding_days)] = coerce_number(row.get(key))
-            row["_is_replay"] = _is_replay_version(row["strategy_version"])
-            row["_primary_ready"] = _outcome_ready(row, row_primary_days)
-            row["_exit_ready"] = _outcome_ready(row, _exit_holding_days(strategy_name or row["strategy_name"]))
-            row["_primary_holding_days"] = row_primary_days
-            row["_primary_horizon_label"] = row_primary_label
-        selected = [row for row in selected_all if row["_primary_ready"]]
-        primary_rows = [row for row in selected if row["_is_primary_signal"]]
-        primary_outcome_rows = [row for row in selected_all if row["_is_primary_signal"]]
-        auxiliary_exit_rows = [row for row in primary_outcome_rows if row["_exit_ready"]]
-        weak_next_day_exit_rows = [row for row in auxiliary_exit_rows if row["_next_day_return_net"] <= 0]
-        replay_selected_all = [row for row in selected_all if row["_is_replay"]]
-        real_rows = [row for row in primary_rows if not row["_is_replay"]]
-        replay_rows = [row for row in primary_rows if row["_is_replay"]]
-        real_primary_outcome_rows = [row for row in primary_outcome_rows if not row["_is_replay"]]
-        replay_primary_outcome_rows = [row for row in primary_outcome_rows if row["_is_replay"]]
-        real_primary_ids = {id(row) for row in real_rows}
-        replay_primary_ids = {id(row) for row in replay_rows}
-        real_backup_rows = [
-            row for row in selected if not row["_is_replay"] and id(row) not in real_primary_ids
-        ]
-        replay_backup_rows = [
-            row for row in selected if row["_is_replay"] and id(row) not in replay_primary_ids
-        ]
-        real_daily = _daily_metrics(real_rows)
-        replay_daily = _daily_metrics(replay_rows)
-        real_daily_returns = [coerce_number(row.get("avg_primary_return_net")) for row in real_daily]
-        real_return_ci = _mean_confidence_interval(real_daily_returns)
-        real_win_ci_low = _wilson_lower_bound([value > 0 for value in real_daily_returns])
-        primary_dates = []
-        for row in primary_rows:
-            if row["signal_date"] not in primary_dates:
-                primary_dates.append(row["signal_date"])
-        metrics = {
-            "strategy_name": strategy_name,
-            "strategy_version": current_version,
-            "sample_count": len(primary_rows),
-            "outcome_sample_count": len(primary_outcome_rows),
-            "total_sample_count": len(selected),
-            "total_outcome_sample_count": len(selected_all),
-            "backup_sample_count": len(selected) - len(primary_rows),
-            "backup_outcome_sample_count": len(selected_all) - len(primary_outcome_rows),
-            "real_sample_count": len(real_rows),
-            "replay_sample_count": len(replay_rows),
-            "real_outcome_sample_count": len(real_primary_outcome_rows),
-            "replay_outcome_sample_count": len(replay_primary_outcome_rows),
-            "real_total_sample_count": len([row for row in selected if not row["_is_replay"]]),
-            "replay_total_sample_count": len([row for row in selected if row["_is_replay"]]),
-            "real_backup_sample_count": len(real_backup_rows),
-            "replay_backup_sample_count": len(replay_backup_rows),
-            "real_day_count": len(real_daily),
-            "replay_day_count": len(replay_daily),
-            "day_count": len(primary_dates),
-            "outcome_day_count": len(dates),
-            "primary_sample_scope": "real_only" if current_version and real_rows else "replay_only" if current_version and replay_rows else "all",
-            "window_scope": window_scope,
-            "primary_return_field": primary_column,
-            "primary_holding_days": primary_days,
-            "primary_horizon_label": primary_label,
-            "trade_cost_pct": base_cost,
-            "avg_trade_cost_pct": _avg(row["_trade_cost_pct"] for row in primary_outcome_rows),
-            "avg_next_close_return": _avg(row["_next_day_return"] for row in primary_outcome_rows),
-            "win_rate_next_close": _rate(row["_next_day_return"] > 0 for row in primary_outcome_rows),
-            "hit_3pct_rate": _rate(row["_hit_3pct"] for row in primary_outcome_rows),
-            "hit_5pct_rate": _rate(row["_hit_5pct"] for row in primary_outcome_rows),
-            "avg_intraday_high_return": _avg(row["_intraday_high_return"] for row in primary_outcome_rows),
-            "avg_hold_3d_return": _avg(row["_hold_3d_return"] for row in primary_rows),
-            "avg_hold_5d_return": _avg(row["_hold_5d_return"] for row in primary_rows),
-            "avg_hold_10d_return": _avg(row["_hold_10d_return"] for row in primary_rows),
-            "avg_hold_20d_return": _avg(row["_hold_20d_return"] for row in primary_rows),
-            "avg_primary_return": _avg(row["_primary_return"] for row in primary_rows),
-            "avg_primary_return_net": _avg(row["_primary_return_net"] for row in primary_rows),
-            "win_rate_primary": _rate(row["_primary_return"] > 0 for row in primary_rows),
-            "win_rate_primary_net": _rate(row["_primary_return_net"] > 0 for row in primary_rows),
-            "avg_next_day_return_net": _avg(row["_next_day_return_net"] for row in primary_outcome_rows),
-            "win_rate_next_day_net": _rate(row["_next_day_return_net"] > 0 for row in primary_outcome_rows),
-            "avg_1_5d_exit_return_net": _avg(row["_exit_return_net"] for row in auxiliary_exit_rows),
-            "win_rate_1_5d_exit_net": _rate(row["_exit_return_net"] > 0 for row in auxiliary_exit_rows),
-            "auxiliary_exit_sample_count": len(auxiliary_exit_rows),
-            "positive_2_5d_after_weak_next_day_rate": _rate(
-                row["_exit_return_net"] > 0 for row in weak_next_day_exit_rows
-            ),
-            "weak_next_day_1_5d_sample_count": len(weak_next_day_exit_rows),
-            "avg_exit_return": _avg(row["_exit_return"] for row in auxiliary_exit_rows),
-            "avg_exit_return_net": _avg(row["_exit_return_net"] for row in auxiliary_exit_rows),
-            "win_rate_exit_net": _rate(row["_exit_return_net"] > 0 for row in auxiliary_exit_rows),
-            "real_avg_primary_return_net": _avg(row["avg_primary_return_net"] for row in real_daily),
-            "real_win_rate_primary_net": _rate(row["avg_primary_return_net"] > 0 for row in real_daily),
-            "real_avg_primary_return_net_ci95_low": real_return_ci[0],
-            "real_avg_primary_return_net_ci95_high": real_return_ci[1],
-            "real_win_rate_primary_net_ci95_low": real_win_ci_low,
-            "real_portfolio_max_drawdown_pct": _portfolio_max_drawdown(real_daily),
-            "replay_avg_primary_return_net": _avg(row["avg_primary_return_net"] for row in replay_daily),
-            "replay_win_rate_primary_net": _rate(row["avg_primary_return_net"] > 0 for row in replay_daily),
-            "avg_max_drawdown_3d": _avg(row["_primary_drawdown"] for row in primary_rows),
-            "avg_max_drawdown_primary": _avg(row["_primary_drawdown"] for row in primary_rows),
-            "real_avg_max_drawdown_primary": _avg(row["_primary_drawdown"] for row in real_rows),
-            "top10_avg_next_close_return": _avg(
-                row["_next_day_return"] for row in primary_outcome_rows if row["rank"] <= 10
-            ),
-            "avg_open_to_close_return": _avg(row["next_close_return"] for row in primary_outcome_rows),
-            "next_day_compare": _next_day_compare(primary_outcome_rows),
-            "replay_next_day_compare": _next_day_compare(replay_selected_all),
-            "daily": _daily_metrics(primary_rows),
-            "real_daily": real_daily,
-            "replay_daily": replay_daily,
-            "execution_skipped_count": execution_skipped_count,
-            **signal_status,
-        }
-        return metrics
+        return self.metrics_service.metrics(strategy_name=strategy_name, days=days)
 
     def deepseek_attribution(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
-        strategy_name = str(strategy_name or "").strip()
-        if not strategy_name:
-            return {"status": "missing_strategy", "sample_count": 0, "days": int(days or 0)}
-        primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
-        version_filter = ""
-        query_params = [strategy_name]
-        current_version = current_strategy_version(strategy_name)
-        if current_version:
-            version_filter = " AND (s.strategy_version = ? OR s.strategy_version = ?)"
-            query_params.extend((current_version, current_replay_strategy_version(strategy_name)))
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            signal_rows = conn.execute(
-                """
-                SELECT s.signal_date, s.strategy_name, s.rank, s.strategy_version,
-                       s.turnover, s.market, s.raw_json,
-                       0 AS deepseek_shadow_signal,
-                       COALESCE(o.{primary_column}, 0) AS primary_return,
-                       COALESCE(o.future_days, 1) AS future_days
-                FROM strategy_signals s
-                JOIN strategy_outcomes o ON o.signal_id = s.id
-                WHERE s.strategy_name = ? {version_filter}
-                ORDER BY s.signal_date DESC, s.rank ASC
-                """.format(primary_column=primary_column, version_filter=version_filter),
-                query_params,
-            ).fetchall()
-            shadow_rows = conn.execute(
-                """
-                SELECT s.signal_date, s.strategy_name, s.rank, s.strategy_version,
-                       s.turnover, s.market, s.raw_json,
-                       1 AS deepseek_shadow_signal,
-                       COALESCE(o.{primary_column}, 0) AS primary_return,
-                       COALESCE(o.future_days, 1) AS future_days
-                FROM strategy_deepseek_shadow_signals s
-                JOIN strategy_deepseek_shadow_outcomes o ON o.shadow_id = s.id
-                WHERE s.strategy_name = ? {version_filter}
-                ORDER BY s.signal_date DESC, s.local_rank ASC
-                """.format(primary_column=primary_column, version_filter=version_filter),
-                query_params,
-            ).fetchall()
-        rows = list(signal_rows) + list(shadow_rows)
-        rows.sort(
-            key=lambda row: (
-                str(row["signal_date"] or ""),
-                -int(coerce_number(row["rank"], 0) or 0),
-            ),
-            reverse=True,
-        )
-        if not rows:
-            result = {
-                "status": "empty",
-                "strategy": strategy_name,
-                "days": int(days or 0),
-                "sample_count": 0,
-                "primary_horizon_label": primary_label,
-            }
-            _write_deepseek_attribution_snapshot(strategy_name, result)
-            return result
-
-        selected_dates: List[str] = []
-        for row in rows:
-            date = row["signal_date"]
-            if date not in selected_dates:
-                selected_dates.append(date)
-            if len(selected_dates) >= max(1, int(days)):
-                break
-
-        selected: List[Dict[str, object]] = []
-        for row in rows:
-            if row["signal_date"] not in selected_dates:
-                continue
-            item = dict(row)
-            try:
-                raw = json.loads(item.get("raw_json") or "{}")
-            except Exception:
-                raw = {}
-            item["_raw"] = raw if isinstance(raw, dict) else {}
-            item["_is_replay"] = _is_replay_version(item["strategy_version"])
-            item["_primary_ready"] = int(item.get("future_days") or 1) >= primary_days
-            item["_is_primary_signal"] = _is_primary_validation_signal(
-                strategy_name,
-                item.get("rank"),
-                item["_raw"],
-            )
-            item["_trade_cost_pct"] = _execution_cost_pct(item)
-            item["_primary_return"] = coerce_number(item.get("primary_return"))
-            item["_primary_return_net"] = round(item["_primary_return"] - item["_trade_cost_pct"], 4)
-            item["_deepseek_shadow_signal"] = bool(item.get("deepseek_shadow_signal"))
-            selected.append(item)
-
-        primary_rows = [row for row in selected if row["_primary_ready"]]
-        primary_rows = [row for row in primary_rows if row["_is_primary_signal"]]
-        attribution_rows = [row for row in primary_rows if _has_deepseek_review(row.get("_raw"))]
-        real_rows = [row for row in attribution_rows if not row["_is_replay"]]
-        replay_rows = [row for row in attribution_rows if row["_is_replay"]]
-        covered_rows = [row for row in attribution_rows if _deepseek_covered(row.get("_raw"))]
-        shadow_rows = [row for row in attribution_rows if row.get("_deepseek_shadow_signal")]
-        selected_rows = [row for row in attribution_rows if not row.get("_deepseek_shadow_signal")]
-        avoid_veto_rows = [row for row in attribution_rows if _deepseek_avoid_or_veto(row.get("_raw"))]
-        priority_rows = [row for row in attribution_rows if _deepseek_action(row.get("_raw")) == "priority"]
-        watch_rows = [row for row in attribution_rows if _deepseek_action(row.get("_raw")) == "watch"]
-        min_real_samples = 10
-        status = "ok"
-        if not attribution_rows:
-            status = "no_deepseek_samples"
-        elif len(real_rows) < min_real_samples:
-            status = "insufficient_real_samples"
-        counterfactual = _deepseek_counterfactual_topn(strategy_name, attribution_rows)
-        priority_vs_watch = _deepseek_group_delta(priority_rows, watch_rows)
-        result = {
-            "status": status,
-            "strategy": strategy_name,
-            "days": int(days or 0),
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "primary_horizon_label": primary_label,
-            "min_real_samples": min_real_samples,
-            "sample_count": len(attribution_rows),
-            "real_sample_count": len(real_rows),
-            "replay_sample_count": len(replay_rows),
-            "covered_sample_count": len(covered_rows),
-            "selected_sample_count": len(selected_rows),
-            "shadow_sample_count": len(shadow_rows),
-            "covered_ratio_pct": round(len(covered_rows) / len(attribution_rows) * 100, 2) if attribution_rows else 0.0,
-            "local_rank_sample_count": sum(1 for row in attribution_rows if _deepseek_local_rank(row) > 0),
-            "reordered_sample_count": sum(1 for row in attribution_rows if _deepseek_local_rank(row) > 0 and _deepseek_local_rank(row) != int(row.get("rank") or 0)),
-            "blend_alpha_avg": _avg(_deepseek_blend_alpha(row.get("_raw")) for row in attribution_rows if _deepseek_blend_alpha(row.get("_raw")) is not None),
-            "avoid_veto": _return_summary(avoid_veto_rows),
-            "shadow_avoid_veto": _return_summary([row for row in avoid_veto_rows if row.get("_deepseek_shadow_signal")]),
-            "priority": _return_summary(priority_rows),
-            "watch": _return_summary(watch_rows),
-            "priority_vs_watch": priority_vs_watch,
-            "counterfactual_topn": counterfactual,
-            "notes": [
-                "avoid/veto 包含正式入选与 DeepSeek gate 剔除后的 shadow 候选；正式策略胜率仍只按入选信号计算。",
-            ],
-        }
-        _write_deepseek_attribution_snapshot(strategy_name, result)
-        return result
+        return self.metrics_service.deepseek_attribution(strategy_name=strategy_name, days=days)
 
     def signal_status_counts(
         self,
@@ -1230,65 +165,26 @@ class StrategyValidationStore:
         days: int = 20,
         strategy_version: str = "",
     ) -> Dict[str, object]:
-        where = "WHERE 1=1"
-        params: List[object] = []
-        if strategy_name:
-            where += " AND strategy_name = ?"
-            params.append(strategy_name)
-        if strategy_version:
-            where += " AND strategy_version = ?"
-            params.append(strategy_version)
-        with _connect_validation_db(self.db_path) as conn:
-            dates = [
-                row[0]
-                for row in conn.execute(
-                    """
-                    SELECT DISTINCT signal_date
-                    FROM strategy_signals
-                    {}
-                    ORDER BY signal_date DESC
-                    LIMIT ?
-                    """.format(where),
-                    [*params, max(1, int(days))],
-                ).fetchall()
-            ]
-            if not dates:
-                return {
-                    "signal_sample_count": 0,
-                    "pending_outcome_count": 0,
-                    "outcome_coverage_pct": None,
-                }
-            placeholders = ",".join("?" for _ in dates)
-            count_where = "WHERE s.signal_date IN ({})".format(placeholders)
-            count_params: List[object] = list(dates)
-            if strategy_name:
-                count_where += " AND s.strategy_name = ?"
-                count_params.append(strategy_name)
-            if strategy_version:
-                count_where += " AND s.strategy_version = ?"
-                count_params.append(strategy_version)
-            row = conn.execute(
-                """
-                SELECT
-                  COUNT(*) AS signal_count,
-                  SUM(CASE WHEN o.signal_id IS NULL AND k.signal_id IS NULL THEN 1 ELSE 0 END) AS pending_count,
-                  SUM(CASE WHEN o.signal_id IS NOT NULL THEN 1 ELSE 0 END) AS outcome_count
-                FROM strategy_signals s
-                LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
-                LEFT JOIN strategy_execution_skips k ON k.signal_id = s.id
-                {}
-                """.format(count_where),
-                count_params,
-            ).fetchone()
-        signal_count = int((row[0] if row else 0) or 0)
-        pending_count = int((row[1] if row else 0) or 0)
-        outcome_count = int((row[2] if row else 0) or 0)
-        coverage = round(outcome_count / signal_count * 100.0, 2) if signal_count > 0 else None
-        return {
-            "signal_sample_count": signal_count,
-            "pending_outcome_count": pending_count,
-            "outcome_coverage_pct": coverage,
-        }
+        return self.repository.signal_status_counts(
+            strategy_name=strategy_name,
+            days=days,
+            strategy_version=strategy_version,
+        )
+
+    def validation_baseline_status(self, strategy_name: str = "", days: int = 120) -> Dict[str, object]:
+        return self.baseline_service.status(strategy_name=strategy_name, days=days)
+
+    def validation_baseline_backfill_candidates(
+        self,
+        strategy_name: str,
+        days: int = 120,
+        limit: int = 500,
+    ) -> Dict[str, object]:
+        return self.baseline_service.backfill_candidates(
+            strategy_name=strategy_name,
+            days=days,
+            limit=limit,
+        )
 
     def execution_skip_count(
         self,
@@ -1296,608 +192,147 @@ class StrategyValidationStore:
         days: int = 20,
         strategy_version: str = "",
     ) -> int:
-        where = "WHERE 1=1"
-        params: List[object] = []
-        if strategy_name:
-            where += " AND s.strategy_name = ?"
-            params.append(strategy_name)
-        if strategy_version:
-            where += " AND s.strategy_version = ?"
-            params.append(strategy_version)
-        with _connect_validation_db(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT DISTINCT s.signal_date
-                FROM strategy_signals s
-                JOIN strategy_execution_skips k ON k.signal_id = s.id
-                {}
-                ORDER BY s.signal_date DESC
-                LIMIT ?
-                """.format(where),
-                [*params, max(1, int(days))],
-            ).fetchall()
-            dates = [row[0] for row in rows]
-            if not dates:
-                return 0
-            placeholders = ",".join("?" for _ in dates)
-            count_where = "WHERE s.signal_date IN ({})".format(placeholders)
-            count_params: List[object] = list(dates)
-            if strategy_name:
-                count_where += " AND s.strategy_name = ?"
-                count_params.append(strategy_name)
-            if strategy_version:
-                count_where += " AND s.strategy_version = ?"
-                count_params.append(strategy_version)
-            row = conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM strategy_signals s
-                JOIN strategy_execution_skips k ON k.signal_id = s.id
-                {}
-                """.format(count_where),
-                count_params,
-            ).fetchone()
-        return int(row[0] or 0) if row else 0
+        return self.repository.execution_skip_count(
+            strategy_name=strategy_name,
+            days=days,
+            strategy_version=strategy_version,
+        )
 
     def save_market_gate_review(self, market_gate: Dict[str, object], market_filter: str = "all") -> Dict[str, object]:
-        if not isinstance(market_gate, dict) or not market_gate.get("enabled"):
-            return {"saved": 0, "status": "disabled"}
-        now = str(market_gate.get("generated_at") or datetime.now().isoformat(timespec="seconds"))
-        review_date = now[:10]
-        with _connect_validation_db(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO deepseek_market_gate_reviews
-                (review_date, review_time, market_filter, regime, size_factor, confidence, status, source, reason,
-                 context_json, result_json, counts_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(review_date, market_filter) DO UPDATE SET
-                  review_time=excluded.review_time,
-                  regime=excluded.regime,
-                  size_factor=excluded.size_factor,
-                  confidence=excluded.confidence,
-                  status=excluded.status,
-                  source=excluded.source,
-                  reason=excluded.reason,
-                  context_json=excluded.context_json,
-                  result_json=excluded.result_json,
-                  counts_json=excluded.counts_json,
-                  created_at=excluded.created_at
-                """,
-                (
-                    review_date,
-                    now,
-                    str(market_filter or "all"),
-                    str(market_gate.get("regime") or ""),
-                    coerce_number(market_gate.get("size_factor"), 1.0),
-                    coerce_number(market_gate.get("confidence"), 0.0),
-                    str(market_gate.get("status") or ""),
-                    str(market_gate.get("source") or ""),
-                    str(market_gate.get("reason") or "")[:500],
-                    json.dumps(market_gate.get("context") or {}, ensure_ascii=False),
-                    json.dumps(market_gate, ensure_ascii=False),
-                    json.dumps(market_gate.get("counts") or {}, ensure_ascii=False),
-                    datetime.now().isoformat(timespec="seconds"),
-                ),
-            )
-        return {"saved": 1, "status": "saved", "review_date": review_date}
+        return self.repository.save_market_gate_review(market_gate, market_filter=market_filter)
 
     def market_gate_metrics(self, days: int = 120) -> Dict[str, object]:
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            reviews = conn.execute(
-                """
-                SELECT *
-                FROM deepseek_market_gate_reviews
-                ORDER BY review_date DESC, id DESC
-                LIMIT ?
-                """,
-                (max(1, int(days)),),
-            ).fetchall()
-            if not reviews:
-                return {"sample_count": 0, "outcome_sample_count": 0, "hit_rate": 0.0, "by_regime": {}}
-            review_dates = [row["review_date"] for row in reviews]
-            placeholders = ",".join("?" for _ in review_dates)
-            outcome_rows = conn.execute(
-                """
-                SELECT s.signal_date, s.strategy_name, s.strategy_version, s.rank, s.turnover, s.market, s.raw_json,
-                       COALESCE(o.next_close_return, 0) AS next_close_return,
-                       COALESCE(o.signal_next_close_return, o.next_close_return, 0) AS signal_next_close_return,
-                       COALESCE(o.hold_3d_return, 0) AS hold_3d_return,
-                       COALESCE(o.hold_5d_return, o.hold_3d_return, 0) AS hold_5d_return,
-                       COALESCE(o.hold_10d_return, o.hold_5d_return, o.hold_3d_return, 0) AS hold_10d_return,
-                       COALESCE(o.hold_20d_return, o.hold_10d_return, o.hold_5d_return, o.hold_3d_return, 0) AS hold_20d_return,
-                       COALESCE(o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_3d_return,
-                       COALESCE(o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_5d_return,
-                       COALESCE(o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_10d_return,
-                       COALESCE(o.signal_hold_20d_return, o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, 0) AS signal_hold_20d_return,
-                       COALESCE(o.signal_exit_return, o.exit_return, o.signal_hold_5d_return, o.hold_5d_return, 0) AS signal_exit_return,
-                       COALESCE(o.exit_reason, '') AS exit_reason,
-                       COALESCE(o.exit_days, 0) AS exit_days,
-                       COALESCE(o.future_days, 1) AS future_days
-                FROM strategy_signals s
-                JOIN strategy_outcomes o ON o.signal_id = s.id
-                WHERE s.signal_date IN ({})
-                """.format(placeholders),
-                review_dates,
-            ).fetchall()
+        return self.repository.market_gate_metrics(days=days)
 
-        outcome_by_date: Dict[str, List[float]] = {}
-        for row in outcome_rows:
-            try:
-                raw = json.loads(row["raw_json"] or "{}")
-            except Exception:
-                raw = {}
-            if row["strategy_name"] == "tomorrow_picks" and not _is_primary_tomorrow_signal(row["rank"], raw):
-                continue
-            primary_column, primary_days, _ = _primary_return_config(row["strategy_name"])
-            if not _outcome_ready(row, primary_days):
-                continue
-            outcome_by_date.setdefault(str(row["signal_date"]), []).append(
-                round(coerce_number(row[primary_column]) - _execution_cost_pct(row), 4)
-            )
+    def save_oos_report(
+        self,
+        report: Dict[str, object],
+        trigger: str = "manual",
+    ) -> Dict[str, object]:
+        return self.repository.save_oos_report(report, trigger=trigger)
 
-        review_items = []
-        by_regime: Dict[str, List[Dict[str, object]]] = {}
-        for review in reviews:
-            returns = outcome_by_date.get(str(review["review_date"]), [])
-            outcome = _market_gate_outcome_summary(returns)
-            item = {
-                "review_date": review["review_date"],
-                "market_filter": review["market_filter"],
-                "regime": review["regime"],
-                "size_factor": coerce_number(review["size_factor"], 1.0),
-                "confidence": coerce_number(review["confidence"], 0.0),
-                "status": review["status"],
-                "source": review["source"],
-                "reason": review["reason"],
-                **outcome,
-            }
-            item["hit"] = _market_gate_hit(str(review["regime"] or ""), outcome.get("actual_regime", "unknown"))
-            review_items.append(item)
-            by_regime.setdefault(str(review["regime"] or "unknown"), []).append(item)
-        outcome_items = [item for item in review_items if item["outcome_sample_count"] > 0 and item["hit"] is not None]
-        return {
-            "sample_count": len(review_items),
-            "outcome_sample_count": len(outcome_items),
-            "hit_rate": _rate(item["hit"] for item in outcome_items),
-            "by_regime": {
-                regime: {
-                    "sample_count": len(items),
-                    "outcome_sample_count": sum(1 for item in items if item["outcome_sample_count"] > 0),
-                    "avg_primary_return_net": _avg(
-                        item.get("avg_primary_return_net") for item in items if item["outcome_sample_count"] > 0
-                    ),
-                    "hit_rate": _rate(item["hit"] for item in items if item["hit"] is not None),
-                }
-                for regime, items in by_regime.items()
-            },
-            "recent": review_items[:20],
-        }
+    def list_oos_reports(
+        self,
+        strategy_name: str = "",
+        limit: int = 50,
+    ) -> List[Dict[str, object]]:
+        return self.repository.list_oos_reports(strategy_name=strategy_name, limit=limit)
 
     def save_stock_prediction_snapshot(self, payload: Dict[str, object]) -> Dict[str, object]:
-        optimization = payload.get("optimization") or {}
-        if not isinstance(optimization, dict) or not optimization:
-            return {"saved": 0, "status": "missing_optimization"}
-        code = normalize_code(payload.get("code"))
-        if not code:
-            return {"saved": 0, "status": "missing_code"}
-        now = datetime.now().isoformat(timespec="seconds")
-        prediction_date = now[:10]
-        with _connect_validation_db(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO stock_prediction_snapshots
-                (prediction_date, prediction_time, code, name, price_at_signal, stance, bias, timing,
-                 optimization_json, prediction_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(prediction_date, code) DO UPDATE SET
-                  prediction_time=excluded.prediction_time,
-                  name=excluded.name,
-                  price_at_signal=excluded.price_at_signal,
-                  stance=excluded.stance,
-                  bias=excluded.bias,
-                  timing=excluded.timing,
-                  optimization_json=excluded.optimization_json,
-                  prediction_json=excluded.prediction_json,
-                  created_at=excluded.created_at
-                """,
-                (
-                    prediction_date,
-                    now,
-                    code,
-                    str(payload.get("name") or ""),
-                    coerce_number(payload.get("price")),
-                    str(optimization.get("stance") or ""),
-                    str(optimization.get("bias") or ""),
-                    str(optimization.get("timing") or ""),
-                    json.dumps(optimization, ensure_ascii=False),
-                    json.dumps(payload, ensure_ascii=False),
-                    now,
-                ),
-            )
-        return {"saved": 1, "status": "saved", "prediction_date": prediction_date, "code": code}
+        return self.repository.save_stock_prediction_snapshot(payload)
 
     def update_stock_prediction_outcomes(self, provider, days: int = 120) -> Dict[str, object]:
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT s.*
-                FROM stock_prediction_snapshots s
-                LEFT JOIN stock_prediction_outcomes o ON o.snapshot_id = s.id
-                WHERE o.snapshot_id IS NULL
-                ORDER BY s.prediction_date DESC, s.id DESC
-                LIMIT ?
-                """,
-                (max(1, int(days)),),
-            ).fetchall()
-        updated = 0
-        skipped = 0
-        for row in rows:
-            outcome = _compute_stance_outcome(provider, row)
-            if not outcome:
-                skipped += 1
-                continue
-            with _connect_validation_db(self.db_path) as conn:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO stock_prediction_outcomes
-                    (snapshot_id, code, next_trade_date, future_days, next_open, next_close,
-                     next_close_return, exit_return, exit_reason, exit_days, exit_date, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        row["id"],
-                        row["code"],
-                        outcome["next_trade_date"],
-                        outcome["future_days"],
-                        outcome["next_open"],
-                        outcome["next_close"],
-                        outcome["next_close_return"],
-                        outcome["exit_return"],
-                        outcome["exit_reason"],
-                        outcome["exit_days"],
-                        outcome["exit_date"],
-                        datetime.now().isoformat(timespec="seconds"),
-                    ),
-                )
-            updated += 1
-        return {"updated": updated, "skipped": skipped}
+        return self.repository.update_stock_prediction_outcomes(provider, days=days)
 
     def stance_metrics(self, days: int = 120) -> Dict[str, object]:
-        with _connect_validation_db(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT s.prediction_date, s.code, s.name, s.stance, s.bias, s.timing,
-                       o.next_close_return, o.exit_return, o.exit_reason, o.future_days
-                FROM stock_prediction_snapshots s
-                JOIN stock_prediction_outcomes o ON o.snapshot_id = s.id
-                ORDER BY s.prediction_date DESC, s.id DESC
-                LIMIT ?
-                """,
-                (max(1, int(days)) * 20,),
-            ).fetchall()
-        groups: Dict[str, List[Dict[str, object]]] = {}
-        for row in rows:
-            item = dict(row)
-            groups.setdefault(str(item.get("stance") or "unknown"), []).append(item)
-        return {
-            "sample_count": len(rows),
-            "by_stance": {
-                stance: {
-                    "sample_count": len(items),
-                    "avg_next_close_return": _avg(item.get("next_close_return") for item in items),
-                    "win_rate_next_close": _rate(coerce_number(item.get("next_close_return")) > 0 for item in items),
-                    "avg_exit_return": _avg(item.get("exit_return") for item in items),
-                    "win_rate_exit": _rate(coerce_number(item.get("exit_return")) > 0 for item in items),
-                }
-                for stance, items in groups.items()
-            },
-        }
+        return self.repository.stance_metrics(days=days)
 
     def _init_db(self) -> None:
-        with _connect_validation_db(self.db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS strategy_signal_batches (
-                    strategy_name TEXT NOT NULL,
-                    strategy_version TEXT NOT NULL,
-                    signal_date TEXT NOT NULL,
-                    signal_time TEXT NOT NULL,
-                    saved_count INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY(strategy_name, signal_date, strategy_version)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS strategy_signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    strategy_name TEXT NOT NULL,
-                    strategy_version TEXT NOT NULL,
-                    signal_date TEXT NOT NULL,
-                    signal_time TEXT NOT NULL,
-                    rank INTEGER NOT NULL,
-                    code TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    market TEXT NOT NULL,
-                    theme TEXT NOT NULL DEFAULT '',
-                    price_at_signal REAL NOT NULL DEFAULT 0,
-                    pct_chg_at_signal REAL NOT NULL DEFAULT 0,
-                    turnover REAL NOT NULL DEFAULT 0,
-                    volume_ratio REAL NOT NULL DEFAULT 0,
-                    turnover_rate REAL NOT NULL DEFAULT 0,
-                    sixty_day_pct REAL NOT NULL DEFAULT 0,
-                    ytd_pct REAL NOT NULL DEFAULT 0,
-                    score REAL NOT NULL DEFAULT 0,
-                    reasons_json TEXT NOT NULL,
-                    raw_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(strategy_name, strategy_version, signal_date, code)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS strategy_outcomes (
-                    signal_id INTEGER PRIMARY KEY,
-                    code TEXT NOT NULL,
-                    next_trade_date TEXT NOT NULL,
-                    next_open REAL NOT NULL DEFAULT 0,
-                    next_high REAL NOT NULL DEFAULT 0,
-                    next_low REAL NOT NULL DEFAULT 0,
-                    next_close REAL NOT NULL DEFAULT 0,
-                    next_open_return REAL NOT NULL DEFAULT 0,
-                    next_close_return REAL NOT NULL DEFAULT 0,
-                    intraday_high_return REAL NOT NULL DEFAULT 0,
-                    future_days INTEGER NOT NULL DEFAULT 1,
-                    hold_3d_return REAL NOT NULL DEFAULT 0,
-                    hold_5d_return REAL NOT NULL DEFAULT 0,
-                    hold_10d_return REAL NOT NULL DEFAULT 0,
-                    hold_20d_return REAL NOT NULL DEFAULT 0,
-                    max_gain_3d REAL NOT NULL DEFAULT 0,
-                    max_drawdown_3d REAL NOT NULL DEFAULT 0,
-                    hit_3pct INTEGER NOT NULL DEFAULT 0,
-                    hit_5pct INTEGER NOT NULL DEFAULT 0,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(signal_id) REFERENCES strategy_signals(id)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS strategy_execution_skips (
-                    signal_id INTEGER PRIMARY KEY,
-                    code TEXT NOT NULL,
-                    skip_reason TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(signal_id) REFERENCES strategy_signals(id)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS strategy_deepseek_shadow_signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    strategy_name TEXT NOT NULL,
-                    strategy_version TEXT NOT NULL,
-                    signal_date TEXT NOT NULL,
-                    signal_time TEXT NOT NULL,
-                    rank INTEGER NOT NULL DEFAULT 0,
-                    local_rank INTEGER NOT NULL DEFAULT 0,
-                    code TEXT NOT NULL,
-                    name TEXT NOT NULL DEFAULT '',
-                    market TEXT NOT NULL DEFAULT '',
-                    theme TEXT NOT NULL DEFAULT '',
-                    price_at_signal REAL NOT NULL DEFAULT 0,
-                    pct_chg_at_signal REAL NOT NULL DEFAULT 0,
-                    turnover REAL NOT NULL DEFAULT 0,
-                    volume_ratio REAL NOT NULL DEFAULT 0,
-                    turnover_rate REAL NOT NULL DEFAULT 0,
-                    sixty_day_pct REAL NOT NULL DEFAULT 0,
-                    ytd_pct REAL NOT NULL DEFAULT 0,
-                    score REAL NOT NULL DEFAULT 0,
-                    deepseek_rank_score REAL NOT NULL DEFAULT 0,
-                    deepseek_action TEXT NOT NULL DEFAULT '',
-                    deepseek_veto INTEGER NOT NULL DEFAULT 0,
-                    deepseek_penalty REAL NOT NULL DEFAULT 0,
-                    filter_reason TEXT NOT NULL DEFAULT '',
-                    raw_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(strategy_name, strategy_version, signal_date, code)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS strategy_deepseek_shadow_outcomes (
-                    shadow_id INTEGER PRIMARY KEY,
-                    code TEXT NOT NULL,
-                    next_trade_date TEXT NOT NULL,
-                    future_days INTEGER NOT NULL DEFAULT 1,
-                    next_open REAL NOT NULL DEFAULT 0,
-                    next_close REAL NOT NULL DEFAULT 0,
-                    next_close_return REAL NOT NULL DEFAULT 0,
-                    hold_3d_return REAL NOT NULL DEFAULT 0,
-                    hold_5d_return REAL NOT NULL DEFAULT 0,
-                    hold_10d_return REAL NOT NULL DEFAULT 0,
-                    hold_20d_return REAL NOT NULL DEFAULT 0,
-                    signal_next_close_return REAL NOT NULL DEFAULT 0,
-                    signal_hold_3d_return REAL NOT NULL DEFAULT 0,
-                    signal_hold_5d_return REAL NOT NULL DEFAULT 0,
-                    signal_hold_10d_return REAL NOT NULL DEFAULT 0,
-                    signal_hold_20d_return REAL NOT NULL DEFAULT 0,
-                    exit_return REAL NOT NULL DEFAULT 0,
-                    signal_exit_return REAL NOT NULL DEFAULT 0,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(shadow_id) REFERENCES strategy_deepseek_shadow_signals(id)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS deepseek_market_gate_reviews (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    review_date TEXT NOT NULL,
-                    review_time TEXT NOT NULL,
-                    market_filter TEXT NOT NULL DEFAULT 'all',
-                    regime TEXT NOT NULL DEFAULT '',
-                    size_factor REAL NOT NULL DEFAULT 1,
-                    confidence REAL NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL DEFAULT '',
-                    source TEXT NOT NULL DEFAULT '',
-                    reason TEXT NOT NULL DEFAULT '',
-                    context_json TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    counts_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(review_date, market_filter)
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_strategy_signals_date ON strategy_signals(signal_date)")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_date ON strategy_signals(strategy_name, signal_date DESC)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_date_rank ON strategy_signals(strategy_name, signal_date DESC, rank)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_version_date ON strategy_signals(strategy_name, strategy_version, signal_date)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_strategy_signal_batches_strategy_date ON strategy_signal_batches(strategy_name, signal_date DESC)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_strategy_outcomes_code ON strategy_outcomes(code)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_strategy_execution_skips_code ON strategy_execution_skips(code)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_deepseek_shadow_strategy_date ON strategy_deepseek_shadow_signals(strategy_name, signal_date DESC)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_deepseek_shadow_code ON strategy_deepseek_shadow_signals(code)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_deepseek_market_gate_date ON deepseek_market_gate_reviews(review_date DESC)"
-            )
-            existing_columns = {
-                row[1] for row in conn.execute("PRAGMA table_info(strategy_outcomes)").fetchall()
-            }
-            outcome_columns = {
-                "signal_next_close_return": "REAL",
-                "signal_intraday_high_return": "REAL",
-                "signal_hold_3d_return": "REAL",
-                "future_days": "INTEGER",
-                "hold_5d_return": "REAL",
-                "hold_10d_return": "REAL",
-                "hold_20d_return": "REAL",
-                "signal_hold_5d_return": "REAL",
-                "signal_hold_10d_return": "REAL",
-                "signal_hold_20d_return": "REAL",
-                "signal_max_gain_3d": "REAL",
-                "signal_max_drawdown_3d": "REAL",
-                "signal_hit_3pct": "INTEGER",
-                "signal_hit_5pct": "INTEGER",
-                "exit_return": "REAL",
-                "signal_exit_return": "REAL",
-                "exit_reason": "TEXT",
-                "exit_days": "INTEGER",
-                "exit_date": "TEXT",
-            }
-            for column, column_type in outcome_columns.items():
-                if column not in existing_columns:
-                    conn.execute("ALTER TABLE strategy_outcomes ADD COLUMN {} {}".format(column, column_type))
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO strategy_signal_batches
-                (strategy_name, strategy_version, signal_date, signal_time, saved_count, created_at)
-                SELECT strategy_name, strategy_version, signal_date, MAX(signal_time), COUNT(*), MIN(created_at)
-                FROM strategy_signals
-                GROUP BY strategy_name, strategy_version, signal_date
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS strategy_tuning_runs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    strategy_name TEXT NOT NULL,
-                    run_time TEXT NOT NULL,
-                    days INTEGER NOT NULL DEFAULT 20,
-                    status TEXT NOT NULL DEFAULT '',
-                    can_apply INTEGER NOT NULL DEFAULT 0,
-                    shadow_mode INTEGER NOT NULL DEFAULT 1,
-                    plan_json TEXT NOT NULL,
-                    metrics_json TEXT NOT NULL,
-                    deepseek_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_strategy_tuning_runs_strategy_time ON strategy_tuning_runs(strategy_name, run_time DESC)"
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS stock_prediction_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    prediction_date TEXT NOT NULL,
-                    prediction_time TEXT NOT NULL,
-                    code TEXT NOT NULL,
-                    name TEXT NOT NULL DEFAULT '',
-                    price_at_signal REAL NOT NULL DEFAULT 0,
-                    stance TEXT NOT NULL DEFAULT '',
-                    bias TEXT NOT NULL DEFAULT '',
-                    timing TEXT NOT NULL DEFAULT '',
-                    optimization_json TEXT NOT NULL,
-                    prediction_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(prediction_date, code)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS stock_prediction_outcomes (
-                    snapshot_id INTEGER PRIMARY KEY,
-                    code TEXT NOT NULL,
-                    next_trade_date TEXT NOT NULL,
-                    future_days INTEGER NOT NULL DEFAULT 1,
-                    next_open REAL NOT NULL DEFAULT 0,
-                    next_close REAL NOT NULL DEFAULT 0,
-                    next_close_return REAL NOT NULL DEFAULT 0,
-                    exit_return REAL NOT NULL DEFAULT 0,
-                    exit_reason TEXT NOT NULL DEFAULT '',
-                    exit_days INTEGER NOT NULL DEFAULT 0,
-                    exit_date TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(snapshot_id) REFERENCES stock_prediction_snapshots(id)
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_stock_prediction_snapshots_date ON stock_prediction_snapshots(prediction_date DESC)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_stock_prediction_snapshots_code ON stock_prediction_snapshots(code)"
-            )
+        self.schema.init_db()
+
+def _compute_outcome_date(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    compact = text[:10].replace("-", "")
+    for fmt in ("%Y%m%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(compact if fmt == "%Y%m%d" else text[:10], fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def _survivorship_correction_enabled() -> bool:
+    return bool(getattr(config, "ENABLE_SURVIVORSHIP_CORRECTION", False))
+
+
+def _survivorship_signal_is_stale(signal) -> bool:
+    if not _survivorship_correction_enabled():
+        return False
+    signal_dt = _compute_outcome_date(_mapping_get(signal, "signal_date"))
+    if signal_dt is None:
+        return False
+    stale_days = max(0, int(coerce_number(getattr(config, "SURVIVORSHIP_CORRECTION_STALE_DAYS", 30), 30)))
+    return (datetime.now().date() - signal_dt).days >= stale_days
+
+
+def _survivorship_default_outcome(signal, latest_row, reason: str) -> Optional[Dict[str, object]]:
+    if not _survivorship_signal_is_stale(signal):
+        return None
+    strategy_name = str(_mapping_get(signal, "strategy_name", ""))
+    primary_days = _primary_return_config(strategy_name)[1]
+    exit_days = _exit_holding_days(strategy_name)
+    future_days = max(1, primary_days, exit_days)
+    signal_entry = coerce_number(_mapping_get(signal, "price_at_signal"))
+    latest_price = coerce_number(latest_row.get("price") if latest_row is not None else None) or coerce_number(
+        latest_row.get("close") if latest_row is not None else None
+    )
+    entry = signal_entry if signal_entry > 0 else latest_price
+    if entry <= 0:
+        return None
+    loss_pct = min(0.0, coerce_number(getattr(config, "DELISTED_DEFAULT_LOSS_PCT", -30.0), -30.0))
+    exit_price = max(0.0, entry * (1.0 + loss_pct / 100.0))
+    trade_date = str(latest_row.get("trade_date") if latest_row is not None else _mapping_get(signal, "signal_date", ""))
+    high = max(entry, exit_price)
+    low = min(entry, exit_price)
+    return {
+        "next_trade_date": trade_date,
+        "future_days": future_days,
+        "next_open": round(entry, 4),
+        "next_high": round(high, 4),
+        "next_low": round(low, 4),
+        "next_close": round(exit_price, 4),
+        "next_open_return": 0.0,
+        "next_close_return": round(loss_pct, 4),
+        "intraday_high_return": 0.0,
+        "hold_3d_return": round(loss_pct, 4),
+        "hold_5d_return": round(loss_pct, 4),
+        "hold_10d_return": round(loss_pct, 4),
+        "hold_20d_return": round(loss_pct, 4),
+        "max_gain_3d": 0.0,
+        "max_drawdown_3d": round(loss_pct, 4),
+        "hit_3pct": False,
+        "hit_5pct": False,
+        "signal_next_close_return": round(loss_pct, 4),
+        "signal_intraday_high_return": 0.0,
+        "signal_hold_3d_return": round(loss_pct, 4),
+        "signal_hold_5d_return": round(loss_pct, 4),
+        "signal_hold_10d_return": round(loss_pct, 4),
+        "signal_hold_20d_return": round(loss_pct, 4),
+        "signal_max_gain_3d": 0.0,
+        "signal_max_drawdown_3d": round(loss_pct, 4),
+        "signal_hit_3pct": False,
+        "signal_hit_5pct": False,
+        "exit_return": round(loss_pct, 4),
+        "signal_exit_return": round(loss_pct, 4),
+        "exit_reason": reason,
+        "exit_days": future_days,
+        "exit_date": trade_date,
+        "survivorship_corrected": True,
+        "correction_reason": reason,
+    }
+
+
+def _should_apply_truncated_survivorship_correction(signal, future: pd.DataFrame, primary_days: int, exit_days: int) -> bool:
+    if future is None or future.empty:
+        return False
+    if not _survivorship_signal_is_stale(signal):
+        return False
+    required_days = max(1, int(primary_days or 1), int(exit_days or 1))
+    return len(future) < required_days
 
 
 def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object]]:
     history = provider.get_history(signal["code"], days=180)
     if history is None or history.empty or "trade_date" not in history.columns:
-        return None
+        return _survivorship_default_outcome(signal, None, "survivorship_no_history_default_loss")
     df = history.sort_values("trade_date").reset_index(drop=True)
     df["prev_close"] = df["price"].shift(1)
     signal_date = str(signal["signal_date"]).replace("-", "")
     future = df[df["trade_date"].astype(str).str.replace("-", "", regex=False) > signal_date].reset_index(drop=True)
     if future.empty:
-        return None
+        return _survivorship_default_outcome(signal, df.iloc[-1], "survivorship_no_future_default_loss")
     first = future.iloc[0]
     previous_rows = df[df["trade_date"].astype(str).str.replace("-", "", regex=False) <= signal_date]
     previous_close = coerce_number(previous_rows.iloc[-1].get("price")) if not previous_rows.empty else coerce_number(first.get("prev_close"))
@@ -1942,7 +377,7 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     exit_policy = _strategy_exit_policy(strategy_name, exit_days, limit_pct)
     open_exit = simulate_exit(future, open_entry, holding_days=exit_days, policy=exit_policy)
     signal_exit = simulate_exit(future, signal_entry, holding_days=exit_days, policy=exit_policy)
-    return {
+    outcome = {
         "next_trade_date": str(first.get("trade_date")),
         "future_days": future_days,
         "next_open": round(open_entry, 4),
@@ -1976,6 +411,15 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
         "exit_days": signal_exit.get("exit_days", open_exit.get("exit_days", 0)),
         "exit_date": signal_exit.get("exit_date", open_exit.get("exit_date", "")),
     }
+    if _should_apply_truncated_survivorship_correction(signal, future, primary_days, exit_days):
+        outcome["survivorship_corrected"] = True
+        outcome["correction_reason"] = "survivorship_truncated_future_liquidation"
+        if str(outcome.get("exit_reason") or "") == "hold_to_term":
+            outcome["exit_reason"] = "survivorship_liquidation_exit"
+        if not outcome.get("exit_date"):
+            outcome["exit_date"] = str(future.iloc[-1].get("trade_date", ""))
+        outcome["exit_days"] = max(int(coerce_number(outcome.get("exit_days"))), min(exit_days, len(future)))
+    return outcome
 
 
 def _compute_stance_outcome(provider, snapshot: sqlite3.Row) -> Optional[Dict[str, object]]:
@@ -2045,6 +489,82 @@ def _primary_return_config(strategy_name: str):
     )
 
 
+def _build_validation_baseline_id(
+    primary_field: str,
+    tail_enabled: bool,
+    impact_enabled: bool,
+    survivorship_enabled: bool,
+) -> str:
+    parts = [
+        "primary_{}".format(primary_field),
+        "liquidity_cost",
+        "tail" if tail_enabled else "no_tail",
+        "impact" if impact_enabled else "no_impact",
+        "survivorship" if survivorship_enabled else "no_survivorship",
+    ]
+    return "validation_{}".format("__".join(parts))
+
+
+def legacy_validation_baseline_id(strategy_name: str = "") -> str:
+    primary_field, _, _ = _primary_return_config(strategy_name)
+    return _build_validation_baseline_id(
+        primary_field,
+        tail_enabled=False,
+        impact_enabled=False,
+        survivorship_enabled=False,
+    )
+
+
+def _stored_validation_baseline_id(stored_baseline_id: object, strategy_name: str = "") -> str:
+    baseline_id = str(stored_baseline_id or "").strip()
+    if baseline_id:
+        return baseline_id
+    return legacy_validation_baseline_id(strategy_name)
+
+
+def _matches_current_validation_baseline(
+    stored_baseline_id: object,
+    strategy_name: str = "",
+    current_baseline_id: str = "",
+) -> bool:
+    expected = current_baseline_id or str(validation_baseline_config(strategy_name).get("baseline_id") or "")
+    return _stored_validation_baseline_id(stored_baseline_id, strategy_name) == expected
+
+
+def validation_baseline_config(strategy_name: str = "") -> Dict[str, object]:
+    primary_field, primary_days, primary_label = _primary_return_config(strategy_name)
+    tail_enabled = bool(getattr(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False))
+    impact_enabled = bool(getattr(config, "ENABLE_MARKET_IMPACT", False))
+    survivorship_enabled = bool(getattr(config, "ENABLE_SURVIVORSHIP_CORRECTION", False))
+    return {
+        "baseline_id": _build_validation_baseline_id(
+            primary_field,
+            tail_enabled=tail_enabled,
+            impact_enabled=impact_enabled,
+            survivorship_enabled=survivorship_enabled,
+        ),
+        "strategy_name": str(strategy_name or ""),
+        "primary_return_field": primary_field,
+        "primary_holding_days": primary_days,
+        "primary_horizon_label": primary_label,
+        "net_return_formula": "{} - trade_cost_pct".format(primary_field),
+        "cost_model": {
+            "base_trade_cost_pct": coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25), 0.25),
+            "liquidity_slippage_enabled": True,
+            "tail_auction_slippage_enabled": tail_enabled,
+            "market_impact_enabled": impact_enabled,
+            "portfolio_capital": coerce_number(getattr(config, "VALIDATION_PORTFOLIO_CAPITAL", 1_000_000), 1_000_000),
+            "default_position_pct": coerce_number(getattr(config, "VALIDATION_DEFAULT_POSITION_PCT", 10.0), 10.0),
+        },
+        "survivorship": {
+            "enabled": survivorship_enabled,
+            "stale_days": int(coerce_number(getattr(config, "SURVIVORSHIP_CORRECTION_STALE_DAYS", 30), 30)),
+            "default_loss_pct": coerce_number(getattr(config, "DELISTED_DEFAULT_LOSS_PCT", -30.0), -30.0),
+        },
+        "separate_legacy_baseline_required": bool(tail_enabled or impact_enabled or survivorship_enabled),
+    }
+
+
 def _strategy_exit_policy(strategy_name: str, holding_days: int, limit_down_pct: float) -> Dict[str, object]:
     policy = {"holding_days": holding_days, "limit_down_pct": limit_down_pct}
     if strategy_name not in {"tomorrow_picks", "swing_picks"}:
@@ -2076,12 +596,45 @@ def _exit_holding_days(strategy_name: str) -> int:
 
 
 def _outcome_ready(row, holding_days: int) -> bool:
+    if bool(_mapping_get(row, "survivorship_corrected", False)):
+        return True
     future_days = int(_mapping_get(row, "future_days", 1) or 1)
     if future_days >= max(1, int(holding_days or 1)):
         return True
     exit_reason = str(_mapping_get(row, "exit_reason", "") or "")
     exit_days = int(_mapping_get(row, "exit_days", 0) or 0)
     return exit_reason not in {"", "hold_to_term"} and 0 < exit_days <= future_days
+
+
+def _increment_reason(counter: Dict[str, int], reason: str) -> None:
+    key = str(reason or "unknown").strip() or "unknown"
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _diagnose_pending_outcome(provider, signal) -> str:
+    try:
+        history = provider.get_history(signal["code"], days=180)
+    except Exception:
+        return "history_fetch_failed"
+    if history is None or history.empty:
+        return "missing_history"
+    if "trade_date" not in history.columns:
+        return "missing_trade_date"
+    try:
+        df = history.sort_values("trade_date").reset_index(drop=True)
+        signal_date = str(_mapping_get(signal, "signal_date")).replace("-", "")
+        future = df[df["trade_date"].astype(str).str.replace("-", "", regex=False) > signal_date].reset_index(drop=True)
+    except Exception:
+        return "history_parse_failed"
+    if future.empty:
+        if _survivorship_correction_enabled() and not _survivorship_signal_is_stale(signal):
+            return "not_stale_for_survivorship_correction"
+        return "not_mature_no_future_trade"
+    first = future.iloc[0]
+    open_entry = coerce_number(first.get("open")) or coerce_number(first.get("price"))
+    if open_entry <= 0:
+        return "invalid_entry_price"
+    return "insufficient_future_data"
 
 
 def _is_replay_version(strategy_version: str) -> bool:
@@ -2136,9 +689,69 @@ def _liquidity_slippage_pct(turnover: float) -> float:
     return coerce_number(getattr(config, "VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT", 0.45), 0.45)
 
 
+def _estimated_order_amount(row) -> float:
+    capital = max(0.0, coerce_number(getattr(config, "VALIDATION_PORTFOLIO_CAPITAL", 1_000_000.0), 1_000_000.0))
+    if capital <= 0:
+        return 0.0
+    weight_pct = coerce_number(_mapping_get(row, "suggested_weight"), None)
+    if weight_pct is None:
+        trade_action = _mapping_get(row, "trade_action", {})
+        if isinstance(trade_action, dict):
+            position = coerce_number(trade_action.get("position_size"), None)
+            if position is not None:
+                weight_pct = position * 100.0 if position <= 1.0 else position
+    if weight_pct is None or weight_pct <= 0:
+        weight_pct = coerce_number(getattr(config, "VALIDATION_DEFAULT_POSITION_PCT", 10.0), 10.0)
+    return capital * max(0.0, weight_pct) / 100.0
+
+
+def tail_auction_slippage_pct(row, base_slippage: float = 0.0) -> float:
+    if not bool(getattr(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False)):
+        return 0.0
+    base = max(0.0, coerce_number(base_slippage))
+    daily_turnover = coerce_number(_mapping_get(row, "turnover"))
+    order_amount = _estimated_order_amount(row)
+    if daily_turnover <= 0 or order_amount <= 0:
+        return round(base + 0.5, 4)
+    liquidity_ratio = max(0.0001, coerce_number(getattr(config, "TAIL_AUCTION_LIQUIDITY_RATIO", 0.05), 0.05))
+    effective_liquidity = daily_turnover * liquidity_ratio
+    if effective_liquidity <= 0:
+        return round(base + 0.5, 4)
+    participation = order_amount / effective_liquidity
+    max_extra = max(0.0, coerce_number(getattr(config, "TAIL_AUCTION_MAX_EXTRA_SLIPPAGE_PCT", 0.8), 0.8))
+    extra = min(max_extra, participation * 100.0 * 0.02)
+    return round(base + extra, 4)
+
+
+def market_impact_cost_pct(row) -> float:
+    if not bool(getattr(config, "ENABLE_MARKET_IMPACT", False)):
+        return 0.0
+    adv = coerce_number(_mapping_get(row, "adv_20d")) or coerce_number(_mapping_get(row, "turnover"))
+    order_amount = _estimated_order_amount(row)
+    if adv <= 0 or order_amount <= 0:
+        return 0.0
+    coefficient = max(0.0, coerce_number(getattr(config, "MARKET_IMPACT_COEFFICIENT", 0.1), 0.1))
+    max_cost = max(0.0, coerce_number(getattr(config, "MARKET_IMPACT_MAX_COST_PCT", 5.0), 5.0))
+    participation = max(0.0, order_amount / adv)
+    impact = coefficient * math.sqrt(participation) * 100.0
+    return round(min(max_cost, impact), 4)
+
+
 def _execution_cost_pct(row) -> float:
     base = coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25), 0.25)
-    return round(base + _liquidity_slippage_pct(coerce_number(_mapping_get(row, "turnover"))), 4)
+    liquidity = _liquidity_slippage_pct(coerce_number(_mapping_get(row, "turnover")))
+    tail_slippage = tail_auction_slippage_pct(row)
+    impact = market_impact_cost_pct(row)
+    return round(base + liquidity + tail_slippage + impact, 4)
+
+
+def _stored_or_current_trade_cost_pct(row) -> float:
+    stored = coerce_number(_mapping_get(row, "stored_trade_cost_pct"), None)
+    if stored is None:
+        stored = coerce_number(_mapping_get(row, "trade_cost_pct"), None)
+    if stored is not None and stored > 0:
+        return round(stored, 4)
+    return _execution_cost_pct(row)
 
 
 def _is_primary_tomorrow_signal(rank, raw: Dict[str, object]) -> bool:
@@ -2170,7 +783,7 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
             item[key.replace("_json", "")] = json.loads(item.get(key) or "[]")
         except Exception:
             item[key.replace("_json", "")] = [] if key == "reasons_json" else {}
-    item["trade_cost_pct"] = _execution_cost_pct(item)
+    item["trade_cost_pct"] = _stored_or_current_trade_cost_pct(item)
     return item
 
 
@@ -2185,6 +798,24 @@ def _tuning_row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
         item.pop(key, None)
     item["can_apply"] = bool(item.get("can_apply"))
     item["shadow_mode"] = bool(item.get("shadow_mode"))
+    return item
+
+
+def _oos_report_row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
+    item = dict(row)
+    for key in ("report_json", "baseline_status_json", "validation_gate_json", "requirements_json"):
+        target = key.replace("_json", "")
+        try:
+            item[target] = json.loads(item.get(key) or "{}")
+        except Exception:
+            item[target] = {}
+        item.pop(key, None)
+    item["gate_blocked"] = bool(item.get("gate_blocked"))
+    report = item.get("report") if isinstance(item.get("report"), dict) else {}
+    if report:
+        item.setdefault("summary", report.get("summary") or {})
+        item.setdefault("validation_baseline", report.get("validation_baseline") or {})
+        item.setdefault("validation_baseline_id", report.get("validation_baseline_id") or item.get("baseline_id"))
     return item
 
 
@@ -2339,6 +970,125 @@ def _deepseek_group_delta(
         "watch_win_rate_primary_net": watch["win_rate_primary_net"],
         "win_rate_delta_pct": round(priority["win_rate_primary_net"] - watch["win_rate_primary_net"], 2),
         "avg_return_delta_pct": round(priority["avg_primary_return_net"] - watch["avg_primary_return_net"], 4),
+    }
+
+
+def _deepseek_token_cost_summary(rows: List[Dict[str, object]]) -> Dict[str, object]:
+    calls: Dict[str, Dict[str, object]] = {}
+    missing_usage = 0
+    for row in rows or []:
+        raw = row.get("_raw") if isinstance(row, dict) else {}
+        if not isinstance(raw, dict):
+            raw = {}
+        cost_hint = raw.get("deepseek_cost_hint") if isinstance(raw.get("deepseek_cost_hint"), dict) else {}
+        usage = raw.get("deepseek_usage") if isinstance(raw.get("deepseek_usage"), dict) else {}
+        usage_total_tokens = coerce_number(usage.get("total_tokens"), 0.0)
+        total_tokens = coerce_number(
+            cost_hint.get("total_tokens"),
+            coerce_number(raw.get("deepseek_total_tokens"), usage_total_tokens),
+        )
+        prompt_tokens = coerce_number(
+            cost_hint.get("prompt_tokens"),
+            coerce_number(usage.get("prompt_tokens"), 0.0),
+        )
+        completion_tokens = coerce_number(
+            cost_hint.get("completion_tokens"),
+            coerce_number(usage.get("completion_tokens"), 0.0),
+        )
+        billable_tokens = coerce_number(
+            cost_hint.get("billable_total_tokens"),
+            coerce_number(raw.get("deepseek_billable_tokens"), total_tokens),
+        )
+        estimated_cost = coerce_number(cost_hint.get("estimated_cost"), 0.0)
+        if total_tokens <= 0:
+            missing_usage += 1
+            continue
+        call_id = str(raw.get("deepseek_call_id") or "").strip()
+        if not call_id:
+            call_id = "{}:{}:{}".format(row.get("signal_date", ""), row.get("strategy_name", ""), row.get("rank", ""))
+        existing = calls.get(call_id)
+        if existing and coerce_number(existing.get("total_tokens")) >= total_tokens:
+            continue
+        calls[call_id] = {
+            "call_id": call_id,
+            "source": str(raw.get("deepseek_call_source") or ""),
+            "model": str(cost_hint.get("model") or ""),
+            "model_tier": str(cost_hint.get("model_tier") or ""),
+            "cached": bool(cost_hint.get("cached")),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "billable_total_tokens": billable_tokens,
+            "estimated_cost": estimated_cost,
+        }
+    call_rows = list(calls.values())
+    total_tokens = sum(coerce_number(item.get("total_tokens")) for item in call_rows)
+    billable_tokens = sum(coerce_number(item.get("billable_total_tokens")) for item in call_rows)
+    return {
+        "call_count": len(call_rows),
+        "total_tokens": round(total_tokens, 4),
+        "billable_total_tokens": round(billable_tokens, 4),
+        "estimated_cost": round(sum(coerce_number(item.get("estimated_cost")) for item in call_rows), 6),
+        "missing_usage_count": missing_usage,
+        "has_usage": total_tokens > 0,
+        "calls": call_rows[:20],
+    }
+
+
+def _deepseek_token_value_metrics(
+    avoid_veto_rows: List[Dict[str, object]],
+    counterfactual: Dict[str, object],
+    token_cost: Dict[str, object],
+) -> Dict[str, object]:
+    skipped_loss_saved = sum(max(0.0, -coerce_number(row.get("_primary_return_net"))) for row in avoid_veto_rows)
+    false_positive_loss = sum(max(0.0, coerce_number(row.get("_primary_return_net"))) for row in avoid_veto_rows)
+    rerank_delta = coerce_number(counterfactual.get("avg_return_delta_pct")) * int(
+        counterfactual.get("sample_count") or 0
+    )
+    net_value = round(skipped_loss_saved - false_positive_loss + rerank_delta, 4)
+    total_tokens = coerce_number(token_cost.get("total_tokens"))
+    value_per_1k = round(net_value / total_tokens * 1000.0, 4) if total_tokens > 0 else None
+    return {
+        "skipped_loss_saved_pct": round(skipped_loss_saved, 4),
+        "false_positive_profit_loss_pct": round(false_positive_loss, 4),
+        "rerank_net_return_delta_pct": coerce_number(counterfactual.get("avg_return_delta_pct")),
+        "rerank_net_return_delta_points": round(rerank_delta, 4),
+        "net_value_pct_points": net_value,
+        "total_tokens": total_tokens,
+        "billable_total_tokens": coerce_number(token_cost.get("billable_total_tokens")),
+        "value_per_1k_tokens": value_per_1k,
+    }
+
+
+def _deepseek_budget_recommendation(
+    status: str,
+    real_sample_count: int,
+    min_real_samples: int,
+    token_value: Dict[str, object],
+) -> Dict[str, object]:
+    value = token_value.get("value_per_1k_tokens") if isinstance(token_value, dict) else None
+    if status != "ok" or int(real_sample_count or 0) < int(min_real_samples or 0):
+        return {
+            "action": "observe",
+            "worth_expanding_budget": False,
+            "reason": "样本不足，只观察，不建议扩大 DeepSeek 调用预算。",
+        }
+    if value is None:
+        return {
+            "action": "observe",
+            "worth_expanding_budget": False,
+            "reason": "缺少 token usage，暂不判断是否扩大预算。",
+        }
+    if coerce_number(value) <= 0:
+        return {
+            "action": "shrink",
+            "worth_expanding_budget": False,
+            "reason": "value_per_1k_tokens <= 0，建议收缩 DeepSeek 调用范围。",
+        }
+    return {
+        "action": "expand",
+        "worth_expanding_budget": True,
+        "reason": "DeepSeek OOS 净收益/token 为正，可评估扩大预算。",
     }
 
 

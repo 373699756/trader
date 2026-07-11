@@ -1,8 +1,10 @@
-# 荐股策略评分机制改进计划
+# 荐股策略与工程优化计划
 
 > 创建时间: 2026-07-10
-> 适用模块: `stock_analyzer/scoring.py`, `stock_analyzer/calibrate.py`, `stock_analyzer/factors.py`
+> 适用模块: `stock_analyzer/scoring.py`, `stock_analyzer/calibrate.py`, `stock_analyzer/factors.py`, `stock_analyzer/strategy_validation.py`, `stock_analyzer/portfolio.py`, `stock_analyzer/app_support.py`
 > 关联文档: `strategy_and_prediction.md`, `software_design.md`
+
+本文档的目标是把现有"0-100 综合排序分"逐步升级为"扣成本后的期望收益 / 下行风险 / 置信度"共同驱动的工程闭环。所有改进只追求提升风险调整后收益与验证可信度, 不承诺也不暗示保证盈利。
 
 ---
 
@@ -41,6 +43,7 @@ score = Σ(factor_score_i × weight_i) - risk_penalty + regime_bonus
 | 6 | **分数不可解释为概率**: "75分"只代表排序 | 用户无法直观理解实际胜率含义 | 🟡 中 |
 | 7 | **单一面板模型**: 所有盘面环境共用一套权重 | risk_off 时应弱化动量、强化流动性 | 🟢 低 |
 | 8 | **因子池有限**: 仅 14 个日线 AlphaLite 因子 | 缺少日内结构、板块相对强度、市场微观结构特征 | 🟢 低 |
+| 9 | **排序目标不是预期净收益**: 最终 `score` 仍主要表示强弱/质量 | 高分股票未必对应更高的扣成本期望收益, 也无法直接进入组合优化 | 🔴 高 |
 
 ### 1.4 独立 Review 的补充发现（代码层面的深层问题）
 
@@ -76,6 +79,35 @@ score = Σ(factor_score_i × weight_i) - risk_penalty + regime_bonus
 - 现状 (`app_support.py`): 要么"执行", 要么"全退降为备选观察", 中间没有连续档位。
 - **影响**: 策略从"边缘可用"到"完全禁用"是断崖式切换, 无法平滑管理边缘表现期。
 - **待办**: 由 2.3.3「动态仓位缩放」补齐此缺口 (连续仓位因子替代二元开关)。
+
+#### 1.4.6 本轮补充: 打分优化的突出方向是"收益目标化"
+
+plan.md 原有优化重点已经覆盖了平滑阈值、Sortino、时间衰减、交互项、概率校准、Meta-Labeling、组合优化和压力测试。这些内容解决的是"评分更稳、更不容易过拟合、更能解释风险"。
+
+本轮需要合并的突出点是: **最终排序目标应从 `0-100 综合强弱分` 升级为 `扣成本后的期望收益分`**。也就是说:
+
+```
+旧目标: score = 综合强弱排序
+新目标: rank_score = E(primary_return_net) - downside_risk - execution_cost - uncertainty_penalty
+```
+
+对应输出字段应从单一 `score` 扩展为:
+
+| 字段 | 含义 | 用途 |
+|------|------|------|
+| `expected_return_net` | 预测扣成本主周期净收益 | 排序和组合优化的核心输入 |
+| `p_win` | 主周期净收益为正的概率 | 概率化解释和仓位折扣 |
+| `downside_p10` | 悲观 10% 分位净收益 | 尾部风险约束 |
+| `expected_drawdown` | 预测主周期最大不利波动 | 风险预算和止损压力评估 |
+| `model_confidence` | 样本数、覆盖率、近期稳定性合成置信度 | 低置信候选降权或备选 |
+| `rank_score` | 风险调整后的排序分 | 取代旧 `score` 的核心排序依据 |
+
+适用边界:
+- `tomorrow_picks`: 目标字段为 `next_close_return - execution_cost`。
+- `swing_picks`: 目标字段为 `exit_return - execution_cost`。
+- `short_term`: 继续保持观察池, 不在没有分钟级成交验证前输出可执行收益模型。
+
+这个补充不是替代 2.1-2.3, 而是为它们统一优化方向: 所有因子、交互项、概率校准和 Meta-Labeling 最终都要服务于 `expected_return_net` 和风险调整后的 `rank_score`。
 
 ### 1.5 数据与执行层的隐藏问题（fresh review 新发现）
 
@@ -126,6 +158,39 @@ score = Σ(factor_score_i × weight_i) - risk_penalty + regime_bonus
 - **机制**: 当测试大量参数组合时, 即使所有组合都是随机噪声, 也总会找到一些"表现显著"的组合。**不校正就会让过拟合结果看起来可信**。
 - **后果**: walk-forward 中选出的"最优权重"可能只是数据挖掘的产物, 上线后快速失效。
 - **待办**: 引入假发现率控制 (FDR) 或 Bonferroni 校正 (见 6.6.2), 尤其当扩展为 Ridge/交互项/Meta-Labeling 等更多超参数时。
+
+### 1.7 收益服务审计: 每项改进必须能说明"为什么有利"
+
+本计划中的机制不是都直接产生 alpha。为了避免把工程建设误写成收益来源, 每个机制必须至少服务以下五类目标之一:
+
+1. **提升 alpha**: 更准确地区分未来净收益更高的候选。
+2. **降低成本**: 减少滑点、市场冲击、不可成交和高换手损耗。
+3. **降低风险**: 降低回撤、尾部损失、集中度和高波动暴露。
+4. **提高验证真实性**: 避免幸存者偏差、未来函数、样本缺失和多重检验假发现。
+5. **提升执行纪律**: 防止低置信模型、旧缓存或解释性字段绕过门控。
+
+| 机制 | 收益服务类型 | 是否直接提升荐股/评分 | 处理原则 |
+|------|--------------|----------------------|----------|
+| 收益目标化排序 `rank_score` | 提升 alpha、降低风险 | 是, 但必须等样本和 OOS 通过 | `model_confidence=ready` 前只展示, 不接管排序 |
+| 平滑风险扣分 | 降低风险、提升排序稳定性 | 是 | 默认开启, 防止边界样本分数跳变 |
+| Sortino/下行分位目标 | 降低尾部风险 | 是 | 校准目标必须优先惩罚大亏结构 |
+| 时间衰减 | 提升适应性 | 是 | 防止旧市场结构污染新权重 |
+| 因子交互 | 潜在提升 alpha | 是, 但过拟合风险高 | 仅 shadow 评估, OOS/FDR 通过后灰度 |
+| 概率校准 | 提升解释与仓位折扣 | 间接 | 可展示, 不能单独作为买入依据 |
+| 分市场状态权重 | 提升适应性、降低风险 | 是, 但样本容易不足 | 用全局权重回退和状态内样本门槛保护 |
+| Meta-Labeling | 降低错误交易 | 是, 但需要真实标签 | 默认 shadow, enforce 前必须通过 OOS/FDR |
+| 多时间框架新因子 | 潜在提升 alpha | 待验证 | 先入特征库, 再看 RankIC/Top-K lift |
+| 动态仓位缩放 | 降低风险 | 间接提升风险调整收益 | 可作为风控默认开启, 不改变股票排序 |
+| 波动率目标化 | 降低回撤 | 间接提升风险调整收益 | 可默认开启, 防止高波动期满仓 |
+| 组合相关性/主题 cap | 降低集中风险 | 间接提升风险调整收益 | 可默认开启, 但不使用低置信收益字段加仓 |
+| 幸存者偏差修正 | 提高验证真实性 | 不直接提升收益 | 必须开启, 否则收益评估不可信 |
+| 尾盘滑点/市场冲击 | 降低成本、提高验证真实性 | 间接 | 必须进入净收益标签和组合容量检查 |
+| DeepSeek 事件/风险信号 | 潜在提升 alpha、降低错误交易 | 待验证 | 只能做结构化抽取、风险识别和解释; 未通过 OOS 前不得接管主排序 |
+| 事件 alpha / Ensemble | 潜在提升 alpha | 待验证 | 单独归因, 未通过前不得接管主排序 |
+| 压力测试/FDR | 提高验证真实性、降低过拟合 | 间接 | 作为生产灰度门槛, 不是收益来源 |
+| 前端解释/看板 | 提升执行纪律 | 不直接 | 防止误把高分、概率、可执行动作混为一谈 |
+
+结论: 文档中的大部分内容都能服务于收益, 但服务路径不同。**直接改变荐股排序或仓位的机制必须有真实前瞻证据; 间接机制可以先作为保守修正或解释层上线。**
 
 ---
 
@@ -379,6 +444,71 @@ def _time_decay_objective(
 
 ### 2.2 第二优先级: 中投入、中回报（预计 2-3 周）
 
+#### 2.2.0 收益目标化排序层（本轮合并）
+
+**核心思路**: 保留现有因子分、风险扣分和解释字段, 但最终排序不再直接使用旧 `score`, 而是使用由真实前瞻样本训练出来的风险调整收益分。
+
+```text
+expected_return_net = f(因子分, 风险分, 市场状态, 执行成本, 历史覆盖)
+p_win               = P(primary_return_net > 0)
+downside_p10        = Q10(primary_return_net)
+rank_score          = 50
+                      + expected_return_net * return_scale
+                      + (p_win - 0.5) * probability_scale
+                      + downside_p10 * downside_scale
+                      - expected_drawdown * drawdown_scale
+                      - uncertainty_penalty
+```
+
+**训练样本**:
+- 来源: `StrategyValidationStore` 中已回填的真实前瞻样本。
+- 特征: `raw_json` 里的 `liquidity_score`、`momentum_score`、`historical_edge_score`、`execution_score`、`tail_setup_score`、`risk_penalty`、`overheat_damp`、`regime_bonus`、`alphalite_coverage` 等。
+- 标签:
+  - `tomorrow_picks`: `next_close_return - _execution_cost_pct(row)`。
+  - `swing_picks`: `exit_return - _execution_cost_pct(row)`。
+
+**模型分层**:
+
+| 样本条件 | 模型 | 原因 |
+|----------|------|------|
+| 真实成熟样本 < 60 个交易日 | 不启用收益模型, 沿用旧排序并输出 `model_confidence=low` | 样本不足时避免伪精确 |
+| 60-120 个交易日 | Ridge / Huber 回归 + Isotonic 概率校准 | 稳健、可解释、低过拟合 |
+| >120 个交易日且 OOS 通过 | Quantile 回归或 Meta-Labeling 辅助 | 增加下行分位与置信度建模 |
+
+**最小可落地模块**:
+
+```text
+stock_analyzer/expected_return_model.py
+  - build_training_samples(strategy)
+  - train_expected_return_model(strategy, samples)
+  - predict_expected_return(strategy, rows)
+  - save/load model artifact
+
+stock_analyzer/scoring.py
+  - 保留旧 score/base_score 作为解释字段
+  - 新增 rank_score/expected_return_net/p_win/downside_p10/model_confidence
+  - 当前阶段只展示 shadow 字段, 线上排序仍使用旧 score
+  - 只有 OOS/FDR 门控通过且显式开启 `ENABLE_EXPECTED_RETURN_RANKING` 后, 才允许 rank_score 替代旧排序
+  - `model_confidence != ready` 时, 收益模型字段不得影响排序、组合权重或执行动作
+
+stock_analyzer/calibrate.py
+  - walk-forward 对比旧 score 与 rank_score 的 OOS 主周期净收益
+  - 只有 OOS 改善和 FDR 门控通过才允许启用
+```
+
+**当前基础版实现**:
+- `score_tomorrow_candidates()` / `score_swing_candidates()` 已支持可选 `expected_return_samples` 和 `use_expected_return_ranking`。
+- 默认行为保持不变: `rank_score`、`expected_return_net`、`p_win`、`downside_p10` 继续作为 shadow/解释字段。
+- `recommendation_runtime_support.expected_return_ranking_context()` 会在 `ENABLE_EXPECTED_RETURN_RANKING=1` 时读取验证样本, 检查真实交易日数、walk-forward OOS、FDR/sign-test guard。
+- 只有门控通过时, 运行层才向策略函数传入 `use_expected_return_ranking=True`, 让 `rank_score` 替代旧 `score` 的排序顺序；未通过时只传入样本用于 shadow 估计。
+- 当前基础版尚未落地持久化模型 artifact, 仍是运行时基于验证样本的轻量估计；后续再升级为 Ridge/Huber/Quantile artifact。
+
+**上线门槛**:
+- `rank_score` Top-K 的 OOS 平均净收益必须高于旧 `score` Top-K。
+- `rank_score` Top-K 的 95% 置信下界不能低于旧模型。
+- 执行跳过率、最大回撤、主题集中度不得恶化。
+- 未通过时只展示预测字段, 不用于排序和执行。
+
 #### 2.2.1 因子交互项 (二阶多项式)
 
 **核心思路**: 当前 `score = Σ(w_i × f_i)`, 扩展为 `score = Σ(w_i × f_i) + Σ(w_ij × f_i × f_j)`。
@@ -393,67 +523,36 @@ def _time_decay_objective(
 | `liquidity × tail_setup` | 尾盘结构需流动性支撑 | 缺流动性 → 降权 |
 | `momentum × risk_penalty` | 动量高但风险也高 | 对冲关系 |
 
-**实现方案**: Ridge 回归替代坐标下降。
+**当前基础版实现**: 先落地无新增依赖的 shadow evaluator, 不改变线上排序。
 
 ```python
-from sklearn.linear_model import Ridge
-from sklearn.preprocessing import PolynomialFeatures, StandardScaler
-from sklearn.pipeline import make_pipeline
-import numpy as np
-
-
-def _build_interaction_model(samples, strategy, degree=2, alpha=1.0):
+def evaluate_interaction_ranker(strategy, samples, top_k=10):
     """
-    用 Ridge 回归 + 多项式特征拟合因子权重及交互项。
+    逐折训练二阶交互项, 在测试折重排 Top-K, 输出 shadow OOS 对比。
 
-    Returns:
-        (model, poly, scaler) 训练好的流水线组件, 以及各特征名和权重
+    当前实现不依赖 sklearn:
+    1. 从策略 combiner 中抽取组件因子, 额外加入 risk_penalty。
+    2. 因子值归一化到 [-1, 1], 构造少量二阶 pair。
+    3. 在训练折里用日内中位收益去市场日效应, 估计 pair 与净收益的方向/强度。
+    4. 在测试折上只给旧 score 加有限幅度的 interaction delta。
+    5. 输出 baseline_oos_objective、interaction_oos_objective、positive_folds、FDR 状态。
     """
-    spec = STRATEGY_COMBINERS[strategy]
-    component_keys = [term["component"] for term in spec["terms"]]
-    # 添加 risk_penalty 作为独立特征
-    feature_keys = component_keys + ["risk_penalty"]
-
-    X_raw = []
-    y = []
-    for sample in samples:
-        raw = sample.get("raw") or {}
-        features = [coerce_number(raw.get(key), 50.0) for key in feature_keys]
-        primary_ret = coerce_number(sample.get("primary_return_net"))
-        X_raw.append(features)
-        y.append(primary_ret)
-
-    X_raw = np.array(X_raw)
-    y = np.array(y)
-
-    # 标准化 + 多项式特征 + Ridge
-    model = make_pipeline(
-        StandardScaler(),
-        PolynomialFeatures(degree=degree, include_bias=False),
-        Ridge(alpha=alpha, fit_intercept=True),
-    )
-    model.fit(X_raw, y)
-
-    # 提取特征名和权重
-    poly = model.named_steps["polynomialfeatures"]
-    feature_names = poly.get_feature_names_out(feature_keys)
-    coef = model.named_steps["ridge"].coef_
-
-    return {
-        "model": model,
-        "feature_names": feature_names,
-        "coefficients": coef,
-        "intercept": float(model.named_steps["ridge"].intercept_),
-    }
 ```
 
-**通过 walk-forward 验证**: Ridge 模型在每折训练集上拟合, 在测试集上预测并与 baseline 线性模型对比 OOS 改善。
+**后续增强方案**: 样本量足够且依赖允许后, 再升级为 Ridge/Huber + PolynomialFeatures, 并对 `alpha=[0.1, 0.5, 1.0, 2.0, 5.0]` 做 walk-forward 选择。
 
-**正则化强度**: `alpha` 也通过 walk-forward 交叉验证选择最优值 (`[0.1, 0.5, 1.0, 2.0, 5.0]`)。
+**通过 walk-forward 验证**: 每折只用训练集拟合交互项, 在测试集上与 baseline 线性模型对比 OOS 改善。
+
+**启用门槛**:
+- `interaction_oos_objective > baseline_oos_objective + CALIBRATE_IMPROVE_MARGIN`
+- `positive_folds > fold_count / 2`
+- 若开启 `ENABLE_CALIBRATE_FDR`, FDR/sign-test guard 必须通过
+- 未通过时只输出 shadow 评估, 不写生产权重, 不替代旧排序
 
 **预期效果**:
 - 捕捉因子间的非线性关系
-- Ridge 正则化减少过拟合
+- 基础版通过 pair 数量、分数增量 cap 和 OOS 门控减少过拟合
+- 后续 Ridge 正则化进一步压低高维交互过拟合
 - 只在 OOS 显著改善时启用
 
 ---
@@ -462,88 +561,45 @@ def _build_interaction_model(samples, strategy, degree=2, alpha=1.0):
 
 **核心思路**: 将排序分转化为"历史上同类分数的股票次日正收益比例"。
 
-**实现方案**: Isotonic Regression (保序回归)。
+**实现方案**: 先采用无新增依赖的"分桶胜率 + 单调修正"校准器, 后续样本充足且引入 sklearn 依赖后再升级为 Isotonic Regression。
 
 ```python
-from sklearn.isotonic import IsotonicRegression
-import numpy as np
-
-
 class ScoreCalibrator:
     """分数-概率校准器, 用历史真实结果训练。"""
 
-    def __init__(self):
-        self._calibrator = IsotonicRegression(
-            y_min=0.01,  # 最低概率 1%
-            y_max=0.99,  # 最高概率 99%
-            out_of_bounds="clip",
-            increasing=True,  # 假设高分→高概率
-        )
-        self._fitted = False
-        self._sample_count = 0
+    def fit(self, samples):
+        # 输入: stored_score/decision_score + primary_return_net
+        # 1) 按 score 排序分桶
+        # 2) 每桶统计主周期净收益为正的比例
+        # 3) 用 PAVA 思路做单调修正, 保证高分桶概率不低于低分桶
 
-    def fit(self, scores: list, outcomes: list):
-        """
-        Args:
-            scores: 历史综合分列表
-            outcomes: 对应次日是否正收益 (1=正, 0=负)
-        """
-        if len(scores) < 20:
-            return
-        X = np.array(sorted(scores))
-        y = np.array([o for _, o in sorted(zip(scores, outcomes))])
-        self._calibrator.fit(X, y)
-        self._fitted = True
-        self._sample_count = len(scores)
-
-    def predict(self, score: float) -> float:
-        """返回校准后的概率估计。"""
-        if not self._fitted:
-            return None
-        return round(float(self._calibrator.predict([score])[0]), 4)
-
-    def predict_many(self, scores: list) -> list:
-        if not self._fitted:
-            return [None] * len(scores)
-        return [round(float(v), 4) for v in self._calibrator.predict(scores)]
-
-    @property
-    def is_fitted(self) -> bool:
-        return self._fitted
-
-    @property
-    def sample_count(self) -> int:
-        return self._sample_count
+    def predict(self, score):
+        return {
+            "calibrated_probability": 0.61,   # 0-1
+            "probability_label": "中等置信",
+            "probability_sample_count": 36,
+            "probability_bucket": "65-75",
+            "probability_avg_return": 0.42,
+        }
 ```
 
 **集成方式**:
 
 ```python
-# 在 scoring.py 的 score_candidates() 末尾
-from .probability_calibration import load_calibrator, save_calibrator
+# 在 app_support.attach_score_calibration() 中
+from .probability_calibration import apply_score_calibration, load_calibrator, train_score_calibrator
 
 calibrator = load_calibrator(strategy_name)
-if calibrator and calibrator.is_fitted:
-    for row in result_rows:
-        prob = calibrator.predict(row["score"])
-        if prob is not None:
-            row["calibrated_probability"] = prob
-            # 补充解释性标签
-            if prob >= 0.65:
-                row["probability_label"] = "高置信"
-            elif prob >= 0.55:
-                row["probability_label"] = "中等置信"
-            elif prob >= 0.48:
-                row["probability_label"] = "接近随机"
-            else:
-                row["probability_label"] = "低置信"
+if not calibrator.is_fitted:
+    calibrator = train_score_calibrator(strategy_name, live_weight_samples)
+apply_score_calibration(result_rows, calibrator)
 ```
 
-**训练触发**: 每次 `calibrate_live_weights()` 成功后, 用验证库全部样本重新训练校准器并保存到 `.runtime/score_calibrator_{strategy}.pkl`。
+**训练触发**: 每次 `calibrate_live_weights()` 成功写入后, 用验证库样本重新训练校准器并保存到 `.runtime/score_calibrator_{strategy}.json`; 页面运行时若未找到持久化文件, 会用最近验证样本临时训练并附加解释字段。
 
 **前端展示**: `score_note` 从 `"综合分是量价/趋势/风险排序分，不等于上涨概率"` 升级为:
 ```
-score_note: "综合分 72 分，历史同类信号次日正收益概率约 61%（基于最近 N 个真实样本）"
+score_note: "综合分 72.0，历史同类信号主周期正收益概率约 61.0%（N样本）"
 ```
 
 ---
@@ -592,12 +648,19 @@ REGIME_WEIGHT_SETS = {
 }
 ```
 
-**校准**: 按市场状态分别训练。
-- 将历史样本按 `signal_date` 当天的 `market_regime` 分组
-- 每组独立进行 walk-forward 校准
-- 新交易日运行时, 先判定当前 regime, 再加载对应权重
+**当前基础版实现**: 先落地 `evaluate_regime_specific_weights()` shadow evaluator。
+- 从验证样本 `raw.regime_level`、`raw.market_regime.level` 或 `regime_score` 识别 `risk_on/balanced/risk_off`。
+- walk-forward 每折只用训练集按状态拟合权重, 测试集按样本状态选择权重重排 Top-K。
+- 某个状态训练样本数低于 `REGIME_SPECIFIC_MIN_TRAIN_SAMPLES` 时, 该状态回退全局权重。
+- 只输出 `weights_by_regime`、`regime_oos_objective`、`positive_folds`、`fdr` 和 `can_promote`; 不直接写生产权重。
 
-**配置开关**: `ENABLE_REGIME_SPECIFIC_WEIGHTS = True` (默认关闭, 需足够样本后才开启)
+**启用门槛**:
+- `regime_oos_objective > baseline_oos_objective + CALIBRATE_IMPROVE_MARGIN`
+- `positive_folds > fold_count / 2`
+- 若开启 `ENABLE_CALIBRATE_FDR`, FDR/sign-test guard 必须通过
+- 所有关键状态样本充足, 否则不足状态继续回退全局权重
+
+**配置开关**: `ENABLE_REGIME_SPECIFIC_WEIGHTS = True` (默认关闭, 需足够样本后才开启), `REGIME_SPECIFIC_MIN_TRAIN_SAMPLES = 20`
 
 ---
 
@@ -631,71 +694,49 @@ y = 1 if primary_return_net > 0  else 0
 ```
 (主模型判断正确 = 推荐后次日正收益)
 
-**模型选择**: LightGBM 二分类器 (处理非线性、特征交互、缺失值)。
+**当前基础版实现**: 先落地无新增依赖的可解释 meta confidence, 默认只输出 shadow 字段。
 
 ```python
-import lightgbm as lgb
+stock_analyzer/meta_labeling.py
+  - train_meta_label_model(strategy, samples)
+  - predict_meta_confidence(row, model)
+  - apply_meta_labeling(rows, model, enforce=False)
 
-
-def train_meta_model(samples: list) -> dict:
-    """训练元标签模型。"""
-    X = _build_meta_features(samples)
-    y = _build_meta_labels(samples)
-
-    if len(y) < 50:
-        return {"fitted": False, "reason": "样本不足"}
-
-    model = lgb.LGBMClassifier(
-        objective="binary",
-        metric="auc",
-        num_leaves=15,         # 控制复杂度
-        max_depth=4,
-        learning_rate=0.03,
-        n_estimators=200,
-        min_child_samples=10,  # 正则化
-        reg_alpha=0.1,
-        reg_lambda=0.1,
-        verbose=-1,
-    )
-    model.fit(X, y)
-
-    return {
-        "fitted": True,
-        "model": model,
-        "feature_names": _meta_feature_names(),
-        "sample_count": len(y),
-        "positive_rate": sum(y) / len(y),
-    }
-
-
-def meta_confidence(meta_model: dict, stock_features: dict) -> dict:
-    """对单只股票输出元模型置信度。"""
-    if not meta_model.get("fitted"):
-        return {"confidence": None, "reason": "元模型未就绪"}
-
-    X = _build_single_meta_features(stock_features)
-    proba = meta_model["model"].predict_proba([X])[0][1]  # P(y=1)
-    confidence = round(float(proba), 4)
-
-    return {
-        "confidence": confidence,
-        "action": (
-            "full" if confidence >= 0.65
-            else "reduced" if confidence >= 0.50
-            else "skip"
-        ),
-    }
+stock_analyzer/calibrate.py
+  - evaluate_meta_labeling_gate(strategy, samples)
+  - walk-forward 对比旧 score Top-K 与 meta confidence gate 后 Top-K
+  - 只有 OOS/FDR 通过才允许 `META_LABELING_ENFORCE_ACTION=1`
 ```
 
+当前基础版使用:
+- `score` 分桶历史胜率
+- `risk_penalty` 分桶历史胜率
+- 全样本正收益率
+- 行上已有 `calibrated_probability` / `p_win` 作为辅助校准
+
+输出字段:
+- `meta_labeling.confidence`
+- `meta_labeling.action`: `full` / `reduced` / `skip`
+- `meta_labeling.position_scale`
+- `meta_confidence`
+
+**后续增强方案**: 样本和依赖成熟后, 再升级 LightGBM/树模型二分类器, 处理更多非线性特征和缺失值。
+
 **集成到现有流程**:
-- `app_support.py` 的 `apply_strategy_validation_gate()` 加入元模型门控
-- 当元模型置信度 < 50% 时, 将对应行降为备选观察
-- 仓位公式: `position = base_position × (0.5 + 0.5 × meta_confidence)`
+- 当前接入 `app_support.attach_meta_labeling()`, 在 `attach_validation_summary()` 后附加 shadow 字段。
+- 默认不改 `trade_action`, 不跳过、不降仓。
+- 只有同时开启 `ENABLE_META_LABELING=1` 和 `META_LABELING_ENFORCE_ACTION=1` 时, 才允许按 action 调整仓位或降为观察。
 
 **训练与部署**:
-- 每次 `calibrate_live_weights()` 成功后自动训练元模型
-- 保存到 `.runtime/meta_model_{strategy}.pkl`
-- OOS 验证: 对比是否使用元模型门控的 walk-forward metrics
+- 当前运行时使用最近验证样本即时训练轻量模型。
+- 后续若升级树模型, 再持久化到 `.runtime/meta_model_{strategy}.pkl/json`。
+- OOS 验证: 对比是否使用元模型门控的 walk-forward metrics, 通过后才允许 enforce。
+
+**启用门槛**:
+- `meta_oos_objective > baseline_oos_objective + CALIBRATE_IMPROVE_MARGIN`
+- `positive_folds > fold_count / 2`
+- 若开启 `ENABLE_CALIBRATE_FDR`, FDR/sign-test guard 必须通过
+- 未通过时只展示 `meta_labeling` / `meta_confidence`, 不改变执行动作
 
 ---
 
@@ -804,6 +845,12 @@ def sector_relative_strength(code: str, daily_return: float,
 | amplitude_5d_mean | 全部 | risk_guard |
 | sector_relative_strength | 全部 | industry/cross_section |
 
+**当前落地**:
+- `factors.py` 已扩展 `ALPHALITE_COLUMNS`, 输出 `close_vs_vwap`、`upper_wick_ratio`、`lower_wick_ratio`、`price_position_20d`、`consecutive_up_days`、`consecutive_down_days`、`amplitude_5d_mean`。
+- `close_vs_vwap` 在无分钟 VWAP 数据时用日线 typical price `(high + low + close) / 3` 近似, 仅作为结构因子。
+- 默认 `ENABLE_ENHANCED_FACTORS=0` 时这些列保持 0, 不改变现有评分。
+- 开启后只进入因子表和验证样本, 是否纳入 `tail_setup`/`execution`/`risk_guard` 仍需 OOS 验证。
+
 **配置开关**: `ENABLE_ENHANCED_FACTORS = True`, 通过环境变量控制, 默认先关闭, OOS 验证通过后开启。
 
 ---
@@ -813,6 +860,11 @@ def sector_relative_strength(code: str, daily_return: float,
 **现状**: 策略退场是二元的 (胜率<48% → 全部禁止)。
 
 **改进**: 渐变降权, 连续调整仓位比例。
+
+**当前落地**:
+- `strategy_validation_gate_decision()` 在未阻断时返回 `position_scale` 与 `position_scale_reason`。
+- `apply_strategy_validation_gate()` 对通过门控的行调用 `apply_position_scale()`, 将 `trade_action.position_size` 乘以连续缩放因子。
+- `retired`、样本不足、真实收益/胜率/回撤/CI 不达标仍然硬阻断并降为备选观察, 不做半仓放行。
 
 ```python
 def dynamic_position_scaling(
@@ -880,45 +932,60 @@ def _scale_reason(scale: float) -> str:
 
 ---
 
-## 三、实施路线图
+## 三、启用与实施路线图
+
+本轮先只修改本文档, 不改代码。后续真正改代码时, 按"保守修正先开、预测模型后验"的顺序推进。
+
+### 3.1 可用能力启用分层
+
+| 分层 | 能力 | 目标默认状态 | 理由 | 约束 |
+|------|------|--------------|------|------|
+| 第一批: 验证口径修正 | 幸存者偏差修正、尾盘滑点、市场冲击成本、主题集中度联动 | 开启 | 这些能力主要修正过度乐观的验证结果, 会让收益口径更保守 | 开启后必须重新生成 baseline, 不能和旧指标直接比较 |
+| 第一批: 保守风控 | 平滑风险扣分、动态仓位缩放、波动率目标化、组合相关性 cap | 开启 | 这些能力降低悬崖式跳变、过度集中和高波动暴露 | 不允许使用低置信收益模型字段做加仓依据 |
+| 第一批: 统计保护 | Sortino/下行目标、时间衰减、FDR/sign-test guard、压力测试输出 | 开启或随校准启用 | 降低过拟合和尾部风险误判 | FDR 无显著结果时必须回退默认权重 |
+| 第二批: 解释型输出 | 概率校准、`expected_return_net/p_win/downside_p10/rank_score` shadow 字段 | 开启展示 | 改善用户理解和后续验证数据采集 | `model_confidence != ready` 时不得影响排序、仓位或执行 |
+| 第三批: 生产排序/门控 | 收益目标化排序、因子交互、分状态权重、Meta-Labeling enforce | 默认关闭 | 这些能力会改变候选排序或执行动作 | 满足真实样本数、OOS、FDR、CI 下界后才灰度 |
+| 第四批: 新 alpha 源 | 事件 alpha、Ensemble、多时间框架因子进入主模型 | 默认关闭或 shadow | 新信号源容易引入主观性和数据漂移 | 必须单独归因、单独 OOS、单独回退 |
+
+### 3.2 文档计划后的代码实施顺序
 
 ```
-第 0 步 (前置, 必做) ── 6.4 数据与执行层修正
-            │
-            ├── 6.4.4 幸存者偏差修正 (最严重, 否则后续验证全失真)
-            ├── 6.4.1 尾盘执行价滑点
-            ├── 6.4.2 市场冲击模型
-            └── 6.4.3 主题集中度联动
-                    ↓ 重新基线化所有策略真实 metrics
-第 1 周 ──── 2.1.1 硬阈值平滑化
-            │
-            ├── 2.1.2 目标函数引入 Sortino
-            │
-            └── 2.1.3 样本时间衰减
-                    ↓ 独立 OOS 验证, 发布到生产
-第 2-3 周 ── 2.2.1 Ridge + 因子交互项
-            │
-            ├── 2.2.2 分数→概率校准
-            │
-            └── 2.2.3 分市场状态独立权重
-                    ↓ 独立 OOS 验证, 发布到生产
-第 4-6 周 ── 6.2.1/6.2.2 波动率目标化 + 组合优化 (立竿见影)
-            │
-            ├── 2.3.1 Meta-Labeling 元标签模型
-            │
-            ├── 2.3.2 多时间框架新因子
-            │
-            └── 2.3.3 动态仓位缩放
-                    ↓ 独立 OOS 验证, 灰度发布
-后续    ──── 6.2.3/6.2.4 新 alpha 源 (事件/集成)
-                    ↓ 突破纯量价框架天花板
+第 A 步 ── 打开已实现的保守修正
+    ├─ 6.5.4 幸存者偏差修正
+    ├─ 6.5.1 尾盘执行价滑点
+    ├─ 6.5.2 市场冲击模型
+    ├─ 6.5.3 主题集中度联动
+    ├─ 2.1.1 平滑风险扣分
+    ├─ 2.1.2/2.1.3 Sortino + 时间衰减
+    └─ 2.3.3/6.2.1/6.2.2 动态仓位 + 波动率目标化 + 相关性 cap
+            ↓ 重新基线化所有策略真实 metrics
+
+第 B 步 ── 开启解释型 shadow 输出
+    ├─ 2.2.2 分数→概率校准
+    ├─ 2.2.0 expected_return_net/p_win/downside_p10/rank_score shadow
+    └─ 前端明确展示"影子/低置信/就绪"状态
+            ↓ 不改变线上排序、不改变组合权重、不改变执行动作
+
+第 C 步 ── OOS/FDR 后灰度生产排序
+    ├─ 2.2.0 收益目标化排序
+    ├─ 2.2.1 因子交互
+    ├─ 2.2.3 分市场状态权重
+    └─ 2.3.1 Meta-Labeling enforce
+            ↓ 仅在真实样本数、OOS、FDR、CI 下界全部通过后启用
+
+第 D 步 ── 新 alpha 源单独归因
+    ├─ 6.2.3 事件 alpha
+    ├─ 6.2.4 Ensemble
+    └─ 2.3.2 多时间框架因子入主模型
+            ↓ 单独归因通过前不得接管主排序
 ```
 
 每个阶段完成后:
-1. 运行 `calibrate_live_weights()` 对比改进前后的 OOS metrics
-2. 仅在 OOS 客观指标显著改善 (改善 > 0.05 且多数折正面) 时合入
-3. 更新 `strategy_and_prediction.md` 中的策略描述
-4. **第 0 步完成后必须重新基线化**: 记录修正后的真实胜率/收益, 作为后续所有改进的对比基准
+1. 运行 `calibrate_live_weights()` 或对应 shadow evaluator 对比改进前后的 OOS metrics。
+2. 仅在 OOS 客观指标显著改善、positive_folds 过半且 FDR/sign-test guard 通过时, 才允许进入生产排序或执行门控。
+3. 更新 `strategy_and_prediction.md` 中的策略描述。
+4. **第 A 步完成后必须重新基线化**: 记录修正后的真实胜率/收益, 作为后续所有改进的对比基准。
+5. 任一开关导致真实前瞻指标、执行跳过率、回撤或主题集中度恶化, 立即回退对应开关。
 
 ---
 
@@ -932,13 +999,15 @@ def _scale_reason(scale: float) -> str:
 |--------|------|------|
 | OOS objective 改善 | > 0.05 | 样本外目标函数提升 |
 | positive_folds | > fold_count / 2 | 多数折正面 |
+| FDR/sign-test guard | 通过 | 参数扫描或模型灰度前必须降低假发现率 |
+| 95% CI 下界 | 不低于 baseline | 期望收益模型不能只看均值改善 |
 | real_win_rate 不降 | ≥ baseline | 真实胜率至少不降 |
 | real_avg_return 不降 | ≥ baseline | 真实平均收益至少不降 |
 | 模型复杂度增量 | 可接受 | 不因增加参数导致严重过拟合 |
 
 ### 4.2 回退开关
 
-所有新机制均通过 `config.py` 环境变量控制:
+所有新机制均通过 `config.py` 环境变量控制。目标默认状态按 3.1 分层执行: 保守修正与统计保护优先开启, 改变排序/执行的预测模型保持关闭。
 
 ```python
 # 2.1.1
@@ -948,46 +1017,80 @@ USE_SMOOTH_PENALTY = os.getenv("USE_SMOOTH_PENALTY", "1") == "1"
 CALIBRATE_USE_SORTINO = os.getenv("CALIBRATE_USE_SORTINO", "1") == "1"
 
 # 2.1.3
+CALIBRATE_USE_TIME_DECAY = os.getenv("CALIBRATE_USE_TIME_DECAY", "1") == "1"
 CALIBRATE_TIME_DECAY_HALF_LIFE = int(os.getenv("CALIBRATE_TIME_DECAY_HALF_LIFE", "60"))
+
+# 2.2.0
+# 继续默认关闭: 只允许 shadow 字段展示, 不替代旧 score 排序
+ENABLE_EXPECTED_RETURN_RANKING = os.getenv("ENABLE_EXPECTED_RETURN_RANKING", "0") == "1"
+EXPECTED_RETURN_MIN_REAL_DAYS = int(os.getenv("EXPECTED_RETURN_MIN_REAL_DAYS", "60"))
+EXPECTED_RETURN_MIN_OOS_DELTA = float(os.getenv("EXPECTED_RETURN_MIN_OOS_DELTA", "0.05"))
 
 # 2.2.1
 ENABLE_INTERACTION_TERMS = os.getenv("ENABLE_INTERACTION_TERMS", "0") == "1"
+INTERACTION_TERM_MAX_PAIRS = int(os.getenv("INTERACTION_TERM_MAX_PAIRS", "8"))
+INTERACTION_MIN_TRAIN_SAMPLES = int(os.getenv("INTERACTION_MIN_TRAIN_SAMPLES", "20"))
+INTERACTION_SCORE_SCALE = float(os.getenv("INTERACTION_SCORE_SCALE", "6.0"))
+INTERACTION_SCORE_DELTA_CAP = float(os.getenv("INTERACTION_SCORE_DELTA_CAP", "12.0"))
+INTERACTION_MIN_ABS_CORR = float(os.getenv("INTERACTION_MIN_ABS_CORR", "0.02"))
 
 # 2.2.2
-ENABLE_PROBABILITY_CALIBRATION = os.getenv("ENABLE_PROBABILITY_CALIBRATION", "0") == "1"
+SCORE_CALIBRATOR_DIR = os.getenv("SCORE_CALIBRATOR_DIR", ".runtime")
+SCORE_CALIBRATION_MIN_SAMPLES = int(os.getenv("SCORE_CALIBRATION_MIN_SAMPLES", "20"))
+SCORE_CALIBRATION_BUCKETS = int(os.getenv("SCORE_CALIBRATION_BUCKETS", "5"))
 
 # 2.2.3
 ENABLE_REGIME_SPECIFIC_WEIGHTS = os.getenv("ENABLE_REGIME_SPECIFIC_WEIGHTS", "0") == "1"
+REGIME_SPECIFIC_MIN_TRAIN_SAMPLES = int(os.getenv("REGIME_SPECIFIC_MIN_TRAIN_SAMPLES", "20"))
 
 # 2.3.1
 ENABLE_META_LABELING = os.getenv("ENABLE_META_LABELING", "0") == "1"
+META_LABELING_MIN_SAMPLES = int(os.getenv("META_LABELING_MIN_SAMPLES", "50"))
+META_LABELING_FULL_THRESHOLD = float(os.getenv("META_LABELING_FULL_THRESHOLD", "0.65"))
+META_LABELING_REDUCED_THRESHOLD = float(os.getenv("META_LABELING_REDUCED_THRESHOLD", "0.50"))
+META_LABELING_ENFORCE_ACTION = os.getenv("META_LABELING_ENFORCE_ACTION", "0") == "1"
 
 # 2.3.2
 ENABLE_ENHANCED_FACTORS = os.getenv("ENABLE_ENHANCED_FACTORS", "0") == "1"
 
 # 2.3.3
-ENABLE_DYNAMIC_POSITION_SCALING = os.getenv("ENABLE_DYNAMIC_POSITION_SCALING", "0") == "1"
+ENABLE_DYNAMIC_POSITION_SCALING = os.getenv("ENABLE_DYNAMIC_POSITION_SCALING", "1") == "1"
+STRATEGY_POSITION_SCALE_MIN = float(os.getenv("STRATEGY_POSITION_SCALE_MIN", "0.35"))
+STRATEGY_POSITION_SCALE_PROBATION = float(os.getenv("STRATEGY_POSITION_SCALE_PROBATION", "0.6"))
 
-# 6.2.1 / 6.2.2
-ENABLE_VOL_TARGETING = os.getenv("ENABLE_VOL_TARGETING", "0") == "1"
-ENABLE_PORTFOLIO_OPTIMIZATION = os.getenv("ENABLE_PORTFOLIO_OPTIMIZATION", "0") == "1"
+# 6.2.1 / P2
+ENABLE_VOLATILITY_TARGETING = os.getenv("ENABLE_VOLATILITY_TARGETING", "1") == "1"
+PORTFOLIO_TARGET_VOLATILITY_PCT = float(os.getenv("PORTFOLIO_TARGET_VOLATILITY_PCT", "5.0"))
+PORTFOLIO_VOL_SCALE_MIN = float(os.getenv("PORTFOLIO_VOL_SCALE_MIN", "0.35"))
+PORTFOLIO_VOL_SCALE_MAX = float(os.getenv("PORTFOLIO_VOL_SCALE_MAX", "1.15"))
+
+# 6.2.2
+ENABLE_PORTFOLIO_OPTIMIZATION = os.getenv("ENABLE_PORTFOLIO_OPTIMIZATION", "1") == "1"
+PORTFOLIO_CORRELATION_GROUP_CAP = float(os.getenv("PORTFOLIO_CORRELATION_GROUP_CAP", "0.45"))
 
 # 6.2.3 / 6.2.4
 ENABLE_EVENT_ALPHA = os.getenv("ENABLE_EVENT_ALPHA", "0") == "1"
+EVENT_ALPHA_MIN_SCORE = float(os.getenv("EVENT_ALPHA_MIN_SCORE", "60"))
 ENABLE_ENSEMBLE = os.getenv("ENABLE_ENSEMBLE", "0") == "1"
+ENSEMBLE_MODEL_WEIGHTS = os.getenv("ENSEMBLE_MODEL_WEIGHTS", "")
 
 # 6.5 数据与执行层修正
-ENABLE_SURVIVORSHIP_CORRECTION = os.getenv("ENABLE_SURVIVORSHIP_CORRECTION", "0") == "1"
-ENABLE_TAIL_AUCTION_SLIPPAGE = os.getenv("ENABLE_TAIL_AUCTION_SLIPPAGE", "0") == "1"
-ENABLE_MARKET_IMPACT = os.getenv("ENABLE_MARKET_IMPACT", "0") == "1"
-ENABLE_REGIME_THEME_CAP = os.getenv("ENABLE_REGIME_THEME_CAP", "0") == "1"
+ENABLE_SURVIVORSHIP_CORRECTION = os.getenv("ENABLE_SURVIVORSHIP_CORRECTION", "1") == "1"
+ENABLE_TAIL_AUCTION_SLIPPAGE = os.getenv("ENABLE_TAIL_AUCTION_SLIPPAGE", "1") == "1"
+ENABLE_MARKET_IMPACT = os.getenv("ENABLE_MARKET_IMPACT", "1") == "1"
+ENABLE_REGIME_THEME_CAP = os.getenv("ENABLE_REGIME_THEME_CAP", "1") == "1"
 
 # 6.6 统计与压力测试修正
-ENABLE_STRESS_TEST = os.getenv("ENABLE_STRESS_TEST", "0") == "1"
-ENABLE_CALIBRATE_FDR = os.getenv("ENABLE_CALIBRATE_FDR", "0") == "1"
+ENABLE_STRESS_TEST = os.getenv("ENABLE_STRESS_TEST", "1") == "1"
+STRESS_TEST_SCENARIOS_PATH = os.getenv("STRESS_TEST_SCENARIOS_PATH", ".runtime/stress_scenarios.json")
+ENABLE_CALIBRATE_FDR = os.getenv("ENABLE_CALIBRATE_FDR", "1") == "1"
+CALIBRATE_FDR_Q = float(os.getenv("CALIBRATE_FDR_Q", "0.1"))
 ```
 
-全部设为 `"0"` 即可恢复到当前行为。**注意**: 6.5 的四个开关建议优先开启 (尤其 `ENABLE_SURVIVORSHIP_CORRECTION`), 否则后续模型优化的验证基础不可信。6.6 的 `ENABLE_CALIBRATE_FDR` 建议在启用 2.2.1/2.3.1 时同步开启。
+回退规则:
+- 第一批默认开启项可单独设为 `"0"` 回退, 但回退后生成的验证指标不得和修正后 baseline 混用。
+- `ENABLE_PORTFOLIO_OPTIMIZATION=1` 只表示启用相关性/集中度约束; 在收益模型 `model_confidence != ready` 时, 不得使用 `expected_return_net` 或 `p_win` 做加仓倾斜。
+- `ENABLE_EXPECTED_RETURN_RANKING`、`ENABLE_INTERACTION_TERMS`、`ENABLE_REGIME_SPECIFIC_WEIGHTS`、`META_LABELING_ENFORCE_ACTION`、`ENABLE_EVENT_ALPHA`、`ENABLE_ENSEMBLE` 保持默认关闭, 只有 OOS/FDR/CI 门控通过后才允许灰度。
 
 ---
 
@@ -995,8 +1098,9 @@ ENABLE_CALIBRATE_FDR = os.getenv("ENABLE_CALIBRATE_FDR", "0") == "1"
 
 | 风险 | 级别 | 缓解措施 |
 |------|------|---------|
+| 期望收益模型伪精确 | 高 | 未满 60 个真实交易日不启用排序; OOS/FDR 不通过时只展示预测字段 |
 | 交互项/Ridge 过拟合 | 中 | L2 正则化 + walk-forward OOS 验证 |
-| 概率校准过拟合 | 低 | Isotonic 保序 + 最少 20 样本才拟合 |
+| 概率校准过拟合 | 低 | 分桶胜率 + 单调保序修正 + 最少 20 样本才拟合 |
 | 分状态模型样本不足 | 中 | risk_off/risk_on 样本 < 30 时回退到 balanced 权重 |
 | Meta-Labeling 过拟合 | 高 | 严格控制树深度(4)+叶子数(15), walk-forward 验证 |
 | 新因子数据覆盖率不足 | 中 | 因子不可用时回退为中性值 50.0 |
@@ -1007,7 +1111,7 @@ ENABLE_CALIBRATE_FDR = os.getenv("ENABLE_CALIBRATE_FDR", "0") == "1"
 | **组合优化在小样本下协方差矩阵不稳定** | 中 | 用 Ledoit-Wolf 收缩估计或对角占优回退 |
 | **压力测试场景选择偏误** | 中 | 覆盖多类尾部事件(流动性/政策/外部冲击), 定期更新场景库 |
 | **FDR 校正导致无配置可选** | 低 | 无显著配置时回退默认权重, 不强制使用 Ridge/交互项 |
-| **多重比较下假发现激增** | 高 | 2.2.1/2.3.1 启用时必须同步开启 `ENABLE_CALIBRATE_FDR` |
+| **多重比较下假发现激增** | 高 | 2.2.0/2.2.1/2.3.1 启用时必须同步开启 `ENABLE_CALIBRATE_FDR` |
 
 ---
 
@@ -1055,7 +1159,8 @@ def volatility_target_scale(
 
 **数据来源**: 用大盘指数或候选组合近 20 日日收益标准差估算 `realized_vol`。
 **集成点**: 与 2.3.3 动态仓位缩放相乘, 作为组合级总仓位闸门。
-**配置**: `ENABLE_VOL_TARGETING`, `VOL_TARGET_ANNUAL = 15.0`。
+**当前落地**: `portfolio.py` 先用候选池 `volatility_20d` 均值估算组合波动率, 缺失时回退 `amplitude`; `gross_exposure = regime_factor × drawdown_factor × volatility_factor`。summary 输出 `volatility_factor`, `portfolio_volatility_pct`, `target_volatility_pct` 和降仓原因。
+**配置**: `ENABLE_VOLATILITY_TARGETING`, `PORTFOLIO_TARGET_VOLATILITY_PCT`, `PORTFOLIO_VOL_SCALE_MIN`, `PORTFOLIO_VOL_SCALE_MAX`。
 
 #### 6.2.2 【最高】组合层 Max-Sharpe 优化
 
@@ -1097,14 +1202,34 @@ def max_sharpe_weights(
 ```
 
 **集成点**: 作为打分/门控之后的"组合构建层", 输出的是**权重**而非排名, 直接对接仓位分配。
+**当前落地**: `portfolio.py` 基础版不引入 numpy/scipy, 采用风险预算近似:
+- 原始权重仍由置信度/风险/波动率生成。
+- 若收益模型已通过门控且 `model_confidence=ready`, 才允许用 `expected_return_net`、`p_win` 或 `calibrated_probability` 对原始权重做预期收益/胜率倾斜。
+- 若收益模型仍是 `low`/`shadow`, 组合优化只能使用单票 cap、主题 cap、相关性组 cap 和波动率目标化, 不得因影子收益字段加仓。
+- 在单票 cap、主题 cap 之外, 增加 `correlation_group` / `risk_group` / `industry` / `theme` 相关性组 cap。
+- summary 输出 `correlation_exposure`, `correlation_group_cap_pct`, `portfolio_optimization_enabled`。
+完整协方差 Max-Sharpe 留到后续有稳定历史收益矩阵时升级。
 **预期收益**: 同等胜率下回撤更小 → Sharpe 提升 → 复利优势。
-**配置**: `ENABLE_PORTFOLIO_OPTIMIZATION`, `PORTFOLIO_MAX_SINGLE_WEIGHT = 0.25`。
+**配置**: `ENABLE_PORTFOLIO_OPTIMIZATION`, `PORTFOLIO_CORRELATION_GROUP_CAP`。
 
 #### 6.2.3 【高】催化剂/事件 alpha 独立成源
 
 **现状**: 系统已有 DeepSeek 事件评分 (`sentiment.py` / `deepseek_client.py`), 但**只用于对量价候选做重排序**, 事件本身未成为独立信号源。
 
 **核心思想**: 把"可验证催化剂"(业绩预告、政策受益、大额订单、重组、回购) 独立成一个事件驱动策略, 与量价策略并行产出候选, 再由 6.2.4 集成层合并。
+
+**DeepSeek 的正确角色**:
+- **结构化抽取**: 从公告、新闻、研报摘要、互动问答中抽取事件类型、兑现窗口、来源可信度和风险点。
+- **语义去重**: 合并同一事件的多条重复文本, 防止同一催化剂被重复加分。
+- **新旧催化识别**: 区分"新增信息"和"市场已充分反映的信息"; 已发酵过热的事件应降权或转为风险提示。
+- **风险反证**: 抽取监管问询、业绩不及预期、减持、诉讼、退市风险、涨停不可买等负面信号, 作为 skip/reduce 候选。
+- **解释归因**: 生成可审计的推荐原因和风险原因, 但不直接给最终买卖指令。
+
+**不得使用 DeepSeek 的方式**:
+- 不让 DeepSeek 直接输出"买入/卖出/目标价"并绕过量价模型。
+- 不把 LLM 主观置信度等同于胜率或预期收益。
+- 不使用信号时间之后才发布的新闻、公告或收盘信息回填当时推荐。
+- 不在没有 OOS 证明前, 让 DeepSeek 分数替代 `score` / `rank_score`。
 
 ```python
 def event_alpha_score(events: list) -> dict:
@@ -1131,7 +1256,21 @@ def event_alpha_score(events: list) -> dict:
 ```
 
 **关键**: 事件时间窗要与策略周期匹配 (明日优先偏好"次日兑现"事件, 2-5日偏好"数日发酵"事件——系统已有此逻辑, 需强化为独立评分)。
-**配置**: `ENABLE_EVENT_ALPHA`。
+
+**当前落地**:
+- 新增 `stock_analyzer/event_alpha.py`, 提供 `event_alpha_score(events, strategy_name)`、`row_event_alpha_events(row)`、`attach_event_alpha(rows, strategy_name)`。
+- 支持结构化事件列表, 也能从行上的 `deepseek_event_type`、`deepseek_catalyst_score`、`deepseek_time_sensitivity` 等字段提取事件。
+- 输出 `event_alpha_score`、`event_alpha_active`、`hits` 和贡献拆分。
+- 当前仍是独立 alpha 分, 不接管量价候选生成; 后续由 6.2.4 ensemble 或独立事件候选源接入。
+
+**DeepSeek 是否提高收益的判定方法**:
+- 建立三组 shadow 对照: `base_score Top-K`、`base_score + DeepSeek风险过滤`、`base_score + event_alpha/ensemble`。
+- 每组使用完全相同的信号时间、候选池、成本模型和持有周期。
+- 统计 DeepSeek 的边际贡献: `delta_avg_return_net`、`delta_sortino`、`delta_max_drawdown`、`delta_skip_loss_avoidance`、`delta_turnover_cost`。
+- 若 DeepSeek 只提高解释质量但不提升 OOS 净收益或降低回撤, 则只能保留为解释层。
+- 若 DeepSeek 降低收益或提高跳过优质标的比例, 立即关闭其排序/过滤影响, 只保留审计字段。
+
+**配置**: `ENABLE_EVENT_ALPHA`, `EVENT_ALPHA_MIN_SCORE`。
 
 #### 6.2.4 【高】多模型集成 (Ensemble)
 
@@ -1159,6 +1298,13 @@ def ensemble_score(model_scores: dict, model_weights: dict) -> dict:
 ```
 
 **模型权重的确定**: 用验证库真实样本, 对各子模型做 walk-forward 回归求最优组合权重 (类似 2.2.1 的思路, 但特征是各模型输出而非各因子)。
+
+**当前落地**:
+- 新增 `stock_analyzer/ensemble.py`, 提供 `ensemble_score(model_scores, model_weights)`、`row_model_scores(row)`、`attach_ensemble_score(rows)`。
+- 默认融合 `price_volume`、`expected_return`、`event`、`probability`、`meta` 五类 shadow/独立分数。
+- 输出 `ensemble_score`、`agreement`、`dispersion`、`model_scores`、`model_weights`。
+- 默认不改变排序; 后续需 walk-forward 验证 ensemble Top-K 优于单模型后再接入排序。
+
 **配置**: `ENABLE_ENSEMBLE`, `ENSEMBLE_MODEL_WEIGHTS`。
 
 ### 6.3 三层升级路径的关系
@@ -1408,6 +1554,12 @@ def stress_test_strategy(
 ```
 
 **集成点**: 在 `strategy_health.py` 中, 除现有胜率/收益/回撤阈值外, 增加"压力测试累计亏损不超过基准"的软约束; 在 UI 展示各策略的压力测试结果。
+
+**当前落地**:
+- 新增 `stock_analyzer/stress_scenarios.py`, 提供 `load_stress_scenarios()` 和 `stress_test_samples()`。
+- 输入验证样本与情景日期窗口, 输出每个情景的样本数、胜率、平均收益、最大单笔损失、累计收益和 `worst_scenario`。
+- 当前不接入硬门控, 后续接到 `strategy_health.py` 和验证看板。
+
 **配置**: `ENABLE_STRESS_TEST`, `STRESS_TEST_SCENARIOS_PATH`。
 
 #### 6.6.2 【中】多重假设检验校正
@@ -1459,6 +1611,13 @@ def calibrate_with_fdr_guard(
 ```
 
 **p_value 计算**: 可用 bootstrap 或 permutation test 计算"该配置收益是否显著为正"。
+
+**当前落地**:
+- `calibrate.py` 已新增 `benjamini_hochberg_fdr()` 与 `calibrate_with_fdr_guard()`。
+- 2.2.1/2.2.3/2.3.1 的 shadow evaluator 已输出 sign-test/FDR guard 状态。
+- 2.2.0 收益目标化排序在替代旧排序前, 必须补齐同级别的 FDR/sign-test guard 和 CI 下界检查。
+- 坐标下降 `_fit_weights()` 的候选扫描尚未整体替换为 BH-FDR 选择器, 后续可在候选配置枚举更完整后接入。
+
 **集成点**: 在 `calibrate.py` 的 `_fit_weights()` / coordinate descent 外层加 FDR 门控; 当 2.2.1 扩展为 Ridge/多项式特征时, 该门控尤为重要。
 **配置**: `ENABLE_CALIBRATE_FDR`, `CALIBRATE_FDR_Q = 0.1`。
 
@@ -1466,26 +1625,34 @@ def calibrate_with_fdr_guard(
 
 ### 6.7 改进实施的正确顺序（修正版）
 
-由于 6.5 的数据/执行层修正确保了验证指标的可信度, **必须先于模型改进完成**:
+由于 6.5 的数据/执行层修正确保了验证指标的可信度, **必须先于模型改进完成**。本轮文档计划将可用能力分成"先开保守修正"和"后开预测模型"两类:
 
 ```
-第 0 步 (前置, 必做) ── 6.5 数据与执行层修正
+第 0 步 (前置, 必做) ── 第一批默认开启: 保守修正 + 风控约束
     ├─ 6.5.4 幸存者偏差修正 (最严重, 否则后续所有验证都失真)
     ├─ 6.5.1 尾盘执行价滑点
     ├─ 6.5.2 市场冲击模型
-    └─ 6.5.3 主题集中度联动
+    ├─ 6.5.3 主题集中度联动
+    ├─ 2.1 地基改进 (平滑惩罚/Sortino/时间衰减)
+    └─ 2.3.3/6.2.1/6.2.2 动态仓位 + 波动率目标化 + 相关性约束
             ↓ 修正后重新基线化所有策略的真实 metrics
-第 1 步 ── 2.1 地基改进 (平滑惩罚/Sortino/时间衰减)
-第 2 步 ── 6.2.1/6.2.2 波动率目标化 + 组合优化 (立竿见影)
-第 3 步 ── 2.2/2.3 模型层升级 (交互项/概率校准/Meta-Labeling)
-第 4 步 ── 6.2.3/6.2.4 新 alpha 源 (事件/集成)
+第 1 步 ── 第二批开启: 解释型 shadow 输出
+    ├─ 2.2.0 收益模型 shadow 字段
+    └─ 2.2.2 概率校准解释
+            ↓ 不改变排序、不改变组合权重、不改变执行
+第 2 步 ── 第三批灰度: 预测模型生产化
+    ├─ 2.2.0 rank_score 替代旧 score 排序
+    ├─ 2.2.1 因子交互
+    ├─ 2.2.3 分市场状态权重
+    └─ 2.3.1 Meta-Labeling enforce
+第 3 步 ── 6.2.3/6.2.4 新 alpha 源 (事件/集成)
             │
-第 5 步 ──── 6.6 统计与压力测试修正 (FDR/压力情景)
+并行约束 ── 6.6 统计与压力测试修正 (FDR/压力情景)
             ↓ 降低假发现率, 量化尾部风险
 ```
 
 **关键判断**: 若跳过第 0 步直接做模型改进, 可能在"被高估的指标"上优化, 导致 OOS 改善是虚假的——这是比过拟合更隐蔽的陷阱。
-**另一关键判断**: 6.6 的 FDR 门控应在每次校准 (2.2.1/2.3.1) 中同步启用, 否则参数空间扩大后假发现会激增。
+**另一关键判断**: 6.6 的 FDR 门控应在每次校准 (2.2.0/2.2.1/2.3.1) 中同步启用, 否则参数空间扩大后假发现会激增。
 
 ---
 
@@ -1507,62 +1674,328 @@ def calibrate_with_fdr_guard(
 
 系统的设计哲学保持不变: **用持续验证闭环替代"保证收益"的幻觉**。
 
+---
 
+## 八、工程级优化计划（交付拆分）
 
-那这个打分机制还有更科学更能保证收益的打分机制吗？
+本节把前文策略优化拆成工程可交付项。优先级规则: **先修正验证可信度, 再优化排序, 再做组合与新 alpha 源, 最后扩大自动化和前端解释**。
 
-review上次提交看看还有没有优化的空间
+### 8.1 P0 数据与验证地基
 
+| 目标 | 主要模块 | 交付物 | 验收标准 |
+|------|----------|--------|----------|
+| 修正收益口径与执行偏差 | `strategy_validation.py`, `risk_rules.py`, `backtest.py` | 统一 `tomorrow_picks` 次日开盘入场、`swing_picks` 动态退出和滑点成本 | 信号保存、回填、页面展示使用同一主收益字段 |
+| 处理幸存者偏差 | `strategy_validation.py`, `daily_data.py` | 退市/长期停牌样本保留与保守回填 | metrics 同时输出全样本与存续样本指标 |
+| 补齐回填完整性 | `daily_job.py`, `validation_runtime_support.py` | 未成熟/缺失结果自动补齐和异常统计 | 未回填样本数可解释, 不静默消失 |
+| 修复门控绕行 | `app.py`, `app_support.py` | 所有快照兜底路径统一重跑验证门控 | 旧缓存不能绕过 `execution_allowed=false` |
 
-## 审查结论
+### 8.2 P1 评分层升级
 
-  不通过。当前实现不能证明、更不能保证收益，尤其不能声称“明日优先第二天正收益”。
+| 目标 | 主要模块 | 交付物 | 验收标准 |
+|------|----------|--------|----------|
+| 平滑风险扣分 | `scoring.py`, `config.py` | `_smooth_penalty()` 与开关 `USE_SMOOTH_PENALTY` | 边界样本排序不再因 0.1% 指标差异跳变 |
+| 改造校准目标 | `calibrate.py` | Sortino、下行分位、时间衰减目标函数 | walk-forward OOS 不低于 baseline |
+| 收益目标化排序 | `expected_return_model.py`, `scoring.py`, `calibrate.py` | `expected_return_net`, `p_win`, `downside_p10`, `rank_score` | 60 个真实交易日后才允许灰度; OOS/FDR 通过才替代旧排序 |
+| 概率解释 | `probability_calibration.py`, 前端推荐表 | 分数段历史胜率/概率标签 | 页面明确区分排序分、概率和预期收益 |
 
-  好的一点是：当前三个新版本都被验证门控降为 execution_allowed=false、仓位 0，今天没有直接放行交易。
+### 8.3 P2 组合与仓位层
 
-  ## 主要问题
+| 目标 | 主要模块 | 交付物 | 验收标准 |
+|------|----------|--------|----------|
+| 波动率目标化 | `portfolio.py`, `strategy_health.py` | 组合级总仓位缩放；基础版已接入候选波动率估算 | 高波动期自动降仓, 回撤低于 baseline |
+| 组合优化 | `portfolio.py` | 风险预算权重基础版；相关性组 cap；收益模型 ready 后才允许预期收益倾斜 | 单票、单主题、相关性约束生效; 低置信收益字段不影响权重 |
+| 动态仓位缩放 | `app_support.py`, `portfolio.py` | `position_scale` 连续仓位因子；硬失败仍阻断 | 边缘策略降仓而不是断崖式全停 |
+| 市场冲击成本 | `portfolio.py`, `strategy_validation.py` | 平方根冲击模型与资金容量检查 | 大资金/低成交额候选自动降权或剔除 |
 
-  1. P0：明日优先存在不可成交的收盘价入场假设。
-     自动快照默认 15:00 才运行，stock_analyzer/config.py:96；数据库实际信号甚至保存于 16:32，却用当日信号价计算“信号价至次日收盘”收益，stock_analyzer/
-     strategy_validation.py:1823。收盘后形成决策，不可能再按已经确定的收盘价成交，这会产生执行层未来函数。
+### 8.4 P3 模型与新 alpha 源
 
-  2. P0：没有足够验证证据。
-      - 当前 tomorrow_picks_v8_next_day：1 条信号，0 条成熟结果。
-      - 当前 swing_2_5d_v2_signal_exit：8 条信号，0 条成熟结果。
-      - 盘中观察：5 条信号，0 条回填结果。
-      - 唯一有结果的旧版明日优先主推样本只有 2 条、来自同一个交易日；两条都亏损，扣成本平均约 -2.18%。
-      - 另有 21 条旧版明日信号一直未回填，说明结果回填链路也不完整。
+| 目标 | 主要模块 | 交付物 | 验收标准 |
+|------|----------|--------|----------|
+| 因子交互 | `calibrate.py`, `scoring.py` | 基础版无依赖 shadow evaluator; 后续 Ridge/Huber + 二阶交互项 | 多数 OOS fold 改善且 FDR 通过后才允许启用生产排序 |
+| Meta-Labeling | 新 `meta_labeling.py`, `app_support.py` | 主模型置信度与跳过/降仓决策 | 使用元模型后主周期净收益或回撤改善 |
+| 事件 alpha 独立化 | `sentiment.py`, `deepseek_client.py`, 新 `event_alpha.py` | 催化剂事件独立打分 | 事件信号独立归因, 不能只靠 LLM 主观判断 |
+| Ensemble | 新 `ensemble.py`, `calibrate.py` | 多 alpha 源加权投票 | 单模型失效时集成模型回撤更低 |
 
-  3. P1：明日优先的入场规则互相矛盾。
-     主指标是 signal_next_close_return，但涨停不可买和高开超过3%的过滤条件却检查 primary_return_field == "next_close_return"，因此两个分支永远不会触
-     发，stock_analyzer/strategy_validation.py:1838。必须二选一：
-      - 14:50前形成信号并按真实尾盘成交价验证；或
-      - 次日开盘买入，并改用开盘至收盘收益。
+### 8.5 P4 前端、运维与回归测试
 
-  4. P1：2–5日退出模拟偏乐观。
-     跳空跌破止损价时仍按止损价成交；连续跌停只延迟一天便假设次日开盘可卖；移动止损还隐含日内先后顺序，stock_analyzer/risk_rules.py:94。这些都会高估可
-     实现收益。
+| 目标 | 主要模块 | 交付物 | 验收标准 |
+|------|----------|--------|----------|
+| 推荐表解释升级 | `static/recommendation-renderers.js`, `templates/index.html` | 展示 `rank_score`、预期净收益、胜率概率、置信度和原因 | 用户能看出"高分"与"可执行"的区别 |
+| 验证看板升级 | `static/validation-*`, `strategy_validation.py` | 全样本/存续样本、OOS、FDR、压力测试结果 | 任何策略上线前能看到完整证据链 |
+| 配置与回退 | `config.py`, `.runtime/weights.json` | 所有新机制都有环境变量开关 | 单项功能可独立关闭并回到当前行为 |
+| 测试矩阵 | `tests/` | 单元、回归、快照、校准门控测试 | 每个阶段合入前测试通过, 关键收益口径有断言 |
 
-  5. P1：2–5日保存快照的兜底路径可能绕过验证门控。
-     明日优先兜底会重新应用门控，但波段兜底只附加统计并直接返回旧行，stock_analyzer/app.py:884。当前快照恰好已是零仓位，但旧快照仍可能携带历史买入动
-     作。
+### 8.6 推荐实施节奏
 
-  6. P2：运行质量尚未达到生产标准。
-      - 历史因子覆盖率仅约 14.81%，2–5日策略因此处于降级状态。
-      - 完整测试结果：225 passed、9 failed、12 skipped。失败涉及 DeepSeek结果解析、调度限频和东方财富行情请求。
+1. **文档阶段（当前）**: 只更新本文档, 明确第一批开启项、shadow 边界、生产灰度门槛和回退规则。
+2. **代码阶段 A**: 默认开启 P0/P1 中已实现且偏保守的能力: 幸存者偏差、尾盘滑点、市场冲击、主题 cap、平滑扣分、Sortino、时间衰减、FDR、压力测试、动态仓位、波动率目标化和相关性 cap。
+3. **代码阶段 B**: 重新回填并生成修正后 baseline; 所有旧指标标记为旧口径, 不再用于证明新策略有效。
+4. **代码阶段 C**: 开启收益模型、概率校准和 Meta-Labeling 的 shadow 输出; 明确 `model_confidence != ready` 时不参与排序、组合权重或执行。
+5. **代码阶段 D**: 若真实样本数、OOS、FDR、CI 下界全部通过, 灰度让 `rank_score` 替代旧排序, 再逐项评估交互项、分状态权重和 Meta enforce。
+6. **代码阶段 E**: 逐步引入 P3 新 alpha 源和模型集成; 每个 alpha 必须单独归因、单独门控。
 
-  ## 三策略判断
+任何阶段只要真实前瞻指标、执行跳过率或回撤明显恶化, 立即关闭对应开关并回退到上一阶段 baseline。
 
-   策略         当前判断
-  ━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   盘中观察     零仓位设计合理，但没有分钟级成交验证，不能视为荐股收益策略
-  ───────────  ──────────────────────────────────────────────────────────────
-   明日优先     当前版本零成熟样本，且存在收盘价执行泄漏；不能宣称次日正收益
-  ───────────  ──────────────────────────────────────────────────────────────
-   2–5日持有    当前版本零成熟样本，退出模拟偏乐观；不能用于真实收益判断
+---
 
-  建议先修正入场与成交模型、补齐回填、修复兜底门控，然后至少积累60–120个独立前瞻交易日，报告置信区间、基准超额、组合最大回撤和全部跳过样本。即使通过，
-  也只能表述为“历史上具有统计优势”，不能表述为保证收益。证监会也明确将“承诺收益、保证盈利”列为高风险或违规表述：证监会风险提示
-  (https://www.csrc.gov.cn/shenzhen/c105614/c7602091/content.shtml)、《证券法》第一百三十五条
-  (https://www.npc.gov.cn/c2/c30834/201912/t20191231_304436.html)。
+## 九、剩余优化空间
 
+当前计划已经覆盖评分目标、验证口径、仓位风控和新 alpha 源, 但仍有进一步提升空间。以下优化都必须以"扣成本后风险调整收益"为验收目标, 不以单纯胜率或展示效果为目标。
+
+### 9.1 排序目标继续收敛到可交易效用
+
+当前 `rank_score` 已从强弱分转向期望净收益, 但后续应进一步升级为可交易效用:
+
+```text
+trade_utility =
+    E[primary_return_net]
+    - lambda_downside * expected_shortfall_or_MAE
+    - lambda_cost * execution_cost
+    - lambda_turnover * turnover_cost
+    - lambda_uncertainty * model_uncertainty
+    - lambda_capacity * market_impact
+```
+
+验收标准:
+- Top-K `trade_utility` 的 OOS 净收益、Sortino、最大回撤均优于旧 `score`。
+- 同等收益下, 换手率、滑点、冲击成本更低。
+- `trade_utility` 不得用未 ready 的 `expected_return_net/p_win` 加仓或重排。
+
+### 9.2 验证方法升级: 防止时间泄漏和样本重叠
+
+短线策略标签存在时间重叠, 尤其是 2-5 日持有。普通 walk-forward 仍可能让相邻训练/测试样本共享行情路径。
+
+优化项:
+- 引入 purged walk-forward: 测试窗口前后增加 embargo 间隔, 避免持仓区间重叠。
+- 所有特征按 `signal_time` 可见性检查, 不允许使用信号后才知道的收盘、板块、资金或 LLM 信息。
+- 对 `tomorrow_picks`、`swing_picks` 分别维护独立验证切分, 不混用样本。
+
+验收标准:
+- purged OOS 下仍优于 baseline。
+- 去掉任一高风险特征后, 结果不应崩塌; 若崩塌则说明模型依赖单点特征。
+
+### 9.3 因子质量治理: 只保留能贡献排序能力的因子
+
+新增因子不等于新增收益。每个因子必须证明它能提升横截面排序。
+
+优化项:
+- 对每个因子计算 RankIC、Top-K lift、分桶单调性和覆盖率。
+- 对行业、市值、市场状态做中性化或分组评估, 避免只是在押注单一风格。
+- 对高度相关因子做去重或正交化, 防止同一信号被重复计分。
+- 建立因子退役规则: 连续多个窗口 RankIC 接近 0 或反向时降权/移除。
+
+验收标准:
+- 新因子入主模型前, 必须在至少两个独立时间窗口提升 Top-K 净收益或降低回撤。
+- 因子覆盖率不足时只能作为解释字段, 不得进入生产排序。
+
+### 9.4 标签与执行继续细化
+
+收益标签越接近真实成交, 评分越有意义。
+
+优化项:
+- `tomorrow_picks`: 继续使用次日开盘入场口径, 同时记录高开跳过、涨停不可买、开盘滑点和开盘后快速回撤。
+- `swing_picks`: 将 `exit_return` 拆成最大不利波动(MAE)、最大有利波动(MFE)、实际退出收益和退出原因。
+- 对止损/止盈模拟加入跳空、跌停不可卖、日内先后顺序不确定性的保守处理。
+- 对不同资金规模输出容量曲线: 资金越大, 预期净收益应扣除更高冲击成本。
+
+验收标准:
+- 标签字段、页面展示、校准目标、组合权重使用同一净收益口径。
+- 成本敏感性测试中, 交易成本上调后策略不应从显著盈利瞬间变成显著亏损。
+
+### 9.5 组合层从"约束"升级为"边际收益/风险分配"
+
+当前组合层以 cap 和风控为主, 后续可在收益模型 ready 后升级为边际贡献分配。
+
+优化项:
+- 权重由 `expected_return_net / downside_risk / correlation / capacity` 共同决定。
+- 加入 turnover budget, 防止每天大幅换仓吞噬收益。
+- 对同主题高相关候选只保留边际贡献最高者, 其余降为备选观察。
+- 输出每只股票对组合预期收益、波动、回撤、相关性暴露的边际贡献。
+
+验收标准:
+- 组合级 OOS 净收益和 Sortino 优于等权 Top-K。
+- 单票/主题/相关性约束触发时, 组合仍保留足够分散度和现金缓冲。
+
+### 9.6 DeepSeek 与事件 alpha 需要结构化归因
+
+DeepSeek 可以帮助提高荐股收益, 但前提是它提供了量价因子没有覆盖的独立信息, 并且该信息在真实前瞻 OOS 中表现为正的边际贡献。LLM 或事件分不能只给"看好/不看好"结论, 必须拆成可验证事件。
+
+优化项:
+- 事件字段标准化: 事件类型、强度、兑现窗口、来源可信度、是否已被价格反映。
+- 区分"新增催化"和"已发酵过热"; 后者可能应降权而不是加分。
+- 建立事件负样本: 高热度但未兑现、公告后冲高回落、监管利空等。
+- LLM 只做结构化抽取和解释, 不直接绕过量价/验证门控。
+- 建立 DeepSeek 边际贡献字段: `deepseek_event_alpha_delta`、`deepseek_risk_filter_delta`、`deepseek_skip_reason`、`deepseek_source_time`、`deepseek_evidence_hash`。
+- 对 DeepSeek 输出做时间戳审计: 只有 `source_time <= signal_time` 的信息可进入当时评分。
+
+推荐结合方式:
+- **明日优先**: DeepSeek 只识别次日可能兑现的催化剂和负面风险; 若事件窗口超过 2-5 日, 不应给明日策略加分。
+- **2-5日持有**: DeepSeek 可识别政策、订单、业绩、回购等多日发酵事件, 但要扣除已连续大涨和高热度过度反映。
+- **盘中观察**: DeepSeek 只做风险提示和主题解释, 不形成可执行收益模型。
+- **组合层**: DeepSeek 不直接加仓; 只有事件 alpha OOS 通过后, 才能作为 ensemble 的一个独立子模型权重。
+
+验收标准:
+- 事件 alpha 独立 Top-K 在 OOS 中有正净收益或能改善主模型回撤。
+- DeepSeek 组合后的 Top-K 净收益、Sortino 或最大回撤至少一项显著优于不使用 DeepSeek 的 baseline, 且其他关键指标不得恶化。
+- DeepSeek 风险过滤能证明避免了亏损样本, 而不是简单跳过所有高波动候选。
+- DeepSeek 的错误类型可归因: 幻觉、信息滞后、事件已反映、来源低可信、周期不匹配。
+- 事件信号失效时可单独关闭, 不影响量价主模型。
+
+### 9.7 线上监控从结果统计升级为归因诊断
+
+只看胜率和平均收益不足以判断为什么策略变好或变坏。
+
+优化项:
+- 每日输出收益归因: alpha 分数、风险扣分、成本、仓位缩放、组合约束分别贡献多少。
+- 监控数据漂移: 因子分布、行业暴露、样本覆盖率、成交额、涨跌停比例。
+- 监控执行漂移: 预测滑点 vs 实际滑点、跳过率、无法成交比例。
+- 建立自动降级: 数据覆盖不足、成本异常、模型置信度下降时自动回到旧排序或观察池。
+
+验收标准:
+- 每次策略恶化都能定位到 alpha 失效、成本上升、风险暴露、数据异常或执行问题中的至少一类。
+- 任何自动降级都必须在前端和验证看板中可解释。
+
+### 9.8 最终优先级建议
+
+| 优先级 | 优化项 | 原因 |
+|--------|--------|------|
+| P0 | purged walk-forward + 标签/执行一致性 | 没有可信验证, 后续所有收益判断都不可靠 |
+| P0 | 成本敏感性和容量曲线 | 短线收益很容易被滑点和冲击成本吞噬 |
+| P1 | 因子 RankIC/Top-K lift 治理 | 确保评分因子真正贡献排序能力 |
+| P1 | trade_utility 排序目标 | 让评分直接服务扣成本风险调整收益 |
+| P2 | 组合边际贡献权重 | 在收益模型 ready 后提升组合层效率 |
+| P2 | 事件 alpha 结构化归因 | 拓展纯量价模型天花板, 但必须严格门控 |
+| P3 | 线上归因诊断和自动降级 | 提升长期维护和失效发现能力 |
+
+总体判断: 现有计划方向正确, 但后续优化重点应从"增加更多模型"转向"证明每个信号的边际收益贡献"。只有能提升净收益、降低成本、降低风险或提高验证真实性的机制, 才允许进入生产荐股和评分链路。
+
+---
+
+## 十、基于当前代码的可执行任务拆分
+
+本节按当前代码中已经存在的模块、函数和配置开关拆任务。目标是把改进变成可以逐项开发、测试、灰度和回退的工程项。
+
+### 10.0 当前开关分层: 能安全用的先打开, 收益型模型先验证
+
+先打开的不是"所有复杂模型", 而是低过拟合、能降低风险或提高验证真实性的机制。凡是会直接改变荐股排序、仓位或执行动作的收益型模型, 必须先 shadow/OOS, 再灰度生产。
+
+| 分层 | 当前开关/模块 | 建议状态 | 原因 |
+|------|---------------|----------|------|
+| 默认保持开启 | `USE_SMOOTH_PENALTY=1` | 开启 | 平滑风险扣分, 降低边界样本排序跳变 |
+| 默认保持开启 | `ENABLE_PORTFOLIO_OPTIMIZATION=1`, `ENABLE_VOLATILITY_TARGETING=1` | 开启 | 控制单票/主题/相关性/波动风险, 不依赖收益模型加仓 |
+| 默认保持开启 | `VALIDATION_AUTO_UPDATE_ENABLED=1`, `VALIDATION_AUTO_SNAPSHOT_ENABLED=1` | 开启 | 持续积累真实前瞻样本, 是后续收益判断的基础 |
+| 默认保持开启 | `ENABLE_RISK_BLACKLIST=1`, `ENABLE_HISTORY_FACTORS=1` | 开启 | 风险过滤和历史因子覆盖属于基础质量控制 |
+| 默认保持开启 | `CALIBRATE_USE_SORTINO=1`, `CALIBRATE_USE_TIME_DECAY=1` | 开启 | 校准时优先惩罚下行风险, 并弱化过旧样本 |
+| 第一批灰度 | `ENABLE_TAIL_AUCTION_SLIPPAGE`, `ENABLE_MARKET_IMPACT`, `ENABLE_SURVIVORSHIP_CORRECTION` | 先并行输出新旧指标, 再切 baseline | 会让验证更真实, 但会改变历史口径, 需要避免新旧收益混算 |
+| 只做 shadow | `ENABLE_EXPECTED_RETURN_RANKING`, `ENABLE_INTERACTION_TERMS`, `ENABLE_META_LABELING` | 默认不接管排序 | 直接影响荐股排序/动作, 必须等 OOS/FDR/CI 通过 |
+| 只做 shadow | `ENABLE_EVENT_ALPHA`, `ENABLE_ENSEMBLE` | 默认不接管排序 | 事件和集成模型必须单独证明边际贡献 |
+| DeepSeek 节约生产 | `ENABLE_DEEPSEEK_RUNTIME=1`, `DEEPSEEK_SCHEDULE_STRATEGIES=tomorrow_picks` | 只集中在明日优先和少量边界样本 | 让 token 花在最接近执行窗口、最可能产生边际收益的位置 |
+| DeepSeek 暂缓扩大 | `ENABLE_DEEPSEEK_MARKET_GATE=0`, `DEEPSEEK_RERANK_DISABLED_STRATEGIES` | 保持可关闭、可按策略禁用 | 大盘 gate 和全策略 rerank 都可能放大 token 成本, 需先看单位收益 |
+
+### 10.1 第一批: 不依赖 DeepSeek 的收益地基
+
+| 步骤 | 当前代码入口 | 任务 | 验收标准 | 回退 |
+|------|--------------|------|----------|------|
+| A1 | `strategy_validation.py::_primary_return_config()`、`_compute_outcome()` | 确认 `tomorrow_picks=next_open_to_close`、`swing_picks=exit_return` 的主收益口径贯穿保存、回填、metrics 和页面 | 同一信号在 DB、metrics、前端展示中的主收益字段一致 | 保留旧字段但标记旧口径 |
+| A2 | `strategy_validation.py::_execution_cost_pct()`、`tail_auction_slippage_pct()`、`market_impact_cost_pct()` | 将尾盘滑点和市场冲击纳入净收益标签, 并补成本敏感性测试 | 成本上调后策略表现变化可解释, 不出现静默高估 | 关闭 `ENABLE_TAIL_AUCTION_SLIPPAGE` / `ENABLE_MARKET_IMPACT` |
+| A3 | `strategy_validation.py` survivorship 相关函数 | 开启并验证幸存者偏差修正, 输出全样本与存续样本指标 | `survivorship_corrected_count` 可见, 指标不再静默剔除坏样本 | 关闭 `ENABLE_SURVIVORSHIP_CORRECTION`, 但旧指标不得与新 baseline 混用 |
+| A4 | `scoring.py::_smooth_penalty()` | 平滑风险扣分默认接入, 检查边界样本排序稳定性 | 10.9%/11.1% 等边界不再产生异常跳变 | `USE_SMOOTH_PENALTY=0` |
+| A5 | `calibrate.py` 目标函数 | Sortino、下行分位、时间衰减作为校准目标默认启用 | OOS 不低于 baseline, 大亏样本权重更高 | 关闭对应校准开关 |
+| A6 | `portfolio.py::build_portfolio()` | 先只启用单票 cap、主题 cap、相关性 cap、波动率目标化; 低置信收益字段不得加仓 | 组合暴露、现金、相关性组 cap 在 summary 中可解释 | 关闭 `ENABLE_PORTFOLIO_OPTIMIZATION` / `ENABLE_VOLATILITY_TARGETING` |
+
+当前进展:
+- 已新增 `strategy_validation.validation_baseline_config()`, 将主收益字段、净收益公式、成本模型组件、幸存者修正状态和 `baseline_id` 统一输出。
+- `StrategyValidationStore.metrics()` 已返回 `validation_baseline` / `validation_baseline_id`; 推荐行 `similar_signal_stats` 也会透传该 baseline 信息。
+- `strategy_outcomes` 已持久化 `validation_baseline_id` / `validation_baseline_json`; `signals_for_date()` 可查看每条 outcome 的验证口径。
+- `metrics()` / `live_weight_samples()` / `signal_status_counts()` 已按当前 `validation_baseline_id` 过滤样本, 并输出 `current_baseline_outcome_count`、`legacy_baseline_outcome_count`、`excluded_baseline_mismatch_count` 等计数, 避免启用成本或幸存者修正后混用旧收益口径。
+- `update_outcomes(..., only_incomplete=True)` 已把"当前 baseline 缺失"视为待回填, 可用于 A2/A3 灰度阶段补齐新口径。
+- 已新增 `/api/strategy-validation/runtime-config`, 可单独查看当前验证口径、baseline 覆盖状态、待回填数和 OOS readiness。
+- 已新增 `StrategyValidationStore.validation_baseline_status()`, 在实际灰度回填前可审计 current/legacy/mismatch baseline 分布、当前口径覆盖率和 primary ready 天数。
+- 已新增 `StrategyValidationStore.validation_baseline_backfill_candidates()` 和 `/api/strategy-validation/backfill-current-baseline`, 支持先 dry-run 查看候选, 再显式 `execute=1` 触发 prefetch + `only_incomplete=True` 回填当前 baseline。
+- `strategy_outcomes` 已持久化 `trade_cost_pct`、`primary_return_field`、`primary_return`、`primary_return_net`、`primary_holding_days`; metrics 和训练样本优先使用落库标签, 避免切换成本参数后历史净收益漂移。
+- 已新增 `/api/strategy-validation/oos-report`, 基于 current baseline 输出样本天数、净收益、净胜率、CI、回撤、baseline readiness 和 validation gate 结论, 作为是否继续灰度/推广的依据。
+- 验证页已接入 OOS report 状态条, 显示 `oos_passed` / `needs_backfill` / `insufficient_oos_days` / `gate_blocked`、ready 天数、净收益、净胜率、CI、回撤和覆盖率。
+- 下一步仍需把 OOS report 接入定时调度/告警; 目前已具备新旧 baseline 分离、回填前审计、受控回填入口、稳定净收益标签、OOS 审计报告和前端状态展示, 但不能把未回填的新口径空样本误判为策略失效。
+
+### 10.2 第二批: 收益模型和评分升级
+
+| 步骤 | 当前代码入口 | 任务 | 验收标准 | 回退 |
+|------|--------------|------|----------|------|
+| B1 | `expected_return_model.py::predict_expected_return()` | 保持 `rank_score/expected_return_net/p_win/downside_p10` shadow 输出 | `model_confidence=low/shadow` 时不影响排序、仓位、执行 | 不展示 shadow 字段 |
+| B2 | `recommendation_runtime_support.expected_return_ranking_context()` | 只有真实交易日、OOS、FDR/sign-test、CI 下界全部通过才传入 `use_expected_return_ranking=True` | `rank_score` 替代旧排序时, meta 中有门控证据 | `ENABLE_EXPECTED_RETURN_RANKING=0` |
+| B3 | `probability_calibration.py`、`app_support.attach_score_calibration()` | 概率校准只做解释和仓位折扣候选, 不单独作为买入依据 | 页面清楚区分排序分、概率、预期收益 | 移除概率展示 |
+| B4 | `calibrate.py::evaluate_interaction_ranker()` | 因子交互保持 shadow evaluator, 不写生产权重 | 多数 fold 改善且 FDR 通过前不接管排序 | `ENABLE_INTERACTION_TERMS=0` |
+| B5 | `calibrate.py::evaluate_meta_labeling_gate()`、`meta_labeling.py` | Meta-Labeling 默认 shadow; enforce 前必须证明减少错误交易 | 使用 meta 后 OOS 净收益或回撤改善 | `META_LABELING_ENFORCE_ACTION=0` |
+
+### 10.3 第三批: DeepSeek 节约使用和收益最大化
+
+当前代码已经具备节约基础:
+- `config.py`: `DEEPSEEK_DAILY_CALL_CAP=11`, `DEEPSEEK_DAILY_PRO_CALL_CAP=1`, `DEEPSEEK_EARLY_REVIEW_LIMIT=4`, `DEEPSEEK_LATE_FLASH_REVIEW_LIMIT=6`, `DEEPSEEK_LATE_PRO_REVIEW_LIMIT=4`。
+- `config.py`: `DEEPSEEK_SCHEDULE_STRATEGIES=tomorrow_picks`, `DEEPSEEK_RERANK_DISABLED_STRATEGIES`, `ENABLE_DEEPSEEK_MARKET_GATE=0`, `DEEPSEEK_VALIDATION_REVIEW_MIN_NEW_DAYS=5` 可用于按策略收缩、避免全市场频繁调用。
+- `deepseek_scheduler.py`: 交易时段窗口、候选签名、调用去抖、日内复用、usage 累计。
+- `deepseek_client.py`: 单策略 rerank、batch rerank、cache hit、`cost_hint/usage` 输出。
+- `recommendation_runtime_support.py`: `apply_deepseek_rerank_batch()` 已统一处理三个策略的 DeepSeek rerank。
+
+DeepSeek 的原则: **先用本地模型缩小候选, 再用 DeepSeek 判断少数高价值边界样本; 任何 DeepSeek 调用都必须能解释它节省了损失或提升了净收益。**
+
+| 步骤 | 当前代码入口 | 任务 | 省钱策略 | 收益最大化验收 |
+|------|--------------|------|----------|----------------|
+| D1 | `config.py` DeepSeek 开关 | 默认只让 `DEEPSEEK_SCHEDULE_STRATEGIES=tomorrow_picks` 进入定时 DeepSeek; `short_term` 只做本地观察, `swing_picks` 仅在事件显著时手动/灰度 | 减少无执行价值和长周期不确定调用 | DeepSeek 调用集中在最可能次日兑现的候选 |
+| D2 | `recommendation_runtime_support.build_recommendation_horizons()` | 调整计划为: 本地评分、验证门控、候选压缩后再 DeepSeek; 已被验证门控归零的策略不花 DeepSeek 预算 | 避免给不可执行候选付费 | DeepSeek reviewed rows 中 `execution_allowed=false` 占比接近 0 |
+| D3 | `deepseek_scheduler.scheduled_deepseek_decision()` | 沿用候选签名复用: Top3 代码、分数、风险词无实质变化时不重新调用 | 命中 `no_material_change` / `late_debounced` 时复用缓存 | cache/reuse 比例逐周提高, 不降低 OOS 表现 |
+| D4 | `deepseek_client.rerank_candidates_batch()` | 优先 batch rerank, 严禁逐股循环调用; review_limit 只覆盖本地 Top-N 和边界样本 | 每次调用覆盖多个策略/候选, 降低 token 均摊成本 | `cost_hint.total_tokens / reviewed_candidate` 下降 |
+| D5 | `_needs_pro_review()` | Pro 只给三类样本: Top3 分差 <=3、存在重大事件/公告/风险词、risk_penalty >=10 的高分边界候选 | 保留 `DEEPSEEK_DAILY_PRO_CALL_CAP=1`, 其余走 base | Pro 调用后的 `delta_skip_loss_avoidance` 或 `delta_avg_return_net` 为正 |
+| D6 | `deepseek_client` cache | 延长稳定事件和已审候选缓存 TTL; 对相同公告/新闻生成 `evidence_hash` 复用抽取结果 | 同一事件不重复付费 | 同一 `evidence_hash` 当日不重复调用 |
+| D7 | `validation_runtime_support._attach_deepseek_oos_evaluations()` | DeepSeek 规则候选最多评估前 4 条, 只把 OOS 通过规则写入权重/规则库 | 不让 LLM 频繁生成无效规则 | DeepSeek 规则通过率、失败原因可统计 |
+| D8 | `strategy_validation.deepseek_attribution()`、验证看板 | 统计 DeepSeek 边际贡献: 净收益提升、回撤降低、跳过亏损、误杀盈利、token 成本 | 以收益/token 衡量调用价值 | `deepseek_value_per_1k_tokens > 0` 才扩大预算 |
+
+### 10.4 DeepSeek 调用预算分配建议
+
+| 场景 | 是否调用 | 模型层级 | 候选数量 | 原因 |
+|------|----------|----------|----------|------|
+| 盘中观察、非执行候选 | 默认不调用 | 无 | 0 | 不形成买入指令, DeepSeek 只会增加解释成本 |
+| 明日优先早盘/午盘普通刷新 | 少量调用或复用 | base | Top 4 | 用于风险提示和催化剂初筛 |
+| 明日优先 14:30-15:00 尾盘决策 | 调用 | base, 必要时 pro | Top 6, pro Top 4 | 最接近执行窗口, 边际价值最高 |
+| Top3 分数接近且风险/事件复杂 | 调用 | pro | Top 3-4 | 本地模型难区分, DeepSeek 可能有边际信息 |
+| 候选签名未变、缓存仍有效 | 不调用 | 复用 | 0 | 当前代码已有 schedule cache, 应优先复用 |
+| 策略验证门控未通过 | 不调用 | 无 | 0 | 不可执行策略不应消耗 DeepSeek 预算 |
+| 事件 alpha OOS 未通过 | 只抽取不加权 | base/cache | 少量 | 保留数据积累, 不影响排序 |
+
+### 10.5 DeepSeek 利益最大化指标
+
+DeepSeek 是否值得用, 不看"解释是否更漂亮", 只看单位成本带来的收益改善:
+
+```text
+deepseek_value =
+    delta_avg_return_net * selected_count
+    + avoided_loss_from_skip
+    - missed_profit_from_false_skip
+    - extra_turnover_cost
+    - token_cost_equivalent
+```
+
+必须每日输出:
+- `deepseek_call_count`, `deepseek_pro_call_count`, `deepseek_cache_hit_count`, `deepseek_total_tokens`。
+- `reviewed_candidate_count`, `cost_per_reviewed_candidate`。
+- `delta_avg_return_net`, `delta_sortino`, `delta_max_drawdown`。
+- `skip_loss_avoidance`, `false_skip_profit_loss`。
+- `deepseek_value_per_1k_tokens`。
+
+预算调整规则:
+- 若连续 20 个真实交易日 `deepseek_value_per_1k_tokens > 0` 且 OOS/FDR 通过, 才允许提高 `DEEPSEEK_DAILY_CALL_CAP` 或扩大策略范围。
+- 若连续 10 个真实交易日 DeepSeek 无边际收益, 将 `DEEPSEEK_SCHEDULE_STRATEGIES` 收缩到 `tomorrow_picks` 或关闭生产影响。
+- 若 Pro 调用没有显著改善边界样本, 保留 `DEEPSEEK_DAILY_PRO_CALL_CAP=1` 且只允许人工触发。
+- DeepSeek 任何时候都不能绕过验证门控、成本模型、收益模型置信度和组合风险约束。
+
+### 10.6 最小执行里程碑
+
+| 里程碑 | 任务范围 | 产出 | 是否允许改变生产排序 |
+|--------|----------|------|----------------------|
+| M0: 开关盘点 | 按 10.0 固化当前默认开启、灰度、shadow、DeepSeek 节约开关 | 一张当前环境开关表和回退命令 | 否 |
+| M1: 真实收益口径 | A1-A3: 主收益字段、成本、幸存者偏差、新旧 baseline 分离 | 验证库和页面主收益口径一致 | 否, 先修验证真实性 |
+| M2: 保守风控上线 | A4-A6: 平滑风险、Sortino/时间衰减、组合 cap/波动率目标化 | 排序跳变减少, 组合风险约束可解释 | 只允许保守降权/降仓 |
+| M3: 收益模型 shadow | B1-B3: 预期收益、概率校准、置信度字段 | `rank_score`、`expected_return_net` 与旧 `score` 的 OOS 对照 | 否 |
+| M4: 排序灰度 | B2/B4/B5: OOS/FDR/CI 通过后逐策略灰度 | 明日优先先灰度, 波段后灰度, 盘中仍观察 | 是, 但必须可一键回退 |
+| M5: DeepSeek 精细化 | D1-D8: 候选压缩、batch、cache、Pro边界样本、收益/token归因 | `deepseek_value_per_1k_tokens` 和误杀/避亏归因 | 只在证明边际收益后影响排序 |
+
+执行顺序固定为: **先修验证口径和成本, 再开保守风控, 再让收益模型 shadow, 最后才让 DeepSeek 或模型接管一部分排序**。这样可以最大化收益判断的可信度, 同时把 DeepSeek 成本控制在最可能产生边际收益的候选上。

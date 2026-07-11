@@ -39,6 +39,15 @@
   --verdict-avoid-fg: #4fc28b;
 }
 
+/*
+CSS blocks:
+- Layout: shell, topbar, workspace, tabs, responsive grids.
+- Status: status line, metric strips, operation feedback, validation verdicts.
+- Table: table wrappers, recommendation tables, validation detail tables.
+- Panel: recommendation summaries, tool cards, validation panels, chart cards.
+*/
+
+/* ===== Layout ===== */
 * {
   box-sizing: border-box;
 }
@@ -89,6 +98,7 @@ h1 {
   font-weight: 700;
 }
 
+/* ===== Status ===== */
 #statusText {
   margin: 0;
   max-width: 100%;
@@ -214,6 +224,7 @@ button:hover {
   line-height: 1.2;
 }
 
+/* ===== Table ===== */
 .table-wrap {
   width: 100%;
   max-width: 100%;
@@ -303,6 +314,7 @@ button:hover {
   display: grid;
 }
 
+/* ===== Panel ===== */
 .rec-pool-control {
   grid-column: 1 / -1;
 }
@@ -592,6 +604,69 @@ button:hover {
   min-width: 112px;
 }
 
+.validation-baseline-actions {
+  margin: -4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.validation-baseline-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.validation-baseline-action-row button {
+  min-height: 30px;
+  padding: 0 12px;
+}
+
+.baseline-backfill-result {
+  min-width: 0;
+}
+
+.baseline-backfill-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.baseline-backfill-lines {
+  display: grid;
+  gap: 1px;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--line);
+}
+
+.baseline-backfill-lines > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  padding: 7px 9px;
+  background: var(--panel-2);
+}
+
+.baseline-backfill-lines span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.baseline-backfill-lines strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
 .tool-result-card {
   min-width: 0;
   height: 100%;
@@ -842,7 +917,7 @@ table {
   --money-col: 72px;
   --cap-col: 78px;
   --metric-col: 60px;
-  --score-col: 96px;
+  --score-col: 118px;
   --action-col: 170px;
   --reasons-col: 420px;
   width: max-content;
@@ -1088,11 +1163,12 @@ th {
 
 .score-stack {
   display: inline-flex;
-  flex-direction: row;
-  align-items: baseline;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 2px;
   line-height: 1.2;
+  max-width: 100%;
 }
 
 .score-line {
@@ -1104,6 +1180,34 @@ th {
 
 .score-pair-value {
   font-weight: 800;
+}
+
+.score-model-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.score-model-rank,
+.score-model-return,
+.score-model-prob {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.score-model-rank {
+  color: var(--tag-validation-fg);
+  font-weight: 700;
+}
+
+.score-model-confidence {
+  color: var(--muted);
 }
 
 .score-pair-value.score-grade-high {
@@ -2023,6 +2127,31 @@ footer {
 .validation-current-decision.decision-bad {
   border-left-color: var(--positive);
 }
+.validation-oos-report {
+  margin: -4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--muted);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+.validation-oos-report strong {
+  color: var(--text);
+}
+.validation-oos-report.oos-passed {
+  border-left-color: var(--negative);
+}
+.validation-oos-report.oos-watch,
+.validation-oos-report.oos-waiting {
+  border-left-color: var(--accent);
+}
+.validation-oos-report.oos-blocked {
+  border-left-color: var(--positive);
+}
 .strategy-tuning-panel {
   margin: 0 0 12px;
   padding: 12px 14px;
@@ -2293,6 +2422,18 @@ footer {
   justify-content: space-between;
   gap: 8px;
   margin-top: 10px;
+}
+.deepseek-attribution-budget {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.deepseek-attribution-budget span:last-child {
+  min-width: 0;
 }
 .deepseek-attribution-warning {
   margin-top: 8px;

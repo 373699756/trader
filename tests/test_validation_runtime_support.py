@@ -72,3 +72,29 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["mode"], "outcome_update")
         self.assertEqual(result["updates"][0]["result"]["updated"], 2)
+
+    def test_run_validation_auto_update_once_summarizes_oos_alerts(self):
+        auto_update_status = {"running": False}
+
+        result = support.run_validation_auto_update_once(
+            auto_update_lock=type("L", (), {"__enter__": lambda self: self, "__exit__": lambda self, *args: False})(),
+            auto_update_status=auto_update_status,
+            set_auto_update_status=lambda **values: auto_update_status.update(values),
+            run_validation_outcome_update_once_fn=lambda: {"ok": True, "updates": []},
+            run_oos_reports_once_fn=lambda: {
+                "ok": True,
+                "reports": [
+                    {"strategy": "tomorrow_picks", "report": {"oos_status": "needs_backfill"}},
+                    {"strategy": "swing_picks", "report": {"oos_status": "gate_blocked"}},
+                    {"strategy": "short_term", "report": {"oos_status": "oos_passed"}},
+                ],
+            },
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "oos_attention_required")
+        self.assertEqual(result["oos_summary"]["needs_backfill_count"], 1)
+        self.assertEqual(result["oos_summary"]["gate_blocked_count"], 1)
+        self.assertEqual(len(result["alerts"]), 2)
+        self.assertEqual(auto_update_status["last_oos_summary"]["gate_blocked_count"], 1)
+        self.assertEqual(len(auto_update_status["last_oos_alerts"]), 2)

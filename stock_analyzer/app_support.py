@@ -9,13 +9,15 @@ from .daily_data import load_history_frames
 from .event_risk import attach_event_risk, load_event_risk
 from .factors import ALPHALITE_COLUMNS, ALPHALITE_META_COLUMNS, build_alphalite_factors, merge_alphalite
 from .fundamentals import attach_fundamental_factors, load_fundamentals
+from .meta_labeling import apply_meta_labeling, train_meta_label_model
 from .normalization import coerce_number
 from .normalization import normalize_code, rename_known_columns
+from .probability_calibration import apply_score_calibration, load_calibrator, train_score_calibrator
 from .risk_blacklist import attach_risk_blacklist, load_risk_blacklist
 from .scoring import mark_backup_watch, prepare_candidates
 from .sentiment import score_stock_sentiment
 from .strategy_health import strategy_status
-from .strategy_validation import StrategyValidationStore, _primary_return_config
+from .strategy_validation import StrategyValidationStore, _primary_return_config, validation_baseline_config
 
 _SENTIMENT_CACHE_LOCK = threading.Lock()
 _HISTORY_REFRESH_LOCK = threading.Lock()
@@ -353,6 +355,7 @@ def attach_validation_summary(
 ) -> None:
     metrics = metrics_fn(strategy_name, days) if metrics_fn else validation_store.metrics(strategy_name, days=days)
     sample_count = int(metrics.get("sample_count") or 0)
+    validation_baseline = metrics.get("validation_baseline") or validation_baseline_config(strategy_name)
     summary = {
         "strategy_name": strategy_name,
         "days": days,
@@ -369,6 +372,14 @@ def attach_validation_summary(
         "real_win_rate_primary_net_ci95_low": metrics.get("real_win_rate_primary_net_ci95_low"),
         "real_portfolio_max_drawdown_pct": metrics.get("real_portfolio_max_drawdown_pct"),
         "primary_horizon_label": metrics.get("primary_horizon_label"),
+        "validation_baseline": validation_baseline,
+        "validation_baseline_id": metrics.get("validation_baseline_id") or validation_baseline.get("baseline_id"),
+        "current_baseline_outcome_count": metrics.get("current_baseline_outcome_count", 0),
+        "raw_outcome_sample_count": metrics.get("raw_outcome_sample_count", 0),
+        "legacy_baseline_outcome_count": metrics.get("legacy_baseline_outcome_count", 0),
+        "excluded_baseline_mismatch_count": metrics.get("excluded_baseline_mismatch_count", 0),
+        "avg_trade_cost_pct": metrics.get("avg_trade_cost_pct"),
+        "survivorship_corrected_count": metrics.get("survivorship_corrected_count", 0),
         "hit_3pct_rate": metrics.get("hit_3pct_rate"),
         "avg_next_close_return": metrics.get("avg_next_close_return"),
         "avg_max_drawdown_3d": metrics.get("avg_max_drawdown_3d"),
@@ -377,6 +388,7 @@ def attach_validation_summary(
     for row in rows:
         row["similar_signal_stats"] = summary
     attach_score_calibration(rows, validation_store, strategy_name, days=max(60, days))
+    attach_meta_labeling(rows, validation_store, strategy_name, days=max(120, days))
 
 
 def _bucket_label(score: float, edges: List[float]) -> str:
@@ -441,6 +453,10 @@ def attach_score_calibration(
         return
     if not samples:
         return
+    calibrator = load_calibrator(strategy_name)
+    if not calibrator.is_fitted:
+        calibrator = train_score_calibrator(strategy_name, samples)
+    apply_score_calibration(rows, calibrator)
     decision_buckets = _score_bucket_stats(
         samples,
         lambda sample: (sample.get("raw") or {}).get("decision_score", sample.get("stored_score")),
@@ -464,6 +480,29 @@ def attach_score_calibration(
             row["decision_calibration"] = decision_buckets[decision_label]
         if sell_label and sell_label in sell_buckets:
             row["sell_risk_calibration"] = sell_buckets[sell_label]
+
+
+def attach_meta_labeling(
+    rows: list,
+    validation_store: StrategyValidationStore,
+    strategy_name: str,
+    days: int = 120,
+) -> None:
+    if not rows:
+        return
+    try:
+        samples = validation_store.live_weight_samples(strategy_name, days=days)
+    except Exception:
+        return
+    if not samples:
+        return
+    model = train_meta_label_model(strategy_name, samples)
+    if not model.get("is_fitted"):
+        return
+    enforce = bool(getattr(config, "ENABLE_META_LABELING", False)) and bool(
+        getattr(config, "META_LABELING_ENFORCE_ACTION", False)
+    )
+    apply_meta_labeling(rows, model, enforce=enforce)
 
 
 def validation_batch_summary(rows: List[Dict[str, object]], strategy_name: str) -> Dict[str, object]:
@@ -514,6 +553,10 @@ def strategy_validation_gate_decision(
     metrics: Dict[str, object],
     strategy_name: str = "",
 ) -> Dict[str, object]:
+    blocked_scale = {
+        "position_scale": 0.0,
+        "position_scale_reason": "验证未通过，仓位归零",
+    }
     if not metrics:
         return {
             "blocked": True,
@@ -521,6 +564,7 @@ def strategy_validation_gate_decision(
             "validated": False,
             "reason": "验证样本不足，暂不形成可执行推荐，仅保留备选观察",
             "state": "pending",
+            **blocked_scale,
         }
     strategy_name = str(strategy_name or metrics.get("strategy_name") or "")
     status = strategy_status(metrics)
@@ -554,10 +598,14 @@ def strategy_validation_gate_decision(
         "real_win_rate_primary_net_ci95_low": metrics.get("real_win_rate_primary_net_ci95_low"),
         "real_portfolio_max_drawdown_pct": metrics.get("real_portfolio_max_drawdown_pct"),
         "avg_max_drawdown_primary": avg_drawdown,
+        "position_scale": 1.0,
+        "position_scale_reason": "验证通过，标准仓位",
     }
     if status.get("state") == "retired":
         decision["blocked"] = True
         decision["reason"] = "验证退场：真实交易日净收益、净胜率或主周期回撤不达标，暂停执行，允许备选观察"
+        decision["position_scale"] = 0.0
+        decision["position_scale_reason"] = "策略已退场，仓位归零"
         return decision
     min_real_days = int(
         getattr(
@@ -572,6 +620,8 @@ def strategy_validation_gate_decision(
         decision["reason"] = "真实验证不足{}个交易日，暂不形成可执行推荐，仅保留备选观察".format(
             min_real_days
         )
+        decision["position_scale"] = 0.0
+        decision["position_scale_reason"] = "真实验证不足，仓位归零"
         return decision
     min_win_rate = coerce_number(getattr(config, "STRATEGY_VALIDATION_MIN_WIN_RATE", 50.0), 50.0)
     ci_low_raw = metrics.get("real_avg_primary_return_net_ci95_low")
@@ -592,9 +642,60 @@ def strategy_validation_gate_decision(
     ):
         decision["blocked"] = True
         decision["reason"] = "验证门控：最近真实交易日组合净表现或回撤不达标，仅保留备选观察"
+        decision["position_scale"] = 0.0
+        decision["position_scale_reason"] = "验证指标不达标，仓位归零"
         return decision
     decision["validated"] = True
+    scale_info = dynamic_position_scaling(metrics, status)
+    decision.update(scale_info)
     return decision
+
+
+def dynamic_position_scaling(metrics: Dict[str, object], status: Dict[str, object] = None) -> Dict[str, object]:
+    if not bool(getattr(config, "ENABLE_DYNAMIC_POSITION_SCALING", True)):
+        return {"position_scale": 1.0, "position_scale_reason": "动态仓位缩放关闭"}
+    metrics = metrics or {}
+    status = status or strategy_status(metrics)
+    min_scale = max(0.0, min(1.0, coerce_number(getattr(config, "STRATEGY_POSITION_SCALE_MIN", 0.35), 0.35)))
+    probation_scale = max(min_scale, min(1.0, coerce_number(getattr(config, "STRATEGY_POSITION_SCALE_PROBATION", 0.6), 0.6)))
+    if status.get("state") == "retired":
+        return {"position_scale": 0.0, "position_scale_reason": "策略已退场，仓位归零"}
+    scale = 1.0
+    reasons = []
+    state = str(status.get("state") or "")
+    if state == "probation":
+        scale = min(scale, probation_scale)
+        reasons.append("策略处于观察降权")
+    win_rate = coerce_number(metrics.get("real_win_rate_primary_net"), metrics.get("win_rate_primary_net"))
+    min_win_rate = coerce_number(getattr(config, "STRATEGY_VALIDATION_MIN_WIN_RATE", 50.0), 50.0)
+    if win_rate < min_win_rate + 2.0:
+        scale = min(scale, max(min_scale, 0.75))
+        reasons.append("净胜率接近门槛")
+    avg_net = coerce_number(metrics.get("real_avg_primary_return_net"), metrics.get("avg_primary_return_net"))
+    if avg_net < 0.3:
+        scale = min(scale, max(min_scale, 0.8))
+        reasons.append("平均净收益偏薄")
+    ci_low_raw = metrics.get("real_avg_primary_return_net_ci95_low")
+    if ci_low_raw is not None and coerce_number(ci_low_raw) < 0.2:
+        scale = min(scale, max(min_scale, 0.75))
+        reasons.append("收益置信下界偏低")
+    drawdown_value = metrics.get("real_portfolio_max_drawdown_pct")
+    if drawdown_value is None:
+        drawdown_value = metrics.get("real_avg_max_drawdown_primary")
+    if drawdown_value is None:
+        drawdown_value = metrics.get("avg_max_drawdown_primary", metrics.get("avg_max_drawdown_3d"))
+    drawdown = coerce_number(drawdown_value)
+    drawdown_floor = coerce_number(getattr(config, "STRATEGY_VALIDATION_MAX_AVG_DRAWDOWN_PCT", -8.0), -8.0)
+    if drawdown < drawdown_floor * 0.75:
+        scale = min(scale, max(min_scale, 0.7))
+        reasons.append("回撤接近门槛")
+    scale = max(min_scale, min(1.0, scale))
+    if not reasons:
+        reasons.append("策略表现稳健")
+    return {
+        "position_scale": round(scale, 4),
+        "position_scale_reason": "，".join(reasons),
+    }
 
 
 def validation_gate_window_days() -> int:
@@ -629,6 +730,8 @@ def apply_strategy_validation_gate(
             meta,
             decision.get("reason") or "真实验证不达标，暂停执行",
         )
+    else:
+        apply_position_scale(rows, decision.get("position_scale", 1.0), decision.get("position_scale_reason", ""))
     return decision
 
 
@@ -656,6 +759,20 @@ def demote_strategy_rows_to_backup(
         current_reason = str(meta.get("gate_reason") or "").strip()
         meta["gate_reason"] = "{} {}".format(current_reason, reason).strip()
         meta["validation_strategy"] = strategy_name
+
+
+def apply_position_scale(rows: List[Dict[str, object]], scale, reason: str = "") -> None:
+    factor = max(0.0, min(1.0, coerce_number(scale, 1.0)))
+    for row in rows or []:
+        trade_action = row.get("trade_action")
+        if not isinstance(trade_action, dict):
+            continue
+        original = coerce_number(trade_action.get("position_size"), 0.0)
+        trade_action.setdefault("base_position_size", original)
+        trade_action["position_scale"] = round(factor, 4)
+        trade_action["position_size"] = round(original * factor, 4)
+        if reason and factor < 0.999 and original > 0:
+            trade_action["scale_reason"] = reason
 
 
 def demote_tomorrow_rows_to_backup(

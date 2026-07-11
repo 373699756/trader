@@ -16,10 +16,14 @@
 
 import argparse
 import copy
+import itertools
 import json
+import math
 import os
 import sqlite3
+import statistics
 from contextlib import closing
+from datetime import datetime
 from typing import Dict, List
 
 import pandas as pd
@@ -33,6 +37,9 @@ from .runtime_json import atomic_write_json
 from .scoring import STRATEGY_COMBINERS, WEIGHTS, _combine_details
 from .strategy_validation import StrategyValidationStore
 from .deepseek_rules import rule_field_value, rule_matches
+from .expected_return_model import predict_expected_return
+from .meta_labeling import predict_meta_confidence, train_meta_label_model
+from .probability_calibration import build_and_save_calibrator, train_score_calibrator
 
 
 def _cached_codes(db_path: str) -> List[str]:
@@ -101,25 +108,100 @@ def _objective(
         median_return = float(metrics.get("absolute_median_period_return", 0.0) or 0.0)
         loss_quantile = float(metrics.get("absolute_loss_quantile_return", 0.0) or 0.0)
         avg_drawdown = float(metrics.get("absolute_avg_max_drawdown", 0.0) or 0.0)
+        max_drawdown = float(metrics.get("absolute_max_drawdown", avg_drawdown) or 0.0)
         avg_open_gap = float(metrics.get("absolute_avg_next_open_return", 0.0) or 0.0)
-        downside_penalty = min(0.0, loss_quantile) * 1.6 + min(0.0, avg_drawdown) * 0.25
+        return_series = metrics.get("return_series") or []
+        sortino = _sortino_ratio(return_series, avg_return) if return_series else 0.0
+        tail_risk = min(0.0, loss_quantile) * 1.6 + min(0.0, avg_drawdown) * 0.25 + min(0.0, max_drawdown) * 0.5
         if not direction_focused:
-            return win_rate + avg_return * 2.0 + downside_penalty
+            base = win_rate + avg_return * 2.0 + min(0.0, loss_quantile) * 1.6 + min(0.0, avg_drawdown) * 0.25
+            if bool(getattr(config, "CALIBRATE_USE_SORTINO", True)) and return_series:
+                base += sortino * 0.4 + min(0.0, max_drawdown) * 0.5
+            return round(base * _time_decay_multiplier(metrics), 6)
         direction_weight = 3.0 if direction_focused else 2.0
         return_weight = 0.6 if direction_focused else 2.0
         median_weight = 0.2 if direction_focused else 1.2
         open_gap_weight = 0.2 if direction_focused else 0.5
-        return (
+        base = (
             win_rate * direction_weight
             + avg_return * return_weight
             + median_return * median_weight
             + avg_open_gap * open_gap_weight
-            + downside_penalty
+            + tail_risk
         )
+        if bool(getattr(config, "CALIBRATE_USE_SORTINO", True)) and return_series:
+            base += sortino * 0.4
+        return round(base * _time_decay_multiplier(metrics), 6)
     else:
         win_rate = float(metrics.get("win_rate", 0.0) or 0.0)
         avg_return = float(metrics.get("avg_period_return", 0.0) or 0.0)
-    return win_rate + avg_return * 2.0
+    base = win_rate + avg_return * 2.0
+    return_series = metrics.get("return_series") or []
+    if bool(getattr(config, "CALIBRATE_USE_SORTINO", True)) and return_series:
+        base += _sortino_ratio(return_series, avg_return) * 0.5
+    return round(base * _time_decay_multiplier(metrics), 6)
+
+
+def _sortino_ratio(return_series: List[float], avg_return: float = 0.0) -> float:
+    returns = [coerce_number(value) for value in (return_series or [])]
+    negative_returns = [value for value in returns if value < 0]
+    if len(negative_returns) >= 2:
+        downside_std = statistics.stdev(negative_returns)
+    else:
+        downside_std = abs(coerce_number(avg_return)) * 2.0 if coerce_number(avg_return) < 0 else 2.0
+    return round(coerce_number(avg_return) / downside_std, 6) if downside_std > 1e-8 else 0.0
+
+
+def _time_decay_multiplier(metrics: Dict[str, object]) -> float:
+    if not bool(getattr(config, "CALIBRATE_USE_TIME_DECAY", True)):
+        return 1.0
+    paired = metrics.get("return_series_with_dates") or []
+    if not paired:
+        return 1.0
+    overall = _time_weighted_win_rate(paired, int(getattr(config, "CALIBRATE_TIME_DECAY_HALF_LIFE", 60)))
+    recent = _time_weighted_win_rate(paired, max(10, int(getattr(config, "CALIBRATE_TIME_DECAY_HALF_LIFE", 60)) // 2))
+    if overall is None or recent is None:
+        return 1.0
+    drift = max(-20.0, min(20.0, recent - overall))
+    return round(max(0.75, min(1.25, 1.0 + drift / 100.0)), 6)
+
+
+def _time_weighted_win_rate(returns_with_dates: List[object], half_life: int = 60):
+    parsed = []
+    for item in returns_with_dates or []:
+        try:
+            date_value, return_value = item
+        except Exception:
+            continue
+        parsed_date = _parse_sample_date(date_value)
+        if parsed_date is None:
+            continue
+        parsed.append((parsed_date, coerce_number(return_value)))
+    if not parsed:
+        return None
+    latest = max(date for date, _ in parsed)
+    half_life_days = max(1, int(half_life or 60))
+    weighted_total = 0.0
+    weighted_wins = 0.0
+    for date_value, return_value in parsed:
+        age_days = max(0, (latest - date_value).days)
+        weight = 0.5 ** (age_days / half_life_days)
+        weighted_total += weight
+        weighted_wins += weight if return_value > 0 else 0.0
+    return weighted_wins / weighted_total * 100.0 if weighted_total > 0 else None
+
+
+def _parse_sample_date(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    compact = text[:10].replace("-", "")
+    for fmt, raw in (("%Y%m%d", compact), ("%Y-%m-%d", text[:10])):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except Exception:
+            continue
+    return None
 
 
 def _resolve_tomorrow_direction_focus(direction_focus) -> bool:
@@ -300,6 +382,12 @@ def calibrate_live_weights(
         "folds": walk_forward.get("folds", []),
         "weights": patch,
     }
+    score_calibrator = train_score_calibrator(strategy, samples)
+    result["score_calibration"] = {
+        "status": "ready" if score_calibrator.is_fitted else "insufficient_samples",
+        "sample_count": score_calibrator.sample_count,
+        "bucket_count": len(score_calibrator.buckets),
+    }
     if not walk_forward.get("ok"):
         result["status"] = walk_forward.get("status", "insufficient_oos_folds")
         result["margin"] = margin
@@ -317,6 +405,7 @@ def calibrate_live_weights(
         result["margin"] = margin
         return result
     _write_weights_override({"weights": {strategy: patch}})
+    result["score_calibration"] = build_and_save_calibrator(strategy, samples)
     result["status"] = "written"
     result["path"] = config.WEIGHTS_OVERRIDE_PATH
     return result
@@ -337,7 +426,11 @@ def evaluate_deepseek_rule(
         return {"ok": True, "strategy": strategy, "status": "insufficient_samples", "sample_count": 0}
     current = _current_strategy_weights(strategy)
     direction_focus = _resolve_tomorrow_direction_focus(direction_focus)
-    folds = _walk_forward_splits(samples, int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)))
+    folds = _walk_forward_splits(
+        samples,
+        int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)),
+        purge_days=_strategy_oos_purge_days(strategy),
+    )
     if not folds:
         return {"ok": False, "strategy": strategy, "status": "insufficient_oos_folds", "folds": [], "fold_count": 0}
     rows = []
@@ -392,6 +485,371 @@ def evaluate_deepseek_rule(
     return result
 
 
+def evaluate_expected_return_ranker(
+    strategy: str,
+    samples: List[Dict[str, object]],
+    top_k: int = 10,
+) -> Dict[str, object]:
+    if strategy not in STRATEGY_COMBINERS:
+        return {"ok": False, "strategy": strategy, "status": "unknown_strategy"}
+    samples = [sample for sample in samples if isinstance(sample, dict)]
+    folds = _walk_forward_splits(
+        samples,
+        int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)),
+        purge_days=_strategy_oos_purge_days(strategy),
+    )
+    if not folds:
+        return {"ok": False, "strategy": strategy, "status": "insufficient_oos_folds", "folds": [], "fold_count": 0}
+    rows = []
+    for index, (train_samples, test_samples, train_dates, test_dates) in enumerate(folds, start=1):
+        baseline_metrics = _metrics_from_score_rank(test_samples, "score", top_k=top_k)
+        rank_metrics = _metrics_from_expected_return_rank(strategy, train_samples, test_samples, top_k=top_k)
+        baseline_obj = _objective(baseline_metrics, strategy, direction_focused=_resolve_tomorrow_direction_focus(None))
+        rank_obj = _objective(rank_metrics, strategy, direction_focused=_resolve_tomorrow_direction_focus(None))
+        rows.append(
+            {
+                "fold": index,
+                "train_start": train_dates[0],
+                "train_end": train_dates[-1],
+                "test_start": test_dates[0],
+                "test_end": test_dates[-1],
+                "train_sample_count": len(train_samples),
+                "test_sample_count": len(test_samples),
+                "baseline_oos_objective": round(baseline_obj, 4),
+                "rank_score_oos_objective": round(rank_obj, 4),
+                "oos_improvement": round(rank_obj - baseline_obj, 4),
+                "baseline_avg_return": baseline_metrics.get("absolute_avg_period_return", 0.0),
+                "rank_score_avg_return": rank_metrics.get("absolute_avg_period_return", 0.0),
+            }
+        )
+    baseline_values = [coerce_number(row["baseline_oos_objective"]) for row in rows]
+    rank_values = [coerce_number(row["rank_score_oos_objective"]) for row in rows]
+    improvements = [coerce_number(row["oos_improvement"]) for row in rows]
+    avg_return_improvements = [
+        coerce_number(row.get("rank_score_avg_return")) - coerce_number(row.get("baseline_avg_return"))
+        for row in rows
+    ]
+    margin = float(getattr(config, "CALIBRATE_IMPROVE_MARGIN", 0.05))
+    baseline_oos = round(sum(baseline_values) / len(baseline_values), 4)
+    rank_oos = round(sum(rank_values) / len(rank_values), 4)
+    positive_folds = sum(1 for value in improvements if value > 0)
+    fold_count = len(rows)
+    fdr_result = _calibrate_fdr_result(positive_folds, fold_count)
+    ci_low, ci_high = _mean_ci(avg_return_improvements)
+    ci_result = {
+        "method": "normal_approx_fold_avg_return_delta",
+        "confidence": 0.95,
+        "metric": "rank_score_avg_return_minus_baseline",
+        "sample_count": len(avg_return_improvements),
+        "low": ci_low,
+        "high": ci_high,
+        "passed": ci_low is not None and ci_low >= 0.0,
+    }
+    oos_passed = rank_oos > baseline_oos + margin and positive_folds > fold_count // 2
+    can_promote = oos_passed and bool(fdr_result.get("passed")) and bool(ci_result.get("passed"))
+    status = "oos_passed" if can_promote else "shadow_only"
+    if oos_passed and not fdr_result.get("passed"):
+        status = "fdr_blocked"
+    elif oos_passed and fdr_result.get("passed") and not ci_result.get("passed"):
+        status = "ci_blocked"
+    return {
+        "ok": True,
+        "strategy": strategy,
+        "status": status,
+        "sample_count": len(samples),
+        "top_k": top_k,
+        "baseline_oos_objective": baseline_oos,
+        "rank_score_oos_objective": rank_oos,
+        "oos_improvement": round(rank_oos - baseline_oos, 4),
+        "positive_folds": positive_folds,
+        "fold_count": fold_count,
+        "oos_passed": oos_passed,
+        "fdr": fdr_result,
+        "ci": ci_result,
+        "avg_return_improvement": round(sum(avg_return_improvements) / len(avg_return_improvements), 4),
+        "avg_return_improvement_ci95_low": ci_low,
+        "avg_return_improvement_ci95_high": ci_high,
+        "margin": margin,
+        "can_promote": can_promote,
+        "folds": rows,
+    }
+
+
+def evaluate_interaction_ranker(
+    strategy: str,
+    samples: List[Dict[str, object]],
+    top_k: int = 10,
+    max_pairs: int = None,
+) -> Dict[str, object]:
+    """Walk-forward shadow evaluation for second-order factor interactions."""
+    if strategy not in STRATEGY_COMBINERS:
+        return {"ok": False, "strategy": strategy, "status": "unknown_strategy"}
+    samples = [sample for sample in samples if isinstance(sample, dict)]
+    samples = [
+        sample
+        for sample in samples
+        if _sample_has_live_components(strategy, sample.get("raw") or {})
+        and sample.get("signal_date")
+        and sample.get("primary_return_net") is not None
+    ]
+    folds = _walk_forward_splits(
+        samples,
+        int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)),
+        purge_days=_strategy_oos_purge_days(strategy),
+    )
+    if not folds:
+        return {"ok": False, "strategy": strategy, "status": "insufficient_oos_folds", "folds": [], "fold_count": 0}
+
+    current = _current_strategy_weights(strategy)
+    max_pairs = int(max_pairs or getattr(config, "INTERACTION_TERM_MAX_PAIRS", 8))
+    direction_focus = _resolve_tomorrow_direction_focus(None)
+    rows = []
+    for index, (train_samples, test_samples, train_dates, test_dates) in enumerate(folds, start=1):
+        model = _fit_interaction_terms(strategy, train_samples, max_pairs=max_pairs)
+        baseline_metrics = _evaluate_live_samples(strategy, test_samples, current, top_k=top_k)
+        interaction_metrics = _evaluate_interaction_samples(strategy, test_samples, current, model, top_k=top_k)
+        baseline_obj = _objective(baseline_metrics, strategy, direction_focused=direction_focus)
+        interaction_obj = _objective(interaction_metrics, strategy, direction_focused=direction_focus)
+        rows.append(
+            {
+                "fold": index,
+                "train_start": train_dates[0],
+                "train_end": train_dates[-1],
+                "test_start": test_dates[0],
+                "test_end": test_dates[-1],
+                "train_sample_count": len(train_samples),
+                "test_sample_count": len(test_samples),
+                "selected_interactions": model.get("interactions", []),
+                "baseline_oos_objective": round(baseline_obj, 4),
+                "interaction_oos_objective": round(interaction_obj, 4),
+                "oos_improvement": round(interaction_obj - baseline_obj, 4),
+                "baseline_avg_return": baseline_metrics.get("absolute_avg_period_return", 0.0),
+                "interaction_avg_return": interaction_metrics.get("absolute_avg_period_return", 0.0),
+            }
+        )
+
+    baseline_values = [coerce_number(row["baseline_oos_objective"]) for row in rows]
+    interaction_values = [coerce_number(row["interaction_oos_objective"]) for row in rows]
+    improvements = [coerce_number(row["oos_improvement"]) for row in rows]
+    margin = float(getattr(config, "CALIBRATE_IMPROVE_MARGIN", 0.05))
+    baseline_oos = round(sum(baseline_values) / len(baseline_values), 4)
+    interaction_oos = round(sum(interaction_values) / len(interaction_values), 4)
+    positive_folds = sum(1 for value in improvements if value > 0)
+    fold_count = len(rows)
+    fdr_result = _calibrate_fdr_result(positive_folds, fold_count)
+    oos_passed = interaction_oos > baseline_oos + margin and positive_folds > fold_count // 2
+    can_promote = oos_passed and bool(fdr_result.get("passed"))
+    status = "oos_passed" if can_promote else "shadow_only"
+    if oos_passed and not fdr_result.get("passed"):
+        status = "fdr_blocked"
+    final_model = _fit_interaction_terms(strategy, samples, max_pairs=max_pairs)
+    return {
+        "ok": True,
+        "strategy": strategy,
+        "status": status,
+        "sample_count": len(samples),
+        "top_k": top_k,
+        "enabled": bool(getattr(config, "ENABLE_INTERACTION_TERMS", False)),
+        "baseline_oos_objective": baseline_oos,
+        "interaction_oos_objective": interaction_oos,
+        "oos_improvement": round(interaction_oos - baseline_oos, 4),
+        "positive_folds": positive_folds,
+        "fold_count": fold_count,
+        "margin": margin,
+        "fdr": fdr_result,
+        "can_promote": can_promote,
+        "selected_interactions": final_model.get("interactions", []),
+        "folds": rows,
+    }
+
+
+def evaluate_regime_specific_weights(
+    strategy: str,
+    samples: List[Dict[str, object]],
+    top_k: int = 10,
+    steps: int = 2,
+) -> Dict[str, object]:
+    """Walk-forward shadow evaluation for regime-specific strategy weights."""
+    if strategy not in STRATEGY_COMBINERS:
+        return {"ok": False, "strategy": strategy, "status": "unknown_strategy"}
+    samples = [sample for sample in samples if isinstance(sample, dict)]
+    samples = [
+        sample
+        for sample in samples
+        if _sample_has_live_components(strategy, sample.get("raw") or {})
+        and sample.get("signal_date")
+        and sample.get("primary_return_net") is not None
+    ]
+    folds = _walk_forward_splits(
+        samples,
+        int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)),
+        purge_days=_strategy_oos_purge_days(strategy),
+    )
+    if not folds:
+        return {"ok": False, "strategy": strategy, "status": "insufficient_oos_folds", "folds": [], "fold_count": 0}
+
+    current = _current_strategy_weights(strategy)
+    direction_focus = _resolve_tomorrow_direction_focus(None)
+    rows = []
+    for index, (train_samples, test_samples, train_dates, test_dates) in enumerate(folds, start=1):
+        regime_model = _fit_regime_specific_weights(
+            strategy,
+            train_samples,
+            top_k=top_k,
+            steps=steps,
+            initial=current,
+            direction_focus=direction_focus,
+        )
+        baseline_metrics = _evaluate_live_samples(strategy, test_samples, current, top_k=top_k)
+        regime_metrics = _evaluate_regime_specific_samples(strategy, test_samples, current, regime_model, top_k=top_k)
+        baseline_obj = _objective(baseline_metrics, strategy, direction_focused=direction_focus)
+        regime_obj = _objective(regime_metrics, strategy, direction_focused=direction_focus)
+        rows.append(
+            {
+                "fold": index,
+                "train_start": train_dates[0],
+                "train_end": train_dates[-1],
+                "test_start": test_dates[0],
+                "test_end": test_dates[-1],
+                "train_sample_count": len(train_samples),
+                "test_sample_count": len(test_samples),
+                "regime_sample_counts": regime_model.get("sample_counts", {}),
+                "fitted_regimes": sorted((regime_model.get("weights") or {}).keys()),
+                "fallback_regimes": sorted(regime_model.get("fallback_regimes", [])),
+                "baseline_oos_objective": round(baseline_obj, 4),
+                "regime_oos_objective": round(regime_obj, 4),
+                "oos_improvement": round(regime_obj - baseline_obj, 4),
+                "baseline_avg_return": baseline_metrics.get("absolute_avg_period_return", 0.0),
+                "regime_avg_return": regime_metrics.get("absolute_avg_period_return", 0.0),
+            }
+        )
+
+    baseline_values = [coerce_number(row["baseline_oos_objective"]) for row in rows]
+    regime_values = [coerce_number(row["regime_oos_objective"]) for row in rows]
+    improvements = [coerce_number(row["oos_improvement"]) for row in rows]
+    margin = float(getattr(config, "CALIBRATE_IMPROVE_MARGIN", 0.05))
+    baseline_oos = round(sum(baseline_values) / len(baseline_values), 4)
+    regime_oos = round(sum(regime_values) / len(regime_values), 4)
+    positive_folds = sum(1 for value in improvements if value > 0)
+    fold_count = len(rows)
+    fdr_result = _calibrate_fdr_result(positive_folds, fold_count)
+    oos_passed = regime_oos > baseline_oos + margin and positive_folds > fold_count // 2
+    can_promote = oos_passed and bool(fdr_result.get("passed"))
+    status = "oos_passed" if can_promote else "shadow_only"
+    if oos_passed and not fdr_result.get("passed"):
+        status = "fdr_blocked"
+    final_model = _fit_regime_specific_weights(
+        strategy,
+        samples,
+        top_k=top_k,
+        steps=steps,
+        initial=current,
+        direction_focus=direction_focus,
+    )
+    return {
+        "ok": True,
+        "strategy": strategy,
+        "status": status,
+        "sample_count": len(samples),
+        "top_k": top_k,
+        "enabled": bool(getattr(config, "ENABLE_REGIME_SPECIFIC_WEIGHTS", False)),
+        "baseline_oos_objective": baseline_oos,
+        "regime_oos_objective": regime_oos,
+        "oos_improvement": round(regime_oos - baseline_oos, 4),
+        "positive_folds": positive_folds,
+        "fold_count": fold_count,
+        "margin": margin,
+        "fdr": fdr_result,
+        "can_promote": can_promote,
+        "weights_by_regime": final_model.get("weights", {}),
+        "regime_sample_counts": final_model.get("sample_counts", {}),
+        "fallback_regimes": sorted(final_model.get("fallback_regimes", [])),
+        "folds": rows,
+    }
+
+
+def evaluate_meta_labeling_gate(
+    strategy: str,
+    samples: List[Dict[str, object]],
+    top_k: int = 10,
+) -> Dict[str, object]:
+    """Walk-forward shadow evaluation for meta-label confidence gating."""
+    if strategy not in STRATEGY_COMBINERS:
+        return {"ok": False, "strategy": strategy, "status": "unknown_strategy"}
+    samples = [sample for sample in samples if isinstance(sample, dict)]
+    samples = [
+        sample
+        for sample in samples
+        if sample.get("signal_date") and sample.get("primary_return_net") is not None
+    ]
+    folds = _walk_forward_splits(
+        samples,
+        int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)),
+        purge_days=_strategy_oos_purge_days(strategy),
+    )
+    if not folds:
+        return {"ok": False, "strategy": strategy, "status": "insufficient_oos_folds", "folds": [], "fold_count": 0}
+    direction_focus = _resolve_tomorrow_direction_focus(None)
+    rows = []
+    for index, (train_samples, test_samples, train_dates, test_dates) in enumerate(folds, start=1):
+        baseline_metrics = _metrics_from_score_rank(test_samples, "score", top_k=top_k)
+        meta_metrics, model_info = _metrics_from_meta_label_rank(strategy, train_samples, test_samples, top_k=top_k)
+        baseline_obj = _objective(baseline_metrics, strategy, direction_focused=direction_focus)
+        meta_obj = _objective(meta_metrics, strategy, direction_focused=direction_focus)
+        rows.append(
+            {
+                "fold": index,
+                "train_start": train_dates[0],
+                "train_end": train_dates[-1],
+                "test_start": test_dates[0],
+                "test_end": test_dates[-1],
+                "train_sample_count": len(train_samples),
+                "test_sample_count": len(test_samples),
+                "model_status": model_info.get("status"),
+                "model_sample_count": model_info.get("sample_count", 0),
+                "baseline_oos_objective": round(baseline_obj, 4),
+                "meta_oos_objective": round(meta_obj, 4),
+                "oos_improvement": round(meta_obj - baseline_obj, 4),
+                "baseline_avg_return": baseline_metrics.get("absolute_avg_period_return", 0.0),
+                "meta_avg_return": meta_metrics.get("absolute_avg_period_return", 0.0),
+            }
+        )
+    baseline_values = [coerce_number(row["baseline_oos_objective"]) for row in rows]
+    meta_values = [coerce_number(row["meta_oos_objective"]) for row in rows]
+    improvements = [coerce_number(row["oos_improvement"]) for row in rows]
+    margin = float(getattr(config, "CALIBRATE_IMPROVE_MARGIN", 0.05))
+    baseline_oos = round(sum(baseline_values) / len(baseline_values), 4)
+    meta_oos = round(sum(meta_values) / len(meta_values), 4)
+    positive_folds = sum(1 for value in improvements if value > 0)
+    fold_count = len(rows)
+    fdr_result = _calibrate_fdr_result(positive_folds, fold_count)
+    oos_passed = meta_oos > baseline_oos + margin and positive_folds > fold_count // 2
+    can_enforce = oos_passed and bool(fdr_result.get("passed"))
+    status = "oos_passed" if can_enforce else "shadow_only"
+    if oos_passed and not fdr_result.get("passed"):
+        status = "fdr_blocked"
+    final_model = train_meta_label_model(strategy, samples)
+    return {
+        "ok": True,
+        "strategy": strategy,
+        "status": status,
+        "sample_count": len(samples),
+        "top_k": top_k,
+        "enabled": bool(getattr(config, "ENABLE_META_LABELING", False)),
+        "baseline_oos_objective": baseline_oos,
+        "meta_oos_objective": meta_oos,
+        "oos_improvement": round(meta_oos - baseline_oos, 4),
+        "positive_folds": positive_folds,
+        "fold_count": fold_count,
+        "margin": margin,
+        "fdr": fdr_result,
+        "can_enforce": can_enforce,
+        "model_status": final_model.get("status"),
+        "model_sample_count": final_model.get("sample_count", 0),
+        "folds": rows,
+    }
+
+
 def calibrate_blend_alpha(
     strategy: str,
     samples: List[Dict[str, object]],
@@ -408,7 +866,11 @@ def calibrate_blend_alpha(
         return {"ok": True, "strategy": strategy, "status": "insufficient_samples", "sample_count": len(samples)}
     alpha_grid = [float(value) for value in (alphas or (0.0, 0.15, 0.3, 0.45))]
     direction_focus = _resolve_tomorrow_direction_focus(direction_focus)
-    folds = _walk_forward_splits(samples, int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)))
+    folds = _walk_forward_splits(
+        samples,
+        int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)),
+        purge_days=_strategy_oos_purge_days(strategy),
+    )
     if not folds:
         return {"ok": False, "strategy": strategy, "status": "insufficient_oos_folds", "folds": [], "fold_count": 0}
     rows = []
@@ -504,6 +966,453 @@ def _evaluate_live_samples_with_rule(
     return _metrics_from_ranked_groups(grouped, top_k)
 
 
+def _metrics_from_score_rank(samples: List[Dict[str, object]], score_key: str, top_k: int) -> Dict[str, object]:
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    for sample in samples:
+        raw = sample.get("raw") or {}
+        item = dict(sample)
+        item["recomputed_score"] = coerce_number(raw.get(score_key), coerce_number(sample.get("stored_score")))
+        grouped.setdefault(str(sample.get("signal_date")), []).append(item)
+    return _metrics_from_ranked_groups(grouped, top_k)
+
+
+def _metrics_from_expected_return_rank(
+    strategy: str,
+    train_samples: List[Dict[str, object]],
+    test_samples: List[Dict[str, object]],
+    top_k: int,
+) -> Dict[str, object]:
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    rows = []
+    for sample in test_samples:
+        raw = sample.get("raw") if isinstance(sample, dict) else {}
+        raw = raw if isinstance(raw, dict) else {}
+        rows.append(
+            {
+                **raw,
+                "sample": sample,
+                "score": coerce_number(raw.get("score"), coerce_number(sample.get("stored_score"))),
+                "risk_penalty": coerce_number(raw.get("risk_penalty")),
+            }
+        )
+    ranked_rows = predict_expected_return(strategy, rows, samples=train_samples)
+    for item in ranked_rows:
+        sample = dict(item.get("sample") or {})
+        sample["recomputed_score"] = coerce_number(item.get("rank_score"))
+        grouped.setdefault(str(sample.get("signal_date")), []).append(sample)
+    return _metrics_from_ranked_groups(grouped, top_k)
+
+
+def _metrics_from_meta_label_rank(
+    strategy: str,
+    train_samples: List[Dict[str, object]],
+    test_samples: List[Dict[str, object]],
+    top_k: int,
+) -> tuple:
+    model = train_meta_label_model(strategy, train_samples)
+    if not model.get("is_fitted"):
+        return _metrics_from_score_rank(test_samples, "score", top_k=top_k), model
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    for sample in test_samples:
+        raw = sample.get("raw") if isinstance(sample, dict) else {}
+        raw = raw if isinstance(raw, dict) else {}
+        base_score = coerce_number(raw.get("score"), coerce_number(sample.get("stored_score")))
+        row = {
+            **raw,
+            "score": base_score,
+            "risk_penalty": coerce_number(raw.get("risk_penalty"), 0.0),
+        }
+        prediction = predict_meta_confidence(row, model)
+        confidence = coerce_number(prediction.get("confidence"), 0.5)
+        action = str(prediction.get("action") or "")
+        item = dict(sample)
+        if action == "skip":
+            item["recomputed_score"] = base_score - 100.0
+        elif action == "reduced":
+            item["recomputed_score"] = base_score * (0.75 + confidence * 0.25)
+        else:
+            item["recomputed_score"] = base_score * (0.9 + confidence * 0.2)
+        item["meta_labeling"] = prediction
+        grouped.setdefault(str(sample.get("signal_date")), []).append(item)
+    return _metrics_from_ranked_groups(grouped, top_k), model
+
+
+def _evaluate_interaction_samples(
+    strategy: str,
+    samples: List[Dict[str, object]],
+    weights: Dict[str, float],
+    model: Dict[str, object],
+    top_k: int,
+) -> Dict[str, object]:
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    for sample in samples:
+        raw = sample.get("raw") or {}
+        components = _live_components(raw)
+        combined = _combine_details(
+            components,
+            strategy,
+            weights={**WEIGHTS, strategy: weights},
+            row=pd.Series(raw),
+            regime_weight_profile=raw.get("regime_weight_profile") or {},
+        )
+        enriched = dict(sample)
+        score = combined["score"] + _interaction_score_delta(components, model)
+        enriched["recomputed_score"] = max(0.0, min(100.0, score))
+        grouped.setdefault(str(sample.get("signal_date")), []).append(enriched)
+    return _metrics_from_ranked_groups(grouped, top_k)
+
+
+def _evaluate_regime_specific_samples(
+    strategy: str,
+    samples: List[Dict[str, object]],
+    default_weights: Dict[str, float],
+    model: Dict[str, object],
+    top_k: int,
+) -> Dict[str, object]:
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    weights_by_regime = model.get("weights") if isinstance(model, dict) else {}
+    weights_by_regime = weights_by_regime if isinstance(weights_by_regime, dict) else {}
+    for sample in samples:
+        raw = sample.get("raw") or {}
+        regime = _sample_regime_level(sample)
+        weights = weights_by_regime.get(regime, default_weights)
+        components = _live_components(raw)
+        combined = _combine_details(
+            components,
+            strategy,
+            weights={**WEIGHTS, strategy: weights},
+            row=pd.Series(raw),
+            regime_weight_profile=raw.get("regime_weight_profile") or {},
+        )
+        enriched = dict(sample)
+        enriched["recomputed_score"] = combined["score"]
+        enriched["regime_level"] = regime
+        grouped.setdefault(str(sample.get("signal_date")), []).append(enriched)
+    return _metrics_from_ranked_groups(grouped, top_k)
+
+
+def _fit_regime_specific_weights(
+    strategy: str,
+    samples: List[Dict[str, object]],
+    top_k: int,
+    steps: int,
+    initial: Dict[str, float],
+    direction_focus=None,
+) -> Dict[str, object]:
+    min_samples = int(getattr(config, "REGIME_SPECIFIC_MIN_TRAIN_SAMPLES", 20))
+    grouped: Dict[str, List[Dict[str, object]]] = {"risk_on": [], "balanced": [], "risk_off": []}
+    unknown = []
+    for sample in samples:
+        regime = _sample_regime_level(sample)
+        if regime in grouped:
+            grouped[regime].append(sample)
+        else:
+            unknown.append(sample)
+    weights = {}
+    fallback_regimes = []
+    sample_counts = {key: len(value) for key, value in grouped.items()}
+    for regime, regime_samples in grouped.items():
+        if len(regime_samples) < min_samples:
+            fallback_regimes.append(regime)
+            continue
+        fitted = _fit_weights(
+            strategy,
+            regime_samples,
+            top_k=top_k,
+            steps=steps,
+            initial=initial,
+            direction_focus=direction_focus,
+        )
+        weights[regime] = fitted["weights"]
+    return {
+        "strategy": strategy,
+        "status": "ready" if weights else "insufficient_regime_samples",
+        "min_samples": min_samples,
+        "sample_counts": sample_counts,
+        "unknown_sample_count": len(unknown),
+        "weights": weights,
+        "fallback_regimes": fallback_regimes,
+    }
+
+
+def _sample_regime_level(sample: Dict[str, object]) -> str:
+    raw = sample.get("raw") if isinstance(sample, dict) else {}
+    raw = raw if isinstance(raw, dict) else {}
+    candidates = [
+        raw.get("regime_level"),
+        raw.get("market_regime_level"),
+        raw.get("market_regime"),
+        sample.get("regime_level"),
+    ]
+    nested = raw.get("market_regime") if isinstance(raw.get("market_regime"), dict) else None
+    if nested:
+        candidates.insert(0, nested.get("level"))
+    for value in candidates:
+        level = _normalize_regime_level(value)
+        if level != "unknown":
+            return level
+    score = raw.get("regime_score", raw.get("market_regime_score"))
+    if score is None and nested:
+        score = nested.get("score")
+    numeric_score = coerce_number(score, None)
+    if numeric_score is None:
+        return "unknown"
+    if numeric_score >= 68:
+        return "risk_on"
+    if numeric_score <= 41:
+        return "risk_off"
+    return "balanced"
+
+
+def _normalize_regime_level(value) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("-", "_").replace(" ", "_")
+    if text in {"risk_on", "on", "bull", "bullish"}:
+        return "risk_on"
+    if text in {"risk_off", "off", "bear", "bearish", "defensive"}:
+        return "risk_off"
+    if text in {"balanced", "neutral", "normal"}:
+        return "balanced"
+    return "unknown"
+
+
+def _fit_interaction_terms(
+    strategy: str,
+    samples: List[Dict[str, object]],
+    max_pairs: int = None,
+) -> Dict[str, object]:
+    min_samples = int(getattr(config, "INTERACTION_MIN_TRAIN_SAMPLES", 20))
+    max_pairs = int(max_pairs or getattr(config, "INTERACTION_TERM_MAX_PAIRS", 8))
+    score_scale = coerce_number(getattr(config, "INTERACTION_SCORE_SCALE", 6.0), 6.0)
+    delta_cap = coerce_number(getattr(config, "INTERACTION_SCORE_DELTA_CAP", 12.0), 12.0)
+    result = {
+        "strategy": strategy,
+        "sample_count": len(samples),
+        "score_scale": score_scale,
+        "delta_cap": delta_cap,
+        "interactions": [],
+    }
+    if len(samples) < min_samples:
+        result["status"] = "insufficient_train_samples"
+        result["min_samples"] = min_samples
+        return result
+
+    day_returns: Dict[str, List[float]] = {}
+    for sample in samples:
+        date_key = str(sample.get("signal_date") or "")
+        day_returns.setdefault(date_key, []).append(coerce_number(sample.get("primary_return_net")))
+    day_medians = {date_key: _median(values) for date_key, values in day_returns.items()}
+    candidate_pairs = _interaction_candidate_pairs(strategy)
+    preferred_rank = {pair: index for index, pair in enumerate(candidate_pairs)}
+    min_abs_corr = max(0.0, coerce_number(getattr(config, "INTERACTION_MIN_ABS_CORR", 0.02), 0.02))
+    fitted = []
+    for left, right in candidate_pairs:
+        xs = []
+        ys = []
+        for sample in samples:
+            components = _live_components(sample.get("raw") or {})
+            x_value = _interaction_feature_product(components, left, right)
+            target = coerce_number(sample.get("primary_return_net")) - day_medians.get(str(sample.get("signal_date") or ""), 0.0)
+            xs.append(x_value)
+            ys.append(target)
+        if len(xs) < min_samples:
+            continue
+        mean_x = sum(xs) / len(xs)
+        mean_y = sum(ys) / len(ys)
+        var_x = sum((value - mean_x) ** 2 for value in xs) / len(xs)
+        var_y = sum((value - mean_y) ** 2 for value in ys) / len(ys)
+        if var_x <= 1e-10 or var_y <= 1e-10:
+            continue
+        cov_xy = sum((x_value - mean_x) * (y_value - mean_y) for x_value, y_value in zip(xs, ys)) / len(xs)
+        corr = cov_xy / math.sqrt(var_x * var_y)
+        if abs(corr) < min_abs_corr:
+            continue
+        coefficient = max(-5.0, min(5.0, cov_xy / var_x))
+        fitted.append(
+            {
+                "pair": "{}*{}".format(left, right),
+                "left": left,
+                "right": right,
+                "coefficient": round(coefficient, 6),
+                "correlation": round(corr, 6),
+                "sample_count": len(xs),
+                "preferred_rank": preferred_rank.get((left, right), 9999),
+            }
+        )
+    fitted.sort(key=lambda item: (-abs(coerce_number(item.get("correlation"))), int(item.get("preferred_rank", 9999)), item["pair"]))
+    selected = fitted[: max(0, max_pairs)]
+    for item in selected:
+        item.pop("preferred_rank", None)
+    result["status"] = "ready" if selected else "no_stable_interactions"
+    result["interactions"] = selected
+    return result
+
+
+def _interaction_candidate_pairs(strategy: str) -> List[tuple]:
+    keys = _interaction_feature_keys(strategy)
+    available = set(keys)
+    pairs = []
+    seen = set()
+
+    def add_pair(left: str, right: str):
+        if left == right or left not in available or right not in available:
+            return
+        marker = frozenset((left, right))
+        if marker in seen:
+            return
+        seen.add(marker)
+        pairs.append((left, right))
+
+    for left, right in (
+        ("momentum_score", "liquidity_score"),
+        ("execution_score", "tail_setup_score"),
+        ("historical_edge_score", "momentum_score"),
+        ("liquidity_score", "tail_setup_score"),
+        ("momentum_score", "risk_penalty"),
+    ):
+        add_pair(left, right)
+    for left, right in itertools.combinations(keys, 2):
+        add_pair(left, right)
+    return pairs
+
+
+def _interaction_feature_keys(strategy: str) -> List[str]:
+    keys: List[str] = []
+    for term in STRATEGY_COMBINERS[strategy]["terms"]:
+        key = str(term["component"])
+        if key not in keys:
+            keys.append(key)
+    if "risk_penalty" not in keys:
+        keys.append("risk_penalty")
+    return keys
+
+
+def _interaction_feature_product(components: Dict[str, object], left: str, right: str) -> float:
+    return _interaction_feature_value(components, left) * _interaction_feature_value(components, right)
+
+
+def _interaction_feature_value(components: Dict[str, object], key: str) -> float:
+    if key == "risk_penalty":
+        value = coerce_number(components.get(key), 0.0)
+        return max(-1.0, min(1.0, (value - 8.0) / 12.0))
+    value = coerce_number(components.get(key), 50.0)
+    return max(-1.0, min(1.0, (value - 50.0) / 50.0))
+
+
+def _interaction_score_delta(components: Dict[str, object], model: Dict[str, object]) -> float:
+    interactions = model.get("interactions") if isinstance(model, dict) else []
+    if not interactions:
+        return 0.0
+    score_scale = coerce_number(model.get("score_scale"), coerce_number(getattr(config, "INTERACTION_SCORE_SCALE", 6.0), 6.0))
+    delta_cap = max(0.0, coerce_number(model.get("delta_cap"), coerce_number(getattr(config, "INTERACTION_SCORE_DELTA_CAP", 12.0), 12.0)))
+    delta = 0.0
+    for item in interactions:
+        left = str(item.get("left") or "")
+        right = str(item.get("right") or "")
+        if not left or not right:
+            continue
+        delta += coerce_number(item.get("coefficient")) * _interaction_feature_product(components, left, right) * score_scale
+    return max(-delta_cap, min(delta_cap, delta))
+
+
+def _calibrate_fdr_result(positive_folds: int, fold_count: int) -> Dict[str, object]:
+    p_value = _binomial_tail_probability(positive_folds, fold_count)
+    q = coerce_number(getattr(config, "CALIBRATE_FDR_Q", 0.1), 0.1)
+    enabled = bool(getattr(config, "ENABLE_CALIBRATE_FDR", False))
+    passed = (not enabled) or p_value <= q
+    return {
+        "enabled": enabled,
+        "method": "fold_sign_test",
+        "q": q,
+        "p_value": round(p_value, 6),
+        "passed": passed,
+        "status": "passed" if passed else "blocked",
+    }
+
+
+def _mean_ci(values: List[object], z_score: float = 1.96) -> tuple:
+    numeric = [coerce_number(value, None) for value in values or []]
+    numeric = [value for value in numeric if value is not None]
+    if not numeric:
+        return None, None
+    mean = sum(numeric) / len(numeric)
+    if len(numeric) == 1:
+        return round(mean, 4), round(mean, 4)
+    stdev = statistics.stdev(numeric)
+    margin = z_score * stdev / math.sqrt(len(numeric))
+    return round(mean - margin, 4), round(mean + margin, 4)
+
+
+def benjamini_hochberg_fdr(p_values: List[object], q: float = 0.1) -> Dict[str, object]:
+    valid = []
+    for index, value in enumerate(p_values or []):
+        p_value = coerce_number(value, None)
+        if p_value is None or p_value < 0 or p_value > 1:
+            continue
+        valid.append((p_value, index))
+    if not valid:
+        return {"q": q, "tested_count": 0, "rejected": [], "rejected_count": 0, "threshold": None}
+    valid.sort(key=lambda item: item[0])
+    q = max(0.0, min(1.0, coerce_number(q, 0.1)))
+    threshold = None
+    rejected_rank = 0
+    tested_count = len(valid)
+    for rank, (p_value, _original_index) in enumerate(valid, start=1):
+        candidate_threshold = q * rank / tested_count
+        if p_value <= candidate_threshold:
+            threshold = candidate_threshold
+            rejected_rank = rank
+    rejected = [original_index for _p_value, original_index in valid[:rejected_rank]]
+    return {
+        "q": q,
+        "tested_count": tested_count,
+        "rejected": rejected,
+        "rejected_count": len(rejected),
+        "threshold": round(threshold, 6) if threshold is not None else None,
+    }
+
+
+def calibrate_with_fdr_guard(
+    candidate_configs: List[Dict[str, object]],
+    evaluate_fn,
+    q: float = None,
+) -> Dict[str, object]:
+    evaluated = []
+    for candidate in candidate_configs or []:
+        metrics = evaluate_fn(candidate)
+        metrics = metrics if isinstance(metrics, dict) else {}
+        evaluated.append({"config": candidate, "metrics": metrics, "p_value": coerce_number(metrics.get("p_value"), 1.0)})
+    fdr_result = benjamini_hochberg_fdr(
+        [item["p_value"] for item in evaluated],
+        q=coerce_number(q, coerce_number(getattr(config, "CALIBRATE_FDR_Q", 0.1), 0.1)),
+    )
+    significant = [evaluated[index] for index in fdr_result.get("rejected", []) if 0 <= index < len(evaluated)]
+    if not significant:
+        return {
+            "selected": None,
+            "status": "no_significant_config",
+            "evaluated": evaluated,
+            "fdr": fdr_result,
+        }
+    selected = max(significant, key=lambda item: coerce_number(item["metrics"].get("objective"), -1e9))
+    return {
+        "selected": selected["config"],
+        "status": "selected",
+        "metrics": selected["metrics"],
+        "evaluated": evaluated,
+        "fdr": fdr_result,
+    }
+
+
+def _binomial_tail_probability(successes: int, trials: int) -> float:
+    trials = max(0, int(trials or 0))
+    if trials <= 0:
+        return 1.0
+    successes = max(0, min(trials, int(successes or 0)))
+    favorable = sum(math.comb(trials, k) for k in range(successes, trials + 1))
+    return favorable / float(2**trials)
+
+
 def _metrics_from_ranked_groups(grouped: Dict[str, List[Dict[str, object]]], top_k: int) -> Dict[str, object]:
     selected: List[Dict[str, object]] = []
     for rows in grouped.values():
@@ -520,10 +1429,13 @@ def _metrics_from_ranked_groups(grouped: Dict[str, List[Dict[str, object]]], top
             "avg_period_return": 0.0,
             "absolute_win_rate": 0.0,
             "absolute_avg_period_return": 0.0,
+            "return_series": [],
+            "return_series_with_dates": [],
         }
     wins = [coerce_number(sample.get("excess_return_net")) > 0 for sample in selected]
     absolute_wins = [coerce_number(sample.get("primary_return_net")) > 0 for sample in selected]
     period_returns = [coerce_number(sample["primary_return_net"]) for sample in selected]
+    return_series_with_dates = [(str(sample.get("signal_date") or ""), coerce_number(sample.get("primary_return_net"))) for sample in selected]
     next_open_returns = [coerce_number(sample.get("next_open_return")) for sample in selected]
     max_drawdowns = [coerce_number(sample.get("max_drawdown")) for sample in selected]
     avg_return = sum(period_returns) / len(period_returns)
@@ -544,6 +1456,10 @@ def _metrics_from_ranked_groups(grouped: Dict[str, List[Dict[str, object]]], top
         "absolute_loss_quantile_return": round(_quantile(period_returns, 0.25), 4),
         "absolute_avg_next_open_return": round(sum(next_open_returns) / len(next_open_returns), 4),
         "absolute_avg_max_drawdown": round(sum(max_drawdowns) / len(max_drawdowns), 4),
+        "absolute_max_drawdown": round(min(max_drawdowns), 4) if max_drawdowns else 0.0,
+        "return_series": [round(value, 4) for value in period_returns],
+        "return_series_with_dates": return_series_with_dates,
+        "sortino": _sortino_ratio(period_returns, avg_return),
     }
 
 
@@ -637,7 +1553,11 @@ def _walk_forward_evaluate(
     steps: int,
     direction_focus=None,
 ) -> Dict[str, object]:
-    folds = _walk_forward_splits(samples, int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)))
+    folds = _walk_forward_splits(
+        samples,
+        int(getattr(config, "CALIBRATE_WALK_FORWARD_FOLDS", 4)),
+        purge_days=_strategy_oos_purge_days(strategy),
+    )
     if not folds:
         return {"ok": False, "status": "insufficient_oos_folds", "folds": [], "fold_count": 0}
     rows = []
@@ -687,20 +1607,25 @@ def _walk_forward_evaluate(
 def _walk_forward_splits(
     samples: List[Dict[str, object]],
     requested_folds: int,
+    purge_days: int = 0,
 ) -> List[tuple]:
     dates = sorted({str(sample.get("signal_date")) for sample in samples if sample.get("signal_date")})
     if len(dates) < 3:
         return []
     fold_count = min(max(1, requested_folds), len(dates) - 1)
     test_size = max(1, len(dates) // (fold_count + 1))
+    purge_days = max(0, int(coerce_number(purge_days, 0)))
     splits = []
     for fold_index in range(fold_count):
         train_end = len(dates) - test_size * (fold_count - fold_index)
         test_end = min(len(dates), train_end + test_size)
         if train_end <= 0 or test_end <= train_end:
             continue
-        train_dates = dates[:train_end]
+        purged_train_end = max(0, train_end - purge_days)
+        train_dates = dates[:purged_train_end]
         test_dates = dates[train_end:test_end]
+        if not train_dates:
+            continue
         train_set = set(train_dates)
         test_set = set(test_dates)
         train_samples = [sample for sample in samples if str(sample.get("signal_date")) in train_set]
@@ -708,6 +1633,15 @@ def _walk_forward_splits(
         if train_samples and test_samples:
             splits.append((train_samples, test_samples, train_dates, test_dates))
     return splits
+
+
+def _strategy_oos_purge_days(strategy: str) -> int:
+    strategy = str(strategy or "")
+    if strategy == "swing_picks":
+        return 5
+    if strategy in {"tomorrow_picks", "short_term"}:
+        return 1
+    return 0
 
 
 def _strategy_weight_keys(strategy: str) -> List[str]:
@@ -830,10 +1764,13 @@ def _evaluate_live_samples(
             "avg_period_return": 0.0,
             "absolute_win_rate": 0.0,
             "absolute_avg_period_return": 0.0,
+            "return_series": [],
+            "return_series_with_dates": [],
         }
     wins = [coerce_number(sample.get("excess_return_net")) > 0 for sample in selected]
     absolute_wins = [coerce_number(sample.get("primary_return_net")) > 0 for sample in selected]
     period_returns = [coerce_number(sample["primary_return_net"]) for sample in selected]
+    return_series_with_dates = [(str(sample.get("signal_date") or ""), coerce_number(sample.get("primary_return_net"))) for sample in selected]
     next_open_returns = [coerce_number(sample.get("next_open_return")) for sample in selected]
     max_drawdowns = [coerce_number(sample.get("max_drawdown")) for sample in selected]
     avg_return = sum(period_returns) / len(period_returns)
@@ -854,6 +1791,10 @@ def _evaluate_live_samples(
         "absolute_loss_quantile_return": round(_quantile(period_returns, 0.25), 4),
         "absolute_avg_next_open_return": round(sum(next_open_returns) / len(next_open_returns), 4),
         "absolute_avg_max_drawdown": round(sum(max_drawdowns) / len(max_drawdowns), 4),
+        "absolute_max_drawdown": round(min(max_drawdowns), 4) if max_drawdowns else 0.0,
+        "return_series": [round(value, 4) for value in period_returns],
+        "return_series_with_dates": return_series_with_dates,
+        "sortino": _sortino_ratio(period_returns, avg_return),
     }
 
 

@@ -271,6 +271,7 @@ def run_validation_auto_update_once(
     auto_update_status: Dict[str, object],
     set_auto_update_status: Callable[..., None],
     run_validation_outcome_update_once_fn: Callable[[], Dict[str, object]],
+    run_oos_reports_once_fn: Callable[[], Dict[str, object]] = None,
 ) -> Dict[str, object]:
     if not config.VALIDATION_AUTO_UPDATE_ENABLED:
         return {"ok": True, "status": "disabled"}
@@ -287,13 +288,28 @@ def run_validation_auto_update_once(
         update_result = run_validation_outcome_update_once_fn()
         result.update(update_result)
         result["mode"] = "outcome_update"
+        result["summary"] = _outcome_update_summary(result.get("updates") or [])
         if not result.get("ok"):
             raise RuntimeError(str(result.get("error") or result.get("status") or "荐股结果回填失败"))
+        if run_oos_reports_once_fn is not None:
+            oos_result = run_oos_reports_once_fn()
+            result["oos_reports"] = oos_result
+            result["oos_summary"] = _oos_report_summary(oos_result.get("reports") or [])
+            alert_statuses = [
+                item
+                for item in result["oos_summary"].get("statuses", [])
+                if item.get("oos_status") in ("needs_backfill", "gate_blocked")
+            ]
+            if alert_statuses:
+                result["status"] = "oos_attention_required"
+                result["alerts"] = alert_statuses
         result["finished_at"] = datetime.now().isoformat(timespec="seconds")
         set_auto_update_status(
             running=False,
             last_finished_at=result["finished_at"],
             last_result=result,
+            last_oos_summary=result.get("oos_summary", {}),
+            last_oos_alerts=result.get("alerts", []),
         )
         return result
     except Exception as exc:
@@ -307,6 +323,65 @@ def run_validation_auto_update_once(
             last_result=result,
         )
         return result
+
+
+def _outcome_update_summary(updates: List[Dict[str, object]]) -> Dict[str, object]:
+    summary = {
+        "requested": 0,
+        "updated": 0,
+        "pending": 0,
+        "skipped": 0,
+        "execution_skipped": 0,
+        "skipped_reasons": {},
+        "error_count": 0,
+    }
+    for item in updates or []:
+        if item.get("error"):
+            summary["error_count"] += 1
+            continue
+        result = item.get("result") if isinstance(item, dict) else {}
+        if not isinstance(result, dict):
+            continue
+        for key in ("requested", "updated", "pending", "skipped", "execution_skipped"):
+            summary[key] += int(result.get(key) or 0)
+        for reason, count in (result.get("skipped_reasons") or {}).items():
+            reason_key = str(reason or "unknown").strip() or "unknown"
+            summary["skipped_reasons"][reason_key] = summary["skipped_reasons"].get(reason_key, 0) + int(count or 0)
+    return summary
+
+
+def _oos_report_summary(reports: List[Dict[str, object]]) -> Dict[str, object]:
+    summary = {
+        "report_count": 0,
+        "needs_backfill_count": 0,
+        "gate_blocked_count": 0,
+        "oos_passed_count": 0,
+        "empty_count": 0,
+        "error_count": 0,
+        "statuses": [],
+    }
+    for item in reports or []:
+        strategy = str(item.get("strategy") or item.get("strategy_name") or "")
+        if item.get("error"):
+            summary["error_count"] += 1
+            summary["statuses"].append(
+                {"strategy": strategy, "oos_status": "error", "error": str(item.get("error") or "")}
+            )
+            continue
+        report = item.get("report") if isinstance(item.get("report"), dict) else item
+        oos_status = str(report.get("oos_status") or item.get("oos_status") or "")
+        if oos_status == "needs_backfill":
+            summary["needs_backfill_count"] += 1
+        elif oos_status == "gate_blocked":
+            summary["gate_blocked_count"] += 1
+        elif oos_status == "oos_passed":
+            summary["oos_passed_count"] += 1
+        elif oos_status == "empty":
+            summary["empty_count"] += 1
+        if oos_status:
+            summary["report_count"] += 1
+            summary["statuses"].append({"strategy": strategy, "oos_status": oos_status})
+    return summary
 
 
 def start_validation_auto_update_worker(

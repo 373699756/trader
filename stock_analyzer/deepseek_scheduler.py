@@ -4,11 +4,13 @@ from datetime import datetime, time as clock_time
 from typing import Dict, List, Tuple
 
 from . import config
+from .deepseek.budget_policy import BudgetPolicy
 from .normalization import coerce_number, normalize_code
 from .runtime_json import atomic_write_json
 
 
 _STATE_LOCK = threading.Lock()
+_BUDGET_POLICY = BudgetPolicy()
 
 _REUSED_ROW_FIELDS = (
     "local_rank",
@@ -77,7 +79,7 @@ def scheduled_deepseek_decision(
                 0, int(getattr(config, "DEEPSEEK_LATE_MIN_INTERVAL_SECONDS", 300))
             ):
                 return _reuse_decision("late_debounced", latest, profile)
-            profile["model_tier"] = "pro" if not latest_is_late or _needs_pro_review(rows) else "base"
+            profile["model_tier"] = "pro" if _needs_pro_review(rows) else "base"
             profile["review_limit"] = max(
                 1,
                 int(
@@ -301,18 +303,7 @@ def _candidate_signature(rows: List[Dict[str, object]]) -> List[object]:
 
 
 def _needs_pro_review(rows: List[Dict[str, object]]) -> bool:
-    top = list(rows or [])[:3]
-    if not top:
-        return False
-    scores = [coerce_number(row.get("score"), 0.0) for row in top]
-    if len(scores) >= 2 and max(scores) - min(scores) <= 3.0:
-        return True
-    for row in top:
-        if row.get("event_risk_flags") or row.get("recent_news") or row.get("announcement_flags"):
-            return True
-        if coerce_number(row.get("risk_penalty"), 0.0) >= 10.0:
-            return True
-    return False
+    return _BUDGET_POLICY.needs_pro_review(rows)
 
 
 def _seconds_since(value: object, now: datetime) -> float:

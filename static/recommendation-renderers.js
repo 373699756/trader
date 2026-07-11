@@ -125,6 +125,7 @@ window.TraderRecommendationRenderers = {
       ...(row.sell_risk?.reasons || []),
     ], 4);
     const validationTexts = this.uniqueReasonTexts([
+      this.expectedReturnSummary(row, helpers),
       row.holding_discipline,
       row.trade_action_stats?.sample_count ? this.tradeActionSummary(row, helpers) : "",
       row.exit_action_stats?.sample_count ? this.exitActionSummary(row, helpers) : "",
@@ -139,6 +140,57 @@ window.TraderRecommendationRenderers = {
       this.reasonLine(`验证：${validationTexts.join("；") || "暂无"}`, "validation", helpers),
     ];
     return lines.join("");
+  },
+
+  finiteNumber(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  },
+
+  probabilityPercent(value) {
+    const num = this.finiteNumber(value);
+    if (num == null) return null;
+    return Math.abs(num) <= 1 ? num * 100 : num;
+  },
+
+  signedPercentText(value, digits, helpers) {
+    const { formatNumber } = helpers;
+    const num = this.finiteNumber(value);
+    if (num == null) return "-";
+    const sign = num > 0 ? "+" : "";
+    return `${sign}${formatNumber(num, digits)}%`;
+  },
+
+  signedPercentClass(value) {
+    const num = this.finiteNumber(value);
+    if (num == null || num === 0) return "";
+    return num > 0 ? " positive" : " negative";
+  },
+
+  confidenceLabel(value) {
+    const key = String(value || "").toLowerCase();
+    if (key === "ready") return "就绪";
+    if (key === "shadow") return "影子";
+    if (key === "low") return "低";
+    return value ? String(value) : "-";
+  },
+
+  expectedReturnSummary(row, helpers) {
+    const { formatNumber } = helpers;
+    const rankScore = this.finiteNumber(row.rank_score);
+    const expectedReturn = this.finiteNumber(row.expected_return_net);
+    const pWin = this.probabilityPercent(row.p_win);
+    const downside = this.finiteNumber(row.downside_p10);
+    const sampleCount = this.finiteNumber(row.expected_return_sample_count);
+    const confidence = this.confidenceLabel(row.model_confidence);
+    const parts = [];
+    if (rankScore != null) parts.push(`影子排序分${formatNumber(rankScore, 1)}`);
+    if (expectedReturn != null) parts.push(`预期净收益${this.signedPercentText(expectedReturn, 2, helpers)}`);
+    if (pWin != null) parts.push(`胜率概率${formatNumber(pWin, 1)}%`);
+    if (downside != null) parts.push(`下行P10 ${this.signedPercentText(downside, 2, helpers)}`);
+    if (confidence !== "-") parts.push(`置信${confidence}`);
+    if (sampleCount != null) parts.push(`样本${formatNumber(sampleCount, 0)}`);
+    return parts.length ? `收益模型：${parts.join("，")}` : "";
   },
 
   rowIndustryLabel(row) {
@@ -197,13 +249,40 @@ window.TraderRecommendationRenderers = {
     return `<span class="score-pair-value ${this.riskGradeClass(num)}" title="${escapeHtml(title || "")}">${prefix}${formatNumber(num, digits)}</span>`;
   },
 
+  expectedReturnScoreLines(row, helpers) {
+    const { escapeHtml, formatNumber } = helpers;
+    const rankScore = this.finiteNumber(row.rank_score);
+    const expectedReturn = this.finiteNumber(row.expected_return_net);
+    const pWin = this.probabilityPercent(row.p_win);
+    const confidence = this.confidenceLabel(row.model_confidence);
+    if (rankScore == null && expectedReturn == null && pWin == null && confidence === "-") {
+      return "";
+    }
+    const title = this.expectedReturnSummary(row, helpers) || "收益模型暂无数据";
+    const rankText = rankScore == null ? "影-" : `影${formatNumber(rankScore, 1)}`;
+    const expectedText = expectedReturn == null ? "E-" : `E${this.signedPercentText(expectedReturn, 2, helpers)}`;
+    const pWinText = pWin == null ? "P-" : `P${formatNumber(pWin, 0)}%`;
+    const confidenceText = confidence === "-" ? "" : `<span class="score-model-confidence">${escapeHtml(confidence)}</span>`;
+    return `
+      <div class="score-model-line" title="${escapeHtml(`${title}；未通过验证门控前不参与生产排序`)}">
+        <span class="score-model-rank">${escapeHtml(rankText)}</span>${confidenceText}
+      </div>
+      <div class="score-model-line" title="${escapeHtml(title)}">
+        <span class="score-model-return${this.signedPercentClass(expectedReturn)}">${escapeHtml(expectedText)}</span>
+        <span class="score-model-prob">${escapeHtml(pWinText)}</span>
+      </div>
+    `;
+  },
+
   scoreCell(row, helpers) {
     const { escapeHtml, rowScore } = helpers;
-    const overall = this.scorePairValue(rowScore(row), 1, "综合评分", "", helpers);
-    const risk = this.riskScoreValue(row.sell_risk?.score ?? row.serenity_profile?.risk_score ?? row.avg_risk, 0, "风险评分", "", helpers);
+    const overall = this.scorePairValue(rowScore(row), 1, "当前生产综合排序分", "综", helpers);
+    const risk = this.riskScoreValue(row.sell_risk?.score ?? row.serenity_profile?.risk_score ?? row.avg_risk, 0, "风险评分", "险", helpers);
+    const expectedLines = this.expectedReturnScoreLines(row, helpers);
     const number = `
-      <div class="score-stack" title="综合评分 / 风险评分">
+      <div class="score-stack" title="当前生产综合排序分 / 风险评分">
         <div class="score-line">${overall}<span class="score-pair-separator">/</span>${risk}</div>
+        ${expectedLines}
       </div>
     `;
     const tier = row.verdict?.tier ? ` score-${escapeHtml(row.verdict.tier)}` : "";

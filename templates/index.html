@@ -193,6 +193,18 @@
             策略验证加载后，这里会给出一句话结论。
           </div>
 
+          <div class="validation-oos-report oos-waiting" id="validationOosReport">
+            OOS 状态加载中
+          </div>
+
+          <div class="validation-baseline-actions" aria-label="current baseline 回填操作">
+            <div class="validation-baseline-action-row">
+              <button id="validationBaselineDryRunBtn" class="ghost-action" type="button">current baseline dry-run</button>
+              <button id="validationBaselineExecuteBtn" class="primary-action" type="button">execute 回填</button>
+            </div>
+            <div class="ops-status" id="validationBaselineStatus"></div>
+          </div>
+
           <div class="validation-summary-row validation-summary-compact">
             <div class="selected-validation">
               <span>当前批次</span>
@@ -313,6 +325,10 @@
     <script src="{{ url_for('static', filename='recommendation-utils.js') }}"></script>
     <script src="{{ url_for('static', filename='recommendation-renderers.js') }}"></script>
     <script src="{{ url_for('static', filename='recommendation-tables.js') }}"></script>
+    <script src="{{ url_for('static', filename='recommendation-status.js') }}"></script>
+    <script src="{{ url_for('static', filename='recommendation-app.js') }}"></script>
+    <script src="{{ url_for('static', filename='validation-stock-prediction.js') }}"></script>
+    <script src="{{ url_for('static', filename='validation-app.js') }}"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
   </body>
 </html>

@@ -59,6 +59,44 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("仓位0 · 不执行", result["html"])
         self.assertNotIn("确认买入", result["html"])
 
+    def test_recommendation_score_cell_exposes_expected_return_shadow_fields(self):
+        result = self.run_node(
+            """
+            global.window = {};
+            require('./static/recommendation-renderers.js');
+            const renderer = window.TraderRecommendationRenderers;
+            const row = {
+              score: 72.4,
+              avg_risk: 31,
+              rank_score: 66.8,
+              expected_return_net: 1.25,
+              p_win: 0.612,
+              downside_p10: -2.4,
+              model_confidence: 'shadow',
+              expected_return_sample_count: 36,
+            };
+            const helpers = {
+              rowScore: item => Number(item.score || 0),
+              formatNumber: (value, digits) => Number(value).toFixed(digits),
+              escapeHtml: value => String(value),
+            };
+            process.stdout.write(JSON.stringify({
+              scoreHtml: renderer.scoreCell(row, helpers),
+              explanation: renderer.explanationTags(row, helpers),
+            }));
+            """
+        )
+
+        self.assertIn("综72.4", result["scoreHtml"])
+        self.assertIn("险31", result["scoreHtml"])
+        self.assertIn("影66.8", result["scoreHtml"])
+        self.assertIn("E+1.25%", result["scoreHtml"])
+        self.assertIn("P61%", result["scoreHtml"])
+        self.assertIn("收益模型", result["explanation"])
+        self.assertIn("预期净收益+1.25%", result["explanation"])
+        self.assertIn("胜率概率61.2%", result["explanation"])
+        self.assertIn("置信影子", result["explanation"])
+
     def test_validation_decision_uses_backend_gate_reason(self):
         result = self.run_node(
             """
@@ -108,6 +146,27 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("validationSnapshotStrategiesText(config.strategies)", app_source)
         self.assertIn("snapshotStatusText(snapshot, config.strategies)", app_source)
         self.assertNotIn("三类策略验证快照", app_source)
+
+    def test_validation_panel_loads_oos_report(self):
+        with open("static/app.js", encoding="utf-8") as source:
+            app_source = source.read()
+        with open("templates/index.html", encoding="utf-8") as source:
+            template_source = source.read()
+
+        self.assertIn('id="validationOosReport"', template_source)
+        self.assertIn('id="validationBaselineDryRunBtn"', template_source)
+        self.assertIn('id="validationBaselineExecuteBtn"', template_source)
+        self.assertIn('id="validationBaselineStatus"', template_source)
+        self.assertIn("/api/strategy-validation/oos-report", app_source)
+        self.assertIn("/api/strategy-validation/backfill-current-baseline", app_source)
+        self.assertIn('params.set("execute", "1")', app_source)
+        self.assertIn("window.confirm", app_source)
+        self.assertIn("renderValidationOosReport", app_source)
+        self.assertIn("renderValidationBaselineBackfillResult", app_source)
+        self.assertIn("候选", app_source)
+        self.assertIn("回填前", app_source)
+        self.assertIn("回填后", app_source)
+        self.assertIn("oos_status", app_source)
 
 
 if __name__ == "__main__":
