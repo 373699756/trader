@@ -51,14 +51,15 @@ def build_event_risk_map(
             continue
         ratio = coerce_number(_first(row, "unlock_ratio", "float_ratio", "解禁比例", "解禁占比"))
         days = _days_until(_first(row, "date", "unlock_date", "解禁日期"))
+        announcement_time = _first(row, "announcement_time", "announce_date", "公告日期", "公告发布时间")
         if days is None or days < 0 or days > int(getattr(config, "EVENT_RISK_LOOKAHEAD_DAYS", 30)):
             continue
         warn = coerce_number(getattr(config, "EVENT_RISK_UNLOCK_WARN_RATIO", 3.0), 3.0)
         high = coerce_number(getattr(config, "EVENT_RISK_UNLOCK_HIGH_RATIO", 8.0), 8.0)
         if ratio >= high:
-            _add_flag(risks, code, "大额解禁", "high", getattr(config, "EVENT_RISK_PENALTY_HIGH", 18.0), ratio, days)
+            _add_flag(risks, code, "大额解禁", "high", getattr(config, "EVENT_RISK_PENALTY_HIGH", 18.0), ratio, days, announcement_time)
         elif ratio >= warn:
-            _add_flag(risks, code, "限售解禁", "medium", getattr(config, "EVENT_RISK_PENALTY_MEDIUM", 9.0), ratio, days)
+            _add_flag(risks, code, "限售解禁", "medium", getattr(config, "EVENT_RISK_PENALTY_MEDIUM", 9.0), ratio, days, announcement_time)
 
     for row in pledges or []:
         code = normalize_code(_first(row, "code", "ts_code", "股票代码", "证券代码"))
@@ -68,9 +69,9 @@ def build_event_risk_map(
         warn = coerce_number(getattr(config, "EVENT_RISK_PLEDGE_WARN_RATIO", 35.0), 35.0)
         high = coerce_number(getattr(config, "EVENT_RISK_PLEDGE_HIGH_RATIO", 55.0), 55.0)
         if ratio >= high:
-            _add_flag(risks, code, "高质押", "high", getattr(config, "EVENT_RISK_PENALTY_HIGH", 18.0), ratio, None)
+            _add_flag(risks, code, "高质押", "high", getattr(config, "EVENT_RISK_PENALTY_HIGH", 18.0), ratio, None, _first(row, "announcement_time", "announce_date", "公告日期", "公告发布时间"))
         elif ratio >= warn:
-            _add_flag(risks, code, "质押偏高", "medium", getattr(config, "EVENT_RISK_PENALTY_MEDIUM", 9.0), ratio, None)
+            _add_flag(risks, code, "质押偏高", "medium", getattr(config, "EVENT_RISK_PENALTY_MEDIUM", 9.0), ratio, None, _first(row, "announcement_time", "announce_date", "公告日期", "公告发布时间"))
 
     for row in reductions or []:
         code = normalize_code(_first(row, "code", "ts_code", "股票代码", "证券代码"))
@@ -81,14 +82,14 @@ def build_event_risk_map(
         recent = days_since is not None and 0 <= days_since <= lookback
         upcoming = days_until is not None and 0 <= days_until <= int(getattr(config, "EVENT_RISK_LOOKAHEAD_DAYS", 30))
         if code and (recent or upcoming):
-            _add_flag(risks, code, "减持计划", "medium", getattr(config, "EVENT_RISK_PENALTY_MEDIUM", 9.0), 0.0, days_until)
+            _add_flag(risks, code, "减持计划", "medium", getattr(config, "EVENT_RISK_PENALTY_MEDIUM", 9.0), 0.0, days_until, date_value)
 
     report_window = int(getattr(config, "EVENT_RISK_REPORT_WINDOW_DAYS", 5))
     for row in reports or []:
         code = normalize_code(_first(row, "code", "ts_code", "股票代码", "证券代码"))
         days = _days_until(_first(row, "date", "report_date", "预约披露日期", "公告日期"))
         if code and days is not None and abs(days) <= report_window:
-            _add_flag(risks, code, "财报窗口", "low", getattr(config, "EVENT_RISK_PENALTY_LOW", 4.0), 0.0, days)
+            _add_flag(risks, code, "财报窗口", "low", getattr(config, "EVENT_RISK_PENALTY_LOW", 4.0), 0.0, days, _first(row, "announcement_time", "announce_date", "公告日期", "公告发布时间"))
 
     hard_threshold = coerce_number(getattr(config, "EVENT_RISK_HARD_PENALTY", 24.0), 24.0)
     for item in risks.values():
@@ -145,9 +146,19 @@ def _add_flag(
     penalty: float,
     value: float,
     days: int,
+    announcement_time=None,
 ) -> None:
     item = risks.setdefault(code, {"code": code, "flags": [], "penalty": 0.0})
-    item["flags"].append({"label": label, "level": level, "value": round(coerce_number(value), 2), "days": days})
+    item["flags"].append(
+        {
+            "label": label,
+            "level": level,
+            "value": round(coerce_number(value), 2),
+            "days": days,
+            "penalty": round(coerce_number(penalty), 2),
+            "announcement_time": str(announcement_time or ""),
+        }
+    )
     item["penalty"] += coerce_number(penalty)
 
 

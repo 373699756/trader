@@ -1,20 +1,12 @@
 import os
-from contextlib import contextmanager
-import sqlite3
 from datetime import datetime, timedelta
 import pandas as pd
 
 from .normalization import coerce_number, normalize_code, rename_known_columns
+from .sqlite_support import sqlite_transaction
 
 
-@contextmanager
-def _connect_history_db(db_path: str):
-    conn = sqlite3.connect(db_path, timeout=30)
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+_connect_history_db = sqlite_transaction
 
 
 class HistoryCache:

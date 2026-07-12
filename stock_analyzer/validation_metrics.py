@@ -7,144 +7,45 @@ from typing import Dict, List
 
 from . import config
 from .normalization import coerce_number, normalize_code
-
-
-def _sv():
-    from . import strategy_validation
-
-    return strategy_validation
-
-
-def current_strategy_version(strategy_name: str) -> str:
-    return _sv().current_strategy_version(strategy_name)
-
-
-def current_replay_strategy_version(strategy_name: str) -> str:
-    return _sv().current_replay_strategy_version(strategy_name)
-
-
-def validation_baseline_config(strategy_name: str = "") -> Dict[str, object]:
-    return _sv().validation_baseline_config(strategy_name)
-
-
-def legacy_validation_baseline_id(strategy_name: str = "") -> str:
-    return _sv().legacy_validation_baseline_id(strategy_name)
-
-
-def _primary_return_config(strategy_name: str):
-    return _sv()._primary_return_config(strategy_name)
-
-
-def _stored_validation_baseline_id(stored_baseline_id, strategy_name: str = "") -> str:
-    return _sv()._stored_validation_baseline_id(stored_baseline_id, strategy_name)
-
-
-def _matches_current_validation_baseline(stored_baseline_id, strategy_name: str = "", current_baseline_id: str = "") -> bool:
-    return _sv()._matches_current_validation_baseline(stored_baseline_id, strategy_name, current_baseline_id)
-
-
-def _outcome_ready(row, holding_days: int) -> bool:
-    return _sv()._outcome_ready(row, holding_days)
-
-
-def _is_primary_validation_signal(strategy_name: str, rank, raw: Dict[str, object]) -> bool:
-    return _sv()._is_primary_validation_signal(strategy_name, rank, raw)
-
-
-def _is_replay_version(strategy_version: str) -> bool:
-    return _sv()._is_replay_version(strategy_version)
-
-
-def _stored_or_current_trade_cost_pct(row) -> float:
-    return _sv()._stored_or_current_trade_cost_pct(row)
-
-
-def _execution_cost_pct(row) -> float:
-    return _sv()._execution_cost_pct(row)
-
-
-def _exit_holding_days(strategy_name: str) -> int:
-    return _sv()._exit_holding_days(strategy_name)
-
-
-def _avg(values) -> float:
-    return _sv()._avg(values)
-
-
-def _rate(values) -> float:
-    return _sv()._rate(values)
-
-
-def _mean_confidence_interval(values, z_score: float = 1.96):
-    return _sv()._mean_confidence_interval(values, z_score)
-
-
-def _wilson_lower_bound(values, z_score: float = 1.96):
-    return _sv()._wilson_lower_bound(values, z_score)
-
-
-def _portfolio_max_drawdown(daily_rows: List[Dict[str, object]]) -> float:
-    return _sv()._portfolio_max_drawdown(daily_rows)
-
-
-def _daily_metrics(rows: List[sqlite3.Row]) -> List[Dict[str, object]]:
-    return _sv()._daily_metrics(rows)
-
-
-def _next_day_compare(rows: List[sqlite3.Row]) -> Dict[str, object]:
-    return _sv()._next_day_compare(rows)
-
-
-def _has_deepseek_review(raw: Dict[str, object]) -> bool:
-    return _sv()._has_deepseek_review(raw)
-
-
-def _deepseek_covered(raw: Dict[str, object]) -> bool:
-    return _sv()._deepseek_covered(raw)
-
-
-def _deepseek_avoid_or_veto(raw: Dict[str, object]) -> bool:
-    return _sv()._deepseek_avoid_or_veto(raw)
-
-
-def _deepseek_action(raw: Dict[str, object]) -> str:
-    return _sv()._deepseek_action(raw)
-
-
-def _deepseek_local_rank(row: Dict[str, object]) -> int:
-    return _sv()._deepseek_local_rank(row)
-
-
-def _deepseek_blend_alpha(raw: Dict[str, object]):
-    return _sv()._deepseek_blend_alpha(raw)
-
-
-def _return_summary(rows: List[Dict[str, object]]) -> Dict[str, object]:
-    return _sv()._return_summary(rows)
-
-
-def _deepseek_counterfactual_topn(strategy_name: str, rows: List[Dict[str, object]]) -> Dict[str, object]:
-    return _sv()._deepseek_counterfactual_topn(strategy_name, rows)
-
-
-def _deepseek_group_delta(priority_rows: List[Dict[str, object]], watch_rows: List[Dict[str, object]]) -> Dict[str, object]:
-    return _sv()._deepseek_group_delta(priority_rows, watch_rows)
-
-
-def _deepseek_token_cost_summary(rows: List[Dict[str, object]]) -> Dict[str, object]:
-    return _sv()._deepseek_token_cost_summary(rows)
-
-
-def _deepseek_token_value_metrics(avoid_veto_rows: List[Dict[str, object]], counterfactual: Dict[str, object], token_cost: Dict[str, object]) -> Dict[str, object]:
-    return _sv()._deepseek_token_value_metrics(avoid_veto_rows, counterfactual, token_cost)
-
-
-def _deepseek_budget_recommendation(status: str, real_sample_count: int, min_real_samples: int, token_value: Dict[str, object]) -> Dict[str, object]:
-    return _sv()._deepseek_budget_recommendation(status, real_sample_count, min_real_samples, token_value)
-
-
-def _write_deepseek_attribution_snapshot(strategy_name: str, result: Dict[str, object]) -> None:
-    return _sv()._write_deepseek_attribution_snapshot(strategy_name, result)
+from .validation_policy import (
+    current_replay_strategy_version,
+    current_strategy_version,
+    execution_cost_pct as _execution_cost_pct,
+    exit_holding_days as _exit_holding_days,
+    is_primary_validation_signal as _is_primary_validation_signal,
+    is_replay_version as _is_replay_version,
+    legacy_validation_baseline_id,
+    matches_current_validation_baseline as _matches_current_validation_baseline,
+    outcome_ready as _outcome_ready,
+    primary_return_config as _primary_return_config,
+    stored_or_current_trade_cost_pct as _stored_or_current_trade_cost_pct,
+    stored_validation_baseline_id as _stored_validation_baseline_id,
+    validation_baseline_config,
+)
+from .validation_statistics import (
+    average as _avg,
+    daily_metrics as _daily_metrics,
+    deepseek_action as _deepseek_action,
+    deepseek_avoid_or_veto as _deepseek_avoid_or_veto,
+    deepseek_blend_alpha as _deepseek_blend_alpha,
+    deepseek_budget_recommendation as _deepseek_budget_recommendation,
+    deepseek_counterfactual_topn as _deepseek_counterfactual_topn,
+    deepseek_covered as _deepseek_covered,
+    deepseek_group_delta as _deepseek_group_delta,
+    deepseek_local_rank as _deepseek_local_rank,
+    deepseek_shadow_rank as _deepseek_shadow_rank,
+    deepseek_token_cost_summary as _deepseek_token_cost_summary,
+    deepseek_token_value_metrics as _deepseek_token_value_metrics,
+    has_deepseek_review as _has_deepseek_review,
+    mean_confidence_interval as _mean_confidence_interval,
+    next_day_compare as _next_day_compare,
+    portfolio_max_drawdown as _portfolio_max_drawdown,
+    rate as _rate,
+    return_summary as _return_summary,
+    top_k_sensitivity as _top_k_sensitivity,
+    wilson_lower_bound as _wilson_lower_bound,
+    write_deepseek_attribution_snapshot as _write_deepseek_attribution_snapshot,
+)
 
 
 class ValidationMetricsService:
@@ -207,6 +108,7 @@ class ValidationMetricsService:
                 "raw_outcome_sample_count": 0,
                 "legacy_baseline_outcome_count": 0,
                 "excluded_baseline_mismatch_count": 0,
+                "excluded_promotion_ineligible_count": 0,
                 "avg_next_day_return_net": 0.0,
                 "win_rate_next_day_net": 0.0,
                 "avg_1_5d_exit_return_net": 0.0,
@@ -220,6 +122,10 @@ class ValidationMetricsService:
                 "real_avg_primary_return_net_ci95_high": None,
                 "real_win_rate_primary_net_ci95_low": None,
                 "real_portfolio_max_drawdown_pct": 0.0,
+                "top_k_sensitivity": _top_k_sensitivity(
+                    [],
+                    getattr(config, "RESEARCH_TOP_K_SENSITIVITY", (3, 5, 10)),
+                ),
                 "survivorship_corrected_count": 0,
                 "survivor_sample_count": 0,
                 "avg_primary_return_net_survivors": 0.0,
@@ -236,6 +142,7 @@ class ValidationMetricsService:
         current_baseline_rows: List[Dict[str, object]] = []
         baseline_mismatch_rows: List[Dict[str, object]] = []
         legacy_baseline_rows: List[Dict[str, object]] = []
+        promotion_ineligible_rows: List[Dict[str, object]] = []
         baseline_cache: Dict[str, str] = {}
         legacy_cache: Dict[str, str] = {}
         for row in raw_rows:
@@ -245,11 +152,17 @@ class ValidationMetricsService:
                 legacy_cache[row_strategy] = legacy_validation_baseline_id(row_strategy)
             stored_baseline_id = _stored_validation_baseline_id(row.get("validation_baseline_id"), row_strategy)
             row["_stored_validation_baseline_id"] = stored_baseline_id
-            row["_validation_baseline_matches_current"] = stored_baseline_id == baseline_cache[row_strategy]
+            row["_validation_baseline_matches_current"] = _matches_current_validation_baseline(
+                stored_baseline_id,
+                row_strategy,
+                baseline_cache[row_strategy],
+            )
             if stored_baseline_id == legacy_cache[row_strategy]:
                 legacy_baseline_rows.append(row)
-            if row["_validation_baseline_matches_current"]:
+            if row["_validation_baseline_matches_current"] and bool(row.get("promotion_eligible", 1)):
                 current_baseline_rows.append(row)
+            elif row["_validation_baseline_matches_current"]:
+                promotion_ineligible_rows.append(row)
             else:
                 baseline_mismatch_rows.append(row)
         rows = current_baseline_rows
@@ -348,6 +261,10 @@ class ValidationMetricsService:
         ]
         real_daily = _daily_metrics(real_rows)
         replay_daily = _daily_metrics(replay_rows)
+        top_k_sensitivity = _top_k_sensitivity(
+            [row for row in selected if not row["_is_replay"]],
+            getattr(config, "RESEARCH_TOP_K_SENSITIVITY", (3, 5, 10)),
+        )
         real_daily_returns = [coerce_number(row.get("avg_primary_return_net")) for row in real_daily]
         real_return_ci = _mean_confidence_interval(real_daily_returns)
         real_win_ci_low = _wilson_lower_bound([value > 0 for value in real_daily_returns])
@@ -389,6 +306,7 @@ class ValidationMetricsService:
             "raw_outcome_sample_count": len(raw_rows),
             "legacy_baseline_outcome_count": len(legacy_baseline_rows),
             "excluded_baseline_mismatch_count": len(baseline_mismatch_rows),
+            "excluded_promotion_ineligible_count": len(promotion_ineligible_rows),
             "trade_cost_pct": base_cost,
             "avg_trade_cost_pct": _avg(row["_trade_cost_pct"] for row in primary_outcome_rows),
             "avg_next_close_return": _avg(row["_next_day_return"] for row in primary_outcome_rows),
@@ -428,6 +346,7 @@ class ValidationMetricsService:
             "real_avg_primary_return_net_ci95_high": real_return_ci[1],
             "real_win_rate_primary_net_ci95_low": real_win_ci_low,
             "real_portfolio_max_drawdown_pct": _portfolio_max_drawdown(real_daily),
+            "top_k_sensitivity": top_k_sensitivity,
             "replay_avg_primary_return_net": _avg(row["avg_primary_return_net"] for row in replay_daily),
             "replay_win_rate_primary_net": _rate(row["avg_primary_return_net"] > 0 for row in replay_daily),
             "avg_max_drawdown_3d": _avg(row["_primary_drawdown"] for row in primary_rows),
@@ -514,7 +433,11 @@ class ValidationMetricsService:
         real_rows = [row for row in attribution_rows if not row["_is_replay"]]
         replay_rows = [row for row in attribution_rows if row["_is_replay"]]
         covered_rows = [row for row in attribution_rows if _deepseek_covered(row.get("_raw"))]
-        shadow_rows = [row for row in attribution_rows if row.get("_deepseek_shadow_signal")]
+        shadow_rows = [
+            row
+            for row in attribution_rows
+            if row.get("_deepseek_shadow_signal") or bool((row.get("_raw") or {}).get("deepseek_shadow_filtered"))
+        ]
         selected_rows = [row for row in attribution_rows if not row.get("_deepseek_shadow_signal")]
         avoid_veto_rows = [row for row in attribution_rows if _deepseek_avoid_or_veto(row.get("_raw"))]
         priority_rows = [row for row in attribution_rows if _deepseek_action(row.get("_raw")) == "priority"]
@@ -554,7 +477,13 @@ class ValidationMetricsService:
             "shadow_sample_count": len(shadow_rows),
             "covered_ratio_pct": round(len(covered_rows) / len(attribution_rows) * 100, 2) if attribution_rows else 0.0,
             "local_rank_sample_count": sum(1 for row in attribution_rows if _deepseek_local_rank(row) > 0),
-            "reordered_sample_count": sum(1 for row in attribution_rows if _deepseek_local_rank(row) > 0 and _deepseek_local_rank(row) != int(row.get("rank") or 0)),
+            "reordered_sample_count": sum(
+                1
+                for row in attribution_rows
+                if _deepseek_local_rank(row) > 0
+                and _deepseek_shadow_rank(row) > 0
+                and _deepseek_local_rank(row) != _deepseek_shadow_rank(row)
+            ),
             "blend_alpha_avg": _avg(_deepseek_blend_alpha(row.get("_raw")) for row in attribution_rows if _deepseek_blend_alpha(row.get("_raw")) is not None),
             "avoid_veto": _return_summary(avoid_veto_rows),
             "shadow_avoid_veto": _return_summary([row for row in avoid_veto_rows if row.get("_deepseek_shadow_signal")]),
@@ -623,6 +552,7 @@ class ValidationBaselineService:
                 "current_baseline_day_count": 0,
                 "current_primary_ready_count": 0,
                 "current_primary_ready_day_count": 0,
+                "promotion_ineligible_outcome_count": 0,
                 "current_baseline_coverage_pct": None,
                 "current_baseline_actionable_coverage_pct": None,
                 "needs_backfill": False,
@@ -648,6 +578,7 @@ class ValidationBaselineService:
         current_dates = set()
         current_primary_ready_count = 0
         current_primary_ready_dates = set()
+        promotion_ineligible_count = 0
         by_baseline: Dict[str, Dict[str, object]] = {}
         baseline_cache: Dict[str, str] = {}
         legacy_cache: Dict[str, str] = {}
@@ -658,6 +589,7 @@ class ValidationBaselineService:
                 legacy_cache[row_strategy] = legacy_validation_baseline_id(row_strategy)
             has_outcome = bool(row["outcome_signal_id"])
             has_skip = bool(row["skip_signal_id"])
+            promotion_eligible = bool(row["promotion_eligible"])
             if has_skip:
                 skipped_count += 1
             if not has_outcome:
@@ -666,6 +598,11 @@ class ValidationBaselineService:
                 continue
             raw_outcome_count += 1
             stored_baseline_id = _stored_validation_baseline_id(row["validation_baseline_id"], row_strategy)
+            matches_current = _matches_current_validation_baseline(
+                stored_baseline_id,
+                row_strategy,
+                baseline_cache[row_strategy],
+            )
             bucket = by_baseline.setdefault(
                 stored_baseline_id,
                 {
@@ -673,7 +610,7 @@ class ValidationBaselineService:
                     "outcome_count": 0,
                     "day_count": 0,
                     "_dates": set(),
-                    "is_current": stored_baseline_id == baseline_cache[row_strategy],
+                    "is_current": matches_current,
                     "is_legacy": stored_baseline_id == legacy_cache[row_strategy],
                 },
             )
@@ -681,9 +618,12 @@ class ValidationBaselineService:
             bucket["_dates"].add(str(row["signal_date"]))
             if stored_baseline_id == legacy_cache[row_strategy]:
                 legacy_count += 1
-            if stored_baseline_id == baseline_cache[row_strategy]:
+            if matches_current:
                 current_count += 1
                 current_dates.add(str(row["signal_date"]))
+                if not promotion_eligible:
+                    promotion_ineligible_count += 1
+                    continue
                 try:
                     raw = json.loads(row["raw_json"] or "{}")
                 except Exception:
@@ -743,6 +683,7 @@ class ValidationBaselineService:
             "current_baseline_day_count": len(current_dates),
             "current_primary_ready_count": current_primary_ready_count,
             "current_primary_ready_day_count": len(current_primary_ready_dates),
+            "promotion_ineligible_outcome_count": promotion_ineligible_count,
             "current_baseline_coverage_pct": coverage,
             "current_baseline_actionable_coverage_pct": actionable_coverage,
             "needs_backfill": needs_backfill,

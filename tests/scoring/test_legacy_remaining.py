@@ -323,13 +323,17 @@ class LegacyRemainingScoringTest(unittest.TestCase):
             path = f"{tmp}/weights.json"
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump({"thresholds": {"min_data_coverage": 0.99}}, handle)
-            with patch.object(config, "WEIGHTS_OVERRIDE_PATH", path):
+            with patch.object(config, "WEIGHTS_OVERRIDE_PATH", path), patch.object(
+                config, "PRODUCTION_FREEZE_ENABLED", False
+            ):
                 import stock_analyzer.scoring as scoring
 
                 weights, thresholds = scoring._load_weight_overrides()
                 self.assertEqual(thresholds["min_data_coverage"], 0.99)
             # 不存在文件时回退默认
-            with patch.object(config, "WEIGHTS_OVERRIDE_PATH", f"{tmp}/missing.json"):
+            with patch.object(config, "WEIGHTS_OVERRIDE_PATH", f"{tmp}/missing.json"), patch.object(
+                config, "PRODUCTION_FREEZE_ENABLED", False
+            ):
                 weights, thresholds = scoring._load_weight_overrides()
                 self.assertEqual(thresholds["min_data_coverage"], 0.5)
 
@@ -1254,13 +1258,15 @@ class LegacyRemainingScoringTest(unittest.TestCase):
                 store.update_outcomes(FakeProvider(), signal_date="2024-01-01", strategy_name="tomorrow_picks")
                 rows = store.signals_for_date("2024-01-01", "tomorrow_picks")
                 stored_cost = rows[0]["trade_cost_pct"]
+                metrics = store.metrics("tomorrow_picks", days=20)
+                samples = store.live_weight_samples("tomorrow_picks", days=20)
             with patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", True), patch.object(
                 config, "ENABLE_MARKET_IMPACT", False
             ), patch.object(config, "TAIL_AUCTION_MAX_EXTRA_SLIPPAGE_PCT", 0.0), patch.object(
                 config, "VALIDATION_PORTFOLIO_CAPITAL", 1_000
             ):
-                metrics = store.metrics("tomorrow_picks", days=20)
-                samples = store.live_weight_samples("tomorrow_picks", days=20)
+                changed_policy_metrics = store.metrics("tomorrow_picks", days=20)
+                changed_policy_samples = store.live_weight_samples("tomorrow_picks", days=20)
 
         self.assertGreater(stored_cost, config.VALIDATION_TRADE_COST_PCT)
         self.assertAlmostEqual(metrics["avg_trade_cost_pct"], stored_cost)
@@ -1269,6 +1275,9 @@ class LegacyRemainingScoringTest(unittest.TestCase):
             metrics["avg_primary_return_net"],
             metrics["avg_primary_return"] - stored_cost,
         )
+        self.assertEqual(changed_policy_metrics["sample_count"], 0)
+        self.assertEqual(changed_policy_metrics["excluded_baseline_mismatch_count"], 1)
+        self.assertEqual(changed_policy_samples, [])
 
     def test_strategy_validation_stores_exit_rule_outcome(self):
         import tempfile
@@ -1360,7 +1369,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         self.assertEqual(outcome["skip_reason"], "tomorrow_high_open_chase")
         self.assertGreater(outcome["next_open_return"], 3.0)
 
-    def test_strategy_validation_survivorship_correction_disabled_keeps_no_future_pending(self):
+    def test_strategy_validation_stale_no_future_without_evidence_is_unknown(self):
         import tempfile
 
         class FakeProvider:
@@ -1390,8 +1399,10 @@ class LegacyRemainingScoringTest(unittest.TestCase):
 
         self.assertEqual(update["updated"], 0)
         self.assertEqual(update["skipped"], 1)
-        self.assertEqual(update["pending"], 1)
-        self.assertEqual(update["skipped_reasons"]["not_mature_no_future_trade"], 1)
+        self.assertEqual(update["pending"], 0)
+        self.assertEqual(update["unknown"], 1)
+        self.assertEqual(update["skipped_reasons"]["no_future_trade_unclassified"], 1)
+        self.assertEqual(rows[0]["label_status"], "unknown")
         self.assertIsNone(rows[0]["outcome_updated_at"])
         self.assertEqual(metrics["sample_count"], 0)
 
@@ -1399,14 +1410,17 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         import tempfile
 
         class FakeProvider:
+            def get_security_status(self, code):
+                return {"status": "delisted"}
+
             def get_history(self, code, days=180):
                 return pd.DataFrame(
                     {
                         "trade_date": ["20240101", "20240102", "20240103"],
-                        "open": [10.0, 10.0, 9.6],
-                        "high": [10.2, 10.1, 9.7],
-                        "low": [9.8, 9.5, 9.1],
-                        "price": [10.0, 9.6, 9.2],
+                        "open": [10.0, 10.0, 10.1],
+                        "high": [10.2, 10.2, 10.3],
+                        "low": [9.8, 9.9, 10.0],
+                        "price": [10.0, 10.1, 10.2],
                     }
                 )
 
@@ -1428,7 +1442,8 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         self.assertEqual(update["updated"], 1)
         self.assertEqual(rows[0]["future_days"], 2)
         self.assertEqual(rows[0]["survivorship_corrected"], 1)
-        self.assertEqual(rows[0]["correction_reason"], "survivorship_truncated_future_liquidation")
+        self.assertEqual(rows[0]["correction_reason"], "delisted_last_tradable_liquidation")
+        self.assertEqual(rows[0]["delisting_status"], "liquidated_last_tradable")
         self.assertEqual(metrics["sample_count"], 1)
         self.assertEqual(metrics["survivorship_corrected_count"], 1)
         self.assertEqual(metrics["survivor_sample_count"], 0)
@@ -1629,12 +1644,15 @@ class LegacyRemainingScoringTest(unittest.TestCase):
             rows = store.signals_for_date("2024-01-01", "swing_picks")
             metrics = store.metrics("swing_picks", days=20)
 
-        self.assertEqual(update["updated"], 2)
+        self.assertEqual(update["updated"], 1)
+        self.assertEqual(update["unknown"], 1)
         self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["label_status"], "unknown")
+        self.assertEqual(rows[1]["label_status"], "settled")
         self.assertFalse(any(row.get("survivorship_corrected") for row in rows))
         self.assertEqual(metrics["primary_holding_days"], 5)
         self.assertEqual(metrics["primary_horizon_label"], "次日开盘后2-5日可执行退出")
-        self.assertEqual(metrics["outcome_sample_count"], 2)
+        self.assertEqual(metrics["outcome_sample_count"], 1)
         self.assertEqual(metrics["sample_count"], 1)
         self.assertEqual(metrics["real_sample_count"], 1)
         self.assertAlmostEqual(metrics["avg_primary_return"], 8.0)

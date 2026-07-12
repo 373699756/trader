@@ -10,11 +10,14 @@ from .runtime_json import atomic_write_json
 
 
 def save_recommendation_snapshot(path: str, payload: Dict[str, object]) -> Dict[str, object]:
+    from .production_baseline import production_baseline_id
+
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     snapshot = {
-        "schema": 1,
+        "schema": 2,
         "saved_at": datetime.now().isoformat(timespec="seconds"),
         "saved_at_ts": time.time(),
+        "production_baseline_id": production_baseline_id(),
         "payload": payload,
     }
     atomic_write_json(path, snapshot, ensure_ascii=False, separators=(",", ":"))
@@ -26,6 +29,7 @@ def load_recommendation_snapshot(
     max_age_seconds: int = 0,
     expected_market: str = "",
     expected_top_n: int = 0,
+    expected_baseline_id: str = "",
 ) -> Dict[str, object]:
     if not os.path.exists(path):
         return {"ok": False, "status": "missing", "path": path}
@@ -34,8 +38,21 @@ def load_recommendation_snapshot(
             snapshot = json.load(handle)
     except Exception as exc:
         return {"ok": False, "status": "invalid", "path": path, "error": str(exc)}
-    if not isinstance(snapshot, dict) or snapshot.get("schema") != 1:
+    if not isinstance(snapshot, dict) or snapshot.get("schema") not in {1, 2}:
         return {"ok": False, "status": "unsupported_schema", "path": path}
+    if not expected_baseline_id:
+        from .production_baseline import production_baseline_id
+
+        expected_baseline_id = production_baseline_id()
+    snapshot_baseline_id = str(snapshot.get("production_baseline_id") or "")
+    if expected_baseline_id and snapshot_baseline_id != expected_baseline_id:
+        return {
+            "ok": False,
+            "status": "baseline_mismatch",
+            "path": path,
+            "expected_baseline_id": expected_baseline_id,
+            "snapshot_baseline_id": snapshot_baseline_id,
+        }
     saved_at_ts = float(snapshot.get("saved_at_ts") or 0.0)
     age_seconds = max(0.0, time.time() - saved_at_ts) if saved_at_ts else None
     if max_age_seconds and age_seconds is not None and age_seconds > max_age_seconds:

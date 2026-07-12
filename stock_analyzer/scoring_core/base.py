@@ -499,6 +499,19 @@ def _load_weight_overrides() -> Tuple[Dict[str, object], Dict[str, object]]:
 
     weights = copy.deepcopy(_DEFAULT_WEIGHTS)
     thresholds = copy.deepcopy(_DEFAULT_THRESHOLDS)
+    if bool(getattr(config, "PRODUCTION_FREEZE_ENABLED", False)):
+        manifest = getattr(config, "PRODUCTION_BASELINE_MANIFEST", {}) or {}
+        frozen_weights = manifest.get("weights") if isinstance(manifest.get("weights"), dict) else {}
+        frozen_thresholds = manifest.get("thresholds") if isinstance(manifest.get("thresholds"), dict) else {}
+        for group, values in frozen_weights.items():
+            if isinstance(values, dict):
+                weights.setdefault(group, {}).update(values)
+        for key, value in frozen_thresholds.items():
+            if isinstance(value, dict) and isinstance(thresholds.get(key), dict):
+                thresholds[key].update(value)
+            else:
+                thresholds[key] = value
+        return weights, thresholds
     path = getattr(config, "WEIGHTS_OVERRIDE_PATH", os.path.join(".runtime", "weights.json"))
     try:
         if os.path.exists(path):
@@ -3758,6 +3771,8 @@ def _market_regime_adjustment(
 
 
 def _regime_weight(key: str, market_regime: Dict[str, object], default: float = 1.0) -> float:
+    if not bool(getattr(config, "ENABLE_REGIME_SPECIFIC_WEIGHTS", False)):
+        return 1.0
     if not market_regime:
         return default
     level = market_regime.get("level") or "balanced"
@@ -4084,10 +4099,12 @@ def _tomorrow_analysis_window() -> str:
 
 
 def _tomorrow_intraday_relaxed_mode(now: datetime = None, quote_time: datetime = None) -> bool:
-    current = now or datetime.now()
+    if now is None and quote_time is None:
+        return False
+    current = now or quote_time or datetime.now()
     if current.weekday() >= 5:
         return False
-    if quote_time is not None and quote_time.date() != current.date():
+    if now is not None and quote_time is not None and quote_time.date() != current.date():
         return False
     start = _time_parts(getattr(config, "TOMORROW_INTRADAY_RELAX_START", "09:30"), (9, 30))
     cutoff = _time_parts(getattr(config, "TOMORROW_INTRADAY_RELAX_UNTIL", "14:30"), (14, 30))

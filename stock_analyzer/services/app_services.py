@@ -220,6 +220,28 @@ class _AppServiceContext:
             entry = self._cached_recommendation_entry(top_n, market)
             if entry is not None:
                 return self._serve_recommendation_payload(entry), status
+            return payload, status
+        refresh_status = getattr(self.provider, "quote_refresh_status", lambda: {})()
+        if refresh_status.get("running") or self._safe_provider_health().get("quotes_source") == "后台刷新中":
+            return response_payload(
+                self._safe_provider_health,
+                self.research_disclaimer,
+                ok=True,
+                include_disclaimer=True,
+                data=[],
+                recommendations={"short_term": [], "tomorrow_picks": [], "swing_picks": []},
+                meta={
+                    "generated_at": "",
+                    "candidate_count": 0,
+                    "display_count": 0,
+                    "display_limit": top_n,
+                    "top_n": top_n,
+                    "market_filter": market,
+                    "strategy": "后台刷新中",
+                    "fallback": "async_refresh_pending",
+                },
+                snapshot={"saved_at": "", "age_seconds": None, "source": "async_refresh_pending"},
+            ), 200
         return payload, status
 
     def latest_recommendations_payload(
@@ -523,6 +545,58 @@ class _AppServiceContext:
                 limit=limit,
                 reports=reports,
             )
+        except Exception as exc:
+            return self.error_payload(exc)
+
+    def strategy_validation_portfolio_baseline(
+        self,
+        *,
+        strategy: str,
+        days: int,
+        signal_date: str,
+        ranking_field: str,
+        model_id: str,
+        execute: bool,
+        include_audit: bool,
+    ) -> Tuple[Dict[str, object], int]:
+        try:
+            from ..portfolio_baseline import DailyPortfolioBaselineService
+
+            service = DailyPortfolioBaselineService(self.validation_store)
+            if execute:
+                result = service.run(
+                    self.provider,
+                    strategy,
+                    signal_date=signal_date,
+                    days=days,
+                    ranking_field=ranking_field,
+                    model_id=model_id,
+                )
+                if include_audit and signal_date:
+                    result["audit_record"] = service.record(
+                        strategy,
+                        signal_date,
+                        ranking_field=ranking_field,
+                        model_id=model_id,
+                        include_audit=True,
+                    )
+            elif signal_date:
+                result = service.record(
+                    strategy,
+                    signal_date,
+                    ranking_field=ranking_field,
+                    model_id=model_id,
+                    include_audit=include_audit,
+                )
+            else:
+                result = service.report(
+                    strategy,
+                    days=days,
+                    ranking_field=ranking_field,
+                    model_id=model_id,
+                    include_audit=include_audit,
+                )
+            return self.json_payload(ok=True, include_health=False, strategy=strategy, result=result)
         except Exception as exc:
             return self.error_payload(exc)
 
@@ -985,6 +1059,9 @@ class _AppServiceContext:
         attach_validation_summary(rows, self.validation_store, strategy, metrics_fn=self.cached_metrics)
         meta["market_regime"] = market_regime
         meta["factor_coverage"] = coverage
+        from ..production_baseline import attach_generation_provenance
+
+        attach_generation_provenance(meta, strategy, rows, candidates)
         payload = response_payload(
             lambda: self._provider_health_with_factor_coverage(coverage=coverage),
             self.research_disclaimer,
@@ -1115,6 +1192,15 @@ class _AppServiceContext:
             days = validation_gate_window_days()
             for strategy in self._configured_auto_snapshot_strategies():
                 try:
+                    if strategy in set(getattr(config, "PORTFOLIO_BASELINE_STRATEGIES", ("tomorrow_picks",))):
+                        from ..portfolio_baseline import DailyPortfolioBaselineService
+
+                        DailyPortfolioBaselineService(self.validation_store).run(
+                            self.provider,
+                            strategy,
+                            days=min(days, 6),
+                            reuse_settled=True,
+                        )
                     report = generate_strategy_oos_report(
                         self.validation_store,
                         strategy,
@@ -1180,6 +1266,9 @@ class _AppServiceContext:
                 self.cached_metrics,
             )
             meta["factor_coverage"] = coverage
+            from ..production_baseline import attach_generation_provenance
+
+            attach_generation_provenance(meta, "short_term", short_display_rows, candidates)
             try:
                 market_gate = meta.get("deepseek_market_gate") if isinstance(meta, dict) else {}
                 if isinstance(market_gate, dict) and market_gate.get("enabled"):
@@ -1454,6 +1543,9 @@ class ValidationUseCase(_UseCase):
     def strategy_validation_oos_report_history(self, strategy: str, limit: int) -> Tuple[Dict[str, object], int]:
         return self.context.strategy_validation_oos_report_history(strategy, limit)
 
+    def strategy_validation_portfolio_baseline(self, **kwargs) -> Tuple[Dict[str, object], int]:
+        return self.context.strategy_validation_portfolio_baseline(**kwargs)
+
     def strategy_validation_backfill_samples(
         self,
         *,
@@ -1666,6 +1758,9 @@ class AppServices:
 
     def strategy_validation_oos_report_history(self, strategy: str, limit: int) -> Tuple[Dict[str, object], int]:
         return self.validation.strategy_validation_oos_report_history(strategy, limit)
+
+    def strategy_validation_portfolio_baseline(self, **kwargs) -> Tuple[Dict[str, object], int]:
+        return self.validation.strategy_validation_portfolio_baseline(**kwargs)
 
     def strategy_validation_backfill_samples(
         self,

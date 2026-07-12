@@ -65,6 +65,11 @@ def apply_rule_penalty(strategy: str, row: Dict[str, object]) -> Dict[str, objec
     if penalty <= 0:
         return row
     next_row = dict(row)
+    if bool(getattr(config, "DEEPSEEK_SHADOW_ONLY", False)):
+        next_row["deepseek_rule_shadow_penalty"] = penalty
+        next_row["deepseek_rule_shadow_matches"] = matched
+        next_row["deepseek_rule_shadow_only"] = True
+        return next_row
     base_score = coerce_number(next_row.get("score"), 0.0)
     next_row["deepseek_rule_penalty"] = penalty
     next_row["deepseek_rules_matched"] = matched

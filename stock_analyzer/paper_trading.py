@@ -1,5 +1,4 @@
 import json
-from contextlib import contextmanager
 import os
 import sqlite3
 from datetime import datetime
@@ -11,6 +10,7 @@ from . import config
 from .normalization import coerce_number, normalize_code
 from .portfolio import build_portfolio
 from .risk_rules import simulate_exit
+from .sqlite_support import sqlite_transaction
 from .strategy_validation import (
     _daily_limit_pct,
     _execution_cost_pct,
@@ -19,14 +19,7 @@ from .strategy_validation import (
 )
 
 
-@contextmanager
-def _connect_paper_db(db_path: str):
-    conn = sqlite3.connect(db_path, timeout=30)
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+_connect_paper_db = sqlite_transaction
 
 
 class PaperTradingStore:

@@ -190,6 +190,7 @@ class SwingScorer:
         market_regime: Dict[str, object] = None,
         expected_return_samples: Iterable[Dict[str, object]] = None,
         use_expected_return_ranking: bool = False,
+        capture_candidate_pool: bool = False,
     ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
         if market_filter in ("main", "chinext", "star"):
             df = df[df["market"] == market_filter].copy()
@@ -222,6 +223,12 @@ class SwingScorer:
             samples=expected_return_samples,
             use_ranking=use_expected_return_ranking,
         )
+        candidate_pool_rows = []
+        for frozen_rank, row in enumerate(rows, start=1):
+            item = dict(row)
+            item["rank"] = frozen_rank
+            item["frozen_rule_rank"] = frozen_rank
+            candidate_pool_rows.append(item)
         min_score = coerce_number(getattr(config, "SWING_RECOMMENDATION_MIN_SCORE", 60.0), 60.0)
         eligible_rows = [row for row in rows if self._ranking_gate_score(row) >= min_score]
         display_limit = int(top_n)
@@ -244,6 +251,8 @@ class SwingScorer:
             history_factor_ratio,
             factor_degraded,
         )
+        if capture_candidate_pool:
+            meta["_candidate_pool_rows"] = candidate_pool_rows
         return display_rows, meta
 
 

@@ -8,6 +8,33 @@ from typing import Dict, Iterable, List, Optional
 from . import config
 from .normalization import coerce_number, normalize_code
 from .performance import json_loads_cached, validation_metrics_cache_key as _validation_metrics_cache_key
+from .validation_policy import (
+    current_replay_strategy_version,
+    current_strategy_version,
+    execution_cost_pct as _execution_cost_pct,
+    exit_holding_days as _exit_holding_days,
+    is_primary_tomorrow_signal as _is_primary_tomorrow_signal,
+    is_primary_validation_signal as _is_primary_validation_signal,
+    is_replay_version as _is_replay_version,
+    matches_current_validation_baseline as _matches_current_validation_baseline,
+    outcome_ready as _outcome_ready,
+    primary_return_config as _primary_return_config,
+    stored_or_current_trade_cost_pct as _stored_or_current_trade_cost_pct,
+    stored_validation_baseline_id as _stored_validation_baseline_id,
+    validation_baseline_config,
+)
+from .validation_serialization import (
+    oos_report_row_to_dict as _oos_report_row_to_dict,
+    signal_row_to_dict as _row_to_dict,
+    tuning_row_to_dict as _tuning_row_to_dict,
+)
+from .validation_stance import compute_stance_outcome as _compute_stance_outcome
+from .validation_statistics import (
+    average as _avg,
+    market_gate_hit as _market_gate_hit,
+    market_gate_outcome_summary as _market_gate_outcome_summary,
+    rate as _rate,
+)
 
 
 __all__ = [
@@ -20,99 +47,44 @@ __all__ = [
     "PredictionRepository",
 ]
 
-
-def _sv():
-    from . import strategy_validation
-
-    return strategy_validation
-
-
-def current_strategy_version(strategy_name: str) -> str:
-    return _sv().current_strategy_version(strategy_name)
-
-
-def current_replay_strategy_version(strategy_name: str) -> str:
-    return _sv().current_replay_strategy_version(strategy_name)
+def _json_value(value, fallback):
+    if isinstance(value, type(fallback)):
+        return value
+    try:
+        loaded = json.loads(value or ("[]" if isinstance(fallback, list) else "{}"))
+    except Exception:
+        return fallback
+    return loaded if isinstance(loaded, type(fallback)) else fallback
 
 
-def validation_baseline_config(strategy_name: str = "") -> Dict[str, object]:
-    return _sv().validation_baseline_config(strategy_name)
+def _candidate_snapshot_to_dict(row: sqlite3.Row) -> Dict[str, object]:
+    item = dict(row)
+    for source, target, fallback in (
+        ("eligibility_reasons_json", "eligibility_reasons", []),
+        ("feature_values_json", "feature_values", {}),
+        ("missing_mask_json", "missing_mask", {}),
+        ("source_timestamps_json", "source_timestamps", {}),
+        ("point_in_time_violations_json", "point_in_time_violations", []),
+        ("raw_json", "raw", {}),
+    ):
+        item[target] = _json_value(item.pop(source, None), fallback)
+    item["eligible"] = bool(item.get("eligible"))
+    item["selected"] = bool(item.get("selected"))
+    item["point_in_time_valid"] = bool(item.get("point_in_time_valid"))
+    return item
 
 
-def legacy_validation_baseline_id(strategy_name: str = "") -> str:
-    return _sv().legacy_validation_baseline_id(strategy_name)
-
-
-def _primary_return_config(strategy_name: str):
-    return _sv()._primary_return_config(strategy_name)
-
-
-def _matches_current_validation_baseline(stored_baseline_id, strategy_name: str = "", current_baseline_id: str = "") -> bool:
-    return _sv()._matches_current_validation_baseline(stored_baseline_id, strategy_name, current_baseline_id)
-
-
-def _stored_validation_baseline_id(stored_baseline_id, strategy_name: str = "") -> str:
-    return _sv()._stored_validation_baseline_id(stored_baseline_id, strategy_name)
-
-
-def _is_replay_version(strategy_version: str) -> bool:
-    return _sv()._is_replay_version(strategy_version)
-
-
-def _outcome_ready(row, holding_days: int) -> bool:
-    return _sv()._outcome_ready(row, holding_days)
-
-
-def _is_primary_validation_signal(strategy_name: str, rank, raw: Dict[str, object]) -> bool:
-    return _sv()._is_primary_validation_signal(strategy_name, rank, raw)
-
-
-def _stored_or_current_trade_cost_pct(row) -> float:
-    return _sv()._stored_or_current_trade_cost_pct(row)
-
-
-def _exit_holding_days(strategy_name: str) -> int:
-    return _sv()._exit_holding_days(strategy_name)
-
-
-def _row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
-    return _sv()._row_to_dict(row)
-
-
-def _tuning_row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
-    return _sv()._tuning_row_to_dict(row)
-
-
-def _oos_report_row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
-    return _sv()._oos_report_row_to_dict(row)
-
-
-def _compute_stance_outcome(provider, snapshot):
-    return _sv()._compute_stance_outcome(provider, snapshot)
-
-
-def _is_primary_tomorrow_signal(rank, raw: Dict[str, object]) -> bool:
-    return _sv()._is_primary_tomorrow_signal(rank, raw)
-
-
-def _execution_cost_pct(row) -> float:
-    return _sv()._execution_cost_pct(row)
-
-
-def _market_gate_outcome_summary(returns: List[float]) -> Dict[str, object]:
-    return _sv()._market_gate_outcome_summary(returns)
-
-
-def _market_gate_hit(expected_regime: str, actual_regime: str):
-    return _sv()._market_gate_hit(expected_regime, actual_regime)
-
-
-def _avg(values) -> float:
-    return _sv()._avg(values)
-
-
-def _rate(values) -> float:
-    return _sv()._rate(values)
+def _execution_record_to_dict(row: sqlite3.Row) -> Dict[str, object]:
+    item = dict(row)
+    for source, target, fallback in (
+        ("execution_policy_json", "execution_policy", {}),
+        ("cost_scenarios_json", "cost_scenarios", {}),
+        ("raw_prices_json", "raw_prices", []),
+        ("benchmark_json", "benchmark", {}),
+    ):
+        item[target] = _json_value(item.pop(source, None), fallback)
+    item["promotion_eligible"] = bool(item.get("promotion_eligible"))
+    return item
 
 
 class _RepositoryBase:
@@ -140,18 +112,31 @@ class SignalRepository(_RepositoryBase):
         signal_time: str,
         rows: Iterable[Dict[str, object]],
         deepseek_shadow_rows: Optional[Iterable[Dict[str, object]]] = None,
+        candidate_rows: Optional[Iterable[Dict[str, object]]] = None,
+        batch_metadata: Optional[Dict[str, object]] = None,
+        execution_policy: Optional[Dict[str, object]] = None,
     ) -> Dict[str, object]:
         signal_date = signal_time[:10]
         rows = list(rows)
         deepseek_shadow_rows = list(deepseek_shadow_rows or [])
+        candidate_rows = list(candidate_rows or [])
+        batch_metadata = dict(batch_metadata or {})
+        execution_policy = dict(execution_policy or {})
+        execution_policy_json = json.dumps(execution_policy, ensure_ascii=False, sort_keys=True, default=str)
+        execution_policy_version = str(execution_policy.get("policy_version") or "")
+        portfolio_capital = coerce_number((execution_policy.get("portfolio") or {}).get("capital"))
         saved = 0
         shadow_saved = 0
+        candidate_saved = 0
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO strategy_signal_batches
-                (strategy_name, strategy_version, signal_date, signal_time, saved_count, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (strategy_name, strategy_version, signal_date, signal_time, saved_count,
+                 candidate_count, selected_count, data_source_timestamp, market_data_cutoff,
+                 execution_policy_version, execution_policy_json, generation_json,
+                 portfolio_capital, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     strategy_name,
@@ -159,6 +144,14 @@ class SignalRepository(_RepositoryBase):
                     signal_date,
                     signal_time,
                     len(rows),
+                    len(candidate_rows),
+                    len(rows),
+                    str(batch_metadata.get("data_source_timestamp") or ""),
+                    str(batch_metadata.get("market_data_cutoff") or signal_time),
+                    execution_policy_version,
+                    execution_policy_json,
+                    json.dumps(batch_metadata.get("generation") or {}, ensure_ascii=False, sort_keys=True, default=str),
+                    portfolio_capital,
                     datetime.now().isoformat(timespec="seconds"),
                 ),
             )
@@ -189,7 +182,20 @@ class SignalRepository(_RepositoryBase):
                     WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
                     """
                 shadow_delete_params = (strategy_name, strategy_version, signal_date)
+                candidate_delete_sql = """
+                    DELETE FROM strategy_candidate_snapshots
+                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                    """
+                candidate_delete_params = (strategy_name, strategy_version, signal_date)
             else:
+                conn.execute(
+                    """
+                    DELETE FROM strategy_signal_batches
+                    WHERE strategy_name = ? AND signal_date = ? AND strategy_version != ?
+                      AND lower(strategy_version) NOT LIKE '%replay%'
+                    """,
+                    (strategy_name, signal_date, strategy_version),
+                )
                 old_ids = conn.execute(
                     """
                     SELECT id
@@ -216,6 +222,11 @@ class SignalRepository(_RepositoryBase):
                     WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
                     """
                 shadow_delete_params = (strategy_name, signal_date)
+                candidate_delete_sql = """
+                    DELETE FROM strategy_candidate_snapshots
+                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                    """
+                candidate_delete_params = (strategy_name, signal_date)
             if old_ids:
                 conn.executemany(
                     "DELETE FROM strategy_execution_skips WHERE signal_id = ?",
@@ -225,6 +236,10 @@ class SignalRepository(_RepositoryBase):
                     "DELETE FROM strategy_outcomes WHERE signal_id = ?",
                     [(row[0],) for row in old_ids],
                 )
+                conn.executemany(
+                    "DELETE FROM strategy_execution_records WHERE signal_id = ?",
+                    [(row[0],) for row in old_ids],
+                )
                 conn.execute(delete_sql, delete_params)
             if old_shadow_ids:
                 conn.executemany(
@@ -232,6 +247,48 @@ class SignalRepository(_RepositoryBase):
                     [(row[0],) for row in old_shadow_ids],
                 )
                 conn.execute(shadow_delete_sql, shadow_delete_params)
+            conn.execute(candidate_delete_sql, candidate_delete_params)
+            for row in candidate_rows:
+                code = normalize_code(row.get("code"))
+                if not code:
+                    continue
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO strategy_candidate_snapshots
+                    (strategy_name, strategy_version, signal_date, signal_time, code, name, market,
+                     industry, style_bucket, eligible, selected, rank, score, point_in_time_valid,
+                     eligibility_reasons_json, feature_values_json, missing_mask_json,
+                     source_timestamps_json, announcement_time, market_data_cutoff,
+                     point_in_time_violations_json, raw_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        strategy_name,
+                        strategy_version,
+                        signal_date,
+                        signal_time,
+                        code,
+                        str(row.get("name") or ""),
+                        str(row.get("market") or ""),
+                        str(row.get("industry") or ""),
+                        str(row.get("style_bucket") or "unknown"),
+                        1 if row.get("eligible") else 0,
+                        1 if row.get("selected") else 0,
+                        int(coerce_number(row.get("rank")) or 0),
+                        coerce_number(row.get("score")),
+                        1 if row.get("point_in_time_valid") else 0,
+                        json.dumps(row.get("eligibility_reasons") or [], ensure_ascii=False, default=str),
+                        json.dumps(row.get("feature_values") or {}, ensure_ascii=False, default=str),
+                        json.dumps(row.get("missing_mask") or {}, ensure_ascii=False, default=str),
+                        json.dumps(row.get("source_timestamps") or {}, ensure_ascii=False, default=str),
+                        str(row.get("announcement_time") or ""),
+                        str(row.get("market_data_cutoff") or signal_time),
+                        json.dumps(row.get("point_in_time_violations") or [], ensure_ascii=False, default=str),
+                        json.dumps(row.get("raw") or {}, ensure_ascii=False, default=str),
+                        datetime.now().isoformat(timespec="seconds"),
+                    ),
+                )
+                candidate_saved += 1
             for row in rows:
                 code = normalize_code(row.get("code"))
                 rank = int(row.get("rank") or 0)
@@ -315,6 +372,7 @@ class SignalRepository(_RepositoryBase):
             "signal_date": signal_date,
             "saved": saved,
             "replaced": len(old_ids),
+            "candidate_saved": candidate_saved,
             "deepseek_shadow_saved": shadow_saved,
             "deepseek_shadow_replaced": len(old_shadow_ids),
         }
@@ -401,24 +459,89 @@ class SignalRepository(_RepositoryBase):
                        o.future_days,
                        COALESCE(o.survivorship_corrected, 0) AS survivorship_corrected,
                        COALESCE(o.correction_reason, '') AS correction_reason,
-                       COALESCE(o.trade_cost_pct, 0) AS stored_trade_cost_pct,
+                       o.trade_cost_pct AS stored_trade_cost_pct,
                        COALESCE(o.primary_return_field, '') AS stored_primary_return_field,
                        COALESCE(o.primary_return, 0) AS stored_primary_return,
                        COALESCE(o.primary_return_net, 0) AS stored_primary_return_net,
                        COALESCE(o.primary_holding_days, 0) AS stored_primary_holding_days,
                        COALESCE(o.validation_baseline_id, '') AS validation_baseline_id,
                        COALESCE(o.validation_baseline_json, '') AS validation_baseline_json,
+                       COALESCE(e.label_status, CASE WHEN o.signal_id IS NOT NULL THEN 'settled' ELSE 'pending' END) AS label_status,
+                       COALESCE(e.reason, k.skip_reason, '') AS execution_reason,
+                       COALESCE(e.entry_status, '') AS entry_status,
+                       COALESCE(e.exit_status, '') AS exit_status,
+                       COALESCE(e.delisting_status, o.delisting_status, 'not_applicable') AS delisting_status,
+                       COALESCE(e.promotion_eligible, CASE WHEN o.signal_id IS NOT NULL THEN 1 ELSE 0 END) AS promotion_eligible,
+                       e.portfolio_capital, e.target_weight_pct, e.target_notional, e.order_quantity,
+                       e.actual_filled_quantity, e.actual_entry_price, e.actual_exit_quantity,
+                       e.actual_exit_price, e.unfilled_quantity, e.unfilled_entry_quantity,
+                       e.unfilled_exit_quantity, e.fill_source,
+                       e.fee_pct, e.slippage_pct, e.impact_pct,
+                       e.gross_return_pct, e.net_return_pct, e.return_formula,
+                       COALESCE(e.execution_policy_version, o.execution_policy_version, '') AS execution_policy_version,
+                       COALESCE(e.execution_policy_json, o.execution_policy_json, '') AS execution_policy_json,
+                       COALESCE(e.cost_scenarios_json, o.cost_scenarios_json, '{{}}') AS cost_scenarios_json,
+                       COALESCE(e.raw_prices_json, o.raw_prices_json, '[]') AS raw_prices_json,
+                       COALESCE(e.benchmark_json, o.benchmark_json, '{{}}') AS benchmark_json,
+                       COALESCE(o.return_reproducible, 0) AS return_reproducible,
                        o.updated_at AS outcome_updated_at,
                        k.skip_reason, k.updated_at AS skip_updated_at
                 FROM strategy_signals s
                 LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
                 LEFT JOIN strategy_execution_skips k ON k.signal_id = s.id
+                LEFT JOIN strategy_execution_records e ON e.signal_id = s.id
                 {}
                 ORDER BY s.strategy_name ASC, s.rank ASC
                 """.format(where),
                 params,
             ).fetchall()
         return [_row_to_dict(row) for row in rows]
+
+
+    def candidate_snapshots_for_date(
+        self,
+        signal_date: str,
+        strategy_name: str = "",
+        strategy_version: str = "",
+    ) -> List[Dict[str, object]]:
+        where = "WHERE signal_date = ?"
+        params: List[object] = [signal_date]
+        if strategy_name:
+            where += " AND strategy_name = ?"
+            params.append(strategy_name)
+        if strategy_version:
+            where += " AND strategy_version = ?"
+            params.append(strategy_version)
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM strategy_candidate_snapshots
+                {}
+                ORDER BY selected DESC, rank ASC, code ASC
+                """.format(where),
+                params,
+            ).fetchall()
+        return [_candidate_snapshot_to_dict(row) for row in rows]
+
+
+    def latest_candidate_snapshots(self, strategy_name: str) -> List[Dict[str, object]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT signal_date, strategy_version
+                FROM strategy_signal_batches
+                WHERE strategy_name = ? AND candidate_count > 0
+                  AND lower(strategy_version) NOT LIKE '%replay%'
+                ORDER BY signal_date DESC, signal_time DESC
+                LIMIT 1
+                """,
+                (strategy_name,),
+            ).fetchone()
+        if not row:
+            return []
+        return self.candidate_snapshots_for_date(row[0], strategy_name, row[1])
 
 
     def latest_signal_rows(self, strategy_name: str) -> List[Dict[str, object]]:
@@ -473,7 +596,12 @@ class SignalRepository(_RepositoryBase):
                 id_rows = [(row[0],) for row in old_ids]
                 conn.executemany("DELETE FROM strategy_execution_skips WHERE signal_id = ?", id_rows)
                 conn.executemany("DELETE FROM strategy_outcomes WHERE signal_id = ?", id_rows)
+                conn.executemany("DELETE FROM strategy_execution_records WHERE signal_id = ?", id_rows)
                 conn.executemany("DELETE FROM strategy_signals WHERE id = ?", id_rows)
+            conn.execute(
+                "DELETE FROM strategy_candidate_snapshots WHERE strategy_name NOT IN ({})".format(placeholders),
+                allowed,
+            )
             batch_result = conn.execute(
                 """
                 DELETE FROM strategy_signal_batches
@@ -568,6 +696,8 @@ class SignalRepository(_RepositoryBase):
                 return {
                     "signal_sample_count": 0,
                     "pending_outcome_count": 0,
+                    "unknown_outcome_count": 0,
+                    "unfilled_outcome_count": 0,
                     "outcome_coverage_pct": None,
                     "baseline_mismatch_outcome_count": 0,
                 }
@@ -586,10 +716,12 @@ class SignalRepository(_RepositoryBase):
                   s.strategy_name,
                   o.signal_id AS outcome_signal_id,
                   COALESCE(o.validation_baseline_id, '') AS validation_baseline_id,
-                  k.signal_id AS skip_signal_id
+                  k.signal_id AS skip_signal_id,
+                  COALESCE(e.label_status, '') AS label_status
                 FROM strategy_signals s
                 LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
                 LEFT JOIN strategy_execution_skips k ON k.signal_id = s.id
+                LEFT JOIN strategy_execution_records e ON e.signal_id = s.id
                 {}
                 """.format(count_where),
                 count_params,
@@ -598,6 +730,8 @@ class SignalRepository(_RepositoryBase):
         pending_count = 0
         outcome_count = 0
         mismatch_count = 0
+        unknown_count = 0
+        unfilled_count = 0
         baseline_cache: Dict[str, str] = {}
         for row in rows:
             row_strategy = strategy_name or str(row[0] or "")
@@ -609,16 +743,23 @@ class SignalRepository(_RepositoryBase):
                 baseline_cache[row_strategy],
             )
             has_skip = bool(row[3])
+            label_status = str(row[4] or "")
             if has_current_outcome:
                 outcome_count += 1
             elif bool(row[1]):
                 mismatch_count += 1
-            if not has_current_outcome and not has_skip:
+            if label_status == "unknown":
+                unknown_count += 1
+            elif has_skip or label_status == "unfilled":
+                unfilled_count += 1
+            elif not has_current_outcome:
                 pending_count += 1
         coverage = round(outcome_count / signal_count * 100.0, 2) if signal_count > 0 else None
         return {
             "signal_sample_count": signal_count,
             "pending_outcome_count": pending_count,
+            "unknown_outcome_count": unknown_count,
+            "unfilled_outcome_count": unfilled_count,
             "outcome_coverage_pct": coverage,
             "baseline_mismatch_outcome_count": mismatch_count,
         }
@@ -730,10 +871,17 @@ class SignalRepository(_RepositoryBase):
                        o.signal_id AS outcome_signal_id,
                        COALESCE(o.validation_baseline_id, '') AS validation_baseline_id,
                        COALESCE(o.future_days, 1) AS future_days,
-                       k.signal_id AS skip_signal_id
+                       k.signal_id AS skip_signal_id,
+                       CASE WHEN COALESCE(b.candidate_count, 0) > 0
+                            THEN COALESCE(e.promotion_eligible, 0) ELSE 1 END AS promotion_eligible
                 FROM strategy_signals s
                 LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
                 LEFT JOIN strategy_execution_skips k ON k.signal_id = s.id
+                LEFT JOIN strategy_execution_records e ON e.signal_id = s.id
+                LEFT JOIN strategy_signal_batches b
+                  ON b.strategy_name = s.strategy_name
+                 AND b.strategy_version = s.strategy_version
+                 AND b.signal_date = s.signal_date
                 {}
                 ORDER BY s.signal_date DESC, s.rank ASC
                 """.format(row_where),
@@ -832,15 +980,22 @@ class OutcomeRepository(_RepositoryBase):
                        COALESCE(o.future_days, 1) AS future_days,
                        COALESCE(o.survivorship_corrected, 0) AS survivorship_corrected,
                        COALESCE(o.correction_reason, '') AS correction_reason,
-                       COALESCE(o.trade_cost_pct, 0) AS stored_trade_cost_pct,
+                       o.trade_cost_pct AS stored_trade_cost_pct,
                        COALESCE(o.primary_return_field, '') AS stored_primary_return_field,
                        COALESCE(o.primary_return, 0) AS stored_primary_return,
                        COALESCE(o.primary_return_net, 0) AS stored_primary_return_net,
                        COALESCE(o.primary_holding_days, 0) AS stored_primary_holding_days,
                        COALESCE(o.validation_baseline_id, '') AS validation_baseline_id,
-                       COALESCE(o.validation_baseline_json, '') AS validation_baseline_json
+                       COALESCE(o.validation_baseline_json, '') AS validation_baseline_json,
+                       CASE WHEN COALESCE(b.candidate_count, 0) > 0
+                            THEN COALESCE(e.promotion_eligible, 0) ELSE 1 END AS promotion_eligible
                 FROM strategy_signals s
                 JOIN strategy_outcomes o ON o.signal_id = s.id
+                LEFT JOIN strategy_execution_records e ON e.signal_id = s.id
+                LEFT JOIN strategy_signal_batches b
+                  ON b.strategy_name = s.strategy_name
+                 AND b.strategy_version = s.strategy_version
+                 AND b.signal_date = s.signal_date
                 {}
                 ORDER BY s.signal_date DESC, s.rank ASC
                 """.format(where),
@@ -897,7 +1052,32 @@ class OutcomeRepository(_RepositoryBase):
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             return conn.execute(
-                "SELECT * FROM strategy_signals {} ORDER BY signal_date DESC, rank ASC".format(where),
+                """
+                SELECT strategy_signals.*,
+                       existing_outcome.signal_id AS existing_outcome_signal_id,
+                       COALESCE(existing_outcome.validation_baseline_id, '') AS existing_validation_baseline_id,
+                       COALESCE(existing_outcome.future_days, 0) AS existing_future_days,
+                       COALESCE(existing_outcome.exit_reason, '') AS existing_exit_reason,
+                       COALESCE((
+                           SELECT b.execution_policy_version
+                           FROM strategy_signal_batches b
+                           WHERE b.strategy_name = strategy_signals.strategy_name
+                             AND b.strategy_version = strategy_signals.strategy_version
+                             AND b.signal_date = strategy_signals.signal_date
+                       ), '') AS execution_policy_version,
+                       COALESCE((
+                           SELECT b.execution_policy_json
+                           FROM strategy_signal_batches b
+                           WHERE b.strategy_name = strategy_signals.strategy_name
+                             AND b.strategy_version = strategy_signals.strategy_version
+                             AND b.signal_date = strategy_signals.signal_date
+                       ), '') AS execution_policy_json
+                FROM strategy_signals
+                LEFT JOIN strategy_outcomes existing_outcome
+                  ON existing_outcome.signal_id = strategy_signals.id
+                {}
+                ORDER BY signal_date DESC, rank ASC
+                """.format(where),
                 params,
             ).fetchall()
 
@@ -918,6 +1098,95 @@ class OutcomeRepository(_RepositoryBase):
                 """,
                 (signal_id, code, reason, updated_at),
             )
+
+
+    def save_execution_record(self, record: Dict[str, object]) -> None:
+        columns = (
+            "signal_id",
+            "code",
+            "label_status",
+            "reason",
+            "entry_status",
+            "exit_status",
+            "delisting_status",
+            "promotion_eligible",
+            "portfolio_capital",
+            "target_weight_pct",
+            "target_notional",
+            "order_quantity",
+            "actual_filled_quantity",
+            "actual_entry_price",
+            "actual_exit_quantity",
+            "actual_exit_price",
+            "unfilled_quantity",
+            "unfilled_entry_quantity",
+            "unfilled_exit_quantity",
+            "fill_source",
+            "fee_pct",
+            "slippage_pct",
+            "impact_pct",
+            "gross_return_pct",
+            "net_return_pct",
+            "return_formula",
+            "execution_policy_version",
+            "execution_policy_json",
+            "cost_scenarios_json",
+            "raw_prices_json",
+            "benchmark_json",
+            "updated_at",
+        )
+        json_fields = {
+            "execution_policy_json": record.get("execution_policy") or {},
+            "cost_scenarios_json": record.get("cost_scenarios") or {},
+            "raw_prices_json": record.get("raw_prices") or [],
+            "benchmark_json": record.get("benchmark") or {},
+        }
+        values = []
+        for column in columns:
+            if column in json_fields:
+                values.append(json.dumps(json_fields[column], ensure_ascii=False, sort_keys=True, default=str))
+            elif column == "promotion_eligible":
+                values.append(1 if record.get(column) else 0)
+            else:
+                values.append(record.get(column))
+        with self.connect() as conn:
+            if str(record.get("label_status") or "") != "unfilled":
+                conn.execute(
+                    "DELETE FROM strategy_execution_skips WHERE signal_id = ?",
+                    (record.get("signal_id"),),
+                )
+            conn.execute(
+                "INSERT OR REPLACE INTO strategy_execution_records ({}) VALUES ({})".format(
+                    ", ".join(columns),
+                    ", ".join("?" for _ in columns),
+                ),
+                values,
+            )
+
+
+    def execution_records_for_date(
+        self,
+        signal_date: str,
+        strategy_name: str = "",
+    ) -> List[Dict[str, object]]:
+        where = "WHERE s.signal_date = ?"
+        params: List[object] = [signal_date]
+        if strategy_name:
+            where += " AND s.strategy_name = ?"
+            params.append(strategy_name)
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT e.*, s.strategy_name, s.strategy_version, s.signal_date, s.signal_time, s.rank
+                FROM strategy_execution_records e
+                JOIN strategy_signals s ON s.id = e.signal_id
+                {}
+                ORDER BY s.strategy_name, s.rank
+                """.format(where),
+                params,
+            ).fetchall()
+        return [_execution_record_to_dict(row) for row in rows]
 
 
     def save_strategy_outcome(self, signal_id: int, columns, values) -> None:
@@ -1035,14 +1304,6 @@ class TuningRepository(_RepositoryBase):
             version_filter = " AND s.strategy_version = ?"
             params.append(current_version)
         current_baseline_id = str(validation_baseline_config(strategy_name).get("baseline_id") or "")
-        legacy_baseline_id_value = legacy_validation_baseline_id(strategy_name)
-        baseline_filter = ""
-        if current_baseline_id:
-            baseline_filter = " AND (COALESCE(o.validation_baseline_id, '') = ?"
-            params.append(current_baseline_id)
-            if current_baseline_id == legacy_baseline_id_value:
-                baseline_filter += " OR COALESCE(o.validation_baseline_id, '') = ''"
-            baseline_filter += ")"
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -1056,22 +1317,28 @@ class TuningRepository(_RepositoryBase):
                        COALESCE(o.exit_reason, '') AS exit_reason,
                        COALESCE(o.exit_days, 0) AS exit_days,
                        COALESCE(o.future_days, 1) AS future_days,
-                       COALESCE(o.trade_cost_pct, 0) AS stored_trade_cost_pct,
+                       o.trade_cost_pct AS stored_trade_cost_pct,
                        COALESCE(o.primary_return_field, '') AS stored_primary_return_field,
                        COALESCE(o.primary_return, 0) AS stored_primary_return,
                        COALESCE(o.primary_return_net, 0) AS stored_primary_return_net,
                        COALESCE(o.primary_holding_days, 0) AS stored_primary_holding_days,
-                       COALESCE(o.validation_baseline_id, '') AS validation_baseline_id
+                       COALESCE(o.validation_baseline_id, '') AS validation_baseline_id,
+                       CASE WHEN COALESCE(b.candidate_count, 0) > 0
+                            THEN COALESCE(e.promotion_eligible, 0) ELSE 1 END AS promotion_eligible
                 FROM strategy_signals s
                 JOIN strategy_outcomes o ON o.signal_id = s.id
-                WHERE s.strategy_name = ? {version_filter} {baseline_filter}
+                LEFT JOIN strategy_execution_records e ON e.signal_id = s.id
+                LEFT JOIN strategy_signal_batches b
+                  ON b.strategy_name = s.strategy_name
+                 AND b.strategy_version = s.strategy_version
+                 AND b.signal_date = s.signal_date
+                WHERE s.strategy_name = ? {version_filter}
                 ORDER BY s.signal_date DESC, s.rank ASC
                 """.format(
                     primary_column=primary_column,
                     drawdown_column=drawdown_column,
                     exit_column=exit_column,
                     version_filter=version_filter,
-                    baseline_filter=baseline_filter,
                 ),
                 params,
             ).fetchall()
@@ -1080,7 +1347,8 @@ class TuningRepository(_RepositoryBase):
         rows = [
             row
             for row in rows
-            if _matches_current_validation_baseline(row["validation_baseline_id"], strategy_name, current_baseline_id)
+            if bool(row["promotion_eligible"])
+            and _matches_current_validation_baseline(row["validation_baseline_id"], strategy_name, current_baseline_id)
         ]
         if not rows:
             return []
@@ -1223,7 +1491,8 @@ class MarketGateRepository(_RepositoryBase):
                        COALESCE(o.signal_exit_return, o.exit_return, o.signal_hold_5d_return, o.hold_5d_return, 0) AS signal_exit_return,
                        COALESCE(o.exit_reason, '') AS exit_reason,
                        COALESCE(o.exit_days, 0) AS exit_days,
-                       COALESCE(o.future_days, 1) AS future_days
+                       COALESCE(o.future_days, 1) AS future_days,
+                       o.trade_cost_pct AS stored_trade_cost_pct
                 FROM strategy_signals s
                 JOIN strategy_outcomes o ON o.signal_id = s.id
                 WHERE s.signal_date IN ({})
@@ -1243,7 +1512,7 @@ class MarketGateRepository(_RepositoryBase):
             if not _outcome_ready(row, primary_days):
                 continue
             outcome_by_date.setdefault(str(row["signal_date"]), []).append(
-                round(coerce_number(row[primary_column]) - _execution_cost_pct(row), 4)
+                round(coerce_number(row[primary_column]) - _stored_or_current_trade_cost_pct(row), 4)
             )
 
         review_items = []
@@ -1525,6 +1794,8 @@ class ValidationRepository(_RepositoryBase):
         "list_signal_dates": "signals",
         "existing_validation_dates": "signals",
         "signals_for_date": "signals",
+        "candidate_snapshots_for_date": "signals",
+        "latest_candidate_snapshots": "signals",
         "latest_signal_rows": "signals",
         "prune_strategies": "signals",
         "signal_codes": "signals",
@@ -1538,6 +1809,8 @@ class ValidationRepository(_RepositoryBase):
         "fetch_signals_for_outcome_update": "outcomes",
         "delete_strategy_outcome": "outcomes",
         "save_execution_skip": "outcomes",
+        "save_execution_record": "outcomes",
+        "execution_records_for_date": "outcomes",
         "save_strategy_outcome": "outcomes",
         "fetch_deepseek_shadow_signals": "outcomes",
         "save_deepseek_shadow_outcome": "outcomes",

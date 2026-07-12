@@ -36,6 +36,7 @@ def build_strategy_tuning_plan(
     real_count = int(coerce_number(metrics.get("real_day_count"), 0))
     replay_count = int(coerce_number(metrics.get("replay_day_count"), 0))
     pending_count = int(coerce_number(metrics.get("pending_outcome_count"), 0))
+    unknown_count = int(coerce_number(metrics.get("unknown_outcome_count"), 0))
     win_rate = _first_number(metrics, "real_win_rate_primary_net", "win_rate_primary_net")
     avg_return = _first_number(metrics, "real_avg_primary_return_net", "avg_primary_return_net")
     drawdown = _first_number(
@@ -71,6 +72,12 @@ def build_strategy_tuning_plan(
         issues.append("存在待回填样本，统计结论暂不稳定。")
     else:
         gates.append(_gate("no_pending_outcomes", True, 0, 0, "无待回填样本。"))
+
+    if unknown_count > 0:
+        gates.append(_gate("no_unknown_outcomes", False, unknown_count, 0, "存在数据状态未知样本，禁止晋级。"))
+        issues.append("存在无法确认成交或退市状态的样本，必须修复数据后再评估。")
+    else:
+        gates.append(_gate("no_unknown_outcomes", True, 0, 0, "无数据状态未知样本。"))
 
     if win_rate is None:
         issues.append("胜率尚未形成有效统计。")
@@ -151,6 +158,7 @@ def build_strategy_tuning_plan(
             "real_day_count": real_count,
             "replay_day_count": replay_count,
             "pending_outcome_count": pending_count,
+            "unknown_outcome_count": unknown_count,
             "win_rate_primary_net": win_rate,
             "avg_primary_return_net": avg_return,
             "avg_max_drawdown_primary": drawdown,

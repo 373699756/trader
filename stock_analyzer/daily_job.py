@@ -33,6 +33,14 @@ def main() -> int:
     parser.add_argument("--snapshot", action="store_true", help="保存策略当日预测快照")
     parser.add_argument("--update", action="store_true", help="回填已保存快照的未来收益")
     parser.add_argument("--paper-trade", action="store_true", help="根据最近保存快照生成/更新纸面组合交易")
+    parser.add_argument("--portfolio-baseline", action="store_true", help="生成可重放的日级等权组合基线和比较组")
+    parser.add_argument("--portfolio-baseline-date", default="", help="只重放指定信号日期；留空处理窗口内日期")
+    parser.add_argument("--portfolio-baseline-days", type=int, default=120, help="日级组合基线回看交易日数")
+    parser.add_argument("--portfolio-ranking-field", default="score", help="挑战模型排名字段；冻结基线始终使用 score")
+    parser.add_argument("--portfolio-model-id", default="", help="挑战模型审计标识")
+    parser.add_argument("--portfolio-top-k", type=int, default=0, help="组合持仓数；0 使用冻结 Top-K")
+    parser.add_argument("--portfolio-random-seed", type=int, default=None, help="随机基准种子")
+    parser.add_argument("--portfolio-random-repeats", type=int, default=0, help="随机抽样次数；最低 1000")
     parser.add_argument("--factor-snapshot", action="store_true", help="基于本地 market_data 生成 Qlib 风格因子快照表")
     parser.add_argument("--factor-ic", action="store_true", help="基于真实验证样本刷新因子 IC 文件")
     parser.add_argument("--calibrate-live", action="store_true", help="基于明天预测真实验证样本校准权重")
@@ -54,6 +62,7 @@ def main() -> int:
         args.download_market_data = True
         args.snapshot = True
         args.update = True
+        args.portfolio_baseline = True
         args.factor_snapshot = True
         args.factor_ic = True
 
@@ -63,6 +72,7 @@ def main() -> int:
             args.snapshot,
             args.update,
             args.paper_trade,
+            args.portfolio_baseline,
             args.factor_snapshot,
             args.factor_ic,
             args.calibrate_live,
@@ -103,6 +113,7 @@ def main() -> int:
         "snapshot": [],
         "update": [],
         "paper_trade": [],
+        "portfolio_baseline": [],
         "factor_snapshot": {},
         "factor_ic": {},
         "calibrate_live": {},
@@ -147,6 +158,28 @@ def main() -> int:
         for strategy in executable_strategies:
             result = paper_store.run_paper_trade(provider, store, strategy)
             payload["paper_trade"].append({"strategy": strategy, "result": result})
+    if args.portfolio_baseline:
+        from .portfolio_baseline import DailyPortfolioBaselineService
+
+        for strategy in _portfolio_baseline_strategies(args.strategy, executable_strategies):
+            if not hasattr(store, "candidate_snapshots_for_date"):
+                payload["portfolio_baseline"].append(
+                    {"strategy": strategy, "result": {"ok": True, "status": "candidate_store_unavailable"}}
+                )
+                continue
+            baseline_service = DailyPortfolioBaselineService(store)
+            result = baseline_service.run(
+                provider,
+                strategy,
+                signal_date=args.portfolio_baseline_date,
+                days=max(1, int(args.portfolio_baseline_days or 120)),
+                ranking_field=args.portfolio_ranking_field,
+                model_id=args.portfolio_model_id,
+                top_k=max(0, int(args.portfolio_top_k or 0)),
+                random_seed=args.portfolio_random_seed,
+                random_repeats=max(0, int(args.portfolio_random_repeats or 0)),
+            )
+            payload["portfolio_baseline"].append({"strategy": strategy, "result": result})
     if args.factor_snapshot:
         from .factor_snapshot import build_factor_snapshots
 
@@ -207,6 +240,13 @@ def _task_strategy_sets(raw: str, supported) -> tuple:
         return validation, executable
     selected = _parse_strategies(text, supported)
     return selected, selected
+
+
+def _portfolio_baseline_strategies(raw: str, executable_strategies: list) -> list:
+    if str(raw or "all").strip().lower() != "all":
+        return list(executable_strategies)
+    configured = set(getattr(config, "PORTFOLIO_BASELINE_STRATEGIES", ("tomorrow_picks",)))
+    return [strategy for strategy in executable_strategies if strategy in configured]
 
 
 def _parse_code_list(raw: str) -> list:

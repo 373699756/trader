@@ -22,6 +22,12 @@ FUNDAMENTAL_COLUMNS = (
     "rating_revision",
 )
 
+FUNDAMENTAL_META_COLUMNS = (
+    "announcement_time",
+    "report_period",
+    "source_timestamp",
+)
+
 
 @dataclass
 class FundamentalFetchResult:
@@ -304,6 +310,14 @@ def attach_fundamental_factors(df: pd.DataFrame, fundamentals: Dict[str, Dict[st
                     if isinstance(values, dict)
                 }
                 result[column] = normalized_codes.map(values_by_code).fillna(0.0)
+        for column in FUNDAMENTAL_META_COLUMNS:
+            if column not in result.columns:
+                values_by_code = {
+                    normalize_code(code): values.get(column, "")
+                    for code, values in fundamentals.items()
+                    if isinstance(values, dict)
+                }
+                result[column] = normalized_codes.map(values_by_code).fillna("")
     for column in FUNDAMENTAL_COLUMNS:
         if column not in result.columns:
             result[column] = 0.0
@@ -461,7 +475,9 @@ def _normalize_fundamental_items(raw_items) -> Dict[str, Dict[str, object]]:
         code = normalize_code(row.get("code") or row.get("ts_code") or row.get("股票代码") or row.get("证券代码"))
         if not code:
             continue
-        items[code] = {column: coerce_number(row.get(column)) for column in FUNDAMENTAL_COLUMNS}
+        item = {column: coerce_number(row.get(column)) for column in FUNDAMENTAL_COLUMNS}
+        item.update(_fundamental_metadata(row))
+        items[code] = item
     return items
 
 
@@ -504,6 +520,35 @@ def _merge_fundamental_row(items: Dict[str, Dict[str, object]], code: str, row: 
         value = _first_mapping_value(row, columns)
         if value not in (None, ""):
             item[target] = coerce_number(value)
+    item.update({key: value for key, value in _fundamental_metadata(row).items() if value not in (None, "")})
+
+
+def _fundamental_metadata(row: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "announcement_time": _first_mapping_value(
+            row,
+            (
+                "announcement_time",
+                "announce_time",
+                "announce_date",
+                "ann_date",
+                "f_ann_date",
+                "公告发布时间",
+                "公告日期",
+            ),
+        )
+        or "",
+        "report_period": _first_mapping_value(
+            row,
+            ("report_period", "end_date", "报告期", "报告日期"),
+        )
+        or "",
+        "source_timestamp": _first_mapping_value(
+            row,
+            ("source_timestamp", "updated_at", "update_time", "数据时间"),
+        )
+        or "",
+    }
 
 
 def _first_mapping_value(row: Dict[str, object], columns: Tuple[str, ...]):

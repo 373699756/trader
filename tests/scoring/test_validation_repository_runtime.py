@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from stock_analyzer import config
+from stock_analyzer.execution_policy import build_execution_policy
 from stock_analyzer.strategy_validation import StrategyValidationStore, _primary_return_config, validation_baseline_config
 
 
@@ -39,11 +40,17 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
             store.save_signals("tomorrow_picks", "tomorrow_picks_v2", "2024-01-01T14:30:00", first)
             result = store.save_signals("tomorrow_picks", "tomorrow_picks_v3", "2024-01-01T14:31:00", second)
             rows = store.signals_for_date("2024-01-01", "tomorrow_picks")
+            with store.repository.connect() as conn:
+                batches = conn.execute(
+                    "SELECT strategy_version FROM strategy_signal_batches WHERE strategy_name = ? AND signal_date = ?",
+                    ("tomorrow_picks", "2024-01-01"),
+                ).fetchall()
 
         self.assertEqual(result["replaced"], 2)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["code"], "600001")
         self.assertEqual(rows[0]["name"], "new")
+        self.assertEqual(batches, [("tomorrow_picks_v3",)])
 
     def test_strategy_validation_reports_pending_outcomes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -90,16 +97,17 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
                     }
                 )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 50.0):
             store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            execution_policy = build_execution_policy("tomorrow_picks")
             store.save_signals(
                 "tomorrow_picks",
                 config.TOMORROW_STRATEGY_VERSION,
                 "2024-01-01T14:30:00",
                 [{"rank": 1, "code": "600001", "name": "sample", "price": 10, "score": 90}],
+                execution_policy=execution_policy,
             )
-            with patch.object(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 50.0):
-                update = store.update_outcomes(FakeProvider(), signal_date="2024-01-01", strategy_name="tomorrow_picks")
+            update = store.update_outcomes(FakeProvider(), signal_date="2024-01-01", strategy_name="tomorrow_picks")
             rows = store.signals_for_date("2024-01-01", "tomorrow_picks")
             metrics = store.metrics("tomorrow_picks", days=20)
 
@@ -180,7 +188,7 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
 
         self.assertEqual(legacy_update["updated"], 1)
         self.assertEqual(metrics_before["sample_count"], 0)
-        self.assertEqual(metrics_before["legacy_baseline_outcome_count"], 1)
+        self.assertEqual(metrics_before["excluded_baseline_mismatch_count"], 1)
         self.assertEqual(status_before["status"], "needs_backfill")
         self.assertEqual(samples_before, [])
         self.assertEqual(backfill_update["updated"], 1)
@@ -188,7 +196,61 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
         self.assertFalse(status_after["needs_backfill"])
         self.assertIn("tail", rows_after[0]["validation_baseline_id"])
 
-    def test_strategy_validation_survivorship_correction_keeps_stale_no_future_sample(self):
+    def test_policy_only_baseline_change_reuses_same_outcome_fingerprint(self):
+        class FakeProvider:
+            def __init__(self):
+                self.calls = []
+
+            def get_history(self, code, days=180):
+                self.calls.append(code)
+                return _validation_history("2024-01-01", future_days=6, final_price=10.6)
+
+        provider = FakeProvider()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 30.0
+        ):
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            frozen_policy = build_execution_policy("tomorrow_picks")
+            store.save_signals(
+                "tomorrow_picks",
+                config.TOMORROW_STRATEGY_VERSION,
+                "2024-01-01T14:30:00",
+                [{"rank": 1, "code": "600001", "name": "sample", "price": 10, "score": 90}],
+                execution_policy=frozen_policy,
+            )
+            store.update_outcomes(
+                provider,
+                signal_date="2024-01-01",
+                strategy_name="tomorrow_picks",
+            )
+            stored_baseline_id = store.signals_for_date("2024-01-01", "tomorrow_picks")[0][
+                "validation_baseline_id"
+            ]
+            provider.calls.clear()
+            with patch.object(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 10.0):
+                current_baseline_id = validation_baseline_config("tomorrow_picks")["baseline_id"]
+                metrics = store.metrics("tomorrow_picks", days=20)
+                status = store.validation_baseline_status("tomorrow_picks", days=20)
+                candidates = store.validation_baseline_backfill_candidates("tomorrow_picks", days=20)
+                samples = store.live_weight_samples("tomorrow_picks", days=20)
+                update = store.update_outcomes(
+                    provider,
+                    strategy_name="tomorrow_picks",
+                    codes=["600001"],
+                    only_incomplete=True,
+                )
+
+        self.assertNotEqual(stored_baseline_id, current_baseline_id)
+        self.assertEqual(metrics["sample_count"], 1)
+        self.assertEqual(metrics["excluded_baseline_mismatch_count"], 0)
+        self.assertEqual(status["current_baseline_outcome_count"], 1)
+        self.assertFalse(status["needs_backfill"])
+        self.assertEqual(candidates["candidate_count"], 0)
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(update["updated"], 0)
+        self.assertEqual(provider.calls, [])
+
+    def test_strategy_validation_stale_no_future_sample_is_unknown_without_delisting_evidence(self):
         class FakeProvider:
             def get_history(self, code, days=180):
                 return pd.DataFrame(
@@ -211,17 +273,17 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
             )
             with patch.object(config, "ENABLE_SURVIVORSHIP_CORRECTION", True), patch.object(
                 config, "SURVIVORSHIP_CORRECTION_STALE_DAYS", 0
-            ), patch.object(config, "DELISTED_DEFAULT_LOSS_PCT", -30.0):
+            ):
                 update = store.update_outcomes(FakeProvider(), signal_date="2024-01-01", strategy_name="tomorrow_picks")
                 rows = store.signals_for_date("2024-01-01", "tomorrow_picks")
                 metrics = store.metrics("tomorrow_picks", days=20)
 
-        self.assertEqual(update["updated"], 1)
-        self.assertEqual(rows[0]["survivorship_corrected"], 1)
-        self.assertEqual(rows[0]["correction_reason"], "survivorship_no_future_default_loss")
-        self.assertAlmostEqual(rows[0]["next_close_return"], -30.0)
-        self.assertEqual(metrics["survivorship_corrected_count"], 1)
-        self.assertEqual(metrics["survivor_sample_count"], 0)
+        self.assertEqual(update["updated"], 0)
+        self.assertEqual(update["unknown"], 1)
+        self.assertEqual(rows[0]["label_status"], "unknown")
+        self.assertIsNone(rows[0]["gross_return_pct"])
+        self.assertFalse(rows[0]["promotion_eligible"])
+        self.assertEqual(metrics["sample_count"], 0)
 
     def test_validation_execution_cost_uses_liquidity_tail_auction_and_market_impact(self):
         from stock_analyzer.strategy_validation import _execution_cost_pct, market_impact_cost_pct, tail_auction_slippage_pct

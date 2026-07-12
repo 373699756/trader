@@ -1,5 +1,4 @@
 import math
-from contextlib import contextmanager
 import os
 import sqlite3
 from datetime import datetime
@@ -9,16 +8,10 @@ from typing import Dict, Iterable, List, Optional
 import pandas as pd
 
 from .normalization import coerce_number, market_type, normalize_code, rename_known_columns
+from .sqlite_support import sqlite_transaction
 
 
-@contextmanager
-def _connect_market_db(db_path: str):
-    conn = sqlite3.connect(db_path, timeout=30)
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+_connect_market_db = sqlite_transaction
 
 
 DAILY_BAR_COLUMNS = (

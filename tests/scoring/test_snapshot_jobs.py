@@ -318,6 +318,26 @@ def test_snapshot_tomorrow_keeps_wide_validation_candidates():
     assert meta["top_n"] == 12
     assert meta["display_cap"] == 0
     assert meta["display_limit"] == 12
+    assert len(meta["_candidate_pool_rows"]) >= len(rows)
+    assert all("frozen_rule_rank" in row for row in meta["_candidate_pool_rows"])
+
+
+def test_snapshot_short_and_swing_capture_full_scored_pools():
+    quotes = _snapshot_quotes(12)
+    candidates = prepare_candidates(quotes)
+    market_regime = {"level": "risk_on", "label": "偏进攻", "score": 75}
+
+    for strategy in ("short_term", "swing_picks"):
+        rows, meta, _version = _score_snapshot_strategy(
+            None,
+            candidates,
+            quotes,
+            strategy,
+            "all",
+            market_regime,
+        )
+        assert len(meta["_candidate_pool_rows"]) >= len(rows)
+        assert all("frozen_rule_rank" in row for row in meta["_candidate_pool_rows"])
 
 
 def test_saved_tomorrow_fallback_uses_display_cap_not_wide_snapshot_count():

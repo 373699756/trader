@@ -10,7 +10,7 @@
 - 策略验证：历史批次、样本表现、股票明细、DeepSeek 复盘
 - 个股预测：输入股票代码，返回本地预测和 DeepSeek 优化建议
 - 自动保存与回填：交易日 14:30 后补齐已成熟收益，15:00 后保存一次收盘候选快照；可执行策略统一按次日开盘成交
-- DeepSeek：候选复核、风险降权、验证复盘、影子调参建议
+- DeepSeek：候选 shadow 复核、验证复盘和影子调参；生产冻结期不改变排序、过滤或仓位
 - 执行门控：至少 20 个真实交易日，平均净收益为正、净胜率不低于 50%，且主周期平均回撤优于硬限制；未通过时只展示零仓位备选
 - 历史因子默认启用；缓存缺失时后台分批预热，不阻塞推荐接口。盘后使用 `./run.sh after-close` 或 `.\run.ps1 after-close` 更新完整日线、快照和 IC
 
@@ -115,6 +115,16 @@ $env:SKIP_PROXY_CHECK="1"; .\run.ps1
 .\run.ps1 after-close --market-data-limit 500
 ```
 
+日级组合基线随 `after-close` 自动刷新；也可单独重放：
+
+```bash
+.venv/bin/python -m stock_analyzer.daily_job --portfolio-baseline --strategy tomorrow_picks
+.venv/bin/python -m stock_analyzer.daily_job --portfolio-baseline --strategy tomorrow_picks --portfolio-baseline-date 2026-07-10
+.venv/bin/python -m stock_analyzer.daily_job --portfolio-baseline --strategy tomorrow_picks --portfolio-ranking-field rank_score --portfolio-model-id challenger_v1
+```
+
+冻结基线始终按 `score` 生成等权 Top-5；`--portfolio-ranking-field` 只生成同日期候选池上的挑战模型组。随机候选池基准使用固定种子且至少重复 1,000 次。
+
 ## 常用接口（A股口径）
 
 - `GET /api/recommendations?top_n=18&market=all`
@@ -123,12 +133,16 @@ $env:SKIP_PROXY_CHECK="1"; .\run.ps1
 - `GET /api/stock-prediction/<code>`
   - 其中 `market=all` 表示 A 股主板+创业板+科创板（对应沪深/创业/科创）。
 - `GET /api/strategy-validation?strategy=tomorrow_picks`
+- `GET /api/strategy-validation/portfolio-baseline?strategy=tomorrow_picks&days=120`
+- `POST /api/strategy-validation/portfolio-baseline?strategy=tomorrow_picks&days=120`
 - `GET /api/strategy-validation/tuning?strategy=tomorrow_picks`
 - `POST /api/strategy-validation/tuning?strategy=tomorrow_picks`
 
 ## 数据与备份
 
 - 验证数据库：`.runtime/strategy_validation.sqlite3`
+- 日级组合审计表：同库的 `daily_portfolio_baselines`；保存完整候选哈希、排名、执行状态、随机路径和五类对照。
+- P1 数据与标签验收：`.venv/bin/python -m stock_analyzer.validation_audit_cli --strategy tomorrow_picks --sample-size 30`
 - 自动备份文件：`.runtime/strategy_validation.backup.sqlite3`
 - 备份列表：
   - Linux/macOS/WSL：`.venv/bin/python -m stock_analyzer.daily_job --list-validation-backups`
@@ -139,5 +153,6 @@ $env:SKIP_PROXY_CHECK="1"; .\run.ps1
 
 ## 文档
 
+- [`docs/production_freeze.md`](docs/production_freeze.md)：P0 冻结基线、推荐追溯、重放校验和试验登记。
 - [`docs/strategy_and_prediction.md`](docs/strategy_and_prediction.md)：三类荐股策略、DeepSeek 结合方式、个股预测与优化建议。
 - [`docs/software_design.md`](docs/software_design.md)：软件整体结构、页面设计、接口、异步刷新、验证保存和运行方式。

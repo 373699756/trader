@@ -14,12 +14,14 @@ def build_strategy_oos_report(
     baseline_status: Dict[str, object],
     gate_decision: Dict[str, object],
     generated_at: str = "",
+    portfolio_baseline: Dict[str, object] = None,
 ) -> Dict[str, object]:
     strategy = str(strategy or "")
     days = int(days or 0)
     metrics = metrics or {}
     baseline_status = baseline_status or {}
     gate_decision = gate_decision or {}
+    portfolio_baseline = portfolio_baseline or {}
     if baseline_status.get("needs_backfill"):
         status = "needs_backfill"
     elif not metrics.get("sample_count") and not metrics.get("outcome_sample_count"):
@@ -45,7 +47,22 @@ def build_strategy_oos_report(
         "real_portfolio_max_drawdown_pct": metrics.get("real_portfolio_max_drawdown_pct", 0.0),
         "avg_trade_cost_pct": metrics.get("avg_trade_cost_pct", 0.0),
         "survivorship_corrected_count": int(metrics.get("survivorship_corrected_count") or 0),
+        "top_k_sensitivity": metrics.get("top_k_sensitivity") or {},
     }
+    frozen_portfolio = (portfolio_baseline.get("groups") or {}).get("frozen_rule_top_k") or {}
+    portfolio_day_count = int(portfolio_baseline.get("day_count") or 0)
+    portfolio_total_return = coerce_number(frozen_portfolio.get("total_return_pct"), 0.0)
+    if status == "oos_passed" and portfolio_day_count > 0 and portfolio_total_return <= 0:
+        status = "portfolio_blocked"
+    summary.update(
+        {
+            "portfolio_day_count": portfolio_day_count,
+            "portfolio_total_return_pct": portfolio_total_return,
+            "portfolio_max_drawdown_pct": frozen_portfolio.get("max_drawdown_pct", 0.0),
+            "portfolio_sortino": frozen_portfolio.get("sortino"),
+            "portfolio_random_percentile": portfolio_baseline.get("rule_vs_random_percentile"),
+        }
+    )
     requirements = {
         "min_oos_days": baseline_status.get("min_oos_days"),
         "min_real_days": int(
@@ -73,6 +90,7 @@ def build_strategy_oos_report(
         or baseline_status.get("validation_baseline_id"),
         "baseline_status": baseline_status,
         "validation_gate": gate_decision,
+        "portfolio_baseline": portfolio_baseline,
         "summary": summary,
         "requirements": requirements,
     }
@@ -87,10 +105,17 @@ def generate_strategy_oos_report(
     metrics = validation_store.metrics(strategy, days=days)
     baseline_status = validation_store.validation_baseline_status(strategy, days=days)
     gate_decision = gate_decision_fn(metrics, strategy)
+    try:
+        from .portfolio_baseline import DailyPortfolioBaselineService
+
+        portfolio_baseline = DailyPortfolioBaselineService(validation_store).report(strategy, days=days)
+    except Exception:
+        portfolio_baseline = {}
     return build_strategy_oos_report(
         strategy,
         days,
         metrics,
         baseline_status,
         gate_decision,
+        portfolio_baseline=portfolio_baseline,
     )

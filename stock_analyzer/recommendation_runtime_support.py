@@ -8,6 +8,7 @@ from .app_runtime_support import (
     apply_deepseek_rerank,
     apply_deepseek_rerank_batch,
     finalize_deepseek_meta,
+    merge_deepseek_shadow_rows,
     risk_blacklist_summary,
     skipped_deepseek_meta,
 )
@@ -27,6 +28,7 @@ from .expected_return_model import (
     save_expected_return_artifact,
 )
 from .normalization import coerce_number
+from .production_baseline import attach_generation_provenance
 from .scoring import limit_theme_concentration
 from .strategy_validation import validation_baseline_config
 from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks
@@ -74,6 +76,7 @@ def scored_strategy_rows(
     else:
         deepseek_meta = skipped_deepseek_meta(strategy_name)
     finalize_deepseek_meta(meta, rows, deepseek_meta)
+    attach_generation_provenance(meta, strategy_name, rows, candidates)
     return rows, meta, deepseek_meta
 
 
@@ -96,7 +99,8 @@ def apply_deepseek_to_reviewable_rows(
         )
         result_rows = source_rows
     else:
-        result_rows, deepseek_meta = apply_deepseek_rerank(strategy_name, review_rows, market)
+        reviewed_rows, deepseek_meta = apply_deepseek_rerank(strategy_name, review_rows, market)
+        result_rows = merge_deepseek_shadow_rows(source_rows, reviewed_rows)
     if meta is not None:
         finalize_deepseek_meta(meta, result_rows, deepseek_meta)
     return result_rows, deepseek_meta
@@ -275,15 +279,19 @@ def prediction_strategy_rows(
     if callable(cached_metrics_fn):
         _apply_validation_gate_safe("swing_picks", swing_rows, swing_meta, cached_metrics_fn)
     swing_rows, _ = apply_deepseek_to_reviewable_rows("swing_picks", swing_rows, "all", swing_meta)
-    return {
+    rows_by_strategy = {
         "short_term": short_rows,
         "tomorrow_picks": tomorrow_rows,
         "swing_picks": swing_rows,
-    }, {
+    }
+    metas_by_strategy = {
         "short_term": {**today_meta, "deepseek": short_deepseek_meta, **(short_term_meta_override or {})},
         "tomorrow_picks": tomorrow_meta,
         "swing_picks": swing_meta,
     }
+    for strategy_name, strategy_rows in rows_by_strategy.items():
+        attach_generation_provenance(metas_by_strategy[strategy_name], strategy_name, strategy_rows, candidates)
+    return rows_by_strategy, metas_by_strategy
 
 
 def build_recommendation_horizons(
@@ -378,9 +386,19 @@ class RecommendationService:
 
         market_gate = _review_market_gate(candidates, market_regime, apply_deepseek=apply_deepseek)
         if market_gate.get("enabled") and market_gate.get("status") in {"ok", "fallback"}:
-            recommendations_by_horizon, gate_counts = _apply_market_gate(recommendations_by_horizon, market_gate)
+            gated_rows, gate_counts = _apply_market_gate(recommendations_by_horizon, market_gate)
+            if not bool(getattr(config, "DEEPSEEK_SHADOW_ONLY", False)):
+                recommendations_by_horizon = gated_rows
             market_gate["counts"] = gate_counts
             short_meta["deepseek_market_gate"] = market_gate
+        strategy_metas = {
+            "short_term": short_meta,
+            "tomorrow_picks": tomorrow_meta,
+            "swing_picks": swing_meta,
+        }
+        for strategy_name, strategy_rows in recommendations_by_horizon.items():
+            strategy_metas[strategy_name]["market_regime"] = market_regime
+            attach_generation_provenance(strategy_metas[strategy_name], strategy_name, strategy_rows, candidates)
         return recommendations_by_horizon, short_meta, {
             "short_term": short_deepseek_meta,
             "tomorrow_picks": tomorrow_deepseek_meta,
@@ -471,8 +489,16 @@ class RecommendationService:
         if not review_input:
             return meta
         reranked, batch_meta = apply_deepseek_rerank_batch(review_input, market)
+        if bool(getattr(config, "DEEPSEEK_SHADOW_ONLY", False)):
+            for strategy in review_input:
+                strategy_meta = batch_meta.setdefault(strategy, {})
+                strategy_meta.setdefault("mode", "shadow_only")
+                strategy_meta.setdefault("production_applied", False)
         for strategy, rows in reranked.items():
-            recommendations_by_horizon[strategy] = rows
+            recommendations_by_horizon[strategy] = merge_deepseek_shadow_rows(
+                recommendations_by_horizon.get(strategy, []),
+                rows,
+            )
         meta.update(batch_meta)
         return meta
 
@@ -522,6 +548,9 @@ def _review_market_gate(candidates: pd.DataFrame, market_regime: Dict[str, objec
 
         result = review_market_regime(context)
         result["context"] = context
+        if bool(getattr(config, "DEEPSEEK_SHADOW_ONLY", False)):
+            result["mode"] = "shadow_only"
+            result["production_applied"] = False
         return result
     except Exception as exc:
         return {"enabled": True, "status": "fallback", "error": str(exc), "context": context}

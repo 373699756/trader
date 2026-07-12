@@ -3,6 +3,7 @@ from typing import Dict, Iterable, List
 import pandas as pd
 
 from . import config
+from .execution_policy import build_execution_policy
 from .factors import compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code, rename_known_columns
 from .scoring import build_market_regime, prepare_candidates, score_swing_candidates, score_tomorrow_candidates
@@ -101,7 +102,13 @@ def backfill_strategy_validation_samples(
             skipped_dates += 1
             continue
         signal_time = "{}T{}".format(_display_date(trade_date_key), _replay_signal_time_tail())
-        result = validation_store.save_signals(strategy_name, version, signal_time, rows)
+        result = validation_store.save_signals(
+            strategy_name,
+            version,
+            signal_time,
+            rows,
+            execution_policy=build_execution_policy(strategy_name),
+        )
         saved += int(result.get("saved") or 0)
         replaced += int(result.get("replaced") or 0)
         saved_dates.append(result.get("signal_date") or _display_date(trade_date_key))

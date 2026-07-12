@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from datetime import datetime
 import json
 import os
@@ -12,16 +11,10 @@ import pandas as pd
 from .daily_data import list_market_data_codes, load_history_frames
 from .factors import ALPHALITE_COLUMNS, ALPHALITE_META_COLUMNS, compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code
+from .sqlite_support import sqlite_transaction
 
 
-@contextmanager
-def _connect_factor_db(db_path: str):
-    conn = sqlite3.connect(db_path, timeout=30)
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+_connect_factor_db = sqlite_transaction
 
 
 FACTOR_SET = "alphalite_v1"

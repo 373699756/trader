@@ -1,4 +1,37 @@
+import json
 import os
+
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PRODUCTION_BASELINE_MANIFEST_PATH = os.getenv(
+    "PRODUCTION_BASELINE_MANIFEST_PATH",
+    os.path.join(_PROJECT_ROOT, "config", "production_baseline.json"),
+)
+PRODUCTION_FREEZE_ENABLED = os.getenv("PRODUCTION_FREEZE_ENABLED", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+EXPERIMENT_REGISTRY_PATH = os.getenv("EXPERIMENT_REGISTRY_PATH", "experiments/registry.jsonl")
+
+
+def _load_production_baseline_manifest():
+    try:
+        with open(PRODUCTION_BASELINE_MANIFEST_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception as exc:
+        if PRODUCTION_FREEZE_ENABLED:
+            raise RuntimeError("production baseline manifest is unavailable: {}".format(exc)) from exc
+        return {}
+    if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != 1:
+        if PRODUCTION_FREEZE_ENABLED:
+            raise RuntimeError("production baseline manifest has an unsupported schema")
+        return {}
+    return payload
+
+
+PRODUCTION_BASELINE_MANIFEST = _load_production_baseline_manifest()
 
 
 REFRESH_SECONDS = int(os.getenv("REFRESH_SECONDS", "30"))
@@ -93,6 +126,7 @@ ENABLE_SURVIVORSHIP_CORRECTION = os.getenv("ENABLE_SURVIVORSHIP_CORRECTION", "1"
     "on",
 )
 SURVIVORSHIP_CORRECTION_STALE_DAYS = int(os.getenv("SURVIVORSHIP_CORRECTION_STALE_DAYS", "30"))
+# Deprecated compatibility setting. Validation labels never synthesize a delisting return.
 DELISTED_DEFAULT_LOSS_PCT = float(os.getenv("DELISTED_DEFAULT_LOSS_PCT", "-30.0"))
 TOMORROW_INTRADAY_RELAX_UNTIL = os.getenv("TOMORROW_INTRADAY_RELAX_UNTIL", "14:30")
 TOMORROW_INTRADAY_RELAX_START = os.getenv("TOMORROW_INTRADAY_RELAX_START", "09:30")
@@ -108,6 +142,12 @@ VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS = int(os.getenv("VALIDATION_AUTO_SNAPSHOT
 VALIDATION_AUTO_SNAPSHOT_MARKET = os.getenv("VALIDATION_AUTO_SNAPSHOT_MARKET", "all")
 VALIDATION_AUTO_SNAPSHOT_STRATEGIES = os.getenv("VALIDATION_AUTO_SNAPSHOT_STRATEGIES", "")
 ENABLE_DEEPSEEK_RUNTIME = os.getenv("ENABLE_DEEPSEEK_RUNTIME", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+DEEPSEEK_SHADOW_ONLY = os.getenv("DEEPSEEK_SHADOW_ONLY", "1").lower() in (
     "1",
     "true",
     "yes",
@@ -157,6 +197,7 @@ ENABLE_MARKET_IMPACT = os.getenv("ENABLE_MARKET_IMPACT", "1").lower() in (
 )
 VALIDATION_PORTFOLIO_CAPITAL = float(os.getenv("VALIDATION_PORTFOLIO_CAPITAL", "1000000"))
 VALIDATION_DEFAULT_POSITION_PCT = float(os.getenv("VALIDATION_DEFAULT_POSITION_PCT", "10"))
+VALIDATION_BENCHMARK_MAX_PEERS = int(os.getenv("VALIDATION_BENCHMARK_MAX_PEERS", "120"))
 MARKET_IMPACT_COEFFICIENT = float(os.getenv("MARKET_IMPACT_COEFFICIENT", "0.1"))
 MARKET_IMPACT_MAX_COST_PCT = float(os.getenv("MARKET_IMPACT_MAX_COST_PCT", "5.0"))
 MAX_ACCEPTABLE_IMPACT_PCT = float(os.getenv("MAX_ACCEPTABLE_IMPACT_PCT", "1.0"))
@@ -223,6 +264,20 @@ PAPER_TRADING_SPREAD_CAPITAL_BY_HOLDING_DAYS = os.getenv("PAPER_TRADING_SPREAD_C
     "true",
     "yes",
     "on",
+)
+PORTFOLIO_BASELINE_VERSION = os.getenv("PORTFOLIO_BASELINE_VERSION", "daily_equal_weight_v1")
+PORTFOLIO_BASELINE_TOP_K = int(os.getenv("PORTFOLIO_BASELINE_TOP_K", "5"))
+PORTFOLIO_BASELINE_RANDOM_SEED = int(os.getenv("PORTFOLIO_BASELINE_RANDOM_SEED", "20260712"))
+PORTFOLIO_BASELINE_RANDOM_REPEATS = max(
+    1000,
+    int(os.getenv("PORTFOLIO_BASELINE_RANDOM_REPEATS", "1000")),
+)
+PORTFOLIO_BASELINE_INDEX_CODE = os.getenv("PORTFOLIO_BASELINE_INDEX_CODE", "000300")
+PORTFOLIO_BASELINE_INDEX_LABEL = os.getenv("PORTFOLIO_BASELINE_INDEX_LABEL", "沪深300")
+PORTFOLIO_BASELINE_STRATEGIES = tuple(
+    item.strip()
+    for item in os.getenv("PORTFOLIO_BASELINE_STRATEGIES", "tomorrow_picks").replace("，", ",").split(",")
+    if item.strip()
 )
 ENABLE_STANCE_TRACKING = os.getenv("ENABLE_STANCE_TRACKING", "0").lower() in ("1", "true", "yes", "on")
 STANCE_TRACKING_HOLDING_DAYS = int(os.getenv("STANCE_TRACKING_HOLDING_DAYS", "5"))
@@ -307,10 +362,19 @@ ENABLE_INDUSTRY_STRENGTH = os.getenv("ENABLE_INDUSTRY_STRENGTH", "0").lower() in
     "yes",
     "on",
 )
-EASTMONEY_TIMEOUT_SECONDS = float(os.getenv("EASTMONEY_TIMEOUT_SECONDS", "1"))
+EASTMONEY_TIMEOUT_SECONDS = float(os.getenv("EASTMONEY_TIMEOUT_SECONDS", "2.5"))
 EASTMONEY_PAGE_SIZE = int(os.getenv("EASTMONEY_PAGE_SIZE", "500"))
-EASTMONEY_MAX_PAGES = int(os.getenv("EASTMONEY_MAX_PAGES", "1"))
-EASTMONEY_SORT_FIELD = os.getenv("EASTMONEY_SORT_FIELD", "f6")
+EASTMONEY_MAX_PAGES = int(os.getenv("EASTMONEY_MAX_PAGES", "0"))
+EASTMONEY_SORT_FIELD = os.getenv("EASTMONEY_SORT_FIELD", "f12")
+EASTMONEY_CONCURRENCY = int(os.getenv("EASTMONEY_CONCURRENCY", "6"))
+EASTMONEY_PAGE_RETRIES = int(os.getenv("EASTMONEY_PAGE_RETRIES", "1"))
+EASTMONEY_BATCH_TIMEOUT_SECONDS = float(os.getenv("EASTMONEY_BATCH_TIMEOUT_SECONDS", "45"))
+SINA_QUOTE_TIMEOUT_SECONDS = float(os.getenv("SINA_QUOTE_TIMEOUT_SECONDS", "5"))
+SINA_QUOTE_PAGE_SIZE = int(os.getenv("SINA_QUOTE_PAGE_SIZE", "80"))
+SINA_QUOTE_CONCURRENCY = int(os.getenv("SINA_QUOTE_CONCURRENCY", "6"))
+SINA_QUOTE_PAGE_RETRIES = int(os.getenv("SINA_QUOTE_PAGE_RETRIES", "1"))
+SINA_QUOTE_BATCH_TIMEOUT_SECONDS = float(os.getenv("SINA_QUOTE_BATCH_TIMEOUT_SECONDS", "90"))
+QUOTE_DOWNLOAD_MIN_COVERAGE_RATIO = float(os.getenv("QUOTE_DOWNLOAD_MIN_COVERAGE_RATIO", "0.98"))
 
 # 回测校准脚本（calibrate.py）写出的权重覆盖文件；scoring/backtest 启动时若存在则加载。
 WEIGHTS_OVERRIDE_PATH = os.getenv("WEIGHTS_OVERRIDE_PATH", ".runtime/weights.json")
@@ -412,3 +476,25 @@ ACTIVE_STRATEGIES = (
     "swing_picks",
 )
 AUTO_SNAPSHOT_STRATEGIES = SNAPSHOT_STRATEGIES
+
+
+def _apply_production_freeze() -> None:
+    if not PRODUCTION_FREEZE_ENABLED:
+        return
+    switches = PRODUCTION_BASELINE_MANIFEST.get("switches") or {}
+    locked_config = PRODUCTION_BASELINE_MANIFEST.get("locked_config") or {}
+    for name, value in switches.items():
+        globals()[str(name)] = bool(value)
+    for name, value in locked_config.items():
+        globals()[str(name)] = value
+
+
+_apply_production_freeze()
+PRODUCTION_RESEARCH_STRATEGY = str(
+    (PRODUCTION_BASELINE_MANIFEST.get("research") or {}).get("first_strategy") or "tomorrow_picks"
+)
+PRODUCTION_TOP_K = int((PRODUCTION_BASELINE_MANIFEST.get("research") or {}).get("production_top_k") or 5)
+RESEARCH_TOP_K_SENSITIVITY = tuple(
+    int(value)
+    for value in (PRODUCTION_BASELINE_MANIFEST.get("research") or {}).get("sensitivity_top_k", (3, 5, 10))
+)

@@ -11,8 +11,8 @@ class ValidationSchemaManager:
     def init_db(self) -> None:
         with self._connect(self.db_path) as conn:
             self._create_tables(conn)
-            self._create_indexes(conn)
             self._run_migrations(conn)
+            self._create_indexes(conn)
 
     def _create_tables(self, conn) -> None:
         for statement in _TABLES:
@@ -23,12 +23,10 @@ class ValidationSchemaManager:
             conn.execute(statement)
 
     def _run_migrations(self, conn) -> None:
-        existing_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(strategy_outcomes)").fetchall()
-        }
-        for column, column_type in _OUTCOME_MIGRATION_COLUMNS.items():
-            if column not in existing_columns:
-                conn.execute("ALTER TABLE strategy_outcomes ADD COLUMN {} {}".format(column, column_type))
+        self._add_columns(conn, "strategy_outcomes", _OUTCOME_MIGRATION_COLUMNS)
+        self._add_columns(conn, "strategy_signal_batches", _BATCH_MIGRATION_COLUMNS)
+        self._add_columns(conn, "strategy_execution_records", _EXECUTION_MIGRATION_COLUMNS)
+        self._add_columns(conn, "daily_portfolio_baselines", _PORTFOLIO_BASELINE_MIGRATION_COLUMNS)
         conn.execute(
             """
             INSERT OR IGNORE INTO strategy_signal_batches
@@ -39,6 +37,13 @@ class ValidationSchemaManager:
             """
         )
 
+    @staticmethod
+    def _add_columns(conn, table: str, columns) -> None:
+        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info({})".format(table)).fetchall()}
+        for column, column_type in columns.items():
+            if column not in existing_columns:
+                conn.execute("ALTER TABLE {} ADD COLUMN {} {}".format(table, column, column_type))
+
 
 _TABLES = (
     """
@@ -48,8 +53,45 @@ _TABLES = (
         signal_date TEXT NOT NULL,
         signal_time TEXT NOT NULL,
         saved_count INTEGER NOT NULL DEFAULT 0,
+        candidate_count INTEGER NOT NULL DEFAULT 0,
+        selected_count INTEGER NOT NULL DEFAULT 0,
+        data_source_timestamp TEXT NOT NULL DEFAULT '',
+        market_data_cutoff TEXT NOT NULL DEFAULT '',
+        execution_policy_version TEXT NOT NULL DEFAULT '',
+        execution_policy_json TEXT NOT NULL DEFAULT '',
+        generation_json TEXT NOT NULL DEFAULT '{}',
+        portfolio_capital REAL NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         PRIMARY KEY(strategy_name, signal_date, strategy_version)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS strategy_candidate_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name TEXT NOT NULL,
+        strategy_version TEXT NOT NULL,
+        signal_date TEXT NOT NULL,
+        signal_time TEXT NOT NULL,
+        code TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        market TEXT NOT NULL DEFAULT '',
+        industry TEXT NOT NULL DEFAULT '',
+        style_bucket TEXT NOT NULL DEFAULT 'unknown',
+        eligible INTEGER NOT NULL DEFAULT 0,
+        selected INTEGER NOT NULL DEFAULT 0,
+        rank INTEGER NOT NULL DEFAULT 0,
+        score REAL NOT NULL DEFAULT 0,
+        point_in_time_valid INTEGER NOT NULL DEFAULT 0,
+        eligibility_reasons_json TEXT NOT NULL DEFAULT '[]',
+        feature_values_json TEXT NOT NULL DEFAULT '{}',
+        missing_mask_json TEXT NOT NULL DEFAULT '{}',
+        source_timestamps_json TEXT NOT NULL DEFAULT '{}',
+        announcement_time TEXT NOT NULL DEFAULT '',
+        market_data_cutoff TEXT NOT NULL DEFAULT '',
+        point_in_time_violations_json TEXT NOT NULL DEFAULT '[]',
+        raw_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        UNIQUE(strategy_name, strategy_version, signal_date, code)
     )
     """,
     """
@@ -108,6 +150,53 @@ _TABLES = (
         primary_holding_days INTEGER NOT NULL DEFAULT 0,
         validation_baseline_id TEXT NOT NULL DEFAULT '',
         validation_baseline_json TEXT NOT NULL DEFAULT '',
+        label_status TEXT NOT NULL DEFAULT 'settled',
+        delisting_status TEXT NOT NULL DEFAULT 'not_applicable',
+        execution_policy_version TEXT NOT NULL DEFAULT '',
+        execution_policy_json TEXT NOT NULL DEFAULT '',
+        cost_scenarios_json TEXT NOT NULL DEFAULT '{}',
+        raw_prices_json TEXT NOT NULL DEFAULT '[]',
+        benchmark_json TEXT NOT NULL DEFAULT '{}',
+        entry_price REAL,
+        exit_price REAL,
+        return_reproducible INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(signal_id) REFERENCES strategy_signals(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS strategy_execution_records (
+        signal_id INTEGER PRIMARY KEY,
+        code TEXT NOT NULL,
+        label_status TEXT NOT NULL DEFAULT 'pending',
+        reason TEXT NOT NULL DEFAULT '',
+        entry_status TEXT NOT NULL DEFAULT 'pending',
+        exit_status TEXT NOT NULL DEFAULT 'pending',
+        delisting_status TEXT NOT NULL DEFAULT 'not_applicable',
+        promotion_eligible INTEGER NOT NULL DEFAULT 0,
+        portfolio_capital REAL NOT NULL DEFAULT 0,
+        target_weight_pct REAL NOT NULL DEFAULT 0,
+        target_notional REAL NOT NULL DEFAULT 0,
+        order_quantity REAL NOT NULL DEFAULT 0,
+        actual_filled_quantity REAL NOT NULL DEFAULT 0,
+        actual_entry_price REAL,
+        actual_exit_quantity REAL NOT NULL DEFAULT 0,
+        actual_exit_price REAL,
+        unfilled_quantity REAL NOT NULL DEFAULT 0,
+        unfilled_entry_quantity REAL NOT NULL DEFAULT 0,
+        unfilled_exit_quantity REAL NOT NULL DEFAULT 0,
+        fill_source TEXT NOT NULL DEFAULT '',
+        fee_pct REAL NOT NULL DEFAULT 0,
+        slippage_pct REAL NOT NULL DEFAULT 0,
+        impact_pct REAL NOT NULL DEFAULT 0,
+        gross_return_pct REAL,
+        net_return_pct REAL,
+        return_formula TEXT NOT NULL DEFAULT '',
+        execution_policy_version TEXT NOT NULL DEFAULT '',
+        execution_policy_json TEXT NOT NULL DEFAULT '',
+        cost_scenarios_json TEXT NOT NULL DEFAULT '{}',
+        raw_prices_json TEXT NOT NULL DEFAULT '[]',
+        benchmark_json TEXT NOT NULL DEFAULT '{}',
         updated_at TEXT NOT NULL,
         FOREIGN KEY(signal_id) REFERENCES strategy_signals(id)
     )
@@ -222,6 +311,25 @@ _TABLES = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS daily_portfolio_baselines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name TEXT NOT NULL,
+        portfolio_baseline_id TEXT NOT NULL,
+        signal_date TEXT NOT NULL,
+        signal_time TEXT NOT NULL DEFAULT '',
+        strategy_version TEXT NOT NULL DEFAULT '',
+        validation_baseline_id TEXT NOT NULL DEFAULT '',
+        model_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        candidate_hash TEXT NOT NULL DEFAULT '',
+        result_json TEXT NOT NULL,
+        audit_blob BLOB,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(strategy_name, portfolio_baseline_id, signal_date)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS strategy_tuning_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         strategy_name TEXT NOT NULL,
@@ -278,12 +386,17 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_date_rank ON strategy_signals(strategy_name, signal_date DESC, rank)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_version_date ON strategy_signals(strategy_name, strategy_version, signal_date)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_signal_batches_strategy_date ON strategy_signal_batches(strategy_name, signal_date DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_strategy_candidates_strategy_date ON strategy_candidate_snapshots(strategy_name, signal_date DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_strategy_candidates_code ON strategy_candidate_snapshots(code)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_outcomes_code ON strategy_outcomes(code)",
+    "CREATE INDEX IF NOT EXISTS idx_strategy_execution_records_status ON strategy_execution_records(label_status)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_execution_skips_code ON strategy_execution_skips(code)",
     "CREATE INDEX IF NOT EXISTS idx_deepseek_shadow_strategy_date ON strategy_deepseek_shadow_signals(strategy_name, signal_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_deepseek_shadow_code ON strategy_deepseek_shadow_signals(code)",
     "CREATE INDEX IF NOT EXISTS idx_deepseek_market_gate_date ON deepseek_market_gate_reviews(review_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_oos_reports_strategy_time ON strategy_oos_reports(strategy_name, generated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_daily_portfolio_baselines_strategy_date ON daily_portfolio_baselines(strategy_name, signal_date DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_daily_portfolio_baselines_id_date ON daily_portfolio_baselines(portfolio_baseline_id, signal_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_outcomes_baseline ON strategy_outcomes(validation_baseline_id)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_tuning_runs_strategy_time ON strategy_tuning_runs(strategy_name, run_time DESC)",
     "CREATE INDEX IF NOT EXISTS idx_stock_prediction_snapshots_date ON stock_prediction_snapshots(prediction_date DESC)",
@@ -319,4 +432,34 @@ _OUTCOME_MIGRATION_COLUMNS = {
     "primary_holding_days": "INTEGER NOT NULL DEFAULT 0",
     "validation_baseline_id": "TEXT NOT NULL DEFAULT ''",
     "validation_baseline_json": "TEXT NOT NULL DEFAULT ''",
+    "label_status": "TEXT NOT NULL DEFAULT 'settled'",
+    "delisting_status": "TEXT NOT NULL DEFAULT 'not_applicable'",
+    "execution_policy_version": "TEXT NOT NULL DEFAULT ''",
+    "execution_policy_json": "TEXT NOT NULL DEFAULT ''",
+    "cost_scenarios_json": "TEXT NOT NULL DEFAULT '{}'",
+    "raw_prices_json": "TEXT NOT NULL DEFAULT '[]'",
+    "benchmark_json": "TEXT NOT NULL DEFAULT '{}'",
+    "entry_price": "REAL",
+    "exit_price": "REAL",
+    "return_reproducible": "INTEGER NOT NULL DEFAULT 0",
+}
+
+_BATCH_MIGRATION_COLUMNS = {
+    "candidate_count": "INTEGER NOT NULL DEFAULT 0",
+    "selected_count": "INTEGER NOT NULL DEFAULT 0",
+    "data_source_timestamp": "TEXT NOT NULL DEFAULT ''",
+    "market_data_cutoff": "TEXT NOT NULL DEFAULT ''",
+    "execution_policy_version": "TEXT NOT NULL DEFAULT ''",
+    "execution_policy_json": "TEXT NOT NULL DEFAULT ''",
+    "generation_json": "TEXT NOT NULL DEFAULT '{}'",
+    "portfolio_capital": "REAL NOT NULL DEFAULT 0",
+}
+
+_EXECUTION_MIGRATION_COLUMNS = {
+    "unfilled_entry_quantity": "REAL NOT NULL DEFAULT 0",
+    "unfilled_exit_quantity": "REAL NOT NULL DEFAULT 0",
+}
+
+_PORTFOLIO_BASELINE_MIGRATION_COLUMNS = {
+    "audit_blob": "BLOB",
 }

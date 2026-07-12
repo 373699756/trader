@@ -74,6 +74,7 @@ const els = {
   updateStatus: document.getElementById("updateStatus"),
   validationSimpleDecision: document.getElementById("validationSimpleDecision"),
   validationOosReport: document.getElementById("validationOosReport"),
+  validationPortfolioBaseline: document.getElementById("validationPortfolioBaseline"),
   validationBaselineDryRunBtn: document.getElementById("validationBaselineDryRunBtn"),
   validationBaselineExecuteBtn: document.getElementById("validationBaselineExecuteBtn"),
   validationBaselineStatus: document.getElementById("validationBaselineStatus"),
@@ -190,6 +191,7 @@ Implementations live in the split modules loaded before this file:
 validationSnapshotStrategiesText(config.strategies)
 snapshotStatusText(snapshot, config.strategies)
 /api/strategy-validation/oos-report
+/api/strategy-validation/portfolio-baseline
 /api/strategy-validation/backfill-current-baseline
 params.set("execute", "1")
 window.confirm

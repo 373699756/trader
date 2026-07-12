@@ -1,4 +1,8 @@
+import math
+import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,17 +28,27 @@ class ProviderStatus:
 
 
 class MarketDataProvider:
-    def __init__(self) -> None:
+    def __init__(self, web_nonblocking: bool = False) -> None:
         self.status = ProviderStatus()
+        self._web_nonblocking = bool(web_nonblocking)
         self._akshare = None
         self._tushare = None
         self._tushare_api = None
+        self._quote_refresh_lock = threading.Lock()
+        self._quote_refresh_running = False
+        self._quote_refresh_last_started_at = ""
+        self._quote_refresh_last_finished_at = ""
+        self._quote_refresh_last_success_at = ""
+        self._quote_refresh_last_error = ""
+        self._quote_refresh_last_started_ts = 0.0
         self._history_cache = HistoryCache(
             config.HISTORY_CACHE_PATH,
             freshness_hours=config.HISTORY_CACHE_FRESHNESS_HOURS,
         )
 
     def get_realtime_quotes(self) -> pd.DataFrame:
+        if self._web_nonblocking:
+            return self.get_web_realtime_quotes()
         errors = []
         try:
             df = self._fetch_eastmoney_quotes()
@@ -43,15 +57,11 @@ class MarketDataProvider:
             errors.append("东方财富直连行情失败: {}".format(exc))
 
         if config.ALLOW_SLOW_QUOTE_FALLBACK:
-            for source, fetcher, error_prefix in (
-                ("AKShare 东方财富", self._fetch_akshare_quotes, "AKShare 行情失败"),
-                ("AKShare 新浪", self._fetch_sina_quotes, "新浪行情失败"),
-            ):
-                try:
-                    df = fetcher()
-                    return self._accept_realtime_quotes(df, source, errors)
-                except Exception as exc:  # pragma: no cover - depends on remote services
-                    errors.append("{}: {}".format(error_prefix, exc))
+            try:
+                df = self._fetch_sina_quotes()
+                return self._accept_realtime_quotes(df, "新浪并发行情", errors)
+            except Exception as exc:  # pragma: no cover - depends on remote services
+                errors.append("新浪行情失败: {}".format(exc))
 
             if config.TUSHARE_TOKEN:
                 try:
@@ -70,6 +80,96 @@ class MarketDataProvider:
         self.status.quotes_source = "unavailable"
         self.status.errors = errors
         raise RuntimeError("; ".join(errors))
+
+    def get_web_realtime_quotes(self) -> pd.DataFrame:
+        """Serve a local snapshot immediately; perform all remote work in background."""
+        snapshot = self._load_quote_snapshot()
+        self.refresh_realtime_quotes_async()
+        if snapshot is not None and not snapshot.empty:
+            self.status.quotes_source = "本地快照"
+            self.status.last_quote_refresh = snapshot.attrs.get("snapshot_mtime") or datetime.now().isoformat(
+                timespec="seconds"
+            )
+            return snapshot
+        message = "实时行情正在后台刷新，Web 请求未等待行情下载"
+        self.status.quotes_source = "后台刷新中"
+        self.status.errors = [*self.status.errors[-9:], message]
+        raise RuntimeError(message)
+
+    def refresh_realtime_quotes_async(self, force: bool = False) -> bool:
+        now = time.time()
+        min_interval = max(30, int(getattr(config, "QUOTE_BACKGROUND_REFRESH_INTERVAL_SECONDS", 300)))
+        with self._quote_refresh_lock:
+            if self._quote_refresh_running:
+                return False
+            if not force and self._quote_refresh_last_started_ts and now - self._quote_refresh_last_started_ts < min_interval:
+                return False
+            self._quote_refresh_running = True
+            self._quote_refresh_last_started_ts = now
+            self._quote_refresh_last_started_at = datetime.now().isoformat(timespec="seconds")
+            self._quote_refresh_last_error = ""
+        worker = threading.Thread(
+            target=self._refresh_realtime_quotes_worker,
+            name="market-quotes-background-refresh",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except Exception as exc:
+            with self._quote_refresh_lock:
+                self._quote_refresh_running = False
+                self._quote_refresh_last_finished_at = datetime.now().isoformat(timespec="seconds")
+                self._quote_refresh_last_error = str(exc)
+            return False
+        return True
+
+    def quote_refresh_status(self) -> Dict[str, object]:
+        with self._quote_refresh_lock:
+            return {
+                "running": self._quote_refresh_running,
+                "last_started_at": self._quote_refresh_last_started_at,
+                "last_finished_at": self._quote_refresh_last_finished_at,
+                "last_success_at": self._quote_refresh_last_success_at,
+                "last_error": self._quote_refresh_last_error,
+            }
+
+    def _refresh_realtime_quotes_worker(self) -> None:
+        error = ""
+        success = False
+        errors = list(self.status.errors)
+        try:
+            try:
+                quotes = self._fetch_eastmoney_quotes()
+                self._accept_realtime_quotes(quotes, "东方财富直连", errors)
+                success = True
+            except Exception as exc:  # pragma: no cover - depends on remote services
+                errors.append("东方财富直连行情失败: {}".format(exc))
+            if not success and config.ALLOW_SLOW_QUOTE_FALLBACK:
+                try:
+                    quotes = self._fetch_sina_quotes()
+                    self._accept_realtime_quotes(quotes, "新浪并发行情", errors)
+                    success = True
+                except Exception as exc:  # pragma: no cover - depends on remote services
+                    errors.append("新浪行情失败: {}".format(exc))
+            if not success and config.TUSHARE_TOKEN:
+                try:
+                    quotes = self._fetch_tushare_quotes()
+                    self._accept_realtime_quotes(quotes, "Tushare", errors)
+                    success = True
+                except Exception as exc:  # pragma: no cover - depends on remote services
+                    errors.append("Tushare 行情失败: {}".format(exc))
+            if not success:
+                error = "; ".join(errors[-3:]) or "后台行情刷新没有可用数据源"
+                self.status.errors = errors
+        except Exception as exc:
+            error = str(exc)
+        finished_at = datetime.now().isoformat(timespec="seconds")
+        with self._quote_refresh_lock:
+            self._quote_refresh_running = False
+            self._quote_refresh_last_finished_at = finished_at
+            self._quote_refresh_last_error = error
+            if success:
+                self._quote_refresh_last_success_at = finished_at
 
     def _accept_realtime_quotes(self, df: pd.DataFrame, source: str, errors: List[str]) -> pd.DataFrame:
         refresh_time = datetime.now().isoformat(timespec="seconds")
@@ -297,6 +397,30 @@ class MarketDataProvider:
             return local
         return cached if cached is not None and not cached.empty else local
 
+    def get_index_history(self, code: str = "000300", days: int = 90) -> pd.DataFrame:
+        normalized = normalize_code(code)
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=max(days * 2, 120))).strftime("%Y%m%d")
+        ak = self._get_akshare()
+        try:
+            frame = ak.index_zh_a_hist(
+                symbol=normalized,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except Exception as first_error:
+            try:
+                frame = ak.stock_zh_index_daily_em(symbol="sh{}".format(normalized))
+            except Exception as second_error:
+                self._record_sentiment_error(
+                    "指数历史失败 {}: {}; {}".format(normalized, first_error, second_error)
+                )
+                return pd.DataFrame()
+        if frame is None or frame.empty:
+            return pd.DataFrame()
+        return rename_known_columns(frame).tail(days).reset_index(drop=True)
+
     def prefetch_history(self, codes: List[str], days: int = 180, force: bool = False) -> Dict[str, object]:
         result = {
             "requested": len(codes),
@@ -386,14 +510,8 @@ class MarketDataProvider:
             "last_quote_refresh": self.status.last_quote_refresh,
             "last_sentiment_refresh": self.status.last_sentiment_refresh,
             "errors": self.status.errors[-10:],
+            "quote_background_refresh": self.quote_refresh_status(),
         }
-
-    def _fetch_akshare_quotes(self) -> pd.DataFrame:
-        ak = self._get_akshare()
-        df = ak.stock_zh_a_spot_em()
-        if df is None or df.empty:
-            raise RuntimeError("AKShare 返回空行情")
-        return rename_known_columns(df)
 
     def _fetch_eastmoney_quotes(self) -> pd.DataFrame:
         df = _fetch_eastmoney_spot_dataframe()
@@ -402,8 +520,7 @@ class MarketDataProvider:
         return rename_known_columns(df)
 
     def _fetch_sina_quotes(self) -> pd.DataFrame:
-        ak = self._get_akshare()
-        df = ak.stock_zh_a_spot()
+        df = _fetch_sina_spot_dataframe()
         if df is None or df.empty:
             raise RuntimeError("新浪返回空行情")
         return rename_known_columns(df)
@@ -559,7 +676,6 @@ EASTMONEY_NUMERIC_COLUMNS = (
 
 
 def _fetch_eastmoney_spot_dataframe() -> pd.DataFrame:
-    frames = []
     params = _eastmoney_spot_params(page=1)
     first_json = _request_eastmoney_page(params)
     data = first_json.get("data") or {}
@@ -572,20 +688,24 @@ def _fetch_eastmoney_spot_dataframe() -> pd.DataFrame:
     total_pages = max(1, (total + page_size - 1) // page_size)
     if config.EASTMONEY_MAX_PAGES > 0:
         total_pages = min(total_pages, config.EASTMONEY_MAX_PAGES)
-    frames.append(pd.DataFrame(rows))
 
-    for page in range(2, total_pages + 1):
-        params = _eastmoney_spot_params(page=page)
-        try:
-            page_json = _request_eastmoney_page(params)
-        except Exception:
-            break
-        page_rows = (page_json.get("data") or {}).get("diff") or []
-        if not page_rows:
-            continue
-        frames.append(pd.DataFrame(page_rows))
+    def fetch_page(page: int):
+        page_json = _request_eastmoney_page(_eastmoney_spot_params(page=page))
+        return (page_json.get("data") or {}).get("diff") or []
 
+    page_rows = _download_quote_pages(
+        range(2, total_pages + 1),
+        fetch_page,
+        source="东方财富",
+        max_workers=config.EASTMONEY_CONCURRENCY,
+        retries=config.EASTMONEY_PAGE_RETRIES,
+        batch_timeout_seconds=config.EASTMONEY_BATCH_TIMEOUT_SECONDS,
+    )
+    frames = [pd.DataFrame(rows)]
+    frames.extend(pd.DataFrame(page_rows[page]) for page in sorted(page_rows))
     raw = pd.concat(frames, ignore_index=True)
+    expected_rows = min(total, total_pages * page_size)
+    raw = _validate_quote_coverage(raw, "f12", expected_rows, "东方财富")
     return _normalize_eastmoney_spot(raw)
 
 
@@ -613,28 +733,219 @@ def _request_eastmoney_page(params: Dict[str, str]) -> Dict[str, object]:
         ),
         "Referer": "https://quote.eastmoney.com/center/gridlist.html",
     }
-    for host in ("push2.eastmoney.com", "82.push2.eastmoney.com", "7.push2.eastmoney.com"):
-        for scheme in ("https", "http"):
-            url = "{}://{}/api/qt/clist/get".format(scheme, host)
-            for trust_env in (True, False):
-                try:
-                    with requests.Session() as session:
-                        session.trust_env = trust_env
-                        response = session.get(
-                            url,
-                            params=params,
-                            headers=headers,
-                            timeout=config.EASTMONEY_TIMEOUT_SECONDS,
-                        )
-                        response.raise_for_status()
-                        payload = response.json()
-                except Exception as exc:
-                    last_error = exc
-                    continue
-                if payload.get("data"):
-                    return payload
-                last_error = RuntimeError("东方财富返回空 data")
+    for host in ("82.push2.eastmoney.com", "push2.eastmoney.com", "7.push2.eastmoney.com"):
+        url = "https://{}/api/qt/clist/get".format(host)
+        for trust_env in (True, False):
+            try:
+                with requests.Session() as session:
+                    session.trust_env = trust_env
+                    response = session.get(
+                        url,
+                        params=params,
+                        headers=headers,
+                        timeout=config.EASTMONEY_TIMEOUT_SECONDS,
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+            except Exception as exc:
+                last_error = exc
+                continue
+            if payload.get("data"):
+                return payload
+            last_error = RuntimeError("东方财富返回空 data")
     raise RuntimeError(str(last_error) if last_error else "东方财富请求失败")
+
+
+SINA_QUOTE_URL = "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
+SINA_QUOTE_COUNT_URL = (
+    "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount"
+)
+SINA_NUMERIC_COLUMN_MAP = {
+    "trade": "最新价",
+    "pricechange": "涨跌额",
+    "changepercent": "涨跌幅",
+    "buy": "买入",
+    "sell": "卖出",
+    "settlement": "昨收",
+    "open": "今开",
+    "high": "最高",
+    "low": "最低",
+    "volume": "成交量",
+    "amount": "成交额",
+}
+
+
+def _fetch_sina_spot_dataframe() -> pd.DataFrame:
+    count_text = _request_sina_text(SINA_QUOTE_COUNT_URL, {"node": "hs_a"})
+    count_match = re.search(r"\d+", count_text)
+    if count_match is None:
+        raise RuntimeError("新浪行情总数格式异常")
+    total = int(count_match.group(0))
+    page_size = max(1, int(config.SINA_QUOTE_PAGE_SIZE))
+    total_pages = max(1, math.ceil(total / page_size))
+
+    def fetch_page(page: int):
+        text = _request_sina_text(
+            SINA_QUOTE_URL,
+            {
+                "page": str(page),
+                "num": str(page_size),
+                "sort": "symbol",
+                "asc": "1",
+                "node": "hs_a",
+                "symbol": "",
+                "_s_r_a": "page",
+            },
+        )
+        return _decode_sina_rows(text)
+
+    page_rows = _download_quote_pages(
+        range(1, total_pages + 1),
+        fetch_page,
+        source="新浪",
+        max_workers=config.SINA_QUOTE_CONCURRENCY,
+        retries=config.SINA_QUOTE_PAGE_RETRIES,
+        batch_timeout_seconds=config.SINA_QUOTE_BATCH_TIMEOUT_SECONDS,
+    )
+    raw = pd.DataFrame([row for page in sorted(page_rows) for row in page_rows[page]])
+    raw = _validate_quote_coverage(raw, "code", total, "新浪", fallback_code_column="symbol")
+    return _normalize_sina_spot(raw)
+
+
+def _request_sina_text(url: str, params: Dict[str, str]) -> str:
+    last_error: Optional[Exception] = None
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        ),
+        "Referer": "https://vip.stock.finance.sina.com.cn/mkt/",
+    }
+    for trust_env in (False, True):
+        try:
+            with requests.Session() as session:
+                session.trust_env = trust_env
+                response = session.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=config.SINA_QUOTE_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                text = response.text
+        except Exception as exc:
+            last_error = exc
+            continue
+        if text.strip():
+            return text
+        last_error = RuntimeError("新浪返回空响应")
+    raise RuntimeError(str(last_error) if last_error else "新浪请求失败")
+
+
+def _decode_sina_rows(text: str) -> List[Dict[str, object]]:
+    from akshare.utils import demjson
+
+    payload = demjson.decode(text)
+    if not isinstance(payload, list):
+        raise RuntimeError("新浪行情分页格式异常")
+    return [row for row in payload if isinstance(row, dict)]
+
+
+def _normalize_sina_spot(raw: pd.DataFrame) -> pd.DataFrame:
+    if raw.empty:
+        return pd.DataFrame()
+    codes = raw.get("code", pd.Series(index=raw.index, dtype=object))
+    if "symbol" in raw.columns:
+        codes = codes.where(codes.notna() & codes.astype(str).str.strip().ne(""), raw["symbol"])
+    result = pd.DataFrame(
+        {
+            "代码": codes.map(normalize_code),
+            "名称": raw.get("name", pd.Series(index=raw.index, dtype=object)).fillna("").astype(str),
+            "时间戳": raw.get("ticktime", pd.Series(index=raw.index, dtype=object)).fillna("").astype(str),
+        }
+    )
+    for source_column, target_column in SINA_NUMERIC_COLUMN_MAP.items():
+        values = raw.get(source_column, pd.Series(index=raw.index, dtype=float))
+        result[target_column] = pd.to_numeric(values, errors="coerce")
+    result = result[result["代码"].astype(str).str.len() == 6]
+    return result.sort_values("代码", kind="stable").reset_index(drop=True)
+
+
+def _download_quote_pages(
+    pages,
+    fetch_page,
+    source: str,
+    max_workers: int,
+    retries: int,
+    batch_timeout_seconds: float,
+) -> Dict[int, List[Dict[str, object]]]:
+    page_numbers = list(pages)
+    if not page_numbers:
+        return {}
+    deadline = time.monotonic() + max(1.0, float(batch_timeout_seconds))
+
+    def run(page: int):
+        last_error: Optional[Exception] = None
+        for attempt in range(max(0, int(retries)) + 1):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("超过批次截止时间")
+            try:
+                rows = fetch_page(page)
+                if not rows:
+                    raise RuntimeError("返回空分页")
+                return rows
+            except Exception as exc:
+                last_error = exc
+                if attempt < max(0, int(retries)):
+                    time.sleep(min(0.2 * (attempt + 1), 0.5))
+        raise RuntimeError(str(last_error) if last_error else "分页请求失败")
+
+    results: Dict[int, List[Dict[str, object]]] = {}
+    errors: Dict[int, str] = {}
+    worker_count = min(len(page_numbers), max(1, int(max_workers)))
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="quote-pages") as executor:
+        futures = {executor.submit(run, page): page for page in page_numbers}
+        for future in as_completed(futures):
+            page = futures[future]
+            try:
+                results[page] = future.result()
+            except Exception as exc:
+                errors[page] = str(exc)
+    if errors:
+        details = ", ".join("{}={}".format(page, errors[page]) for page in sorted(errors)[:5])
+        raise RuntimeError("{}分页下载失败: {}".format(source, details))
+    return results
+
+
+def _validate_quote_coverage(
+    raw: pd.DataFrame,
+    code_column: str,
+    expected_rows: int,
+    source: str,
+    fallback_code_column: str = "",
+) -> pd.DataFrame:
+    if raw.empty:
+        raise RuntimeError("{}行情为空".format(source))
+    codes = raw.get(code_column, pd.Series(index=raw.index, dtype=object))
+    if fallback_code_column and fallback_code_column in raw.columns:
+        codes = codes.where(codes.notna() & codes.astype(str).str.strip().ne(""), raw[fallback_code_column])
+    normalized_codes = codes.map(normalize_code)
+    valid = normalized_codes.astype(str).str.fullmatch(r"\d{6}")
+    result = raw.loc[valid].copy()
+    result[code_column] = normalized_codes.loc[valid]
+    result = result.drop_duplicates(subset=[code_column], keep="first")
+    minimum_ratio = min(1.0, max(0.5, float(config.QUOTE_DOWNLOAD_MIN_COVERAGE_RATIO)))
+    minimum_rows = math.ceil(max(1, int(expected_rows)) * minimum_ratio)
+    if len(result) < minimum_rows:
+        raise RuntimeError(
+            "{}行情覆盖不足: 唯一代码 {} / 预期 {}, 最低比例 {:.0%}".format(
+                source,
+                len(result),
+                expected_rows,
+                minimum_ratio,
+            )
+        )
+    return result.sort_values(code_column, kind="stable").reset_index(drop=True)
 
 
 def _normalize_eastmoney_spot(raw: pd.DataFrame) -> pd.DataFrame:

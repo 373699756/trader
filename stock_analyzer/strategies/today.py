@@ -99,6 +99,7 @@ class TodayScorer:
         top_n: int = 10,
         market_filter: str = "all",
         market_regime: Dict[str, object] = None,
+        capture_candidate_pool: bool = False,
     ) -> Tuple[Dict[str, List[Dict[str, object]]], Dict[str, object]]:
         if market_filter in ("main", "chinext", "star"):
             df = df[df["market"] == market_filter].copy()
@@ -120,6 +121,12 @@ class TodayScorer:
             )
 
         self.ranking_policy.score_desc(short_rows)
+        candidate_pool_rows = []
+        for frozen_rank, row in enumerate(short_rows, start=1):
+            item = dict(row)
+            item["rank"] = frozen_rank
+            item["frozen_rule_rank"] = frozen_rank
+            candidate_pool_rows.append(item)
         min_score = coerce_number(getattr(config, "TODAY_RECOMMENDATION_MIN_SCORE", 60.0), 60.0)
         eligible_rows = [row for row in short_rows if coerce_number(row.get("score")) >= min_score]
         display_rows = eligible_rows[:top_n]
@@ -135,6 +142,8 @@ class TodayScorer:
             top_n,
             market_filter,
         )
+        if capture_candidate_pool:
+            meta["_candidate_pool_rows"] = candidate_pool_rows
         return {"short_term": display_rows}, meta
 
 

@@ -5,9 +5,16 @@ from . import config
 from .app_runtime_support import apply_deepseek_rerank, finalize_deepseek_meta
 from .daily_data import load_history_frames
 from .event_risk import attach_event_risk, load_event_risk
+from .execution_policy import build_execution_policy
 from .factors import build_alphalite_factors, merge_alphalite
 from .fundamentals import attach_fundamental_factors, load_fundamentals
 from .normalization import coerce_number, normalize_code
+from .point_in_time import (
+    build_candidate_snapshot_rows,
+    filter_point_in_time_events,
+    filter_point_in_time_fundamentals,
+)
+from .production_baseline import attach_generation_provenance
 from .scoring import (
     build_market_regime,
     prepare_candidates,
@@ -26,12 +33,19 @@ def run_snapshot(provider, validation_store, strategy: str, market: str = "all")
     freshness_error = _quote_freshness_error(provider, quotes)
     if freshness_error:
         return {"ok": False, "strategy": strategy, "error": freshness_error, "saved": {"saved": 0, "replaced": 0}}
-    candidates = attach_event_risk(prepare_candidates(quotes), load_event_risk(provider))
+    snapshot_cutoff = datetime.now().isoformat(timespec="seconds")
+    event_payload = filter_point_in_time_events(load_event_risk(provider), snapshot_cutoff)
+    candidates = attach_event_risk(prepare_candidates(quotes), event_payload)
     codes = candidates["code"].tolist() if candidates is not None and "code" in candidates.columns else []
-    candidates = attach_fundamental_factors(candidates, load_fundamentals(provider, codes=codes))
+    fundamental_payload = filter_point_in_time_fundamentals(
+        load_fundamentals(provider, codes=codes),
+        snapshot_cutoff,
+    )
+    candidates = attach_fundamental_factors(candidates, fundamental_payload)
     candidates = _attach_snapshot_history_factors(provider, candidates)
     market_regime = build_market_regime(candidates, breadth_source=quotes)
     rows, meta, version = _score_snapshot_strategy(provider, candidates, quotes, strategy, market, market_regime)
+    scored_candidate_rows = meta.pop("_candidate_pool_rows", None)
     rows, deepseek_meta = _apply_snapshot_deepseek_rerank(rows, strategy, market)
     finalize_deepseek_meta(meta, rows, deepseek_meta)
     if _after_close_anchor_time(meta["generated_at"]):
@@ -49,12 +63,52 @@ def run_snapshot(provider, validation_store, strategy: str, market: str = "all")
                 "saved": {"saved": 0, "replaced": 0},
                 "meta": meta,
             }
+    provider_health = _provider_health(provider)
+    provenance = attach_generation_provenance(meta, strategy, rows, candidates)
+    candidate_rows = build_candidate_snapshot_rows(
+        quotes,
+        candidates,
+        rows,
+        meta["generated_at"],
+        scored_rows=scored_candidate_rows,
+        event_payload=event_payload,
+        fundamental_payload=fundamental_payload,
+        provider_health=provider_health,
+    )
+    execution_policy = build_execution_policy(strategy, market)
+    data_source_timestamp = str(
+        (quotes.attrs or {}).get("quote_timestamp")
+        or provider_health.get("last_quote_refresh")
+        or ""
+    )
+    meta["point_in_time"] = {
+        "candidate_count": len(candidate_rows),
+        "eligible_count": sum(1 for row in candidate_rows if row.get("eligible")),
+        "selected_count": sum(1 for row in candidate_rows if row.get("selected")),
+        "valid_count": sum(1 for row in candidate_rows if row.get("point_in_time_valid")),
+        "market_data_cutoff": meta["generated_at"],
+        "data_source_timestamp": data_source_timestamp,
+        "fundamentals": fundamental_payload.get("point_in_time") or {},
+        "events": event_payload.get("point_in_time") or {},
+    }
+    meta["execution_policy_version"] = execution_policy["policy_version"]
     saved = validation_store.save_signals(
         strategy,
         version,
         meta["generated_at"],
         rows,
-        deepseek_shadow_rows=deepseek_meta.get("filtered_rows") or [],
+        deepseek_shadow_rows=(
+            []
+            if str(deepseek_meta.get("mode") or "") == "shadow_only"
+            else deepseek_meta.get("filtered_rows") or []
+        ),
+        candidate_rows=candidate_rows,
+        batch_metadata={
+            "data_source_timestamp": data_source_timestamp,
+            "market_data_cutoff": meta["generated_at"],
+            "generation": provenance,
+        },
+        execution_policy=execution_policy,
     )
     return {"ok": True, "strategy": strategy, "saved": saved, "meta": meta}
 
@@ -73,6 +127,7 @@ def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market
             top_n=getattr(config, "RECOMMENDATION_DISPLAY_LIMIT", 18),
             market_filter=market,
             market_regime=market_regime,
+            capture_candidate_pool=True,
         )
         rows = rows_by_horizon.get("short_term", [])
         return rows, meta, config.SHORT_TERM_STRATEGY_VERSION
@@ -80,12 +135,12 @@ def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market
         "tomorrow_picks": (
             score_tomorrow_picks,
             getattr(config, "TOMORROW_SNAPSHOT_TOP_N", config.TOMORROW_TOP_N),
-            {"display_cap": 0},
+            {"display_cap": 0, "capture_candidate_pool": True},
         ),
         "swing_picks": (
             score_swing_2_5d_picks,
             getattr(config, "RECOMMENDATION_DISPLAY_LIMIT", 18),
-            {},
+            {"capture_candidate_pool": True},
         ),
     }
     scorer, top_n, extra_kwargs = scorers[strategy]
@@ -135,7 +190,15 @@ def _attach_snapshot_history_factors(provider, candidates):
             history_by_code[code] = history
     if not history_by_code:
         return candidates
-    return merge_alphalite(candidates, build_alphalite_factors(history_by_code))
+    factors = build_alphalite_factors(history_by_code)
+    if factors is not None and not factors.empty:
+        cutoffs = {}
+        for code, history in history_by_code.items():
+            if history is None or history.empty or "trade_date" not in history.columns:
+                continue
+            cutoffs[normalize_code(code)] = str(history["trade_date"].iloc[-1])
+        factors["history_data_cutoff"] = factors["code"].map(cutoffs).fillna("")
+    return merge_alphalite(candidates, factors)
 
 
 def _apply_close_anchor_prices(provider, rows: List[Dict[str, object]], signal_time: str, quotes):
@@ -275,3 +338,14 @@ def _quote_freshness_error(provider, quotes) -> str:
     if age > max_age:
         return "行情已超过 {} 秒未刷新，拒绝保存明天预测快照。".format(max_age)
     return ""
+
+
+def _provider_health(provider) -> Dict[str, object]:
+    health_fn = getattr(provider, "health", None)
+    if not callable(health_fn):
+        return {}
+    try:
+        result = health_fn() or {}
+    except Exception:
+        return {}
+    return result if isinstance(result, dict) else {}

@@ -110,7 +110,7 @@ class ApplicationContainer:
     """Owns runtime collaborators shared by Flask routes and background workers."""
 
     def __init__(self) -> None:
-        self.provider = MarketDataProvider()
+        self.provider = MarketDataProvider(web_nonblocking=True)
         self.quotes_cache = TimedCache(config.REFRESH_SECONDS)
         self.hot_cache = TimedCache(config.REFRESH_SECONDS * 2)
         self.industry_cache = TimedCache(config.REFRESH_SECONDS * 5)

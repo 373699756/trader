@@ -598,9 +598,16 @@ def strategy_validation_gate_decision(
         "real_win_rate_primary_net_ci95_low": metrics.get("real_win_rate_primary_net_ci95_low"),
         "real_portfolio_max_drawdown_pct": metrics.get("real_portfolio_max_drawdown_pct"),
         "avg_max_drawdown_primary": avg_drawdown,
+        "unknown_outcome_count": int(metrics.get("unknown_outcome_count") or 0),
         "position_scale": 1.0,
         "position_scale_reason": "验证通过，标准仓位",
     }
+    if decision["unknown_outcome_count"] > 0:
+        decision["blocked"] = True
+        decision["reason"] = "存在数据状态未知样本，修复行情或证券状态后才能晋级"
+        decision["position_scale"] = 0.0
+        decision["position_scale_reason"] = "标签状态未知，仓位归零"
+        return decision
     if status.get("state") == "retired":
         decision["blocked"] = True
         decision["reason"] = "验证退场：真实交易日净收益、净胜率或主周期回撤不达标，暂停执行，允许备选观察"

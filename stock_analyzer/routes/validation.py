@@ -109,6 +109,21 @@ def strategy_validation_oos_report_history():
     )
 
 
+@bp.route("/api/strategy-validation/portfolio-baseline", methods=["GET", "POST"])
+def strategy_validation_portfolio_baseline():
+    return json_result(
+        services().strategy_validation_portfolio_baseline(
+            strategy=_validation_strategy("tomorrow_picks"),
+            days=int_arg("days", validation_gate_window_days(), minimum=1, maximum=500),
+            signal_date=request.args.get("date", ""),
+            ranking_field=request.args.get("ranking_field", "score"),
+            model_id=request.args.get("model_id", ""),
+            execute=request.method == "POST",
+            include_audit=bool_arg("audit", False),
+        )
+    )
+
+
 @bp.route("/api/strategy-validation/backfill-samples", methods=["POST"])
 def strategy_validation_backfill_samples():
     return json_result(

@@ -23,6 +23,10 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
                 config, "VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT", 0.0
             ), patch.object(
                 config, "VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT", 0.0
+            ), patch.object(
+                config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False
+            ), patch.object(
+                config, "ENABLE_MARKET_IMPACT", False
             ):
                 store = StrategyValidationStore(db_path)
                 store.save_signals(
@@ -77,6 +81,10 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
                 config, "VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT", 0.0
             ), patch.object(
                 config, "VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT", 0.0
+            ), patch.object(
+                config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False
+            ), patch.object(
+                config, "ENABLE_MARKET_IMPACT", False
             ):
                 store = StrategyValidationStore(db_path)
                 saved = store.save_signals(
@@ -182,6 +190,10 @@ class StrategyValidationDeepSeekAttributionTest(unittest.TestCase):
                 config, "VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT", 0.0
             ), patch.object(
                 config, "VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT", 0.0
+            ), patch.object(
+                config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False
+            ), patch.object(
+                config, "ENABLE_MARKET_IMPACT", False
             ):
                 store = StrategyValidationStore(db_path)
                 store.save_market_gate_review(
@@ -225,6 +237,8 @@ def _patched_validation_config(attribution_path):
         VALIDATION_SLIPPAGE_MID_TURNOVER_PCT=0.0,
         VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT=0.0,
         VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT=0.0,
+        ENABLE_TAIL_AUCTION_SLIPPAGE=False,
+        ENABLE_MARKET_IMPACT=False,
     )
 
 

@@ -168,7 +168,9 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
             )
 
         batch.assert_called_once()
-        self.assertEqual(rows["short_term"][0]["score"], 91)
+        self.assertEqual(rows["short_term"][0]["score"], 90)
+        self.assertEqual(meta["short_term"]["mode"], "shadow_only")
+        self.assertFalse(meta["short_term"]["production_applied"])
         self.assertEqual(meta["short_term"]["source"], "deepseek_batch")
         self.assertEqual(meta["tomorrow_picks"]["source"], "deepseek_batch")
         self.assertEqual(meta["swing_picks"]["source"], "deepseek_batch")

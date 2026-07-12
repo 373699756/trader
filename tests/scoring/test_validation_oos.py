@@ -81,6 +81,17 @@ class ValidationOosTest(unittest.TestCase):
         )
         passed = build_strategy_oos_report("tomorrow_picks", 20, base_metrics, ready, {"blocked": False})
         blocked = build_strategy_oos_report("tomorrow_picks", 20, base_metrics, ready, {"blocked": True})
+        portfolio_blocked = build_strategy_oos_report(
+            "tomorrow_picks",
+            20,
+            base_metrics,
+            ready,
+            {"blocked": False},
+            portfolio_baseline={
+                "day_count": 3,
+                "groups": {"frozen_rule_top_k": {"total_return_pct": -0.5}},
+            },
+        )
 
         self.assertEqual(empty["oos_status"], "empty")
         self.assertEqual(backfill["oos_status"], "needs_backfill")
@@ -88,6 +99,8 @@ class ValidationOosTest(unittest.TestCase):
         self.assertTrue(passed["can_promote"])
         self.assertEqual(blocked["oos_status"], "gate_blocked")
         self.assertFalse(blocked["can_promote"])
+        self.assertEqual(portfolio_blocked["oos_status"], "portfolio_blocked")
+        self.assertFalse(portfolio_blocked["can_promote"])
 
     def test_strategy_oos_report_history_persists_snapshots(self):
         report = build_strategy_oos_report(

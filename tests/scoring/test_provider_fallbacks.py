@@ -1,13 +1,23 @@
+import threading
+import time
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 from helpers import app_patch_context
 from stock_analyzer import config
 from stock_analyzer.daily_data import DailyMarketDataStore
 from stock_analyzer.normalization import rename_known_columns
-from stock_analyzer.providers import MarketDataProvider, _normalize_eastmoney_spot, _request_eastmoney_page
+from stock_analyzer.providers import (
+    MarketDataProvider,
+    _download_quote_pages,
+    _normalize_eastmoney_spot,
+    _normalize_sina_spot,
+    _request_eastmoney_page,
+    _validate_quote_coverage,
+)
 
 
 def test_eastmoney_normalization_maps_required_quote_fields():
@@ -87,7 +97,6 @@ def test_provider_uses_quote_snapshot_when_live_quote_sources_fail(tmp_path):
     )
     snapshot.attrs["quote_timestamp"] = "2026-07-09T15:00:00"
     provider._fetch_eastmoney_quotes = lambda: (_ for _ in ()).throw(RuntimeError("eastmoney failed"))
-    provider._fetch_akshare_quotes = lambda: (_ for _ in ()).throw(RuntimeError("akshare failed"))
     provider._fetch_sina_quotes = lambda: (_ for _ in ()).throw(RuntimeError("sina failed"))
 
     with patch.object(config, "QUOTE_SNAPSHOT_PATH", str(tmp_path / "quotes.json")), patch.object(
@@ -101,7 +110,7 @@ def test_provider_uses_quote_snapshot_when_live_quote_sources_fail(tmp_path):
     assert str(quotes.iloc[0]["code"]).zfill(6) == "600001"
     assert quotes.attrs.get("quote_timestamp") == "2026-07-09T15:00:00"
     assert provider.status.quotes_source == "本地快照"
-    assert any("AKShare 行情失败" in error for error in provider.status.errors)
+    assert any("新浪行情失败" in error for error in provider.status.errors)
     assert not any("Tushare 行情失败" in error for error in provider.status.errors)
 
 
@@ -138,10 +147,11 @@ def test_provider_get_history_uses_local_market_data(tmp_path):
     assert prefetch["failed"] == 0
 
 
-def test_provider_falls_back_to_akshare_quotes_when_enabled():
+def test_provider_falls_back_to_concurrent_sina_quotes_when_enabled():
     provider = MarketDataProvider()
     provider._fetch_eastmoney_quotes = lambda: (_ for _ in ()).throw(RuntimeError("eastmoney failed"))
-    provider._fetch_akshare_quotes = lambda: pd.DataFrame(
+    provider._fetch_akshare_quotes = MagicMock(side_effect=AssertionError("serial AkShare download must not run"))
+    provider._fetch_sina_quotes = lambda: pd.DataFrame(
         [{"code": "600001", "name": "样本股份", "price": 12, "pct_chg": 3, "turnover": 90000000}]
     )
 
@@ -149,7 +159,8 @@ def test_provider_falls_back_to_akshare_quotes_when_enabled():
         quotes = provider.get_realtime_quotes()
 
     assert quotes.iloc[0]["code"] == "600001"
-    assert provider.status.quotes_source == "AKShare 东方财富"
+    assert provider.status.quotes_source == "新浪并发行情"
+    provider._fetch_akshare_quotes.assert_not_called()
 
 
 def test_eastmoney_request_uses_proxy_environment_first():
@@ -185,6 +196,114 @@ def test_eastmoney_request_retries_without_proxy_environment():
     assert result == payload
     assert env_session.trust_env
     assert not direct_session.trust_env
+
+
+def test_quote_page_download_uses_bounded_concurrency():
+    state = {"active": 0, "maximum": 0}
+    lock = threading.Lock()
+
+    def fetch_page(page):
+        with lock:
+            state["active"] += 1
+            state["maximum"] = max(state["maximum"], state["active"])
+        time.sleep(0.03)
+        with lock:
+            state["active"] -= 1
+        return [{"code": "{:06d}".format(page)}]
+
+    result = _download_quote_pages(
+        range(1, 7),
+        fetch_page,
+        source="测试",
+        max_workers=3,
+        retries=0,
+        batch_timeout_seconds=2,
+    )
+
+    assert sorted(result) == [1, 2, 3, 4, 5, 6]
+    assert state["maximum"] == 3
+
+
+def test_quote_page_download_retries_transient_page_failure():
+    calls = {2: 0}
+
+    def fetch_page(page):
+        calls[page] = calls.get(page, 0) + 1
+        if page == 2 and calls[page] == 1:
+            raise RuntimeError("temporary")
+        return [{"code": "{:06d}".format(page)}]
+
+    result = _download_quote_pages(
+        [1, 2],
+        fetch_page,
+        source="测试",
+        max_workers=2,
+        retries=1,
+        batch_timeout_seconds=2,
+    )
+
+    assert sorted(result) == [1, 2]
+    assert calls[2] == 2
+
+
+def test_quote_page_download_rejects_missing_page():
+    def fetch_page(page):
+        if page == 2:
+            raise RuntimeError("unavailable")
+        return [{"code": "{:06d}".format(page)}]
+
+    with pytest.raises(RuntimeError, match="分页下载失败"):
+        _download_quote_pages(
+            [1, 2, 3],
+            fetch_page,
+            source="测试",
+            max_workers=2,
+            retries=0,
+            batch_timeout_seconds=2,
+        )
+
+
+def test_quote_coverage_rejects_duplicates_and_invalid_codes():
+    raw = pd.DataFrame(
+        [
+            {"code": "600001"},
+            {"code": "600001"},
+            {"code": "not-a-code"},
+            {"code": "600004"},
+        ]
+    )
+
+    with patch.object(config, "QUOTE_DOWNLOAD_MIN_COVERAGE_RATIO", 1.0), pytest.raises(
+        RuntimeError,
+        match="覆盖不足",
+    ):
+        _validate_quote_coverage(raw, "code", 4, "测试")
+
+
+def test_sina_normalization_matches_provider_quote_contract():
+    raw = pd.DataFrame(
+        [
+            {
+                "symbol": "sh600001",
+                "code": "600001",
+                "name": "样本股份",
+                "trade": "12.30",
+                "pricechange": "0.53",
+                "changepercent": "4.50",
+                "volume": "1000",
+                "amount": "90000000",
+                "ticktime": "15:00:00",
+            }
+        ]
+    )
+
+    result = rename_known_columns(_normalize_sina_spot(raw))
+
+    assert result.iloc[0]["code"] == "600001"
+    assert result.iloc[0]["name"] == "样本股份"
+    assert result.iloc[0]["price"] == 12.3
+    assert result.iloc[0]["pct_chg"] == 4.5
+    assert result.iloc[0]["turnover"] == 90000000
 
 
 def test_health_endpoint_exposes_factor_coverage_alerts_in_provider_health(tmp_path):

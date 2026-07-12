@@ -298,7 +298,7 @@ def run_validation_auto_update_once(
             alert_statuses = [
                 item
                 for item in result["oos_summary"].get("statuses", [])
-                if item.get("oos_status") in ("needs_backfill", "gate_blocked")
+                if item.get("oos_status") in ("needs_backfill", "gate_blocked", "portfolio_blocked")
             ]
             if alert_statuses:
                 result["status"] = "oos_attention_required"
@@ -330,6 +330,7 @@ def _outcome_update_summary(updates: List[Dict[str, object]]) -> Dict[str, objec
         "requested": 0,
         "updated": 0,
         "pending": 0,
+        "unknown": 0,
         "skipped": 0,
         "execution_skipped": 0,
         "skipped_reasons": {},
@@ -342,7 +343,7 @@ def _outcome_update_summary(updates: List[Dict[str, object]]) -> Dict[str, objec
         result = item.get("result") if isinstance(item, dict) else {}
         if not isinstance(result, dict):
             continue
-        for key in ("requested", "updated", "pending", "skipped", "execution_skipped"):
+        for key in ("requested", "updated", "pending", "unknown", "skipped", "execution_skipped"):
             summary[key] += int(result.get(key) or 0)
         for reason, count in (result.get("skipped_reasons") or {}).items():
             reason_key = str(reason or "unknown").strip() or "unknown"
@@ -355,6 +356,7 @@ def _oos_report_summary(reports: List[Dict[str, object]]) -> Dict[str, object]:
         "report_count": 0,
         "needs_backfill_count": 0,
         "gate_blocked_count": 0,
+        "portfolio_blocked_count": 0,
         "oos_passed_count": 0,
         "empty_count": 0,
         "error_count": 0,
@@ -374,6 +376,8 @@ def _oos_report_summary(reports: List[Dict[str, object]]) -> Dict[str, object]:
             summary["needs_backfill_count"] += 1
         elif oos_status == "gate_blocked":
             summary["gate_blocked_count"] += 1
+        elif oos_status == "portfolio_blocked":
+            summary["portfolio_blocked_count"] += 1
         elif oos_status == "oos_passed":
             summary["oos_passed_count"] += 1
         elif oos_status == "empty":

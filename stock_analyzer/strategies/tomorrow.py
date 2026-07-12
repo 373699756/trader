@@ -384,6 +384,7 @@ class TomorrowScorer:
         display_cap: int = None,
         expected_return_samples: Iterable[Dict[str, object]] = None,
         use_expected_return_ranking: bool = False,
+        capture_candidate_pool: bool = False,
     ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
         if market_filter in ("main", "chinext", "star"):
             df = df[df["market"] == market_filter].copy()
@@ -409,6 +410,12 @@ class TomorrowScorer:
             samples=expected_return_samples,
             use_ranking=use_expected_return_ranking,
         )
+        candidate_pool_rows = []
+        for frozen_rank, row in enumerate(rows, start=1):
+            item = dict(row)
+            item["rank"] = frozen_rank
+            item["frozen_rule_rank"] = frozen_rank
+            candidate_pool_rows.append(item)
         display_state = self._select_display_rows(
             rows,
             df,
@@ -427,7 +434,7 @@ class TomorrowScorer:
             intraday_relaxed,
         )
         theme_distribution = theme_limits._tomorrow_theme_distribution(display_rows)
-        return display_rows, self._build_meta(
+        meta = self._build_meta(
             df,
             rows,
             display_rows,
@@ -440,6 +447,9 @@ class TomorrowScorer:
             intraday_relaxed,
             analysis_window,
         )
+        if capture_candidate_pool:
+            meta["_candidate_pool_rows"] = candidate_pool_rows
+        return display_rows, meta
 
 
 def score_tomorrow_picks(*args, **kwargs):

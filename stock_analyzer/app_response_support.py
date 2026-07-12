@@ -10,6 +10,7 @@ from .app_support import (
     validation_gate_window_days,
 )
 from .app_runtime_support import risk_blacklist_summary
+from .production_baseline import attach_generation_provenance
 
 
 def response_payload(
@@ -96,6 +97,12 @@ def saved_tomorrow_fallback_payload(
     display_rows = saved_rows[:display_limit]
     tier_counts = _saved_tomorrow_tier_counts(display_rows)
     strategy_version = _saved_tomorrow_strategy_version(saved_rows)
+    attach_generation_provenance(
+        validation_meta,
+        "tomorrow_picks",
+        display_rows,
+        saved_rows,
+    )
     if not detailed:
         return response_payload(
             provider_health_fn,
@@ -120,6 +127,7 @@ def saved_tomorrow_fallback_payload(
                 "fallback": "saved_snapshot",
                 "risk_blacklist": risk_blacklist_summary(load_risk_blacklist_fn()),
                 "hard_filter_report": {"raw_count": 0, "passed_count": len(saved_rows), "rejected_count": 0, "reasons": []},
+                "generation": validation_meta["generation"],
             },
         )
 
@@ -154,6 +162,7 @@ def saved_tomorrow_fallback_payload(
             "min_turnover": config.MIN_TURNOVER,
             "avoid_limit_up": True,
         },
+        "generation": validation_meta["generation"],
     }
     return response_payload(
         provider_health_fn,
@@ -210,6 +219,12 @@ def saved_swing_fallback_payload(
         (str(row.get("strategy_version")) for row in saved_rows if row.get("strategy_version")),
         str(getattr(config, "SWING_STRATEGY_VERSION", "swing_2_5d_v3_next_open_exit")),
     )
+    attach_generation_provenance(
+        validation_meta,
+        "swing_picks",
+        display_rows,
+        saved_rows,
+    )
     return response_payload(
         provider_health_fn,
         research_disclaimer_fn,
@@ -232,6 +247,7 @@ def saved_swing_fallback_payload(
             "backup_watch_count": max(0, len(display_rows) - primary_count),
             "gate_reason": validation_meta.get("gate_reason", ""),
             "validation_gate": validation_meta.get("validation_gate", {}),
+            "generation": validation_meta["generation"],
         },
     )
 

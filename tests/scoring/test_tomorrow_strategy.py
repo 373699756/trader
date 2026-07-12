@@ -115,7 +115,11 @@ class TomorrowStrategyTest(unittest.TestCase):
                     handle,
                     ensure_ascii=False,
                 )
-            with patch.object(config, "WEIGHTS_OVERRIDE_PATH", path), patch(
+            with patch.object(config, "WEIGHTS_OVERRIDE_PATH", path), patch.object(
+                config,
+                "DEEPSEEK_SHADOW_ONLY",
+                False,
+            ), patch(
                 "stock_analyzer.scoring._tomorrow_display_gate",
                 return_value=(2, 0.0, "测试展示全部候选"),
             ):

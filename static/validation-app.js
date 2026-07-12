@@ -111,6 +111,7 @@
             return;
           }
           renderValidationOosReport(payload);
+          renderValidationPortfolioBaseline(payload.portfolio_baseline || {});
         } catch (err) {
           if (requestSeq !== state.validationRequestSeq) {
             return;
@@ -588,6 +589,7 @@
       }
 
       function formatSignedPct(value) {
+        if (value == null || value === "") return "-";
         const num = Number(value);
         if (!Number.isFinite(num)) return "-";
         const sign = num > 0 ? "+" : "";
@@ -636,6 +638,7 @@
           needs_backfill: ["oos-watch", "需回填当前口径"],
           insufficient_oos_days: ["oos-watch", "OOS 天数不足"],
           gate_blocked: ["oos-blocked", "验证门控阻断"],
+          portfolio_blocked: ["oos-blocked", "日级组合亏损阻断"],
         }[status] || ["oos-watch", "OOS 待观察"];
         const readyDays = Number(baseline.current_primary_ready_day_count || 0);
         const minDays = Number(baseline.min_oos_days || 0);
@@ -655,6 +658,30 @@
           · 净收益 ${formatSignedPct(avgNet)}
           · 净胜率 ${winRate == null ? "-" : `${formatNumber(winRate, 1)}%`}
           ${ciText}${drawdownText}${coverageText}${reason}
+        `;
+      }
+
+      function renderValidationPortfolioBaseline(report) {
+        if (!els.validationPortfolioBaseline) return;
+        const groups = report.groups || {};
+        const frozen = groups.frozen_rule_top_k || {};
+        const random = groups.random_equal_weight || {};
+        const index = groups.major_index || {};
+        const current = groups.current_rule_top_k || {};
+        const days = Number(report.day_count || 0);
+        const percentile = report.rule_vs_random_percentile;
+        const statusClass = days > 0 ? "oos-passed" : "oos-watch";
+        els.validationPortfolioBaseline.className = `validation-oos-report ${statusClass}`;
+        els.validationPortfolioBaseline.innerHTML = `
+          <strong>日级组合基线</strong>
+          · 配对 ${days}日
+          · 冻结 Top-5 ${formatSignedPct(frozen.total_return_pct)}
+          · 回撤 ${formatSignedPct(frozen.max_drawdown_pct)}
+          · Sortino ${frozen.sortino == null ? "-" : formatNumber(frozen.sortino, 2)}
+          · 随机分位 ${percentile == null ? "-" : `${formatNumber(percentile, 1)}%`}
+          · 当前规则 ${formatSignedPct(current.total_return_pct)}
+          · 随机 ${formatSignedPct(random.total_return_pct)}
+          · 指数 ${formatSignedPct(index.total_return_pct)}
         `;
       }
 
