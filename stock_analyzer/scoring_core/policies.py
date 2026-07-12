@@ -21,7 +21,7 @@ class RiskPolicy:
         return tomorrow_policy._tomorrow_hard_reject(row, intraday_relaxed=intraday_relaxed)
 
     def tomorrow_risk_penalty_parts(self, row: pd.Series, provisional: bool = False) -> Dict[str, float]:
-        return tomorrow_policy._tomorrow_risk_penalty_parts(row, provisional=provisional)
+        return risk._tomorrow_risk_penalty_parts(row, provisional=provisional)
 
     def swing_risk_penalty_parts(self, row: pd.Series) -> Dict[str, float]:
         return risk._swing_risk_penalty_parts(row)

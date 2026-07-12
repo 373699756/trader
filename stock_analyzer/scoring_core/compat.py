@@ -7,7 +7,9 @@ from . import explanations as _explanations
 from . import expected_return as _expected_return
 from . import risk as _risk
 from . import scoring_math as _scoring_math
+from . import today_score as _today_score
 from . import tomorrow_policy as _tomorrow_policy
+from . import tomorrow_score as _tomorrow_score
 
 
 _EXPORT_MODULES = (
@@ -15,6 +17,8 @@ _EXPORT_MODULES = (
     _scoring_math,
     _risk,
     _expected_return,
+    _today_score,
+    _tomorrow_score,
     _tomorrow_policy,
     _explanations,
 )

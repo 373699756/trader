@@ -37,6 +37,7 @@
         if (!el) return;
         el.textContent = text;
         el.className = "ops-status" + (level ? ` ops-${level}` : "");
+        el.parentElement?.classList.toggle("has-status", Boolean(String(text || "").trim()));
       }
 
       function renderToolResult(html) {

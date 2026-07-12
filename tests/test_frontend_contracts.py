@@ -98,6 +98,59 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("置信影子", result["explanation"])
         self.assertNotIn("影子排序分", result["explanation"])
 
+    def test_empty_recommendation_action_summary_keeps_card_layout(self):
+        result = self.run_node(
+            """
+            global.window = {};
+            require('./static/recommendation-renderers.js');
+            const renderer = window.TraderRecommendationRenderers;
+            const html = renderer.renderRecommendationActionSummaryHtml([], {
+              rowScore: () => 0,
+              formatNumber: value => String(value),
+              escapeHtml: value => String(value),
+            });
+            const appSource = require('fs').readFileSync('./static/recommendation-app.js', 'utf8');
+            process.stdout.write(JSON.stringify({html, appSource}));
+            """
+        )
+
+        self.assertIn("action-summary-shell", result["html"])
+        self.assertIn("action-signals-card", result["html"])
+        self.assertIn("买入动作", result["html"])
+        self.assertIn("卖点提示", result["html"])
+        self.assertIn("暂无可执行买入", result["html"])
+        self.assertIn("暂无明确卖点", result["html"])
+        self.assertNotIn("当前筛选下暂无动作汇总", result["appSource"])
+
+    def test_backup_only_recommendation_summary_is_not_executable(self):
+        result = self.run_node(
+            """
+            global.window = {};
+            require('./static/recommendation-renderers.js');
+            const renderer = window.TraderRecommendationRenderers;
+            const rows = [{
+              name: '测试股份',
+              score: 88,
+              execution_allowed: false,
+              tier_label: '备选观察',
+              trade_action: {action: 'buy_confirmed', label: '确认买入', position_size: 0},
+              exit_action: {action: 'hold', label: '持有'},
+            }];
+            const html = renderer.renderRecommendationActionSummaryHtml(rows, {
+              rowScore: row => Number(row.score || 0),
+              formatNumber: (value, digits = 0) => Number(value).toFixed(digits),
+              escapeHtml: value => String(value),
+            });
+            process.stdout.write(JSON.stringify({html}));
+            """
+        )
+
+        self.assertIn("无可执行推荐", result["html"])
+        self.assertIn("仓位为0", result["html"])
+        self.assertIn("暂无可执行买入", result["html"])
+        self.assertNotIn("可开仓", result["html"])
+        self.assertNotIn("确认买入", result["html"])
+
     def test_validation_decision_uses_backend_gate_reason(self):
         result = self.run_node(
             """
@@ -154,10 +207,19 @@ class FrontendContractTest(unittest.TestCase):
         with open("templates/index.html", encoding="utf-8") as source:
             template_source = source.read()
 
+        self.assertIn('class="validation-status-panel"', template_source)
         self.assertIn('id="validationOosReport"', template_source)
-        self.assertIn('id="validationBaselineDryRunBtn"', template_source)
-        self.assertIn('id="validationBaselineExecuteBtn"', template_source)
+        self.assertIn('id="validationPortfolioBaseline"', template_source)
+        self.assertNotIn('id="validationBaselineDryRunBtn"', template_source)
+        self.assertNotIn('id="validationBaselineExecuteBtn"', template_source)
         self.assertIn('id="validationBaselineStatus"', template_source)
+        self.assertIn("current baseline 自动回填状态", template_source)
+        with open("static/styles.css", encoding="utf-8") as source:
+            styles_source = source.read()
+        with open("static/recommendation-status.js", encoding="utf-8") as source:
+            status_source = source.read()
+        self.assertIn(".validation-baseline-actions.has-status", styles_source)
+        self.assertIn('classList.toggle("has-status"', status_source)
         self.assertIn("/api/strategy-validation/oos-report", app_source)
         self.assertIn("/api/strategy-validation/readiness", app_source)
         self.assertIn("/api/strategy-validation/backfill-current-baseline", app_source)

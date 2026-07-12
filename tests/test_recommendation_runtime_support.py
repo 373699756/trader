@@ -211,10 +211,24 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
         tomorrow_rows = [
             {"code": "T1", "score": 88, "tier": "primary_watch", "execution_allowed": True},
             {"code": "T2", "score": 80, "tier": "backup_pool", "execution_allowed": False},
+            {
+                "code": "T3",
+                "score": 82,
+                "tier": "primary_watch",
+                "execution_allowed": True,
+                "trade_action": {"action": "buy_small", "position_size": 0.0},
+            },
+            {"code": "T4", "score": 76, "tier": "backup_pool", "execution_allowed": True},
         ]
         swing_rows = [
             {"code": "S1", "score": 86, "execution_allowed": True},
             {"code": "S2", "score": 70, "execution_allowed": False},
+            {
+                "code": "S3",
+                "score": 72,
+                "execution_allowed": True,
+                "trade_action": {"action": "watch_only", "position_size": 0.0},
+            },
         ]
 
         def batch(rows_by_strategy, market):

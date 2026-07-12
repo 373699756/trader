@@ -226,10 +226,6 @@
           actionFilter: DEFAULT_ACTION_FILTER,
           sortMode: DEFAULT_SORT_MODE,
         });
-        if (!rows.length) {
-          els.recommendationActionSummary.innerHTML = '<div class="empty">当前筛选下暂无动作汇总</div>';
-          return;
-        }
         els.recommendationActionSummary.innerHTML = RecommendationRenderers.renderRecommendationActionSummaryHtml(rows, {
           escapeHtml,
           formatNumber,

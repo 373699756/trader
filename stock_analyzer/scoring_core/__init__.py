@@ -9,6 +9,8 @@ _MODULE_EXPORTS = {
     "market_regime",
     "scoring_math",
     "theme_limits",
+    "today_score",
+    "tomorrow_score",
     "tomorrow_policy",
 }
 
@@ -43,5 +45,7 @@ __all__ = [
     "market_regime",
     "scoring_math",
     "theme_limits",
+    "today_score",
+    "tomorrow_score",
     "tomorrow_policy",
 ]

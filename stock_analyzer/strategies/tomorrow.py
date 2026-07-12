@@ -6,9 +6,9 @@ from typing import Dict, Iterable, List, Tuple
 import pandas as pd
 
 from .. import config
-from ..normalization import coerce_number, percentile_score
+from ..normalization import coerce_number
 from ..scoring_core import ExplanationBuilder, FeatureBuilder, RankingPolicy, RiskPolicy
-from ..scoring_core import scoring_math, theme_limits, tomorrow_policy
+from ..scoring_core import theme_limits, tomorrow_policy, tomorrow_score
 
 
 class TomorrowScorer:
@@ -37,131 +37,11 @@ class TomorrowScorer:
         market_regime: Dict[str, object],
         intraday_relaxed: bool,
     ) -> Dict[str, object]:
-        pct_chg = coerce_number(row.get("pct_chg"))
-        volume_ratio = coerce_number(row.get("volume_ratio"))
-        turnover_rate = coerce_number(row.get("turnover_rate"))
-        turnover = coerce_number(row.get("turnover"))
-        speed = self.feature_builder.row_speed(row)
-        amplitude = coerce_number(row.get("amplitude"))
-        sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
-        ytd_pct = coerce_number(row.get("ytd_pct"))
-        ret_5d = coerce_number(row.get("ret_5d"))
-        ret_10d = coerce_number(row.get("ret_10d"))
-        ret_20d = coerce_number(row.get("ret_20d"))
-        ma20_gap = coerce_number(row.get("ma20_gap"))
-        vol_amount_5d = coerce_number(row.get("vol_amount_5d"))
-        volatility_20d = coerce_number(row.get("volatility_20d"))
-        breakout_20d = coerce_number(row.get("breakout_20d"))
-
-        liquidity_score = (
-            percentile_score(turnover, context["turnover_values"]) * 0.58
-            + percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.42
-        )
-        momentum_score = (
-            percentile_score(pct_chg, context["pct_values"]) * 0.34
-            + percentile_score(speed, context["speed_values"]) * 0.24
-            + percentile_score(volume_ratio, context["volume_ratio_values"]) * 0.24
-            + scoring_math._optional_factor_score(sixty_day_pct, context["sixty_day_values"]) * 0.18
-        )
-        trend_score = (
-            percentile_score(sixty_day_pct, context["sixty_day_values"]) * 0.55
-            + percentile_score(ytd_pct, context["ytd_values"]) * 0.25
-            + scoring_math._optional_factor_score(
-                amplitude,
-                context["amplitude_values"],
-                higher_is_better=False,
-            ) * 0.20
-        )
-        execution_score = self.risk_policy.execution_score(row)
-        tail_setup_score = 50.0 if intraday_relaxed else scoring_math._tail_close_setup_score(row)
-        historical_edge_score = tomorrow_policy._tomorrow_historical_edge_score(row, context)
-        risk_penalty_parts = self.risk_policy.tomorrow_risk_penalty_parts(row, provisional=intraday_relaxed)
-        risk_penalty = self.risk_policy.sum_penalty(risk_penalty_parts)
-        regime_bonus = scoring_math._market_regime_adjustment(row, market_regime, "tomorrow")
-        regime_profile = scoring_math._regime_weight_profile(
-            market_regime,
-            ["liquidity", "momentum", "trend", "quality"],
-        )
-        combined = self.ranking_policy.combine_details(
-            {
-                "liquidity_score": liquidity_score,
-                "momentum_score": momentum_score,
-                "trend_score": trend_score,
-                "historical_edge_score": historical_edge_score,
-                "execution_score": execution_score,
-                "tail_setup_score": tail_setup_score,
-                "risk_penalty": risk_penalty,
-                "regime_bonus": regime_bonus,
-            },
-            "tomorrow_picks",
+        return tomorrow_score._tomorrow_candidate_row(
+            row,
+            context,
             market_regime=market_regime,
-            row=row,
-        )
-        final_score = combined["score"]
-        item = {
-            "code": row["code"],
-            "name": str(row.get("name", "")),
-            "market": row.get("market", "main"),
-            "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
-            "industry": str(row.get("industry", "") or ""),
-            "price": round(coerce_number(row.get("price")), 3),
-            "pct_chg": round(pct_chg, 2),
-            "speed": round(coerce_number(row.get("speed")), 2),
-            "five_min_pct": round(coerce_number(row.get("five_min_pct")), 2),
-            "volume_ratio": round(volume_ratio, 2),
-            "turnover_rate": round(turnover_rate, 2),
-            "turnover": round(turnover, 2),
-            "sixty_day_pct": round(sixty_day_pct, 2),
-            "ytd_pct": round(ytd_pct, 2),
-            "amplitude": round(amplitude, 2),
-            "ret_5d": round(ret_5d, 2),
-            "ret_10d": round(ret_10d, 2),
-            "ret_20d": round(ret_20d, 2),
-            "ma20_gap": round(ma20_gap, 2),
-            "vol_amount_5d": round(vol_amount_5d, 2),
-            "breakout_20d": bool(breakout_20d),
-            "volatility_20d": round(volatility_20d, 2),
-            "alphalite_factor_ready": round(coerce_number(row.get("alphalite_factor_ready")), 2),
-            "alphalite_coverage": round(coerce_number(row.get("alphalite_coverage")), 2),
-            "liquidity_score": round(liquidity_score, 2),
-            "momentum_score": round(momentum_score, 2),
-            "trend_score": round(trend_score, 2),
-            "historical_edge_score": round(historical_edge_score, 2),
-            "execution_score": round(execution_score, 2),
-            "tail_setup_score": round(tail_setup_score, 2),
-            "risk_penalty": round(risk_penalty, 2),
-            "risk_penalty_parts": risk_penalty_parts,
-            "mid_gain_weak_close_flag": bool(risk_penalty_parts.get("mid_gain_weak_close")),
-            "regime_bonus": round(regime_bonus, 2),
-            "regime_weight_profile": regime_profile,
-            "base_score": round(combined["base_score"], 2),
-            "raw_score": round(combined["raw_score"], 2),
-            "overheat_damp": round(combined["overheat_damp"], 4),
-            "score": round(max(0.0, min(100.0, final_score)), 2),
-            "holding_discipline": "盘后确认候选，次日开盘入场；高开超过阈值不追",
-            "profit_window": "次日",
-            "reasons": self.explanation_builder.tomorrow_reasons(
-                row,
-                liquidity_score,
-                momentum_score,
-                trend_score,
-                historical_edge_score,
-                execution_score,
-                tail_setup_score,
-                risk_penalty,
-            ),
-        }
-        item = self.risk_policy.apply_rule_penalty("tomorrow_picks", item)
-        return self.explanation_builder.with_regime_reason(
-            self.explanation_builder.attach_signal(
-                item,
-                row,
-                "tomorrow_picks",
-                "明日优先",
-                "次日冲高",
-            ),
-            market_regime,
-            regime_bonus,
+            intraday_relaxed=intraday_relaxed,
         )
 
     def _select_display_rows(
@@ -193,7 +73,7 @@ class TomorrowScorer:
         backup_min_score = coerce_number(getattr(config, "TOMORROW_BACKUP_MIN_SCORE", 45.0), 45.0)
 
         if not display_rows and top_n > 0:
-            backup_rows = tomorrow_policy._tomorrow_backup_rows(
+            backup_rows = tomorrow_score._tomorrow_backup_rows(
                 df,
                 context,
                 market_regime=market_regime,

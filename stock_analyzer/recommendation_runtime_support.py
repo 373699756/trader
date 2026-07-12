@@ -509,8 +509,27 @@ class RecommendationService:
 def _deepseek_review_rows(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
     return [
         row for row in rows or []
-        if isinstance(row, dict) and row.get("execution_allowed") is not False
+        if _is_deepseek_reviewable_row(row)
     ]
+
+
+def _is_deepseek_reviewable_row(row: Dict[str, object]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if row.get("execution_allowed") is False:
+        return False
+    if str(row.get("tier") or "").strip().lower() == "backup_pool":
+        return False
+    if str(row.get("observation_mode") or "").strip().lower() == "intraday_provisional":
+        return False
+    trade_action = row.get("trade_action") if isinstance(row.get("trade_action"), dict) else {}
+    if trade_action:
+        action = str(trade_action.get("action") or "").strip().lower()
+        if action == "watch_only":
+            return False
+        if "position_size" in trade_action and coerce_number(trade_action.get("position_size"), 0.0) <= 0:
+            return False
+    return True
 
 
 def _apply_validation_gate_safe(

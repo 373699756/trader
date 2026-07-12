@@ -297,7 +297,7 @@ window.TraderRecommendationRenderers = {
     });
     if (!counts.size) {
       const emptyText = key === "exit_action" ? "暂无明确卖点" : "暂无可执行买入";
-      return `<div class="action-summary-card"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(emptyText)}</span></div>`;
+      return `<div class="action-summary-card"><strong>${escapeHtml(title)}</strong><span class="action-summary-empty">${escapeHtml(emptyText)}</span></div>`;
     }
     const lines = [...counts.entries()]
       .sort((left, right) => right[1].length - left[1].length)
@@ -323,10 +323,24 @@ window.TraderRecommendationRenderers = {
       .slice(0, limit);
   },
 
+  isExecutableActionRow(row) {
+    if (row?.execution_allowed === false) return false;
+    const positionSize = Number(row?.trade_action?.position_size);
+    return !Number.isFinite(positionSize) || positionSize > 0;
+  },
+
   actionableSummary(rows, helpers) {
-    const openRows = this.topActionRows(rows, (row) => {
+    const sourceRows = rows || [];
+    const executableRows = sourceRows.filter((row) => this.isExecutableActionRow(row));
+    if (sourceRows.length && !executableRows.length) {
+      return [{
+        title: "无可执行推荐",
+        text: "当前候选均为备选观察或验证门控阻断，仓位为0；保持现金，等待下一批可执行信号。",
+      }];
+    }
+    const openRows = this.topActionRows(executableRows, (row) => {
       const action = row?.trade_action?.action;
-      return row?.execution_allowed !== false && (action === "buy_confirmed" || action === "buy_small");
+      return action === "buy_confirmed" || action === "buy_small";
     }, helpers);
     const chaseRiskRows = this.topActionRows(rows, (row) => {
       const tradeAction = row?.trade_action?.action;
@@ -373,7 +387,7 @@ window.TraderRecommendationRenderers = {
   renderRecommendationActionSummaryHtml(rows, helpers) {
     const { escapeHtml } = helpers;
     const summaryLines = this.actionableSummary(rows, helpers);
-    const executableRows = (rows || []).filter(row => row?.execution_allowed !== false);
+    const executableRows = (rows || []).filter((row) => this.isExecutableActionRow(row));
     const openLine = this.findSummaryLine(summaryLines, "可开仓") || summaryLines[0] || {
       title: "当前结论",
       text: "暂无明确开仓优势，先观察量价是否继续强化，再决定是否参与。",

@@ -78,8 +78,6 @@ const els = {
   validationSimpleDecision: document.getElementById("validationSimpleDecision"),
   validationOosReport: document.getElementById("validationOosReport"),
   validationPortfolioBaseline: document.getElementById("validationPortfolioBaseline"),
-  validationBaselineDryRunBtn: document.getElementById("validationBaselineDryRunBtn"),
-  validationBaselineExecuteBtn: document.getElementById("validationBaselineExecuteBtn"),
   validationBaselineStatus: document.getElementById("validationBaselineStatus"),
   validationTitle: document.getElementById("validationTitle"),
   validationSubtitle: document.getElementById("validationSubtitle"),
@@ -205,6 +203,7 @@ maybeAutoBackfillCurrentBaseline
 shouldAutoBackfillCurrentBaseline
 execute: "1"
 current baseline 自动回填完成
+current baseline 自动回填状态
 候选
 回填前
 回填后
@@ -240,8 +239,6 @@ function bindEvents() {
     }
   });
   els.generateTuningBtn?.addEventListener("click", context.stockPrediction.loadStockOptimization);
-  els.validationBaselineDryRunBtn?.addEventListener("click", () => context.validation.runValidationBaselineBackfill(false));
-  els.validationBaselineExecuteBtn?.addEventListener("click", () => context.validation.runValidationBaselineBackfill(true));
   els.poolTabs.forEach(button => {
     button.addEventListener("click", () => {
       context.recommendations.selectRecommendationPool(button.dataset.poolFilter || "today");

@@ -8,7 +8,7 @@ import pandas as pd
 from .. import config
 from ..normalization import coerce_number
 from ..scoring_core import ExplanationBuilder, FeatureBuilder, RankingPolicy, RiskPolicy
-from ..scoring_core import scoring_math
+from ..scoring_core import today_score
 
 
 class TodayScorer:
@@ -35,7 +35,7 @@ class TodayScorer:
         context: Dict[str, List[float]],
         market_regime: Dict[str, object],
     ) -> Dict[str, object]:
-        item = scoring_math._score_row(
+        item = today_score._score_row(
             row,
             hot_ranks=hot_ranks,
             industry_strength=industry_strength,

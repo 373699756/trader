@@ -75,17 +75,17 @@ class DeepSeekSchedulerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir, patch.object(
             config, "DEEPSEEK_SCHEDULE_STATE_PATH", "{}/schedule.json".format(tmpdir)
         ), patch.object(config, "DEEPSEEK_SCHEDULE_ENABLED", True), patch.object(
-            config, "DEEPSEEK_LATE_MIN_INTERVAL_SECONDS", 300
+            config, "DEEPSEEK_LATE_MIN_INTERVAL_SECONDS", 60
         ), patch.object(config, "DEEPSEEK_DAILY_PRO_CALL_CAP", 1):
             first = scheduled_deepseek_decision("tomorrow_picks", self._rows(), start)
             save_scheduled_deepseek_result(
                 "tomorrow_picks", self._rows(), {"status": "ok"}, first, start
             )
             debounced = scheduled_deepseek_decision(
-                "tomorrow_picks", self._rows(first_score=84), start + timedelta(minutes=2)
+                "tomorrow_picks", self._rows(first_score=84), start + timedelta(seconds=30)
             )
             later = scheduled_deepseek_decision(
-                "tomorrow_picks", self._rows(first_score=84), start + timedelta(minutes=6)
+                "tomorrow_picks", self._rows(first_score=84), start + timedelta(seconds=70)
             )
 
         self.assertFalse(debounced["allow_call"])

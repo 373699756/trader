@@ -397,6 +397,14 @@ button:hover {
   min-width: 0;
 }
 
+.action-summary-empty {
+  display: block;
+  min-height: 30px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .action-summary-card > strong {
   display: block;
   margin-bottom: 6px;
@@ -605,11 +613,16 @@ button:hover {
 }
 
 .validation-baseline-actions {
+  display: none;
   margin: -4px 0 12px;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
+}
+
+.validation-baseline-actions.has-status {
+  display: block;
 }
 
 .validation-baseline-action-row {
@@ -2107,50 +2120,38 @@ footer {
   font-size: 13px;
   line-height: 1.55;
 }
-.validation-current-decision {
+.validation-status-panel {
+  display: grid;
+  gap: 8px;
   margin: 0 0 12px;
   padding: 12px 14px;
   border: 1px solid var(--line);
-  border-left: 4px solid var(--muted);
   border-radius: 8px;
   background: var(--panel);
+}
+
+.validation-current-decision {
   color: var(--text);
   font-weight: 650;
   line-height: 1.55;
 }
 .validation-current-decision.decision-good {
-  border-left-color: var(--negative);
+  color: var(--negative);
 }
 .validation-current-decision.decision-watch {
-  border-left-color: var(--accent);
+  color: var(--accent);
 }
 .validation-current-decision.decision-bad {
-  border-left-color: var(--positive);
+  color: var(--positive);
 }
 .validation-oos-report {
-  margin: -4px 0 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-left: 4px solid var(--muted);
-  border-radius: 8px;
-  background: var(--panel);
   color: var(--muted);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.45;
 }
 .validation-oos-report strong {
   color: var(--text);
-}
-.validation-oos-report.oos-passed {
-  border-left-color: var(--negative);
-}
-.validation-oos-report.oos-watch,
-.validation-oos-report.oos-waiting {
-  border-left-color: var(--accent);
-}
-.validation-oos-report.oos-blocked {
-  border-left-color: var(--positive);
 }
 .strategy-tuning-panel {
   margin: 0 0 12px;
