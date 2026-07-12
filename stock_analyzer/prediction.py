@@ -5,7 +5,7 @@ import pandas as pd
 from . import config
 from .normalization import coerce_number, is_supported_code, market_type, normalize_code, rename_known_columns
 from .risk_blacklist import blacklist_risk_for_code
-from .scoring import STRATEGY_LABELS
+from .scoring_core.constants import STRATEGY_LABELS
 
 
 HORIZON_STRATEGIES = {

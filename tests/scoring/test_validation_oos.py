@@ -94,13 +94,23 @@ class ValidationOosTest(unittest.TestCase):
         )
 
         self.assertEqual(empty["oos_status"], "empty")
+        self.assertFalse(empty["can_promote"])
+        self.assertEqual(empty["readiness"]["ready_oos_day_count"], 0)
+        self.assertTrue(empty["readiness"]["blocked_by_real_oos_days"])
+        self.assertEqual(empty["blockers"][0]["code"], "real_oos_days_insufficient")
         self.assertEqual(backfill["oos_status"], "needs_backfill")
+        self.assertEqual(backfill["blockers"][0]["code"], "current_baseline_backfill_required")
         self.assertEqual(passed["oos_status"], "oos_passed")
         self.assertTrue(passed["can_promote"])
+        self.assertFalse(passed["production_eligible"])
+        self.assertEqual(passed["promotion_stage"], "shadow_eligible")
+        self.assertEqual(passed["blockers"], [])
         self.assertEqual(blocked["oos_status"], "gate_blocked")
         self.assertFalse(blocked["can_promote"])
+        self.assertEqual(blocked["blockers"][0]["code"], "validation_gate_blocked")
         self.assertEqual(portfolio_blocked["oos_status"], "portfolio_blocked")
         self.assertFalse(portfolio_blocked["can_promote"])
+        self.assertEqual(portfolio_blocked["blockers"][0]["code"], "portfolio_baseline_blocked")
 
     def test_strategy_oos_report_history_persists_snapshots(self):
         report = build_strategy_oos_report(
@@ -184,6 +194,8 @@ class ValidationOosTest(unittest.TestCase):
             run_oos_reports_once_fn=lambda: {
                 "ok": True,
                 "reports": [
+                    {"strategy": "empty_picks", "report": {"oos_status": "empty"}},
+                    {"strategy": "young_picks", "report": {"oos_status": "insufficient_oos_days"}},
                     {"strategy": "tomorrow_picks", "report": {"oos_status": "needs_backfill"}},
                     {"strategy": "swing_picks", "report": {"oos_status": "gate_blocked"}},
                     {"strategy": "short_term", "report": {"oos_status": "oos_passed"}},
@@ -196,11 +208,14 @@ class ValidationOosTest(unittest.TestCase):
         self.assertEqual(result["status"], "oos_attention_required")
         self.assertEqual(result["summary"]["updated"], 2)
         self.assertEqual(result["oos_summary"]["needs_backfill_count"], 1)
+        self.assertEqual(result["oos_summary"]["empty_count"], 1)
+        self.assertEqual(result["oos_summary"]["insufficient_oos_days_count"], 1)
         self.assertEqual(result["oos_summary"]["gate_blocked_count"], 1)
-        self.assertEqual(len(result["alerts"]), 2)
+        self.assertEqual(result["oos_summary"]["attention_count"], 4)
+        self.assertEqual(len(result["alerts"]), 4)
         self.assertEqual(auto_update_status["last_result"]["status"], "oos_attention_required")
         self.assertEqual(auto_update_status["last_oos_summary"]["gate_blocked_count"], 1)
-        self.assertEqual(len(auto_update_status["last_oos_alerts"]), 2)
+        self.assertEqual(len(auto_update_status["last_oos_alerts"]), 4)
 
 
 if __name__ == "__main__":

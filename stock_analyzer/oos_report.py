@@ -32,6 +32,44 @@ def build_strategy_oos_report(
         status = "gate_blocked"
     else:
         status = "oos_passed"
+    min_oos_days = int(
+        baseline_status.get("min_oos_days")
+        or getattr(config, "EXPECTED_RETURN_MIN_REAL_DAYS", 60)
+        or 0
+    )
+    ready_days = int(
+        baseline_status.get("current_primary_ready_day_count")
+        or metrics.get("real_day_count")
+        or 0
+    )
+    missing_oos_days = max(0, min_oos_days - ready_days)
+    blockers = []
+    if status in ("empty", "insufficient_oos_days"):
+        blockers.append(
+            {
+                "code": "real_oos_days_insufficient",
+                "message": "真实 OOS 交易日不足，不能生成晋级结论或收益模型 artifact。",
+                "observed_days": ready_days,
+                "required_days": min_oos_days,
+                "missing_days": missing_oos_days,
+            }
+        )
+    elif status == "needs_backfill":
+        blockers.append(
+            {
+                "code": "current_baseline_backfill_required",
+                "message": "存在待回填或旧口径结果，不能混算当前 baseline。",
+                "pending_count": int(baseline_status.get("pending_current_baseline_count") or 0),
+                "mismatched_count": int(baseline_status.get("mismatched_baseline_outcome_count") or 0),
+            }
+        )
+    elif status == "gate_blocked":
+        blockers.append(
+            {
+                "code": "validation_gate_blocked",
+                "message": str(gate_decision.get("reason") or "验证门控未通过。"),
+            }
+        )
     summary = {
         "sample_count": int(metrics.get("sample_count") or 0),
         "outcome_sample_count": int(metrics.get("outcome_sample_count") or 0),
@@ -48,12 +86,22 @@ def build_strategy_oos_report(
         "avg_trade_cost_pct": metrics.get("avg_trade_cost_pct", 0.0),
         "survivorship_corrected_count": int(metrics.get("survivorship_corrected_count") or 0),
         "top_k_sensitivity": metrics.get("top_k_sensitivity") or {},
+        "ready_oos_day_count": ready_days,
+        "missing_oos_day_count": missing_oos_days,
     }
     frozen_portfolio = (portfolio_baseline.get("groups") or {}).get("frozen_rule_top_k") or {}
     portfolio_day_count = int(portfolio_baseline.get("day_count") or 0)
     portfolio_total_return = coerce_number(frozen_portfolio.get("total_return_pct"), 0.0)
     if status == "oos_passed" and portfolio_day_count > 0 and portfolio_total_return <= 0:
         status = "portfolio_blocked"
+        blockers.append(
+            {
+                "code": "portfolio_baseline_blocked",
+                "message": "冻结规则日级组合收益未通过，不能晋级。",
+                "portfolio_day_count": portfolio_day_count,
+                "portfolio_total_return_pct": portfolio_total_return,
+            }
+        )
     summary.update(
         {
             "portfolio_day_count": portfolio_day_count,
@@ -64,7 +112,7 @@ def build_strategy_oos_report(
         }
     )
     requirements = {
-        "min_oos_days": baseline_status.get("min_oos_days"),
+        "min_oos_days": min_oos_days,
         "min_real_days": int(
             getattr(
                 config,
@@ -85,6 +133,15 @@ def build_strategy_oos_report(
         "generated_at": generated_at or datetime.now().isoformat(timespec="seconds"),
         "oos_status": status,
         "can_promote": status == "oos_passed",
+        "production_eligible": False,
+        "promotion_stage": "shadow_eligible" if status == "oos_passed" else "blocked",
+        "readiness": {
+            "ready_oos_day_count": ready_days,
+            "min_oos_days": min_oos_days,
+            "missing_oos_day_count": missing_oos_days,
+            "blocked_by_real_oos_days": status in ("empty", "insufficient_oos_days"),
+        },
+        "blockers": blockers,
         "validation_baseline": metrics.get("validation_baseline") or baseline_status.get("validation_baseline"),
         "validation_baseline_id": metrics.get("validation_baseline_id")
         or baseline_status.get("validation_baseline_id"),

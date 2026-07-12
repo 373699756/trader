@@ -78,6 +78,8 @@ def attach_event_alpha(rows: List[Dict[str, object]], strategy_name: str = "tomo
     for row in rows or []:
         events = row_event_alpha_events(row)
         result = event_alpha_score(events, strategy_name=strategy_name)
+        result["mode"] = "research_only"
+        result["trading_enabled"] = False
         row["event_alpha"] = result
         row["event_alpha_score"] = result["event_alpha_score"]
 

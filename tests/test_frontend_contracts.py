@@ -68,7 +68,7 @@ class FrontendContractTest(unittest.TestCase):
             const row = {
               score: 72.4,
               avg_risk: 31,
-              rank_score: 66.8,
+              predicted_net_return: 1.25,
               expected_return_net: 1.25,
               p_win: 0.612,
               downside_p10: -2.4,
@@ -89,13 +89,14 @@ class FrontendContractTest(unittest.TestCase):
 
         self.assertIn("综72.4", result["scoreHtml"])
         self.assertIn("险31", result["scoreHtml"])
-        self.assertIn("影66.8", result["scoreHtml"])
+        self.assertIn("模型影子", result["scoreHtml"])
         self.assertIn("E+1.25%", result["scoreHtml"])
         self.assertIn("P61%", result["scoreHtml"])
         self.assertIn("收益模型", result["explanation"])
-        self.assertIn("预期净收益+1.25%", result["explanation"])
-        self.assertIn("胜率概率61.2%", result["explanation"])
+        self.assertIn("预测净收益+1.25%", result["explanation"])
+        self.assertIn("模型胜率61.2%", result["explanation"])
         self.assertIn("置信影子", result["explanation"])
+        self.assertNotIn("影子排序分", result["explanation"])
 
     def test_validation_decision_uses_backend_gate_reason(self):
         result = self.run_node(
@@ -158,15 +159,22 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn('id="validationBaselineExecuteBtn"', template_source)
         self.assertIn('id="validationBaselineStatus"', template_source)
         self.assertIn("/api/strategy-validation/oos-report", app_source)
+        self.assertIn("/api/strategy-validation/readiness", app_source)
         self.assertIn("/api/strategy-validation/backfill-current-baseline", app_source)
         self.assertIn('params.set("execute", "1")', app_source)
         self.assertIn("window.confirm", app_source)
+        self.assertIn("maybeAutoBackfillCurrentBaseline", app_source)
+        self.assertIn("shouldAutoBackfillCurrentBaseline", app_source)
+        self.assertIn('execute: "1"', app_source)
+        self.assertIn("current baseline 自动回填完成", app_source)
         self.assertIn("renderValidationOosReport", app_source)
         self.assertIn("renderValidationBaselineBackfillResult", app_source)
         self.assertIn("候选", app_source)
         self.assertIn("回填前", app_source)
         self.assertIn("回填后", app_source)
         self.assertIn("oos_status", app_source)
+        self.assertIn("blockers", app_source)
+        self.assertIn("暂无真实 OOS", app_source)
 
 
 if __name__ == "__main__":

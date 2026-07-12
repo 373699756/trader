@@ -177,16 +177,14 @@ window.TraderRecommendationRenderers = {
 
   expectedReturnSummary(row, helpers) {
     const { formatNumber } = helpers;
-    const rankScore = this.finiteNumber(row.rank_score);
-    const expectedReturn = this.finiteNumber(row.expected_return_net);
+    const predictedReturn = this.finiteNumber(row.predicted_net_return ?? row.expected_return_net);
     const pWin = this.probabilityPercent(row.p_win);
     const downside = this.finiteNumber(row.downside_p10);
     const sampleCount = this.finiteNumber(row.expected_return_sample_count);
     const confidence = this.confidenceLabel(row.model_confidence);
     const parts = [];
-    if (rankScore != null) parts.push(`影子排序分${formatNumber(rankScore, 1)}`);
-    if (expectedReturn != null) parts.push(`预期净收益${this.signedPercentText(expectedReturn, 2, helpers)}`);
-    if (pWin != null) parts.push(`胜率概率${formatNumber(pWin, 1)}%`);
+    if (predictedReturn != null) parts.push(`预测净收益${this.signedPercentText(predictedReturn, 2, helpers)}`);
+    if (pWin != null) parts.push(`模型胜率${formatNumber(pWin, 1)}%`);
     if (downside != null) parts.push(`下行P10 ${this.signedPercentText(downside, 2, helpers)}`);
     if (confidence !== "-") parts.push(`置信${confidence}`);
     if (sampleCount != null) parts.push(`样本${formatNumber(sampleCount, 0)}`);
@@ -251,24 +249,22 @@ window.TraderRecommendationRenderers = {
 
   expectedReturnScoreLines(row, helpers) {
     const { escapeHtml, formatNumber } = helpers;
-    const rankScore = this.finiteNumber(row.rank_score);
-    const expectedReturn = this.finiteNumber(row.expected_return_net);
+    const predictedReturn = this.finiteNumber(row.predicted_net_return ?? row.expected_return_net);
     const pWin = this.probabilityPercent(row.p_win);
     const confidence = this.confidenceLabel(row.model_confidence);
-    if (rankScore == null && expectedReturn == null && pWin == null && confidence === "-") {
+    if (predictedReturn == null && pWin == null && confidence === "-") {
       return "";
     }
     const title = this.expectedReturnSummary(row, helpers) || "收益模型暂无数据";
-    const rankText = rankScore == null ? "影-" : `影${formatNumber(rankScore, 1)}`;
-    const expectedText = expectedReturn == null ? "E-" : `E${this.signedPercentText(expectedReturn, 2, helpers)}`;
+    const statusText = confidence === "-" ? "模型-" : `模型${confidence}`;
+    const expectedText = predictedReturn == null ? "E-" : `E${this.signedPercentText(predictedReturn, 2, helpers)}`;
     const pWinText = pWin == null ? "P-" : `P${formatNumber(pWin, 0)}%`;
-    const confidenceText = confidence === "-" ? "" : `<span class="score-model-confidence">${escapeHtml(confidence)}</span>`;
     return `
-      <div class="score-model-line" title="${escapeHtml(`${title}；未通过验证门控前不参与生产排序`)}">
-        <span class="score-model-rank">${escapeHtml(rankText)}</span>${confidenceText}
+      <div class="score-model-line" title="${escapeHtml(`${title}；模型字段按验证门控状态展示，未通过门控前不参与生产排序`)}">
+        <span class="score-model-rank">${escapeHtml(statusText)}</span>
       </div>
       <div class="score-model-line" title="${escapeHtml(title)}">
-        <span class="score-model-return${this.signedPercentClass(expectedReturn)}">${escapeHtml(expectedText)}</span>
+        <span class="score-model-return${this.signedPercentClass(predictedReturn)}">${escapeHtml(expectedText)}</span>
         <span class="score-model-prob">${escapeHtml(pWinText)}</span>
       </div>
     `;

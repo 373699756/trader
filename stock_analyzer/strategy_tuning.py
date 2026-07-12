@@ -5,7 +5,7 @@ from typing import Dict, List
 
 from . import config
 from .normalization import coerce_number
-from .scoring import WEIGHTS
+from .scoring_core.weights import WEIGHTS
 
 
 SUPPORTED_TUNING_STRATEGIES = ("short_term", "tomorrow_picks", "swing_picks")

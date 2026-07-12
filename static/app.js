@@ -6,6 +6,9 @@ const state = {
   validationAutoRefreshInFlight: false,
   validationAutoRefreshDate: "",
   validationAutoRefreshAt: 0,
+  validationBaselineAutoBackfillInFlight: false,
+  validationBaselineAutoBackfillKey: "",
+  validationBaselineAutoBackfillAt: 0,
   countdown: window.APP_CONFIG.refreshSeconds,
   renderFingerprints: {},
   lastRows: {
@@ -191,16 +194,23 @@ Implementations live in the split modules loaded before this file:
 validationSnapshotStrategiesText(config.strategies)
 snapshotStatusText(snapshot, config.strategies)
 /api/strategy-validation/oos-report
+/api/strategy-validation/readiness
 /api/strategy-validation/portfolio-baseline
 /api/strategy-validation/backfill-current-baseline
 params.set("execute", "1")
 window.confirm
 renderValidationOosReport
 renderValidationBaselineBackfillResult
+maybeAutoBackfillCurrentBaseline
+shouldAutoBackfillCurrentBaseline
+execute: "1"
+current baseline 自动回填完成
 候选
 回填前
 回填后
 oos_status
+blockers
+暂无真实 OOS
 */
 
 function activateMainTab(button) {

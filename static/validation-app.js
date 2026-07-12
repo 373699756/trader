@@ -112,6 +112,7 @@
           }
           renderValidationOosReport(payload);
           renderValidationPortfolioBaseline(payload.portfolio_baseline || {});
+          maybeAutoBackfillCurrentBaseline(payload, strategy, days, requestSeq);
         } catch (err) {
           if (requestSeq !== state.validationRequestSeq) {
             return;
@@ -310,6 +311,75 @@
         }
       }
 
+      function shouldAutoBackfillCurrentBaseline(report) {
+        const baseline = report?.baseline_status || {};
+        const pending = Number(baseline.pending_current_baseline_count || 0);
+        const mismatch = Number(baseline.mismatched_baseline_outcome_count || 0);
+        return report?.oos_status === "needs_backfill" || Boolean(baseline.needs_backfill) || pending > 0 || mismatch > 0;
+      }
+
+      async function maybeAutoBackfillCurrentBaseline(report, strategy, days, requestSeq) {
+        if (!shouldAutoBackfillCurrentBaseline(report)) {
+          return;
+        }
+        if (state.validationBaselineAutoBackfillInFlight) {
+          return;
+        }
+        const baseline = report?.baseline_status || {};
+        const key = [
+          strategy,
+          days,
+          baseline.validation_baseline_id || "",
+          baseline.pending_current_baseline_count || 0,
+          baseline.mismatched_baseline_outcome_count || 0,
+        ].join(":");
+        const now = Date.now();
+        if (
+          state.validationBaselineAutoBackfillKey === key
+          && now - state.validationBaselineAutoBackfillAt < VALIDATION_AUTO_REFRESH_MS
+        ) {
+          return;
+        }
+        state.validationBaselineAutoBackfillInFlight = true;
+        state.validationBaselineAutoBackfillKey = key;
+        state.validationBaselineAutoBackfillAt = now;
+        setOpsStatus(els.validationBaselineStatus, "检测到 current baseline 待回填，正在自动执行...", "pending");
+        try {
+          const params = new URLSearchParams({ strategy, days, execute: "1" });
+          const res = await fetch(`/api/strategy-validation/backfill-current-baseline?${params.toString()}`, {
+            method: "POST",
+          });
+          const payload = await res.json();
+          if (!payload.ok) {
+            throw new Error(payload.error || "current baseline 自动回填失败");
+          }
+          const afterOos = await fetchValidationOosReportPayloadSafe(new URLSearchParams({ strategy, days }));
+          payload.before_oos = report;
+          payload.after_oos = afterOos;
+          if (requestSeq === state.validationRequestSeq && strategy === currentValidationStrategy()) {
+            if (afterOos.ok) {
+              renderValidationOosReport(afterOos);
+              renderValidationPortfolioBaseline(afterOos.portfolio_baseline || {});
+            }
+            renderValidationBaselineBackfillResult(payload, true);
+            const outcome = payload.outcome || {};
+            const prefetch = payload.prefetch || {};
+            setOpsStatus(
+              els.validationBaselineStatus,
+              `current baseline 自动回填完成：候选 ${Number(payload.candidates?.candidate_count || 0)}，更新 ${Number(outcome.updated || 0)}，下载 ${Number(prefetch.downloaded || 0)}`,
+              "ok",
+            );
+            delete state.validationCache[`${strategy}:${days}`];
+            state.validationDailyCache = {};
+            await loadValidation({ silent: true, skipAutoOutcomeUpdate: true });
+          }
+        } catch (err) {
+          setOpsStatus(els.validationBaselineStatus, `current baseline 自动回填失败：${escapeHtml(err.message)}`, "bad");
+        } finally {
+          state.validationBaselineAutoBackfillInFlight = false;
+        }
+      }
+
       // 就地操作反馈：在操作块下方的状态行显示进度/成功/失败。
 
       async function loadValidationAutoUpdateStatus() {
@@ -325,16 +395,16 @@
           const strategiesText = validationSnapshotStrategiesText(config.strategies);
           const snapshotText = snapshotStatusText(snapshot, config.strategies);
           if (!status.enabled) {
-            setOpsStatus(els.updateStatus, joinStatusText(["14:30 后自动保存荐股快照已关闭", snapshotText]), "pending");
+            setOpsStatus(els.updateStatus, joinStatusText(["验证自动更新已关闭", snapshotText]), "pending");
             return;
           }
           if (status.running) {
-            setOpsStatus(els.updateStatus, joinStatusText([`正在保存${strategiesText}快照…`, snapshotText]), "pending");
+            setOpsStatus(els.updateStatus, joinStatusText([`正在更新${strategiesText}验证结果…`, snapshotText]), "pending");
             return;
           }
           const result = status.last_result || {};
           if (status.last_error) {
-            setOpsStatus(els.updateStatus, joinStatusText([`荐股快照自动保存上次失败：${status.last_error}`, snapshotText]), "bad");
+            setOpsStatus(els.updateStatus, joinStatusText([`验证自动更新上次失败：${status.last_error}`, snapshotText]), "bad");
             return;
           }
           if (status.last_finished_at) {
@@ -342,7 +412,7 @@
             setOpsStatus(
               els.updateStatus,
               joinStatusText([
-                `荐股快照 ${status.last_finished_at} 已保存${savedText ? `：${savedText}` : ""}`,
+                `验证自动更新 ${status.last_finished_at} 已完成${savedText ? `：${savedText}` : ""}`,
                 snapshotText,
               ]),
               "ok"
@@ -352,7 +422,7 @@
           setOpsStatus(
             els.updateStatus,
             joinStatusText([
-              `自动保存已启动：${config.start_time || "14:30"} 之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟保存${strategiesText}快照`,
+              `自动更新已启动：${config.start_time || "14:30"} 之后每 ${Math.round((config.interval_seconds || 0) / 60)} 分钟更新${strategiesText}验证结果`,
               snapshotText,
             ]),
             "pending"
@@ -632,10 +702,12 @@
         const summary = report.summary || {};
         const baseline = report.baseline_status || {};
         const gate = report.validation_gate || {};
+        const blockers = Array.isArray(report.blockers) ? report.blockers : [];
         const status = report.oos_status || "unknown";
         const statusMeta = {
           oos_passed: ["oos-passed", "OOS 通过"],
           needs_backfill: ["oos-watch", "需回填当前口径"],
+          empty: ["oos-watch", "暂无真实 OOS"],
           insufficient_oos_days: ["oos-watch", "OOS 天数不足"],
           gate_blocked: ["oos-blocked", "验证门控阻断"],
           portfolio_blocked: ["oos-blocked", "日级组合亏损阻断"],
@@ -648,6 +720,9 @@
         const drawdown = summary.real_portfolio_max_drawdown_pct;
         const coverage = baseline.current_baseline_coverage_pct;
         const reason = gate.blocked && gate.reason ? ` · ${escapeHtml(gate.reason)}` : "";
+        const blockerText = blockers.length
+          ? ` · ${blockers.map(item => escapeHtml(item.message || item.code || "门槛未通过")).join(" / ")}`
+          : "";
         const ciText = ciLow == null ? "" : ` · CI低 ${formatSignedPct(ciLow)}`;
         const drawdownText = drawdown == null ? "" : ` · 回撤 ${formatSignedPct(drawdown)}`;
         const coverageText = coverage == null ? "" : ` · 覆盖 ${formatNumber(coverage, 1)}%`;
@@ -657,7 +732,7 @@
           · ready ${readyDays}/${minDays || "-"}日
           · 净收益 ${formatSignedPct(avgNet)}
           · 净胜率 ${winRate == null ? "-" : `${formatNumber(winRate, 1)}%`}
-          ${ciText}${drawdownText}${coverageText}${reason}
+          ${ciText}${drawdownText}${coverageText}${reason}${blockerText}
         `;
       }
 

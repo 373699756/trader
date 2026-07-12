@@ -109,6 +109,11 @@ def strategy_validation_oos_report_history():
     )
 
 
+@bp.route("/api/strategy-validation/readiness")
+def strategy_validation_readiness():
+    return json_result(services().strategy_validation_readiness())
+
+
 @bp.route("/api/strategy-validation/portfolio-baseline", methods=["GET", "POST"])
 def strategy_validation_portfolio_baseline():
     return json_result(

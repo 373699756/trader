@@ -4,17 +4,18 @@ from typing import Dict, Iterable, List, Tuple
 
 import pandas as pd
 
-from . import base, explanations, scoring_math, theme_limits, tomorrow_policy
+from ..deepseek_rules import apply_rule_penalty
+from . import expected_return, explanations, risk, scoring_math, theme_limits, tomorrow_policy
 
 
 class RiskPolicy:
     """Risk gates and penalties shared by concrete strategy scorers."""
 
     def apply_rule_penalty(self, strategy_name: str, item: Dict[str, object]) -> Dict[str, object]:
-        return base.apply_rule_penalty(strategy_name, item)
+        return apply_rule_penalty(strategy_name, item)
 
     def sum_penalty(self, parts: Dict[str, float]) -> float:
-        return scoring_math._sum_penalty(parts)
+        return risk._sum_penalty(parts)
 
     def tomorrow_hard_reject(self, row: pd.Series, intraday_relaxed: bool = False) -> bool:
         return tomorrow_policy._tomorrow_hard_reject(row, intraday_relaxed=intraday_relaxed)
@@ -23,7 +24,7 @@ class RiskPolicy:
         return tomorrow_policy._tomorrow_risk_penalty_parts(row, provisional=provisional)
 
     def swing_risk_penalty_parts(self, row: pd.Series) -> Dict[str, float]:
-        return scoring_math._swing_risk_penalty_parts(row)
+        return risk._swing_risk_penalty_parts(row)
 
     def execution_score(self, row: pd.Series) -> float:
         return scoring_math._execution_score(row)
@@ -68,7 +69,7 @@ class RankingPolicy:
         samples: Iterable[Dict[str, object]] = None,
         use_ranking: bool = False,
     ) -> List[Dict[str, object]]:
-        return scoring_math._attach_expected_return_prediction(
+        return expected_return._attach_expected_return_prediction(
             strategy_name,
             rows,
             samples=samples,

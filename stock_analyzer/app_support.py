@@ -14,7 +14,8 @@ from .normalization import coerce_number
 from .normalization import normalize_code, rename_known_columns
 from .probability_calibration import apply_score_calibration, load_calibrator, train_score_calibrator
 from .risk_blacklist import attach_risk_blacklist, load_risk_blacklist
-from .scoring import mark_backup_watch, prepare_candidates
+from .scoring_core.candidate_filters import prepare_candidates
+from .scoring_core.explanations import mark_backup_watch
 from .sentiment import score_stock_sentiment
 from .strategy_health import strategy_status
 from .strategy_validation import StrategyValidationStore, _primary_return_config, validation_baseline_config
@@ -499,10 +500,7 @@ def attach_meta_labeling(
     model = train_meta_label_model(strategy_name, samples)
     if not model.get("is_fitted"):
         return
-    enforce = bool(getattr(config, "ENABLE_META_LABELING", False)) and bool(
-        getattr(config, "META_LABELING_ENFORCE_ACTION", False)
-    )
-    apply_meta_labeling(rows, model, enforce=enforce)
+    apply_meta_labeling(rows, model, enforce=False)
 
 
 def validation_batch_summary(rows: List[Dict[str, object]], strategy_name: str) -> Dict[str, object]:

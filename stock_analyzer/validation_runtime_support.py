@@ -298,7 +298,8 @@ def run_validation_auto_update_once(
             alert_statuses = [
                 item
                 for item in result["oos_summary"].get("statuses", [])
-                if item.get("oos_status") in ("needs_backfill", "gate_blocked", "portfolio_blocked")
+                if item.get("oos_status")
+                in ("empty", "insufficient_oos_days", "needs_backfill", "gate_blocked", "portfolio_blocked")
             ]
             if alert_statuses:
                 result["status"] = "oos_attention_required"
@@ -357,6 +358,7 @@ def _oos_report_summary(reports: List[Dict[str, object]]) -> Dict[str, object]:
         "needs_backfill_count": 0,
         "gate_blocked_count": 0,
         "portfolio_blocked_count": 0,
+        "insufficient_oos_days_count": 0,
         "oos_passed_count": 0,
         "empty_count": 0,
         "error_count": 0,
@@ -378,13 +380,29 @@ def _oos_report_summary(reports: List[Dict[str, object]]) -> Dict[str, object]:
             summary["gate_blocked_count"] += 1
         elif oos_status == "portfolio_blocked":
             summary["portfolio_blocked_count"] += 1
+        elif oos_status == "insufficient_oos_days":
+            summary["insufficient_oos_days_count"] += 1
         elif oos_status == "oos_passed":
             summary["oos_passed_count"] += 1
         elif oos_status == "empty":
             summary["empty_count"] += 1
         if oos_status:
             summary["report_count"] += 1
-            summary["statuses"].append({"strategy": strategy, "oos_status": oos_status})
+            summary["statuses"].append(
+                {
+                    "strategy": strategy,
+                    "oos_status": oos_status,
+                    "blockers": report.get("blockers") or [],
+                    "readiness": report.get("readiness") or {},
+                }
+            )
+    summary["attention_count"] = (
+        summary["empty_count"]
+        + summary["insufficient_oos_days_count"]
+        + summary["needs_backfill_count"]
+        + summary["gate_blocked_count"]
+        + summary["portfolio_blocked_count"]
+    )
     return summary
 
 

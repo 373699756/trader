@@ -55,6 +55,7 @@ from ..sentiment import build_market_sentiment_index
 from ..snapshot import SNAPSHOT_STRATEGIES, run_snapshot, run_snapshots
 from ..strategies import storage_strategy_name
 from ..validation_replay import backfill_strategy_validation_samples
+from ..validation_audit_cli import build_validation_readiness_report
 from ..validation_runtime_support import (
     analysis_window,
     auto_snapshot_time_parts,
@@ -545,6 +546,14 @@ class _AppServiceContext:
                 limit=limit,
                 reports=reports,
             )
+        except Exception as exc:
+            return self.error_payload(exc)
+
+    def strategy_validation_readiness(self) -> Tuple[Dict[str, object], int]:
+        try:
+            report = build_validation_readiness_report(config.VALIDATION_DB_PATH)
+            ready = bool(report.pop("ok", False))
+            return self.json_payload(ok=True, include_health=False, ready=ready, **report)
         except Exception as exc:
             return self.error_payload(exc)
 
@@ -1543,6 +1552,9 @@ class ValidationUseCase(_UseCase):
     def strategy_validation_oos_report_history(self, strategy: str, limit: int) -> Tuple[Dict[str, object], int]:
         return self.context.strategy_validation_oos_report_history(strategy, limit)
 
+    def strategy_validation_readiness(self) -> Tuple[Dict[str, object], int]:
+        return self.context.strategy_validation_readiness()
+
     def strategy_validation_portfolio_baseline(self, **kwargs) -> Tuple[Dict[str, object], int]:
         return self.context.strategy_validation_portfolio_baseline(**kwargs)
 
@@ -1758,6 +1770,9 @@ class AppServices:
 
     def strategy_validation_oos_report_history(self, strategy: str, limit: int) -> Tuple[Dict[str, object], int]:
         return self.validation.strategy_validation_oos_report_history(strategy, limit)
+
+    def strategy_validation_readiness(self) -> Tuple[Dict[str, object], int]:
+        return self.validation.strategy_validation_readiness()
 
     def strategy_validation_portfolio_baseline(self, **kwargs) -> Tuple[Dict[str, object], int]:
         return self.validation.strategy_validation_portfolio_baseline(**kwargs)

@@ -43,6 +43,8 @@ class ScoreCalibrator:
             "probability_sample_count": int(bucket.get("sample_count") or 0),
             "probability_bucket": bucket.get("label") or "",
             "probability_avg_return": round(coerce_number(bucket.get("avg_return")), 4),
+            "probability_role": "diagnostic_only",
+            "probability_trading_enabled": False,
         }
 
     def _bucket_for_score(self, score: float) -> Optional[Dict[str, object]]:
@@ -252,7 +254,7 @@ def _score_note(row: Dict[str, object], prediction: Dict[str, object]) -> str:
     score = coerce_number(row.get("decision_score", row.get("score")))
     probability = coerce_number(prediction.get("calibrated_probability")) * 100.0
     sample_count = int(prediction.get("probability_sample_count") or 0)
-    return "综合分 {:.1f}，历史同类信号主周期正收益概率约 {:.1f}%（{}样本）".format(
+    return "综合分 {:.1f}，历史同类信号诊断胜率 {:.1f}%（{}样本，仅供校准观察）".format(
         score,
         probability,
         sample_count,

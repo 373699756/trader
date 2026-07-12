@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import os
 from typing import Dict, Iterable, List, Tuple
 
 import pandas as pd
 
-from . import base as _base
+from .. import config
+from ..factor_ic import load_factor_ic
+from ..normalization import coerce_number, finite_series, percentile_score
+from . import explanations
+from . import horizon
+from . import risk
+from . import theme_limits
+from .weights import COMPONENT_FACTOR_KEYS, STRATEGY_COMBINERS, THRESHOLDS, WEIGHTS
+
+
+_FACTOR_IC_CACHE = {"mtime": None, "payload": {}}
 
 
 __all__ = [
-    "_attach_expected_return_prediction",
     "_close_location",
     "_combine",
     "_combine_details",
@@ -24,6 +34,8 @@ __all__ = [
     "_market_regime_adjustment",
     "_not_overextended_score",
     "_optional_factor_score",
+    "_overheat_damp_multiplier",
+    "_apply_overheat_damp",
     "_regime_component",
     "_regime_component_from_profile",
     "_regime_weight",
@@ -33,44 +45,179 @@ __all__ = [
     "_score_context",
     "_score_row",
     "_stddev",
-    "_sum_penalty",
-    "_swing_risk_penalty",
-    "_swing_risk_penalty_parts",
     "_tail_close_setup_score",
     "_weighted_score",
 ]
 
 
 def _score_context(df: pd.DataFrame, industry_strength: Dict[str, float]) -> Dict[str, List[float]]:
-    return _base._score_context(df, industry_strength)
+    return {
+        "pct_values": finite_series(df, "pct_chg").tolist(),
+        "speed_values": _combined_speed(df).tolist(),
+        "volume_ratio_values": finite_series(df, "volume_ratio").tolist(),
+        "turnover_rate_values": finite_series(df, "turnover_rate").tolist(),
+        "turnover_values": finite_series(df, "turnover").tolist(),
+        "sixty_day_values": finite_series(df, "sixty_day_pct").tolist(),
+        "ytd_values": finite_series(df, "ytd_pct").tolist(),
+        "amplitude_values": finite_series(df, "amplitude").tolist(),
+        "ret_3d_values": finite_series(df, "ret_3d").tolist(),
+        "ret_5d_values": finite_series(df, "ret_5d").tolist(),
+        "ret_10d_values": finite_series(df, "ret_10d").tolist(),
+        "ret_20d_values": finite_series(df, "ret_20d").tolist(),
+        "ma5_gap_values": finite_series(df, "ma5_gap").tolist(),
+        "ma20_gap_values": finite_series(df, "ma20_gap").tolist(),
+        "ma10_gap_values": finite_series(df, "ma10_gap").tolist(),
+        "ma60_gap_values": finite_series(df, "ma60_gap").tolist(),
+        "vol_ma5_ratio_values": finite_series(df, "vol_ma5_ratio").tolist(),
+        "vol_amount_5d_values": finite_series(df, "vol_amount_5d").tolist(),
+        "breakout_20d_values": finite_series(df, "breakout_20d").tolist(),
+        "volatility_20d_values": finite_series(df, "volatility_20d").tolist(),
+        "float_market_cap_values": finite_series(df, "float_market_cap").tolist(),
+        "pe_dynamic_values": finite_series(df, "pe_dynamic").tolist(),
+        "pb_values": finite_series(df, "pb").tolist(),
+        "industry_values": list(industry_strength.values()),
+    }
 
 
 def _stddev(values: List[float]) -> float:
-    return _base._stddev(values)
+    nums = [coerce_number(v) for v in values if pd.notna(coerce_number(v))]
+    if len(nums) < 2:
+        return 0.0
+    mean = sum(nums) / len(nums)
+    variance = sum((v - mean) ** 2 for v in nums) / len(nums)
+    return variance ** 0.5
 
 
 def _safe_corr(left: List[float], right: List[float]) -> float:
-    return _base._safe_corr(left, right)
+    size = min(len(left), len(right))
+    if size < 2:
+        return 0.0
+    a = pd.Series(left[:size], dtype="float64")
+    b = pd.Series(right[:size], dtype="float64")
+    if a.std() <= 1e-12 or b.std() <= 1e-12:
+        return 0.0
+    value = a.corr(b)
+    return round(coerce_number(value), 4)
 
 
 def _combined_speed(df: pd.DataFrame) -> pd.Series:
-    return _base._combined_speed(df)
+    speed = finite_series(df, "speed")
+    five_min = finite_series(df, "five_min_pct")
+    return speed.where(speed != 0, five_min)
 
 
 def _row_speed(row: pd.Series) -> float:
-    return _base._row_speed(row)
+    speed = coerce_number(row.get("speed"))
+    if speed != 0:
+        return speed
+    return coerce_number(row.get("five_min_pct"))
 
 
 def _tail_close_setup_score(row: pd.Series) -> float:
-    return _base._tail_close_setup_score(row)
+    pct = coerce_number(row.get("pct_chg"))
+    price = coerce_number(row.get("price"))
+    open_price = coerce_number(row.get("open"))
+    high = coerce_number(row.get("high"))
+    low = coerce_number(row.get("low"))
+    amplitude = coerce_number(row.get("amplitude"))
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+    turnover_rate = coerce_number(row.get("turnover_rate"))
+    speed = _row_speed(row)
+    market = row.get("market")
+    upper = config.MAX_BUYABLE_GAIN_GROWTH if market in ("chinext", "star") else config.MAX_BUYABLE_GAIN_MAIN
+
+    score = 52.0
+    if 1.1 <= pct <= min(upper * 0.78, 5.5):
+        score += 20
+    elif 0.6 <= pct < 1.1:
+        score += 10
+    elif 0.4 <= pct < 0.6:
+        score += 2
+    elif pct > upper * 0.86:
+        score -= 22
+    elif pct <= 0:
+        score -= 20
+
+    if 1.1 <= volume_ratio <= 3.2:
+        score += 16
+    elif 3.2 < volume_ratio <= 4.5:
+        score += 6
+    elif 0.8 <= volume_ratio < 1.1:
+        score -= 4
+    elif volume_ratio > 4.5:
+        score -= 14
+
+    if 2.0 <= turnover_rate <= 10.0:
+        score += 9
+    elif 10.0 < turnover_rate <= 15.0:
+        score += 4
+    elif turnover_rate > 15.0:
+        score -= 10
+
+    close_location = _close_location(price, high, low)
+    if close_location >= 0.72:
+        score += 16
+    elif close_location >= 0.60:
+        score += 6
+    elif close_location >= 0.52:
+        score += 2
+    elif close_location < 0.30:
+        score -= 28
+    elif close_location < 0.45:
+        score -= 16
+
+    if open_price > 0 and price > 0:
+        intraday_gain = (price / open_price - 1.0) * 100.0
+        if 0.3 <= intraday_gain <= 4.8:
+            score += 10
+        elif intraday_gain < 0:
+            score -= 10
+        elif intraday_gain > 6.0:
+            score -= 14
+
+    if 0 < amplitude <= 6.8:
+        score += 10
+    elif amplitude <= 9.0:
+        score += 4
+    elif amplitude >= 11.0:
+        score -= 12
+
+    if 0 <= speed <= 1.6:
+        score += 8
+    elif 1.6 < speed <= 2.4:
+        score += 2
+    elif -1.2 <= speed < 0:
+        score -= 4
+    elif speed > 2.4:
+        score -= 10
+    elif speed < -1.2:
+        score -= 7
+
+    return max(0.0, min(100.0, score))
 
 
 def _close_location(price: float, high: float, low: float) -> float:
-    return _base._close_location(price, high, low)
+    price = coerce_number(price)
+    high = coerce_number(high)
+    low = coerce_number(low)
+    if price <= 0 or high <= low or low <= 0:
+        return 0.5
+    return max(0.0, min(1.0, (price - low) / (high - low)))
 
 
 def _hot_rank_score(rank) -> float:
-    return _base._hot_rank_score(rank)
+    if not rank:
+        return 50.0
+    rank = int(rank)
+    if rank <= 20:
+        return 100.0
+    if rank <= 50:
+        return 88.0
+    if rank <= 100:
+        return 76.0
+    if rank <= 200:
+        return 62.0
+    return 52.0
 
 
 def _optional_factor_score(
@@ -80,25 +227,38 @@ def _optional_factor_score(
     fallback=None,
     fallback_values: List[float] = None,
 ) -> float:
-    return _base._optional_factor_score(
-        value,
-        values,
-        higher_is_better=higher_is_better,
-        fallback=fallback,
-        fallback_values=fallback_values,
-    )
+    if _has_signal(values):
+        return percentile_score(value, values, higher_is_better=higher_is_better)
+    if fallback is not None and fallback_values is not None:
+        return percentile_score(fallback, fallback_values, higher_is_better=higher_is_better)
+    return 50.0
 
 
 def _has_signal(values: List[float]) -> bool:
-    return _base._has_signal(values)
+    return any(abs(coerce_number(value)) > 1e-9 for value in values)
 
 
 def _composite_score(parts: List[float]) -> float:
-    return _base._composite_score(parts)
+    clean = [max(0.0, min(100.0, coerce_number(value))) for value in parts if pd.notna(coerce_number(value))]
+    if not clean:
+        return 50.0
+    return sum(clean) / len(clean)
 
 
 def _weighted_score(pairs: Tuple[Tuple[object, float], ...], fallback: object = 50.0) -> float:
-    return _base._weighted_score(pairs, fallback=fallback)
+    total = 0.0
+    weight_total = 0.0
+    for value, weight in pairs:
+        if value is None:
+            continue
+        num = coerce_number(value)
+        if not pd.notna(num):
+            continue
+        total += max(0.0, min(100.0, num)) * weight
+        weight_total += weight
+    if weight_total <= 0:
+        return max(0.0, min(100.0, coerce_number(fallback, 50.0)))
+    return max(0.0, min(100.0, total / weight_total))
 
 
 def _market_regime_adjustment(
@@ -106,23 +266,90 @@ def _market_regime_adjustment(
     market_regime: Dict[str, object],
     strategy_style: str,
 ) -> float:
-    return _base._market_regime_adjustment(row, market_regime, strategy_style)
+    if not market_regime:
+        return 0.0
+
+    level = market_regime.get("level")
+    pct = coerce_number(row.get("pct_chg"))
+    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+    amplitude = coerce_number(row.get("amplitude"))
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+    turnover = coerce_number(row.get("turnover"))
+    bonus = 0.0
+
+    if level == "risk_on":
+        if strategy_style in ("short", "tomorrow", "swing", "tech"):
+            if pct > 0:
+                bonus += 1.8
+            if 1.1 <= volume_ratio <= 4.5:
+                bonus += 1.6
+            if turnover >= config.MIN_TURNOVER * 4:
+                bonus += 1.2
+        if strategy_style in ("long", "position") and sixty_day_pct >= 0:
+            bonus += 0.8
+        if amplitude > 11:
+            bonus -= 1.5
+    elif level == "risk_off":
+        if strategy_style in ("short", "tomorrow", "tech"):
+            if pct > 4:
+                bonus -= 4.5
+            if volume_ratio > 4.5:
+                bonus -= 2.5
+            if amplitude > 9:
+                bonus -= 2.5
+        if strategy_style in ("long", "position"):
+            if 0 <= sixty_day_pct <= 40:
+                bonus += 2.4
+            if amplitude <= 7:
+                bonus += 1.6
+            if turnover >= config.MIN_TURNOVER * 3:
+                bonus += 1.0
+        if sixty_day_pct < -12:
+            bonus -= 2.5
+    else:
+        if strategy_style in ("short", "tomorrow", "swing") and 1.0 <= volume_ratio <= 3.5:
+            bonus += 0.8
+        if amplitude > 12:
+            bonus -= 1.2
+
+    return round(bonus, 2)
+
+
+def _near_limit_up_risk(row: pd.Series) -> bool:
+    pct = coerce_number(row.get("pct_chg"))
+    market = row.get("market")
+    limit = 20 if market in ("chinext", "star") else 10
+    turnover = coerce_number(row.get("turnover"))
+    return pct >= limit * 0.88 and turnover < config.MIN_TURNOVER * 2
 
 
 def _regime_weight(key: str, market_regime: Dict[str, object], default: float = 1.0) -> float:
-    return _base._regime_weight(key, market_regime, default=default)
+    if not bool(getattr(config, "ENABLE_REGIME_SPECIFIC_WEIGHTS", False)):
+        return 1.0
+    if not market_regime:
+        return default
+    level = market_regime.get("level") or "balanced"
+    profiles = WEIGHTS.get("regime_profiles") or {}
+    profile = profiles.get(level) or profiles.get("balanced") or {}
+    value = coerce_number(profile.get(key), default)
+    return max(0.5, min(1.5, value))
 
 
 def _regime_weight_profile(market_regime: Dict[str, object], keys: List[str]) -> Dict[str, float]:
-    return _base._regime_weight_profile(market_regime, keys)
+    return {key: round(_regime_weight(key, market_regime), 3) for key in keys}
 
 
 def _regime_component(score: float, key: str, market_regime: Dict[str, object]) -> float:
-    return _base._regime_component(score, key, market_regime)
+    value = max(0.0, min(100.0, coerce_number(score, 50.0)))
+    weight = _regime_weight(key, market_regime)
+    return max(0.0, min(100.0, 50.0 + (value - 50.0) * weight))
 
 
 def _regime_component_from_profile(score: float, key: str, profile: Dict[str, object]) -> float:
-    return _base._regime_component_from_profile(score, key, profile)
+    value = max(0.0, min(100.0, coerce_number(score, 50.0)))
+    weight = coerce_number((profile or {}).get(key), 1.0)
+    weight = max(0.5, min(1.5, weight))
+    return max(0.0, min(100.0, 50.0 + (value - 50.0) * weight))
 
 
 def _combine(
@@ -133,14 +360,14 @@ def _combine(
     row: pd.Series = None,
     regime_weight_profile: Dict[str, object] = None,
 ) -> float:
-    return _base._combine(
+    return _combine_details(
         components,
         strategy,
         weights=weights,
         market_regime=market_regime,
         row=row,
         regime_weight_profile=regime_weight_profile,
-    )
+    )["score"]
 
 
 def _combine_details(
@@ -151,42 +378,130 @@ def _combine_details(
     row: pd.Series = None,
     regime_weight_profile: Dict[str, object] = None,
 ) -> Dict[str, float]:
-    return _base._combine_details(
-        components,
-        strategy,
-        weights=weights,
-        market_regime=market_regime,
-        row=row,
-        regime_weight_profile=regime_weight_profile,
-    )
+    spec = STRATEGY_COMBINERS.get(strategy)
+    if not spec:
+        raise KeyError("unknown strategy combiner: {}".format(strategy))
+    all_weights = weights or WEIGHTS
+    strategy_weights = all_weights.get(strategy, {})
+    base = 0.0
+    term_total = 0.0
+    weighted_terms = []
+    for term in spec["terms"]:
+        key = term["component"]
+        weight_key = term["weight_key"]
+        weight = coerce_number(strategy_weights.get(weight_key), 0.0)
+        if weight <= 0:
+            continue
+        value = coerce_number(components.get(key), 50.0)
+        regime_key = term.get("regime_key")
+        if regime_key:
+            if regime_weight_profile:
+                value = _regime_component_from_profile(value, regime_key, regime_weight_profile)
+            else:
+                value = _regime_component(value, regime_key, market_regime)
+        adjusted_weight = weight * _factor_ic_multiplier(key)
+        weighted_terms.append((value, weight, adjusted_weight))
+        term_total += weight
+
+    adjusted_total = sum(item[2] for item in weighted_terms)
+    scale = (term_total / adjusted_total) if adjusted_total > 1e-12 else 1.0
+    for value, _, adjusted_weight in weighted_terms:
+        base += value * adjusted_weight * scale
+    if term_total <= 0:
+        base = 0.0
+
+    risk_penalty = coerce_number(components.get("risk_penalty"), 0.0)
+    regime_bonus = coerce_number(components.get("regime_bonus"), 0.0)
+    raw_score = base - risk_penalty + regime_bonus
+    if spec.get("apply_damp"):
+        if "overheat_damp" in components:
+            damp = coerce_number(components.get("overheat_damp"), 1.0)
+        elif row is not None:
+            damp = _overheat_damp_multiplier(row)
+        else:
+            damp = 1.0
+        damp = max(0.0, min(1.0, damp))
+    else:
+        damp = 1.0
+    score = max(0.0, min(100.0, raw_score * damp))
+    return {
+        "score": score,
+        "base_score": base,
+        "raw_score": raw_score,
+        "risk_penalty": risk_penalty,
+        "regime_bonus": regime_bonus,
+        "overheat_damp": damp,
+    }
 
 
 def _factor_ic_multiplier(component: str) -> float:
-    return _base._factor_ic_multiplier(component)
+    if not getattr(config, "ENABLE_FACTOR_IC_WEIGHTING", False):
+        return 1.0
+    factor_key = COMPONENT_FACTOR_KEYS.get(component)
+    if not factor_key:
+        return 1.0
+    payload = _factor_ic_payload()
+    info = ((payload or {}).get("ic") or {}).get(factor_key) or {}
+    if info.get("status") != "ok":
+        return 1.0
+    if int(info.get("sample_count") or 0) < int(getattr(config, "FACTOR_IC_MIN_SAMPLES", 30)):
+        return 1.0
+    band = max(0.0, min(0.8, coerce_number(getattr(config, "FACTOR_IC_WEIGHT_BAND", 0.3), 0.3)))
+    ic = max(-1.0, min(1.0, coerce_number(info.get("ic"))))
+    return max(0.1, 1.0 + max(-band, min(band, ic * band)))
 
 
 def _factor_ic_payload() -> Dict[str, object]:
-    return _base._factor_ic_payload()
+    path = getattr(config, "FACTOR_IC_PATH", ".runtime/factor_ic.json")
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        _FACTOR_IC_CACHE["mtime"] = None
+        _FACTOR_IC_CACHE["payload"] = {}
+        return {}
+    if _FACTOR_IC_CACHE.get("mtime") != mtime:
+        _FACTOR_IC_CACHE["mtime"] = mtime
+        _FACTOR_IC_CACHE["payload"] = load_factor_ic()
+    return _FACTOR_IC_CACHE.get("payload") or {}
 
 
 def _execution_score(row: pd.Series) -> float:
-    return _base._execution_score(row)
+    pct = coerce_number(row.get("pct_chg"))
+    market = row.get("market")
+    upper = config.MAX_BUYABLE_GAIN_GROWTH if market in ("chinext", "star") else config.MAX_BUYABLE_GAIN_MAIN
+    if pct <= 0:
+        return 45.0
+    if pct <= upper * 0.55:
+        return 88.0
+    if pct <= upper * 0.78:
+        return 76.0
+    return 58.0
 
 
 def _not_overextended_score(row: pd.Series) -> float:
-    return _base._not_overextended_score(row)
+    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+    ytd_pct = coerce_number(row.get("ytd_pct"))
+    amplitude = coerce_number(row.get("amplitude"))
+    score = 86.0
+    if sixty_day_pct > 45:
+        score -= min(30.0, (sixty_day_pct - 45) * 0.8)
+    if ytd_pct > 80:
+        score -= min(35.0, (ytd_pct - 80) * 0.6)
+    if amplitude > 10:
+        score -= 8
+    if sixty_day_pct < -20:
+        score -= 16
+    return max(0.0, min(100.0, score))
 
 
-def _sum_penalty(parts: Dict[str, float]) -> float:
-    return _base._sum_penalty(parts)
+def _overheat_damp_multiplier(row: pd.Series) -> float:
+    not_overextended = _not_overextended_score(row) / 100.0
+    floor = coerce_number(THRESHOLDS.get("overheat_damp_floor"), 0.6)
+    return floor + (1.0 - floor) * max(0.0, min(1.0, not_overextended))
 
 
-def _swing_risk_penalty(row: pd.Series) -> float:
-    return _base._swing_risk_penalty(row)
-
-
-def _swing_risk_penalty_parts(row: pd.Series) -> Dict[str, float]:
-    return _base._swing_risk_penalty_parts(row)
+def _apply_overheat_damp(final_score: float, row: pd.Series) -> float:
+    return final_score * _overheat_damp_multiplier(row)
 
 
 def _horizon_meta(
@@ -196,26 +511,168 @@ def _horizon_meta(
     strategy_version: str,
     strategy_label: str,
 ) -> Dict[str, object]:
-    return _base._horizon_meta(top_n, market_filter, candidate_count, strategy_version, strategy_label)
+    return horizon._horizon_meta(top_n, market_filter, candidate_count, strategy_version, strategy_label)
 
 
 def _horizon_row(row: pd.Series, scores: Dict[str, object]) -> Dict[str, object]:
-    return _base._horizon_row(row, scores)
+    return horizon._horizon_row(row, scores)
 
 
-def _score_row(*args, **kwargs) -> Dict[str, object]:
-    return _base._score_row(*args, **kwargs)
+def _score_row(
+    row: pd.Series,
+    hot_ranks: Dict[str, int],
+    industry_strength: Dict[str, float],
+    sentiment_lookup: Dict[str, Dict[str, object]],
+    context: Dict[str, List[float]],
+    horizon: str,
+    market_regime: Dict[str, object] = None,
+) -> Dict[str, object]:
+    if horizon != "short":
+        raise ValueError("{} horizon is retired; current scoring row path supports short only".format(horizon))
 
+    code = row["code"]
+    industry = str(row.get("industry", "") or "")
+    pct_chg = coerce_number(row.get("pct_chg"))
+    speed = _row_speed(row)
+    volume_ratio = coerce_number(row.get("volume_ratio"))
+    turnover_rate = coerce_number(row.get("turnover_rate"))
+    turnover = coerce_number(row.get("turnover"))
+    sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
+    ytd_pct = coerce_number(row.get("ytd_pct"))
+    amplitude = coerce_number(row.get("amplitude"))
+    ret_3d = coerce_number(row.get("ret_3d"))
+    ret_5d = coerce_number(row.get("ret_5d"))
+    ret_10d = coerce_number(row.get("ret_10d"))
+    ret_20d = coerce_number(row.get("ret_20d"))
+    ma5_gap = coerce_number(row.get("ma5_gap"))
+    ma20_gap = coerce_number(row.get("ma20_gap"))
+    vol_amount_5d = coerce_number(row.get("vol_amount_5d"))
+    breakout_20d = coerce_number(row.get("breakout_20d"))
+    volatility_20d = coerce_number(row.get("volatility_20d"))
+    industry_pct = industry_strength.get(industry, 0.0)
+    hot_rank = hot_ranks.get(code)
+    sentiment = sentiment_lookup.get(code, {"score": 50.0, "summary": "未拉取到个股舆情"})
+    execution_score = _execution_score(row)
 
-def _attach_expected_return_prediction(
-    strategy_name: str,
-    rows: List[Dict[str, object]],
-    samples: Iterable[Dict[str, object]] = None,
-    use_ranking: bool = False,
-) -> List[Dict[str, object]]:
-    return _base._attach_expected_return_prediction(
-        strategy_name,
-        rows,
-        samples=samples,
-        use_ranking=use_ranking,
+    momentum_score = (
+        percentile_score(pct_chg, context["pct_values"]) * 0.24
+        + percentile_score(speed, context["speed_values"]) * 0.24
+        + percentile_score(volume_ratio, context["volume_ratio_values"]) * 0.18
+        + _optional_factor_score(ret_3d, context["ret_3d_values"]) * 0.12
+        + _optional_factor_score(ret_5d, context["ret_5d_values"]) * 0.10
+        + _optional_factor_score(vol_amount_5d, context["vol_amount_5d_values"]) * 0.08
+        + _optional_factor_score(breakout_20d, context["breakout_20d_values"]) * 0.04
+    )
+    liquidity_score = (
+        percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.45
+        + percentile_score(turnover, context["turnover_values"]) * 0.55
+    )
+    trend_score = (
+        _optional_factor_score(
+            ret_20d,
+            context["ret_20d_values"],
+            fallback=sixty_day_pct,
+            fallback_values=context["sixty_day_values"],
+        )
+        * 0.24
+        + percentile_score(sixty_day_pct, context["sixty_day_values"]) * 0.20
+        + percentile_score(ytd_pct, context["ytd_values"]) * 0.14
+        + _optional_factor_score(ma20_gap, context["ma20_gap_values"]) * 0.14
+        + _optional_factor_score(ret_10d, context["ret_10d_values"]) * 0.12
+        + _optional_factor_score(vol_amount_5d, context["vol_amount_5d_values"]) * 0.08
+        + _optional_factor_score(
+            volatility_20d,
+            context["volatility_20d_values"],
+            higher_is_better=False,
+            fallback=amplitude,
+            fallback_values=context["amplitude_values"],
+        )
+        * 0.08
+    )
+    industry_score = percentile_score(industry_pct, context["industry_values"]) if context["industry_values"] else 50.0
+    hot_score = _hot_rank_score(hot_rank)
+    sentiment_score = coerce_number(sentiment.get("score"), 50.0)
+    regime_bonus = _market_regime_adjustment(row, market_regime, "short")
+    regime_profile = _regime_weight_profile(market_regime, ["momentum", "liquidity"])
+
+    risk_penalty_parts = {}
+    reversal_tilt = coerce_number(WEIGHTS["short_term"].get("reversal_tilt"), 0.0)
+    if reversal_tilt > 0:
+        recent_gain = coerce_number(row.get("ret_5d"), pct_chg)
+        risk_penalty_parts["reversal_tilt"] = max(0.0, recent_gain) * reversal_tilt
+    if sentiment.get("risk_words"):
+        risk_penalty_parts["sentiment"] = 8
+    if _near_limit_up_risk(row):
+        risk_penalty_parts["near_limit_up"] = 5
+    risk_penalty = risk._sum_penalty(risk_penalty_parts)
+    risk_guard_score = max(0.0, min(100.0, 100.0 - risk_penalty * 3.2))
+    combined = _combine_details(
+        {
+            "momentum_score": momentum_score,
+            "liquidity_score": liquidity_score,
+            "trend_score": trend_score,
+            "industry_score": industry_score,
+            "hot_score": hot_score,
+            "sentiment_score": sentiment_score,
+            "risk_guard_score": risk_guard_score,
+            "risk_penalty": risk_penalty,
+            "regime_bonus": regime_bonus,
+        },
+        "short_term",
+        market_regime=market_regime,
+        row=row,
+    )
+    final_score = combined["score"]
+    item = {
+        "code": code,
+        "name": str(row.get("name", "")),
+        "market": row.get("market", "main"),
+        "market_label": config.MARKET_LABELS.get(row.get("market", "main"), "主板"),
+        "industry": industry,
+        "theme": theme_limits._infer_theme_from_row(row) or industry,
+        "price": round(coerce_number(row.get("price")), 3),
+        "pct_chg": round(pct_chg, 2),
+        "speed": round(coerce_number(row.get("speed")), 2),
+        "five_min_pct": round(coerce_number(row.get("five_min_pct")), 2),
+        "volume_ratio": round(volume_ratio, 2),
+        "turnover_rate": round(turnover_rate, 2),
+        "turnover": round(turnover, 2),
+        "industry_pct": round(industry_pct, 2),
+        "sixty_day_pct": round(sixty_day_pct, 2),
+        "ytd_pct": round(ytd_pct, 2),
+        "ret_3d": round(ret_3d, 2),
+        "ret_5d": round(ret_5d, 2),
+        "ret_10d": round(ret_10d, 2),
+        "ret_20d": round(ret_20d, 2),
+        "ma5_gap": round(ma5_gap, 2),
+        "ma20_gap": round(ma20_gap, 2),
+        "vol_amount_5d": round(vol_amount_5d, 2),
+        "breakout_20d": bool(breakout_20d),
+        "volatility_20d": round(volatility_20d, 2),
+        "hot_rank": hot_rank,
+        "hot_score": round(hot_score, 2),
+        "momentum_score": round(momentum_score, 2),
+        "liquidity_score": round(liquidity_score, 2),
+        "trend_score": round(trend_score, 2),
+        "execution_score": round(execution_score, 2),
+        "industry_score": round(industry_score, 2),
+        "sentiment_score": round(sentiment_score, 2),
+        "risk_guard_score": round(risk_guard_score, 2),
+        "risk_penalty": round(risk_penalty, 2),
+        "risk_penalty_parts": risk_penalty_parts,
+        "regime_bonus": round(regime_bonus, 2),
+        "regime_weight_profile": regime_profile,
+        "base_score": round(combined["base_score"], 2),
+        "raw_score": round(combined["raw_score"], 2),
+        "overheat_damp": round(combined["overheat_damp"], 4),
+        "score": round(max(0.0, min(100.0, final_score)), 2),
+        "sentiment_summary": sentiment.get("summary", "暂无明显舆情信号"),
+        "risk_words": sentiment.get("risk_words", []),
+        "reasons": explanations._build_reasons(row, industry_pct, hot_rank, sentiment),
+        "horizon": horizon,
+    }
+    return explanations._with_regime_reason(
+        explanations._attach_signal_explanation(item, row, "short_term", "短线推荐", "盘中强势"),
+        market_regime,
+        regime_bonus,
     )

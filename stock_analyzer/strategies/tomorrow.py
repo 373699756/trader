@@ -28,10 +28,6 @@ class TomorrowScorer:
 
     @staticmethod
     def _ranking_gate_score(row: Dict[str, object]) -> float:
-        ready = str(row.get("model_confidence") or "").strip().lower() == "ready"
-        expected_return_rank = str(row.get("ranking_source") or "").strip() == "expected_return_rank_score"
-        if ready and expected_return_rank:
-            return coerce_number(row.get("rank_score"), coerce_number(row.get("score")))
         return coerce_number(row.get("score"))
 
     def _build_candidate_row(

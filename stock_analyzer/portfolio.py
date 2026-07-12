@@ -241,22 +241,18 @@ def _expected_edge_multiplier(row: Dict[str, object]) -> float:
     probability = coerce_number(row.get("p_win"), None)
     if probability is not None and abs(probability) <= 1:
         probability *= 100.0
-    calibrated = coerce_number(row.get("calibrated_probability"), None)
-    if calibrated is not None and abs(calibrated) <= 1:
-        calibrated *= 100.0
-    win_prob = probability if probability is not None else calibrated
     multiplier = 1.0
     if expected is not None:
         multiplier *= max(0.6, min(1.5, 1.0 + expected / 8.0))
-    if win_prob is not None:
-        multiplier *= max(0.7, min(1.35, 1.0 + (win_prob - 50.0) / 100.0))
+    if probability is not None:
+        multiplier *= max(0.7, min(1.35, 1.0 + (probability - 50.0) / 100.0))
     return max(0.35, min(1.75, multiplier))
 
 
 def _expected_edge_allowed(row: Dict[str, object]) -> bool:
     if str(row.get("model_confidence") or "").strip().lower() != "ready":
         return False
-    if str(row.get("ranking_source") or "").strip() == "expected_return_rank_score":
+    if str(row.get("ranking_source") or "").strip() == "expected_return_predicted_net_return":
         return True
     return row.get("expected_return_rank") is not None
 

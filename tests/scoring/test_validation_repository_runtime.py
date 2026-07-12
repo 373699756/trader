@@ -7,6 +7,7 @@ import pandas as pd
 from stock_analyzer import config
 from stock_analyzer.execution_policy import build_execution_policy
 from stock_analyzer.strategy_validation import StrategyValidationStore, _primary_return_config, validation_baseline_config
+from stock_analyzer.validation_audit_cli import build_validation_readiness_report
 
 
 def _validation_history(start_date: str, future_days: int, final_price: float) -> pd.DataFrame:
@@ -28,6 +29,95 @@ def _validation_history(start_date: str, future_days: int, final_price: float) -
 
 
 class ValidationRepositoryRuntimeTest(unittest.TestCase):
+    def test_validation_readiness_report_blocks_zero_oos_samples(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = "{}/validation.sqlite3".format(tmpdir)
+            report = build_validation_readiness_report(path)
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["table_counts"]["strategy_outcomes"], 0)
+        self.assertEqual(report["table_counts"]["strategy_fold_predictions"], 0)
+        self.assertEqual(report["readiness"]["real_oos_day_count"], 0)
+        self.assertEqual(report["readiness"]["portfolio_day_count"], 0)
+        self.assertEqual(report["readiness"]["deepseek_event_day_count"], 0)
+        blocker_tasks = {item["task"] for item in report["blockers"]}
+        self.assertIn("P3-REAL-OOS-SAMPLE-GATE", blocker_tasks)
+        self.assertIn("P4-REBUILDABLE-RETURN-ARTIFACT", blocker_tasks)
+        self.assertIn("P5-PORTFOLIO-ABLATION-EVIDENCE", blocker_tasks)
+        self.assertIn("P6-DEEPSEEK-EVENT-COUNTERFACTUAL", blocker_tasks)
+        self.assertIn("P7-GRAY-ROLLBACK", blocker_tasks)
+
+    def test_strategy_validation_persists_fold_predictions_for_oos_audit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            first = store.save_fold_predictions(
+                "EXP-1",
+                "fold-1",
+                "tomorrow_picks",
+                [
+                    {
+                        "test_date": "2024-01-02",
+                        "code": "600001",
+                        "baseline_score": 88.0,
+                        "predicted_net_return": 1.2,
+                        "predicted_probability": 0.63,
+                        "selected": True,
+                        "actual_net_return": 0.9,
+                        "extra": {"rank": 1},
+                    },
+                    {
+                        "signal_date": "2024-01-02",
+                        "code": "600002.SH",
+                        "baseline_score": 70.0,
+                        "predicted_net_return": -0.2,
+                        "predicted_probability": 0.41,
+                        "selected": False,
+                        "actual_net_return": -0.8,
+                    },
+                ],
+                baseline_id="baseline-v1",
+                model_id="linear-net-v1",
+                model_version="2024-01",
+                train_end_date="2024-01-01",
+                feature_schema_hash="features-v1",
+            )
+            second = store.save_fold_predictions(
+                "EXP-1",
+                "fold-1",
+                "tomorrow_picks",
+                [
+                    {
+                        "test_date": "2024-01-02",
+                        "code": "600001",
+                        "baseline_score": 88.0,
+                        "predicted_net_return": 1.5,
+                        "predicted_probability": 0.67,
+                        "selected": True,
+                        "actual_net_return": 1.1,
+                    }
+                ],
+                baseline_id="baseline-v1",
+                model_id="linear-net-v1",
+                model_version="2024-01",
+                train_end_date="2024-01-01",
+                feature_schema_hash="features-v1",
+            )
+            rows = store.list_fold_predictions("EXP-1", strategy_name="tomorrow_picks", fold_id="fold-1")
+
+        self.assertEqual(first["saved"], 2)
+        self.assertEqual(second["saved"], 1)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["code"], "600001")
+        self.assertTrue(rows[0]["selected"])
+        self.assertEqual(rows[0]["predicted_net_return"], 1.5)
+        self.assertEqual(rows[0]["predicted_probability"], 0.67)
+        self.assertEqual(rows[0]["baseline_id"], "baseline-v1")
+        self.assertEqual(rows[0]["model_id"], "linear-net-v1")
+        self.assertEqual(rows[0]["feature_schema_hash"], "features-v1")
+        self.assertEqual(rows[0]["prediction"]["actual_net_return"], 1.1)
+        self.assertEqual(rows[1]["code"], "600002")
+        self.assertFalse(rows[1]["selected"])
+
     def test_strategy_validation_replaces_same_day_snapshot(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))

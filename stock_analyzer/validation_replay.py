@@ -6,7 +6,9 @@ from . import config
 from .execution_policy import build_execution_policy
 from .factors import compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code, rename_known_columns
-from .scoring import build_market_regime, prepare_candidates, score_swing_candidates, score_tomorrow_candidates
+from .scoring_core.candidate_filters import prepare_candidates
+from .scoring_core.market_regime import build_market_regime
+from .strategies import score_swing_2_5d_picks, score_tomorrow_picks
 
 
 REPLAY_VERSION_SUFFIX = str(getattr(config, "VALIDATION_REPLAY_VERSION_SUFFIX", "replay_v2_production"))
@@ -255,14 +257,14 @@ def _rank_replay_rows(
         return []
     market_regime = build_market_regime(candidates, breadth_source=candidates)
     if strategy_name == "tomorrow_picks":
-        selected, _ = score_tomorrow_candidates(
+        selected, _ = score_tomorrow_picks(
             candidates,
             top_n=max(1, int(top_n)),
             market_regime=market_regime,
             display_cap=0,
         )
     else:
-        selected, _ = score_swing_candidates(
+        selected, _ = score_swing_2_5d_picks(
             candidates,
             top_n=max(1, int(top_n)),
             market_regime=market_regime,

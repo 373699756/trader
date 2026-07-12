@@ -34,7 +34,8 @@ from .daily_data import list_market_data_codes, load_history_frames
 from .history_cache import HistoryCache
 from .normalization import coerce_number, normalize_code
 from .runtime_json import atomic_write_json
-from .scoring import STRATEGY_COMBINERS, WEIGHTS, _combine_details
+from .scoring_core.scoring_math import _combine_details
+from .scoring_core.weights import STRATEGY_COMBINERS, WEIGHTS
 from .strategy_validation import StrategyValidationStore
 from .deepseek_rules import rule_field_value, rule_matches
 from .expected_return_model import predict_expected_return
@@ -516,17 +517,19 @@ def evaluate_expected_return_ranker(
                 "train_sample_count": len(train_samples),
                 "test_sample_count": len(test_samples),
                 "baseline_oos_objective": round(baseline_obj, 4),
+                "predicted_net_return_oos_objective": round(rank_obj, 4),
                 "rank_score_oos_objective": round(rank_obj, 4),
                 "oos_improvement": round(rank_obj - baseline_obj, 4),
                 "baseline_avg_return": baseline_metrics.get("absolute_avg_period_return", 0.0),
+                "predicted_net_return_avg_return": rank_metrics.get("absolute_avg_period_return", 0.0),
                 "rank_score_avg_return": rank_metrics.get("absolute_avg_period_return", 0.0),
             }
         )
     baseline_values = [coerce_number(row["baseline_oos_objective"]) for row in rows]
-    rank_values = [coerce_number(row["rank_score_oos_objective"]) for row in rows]
+    rank_values = [coerce_number(row["predicted_net_return_oos_objective"]) for row in rows]
     improvements = [coerce_number(row["oos_improvement"]) for row in rows]
     avg_return_improvements = [
-        coerce_number(row.get("rank_score_avg_return")) - coerce_number(row.get("baseline_avg_return"))
+        coerce_number(row.get("predicted_net_return_avg_return")) - coerce_number(row.get("baseline_avg_return"))
         for row in rows
     ]
     margin = float(getattr(config, "CALIBRATE_IMPROVE_MARGIN", 0.05))
@@ -539,7 +542,7 @@ def evaluate_expected_return_ranker(
     ci_result = {
         "method": "normal_approx_fold_avg_return_delta",
         "confidence": 0.95,
-        "metric": "rank_score_avg_return_minus_baseline",
+        "metric": "predicted_net_return_avg_return_minus_baseline",
         "sample_count": len(avg_return_improvements),
         "low": ci_low,
         "high": ci_high,
@@ -559,6 +562,7 @@ def evaluate_expected_return_ranker(
         "sample_count": len(samples),
         "top_k": top_k,
         "baseline_oos_objective": baseline_oos,
+        "predicted_net_return_oos_objective": rank_oos,
         "rank_score_oos_objective": rank_oos,
         "oos_improvement": round(rank_oos - baseline_oos, 4),
         "positive_folds": positive_folds,
@@ -996,9 +1000,22 @@ def _metrics_from_expected_return_rank(
             }
         )
     ranked_rows = predict_expected_return(strategy, rows, samples=train_samples)
-    for item in ranked_rows:
+    usable_rows = [
+        item
+        for item in ranked_rows
+        if coerce_number(item.get("predicted_net_return"), None) is not None
+        and str(item.get("model_confidence") or "").strip().lower() in {"shadow", "ready"}
+    ]
+    if len(usable_rows) < len(ranked_rows):
+        return {
+            "absolute_avg_period_return": 0.0,
+            "win_rate": 0.0,
+            "selection_count": 0,
+            "status": "insufficient_expected_return_predictions",
+        }
+    for item in usable_rows:
         sample = dict(item.get("sample") or {})
-        sample["recomputed_score"] = coerce_number(item.get("rank_score"))
+        sample["recomputed_score"] = coerce_number(item.get("predicted_net_return"))
         grouped.setdefault(str(sample.get("signal_date")), []).append(sample)
     return _metrics_from_ranked_groups(grouped, top_k)
 

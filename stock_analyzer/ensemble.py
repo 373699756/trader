@@ -40,7 +40,8 @@ def ensemble_score(model_scores: Dict[str, object], model_weights: Dict[str, obj
 def attach_ensemble_score(rows: List[Dict[str, object]], model_weights: Dict[str, object] = None) -> None:
     for row in rows or []:
         result = ensemble_score(row_model_scores(row), model_weights=model_weights)
-        result["enabled"] = bool(getattr(config, "ENABLE_ENSEMBLE", False))
+        result["enabled"] = False
+        result["mode"] = "shadow_only"
         row["ensemble"] = result
         row["ensemble_score"] = result["ensemble_score"]
 

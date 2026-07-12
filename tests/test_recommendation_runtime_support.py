@@ -367,6 +367,27 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
         self.assertNotIn("folds", meta["expected_return_ranking"]["gate"])
         self.assertEqual(rows[0]["code"], "T1")
 
+    def test_expected_return_context_builds_execution_policy_baseline_for_primary_strategies(self):
+        class Store:
+            def live_weight_samples(self, strategy_name, days=180):
+                return []
+
+        with patch.object(config, "ENABLE_EXPECTED_RETURN_RANKING", True):
+            contexts = [
+                support.expected_return_ranking_context(
+                    strategy_name,
+                    validation_store=Store(),
+                    top_k=5,
+                )
+                for strategy_name in ("tomorrow_picks", "swing_picks")
+            ]
+
+        for context in contexts:
+            self.assertFalse(context["use_ranking"])
+            self.assertEqual(context["meta"]["status"], "insufficient_real_days")
+            self.assertIn("validation_baseline_id", context["meta"])
+            self.assertIn("policy_", context["meta"]["validation_baseline_id"])
+
     def test_scored_strategy_rows_keeps_expected_return_shadow_when_gate_fails(self):
         class Store:
             def live_weight_samples(self, strategy_name, days=180):

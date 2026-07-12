@@ -153,6 +153,5 @@ $env:SKIP_PROXY_CHECK="1"; .\run.ps1
 
 ## 文档
 
-- [`docs/production_freeze.md`](docs/production_freeze.md)：P0 冻结基线、推荐追溯、重放校验和试验登记。
-- [`docs/strategy_and_prediction.md`](docs/strategy_and_prediction.md)：三类荐股策略、DeepSeek 结合方式、个股预测与优化建议。
-- [`docs/software_design.md`](docs/software_design.md)：软件整体结构、页面设计、接口、异步刷新、验证保存和运行方式。
+- [`docs/strategy_and_prediction.md`](docs/strategy_and_prediction.md)：荐股策略、评分取舍、收益口径、DeepSeek 业务边界和 OOS 晋级标准。
+- [`docs/software_design.md`](docs/software_design.md)：软件结构、接口、数据库、生产冻结、试验登记、readiness 审计、任务门控和运行方式。

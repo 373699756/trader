@@ -13,7 +13,7 @@ from .runtime_json import atomic_write_json
 MIN_SHADOW_SAMPLES = 20
 MIN_READY_DAYS = 60
 NEAREST_SCORE_FRACTION = 0.35
-MODEL_VERSION = "nearest_feature_v3"
+MODEL_VERSION = "nearest_feature_net_return_v4"
 ARTIFACT_SCHEMA_VERSION = 1
 ARTIFACT_TYPE = "expected_return_model"
 FEATURE_DISTANCE_MIN_FIELDS = 3
@@ -182,19 +182,12 @@ def expected_return_model_params() -> Dict[str, object]:
         "min_shadow_samples": MIN_SHADOW_SAMPLES,
         "min_ready_days": _min_ready_days(),
         "nearest_score_fraction": NEAREST_SCORE_FRACTION,
-        "peer_selection": "nearest common strategy features with score-nearest fallback",
+        "peer_selection": "nearest common strategy features",
         "feature_distance_min_fields": FEATURE_DISTANCE_MIN_FIELDS,
         "feature_fields": [key for key, _scale, _weight in FEATURE_SPECS],
-        "rank_score_formula": {
-            "base": 50.0,
-            "expected_return_net_weight": 6.0,
-            "p_win_weight": 40.0,
-            "downside_p10_weight": 2.0,
-            "expected_drawdown_weight": 0.8,
-            "uncertainty_penalty_weight": 1.4,
-        },
+        "ranking_field": "predicted_net_return",
         "time_decay_half_life_days": _time_decay_half_life_days(),
-        "fallback_formula": "score/risk_penalty heuristic until enough peer samples exist",
+        "fallback_policy": "insufficient feature peers produce shadow diagnostics only",
     }
 
 
@@ -240,48 +233,46 @@ def predict_expected_return(
 
 
 def _predict_row(row: Dict[str, object], training: List[Dict[str, object]], day_count: int) -> Dict[str, object]:
-    score = coerce_number(row.get("score"))
-    risk_penalty = coerce_number(row.get("risk_penalty"))
     peers, peer_method = _nearest_training_samples(training, row)
-    if len(peers) >= MIN_SHADOW_SAMPLES:
-        returns = [coerce_number(item.get("primary_return_net")) for item in peers]
-        drawdowns = [coerce_number(item.get("max_drawdown"), 0.0) for item in peers]
-        weights = _time_decay_weights(peers)
-        expected = _weighted_avg(returns, weights)
-        p_win = _weighted_avg([1.0 if value > 0 else 0.0 for value in returns], weights)
-        downside_p10 = _weighted_quantile(returns, weights, 0.10)
-        expected_drawdown = _weighted_avg(drawdowns, weights)
-        uncertainty = _return_uncertainty(returns, weights)
-        confidence = "ready" if day_count >= _min_ready_days() else "shadow"
-        sample_count = len(peers)
-    else:
-        expected = (score - 50.0) / 100.0 - risk_penalty * 0.03
-        p_win = max(0.05, min(0.95, 0.50 + (score - 50.0) / 200.0 - risk_penalty / 200.0))
-        downside_p10 = min(-0.5, expected - max(0.5, risk_penalty * 0.08))
-        expected_drawdown = -max(0.0, risk_penalty * 0.25)
-        uncertainty = max(0.35, abs(expected) * 0.5 + max(0.0, risk_penalty) * 0.04)
-        confidence = "low"
-        sample_count = len(peers)
-        peer_method = "heuristic_fallback"
-    rank_score = (
-        50.0
-        + expected * 6.0
-        + (p_win - 0.5) * 40.0
-        + downside_p10 * 2.0
-        + expected_drawdown * 0.8
-        - uncertainty * 1.4
-    )
+    sample_count = len(peers)
+    if sample_count < MIN_SHADOW_SAMPLES:
+        return {
+            "expected_return_net": None,
+            "predicted_net_return": None,
+            "p_win": None,
+            "predicted_probability": None,
+            "downside_p10": None,
+            "expected_drawdown": None,
+            "expected_return_uncertainty": None,
+            "expected_return_time_decay_half_life": _time_decay_half_life_days(),
+            "model_confidence": "low",
+            "expected_return_sample_count": sample_count,
+            "expected_return_peer_method": peer_method,
+            "expected_return_available": False,
+        }
+
+    returns = [coerce_number(item.get("primary_return_net")) for item in peers]
+    drawdowns = [coerce_number(item.get("max_drawdown"), 0.0) for item in peers]
+    weights = _time_decay_weights(peers)
+    expected = _weighted_avg(returns, weights)
+    p_win = _weighted_avg([1.0 if value > 0 else 0.0 for value in returns], weights)
+    downside_p10 = _weighted_quantile(returns, weights, 0.10)
+    expected_drawdown = _weighted_avg(drawdowns, weights)
+    uncertainty = _return_uncertainty(returns, weights)
+    confidence = "ready" if day_count >= _min_ready_days() else "shadow"
     return {
         "expected_return_net": round(expected, 4),
+        "predicted_net_return": round(expected, 4),
         "p_win": round(p_win, 4),
+        "predicted_probability": round(p_win, 4),
         "downside_p10": round(downside_p10, 4),
         "expected_drawdown": round(expected_drawdown, 4),
         "expected_return_uncertainty": round(uncertainty, 4),
         "expected_return_time_decay_half_life": _time_decay_half_life_days(),
-        "rank_score": round(max(0.0, min(100.0, rank_score)), 2),
         "model_confidence": confidence,
         "expected_return_sample_count": sample_count,
         "expected_return_peer_method": peer_method,
+        "expected_return_available": True,
     }
 
 
@@ -289,7 +280,7 @@ def _nearest_training_samples(training: List[Dict[str, object]], row: Dict[str, 
     peers = _nearest_feature_samples(training, row)
     if peers:
         return peers, "feature_nearest"
-    return _nearest_score_samples(training, coerce_number(row.get("score"))), "score_nearest"
+    return [], "insufficient_feature_peers"
 
 
 def _nearest_feature_samples(training: List[Dict[str, object]], row: Dict[str, object]) -> List[Dict[str, object]]:
@@ -307,14 +298,6 @@ def _nearest_feature_samples(training: List[Dict[str, object]], row: Dict[str, o
     ranked.sort(key=lambda pair: pair[0])
     limit = min(len(ranked), max(MIN_SHADOW_SAMPLES, int(len(ranked) * NEAREST_SCORE_FRACTION)))
     return [item for _distance, item in ranked[:limit]]
-
-
-def _nearest_score_samples(training: List[Dict[str, object]], score: float) -> List[Dict[str, object]]:
-    if not training:
-        return []
-    ranked = sorted(training, key=lambda item: abs(coerce_number(item.get("score")) - score))
-    limit = min(len(ranked), max(MIN_SHADOW_SAMPLES, int(len(ranked) * NEAREST_SCORE_FRACTION)))
-    return ranked[:limit]
 
 
 def _feature_values(*sources: Dict[str, object]) -> Dict[str, float]:
@@ -475,11 +458,13 @@ def _artifact_expired(artifact: Dict[str, object], *, now: datetime = None, max_
 
 def _oos_gate_passed(oos_result: Dict[str, object]) -> bool:
     baseline = coerce_number(oos_result.get("baseline_oos_objective"), None)
-    rank_score = coerce_number(oos_result.get("rank_score_oos_objective"), None)
+    predicted_return = coerce_number(oos_result.get("predicted_net_return_oos_objective"), None)
+    if predicted_return is None:
+        predicted_return = coerce_number(oos_result.get("rank_score_oos_objective"), None)
     margin = coerce_number(oos_result.get("margin"), coerce_number(getattr(config, "CALIBRATE_IMPROVE_MARGIN", 0.05), 0.05))
     positive_folds = int(coerce_number(oos_result.get("positive_folds"), 0))
     fold_count = int(coerce_number(oos_result.get("fold_count"), 0))
-    objective_passed = baseline is not None and rank_score is not None and rank_score > baseline + margin
+    objective_passed = baseline is not None and predicted_return is not None and predicted_return > baseline + margin
     folds_passed = fold_count > 0 and positive_folds > fold_count // 2
     status_passed = str(oos_result.get("status") or "") == "oos_passed" or bool(oos_result.get("oos_passed"))
     return bool(oos_result.get("ok")) and status_passed and objective_passed and folds_passed

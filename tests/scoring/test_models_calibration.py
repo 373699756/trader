@@ -8,44 +8,54 @@ from stock_analyzer import config
 
 
 class ModelsCalibrationTest(unittest.TestCase):
-    def test_ranking_gate_score_uses_rank_score_only_after_promotion(self):
-        from stock_analyzer.scoring import _ranking_gate_score
+    def test_ranking_gate_score_keeps_strategy_score_after_expected_return_promotion(self):
+        from stock_analyzer.scoring import _expected_return_rank_active, _ranking_gate_score
 
         promoted = {
             "score": 50,
-            "rank_score": 82,
+            "predicted_net_return": 2.4,
             "model_confidence": "ready",
-            "ranking_source": "expected_return_rank_score",
+            "ranking_source": "expected_return_predicted_net_return",
         }
         shadow = {
             "score": 50,
-            "rank_score": 82,
+            "predicted_net_return": 2.4,
             "model_confidence": "ready",
         }
         low_confidence = {
             "score": 50,
-            "rank_score": 82,
+            "predicted_net_return": 2.4,
             "model_confidence": "low",
-            "ranking_source": "expected_return_rank_score",
+            "ranking_source": "expected_return_predicted_net_return",
         }
 
-        self.assertEqual(_ranking_gate_score(promoted), 82)
+        self.assertTrue(_expected_return_rank_active(promoted))
+        self.assertEqual(_ranking_gate_score(promoted), 50)
         self.assertEqual(_ranking_gate_score(shadow), 50)
         self.assertEqual(_ranking_gate_score(low_confidence), 50)
 
-    def test_expected_return_model_adds_shadow_rank_fields_without_reordering(self):
+    def test_expected_return_model_adds_shadow_prediction_fields_without_reordering(self):
         from stock_analyzer.expected_return_model import predict_expected_return
 
-        rows = [{"code": "A", "score": 80, "risk_penalty": 2}, {"code": "B", "score": 60, "risk_penalty": 4}]
+        rows = [
+            {"code": "A", "score": 80, "risk_penalty": 2, "liquidity_score": 85, "momentum_score": 82},
+            {"code": "B", "score": 60, "risk_penalty": 4, "liquidity_score": 45, "momentum_score": 40},
+        ]
         samples = []
         for idx in range(25):
+            high_score = idx < 15
             samples.append(
                 {
                     "signal_date": "2024-01-{:02d}".format((idx % 10) + 1),
-                    "stored_score": 78 if idx < 15 else 62,
-                    "primary_return_net": 1.0 if idx < 15 else -0.5,
-                    "max_drawdown": -1.0 if idx < 15 else -3.0,
-                    "raw": {"score": 78 if idx < 15 else 62, "risk_penalty": 2},
+                    "stored_score": 78 if high_score else 62,
+                    "primary_return_net": 1.0 if high_score else -0.5,
+                    "max_drawdown": -1.0 if high_score else -3.0,
+                    "raw": {
+                        "score": 78 if high_score else 62,
+                        "risk_penalty": 2 if high_score else 4,
+                        "liquidity_score": 85 if high_score else 45,
+                        "momentum_score": 82 if high_score else 40,
+                    },
                 }
             )
 
@@ -53,7 +63,8 @@ class ModelsCalibrationTest(unittest.TestCase):
 
         self.assertEqual([row["code"] for row in enriched], ["A", "B"])
         self.assertIn(enriched[0]["model_confidence"], {"shadow", "ready"})
-        self.assertGreater(enriched[0]["rank_score"], enriched[1]["rank_score"])
+        self.assertNotIn("rank_score", enriched[0])
+        self.assertGreater(enriched[0]["predicted_net_return"], enriched[1]["predicted_net_return"])
         self.assertGreater(enriched[0]["expected_return_sample_count"], 0)
 
     def test_expected_return_model_uses_component_feature_neighbors(self):
@@ -104,7 +115,7 @@ class ModelsCalibrationTest(unittest.TestCase):
         self.assertEqual(enriched[0]["expected_return_peer_method"], "feature_nearest")
         self.assertEqual(enriched[1]["expected_return_peer_method"], "feature_nearest")
         self.assertGreater(enriched[0]["expected_return_net"], enriched[1]["expected_return_net"])
-        self.assertGreater(enriched[0]["rank_score"], enriched[1]["rank_score"])
+        self.assertGreater(enriched[0]["predicted_net_return"], enriched[1]["predicted_net_return"])
 
     def test_expected_return_model_time_decays_peer_outcomes(self):
         from stock_analyzer.expected_return_model import predict_expected_return
@@ -201,7 +212,30 @@ class ModelsCalibrationTest(unittest.TestCase):
             by_code["VOL"]["expected_return_uncertainty"],
             by_code["STABLE"]["expected_return_uncertainty"],
         )
-        self.assertLess(by_code["VOL"]["rank_score"], by_code["STABLE"]["rank_score"])
+        self.assertTrue(by_code["VOL"]["expected_return_available"])
+        self.assertNotIn("rank_score", by_code["VOL"])
+
+    def test_expected_return_model_does_not_heuristic_fallback_without_feature_peers(self):
+        from stock_analyzer.expected_return_model import predict_expected_return
+
+        rows = [{"code": "A", "score": 95, "risk_penalty": 1}]
+        samples = [
+            {
+                "signal_date": "2024-01-{:02d}".format((idx % 5) + 1),
+                "stored_score": 90,
+                "primary_return_net": 3.0,
+                "raw": {"score": 90, "risk_penalty": 1},
+            }
+            for idx in range(25)
+        ]
+
+        enriched = predict_expected_return("tomorrow_picks", rows, samples=samples)
+
+        self.assertFalse(enriched[0]["expected_return_available"])
+        self.assertIsNone(enriched[0]["predicted_net_return"])
+        self.assertIsNone(enriched[0]["p_win"])
+        self.assertEqual(enriched[0]["expected_return_peer_method"], "insufficient_feature_peers")
+        self.assertNotIn("rank_score", enriched[0])
 
     def test_expected_return_artifact_roundtrip_baseline_and_gate_guards(self):
         from stock_analyzer.expected_return_model import (
@@ -304,7 +338,10 @@ class ModelsCalibrationTest(unittest.TestCase):
     def test_expected_return_prediction_can_promote_rank_order_when_enabled(self):
         from stock_analyzer.scoring import _attach_expected_return_prediction
 
-        rows = [{"code": "A", "score": 82, "risk_penalty": 2}, {"code": "B", "score": 42, "risk_penalty": 2}]
+        rows = [
+            {"code": "A", "score": 82, "risk_penalty": 2, "liquidity_score": 82, "momentum_score": 78},
+            {"code": "B", "score": 42, "risk_penalty": 2, "liquidity_score": 42, "momentum_score": 38},
+        ]
         samples = []
         for idx in range(30):
             low_score_winner = idx < 15
@@ -314,7 +351,12 @@ class ModelsCalibrationTest(unittest.TestCase):
                     "stored_score": 42 if low_score_winner else 82,
                     "primary_return_net": 2.0 if low_score_winner else -1.0,
                     "max_drawdown": -1.0 if low_score_winner else -3.0,
-                    "raw": {"score": 42 if low_score_winner else 82, "risk_penalty": 2},
+                    "raw": {
+                        "score": 42 if low_score_winner else 82,
+                        "risk_penalty": 2,
+                        "liquidity_score": 42 if low_score_winner else 82,
+                        "momentum_score": 38 if low_score_winner else 78,
+                    },
                 }
             )
 
@@ -326,12 +368,17 @@ class ModelsCalibrationTest(unittest.TestCase):
         self.assertEqual([row["code"] for row in ranked], ["B", "A"])
         self.assertEqual(ranked[0]["expected_return_rank"], 1)
         self.assertEqual(ranked[0]["legacy_score_rank"], 2)
-        self.assertEqual(ranked[0]["ranking_source"], "expected_return_rank_score")
+        self.assertEqual(ranked[0]["ranking_source"], "expected_return_predicted_net_return")
+        self.assertGreater(ranked[0]["predicted_net_return"], ranked[1]["predicted_net_return"])
+        self.assertNotIn("rank_score", ranked[0])
 
     def test_expected_return_prediction_keeps_shadow_order_until_ready(self):
         from stock_analyzer.scoring import _attach_expected_return_prediction
 
-        rows = [{"code": "A", "score": 82, "risk_penalty": 2}, {"code": "B", "score": 42, "risk_penalty": 2}]
+        rows = [
+            {"code": "A", "score": 82, "risk_penalty": 2, "liquidity_score": 82, "momentum_score": 78},
+            {"code": "B", "score": 42, "risk_penalty": 2, "liquidity_score": 42, "momentum_score": 38},
+        ]
         samples = []
         for idx in range(30):
             low_score_winner = idx < 15
@@ -341,7 +388,12 @@ class ModelsCalibrationTest(unittest.TestCase):
                     "stored_score": 42 if low_score_winner else 82,
                     "primary_return_net": 2.0 if low_score_winner else -1.0,
                     "max_drawdown": -1.0 if low_score_winner else -3.0,
-                    "raw": {"score": 42 if low_score_winner else 82, "risk_penalty": 2},
+                    "raw": {
+                        "score": 42 if low_score_winner else 82,
+                        "risk_penalty": 2,
+                        "liquidity_score": 42 if low_score_winner else 82,
+                        "momentum_score": 38 if low_score_winner else 78,
+                    },
                 }
             )
 
@@ -349,7 +401,8 @@ class ModelsCalibrationTest(unittest.TestCase):
 
         self.assertEqual([row["code"] for row in ranked], ["A", "B"])
         self.assertEqual(ranked[0]["model_confidence"], "shadow")
-        self.assertIn("rank_score", ranked[0])
+        self.assertIn("predicted_net_return", ranked[0])
+        self.assertNotIn("rank_score", ranked[0])
         self.assertNotIn("expected_return_rank", ranked[0])
 
     def test_walk_forward_splits_leave_purge_gap_before_test_dates(self):
@@ -420,7 +473,9 @@ class ModelsCalibrationTest(unittest.TestCase):
         self.assertIn("calibrated_probability", rows[0])
         self.assertGreater(rows[0]["calibrated_probability"], 0.5)
         self.assertEqual(rows[0]["probability_label"], "高置信")
-        self.assertIn("历史同类信号主周期正收益概率", rows[0]["score_note"])
+        self.assertEqual(rows[0]["probability_role"], "diagnostic_only")
+        self.assertFalse(rows[0]["probability_trading_enabled"])
+        self.assertIn("仅供校准观察", rows[0]["score_note"])
         self.assertIn("decision_calibration", rows[0])
 
     def test_meta_label_model_predicts_confidence_from_validation_samples(self):
@@ -476,13 +531,14 @@ class ModelsCalibrationTest(unittest.TestCase):
             }
         ]
         with patch.object(config, "META_LABELING_MIN_SAMPLES", 20), patch.object(
-            config, "ENABLE_META_LABELING", False
-        ):
+            config, "ENABLE_META_LABELING", True
+        ), patch.object(config, "META_LABELING_ENFORCE_ACTION", True):
             attach_meta_labeling(rows, DummyValidationStore(), "tomorrow_picks", days=120)
 
         self.assertIn("meta_labeling", rows[0])
         self.assertIn("meta_confidence", rows[0])
         self.assertFalse(rows[0]["meta_labeling"]["enabled"])
+        self.assertEqual(rows[0]["trade_action"], {"action": "buy_confirmed", "position_size": 1.0})
         self.assertEqual(rows[0]["trade_action"]["position_size"], 1.0)
 
     def test_event_alpha_scores_independent_catalysts(self):
@@ -534,6 +590,8 @@ class ModelsCalibrationTest(unittest.TestCase):
         self.assertIn("event_alpha", rows[0])
         self.assertGreater(rows[0]["event_alpha_score"], 50.0)
         self.assertTrue(rows[0]["event_alpha"]["hits"])
+        self.assertEqual(rows[0]["event_alpha"]["mode"], "research_only")
+        self.assertFalse(rows[0]["event_alpha"]["trading_enabled"])
         self.assertAlmostEqual(rows[0]["event_alpha"]["hits"][0]["confidence"], 0.82, places=4)
 
     def test_attach_event_alpha_uses_catalyst_strength_when_score_missing(self):
@@ -580,12 +638,13 @@ class ModelsCalibrationTest(unittest.TestCase):
             }
         ]
 
-        with patch.object(config, "ENABLE_ENSEMBLE", False):
+        with patch.object(config, "ENABLE_ENSEMBLE", True):
             attach_ensemble_score(rows)
 
         self.assertIn("ensemble", rows[0])
         self.assertIn("ensemble_score", rows[0])
         self.assertFalse(rows[0]["ensemble"]["enabled"])
+        self.assertEqual(rows[0]["ensemble"]["mode"], "shadow_only")
         self.assertEqual(rows[0]["score"], 70)
 
     def test_live_weight_calibration_keeps_weights_when_samples_insufficient(self):
@@ -757,8 +816,10 @@ class ModelsCalibrationTest(unittest.TestCase):
         self.assertIn(result["status"], {"shadow_only", "oos_passed", "fdr_blocked", "ci_blocked"})
         self.assertIn("can_promote", result)
         self.assertIn("ci", result)
+        self.assertIn("predicted_net_return_oos_objective", result)
         self.assertEqual(result["fold_count"], 3)
         self.assertTrue(result["folds"])
+        self.assertIn("predicted_net_return_oos_objective", result["folds"][0])
 
     def test_meta_labeling_gate_reports_oos_shadow_improvement(self):
         from stock_analyzer.calibrate import evaluate_meta_labeling_gate

@@ -6,7 +6,7 @@ import pandas as pd
 
 from . import config
 from .normalization import coerce_number
-from .scoring import ALPHALITE_SIGNAL_COLUMNS
+from .scoring_core.constants import ALPHALITE_SIGNAL_COLUMNS
 
 
 def factor_coverage(candidates: pd.DataFrame) -> Dict[str, object]:
@@ -93,7 +93,7 @@ def factor_coverage(candidates: pd.DataFrame) -> Dict[str, object]:
 def main() -> int:
     from .factors import build_alphalite_factors, merge_alphalite
     from .providers import MarketDataProvider
-    from .scoring import prepare_candidates
+    from .scoring_core.candidate_filters import prepare_candidates
 
     parser = argparse.ArgumentParser(description="检查 AlphaLite 历史因子覆盖率")
     parser.add_argument("--limit", type=int, default=80)

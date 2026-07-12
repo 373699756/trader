@@ -10,7 +10,7 @@ from .normalization import coerce_number, normalize_code, rename_known_columns
 from .production_baseline import attach_generation_provenance
 from .risk_rules import _is_sealed_limit_down, simulate_exit
 from .sqlite_support import sqlite_transaction
-from .execution_policy import policy_from_signal
+from .execution_policy import build_execution_policy, policy_from_signal
 from .validation_policy import (
     EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY,
     PRIMARY_RETURN_BY_STRATEGY,
@@ -204,6 +204,36 @@ class StrategyValidationStore:
 
     def list_tuning_runs(self, strategy_name: str, limit: int = 10) -> List[Dict[str, object]]:
         return self.repository.list_tuning_runs(strategy_name, limit=limit)
+
+    def save_fold_predictions(
+        self,
+        experiment_id: str,
+        fold_id: str,
+        strategy_name: str,
+        rows: Iterable[Dict[str, object]],
+        **metadata,
+    ) -> Dict[str, object]:
+        return self.repository.save_fold_predictions(
+            experiment_id,
+            fold_id,
+            strategy_name,
+            rows,
+            **metadata,
+        )
+
+    def list_fold_predictions(
+        self,
+        experiment_id: str,
+        strategy_name: str = "",
+        fold_id: str = "",
+        limit: int = 500,
+    ) -> List[Dict[str, object]]:
+        return self.repository.list_fold_predictions(
+            experiment_id,
+            strategy_name=strategy_name,
+            fold_id=fold_id,
+            limit=limit,
+        )
 
     def live_weight_samples(self, strategy_name: str, days: int = 120) -> List[Dict[str, object]]:
         return self.repository.live_weight_samples(strategy_name, days=days)

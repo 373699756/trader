@@ -87,7 +87,10 @@ class TomorrowStrategyTest(unittest.TestCase):
         self.assertIn("expected_return_net", row)
         self.assertIn("p_win", row)
         self.assertIn("downside_p10", row)
-        self.assertIn("rank_score", row)
+        self.assertIn("predicted_net_return", row)
+        self.assertIsNone(row["predicted_net_return"])
+        self.assertFalse(row["expected_return_available"])
+        self.assertNotIn("rank_score", row)
         self.assertEqual(row["model_confidence"], "low")
 
     def test_tomorrow_consumes_oos_deepseek_rules_from_weights(self):

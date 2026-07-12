@@ -27,6 +27,7 @@ class ValidationSchemaManager:
         self._add_columns(conn, "strategy_signal_batches", _BATCH_MIGRATION_COLUMNS)
         self._add_columns(conn, "strategy_execution_records", _EXECUTION_MIGRATION_COLUMNS)
         self._add_columns(conn, "daily_portfolio_baselines", _PORTFOLIO_BASELINE_MIGRATION_COLUMNS)
+        self._add_columns(conn, "strategy_fold_predictions", _FOLD_PREDICTION_MIGRATION_COLUMNS)
         conn.execute(
             """
             INSERT OR IGNORE INTO strategy_signal_batches
@@ -311,6 +312,29 @@ _TABLES = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS strategy_fold_predictions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        experiment_id TEXT NOT NULL,
+        fold_id TEXT NOT NULL,
+        strategy_name TEXT NOT NULL,
+        baseline_id TEXT NOT NULL DEFAULT '',
+        model_id TEXT NOT NULL DEFAULT '',
+        model_version TEXT NOT NULL DEFAULT '',
+        train_end_date TEXT NOT NULL DEFAULT '',
+        test_date TEXT NOT NULL,
+        code TEXT NOT NULL,
+        baseline_score REAL,
+        predicted_net_return REAL,
+        predicted_probability REAL,
+        selected INTEGER NOT NULL DEFAULT 0,
+        actual_net_return REAL,
+        feature_schema_hash TEXT NOT NULL DEFAULT '',
+        prediction_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        UNIQUE(experiment_id, fold_id, test_date, code)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS daily_portfolio_baselines (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         strategy_name TEXT NOT NULL,
@@ -395,6 +419,8 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_deepseek_shadow_code ON strategy_deepseek_shadow_signals(code)",
     "CREATE INDEX IF NOT EXISTS idx_deepseek_market_gate_date ON deepseek_market_gate_reviews(review_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_oos_reports_strategy_time ON strategy_oos_reports(strategy_name, generated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_strategy_fold_predictions_exp_date ON strategy_fold_predictions(experiment_id, test_date)",
+    "CREATE INDEX IF NOT EXISTS idx_strategy_fold_predictions_strategy_date ON strategy_fold_predictions(strategy_name, test_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_daily_portfolio_baselines_strategy_date ON daily_portfolio_baselines(strategy_name, signal_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_daily_portfolio_baselines_id_date ON daily_portfolio_baselines(portfolio_baseline_id, signal_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_outcomes_baseline ON strategy_outcomes(validation_baseline_id)",
@@ -462,4 +488,14 @@ _EXECUTION_MIGRATION_COLUMNS = {
 
 _PORTFOLIO_BASELINE_MIGRATION_COLUMNS = {
     "audit_blob": "BLOB",
+}
+
+_FOLD_PREDICTION_MIGRATION_COLUMNS = {
+    "baseline_id": "TEXT NOT NULL DEFAULT ''",
+    "model_id": "TEXT NOT NULL DEFAULT ''",
+    "model_version": "TEXT NOT NULL DEFAULT ''",
+    "train_end_date": "TEXT NOT NULL DEFAULT ''",
+    "baseline_score": "REAL",
+    "predicted_probability": "REAL",
+    "feature_schema_hash": "TEXT NOT NULL DEFAULT ''",
 }

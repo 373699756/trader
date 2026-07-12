@@ -35,7 +35,7 @@ OUTPUT_FINGERPRINT_FIELDS = (
     "code",
     "rank",
     "score",
-    "rank_score",
+    "predicted_net_return",
     "ranking_source",
     "tier",
     "execution_allowed",
@@ -119,7 +119,11 @@ def attach_generation_provenance(
     manifest = frozen_manifest()
     ranking_config = (manifest.get("ranking") or {}).get(strategy_name) or {}
     expected_return = meta.get("expected_return_ranking") if isinstance(meta.get("expected_return_ranking"), dict) else {}
-    ranking_field = "rank_score" if expected_return.get("status") == "active" else str(ranking_config.get("field") or "score")
+    ranking_field = (
+        "predicted_net_return"
+        if expected_return.get("status") == "active"
+        else str(ranking_config.get("field") or "score")
+    )
     strategy_version = str(
         meta.get("strategy_version")
         or (manifest.get("strategy_versions") or {}).get(strategy_name)

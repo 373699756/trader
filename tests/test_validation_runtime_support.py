@@ -84,6 +84,15 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
             run_oos_reports_once_fn=lambda: {
                 "ok": True,
                 "reports": [
+                    {
+                        "strategy": "empty_picks",
+                        "report": {
+                            "oos_status": "empty",
+                            "blockers": [{"code": "real_oos_days_insufficient"}],
+                            "readiness": {"missing_oos_day_count": 60},
+                        },
+                    },
+                    {"strategy": "young_picks", "report": {"oos_status": "insufficient_oos_days"}},
                     {"strategy": "tomorrow_picks", "report": {"oos_status": "needs_backfill"}},
                     {"strategy": "swing_picks", "report": {"oos_status": "gate_blocked"}},
                     {"strategy": "short_term", "report": {"oos_status": "oos_passed"}},
@@ -93,8 +102,13 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "oos_attention_required")
+        self.assertEqual(result["oos_summary"]["empty_count"], 1)
+        self.assertEqual(result["oos_summary"]["insufficient_oos_days_count"], 1)
         self.assertEqual(result["oos_summary"]["needs_backfill_count"], 1)
         self.assertEqual(result["oos_summary"]["gate_blocked_count"], 1)
-        self.assertEqual(len(result["alerts"]), 2)
+        self.assertEqual(result["oos_summary"]["attention_count"], 4)
+        self.assertEqual(result["oos_summary"]["statuses"][0]["blockers"][0]["code"], "real_oos_days_insufficient")
+        self.assertEqual(result["oos_summary"]["statuses"][0]["readiness"]["missing_oos_day_count"], 60)
+        self.assertEqual(len(result["alerts"]), 4)
         self.assertEqual(auto_update_status["last_oos_summary"]["gate_blocked_count"], 1)
-        self.assertEqual(len(auto_update_status["last_oos_alerts"]), 2)
+        self.assertEqual(len(auto_update_status["last_oos_alerts"]), 4)

@@ -120,6 +120,101 @@ def test_deepseek_shadow_keeps_production_order_and_action():
     assert meta["production_applied"] is False
 
 
+def test_deepseek_schedule_cache_reuse_is_shadow_only():
+    rows = [
+        {"code": "600001", "rank": 1, "score": 90, "tier": "primary_watch", "execution_allowed": True},
+        {"code": "600002", "rank": 2, "score": 80, "tier": "primary_watch", "execution_allowed": True},
+    ]
+    reused_rows = [
+        {
+            **rows[1],
+            "rank": 1,
+            "score": 99,
+            "local_rank": 2,
+            "deepseek_rank_score": 99,
+            "deepseek_action": "priority",
+            "rerank_source": "deepseek_schedule_cache",
+        },
+        {
+            **rows[0],
+            "rank": 2,
+            "score": 10,
+            "local_rank": 1,
+            "deepseek_rank_score": 10,
+            "deepseek_action": "avoid",
+            "rerank_source": "deepseek_schedule_cache",
+        },
+    ]
+
+    with patch.object(config, "ENABLE_DEEPSEEK_RUNTIME", True), patch.object(
+        app_runtime_support,
+        "scheduled_deepseek_decision",
+        return_value={"enabled": True, "allow_call": False, "reuse": True},
+    ), patch.object(
+        app_runtime_support,
+        "reuse_scheduled_deepseek_result",
+        return_value=(reused_rows, {"status": "schedule_cache_hit", "source": "deepseek_schedule_cache"}),
+    ):
+        result, meta = app_runtime_support.apply_deepseek_rerank("tomorrow_picks", rows, "all")
+
+    assert [(row["code"], row["rank"], row["score"]) for row in result] == [
+        ("600001", 1, 90),
+        ("600002", 2, 80),
+    ]
+    assert result[0]["deepseek_shadow_rank"] == 2
+    assert result[1]["deepseek_shadow_rank"] == 1
+    assert meta["mode"] == "shadow_only"
+    assert meta["production_applied"] is False
+
+
+def test_deepseek_batch_schedule_cache_reuse_is_shadow_only():
+    rows = [
+        {"code": "600001", "rank": 1, "score": 90, "tier": "primary_watch", "execution_allowed": True},
+        {"code": "600002", "rank": 2, "score": 80, "tier": "primary_watch", "execution_allowed": True},
+    ]
+    reused_rows = [
+        {
+            **rows[1],
+            "rank": 1,
+            "score": 99,
+            "deepseek_rank_score": 99,
+            "deepseek_action": "priority",
+        },
+        {
+            **rows[0],
+            "rank": 2,
+            "score": 10,
+            "deepseek_rank_score": 10,
+            "deepseek_action": "avoid",
+        },
+    ]
+
+    with patch.object(config, "ENABLE_DEEPSEEK_RUNTIME", True), patch.object(
+        app_runtime_support,
+        "scheduled_deepseek_decision",
+        return_value={"enabled": True, "allow_call": False, "reuse": True},
+    ), patch.object(
+        app_runtime_support,
+        "reuse_scheduled_deepseek_result",
+        return_value=(reused_rows, {"status": "schedule_cache_hit", "source": "deepseek_schedule_cache"}),
+    ), patch.object(
+        app_runtime_support,
+        "rerank_candidates_batch",
+        side_effect=AssertionError("cache reuse should not call DeepSeek"),
+    ):
+        result, meta = app_runtime_support.apply_deepseek_rerank_batch({"tomorrow_picks": rows}, "all")
+
+    result_rows = result["tomorrow_picks"]
+    assert [(row["code"], row["rank"], row["score"]) for row in result_rows] == [
+        ("600001", 1, 90),
+        ("600002", 2, 80),
+    ]
+    assert result_rows[0]["deepseek_shadow_rank"] == 2
+    assert result_rows[1]["deepseek_shadow_rank"] == 1
+    assert meta["tomorrow_picks"]["mode"] == "shadow_only"
+    assert meta["tomorrow_picks"]["production_applied"] is False
+
+
 def test_deepseek_rules_are_shadow_only(tmp_path):
     weights_path = tmp_path / "weights.json"
     weights_path.write_text(

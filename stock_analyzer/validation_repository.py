@@ -43,6 +43,7 @@ __all__ = [
     "OutcomeRepository",
     "TuningRepository",
     "MarketGateRepository",
+    "ResearchRepository",
     "OOSReportRepository",
     "PredictionRepository",
 ]
@@ -84,6 +85,13 @@ def _execution_record_to_dict(row: sqlite3.Row) -> Dict[str, object]:
     ):
         item[target] = _json_value(item.pop(source, None), fallback)
     item["promotion_eligible"] = bool(item.get("promotion_eligible"))
+    return item
+
+
+def _fold_prediction_to_dict(row: sqlite3.Row) -> Dict[str, object]:
+    item = dict(row)
+    item["selected"] = bool(item.get("selected"))
+    item["prediction"] = _json_value(item.pop("prediction_json", None), {})
     return item
 
 
@@ -1554,6 +1562,126 @@ class MarketGateRepository(_RepositoryBase):
         }
 
 
+class ResearchRepository(_RepositoryBase):
+    """Persists research fold predictions for OOS audit and replay."""
+
+    def save_fold_predictions(
+        self,
+        experiment_id: str,
+        fold_id: str,
+        strategy_name: str,
+        rows: Iterable[Dict[str, object]],
+        *,
+        baseline_id: str = "",
+        model_id: str = "",
+        model_version: str = "",
+        train_end_date: str = "",
+        feature_schema_hash: str = "",
+    ) -> Dict[str, object]:
+        experiment_id = str(experiment_id or "").strip()
+        fold_id = str(fold_id or "").strip()
+        strategy_name = str(strategy_name or "").strip()
+        if not experiment_id or not fold_id or not strategy_name:
+            return {"saved": 0, "status": "missing_identity"}
+        rows = [dict(row) for row in rows or [] if isinstance(row, dict)]
+        now = datetime.now().isoformat(timespec="seconds")
+        saved = 0
+        with self.connect() as conn:
+            for row in rows:
+                code = normalize_code(row.get("code"))
+                test_date = str(row.get("test_date") or row.get("signal_date") or "").strip()
+                if not code or not test_date:
+                    continue
+                row_baseline_id = str(row.get("baseline_id") or baseline_id or "")
+                row_model_id = str(row.get("model_id") or model_id or "")
+                row_model_version = str(row.get("model_version") or model_version or "")
+                row_train_end = str(row.get("train_end_date") or train_end_date or "")
+                row_schema_hash = str(row.get("feature_schema_hash") or feature_schema_hash or "")
+                conn.execute(
+                    """
+                    INSERT INTO strategy_fold_predictions
+                    (experiment_id, fold_id, strategy_name, baseline_id, model_id, model_version,
+                     train_end_date, test_date, code, baseline_score, predicted_net_return,
+                     predicted_probability, selected, actual_net_return, feature_schema_hash,
+                     prediction_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(experiment_id, fold_id, test_date, code) DO UPDATE SET
+                      strategy_name=excluded.strategy_name,
+                      baseline_id=excluded.baseline_id,
+                      model_id=excluded.model_id,
+                      model_version=excluded.model_version,
+                      train_end_date=excluded.train_end_date,
+                      baseline_score=excluded.baseline_score,
+                      predicted_net_return=excluded.predicted_net_return,
+                      predicted_probability=excluded.predicted_probability,
+                      selected=excluded.selected,
+                      actual_net_return=excluded.actual_net_return,
+                      feature_schema_hash=excluded.feature_schema_hash,
+                      prediction_json=excluded.prediction_json,
+                      created_at=excluded.created_at
+                    """,
+                    (
+                        experiment_id,
+                        fold_id,
+                        strategy_name,
+                        row_baseline_id,
+                        row_model_id,
+                        row_model_version,
+                        row_train_end,
+                        test_date,
+                        code,
+                        coerce_number(row.get("baseline_score"), None),
+                        coerce_number(row.get("predicted_net_return"), None),
+                        coerce_number(row.get("predicted_probability"), None),
+                        1 if row.get("selected") else 0,
+                        coerce_number(row.get("actual_net_return"), None),
+                        row_schema_hash,
+                        json.dumps(row, ensure_ascii=False, sort_keys=True, default=str),
+                        now,
+                    ),
+                )
+                saved += 1
+        return {
+            "saved": saved,
+            "status": "saved" if saved else "empty",
+            "experiment_id": experiment_id,
+            "fold_id": fold_id,
+            "strategy": strategy_name,
+        }
+
+
+    def list_fold_predictions(
+        self,
+        experiment_id: str,
+        *,
+        strategy_name: str = "",
+        fold_id: str = "",
+        limit: int = 500,
+    ) -> List[Dict[str, object]]:
+        where = "WHERE experiment_id = ?"
+        params: List[object] = [str(experiment_id or "")]
+        if strategy_name:
+            where += " AND strategy_name = ?"
+            params.append(str(strategy_name))
+        if fold_id:
+            where += " AND fold_id = ?"
+            params.append(str(fold_id))
+        params.append(max(1, int(limit)))
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM strategy_fold_predictions
+                {}
+                ORDER BY test_date ASC, fold_id ASC, selected DESC, code ASC
+                LIMIT ?
+                """.format(where),
+                params,
+            ).fetchall()
+        return [_fold_prediction_to_dict(row) for row in rows]
+
+
 class OOSReportRepository(_RepositoryBase):
     """Persists out-of-sample report snapshots."""
 
@@ -1820,6 +1948,8 @@ class ValidationRepository(_RepositoryBase):
         "live_weight_samples": "tuning",
         "save_market_gate_review": "market_gates",
         "market_gate_metrics": "market_gates",
+        "save_fold_predictions": "research",
+        "list_fold_predictions": "research",
         "save_oos_report": "oos_reports",
         "list_oos_reports": "oos_reports",
         "save_stock_prediction_snapshot": "predictions",
@@ -1833,6 +1963,7 @@ class ValidationRepository(_RepositoryBase):
         self.outcomes = OutcomeRepository(connect_fn, db_path)
         self.tuning = TuningRepository(connect_fn, db_path)
         self.market_gates = MarketGateRepository(connect_fn, db_path)
+        self.research = ResearchRepository(connect_fn, db_path)
         self.oos_reports = OOSReportRepository(connect_fn, db_path)
         self.predictions = PredictionRepository(connect_fn, db_path)
         self._repositories = (
@@ -1840,6 +1971,7 @@ class ValidationRepository(_RepositoryBase):
             self.outcomes,
             self.tuning,
             self.market_gates,
+            self.research,
             self.oos_reports,
             self.predictions,
         )

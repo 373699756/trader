@@ -344,7 +344,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "expected_return_net": 2.0,
                 "p_win": 0.66,
                 "model_confidence": "ready",
-                "ranking_source": "expected_return_rank_score",
+                "ranking_source": "expected_return_predicted_net_return",
                 "expected_return_rank": 1,
                 "serenity_profile": {"confidence_score": 70, "risk_score": 40},
             },
@@ -358,7 +358,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "expected_return_net": -1.0,
                 "p_win": 0.45,
                 "model_confidence": "ready",
-                "ranking_source": "expected_return_rank_score",
+                "ranking_source": "expected_return_predicted_net_return",
                 "expected_return_rank": 2,
                 "serenity_profile": {"confidence_score": 70, "risk_score": 40},
             },
@@ -396,6 +396,46 @@ class PortfolioRiskTest(unittest.TestCase):
                 "expected_return_net": -1.0,
                 "p_win": 0.45,
                 "model_confidence": "low",
+                "serenity_profile": {"confidence_score": 70, "risk_score": 40},
+            },
+        ]
+
+        with patch.object(config, "ENABLE_PORTFOLIO_OPTIMIZATION", True), patch.object(
+            config, "ENABLE_VOLATILITY_TARGETING", False
+        ):
+            result = build_portfolio(rows, max_positions=2, single_cap=0.8, theme_cap=1.0, market_regime={"score": 80})
+
+        weights = {row["code"]: row["suggested_weight"] for row in result["rows"]}
+        self.assertAlmostEqual(weights["600001"], weights["600002"])
+
+    def test_portfolio_optimization_ignores_score_bucket_probability_for_weights(self):
+        rows = [
+            {
+                "rank": 1,
+                "code": "600001",
+                "name": "分桶高胜率",
+                "theme": "半导体",
+                "correlation_group": "半导体",
+                "score": 80,
+                "expected_return_net": 0.0,
+                "calibrated_probability": 0.90,
+                "model_confidence": "ready",
+                "ranking_source": "expected_return_predicted_net_return",
+                "expected_return_rank": 1,
+                "serenity_profile": {"confidence_score": 70, "risk_score": 40},
+            },
+            {
+                "rank": 2,
+                "code": "600002",
+                "name": "分桶低胜率",
+                "theme": "医药",
+                "correlation_group": "医药",
+                "score": 80,
+                "expected_return_net": 0.0,
+                "calibrated_probability": 0.10,
+                "model_confidence": "ready",
+                "ranking_source": "expected_return_predicted_net_return",
+                "expected_return_rank": 2,
                 "serenity_profile": {"confidence_score": 70, "risk_score": 40},
             },
         ]
