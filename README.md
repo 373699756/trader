@@ -9,9 +9,9 @@
 - 三类结果：盘中强势观察（零仓位）、明日优先、2-5 日持有
 - 策略验证：历史批次、样本表现、股票明细、DeepSeek 复盘
 - 个股预测：输入股票代码，返回本地预测和 DeepSeek 优化建议
-- 自动保存与回填：交易日 14:30 后补齐已成熟收益，15:00 后保存一次收盘候选快照；可执行策略统一按次日开盘成交
+- 自动保存与回填：交易日 14:50 生成尾盘隔夜推荐并在 14:55 前冻结发布，v11/DeepSeek 在发布后异步研究；系统不实际下单，`tomorrow_picks` 仅按 T 日收盘集合竞价买入、T+1 收盘退出进行模拟验证
 - DeepSeek：候选 shadow 复核、验证复盘和影子调参；生产冻结期不改变排序、过滤或仓位
-- 执行门控：至少 20 个真实交易日，平均净收益为正、净胜率不低于 50%，且主周期平均回撤优于硬限制；未通过时只展示零仓位备选
+- 执行门控：尾盘隔夜策略至少需要 60 个完整真实交易日和 60 个冻结 Top-5 组合日，组合累计净收益及块自助法置信区间须为正；未通过时只展示零仓位备选
 - 历史因子默认启用；缓存缺失时后台分批预热，不阻塞推荐接口。盘后使用 `./run.sh after-close` 或 `.\run.ps1 after-close` 更新完整日线、快照和 IC
 
 ## 运行环境与安装
@@ -86,7 +86,7 @@ Linux/macOS/WSL 常用环境变量：
 ```bash
 PORT=5050 ./run.sh
 ENABLE_HISTORY_FACTORS=1 ./run.sh
-VALIDATION_AUTO_SNAPSHOT_TIME=15:00 ./run.sh
+VALIDATION_AUTO_SNAPSHOT_TIME=14:50 ./run.sh
 VALIDATION_AUTO_UPDATE_START_TIME=14:30 ./run.sh
 VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS=600 ./run.sh
 ENABLE_DEEPSEEK_RUNTIME=1 ./run.sh
@@ -99,7 +99,7 @@ Windows PowerShell 常用环境变量：
 ```powershell
 $env:PORT="5050"; .\run.ps1
 $env:ENABLE_HISTORY_FACTORS="1"; .\run.ps1
-$env:VALIDATION_AUTO_SNAPSHOT_TIME="15:00"; .\run.ps1
+$env:VALIDATION_AUTO_SNAPSHOT_TIME="14:50"; .\run.ps1
 $env:VALIDATION_AUTO_UPDATE_START_TIME="14:30"; .\run.ps1
 $env:VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS="600"; .\run.ps1
 $env:ENABLE_DEEPSEEK_RUNTIME="1"; .\run.ps1
@@ -114,6 +114,20 @@ $env:SKIP_PROXY_CHECK="1"; .\run.ps1
 .\run.ps1 after-close --strategy all
 .\run.ps1 after-close --market-data-limit 500
 ```
+
+离线任务统一改为：
+
+```bash
+.venv/bin/python -m stock_analyzer.jobs snapshot
+.venv/bin/python -m stock_analyzer.jobs update-outcomes
+.venv/bin/python -m stock_analyzer.jobs build-portfolios
+.venv/bin/python -m stock_analyzer.jobs tune
+.venv/bin/python -m stock_analyzer.jobs validate
+.venv/bin/python -m stock_analyzer.jobs backup
+.venv/bin/python -m stock_analyzer.jobs stats
+```
+
+若使用定时器/服务，建议直接执行以上命令并依赖数据库租约（`.stock_analyzer_jobs.sqlite3`）防止多实例并发重入。
 
 日级组合基线随 `after-close` 自动刷新；也可单独重放：
 

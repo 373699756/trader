@@ -309,25 +309,62 @@ def load_history_frames(
     normalized_codes = list(dict.fromkeys(normalize_code(code) for code in codes if str(code).strip()))
     if not normalized_codes or not os.path.exists(db_path):
         return {}
+    window_days = max(6, max(1, int(days or 0)))
     history = _read_daily_bars_for_codes(
         db_path,
         normalized_codes,
         "trade_date, code, open, high, low, close, volume, turnover, qfq_open, qfq_high, qfq_low, qfq_close, pct_chg",
+        days=window_days,
     )
     if history.empty:
         return {}
 
     result: Dict[str, pd.DataFrame] = {}
     for code, group in history.groupby("code"):
-        df = group.tail(max(days, 6)).copy()
+        df = group.copy()
         for column in ("open", "high", "low", "close"):
             raw_value = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
             qfq_value = pd.to_numeric(df["qfq_{}".format(column)], errors="coerce").fillna(0.0)
             df[column] = qfq_value.where(qfq_value > 0, raw_value)
         df["price"] = df["close"]
-        result[normalize_code(code)] = df[
+        output = df[
             ["trade_date", "code", "open", "high", "low", "price", "volume", "turnover", "pct_chg"]
         ].reset_index(drop=True)
+        output.attrs["price_adjustment_mode"] = "qfq"
+        result[normalize_code(code)] = output
+    return result
+
+
+def load_execution_history_frames(
+    db_path: str,
+    codes: Iterable[str],
+    days: int = 90,
+) -> Dict[str, pd.DataFrame]:
+    """Load unadjusted bars for executable-price and return reconstruction."""
+    db_path = resolve_market_data_path(db_path)
+    normalized_codes = list(dict.fromkeys(normalize_code(code) for code in codes if str(code).strip()))
+    if not normalized_codes or not os.path.exists(db_path):
+        return {}
+    window_days = max(6, max(1, int(days or 0)))
+    history = _read_daily_bars_for_codes(
+        db_path,
+        normalized_codes,
+        "trade_date, code, open, high, low, close, volume, turnover, pct_chg",
+        days=window_days,
+    )
+    if history.empty:
+        return {}
+    result: Dict[str, pd.DataFrame] = {}
+    for code, group in history.groupby("code"):
+        output = group.copy()
+        for column in ("open", "high", "low", "close", "volume", "turnover", "pct_chg"):
+            output[column] = pd.to_numeric(output[column], errors="coerce").fillna(0.0)
+        output["price"] = output["close"]
+        output = output[
+            ["trade_date", "code", "open", "high", "low", "price", "volume", "turnover", "pct_chg"]
+        ].reset_index(drop=True)
+        output.attrs["price_adjustment_mode"] = "raw"
+        result[normalize_code(code)] = output
     return result
 
 
@@ -340,17 +377,19 @@ def load_tomorrow_history_factors(
     normalized_codes = list(dict.fromkeys(normalize_code(code) for code in codes if str(code).strip()))
     if not normalized_codes or not os.path.exists(db_path):
         return pd.DataFrame()
+    window_days = max(90, max(1, int(days or 0)))
     history = _read_daily_bars_for_codes(
         db_path,
         normalized_codes,
         "trade_date, code, close, qfq_close, turnover",
+        days=window_days,
     )
     if history.empty:
         return pd.DataFrame()
 
     rows = []
     for code, group in history.groupby("code"):
-        factors = _tomorrow_factors_for_history(code, group.tail(max(days, 90)))
+        factors = _tomorrow_factors_for_history(code, group)
         if factors:
             rows.append(factors)
     return pd.DataFrame(rows)
@@ -451,7 +490,8 @@ def _history_return(close: pd.Series, days: int) -> float:
     return latest / base - 1
 
 
-def _read_daily_bars_for_codes(db_path: str, codes: List[str], columns: str) -> pd.DataFrame:
+def _read_daily_bars_for_codes(db_path: str, codes: List[str], columns: str, days: int = 90) -> pd.DataFrame:
+    window_days = max(1, int(days or 0))
     frames = []
     for path, path_codes in _bar_db_paths_for_codes(db_path, codes).items():
         if not os.path.exists(path):
@@ -459,12 +499,22 @@ def _read_daily_bars_for_codes(db_path: str, codes: List[str], columns: str) -> 
         placeholders = ",".join("?" for _ in path_codes)
         with _connect_market_db(path) as conn:
             query = """
-                SELECT {}
-                FROM daily_bars
-                WHERE code IN ({})
+                SELECT {columns}
+                FROM daily_bars d
+                WHERE d.code IN ({codes})
+                  AND d.trade_date IN (
+                    SELECT dd.trade_date
+                    FROM daily_bars dd
+                    WHERE dd.code = d.code
+                    ORDER BY dd.trade_date DESC
+                    LIMIT ?
+                  )
                 ORDER BY code ASC, trade_date ASC
-            """.format(columns, placeholders)
-            frames.append(pd.read_sql_query(query, conn, params=path_codes))
+            """.format(
+                columns=columns,
+                codes=placeholders,
+            )
+            frames.append(pd.read_sql_query(query, conn, params=(*path_codes, window_days)))
     frames = [frame for frame in frames if not frame.empty and frame.notna().any().any()]
     if not frames:
         return pd.DataFrame()

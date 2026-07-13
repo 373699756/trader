@@ -118,6 +118,8 @@ class _AppServiceContext:
             "schedule_time": config.VALIDATION_AUTO_SNAPSHOT_TIME,
             "market": config.VALIDATION_AUTO_SNAPSHOT_MARKET,
             "last_attempt_date": "",
+            "deadline_missed": False,
+            "deadline_missed_at": "",
             "last_started_at": "",
             "last_finished_at": "",
             "last_error": "",
@@ -187,11 +189,19 @@ class _AppServiceContext:
             coverage = factor_coverage(candidates)
         except Exception:
             pass
+        provider_health = self._provider_health_with_factor_coverage(coverage=coverage)
+        try:
+            provider_health["cache"] = self.container.cache_health()
+            provider_health["snapshot_writer"] = self.container.snapshot_writer_health()
+        except Exception:
+            pass
+        health_metrics = self._validation_health_metrics()
         return {
             "ok": True,
             "refresh_seconds": config.REFRESH_SECONDS,
             "supported_markets": config.MARKET_LABELS,
             "factor_coverage": coverage,
+            "runtime_metrics": health_metrics,
             "event_risk": {
                 "enabled": bool(config.ENABLE_EVENT_RISK),
                 "status": load_event_risk(self.provider).get("status", "disabled"),
@@ -203,8 +213,52 @@ class _AppServiceContext:
                 "generated_at": load_factor_ic().get("generated_at", ""),
             },
             "deepseek_schedule": deepseek_schedule_status(),
-            "health": self._provider_health_with_factor_coverage(coverage=coverage),
+            "health": provider_health,
         }, 200
+
+    def _validation_health_metrics(self) -> Dict[str, object]:
+        metrics: Dict[str, object] = {
+            "unfilled_rate": 0.0,
+            "open_positions": 0,
+            "db_lock_wait_ms": 0.0,
+            "recent_snapshot_at": "",
+            "snapshot_writer_success": False,
+            "snapshot_writer_failure_count": 0,
+            "candidate_coverage": 0.0,
+        }
+        try:
+            status_counts = self.validation_store.repository.signal_status_counts(
+                days=120,
+            )
+            signal_sample_count = int(status_counts.get("signal_sample_count") or 0)
+            if signal_sample_count > 0:
+                unfilled = int(status_counts.get("unfilled_outcome_count") or 0)
+                metrics["unfilled_rate"] = round(unfilled * 100.0 / signal_sample_count, 4)
+                outcome_coverage = float(status_counts.get("outcome_coverage_pct") or 0.0)
+                metrics["candidate_coverage"] = float(outcome_coverage)
+        except Exception:
+            pass
+        try:
+            with self.validation_store.repository.connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM strategy_execution_records
+                    WHERE COALESCE(position_status, '') = 'open_position'
+                    """,
+                ).fetchone()
+            open_positions = int(row[0] or 0) if row else 0
+            metrics["open_positions"] = open_positions
+        except Exception:
+            pass
+        try:
+            writer = self.container.snapshot_writer_health()
+            metrics["recent_snapshot_at"] = str(writer.get("last_success_at") or "")
+            metrics["snapshot_writer_failure_count"] = int(writer.get("failure_count") or 0)
+            metrics["snapshot_writer_success"] = bool(int(writer.get("success_count") or 0) > 0)
+        except Exception:
+            pass
+        return metrics
 
     def recommendations_payload(self, top_n: int, market: str) -> Tuple[Dict[str, object], int]:
         refresh_after_seconds = max(5, int(config.REFRESH_SECONDS))
@@ -438,7 +492,7 @@ class _AppServiceContext:
         snapshot_status["config"] = {
             "enabled": bool(config.VALIDATION_AUTO_SNAPSHOT_ENABLED),
             "time": config.VALIDATION_AUTO_SNAPSHOT_TIME,
-            "retry_seconds": getattr(config, "VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS", 600),
+            "retry_seconds": getattr(config, "VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS", 60),
             "market": config.VALIDATION_AUTO_SNAPSHOT_MARKET,
             "strategies": self._configured_auto_snapshot_strategies(),
             "weekdays_only": True,

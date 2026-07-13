@@ -66,17 +66,22 @@ def test_snapshot_persists_full_evaluated_pool_not_only_top_k(tmp_path):
             return {"quotes_source": "测试源", "last_quote_refresh": "2024-01-01T15:00:00"}
 
     store = StrategyValidationStore(str(tmp_path / "validation.sqlite3"))
-    meta = {"generated_at": "2024-01-01T15:00:00", "top_n": 2}
+    meta = {"generated_at": "2024-01-01T14:50:00", "top_n": 2}
     with patch.object(config, "QUOTE_SNAPSHOT_MIN_ROWS", 1), patch.object(
+        config, "TOMORROW_SIGNAL_CUTOFF_TIME", "23:59"
+    ), patch.object(
         config, "ENABLE_HISTORY_FACTORS", False
     ), patch(
         "stock_analyzer.snapshot._quote_freshness_error", return_value=""
     ), patch("stock_analyzer.snapshot._score_snapshot_strategy", return_value=(selected, meta, "pit_v1")), patch(
         "stock_analyzer.snapshot._apply_snapshot_deepseek_rerank", return_value=(selected, {})
-    ), patch("stock_analyzer.snapshot._after_close_anchor_time", return_value=False):
+    ), patch("stock_analyzer.snapshot._after_close_anchor_time", return_value=False), patch(
+        "stock_analyzer.snapshot._signal_at_or_after_tomorrow_cutoff", return_value=False
+    ):
         result = run_snapshot(Provider(), store, "tomorrow_picks")
 
-    candidates = store.candidate_snapshots_for_date("2024-01-01", "tomorrow_picks")
+    signal_date = result["meta"]["generated_at"][:10]
+    candidates = store.candidate_snapshots_for_date(signal_date, "tomorrow_picks")
     assert result["ok"]
     assert result["saved"]["saved"] == 2
     assert result["saved"]["candidate_saved"] == 35
@@ -84,7 +89,10 @@ def test_snapshot_persists_full_evaluated_pool_not_only_top_k(tmp_path):
     assert sum(row["selected"] for row in candidates) == 2
     assert sum(not row["selected"] for row in candidates) == 33
     assert all("raw_source.price" in row["missing_mask"] for row in candidates)
-    assert all(row["source_timestamps"]["market_data_cutoff"] == "2024-01-01T15:00:00" for row in candidates)
+    assert all(
+        row["source_timestamps"]["market_data_cutoff"] == result["meta"]["generated_at"]
+        for row in candidates
+    )
 
 
 def test_missing_history_is_unknown_and_never_fabricates_delisting_return(tmp_path):
@@ -204,14 +212,14 @@ def test_unfilled_exit_preserves_entry_and_unfilled_exit_quantities(tmp_path):
     result = store.update_outcomes(Provider(), signal_date="2024-01-01", strategy_name="swing_picks")
     row = store.signals_for_date("2024-01-01", "swing_picks")[0]
 
-    assert result["execution_skipped"] == 1
-    assert row["label_status"] == "unfilled"
+    assert result["execution_skipped"] == 0
+    assert row["label_status"] == "pending"
     assert row["entry_status"] == "filled"
-    assert row["exit_status"] == "unfilled"
+    assert row["exit_status"] == "pending"
     assert row["actual_filled_quantity"] == row["order_quantity"]
     assert row["actual_exit_quantity"] == 0
     assert row["unfilled_entry_quantity"] == 0
-    assert row["unfilled_exit_quantity"] == row["order_quantity"]
+    assert row["unfilled_exit_quantity"] == 0
     assert row["gross_return_pct"] is None
 
 

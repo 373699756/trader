@@ -278,6 +278,36 @@ def _tomorrow_row_payload(row: pd.Series, scores: Dict[str, object], final_score
     }
 
 
+def attach_tomorrow_challenger_scores(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Compute v11 only in the post-freeze shadow path."""
+    result = []
+    for row in rows or []:
+        item = dict(row)
+        challenger_score = (
+            coerce_number(item.get("tail_setup_score")) * 0.30
+            + coerce_number(item.get("historical_edge_score")) * 0.25
+            + coerce_number(item.get("execution_score")) * 0.20
+            + coerce_number(item.get("momentum_score")) * 0.15
+            + coerce_number(item.get("liquidity_score")) * 0.10
+            - min(20.0, coerce_number(item.get("risk_penalty"))) * 0.35
+        )
+        item["challenger_score"] = round(max(0.0, min(100.0, challenger_score)), 2)
+        item["challenger_strategy_version"] = str(
+            getattr(config, "TOMORROW_CHALLENGER_STRATEGY_VERSION", "")
+        )
+        item["challenger_mode"] = str(
+            getattr(config, "TOMORROW_CHALLENGER_MODE", "shadow_only")
+        )
+        result.append(item)
+    challenger_order = sorted(
+        result,
+        key=lambda item: (-coerce_number(item.get("challenger_score")), str(item.get("code") or "")),
+    )
+    for challenger_rank, row in enumerate(challenger_order, start=1):
+        row["challenger_rank"] = challenger_rank
+    return result
+
+
 def _tomorrow_reasons(row: pd.Series, scores: Dict[str, object]) -> List[str]:
     return explanations._build_tomorrow_reasons(
         row,
@@ -308,8 +338,10 @@ def _tomorrow_candidate_row(
     item.update(
         {
             "mid_gain_weak_close_flag": bool(scores["risk_penalty_parts"].get("mid_gain_weak_close")),
-            "holding_discipline": "盘后确认候选，次日开盘入场；高开超过阈值不追",
-            "profit_window": "次日",
+            "holding_discipline": "T日14:50形成推荐，14:55前冻结发布；系统不下单，验证假设14:55-15:00集合竞价入场、T+1收盘退出",
+            "profit_window": "隔夜至T+1收盘",
+            "recommendation_class": "close_auction_overnight",
+            "recommendation_class_label": "尾盘隔夜",
             "reasons": _tomorrow_reasons(row, scores),
         }
     )
@@ -329,6 +361,14 @@ def _build_tomorrow_backup_row(
     combined = scores["combined"]
     final_score = max(0.0, min(100.0, combined["score"] - 4.0))
     item = _tomorrow_row_payload(row, scores, final_score)
+    item.update(
+        {
+            "holding_discipline": "T日14:50形成推荐，14:55前冻结发布；系统不下单，验证假设14:55-15:00集合竞价入场、T+1收盘退出",
+            "profit_window": "隔夜至T+1收盘",
+            "recommendation_class": "close_auction_overnight",
+            "recommendation_class_label": "尾盘隔夜",
+        }
+    )
     item["reasons"] = ["备选观察：严格明日优先池为空"] + _tomorrow_reasons(row, scores)
     item = apply_rule_penalty("tomorrow_picks", item)
     return explanations._with_regime_reason(

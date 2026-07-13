@@ -47,10 +47,10 @@ class ValidationOosTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["oos_status"], "oos_passed")
-        self.assertTrue(payload["can_promote"])
+        self.assertEqual(payload["oos_status"], "gate_blocked")
+        self.assertFalse(payload["can_promote"])
         self.assertTrue(payload["baseline_status"]["oos_ready"])
-        self.assertTrue(payload["validation_gate"]["validated"])
+        self.assertFalse(payload["validation_gate"]["validated"])
         self.assertGreater(payload["summary"]["avg_primary_return_net"], 0)
 
     def test_strategy_oos_report_builder_covers_empty_backfill_passed_and_blocked(self):
@@ -79,7 +79,22 @@ class ValidationOosTest(unittest.TestCase):
             {**ready, "needs_backfill": True},
             {"blocked": False},
         )
-        passed = build_strategy_oos_report("tomorrow_picks", 20, base_metrics, ready, {"blocked": False})
+        passed = build_strategy_oos_report(
+            "tomorrow_picks",
+            20,
+            base_metrics,
+            ready,
+            {"blocked": False},
+            portfolio_baseline={
+                "day_count": 8,
+                "groups": {
+                    "frozen_rule_top_k": {
+                        "total_return_pct": 1.5,
+                        "avg_daily_net_return_ci95_low": 0.1,
+                    }
+                },
+            },
+        )
         blocked = build_strategy_oos_report("tomorrow_picks", 20, base_metrics, ready, {"blocked": True})
         portfolio_blocked = build_strategy_oos_report(
             "tomorrow_picks",
@@ -90,6 +105,22 @@ class ValidationOosTest(unittest.TestCase):
             portfolio_baseline={
                 "day_count": 3,
                 "groups": {"frozen_rule_top_k": {"total_return_pct": -0.5}},
+            },
+        )
+        portfolio_ci_blocked = build_strategy_oos_report(
+            "tomorrow_picks",
+            20,
+            base_metrics,
+            ready,
+            {"blocked": False},
+            portfolio_baseline={
+                "day_count": 8,
+                "groups": {
+                    "frozen_rule_top_k": {
+                        "total_return_pct": 1.5,
+                        "avg_daily_net_return_ci95_low": -0.1,
+                    }
+                },
             },
         )
 
@@ -111,6 +142,8 @@ class ValidationOosTest(unittest.TestCase):
         self.assertEqual(portfolio_blocked["oos_status"], "portfolio_blocked")
         self.assertFalse(portfolio_blocked["can_promote"])
         self.assertEqual(portfolio_blocked["blockers"][0]["code"], "portfolio_baseline_blocked")
+        self.assertEqual(portfolio_ci_blocked["oos_status"], "portfolio_blocked")
+        self.assertFalse(portfolio_ci_blocked["can_promote"])
 
     def test_strategy_oos_report_history_persists_snapshots(self):
         report = build_strategy_oos_report(
@@ -136,6 +169,15 @@ class ValidationOosTest(unittest.TestCase):
             },
             {"blocked": False, "validated": True},
             generated_at="2024-01-10T15:30:00",
+            portfolio_baseline={
+                "day_count": 3,
+                "groups": {
+                    "frozen_rule_top_k": {
+                        "total_return_pct": 1.0,
+                        "avg_daily_net_return_ci95_low": 0.1,
+                    }
+                },
+            },
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:

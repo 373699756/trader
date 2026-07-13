@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, Iterable, List, Tuple
+from types import MappingProxyType
+from typing import Dict, Iterable, List, Mapping, Tuple
 
 import pandas as pd
 
@@ -20,11 +21,16 @@ class TomorrowScorer:
         risk_policy: RiskPolicy = None,
         ranking_policy: RankingPolicy = None,
         explanation_builder: ExplanationBuilder = None,
+        scoring_context: Mapping[str, object] = None,
     ) -> None:
         self.feature_builder = feature_builder or FeatureBuilder()
         self.risk_policy = risk_policy or RiskPolicy()
         self.ranking_policy = ranking_policy or RankingPolicy()
         self.explanation_builder = explanation_builder or ExplanationBuilder()
+        self.scoring_context = MappingProxyType(dict(scoring_context or {}))
+
+    def _ctx(self, name: str, default):
+        return self.scoring_context.get(name, default)
 
     @staticmethod
     def _ranking_gate_score(row: Dict[str, object]) -> float:
@@ -37,12 +43,16 @@ class TomorrowScorer:
         market_regime: Dict[str, object],
         intraday_relaxed: bool,
     ) -> Dict[str, object]:
-        return tomorrow_score._tomorrow_candidate_row(
+        item = tomorrow_score._tomorrow_candidate_row(
             row,
             context,
             market_regime=market_regime,
             intraday_relaxed=intraday_relaxed,
         )
+        rule_override = self.scoring_context.get("apply_rule_penalty")
+        if callable(rule_override):
+            item = rule_override("tomorrow_picks", item)
+        return item
 
     def _select_display_rows(
         self,
@@ -54,7 +64,11 @@ class TomorrowScorer:
         market_regime: Dict[str, object],
         intraday_relaxed: bool,
     ) -> Dict[str, object]:
-        display_limit, min_score, gate_reason = self.ranking_policy.tomorrow_display_gate(
+        tomorrow_display_gate = self._ctx(
+            "_tomorrow_display_gate",
+            tomorrow_policy._tomorrow_display_gate,
+        )
+        display_limit, min_score, gate_reason = tomorrow_display_gate(
             top_n,
             market_regime,
             intraday_relaxed=intraday_relaxed,
@@ -73,12 +87,19 @@ class TomorrowScorer:
         backup_min_score = coerce_number(getattr(config, "TOMORROW_BACKUP_MIN_SCORE", 45.0), 45.0)
 
         if not display_rows and top_n > 0:
-            backup_rows = tomorrow_score._tomorrow_backup_rows(
+            tomorrow_backup_rows = self._ctx(
+                "_tomorrow_backup_rows",
+                tomorrow_score._tomorrow_backup_rows,
+            )
+            backup_rows = tomorrow_backup_rows(
                 df,
                 context,
                 market_regime=market_regime,
                 provisional=intraday_relaxed,
             )
+            rule_override = self.scoring_context.get("apply_rule_penalty")
+            if callable(rule_override):
+                backup_rows = [rule_override("tomorrow_picks", row) for row in backup_rows]
             backup_candidates = [row for row in backup_rows if row["score"] >= backup_min_score]
             backup_candidate_count = len(backup_candidates)
             display_rows = self.ranking_policy.limit_tomorrow_display_concentration(backup_candidates, display_limit)
@@ -115,7 +136,11 @@ class TomorrowScorer:
         intraday_relaxed: bool,
     ) -> Dict[str, int]:
         strict_display_count = len([row for row in display_rows if self._ranking_gate_score(row) >= min_score])
-        primary_watch_n = 0 if fallback_mode or intraday_relaxed else tomorrow_policy._tomorrow_primary_watch_limit(
+        tomorrow_primary_watch_limit = self._ctx(
+            "_tomorrow_primary_watch_limit",
+            tomorrow_policy._tomorrow_primary_watch_limit,
+        )
+        primary_watch_n = 0 if fallback_mode or intraday_relaxed else tomorrow_primary_watch_limit(
             strict_display_count,
             market_regime,
         )
@@ -134,11 +159,16 @@ class TomorrowScorer:
                 row["prediction_type"] = "rank_score"
                 row["score_note"] = "综合分用于排序，不是上涨概率或预期收益率。"
                 continue
-            eligible, eligibility_reasons = tomorrow_policy._tomorrow_primary_eligibility(row, min_score)
+            tomorrow_primary_eligibility = self._ctx(
+                "_tomorrow_primary_eligibility",
+                tomorrow_policy._tomorrow_primary_eligibility,
+            )
+            eligible, eligibility_reasons = tomorrow_primary_eligibility(row, min_score)
             if eligibility_reasons:
                 for reason in eligibility_reasons:
                     self.explanation_builder.append_unique_reason(row, reason)
-            theme_key = theme_limits._tomorrow_theme_key(row)
+            tomorrow_theme_key = self._ctx("_tomorrow_theme_key", theme_limits._tomorrow_theme_key)
+            theme_key = tomorrow_theme_key(row)
             theme_allowed = self.ranking_policy.theme_count_allowed(
                 primary_theme_counts,
                 theme_key,
@@ -186,7 +216,7 @@ class TomorrowScorer:
             "analysis_window": analysis_window,
             "strategy_version": config.TOMORROW_STRATEGY_VERSION,
             "strategy_label": "明日优先",
-            "policy": tomorrow_policy._tomorrow_policy(),
+            "policy": self._ctx("_tomorrow_policy", tomorrow_policy._tomorrow_policy)(),
         }
 
     def _build_meta(
@@ -241,14 +271,18 @@ class TomorrowScorer:
             "strategy_label": "明日优先",
             "prediction_type": "rank_score",
             "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
-            "holding_discipline": "盘后确认候选，次日开盘入场；高开超过阈值不追",
-            "profit_window": "次日",
-            "recommendation_class": "next_day_priority",
-            "recommendation_class_label": "明日优先",
-            "strategy": "{} 明日优先：盘后形成候选，面向次日开盘至收盘的正收益机会，优先保留成交承接、温和动能、收盘结构和买入安全的票".format(
+            "holding_discipline": "T日14:50形成推荐，14:55前冻结发布；系统不下单，验证假设14:55-15:00集合竞价入场、T+1收盘退出",
+            "profit_window": "隔夜至T+1收盘",
+            "recommendation_class": "close_auction_overnight",
+            "recommendation_class_label": "尾盘隔夜",
+            "challenger_strategy_version": str(
+                getattr(config, "TOMORROW_CHALLENGER_STRATEGY_VERSION", "")
+            ),
+            "challenger_mode": str(getattr(config, "TOMORROW_CHALLENGER_MODE", "shadow_only")),
+            "strategy": "{} 尾盘隔夜推荐：T日14:50形成并在14:55前冻结发布；系统不实际购买，模拟验证按收盘集合竞价成交近似，主收益为T日收盘至T+1收盘".format(
                 analysis_window,
             ),
-            "policy": tomorrow_policy._tomorrow_policy(),
+            "policy": self._ctx("_tomorrow_policy", tomorrow_policy._tomorrow_policy)(),
         }
 
     def score(
@@ -261,12 +295,21 @@ class TomorrowScorer:
         expected_return_samples: Iterable[Dict[str, object]] = None,
         use_expected_return_ranking: bool = False,
         capture_candidate_pool: bool = False,
+        scoring_context: Mapping[str, object] = None,
     ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+        if scoring_context is not None:
+            self.scoring_context = MappingProxyType(dict(scoring_context))
         if market_filter in ("main", "chinext", "star"):
             df = df[df["market"] == market_filter].copy()
-        analysis_window = tomorrow_policy._tomorrow_analysis_window()
-        intraday_relaxed = tomorrow_policy._tomorrow_intraday_relaxed_mode(
-            quote_time=tomorrow_policy._tomorrow_quote_time(df)
+        tomorrow_analysis_window = self._ctx("_tomorrow_analysis_window", tomorrow_policy._tomorrow_analysis_window)
+        tomorrow_intraday_relaxed_mode = self._ctx(
+            "_tomorrow_intraday_relaxed_mode",
+            tomorrow_policy._tomorrow_intraday_relaxed_mode,
+        )
+        tomorrow_quote_time = self._ctx("_tomorrow_quote_time", tomorrow_policy._tomorrow_quote_time)
+        analysis_window = tomorrow_analysis_window()
+        intraday_relaxed = tomorrow_intraday_relaxed_mode(
+            quote_time=tomorrow_quote_time(df)
         )
         if df.empty:
             return [], self._empty_meta(top_n, market_filter, analysis_window)
@@ -309,7 +352,11 @@ class TomorrowScorer:
             display_state["fallback_mode"],
             intraday_relaxed,
         )
-        theme_distribution = theme_limits._tomorrow_theme_distribution(display_rows)
+        theme_distribution_fn = self._ctx(
+            "_tomorrow_theme_distribution",
+            theme_limits._tomorrow_theme_distribution,
+        )
+        theme_distribution = theme_distribution_fn(display_rows)
         meta = self._build_meta(
             df,
             rows,

@@ -24,20 +24,22 @@ class HistoryCache:
 
     def get(self, code: str, days: int) -> pd.DataFrame:
         code = normalize_code(code)
+        window_days = max(1, int(days or 0))
         with _connect_history_db(self.db_path) as conn:
             df = pd.read_sql_query(
                 """
                 SELECT trade_date, code, open, high, low, price, turnover, volume
                 FROM daily_history
                 WHERE code = ?
-                ORDER BY trade_date ASC
+                ORDER BY trade_date DESC
+                LIMIT ?
                 """,
                 conn,
-                params=(code,),
+                params=(code, window_days),
             )
         if df.empty:
             return df
-        return df.tail(days).reset_index(drop=True)
+        return df.sort_values("trade_date").reset_index(drop=True)
 
     def is_fresh(self, code: str) -> bool:
         code = normalize_code(code)
@@ -104,6 +106,9 @@ class HistoryCache:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_history_code ON daily_history(code)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_daily_history_code_trade_date ON daily_history(code, trade_date)"
+            )
 
 
 def _normalize_history_frame(code: str, history: pd.DataFrame) -> pd.DataFrame:

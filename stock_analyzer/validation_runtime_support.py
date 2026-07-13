@@ -14,25 +14,34 @@ def configured_auto_snapshot_strategies(
 ) -> List[str]:
     raw = str(getattr(config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", "") or "").strip()
     if not raw:
-        return list(default_snapshot_strategies)
+        strategies = list(default_snapshot_strategies)
+        return _prioritize_deadline_strategy(strategies)
     requested = [item.strip() for item in raw.replace("，", ",").split(",") if item.strip()]
     if any(item.lower() == "all" for item in requested):
-        return list(default_snapshot_strategies)
+        return _prioritize_deadline_strategy(list(default_snapshot_strategies))
     strategies = [item for item in requested if item in snapshot_strategies]
-    return strategies or ["tomorrow_picks"]
+    return _prioritize_deadline_strategy(strategies or ["tomorrow_picks"])
+
+
+def _prioritize_deadline_strategy(strategies: List[str]) -> List[str]:
+    unique = list(dict.fromkeys(strategies))
+    if "tomorrow_picks" in unique:
+        unique.remove("tomorrow_picks")
+        unique.insert(0, "tomorrow_picks")
+    return unique
 
 
 def analysis_window(snapshot_time: str) -> str:
-    raw = str(snapshot_time or "15:00").strip() or "15:00"
+    raw = str(snapshot_time or "14:50").strip() or "14:50"
     if ":" not in raw:
-        return "15:00"
+        return "14:50"
     try:
         hour_text, minute_text = raw.split(":", 1)
         hour = max(0, min(23, int(hour_text)))
         minute = max(0, min(59, int(minute_text)))
         return "{:02d}:{:02d}".format(hour, minute)
     except Exception:
-        return "15:00"
+        return "14:50"
 
 
 def set_status(lock, status: Dict[str, object], **values) -> None:
@@ -41,14 +50,14 @@ def set_status(lock, status: Dict[str, object], **values) -> None:
 
 
 def auto_snapshot_time_parts(snapshot_time: str) -> Tuple[int, int]:
-    raw = str(snapshot_time or "15:00").strip()
+    raw = str(snapshot_time or "14:50").strip()
     try:
         hour_text, minute_text = raw.split(":", 1)
         hour = min(23, max(0, int(hour_text)))
         minute = min(59, max(0, int(minute_text)))
         return hour, minute
     except Exception:
-        return 15, 0
+        return 14, 50
 
 
 def time_parts(value: str, fallback: Tuple[int, int]) -> Tuple[int, int]:
@@ -250,6 +259,7 @@ def run_validation_auto_snapshot_once(
         set_auto_snapshot_status(
             running=False,
             last_attempt_date=datetime.now().date().isoformat(),
+            deadline_missed=False,
             last_finished_at=result["finished_at"],
             last_result=result,
         )
@@ -484,7 +494,24 @@ def start_validation_auto_snapshot_worker(
                 snapshot_result = run_validation_auto_snapshot_once_fn()
                 now = datetime.now()
                 if not snapshot_result.get("ok"):
-                    retry_seconds = max(60, int(getattr(config, "VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS", 600)))
+                    cutoff_hour, cutoff_minute = time_parts(
+                        getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55"),
+                        (14, 55),
+                    )
+                    cutoff_today = now.replace(
+                        hour=cutoff_hour,
+                        minute=cutoff_minute,
+                        second=0,
+                        microsecond=0,
+                    )
+                    if now >= cutoff_today:
+                        set_auto_snapshot_status(
+                            last_attempt_date=today,
+                            deadline_missed=True,
+                            deadline_missed_at=now.isoformat(timespec="seconds"),
+                        )
+                        continue
+                    retry_seconds = max(60, int(getattr(config, "VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS", 60)))
                     next_run_at = now + timedelta(seconds=retry_seconds)
                     set_auto_snapshot_status(next_run_at=next_run_at.isoformat(timespec="seconds"))
                     time.sleep(retry_seconds)

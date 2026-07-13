@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import threading
-
 from flask import Flask
 
 from .app_container import ApplicationContainer
@@ -39,7 +37,9 @@ def create_app() -> Flask:
             run_rolling_alphalite_backtest=run_rolling_alphalite_backtest,
         ),
     )
-    services.start_background_workers()
+    # Background workers are intentionally not auto-started by web processes.
+    # Scheduled tasks should run via `stock_analyzer.jobs` (or an external scheduler)
+    # to keep request handlers isolated from long-lived background loops.
 
     app.extensions["app_container"] = container
     app.extensions["app_services"] = services

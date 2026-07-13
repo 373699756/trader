@@ -92,14 +92,35 @@ def build_strategy_oos_report(
     frozen_portfolio = (portfolio_baseline.get("groups") or {}).get("frozen_rule_top_k") or {}
     portfolio_day_count = int(portfolio_baseline.get("day_count") or 0)
     portfolio_total_return = coerce_number(frozen_portfolio.get("total_return_pct"), 0.0)
-    if status == "oos_passed" and portfolio_day_count > 0 and portfolio_total_return <= 0:
+    portfolio_ci_low_raw = frozen_portfolio.get("avg_daily_net_return_ci95_low")
+    portfolio_ci_low = (
+        coerce_number(portfolio_ci_low_raw)
+        if portfolio_ci_low_raw is not None
+        else None
+    )
+    require_positive_ci = bool(
+        getattr(config, "STRATEGY_VALIDATION_REQUIRE_POSITIVE_CI", True)
+    )
+    portfolio_pending_days = int(portfolio_baseline.get("pending_day_count") or 0)
+    portfolio_unknown_days = int(portfolio_baseline.get("unknown_day_count") or 0)
+    if status == "oos_passed" and (
+        portfolio_day_count < min_oos_days
+        or portfolio_pending_days > 0
+        or portfolio_unknown_days > 0
+        or portfolio_total_return <= 0
+        or (require_positive_ci and (portfolio_ci_low is None or portfolio_ci_low <= 0))
+    ):
         status = "portfolio_blocked"
         blockers.append(
             {
                 "code": "portfolio_baseline_blocked",
-                "message": "冻结规则日级组合收益未通过，不能晋级。",
+                "message": "冻结规则日级组合天数、持仓状态或累计净收益未通过，不能晋级。",
                 "portfolio_day_count": portfolio_day_count,
+                "required_days": min_oos_days,
+                "portfolio_pending_day_count": portfolio_pending_days,
+                "portfolio_unknown_day_count": portfolio_unknown_days,
                 "portfolio_total_return_pct": portfolio_total_return,
+                "portfolio_avg_daily_net_return_ci95_low": portfolio_ci_low_raw,
             }
         )
     summary.update(
@@ -107,6 +128,12 @@ def build_strategy_oos_report(
             "portfolio_day_count": portfolio_day_count,
             "portfolio_total_return_pct": portfolio_total_return,
             "portfolio_max_drawdown_pct": frozen_portfolio.get("max_drawdown_pct", 0.0),
+            "portfolio_avg_daily_net_return_ci95_low": frozen_portfolio.get(
+                "avg_daily_net_return_ci95_low"
+            ),
+            "portfolio_avg_daily_net_return_ci95_high": frozen_portfolio.get(
+                "avg_daily_net_return_ci95_high"
+            ),
             "portfolio_sortino": frozen_portfolio.get("sortino"),
             "portfolio_random_percentile": portfolio_baseline.get("rule_vs_random_percentile"),
         }

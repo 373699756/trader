@@ -14,6 +14,7 @@ from .normalization import coerce_number, normalize_code, rename_known_columns
 from .production_baseline import production_baseline_id
 from .sqlite_support import sqlite_transaction
 from .strategy_validation import _compute_outcome, _primary_return_config, validation_baseline_config
+from .validation_statistics import block_bootstrap_mean_confidence_interval
 
 
 COMPARISON_LABELS = {
@@ -1169,6 +1170,7 @@ def _group_metrics(daily: List[Dict[str, object]], key: str) -> Dict[str, object
     downside = [value for value in returns if value < 0]
     downside_deviation = math.sqrt(sum(value * value for value in downside) / len(downside)) if downside else 0.0
     average = sum(returns) / len(returns) if returns else 0.0
+    return_ci = block_bootstrap_mean_confidence_interval(returns, samples=500)
     sortino = average / downside_deviation * math.sqrt(252.0) if downside_deviation > 0 else None
     return {
         "label": COMPARISON_LABELS[key],
@@ -1176,6 +1178,9 @@ def _group_metrics(daily: List[Dict[str, object]], key: str) -> Dict[str, object
         "day_count": len(rows),
         "total_return_pct": coerce_number(rows[-1].get("cumulative_return_pct")) if rows else None,
         "avg_daily_net_return_pct": round(average, 4) if rows else None,
+        "avg_daily_net_return_ci95_low": return_ci[0],
+        "avg_daily_net_return_ci95_high": return_ci[1],
+        "return_ci_method": "moving_block_bootstrap",
         "max_drawdown_pct": min((coerce_number(item.get("drawdown_pct")) for item in rows), default=None),
         "sortino": round(sortino, 4) if sortino is not None else None,
         "avg_turnover_pct": _average(item.get("turnover_pct") for item in rows),

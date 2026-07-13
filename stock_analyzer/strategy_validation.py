@@ -147,6 +147,20 @@ class StrategyValidationStore:
             execution_policy=policy,
         )
 
+    def save_shadow_analysis_signals(
+        self,
+        strategy_name: str,
+        strategy_version: str,
+        signal_time: str,
+        rows: Iterable[Dict[str, object]],
+    ) -> Dict[str, int]:
+        return self.repository.save_shadow_analysis_signals(
+            strategy_name,
+            strategy_version,
+            signal_time,
+            rows,
+        )
+
     def list_signal_dates(self, strategy_name: str = "") -> List[Dict[str, object]]:
         return self.repository.list_signal_dates(strategy_name=strategy_name)
 
@@ -446,6 +460,9 @@ def _stateful_unresolved_outcome(
     error: str = "",
     entry_filled: bool = False,
     primary_entry_price: float = None,
+    position_status: str = "",
+    entry_trade_date: str = "",
+    earliest_exit_date: str = "",
 ) -> Dict[str, object]:
     result = {
         "label_status": str(label_status or "unknown"),
@@ -455,6 +472,9 @@ def _stateful_unresolved_outcome(
         "security_state": dict(security_state or {}),
         "promotion_eligible": False,
         "raw_prices": raw_prices or [],
+        "position_status": position_status or ("open_position" if entry_filled else "not_entered"),
+        "entry_trade_date": str(entry_trade_date or ""),
+        "earliest_exit_date": str(earliest_exit_date or ""),
     }
     if error:
         result["error"] = error
@@ -465,6 +485,220 @@ def _stateful_unresolved_outcome(
         result["excluded"] = True
         result["skip_reason"] = str(reason or "unfilled")
     return result
+
+
+def _load_execution_history(provider, code: str, days: int = 180):
+    method = getattr(provider, "get_execution_bars_raw", None)
+    if callable(method):
+        history = method(code, days=days)
+        source = "provider_raw_execution_history"
+    else:
+        # Compatibility path for old providers and fixtures. Such rows remain
+        # non-promotable unless the frame explicitly declares raw prices.
+        history = provider.get_history(code, days=days)
+        source = "legacy_history_fallback"
+    mode = str((getattr(history, "attrs", {}) or {}).get("price_adjustment_mode") or "")
+    return history, mode, source
+
+
+def _is_close_auction_entry_policy(policy: Dict[str, object]) -> bool:
+    return str((policy.get("entry") or {}).get("timing") or "") == "same_trade_day_close_auction"
+
+
+def _first_tradable_exit_after_limit_down(
+    future: pd.DataFrame,
+    limit_pct: float,
+    previous_close: float,
+) -> Optional[Dict[str, object]]:
+    prior_close = coerce_number(previous_close)
+    for idx, row in future.iterrows():
+        if _is_sealed_limit_down(row, coerce_number(row.get("prev_close")) or prior_close, limit_pct):
+            prior_close = coerce_number(row.get("price")) or prior_close
+            continue
+        exit_price = coerce_number(row.get("open")) or coerce_number(row.get("price"))
+        if exit_price > 0:
+            return {"row": row, "index": int(idx), "exit_price": exit_price}
+    return None
+
+
+def _compute_close_auction_outcome(
+    provider,
+    signal,
+    frozen_policy: Dict[str, object],
+    security_state: Dict[str, str],
+) -> Dict[str, object]:
+    code = str(_mapping_get(signal, "code", ""))
+    try:
+        history, price_mode, fill_source = _load_execution_history(provider, code, days=180)
+    except Exception as exc:
+        return _stateful_unresolved_outcome(
+            "unknown", "execution_history_fetch_failed", security_state, error=str(exc)
+        )
+    if history is None or history.empty or "trade_date" not in history.columns:
+        return _stateful_unresolved_outcome("unknown", "missing_execution_history", security_state)
+    df = rename_known_columns(history.copy()).sort_values("trade_date").reset_index(drop=True)
+    if "price" not in df.columns:
+        return _stateful_unresolved_outcome("unknown", "missing_raw_close_price", security_state)
+    df["prev_close"] = df["price"].shift(1)
+    signal_date = str(_mapping_get(signal, "signal_date", "")).replace("-", "")
+    date_keys = df["trade_date"].astype(str).str.replace("-", "", regex=False)
+    entry_rows = df[date_keys == signal_date]
+    prior_rows = df[date_keys < signal_date]
+    future = df[date_keys > signal_date].reset_index(drop=True)
+    raw_context = pd.concat([prior_rows.tail(1), entry_rows.tail(1), future.head(20)])
+    if entry_rows.empty:
+        return _stateful_unresolved_outcome(
+            "unknown",
+            "signal_day_raw_bar_missing",
+            security_state,
+            raw_prices=_raw_price_rows(raw_context),
+        )
+    entry_row = entry_rows.iloc[-1]
+    entry_price = coerce_number(entry_row.get("price"))
+    prior_close = (
+        coerce_number(prior_rows.iloc[-1].get("price"))
+        if not prior_rows.empty
+        else coerce_number(entry_row.get("prev_close"))
+    )
+    configured_limits = frozen_policy.get("price_limits") or {}
+    default_limit_pct = _daily_limit_pct(code, str(_mapping_get(signal, "market", "")))
+    limit_key = "chinext_star_pct" if default_limit_pct >= 20.0 else "main_board_pct"
+    limit_pct = max(1.0, coerce_number(configured_limits.get(limit_key), default_limit_pct))
+    if entry_price <= 0:
+        return _stateful_unresolved_outcome(
+            "unfilled",
+            "invalid_close_auction_entry_price",
+            security_state,
+            raw_prices=_raw_price_rows(raw_context),
+        )
+    if _is_unbuyable_limit_up(entry_row, prior_close, limit_pct):
+        return _stateful_unresolved_outcome(
+            "unfilled",
+            "close_auction_limit_up_unfilled",
+            security_state,
+            raw_prices=_raw_price_rows(raw_context),
+            position_status="not_entered",
+        )
+    entry_date = str(entry_row.get("trade_date") or _mapping_get(signal, "signal_date", ""))
+    earliest_exit_date = str(future.iloc[0].get("trade_date")) if not future.empty else ""
+    raw_prices = _raw_price_rows(raw_context.drop_duplicates(subset=["trade_date"]))
+    if future.empty:
+        status = "unknown" if _signal_is_stale(signal) else "pending"
+        return _stateful_unresolved_outcome(
+            status,
+            "close_auction_entry_filled_waiting_t1",
+            security_state,
+            raw_prices=raw_prices,
+            entry_filled=True,
+            primary_entry_price=round(entry_price, 4),
+            position_status="open_position",
+            entry_trade_date=entry_date,
+        )
+
+    first = future.iloc[0]
+    next_open = coerce_number(first.get("open")) or coerce_number(first.get("price"))
+    next_close = coerce_number(first.get("price"))
+    next_high = coerce_number(first.get("high"))
+    next_low = coerce_number(first.get("low"))
+    exit_row = first
+    exit_price = next_close
+    exit_reason = "next_trade_day_close_auction"
+    exit_index = 0
+    if _is_sealed_limit_down(first, entry_price, limit_pct):
+        delayed = _first_tradable_exit_after_limit_down(future.iloc[1:], limit_pct, next_close)
+        if delayed is None:
+            return _stateful_unresolved_outcome(
+                "pending",
+                "t1_limit_down_exit_pending",
+                security_state,
+                raw_prices=raw_prices,
+                entry_filled=True,
+                primary_entry_price=round(entry_price, 4),
+                position_status="exit_pending",
+                entry_trade_date=entry_date,
+                earliest_exit_date=earliest_exit_date,
+            )
+        exit_row = delayed["row"]
+        exit_index = delayed["index"]
+        exit_price = coerce_number(delayed["exit_price"])
+        exit_reason = "next_close_limit_down_delayed_to_tradable_open"
+    if exit_price <= 0:
+        return _stateful_unresolved_outcome(
+            "pending",
+            "exit_price_unavailable",
+            security_state,
+            raw_prices=raw_prices,
+            entry_filled=True,
+            primary_entry_price=round(entry_price, 4),
+            position_status="exit_pending",
+            entry_trade_date=entry_date,
+            earliest_exit_date=earliest_exit_date,
+        )
+
+    settled_context = pd.concat(
+        [prior_rows.tail(1), entry_rows.tail(1), future.iloc[: exit_index + 1]]
+    ).drop_duplicates(subset=["trade_date"])
+    raw_prices = _raw_price_rows(settled_context)
+
+    hold_3d_close = _window_close(future, 3, next_close)
+    hold_5d_close = _window_close(future, 5, hold_3d_close)
+    hold_10d_close = _window_close(future, 10, hold_5d_close)
+    hold_20d_close = _window_close(future, 20, hold_10d_close)
+    three_day_window = future.head(3)
+    max_high = max(coerce_number(value) for value in three_day_window.get("high", pd.Series([next_high])).tolist())
+    min_low = min(coerce_number(value) for value in three_day_window.get("low", pd.Series([next_low])).tolist())
+    overnight_return = round((exit_price / entry_price - 1) * 100, 4)
+    raw_price_verified = price_mode == "raw"
+    return {
+        "next_trade_date": str(first.get("trade_date")),
+        "future_days": len(future),
+        "next_open": round(next_open, 4),
+        "next_high": round(next_high, 4),
+        "next_low": round(next_low, 4),
+        "next_close": round(next_close, 4),
+        "next_open_return": round((next_open / entry_price - 1) * 100, 4) if next_open > 0 else 0.0,
+        "next_close_return": round((next_close / next_open - 1) * 100, 4) if next_open > 0 else 0.0,
+        "overnight_return": overnight_return,
+        "intraday_high_return": round((next_high / next_open - 1) * 100, 4) if next_open > 0 else 0.0,
+        "hold_3d_return": round((hold_3d_close / entry_price - 1) * 100, 4),
+        "hold_5d_return": round((hold_5d_close / entry_price - 1) * 100, 4),
+        "hold_10d_return": round((hold_10d_close / entry_price - 1) * 100, 4),
+        "hold_20d_return": round((hold_20d_close / entry_price - 1) * 100, 4),
+        "max_gain_3d": round((max_high / entry_price - 1) * 100, 4),
+        "max_drawdown_3d": round((min_low / entry_price - 1) * 100, 4),
+        "hit_3pct": max_high / entry_price - 1 >= 0.03,
+        "hit_5pct": max_high / entry_price - 1 >= 0.05,
+        "signal_next_close_return": round((next_close / entry_price - 1) * 100, 4),
+        "signal_intraday_high_return": round((next_high / entry_price - 1) * 100, 4),
+        "signal_hold_3d_return": round((hold_3d_close / entry_price - 1) * 100, 4),
+        "signal_hold_5d_return": round((hold_5d_close / entry_price - 1) * 100, 4),
+        "signal_hold_10d_return": round((hold_10d_close / entry_price - 1) * 100, 4),
+        "signal_hold_20d_return": round((hold_20d_close / entry_price - 1) * 100, 4),
+        "signal_max_gain_3d": round((max_high / entry_price - 1) * 100, 4),
+        "signal_max_drawdown_3d": round((min_low / entry_price - 1) * 100, 4),
+        "signal_hit_3pct": max_high / entry_price - 1 >= 0.03,
+        "signal_hit_5pct": max_high / entry_price - 1 >= 0.05,
+        "exit_return": overnight_return,
+        "signal_exit_return": overnight_return,
+        "exit_reason": exit_reason,
+        "exit_days": int(exit_index) + 1,
+        "exit_date": str(exit_row.get("trade_date")),
+        "label_status": "settled",
+        "status_reason": "settled",
+        "position_status": "closed",
+        "entry_trade_date": entry_date,
+        "earliest_exit_date": earliest_exit_date,
+        "exit_trade_date": str(exit_row.get("trade_date")),
+        "delisting_status": "not_applicable",
+        "promotion_eligible": raw_price_verified,
+        "primary_entry_price": round(entry_price, 4),
+        "primary_exit_price": round(exit_price, 4),
+        "primary_holding_days": int(exit_index) + 1,
+        "price_adjustment_mode": price_mode or "unknown",
+        "fill_source": fill_source,
+        "raw_prices": raw_prices,
+        "return_reproducible": raw_price_verified,
+    }
 
 
 def _raw_price_rows(frame: pd.DataFrame) -> List[Dict[str, object]]:
@@ -493,8 +727,14 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     strategy_name = str(_mapping_get(signal, "strategy_name", ""))
     frozen_policy = policy_from_signal(signal, strategy_name)
     security_state = _provider_security_state(provider, code)
+    if strategy_name == "tomorrow_picks" and _is_close_auction_entry_policy(frozen_policy):
+        return _compute_close_auction_outcome(provider, signal, frozen_policy, security_state)
     try:
-        history = provider.get_history(code, days=180)
+        method = getattr(provider, "get_factor_bars_adjusted", None)
+        if callable(method):
+            history = method(code, days=180)
+        else:
+            history = provider.get_history(code, days=180)
     except Exception as exc:
         return _stateful_unresolved_outcome(
             "unknown",
@@ -597,17 +837,16 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     )
     required_days = max(1, primary_days if primary_return_field not in {"exit_return", "signal_exit_return"} else exit_days)
     if strategy_name == "tomorrow_picks" and _is_sealed_limit_down(first, previous_close, limit_pct):
-        return {
-            "label_status": "unfilled",
-            "excluded": True,
-            "skip_reason": "next_close_limit_down_unfilled",
-            "status_reason": "next_close_limit_down_unfilled",
-            "delisting_status": "not_applicable",
-            "promotion_eligible": False,
-            "entry_filled": True,
-            "primary_entry_price": round(open_entry, 4),
-            "raw_prices": _raw_price_rows(pd.concat([previous_rows.tail(1), future.head(1)])),
-        }
+        return _stateful_unresolved_outcome(
+            "pending",
+            "next_close_limit_down_exit_pending",
+            security_state,
+            raw_prices=_raw_price_rows(pd.concat([previous_rows.tail(1), future.head(1)])),
+            entry_filled=True,
+            primary_entry_price=round(open_entry, 4),
+            position_status="exit_pending",
+            entry_trade_date=str(first.get("trade_date") or ""),
+        )
     window = future.head(max(1, primary_days))
     last = window.iloc[-1]
     hold_3d_close = _window_close(future, 3, coerce_number(last.get("price")))
@@ -641,23 +880,20 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     if primary_return_field == "exit_return" and str(primary_exit_result.get("exit_reason") or "").endswith(
         "_unfilled"
     ):
-        return {
-            "label_status": "unfilled",
-            "excluded": True,
-            "skip_reason": str(primary_exit_result.get("exit_reason") or "exit_unfilled"),
-            "status_reason": str(primary_exit_result.get("exit_reason") or "exit_unfilled"),
-            "delisting_status": (
-                "delisted_exit_unfilled" if security_state["status"] == "delisted" else "not_applicable"
-            ),
-            "promotion_eligible": False,
-            "entry_filled": True,
-            "primary_entry_price": round(open_entry, 4),
-            "raw_prices": _raw_price_rows(
+        return _stateful_unresolved_outcome(
+            "pending",
+            str(primary_exit_result.get("exit_reason") or "exit_pending"),
+            security_state,
+            raw_prices=_raw_price_rows(
                 pd.concat([previous_rows.tail(1), future.head(max(20, exit_days))]).drop_duplicates(
                     subset=["trade_date"]
                 )
             ),
-        }
+            entry_filled=True,
+            primary_entry_price=round(open_entry, 4),
+            position_status="exit_pending",
+            entry_trade_date=str(first.get("trade_date") or ""),
+        )
     outcome = {
         "next_trade_date": str(first.get("trade_date")),
         "future_days": future_days,

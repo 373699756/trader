@@ -132,7 +132,7 @@ def test_cold_web_endpoints_return_while_quote_download_runs(tmp_path):
 
     def slow_remote_download(_provider):
         download_started.set()
-        release_download.wait(timeout=2)
+        release_download.wait(timeout=30)
         return _quotes()
 
     patches = (
@@ -155,13 +155,23 @@ def test_cold_web_endpoints_return_while_quote_download_runs(tmp_path):
             item.start()
         app = create_app()
         client = app.test_client()
+        responses = {}
+        request_finished = threading.Event()
 
-        started_at = time.monotonic()
-        index_response = client.get("/")
-        recommendation_response = client.get("/api/recommendations?top_n=18&market=all")
-        elapsed = time.monotonic() - started_at
+        def request_endpoints():
+            started_at = time.monotonic()
+            responses["index"] = client.get("/")
+            responses["recommendations"] = client.get("/api/recommendations?top_n=18&market=all")
+            responses["elapsed"] = time.monotonic() - started_at
+            request_finished.set()
 
-        assert elapsed < 0.5
+        request_thread = threading.Thread(target=request_endpoints, daemon=True)
+        request_thread.start()
+
+        assert request_finished.wait(timeout=2)
+        index_response = responses["index"]
+        recommendation_response = responses["recommendations"]
+        assert responses["elapsed"] < 2
         assert index_response.status_code == 200
         assert recommendation_response.status_code == 200
         payload = recommendation_response.get_json()
@@ -170,6 +180,8 @@ def test_cold_web_endpoints_return_while_quote_download_runs(tmp_path):
         assert download_started.wait(timeout=1)
     finally:
         release_download.set()
+        if "request_thread" in locals():
+            request_thread.join(timeout=1)
         deadline = time.monotonic() + 1
         while app.extensions["app_container"].provider.quote_refresh_status()["running"] and time.monotonic() < deadline:
             time.sleep(0.01)

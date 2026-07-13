@@ -10,24 +10,112 @@ class ValidationSchemaManager:
 
     def init_db(self) -> None:
         with self._connect(self.db_path) as conn:
-            self._create_tables(conn)
-            self._run_migrations(conn)
-            self._create_indexes(conn)
+            self._create_schema_migrations_table(conn)
+            for migration_id, migration in self._migrations():
+                if self._migration_already_applied(conn, migration_id):
+                    continue
+                self._run_migration(conn, migration_id, migration)
 
-    def _create_tables(self, conn) -> None:
+    @staticmethod
+    def _create_schema_migrations_table(conn) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+
+    @staticmethod
+    def _migration_already_applied(conn, migration_id: str) -> bool:
+        return (
+            conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE migration_id = ? LIMIT 1",
+                (migration_id,),
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
+    def _record_migration(conn, migration_id: str) -> None:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at)
+            VALUES (?, CURRENT_TIMESTAMP)
+            """,
+            (migration_id,),
+        )
+
+    def _run_migration(self, conn, migration_id: str, migration) -> None:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            migration(conn)
+            self._record_migration(conn, migration_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    @staticmethod
+    def _migrations():
+        return (
+            ("0001_bootstrap_schema", ValidationSchemaManager._migration_bootstrap_schema),
+            ("0002_strategy_outcome_columns", ValidationSchemaManager._migration_strategy_outcome_columns),
+            ("0003_strategy_signal_batch_columns", ValidationSchemaManager._migration_batch_columns),
+            ("0004_candidate_snapshot_columns", ValidationSchemaManager._migration_candidate_columns),
+            ("0005_execution_record_columns", ValidationSchemaManager._migration_execution_record_columns),
+            ("0006_shadow_outcome_columns", ValidationSchemaManager._migration_shadow_columns),
+            ("0007_portfolio_baseline_columns", ValidationSchemaManager._migration_portfolio_baseline_columns),
+            ("0008_fold_prediction_columns", ValidationSchemaManager._migration_fold_prediction_columns),
+            (
+                "0009_seed_signal_batches",
+                ValidationSchemaManager._migration_seed_signal_batches_from_signals,
+            ),
+            ("0010_migration_noop", ValidationSchemaManager._migration_noop),
+            (
+                "0011_add_query_indexes",
+                ValidationSchemaManager._migration_add_query_indexes,
+            ),
+        )
+
+    @staticmethod
+    def _migration_bootstrap_schema(conn) -> None:
         for statement in _TABLES:
             conn.execute(statement)
-
-    def _create_indexes(self, conn) -> None:
         for statement in _INDEXES:
             conn.execute(statement)
 
-    def _run_migrations(self, conn) -> None:
-        self._add_columns(conn, "strategy_outcomes", _OUTCOME_MIGRATION_COLUMNS)
-        self._add_columns(conn, "strategy_signal_batches", _BATCH_MIGRATION_COLUMNS)
-        self._add_columns(conn, "strategy_execution_records", _EXECUTION_MIGRATION_COLUMNS)
-        self._add_columns(conn, "daily_portfolio_baselines", _PORTFOLIO_BASELINE_MIGRATION_COLUMNS)
-        self._add_columns(conn, "strategy_fold_predictions", _FOLD_PREDICTION_MIGRATION_COLUMNS)
+    @staticmethod
+    def _migration_strategy_outcome_columns(conn) -> None:
+        ValidationSchemaManager._add_columns(conn, "strategy_outcomes", _OUTCOME_MIGRATION_COLUMNS)
+
+    @staticmethod
+    def _migration_batch_columns(conn) -> None:
+        ValidationSchemaManager._add_columns(conn, "strategy_signal_batches", _BATCH_MIGRATION_COLUMNS)
+
+    @staticmethod
+    def _migration_candidate_columns(conn) -> None:
+        ValidationSchemaManager._add_columns(conn, "strategy_candidate_snapshots", _CANDIDATE_MIGRATION_COLUMNS)
+
+    @staticmethod
+    def _migration_execution_record_columns(conn) -> None:
+        ValidationSchemaManager._add_columns(conn, "strategy_execution_records", _EXECUTION_MIGRATION_COLUMNS)
+
+    @staticmethod
+    def _migration_shadow_columns(conn) -> None:
+        ValidationSchemaManager._add_columns(conn, "strategy_deepseek_shadow_outcomes", _SHADOW_OUTCOME_MIGRATION_COLUMNS)
+
+    @staticmethod
+    def _migration_portfolio_baseline_columns(conn) -> None:
+        ValidationSchemaManager._add_columns(conn, "daily_portfolio_baselines", _PORTFOLIO_BASELINE_MIGRATION_COLUMNS)
+
+    @staticmethod
+    def _migration_fold_prediction_columns(conn) -> None:
+        ValidationSchemaManager._add_columns(conn, "strategy_fold_predictions", _FOLD_PREDICTION_MIGRATION_COLUMNS)
+
+    @staticmethod
+    def _migration_seed_signal_batches_from_signals(conn) -> None:
         conn.execute(
             """
             INSERT OR IGNORE INTO strategy_signal_batches
@@ -37,6 +125,15 @@ class ValidationSchemaManager:
             GROUP BY strategy_name, strategy_version, signal_date
             """
         )
+
+    @staticmethod
+    def _migration_noop(conn) -> None:
+        return None
+
+    @staticmethod
+    def _migration_add_query_indexes(conn) -> None:
+        for statement in _QUERY_INDEXES:
+            conn.execute(statement)
 
     @staticmethod
     def _add_columns(conn, table: str, columns) -> None:
@@ -62,6 +159,7 @@ _TABLES = (
         execution_policy_json TEXT NOT NULL DEFAULT '',
         generation_json TEXT NOT NULL DEFAULT '{}',
         portfolio_capital REAL NOT NULL DEFAULT 0,
+        snapshot_id TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         PRIMARY KEY(strategy_name, signal_date, strategy_version)
     )
@@ -91,6 +189,7 @@ _TABLES = (
         market_data_cutoff TEXT NOT NULL DEFAULT '',
         point_in_time_violations_json TEXT NOT NULL DEFAULT '[]',
         raw_json TEXT NOT NULL DEFAULT '{}',
+        snapshot_id TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         UNIQUE(strategy_name, strategy_version, signal_date, code)
     )
@@ -132,6 +231,7 @@ _TABLES = (
         next_close REAL NOT NULL DEFAULT 0,
         next_open_return REAL NOT NULL DEFAULT 0,
         next_close_return REAL NOT NULL DEFAULT 0,
+        overnight_return REAL NOT NULL DEFAULT 0,
         intraday_high_return REAL NOT NULL DEFAULT 0,
         future_days INTEGER NOT NULL DEFAULT 1,
         hold_3d_return REAL NOT NULL DEFAULT 0,
@@ -161,6 +261,11 @@ _TABLES = (
         entry_price REAL,
         exit_price REAL,
         return_reproducible INTEGER NOT NULL DEFAULT 0,
+        position_status TEXT NOT NULL DEFAULT 'closed',
+        entry_trade_date TEXT NOT NULL DEFAULT '',
+        earliest_exit_date TEXT NOT NULL DEFAULT '',
+        exit_trade_date TEXT NOT NULL DEFAULT '',
+        price_adjustment_mode TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL,
         FOREIGN KEY(signal_id) REFERENCES strategy_signals(id)
     )
@@ -198,6 +303,12 @@ _TABLES = (
         cost_scenarios_json TEXT NOT NULL DEFAULT '{}',
         raw_prices_json TEXT NOT NULL DEFAULT '[]',
         benchmark_json TEXT NOT NULL DEFAULT '{}',
+        position_status TEXT NOT NULL DEFAULT 'not_entered',
+        entry_trade_date TEXT NOT NULL DEFAULT '',
+        earliest_exit_date TEXT NOT NULL DEFAULT '',
+        exit_trade_date TEXT NOT NULL DEFAULT '',
+        mark_price REAL,
+        price_adjustment_mode TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL,
         FOREIGN KEY(signal_id) REFERENCES strategy_signals(id)
     )
@@ -256,6 +367,7 @@ _TABLES = (
         hold_10d_return REAL NOT NULL DEFAULT 0,
         hold_20d_return REAL NOT NULL DEFAULT 0,
         signal_next_close_return REAL NOT NULL DEFAULT 0,
+        overnight_return REAL NOT NULL DEFAULT 0,
         signal_hold_3d_return REAL NOT NULL DEFAULT 0,
         signal_hold_5d_return REAL NOT NULL DEFAULT 0,
         signal_hold_10d_return REAL NOT NULL DEFAULT 0,
@@ -409,10 +521,13 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_date ON strategy_signals(strategy_name, signal_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_date_rank ON strategy_signals(strategy_name, signal_date DESC, rank)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy_version_date ON strategy_signals(strategy_name, strategy_version, signal_date)",
+    "CREATE INDEX IF NOT EXISTS idx_strategy_candidates_strategy_version_date ON strategy_candidate_snapshots(strategy_name, strategy_version, signal_date)",
+    "CREATE INDEX IF NOT EXISTS idx_strategy_candidates_selected_eligible ON strategy_candidate_snapshots(strategy_name, strategy_version, signal_date, selected, eligible)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_signal_batches_strategy_date ON strategy_signal_batches(strategy_name, signal_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_candidates_strategy_date ON strategy_candidate_snapshots(strategy_name, signal_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_candidates_code ON strategy_candidate_snapshots(code)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_outcomes_code ON strategy_outcomes(code)",
+    "CREATE INDEX IF NOT EXISTS idx_strategy_outcomes_label_updated ON strategy_outcomes(label_status, updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_execution_records_status ON strategy_execution_records(label_status)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_execution_skips_code ON strategy_execution_skips(code)",
     "CREATE INDEX IF NOT EXISTS idx_deepseek_shadow_strategy_date ON strategy_deepseek_shadow_signals(strategy_name, signal_date DESC)",
@@ -429,7 +544,13 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_stock_prediction_snapshots_code ON stock_prediction_snapshots(code)",
 )
 
+_QUERY_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_strategy_signals_code_date ON strategy_signals(code, signal_date)",
+    "CREATE INDEX IF NOT EXISTS idx_strategy_outcomes_code_trade_date ON strategy_outcomes(code, next_trade_date)",
+)
+
 _OUTCOME_MIGRATION_COLUMNS = {
+    "overnight_return": "REAL NOT NULL DEFAULT 0",
     "signal_next_close_return": "REAL",
     "signal_intraday_high_return": "REAL",
     "signal_hold_3d_return": "REAL",
@@ -468,6 +589,11 @@ _OUTCOME_MIGRATION_COLUMNS = {
     "entry_price": "REAL",
     "exit_price": "REAL",
     "return_reproducible": "INTEGER NOT NULL DEFAULT 0",
+    "position_status": "TEXT NOT NULL DEFAULT 'closed'",
+    "entry_trade_date": "TEXT NOT NULL DEFAULT ''",
+    "earliest_exit_date": "TEXT NOT NULL DEFAULT ''",
+    "exit_trade_date": "TEXT NOT NULL DEFAULT ''",
+    "price_adjustment_mode": "TEXT NOT NULL DEFAULT ''",
 }
 
 _BATCH_MIGRATION_COLUMNS = {
@@ -479,11 +605,26 @@ _BATCH_MIGRATION_COLUMNS = {
     "execution_policy_json": "TEXT NOT NULL DEFAULT ''",
     "generation_json": "TEXT NOT NULL DEFAULT '{}'",
     "portfolio_capital": "REAL NOT NULL DEFAULT 0",
+    "snapshot_id": "TEXT NOT NULL DEFAULT ''",
+}
+
+_CANDIDATE_MIGRATION_COLUMNS = {
+    "snapshot_id": "TEXT NOT NULL DEFAULT ''",
+}
+
+_SHADOW_OUTCOME_MIGRATION_COLUMNS = {
+    "overnight_return": "REAL NOT NULL DEFAULT 0",
 }
 
 _EXECUTION_MIGRATION_COLUMNS = {
     "unfilled_entry_quantity": "REAL NOT NULL DEFAULT 0",
     "unfilled_exit_quantity": "REAL NOT NULL DEFAULT 0",
+    "position_status": "TEXT NOT NULL DEFAULT 'not_entered'",
+    "entry_trade_date": "TEXT NOT NULL DEFAULT ''",
+    "earliest_exit_date": "TEXT NOT NULL DEFAULT ''",
+    "exit_trade_date": "TEXT NOT NULL DEFAULT ''",
+    "mark_price": "REAL",
+    "price_adjustment_mode": "TEXT NOT NULL DEFAULT ''",
 }
 
 _PORTFOLIO_BASELINE_MIGRATION_COLUMNS = {

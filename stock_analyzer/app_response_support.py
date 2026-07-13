@@ -179,7 +179,9 @@ def _saved_tomorrow_strategy_version(rows: List[Dict[str, object]]) -> str:
         version = str(row.get("strategy_version") or "").strip()
         if version:
             return version
-    return str(getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v9_next_open"))
+    return str(
+        getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v10_close_auction_baseline")
+    )
 
 
 def saved_swing_fallback_payload(

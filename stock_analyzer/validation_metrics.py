@@ -38,6 +38,7 @@ from .validation_statistics import (
     deepseek_token_value_metrics as _deepseek_token_value_metrics,
     has_deepseek_review as _has_deepseek_review,
     mean_confidence_interval as _mean_confidence_interval,
+    block_bootstrap_mean_confidence_interval as _block_bootstrap_mean_confidence_interval,
     next_day_compare as _next_day_compare,
     portfolio_max_drawdown as _portfolio_max_drawdown,
     rate as _rate,
@@ -68,6 +69,7 @@ class ValidationMetricsService:
             strategy_name=strategy_name,
             current_version=current_version,
             replay_version=current_replay_strategy_version(strategy_name),
+            days=days,
         )
         execution_skipped_count = self.repository.execution_skip_count(
             strategy_name=strategy_name,
@@ -135,6 +137,8 @@ class ValidationMetricsService:
                 "win_rate_all": 0.0,
                 "win_rate_survivors": 0.0,
                 "execution_skipped_count": execution_skipped_count,
+                "real_return_ci_method": "moving_block_bootstrap",
+                **self._portfolio_metrics(strategy_name, days),
                 **signal_status,
                 "daily": [],
             }
@@ -266,7 +270,7 @@ class ValidationMetricsService:
             getattr(config, "RESEARCH_TOP_K_SENSITIVITY", (3, 5, 10)),
         )
         real_daily_returns = [coerce_number(row.get("avg_primary_return_net")) for row in real_daily]
-        real_return_ci = _mean_confidence_interval(real_daily_returns)
+        real_return_ci = _block_bootstrap_mean_confidence_interval(real_daily_returns)
         real_win_ci_low = _wilson_lower_bound([value > 0 for value in real_daily_returns])
         primary_dates = []
         for row in primary_rows:
@@ -344,6 +348,7 @@ class ValidationMetricsService:
             "real_win_rate_primary_net": _rate(row["avg_primary_return_net"] > 0 for row in real_daily),
             "real_avg_primary_return_net_ci95_low": real_return_ci[0],
             "real_avg_primary_return_net_ci95_high": real_return_ci[1],
+            "real_return_ci_method": "moving_block_bootstrap",
             "real_win_rate_primary_net_ci95_low": real_win_ci_low,
             "real_portfolio_max_drawdown_pct": _portfolio_max_drawdown(real_daily),
             "top_k_sensitivity": top_k_sensitivity,
@@ -362,9 +367,43 @@ class ValidationMetricsService:
             "real_daily": real_daily,
             "replay_daily": replay_daily,
             "execution_skipped_count": execution_skipped_count,
+            **self._portfolio_metrics(strategy_name, days),
             **signal_status,
         }
         return metrics
+
+    def _portfolio_metrics(self, strategy_name: str, days: int) -> Dict[str, object]:
+        if not strategy_name:
+            return {
+                "portfolio_day_count": 0,
+                "portfolio_pending_day_count": 0,
+                "portfolio_unknown_day_count": 0,
+                "portfolio_total_return_pct": 0.0,
+                "portfolio_avg_daily_net_return_pct": 0.0,
+                "portfolio_avg_daily_net_return_ci95_low": None,
+                "portfolio_avg_daily_net_return_ci95_high": None,
+                "portfolio_return_ci_method": "moving_block_bootstrap",
+                "portfolio_max_drawdown_pct": 0.0,
+            }
+        try:
+            from .portfolio_baseline import DailyPortfolioBaselineService
+
+            report = DailyPortfolioBaselineService(self.store).report(strategy_name, days=days)
+        except Exception:
+            report = {}
+        frozen = (report.get("groups") or {}).get("frozen_rule_top_k") or {}
+        return {
+            "portfolio_day_count": int(report.get("day_count") or 0),
+            "portfolio_pending_day_count": int(report.get("pending_day_count") or 0),
+            "portfolio_unknown_day_count": int(report.get("unknown_day_count") or 0),
+            "portfolio_total_return_pct": coerce_number(frozen.get("total_return_pct")),
+            "portfolio_avg_daily_net_return_pct": coerce_number(frozen.get("avg_daily_net_return_pct")),
+            "portfolio_avg_daily_net_return_ci95_low": frozen.get("avg_daily_net_return_ci95_low"),
+            "portfolio_avg_daily_net_return_ci95_high": frozen.get("avg_daily_net_return_ci95_high"),
+            "portfolio_return_ci_method": str(frozen.get("return_ci_method") or ""),
+            "portfolio_max_drawdown_pct": coerce_number(frozen.get("max_drawdown_pct")),
+            "portfolio_baseline_id": str(report.get("portfolio_baseline_id") or ""),
+        }
 
     def deepseek_attribution(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
         strategy_name = str(strategy_name or "").strip()

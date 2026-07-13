@@ -553,7 +553,7 @@ class RecommendationStrategiesTest(unittest.TestCase):
         rows, meta = score_tomorrow_candidates(candidates, top_n=50)
 
         self.assertNotIn("600002", {row["code"] for row in rows})
-        self.assertEqual(meta["analysis_window"], "15:00")
+        self.assertEqual(meta["analysis_window"], "14:50")
         self.assertLessEqual(len(rows), 18)
         if rows:
             self.assertHasExplanationFields(rows[0], "tomorrow_picks")

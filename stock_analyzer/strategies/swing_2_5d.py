@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Tuple
+from types import MappingProxyType
+from typing import Dict, Iterable, List, Mapping, Tuple
 
 import pandas as pd
 
@@ -19,11 +20,16 @@ class SwingScorer:
         risk_policy: RiskPolicy = None,
         ranking_policy: RankingPolicy = None,
         explanation_builder: ExplanationBuilder = None,
+        scoring_context: Mapping[str, object] = None,
     ) -> None:
         self.feature_builder = feature_builder or FeatureBuilder()
         self.risk_policy = risk_policy or RiskPolicy()
         self.ranking_policy = ranking_policy or RankingPolicy()
         self.explanation_builder = explanation_builder or ExplanationBuilder()
+        self.scoring_context = MappingProxyType(dict(scoring_context or {}))
+
+    def _ctx(self, name: str, default):
+        return self.scoring_context.get(name, default)
 
     @staticmethod
     def _ranking_gate_score(row: Dict[str, object]) -> float:
@@ -187,7 +193,10 @@ class SwingScorer:
         expected_return_samples: Iterable[Dict[str, object]] = None,
         use_expected_return_ranking: bool = False,
         capture_candidate_pool: bool = False,
+        scoring_context: Mapping[str, object] = None,
     ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+        if scoring_context is not None:
+            self.scoring_context = MappingProxyType(dict(scoring_context))
         if market_filter in ("main", "chinext", "star"):
             df = df[df["market"] == market_filter].copy()
         df = df[

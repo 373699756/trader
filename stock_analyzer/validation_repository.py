@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Protocol
 
-from . import config
 from .normalization import coerce_number, normalize_code
 from .performance import json_loads_cached, validation_metrics_cache_key as _validation_metrics_cache_key
 from .validation_policy import (
@@ -37,16 +36,181 @@ from .validation_statistics import (
 )
 
 
+class SignalFreezeDeadlineExceeded(RuntimeError):
+    def __init__(self, deadline: str, observed_at: str) -> None:
+        self.deadline = str(deadline or "")
+        self.observed_at = str(observed_at or "")
+        super().__init__(
+            "signal freeze deadline exceeded: deadline={}, observed_at={}".format(
+                self.deadline,
+                self.observed_at,
+            )
+        )
+
+
+def _check_signal_freeze_deadline(batch_metadata: Dict[str, object]) -> str:
+    deadline = str((batch_metadata or {}).get("freeze_deadline") or "")
+    if not deadline:
+        return ""
+    observed_at = datetime.now().isoformat(timespec="seconds")
+    if observed_at >= deadline:
+        raise SignalFreezeDeadlineExceeded(deadline, observed_at)
+    return observed_at
+
+
 __all__ = [
     "ValidationRepository",
+    "ValidationRepositoryFacadeProtocol",
+    "SignalFreezeDeadlineExceeded",
     "SignalRepository",
+    "CandidateSnapshotRepository",
     "OutcomeRepository",
+    "ExecutionRepository",
+    "PortfolioRepository",
+    "ExperimentRepository",
+    "MigrationRepository",
     "TuningRepository",
     "MarketGateRepository",
     "ResearchRepository",
     "OOSReportRepository",
     "PredictionRepository",
 ]
+
+_EXECUTION_RECORD_COLUMNS = (
+    "signal_id",
+    "code",
+    "label_status",
+    "reason",
+    "entry_status",
+    "exit_status",
+    "delisting_status",
+    "promotion_eligible",
+    "portfolio_capital",
+    "target_weight_pct",
+    "target_notional",
+    "order_quantity",
+    "actual_filled_quantity",
+    "actual_entry_price",
+    "actual_exit_quantity",
+    "actual_exit_price",
+    "unfilled_quantity",
+    "unfilled_entry_quantity",
+    "unfilled_exit_quantity",
+    "fill_source",
+    "fee_pct",
+    "slippage_pct",
+    "impact_pct",
+    "gross_return_pct",
+    "net_return_pct",
+    "return_formula",
+    "execution_policy_version",
+    "execution_policy_json",
+    "cost_scenarios_json",
+    "raw_prices_json",
+    "benchmark_json",
+    "position_status",
+    "entry_trade_date",
+    "earliest_exit_date",
+    "exit_trade_date",
+    "mark_price",
+    "price_adjustment_mode",
+    "updated_at",
+)
+
+
+class MigrationRepositoryProtocol(Protocol):
+    def applied_migrations(self) -> List[str]:
+        ...
+
+    def table_exists(self, table_name: str) -> bool:
+        ...
+
+
+class ValidationRepositoryFacadeProtocol(Protocol):
+    def save_signals(
+        self,
+        strategy_name: str,
+        strategy_version: str,
+        signal_time: str,
+        rows: Iterable[Dict[str, object]],
+        deepseek_shadow_rows: Optional[Iterable[Dict[str, object]]] = ...,
+        candidate_rows: Optional[Iterable[Dict[str, object]]] = ...,
+        batch_metadata: Optional[Dict[str, object]] = ...,
+        execution_policy: Optional[Dict[str, object]] = ...,
+    ) -> Dict[str, object]:
+        ...
+
+    def save_shadow_analysis_signals(
+        self,
+        strategy_name: str,
+        strategy_version: str,
+        signal_time: str,
+        rows: Iterable[Dict[str, object]],
+    ) -> Dict[str, int]:
+        ...
+
+    def list_signal_dates(self, strategy_name: str = "") -> List[Dict[str, object]]:
+        ...
+
+    def existing_validation_dates(self, strategy_name: str, replay_version: str = "") -> List[str]:
+        ...
+
+    def signals_for_date(self, signal_date: str, strategy_name: str = "") -> List[Dict[str, object]]:
+        ...
+
+    def candidate_snapshots_for_date(
+        self,
+        signal_date: str,
+        strategy_name: str = "",
+        strategy_version: str = "",
+    ) -> List[Dict[str, object]]:
+        ...
+
+    def latest_candidate_snapshots(self, strategy_name: str) -> List[Dict[str, object]]:
+        ...
+
+    def latest_signal_rows(self, strategy_name: str) -> List[Dict[str, object]]:
+        ...
+
+    def prune_strategies(self, allowed_strategies: Iterable[str]) -> Dict[str, int]:
+        ...
+
+    def signal_codes(
+        self,
+        signal_date: str = "",
+        strategy_name: str = "",
+        limit: int = 500,
+    ) -> List[Dict[str, object]]:
+        ...
+
+    def signal_status_counts(
+        self,
+        strategy_name: str = "",
+        days: int = 20,
+        strategy_version: str = "",
+    ) -> Dict[str, object]:
+        ...
+
+    def fetch_validation_metric_rows(
+        self,
+        strategy_name: str = "",
+        current_version: str = "",
+        replay_version: str = "",
+        days: int = 0,
+    ) -> List[sqlite3.Row]:
+        ...
+
+    def fetch_signals_for_outcome_update(self, where: str, params: List[object]) -> List[sqlite3.Row]:
+        ...
+
+    def delete_strategy_outcome(self, signal_id: int) -> None:
+        ...
+
+    def applied_migrations(self) -> List[str]:
+        ...
+
+    def table_exists(self, table_name: str) -> bool:
+        ...
 
 def _json_value(value, fallback):
     if isinstance(value, type(fallback)):
@@ -110,6 +274,338 @@ class _RepositoryBase:
         return _validation_metrics_cache_key(strategy_name, baseline_id, days)
 
 
+class MigrationRepository(_RepositoryBase):
+    """Tracks and exposes schema migration metadata."""
+
+    def table_exists(self, table_name: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = ?
+                LIMIT 1
+                """,
+                (str(table_name),),
+            ).fetchone()
+        return bool(row)
+
+    def applied_migrations(self) -> List[str]:
+        if not self.table_exists("schema_migrations"):
+            return []
+        with self.connect() as conn:
+            return [row[0] for row in conn.execute("SELECT migration_id FROM schema_migrations ORDER BY applied_at ASC, migration_id ASC").fetchall()]
+
+
+class CandidateSnapshotRepository(_RepositoryBase):
+    """Read/write access for candidate snapshot records."""
+
+    def candidate_snapshots_for_date(
+        self,
+        signal_date: str,
+        strategy_name: str = "",
+        strategy_version: str = "",
+    ) -> List[Dict[str, object]]:
+        where = "WHERE signal_date = ?"
+        params: List[object] = [signal_date]
+        if strategy_name:
+            where += " AND strategy_name = ?"
+            params.append(strategy_name)
+        if strategy_version:
+            where += " AND strategy_version = ?"
+            params.append(strategy_version)
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM strategy_candidate_snapshots
+                {}
+                ORDER BY selected DESC, rank ASC, code ASC
+                """.format(where),
+                params,
+            ).fetchall()
+        return [_candidate_snapshot_to_dict(row) for row in rows]
+
+    def latest_candidate_snapshots(self, strategy_name: str) -> List[Dict[str, object]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT signal_date, strategy_version
+                FROM strategy_signal_batches
+                WHERE strategy_name = ? AND candidate_count > 0
+                  AND lower(strategy_version) NOT LIKE '%replay%'
+                ORDER BY signal_date DESC, signal_time DESC
+                LIMIT 1
+                """,
+                (strategy_name,),
+            ).fetchone()
+        if not row:
+            return []
+        return self.candidate_snapshots_for_date(row[0], strategy_name, row[1])
+
+    def save_candidate_snapshots(self, snapshot_rows: List[tuple]) -> int:
+        if not snapshot_rows:
+            return 0
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO strategy_candidate_snapshots
+                (strategy_name, strategy_version, signal_date, signal_time, code, name, market,
+                 industry, style_bucket, eligible, selected, rank, score, point_in_time_valid,
+                 eligibility_reasons_json, feature_values_json, missing_mask_json,
+                 source_timestamps_json, announcement_time, market_data_cutoff,
+                 point_in_time_violations_json, raw_json, snapshot_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                snapshot_rows,
+            )
+        return int(len(snapshot_rows))
+
+
+class ExecutionRepository(_RepositoryBase):
+    """Read/write access for execution records and skips."""
+
+    _COLUMNS = _EXECUTION_RECORD_COLUMNS
+
+    def save_execution_records(self, records: List[Dict[str, object]], connection=None) -> int:
+        if not records:
+            return 0
+        rows = []
+        for record in records:
+            payload: List[object] = []
+            for column in self._COLUMNS:
+                if column in ("execution_policy_json", "cost_scenarios_json", "raw_prices_json", "benchmark_json"):
+                    payload.append(json.dumps(record.get(column, {}), ensure_ascii=False, sort_keys=True, default=str))
+                elif column == "promotion_eligible":
+                    payload.append(1 if record.get(column) else 0)
+                else:
+                    payload.append(record.get(column))
+            rows.append(payload)
+        if connection is None:
+            with self.connect() as conn:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO strategy_execution_records ({}) VALUES ({})".format(
+                        ", ".join(self._COLUMNS),
+                        ", ".join("?" for _ in self._COLUMNS),
+                    ),
+                    rows,
+                )
+            return int(len(rows))
+        connection.executemany(
+            "INSERT OR REPLACE INTO strategy_execution_records ({}) VALUES ({})".format(
+                ", ".join(self._COLUMNS),
+                ", ".join("?" for _ in self._COLUMNS),
+            ),
+            rows,
+        )
+        return int(len(rows))
+
+    def execution_records_for_date(self, signal_date: str, strategy_name: str = "") -> List[Dict[str, object]]:
+        where = "WHERE s.signal_date = ?"
+        params: List[object] = [signal_date]
+        if strategy_name:
+            where += " AND s.strategy_name = ?"
+            params.append(strategy_name)
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT e.*, s.strategy_name, s.strategy_version, s.signal_date, s.signal_time, s.rank
+                FROM strategy_execution_records e
+                JOIN strategy_signals s ON s.id = e.signal_id
+                {}
+                ORDER BY s.strategy_name, s.rank
+                """.format(where),
+                params,
+            ).fetchall()
+        return [_execution_record_to_dict(row) for row in rows]
+
+
+class PortfolioRepository(_RepositoryBase):
+    """Repository helper for portfolio-related and daily validation baseline data."""
+
+    def save_tuning_run(
+        self,
+        strategy_name: str,
+        days: int,
+        plan: Dict[str, object],
+        metrics: Dict[str, object],
+        deepseek_review: Dict[str, object],
+    ) -> Dict[str, object]:
+        now = datetime.now().isoformat(timespec="seconds")
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO strategy_tuning_runs
+                (strategy_name, run_time, days, status, can_apply, shadow_mode,
+                 plan_json, metrics_json, deepseek_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    strategy_name,
+                    now,
+                    int(days),
+                    str(plan.get("status", "")),
+                    1 if plan.get("can_apply") else 0,
+                    1 if plan.get("shadow_mode") else 0,
+                    json.dumps(plan, ensure_ascii=False),
+                    json.dumps(metrics or {}, ensure_ascii=False),
+                    json.dumps(deepseek_review, ensure_ascii=False),
+                    now,
+                ),
+            )
+            run_id = int(cursor.lastrowid)
+        return {
+            "id": run_id,
+            "run_time": now,
+        }
+
+    def latest_tuning_run(self, strategy_name: str) -> Dict[str, object]:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT *
+                FROM strategy_tuning_runs
+                WHERE strategy_name = ?
+                ORDER BY run_time DESC, id DESC
+                LIMIT 1
+                """,
+                (strategy_name,),
+            ).fetchone()
+        return _tuning_row_to_dict(row) if row else {}
+
+    def list_tuning_runs(self, strategy_name: str, limit: int = 10) -> List[Dict[str, object]]:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM strategy_tuning_runs
+                WHERE strategy_name = ?
+                ORDER BY run_time DESC, id DESC
+                LIMIT ?
+                """,
+                (strategy_name, max(1, int(limit))),
+            ).fetchall()
+        return [_tuning_row_to_dict(row) for row in rows]
+
+
+class ExperimentRepository(_RepositoryBase):
+    """Repository for OOS fold prediction experiments."""
+
+    def save_fold_predictions(
+        self,
+        experiment_id: str,
+        fold_id: str,
+        strategy_name: str,
+        rows: Iterable[Dict[str, object]],
+        *,
+        baseline_id: str = "",
+        model_id: str = "",
+        model_version: str = "",
+        train_end_date: str = "",
+        feature_schema_hash: str = "",
+    ) -> Dict[str, object]:
+        experiment_id = str(experiment_id or "").strip()
+        fold_id = str(fold_id or "").strip()
+        strategy_name = str(strategy_name or "").strip()
+        if not experiment_id or not fold_id or not strategy_name:
+            return {"saved": 0, "status": "missing_identity"}
+        rows = [dict(row) for row in rows or [] if isinstance(row, dict)]
+        now = datetime.now().isoformat(timespec="seconds")
+        saved = 0
+        with self.connect() as conn:
+            for row in rows:
+                code = normalize_code(row.get("code"))
+                test_date = str(row.get("test_date") or row.get("signal_date") or "").strip()
+                if not code or not test_date:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO strategy_fold_predictions
+                    (experiment_id, fold_id, strategy_name, baseline_id, model_id, model_version,
+                     train_end_date, test_date, code, baseline_score, predicted_net_return,
+                     predicted_probability, selected, actual_net_return, feature_schema_hash,
+                     prediction_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(experiment_id, fold_id, test_date, code) DO UPDATE SET
+                      strategy_name=excluded.strategy_name,
+                      baseline_id=excluded.baseline_id,
+                      model_id=excluded.model_id,
+                      model_version=excluded.model_version,
+                      train_end_date=excluded.train_end_date,
+                      baseline_score=excluded.baseline_score,
+                      predicted_net_return=excluded.predicted_net_return,
+                      predicted_probability=excluded.predicted_probability,
+                      selected=excluded.selected,
+                      actual_net_return=excluded.actual_net_return,
+                      feature_schema_hash=excluded.feature_schema_hash,
+                      prediction_json=excluded.prediction_json,
+                      created_at=excluded.created_at
+                    """,
+                    (
+                        experiment_id,
+                        fold_id,
+                        strategy_name,
+                        str(row.get("baseline_id") or baseline_id or ""),
+                        str(row.get("model_id") or model_id or ""),
+                        str(row.get("model_version") or model_version or ""),
+                        str(row.get("train_end_date") or train_end_date or ""),
+                        test_date,
+                        code,
+                        coerce_number(row.get("baseline_score"), None),
+                        coerce_number(row.get("predicted_net_return"), None),
+                        coerce_number(row.get("predicted_probability"), None),
+                        1 if row.get("selected") else 0,
+                        coerce_number(row.get("actual_net_return"), None),
+                        str(row.get("feature_schema_hash") or feature_schema_hash or ""),
+                        json.dumps(row, ensure_ascii=False, sort_keys=True, default=str),
+                        now,
+                    ),
+                )
+                saved += 1
+        return {
+            "saved": saved,
+            "status": "saved" if saved else "empty",
+            "experiment_id": experiment_id,
+            "fold_id": fold_id,
+            "strategy": strategy_name,
+        }
+
+    def list_fold_predictions(
+        self,
+        experiment_id: str,
+        *,
+        strategy_name: str = "",
+        fold_id: str = "",
+        limit: int = 500,
+    ) -> List[Dict[str, object]]:
+        where = "WHERE experiment_id = ?"
+        params: List[object] = [str(experiment_id or "")]
+        if strategy_name:
+            where += " AND strategy_name = ?"
+            params.append(strategy_name)
+        if fold_id:
+            where += " AND fold_id = ?"
+            params.append(fold_id)
+        params.append(max(1, int(limit)))
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM strategy_fold_predictions
+                {}
+                ORDER BY test_date ASC, fold_id ASC, selected DESC, code ASC
+                LIMIT ?
+                """.format(where),
+                params,
+            ).fetchall()
+        return [_fold_prediction_to_dict(row) for row in rows]
+
+
 class SignalRepository(_RepositoryBase):
     """Persists and queries strategy signal snapshots."""
 
@@ -136,15 +632,18 @@ class SignalRepository(_RepositoryBase):
         saved = 0
         shadow_saved = 0
         candidate_saved = 0
+        freeze_transaction_checked_at = ""
         with self.connect() as conn:
+            freeze_transaction_checked_at = _check_signal_freeze_deadline(batch_metadata)
+            now_ts = datetime.now().isoformat(timespec="seconds")
             conn.execute(
                 """
                 INSERT OR REPLACE INTO strategy_signal_batches
                 (strategy_name, strategy_version, signal_date, signal_time, saved_count,
                  candidate_count, selected_count, data_source_timestamp, market_data_cutoff,
                  execution_policy_version, execution_policy_json, generation_json,
-                 portfolio_capital, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 portfolio_capital, snapshot_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     strategy_name,
@@ -160,7 +659,8 @@ class SignalRepository(_RepositoryBase):
                     execution_policy_json,
                     json.dumps(batch_metadata.get("generation") or {}, ensure_ascii=False, sort_keys=True, default=str),
                     portfolio_capital,
-                    datetime.now().isoformat(timespec="seconds"),
+                    str(batch_metadata.get("snapshot_id") or ""),
+                    now_ts,
                 ),
             )
             if "replay" in str(strategy_version or "").lower():
@@ -256,20 +756,12 @@ class SignalRepository(_RepositoryBase):
                 )
                 conn.execute(shadow_delete_sql, shadow_delete_params)
             conn.execute(candidate_delete_sql, candidate_delete_params)
+            candidate_rows_to_save = []
             for row in candidate_rows:
                 code = normalize_code(row.get("code"))
                 if not code:
                     continue
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO strategy_candidate_snapshots
-                    (strategy_name, strategy_version, signal_date, signal_time, code, name, market,
-                     industry, style_bucket, eligible, selected, rank, score, point_in_time_valid,
-                     eligibility_reasons_json, feature_values_json, missing_mask_json,
-                     source_timestamps_json, announcement_time, market_data_cutoff,
-                     point_in_time_violations_json, raw_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                candidate_rows_to_save.append(
                     (
                         strategy_name,
                         strategy_version,
@@ -293,21 +785,30 @@ class SignalRepository(_RepositoryBase):
                         str(row.get("market_data_cutoff") or signal_time),
                         json.dumps(row.get("point_in_time_violations") or [], ensure_ascii=False, default=str),
                         json.dumps(row.get("raw") or {}, ensure_ascii=False, default=str),
-                        datetime.now().isoformat(timespec="seconds"),
-                    ),
+                        str(row.get("snapshot_id") or batch_metadata.get("snapshot_id") or ""),
+                        now_ts,
+                    )
                 )
-                candidate_saved += 1
+            if candidate_rows_to_save:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO strategy_candidate_snapshots
+                    (strategy_name, strategy_version, signal_date, signal_time, code, name, market,
+                     industry, style_bucket, eligible, selected, rank, score, point_in_time_valid,
+                     eligibility_reasons_json, feature_values_json, missing_mask_json,
+                    source_timestamps_json, announcement_time, market_data_cutoff,
+                     point_in_time_violations_json, raw_json, snapshot_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    candidate_rows_to_save,
+                )
+                candidate_saved = len(candidate_rows_to_save)
+
+            signal_rows_to_save = []
             for row in rows:
                 code = normalize_code(row.get("code"))
                 rank = int(row.get("rank") or 0)
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO strategy_signals
-                    (strategy_name, strategy_version, signal_date, signal_time, rank, code, name,
-                     market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
-                     turnover_rate, sixty_day_pct, ytd_pct, score, reasons_json, raw_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                signal_rows_to_save.append(
                     (
                         strategy_name,
                         strategy_version,
@@ -328,25 +829,30 @@ class SignalRepository(_RepositoryBase):
                         coerce_number(row.get("score")),
                         json.dumps(row.get("reasons", []), ensure_ascii=False),
                         json.dumps(row, ensure_ascii=False),
-                        datetime.now().isoformat(timespec="seconds"),
-                    ),
+                        now_ts,
+                    )
                 )
-                saved += 1
+            if signal_rows_to_save:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO strategy_signals
+                    (strategy_name, strategy_version, signal_date, signal_time, rank, code, name,
+                     market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
+                     turnover_rate, sixty_day_pct, ytd_pct, score, reasons_json, raw_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    signal_rows_to_save,
+                )
+                saved = len(signal_rows_to_save)
+
+            shadow_rows_to_save = []
             for row in deepseek_shadow_rows:
                 code = normalize_code(row.get("code"))
                 if not code:
                     continue
                 rank = int(coerce_number(row.get("rank"), coerce_number(row.get("local_rank"), 0)) or 0)
                 local_rank = int(coerce_number(row.get("local_rank"), rank) or 0)
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO strategy_deepseek_shadow_signals
-                    (strategy_name, strategy_version, signal_date, signal_time, rank, local_rank, code, name,
-                     market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
-                     turnover_rate, sixty_day_pct, ytd_pct, score, deepseek_rank_score, deepseek_action,
-                     deepseek_veto, deepseek_penalty, filter_reason, raw_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                shadow_rows_to_save.append(
                     (
                         strategy_name,
                         strategy_version,
@@ -372,10 +878,26 @@ class SignalRepository(_RepositoryBase):
                         coerce_number(row.get("deepseek_penalty")),
                         str(row.get("deepseek_filter_reason") or ""),
                         json.dumps(row, ensure_ascii=False),
-                        datetime.now().isoformat(timespec="seconds"),
-                    ),
+                        now_ts,
+                    )
                 )
-                shadow_saved += 1
+            if shadow_rows_to_save:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO strategy_deepseek_shadow_signals
+                    (strategy_name, strategy_version, signal_date, signal_time, rank, local_rank, code, name,
+                     market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
+                     turnover_rate, sixty_day_pct, ytd_pct, score, deepseek_rank_score, deepseek_action,
+                     deepseek_veto, deepseek_penalty, filter_reason, raw_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    shadow_rows_to_save,
+                )
+                shadow_saved = len(shadow_rows_to_save)
+            # This check is deliberately inside the transaction. Raising here
+            # rolls back all replacements/inserts, so a late batch cannot look
+            # executable merely because its calculation started before cutoff.
+            freeze_transaction_checked_at = _check_signal_freeze_deadline(batch_metadata)
         return {
             "signal_date": signal_date,
             "saved": saved,
@@ -383,7 +905,90 @@ class SignalRepository(_RepositoryBase):
             "candidate_saved": candidate_saved,
             "deepseek_shadow_saved": shadow_saved,
             "deepseek_shadow_replaced": len(old_shadow_ids),
+            "freeze_transaction_checked_at": freeze_transaction_checked_at,
         }
+
+    def save_shadow_analysis_signals(
+        self,
+        strategy_name: str,
+        strategy_version: str,
+        signal_time: str,
+        rows: Iterable[Dict[str, object]],
+    ) -> Dict[str, int]:
+        """Replace shadow research rows without touching the frozen recommendation batch."""
+        signal_date = str(signal_time or "")[:10]
+        rows = [dict(row) for row in rows or [] if isinstance(row, dict)]
+        with self.connect() as conn:
+            old_ids = conn.execute(
+                """
+                SELECT id
+                FROM strategy_deepseek_shadow_signals
+                WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                """,
+                (strategy_name, strategy_version, signal_date),
+            ).fetchall()
+            if old_ids:
+                conn.executemany(
+                    "DELETE FROM strategy_deepseek_shadow_outcomes WHERE shadow_id = ?",
+                    [(row[0],) for row in old_ids],
+                )
+                conn.execute(
+                    """
+                    DELETE FROM strategy_deepseek_shadow_signals
+                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                    """,
+                    (strategy_name, strategy_version, signal_date),
+                )
+            now_ts = datetime.now().isoformat(timespec="seconds")
+            values = []
+            for index, row in enumerate(rows, start=1):
+                code = normalize_code(row.get("code"))
+                if not code:
+                    continue
+                rank = int(coerce_number(row.get("rank"), index) or index)
+                local_rank = int(coerce_number(row.get("local_rank"), rank) or rank)
+                values.append(
+                    (
+                        strategy_name,
+                        strategy_version,
+                        signal_date,
+                        signal_time,
+                        rank,
+                        local_rank,
+                        code,
+                        str(row.get("name") or ""),
+                        str(row.get("market_label") or row.get("market") or ""),
+                        str(row.get("theme") or ""),
+                        coerce_number(row.get("price")),
+                        coerce_number(row.get("pct_chg")),
+                        coerce_number(row.get("turnover")),
+                        coerce_number(row.get("volume_ratio")),
+                        coerce_number(row.get("turnover_rate")),
+                        coerce_number(row.get("sixty_day_pct")),
+                        coerce_number(row.get("ytd_pct")),
+                        coerce_number(row.get("score")),
+                        coerce_number(row.get("deepseek_rank_score")),
+                        str(row.get("deepseek_action") or ""),
+                        1 if row.get("deepseek_veto") else 0,
+                        coerce_number(row.get("deepseek_penalty")),
+                        str(row.get("deepseek_filter_reason") or ""),
+                        json.dumps(row, ensure_ascii=False, default=str),
+                        now_ts,
+                    )
+                )
+            if values:
+                conn.executemany(
+                    """
+                    INSERT INTO strategy_deepseek_shadow_signals
+                    (strategy_name, strategy_version, signal_date, signal_time, rank, local_rank, code, name,
+                     market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
+                     turnover_rate, sixty_day_pct, ytd_pct, score, deepseek_rank_score, deepseek_action,
+                     deepseek_veto, deepseek_penalty, filter_reason, raw_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+        return {"saved": len(values), "replaced": len(old_ids)}
 
 
     def list_signal_dates(self, strategy_name: str = "") -> List[Dict[str, object]]:
@@ -455,7 +1060,7 @@ class SignalRepository(_RepositoryBase):
             rows = conn.execute(
                 """
                 SELECT s.*, o.next_trade_date, o.next_open, o.next_high, o.next_low, o.next_close,
-                       o.next_open_return, o.next_close_return,
+                       o.next_open_return, o.next_close_return, o.overnight_return,
                        o.intraday_high_return, o.hold_3d_return, o.hold_5d_return,
                        o.hold_10d_return, o.hold_20d_return, o.max_gain_3d,
                        o.max_drawdown_3d, o.hit_3pct, o.hit_5pct,
@@ -486,12 +1091,19 @@ class SignalRepository(_RepositoryBase):
                        e.unfilled_exit_quantity, e.fill_source,
                        e.fee_pct, e.slippage_pct, e.impact_pct,
                        e.gross_return_pct, e.net_return_pct, e.return_formula,
+                       COALESCE(e.position_status, o.position_status, 'not_entered') AS position_status,
+                       COALESCE(e.entry_trade_date, o.entry_trade_date, '') AS entry_trade_date,
+                       COALESCE(e.earliest_exit_date, o.earliest_exit_date, '') AS earliest_exit_date,
+                       COALESCE(e.exit_trade_date, o.exit_trade_date, '') AS exit_trade_date,
+                       e.mark_price,
+                       COALESCE(e.price_adjustment_mode, o.price_adjustment_mode, '') AS price_adjustment_mode,
                        COALESCE(e.execution_policy_version, o.execution_policy_version, '') AS execution_policy_version,
                        COALESCE(e.execution_policy_json, o.execution_policy_json, '') AS execution_policy_json,
                        COALESCE(e.cost_scenarios_json, o.cost_scenarios_json, '{{}}') AS cost_scenarios_json,
                        COALESCE(e.raw_prices_json, o.raw_prices_json, '[]') AS raw_prices_json,
                        COALESCE(e.benchmark_json, o.benchmark_json, '{{}}') AS benchmark_json,
                        COALESCE(o.return_reproducible, 0) AS return_reproducible,
+                       o.entry_price, o.exit_price,
                        o.updated_at AS outcome_updated_at,
                        k.skip_reason, k.updated_at AS skip_updated_at
                 FROM strategy_signals s
@@ -941,11 +1553,125 @@ class SignalRepository(_RepositoryBase):
 class OutcomeRepository(_RepositoryBase):
     """Persists strategy outcomes and provides outcome query rows."""
 
+    _EXECUTION_RECORD_COLUMNS = _EXECUTION_RECORD_COLUMNS
+
+    @staticmethod
+    def _execution_record_values(record: Dict[str, object]) -> List[object]:
+        json_fields = {
+            "execution_policy_json": record.get("execution_policy") or {},
+            "cost_scenarios_json": record.get("cost_scenarios") or {},
+            "raw_prices_json": record.get("raw_prices") or [],
+            "benchmark_json": record.get("benchmark") or {},
+        }
+        values: List[object] = []
+        for column in OutcomeRepository._EXECUTION_RECORD_COLUMNS:
+            if column in json_fields:
+                values.append(
+                    json.dumps(
+                        json_fields[column],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    )
+                )
+            elif column == "promotion_eligible":
+                values.append(1 if record.get(column) else 0)
+            else:
+                values.append(record.get(column))
+        return values
+
+    def delete_strategy_outcomes(self, signal_ids: List[int], connection=None) -> None:
+        if not signal_ids:
+            return
+        if connection is None:
+            with self.connect() as conn:
+                conn.executemany("DELETE FROM strategy_outcomes WHERE signal_id = ?", [(item,) for item in signal_ids])
+            return
+        connection.executemany("DELETE FROM strategy_outcomes WHERE signal_id = ?", [(item,) for item in signal_ids])
+
+    def delete_execution_skips(self, signal_ids: List[int], connection=None) -> None:
+        if not signal_ids:
+            return
+        if connection is None:
+            with self.connect() as conn:
+                conn.executemany("DELETE FROM strategy_execution_skips WHERE signal_id = ?", [(item,) for item in signal_ids])
+            return
+        connection.executemany("DELETE FROM strategy_execution_skips WHERE signal_id = ?", [(item,) for item in signal_ids])
+
+    def save_execution_records(self, records: List[Dict[str, object]], connection=None) -> None:
+        if not records:
+            return
+        rows = [self._execution_record_values(record) for record in records]
+        if connection is None:
+            with self.connect() as conn:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO strategy_execution_records ({}) VALUES ({})".format(
+                        ", ".join(self._EXECUTION_RECORD_COLUMNS),
+                        ", ".join("?" for _ in self._EXECUTION_RECORD_COLUMNS),
+                    ),
+                    rows,
+                )
+            return
+        connection.executemany(
+            "INSERT OR REPLACE INTO strategy_execution_records ({}) VALUES ({})".format(
+                ", ".join(self._EXECUTION_RECORD_COLUMNS),
+                ", ".join("?" for _ in self._EXECUTION_RECORD_COLUMNS),
+            ),
+            rows,
+        )
+
+    def save_strategy_outcomes(self, columns, rows: List[tuple], connection=None) -> None:
+        if not rows:
+            return
+        sql = "INSERT OR REPLACE INTO strategy_outcomes ({}) VALUES ({})".format(
+            ", ".join(columns),
+            ", ".join("?" for _ in columns),
+        )
+        if connection is None:
+            with self.connect() as conn:
+                conn.executemany(sql, rows)
+            return
+        connection.executemany(sql, rows)
+
+    def delete_deepseek_shadow_outcomes(self, shadow_ids: List[int], connection=None) -> None:
+        if not shadow_ids:
+            return
+        if connection is None:
+            with self.connect() as conn:
+                conn.executemany(
+                    "DELETE FROM strategy_deepseek_shadow_outcomes WHERE shadow_id = ?",
+                    [(item,) for item in shadow_ids],
+                )
+            return
+        connection.executemany(
+            "DELETE FROM strategy_deepseek_shadow_outcomes WHERE shadow_id = ?",
+            [(item,) for item in shadow_ids],
+        )
+
+    def save_deepseek_shadow_outcomes(self, rows: List[tuple], connection=None) -> None:
+        if not rows:
+            return
+        sql = """
+                INSERT OR REPLACE INTO strategy_deepseek_shadow_outcomes
+                (shadow_id, code, next_trade_date, future_days, next_open, next_close,
+                 next_close_return, hold_3d_return, hold_5d_return, hold_10d_return, hold_20d_return,
+                 signal_next_close_return, signal_hold_3d_return, signal_hold_5d_return,
+                 signal_hold_10d_return, signal_hold_20d_return, exit_return, signal_exit_return,
+                 overnight_return, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+        if connection is None:
+            with self.connect() as conn:
+                conn.executemany(sql, rows)
+            return
+        connection.executemany(sql, rows)
+
     def fetch_validation_metric_rows(
         self,
         strategy_name: str = "",
         current_version: str = "",
         replay_version: str = "",
+        days: int = 0,
     ) -> List[sqlite3.Row]:
         where = "WHERE o.signal_id IS NOT NULL"
         params: List[object] = []
@@ -955,6 +1681,32 @@ class OutcomeRepository(_RepositoryBase):
         if current_version:
             where += " AND (s.strategy_version = ? OR s.strategy_version = ?)"
             params.extend((current_version, replay_version))
+        if days and int(days) > 0:
+            with self.connect() as conn:
+                recent_dates = [
+                    row[0]
+                    for row in conn.execute(
+                        """
+                        SELECT DISTINCT s.signal_date
+                        FROM strategy_signals s
+                        JOIN strategy_outcomes o ON o.signal_id = s.id
+                        {}
+                        ORDER BY s.signal_date DESC
+                        LIMIT ?
+                        """.format(where),
+                        [*params, max(1, int(days))],
+                    ).fetchall()
+                ]
+            if recent_dates:
+                placeholders = ",".join("?" for _ in recent_dates)
+                date_filter = "AND s.signal_date IN ({})".format(placeholders)
+                date_params: List[object] = list(recent_dates)
+            else:
+                date_filter = "AND 1=0"
+                date_params = []
+        else:
+            date_filter = ""
+            date_params = []
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             return conn.execute(
@@ -995,6 +1747,7 @@ class OutcomeRepository(_RepositoryBase):
                        COALESCE(o.primary_holding_days, 0) AS stored_primary_holding_days,
                        COALESCE(o.validation_baseline_id, '') AS validation_baseline_id,
                        COALESCE(o.validation_baseline_json, '') AS validation_baseline_json,
+                       COALESCE(o.overnight_return, 0) AS overnight_return,
                        CASE WHEN COALESCE(b.candidate_count, 0) > 0
                             THEN COALESCE(e.promotion_eligible, 0) ELSE 1 END AS promotion_eligible
                 FROM strategy_signals s
@@ -1004,10 +1757,10 @@ class OutcomeRepository(_RepositoryBase):
                   ON b.strategy_name = s.strategy_name
                  AND b.strategy_version = s.strategy_version
                  AND b.signal_date = s.signal_date
-                {}
+                {} {}
                 ORDER BY s.signal_date DESC, s.rank ASC
-                """.format(where),
-                params,
+                """.format(where, date_filter),
+                [*params, *date_params],
             ).fetchall()
 
 
@@ -1023,6 +1776,20 @@ class OutcomeRepository(_RepositoryBase):
         if current_version:
             version_filter = " AND (s.strategy_version = ? OR s.strategy_version = ?)"
             query_params.extend((current_version, replay_version))
+        if primary_column == "overnight_return":
+            signal_primary_expression = (
+                "CASE WHEN lower(COALESCE(o.primary_return_field, '')) = 'overnight_return' "
+                "THEN COALESCE(o.overnight_return, 0) "
+                "ELSE COALESCE(o.signal_next_close_return, o.next_close_return, 0) END"
+            )
+            shadow_primary_expression = (
+                "CASE WHEN lower(s.strategy_version) LIKE '%close_auction%' "
+                "THEN COALESCE(o.overnight_return, 0) "
+                "ELSE COALESCE(o.signal_next_close_return, o.next_close_return, 0) END"
+            )
+        else:
+            signal_primary_expression = "COALESCE(o.{}, 0)".format(primary_column)
+            shadow_primary_expression = signal_primary_expression
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             signal_rows = conn.execute(
@@ -1030,13 +1797,16 @@ class OutcomeRepository(_RepositoryBase):
                 SELECT s.signal_date, s.strategy_name, s.rank, s.strategy_version,
                        s.turnover, s.market, s.raw_json,
                        0 AS deepseek_shadow_signal,
-                       COALESCE(o.{primary_column}, 0) AS primary_return,
+                       {signal_primary_expression} AS primary_return,
                        COALESCE(o.future_days, 1) AS future_days
                 FROM strategy_signals s
                 JOIN strategy_outcomes o ON o.signal_id = s.id
                 WHERE s.strategy_name = ? {version_filter}
                 ORDER BY s.signal_date DESC, s.rank ASC
-                """.format(primary_column=primary_column, version_filter=version_filter),
+                """.format(
+                    signal_primary_expression=signal_primary_expression,
+                    version_filter=version_filter,
+                ),
                 query_params,
             ).fetchall()
             shadow_rows = conn.execute(
@@ -1044,13 +1814,16 @@ class OutcomeRepository(_RepositoryBase):
                 SELECT s.signal_date, s.strategy_name, s.rank, s.strategy_version,
                        s.turnover, s.market, s.raw_json,
                        1 AS deepseek_shadow_signal,
-                       COALESCE(o.{primary_column}, 0) AS primary_return,
+                       {shadow_primary_expression} AS primary_return,
                        COALESCE(o.future_days, 1) AS future_days
                 FROM strategy_deepseek_shadow_signals s
                 JOIN strategy_deepseek_shadow_outcomes o ON o.shadow_id = s.id
                 WHERE s.strategy_name = ? {version_filter}
                 ORDER BY s.signal_date DESC, s.local_rank ASC
-                """.format(primary_column=primary_column, version_filter=version_filter),
+                """.format(
+                    shadow_primary_expression=shadow_primary_expression,
+                    version_filter=version_filter,
+                ),
                 query_params,
             ).fetchall()
         return list(signal_rows) + list(shadow_rows)
@@ -1105,71 +1878,17 @@ class OutcomeRepository(_RepositoryBase):
                 VALUES (?, ?, ?, ?)
                 """,
                 (signal_id, code, reason, updated_at),
-            )
+                )
 
 
     def save_execution_record(self, record: Dict[str, object]) -> None:
-        columns = (
-            "signal_id",
-            "code",
-            "label_status",
-            "reason",
-            "entry_status",
-            "exit_status",
-            "delisting_status",
-            "promotion_eligible",
-            "portfolio_capital",
-            "target_weight_pct",
-            "target_notional",
-            "order_quantity",
-            "actual_filled_quantity",
-            "actual_entry_price",
-            "actual_exit_quantity",
-            "actual_exit_price",
-            "unfilled_quantity",
-            "unfilled_entry_quantity",
-            "unfilled_exit_quantity",
-            "fill_source",
-            "fee_pct",
-            "slippage_pct",
-            "impact_pct",
-            "gross_return_pct",
-            "net_return_pct",
-            "return_formula",
-            "execution_policy_version",
-            "execution_policy_json",
-            "cost_scenarios_json",
-            "raw_prices_json",
-            "benchmark_json",
-            "updated_at",
-        )
-        json_fields = {
-            "execution_policy_json": record.get("execution_policy") or {},
-            "cost_scenarios_json": record.get("cost_scenarios") or {},
-            "raw_prices_json": record.get("raw_prices") or [],
-            "benchmark_json": record.get("benchmark") or {},
-        }
-        values = []
-        for column in columns:
-            if column in json_fields:
-                values.append(json.dumps(json_fields[column], ensure_ascii=False, sort_keys=True, default=str))
-            elif column == "promotion_eligible":
-                values.append(1 if record.get(column) else 0)
-            else:
-                values.append(record.get(column))
         with self.connect() as conn:
             if str(record.get("label_status") or "") != "unfilled":
                 conn.execute(
                     "DELETE FROM strategy_execution_skips WHERE signal_id = ?",
                     (record.get("signal_id"),),
                 )
-            conn.execute(
-                "INSERT OR REPLACE INTO strategy_execution_records ({}) VALUES ({})".format(
-                    ", ".join(columns),
-                    ", ".join("?" for _ in columns),
-                ),
-                values,
-            )
+            self.save_execution_records([record], connection=conn)
 
 
     def execution_records_for_date(
@@ -1200,13 +1919,7 @@ class OutcomeRepository(_RepositoryBase):
     def save_strategy_outcome(self, signal_id: int, columns, values) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM strategy_execution_skips WHERE signal_id = ?", (signal_id,))
-            conn.execute(
-                "INSERT OR REPLACE INTO strategy_outcomes ({}) VALUES ({})".format(
-                    ", ".join(columns),
-                    ", ".join("?" for _ in values),
-                ),
-                values,
-            )
+            self.save_strategy_outcomes(columns, [values], connection=conn)
 
 
     def fetch_deepseek_shadow_signals(self, where: str, params: List[object]) -> List[sqlite3.Row]:
@@ -1220,17 +1933,7 @@ class OutcomeRepository(_RepositoryBase):
 
     def save_deepseek_shadow_outcome(self, values) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO strategy_deepseek_shadow_outcomes
-                (shadow_id, code, next_trade_date, future_days, next_open, next_close,
-                 next_close_return, hold_3d_return, hold_5d_return, hold_10d_return, hold_20d_return,
-                 signal_next_close_return, signal_hold_3d_return, signal_hold_5d_return,
-                 signal_hold_10d_return, signal_hold_20d_return, exit_return, signal_exit_return, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                values,
-            )
+            self.save_deepseek_shadow_outcomes([values], connection=conn)
 
 class TuningRepository(_RepositoryBase):
     """Persists tuning runs and live-weight training samples."""
@@ -1488,6 +2191,10 @@ class MarketGateRepository(_RepositoryBase):
                 SELECT s.signal_date, s.strategy_name, s.strategy_version, s.rank, s.turnover, s.market, s.raw_json,
                        COALESCE(o.next_close_return, 0) AS next_close_return,
                        COALESCE(o.signal_next_close_return, o.next_close_return, 0) AS signal_next_close_return,
+                       CASE WHEN lower(COALESCE(o.primary_return_field, '')) = 'overnight_return'
+                            THEN COALESCE(o.overnight_return, 0)
+                            ELSE COALESCE(o.signal_next_close_return, o.next_close_return, 0)
+                       END AS overnight_return,
                        COALESCE(o.hold_3d_return, 0) AS hold_3d_return,
                        COALESCE(o.hold_5d_return, o.hold_3d_return, 0) AS hold_5d_return,
                        COALESCE(o.hold_10d_return, o.hold_5d_return, o.hold_3d_return, 0) AS hold_10d_return,
@@ -1917,88 +2624,304 @@ class PredictionRepository(_RepositoryBase):
 class ValidationRepository(_RepositoryBase):
     """Facade preserving the legacy validation repository API."""
 
-    _FACADE_METHODS = {
-        "save_signals": "signals",
-        "list_signal_dates": "signals",
-        "existing_validation_dates": "signals",
-        "signals_for_date": "signals",
-        "candidate_snapshots_for_date": "signals",
-        "latest_candidate_snapshots": "signals",
-        "latest_signal_rows": "signals",
-        "prune_strategies": "signals",
-        "signal_codes": "signals",
-        "signal_status_counts": "signals",
-        "execution_skip_count": "signals",
-        "fetch_recent_signal_dates": "signals",
-        "fetch_baseline_status_rows": "signals",
-        "fetch_baseline_backfill_rows": "signals",
-        "fetch_validation_metric_rows": "outcomes",
-        "fetch_deepseek_attribution_rows": "outcomes",
-        "fetch_signals_for_outcome_update": "outcomes",
-        "delete_strategy_outcome": "outcomes",
-        "save_execution_skip": "outcomes",
-        "save_execution_record": "outcomes",
-        "execution_records_for_date": "outcomes",
-        "save_strategy_outcome": "outcomes",
-        "fetch_deepseek_shadow_signals": "outcomes",
-        "save_deepseek_shadow_outcome": "outcomes",
-        "save_tuning_run": "tuning",
-        "latest_tuning_run": "tuning",
-        "list_tuning_runs": "tuning",
-        "live_weight_samples": "tuning",
-        "save_market_gate_review": "market_gates",
-        "market_gate_metrics": "market_gates",
-        "save_fold_predictions": "research",
-        "list_fold_predictions": "research",
-        "save_oos_report": "oos_reports",
-        "list_oos_reports": "oos_reports",
-        "save_stock_prediction_snapshot": "predictions",
-        "update_stock_prediction_outcomes": "predictions",
-        "stance_metrics": "predictions",
-    }
-
     def __init__(self, connect_fn, db_path: str) -> None:
         super().__init__(connect_fn, db_path)
+        self.migrations = MigrationRepository(connect_fn, db_path)
         self.signals = SignalRepository(connect_fn, db_path)
+        self.candidates = CandidateSnapshotRepository(connect_fn, db_path)
+        self.executions = ExecutionRepository(connect_fn, db_path)
         self.outcomes = OutcomeRepository(connect_fn, db_path)
         self.tuning = TuningRepository(connect_fn, db_path)
         self.market_gates = MarketGateRepository(connect_fn, db_path)
         self.research = ResearchRepository(connect_fn, db_path)
         self.oos_reports = OOSReportRepository(connect_fn, db_path)
         self.predictions = PredictionRepository(connect_fn, db_path)
-        self._repositories = (
-            self.signals,
-            self.outcomes,
-            self.tuning,
-            self.market_gates,
-            self.research,
-            self.oos_reports,
-            self.predictions,
+
+    def save_signals(
+        self,
+        strategy_name: str,
+        strategy_version: str,
+        signal_time: str,
+        rows: Iterable[Dict[str, object]],
+        deepseek_shadow_rows: Optional[Iterable[Dict[str, object]]] = None,
+        candidate_rows: Optional[Iterable[Dict[str, object]]] = None,
+        batch_metadata: Optional[Dict[str, object]] = None,
+        execution_policy: Optional[Dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        return self.signals.save_signals(
+            strategy_name,
+            strategy_version,
+            signal_time,
+            rows,
+            deepseek_shadow_rows=deepseek_shadow_rows,
+            candidate_rows=candidate_rows,
+            batch_metadata=batch_metadata,
+            execution_policy=execution_policy,
         )
 
-    def _repository_for_method(self, name: str):
-        repository_name = self._FACADE_METHODS.get(name)
-        if not repository_name:
-            raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
-        return getattr(self, repository_name)
+    def save_shadow_analysis_signals(
+        self,
+        strategy_name: str,
+        strategy_version: str,
+        signal_time: str,
+        rows: Iterable[Dict[str, object]],
+    ) -> Dict[str, int]:
+        return self.signals.save_shadow_analysis_signals(
+            strategy_name,
+            strategy_version,
+            signal_time,
+            rows,
+        )
 
-    def __getattr__(self, name: str):
-        return getattr(self._repository_for_method(name), name)
+    def list_signal_dates(self, strategy_name: str = "") -> List[Dict[str, object]]:
+        return self.signals.list_signal_dates(strategy_name=strategy_name)
 
-    def __dir__(self):
-        return sorted(set(super().__dir__()) | set(self._FACADE_METHODS))
+    def existing_validation_dates(self, strategy_name: str, replay_version: str = "") -> List[str]:
+        return self.signals.existing_validation_dates(strategy_name, replay_version=replay_version)
 
+    def signals_for_date(self, signal_date: str, strategy_name: str = "") -> List[Dict[str, object]]:
+        return self.signals.signals_for_date(signal_date, strategy_name=strategy_name)
 
-def _make_facade_method(name: str):
-    def _method(self, *args, **kwargs):
-        return getattr(self._repository_for_method(name), name)(*args, **kwargs)
+    def candidate_snapshots_for_date(
+        self,
+        signal_date: str,
+        strategy_name: str = "",
+        strategy_version: str = "",
+    ) -> List[Dict[str, object]]:
+        return self.candidates.candidate_snapshots_for_date(
+            signal_date,
+            strategy_name=strategy_name,
+            strategy_version=strategy_version,
+        )
 
-    _method.__name__ = name
-    _method.__qualname__ = f"ValidationRepository.{name}"
-    return _method
+    def latest_candidate_snapshots(self, strategy_name: str) -> List[Dict[str, object]]:
+        return self.candidates.latest_candidate_snapshots(strategy_name)
 
+    def latest_signal_rows(self, strategy_name: str) -> List[Dict[str, object]]:
+        return self.signals.latest_signal_rows(strategy_name)
 
-for _method_name in ValidationRepository._FACADE_METHODS:
-    setattr(ValidationRepository, _method_name, _make_facade_method(_method_name))
-del _method_name
-del _make_facade_method
+    def prune_strategies(self, allowed_strategies: Iterable[str]) -> Dict[str, int]:
+        return self.signals.prune_strategies(allowed_strategies)
+
+    def signal_codes(self, signal_date: str = "", strategy_name: str = "", limit: int = 500) -> List[Dict[str, object]]:
+        return self.signals.signal_codes(signal_date=signal_date, strategy_name=strategy_name, limit=limit)
+
+    def signal_status_counts(
+        self,
+        strategy_name: str = "",
+        days: int = 20,
+        strategy_version: str = "",
+    ) -> Dict[str, object]:
+        return self.signals.signal_status_counts(strategy_name=strategy_name, days=days, strategy_version=strategy_version)
+
+    def execution_skip_count(
+        self,
+        strategy_name: str = "",
+        days: int = 20,
+        strategy_version: str = "",
+    ) -> int:
+        return self.signals.execution_skip_count(strategy_name=strategy_name, days=days, strategy_version=strategy_version)
+
+    def fetch_recent_signal_dates(
+        self,
+        strategy_name: str = "",
+        current_version: str = "",
+        replay_version: str = "",
+        days: int = 120,
+    ) -> List[str]:
+        return self.signals.fetch_recent_signal_dates(
+            strategy_name=strategy_name,
+            current_version=current_version,
+            replay_version=replay_version,
+            days=days,
+        )
+
+    def fetch_baseline_status_rows(
+        self,
+        dates: List[str],
+        strategy_name: str = "",
+        current_version: str = "",
+        replay_version: str = "",
+    ) -> List[sqlite3.Row]:
+        return self.signals.fetch_baseline_status_rows(
+            dates,
+            strategy_name=strategy_name,
+            current_version=current_version,
+            replay_version=replay_version,
+        )
+
+    def fetch_baseline_backfill_rows(
+        self,
+        dates: List[str],
+        strategy_name: str,
+        current_version: str = "",
+        replay_version: str = "",
+        limit: int = 500,
+    ) -> List[sqlite3.Row]:
+        return self.signals.fetch_baseline_backfill_rows(
+            dates,
+            strategy_name=strategy_name,
+            current_version=current_version,
+            replay_version=replay_version,
+            limit=limit,
+        )
+
+    def fetch_validation_metric_rows(
+        self,
+        strategy_name: str = "",
+        current_version: str = "",
+        replay_version: str = "",
+        days: int = 0,
+    ) -> List[sqlite3.Row]:
+        return self.outcomes.fetch_validation_metric_rows(
+            strategy_name=strategy_name,
+            current_version=current_version,
+            replay_version=replay_version,
+            days=days,
+        )
+
+    def fetch_deepseek_attribution_rows(
+        self,
+        strategy_name: str,
+        primary_column: str,
+        current_version: str = "",
+        replay_version: str = "",
+    ) -> List[sqlite3.Row]:
+        return self.outcomes.fetch_deepseek_attribution_rows(
+            strategy_name,
+            primary_column,
+            current_version=current_version,
+            replay_version=replay_version,
+        )
+
+    def fetch_signals_for_outcome_update(self, where: str, params: List[object]) -> List[sqlite3.Row]:
+        return self.outcomes.fetch_signals_for_outcome_update(where, params)
+
+    def delete_strategy_outcome(self, signal_id: int) -> None:
+        return self.outcomes.delete_strategy_outcome(signal_id)
+
+    def delete_strategy_outcomes(self, signal_ids: List[int], connection=None) -> None:
+        return self.outcomes.delete_strategy_outcomes(signal_ids, connection=connection)
+
+    def delete_execution_skips(self, signal_ids: List[int], connection=None) -> None:
+        return self.outcomes.delete_execution_skips(signal_ids, connection=connection)
+
+    def save_execution_skip(self, signal_id: int, code: str, reason: str, updated_at: str) -> None:
+        return self.outcomes.save_execution_skip(signal_id, code, reason, updated_at)
+
+    def save_execution_record(self, record: Dict[str, object]) -> None:
+        return self.outcomes.save_execution_record(record)
+
+    def save_execution_records(self, records: List[Dict[str, object]], connection=None) -> None:
+        return self.executions.save_execution_records(records, connection=connection)
+
+    def execution_records_for_date(
+        self,
+        signal_date: str,
+        strategy_name: str = "",
+    ) -> List[Dict[str, object]]:
+        return self.executions.execution_records_for_date(signal_date, strategy_name=strategy_name)
+
+    def save_strategy_outcome(self, signal_id: int, columns, values) -> None:
+        return self.outcomes.save_strategy_outcome(signal_id, columns, values)
+
+    def save_strategy_outcomes(self, columns, rows: List[tuple], connection=None) -> None:
+        return self.outcomes.save_strategy_outcomes(columns, rows, connection=connection)
+
+    def fetch_deepseek_shadow_signals(self, where: str, params: List[object]) -> List[sqlite3.Row]:
+        return self.outcomes.fetch_deepseek_shadow_signals(where, params)
+
+    def save_deepseek_shadow_outcome(self, values) -> None:
+        return self.outcomes.save_deepseek_shadow_outcome(values)
+
+    def delete_deepseek_shadow_outcomes(self, shadow_ids: List[int], connection=None) -> None:
+        return self.outcomes.delete_deepseek_shadow_outcomes(shadow_ids, connection=connection)
+
+    def save_deepseek_shadow_outcomes(self, rows: List[tuple], connection=None) -> None:
+        return self.outcomes.save_deepseek_shadow_outcomes(rows, connection=connection)
+
+    def save_tuning_run(
+        self,
+        strategy_name: str,
+        days: int,
+        plan: Dict[str, object],
+        metrics: Dict[str, object],
+        deepseek_review: Dict[str, object],
+    ) -> Dict[str, object]:
+        return self.tuning.save_tuning_run(strategy_name, days, plan, metrics, deepseek_review)
+
+    def latest_tuning_run(self, strategy_name: str) -> Dict[str, object]:
+        return self.tuning.latest_tuning_run(strategy_name)
+
+    def list_tuning_runs(self, strategy_name: str, limit: int = 10) -> List[Dict[str, object]]:
+        return self.tuning.list_tuning_runs(strategy_name, limit=limit)
+
+    def live_weight_samples(self, strategy_name: str, days: int = 120) -> List[Dict[str, object]]:
+        return self.tuning.live_weight_samples(strategy_name, days=days)
+
+    def save_market_gate_review(self, market_gate: Dict[str, object], market_filter: str = "all") -> Dict[str, object]:
+        return self.market_gates.save_market_gate_review(market_gate, market_filter=market_filter)
+
+    def market_gate_metrics(self, days: int = 120) -> Dict[str, object]:
+        return self.market_gates.market_gate_metrics(days=days)
+
+    def save_fold_predictions(
+        self,
+        experiment_id: str,
+        fold_id: str,
+        strategy_name: str,
+        rows: Iterable[Dict[str, object]],
+        *,
+        baseline_id: str = "",
+        model_id: str = "",
+        model_version: str = "",
+        train_end_date: str = "",
+        feature_schema_hash: str = "",
+    ) -> Dict[str, object]:
+        return self.research.save_fold_predictions(
+            experiment_id,
+            fold_id,
+            strategy_name,
+            rows,
+            baseline_id=baseline_id,
+            model_id=model_id,
+            model_version=model_version,
+            train_end_date=train_end_date,
+            feature_schema_hash=feature_schema_hash,
+        )
+
+    def list_fold_predictions(
+        self,
+        experiment_id: str,
+        *,
+        strategy_name: str = "",
+        fold_id: str = "",
+        limit: int = 500,
+    ) -> List[Dict[str, object]]:
+        return self.research.list_fold_predictions(
+            experiment_id,
+            strategy_name=strategy_name,
+            fold_id=fold_id,
+            limit=limit,
+        )
+
+    def save_oos_report(self, report: Dict[str, object], trigger: str = "manual") -> Dict[str, object]:
+        return self.oos_reports.save_oos_report(report, trigger=trigger)
+
+    def list_oos_reports(self, strategy_name: str = "", limit: int = 50) -> List[Dict[str, object]]:
+        return self.oos_reports.list_oos_reports(strategy_name=strategy_name, limit=limit)
+
+    def save_stock_prediction_snapshot(self, payload: Dict[str, object]) -> Dict[str, object]:
+        return self.predictions.save_stock_prediction_snapshot(payload)
+
+    def update_stock_prediction_outcomes(self, provider, days: int = 120) -> Dict[str, object]:
+        return self.predictions.update_stock_prediction_outcomes(provider, days=days)
+
+    def stance_metrics(self, days: int = 120) -> Dict[str, object]:
+        return self.predictions.stance_metrics(days=days)
+
+    def applied_migrations(self) -> List[str]:
+        return self.migrations.applied_migrations()
+
+    def table_exists(self, table_name: str) -> bool:
+        return self.migrations.table_exists(table_name)

@@ -145,6 +145,8 @@ def build_candidate_snapshot_rows(
     fundamental_payload: Dict[str, object] = None,
     provider_health: Dict[str, object] = None,
     scored_rows: Iterable[Dict[str, object]] = None,
+    strategy_name: str = "",
+    snapshot_id: str = "",
 ) -> List[Dict[str, object]]:
     if quotes is None or quotes.empty:
         return []
@@ -227,7 +229,17 @@ def build_candidate_snapshot_rows(
             point_in_time_violations.append("future_quote_observed_at:{}".format(quote_timestamp))
         if not market_cutoff:
             point_in_time_violations.append("missing_market_data_cutoff")
+        if strategy_name == "tomorrow_picks" and _signal_at_or_after_cutoff(
+            market_cutoff,
+            str(getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55")),
+        ):
+            point_in_time_violations.append(
+                "signal_after_order_cutoff:{}".format(
+                    getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55")
+                )
+            )
         source_timestamps = {
+            "snapshot_id": str(snapshot_id or ""),
             "quote_observed_at": quote_timestamp,
             "market_data_cutoff": market_cutoff,
             "event_loaded_at": event_timestamp,
@@ -309,6 +321,7 @@ def build_candidate_snapshot_rows(
                 "market_data_cutoff": market_cutoff,
                 "point_in_time_valid": not point_in_time_violations,
                 "point_in_time_violations": sorted(set(point_in_time_violations)),
+                "snapshot_id": str(snapshot_id or ""),
                 "raw": {
                     "quote": raw,
                     "candidate": enriched,
@@ -320,6 +333,12 @@ def build_candidate_snapshot_rows(
             }
         )
     return records
+
+
+def _signal_at_or_after_cutoff(signal_time: str, cutoff: str) -> bool:
+    text = str(signal_time or "")
+    clock = text.split("T", 1)[1][:5] if "T" in text else ""
+    return bool(clock and cutoff and clock >= str(cutoff)[:5])
 
 
 def first_announcement_time(item: Dict[str, object]) -> str:

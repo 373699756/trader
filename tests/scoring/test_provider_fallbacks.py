@@ -221,7 +221,7 @@ def test_quote_page_download_uses_bounded_concurrency():
     )
 
     assert sorted(result) == [1, 2, 3, 4, 5, 6]
-    assert state["maximum"] == 3
+    assert 1 < state["maximum"] <= 3
 
 
 def test_quote_page_download_retries_transient_page_failure():

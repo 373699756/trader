@@ -1,5 +1,8 @@
+import copy
 from datetime import datetime
+import threading
 from typing import Dict, Iterable, List
+from uuid import uuid4
 
 from . import config
 from .app_runtime_support import apply_deepseek_rerank, finalize_deepseek_meta
@@ -17,36 +20,67 @@ from .point_in_time import (
 from .production_baseline import attach_generation_provenance
 from .scoring_core.candidate_filters import prepare_candidates
 from .scoring_core.market_regime import build_market_regime
+from .scoring_core.tomorrow_score import attach_tomorrow_challenger_scores
 from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks, storage_strategy_name
+from .validation_repository import SignalFreezeDeadlineExceeded
 
 
 SNAPSHOT_STRATEGIES = tuple(config.SNAPSHOT_STRATEGIES)
+_SHADOW_ANALYSIS_JOBS = set()
+_SHADOW_ANALYSIS_LOCK = threading.Lock()
 
 
-def run_snapshot(provider, validation_store, strategy: str, market: str = "all") -> Dict[str, object]:
+def run_snapshot(
+    provider,
+    validation_store,
+    strategy: str,
+    market: str = "all",
+    _context: Dict[str, object] = None,
+) -> Dict[str, object]:
     strategy = storage_strategy_name(strategy)
     if strategy not in SNAPSHOT_STRATEGIES:
         return {"ok": False, "strategy": strategy, "error": "unknown_strategy"}
-    quotes = provider.get_realtime_quotes()
-    freshness_error = _quote_freshness_error(provider, quotes)
-    if freshness_error:
-        return {"ok": False, "strategy": strategy, "error": freshness_error, "saved": {"saved": 0, "replaced": 0}}
-    snapshot_cutoff = datetime.now().isoformat(timespec="seconds")
-    event_payload = filter_point_in_time_events(load_event_risk(provider), snapshot_cutoff)
-    candidates = attach_event_risk(prepare_candidates(quotes), event_payload)
-    codes = candidates["code"].tolist() if candidates is not None and "code" in candidates.columns else []
-    fundamental_payload = filter_point_in_time_fundamentals(
-        load_fundamentals(provider, codes=codes),
-        snapshot_cutoff,
-    )
-    candidates = attach_fundamental_factors(candidates, fundamental_payload)
-    candidates = _attach_snapshot_history_factors(provider, candidates)
-    market_regime = build_market_regime(candidates, breadth_source=quotes)
+    context = _context or _prepare_snapshot_context(provider)
+    if context.get("error"):
+        return {
+            "ok": False,
+            "strategy": strategy,
+            "error": context["error"],
+            "saved": {"saved": 0, "replaced": 0},
+        }
+    quotes = context["quotes"]
+    snapshot_cutoff = str(context["snapshot_cutoff"])
+    snapshot_id = str(context["snapshot_id"])
+    event_payload = context["event_payload"]
+    fundamental_payload = context["fundamental_payload"]
+    candidates = context["candidates"].copy(deep=True)
+    market_regime = dict(context["market_regime"])
+    common_signal_time = str(context.get("signal_time") or snapshot_cutoff)
+    context["signal_time"] = common_signal_time
+    if strategy == "tomorrow_picks" and _signal_at_or_after_tomorrow_cutoff(common_signal_time):
+        return _tomorrow_freeze_rejection(
+            strategy,
+            {"generated_at": common_signal_time, "snapshot_id": snapshot_id},
+        )
     rows, meta, version = _score_snapshot_strategy(provider, candidates, quotes, strategy, market, market_regime)
+    meta["generated_at"] = common_signal_time
+    meta["snapshot_id"] = snapshot_id
     scored_candidate_rows = meta.pop("_candidate_pool_rows", None)
-    rows, deepseek_meta = _apply_snapshot_deepseek_rerank(rows, strategy, market)
+    shadow_source_rows = []
+    if strategy == "tomorrow_picks":
+        shadow_source_rows = copy.deepcopy(rows)
+        rows = _production_v10_rows(rows)
+        deepseek_meta = {
+            "enabled": bool(getattr(config, "ENABLE_DEEPSEEK_RUNTIME", False)),
+            "status": "deferred_until_recommendation_frozen",
+            "mode": "shadow_only",
+            "production_applied": False,
+            "strategy": strategy,
+        }
+    else:
+        rows, deepseek_meta = _apply_snapshot_deepseek_rerank(rows, strategy, market)
     finalize_deepseek_meta(meta, rows, deepseek_meta)
-    if _after_close_anchor_time(meta["generated_at"]):
+    if strategy != "tomorrow_picks" and _after_close_anchor_time(meta["generated_at"]):
         rows, close_anchor = _apply_close_anchor_prices(provider, rows, meta["generated_at"], quotes)
         meta["close_anchor"] = {
             "enabled": True,
@@ -72,6 +106,8 @@ def run_snapshot(provider, validation_store, strategy: str, market: str = "all")
         event_payload=event_payload,
         fundamental_payload=fundamental_payload,
         provider_health=provider_health,
+        strategy_name=strategy,
+        snapshot_id=snapshot_id,
     )
     execution_policy = build_execution_policy(strategy, market)
     data_source_timestamp = str(
@@ -90,29 +126,200 @@ def run_snapshot(provider, validation_store, strategy: str, market: str = "all")
         "events": event_payload.get("point_in_time") or {},
     }
     meta["execution_policy_version"] = execution_policy["policy_version"]
-    saved = validation_store.save_signals(
-        strategy,
-        version,
-        meta["generated_at"],
-        rows,
-        deepseek_shadow_rows=(
-            []
-            if str(deepseek_meta.get("mode") or "") == "shadow_only"
-            else deepseek_meta.get("filtered_rows") or []
-        ),
-        candidate_rows=candidate_rows,
-        batch_metadata={
-            "data_source_timestamp": data_source_timestamp,
-            "market_data_cutoff": meta["generated_at"],
-            "generation": provenance,
-        },
-        execution_policy=execution_policy,
+    freeze_deadline = ""
+    if strategy == "tomorrow_picks":
+        freeze_ready_at = datetime.now().isoformat(timespec="seconds")
+        meta["freeze_ready_at"] = freeze_ready_at
+        if _signal_at_or_after_tomorrow_cutoff(freeze_ready_at):
+            return _tomorrow_freeze_rejection(strategy, meta)
+        freeze_deadline = _tomorrow_freeze_deadline(common_signal_time)
+    try:
+        saved = validation_store.save_signals(
+            strategy,
+            version,
+            meta["generated_at"],
+            rows,
+            deepseek_shadow_rows=(
+                []
+                if str(deepseek_meta.get("mode") or "") == "shadow_only"
+                else deepseek_meta.get("filtered_rows") or []
+            ),
+            candidate_rows=candidate_rows,
+            batch_metadata={
+                "data_source_timestamp": data_source_timestamp,
+                "market_data_cutoff": meta["generated_at"],
+                "generation": provenance,
+                "snapshot_id": snapshot_id,
+                "freeze_deadline": freeze_deadline,
+            },
+            execution_policy=execution_policy,
+        )
+    except SignalFreezeDeadlineExceeded as exc:
+        meta["freeze_completed_at"] = exc.observed_at
+        return _tomorrow_freeze_rejection(strategy, meta)
+    meta["freeze_completed_at"] = str(
+        saved.get("freeze_transaction_checked_at") or datetime.now().isoformat(timespec="seconds")
     )
+    if strategy == "tomorrow_picks":
+        meta["recommendation_frozen_at"] = meta["freeze_completed_at"]
+        meta["shadow_analysis"] = _schedule_shadow_analysis(
+            validation_store,
+            strategy,
+            version,
+            meta["generated_at"],
+            shadow_source_rows,
+            market,
+            snapshot_id,
+        )
     return {"ok": True, "strategy": strategy, "saved": saved, "meta": meta}
 
 
 def run_snapshots(provider, validation_store, strategies: Iterable[str], market: str = "all") -> List[Dict[str, object]]:
-    return [run_snapshot(provider, validation_store, strategy, market=market) for strategy in strategies]
+    context = _prepare_snapshot_context(provider)
+    return [
+        run_snapshot(provider, validation_store, strategy, market=market, _context=context)
+        for strategy in strategies
+    ]
+
+
+def _prepare_snapshot_context(provider) -> Dict[str, object]:
+    quotes = provider.get_realtime_quotes()
+    freshness_error = _quote_freshness_error(provider, quotes)
+    if freshness_error:
+        return {"error": freshness_error}
+    snapshot_cutoff = datetime.now().isoformat(timespec="seconds")
+    event_payload = filter_point_in_time_events(load_event_risk(provider), snapshot_cutoff)
+    candidates = attach_event_risk(prepare_candidates(quotes), event_payload)
+    codes = candidates["code"].tolist() if candidates is not None and "code" in candidates.columns else []
+    fundamental_payload = filter_point_in_time_fundamentals(
+        load_fundamentals(provider, codes=codes),
+        snapshot_cutoff,
+    )
+    candidates = attach_fundamental_factors(candidates, fundamental_payload)
+    candidates = _attach_snapshot_history_factors(provider, candidates)
+    return {
+        "quotes": quotes,
+        "snapshot_cutoff": snapshot_cutoff,
+        "snapshot_id": "snapshot_{}".format(uuid4().hex),
+        "event_payload": event_payload,
+        "fundamental_payload": fundamental_payload,
+        "candidates": candidates,
+        "market_regime": build_market_regime(candidates, breadth_source=quotes),
+    }
+
+
+def _signal_at_or_after_tomorrow_cutoff(signal_time: str) -> bool:
+    text = str(signal_time or "")
+    clock = text.split("T", 1)[1][:5] if "T" in text else ""
+    cutoff = str(getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55"))[:5]
+    return bool(clock and cutoff and clock >= cutoff)
+
+
+def _tomorrow_freeze_deadline(signal_time: str) -> str:
+    signal_date = str(signal_time or "")[:10]
+    cutoff = str(getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55"))[:5]
+    return "{}T{}:00".format(signal_date, cutoff) if signal_date and cutoff else ""
+
+
+def _tomorrow_freeze_rejection(strategy: str, meta: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "ok": False,
+        "strategy": strategy,
+        "error": "尾盘隔夜推荐未能在{}前完成冻结，拒绝保存当日集合竞价推荐批次。".format(
+            getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55")
+        ),
+        "saved": {"saved": 0, "replaced": 0},
+        "meta": meta,
+    }
+
+
+def _production_v10_rows(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    production_rows = []
+    for row in rows or []:
+        item = copy.deepcopy(row)
+        for key in (
+            "challenger_score",
+            "challenger_rank",
+            "challenger_strategy_version",
+            "challenger_mode",
+        ):
+            item.pop(key, None)
+        production_rows.append(item)
+    return production_rows
+
+
+def _schedule_shadow_analysis(
+    validation_store,
+    strategy: str,
+    strategy_version: str,
+    signal_time: str,
+    rows: List[Dict[str, object]],
+    market: str,
+    snapshot_id: str,
+) -> Dict[str, object]:
+    if not rows:
+        return {"status": "empty", "production_applied": False}
+    job_key = "{}|{}|{}|{}".format(
+        getattr(validation_store, "db_path", ""),
+        strategy,
+        signal_time[:10],
+        snapshot_id,
+    )
+    with _SHADOW_ANALYSIS_LOCK:
+        if job_key in _SHADOW_ANALYSIS_JOBS:
+            return {"status": "already_scheduled", "production_applied": False}
+        _SHADOW_ANALYSIS_JOBS.add(job_key)
+
+    def _worker() -> None:
+        try:
+            challenger_rows = attach_tomorrow_challenger_scores(copy.deepcopy(rows))
+            reviewed_rows, deepseek_meta = _apply_snapshot_deepseek_rerank(
+                challenger_rows,
+                strategy,
+                market,
+            )
+            generated_at = datetime.now().isoformat(timespec="seconds")
+            shadow_rows = []
+            for row in reviewed_rows or challenger_rows:
+                item = copy.deepcopy(row)
+                item["shadow_analysis_generated_at"] = generated_at
+                item["shadow_analysis_status"] = str(deepseek_meta.get("status") or "completed")
+                item["shadow_production_applied"] = False
+                item["snapshot_id"] = snapshot_id
+                shadow_rows.append(item)
+            validation_store.save_shadow_analysis_signals(
+                strategy,
+                strategy_version,
+                signal_time,
+                shadow_rows,
+            )
+        except Exception:
+            # Shadow research must never change or delay the frozen production recommendation.
+            pass
+        finally:
+            with _SHADOW_ANALYSIS_LOCK:
+                _SHADOW_ANALYSIS_JOBS.discard(job_key)
+
+    thread = threading.Thread(
+        target=_worker,
+        name="tomorrow-shadow-analysis-{}".format(signal_time[:10]),
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception as exc:
+        with _SHADOW_ANALYSIS_LOCK:
+            _SHADOW_ANALYSIS_JOBS.discard(job_key)
+        return {
+            "status": "schedule_failed",
+            "production_applied": False,
+            "error": str(exc),
+        }
+    return {
+        "status": "scheduled",
+        "production_applied": False,
+        "snapshot_id": snapshot_id,
+    }
 
 
 def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market: str, market_regime: Dict[str, object]):

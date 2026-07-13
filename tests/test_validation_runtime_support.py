@@ -17,7 +17,7 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
                 snapshot_strategies=("short_term", "tomorrow_picks"),
             )
 
-        self.assertEqual(strategies, ["short_term", "tomorrow_picks"])
+        self.assertEqual(strategies, ["tomorrow_picks", "short_term"])
 
     def test_default_auto_snapshot_strategies_include_intraday_observation(self):
         with patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", ""):
@@ -26,7 +26,7 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
                 snapshot_strategies=("short_term", "tomorrow_picks", "swing_picks"),
             )
 
-        self.assertEqual(strategies, ["short_term", "tomorrow_picks", "swing_picks"])
+        self.assertEqual(strategies, ["tomorrow_picks", "short_term", "swing_picks"])
 
     def test_explicit_auto_snapshot_strategy_override_is_respected(self):
         with patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", "tomorrow_picks"):

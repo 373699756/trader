@@ -1054,16 +1054,16 @@ class TomorrowStrategyTest(unittest.TestCase):
         self.assertEqual(metrics["signal_sample_count"], 1)
         self.assertEqual(metrics["pending_outcome_count"], 1)
 
-    def test_tomorrow_primary_return_config_uses_next_open_to_close(self):
+    def test_tomorrow_primary_return_config_uses_close_auction_overnight(self):
         column, days, horizon = _primary_return_config("tomorrow_picks")
-        self.assertEqual(column, "next_close_return")
+        self.assertEqual(column, "overnight_return")
         self.assertEqual(days, 1)
-        self.assertEqual(horizon, "次日开盘至收盘")
+        self.assertEqual(horizon, "T日收盘集合竞价至T+1收盘")
         with patch.object(config, "VALIDATION_PRIMARY_ENTRY_MODE", "signal"):
             column_signal, days_signal, horizon_signal = _primary_return_config("tomorrow_picks")
-            self.assertEqual(column_signal, "next_close_return")
+            self.assertEqual(column_signal, "overnight_return")
             self.assertEqual(days_signal, 1)
-            self.assertEqual(horizon_signal, "次日开盘至收盘")
+            self.assertEqual(horizon_signal, "T日收盘集合竞价至T+1收盘")
 
 
 

@@ -190,8 +190,8 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         ), patch.object(config, "ENABLE_SURVIVORSHIP_CORRECTION", True):
             baseline = validation_baseline_config("tomorrow_picks")
 
-        self.assertEqual(baseline["primary_return_field"], "next_close_return")
-        self.assertEqual(baseline["net_return_formula"], "next_close_return - trade_cost_pct")
+        self.assertEqual(baseline["primary_return_field"], "overnight_return")
+        self.assertEqual(baseline["net_return_formula"], "overnight_return - trade_cost_pct")
         self.assertTrue(baseline["cost_model"]["tail_auction_slippage_enabled"])
         self.assertTrue(baseline["cost_model"]["market_impact_enabled"])
         self.assertTrue(baseline["survivorship"]["enabled"])
@@ -222,7 +222,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
 
         stats = rows[0]["similar_signal_stats"]
         self.assertEqual(stats["validation_baseline_id"], baseline["baseline_id"])
-        self.assertEqual(stats["validation_baseline"]["net_return_formula"], "next_close_return - trade_cost_pct")
+        self.assertEqual(stats["validation_baseline"]["net_return_formula"], "overnight_return - trade_cost_pct")
         self.assertEqual(stats["current_baseline_outcome_count"], 4)
         self.assertEqual(stats["raw_outcome_sample_count"], 5)
         self.assertEqual(stats["legacy_baseline_outcome_count"], 3)
@@ -1307,10 +1307,11 @@ class LegacyRemainingScoringTest(unittest.TestCase):
             metrics = store.metrics("tomorrow_picks", days=20)
 
         self.assertEqual(update["updated"], 1)
-        self.assertEqual(rows[0]["exit_reason"], "stop_loss")
-        self.assertAlmostEqual(rows[0]["signal_exit_return"], -5.0)
-        self.assertAlmostEqual(metrics["avg_exit_return"], -5.0)
-        self.assertAlmostEqual(metrics["avg_exit_return_net"], -5.0 - metrics["avg_trade_cost_pct"])
+        self.assertEqual(rows[0]["exit_reason"], "next_trade_day_close_auction")
+        self.assertAlmostEqual(rows[0]["overnight_return"], 2.0)
+        self.assertAlmostEqual(rows[0]["signal_exit_return"], 2.0)
+        self.assertAlmostEqual(metrics["avg_exit_return"], 2.0)
+        self.assertAlmostEqual(metrics["avg_exit_return_net"], 2.0 - metrics["avg_trade_cost_pct"])
 
     def test_strategy_validation_skips_unbuyable_limit_up_at_next_open(self):
         from stock_analyzer.strategy_validation import _compute_outcome
@@ -1336,8 +1337,8 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         }
 
         outcome = _compute_outcome(FakeProvider(), signal)
-        self.assertTrue(outcome["excluded"])
-        self.assertEqual(outcome["skip_reason"], "unbuyable_limit_up")
+        self.assertEqual(outcome["label_status"], "settled")
+        self.assertAlmostEqual(outcome["overnight_return"], 10.0)
 
     def test_strategy_validation_skips_high_open_chase(self):
         from stock_analyzer.strategy_validation import _compute_outcome
@@ -1365,8 +1366,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         with patch.object(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 3.0):
             outcome = _compute_outcome(FakeProvider(), signal)
 
-        self.assertTrue(outcome["excluded"])
-        self.assertEqual(outcome["skip_reason"], "tomorrow_high_open_chase")
+        self.assertEqual(outcome["label_status"], "settled")
         self.assertGreater(outcome["next_open_return"], 3.0)
 
     def test_strategy_validation_stale_no_future_without_evidence_is_unknown(self):
@@ -1401,7 +1401,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         self.assertEqual(update["skipped"], 1)
         self.assertEqual(update["pending"], 0)
         self.assertEqual(update["unknown"], 1)
-        self.assertEqual(update["skipped_reasons"]["no_future_trade_unclassified"], 1)
+        self.assertEqual(update["skipped_reasons"]["close_auction_entry_filled_waiting_t1"], 1)
         self.assertEqual(rows[0]["label_status"], "unknown")
         self.assertIsNone(rows[0]["outcome_updated_at"])
         self.assertEqual(metrics["sample_count"], 0)
@@ -1541,7 +1541,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         self.assertEqual(metrics["outcome_sample_count"], 2)
         self.assertEqual(metrics["real_sample_count"], 1)
         self.assertEqual(metrics["replay_sample_count"], 1)
-        self.assertEqual(metrics["primary_horizon_label"], "次日开盘至收盘")
+        self.assertEqual(metrics["primary_horizon_label"], "T日收盘集合竞价至T+1收盘")
 
     def test_swing_pending_counts_only_use_current_formal_version(self):
         with tempfile.TemporaryDirectory() as tmpdir:

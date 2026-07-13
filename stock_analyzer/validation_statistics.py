@@ -4,6 +4,7 @@ import math
 import json
 import os
 import sqlite3
+import random
 from typing import Dict, List
 
 from . import config
@@ -30,6 +31,33 @@ def mean_confidence_interval(values, z_score: float = 1.96):
     variance = sum((value - mean) ** 2 for value in clean) / (len(clean) - 1)
     margin = max(0.0, coerce_number(z_score, 1.96)) * math.sqrt(variance / len(clean))
     return round(mean - margin, 4), round(mean + margin, 4)
+
+
+def block_bootstrap_mean_confidence_interval(
+    values,
+    samples: int = 1000,
+    block_size: int = 0,
+    seed: int = 20260713,
+):
+    """Deterministic moving-block bootstrap CI for serially dependent daily returns."""
+    clean = [coerce_number(value) for value in values if value is not None]
+    count = len(clean)
+    if count < 2:
+        return None, None
+    width = max(1, min(count, int(block_size or round(math.sqrt(count)))))
+    starts = list(range(max(1, count - width + 1)))
+    rng = random.Random(int(seed))
+    estimates = []
+    for _ in range(max(200, int(samples or 1000))):
+        draw = []
+        while len(draw) < count:
+            start = starts[rng.randrange(len(starts))]
+            draw.extend(clean[start : start + width])
+        estimates.append(sum(draw[:count]) / count)
+    estimates.sort()
+    low_index = max(0, int(len(estimates) * 0.025))
+    high_index = min(len(estimates) - 1, int(len(estimates) * 0.975))
+    return round(estimates[low_index], 4), round(estimates[high_index], 4)
 
 
 def wilson_lower_bound(values, z_score: float = 1.96):

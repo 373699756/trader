@@ -619,6 +619,11 @@ def strategy_validation_gate_decision(
             getattr(config, "STRATEGY_DECAY_MIN_REAL_SAMPLES", 20),
         )
     )
+    if strategy_name == "tomorrow_picks":
+        min_real_days = max(
+            min_real_days,
+            int(getattr(config, "EXPECTED_RETURN_MIN_REAL_DAYS", 60) or 60),
+        )
     real_days = int(metrics.get("real_day_count") or 0)
     if real_days < min_real_days:
         decision["blocked"] = True
@@ -628,6 +633,49 @@ def strategy_validation_gate_decision(
         decision["position_scale"] = 0.0
         decision["position_scale_reason"] = "真实验证不足，仓位归零"
         return decision
+    if strategy_name == "tomorrow_picks" and "portfolio_day_count" in metrics:
+        portfolio_days = int(metrics.get("portfolio_day_count") or 0)
+        portfolio_pending = int(metrics.get("portfolio_pending_day_count") or 0)
+        portfolio_unknown = int(metrics.get("portfolio_unknown_day_count") or 0)
+        portfolio_total = coerce_number(metrics.get("portfolio_total_return_pct"))
+        portfolio_ci_low_raw = metrics.get("portfolio_avg_daily_net_return_ci95_low")
+        portfolio_ci_low = (
+            coerce_number(portfolio_ci_low_raw)
+            if portfolio_ci_low_raw is not None
+            else None
+        )
+        decision.update(
+            {
+                "portfolio_day_count": portfolio_days,
+                "portfolio_pending_day_count": portfolio_pending,
+                "portfolio_unknown_day_count": portfolio_unknown,
+                "portfolio_total_return_pct": portfolio_total,
+                "portfolio_avg_daily_net_return_ci95_low": portfolio_ci_low_raw,
+            }
+        )
+        if portfolio_days < min_real_days or portfolio_pending > 0 or portfolio_unknown > 0:
+            decision["blocked"] = True
+            decision["reason"] = "冻结 Top5 日级组合不足{}个完整交易日，或仍有未平仓/未知日，不能晋级".format(
+                min_real_days
+            )
+            decision["position_scale"] = 0.0
+            decision["position_scale_reason"] = "组合验证未完成，仓位归零"
+            return decision
+        if portfolio_total <= 0:
+            decision["blocked"] = True
+            decision["reason"] = "冻结 Top5 日级组合累计净收益不为正，不能晋级"
+            decision["position_scale"] = 0.0
+            decision["position_scale_reason"] = "组合净收益未通过，仓位归零"
+            return decision
+        if (
+            bool(getattr(config, "STRATEGY_VALIDATION_REQUIRE_POSITIVE_CI", True))
+            and (portfolio_ci_low is None or portfolio_ci_low <= 0)
+        ):
+            decision["blocked"] = True
+            decision["reason"] = "冻结 Top5 日级组合净收益置信区间缺失或下界不为正，不能晋级"
+            decision["position_scale"] = 0.0
+            decision["position_scale_reason"] = "组合统计显著性未通过，仓位归零"
+            return decision
     min_win_rate = coerce_number(getattr(config, "STRATEGY_VALIDATION_MIN_WIN_RATE", 50.0), 50.0)
     ci_low_raw = metrics.get("real_avg_primary_return_net_ci95_low")
     ci_low = coerce_number(ci_low_raw) if ci_low_raw is not None else None

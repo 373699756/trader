@@ -9,7 +9,7 @@ from . import config
 from .normalization import coerce_number
 
 
-EXECUTION_POLICY_FAMILY = "cn_a_daily_execution_v1"
+EXECUTION_POLICY_FAMILY = "cn_a_close_auction_execution_v2"
 
 
 def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, object]:
@@ -22,6 +22,7 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
         "stop_loss_pct": _configured_pct(prefix, "STOP_LOSS_PCT", 5.0),
         "trailing_stop_pct": _configured_pct(prefix, "TRAILING_STOP_PCT", 4.0),
         "sealed_limit_down": "delay_until_first_tradable_open",
+        "earliest_exit_offset_days": 1 if strategy_name == "swing_picks" else 0,
     }
     if strategy_name not in {"tomorrow_picks", "swing_picks"}:
         exit_policy = {
@@ -33,17 +34,33 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
         }
 
     body = {
-        "schema_version": 1,
+        "schema_version": 2,
         "policy_family": EXECUTION_POLICY_FAMILY,
         "strategy_name": str(strategy_name or ""),
         "market": str(market or ""),
         "entry": {
-            "timing": "next_trade_day_open",
-            "price_field": "open_with_close_fallback",
+            "timing": (
+                "same_trade_day_close_auction"
+                if strategy_name == "tomorrow_picks"
+                else "next_trade_day_open"
+            ),
+            "price_field": (
+                "signal_day_raw_close"
+                if strategy_name == "tomorrow_picks"
+                else "open_with_close_fallback"
+            ),
             "sealed_limit_up": "unfilled",
             "suspension": "unfilled_until_tradable",
-            "high_open_skip_pct": (
-                coerce_number(getattr(config, "TOMORROW_HIGH_OPEN_SKIP_PCT", 3.0), 3.0)
+            "signal_cutoff": (
+                str(getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55"))
+                if strategy_name == "tomorrow_picks"
+                else None
+            ),
+            "order_window": (
+                "{}-{}".format(
+                    getattr(config, "TOMORROW_CLOSE_AUCTION_START_TIME", "14:55"),
+                    getattr(config, "TOMORROW_CLOSE_AUCTION_END_TIME", "15:00"),
+                )
                 if strategy_name == "tomorrow_picks"
                 else None
             ),
@@ -87,13 +104,22 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
         },
         "portfolio": {
             "capital": coerce_number(getattr(config, "VALIDATION_PORTFOLIO_CAPITAL", 1_000_000), 1_000_000),
-            "default_target_weight_pct": coerce_number(
-                getattr(config, "VALIDATION_DEFAULT_POSITION_PCT", 10.0), 10.0
+            "weighting": (
+                "frozen_equal_weight_top_k"
+                if strategy_name == "tomorrow_picks"
+                else "strategy_suggested_or_default"
+            ),
+            "default_target_weight_pct": (
+                round(100.0 / max(1, int(getattr(config, "PRODUCTION_TOP_K", 5))), 6)
+                if strategy_name == "tomorrow_picks"
+                else coerce_number(getattr(config, "VALIDATION_DEFAULT_POSITION_PCT", 10.0), 10.0)
             ),
             "board_lot": 100,
         },
         "missing_or_unfilled": {
-            "unfilled_return": None,
+            "unfilled_entry_return": 0.0,
+            "open_position_return": None,
+            "exit_pending_action": "retry_until_tradable",
             "data_source_failure": "unknown",
             "promotion_eligible": False,
         },
@@ -105,7 +131,7 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
         },
     }
     body["exit"]["primary_timing"] = (
-        "next_trade_day_close" if strategy_name == "tomorrow_picks" else "dynamic_2_5d"
+        "next_trade_day_close_auction" if strategy_name == "tomorrow_picks" else "dynamic_2_5d"
         if strategy_name == "swing_picks"
         else "next_trade_day_close"
     )
@@ -150,6 +176,12 @@ def liquidity_slippage_pct(turnover: float, policy: Dict[str, object] = None) ->
 
 
 def target_weight_pct(row, policy: Dict[str, object] = None) -> float:
+    portfolio = (policy or {}).get("portfolio") or {}
+    if portfolio.get("weighting") == "frozen_equal_weight_top_k":
+        return round(
+            max(0.0, coerce_number(portfolio.get("default_target_weight_pct"), 20.0)),
+            6,
+        )
     suggested_weight = _mapping_get(row, "suggested_weight", None)
     value = coerce_number(suggested_weight, None)
     if suggested_weight is None:
@@ -159,7 +191,6 @@ def target_weight_pct(row, policy: Dict[str, object] = None) -> float:
             if position is not None and position > 0:
                 value = position * 100.0 if position <= 1.0 else position
     if value is None:
-        portfolio = (policy or {}).get("portfolio") or {}
         value = coerce_number(
             portfolio.get("default_target_weight_pct"),
             getattr(config, "VALIDATION_DEFAULT_POSITION_PCT", 10.0),

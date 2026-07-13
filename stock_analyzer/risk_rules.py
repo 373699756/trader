@@ -90,6 +90,7 @@ def simulate_exit(
     take_profit_pct = max(0.0, coerce_number(policy.get("take_profit_pct")))
     trailing_stop_pct = max(0.0, coerce_number(policy.get("trailing_stop_pct")))
     limit_down_pct = max(1.0, coerce_number(policy.get("limit_down_pct"), 10.0))
+    earliest_exit_index = max(0, int(coerce_number(policy.get("earliest_exit_offset_days"), 0)))
 
     full = future.reset_index(drop=True)
     window = full.head(max_days)
@@ -111,6 +112,15 @@ def simulate_exit(
         take_price = entry * (1 + take_profit_pct / 100.0) if take_profit_pct > 0 else 0.0
         # 日线无法判断当日高点和低点的先后顺序，移动止损只使用前一日已确认的最高价。
         trail_price = prior_highest * (1 - trailing_stop_pct / 100.0) if trailing_stop_pct > 0 else 0.0
+
+        # A股当日买入的仓位不能当日卖出。入场日行情只更新风险轨迹，
+        # 不允许触发模拟成交；次一交易日才进入可卖窗口。
+        if idx < earliest_exit_index:
+            if high > 0:
+                highest = max(highest, high)
+            if close > 0:
+                previous_close = close
+            continue
 
         exit_index = idx
         exit_date = str(row.get("trade_date", ""))

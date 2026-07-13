@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List, Tuple
+from types import MappingProxyType
+from typing import Dict, List, Mapping, Tuple
 
 import pandas as pd
 
@@ -20,11 +21,16 @@ class TodayScorer:
         risk_policy: RiskPolicy = None,
         ranking_policy: RankingPolicy = None,
         explanation_builder: ExplanationBuilder = None,
+        scoring_context: Mapping[str, object] = None,
     ) -> None:
         self.feature_builder = feature_builder or FeatureBuilder()
         self.risk_policy = risk_policy or RiskPolicy()
         self.ranking_policy = ranking_policy or RankingPolicy()
         self.explanation_builder = explanation_builder or ExplanationBuilder()
+        self.scoring_context = MappingProxyType(dict(scoring_context or {}))
+
+    def _ctx(self, name: str, default):
+        return self.scoring_context.get(name, default)
 
     def _build_candidate_row(
         self,
@@ -100,7 +106,10 @@ class TodayScorer:
         market_filter: str = "all",
         market_regime: Dict[str, object] = None,
         capture_candidate_pool: bool = False,
+        scoring_context: Mapping[str, object] = None,
     ) -> Tuple[Dict[str, List[Dict[str, object]]], Dict[str, object]]:
+        if scoring_context is not None:
+            self.scoring_context = MappingProxyType(dict(scoring_context))
         if market_filter in ("main", "chinext", "star"):
             df = df[df["market"] == market_filter].copy()
         if df.empty:

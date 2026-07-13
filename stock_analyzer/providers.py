@@ -1,5 +1,7 @@
 import math
 import re
+import copy
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,10 +14,12 @@ import pandas as pd
 import requests
 
 from . import config
-from .daily_data import load_history_frames
+from .daily_data import load_execution_history_frames, load_history_frames
 from .history_cache import HistoryCache
 from .normalization import normalize_code, rename_known_columns
 from .runtime_json import atomic_write_text
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,6 +28,11 @@ class ProviderStatus:
     sentiment_source: str = "unavailable"
     last_quote_refresh: Optional[str] = None
     last_sentiment_refresh: Optional[str] = None
+    last_quote_latency_ms: Optional[float] = None
+    quote_fetch_count: int = 0
+    quote_fetch_success_count: int = 0
+    quote_fetch_error_count: int = 0
+    quote_last_error: str = ""
     errors: List[str] = field(default_factory=list)
 
 
@@ -34,6 +43,7 @@ class MarketDataProvider:
         self._akshare = None
         self._tushare = None
         self._tushare_api = None
+        self._status_lock = threading.Lock()
         self._quote_refresh_lock = threading.Lock()
         self._quote_refresh_running = False
         self._quote_refresh_last_started_at = ""
@@ -46,39 +56,93 @@ class MarketDataProvider:
             freshness_hours=config.HISTORY_CACHE_FRESHNESS_HOURS,
         )
 
+    def _record_quote_fetch_result(self, *, source: str, success: bool, latency_ms: Optional[float], error: str = "") -> None:
+        with self._status_lock:
+            self.status.quote_fetch_count += 1
+            self.status.last_quote_latency_ms = latency_ms
+            if success:
+                self.status.quote_fetch_success_count += 1
+                self.status.quote_last_error = ""
+            else:
+                self.status.quote_fetch_error_count += 1
+                self.status.quote_last_error = error
+            self.status.quotes_source = source if success else self.status.quotes_source
+
+    def _append_status_error(self, message: str) -> None:
+        with self._status_lock:
+            self.status.errors.append(message)
+            self.status.errors = self.status.errors[-20:]
+
+    def _set_status_errors(self, messages: List[str]) -> None:
+        with self._status_lock:
+            self.status.errors = list(messages)[-20:]
+
+    def _set_quote_source(self, source: str, refresh_time: str) -> None:
+        with self._status_lock:
+            self.status.quotes_source = source
+            self.status.last_quote_refresh = refresh_time
+
+    def _record_quote_latency(self, source: str, start_time: float) -> None:
+        latency_ms = max(0.0, (time.perf_counter() - start_time) * 1000.0)
+        self._record_quote_fetch_result(source=source, success=True, latency_ms=latency_ms)
+
     def get_realtime_quotes(self) -> pd.DataFrame:
         if self._web_nonblocking:
             return self.get_web_realtime_quotes()
         errors = []
+        start_time = time.perf_counter()
         try:
             df = self._fetch_eastmoney_quotes()
+            self._record_quote_latency("东方财富直连", start_time)
             return self._accept_realtime_quotes(df, "东方财富直连", errors)
         except Exception as exc:  # pragma: no cover - depends on remote services
+            self._record_quote_fetch_result(
+                source="东方财富直连",
+                success=False,
+                latency_ms=None,
+                error=str(exc),
+            )
             errors.append("东方财富直连行情失败: {}".format(exc))
 
         if config.ALLOW_SLOW_QUOTE_FALLBACK:
             try:
+                start_time = time.perf_counter()
                 df = self._fetch_sina_quotes()
+                self._record_quote_latency("新浪并发行情", start_time)
                 return self._accept_realtime_quotes(df, "新浪并发行情", errors)
             except Exception as exc:  # pragma: no cover - depends on remote services
+                self._record_quote_fetch_result(
+                    source="新浪并发行情",
+                    success=False,
+                    latency_ms=None,
+                    error=str(exc),
+                )
                 errors.append("新浪行情失败: {}".format(exc))
 
             if config.TUSHARE_TOKEN:
                 try:
+                    start_time = time.perf_counter()
                     df = self._fetch_tushare_quotes()
+                    self._record_quote_latency("Tushare", start_time)
                     return self._accept_realtime_quotes(df, "Tushare", errors)
                 except Exception as exc:  # pragma: no cover - depends on remote services
+                    self._record_quote_fetch_result(
+                        source="Tushare",
+                        success=False,
+                        latency_ms=None,
+                        error=str(exc),
+                    )
                     errors.append("Tushare 行情失败: {}".format(exc))
 
         snapshot = self._load_quote_snapshot()
         if snapshot is not None and not snapshot.empty:
-            self.status.quotes_source = "本地快照"
-            self.status.last_quote_refresh = snapshot.attrs.get("snapshot_mtime") or datetime.now().isoformat(timespec="seconds")
-            self.status.errors = errors
+            refresh_time = snapshot.attrs.get("snapshot_mtime") or datetime.now().isoformat(timespec="seconds")
+            self._set_quote_source("本地快照", refresh_time)
+            self._set_status_errors(errors)
             return snapshot
 
-        self.status.quotes_source = "unavailable"
-        self.status.errors = errors
+        self._set_quote_source("unavailable", datetime.now().isoformat(timespec="seconds"))
+        self._set_status_errors(errors)
         raise RuntimeError("; ".join(errors))
 
     def get_web_realtime_quotes(self) -> pd.DataFrame:
@@ -86,14 +150,12 @@ class MarketDataProvider:
         snapshot = self._load_quote_snapshot()
         self.refresh_realtime_quotes_async()
         if snapshot is not None and not snapshot.empty:
-            self.status.quotes_source = "本地快照"
-            self.status.last_quote_refresh = snapshot.attrs.get("snapshot_mtime") or datetime.now().isoformat(
-                timespec="seconds"
-            )
+            refresh_time = snapshot.attrs.get("snapshot_mtime") or datetime.now().isoformat(timespec="seconds")
+            self._set_quote_source("本地快照", refresh_time)
             return snapshot
         message = "实时行情正在后台刷新，Web 请求未等待行情下载"
-        self.status.quotes_source = "后台刷新中"
-        self.status.errors = [*self.status.errors[-9:], message]
+        self._set_quote_source("后台刷新中", datetime.now().isoformat(timespec="seconds"))
+        self._append_status_error(message)
         raise RuntimeError(message)
 
     def refresh_realtime_quotes_async(self, force: bool = False) -> bool:
@@ -139,30 +201,55 @@ class MarketDataProvider:
         errors = list(self.status.errors)
         try:
             try:
+                start_time = time.perf_counter()
                 quotes = self._fetch_eastmoney_quotes()
+                self._record_quote_latency("东方财富直连", start_time)
                 self._accept_realtime_quotes(quotes, "东方财富直连", errors)
                 success = True
             except Exception as exc:  # pragma: no cover - depends on remote services
+                self._record_quote_fetch_result(
+                    source="东方财富直连",
+                    success=False,
+                    latency_ms=None,
+                    error=str(exc),
+                )
                 errors.append("东方财富直连行情失败: {}".format(exc))
             if not success and config.ALLOW_SLOW_QUOTE_FALLBACK:
                 try:
+                    start_time = time.perf_counter()
                     quotes = self._fetch_sina_quotes()
+                    self._record_quote_latency("新浪并发行情", start_time)
                     self._accept_realtime_quotes(quotes, "新浪并发行情", errors)
                     success = True
                 except Exception as exc:  # pragma: no cover - depends on remote services
+                    self._record_quote_fetch_result(
+                        source="新浪并发行情",
+                        success=False,
+                        latency_ms=None,
+                        error=str(exc),
+                    )
                     errors.append("新浪行情失败: {}".format(exc))
             if not success and config.TUSHARE_TOKEN:
                 try:
+                    start_time = time.perf_counter()
                     quotes = self._fetch_tushare_quotes()
+                    self._record_quote_latency("Tushare", start_time)
                     self._accept_realtime_quotes(quotes, "Tushare", errors)
                     success = True
                 except Exception as exc:  # pragma: no cover - depends on remote services
+                    self._record_quote_fetch_result(
+                        source="Tushare",
+                        success=False,
+                        latency_ms=None,
+                        error=str(exc),
+                    )
                     errors.append("Tushare 行情失败: {}".format(exc))
             if not success:
                 error = "; ".join(errors[-3:]) or "后台行情刷新没有可用数据源"
-                self.status.errors = errors
+                self._set_status_errors(errors)
         except Exception as exc:
             error = str(exc)
+            _LOGGER.exception("行情刷新任务异常: %s", error)
         finished_at = datetime.now().isoformat(timespec="seconds")
         with self._quote_refresh_lock:
             self._quote_refresh_running = False
@@ -174,9 +261,9 @@ class MarketDataProvider:
     def _accept_realtime_quotes(self, df: pd.DataFrame, source: str, errors: List[str]) -> pd.DataFrame:
         refresh_time = datetime.now().isoformat(timespec="seconds")
         df.attrs.setdefault("quote_timestamp", refresh_time)
-        self.status.quotes_source = source
-        self.status.last_quote_refresh = refresh_time
-        self.status.errors = list(errors)
+        self._set_quote_source(source, refresh_time)
+        self._set_status_errors(errors)
+        self._record_quote_fetch_result(source=source, success=True, latency_ms=None, error="")
         self._save_quote_snapshot(df)
         return df
 
@@ -370,32 +457,107 @@ class MarketDataProvider:
         normalized = normalize_code(code)
         cached, cache_fresh = self._read_history_cache(normalized, days)
         if _usable_history(cached, days) and cache_fresh:
-            return cached
+            return self._with_price_metadata(cached, price_adjustment_mode="adjusted", data_source="cache")
         local = self._load_local_history(normalized, days)
         if _usable_history(local, days):
-            return local
+            return self._with_price_metadata(local, price_adjustment_mode="adjusted", data_source="local")
         try:
             fetched = self._fetch_akshare_history(normalized, days)
         except Exception as exc:  # pragma: no cover - depends on remote services
             self._record_sentiment_error("历史行情失败 {}: {}".format(normalized, exc))
-            return local if local is not None and not local.empty else cached
+            return self._with_price_metadata(
+                local if local is not None and not local.empty else cached,
+                price_adjustment_mode="adjusted",
+                data_source="cache_or_local",
+            )
         if not fetched.empty:
             if self._write_history_cache(normalized, fetched):
                 refreshed, _ = self._read_history_cache(normalized, days)
                 if refreshed is not None and not refreshed.empty:
-                    return refreshed
-            return fetched.tail(days).reset_index(drop=True)
-        return local if local is not None and not local.empty else cached
+                    return self._with_price_metadata(refreshed, price_adjustment_mode="adjusted", data_source="cache")
+            return self._with_price_metadata(
+                fetched.tail(days).reset_index(drop=True),
+                price_adjustment_mode="adjusted",
+                data_source="remote_akshare",
+            )
+        return self._with_price_metadata(
+            local if local is not None and not local.empty else cached,
+            price_adjustment_mode="adjusted",
+            data_source="cache_or_local",
+        )
+
+    def get_factor_bars_adjusted(self, code: str, days: int = 90) -> pd.DataFrame:
+        """Get historical bars used for因子/收益校验（保留复权信息）。"""
+        return self.get_history(code, days=days)
+
+    def get_intraday_snapshot(self, as_of: str = "") -> pd.DataFrame:
+        """Return a copy of realtime snapshot; `as_of` is for caller-side traceability."""
+        quotes = self.get_realtime_quotes()
+        frame = self._with_price_metadata(quotes, price_adjustment_mode="snapshot", data_source="realtime")
+        if as_of:
+            frame.attrs["snapshot_as_of"] = str(as_of)
+        return frame
+
+    def get_execution_bars_raw(self, code: str, days: int = 90) -> pd.DataFrame:
+        """Return raw, unadjusted prices for fills and realized-return reconstruction."""
+        normalized = normalize_code(code)
+        try:
+            local = load_execution_history_frames(
+                config.MARKET_DATA_DB_PATH,
+                [normalized],
+                days=days,
+            ).get(normalized, pd.DataFrame())
+        except Exception as exc:
+            self._record_sentiment_error("本地原始成交行情失败 {}: {}".format(normalized, exc))
+            local = pd.DataFrame()
+        if _usable_history(local, days):
+            return self._with_price_metadata(local, price_adjustment_mode="raw", data_source="local_execution_db")
+        try:
+            fetched = self._fetch_akshare_execution_history(normalized, days)
+        except Exception as exc:  # pragma: no cover - depends on remote services
+            self._record_sentiment_error("原始成交行情失败 {}: {}".format(normalized, exc))
+            fetched = pd.DataFrame()
+        if fetched is not None and not fetched.empty:
+            return self._with_price_metadata(fetched, price_adjustment_mode="raw", data_source="akshare_execution_fetch")
+        fallback = self.get_history(normalized, days=days)
+        if fallback is not None and not fallback.empty:
+            fallback = self._with_price_metadata(fallback, price_adjustment_mode="fallback_adjusted", data_source="history_fallback")
+            return fallback
+        return self._with_price_metadata(local, price_adjustment_mode="raw", data_source="empty_fallback")
+
+    def get_execution_history(self, code: str, days: int = 90) -> pd.DataFrame:
+        """Backwards-compatible alias for execution bar access."""
+        return self.get_execution_bars_raw(code, days=days)
+
+    def _with_price_metadata(
+        self,
+        frame: Optional[pd.DataFrame],
+        *,
+        price_adjustment_mode: str,
+        data_source: str,
+    ) -> pd.DataFrame:
+        if not isinstance(frame, pd.DataFrame):
+            frame = pd.DataFrame()
+        payload = frame.copy(deep=True)
+        attrs = dict(getattr(payload, "attrs", {}) or {})
+        attrs["price_adjustment_mode"] = str(price_adjustment_mode)
+        attrs["price_data_source"] = str(data_source)
+        payload.attrs = attrs
+        return payload
 
     def get_cached_history(self, code: str, days: int = 90) -> pd.DataFrame:
         normalized = normalize_code(code)
         cached, cache_fresh = self._read_history_cache(normalized, days)
         if _usable_history(cached, days) and cache_fresh:
-            return cached
+            return self._with_price_metadata(cached, price_adjustment_mode="adjusted", data_source="history_cache")
         local = self._load_local_history(normalized, days)
         if _usable_history(local, days):
-            return local
-        return cached if cached is not None and not cached.empty else local
+            return self._with_price_metadata(local, price_adjustment_mode="adjusted", data_source="local")
+        return self._with_price_metadata(
+            cached if cached is not None and not cached.empty else local,
+            price_adjustment_mode="adjusted",
+            data_source="cache_or_local",
+        )
 
     def get_index_history(self, code: str = "000300", days: int = 90) -> pd.DataFrame:
         normalized = normalize_code(code)
@@ -503,13 +665,39 @@ class MarketDataProvider:
             return pd.DataFrame()
         return rename_known_columns(df).tail(days).reset_index(drop=True)
 
+    def _fetch_akshare_execution_history(self, code: str, days: int) -> pd.DataFrame:
+        ak = self._get_akshare()
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=max(days * 2, 120))).strftime("%Y%m%d")
+        df = ak.stock_zh_a_hist(
+            symbol=normalize_code(code),
+            period="daily",
+            start_date=start_date,
+            end_date=end_date,
+            adjust="",
+        )
+        if df is None or df.empty:
+            return pd.DataFrame()
+        output = rename_known_columns(df).tail(days).reset_index(drop=True)
+        output.attrs["price_adjustment_mode"] = "raw"
+        return output
+
     def health(self) -> Dict[str, object]:
+        with self._status_lock:
+            status = {
+                "quotes_source": self.status.quotes_source,
+                "sentiment_source": self.status.sentiment_source,
+                "last_quote_refresh": self.status.last_quote_refresh,
+                "last_sentiment_refresh": self.status.last_sentiment_refresh,
+                "last_quote_latency_ms": self.status.last_quote_latency_ms,
+                "quote_fetch_count": self.status.quote_fetch_count,
+                "quote_fetch_success_count": self.status.quote_fetch_success_count,
+                "quote_fetch_error_count": self.status.quote_fetch_error_count,
+                "quote_last_error": self.status.quote_last_error,
+                "errors": list(self.status.errors[-10:]),
+            }
         return {
-            "quotes_source": self.status.quotes_source,
-            "sentiment_source": self.status.sentiment_source,
-            "last_quote_refresh": self.status.last_quote_refresh,
-            "last_sentiment_refresh": self.status.last_sentiment_refresh,
-            "errors": self.status.errors[-10:],
+            **status,
             "quote_background_refresh": self.quote_refresh_status(),
         }
 
@@ -562,8 +750,9 @@ class MarketDataProvider:
         return self._tushare_api
 
     def _record_sentiment_error(self, message: str) -> None:
-        self.status.errors.append(message)
-        self.status.errors = self.status.errors[-20:]
+        with self._status_lock:
+            self.status.errors.append(message)
+            self.status.errors = self.status.errors[-20:]
 
     def _save_quote_snapshot(self, df: pd.DataFrame) -> None:
         if df is None or df.empty or len(df) < config.QUOTE_SNAPSHOT_MIN_ROWS:
@@ -604,21 +793,87 @@ class MarketDataProvider:
 class TimedCache:
     def __init__(self, ttl_seconds: int) -> None:
         self.ttl_seconds = ttl_seconds
+        self._lock = threading.Lock()
         self._value = None
         self._expires_at = 0.0
+        self._stats = {
+            "hits": 0,
+            "misses": 0,
+            "expired": 0,
+            "sets": 0,
+            "clears": 0,
+            "set_bytes": 0,
+            "hit_bytes": 0,
+        }
+
+    @staticmethod
+    def _copy_value(value):
+        if isinstance(value, pd.DataFrame):
+            return value.copy(deep=True)
+        if isinstance(value, pd.Series):
+            return value.copy(deep=True)
+        if isinstance(value, dict):
+            return copy.deepcopy(value)
+        if isinstance(value, (list, tuple, set)):
+            return copy.deepcopy(value)
+        return copy.deepcopy(value)
+
+    @staticmethod
+    def _estimate_bytes(value) -> int:
+        try:
+            return len(str(value))
+        except Exception:
+            return 0
 
     def get(self):
-        if time.time() < self._expires_at:
-            return self._value
-        return None
+        now = time.time()
+        with self._lock:
+            if self._value is None or now >= self._expires_at:
+                if self._value is not None and now >= self._expires_at:
+                    self._stats["expired"] += 1
+                self._value = None
+                self._stats["misses"] += 1
+                self._stats["hit_bytes"] = 0
+                return None
+            self._stats["hits"] += 1
+            cached = self._copy_value(self._value)
+            self._stats["hit_bytes"] = self._estimate_bytes(cached)
+            return cached
 
     def set(self, value):
-        self._value = value
-        self._expires_at = time.time() + self.ttl_seconds
+        cloned = self._copy_value(value)
+        with self._lock:
+            self._value = cloned
+            self._expires_at = time.time() + self.ttl_seconds
+            self._stats["sets"] += 1
+            self._stats["set_bytes"] = self._estimate_bytes(cloned)
+            self._stats["hit_bytes"] = self._stats["set_bytes"]
 
     def clear(self):
-        self._value = None
-        self._expires_at = 0.0
+        with self._lock:
+            self._value = None
+            self._expires_at = 0.0
+            self._stats["clears"] += 1
+            self._stats["hit_bytes"] = 0
+
+    def stats(self) -> Dict[str, object]:
+        with self._lock:
+            now = time.time()
+            expired = self._value is not None and now >= self._expires_at
+            if expired:
+                return {
+                    **self._stats,
+                    "entries": 0,
+                    "expired": self._stats["expired"] + 1,
+                    "memory_bytes": self._stats["set_bytes"],
+                    "ttl_seconds": self.ttl_seconds,
+                }
+            return {
+                **self._stats,
+                "entries": 0 if self._value is None else 1,
+                "memory_bytes": self._stats["set_bytes"],
+                "ttl_seconds": self.ttl_seconds,
+            }
 
 
 EASTMONEY_FIELDS = (
@@ -902,7 +1157,9 @@ def _download_quote_pages(
 
     results: Dict[int, List[Dict[str, object]]] = {}
     errors: Dict[int, str] = {}
-    worker_count = min(len(page_numbers), max(1, int(max_workers)))
+    configured_limit = max(1, int(getattr(config, "QUOTE_PAGE_WORKER_LIMIT", int(max_workers) or 1)))
+    worker_count = min(len(page_numbers), max(1, int(max_workers), 1))
+    worker_count = min(worker_count, configured_limit)
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="quote-pages") as executor:
         futures = {executor.submit(run, page): page for page in page_numbers}
         for future in as_completed(futures):

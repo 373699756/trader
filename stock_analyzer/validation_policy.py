@@ -18,7 +18,7 @@ from .normalization import coerce_number, normalize_code
 
 PRIMARY_RETURN_BY_STRATEGY = {
     "short_term": ("signal_next_close_return", 1, "盘中观察至次日收盘（辅助）"),
-    "tomorrow_picks": ("next_close_return", 1, "次日开盘至收盘"),
+    "tomorrow_picks": ("overnight_return", 1, "T日收盘集合竞价至T+1收盘"),
     "swing_picks": ("exit_return", 5, "次日开盘后2-5日可执行退出"),
 }
 
@@ -30,7 +30,9 @@ EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY = {
 def current_strategy_version(strategy_name: str) -> str:
     return {
         "short_term": str(getattr(config, "SHORT_TERM_STRATEGY_VERSION", "short_term_v2_observation")),
-        "tomorrow_picks": str(getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v9_next_open")),
+        "tomorrow_picks": str(
+            getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v10_close_auction_baseline")
+        ),
         "swing_picks": str(getattr(config, "SWING_STRATEGY_VERSION", "swing_2_5d_v3_next_open_exit")),
     }.get(str(strategy_name or ""), "")
 

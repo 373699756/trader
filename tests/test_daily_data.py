@@ -2,7 +2,12 @@ import os
 
 import pandas as pd
 
-from stock_analyzer.daily_data import DailyMarketDataStore, list_market_data_codes, load_history_frames
+from stock_analyzer.daily_data import (
+    DailyMarketDataStore,
+    list_market_data_codes,
+    load_execution_history_frames,
+    load_history_frames,
+)
 from stock_analyzer.factor_snapshot import FactorSnapshotStore, build_factor_snapshots
 
 
@@ -97,6 +102,24 @@ def test_market_data_code_listing_ignores_old_shard_names(tmp_path):
 
     assert list_market_data_codes(str(db_dir)) == ["600000"]
     assert store.summary()["stock_count"] == 1
+
+
+def test_execution_history_keeps_raw_prices_separate_from_qfq_factors(tmp_path):
+    db_dir = tmp_path / "market_data"
+    store = DailyMarketDataStore(str(db_dir))
+    raw = _history("600000")
+    qfq = raw.copy()
+    for column in ("open", "high", "low", "close"):
+        qfq[column] = qfq[column] * 2
+    assert store.upsert_bars("600000", raw, qfq) == 2
+
+    factor_frame = load_history_frames(str(db_dir), ["600000"], days=2)["600000"]
+    execution_frame = load_execution_history_frames(str(db_dir), ["600000"], days=2)["600000"]
+
+    assert factor_frame["price"].tolist() == [20, 22]
+    assert execution_frame["price"].tolist() == [10, 11]
+    assert factor_frame.attrs["price_adjustment_mode"] == "qfq"
+    assert execution_frame.attrs["price_adjustment_mode"] == "raw"
 
 
 def test_factor_snapshots_build_from_market_data(tmp_path):

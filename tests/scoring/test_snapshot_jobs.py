@@ -263,7 +263,11 @@ def test_run_snapshot_saves_strategy_rows_without_web_route(tmp_path):
             return _snapshot_quotes()
 
     store = StrategyValidationStore(str(tmp_path / "validation.sqlite3"))
-    with patch.object(config, "QUOTE_SNAPSHOT_MIN_ROWS", 1):
+    with patch.object(config, "QUOTE_SNAPSHOT_MIN_ROWS", 1), patch.object(
+        config, "TOMORROW_SIGNAL_CUTOFF_TIME", "23:59"
+    ), patch(
+        "stock_analyzer.snapshot._signal_at_or_after_tomorrow_cutoff", return_value=False
+    ):
         result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")
     dates = store.list_signal_dates("tomorrow_picks")
 
@@ -404,9 +408,15 @@ def test_run_snapshot_allows_fresh_local_quote_snapshot_when_enabled(tmp_path):
             }
 
     store = StrategyValidationStore(str(tmp_path / "validation.sqlite3"))
-    with patch.object(config, "VALIDATION_ALLOW_LOCAL_QUOTE_SNAPSHOT", True), patch(
+    with patch.object(config, "VALIDATION_ALLOW_LOCAL_QUOTE_SNAPSHOT", True), patch.object(
+        config,
+        "TOMORROW_SIGNAL_CUTOFF_TIME",
+        "23:59",
+    ), patch(
         "stock_analyzer.snapshot._after_close_anchor_time",
         return_value=False,
+    ), patch(
+        "stock_analyzer.snapshot._signal_at_or_after_tomorrow_cutoff", return_value=False,
     ):
         result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")
     dates = store.list_signal_dates("tomorrow_picks")
@@ -465,7 +475,7 @@ def test_after_close_snapshot_uses_quote_close_when_history_missing():
     assert anchor_meta["count"] == 1
 
 
-def test_after_close_snapshot_rejects_incomplete_close_anchor(tmp_path):
+def test_tomorrow_snapshot_rejects_when_freeze_completes_at_cutoff(tmp_path):
     rows = [{"rank": 1, "code": "699999", "name": "缺失锚点", "price": 10.0, "score": 80}]
     meta = {"generated_at": "2026-07-08T15:05:00", "top_n": 1}
 
@@ -486,13 +496,16 @@ def test_after_close_snapshot_rejects_incomplete_close_anchor(tmp_path):
     with patch("stock_analyzer.snapshot._score_snapshot_strategy", return_value=(rows, meta, "tomorrow_picks_test")), patch(
         "stock_analyzer.snapshot._apply_snapshot_deepseek_rerank",
         return_value=(rows, {}),
+    ), patch(
+        "stock_analyzer.snapshot._signal_at_or_after_tomorrow_cutoff",
+        side_effect=[False, True],
     ):
         result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")
     dates = store.list_signal_dates("tomorrow_picks")
 
     assert not result["ok"]
     assert dates == []
-    assert "收盘锚点不完整" in result["error"]
+    assert "完成冻结" in result["error"]
 
 
 def test_prefetch_history_endpoint_downloads_then_updates_validation(tmp_path):
@@ -519,6 +532,9 @@ def test_prefetch_history_endpoint_downloads_then_updates_validation(tmp_path):
         return_value={"requested": 1, "unique_codes": 1, "downloaded": 1, "cached": 0, "failed": 0, "errors": []},
     ), patch(
         "stock_analyzer.providers.MarketDataProvider.get_history",
+        return_value=history,
+    ), patch(
+        "stock_analyzer.providers.MarketDataProvider.get_execution_history",
         return_value=history,
     ), app_patch_context(
         tmp_path,

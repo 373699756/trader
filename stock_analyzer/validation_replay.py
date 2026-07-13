@@ -369,7 +369,7 @@ def _display_date(date_key: str) -> str:
 
 
 def _replay_signal_time_tail() -> str:
-    raw = str(getattr(config, "VALIDATION_AUTO_SNAPSHOT_TIME", "15:00")).strip() or "15:00"
+    raw = str(getattr(config, "VALIDATION_AUTO_SNAPSHOT_TIME", "14:50")).strip() or "14:50"
     if ":" not in raw:
         return "15:00:00"
     try:
