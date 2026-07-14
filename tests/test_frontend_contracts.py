@@ -181,16 +181,19 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("仓位0", result["text"])
         self.assertEqual(result["cls"], "validation-current-decision decision-bad")
 
-    def test_stock_diagnosis_always_requests_deepseek_review(self):
+    def test_stock_diagnosis_stays_local_without_synchronous_deepseek_review(self):
         with open("static/app.js", encoding="utf-8") as source:
             app_source = source.read()
+        with open("static/validation-stock-prediction.js", encoding="utf-8") as source:
+            prediction_source = source.read()
         with open("templates/index.html", encoding="utf-8") as source:
             template_source = source.read()
 
-        self.assertIn("/api/stock-prediction/${encodeURIComponent(code)}?deepseek=1", app_source)
-        self.assertIn("本地量化 + DeepSeek", app_source)
+        self.assertNotIn("?deepseek=1", app_source + prediction_source)
+        self.assertIn("/api/stock-prediction/${encodeURIComponent(code)}", prediction_source)
+        self.assertIn("本地量化", prediction_source)
         self.assertIn('id="stockPredictionBtn" class="primary-action" type="button">走势预测</button>', template_source)
-        self.assertIn('id="generateTuningBtn" class="primary-action" type="button">DeepSeek 策略验证</button>', template_source)
+        self.assertIn('id="generateTuningBtn" class="primary-action" type="button">策略验证</button>', template_source)
         self.assertIn('class="tool-action-divider"', template_source)
 
     def test_validation_snapshot_status_uses_backend_strategy_list(self):

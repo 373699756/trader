@@ -26,8 +26,9 @@ def test_strategy_document_matches_runtime_strategy_names_and_snapshot_semantics
 def test_strategy_document_preserves_oos_return_and_shadow_boundaries():
     text = _strategy_doc()
 
-    assert "shadow_ranking_key = predicted_net_return" in text
-    assert "production_ranking_key = predicted_net_return" in text
+    assert "shadow_rank_key" in text
+    assert "production_ranking_key = predicted_net_return" not in text
+    assert "`DEEPSEEK_META_PRODUCTION_ENABLED` 硬编码为 false" in text
     assert "primary_return_net" in text
-    assert "标记为未成交或跳过" in text
-    assert "不采纳 LLM 主观 veto" in text
+    assert "涨跌停未成交按现金零收益处理" in text
+    assert "DeepSeek 不能单独否决" in text

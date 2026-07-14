@@ -10,7 +10,6 @@ from ..normalization import (
     normalize_code,
     percentile_score,
 )
-from ..deepseek_rules import apply_rule_penalty
 from .theme_constants import CHOKEPOINT_CHAIN, TECH_THEMES
 from .theme_scores import (
     CHOKEPOINT_INDUSTRY_LEADERS,
@@ -61,7 +60,6 @@ from .candidate_filters import (
     prepare_candidates,
 )
 from .constants import ALPHALITE_SIGNAL_COLUMNS, STRATEGY_LABELS
-from .legacy_score import score_candidates
 from .market_regime import (
     _history_breadth_metrics,
     _market_regime_breadth_frame,
@@ -113,13 +111,6 @@ from .scoring_math import (
     _tail_close_setup_score,
 )
 from .today_score import _score_row
-from .retired_strategies import (
-    _unsupported_retired_strategy,
-    score_breakout_candidates,
-    score_position_candidates,
-    score_reversal_candidates,
-    score_smallcap_value_candidates,
-)
 from .theme_limits import (
     _infer_theme_from_row,
     _limit_tomorrow_display_concentration,
@@ -156,7 +147,6 @@ __all__ = [
     'market_type',
     'normalize_code',
     'percentile_score',
-    'apply_rule_penalty',
     'CHOKEPOINT_CHAIN',
     'TECH_THEMES',
     'CHOKEPOINT_INDUSTRY_LEADERS',
@@ -203,7 +193,6 @@ __all__ = [
     'prepare_candidates',
     'ALPHALITE_SIGNAL_COLUMNS',
     'STRATEGY_LABELS',
-    'score_candidates',
     '_history_breadth_metrics',
     '_market_regime_breadth_frame',
     '_market_regime_with_history',
@@ -245,11 +234,6 @@ __all__ = [
     '_swing_risk_penalty',
     '_swing_risk_penalty_parts',
     '_tail_close_setup_score',
-    '_unsupported_retired_strategy',
-    'score_breakout_candidates',
-    'score_position_candidates',
-    'score_reversal_candidates',
-    'score_smallcap_value_candidates',
     '_infer_theme_from_row',
     '_limit_tomorrow_display_concentration',
     '_theme_count_allowed',

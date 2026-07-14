@@ -30,8 +30,6 @@ from .validation_serialization import (
 from .validation_stance import compute_stance_outcome as _compute_stance_outcome
 from .validation_statistics import (
     average as _avg,
-    market_gate_hit as _market_gate_hit,
-    market_gate_outcome_summary as _market_gate_outcome_summary,
     rate as _rate,
 )
 
@@ -147,6 +145,36 @@ class ValidationRepositoryFacadeProtocol(Protocol):
         signal_time: str,
         rows: Iterable[Dict[str, object]],
     ) -> Dict[str, int]:
+        ...
+
+    def save_deepseek_analysis_batch(self, batch: Dict[str, object]) -> Dict[str, object]:
+        ...
+
+    def save_deepseek_candidate_features(
+        self,
+        batch: Dict[str, object],
+        rows: Iterable[Dict[str, object]],
+    ) -> Dict[str, int]:
+        ...
+
+    def latest_deepseek_candidate_features(
+        self,
+        strategy_name: str,
+        codes: Iterable[str],
+        cutoff_at: str,
+        prompt_version: str = "",
+        model_name: str = "",
+        feature_schema_version: str = "",
+    ) -> Dict[str, Dict[str, object]]:
+        ...
+
+    def save_deepseek_counterfactual_outcome(self, row: Dict[str, object]) -> Dict[str, object]:
+        ...
+
+    def save_deepseek_counterfactual_outcomes(
+        self,
+        rows: Iterable[Dict[str, object]],
+    ) -> List[Dict[str, object]]:
         ...
 
     def list_signal_dates(self, strategy_name: str = "") -> List[Dict[str, object]]:
@@ -371,12 +399,26 @@ class ExecutionRepository(_RepositoryBase):
     def save_execution_records(self, records: List[Dict[str, object]], connection=None) -> int:
         if not records:
             return 0
+        json_fields = {
+            "execution_policy_json": ("execution_policy", {}),
+            "cost_scenarios_json": ("cost_scenarios", {}),
+            "raw_prices_json": ("raw_prices", []),
+            "benchmark_json": ("benchmark", {}),
+        }
         rows = []
         for record in records:
             payload: List[object] = []
             for column in self._COLUMNS:
-                if column in ("execution_policy_json", "cost_scenarios_json", "raw_prices_json", "benchmark_json"):
-                    payload.append(json.dumps(record.get(column, {}), ensure_ascii=False, sort_keys=True, default=str))
+                if column in json_fields:
+                    source, fallback = json_fields[column]
+                    payload.append(
+                        json.dumps(
+                            record.get(source, fallback),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        )
+                    )
                 elif column == "promotion_eligible":
                     payload.append(1 if record.get(column) else 0)
                 else:
@@ -1620,6 +1662,274 @@ class OutcomeRepository(_RepositoryBase):
             rows,
         )
 
+    def save_deepseek_analysis_batch(self, batch: Dict[str, object]) -> Dict[str, object]:
+        now = datetime.now().isoformat(timespec="seconds")
+        payload = dict(batch or {})
+        batch_id = str(payload.get("batch_id") or "").strip()
+        if not batch_id:
+            raise ValueError("deepseek batch_id is required")
+        requested_at = str(payload.get("requested_at") or now)
+        created_at = str(payload.get("created_at") or requested_at or now)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO deepseek_analysis_batches (
+                    batch_id, strategy_name, snapshot_id, cutoff_at, prompt_version,
+                    feature_schema_version, model_name, model_tier, market_filter,
+                    status, request_hash, response_hash, candidate_count, valid_count,
+                    abstain_count, rejected_count, prompt_tokens, completion_tokens,
+                    cache_hit_tokens, cache_miss_tokens, latency_ms, error_type,
+                    error_message, requested_at, completed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(batch_id) DO UPDATE SET
+                    status = excluded.status,
+                    response_hash = excluded.response_hash,
+                    valid_count = excluded.valid_count,
+                    abstain_count = excluded.abstain_count,
+                    rejected_count = excluded.rejected_count,
+                    prompt_tokens = excluded.prompt_tokens,
+                    completion_tokens = excluded.completion_tokens,
+                    cache_hit_tokens = excluded.cache_hit_tokens,
+                    cache_miss_tokens = excluded.cache_miss_tokens,
+                    latency_ms = excluded.latency_ms,
+                    error_type = excluded.error_type,
+                    error_message = excluded.error_message,
+                    completed_at = excluded.completed_at
+                """,
+                (
+                    batch_id,
+                    str(payload.get("strategy_name") or ""),
+                    str(payload.get("snapshot_id") or ""),
+                    str(payload.get("cutoff_at") or requested_at),
+                    str(payload.get("prompt_version") or ""),
+                    str(payload.get("feature_schema_version") or ""),
+                    str(payload.get("model_name") or ""),
+                    str(payload.get("model_tier") or "flash"),
+                    str(payload.get("market_filter") or "all"),
+                    str(payload.get("status") or "pending"),
+                    str(payload.get("request_hash") or ""),
+                    str(payload.get("response_hash") or ""),
+                    int(coerce_number(payload.get("candidate_count"), 0)),
+                    int(coerce_number(payload.get("valid_count"), 0)),
+                    int(coerce_number(payload.get("abstain_count"), 0)),
+                    int(coerce_number(payload.get("rejected_count"), 0)),
+                    int(coerce_number(payload.get("prompt_tokens"), 0)),
+                    int(coerce_number(payload.get("completion_tokens"), 0)),
+                    int(coerce_number(payload.get("cache_hit_tokens"), 0)),
+                    int(coerce_number(payload.get("cache_miss_tokens"), 0)),
+                    int(coerce_number(payload.get("latency_ms"), 0)),
+                    str(payload.get("error_type") or ""),
+                    str(payload.get("error_message") or "")[:1000],
+                    requested_at,
+                    str(payload.get("completed_at") or ""),
+                    created_at,
+                ),
+            )
+        return {"batch_id": batch_id, "status": str(payload.get("status") or "pending")}
+
+    def save_deepseek_candidate_features(
+        self,
+        batch: Dict[str, object],
+        rows: Iterable[Dict[str, object]],
+    ) -> Dict[str, int]:
+        batch = dict(batch or {})
+        batch_id = str(batch.get("batch_id") or "").strip()
+        if not batch_id:
+            raise ValueError("deepseek batch_id is required")
+        now = datetime.now().isoformat(timespec="seconds")
+        saved = 0
+        with self.connect() as conn:
+            for raw in rows or []:
+                if not isinstance(raw, dict):
+                    continue
+                feature = raw.get("feature") if isinstance(raw.get("feature"), dict) else raw
+                code = normalize_code(feature.get("code") or raw.get("code"))
+                if not code:
+                    continue
+                evidence_ids = feature.get("evidence_ids") or raw.get("evidence_ids") or []
+                conn.execute(
+                    """
+                    INSERT INTO deepseek_candidate_features (
+                        batch_id, strategy_name, code, snapshot_id, cutoff_at,
+                        completed_at, expires_at, prompt_version, feature_schema_version,
+                        model_name, evidence_hash, evidence_ids_json, abstain, valid,
+                        validation_error, feature_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(batch_id, code) DO UPDATE SET
+                        completed_at = excluded.completed_at,
+                        expires_at = excluded.expires_at,
+                        evidence_hash = excluded.evidence_hash,
+                        evidence_ids_json = excluded.evidence_ids_json,
+                        abstain = excluded.abstain,
+                        valid = excluded.valid,
+                        validation_error = excluded.validation_error,
+                        feature_json = excluded.feature_json
+                    """,
+                    (
+                        batch_id,
+                        str(batch.get("strategy_name") or feature.get("strategy") or ""),
+                        code,
+                        str(batch.get("snapshot_id") or raw.get("snapshot_id") or ""),
+                        str(batch.get("cutoff_at") or raw.get("cutoff_at") or now),
+                        str(raw.get("completed_at") or batch.get("completed_at") or now),
+                        str(raw.get("expires_at") or batch.get("expires_at") or ""),
+                        str(batch.get("prompt_version") or raw.get("prompt_version") or ""),
+                        str(batch.get("feature_schema_version") or feature.get("schema_version") or ""),
+                        str(batch.get("model_name") or raw.get("model_name") or ""),
+                        str(feature.get("evidence_hash") or raw.get("evidence_hash") or ""),
+                        json.dumps(evidence_ids, ensure_ascii=False, sort_keys=True, default=str),
+                        int(bool(feature.get("abstain"))),
+                        int(bool(raw.get("valid", feature.get("valid", True)))),
+                        str(raw.get("validation_error") or "")[:500],
+                        json.dumps(feature, ensure_ascii=False, sort_keys=True, default=str),
+                        str(raw.get("created_at") or now),
+                    ),
+                )
+                saved += 1
+        return {"saved": saved}
+
+    def latest_deepseek_candidate_features(
+        self,
+        strategy_name: str,
+        codes: Iterable[str],
+        cutoff_at: str,
+        prompt_version: str = "",
+        model_name: str = "",
+        feature_schema_version: str = "",
+    ) -> Dict[str, Dict[str, object]]:
+        normalized_codes = list(dict.fromkeys(normalize_code(code) for code in codes or [] if normalize_code(code)))
+        if not normalized_codes or not str(cutoff_at or "").strip():
+            return {}
+        placeholders = ",".join("?" for _ in normalized_codes)
+        params: List[object] = [str(strategy_name or ""), *normalized_codes, str(cutoff_at), str(cutoff_at), str(cutoff_at)]
+        prompt_clause = ""
+        if prompt_version:
+            prompt_clause = " AND f.prompt_version = ?"
+            params.append(str(prompt_version))
+        if model_name:
+            prompt_clause += " AND f.model_name = ?"
+            params.append(str(model_name))
+        if feature_schema_version:
+            prompt_clause += " AND f.feature_schema_version = ?"
+            params.append(str(feature_schema_version))
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT f.*, b.status AS batch_status, b.model_tier
+                FROM deepseek_candidate_features f
+                JOIN deepseek_analysis_batches b ON b.batch_id = f.batch_id
+                WHERE f.strategy_name = ?
+                  AND f.code IN ({})
+                  AND f.cutoff_at <= ?
+                  AND f.completed_at <= ?
+                  AND (f.expires_at = '' OR f.expires_at >= ?)
+                  AND f.valid = 1
+                  AND b.model_tier = 'flash'
+                  AND b.status IN ('ok', 'partial', 'cache_hit', 'no_evidence')
+                  {}
+                ORDER BY f.cutoff_at DESC, f.completed_at DESC, f.id DESC
+                """.format(placeholders, prompt_clause),
+                params,
+            ).fetchall()
+        result: Dict[str, Dict[str, object]] = {}
+        for raw in rows:
+            item = dict(raw)
+            code = normalize_code(item.get("code"))
+            if code in result:
+                continue
+            feature = _json_value(item.pop("feature_json", None), {})
+            feature["evidence_ids"] = _json_value(item.pop("evidence_ids_json", None), [])
+            feature["batch_id"] = item.get("batch_id")
+            feature["completed_at"] = item.get("completed_at")
+            feature["cutoff_at"] = item.get("cutoff_at")
+            feature["expires_at"] = item.get("expires_at")
+            feature["prompt_version"] = item.get("prompt_version")
+            feature["model_name"] = item.get("model_name")
+            feature["model_tier"] = item.get("model_tier")
+            result[code] = feature
+        return result
+
+    def save_deepseek_counterfactual_outcome(self, row: Dict[str, object]) -> Dict[str, object]:
+        saved = self.save_deepseek_counterfactual_outcomes([row])
+        return saved[0] if saved else {}
+
+    def save_deepseek_counterfactual_outcomes(
+        self,
+        rows: Iterable[Dict[str, object]],
+    ) -> List[Dict[str, object]]:
+        now = datetime.now().isoformat(timespec="seconds")
+        values = []
+        saved = []
+        for raw in rows or []:
+            payload = dict(raw or {})
+            strategy_name = str(payload.get("strategy_name") or "")
+            signal_date = str(payload.get("signal_date") or "")
+            if not strategy_name or not signal_date:
+                raise ValueError("strategy_name and signal_date are required")
+            values.append(
+                (
+                    strategy_name,
+                    signal_date,
+                    str(payload.get("strategy_version") or ""),
+                    str(payload.get("prompt_version") or ""),
+                    str(payload.get("model_name") or ""),
+                    json.dumps(payload.get("local_codes") or [], ensure_ascii=False, default=str),
+                    json.dumps(payload.get("challenger_codes") or [], ensure_ascii=False, default=str),
+                    json.dumps(payload.get("replacements") or [], ensure_ascii=False, default=str),
+                    payload.get("local_net_return"),
+                    payload.get("challenger_net_return"),
+                    payload.get("incremental_net_return"),
+                    payload.get("local_max_drawdown"),
+                    payload.get("challenger_max_drawdown"),
+                    str(payload.get("status") or "pending"),
+                    json.dumps(
+                        payload.get("outcome") or payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    ),
+                    str(payload.get("created_at") or now),
+                    now,
+                )
+            )
+            saved.append(
+                {
+                    "strategy_name": strategy_name,
+                    "signal_date": signal_date,
+                    "status": str(payload.get("status") or "pending"),
+                }
+            )
+        if not values:
+            return []
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO deepseek_counterfactual_outcomes (
+                    strategy_name, signal_date, strategy_version, prompt_version,
+                    model_name, local_codes_json, challenger_codes_json,
+                    replacements_json, local_net_return, challenger_net_return,
+                    incremental_net_return, local_max_drawdown, challenger_max_drawdown,
+                    status, outcome_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(strategy_name, signal_date, prompt_version, model_name) DO UPDATE SET
+                    strategy_version = excluded.strategy_version,
+                    local_codes_json = excluded.local_codes_json,
+                    challenger_codes_json = excluded.challenger_codes_json,
+                    replacements_json = excluded.replacements_json,
+                    local_net_return = excluded.local_net_return,
+                    challenger_net_return = excluded.challenger_net_return,
+                    incremental_net_return = excluded.incremental_net_return,
+                    local_max_drawdown = excluded.local_max_drawdown,
+                    challenger_max_drawdown = excluded.challenger_max_drawdown,
+                    status = excluded.status,
+                    outcome_json = excluded.outcome_json,
+                    updated_at = excluded.updated_at
+                """,
+                values,
+            )
+        return saved
+
     def save_strategy_outcomes(self, columns, rows: List[tuple], connection=None) -> None:
         if not rows:
             return
@@ -1762,71 +2072,6 @@ class OutcomeRepository(_RepositoryBase):
                 """.format(where, date_filter),
                 [*params, *date_params],
             ).fetchall()
-
-
-    def fetch_deepseek_attribution_rows(
-        self,
-        strategy_name: str,
-        primary_column: str,
-        current_version: str = "",
-        replay_version: str = "",
-    ) -> List[sqlite3.Row]:
-        version_filter = ""
-        query_params: List[object] = [strategy_name]
-        if current_version:
-            version_filter = " AND (s.strategy_version = ? OR s.strategy_version = ?)"
-            query_params.extend((current_version, replay_version))
-        if primary_column == "overnight_return":
-            signal_primary_expression = (
-                "CASE WHEN lower(COALESCE(o.primary_return_field, '')) = 'overnight_return' "
-                "THEN COALESCE(o.overnight_return, 0) "
-                "ELSE COALESCE(o.signal_next_close_return, o.next_close_return, 0) END"
-            )
-            shadow_primary_expression = (
-                "CASE WHEN lower(s.strategy_version) LIKE '%close_auction%' "
-                "THEN COALESCE(o.overnight_return, 0) "
-                "ELSE COALESCE(o.signal_next_close_return, o.next_close_return, 0) END"
-            )
-        else:
-            signal_primary_expression = "COALESCE(o.{}, 0)".format(primary_column)
-            shadow_primary_expression = signal_primary_expression
-        with self.connect() as conn:
-            conn.row_factory = sqlite3.Row
-            signal_rows = conn.execute(
-                """
-                SELECT s.signal_date, s.strategy_name, s.rank, s.strategy_version,
-                       s.turnover, s.market, s.raw_json,
-                       0 AS deepseek_shadow_signal,
-                       {signal_primary_expression} AS primary_return,
-                       COALESCE(o.future_days, 1) AS future_days
-                FROM strategy_signals s
-                JOIN strategy_outcomes o ON o.signal_id = s.id
-                WHERE s.strategy_name = ? {version_filter}
-                ORDER BY s.signal_date DESC, s.rank ASC
-                """.format(
-                    signal_primary_expression=signal_primary_expression,
-                    version_filter=version_filter,
-                ),
-                query_params,
-            ).fetchall()
-            shadow_rows = conn.execute(
-                """
-                SELECT s.signal_date, s.strategy_name, s.rank, s.strategy_version,
-                       s.turnover, s.market, s.raw_json,
-                       1 AS deepseek_shadow_signal,
-                       {shadow_primary_expression} AS primary_return,
-                       COALESCE(o.future_days, 1) AS future_days
-                FROM strategy_deepseek_shadow_signals s
-                JOIN strategy_deepseek_shadow_outcomes o ON o.shadow_id = s.id
-                WHERE s.strategy_name = ? {version_filter}
-                ORDER BY s.signal_date DESC, s.local_rank ASC
-                """.format(
-                    shadow_primary_expression=shadow_primary_expression,
-                    version_filter=version_filter,
-                ),
-                query_params,
-            ).fetchall()
-        return list(signal_rows) + list(shadow_rows)
 
 
     def fetch_signals_for_outcome_update(self, where: str, params: List[object]) -> List[sqlite3.Row]:
@@ -2122,151 +2367,6 @@ class TuningRepository(_RepositoryBase):
             )
         return samples
 
-
-class MarketGateRepository(_RepositoryBase):
-    """Persists DeepSeek market-gate reviews and metrics."""
-
-    def save_market_gate_review(self, market_gate: Dict[str, object], market_filter: str = "all") -> Dict[str, object]:
-        if not isinstance(market_gate, dict) or not market_gate.get("enabled"):
-            return {"saved": 0, "status": "disabled"}
-        now = str(market_gate.get("generated_at") or datetime.now().isoformat(timespec="seconds"))
-        review_date = now[:10]
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO deepseek_market_gate_reviews
-                (review_date, review_time, market_filter, regime, size_factor, confidence, status, source, reason,
-                 context_json, result_json, counts_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(review_date, market_filter) DO UPDATE SET
-                  review_time=excluded.review_time,
-                  regime=excluded.regime,
-                  size_factor=excluded.size_factor,
-                  confidence=excluded.confidence,
-                  status=excluded.status,
-                  source=excluded.source,
-                  reason=excluded.reason,
-                  context_json=excluded.context_json,
-                  result_json=excluded.result_json,
-                  counts_json=excluded.counts_json,
-                  created_at=excluded.created_at
-                """,
-                (
-                    review_date,
-                    now,
-                    str(market_filter or "all"),
-                    str(market_gate.get("regime") or ""),
-                    coerce_number(market_gate.get("size_factor"), 1.0),
-                    coerce_number(market_gate.get("confidence"), 0.0),
-                    str(market_gate.get("status") or ""),
-                    str(market_gate.get("source") or ""),
-                    str(market_gate.get("reason") or "")[:500],
-                    json.dumps(market_gate.get("context") or {}, ensure_ascii=False),
-                    json.dumps(market_gate, ensure_ascii=False),
-                    json.dumps(market_gate.get("counts") or {}, ensure_ascii=False),
-                    datetime.now().isoformat(timespec="seconds"),
-                ),
-            )
-        return {"saved": 1, "status": "saved", "review_date": review_date}
-
-
-    def market_gate_metrics(self, days: int = 120) -> Dict[str, object]:
-        with self.connect() as conn:
-            conn.row_factory = sqlite3.Row
-            reviews = conn.execute(
-                """
-                SELECT *
-                FROM deepseek_market_gate_reviews
-                ORDER BY review_date DESC, id DESC
-                LIMIT ?
-                """,
-                (max(1, int(days)),),
-            ).fetchall()
-            if not reviews:
-                return {"sample_count": 0, "outcome_sample_count": 0, "hit_rate": 0.0, "by_regime": {}}
-            review_dates = [row["review_date"] for row in reviews]
-            placeholders = ",".join("?" for _ in review_dates)
-            outcome_rows = conn.execute(
-                """
-                SELECT s.signal_date, s.strategy_name, s.strategy_version, s.rank, s.turnover, s.market, s.raw_json,
-                       COALESCE(o.next_close_return, 0) AS next_close_return,
-                       COALESCE(o.signal_next_close_return, o.next_close_return, 0) AS signal_next_close_return,
-                       CASE WHEN lower(COALESCE(o.primary_return_field, '')) = 'overnight_return'
-                            THEN COALESCE(o.overnight_return, 0)
-                            ELSE COALESCE(o.signal_next_close_return, o.next_close_return, 0)
-                       END AS overnight_return,
-                       COALESCE(o.hold_3d_return, 0) AS hold_3d_return,
-                       COALESCE(o.hold_5d_return, o.hold_3d_return, 0) AS hold_5d_return,
-                       COALESCE(o.hold_10d_return, o.hold_5d_return, o.hold_3d_return, 0) AS hold_10d_return,
-                       COALESCE(o.hold_20d_return, o.hold_10d_return, o.hold_5d_return, o.hold_3d_return, 0) AS hold_20d_return,
-                       COALESCE(o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_3d_return,
-                       COALESCE(o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_5d_return,
-                       COALESCE(o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, o.hold_3d_return, 0) AS signal_hold_10d_return,
-                       COALESCE(o.signal_hold_20d_return, o.signal_hold_10d_return, o.signal_hold_5d_return, o.signal_hold_3d_return, 0) AS signal_hold_20d_return,
-                       COALESCE(o.signal_exit_return, o.exit_return, o.signal_hold_5d_return, o.hold_5d_return, 0) AS signal_exit_return,
-                       COALESCE(o.exit_reason, '') AS exit_reason,
-                       COALESCE(o.exit_days, 0) AS exit_days,
-                       COALESCE(o.future_days, 1) AS future_days,
-                       o.trade_cost_pct AS stored_trade_cost_pct
-                FROM strategy_signals s
-                JOIN strategy_outcomes o ON o.signal_id = s.id
-                WHERE s.signal_date IN ({})
-                """.format(placeholders),
-                review_dates,
-            ).fetchall()
-
-        outcome_by_date: Dict[str, List[float]] = {}
-        for row in outcome_rows:
-            try:
-                raw = json.loads(row["raw_json"] or "{}")
-            except Exception:
-                raw = {}
-            if row["strategy_name"] == "tomorrow_picks" and not _is_primary_tomorrow_signal(row["rank"], raw):
-                continue
-            primary_column, primary_days, _ = _primary_return_config(row["strategy_name"])
-            if not _outcome_ready(row, primary_days):
-                continue
-            outcome_by_date.setdefault(str(row["signal_date"]), []).append(
-                round(coerce_number(row[primary_column]) - _stored_or_current_trade_cost_pct(row), 4)
-            )
-
-        review_items = []
-        by_regime: Dict[str, List[Dict[str, object]]] = {}
-        for review in reviews:
-            returns = outcome_by_date.get(str(review["review_date"]), [])
-            outcome = _market_gate_outcome_summary(returns)
-            item = {
-                "review_date": review["review_date"],
-                "market_filter": review["market_filter"],
-                "regime": review["regime"],
-                "size_factor": coerce_number(review["size_factor"], 1.0),
-                "confidence": coerce_number(review["confidence"], 0.0),
-                "status": review["status"],
-                "source": review["source"],
-                "reason": review["reason"],
-                **outcome,
-            }
-            item["hit"] = _market_gate_hit(str(review["regime"] or ""), outcome.get("actual_regime", "unknown"))
-            review_items.append(item)
-            by_regime.setdefault(str(review["regime"] or "unknown"), []).append(item)
-        outcome_items = [item for item in review_items if item["outcome_sample_count"] > 0 and item["hit"] is not None]
-        return {
-            "sample_count": len(review_items),
-            "outcome_sample_count": len(outcome_items),
-            "hit_rate": _rate(item["hit"] for item in outcome_items),
-            "by_regime": {
-                regime: {
-                    "sample_count": len(items),
-                    "outcome_sample_count": sum(1 for item in items if item["outcome_sample_count"] > 0),
-                    "avg_primary_return_net": _avg(
-                        item.get("avg_primary_return_net") for item in items if item["outcome_sample_count"] > 0
-                    ),
-                    "hit_rate": _rate(item["hit"] for item in items if item["hit"] is not None),
-                }
-                for regime, items in by_regime.items()
-            },
-            "recent": review_items[:20],
-        }
 
 
 class ResearchRepository(_RepositoryBase):
@@ -2632,7 +2732,6 @@ class ValidationRepository(_RepositoryBase):
         self.executions = ExecutionRepository(connect_fn, db_path)
         self.outcomes = OutcomeRepository(connect_fn, db_path)
         self.tuning = TuningRepository(connect_fn, db_path)
-        self.market_gates = MarketGateRepository(connect_fn, db_path)
         self.research = ResearchRepository(connect_fn, db_path)
         self.oos_reports = OOSReportRepository(connect_fn, db_path)
         self.predictions = PredictionRepository(connect_fn, db_path)
@@ -2672,6 +2771,43 @@ class ValidationRepository(_RepositoryBase):
             signal_time,
             rows,
         )
+
+    def save_deepseek_analysis_batch(self, batch: Dict[str, object]) -> Dict[str, object]:
+        return self.outcomes.save_deepseek_analysis_batch(batch)
+
+    def save_deepseek_candidate_features(
+        self,
+        batch: Dict[str, object],
+        rows: Iterable[Dict[str, object]],
+    ) -> Dict[str, int]:
+        return self.outcomes.save_deepseek_candidate_features(batch, rows)
+
+    def latest_deepseek_candidate_features(
+        self,
+        strategy_name: str,
+        codes: Iterable[str],
+        cutoff_at: str,
+        prompt_version: str = "",
+        model_name: str = "",
+        feature_schema_version: str = "",
+    ) -> Dict[str, Dict[str, object]]:
+        return self.outcomes.latest_deepseek_candidate_features(
+            strategy_name,
+            codes,
+            cutoff_at,
+            prompt_version=prompt_version,
+            model_name=model_name,
+            feature_schema_version=feature_schema_version,
+        )
+
+    def save_deepseek_counterfactual_outcome(self, row: Dict[str, object]) -> Dict[str, object]:
+        return self.outcomes.save_deepseek_counterfactual_outcome(row)
+
+    def save_deepseek_counterfactual_outcomes(
+        self,
+        rows: Iterable[Dict[str, object]],
+    ) -> List[Dict[str, object]]:
+        return self.outcomes.save_deepseek_counterfactual_outcomes(rows)
 
     def list_signal_dates(self, strategy_name: str = "") -> List[Dict[str, object]]:
         return self.signals.list_signal_dates(strategy_name=strategy_name)
@@ -2780,20 +2916,6 @@ class ValidationRepository(_RepositoryBase):
             days=days,
         )
 
-    def fetch_deepseek_attribution_rows(
-        self,
-        strategy_name: str,
-        primary_column: str,
-        current_version: str = "",
-        replay_version: str = "",
-    ) -> List[sqlite3.Row]:
-        return self.outcomes.fetch_deepseek_attribution_rows(
-            strategy_name,
-            primary_column,
-            current_version=current_version,
-            replay_version=replay_version,
-        )
-
     def fetch_signals_for_outcome_update(self, where: str, params: List[object]) -> List[sqlite3.Row]:
         return self.outcomes.fetch_signals_for_outcome_update(where, params)
 
@@ -2859,12 +2981,6 @@ class ValidationRepository(_RepositoryBase):
     def live_weight_samples(self, strategy_name: str, days: int = 120) -> List[Dict[str, object]]:
         return self.tuning.live_weight_samples(strategy_name, days=days)
 
-    def save_market_gate_review(self, market_gate: Dict[str, object], market_filter: str = "all") -> Dict[str, object]:
-        return self.market_gates.save_market_gate_review(market_gate, market_filter=market_filter)
-
-    def market_gate_metrics(self, days: int = 120) -> Dict[str, object]:
-        return self.market_gates.market_gate_metrics(days=days)
-
     def save_fold_predictions(
         self,
         experiment_id: str,
@@ -2925,3 +3041,4 @@ class ValidationRepository(_RepositoryBase):
 
     def table_exists(self, table_name: str) -> bool:
         return self.migrations.table_exists(table_name)
+

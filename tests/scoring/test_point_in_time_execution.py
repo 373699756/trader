@@ -74,9 +74,7 @@ def test_snapshot_persists_full_evaluated_pool_not_only_top_k(tmp_path):
     ), patch(
         "stock_analyzer.snapshot._quote_freshness_error", return_value=""
     ), patch("stock_analyzer.snapshot._score_snapshot_strategy", return_value=(selected, meta, "pit_v1")), patch(
-        "stock_analyzer.snapshot._apply_snapshot_deepseek_rerank", return_value=(selected, {})
-    ), patch("stock_analyzer.snapshot._after_close_anchor_time", return_value=False), patch(
-        "stock_analyzer.snapshot._signal_at_or_after_tomorrow_cutoff", return_value=False
+        "stock_analyzer.snapshot._signal_at_or_after_freeze_cutoff", return_value=False
     ):
         result = run_snapshot(Provider(), store, "tomorrow_picks")
 

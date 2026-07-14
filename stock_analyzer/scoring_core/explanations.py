@@ -114,8 +114,6 @@ def mark_backup_watch(row: Dict[str, object], label: str = "备选观察", reaso
     verdict["label"] = label
     verdict["note"] = "{}不形成可执行推荐".format(label)
     row["verdict"] = verdict
-    if row.get("deepseek_action") not in (None, "avoid"):
-        row["deepseek_action"] = "watch"
     if reason:
         _append_unique_reason(row, reason)
 
@@ -1078,3 +1076,4 @@ def _build_position_reasons(
     if risk_penalty >= 9:
         reasons.append("中长期风险扣分")
     return reasons[:6] or ["中期趋势、流动性和风险控制综合靠前"]
+

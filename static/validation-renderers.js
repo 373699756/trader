@@ -19,7 +19,7 @@ window.TraderValidationRenderers = {
   primaryValidationLabel(row) {
     const strategy = row.strategy_name || "";
     if (strategy === "swing_picks") return "2-5日退出";
-    if (strategy === "short_term") return "次日辅助";
+    if (strategy === "short_term") return "信号至收盘";
     return "次日";
   },
 
@@ -28,7 +28,7 @@ window.TraderValidationRenderers = {
     if (strategy === "swing_picks") {
       return row.signal_exit_return ?? row.exit_return ?? row.signal_hold_5d_return ?? row.hold_5d_return;
     }
-    return row.signal_next_close_return ?? row.next_close_return;
+    return row.signal_exit_return ?? row.exit_return ?? row.signal_next_close_return ?? row.next_close_return;
   },
 
   primaryValidationNetReturn(row) {

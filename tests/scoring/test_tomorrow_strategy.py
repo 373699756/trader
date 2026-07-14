@@ -29,14 +29,13 @@ from stock_analyzer.scoring import (
     candidate_filter_report,
     limit_theme_concentration,
     prepare_candidates,
-    score_candidates,
     score_today_candidates,
     score_swing_candidates,
     score_tomorrow_candidates,
 )
 from stock_analyzer.sentiment import score_news_items
 from stock_analyzer.stability import TopKDropoutTracker
-from stock_analyzer.snapshot import _apply_close_anchor_prices, run_snapshot
+from stock_analyzer.snapshot import run_snapshot
 from stock_analyzer.strategy_validation import StrategyValidationStore, _primary_return_config, validation_baseline_config
 from stock_analyzer.validation_replay import backfill_strategy_validation_samples
 
@@ -93,47 +92,6 @@ class TomorrowStrategyTest(unittest.TestCase):
         self.assertNotIn("rank_score", row)
         self.assertEqual(row["model_confidence"], "low")
 
-    def test_tomorrow_consumes_oos_deepseek_rules_from_weights(self):
-        quotes = pd.DataFrame(
-            [
-                {"code": "600001", "name": "会被规则扣分", "price": 10.6, "open": 10.1, "high": 10.8, "low": 10.0,
-                 "pct_chg": 4.2, "turnover": 9e8, "turnover_rate": 5, "volume_ratio": 2.0,
-                 "speed": 0.4, "sixty_day_pct": 18, "ytd_pct": 20, "amplitude": 5},
-                {"code": "600002", "name": "规则未命中", "price": 10.3, "open": 10.1, "high": 10.5, "low": 10.0,
-                 "pct_chg": 2.0, "turnover": 8e8, "turnover_rate": 4, "volume_ratio": 1.6,
-                 "speed": 0.2, "sixty_day_pct": 8, "ytd_pct": 12, "amplitude": 4},
-            ]
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "weights.json")
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump(
-                    {
-                        "deepseek_rules": {
-                            "tomorrow_picks": [
-                                {"field": "pct_chg", "operator": ">", "threshold": 3, "penalty": 40, "reason": "涨幅过热OOS验证弱"}
-                            ]
-                        }
-                    },
-                    handle,
-                    ensure_ascii=False,
-                )
-            with patch.object(config, "WEIGHTS_OVERRIDE_PATH", path), patch.object(
-                config,
-                "DEEPSEEK_SHADOW_ONLY",
-                False,
-            ), patch(
-                "stock_analyzer.scoring._tomorrow_display_gate",
-                return_value=(2, 0.0, "测试展示全部候选"),
-            ):
-                rows, _ = score_tomorrow_candidates(prepare_candidates(quotes), top_n=2)
-
-        self.assertEqual(rows[0]["code"], "600002")
-        penalized = next(row for row in rows if row["code"] == "600001")
-        self.assertEqual(penalized["deepseek_rule_penalty"], 40)
-        self.assertEqual(penalized["score_before_deepseek_rules"], round(penalized["score"] + 40, 2))
-        self.assertIn("deepseek_rules_matched", penalized)
-
     def test_tomorrow_rejects_weak_tail_close(self):
         quotes = pd.DataFrame(
             [
@@ -170,7 +128,7 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch("stock_analyzer.scoring._tomorrow_intraday_relaxed_mode", return_value=False):
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode", return_value=False):
             rows, meta = score_tomorrow_candidates(
                 prepare_candidates(quotes),
                 top_n=36,
@@ -207,7 +165,7 @@ class TomorrowStrategyTest(unittest.TestCase):
         )
         candidates = prepare_candidates(quotes)
 
-        with patch("stock_analyzer.scoring._tomorrow_display_gate", return_value=(20, 0.0, "测试展示全部候选")):
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_display_gate", return_value=(20, 0.0, "测试展示全部候选")):
             display_rows, display_meta = score_tomorrow_candidates(candidates, top_n=20)
             snapshot_rows, snapshot_meta = score_tomorrow_candidates(candidates, top_n=20, display_cap=0)
 
@@ -256,13 +214,13 @@ class TomorrowStrategyTest(unittest.TestCase):
         )
         candidates = prepare_candidates(quotes)
 
-        with patch("stock_analyzer.scoring._tomorrow_intraday_relaxed_mode", return_value=False), patch(
-            "stock_analyzer.scoring._tomorrow_display_gate",
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode", return_value=False), patch(
+            "stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_display_gate",
             return_value=(10, 0.0, "测试展示全部候选"),
         ):
             strict_rows, _ = score_tomorrow_candidates(candidates, top_n=10)
-        with patch("stock_analyzer.scoring._tomorrow_intraday_relaxed_mode", return_value=True), patch(
-            "stock_analyzer.scoring._tomorrow_display_gate",
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode", return_value=True), patch(
+            "stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_display_gate",
             return_value=(10, 0.0, "测试展示全部候选"),
         ):
             relaxed_rows, meta = score_tomorrow_candidates(candidates, top_n=10)
@@ -280,7 +238,7 @@ class TomorrowStrategyTest(unittest.TestCase):
         self.assertTrue(all(row["verdict"]["label"] == "盘中观察" for row in relaxed_rows))
 
     def test_tomorrow_intraday_mode_only_runs_during_weekday_market_window(self):
-        from stock_analyzer.scoring import _tomorrow_intraday_relaxed_mode
+        from stock_analyzer.scoring_core.tomorrow_policy import _tomorrow_intraday_relaxed_mode
 
         self.assertFalse(_tomorrow_intraday_relaxed_mode(datetime(2026, 7, 10, 9, 29)))
         self.assertTrue(_tomorrow_intraday_relaxed_mode(datetime(2026, 7, 10, 9, 30)))
@@ -316,8 +274,8 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch("stock_analyzer.scoring._tomorrow_intraday_relaxed_mode", return_value=True), patch(
-            "stock_analyzer.scoring._tomorrow_display_gate",
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode", return_value=True), patch(
+            "stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_display_gate",
             return_value=(10, 0.0, "测试展示全部候选"),
         ):
             rows, _ = score_tomorrow_candidates(prepare_candidates(quotes), top_n=10)
@@ -325,7 +283,7 @@ class TomorrowStrategyTest(unittest.TestCase):
         self.assertEqual(rows, [])
 
     def test_tomorrow_display_gate_relaxes_before_1430(self):
-        from stock_analyzer.scoring import _tomorrow_display_gate
+        from stock_analyzer.scoring_core.tomorrow_policy import _tomorrow_display_gate
 
         regime = {"level": "risk_on", "label": "偏进攻", "score": 85}
 
@@ -375,8 +333,8 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch("stock_analyzer.scoring._tomorrow_intraday_relaxed_mode", return_value=False), patch(
-            "stock_analyzer.scoring._tomorrow_display_gate", return_value=(2, 0.0, "测试展示全部候选")
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode", return_value=False), patch(
+            "stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_display_gate", return_value=(2, 0.0, "测试展示全部候选")
         ):
             rows, _ = score_tomorrow_candidates(prepare_candidates(quotes), top_n=2, display_cap=0)
 
@@ -389,7 +347,7 @@ class TomorrowStrategyTest(unittest.TestCase):
         self.assertNotIn("mid_gain_weak_close", strong["risk_penalty_parts"])
 
     def test_tomorrow_tail_score_penalizes_extremely_weak_close_more(self):
-        from stock_analyzer.scoring import _tail_close_setup_score
+        from stock_analyzer.scoring_core.scoring_math import _tail_close_setup_score
 
         base = {
             "pct_chg": 2.0,
@@ -427,7 +385,7 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch("stock_analyzer.scoring._tomorrow_display_gate", return_value=(36, 101.0, "测试严格门控")):
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_display_gate", return_value=(36, 101.0, "测试严格门控")):
             rows, meta = score_tomorrow_candidates(
                 prepare_candidates(quotes),
                 top_n=36,
@@ -460,7 +418,7 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch("stock_analyzer.scoring._tomorrow_intraday_relaxed_mode", return_value=False):
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode", return_value=False):
             rows, meta = score_tomorrow_candidates(
                 prepare_candidates(quotes),
                 top_n=36,
@@ -501,7 +459,7 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch("stock_analyzer.scoring._tomorrow_intraday_relaxed_mode", return_value=False):
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode", return_value=False):
             rows, meta = score_tomorrow_candidates(
                 prepare_candidates(quotes),
                 top_n=12,
@@ -562,7 +520,7 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch("stock_analyzer.scoring._tomorrow_intraday_relaxed_mode", return_value=False):
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode", return_value=False):
             rows, meta = score_tomorrow_candidates(
                 prepare_candidates(quotes),
                 top_n=36,
@@ -601,7 +559,7 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch("stock_analyzer.scoring._tomorrow_intraday_relaxed_mode", return_value=False):
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode", return_value=False):
             rows, meta = score_tomorrow_candidates(
                 prepare_candidates(quotes),
                 top_n=4,
@@ -670,7 +628,7 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch("stock_analyzer.scoring._tomorrow_display_gate", return_value=(36, 101.0, "测试严格门控")):
+        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_display_gate", return_value=(36, 101.0, "测试严格门控")):
             rows, meta = score_tomorrow_candidates(
                 prepare_candidates(quotes),
                 top_n=36,
@@ -685,46 +643,6 @@ class TomorrowStrategyTest(unittest.TestCase):
         self.assertEqual(meta["primary_watch_count"], 0)
         self.assertEqual(meta["fallback_mode"], "backup_pool")
         self.assertIn("降级显示备选观察", meta["gate_reason"])
-
-    def test_tomorrow_backup_applies_oos_rule_penalty(self):
-        quotes = pd.DataFrame(
-            [
-                {
-                    "code": "600001",
-                    "name": "备选规则样本",
-                    "price": 10,
-                    "pct_chg": -0.8,
-                    "turnover": 180000000,
-                    "turnover_rate": 2,
-                    "volume_ratio": 1.0,
-                    "speed": -0.2,
-                    "sixty_day_pct": 4,
-                    "ytd_pct": 6,
-                    "amplitude": 3,
-                }
-            ]
-        )
-
-        def apply_test_rule(strategy, row):
-            item = dict(row)
-            item["score_before_deepseek_rules"] = item["score"]
-            item["deepseek_rule_penalty"] = 7.0
-            item["score"] = 99.0
-            return item
-
-        with patch("stock_analyzer.scoring._tomorrow_intraday_relaxed_mode", return_value=False), patch(
-            "stock_analyzer.scoring.apply_rule_penalty", side_effect=apply_test_rule
-        ) as apply_rule:
-            rows, meta = score_tomorrow_candidates(
-                prepare_candidates(quotes),
-                top_n=10,
-                market_regime={"level": "risk_off", "label": "偏防守", "score": 30},
-            )
-
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["deepseek_rule_penalty"], 7.0)
-        self.assertEqual(meta["fallback_mode"], "backup_pool")
-        apply_rule.assert_called_once()
 
     def test_tomorrow_validation_gate_waits_for_enough_real_days(self):
         from stock_analyzer.app_support import tomorrow_validation_gate_decision
@@ -802,39 +720,6 @@ class TomorrowStrategyTest(unittest.TestCase):
         self.assertTrue(all(not row["execution_allowed"] for row in rows))
         self.assertIn("验证退场", rows[0]["reasons"][0])
         self.assertIn("允许备选观察", decision["reason"])
-
-    def test_tomorrow_validation_gate_preserves_intraday_watch_label(self):
-        from stock_analyzer.app import _apply_tomorrow_validation_gate
-
-        rows = [
-            {
-                "code": "600001",
-                "tier": "backup_pool",
-                "tier_label": "盘中观察",
-                "observation_mode": "intraday_provisional",
-                "reasons": [],
-                "deepseek_action": "priority",
-            }
-        ]
-        meta = {"primary_watch_count": 0, "primary_gate_count": 0}
-
-        _apply_tomorrow_validation_gate(
-            rows,
-            meta,
-            {
-                "strategy_name": "tomorrow_picks",
-                "sample_count": 20,
-                "day_count": 20,
-                "real_sample_count": 20,
-                "real_day_count": 60,
-                "real_avg_primary_return_net": -1.0,
-                "real_win_rate_primary_net": 20.0,
-            },
-        )
-
-        self.assertEqual(rows[0]["tier_label"], "盘中观察")
-        self.assertEqual(rows[0]["trade_action"]["position_size"], 0.0)
-        self.assertEqual(rows[0]["deepseek_action"], "watch")
 
     def test_tomorrow_validation_gate_demotes_primary_without_outcomes(self):
         from stock_analyzer.app import _apply_tomorrow_validation_gate
@@ -1056,14 +941,14 @@ class TomorrowStrategyTest(unittest.TestCase):
 
     def test_tomorrow_primary_return_config_uses_close_auction_overnight(self):
         column, days, horizon = _primary_return_config("tomorrow_picks")
-        self.assertEqual(column, "overnight_return")
+        self.assertEqual(column, "signal_exit_return")
         self.assertEqual(days, 1)
-        self.assertEqual(horizon, "T日收盘集合竞价至T+1收盘")
+        self.assertEqual(horizon, "T日14:30后参考入场至T+1规则退出")
         with patch.object(config, "VALIDATION_PRIMARY_ENTRY_MODE", "signal"):
             column_signal, days_signal, horizon_signal = _primary_return_config("tomorrow_picks")
-            self.assertEqual(column_signal, "overnight_return")
+            self.assertEqual(column_signal, "signal_exit_return")
             self.assertEqual(days_signal, 1)
-            self.assertEqual(horizon_signal, "T日收盘集合竞价至T+1收盘")
+            self.assertEqual(horizon_signal, "T日14:30后参考入场至T+1规则退出")
 
 
 

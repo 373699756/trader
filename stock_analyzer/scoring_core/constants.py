@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 STRATEGY_LABELS = {
-    "short_term": "盘中强势观察",
+    "short_term": "今日延续推荐",
     "tomorrow_picks": "明日优先",
     "swing_picks": "2-5日持有",
 }

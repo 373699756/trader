@@ -29,14 +29,13 @@ from stock_analyzer.scoring import (
     candidate_filter_report,
     limit_theme_concentration,
     prepare_candidates,
-    score_candidates,
     score_today_candidates,
     score_swing_candidates,
     score_tomorrow_candidates,
 )
 from stock_analyzer.sentiment import score_news_items
 from stock_analyzer.stability import TopKDropoutTracker
-from stock_analyzer.snapshot import _apply_close_anchor_prices, run_snapshot
+from stock_analyzer.snapshot import run_snapshot
 from stock_analyzer.strategy_validation import StrategyValidationStore, _primary_return_config, validation_baseline_config
 from stock_analyzer.validation_replay import backfill_strategy_validation_samples
 
@@ -123,7 +122,7 @@ class RecommendationStrategiesTest(unittest.TestCase):
         self.assertEqual(result["short_term"][0]["tier"], "backup_pool")
         self.assertFalse(result["short_term"][0]["execution_allowed"])
         self.assertEqual(result["short_term"][0]["trade_action"]["position_size"], 0.0)
-        self.assertEqual(result["short_term"][0]["recommendation_class_label"], "盘中强势观察")
+        self.assertEqual(result["short_term"][0]["recommendation_class_label"], "今日延续推荐")
         self.assertHasExplanationFields(result["short_term"][0], "short_term")
 
     def test_short_term_rows_carry_verdict_and_bull_bear(self):
@@ -369,7 +368,7 @@ class RecommendationStrategiesTest(unittest.TestCase):
         self.assertIn("reversal_score", rows[0])
 
     def test_chokepoint_score_rewards_upstream_underpriced(self):
-        from stock_analyzer.scoring import _chokepoint_score
+        from stock_analyzer.scoring_core.theme_scores import _chokepoint_score
 
         upstream = pd.Series({"name": "某光模块", "industry": "光器件", "sixty_day_pct": 8})
         score, hits = _chokepoint_score(upstream)
@@ -383,7 +382,7 @@ class RecommendationStrategiesTest(unittest.TestCase):
         self.assertEqual(neutral_score, 50.0)
 
     def test_serenity_references_corrected_to_chokepoint(self):
-        from stock_analyzer.scoring import SERENITY_REFERENCES
+        from stock_analyzer.scoring_core.theme_scores import SERENITY_REFERENCES
 
         joined = " ".join(ref.get("adopted", "") + ref.get("repo", "") for ref in SERENITY_REFERENCES)
         # 不再误标为 BDD/Discord/OS 等不相关仓库
@@ -454,7 +453,7 @@ class RecommendationStrategiesTest(unittest.TestCase):
         self.assertIn("卫星互联网/低轨星座", [node["segment"] for node in meta["chain"]])
 
     def test_chokepoint_industry_leaders_cover_expanded_segments(self):
-        from stock_analyzer.scoring import CHOKEPOINT_INDUSTRY_LEADERS
+        from stock_analyzer.scoring_core.theme_scores import CHOKEPOINT_INDUSTRY_LEADERS
 
         segments = set(CHOKEPOINT_INDUSTRY_LEADERS)
         self.assertGreaterEqual(len(segments), 15)
@@ -553,7 +552,7 @@ class RecommendationStrategiesTest(unittest.TestCase):
         rows, meta = score_tomorrow_candidates(candidates, top_n=50)
 
         self.assertNotIn("600002", {row["code"] for row in rows})
-        self.assertEqual(meta["analysis_window"], "14:50")
+        self.assertEqual(meta["analysis_window"], "14:30")
         self.assertLessEqual(len(rows), 18)
         if rows:
             self.assertHasExplanationFields(rows[0], "tomorrow_picks")

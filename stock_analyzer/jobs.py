@@ -10,14 +10,15 @@ from contextlib import contextmanager
 from typing import Any, Dict, List
 
 from . import config
+from .deepseek.feature_service import DeepSeekFeatureAnalysisService
+from .deepseek.meta_training import DeepSeekMetaTrainingService
 from .portfolio_baseline import DailyPortfolioBaselineService
 from .providers import MarketDataProvider
-from .snapshot import SNAPSHOT_STRATEGIES, run_snapshots
+from .snapshot import SNAPSHOT_STRATEGIES, build_deepseek_precompute_rows, run_snapshots
 from .strategy_validation import StrategyValidationStore
 from .validation_audit_cli import build_validation_readiness_report
 from .validation_backup import backup_validation_db, list_validation_backups
 from .validation_runtime_support import run_validation_tuning_once
-from .app_runtime_support import deepseek_validation_review
 
 
 def _snapshot_strategies(raw: str) -> List[str]:
@@ -213,10 +214,74 @@ def _run_snapshot_command(args) -> Dict[str, Any]:
     }
 
 
+def _run_deepseek_precompute_command(args) -> Dict[str, Any]:
+    store = StrategyValidationStore(config.VALIDATION_DB_PATH)
+    provider = MarketDataProvider()
+    strategies = _snapshot_strategies(args.strategy)
+    context = build_deepseek_precompute_rows(
+        provider,
+        strategies,
+        market=str(args.market or "all"),
+    )
+    if not context.get("ok"):
+        return {
+            "ok": False,
+            "strategies": strategies,
+            "error": str(context.get("error") or "candidate_pool_unavailable"),
+            "results": [],
+        }
+    cutoff_at = str(args.cutoff_at or context.get("cutoff_at") or "")
+    service = DeepSeekFeatureAnalysisService()
+    results = []
+    for strategy in strategies:
+        result = service.analyze(
+            strategy,
+            (context.get("rows_by_strategy") or {}).get(strategy, []),
+            store,
+            cutoff_at=cutoff_at,
+            snapshot_id=str(context.get("snapshot_id") or ""),
+            market_filter=str(args.market or "all"),
+            deadline_at=str(args.deadline_at or getattr(config, "DEEPSEEK_PRECOMPUTE_DEADLINE", "14:48")),
+            model_tier=str(args.model_tier or "flash"),
+        )
+        results.append(result)
+    successful = {"ok", "partial", "cache_hit", "no_evidence", "disabled", "daily_call_limit"}
+    return {
+        "ok": all(str(item.get("status") or "") in successful for item in results),
+        "strategies": strategies,
+        "market": str(args.market or "all"),
+        "cutoff_at": cutoff_at,
+        "snapshot_id": str(context.get("snapshot_id") or ""),
+        "results": results,
+    }
+
+
+def _run_deepseek_meta_build_command(args) -> Dict[str, Any]:
+    store = StrategyValidationStore(config.VALIDATION_DB_PATH)
+    provider = MarketDataProvider()
+    strategies = _snapshot_strategies(args.strategy)
+    service = DeepSeekMetaTrainingService(store, provider=provider)
+    results = [
+        service.build(
+            strategy,
+            min_train_days=max(5, int(args.min_train_days or 60)),
+            top_k=max(1, int(args.top_k or 5)),
+            bootstrap_repeats=max(100, int(args.bootstrap_repeats or 1000)),
+        )
+        for strategy in strategies
+    ]
+    return {
+        "ok": all(item.get("ok") for item in results),
+        "strategies": strategies,
+        "results": results,
+        "production_applied": False,
+    }
+
+
 def _run_outcome_update_command(args) -> Dict[str, Any]:
     store = StrategyValidationStore(config.VALIDATION_DB_PATH)
     provider = MarketDataProvider()
-    strategies = _execution_strategies(args.strategy)
+    strategies = _snapshot_strategies(args.strategy)
     updates = []
     summary = {
         "requested": 0,
@@ -296,14 +361,12 @@ def _run_backup_command(args) -> Dict[str, Any]:
 
 def _run_tune_command(args) -> Dict[str, Any]:
     store = StrategyValidationStore(config.VALIDATION_DB_PATH)
-    strategies = _execution_strategies(args.strategy)
+    strategies = _snapshot_strategies(args.strategy)
     result = run_validation_tuning_once(
         store,
         cached_metrics=store.metrics,
-        deepseek_review_builder=deepseek_validation_review,
         strategies=strategies,
         days=max(1, int(args.days or 20)),
-        use_deepseek=bool(not args.no_deepseek),
     )
     return {
         "ok": bool(result.get("ok", False)),
@@ -372,12 +435,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="快照市场过滤",
     )
 
+    deepseek_precompute = subparsers.add_parser(
+        "deepseek-precompute",
+        help="异步预计算DeepSeek点时证据特征；14:30后可按需调用至生产截止时间",
+    )
+    deepseek_precompute.set_defaults(handler=_run_deepseek_precompute_command)
+    deepseek_precompute.add_argument("--strategy", default="all", help="逗号分隔策略名")
+    deepseek_precompute.add_argument(
+        "--market",
+        default="all",
+        choices=("all", "main", "chinext", "star"),
+        help="市场过滤",
+    )
+    deepseek_precompute.add_argument("--cutoff-at", default="", help="证据截止时间ISO；默认当前候选快照时间")
+    deepseek_precompute.add_argument("--deadline-at", default="", help="API硬截止时间；默认14:48")
+    deepseek_precompute.add_argument("--model-tier", default="flash", choices=("flash", "pro"))
+
+    deepseek_meta = subparsers.add_parser(
+        "deepseek-meta-build",
+        help="构建三策略DeepSeek影子Meta模型与同池反事实",
+    )
+    deepseek_meta.set_defaults(handler=_run_deepseek_meta_build_command)
+    deepseek_meta.add_argument("--strategy", default="all", help="逗号分隔策略名")
+    deepseek_meta.add_argument("--min-train-days", type=int, default=60, help="扩窗训练最少真实交易日")
+    deepseek_meta.add_argument("--top-k", type=int, default=5, help="同池反事实Top K")
+    deepseek_meta.add_argument("--bootstrap-repeats", type=int, default=1000, help="移动块自助次数")
+
     outcomes = subparsers.add_parser("update-outcomes", help="执行 outcome 回填")
     outcomes.set_defaults(handler=_run_outcome_update_command)
     outcomes.add_argument(
         "--strategy",
         default="all",
-        help="逗号分隔策略名，all 表示全部可执行策略",
+        help="逗号分隔策略名，all 表示三个验证策略",
     )
     outcomes.add_argument("--signal-date", default="", help="指定信号日，不传则更新可用批次")
     outcomes.add_argument(
@@ -414,10 +503,9 @@ def _build_parser() -> argparse.ArgumentParser:
     tune.add_argument(
         "--strategy",
         default="all",
-        help="逗号分隔策略名，all 表示全部可执行策略",
+        help="逗号分隔策略名，all 表示三个验证策略",
     )
     tune.add_argument("--days", type=int, default=20, help="调参窗口（交易日）")
-    tune.add_argument("--no-deepseek", action="store_true", help="禁用 DeepSeek 复盘")
 
     stats = subparsers.add_parser("stats", help="导出可观测性与数据库健康快照")
     stats.set_defaults(handler=_run_stats_command)

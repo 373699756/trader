@@ -39,7 +39,7 @@ usage() {
   PROXY_SCHEME=socks5h PROXY_PORT=1080 ./run.sh     # 仅在确认 pip 支持 socks 时使用
   INTERNET_CHECK_URLS="https://pypi.org/simple/pip/" ./run.sh
   SKIP_PROXY_CHECK=1 ./run.sh                        # 明确跳过启动前外网检查
-  ./run.sh after-close --strategy all                 # 收盘后下载日线、快照、回填、刷新因子
+  ./run.sh after-close --strategy all                 # 收盘后下载日线、回填14:30信号、刷新因子
   ./run.sh after-close --market-data-limit 500         # 分批下载，适合普通办公 PC
 
 默认会自动探测 127.0.0.1、WSL nameserver、host.docker.internal 的常见代理端口。

@@ -9,6 +9,8 @@ from typing import Callable, Dict, List, Tuple
 import pandas as pd
 
 from .. import config
+from ..recommendation_freeze import recommendation_is_frozen
+from ..recommendation_policy import apply_today_next_day_gate
 from ..app_response_support import (
     error_payload,
     response_payload,
@@ -16,10 +18,7 @@ from ..app_response_support import (
     saved_tomorrow_fallback_payload,
     snapshot_fallback_payload,
 )
-from ..app_runtime_support import (
-    deepseek_validation_review,
-    risk_blacklist_summary,
-)
+from ..app_runtime_support import risk_blacklist_summary
 from ..app_support import (
     apply_strategy_validation_gate,
     attach_validation_summary,
@@ -81,12 +80,10 @@ _VALIDATION_AUTO_WORKERS_LOCK = threading.Lock()
 class AppServiceHooks:
     """Patchable functions re-exported from app.py for existing tests."""
 
-    deepseek_stock_prediction_review: Callable
     list_market_data_codes: Callable
     load_local_history_frames: Callable
     run_alphalite_backtest: Callable
     run_rolling_alphalite_backtest: Callable
-    deepseek_validation_review: Callable = deepseek_validation_review
 
 
 class _AppServiceContext:
@@ -312,7 +309,7 @@ class _AppServiceContext:
             expected_top_n=top_n,
         )
         if snapshot.get("ok"):
-            payload = dict(snapshot["payload"])
+            payload = self._overlay_live_quotes_on_payload(dict(snapshot["payload"]))
             payload["snapshot"] = {
                 "saved_at": snapshot.get("saved_at", ""),
                 "age_seconds": snapshot.get("age_seconds"),
@@ -323,12 +320,13 @@ class _AppServiceContext:
 
     def horizon_payload(self, strategy: str, top_n: int, market: str) -> Tuple[Dict[str, object], int]:
         try:
-            return self._horizon_payload(strategy, top_n, market)
+            payload, status = self._horizon_payload(strategy, top_n, market)
+            return self._overlay_live_quotes_on_payload(payload), status
         except Exception as exc:
             if strategy == "tomorrow_picks":
                 saved_rows = self.validation_store.latest_signal_rows("tomorrow_picks")
                 if saved_rows:
-                    return saved_tomorrow_fallback_payload(
+                    payload = saved_tomorrow_fallback_payload(
                         saved_rows=saved_rows,
                         top_n=top_n,
                         market=market,
@@ -339,10 +337,11 @@ class _AppServiceContext:
                         analysis_window_fn=lambda: analysis_window(config.VALIDATION_AUTO_SNAPSHOT_TIME),
                         provider_health_fn=self.provider.health,
                         research_disclaimer_fn=self.research_disclaimer,
-                    ), 200
+                    )
+                    return self._overlay_live_quotes_on_payload(payload), 200
             return self.error_payload(exc, include_disclaimer=True)
 
-    def stock_prediction_payload(self, code: str, deepseek_requested: bool) -> Tuple[Dict[str, object], int]:
+    def stock_prediction_payload(self, code: str) -> Tuple[Dict[str, object], int]:
         normalized_code = code.strip()[:12]
         try:
             quotes, quote_error = self._current_quotes_or_empty()
@@ -394,6 +393,7 @@ class _AppServiceContext:
                 short_term_rows_override=short_term_snapshot_rows,
                 short_term_meta_override=short_term_snapshot_meta,
                 cached_metrics_fn=self.cached_metrics,
+                validation_store=self.validation_store,
             )
             fallback_history = None
             fallback_error = ""
@@ -417,8 +417,6 @@ class _AppServiceContext:
                 fallback_history=fallback_history,
                 fallback_error=fallback_error,
             )
-            if deepseek_requested and bool(result.get("ok")):
-                result["optimization"] = self.hooks.deepseek_stock_prediction_review(result)
             if bool(getattr(config, "ENABLE_STANCE_TRACKING", False)) and bool(result.get("ok")):
                 try:
                     result["stance_tracking"] = self.validation_store.save_stock_prediction_snapshot(result)
@@ -736,7 +734,6 @@ class _AppServiceContext:
         strategy: str,
         days: int,
         method: str,
-        use_deepseek: bool,
     ) -> Tuple[Dict[str, object], int]:
         try:
             if method == "GET":
@@ -746,7 +743,7 @@ class _AppServiceContext:
                     strategy=strategy,
                     latest=self.validation_store.latest_tuning_run(strategy),
                 )
-            tuning_result = self.run_validation_tuning_once([strategy], days=days, use_deepseek=use_deepseek)
+            tuning_result = self.run_validation_tuning_once([strategy], days=days)
             self.invalidate_metrics_cache()
             latest = self.validation_store.latest_tuning_run(strategy)
             plan = latest.get("plan") or {}
@@ -1006,6 +1003,10 @@ class _AppServiceContext:
         saved_at: str = "",
         saved_at_ts: float | None = None,
     ) -> Dict[str, object]:
+        if recommendation_is_frozen():
+            frozen = self._cached_recommendation_entry(top_n, market) or self._snapshot_entry(top_n, market)
+            if frozen is not None:
+                return frozen
         snapshot_meta = {
             "source": source,
             "stage": stage,
@@ -1036,6 +1037,10 @@ class _AppServiceContext:
         saved_at_ts: float | None = None,
         source: str = "live",
     ) -> Dict[str, object]:
+        if recommendation_is_frozen():
+            frozen = self._cached_horizon_entry(strategy, top_n, market)
+            if frozen is not None:
+                return frozen
         return self.container.horizon_cache.remember(
             self._horizon_cache_key(strategy, top_n, market),
             payload,
@@ -1095,6 +1100,13 @@ class _AppServiceContext:
         return health
 
     def _build_horizon_payload(self, strategy: str, top_n: int, market: str) -> Dict[str, object]:
+        if recommendation_is_frozen():
+            frozen = self._cached_horizon_entry(strategy, top_n, market)
+            if frozen is not None:
+                return dict(frozen.get("payload") or {})
+            saved = self._saved_horizon_payload(strategy, top_n, market)
+            if saved is not None:
+                return saved
         _, candidates, market_regime = self._live_candidates_with_regime()
         coverage = factor_coverage(candidates)
         rows, meta, _ = scored_strategy_rows(
@@ -1118,7 +1130,13 @@ class _AppServiceContext:
                 "reason": reason,
             }
             demote_strategy_rows_to_backup(strategy, rows, meta, reason)
-        rows, _ = apply_deepseek_to_reviewable_rows(strategy, rows, market, meta)
+        rows, _ = apply_deepseek_to_reviewable_rows(
+            strategy,
+            rows,
+            market,
+            meta,
+            validation_store=self.validation_store,
+        )
         attach_validation_summary(rows, self.validation_store, strategy, metrics_fn=self.cached_metrics)
         meta["market_regime"] = market_regime
         meta["factor_coverage"] = coverage
@@ -1201,20 +1219,12 @@ class _AppServiceContext:
         self,
         strategies: List[str],
         days: int = 120,
-        use_deepseek: bool = True,
     ) -> Dict[str, object]:
         return run_validation_tuning_once_support(
             self.validation_store,
             self.cached_metrics,
-            lambda strategy, metrics, review_days: self.hooks.deepseek_validation_review(
-                self.validation_store,
-                strategy,
-                metrics,
-                review_days,
-            ),
             strategies,
             days=days,
-            use_deepseek=use_deepseek,
         )
 
     def run_validation_auto_snapshot_once(self) -> Dict[str, object]:
@@ -1293,9 +1303,14 @@ class _AppServiceContext:
         )
 
     def _build_recommendations_payload(self, top_n: int, market: str, include_deepseek: bool = True) -> tuple:
+        if recommendation_is_frozen():
+            frozen = self._cached_recommendation_entry(top_n, market) or self._snapshot_entry(top_n, market)
+            if frozen is not None:
+                return self._serve_recommendation_payload(frozen), 200
         try:
             blacklist_payload = load_risk_blacklist()
             context = self._recommendation_input_context()
+            quotes = context["quotes"]
             hard_filter_report = context["hard_filter_report"]
             candidates = context["candidates"]
             market_regime = context["market_regime"]
@@ -1316,6 +1331,9 @@ class _AppServiceContext:
                 apply_deepseek=include_deepseek,
                 validation_store=self.validation_store,
             )
+            recommendations_by_horizon, today_next_day_gate = apply_today_next_day_gate(
+                recommendations_by_horizon
+            )
             short_display_rows, meta = finalize_recommendation_payload_meta(
                 recommendations_by_horizon["short_term"],
                 meta,
@@ -1329,19 +1347,17 @@ class _AppServiceContext:
                 self.cached_metrics,
             )
             meta["factor_coverage"] = coverage
+            meta["today_next_day_gate"] = today_next_day_gate
+            meta["quote_timestamp"] = str(
+                (getattr(quotes, "attrs", {}) or {}).get("quote_timestamp") or ""
+            )
             from ..production_baseline import attach_generation_provenance
 
             attach_generation_provenance(meta, "short_term", short_display_rows, candidates)
-            try:
-                market_gate = meta.get("deepseek_market_gate") if isinstance(meta, dict) else {}
-                if isinstance(market_gate, dict) and market_gate.get("enabled"):
-                    self.validation_store.save_market_gate_review(market_gate, market_filter=market)
-            except Exception:
-                pass
-            recommendations_by_horizon = {"short_term": short_display_rows}
+            recommendations_by_horizon["short_term"] = short_display_rows
             payload = {
                 "ok": True,
-                "data": recommendations_by_horizon["short_term"],
+                "data": short_display_rows,
                 "recommendations": recommendations_by_horizon,
                 "meta": meta,
                 "market_sentiment": self._cached_market_sentiment(),
@@ -1377,16 +1393,181 @@ class _AppServiceContext:
     def _serve_recommendation_payload(self, entry: Dict[str, object]) -> Dict[str, object]:
         payload = dict(entry.get("payload") or {})
         payload["snapshot"] = self._recommendation_snapshot_info(entry)
+        return self._overlay_live_quotes_on_payload(payload)
+
+    def _overlay_live_quotes_on_payload(self, payload: Dict[str, object]) -> Dict[str, object]:
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            return payload
+        recommendations = dict(payload.get("recommendations") or {})
+        payload_rows = list(payload.get("data") or [])
+        all_rows = list(payload_rows)
+        for rows in recommendations.values():
+            if isinstance(rows, list):
+                all_rows.extend(rows)
+        codes = sorted(
+            {
+                normalize_code(row.get("code"))
+                for row in all_rows
+                if isinstance(row, dict) and normalize_code(row.get("code"))
+            }
+        )
+        quotes, quote_error = self.container.candidate_pipeline.recommendation_quotes(codes)
+        quote_scope = "recommendation_pool"
+        if quotes is None or quotes.empty:
+            quotes, fallback_error = self._current_quotes_or_empty()
+            quote_error = quote_error or fallback_error
+            quote_scope = "full_market_fallback"
+        if quotes is None or quotes.empty:
+            return payload
+        live_by_code = quote_lookup(quotes)
+        full_quotes = self.container.quotes_cache.get()
+        full_by_code = quote_lookup(full_quotes) if full_quotes is not None and not full_quotes.empty else {}
+        full_timestamp = str((getattr(full_quotes, "attrs", {}) or {}).get("quote_timestamp") or "")
+        row_quality = {}
+        dynamic_fields = (
+            "price",
+            "pct_chg",
+            "speed",
+            "five_min_pct",
+            "volume_ratio",
+            "turnover_rate",
+            "turnover",
+            "volume",
+            "amplitude",
+            "high",
+            "low",
+            "open",
+        )
+
+        def timestamp_age_seconds(value):
+            if not value:
+                return None
+            try:
+                return round(max(0.0, (datetime.now() - datetime.fromisoformat(str(value))).total_seconds()), 2)
+            except ValueError:
+                return None
+
+        def overlay(rows):
+            result = []
+            for source_row in rows or []:
+                row = dict(source_row)
+                code = normalize_code(row.get("code"))
+                targeted_quote = live_by_code.get(code, {}) if quote_scope == "recommendation_pool" else {}
+                fallback_quote = full_by_code.get(code, {})
+                quote = targeted_quote or live_by_code.get(code, {}) or fallback_quote
+                for field in dynamic_fields:
+                    if quote.get(field) is not None:
+                        row[field] = quote[field]
+                if targeted_quote:
+                    for unavailable_field in ("speed", "five_min_pct"):
+                        if quote.get(unavailable_field) is None:
+                            row[unavailable_field] = None
+                row_timestamp = str(
+                    quote.get("quote_timestamp")
+                    or ((getattr(quotes, "attrs", {}) or {}).get("quote_timestamp") if targeted_quote else full_timestamp)
+                    or ""
+                )
+                row_source = str(
+                    quote.get("quote_source")
+                    or ((getattr(quotes, "attrs", {}) or {}).get("quote_source") if targeted_quote else "全市场快照回退")
+                    or ""
+                )
+                row_age = timestamp_age_seconds(row_timestamp)
+                stale_seconds = max(1, int(getattr(config, "RECOMMENDATION_QUOTE_STALE_SECONDS", 30)))
+                now = datetime.now()
+                minutes = now.hour * 60 + now.minute
+                market_active = now.weekday() < 5 and (
+                    565 <= minutes <= 690 or 780 <= minutes <= 910
+                )
+                row_stale = bool(market_active and (row_age is None or row_age > stale_seconds))
+                source_deviation_pct = None
+                source_mismatch = False
+                primary_price = quote.get("price") if targeted_quote else None
+                fallback_price = fallback_quote.get("price")
+                full_age = timestamp_age_seconds(full_timestamp)
+                if primary_price and fallback_price and full_age is not None and full_age <= 60:
+                    source_deviation_pct = round(abs(float(primary_price) - float(fallback_price)) / abs(float(primary_price)) * 100.0, 4)
+                    source_mismatch = source_deviation_pct > float(
+                        getattr(config, "RECOMMENDATION_QUOTE_MAX_SOURCE_DEVIATION_PCT", 0.5)
+                    )
+                row["quote_timestamp"] = row_timestamp
+                row["quote_source"] = row_source
+                row["quote_age_seconds"] = row_age
+                row["quote_stale"] = row_stale
+                row["quote_source_deviation_pct"] = source_deviation_pct
+                row["quote_source_mismatch"] = source_mismatch
+                row_quality[code] = {
+                    "timestamp": row_timestamp,
+                    "age": row_age,
+                    "stale": row_stale,
+                    "source": row_source,
+                    "mismatch": source_mismatch,
+                }
+                result.append(row)
+            return result
+
+        for strategy, rows in list(recommendations.items()):
+            if isinstance(rows, list):
+                recommendations[strategy] = overlay(rows)
+        payload["recommendations"] = recommendations
+        if isinstance(payload.get("data"), list):
+            payload["data"] = overlay(payload["data"])
+        health = {**dict(payload.get("health") or {}), **self._safe_provider_health()}
+        full_market_source = health.get("quotes_source")
+        quote_timestamp = str(
+            (getattr(quotes, "attrs", {}) or {}).get("quote_timestamp")
+            or health.get("last_quote_refresh")
+            or ""
+        )
+        quote_source = str((getattr(quotes, "attrs", {}) or {}).get("quote_source") or full_market_source or "")
+        ages = sorted(float(item["age"]) for item in row_quality.values() if item.get("age") is not None)
+        quote_age_seconds = max(ages) if ages else timestamp_age_seconds(quote_timestamp)
+        p95_index = min(len(ages) - 1, max(0, int(len(ages) * 0.95))) if ages else 0
+        quote_p95_age_seconds = ages[p95_index] if ages else quote_age_seconds
+        stale_codes = sorted(code for code, item in row_quality.items() if item.get("stale"))
+        mismatch_codes = sorted(code for code, item in row_quality.items() if item.get("mismatch"))
+        missing_codes = sorted((getattr(quotes, "attrs", {}) or {}).get("missing_codes") or [])
+        if quote_scope == "recommendation_pool" and missing_codes:
+            quote_scope = "mixed"
+        quote_version = "|".join(
+            f"{code}:{item.get('timestamp') or 'missing'}"
+            for code, item in sorted(row_quality.items())
+        )
+        health["full_market_quotes_source"] = full_market_source
+        health["recommendation_quotes_source"] = quote_source
+        health["recommendation_quote_error"] = quote_error
+        health["recommendation_quote_missing_codes"] = missing_codes
+        health["recommendation_quote_stale_codes"] = stale_codes
+        health["recommendation_quote_source_mismatch_codes"] = mismatch_codes
+        health["quotes_source"] = quote_source
+        health["last_quote_refresh"] = quote_timestamp
+        meta = dict(payload.get("meta") or {})
+        meta["quote_timestamp"] = quote_timestamp
+        meta["quote_age_seconds"] = quote_age_seconds
+        meta["quote_p95_age_seconds"] = quote_p95_age_seconds
+        meta["quote_stale_count"] = len(stale_codes)
+        meta["quote_missing_count"] = len(missing_codes)
+        meta["quote_source_mismatch_count"] = len(mismatch_codes)
+        meta["quote_version"] = quote_version
+        meta["quote_scope"] = quote_scope
+        meta["quote_overlay_at"] = datetime.now().isoformat(timespec="seconds")
+        payload["meta"] = meta
+        payload["health"] = health
         return payload
 
     def _refresh_recommendation_cache(self, top_n: int, market: str) -> None:
         key = self._recommendation_cache_key(top_n, market)
         try:
+            if recommendation_is_frozen():
+                return
+            self.container.candidate_pipeline.refresh_quotes()
             self._build_recommendations_payload(top_n, market, include_deepseek=True)
         finally:
             self.container.recommendation_cache.discard_refreshing(key)
 
     def _schedule_recommendation_refresh(self, top_n: int, market: str) -> bool:
+        if recommendation_is_frozen():
+            return False
         key = self._recommendation_cache_key(top_n, market)
         if not self.container.recommendation_cache.mark_refreshing(key):
             return False
@@ -1402,6 +1583,9 @@ class _AppServiceContext:
     def _refresh_horizon_cache(self, strategy: str, top_n: int, market: str) -> None:
         key = self._horizon_cache_key(strategy, top_n, market)
         try:
+            if recommendation_is_frozen():
+                return
+            self.container.candidate_pipeline.refresh_quotes()
             self._build_horizon_payload(strategy, top_n, market)
         except Exception as exc:
             payload = response_payload(
@@ -1428,6 +1612,8 @@ class _AppServiceContext:
             self.container.horizon_cache.discard_refreshing(key)
 
     def _schedule_horizon_refresh(self, strategy: str, top_n: int, market: str) -> bool:
+        if recommendation_is_frozen():
+            return False
         key = self._horizon_cache_key(strategy, top_n, market)
         if not self.container.horizon_cache.mark_refreshing(key):
             return False
@@ -1542,8 +1728,8 @@ class RecommendationUseCase(_UseCase):
 
 
 class PredictionUseCase(_UseCase):
-    def stock_prediction_payload(self, code: str, deepseek_requested: bool) -> Tuple[Dict[str, object], int]:
-        return self.context.stock_prediction_payload(code, deepseek_requested)
+    def stock_prediction_payload(self, code: str) -> Tuple[Dict[str, object], int]:
+        return self.context.stock_prediction_payload(code)
 
     def stock_prediction_stance_validation(self, days: int) -> Tuple[Dict[str, object], int]:
         return self.context.stock_prediction_stance_validation(days)
@@ -1645,13 +1831,11 @@ class ValidationUseCase(_UseCase):
         strategy: str,
         days: int,
         method: str,
-        use_deepseek: bool,
     ) -> Tuple[Dict[str, object], int]:
         return self.context.strategy_validation_tuning(
             strategy=strategy,
             days=days,
             method=method,
-            use_deepseek=use_deepseek,
         )
 
     def strategy_validation_daily(
@@ -1710,9 +1894,8 @@ class BackgroundWorkerService(_UseCase):
         self,
         strategies: List[str],
         days: int = 120,
-        use_deepseek: bool = True,
     ) -> Dict[str, object]:
-        return self.context.run_validation_tuning_once(strategies, days=days, use_deepseek=use_deepseek)
+        return self.context.run_validation_tuning_once(strategies, days=days)
 
     def run_validation_auto_snapshot_once(self) -> Dict[str, object]:
         return self.context.run_validation_auto_snapshot_once()
@@ -1738,6 +1921,7 @@ class AppServices:
         self.background_workers = BackgroundWorkerService(self.context)
 
     def start_background_workers(self) -> None:
+        self.context.container.realtime_scheduler.start()
         self.background_workers.start_background_workers()
 
     def index_context(self) -> Dict[str, object]:
@@ -1763,8 +1947,8 @@ class AppServices:
     def horizon_payload(self, strategy: str, top_n: int, market: str) -> Tuple[Dict[str, object], int]:
         return self.recommendations.horizon_payload(strategy, top_n, market)
 
-    def stock_prediction_payload(self, code: str, deepseek_requested: bool) -> Tuple[Dict[str, object], int]:
-        return self.predictions.stock_prediction_payload(code, deepseek_requested)
+    def stock_prediction_payload(self, code: str) -> Tuple[Dict[str, object], int]:
+        return self.predictions.stock_prediction_payload(code)
 
     def stock_prediction_stance_validation(self, days: int) -> Tuple[Dict[str, object], int]:
         return self.predictions.stock_prediction_stance_validation(days)
@@ -1864,13 +2048,11 @@ class AppServices:
         strategy: str,
         days: int,
         method: str,
-        use_deepseek: bool,
     ) -> Tuple[Dict[str, object], int]:
         return self.validation.strategy_validation_tuning(
             strategy=strategy,
             days=days,
             method=method,
-            use_deepseek=use_deepseek,
         )
 
     def strategy_validation_daily(
@@ -1917,9 +2099,8 @@ class AppServices:
         self,
         strategies: List[str],
         days: int = 120,
-        use_deepseek: bool = True,
     ) -> Dict[str, object]:
-        return self.background_workers.run_validation_tuning_once(strategies, days=days, use_deepseek=use_deepseek)
+        return self.background_workers.run_validation_tuning_once(strategies, days=days)
 
     def run_validation_auto_snapshot_once(self) -> Dict[str, object]:
         return self.background_workers.run_validation_auto_snapshot_once()

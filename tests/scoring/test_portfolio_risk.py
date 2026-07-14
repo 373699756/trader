@@ -15,7 +15,7 @@ from stock_analyzer.portfolio import build_portfolio
 class PortfolioRiskTest(unittest.TestCase):
     def test_plan_defaults_keep_conservative_guards_enabled_and_model_takeover_off(self):
         self.assertTrue(config.ENABLE_SURVIVORSHIP_CORRECTION)
-        self.assertTrue(config.ENABLE_TAIL_AUCTION_SLIPPAGE)
+        self.assertFalse(config.ENABLE_TAIL_AUCTION_SLIPPAGE)
         self.assertTrue(config.ENABLE_MARKET_IMPACT)
         self.assertTrue(config.ENABLE_REGIME_THEME_CAP)
         self.assertTrue(config.ENABLE_STRESS_TEST)

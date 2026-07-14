@@ -2,7 +2,7 @@ import json
 import math
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Dict, Iterable, List, Optional
 
 from . import config
@@ -55,7 +55,7 @@ def build_expected_return_artifact(
 ) -> Dict[str, object]:
     training = build_training_samples(strategy, samples or [])
     window = _training_window(training, training_days=training_days)
-    created = created_at or datetime.utcnow()
+    created = created_at or datetime.now(UTC).replace(tzinfo=None)
     max_age_days = _artifact_max_age_days()
     expires_at = created + timedelta(days=max_age_days) if max_age_days > 0 else None
     return {
@@ -445,7 +445,7 @@ def _artifact_max_age_days() -> int:
 
 
 def _artifact_expired(artifact: Dict[str, object], *, now: datetime = None, max_age_days: int = None) -> bool:
-    current = now or datetime.utcnow()
+    current = now or datetime.now(UTC).replace(tzinfo=None)
     expires_at = _parse_time(str((artifact or {}).get("expires_at") or ""))
     if expires_at is not None:
         return current > expires_at

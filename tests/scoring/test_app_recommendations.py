@@ -135,35 +135,6 @@ def test_recommendations_prefers_cached_snapshot_before_live_recompute(tmp_path)
     assert body["snapshot"]["source"] == "disk_snapshot"
 
 
-def test_recommendations_cold_start_returns_local_rows_before_deepseek_refresh(tmp_path):
-    def slow_rerank(rows, strategy_name, market_filter):
-        time.sleep(0.2)
-        return rows, {"enabled": True, "status": "ok", "strategy": strategy_name}
-
-    with patch.object(config, "ENABLE_DEEPSEEK_RUNTIME", True), patch(
-        "stock_analyzer.providers.MarketDataProvider.get_realtime_quotes",
-        return_value=_live_quotes(),
-    ), patch(
-        "stock_analyzer.app_runtime_support.rerank_candidates",
-        side_effect=slow_rerank,
-    ), patch(
-        "stock_analyzer.services.app_services.AppServices._schedule_snapshot_save",
-        return_value=None,
-    ), patch(
-        "stock_analyzer.services.app_services.threading.Thread.start",
-        return_value=None,
-    ), app_patch_context(tmp_path) as app:
-        response = app.test_client().get("/api/recommendations?top_n=10&market=all")
-
-    payload = response.get_json()
-    assert response.status_code == 200
-    assert payload["ok"]
-    assert payload["snapshot"]["stage"] == "local_only"
-    assert payload["meta"]["deepseek"]["short_term"]["status"] == "async_pending"
-    assert payload["meta"]["deepseek"]["tomorrow_picks"]["status"] == "async_pending"
-    assert payload["meta"]["deepseek"]["swing_picks"]["status"] == "async_pending"
-
-
 def test_recommendations_does_not_save_snapshot_synchronously(tmp_path):
     with patch(
         "stock_analyzer.providers.MarketDataProvider.get_realtime_quotes",
@@ -209,3 +180,4 @@ def test_horizon_refresh_failure_is_cached_without_thread_traceback(tmp_path):
     assert payload["meta"]["fallback"] == "live_refresh_failed"
     assert not payload["ok"]
     assert "东方财富直连行情失败" in payload["error"]
+

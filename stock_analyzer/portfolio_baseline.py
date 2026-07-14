@@ -113,6 +113,104 @@ class DailyPortfolioBaselineService:
             "report": report,
         }
 
+    def candidate_execution_dataset(
+        self,
+        provider,
+        strategy_name: str,
+        signal_date: str,
+    ) -> Dict[str, object]:
+        """Return one frozen candidate pool and reproducible outcomes for research jobs."""
+        batch = self._batch_metadata(strategy_name, signal_date)
+        if not batch:
+            return {
+                "status": "unknown",
+                "reason": "signal_batch_unavailable",
+                "strategy": strategy_name,
+                "signal_date": signal_date,
+                "candidates": [],
+                "outcomes": {},
+            }
+        snapshots = self.validation_store.candidate_snapshots_for_date(
+            signal_date,
+            strategy_name,
+            str(batch.get("strategy_version") or ""),
+        )
+        candidates = [
+            _candidate_payload(item)
+            for item in snapshots
+            if item.get("eligible") and item.get("point_in_time_valid", True)
+        ]
+        policy = batch.get("execution_policy") or build_execution_policy(strategy_name)
+        outcomes = self._reusable_candidate_execution(strategy_name, signal_date, candidates)
+        if candidates and not outcomes:
+            outcomes = self._execution_outcomes(
+                provider,
+                strategy_name,
+                signal_date,
+                candidates,
+                policy,
+            )
+        counts = _status_counts(outcomes.values())
+        non_reproducible = any(
+            str(item.get("status") or "") == "settled"
+            and not bool(item.get("return_reproducible"))
+            for item in outcomes.values()
+        )
+        status = (
+            "unknown"
+            if counts.get("unknown") or non_reproducible
+            else "pending"
+            if counts.get("pending")
+            else "settled"
+        )
+        return {
+            "status": status,
+            "reason": (
+                "candidate_return_not_reproducible"
+                if non_reproducible
+                else "settled"
+                if status == "settled"
+                else "candidate_outcome_{}".format(status)
+            ),
+            "strategy": strategy_name,
+            "strategy_version": str(batch.get("strategy_version") or ""),
+            "signal_date": signal_date,
+            "signal_time": str(batch.get("signal_time") or ""),
+            "execution_policy": policy,
+            "candidates": candidates,
+            "outcomes": outcomes,
+            "execution_status_counts": counts,
+        }
+
+    def _reusable_candidate_execution(
+        self,
+        strategy_name: str,
+        signal_date: str,
+        candidates: List[Dict[str, object]],
+    ) -> Dict[str, Dict[str, object]]:
+        if not candidates:
+            return {}
+        record = self.record(
+            strategy_name,
+            signal_date,
+            ranking_field="score",
+            model_id="",
+            include_audit=True,
+        )
+        audit = record.get("audit") if isinstance(record.get("audit"), dict) else {}
+        execution = audit.get("execution") if isinstance(audit.get("execution"), dict) else {}
+        expected_codes = {normalize_code(item.get("code")) for item in candidates}
+        stored_codes = {normalize_code(code) for code in execution}
+        if record.get("status") != "settled" or expected_codes != stored_codes:
+            return {}
+        for item in execution.values():
+            status = str(item.get("status") or "unknown")
+            if status not in {"settled", "unfilled"}:
+                return {}
+            if status == "settled" and "return_reproducible" not in item:
+                return {}
+        return {normalize_code(code): dict(item) for code, item in execution.items()}
+
     def report(
         self,
         strategy_name: str,
@@ -793,6 +891,8 @@ def _computed_execution_outcome(
         "entry_date": outcome.get("next_trade_date") or "",
         "exit_date": _primary_exit_date(strategy_name, outcome),
         "gross_return_pct": round(gross, 4),
+        "return_reproducible": bool(outcome.get("return_reproducible")),
+        "price_adjustment_mode": str(outcome.get("price_adjustment_mode") or ""),
         "raw_prices": outcome.get("raw_prices") or [],
     }
 
@@ -825,6 +925,8 @@ def _stored_execution_outcome(row: Dict[str, object], strategy_name: str) -> Dic
             else 0.0
         ),
         "stored_net_return_pct": coerce_number(net, None),
+        "return_reproducible": bool(row.get("return_reproducible")),
+        "price_adjustment_mode": str(row.get("price_adjustment_mode") or ""),
         "raw_prices": row.get("raw_prices") or [],
     }
 

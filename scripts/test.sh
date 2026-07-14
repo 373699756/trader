@@ -30,7 +30,7 @@ run_pytest() {
       else
         args=(-n "${workers}" --dist loadscope "${args[@]}")
       fi
-    elif [ "${PYTEST_XDIST_REQUIRED}" = "1" ] || [ "${USE_XDIST}" = "1" ]; then
+    elif [ "${PYTEST_XDIST_REQUIRED:-0}" = "1" ] || [ "${USE_XDIST:-0}" = "1" ] || [ "${CI_USE_XDIST}" = "1" ]; then
       echo "error: pytest-xdist requested (PYTEST_XDIST_WORKERS=${workers}) but pytest-xdist is not installed." >&2
       echo "install with: pip install pytest-xdist" >&2
       exit 2

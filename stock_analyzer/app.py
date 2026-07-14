@@ -3,11 +3,9 @@ from __future__ import annotations
 from flask import Flask
 
 from .app_container import ApplicationContainer
-from .app_runtime_support import deepseek_stock_prediction_review
 from .app_support import apply_tomorrow_validation_gate, attach_alphalite_factors, load_local_history_frames
 from .backtest import run_alphalite_backtest, run_rolling_alphalite_backtest
 from .daily_data import list_market_data_codes
-from .deepseek_client import review_strategy_validation
 from .providers import MarketDataProvider, TimedCache
 from .recommendation_snapshot import save_recommendation_snapshot
 from .routes.prediction import bp as prediction_bp
@@ -22,6 +20,8 @@ _apply_tomorrow_validation_gate = apply_tomorrow_validation_gate
 
 
 def create_app() -> Flask:
+    from . import config
+
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.jinja_env.auto_reload = True
@@ -30,19 +30,23 @@ def create_app() -> Flask:
     services = AppServices(
         container,
         AppServiceHooks(
-            deepseek_stock_prediction_review=deepseek_stock_prediction_review,
             list_market_data_codes=list_market_data_codes,
             load_local_history_frames=load_local_history_frames,
             run_alphalite_backtest=run_alphalite_backtest,
             run_rolling_alphalite_backtest=run_rolling_alphalite_backtest,
         ),
     )
-    # Background workers are intentionally not auto-started by web processes.
-    # Scheduled tasks should run via `stock_analyzer.jobs` (or an external scheduler)
-    # to keep request handlers isolated from long-lived background loops.
+    # The quote scheduler is process-local and owns one coalesced refresh loop.
+    # Other research/validation jobs remain outside the web process.
+    if bool(getattr(config, "REALTIME_MARKET_SCHEDULER_ENABLED", True)):
+        container.realtime_scheduler.start()
 
     app.extensions["app_container"] = container
     app.extensions["app_services"] = services
+    if bool(getattr(config, "DEEPSEEK_INTERNAL_SCHEDULER_ENABLED", True)):
+        from .deepseek_scheduler import start_deepseek_scheduler
+
+        start_deepseek_scheduler()
     app.register_blueprint(recommendations_bp)
     app.register_blueprint(prediction_bp)
     app.register_blueprint(validation_bp)

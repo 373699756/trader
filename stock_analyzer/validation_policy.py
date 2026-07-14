@@ -17,9 +17,9 @@ from .normalization import coerce_number, normalize_code
 
 
 PRIMARY_RETURN_BY_STRATEGY = {
-    "short_term": ("signal_next_close_return", 1, "盘中观察至次日收盘（辅助）"),
-    "tomorrow_picks": ("overnight_return", 1, "T日收盘集合竞价至T+1收盘"),
-    "swing_picks": ("exit_return", 5, "次日开盘后2-5日可执行退出"),
+    "short_term": ("signal_exit_return", 0, "信号时点至T日收盘延续收益（非新建仓交易）"),
+    "tomorrow_picks": ("signal_exit_return", 1, "T日14:30后参考入场至T+1规则退出"),
+    "swing_picks": ("signal_exit_return", 5, "T日14:30后参考入场至T+2-T+5规则退出"),
 }
 
 EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY = {
@@ -29,11 +29,11 @@ EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY = {
 
 def current_strategy_version(strategy_name: str) -> str:
     return {
-        "short_term": str(getattr(config, "SHORT_TERM_STRATEGY_VERSION", "short_term_v2_observation")),
+        "short_term": str(getattr(config, "SHORT_TERM_STRATEGY_VERSION", "today_picks_v1_remaining_session")),
         "tomorrow_picks": str(
-            getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v10_close_auction_baseline")
+            getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v12_post_1430_t1_exit")
         ),
-        "swing_picks": str(getattr(config, "SWING_STRATEGY_VERSION", "swing_2_5d_v3_next_open_exit")),
+        "swing_picks": str(getattr(config, "SWING_STRATEGY_VERSION", "swing_2_5d_v4_post_1430_entry")),
     }.get(str(strategy_name or ""), "")
 
 
@@ -45,7 +45,7 @@ def current_replay_strategy_version(strategy_name: str) -> str:
 def primary_return_config(strategy_name: str):
     return PRIMARY_RETURN_BY_STRATEGY.get(
         strategy_name,
-        ("signal_next_close_return", 1, "次日"),
+        ("signal_exit_return", 0, "同日信号至收盘"),
     )
 
 
@@ -111,18 +111,14 @@ def validation_baseline_config(
     execution_policy: Dict[str, object] = None,
 ) -> Dict[str, object]:
     primary_field, primary_days, primary_label = primary_return_config(strategy_name)
-    frozen_cost = (execution_policy or {}).get("cost") or {}
-    tail_enabled = bool(
-        (frozen_cost.get("tail_auction") or {}).get("enabled")
-        if execution_policy
-        else getattr(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False)
-    )
-    impact_enabled = bool(
-        (frozen_cost.get("market_impact") or {}).get("enabled")
-        if execution_policy
-        else getattr(config, "ENABLE_MARKET_IMPACT", False)
-    )
     execution_policy = execution_policy or build_execution_policy(strategy_name)
+    frozen_cost = execution_policy.get("cost") or {}
+    tail_enabled = bool((frozen_cost.get("tail_auction") or {}).get("enabled"))
+    impact_enabled = bool((frozen_cost.get("market_impact") or {}).get("enabled"))
+    slippage_enabled = any(
+        coerce_number(value) > 0
+        for value in (frozen_cost.get("liquidity_slippage_pct") or {}).values()
+    )
     survivorship_enabled = bool(
         (execution_policy.get("delisting") or {}).get("after_entry") == "last_tradable_price"
     )
@@ -146,7 +142,7 @@ def validation_baseline_config(
                 frozen_cost.get("fee_round_trip_pct"),
                 getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25),
             ),
-            "liquidity_slippage_enabled": True,
+            "liquidity_slippage_enabled": slippage_enabled,
             "tail_auction_slippage_enabled": tail_enabled,
             "market_impact_enabled": impact_enabled,
             "portfolio_capital": coerce_number(
@@ -222,7 +218,9 @@ def strategy_exit_policy(strategy_name: str, holding_days: int, limit_down_pct: 
 
 
 def exit_holding_days(strategy_name: str) -> int:
-    if strategy_name in {"tomorrow_picks", "swing_picks"}:
+    if strategy_name == "tomorrow_picks":
+        return 1
+    if strategy_name == "swing_picks":
         return 5
     return primary_return_config(strategy_name)[1]
 
@@ -331,6 +329,9 @@ def is_primary_tomorrow_signal(rank, raw: Dict[str, object]) -> bool:
 def is_primary_validation_signal(strategy_name: str, rank, raw: Dict[str, object]) -> bool:
     if not isinstance(raw, dict):
         raw = {}
+    # 今天策略是非交易观察，但仍需要作为“信号至收盘”的主验证样本。
+    if strategy_name == "short_term":
+        return True
     if raw.get("execution_allowed") is False:
         return False
     tier = str(raw.get("tier") or "").strip()

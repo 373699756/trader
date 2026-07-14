@@ -1,47 +1,23 @@
-"""Compatibility facade for scoring APIs.
-
-Concrete strategy workflows live in ``stock_analyzer.strategies`` and shared
-building blocks live in ``stock_analyzer.scoring_core``. This module keeps the
-legacy import surface stable for callers and tests.
-"""
+"""Public scoring API backed by explicit scoring-core entry points."""
 
 from __future__ import annotations
 
-from .scoring_core.compat import call_legacy_strategy, install_legacy_exports
-
-
-_FACADE_BASELINE = install_legacy_exports(globals())
-
-
-_STRATEGY_ENTRYPOINTS = {
-    "score_today_candidates",
-    "score_tomorrow_candidates",
-    "score_swing_candidates",
-}
-
-
-def score_today_candidates(*args, **kwargs):
-    return call_legacy_strategy("today", globals(), _FACADE_BASELINE, _STRATEGY_ENTRYPOINTS, *args, **kwargs)
-
-
-def score_tomorrow_candidates(*args, **kwargs):
-    return call_legacy_strategy("tomorrow", globals(), _FACADE_BASELINE, _STRATEGY_ENTRYPOINTS, *args, **kwargs)
-
-
-def score_swing_candidates(*args, **kwargs):
-    return call_legacy_strategy("swing", globals(), _FACADE_BASELINE, _STRATEGY_ENTRYPOINTS, *args, **kwargs)
+from .scoring_core.candidate_filters import candidate_filter_report, prepare_candidates
+from .scoring_core.market_regime import build_market_regime
+from .scoring_core.theme_limits import limit_theme_concentration
+from .strategies import (
+    score_swing_2_5d_picks as score_swing_candidates,
+    score_today_picks as score_today_candidates,
+    score_tomorrow_picks as score_tomorrow_candidates,
+)
 
 
 __all__ = [
-    name
-    for name in globals()
-    if not name.startswith("__")
-    and name
-    not in {
-        "_FACADE_BASELINE",
-        "_STRATEGY_ENTRYPOINTS",
-        "call_legacy_strategy",
-        "install_legacy_exports",
-        "_name",
-    }
+    "build_market_regime",
+    "candidate_filter_report",
+    "limit_theme_concentration",
+    "prepare_candidates",
+    "score_today_candidates",
+    "score_tomorrow_candidates",
+    "score_swing_candidates",
 ]

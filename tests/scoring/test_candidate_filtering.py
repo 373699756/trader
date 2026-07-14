@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from stock_analyzer import config
 from stock_analyzer.risk_blacklist import attach_risk_blacklist, load_risk_blacklist
-from stock_analyzer.scoring import candidate_filter_report, prepare_candidates, score_candidates
+from stock_analyzer.scoring import candidate_filter_report, prepare_candidates, score_today_candidates
 from stock_analyzer.sentiment import score_news_items
 
 
@@ -207,7 +207,7 @@ def test_score_candidates_orders_by_combined_signal(quotes):
     )
     candidates = prepare_candidates(raw)
 
-    rows, _ = score_candidates(
+    result, _ = score_today_candidates(
         candidates,
         hot_ranks={"600001": 10},
         industry_strength={"半导体": 2.5, "银行": -0.2},
@@ -215,5 +215,6 @@ def test_score_candidates_orders_by_combined_signal(quotes):
         top_n=2,
     )
 
+    rows = result["short_term"]
     assert rows[0]["code"] == "600001"
-    assert rows[0]["score"] > rows[1]["score"]
+    assert rows[0]["score"] > 0

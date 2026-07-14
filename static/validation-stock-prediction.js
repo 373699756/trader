@@ -29,29 +29,28 @@
         if (mode === "validation") els.generateTuningBtn.textContent = "验证中…";
         setOpsStatus(
           els.stockPredictionStatus,
-          mode === "prediction" ? "正在结合量价因子与 DeepSeek 研判走势…" : "正在读取走势预测并复核执行策略…",
+          mode === "prediction" ? "正在计算本地量价与三策略命中…" : "正在读取本地走势预测与验证状态…",
           "pending"
         );
-        setOpsStatus(els.tuningStatus, mode === "validation" ? "DeepSeek 策略验证中…" : "", mode === "validation" ? "pending" : "");
+        setOpsStatus(els.tuningStatus, mode === "validation" ? "本地策略验证中…" : "", mode === "validation" ? "pending" : "");
         try {
-          const res = await fetch(`/api/stock-prediction/${encodeURIComponent(code)}?deepseek=1`);
+          const res = await fetch(`/api/stock-prediction/${encodeURIComponent(code)}`);
           const payload = await res.json();
           if (!payload.ok) {
             throw new Error(payload.error || "无法给出预测");
           }
           renderStockPrediction(payload);
-          const deepseekReady = predictionOptimizationReady(payload.optimization);
           setOpsStatus(
             els.stockPredictionStatus,
-            deepseekReady ? "DeepSeek 联合走势预测已更新。" : "本地预测已更新，DeepSeek 暂不可用。",
-            deepseekReady ? "ok" : "bad"
+            "本地量化预测已更新。",
+            "ok"
           );
           setOpsStatus(
             els.tuningStatus,
             mode === "validation"
-              ? deepseekReady ? "DeepSeek 策略验证已更新。" : "DeepSeek 策略验证暂不可用。"
+              ? "本地策略验证已更新。"
               : "",
-            mode === "validation" ? deepseekReady ? "ok" : "bad" : ""
+            mode === "validation" ? "ok" : ""
           );
         } catch (err) {
           renderToolResult(`
@@ -72,43 +71,34 @@
 
       function renderStockPrediction(payload) {
         const p = payload.prediction || {};
-        const deepseekReady = predictionOptimizationReady(payload.optimization);
-        const optimization = payload.optimization || null;
-        const cls = predictionClass(deepseekReady ? optimization.bias : p.direction);
+        const cls = predictionClass(p.direction);
         const hits = payload.strategy_hits || [];
         const riskFlags = payload.risk_flags || [];
-        const actionItems = deepseekReady
-          ? uniquePredictionTexts(optimization.entry_plan, optimization.strategy_adjustments).slice(0, 2)
-          : uniquePredictionTexts(hits.map(item => item.action), [p.advice]).slice(0, 2);
+        const actionItems = uniquePredictionTexts(hits.map(item => item.action), [p.advice]).slice(0, 2);
         const evidenceItems = uniquePredictionTexts(
-          deepseekReady ? optimization.reasoning : [],
           hits.flatMap(item => item.reasons || [])
         ).slice(0, 2);
         const riskItems = uniquePredictionTexts(
-          deepseekReady ? optimization.risk_controls : [],
-          deepseekReady ? optimization.avoid_conditions : [],
           riskFlags
         ).slice(0, 3);
-        const summary = deepseekReady && optimization.summary ? optimization.summary : p.advice;
-        const sourceLabel = deepseekReady ? "本地量化 + DeepSeek" : "本地量化";
-        const nextDayOutlook = deepseekReady ? optimization.next_day_outlook || stockPredictionBias(optimization.bias) : p.label;
-        const swingOutlook = deepseekReady ? optimization.swing_outlook || stockPredictionBias(optimization.bias) : "待确认";
-        const upProbability = deepseekReady && Number.isFinite(Number(optimization.up_probability))
-          ? `${formatNumber(optimization.up_probability, 0)}%`
-          : "-";
+        const summary = p.advice;
+        const sourceLabel = "本地量化";
+        const nextDayOutlook = p.label || "待确认";
+        const swingHit = hits.find(item => ["swing_picks", "swing_2_5d_picks"].includes(item.strategy));
+        const swingOutlook = swingHit?.label || swingHit?.action || "以2-5日策略命中为准";
         renderToolResult(`
           <div class="stock-prediction-result prediction-${cls}">
             <header class="prediction-head">
               <div class="prediction-title-row">
                 <span>${escapeHtml(payload.code)} ${escapeHtml(payload.name || "")} · ${formatNumber(payload.price, 3)} · ${formatNumber(payload.pct_chg, 2)}%</span>
-                <span class="prediction-source ${deepseekReady ? "is-deepseek" : ""}">${escapeHtml(sourceLabel)}</span>
+                <span class="prediction-source">${escapeHtml(sourceLabel)}</span>
               </div>
               <div class="prediction-verdict">
-                <strong>${escapeHtml(deepseekReady ? stockPredictionBias(optimization.bias) : p.label || "-")}</strong>
+                <strong>${escapeHtml(p.label || "-")}</strong>
                 <div class="prediction-inline-metrics">
                   <span>本地量化 ${formatNumber(p.score, 1)}</span>
-                  ${deepseekReady ? `<span>DeepSeek 上涨概率 ${upProbability}</span>` : `<span>置信 ${formatNumber(p.confidence, 1)}%</span>`}
-                  <span>${deepseekReady ? escapeHtml(stockOptimizationStance(optimization.stance)) : `风险 ${escapeHtml(riskLevelLabel(p.risk_level))}`}</span>
+                  <span>本地置信 ${formatNumber(p.confidence, 1)}%</span>
+                  <span>风险 ${escapeHtml(riskLevelLabel(p.risk_level))}</span>
                 </div>
               </div>
               <p>${escapeHtml(summary || "暂无有效诊断结论")}</p>
@@ -116,33 +106,18 @@
             <div class="prediction-levels">
               ${renderPredictionLevel("次日走势", nextDayOutlook, "text")}
               ${renderPredictionLevel("2-5日走势", swingOutlook, "text")}
-              ${renderPredictionLevel("上涨概率", upProbability)}
-              ${renderPredictionLevel("策略验证", deepseekReady ? `${stockOptimizationStance(optimization.stance)} · ${stockOptimizationTiming(optimization.timing)}` : "待验证", "text")}
+              ${renderPredictionLevel("今日策略", hits.some(item => ["short_term", "today_picks"].includes(item.strategy)) ? "命中候选" : "未命中", "text")}
+              ${renderPredictionLevel("策略验证", "以真实样本外收益为准", "text")}
             </div>
             <div class="prediction-diagnosis-grid">
               ${renderPredictionDiagnosis("操作", actionItems, "action")}
               ${renderPredictionDiagnosis("依据", evidenceItems, "evidence")}
               ${renderPredictionDiagnosis("风险", riskItems, "risk")}
             </div>
-            ${!deepseekReady ? '<div class="prediction-model-note">DeepSeek 未返回有效结果，本次仅展示本地量化诊断。</div>' : ""}
+            <div class="prediction-model-note">DeepSeek 证据特征只由盘中后台任务异步生成，不参与本页面同步个股预测。</div>
             <p class="prediction-disclaimer">${escapeHtml(payload.data_source || "实时行情")} · ${escapeHtml(payload.disclaimer || "")}</p>
           </div>
         `);
-      }
-
-      function predictionOptimizationReady(optimization) {
-        return Boolean(optimization?.enabled && ["ok", "cache_hit"].includes(optimization.status));
-      }
-
-      function stockPredictionBias(bias) {
-        const map = {
-          bullish: "短线偏强",
-          up: "短线偏强",
-          bearish: "短线偏弱",
-          down: "短线偏弱",
-          neutral: "震荡待确认",
-        };
-        return map[bias] || "走势待确认";
       }
 
       function uniquePredictionTexts(...groups) {
@@ -175,26 +150,6 @@
             <ul>${rows}</ul>
           </section>
         `;
-      }
-
-      function stockOptimizationStance(stance) {
-        const map = {
-          buy_trial: "小仓试单",
-          watch_only: "只观察",
-          hold_or_wait: "等确认",
-          avoid_chase: "不追价",
-        };
-        return map[stance] || "策略待观察";
-      }
-
-      function stockOptimizationTiming(timing) {
-        const map = {
-          now: "可立即观察执行",
-          pullback: "等回踩",
-          breakout_confirm: "等突破确认",
-          observe: "先观察",
-        };
-        return map[timing] || "时机待确认";
       }
 
       function predictionClass(direction) {

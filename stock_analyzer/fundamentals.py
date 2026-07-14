@@ -22,6 +22,21 @@ FUNDAMENTAL_COLUMNS = (
     "rating_revision",
 )
 
+FUNDAMENTAL_RESEARCH_COLUMNS = (
+    "revenue_yoy",
+    "net_profit_yoy",
+    "operating_cashflow",
+    "operating_cashflow_yoy",
+    "free_cashflow",
+    "current_ratio",
+    "receivables_yoy",
+    "inventory_yoy",
+    "goodwill_ratio",
+    "interest_bearing_debt_ratio",
+)
+
+ALL_FUNDAMENTAL_COLUMNS = FUNDAMENTAL_COLUMNS + FUNDAMENTAL_RESEARCH_COLUMNS
+
 FUNDAMENTAL_META_COLUMNS = (
     "announcement_time",
     "report_period",
@@ -302,7 +317,7 @@ def attach_fundamental_factors(df: pd.DataFrame, fundamentals: Dict[str, Dict[st
     fundamentals = (fundamentals or {}).get("items", fundamentals or {}) if isinstance(fundamentals, dict) else {}
     if "code" in result.columns and fundamentals:
         normalized_codes = result["code"].map(normalize_code)
-        for column in FUNDAMENTAL_COLUMNS:
+        for column in ALL_FUNDAMENTAL_COLUMNS:
             if column not in result.columns:
                 values_by_code = {
                     normalize_code(code): values.get(column, 0.0)
@@ -318,7 +333,7 @@ def attach_fundamental_factors(df: pd.DataFrame, fundamentals: Dict[str, Dict[st
                     if isinstance(values, dict)
                 }
                 result[column] = normalized_codes.map(values_by_code).fillna("")
-    for column in FUNDAMENTAL_COLUMNS:
+    for column in ALL_FUNDAMENTAL_COLUMNS:
         if column not in result.columns:
             result[column] = 0.0
         result[column] = result[column].map(coerce_number)
@@ -475,7 +490,7 @@ def _normalize_fundamental_items(raw_items) -> Dict[str, Dict[str, object]]:
         code = normalize_code(row.get("code") or row.get("ts_code") or row.get("股票代码") or row.get("证券代码"))
         if not code:
             continue
-        item = {column: coerce_number(row.get(column)) for column in FUNDAMENTAL_COLUMNS}
+        item = {column: coerce_number(row.get(column)) for column in ALL_FUNDAMENTAL_COLUMNS}
         item.update(_fundamental_metadata(row))
         items[code] = item
     return items
@@ -515,6 +530,16 @@ def _merge_fundamental_row(items: Dict[str, Dict[str, object]], code: str, row: 
         "pb": ("pb", "市净率", "PB"),
         "earnings_surprise": ("earnings_surprise", "业绩变动幅度", "净利润增长率", "q_profit_yoy", "or_yoy"),
         "rating_revision": ("rating_revision", "rating_revision", "预测调整", "盈利预测调整"),
+        "revenue_yoy": ("revenue_yoy", "营业收入同比增长", "营收同比", "or_yoy"),
+        "net_profit_yoy": ("net_profit_yoy", "净利润同比增长", "净利润同比", "q_profit_yoy"),
+        "operating_cashflow": ("operating_cashflow", "经营活动现金流量净额", "经营现金流", "n_cashflow_act"),
+        "operating_cashflow_yoy": ("operating_cashflow_yoy", "经营现金流同比", "经营活动现金流同比"),
+        "free_cashflow": ("free_cashflow", "自由现金流", "fcf"),
+        "current_ratio": ("current_ratio", "流动比率"),
+        "receivables_yoy": ("receivables_yoy", "应收账款同比", "应收同比"),
+        "inventory_yoy": ("inventory_yoy", "存货同比"),
+        "goodwill_ratio": ("goodwill_ratio", "商誉占比"),
+        "interest_bearing_debt_ratio": ("interest_bearing_debt_ratio", "有息负债率"),
     }
     for target, columns in mappings.items():
         value = _first_mapping_value(row, columns)

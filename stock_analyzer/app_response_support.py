@@ -149,8 +149,8 @@ def saved_tomorrow_fallback_payload(
         "strategy_label": "明日优先",
         "prediction_type": "rank_score",
         "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
-        "holding_discipline": "盘后确认候选，次日开盘入场；高开超过阈值不追",
-        "profit_window": "次日",
+        "holding_discipline": "T日14:30形成推荐，14:35前冻结；验证使用14:30后信号参考价并按T+1规则退出",
+        "profit_window": "T日14:30后至T+1规则退出",
         "recommendation_class": "next_day_priority",
         "recommendation_class_label": "明日优先",
         "strategy": "实时行情不可用，显示最近保存的明日优先推荐",
@@ -180,7 +180,7 @@ def _saved_tomorrow_strategy_version(rows: List[Dict[str, object]]) -> str:
         if version:
             return version
     return str(
-        getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v10_close_auction_baseline")
+        getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v12_post_1430_t1_exit")
     )
 
 
@@ -219,7 +219,7 @@ def saved_swing_fallback_payload(
     primary_count = sum(1 for row in display_rows if row.get("tier") == "primary_watch")
     strategy_version = next(
         (str(row.get("strategy_version")) for row in saved_rows if row.get("strategy_version")),
-        str(getattr(config, "SWING_STRATEGY_VERSION", "swing_2_5d_v3_next_open_exit")),
+        str(getattr(config, "SWING_STRATEGY_VERSION", "swing_2_5d_v4_post_1430_entry")),
     )
     attach_generation_provenance(
         validation_meta,

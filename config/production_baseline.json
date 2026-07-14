@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "baseline_name": "p0_close_auction_frozen_2026_07_13",
+  "baseline_name": "p0_three_strategy_1430_deepseek_features_2026_07_13",
   "frozen_at": "2026-07-13T00:00:00+08:00",
   "status": "frozen",
   "research": {
@@ -10,9 +10,9 @@
     "selection_policy": "K=5 is pre-registered for production; K=3/10 are diagnostics and must not be selected for promotion."
   },
   "strategy_versions": {
-    "short_term": "short_term_v2_observation",
-    "tomorrow_picks": "tomorrow_picks_v10_close_auction_baseline",
-    "swing_picks": "swing_2_5d_v3_next_open_exit"
+    "short_term": "today_picks_v1_remaining_session",
+    "tomorrow_picks": "tomorrow_picks_v12_post_1430_t1_exit",
+    "swing_picks": "swing_2_5d_v4_post_1430_entry"
   },
   "ranking": {
     "tomorrow_picks": {
@@ -20,7 +20,7 @@
       "direction": "descending",
       "tie_breaker": "input_order",
       "expected_return_ranking": "disabled",
-      "deepseek": "shadow_only"
+      "deepseek": "precomputed_features_shadow"
     }
   },
   "switches": {
@@ -29,18 +29,21 @@
     "CALIBRATE_USE_SORTINO": true,
     "CALIBRATE_USE_TIME_DECAY": true,
     "DEEPSEEK_CASCADE_FILTER_ENABLED": true,
-    "DEEPSEEK_SCHEDULE_ENABLED": true,
+    "DEEPSEEK_SCHEDULE_ENABLED": false,
     "DEEPSEEK_SHADOW_ONLY": true,
+    "DEEPSEEK_FEATURE_CACHE_ENABLED": true,
+    "DEEPSEEK_META_PRODUCTION_ENABLED": false,
     "DEEPSEEK_WRITE_ALPHA_ZERO": true,
     "ENABLE_CALIBRATE_FDR": true,
     "ENABLE_DEEPSEEK_MARKET_GATE": false,
-    "ENABLE_DEEPSEEK_NEWS_CONTEXT": false,
+    "ENABLE_DEEPSEEK_FEATURES": true,
+    "ENABLE_DEEPSEEK_NEWS_CONTEXT": true,
     "ENABLE_DEEPSEEK_RUNTIME": true,
     "ENABLE_DYNAMIC_POSITION_SCALING": true,
     "ENABLE_ENHANCED_FACTORS": false,
     "ENABLE_ENSEMBLE": false,
     "ENABLE_EVENT_ALPHA": false,
-    "ENABLE_EVENT_RISK": false,
+    "ENABLE_EVENT_RISK": true,
     "ENABLE_EXPECTED_RETURN_RANKING": false,
     "ENABLE_FACTOR_IC_WEIGHTING": false,
     "ENABLE_FUNDAMENTALS": false,
@@ -59,7 +62,7 @@
     "ENABLE_STANCE_TRACKING": false,
     "ENABLE_STRESS_TEST": true,
     "ENABLE_SURVIVORSHIP_CORRECTION": true,
-    "ENABLE_TAIL_AUCTION_SLIPPAGE": true,
+    "ENABLE_TAIL_AUCTION_SLIPPAGE": false,
     "ENABLE_VOLATILITY_TARGETING": true,
     "EVENT_RISK_HARD_FILTER": false,
     "HISTORY_FACTORS_FETCH_ON_REQUEST": true,
@@ -75,15 +78,13 @@
     "WEB_BACKGROUND_WORKERS_ENABLED": true
   },
   "locked_config": {
-    "SHORT_TERM_STRATEGY_VERSION": "short_term_v2_observation",
-    "TOMORROW_STRATEGY_VERSION": "tomorrow_picks_v10_close_auction_baseline",
-    "TOMORROW_CHALLENGER_STRATEGY_VERSION": "tomorrow_picks_v11_close_auction_challenger",
-    "TOMORROW_CHALLENGER_MODE": "shadow_only",
-    "SWING_STRATEGY_VERSION": "swing_2_5d_v3_next_open_exit",
+    "SHORT_TERM_STRATEGY_VERSION": "today_picks_v1_remaining_session",
+    "TOMORROW_STRATEGY_VERSION": "tomorrow_picks_v12_post_1430_t1_exit",
+    "SWING_STRATEGY_VERSION": "swing_2_5d_v4_post_1430_entry",
     "TOMORROW_TOP_N": 5,
     "TOMORROW_PRIMARY_WATCH_N": 5,
     "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT": 8,
-    "TOMORROW_SNAPSHOT_TOP_N": 36,
+    "TOMORROW_SNAPSHOT_TOP_N": 5,
     "MIN_TURNOVER": 50000000.0,
     "MAX_RECOMMENDED_GAIN": 12.0,
     "MAX_BUYABLE_GAIN_MAIN": 6.5,
@@ -93,12 +94,11 @@
     "TOMORROW_MAX_PRIMARY_PER_THEME": 2,
     "TOMORROW_MAX_DISPLAY_PER_THEME": 5,
     "TOMORROW_HIGH_OPEN_SKIP_PCT": 3.0,
-    "VALIDATION_AUTO_SNAPSHOT_TIME": "14:50",
-    "TOMORROW_SIGNAL_CUTOFF_TIME": "14:55",
-    "TOMORROW_CLOSE_AUCTION_START_TIME": "14:55",
-    "TOMORROW_CLOSE_AUCTION_END_TIME": "15:00",
+    "VALIDATION_AUTO_SNAPSHOT_TIME": "14:30",
+    "RECOMMENDATION_FREEZE_CUTOFF_TIME": "14:50",
+    "DEEPSEEK_FEATURE_MODEL": "deepseek-v4-flash",
     "VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS": 60,
-    "VALIDATION_PRIMARY_ENTRY_MODE": "close_auction",
+    "VALIDATION_PRIMARY_ENTRY_MODE": "post_1430_signal_reference",
     "VALIDATION_EXECUTION_PRICE_MODE": "raw",
     "TOMORROW_AUXILIARY_TAKE_PROFIT_PCT": 8.0,
     "TOMORROW_AUXILIARY_STOP_LOSS_PCT": 5.0,
@@ -200,19 +200,21 @@
     ]
   },
   "exit_rules": {
-    "version": "exit_rules_v2_close_auction",
+    "version": "exit_rules_v3_post_1430",
     "tomorrow_picks": {
-      "signal": "T日14:50生成，14:55前冻结",
-      "entry": "T日14:55-15:00收盘集合竞价，按原始收盘价近似",
-      "primary_exit": "next_trade_day_close",
-      "primary_return_field": "overnight_return",
+      "signal": "T日14:30生成，14:35前冻结推荐",
+      "entry": "T日14:30后参考入场，使用信号时原始报价并计入成本滑点",
+      "primary_exit": "next_trade_day_dynamic_exit",
+      "primary_return_field": "signal_exit_return",
       "auxiliary_take_profit_pct": 8.0,
       "auxiliary_stop_loss_pct": 5.0,
       "auxiliary_trailing_stop_pct": 4.0
     },
     "swing_picks": {
-      "entry": "next_trade_day_open_if_buyable",
+      "entry": "T日14:30后参考入场，使用信号时原始报价并计入成本滑点",
       "exit_window_days": 5,
+      "take_profit_earliest_day": 2,
+      "t1_protective_stop_only": true,
       "take_profit_pct": 8.0,
       "stop_loss_pct": 5.0,
       "trailing_stop_pct": 4.0

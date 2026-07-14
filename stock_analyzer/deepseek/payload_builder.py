@@ -1,23 +1,14 @@
 from __future__ import annotations
 
 import json
-from typing import Callable, Dict, List, Sequence
+from typing import Dict, List
 
 from ..normalization import coerce_number
+from .feature_schema import FEATURE_SCHEMA_VERSION, candidate_feature_input, prompt_version, strategy_contract
 
 
 class PayloadBuilder:
     """Builds compact DeepSeek request payloads and chat messages."""
-
-    def __init__(
-        self,
-        strategy_context: Callable[[str], Dict[str, str]],
-        loss_factors: Sequence[str],
-        profit_factors: Sequence[str],
-    ) -> None:
-        self._strategy_context = strategy_context
-        self._loss_factors = tuple(loss_factors or ())
-        self._profit_factors = tuple(profit_factors or ())
 
     def payload_number(self, value, default: float = 0.0, digits: int = 1):
         number = coerce_number(value, default)
@@ -63,126 +54,32 @@ class PayloadBuilder:
             "trigger_words": self.payload_strings(payload.get("trigger_words"), 4),
         }
 
-    def request_payload(
-        self,
-        strategy_name: str,
-        candidates: List[Dict[str, object]],
-        market_filter: str,
-    ) -> List[Dict[str, object]]:
-        return [
-            {
-                "code": row.get("code", ""),
-                "name": row.get("name", ""),
-                "score": self.payload_number(row.get("score"), 0.0, 0),
-                "pct_chg": self.payload_number(row.get("pct_chg"), 0.0, 1),
-                "speed": self.payload_number(row.get("speed"), 0.0, 1),
-                "volume_ratio": self.payload_number(row.get("volume_ratio"), 0.0, 1),
-                "turnover_rate": self.payload_number(row.get("turnover_rate"), 0.0, 1),
-                "turnover": self.payload_number(row.get("turnover"), 0.0, 0),
-                "amplitude": self.payload_number(row.get("amplitude"), 0.0, 1),
-                "sixty_day_pct": self.payload_number(row.get("sixty_day_pct"), 0.0, 1),
-                "ret_5d": self.payload_number(row.get("ret_5d"), 0.0, 1),
-                "ret_10d": self.payload_number(row.get("ret_10d"), 0.0, 1),
-                "ret_20d": self.payload_number(row.get("ret_20d"), 0.0, 1),
-                "ma20_gap": self.payload_number(row.get("ma20_gap"), 0.0, 1),
-                "vol_amount_5d": self.payload_number(row.get("vol_amount_5d"), 0.0, 1),
-                "breakout_20d": bool(row.get("breakout_20d")),
-                "volatility_20d": self.payload_number(row.get("volatility_20d"), 0.0, 1),
-                "liquidity_score": self.payload_number(row.get("liquidity_score"), 0.0, 0),
-                "momentum_score": self.payload_number(row.get("momentum_score"), 0.0, 0),
-                "trend_score": self.payload_number(row.get("trend_score"), 0.0, 0),
-                "historical_edge_score": self.payload_number(row.get("historical_edge_score"), 0.0, 0),
-                "execution_score": self.payload_number(row.get("execution_score"), 0.0, 0),
-                "tail_setup_score": self.payload_number(row.get("tail_setup_score"), 0.0, 0),
-                "risk_penalty": self.payload_number(row.get("risk_penalty"), 0.0, 0),
-                "risk_penalty_parts": row.get("risk_penalty_parts", {}),
-                "overheat_damp": self.payload_number(row.get("overheat_damp"), 1.0, 2),
-                "failure_reasons": self.payload_strings(row.get("failure_reasons"), 3),
-                "market": str(row.get("market", "")),
-                "theme": str(row.get("theme", "")),
-                "reasons": self.payload_strings(row.get("reasons"), 4),
-                "recent_news": self.payload_news(row.get("recent_news")),
-                "announcement_flags": self.payload_strings(row.get("announcement_flags"), 5),
-                "news_sentiment": self.payload_news_sentiment(row.get("news_sentiment")),
-            }
-            for row in candidates
-            if isinstance(row, dict)
-        ]
+    def feature_request_payload(self, strategy_name, candidates, market_filter, *, cutoff_at, snapshot_id):
+        strategy = str(strategy_name or "")
+        return {
+            "schema_version": FEATURE_SCHEMA_VERSION,
+            "prompt_version": prompt_version(strategy),
+            "strategy": strategy,
+            "contract": strategy_contract(strategy),
+            "market_filter": market_filter,
+            "cutoff_at": cutoff_at,
+            "snapshot_id": snapshot_id,
+            "candidates": [candidate_feature_input(row, cutoff_at) for row in candidates or [] if isinstance(row, dict)],
+        }
 
-    def build_messages(
-        self,
-        strategy_name: str,
-        candidates: List[Dict[str, object]],
-        market_filter: str,
-    ) -> List[Dict[str, object]]:
-        context = self._strategy_context(strategy_name)
+    def build_feature_messages(self, strategy_name, candidates, market_filter, *, cutoff_at, snapshot_id):
+        request = self.feature_request_payload(strategy_name, candidates, market_filter, cutoff_at=cutoff_at, snapshot_id=snapshot_id)
+        contract = request["contract"]
         return [
             {
                 "role": "system",
-                "content": "你是A股研究助手。请只输出 JSON，不要解释、不要 Markdown。"
-                "输出必须包含 results 数组，每个元素包含 code、llm_score(0-100)、horizon_up_score(0-100)、action、veto、penalty、reason、risk_flags。"
-                "可选字段 event_type、sentiment(-2~2)、catalyst_strength(0-100)、time_sensitivity、already_priced_in、catalyst_score、"
-                "theme_truth_score、event_risk_score（都是0-100，except sentiment/flag）。"
-                "action 只能是 priority、watch、avoid；penalty 是0-30扣分；risk_flags 是字符串数组，最多3项。",
+                "content": "你是A股五维点时研究结构化器，只能使用输入的财务、行情和evidence，不得补造现金流、主力资金、政策或公司事实。只输出JSON对象results数组，不新增股票，不输出目标价、llm_score、排名或买卖建议；某维数据不足时该维必须unknown，全部证据不足时abstain=true。",
             },
             {
                 "role": "user",
                 "content": (
-                    "策略: {strategy}\n"
-                    "策略周期: {horizon}\n"
-                    "复核重点: {focus}\n"
-                    "市场: {market}，仅聚焦A股（主板/创业板/科创板）\n"
-                    "请重点做风险复核和反推荐，不要直接替代本地量化分数。\n"
-                    "先输出结构化事件字段，再输出复核判断：\n"
-                    "event_type（业绩/订单/政策/并购/涨价/监管/传闻/未知）、sentiment(-2~2)、"
-                    "catalyst_strength(0-100)、time_sensitivity(今天/明天/2-5天/长期)、already_priced_in(true/false)。\n"
-                    "horizon_up_score 表示策略主周期内上涨/跑赢倾向；如果看起来强但容易回落，请提高 penalty 或 action=avoid。\n"
-                    "短周期亏钱因素必须逐项考虑: {loss_factors}\n"
-                    "短周期赚钱因素必须逐项考虑: {profit_factors}\n"
-                    "主题类策略必须判断 theme_truth_score；如果 recent_news 没有具体标题依据，必须视为题材待证实并降低 theme_truth_score。\n"
-                    "announcement_flags/news_sentiment 是真实新闻与事件输入，减持、解禁、质押、问询函、监管函等风险命中时提高 event_risk_score 和 penalty。\n"
-                    "如果亏钱因素明显多于赚钱因素，必须 action=avoid 或提高 penalty；如果赚钱因素多但存在追高风险，action=watch。\n"
-                    "输出 JSON 示例: {{\"results\":[{{\"code\":\"600519\",\"llm_score\":87.4,\"horizon_up_score\":74,\"action\":\"watch\","
-                    "\"veto\":false,\"penalty\":8,\"reason\":\"...\",\"risk_flags\":[\"涨幅透支\"],\"event_type\":\"业绩\","
-                    "\"sentiment\":1,\"catalyst_strength\":78,\"time_sensitivity\":\"明天\",\"already_priced_in\":false,"
-                    "\"catalyst_score\":55,\"theme_truth_score\":50,\"event_risk_score\":35}}]}}\n"
-                    "候选池: {pool}".format(
-                        strategy=strategy_name,
-                        horizon=context["horizon"],
-                        focus=context["focus"],
-                        market=market_filter,
-                        loss_factors="；".join(self._loss_factors),
-                        profit_factors="；".join(self._profit_factors),
-                        pool=json.dumps(
-                            self.request_payload(strategy_name, candidates, market_filter),
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ),
-                    )
-                ),
-            },
-        ]
-
-    def build_batch_messages(self, request_input: Dict[str, object]) -> List[Dict[str, str]]:
-        return [
-            {
-                "role": "system",
-                "content": (
-                    "你是A股短线多策略复核器。请只输出 JSON，不要 Markdown。"
-                    "一次处理多个策略，必须按策略分别返回 results。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    "请对输入中的每个策略候选池做复核。输出格式必须是 "
-                    "{\"strategies\":{\"short_term\":{\"results\":[...]},\"tomorrow_picks\":{\"results\":[...]},\"swing_picks\":{\"results\":[...]}}}。"
-                    "每个 result 字段同单策略复核: code、llm_score、horizon_up_score、action、veto、penalty、reason、risk_flags、"
-                    "event_type、sentiment、catalyst_strength、time_sensitivity、already_priced_in、catalyst_score、theme_truth_score、event_risk_score。"
-                    "只评价输入候选，不新增股票；优先识别追高、流动性、事件风险和催化剂真实性。"
-                    "输入: "
-                    + json.dumps(request_input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                ),
+                    "策略={label}；周期={horizon}；重点={focus}。对每只股票一次完成价值质量、财务健康、市场资金、行业政策、综合风险五维分析。每项必须含code,event_type,event_direction(-2~2),event_strength,event_reliability,novelty,priced_in,time_horizon,overnight_risk,regulatory_risk,theme_truth,uncertainty,abstain,evidence_ids,risk_flags,reason；并包含value_quality={{assessment:positive|neutral|negative|unknown,confidence,flags}}，financial_health={{profit_trend:improving|stable|deteriorating|unknown,cashflow_trend:improving|stable|deteriorating|unknown,confidence,flags}}，market_flow={{flow_health:healthy|neutral|unhealthy|unknown,price_flow_divergence:true|false,confidence,flags}}，industry_policy={{industry_outlook:growing|stable|contracting|unknown,policy_relevance:direct|indirect|none|unknown,confidence,flags}}，risk_assessment={{risk_level:low|medium|high|unknown,confidence,flags}}，horizon_support={{today,next_day,2_5d}}。horizon_support和confidence为0-100 JSON数字。没有现金流或主力资金数据时对应字段必须unknown。event_type只能是业绩/订单/政策/并购/重组/涨价/监管/减持/解禁/诉讼/传闻/行业/其他/未知；time_horizon只能是today/next_day/2_5d/long_term/unknown；abstain必须是JSON布尔值，evidence_ids必须是输入子集。输入="
+                    + json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                ).format(**contract),
             },
         ]

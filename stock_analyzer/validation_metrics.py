@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import datetime
 from typing import Dict, List
@@ -25,32 +24,18 @@ from .validation_policy import (
 from .validation_statistics import (
     average as _avg,
     daily_metrics as _daily_metrics,
-    deepseek_action as _deepseek_action,
-    deepseek_avoid_or_veto as _deepseek_avoid_or_veto,
-    deepseek_blend_alpha as _deepseek_blend_alpha,
-    deepseek_budget_recommendation as _deepseek_budget_recommendation,
-    deepseek_counterfactual_topn as _deepseek_counterfactual_topn,
-    deepseek_covered as _deepseek_covered,
-    deepseek_group_delta as _deepseek_group_delta,
-    deepseek_local_rank as _deepseek_local_rank,
-    deepseek_shadow_rank as _deepseek_shadow_rank,
-    deepseek_token_cost_summary as _deepseek_token_cost_summary,
-    deepseek_token_value_metrics as _deepseek_token_value_metrics,
-    has_deepseek_review as _has_deepseek_review,
     mean_confidence_interval as _mean_confidence_interval,
     block_bootstrap_mean_confidence_interval as _block_bootstrap_mean_confidence_interval,
     next_day_compare as _next_day_compare,
     portfolio_max_drawdown as _portfolio_max_drawdown,
     rate as _rate,
-    return_summary as _return_summary,
     top_k_sensitivity as _top_k_sensitivity,
     wilson_lower_bound as _wilson_lower_bound,
-    write_deepseek_attribution_snapshot as _write_deepseek_attribution_snapshot,
 )
 
 
 class ValidationMetricsService:
-    """Computes validation metrics and DeepSeek attribution."""
+    """Computes strategy validation metrics."""
 
     def __init__(self, store) -> None:
         self.store = store
@@ -185,7 +170,11 @@ class ValidationMetricsService:
         else:
             primary_column, primary_days, primary_label = "strategy_primary_return", 0, "混合主周期"
         validation_baseline = validation_baseline_config(strategy_name)
-        next_day_column = "signal_next_close_return" if strategy_name == "short_term" else "next_close_return"
+        next_day_column = (
+            "signal_next_close_return"
+            if strategy_name in {"short_term", "tomorrow_picks", "swing_picks"}
+            else "next_close_return"
+        )
         for row in selected_all:
             try:
                 raw = json.loads(row.get("raw_json") or "{}")
@@ -218,7 +207,7 @@ class ValidationMetricsService:
                 4,
             )
             row["_next_day_return"] = coerce_number(row.get(next_day_column))
-            uses_signal_entry = (strategy_name or row["strategy_name"]) == "short_term"
+            uses_signal_entry = row_primary_column.startswith("signal_")
             drawdown_key = "signal_max_drawdown_3d" if uses_signal_entry else "open_max_drawdown_primary"
             row["_primary_drawdown"] = coerce_number(row.get(drawdown_key))
             row["_exit_return"] = coerce_number(
@@ -405,142 +394,6 @@ class ValidationMetricsService:
             "portfolio_baseline_id": str(report.get("portfolio_baseline_id") or ""),
         }
 
-    def deepseek_attribution(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
-        strategy_name = str(strategy_name or "").strip()
-        if not strategy_name:
-            return {"status": "missing_strategy", "sample_count": 0, "days": int(days or 0)}
-        primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
-        current_version = current_strategy_version(strategy_name)
-        rows = self.repository.fetch_deepseek_attribution_rows(
-            strategy_name,
-            primary_column,
-            current_version=current_version,
-            replay_version=current_replay_strategy_version(strategy_name),
-        )
-        rows.sort(
-            key=lambda row: (
-                str(row["signal_date"] or ""),
-                -int(coerce_number(row["rank"], 0) or 0),
-            ),
-            reverse=True,
-        )
-        if not rows:
-            result = {
-                "status": "empty",
-                "strategy": strategy_name,
-                "days": int(days or 0),
-                "sample_count": 0,
-                "primary_horizon_label": primary_label,
-            }
-            _write_deepseek_attribution_snapshot(strategy_name, result)
-            return result
-
-        selected_dates: List[str] = []
-        for row in rows:
-            date = row["signal_date"]
-            if date not in selected_dates:
-                selected_dates.append(date)
-            if len(selected_dates) >= max(1, int(days)):
-                break
-
-        selected: List[Dict[str, object]] = []
-        for row in rows:
-            if row["signal_date"] not in selected_dates:
-                continue
-            item = dict(row)
-            try:
-                raw = json.loads(item.get("raw_json") or "{}")
-            except Exception:
-                raw = {}
-            item["_raw"] = raw if isinstance(raw, dict) else {}
-            item["_is_replay"] = _is_replay_version(item["strategy_version"])
-            item["_primary_ready"] = int(item.get("future_days") or 1) >= primary_days
-            item["_is_primary_signal"] = _is_primary_validation_signal(
-                strategy_name,
-                item.get("rank"),
-                item["_raw"],
-            )
-            item["_trade_cost_pct"] = _execution_cost_pct(item)
-            item["_primary_return"] = coerce_number(item.get("primary_return"))
-            item["_primary_return_net"] = round(item["_primary_return"] - item["_trade_cost_pct"], 4)
-            item["_deepseek_shadow_signal"] = bool(item.get("deepseek_shadow_signal"))
-            selected.append(item)
-
-        primary_rows = [row for row in selected if row["_primary_ready"]]
-        primary_rows = [row for row in primary_rows if row["_is_primary_signal"]]
-        attribution_rows = [row for row in primary_rows if _has_deepseek_review(row.get("_raw"))]
-        real_rows = [row for row in attribution_rows if not row["_is_replay"]]
-        replay_rows = [row for row in attribution_rows if row["_is_replay"]]
-        covered_rows = [row for row in attribution_rows if _deepseek_covered(row.get("_raw"))]
-        shadow_rows = [
-            row
-            for row in attribution_rows
-            if row.get("_deepseek_shadow_signal") or bool((row.get("_raw") or {}).get("deepseek_shadow_filtered"))
-        ]
-        selected_rows = [row for row in attribution_rows if not row.get("_deepseek_shadow_signal")]
-        avoid_veto_rows = [row for row in attribution_rows if _deepseek_avoid_or_veto(row.get("_raw"))]
-        priority_rows = [row for row in attribution_rows if _deepseek_action(row.get("_raw")) == "priority"]
-        watch_rows = [row for row in attribution_rows if _deepseek_action(row.get("_raw")) == "watch"]
-        min_real_samples = 10
-        status = "ok"
-        if not attribution_rows:
-            status = "no_deepseek_samples"
-        elif len(real_rows) < min_real_samples:
-            status = "insufficient_real_samples"
-        counterfactual = _deepseek_counterfactual_topn(strategy_name, attribution_rows)
-        priority_vs_watch = _deepseek_group_delta(priority_rows, watch_rows)
-        token_cost = _deepseek_token_cost_summary(attribution_rows)
-        token_value = _deepseek_token_value_metrics(
-            avoid_veto_rows,
-            counterfactual,
-            token_cost,
-        )
-        budget_recommendation = _deepseek_budget_recommendation(
-            status,
-            len(real_rows),
-            min_real_samples,
-            token_value,
-        )
-        result = {
-            "status": status,
-            "strategy": strategy_name,
-            "days": int(days or 0),
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "primary_horizon_label": primary_label,
-            "min_real_samples": min_real_samples,
-            "sample_count": len(attribution_rows),
-            "real_sample_count": len(real_rows),
-            "replay_sample_count": len(replay_rows),
-            "covered_sample_count": len(covered_rows),
-            "selected_sample_count": len(selected_rows),
-            "shadow_sample_count": len(shadow_rows),
-            "covered_ratio_pct": round(len(covered_rows) / len(attribution_rows) * 100, 2) if attribution_rows else 0.0,
-            "local_rank_sample_count": sum(1 for row in attribution_rows if _deepseek_local_rank(row) > 0),
-            "reordered_sample_count": sum(
-                1
-                for row in attribution_rows
-                if _deepseek_local_rank(row) > 0
-                and _deepseek_shadow_rank(row) > 0
-                and _deepseek_local_rank(row) != _deepseek_shadow_rank(row)
-            ),
-            "blend_alpha_avg": _avg(_deepseek_blend_alpha(row.get("_raw")) for row in attribution_rows if _deepseek_blend_alpha(row.get("_raw")) is not None),
-            "avoid_veto": _return_summary(avoid_veto_rows),
-            "shadow_avoid_veto": _return_summary([row for row in avoid_veto_rows if row.get("_deepseek_shadow_signal")]),
-            "priority": _return_summary(priority_rows),
-            "watch": _return_summary(watch_rows),
-            "priority_vs_watch": priority_vs_watch,
-            "counterfactual_topn": counterfactual,
-            "token_cost": token_cost,
-            "token_value": token_value,
-            "value_per_1k_tokens": token_value.get("value_per_1k_tokens"),
-            "budget_recommendation": budget_recommendation,
-            "worth_expanding_budget": bool(budget_recommendation.get("worth_expanding_budget")),
-            "notes": [
-                "avoid/veto 包含正式入选与 DeepSeek gate 剔除后的 shadow 候选；正式策略胜率仍只按入选信号计算。",
-            ],
-        }
-        _write_deepseek_attribution_snapshot(strategy_name, result)
-        return result
 
 
 class ValidationBaselineService:
@@ -798,3 +651,4 @@ class ValidationBaselineService:
             "dates": dates,
             "validation_baseline_id": current_baseline_id,
         }
+

@@ -9,7 +9,7 @@ from stock_analyzer import config
 
 class ModelsCalibrationTest(unittest.TestCase):
     def test_ranking_gate_score_keeps_strategy_score_after_expected_return_promotion(self):
-        from stock_analyzer.scoring import _expected_return_rank_active, _ranking_gate_score
+        from stock_analyzer.scoring_core.expected_return import _expected_return_rank_active, _ranking_gate_score
 
         promoted = {
             "score": 50,
@@ -336,7 +336,7 @@ class ModelsCalibrationTest(unittest.TestCase):
         self.assertEqual(loaded["status"], "expired")
 
     def test_expected_return_prediction_can_promote_rank_order_when_enabled(self):
-        from stock_analyzer.scoring import _attach_expected_return_prediction
+        from stock_analyzer.scoring_core.expected_return import _attach_expected_return_prediction
 
         rows = [
             {"code": "A", "score": 82, "risk_penalty": 2, "liquidity_score": 82, "momentum_score": 78},
@@ -373,7 +373,7 @@ class ModelsCalibrationTest(unittest.TestCase):
         self.assertNotIn("rank_score", ranked[0])
 
     def test_expected_return_prediction_keeps_shadow_order_until_ready(self):
-        from stock_analyzer.scoring import _attach_expected_return_prediction
+        from stock_analyzer.scoring_core.expected_return import _attach_expected_return_prediction
 
         rows = [
             {"code": "A", "score": 82, "risk_penalty": 2, "liquidity_score": 82, "momentum_score": 78},

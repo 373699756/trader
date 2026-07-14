@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>A 股实时强势股推荐</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='recommendation-stream.css', v='20260714-1') }}" />
   </head>
   <body>
     <div class="app-shell">
@@ -17,6 +18,8 @@
           <section class="status-line" aria-label="数据状态">
             <span class="status-text-wrap"><strong id="statusText">等待刷新</strong></span>
             <span>行情 <strong id="quoteSource">-</strong></span>
+            <span>推送 <strong id="streamStatus" data-state="connecting">连接中</strong></span>
+            <span>行情时间 <strong id="streamQuoteTime">-</strong></span>
             <span>舆情 <strong id="sentimentSource">-</strong></span>
             <span>候选 <strong id="candidateCount">-</strong></span>
             <span>因子 <strong id="factorCoverageStatus">-</strong></span>
@@ -37,7 +40,7 @@
             </div>
           </div>
           <div class="pool-tabs" role="tablist" aria-label="推荐周期筛选">
-            <button class="pool-tab active" type="button" data-pool-filter="today">盘中观察</button>
+            <button class="pool-tab active" type="button" data-pool-filter="today">今天策略</button>
             <button class="pool-tab" type="button" data-pool-filter="next">明日优先</button>
             <button class="pool-tab" type="button" data-pool-filter="swing">2-5日持有</button>
           </div>
@@ -149,7 +152,7 @@
             </div>
             <div class="validation-controls">
               <select id="validationStrategySelect" hidden>
-                <option value="short_term">盘中观察</option>
+                <option value="short_term">今天策略</option>
                 <option value="tomorrow_picks">明日优先</option>
                 <option value="swing_picks">2-5日持有</option>
               </select>
@@ -176,7 +179,7 @@
               <div class="tool-action-divider" aria-hidden="true"></div>
               <div class="tool-action-block">
                 <div class="tool-action-row tool-action-row-secondary">
-                  <button id="generateTuningBtn" class="primary-action" type="button">DeepSeek 策略验证</button>
+                <button id="generateTuningBtn" class="primary-action" type="button">策略验证</button>
                 </div>
                 <div class="ops-status" id="tuningStatus"></div>
               </div>
@@ -224,24 +227,11 @@
             </div>
           </div>
 
-          <section class="deepseek-attribution-panel" aria-label="DeepSeek 增益">
-            <div class="validation-section-head">
-              <div class="section-label">DeepSeek 增益</div>
-              <span class="deepseek-attribution-note">按真实回填样本归因，样本不足时只观察</span>
-            </div>
-            <div class="deepseek-attribution-grid" id="validationDeepseekAttribution">
-              <div class="empty">等待验证指标加载</div>
-            </div>
-            <div class="deepseek-market-gate" id="validationDeepseekMarketGate">
-              <div class="empty">等待大盘 Gate 指标加载</div>
-            </div>
-          </section>
-
           <div class="validation-workbench">
             <section class="validation-batches">
               <div class="validation-section-head">
                 <div class="validation-strategy-tabs" role="tablist" aria-label="保存批次类型">
-                  <button class="validation-strategy-tab active" type="button" data-validation-strategy="short_term" role="tab" aria-selected="true">盘中观察</button>
+                  <button class="validation-strategy-tab active" type="button" data-validation-strategy="short_term" role="tab" aria-selected="true">今天策略</button>
                   <button class="validation-strategy-tab" type="button" data-validation-strategy="tomorrow_picks" role="tab" aria-selected="false">明日优先</button>
                   <button class="validation-strategy-tab" type="button" data-validation-strategy="swing_picks" role="tab" aria-selected="false">2-5日持有</button>
                 </div>

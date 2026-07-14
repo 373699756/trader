@@ -172,7 +172,6 @@ def strategy_validation_tuning():
             strategy=_validation_strategy(),
             days=int_arg("days", 20, minimum=1, maximum=120),
             method=request.method,
-            use_deepseek=request.args.get("deepseek", "1").lower() not in ("0", "false", "no", "off"),
         )
     )
 

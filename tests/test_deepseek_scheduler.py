@@ -1,98 +1,61 @@
-import tempfile
-import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 from unittest.mock import patch
 
 from stock_analyzer import config
-from stock_analyzer.deepseek_scheduler import (
-    reuse_scheduled_deepseek_result,
-    save_scheduled_deepseek_result,
-    scheduled_deepseek_decision,
-)
+from stock_analyzer.app import create_app
+from stock_analyzer.deepseek_scheduler import DeepSeekPrecomputeScheduler
 
 
-class DeepSeekSchedulerTest(unittest.TestCase):
-    def _rows(self, first_score=80):
-        return [
-            {"code": "600001", "score": first_score, "tier": "primary_watch", "price": 10.0},
-            {"code": "600002", "score": 75, "tier": "primary_watch", "price": 11.0},
-            {"code": "600003", "score": 70, "tier": "backup_pool", "price": 12.0},
-        ]
+def test_scheduler_claims_each_pre_1430_slot_once_across_rechecks(tmp_path):
+    scheduler = DeepSeekPrecomputeScheduler()
+    with patch.object(config, "DEEPSEEK_SCHEDULER_DB_PATH", str(tmp_path / "scheduler.sqlite3")), patch.object(
+        config,
+        "DEEPSEEK_PRECOMPUTE_TIMES",
+        ("09:30",),
+    ), patch.object(scheduler, "_execute") as execute:
+        scheduler._run_due_slot(datetime(2026, 7, 14, 9, 30, 10))
+        scheduler._run_due_slot(datetime(2026, 7, 14, 9, 30, 20))
 
-    def test_early_session_allows_at_most_one_call_per_half_hour(self):
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
-            config, "DEEPSEEK_SCHEDULE_STATE_PATH", "{}/schedule.json".format(tmpdir)
-        ), patch.object(config, "DEEPSEEK_SCHEDULE_ENABLED", True):
-            first = scheduled_deepseek_decision(
-                "tomorrow_picks", self._rows(), datetime(2026, 7, 10, 10, 2)
-            )
-            second = scheduled_deepseek_decision(
-                "tomorrow_picks", self._rows(), datetime(2026, 7, 10, 10, 20)
-            )
-            third = scheduled_deepseek_decision(
-                "tomorrow_picks", self._rows(), datetime(2026, 7, 10, 10, 31)
-            )
-
-        self.assertTrue(first["allow_call"])
-        self.assertEqual(first["slot"], "10:00")
-        self.assertFalse(second["allow_call"])
-        self.assertEqual(second["status"], "slot_reused")
-        self.assertTrue(third["allow_call"])
-        self.assertEqual(third["slot"], "10:30")
-
-    def test_late_session_is_on_demand_and_reuses_unchanged_candidates(self):
-        start = datetime(2026, 7, 10, 14, 32)
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
-            config, "DEEPSEEK_SCHEDULE_STATE_PATH", "{}/schedule.json".format(tmpdir)
-        ), patch.object(config, "DEEPSEEK_SCHEDULE_ENABLED", True):
-            first = scheduled_deepseek_decision("tomorrow_picks", self._rows(), start)
-            reviewed = [{**row, "deepseek_action": "watch", "deepseek_rank_score": row["score"] + 1} for row in self._rows()]
-            save_scheduled_deepseek_result(
-                "tomorrow_picks",
-                reviewed,
-                {"status": "ok", "usage": {"total_tokens": 100}},
-                first,
-                start,
-            )
-            unchanged = scheduled_deepseek_decision(
-                "tomorrow_picks", self._rows(), start + timedelta(minutes=8)
-            )
-            reused_rows, reused_meta = reuse_scheduled_deepseek_result(
-                "tomorrow_picks", [{**row, "price": 99.0} for row in self._rows()], unchanged, start
-            )
-
-        self.assertTrue(first["allow_call"])
-        self.assertEqual(first["model_tier"], "pro")
-        self.assertTrue(first["slot"].startswith("late:"))
-        self.assertFalse(unchanged["allow_call"])
-        self.assertEqual(unchanged["status"], "no_material_change")
-        self.assertEqual(reused_meta["status"], "schedule_cache_hit")
-        self.assertEqual(reused_rows[0]["price"], 99.0)
-        self.assertEqual(reused_rows[0]["deepseek_action"], "watch")
-
-    def test_late_changes_are_debounced_then_use_flash_after_pro_cap(self):
-        start = datetime(2026, 7, 10, 14, 31)
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
-            config, "DEEPSEEK_SCHEDULE_STATE_PATH", "{}/schedule.json".format(tmpdir)
-        ), patch.object(config, "DEEPSEEK_SCHEDULE_ENABLED", True), patch.object(
-            config, "DEEPSEEK_LATE_MIN_INTERVAL_SECONDS", 60
-        ), patch.object(config, "DEEPSEEK_DAILY_PRO_CALL_CAP", 1):
-            first = scheduled_deepseek_decision("tomorrow_picks", self._rows(), start)
-            save_scheduled_deepseek_result(
-                "tomorrow_picks", self._rows(), {"status": "ok"}, first, start
-            )
-            debounced = scheduled_deepseek_decision(
-                "tomorrow_picks", self._rows(first_score=84), start + timedelta(seconds=30)
-            )
-            later = scheduled_deepseek_decision(
-                "tomorrow_picks", self._rows(first_score=84), start + timedelta(seconds=70)
-            )
-
-        self.assertFalse(debounced["allow_call"])
-        self.assertEqual(debounced["status"], "late_debounced")
-        self.assertTrue(later["allow_call"])
-        self.assertEqual(later["model_tier"], "base")
+    execute.assert_called_once_with("2026-07-14T09:30")
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_scheduler_never_auto_runs_at_or_after_on_demand_window(tmp_path):
+    scheduler = DeepSeekPrecomputeScheduler()
+    with patch.object(config, "DEEPSEEK_SCHEDULER_DB_PATH", str(tmp_path / "scheduler.sqlite3")), patch.object(
+        config,
+        "DEEPSEEK_PRECOMPUTE_TIMES",
+        ("14:30",),
+    ), patch.object(config, "DEEPSEEK_ON_DEMAND_START", "14:30"), patch.object(
+        scheduler,
+        "_execute",
+    ) as execute:
+        scheduler._run_due_slot(datetime(2026, 7, 14, 14, 30, 5))
+
+    execute.assert_not_called()
+
+
+def test_scheduler_status_reports_internal_sqlite_mode(tmp_path):
+    scheduler = DeepSeekPrecomputeScheduler()
+    with patch.object(config, "DEEPSEEK_SCHEDULER_DB_PATH", str(tmp_path / "scheduler.sqlite3")):
+        status = scheduler.status(datetime(2026, 7, 14, 10, 0))
+
+    assert status["mode"] == "in_process_sqlite_lease"
+    assert status["daily_call_limit"] == 50
+
+
+def test_app_factory_starts_only_the_internal_deepseek_scheduler():
+    with patch.object(config, "DEEPSEEK_INTERNAL_SCHEDULER_ENABLED", True), patch(
+        "stock_analyzer.deepseek_scheduler.start_deepseek_scheduler"
+    ) as start_scheduler:
+        create_app()
+
+    start_scheduler.assert_called_once_with()
+
+
+def test_app_factory_respects_internal_scheduler_switch():
+    with patch.object(config, "DEEPSEEK_INTERNAL_SCHEDULER_ENABLED", False), patch(
+        "stock_analyzer.deepseek_scheduler.start_deepseek_scheduler"
+    ) as start_scheduler:
+        create_app()
+
+    start_scheduler.assert_not_called()

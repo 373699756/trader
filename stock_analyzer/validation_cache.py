@@ -46,25 +46,10 @@ class ValidationMetricsCache:
         if hit is not None and now < float(hit[1]):
             return hit[0]
         metrics = self.metrics(strategy_name, days)
-        deepseek_attribution_by_strategy = {
-            item: self.validation_store.deepseek_attribution(item, days=days)
-            for item in config.SNAPSHOT_STRATEGIES
-        }
-        latest_tuning = self.validation_store.latest_tuning_run(strategy_name)
-        saved_deepseek_review = (latest_tuning.get("deepseek") or {}) if latest_tuning else {}
         value = {
             "metrics": metrics,
             "validation_gate": strategy_validation_gate_decision(metrics, strategy_name),
-            "deepseek_attribution": deepseek_attribution_by_strategy.get(strategy_name, {}),
-            "deepseek_attribution_by_strategy": deepseek_attribution_by_strategy,
-            "deepseek_market_gate": self.validation_store.market_gate_metrics(days=days),
-            "deepseek_review": saved_deepseek_review
-            or {
-                "enabled": False,
-                "status": "not_requested",
-                "strategy": strategy_name,
-                "reason": "DeepSeek validation review only runs from tuning POST or scheduled end-of-day jobs.",
-            },
         }
         self._summary_cache[key] = (value, now + min(self.ttl_seconds, 30.0))
         return value
+

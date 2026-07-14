@@ -1,10 +1,10 @@
+import importlib.util
 from unittest.mock import patch
 
 import pandas as pd
 
 from stock_analyzer import config
 from stock_analyzer.app import create_app
-from stock_analyzer.scoring_core import compat
 from stock_analyzer.strategy_validation import _load_execution_history
 from stock_analyzer.providers import MarketDataProvider
 
@@ -40,21 +40,8 @@ def test_background_workers_can_be_started_explicitly_from_service():
             start_background_workers.assert_called_once()
 
 
-def test_scoring_core_context_injection_is_immutable_and_overridable():
-    result = compat.call_with_scoring_core_overrides(
-        namespace={"metric": 1, "_internal": 3},
-        baseline={"metric": 0},
-        strategy_entrypoints={"_internal"},
-        scoring_context={"metric": 9},
-        callback=lambda scoring_context: scoring_context,
-    )
-    assert result["metric"] == 9
-    try:
-        result["metric"] = 10
-    except Exception as exc:
-        assert isinstance(exc, TypeError)
-    else:
-        raise AssertionError("scoring_context should be immutable")
+def test_scoring_core_compatibility_module_is_removed():
+    assert importlib.util.find_spec("stock_analyzer.scoring_core.compat") is None
 
 
 def test_load_execution_history_prefers_get_execution_bars_raw_when_present():

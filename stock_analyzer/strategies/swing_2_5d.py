@@ -124,7 +124,6 @@ class SwingScorer:
             "horizon": "swing",
             "reasons": self.explanation_builder.swing_reasons(row, momentum_score, trend_score, liquidity_score, risk_penalty),
         })
-        item = self.risk_policy.apply_rule_penalty("swing_picks", item)
         return self.explanation_builder.with_regime_reason(
             self.explanation_builder.attach_signal(item, row, "swing_picks", "2-5日持有", "短周期延续"),
             market_regime,
@@ -144,7 +143,8 @@ class SwingScorer:
                 row["execution_allowed"] = True
                 row["recommendation_class"] = "hold_2_5d"
                 row["recommendation_class_label"] = "2-5日持有"
-                row["profit_window"] = "2-5个交易日"
+                row["profit_window"] = "T日14:30后参考入场，T+2至T+5退出"
+                row["holding_discipline"] = "T+1只允许保护性止损；正常止盈最早T+2，T+5强制退出"
 
     def _empty_meta(self, top_n: int, market_filter: str) -> Dict[str, object]:
         return scoring_math._horizon_meta(
@@ -178,10 +178,12 @@ class SwingScorer:
         meta["backup_watch_count"] = display_count if factor_degraded else 0
         meta["recommendation_class"] = "hold_2_5d"
         meta["recommendation_class_label"] = "2-5日持有"
-        meta["profit_window"] = "2-5个交易日"
+        meta["profit_window"] = "T日14:30后参考入场，T+2至T+5退出"
+        meta["holding_discipline"] = "T+1只允许保护性止损；正常止盈最早T+2，T+5强制退出"
+        meta["deepseek_mode"] = "precomputed_features_shadow"
         if factor_degraded:
             meta["degraded_reason"] = "历史因子覆盖不足，2-5天趋势延续因子降级；仅供观察。"
-        meta["strategy"] = "2-5日持有：偏好短周期趋势延续、温和放量、站上短均线、流动性足且涨幅未透支"
+        meta["strategy"] = "2-5日策略：T日14:30后参考入场，T+1保护性止损，T+2至T+5兑现收益"
         return meta
 
     def score(

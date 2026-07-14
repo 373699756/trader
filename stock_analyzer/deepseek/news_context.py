@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import json
 from typing import Dict, List, Tuple
 
 from ..normalization import coerce_number, normalize_code
-from ..runtime_json import atomic_write_json
+from .cache import DeepSeekCache
+
+
+_NEWS_CACHE = DeepSeekCache()
 
 
 class NewsContextProvider:
@@ -168,21 +170,13 @@ class NewsContextProvider:
 
     def read_cache(self) -> Dict[str, object]:
         path = str(getattr(self.config, "DEEPSEEK_NEWS_CACHE_PATH", ".runtime/deepseek_news_context.json") or "")
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-            return payload if isinstance(payload, dict) else {}
-        except Exception:
-            return {}
+        return _NEWS_CACHE.read(path)
 
     def write_cache(self, cache: Dict[str, object]) -> None:
         path = str(getattr(self.config, "DEEPSEEK_NEWS_CACHE_PATH", ".runtime/deepseek_news_context.json") or "")
         if not path:
             return
-        try:
-            atomic_write_json(path, cache, ensure_ascii=False, separators=(",", ":"))
-        except Exception:
-            return
+        _NEWS_CACHE.merge(path, cache)
 
     @staticmethod
     def unique_strings(values: List[object]) -> List[str]:

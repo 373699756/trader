@@ -288,7 +288,7 @@ def audit_point_in_time(store, strategy_name: str = "", sample_size: int = 30) -
                 raw_exit = coerce_number((exit_bar or {}).get("close"), None)
                 if exit_bar is None or raw_exit is None or abs(raw_exit - coerce_number(exit_price, 0.0)) > 0.001:
                     violations.append({"code": code, "type": "exit_fill_not_in_raw_prices"})
-            elif primary_field == "exit_return":
+            elif primary_field in {"exit_return", "signal_exit_return"}:
                 raw_low = coerce_number((exit_bar or {}).get("low"), None)
                 raw_high = coerce_number((exit_bar or {}).get("high"), None)
                 if (

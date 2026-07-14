@@ -9,12 +9,13 @@ from . import config
 from .normalization import coerce_number
 
 
-EXECUTION_POLICY_FAMILY = "cn_a_close_auction_execution_v2"
+EXECUTION_POLICY_FAMILY = "cn_a_post_1430_recommendation_v3"
 
 
 def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, object]:
     """Return the complete, immutable policy used to label a signal."""
-    holding_days = 5 if strategy_name in {"tomorrow_picks", "swing_picks"} else 1
+    holding_days = 1 if strategy_name == "tomorrow_picks" else 5 if strategy_name == "swing_picks" else 0
+    executable = strategy_name in {"tomorrow_picks", "swing_picks"}
     prefix = "TOMORROW_AUXILIARY" if strategy_name == "tomorrow_picks" else "SWING_VALIDATION"
     exit_policy = {
         "holding_days": holding_days,
@@ -22,7 +23,8 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
         "stop_loss_pct": _configured_pct(prefix, "STOP_LOSS_PCT", 5.0),
         "trailing_stop_pct": _configured_pct(prefix, "TRAILING_STOP_PCT", 4.0),
         "sealed_limit_down": "delay_until_first_tradable_open",
-        "earliest_exit_offset_days": 1 if strategy_name == "swing_picks" else 0,
+        "earliest_exit_offset_days": 0,
+        "take_profit_earliest_offset_days": 1 if strategy_name == "swing_picks" else 0,
     }
     if strategy_name not in {"tomorrow_picks", "swing_picks"}:
         exit_policy = {
@@ -34,34 +36,26 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
         }
 
     body = {
-        "schema_version": 2,
+        "schema_version": 3,
         "policy_family": EXECUTION_POLICY_FAMILY,
         "strategy_name": str(strategy_name or ""),
         "market": str(market or ""),
         "entry": {
             "timing": (
-                "same_trade_day_close_auction"
-                if strategy_name == "tomorrow_picks"
-                else "next_trade_day_open"
+                "same_trade_day_after_1430" if executable else "same_trade_day_observation"
             ),
             "price_field": (
-                "signal_day_raw_close"
-                if strategy_name == "tomorrow_picks"
-                else "open_with_close_fallback"
+                "signal_time_raw_quote_with_slippage" if executable else "signal_time_raw_quote"
             ),
             "sealed_limit_up": "unfilled",
             "suspension": "unfilled_until_tradable",
-            "signal_cutoff": (
-                str(getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55"))
-                if strategy_name == "tomorrow_picks"
-                else None
-            ),
+            "signal_cutoff": str(getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50")),
             "order_window": (
                 "{}-{}".format(
-                    getattr(config, "TOMORROW_CLOSE_AUCTION_START_TIME", "14:55"),
-                    getattr(config, "TOMORROW_CLOSE_AUCTION_END_TIME", "15:00"),
+                    getattr(config, "TOMORROW_RECOMMENDATION_BUY_WINDOW_START", "14:30"),
+                    getattr(config, "TOMORROW_RECOMMENDATION_BUY_WINDOW_END", "14:55"),
                 )
-                if strategy_name == "tomorrow_picks"
+                if executable
                 else None
             ),
         },
@@ -73,30 +67,34 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
             "exit_limit_down_action": "defer",
         },
         "cost": {
-            "fee_round_trip_pct": coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25), 0.25),
+            "fee_round_trip_pct": (
+                coerce_number(getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25), 0.25)
+                if executable
+                else 0.0
+            ),
             "liquidity_slippage_pct": {
                 "turnover_ge_1b": coerce_number(
                     getattr(config, "VALIDATION_SLIPPAGE_HIGH_TURNOVER_PCT", 0.05), 0.05
-                ),
+                ) if executable else 0.0,
                 "turnover_ge_300m": coerce_number(
                     getattr(config, "VALIDATION_SLIPPAGE_MID_TURNOVER_PCT", 0.12), 0.12
-                ),
+                ) if executable else 0.0,
                 "turnover_ge_100m": coerce_number(
                     getattr(config, "VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT", 0.25), 0.25
-                ),
+                ) if executable else 0.0,
                 "turnover_lt_100m": coerce_number(
                     getattr(config, "VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT", 0.45), 0.45
-                ),
+                ) if executable else 0.0,
             },
             "tail_auction": {
-                "enabled": bool(getattr(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False)),
+                "enabled": False,
                 "liquidity_ratio": coerce_number(getattr(config, "TAIL_AUCTION_LIQUIDITY_RATIO", 0.05), 0.05),
                 "max_extra_pct": coerce_number(
                     getattr(config, "TAIL_AUCTION_MAX_EXTRA_SLIPPAGE_PCT", 0.8), 0.8
                 ),
             },
             "market_impact": {
-                "enabled": bool(getattr(config, "ENABLE_MARKET_IMPACT", False)),
+                "enabled": executable and bool(getattr(config, "ENABLE_MARKET_IMPACT", False)),
                 "coefficient": coerce_number(getattr(config, "MARKET_IMPACT_COEFFICIENT", 0.1), 0.1),
                 "max_cost_pct": coerce_number(getattr(config, "MARKET_IMPACT_MAX_COST_PCT", 5.0), 5.0),
             },
@@ -113,6 +111,8 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
                 round(100.0 / max(1, int(getattr(config, "PRODUCTION_TOP_K", 5))), 6)
                 if strategy_name == "tomorrow_picks"
                 else coerce_number(getattr(config, "VALIDATION_DEFAULT_POSITION_PCT", 10.0), 10.0)
+                if strategy_name == "swing_picks"
+                else 0.0
             ),
             "board_lot": 100,
         },
@@ -131,11 +131,11 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
         },
     }
     body["exit"]["primary_timing"] = (
-        "next_trade_day_close_auction" if strategy_name == "tomorrow_picks" else "dynamic_2_5d"
+        "next_trade_day_dynamic_exit" if strategy_name == "tomorrow_picks" else "dynamic_t2_t5"
         if strategy_name == "swing_picks"
-        else "next_trade_day_close"
+        else "same_trade_day_close_observation"
     )
-    body["exit"]["primary_holding_days"] = 1 if strategy_name != "swing_picks" else holding_days
+    body["exit"]["primary_holding_days"] = holding_days if executable else 0
     body["exit"]["auxiliary_holding_days"] = holding_days
     versioned_body = {key: value for key, value in body.items() if key != "market"}
     canonical = json.dumps(versioned_body, ensure_ascii=True, sort_keys=True, separators=(",", ":"))

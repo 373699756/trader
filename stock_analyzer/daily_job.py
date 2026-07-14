@@ -27,8 +27,8 @@ def _save_iteration_payload(result, applied=False):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="盘后每日任务：保存策略快照并回填验证结果")
-    parser.add_argument("--after-close", action="store_true", help="收盘后完整流水线：下载日线、保存快照、回填、刷新因子快照和 IC")
+    parser = argparse.ArgumentParser(description="盘后每日任务：回填14:30已冻结信号并刷新验证结果")
+    parser.add_argument("--after-close", action="store_true", help="收盘后完整流水线：下载日线、回填14:30信号、刷新组合与因子 IC")
     parser.add_argument("--download-market-data", action="store_true", help="先下载缺失或过期的本地日线历史")
     parser.add_argument("--snapshot", action="store_true", help="保存策略当日预测快照")
     parser.add_argument("--update", action="store_true", help="回填已保存快照的未来收益")
@@ -60,7 +60,6 @@ def main() -> int:
 
     if args.after_close:
         args.download_market_data = True
-        args.snapshot = True
         args.update = True
         args.portfolio_baseline = True
         args.factor_snapshot = True
@@ -239,7 +238,8 @@ def _task_strategy_sets(raw: str, supported) -> tuple:
         executable = [item for item in config.ACTIVE_STRATEGIES if item in supported]
         return validation, executable
     selected = _parse_strategies(text, supported)
-    return selected, selected
+    executable = [item for item in selected if item in config.ACTIVE_STRATEGIES]
+    return selected, executable
 
 
 def _portfolio_baseline_strategies(raw: str, executable_strategies: list) -> list:

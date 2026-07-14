@@ -713,6 +713,39 @@ class MarketDataProvider:
             raise RuntimeError("新浪返回空行情")
         return rename_known_columns(df)
 
+    def get_recommendation_quotes(self, codes) -> pd.DataFrame:
+        start_time = time.perf_counter()
+        try:
+            raw = _fetch_tencent_recommendation_quotes(codes)
+            quote_timestamp = str((raw.attrs or {}).get("quote_timestamp") or "")
+            frame = rename_known_columns(raw)
+            timestamp_by_code = {
+                normalize_code(row.get("代码")): str(row.get("时间戳") or "")
+                for row in raw.to_dict(orient="records")
+            }
+            frame["quote_timestamp"] = frame["code"].map(timestamp_by_code).fillna(quote_timestamp)
+            frame["quote_source"] = "腾讯推荐池批量行情"
+            frame.attrs["quote_timestamp"] = quote_timestamp
+            frame.attrs["quote_source"] = "腾讯推荐池批量行情"
+            requested = {normalize_code(code) for code in (codes or []) if normalize_code(code)}
+            received = set(frame["code"].astype(str)) if "code" in frame.columns else set()
+            frame.attrs["missing_codes"] = sorted(requested - received)
+            frame.attrs["coverage_ratio"] = round(len(received & requested) / max(1, len(requested)), 4)
+            self._record_quote_fetch_result(
+                source="腾讯推荐池批量行情",
+                success=True,
+                latency_ms=max(0.0, (time.perf_counter() - start_time) * 1000.0),
+            )
+            return frame
+        except Exception as exc:
+            self._record_quote_fetch_result(
+                source="腾讯推荐池批量行情",
+                success=False,
+                latency_ms=max(0.0, (time.perf_counter() - start_time) * 1000.0),
+                error=str(exc),
+            )
+            raise
+
     def _fetch_tushare_quotes(self) -> pd.DataFrame:
         token = config.TUSHARE_TOKEN
         if not token:
@@ -750,7 +783,13 @@ class MarketDataProvider:
         return self._tushare_api
 
     def _record_sentiment_error(self, message: str) -> None:
-        with self._status_lock:
+        lock = getattr(self, "_status_lock", None)
+        if lock is None:
+            errors = list(getattr(self.status, "errors", []) or [])
+            errors.append(message)
+            self.status.errors = errors[-20:]
+            return
+        with lock:
             self.status.errors.append(message)
             self.status.errors = self.status.errors[-20:]
 
@@ -774,7 +813,15 @@ class MarketDataProvider:
                 return None
             stat = path.stat()
             age = time.time() - stat.st_mtime
-            if age > config.QUOTE_SNAPSHOT_MAX_AGE_SECONDS:
+            max_age = int(getattr(config, "QUOTE_SNAPSHOT_MAX_AGE_SECONDS", 21600))
+            now = datetime.now()
+            clock = now.strftime("%H:%M")
+            if now.weekday() < 5 and ("09:15" <= clock <= "11:35" or "13:00" <= clock <= "15:10"):
+                max_age = min(
+                    max_age,
+                    max(30, int(getattr(config, "QUOTE_SNAPSHOT_INTRADAY_MAX_AGE_SECONDS", 90))),
+                )
+            if age > max_age:
                 return None
             df = pd.read_json(path)
         except Exception:
@@ -1028,6 +1075,109 @@ SINA_NUMERIC_COLUMN_MAP = {
     "volume": "成交量",
     "amount": "成交额",
 }
+
+
+def _fetch_tencent_recommendation_quotes(codes) -> pd.DataFrame:
+    normalized_codes = sorted(
+        {
+            normalize_code(code)
+            for code in (codes or [])
+            if normalize_code(code) and len(normalize_code(code)) == 6
+        }
+    )
+    if not normalized_codes:
+        return pd.DataFrame()
+
+    def symbol(code: str) -> str:
+        if code.startswith(("6", "9")):
+            return "sh" + code
+        if code.startswith(("4", "8")):
+            return "bj" + code
+        return "sz" + code
+
+    last_error: Optional[Exception] = None
+    content = b""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "Referer": "https://gu.qq.com/",
+    }
+    for trust_env in (True, False):
+        try:
+            with requests.Session() as session:
+                session.trust_env = trust_env
+                response = session.get(
+                    "https://qt.gtimg.cn/q={}".format(",".join(symbol(code) for code in normalized_codes)),
+                    headers=headers,
+                    timeout=max(1.0, float(getattr(config, "RECOMMENDATION_QUOTE_TIMEOUT_SECONDS", 4))),
+                )
+                response.raise_for_status()
+                content = response.content
+        except Exception as exc:
+            last_error = exc
+            continue
+        if content.strip():
+            break
+    if not content.strip():
+        raise RuntimeError(str(last_error) if last_error else "腾讯推荐池行情返回空响应")
+
+    rows = []
+    timestamps = []
+    text = content.decode("gb18030", errors="replace")
+    for payload in re.findall(r'v_[^=]+="([^"]*)";', text):
+        fields = payload.split("~")
+        if len(fields) < 50:
+            continue
+        code = normalize_code(fields[2])
+        if code not in normalized_codes:
+            continue
+
+        def number(index: int, default=None):
+            try:
+                value = fields[index].strip()
+                return float(value) if value else default
+            except (IndexError, TypeError, ValueError):
+                return default
+
+        timestamp = ""
+        raw_timestamp = fields[30].strip()
+        try:
+            timestamp = datetime.strptime(raw_timestamp, "%Y%m%d%H%M%S").isoformat(timespec="seconds")
+        except ValueError:
+            timestamp = ""
+        if timestamp:
+            timestamps.append(timestamp)
+        transaction = fields[35].split("/") if len(fields) > 35 else []
+        volume = number(36)
+        if code.startswith(("0", "3")) and volume is not None:
+            volume *= 100.0
+        amount = None
+        if len(transaction) >= 3:
+            try:
+                amount = float(transaction[2])
+            except (TypeError, ValueError):
+                amount = None
+        rows.append(
+            {
+                "代码": code,
+                "名称": fields[1].strip(),
+                "最新价": number(3),
+                "涨跌幅": number(32),
+                "今开": number(5),
+                "最高": number(33),
+                "最低": number(34),
+                "成交量": volume,
+                "成交额": amount,
+                "换手率": number(38),
+                "振幅": number(43),
+                "量比": number(49),
+                "时间戳": timestamp,
+            }
+        )
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        raise RuntimeError("腾讯推荐池行情没有可用股票记录")
+    frame.attrs["quote_timestamp"] = max(timestamps) if timestamps else datetime.now().isoformat(timespec="seconds")
+    return frame
 
 
 def _fetch_sina_spot_dataframe() -> pd.DataFrame:

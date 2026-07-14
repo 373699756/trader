@@ -8,7 +8,7 @@ import pandas as pd
 
 from . import config
 from .factors import ALPHALITE_COLUMNS, ALPHALITE_META_COLUMNS
-from .fundamentals import FUNDAMENTAL_COLUMNS
+from .fundamentals import ALL_FUNDAMENTAL_COLUMNS
 from .normalization import coerce_number, normalize_code, rename_known_columns
 from .scoring_core.candidate_filters import (
     HARD_FILTER_LABELS,
@@ -229,13 +229,13 @@ def build_candidate_snapshot_rows(
             point_in_time_violations.append("future_quote_observed_at:{}".format(quote_timestamp))
         if not market_cutoff:
             point_in_time_violations.append("missing_market_data_cutoff")
-        if strategy_name == "tomorrow_picks" and _signal_at_or_after_cutoff(
+        if strategy_name in {"short_term", "tomorrow_picks", "swing_picks"} and _signal_at_or_after_cutoff(
             market_cutoff,
-            str(getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55")),
+            str(getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:35")),
         ):
             point_in_time_violations.append(
-                "signal_after_order_cutoff:{}".format(
-                    getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55")
+                "signal_after_recommendation_cutoff:{}".format(
+                    getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:35")
                 )
             )
         source_timestamps = {
@@ -254,7 +254,7 @@ def build_candidate_snapshot_rows(
             "raw_source.{}".format(key): is_missing(value) for key, value in raw.items()
         }
         for key, value in model_features.items():
-            if key in FUNDAMENTAL_COLUMNS:
+            if key in ALL_FUNDAMENTAL_COLUMNS:
                 source_value = (fundamental_item or {}).get(key) if isinstance(fundamental_item, dict) else None
                 if is_missing(source_value):
                     source_value = raw_normalized.get(key)
@@ -275,7 +275,7 @@ def build_candidate_snapshot_rows(
         }
         latest_announcement = max(announcement_times) if announcement_times else ""
         for key in model_features:
-            if key in FUNDAMENTAL_COLUMNS or key in _FUNDAMENTAL_DERIVED_FIELDS or key in {
+            if key in ALL_FUNDAMENTAL_COLUMNS or key in _FUNDAMENTAL_DERIVED_FIELDS or key in {
                 "announcement_time",
                 "report_period",
             }:
@@ -297,7 +297,7 @@ def build_candidate_snapshot_rows(
                 point_in_time_violations.append(
                     "future_feature_timestamp:{}:{}".format(feature_key, observed_at)
                 )
-        for key in FUNDAMENTAL_COLUMNS:
+        for key in ALL_FUNDAMENTAL_COLUMNS:
             missing_mask.setdefault(
                 "fundamental.{}".format(key),
                 is_missing((fundamental_item or {}).get(key)) if isinstance(fundamental_item, dict) else True,

@@ -112,14 +112,22 @@ window.TraderRecommendationRenderers = {
   },
 
   explanationTags(row, helpers) {
+    const deepseek = row.deepseek_features || {};
+    const deepseekTrace = row.deepseek_feature_status === "precomputed"
+      ? `DeepSeek预计算：${deepseek.event_type || "未知事件"} · 证据${(deepseek.evidence_ids || []).join(",") || "无"} · 截止${deepseek.cutoff_at || row.deepseek_feature_cutoff || "-"}`
+      : row.deepseek_feature_status === "abstain"
+        ? `DeepSeek预计算：弃权 · ${deepseek.reason || "证据不足"}`
+        : "";
     const explanationTexts = this.uniqueReasonTexts([
-      row.deepseek_reason,
+      row.deepseek_features?.reason,
+      deepseekTrace,
       ...(row.reasons || []),
       ...((row.serenity_profile?.evidence || []).map(item => item.label || "")),
       row.trade_action?.label,
       row.exit_action?.label,
     ], 4);
     const riskTexts = this.uniqueReasonTexts([
+      ...(deepseek.risk_flags || []),
       ...(row.deepseek_risk_flags || []),
       row.sell_risk?.label || "",
       ...(row.sell_risk?.reasons || []),

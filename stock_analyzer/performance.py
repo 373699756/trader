@@ -76,37 +76,4 @@ def json_loads_cached(raw: object, cache: Optional[Dict[str, object]] = None, de
     return value
 
 
-def _total_tokens(usage: Dict[str, object]) -> float:
-    usage = usage or {}
-    total = _safe_float(usage.get("total_tokens"), 0.0)
-    if total <= 0:
-        total = _safe_float(usage.get("billable_total_tokens"), 0.0)
-    if total <= 0:
-        total = _safe_float(usage.get("prompt_tokens", usage.get("input_tokens", 0.0)), 0.0) + _safe_float(
-            usage.get("completion_tokens", usage.get("output_tokens", 0.0)),
-            0.0,
-        )
-    return round(total, 4)
 
-
-def deepseek_review_efficiency_meta(
-    requested_count: int,
-    reviewed_count: int,
-    usage: Optional[Dict[str, object]] = None,
-    execution_filtered_count: int = 0,
-) -> Dict[str, object]:
-    requested = max(0, _safe_int(requested_count))
-    reviewed = max(0, _safe_int(reviewed_count))
-    execution_filtered = max(0, _safe_int(execution_filtered_count))
-    total_tokens = _total_tokens(usage or {})
-    return {
-        "requested_candidate_count": requested,
-        "reviewed_candidate_count": reviewed,
-        "execution_filtered_count": execution_filtered,
-        "reviewed_ratio": round(reviewed / requested, 4) if requested else 0.0,
-        "total_tokens": total_tokens,
-        "tokens_per_candidate": round(total_tokens / requested, 4) if requested and total_tokens > 0 else None,
-        "tokens_per_reviewed_candidate": round(total_tokens / reviewed, 4)
-        if reviewed and total_tokens > 0
-        else None,
-    }

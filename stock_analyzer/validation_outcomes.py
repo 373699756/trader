@@ -60,9 +60,10 @@ def _needs_outcome_refresh(signal, strategy_name: str, current_baseline_id: str)
         current_baseline_id,
     ):
         return True
+    required_days = 1 if strategy_name == "tomorrow_picks" else 5 if strategy_name == "swing_picks" else 0
     return (
-        strategy_name in {"tomorrow_picks", "swing_picks"}
-        and int(signal["existing_future_days"] or 0) < 5
+        required_days > 0
+        and int(signal["existing_future_days"] or 0) < required_days
         and str(signal["existing_exit_reason"] or "") in {"", "hold_to_term"}
     )
 
@@ -77,6 +78,7 @@ def _build_execution_record(
 ) -> Dict[str, object]:
     label_status = str(outcome.get("label_status") or "unknown")
     settled = label_status == "settled"
+    observation_only = str(_mapping_get(signal, "strategy_name", "")) == "short_term"
     entry_price = coerce_number(outcome.get("primary_entry_price"), None)
     if entry_price is None or entry_price <= 0:
         entry_price = coerce_number(_mapping_get(signal, "price_at_signal"), 0.0)
@@ -94,8 +96,8 @@ def _build_execution_record(
         else None
     )
     if settled:
-        entry_status = "filled"
-        exit_status = "filled"
+        entry_status = "observed" if observation_only else "filled"
+        exit_status = "observed" if observation_only else "filled"
         fill_source = str(outcome.get("fill_source") or "simulated_daily_bar")
     elif label_status == "unfilled" and entry_was_filled:
         entry_status = "filled"
@@ -135,7 +137,7 @@ def _build_execution_record(
             settled
             and outcome.get("promotion_eligible", True)
             and outcome.get("return_reproducible")
-            and benchmark_ready
+            and (benchmark_ready or observation_only)
         ),
         **quantities,
         "actual_filled_quantity": filled_quantity,
@@ -226,7 +228,10 @@ class StrategyOutcomeService:
                         OR NOT ({compatible_filter})
                         OR (
                             strategy_signals.strategy_name IN ('tomorrow_picks', 'swing_picks')
-                            AND COALESCE(existing_outcome.future_days, 0) < 5
+                            AND COALESCE(existing_outcome.future_days, 0) < CASE
+                                WHEN strategy_signals.strategy_name = 'tomorrow_picks' THEN 1
+                                ELSE 5
+                            END
                             AND COALESCE(existing_outcome.exit_reason, '') IN ('', 'hold_to_term')
                         )
                     )
@@ -247,7 +252,10 @@ class StrategyOutcomeService:
                         AND COALESCE((
                             SELECT o.future_days FROM strategy_outcomes o
                             WHERE o.signal_id = strategy_signals.id
-                        ), 0) < 5
+                        ), 0) < CASE
+                            WHEN strategy_signals.strategy_name = 'tomorrow_picks' THEN 1
+                            ELSE 5
+                        END
                         AND COALESCE((
                             SELECT o.exit_reason FROM strategy_outcomes o
                             WHERE o.signal_id = strategy_signals.id

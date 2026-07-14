@@ -12,7 +12,7 @@ from helpers import app_patch_context
 from stock_analyzer import config, daily_job
 from stock_analyzer.app_response_support import saved_tomorrow_fallback_payload
 from stock_analyzer.scoring import prepare_candidates
-from stock_analyzer.snapshot import SNAPSHOT_STRATEGIES, _apply_close_anchor_prices, _score_snapshot_strategy, run_snapshot
+from stock_analyzer.snapshot import SNAPSHOT_STRATEGIES, _score_snapshot_strategy, run_snapshot
 from stock_analyzer.strategy_validation import StrategyValidationStore
 from stock_analyzer.validation_backup import backup_validation_db, list_validation_backups, restore_validation_db
 from stock_analyzer.validation_runtime_support import run_validation_auto_update_once
@@ -72,7 +72,7 @@ def test_daily_job_strategy_all_and_explicit_strategy_sets():
 
     validation, executable = daily_job._task_strategy_sets("short_term", SNAPSHOT_STRATEGIES)
     assert validation == ["short_term"]
-    assert executable == ["short_term"]
+    assert executable == []
 
 
 def test_validation_auto_update_summarizes_pending_reasons():
@@ -180,7 +180,7 @@ def test_daily_job_after_close_runs_market_data_snapshot_update_and_backup(tmp_p
 
     assert result == 0
     assert calls[0] == ("download", 3)
-    assert ("snapshot", ("tomorrow_picks",)) in calls
+    assert ("snapshot", ("tomorrow_picks",)) not in calls
     assert ("update", "tomorrow_picks") in calls
     assert payload["market_data"]["downloaded"] == 1
 
@@ -266,7 +266,7 @@ def test_run_snapshot_saves_strategy_rows_without_web_route(tmp_path):
     with patch.object(config, "QUOTE_SNAPSHOT_MIN_ROWS", 1), patch.object(
         config, "TOMORROW_SIGNAL_CUTOFF_TIME", "23:59"
     ), patch(
-        "stock_analyzer.snapshot._signal_at_or_after_tomorrow_cutoff", return_value=False
+        "stock_analyzer.snapshot._signal_at_or_after_freeze_cutoff", return_value=False
     ):
         result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")
     dates = store.list_signal_dates("tomorrow_picks")
@@ -307,7 +307,7 @@ def test_snapshot_tomorrow_keeps_wide_validation_candidates():
         config,
         "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT",
         4,
-    ), patch("stock_analyzer.scoring._tomorrow_display_gate", return_value=(12, 0.0, "测试展示全部候选")):
+    ), patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_display_gate", return_value=(12, 0.0, "测试展示全部候选")):
         rows, meta, version = _score_snapshot_strategy(
             None,
             candidates,
@@ -413,10 +413,7 @@ def test_run_snapshot_allows_fresh_local_quote_snapshot_when_enabled(tmp_path):
         "TOMORROW_SIGNAL_CUTOFF_TIME",
         "23:59",
     ), patch(
-        "stock_analyzer.snapshot._after_close_anchor_time",
-        return_value=False,
-    ), patch(
-        "stock_analyzer.snapshot._signal_at_or_after_tomorrow_cutoff", return_value=False,
+        "stock_analyzer.snapshot._signal_at_or_after_freeze_cutoff", return_value=False,
     ):
         result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")
     dates = store.list_signal_dates("tomorrow_picks")
@@ -424,55 +421,6 @@ def test_run_snapshot_allows_fresh_local_quote_snapshot_when_enabled(tmp_path):
     assert result["ok"]
     assert result["saved"]["saved"] > 0
     assert dates[0]["strategy_name"] == "tomorrow_picks"
-
-
-def test_after_close_snapshot_uses_close_price_as_anchor():
-    rows = [{"rank": 1, "code": "600001", "name": "锚点样本", "price": 10.0, "score": 80}]
-    quotes = pd.DataFrame([{"code": "600001", "price": 11.0}])
-
-    class FakeProvider:
-        def get_history(self, code, days=10):
-            return pd.DataFrame(
-                [
-                    {"trade_date": "20260707", "price": 9.5},
-                    {"trade_date": "20260708", "price": 12.3},
-                ]
-            )
-
-        def health(self):
-            return {
-                "quotes_source": "东方财富直连",
-                "last_quote_refresh": "2026-07-08T15:02:00",
-            }
-
-    anchored, anchor_meta = _apply_close_anchor_prices(FakeProvider(), rows, "2026-07-08T15:05:00", quotes)
-
-    assert anchored[0]["price"] == 12.3
-    assert round(anchored[0]["pct_chg"], 4) == 29.4737
-    assert anchored[0]["anchor_price_source"] == "history_close"
-    assert anchor_meta["count"] == 1
-
-
-def test_after_close_snapshot_uses_quote_close_when_history_missing():
-    rows = [{"rank": 1, "code": "600001", "name": "行情锚点", "price": 10.0, "score": 80}]
-    quotes = pd.DataFrame([{"code": "600001", "price": 11.2, "pct_chg": 3.7}])
-
-    class FakeProvider:
-        def get_history(self, code, days=10):
-            return pd.DataFrame([{"trade_date": "20260707", "price": 9.5}])
-
-        def health(self):
-            return {
-                "quotes_source": "东方财富直连",
-                "last_quote_refresh": "2026-07-08T15:02:00",
-            }
-
-    anchored, anchor_meta = _apply_close_anchor_prices(FakeProvider(), rows, "2026-07-08T15:05:00", quotes)
-
-    assert anchored[0]["price"] == 11.2
-    assert anchored[0]["pct_chg"] == 3.7
-    assert anchored[0]["anchor_price_source"] == "quote_close"
-    assert anchor_meta["count"] == 1
 
 
 def test_tomorrow_snapshot_rejects_when_freeze_completes_at_cutoff(tmp_path):
@@ -494,10 +442,7 @@ def test_tomorrow_snapshot_rejects_when_freeze_completes_at_cutoff(tmp_path):
 
     store = StrategyValidationStore(str(tmp_path / "validation.sqlite3"))
     with patch("stock_analyzer.snapshot._score_snapshot_strategy", return_value=(rows, meta, "tomorrow_picks_test")), patch(
-        "stock_analyzer.snapshot._apply_snapshot_deepseek_rerank",
-        return_value=(rows, {}),
-    ), patch(
-        "stock_analyzer.snapshot._signal_at_or_after_tomorrow_cutoff",
+        "stock_analyzer.snapshot._signal_at_or_after_freeze_cutoff",
         side_effect=[False, True],
     ):
         result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")

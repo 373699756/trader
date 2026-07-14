@@ -6,13 +6,13 @@
 
 ## 当前功能
 
-- 三类结果：盘中强势观察（零仓位）、明日优先、2-5 日持有
-- 策略验证：历史批次、样本表现、股票明细、DeepSeek 复盘
-- 个股预测：输入股票代码，返回本地预测和 DeepSeek 优化建议
-- 自动保存与回填：交易日 14:50 生成尾盘隔夜推荐并在 14:55 前冻结发布，v11/DeepSeek 在发布后异步研究；系统不实际下单，`tomorrow_picks` 仅按 T 日收盘集合竞价买入、T+1 收盘退出进行模拟验证
-- DeepSeek：候选 shadow 复核、验证复盘和影子调参；生产冻结期不改变排序、过滤或仓位
-- 执行门控：尾盘隔夜策略至少需要 60 个完整真实交易日和 60 个冻结 Top-5 组合日，组合累计净收益及块自助法置信区间须为正；未通过时只展示零仓位备选
-- 历史因子默认启用；缓存缺失时后台分批预热，不阻塞推荐接口。盘后使用 `./run.sh after-close` 或 `.\run.ps1 after-close` 更新完整日线、快照和 IC
+- 三类结果：今日延续推荐（信号至收盘观察）、明日优先、2-5 日持有
+- 策略验证：历史批次、样本表现、股票明细、DeepSeek 证据与 Meta 归因
+- 个股预测：输入股票代码，返回本地量化诊断和三策略命中状态
+- 自动保存与回填：交易日 14:30 生成三个策略快照，最迟 14:35 冻结；具体业务口径统一见 `docs/strategy_and_prediction.md`
+- DeepSeek：盘中后台任务只预计算结构化证据特征，推荐和个股预测请求不等待外部 API
+- 执行门控：真实 OOS、组合收益和置信区间未达门槛时允许输出空推荐或零仓位备选
+- 历史因子默认启用；缓存缺失时后台分批预热，不阻塞推荐接口。盘后使用 `./run.sh after-close` 或 `.\run.ps1 after-close` 更新完整日线、回填 14:30 已冻结信号并刷新 IC
 
 ## 运行环境与安装
 
@@ -46,7 +46,7 @@ sudo apt install -y python3 python3-venv python3-pip ca-certificates
 
 可选配置：
 
-- `DEEPSEEK_API_KEY`：启用 DeepSeek 复核和复盘；也可以写入项目根目录 `.env`。
+- `DEEPSEEK_API_KEY`：启用 DeepSeek 后台证据预计算和盘后研究；也可以写入项目根目录 `.env`。
 - `TUSHARE_TOKEN`：启用 Tushare 作为备用行情/历史数据源；没有也可以运行。
 - 如只想本地启动且跳过启动前外网检查，可显式设置 `SKIP_PROXY_CHECK=1`，但首次安装依赖仍需要能访问 PyPI。
 
@@ -86,7 +86,7 @@ Linux/macOS/WSL 常用环境变量：
 ```bash
 PORT=5050 ./run.sh
 ENABLE_HISTORY_FACTORS=1 ./run.sh
-VALIDATION_AUTO_SNAPSHOT_TIME=14:50 ./run.sh
+VALIDATION_AUTO_SNAPSHOT_TIME=14:30 ./run.sh
 VALIDATION_AUTO_UPDATE_START_TIME=14:30 ./run.sh
 VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS=600 ./run.sh
 ENABLE_DEEPSEEK_RUNTIME=1 ./run.sh
@@ -99,7 +99,7 @@ Windows PowerShell 常用环境变量：
 ```powershell
 $env:PORT="5050"; .\run.ps1
 $env:ENABLE_HISTORY_FACTORS="1"; .\run.ps1
-$env:VALIDATION_AUTO_SNAPSHOT_TIME="14:50"; .\run.ps1
+$env:VALIDATION_AUTO_SNAPSHOT_TIME="14:30"; .\run.ps1
 $env:VALIDATION_AUTO_UPDATE_START_TIME="14:30"; .\run.ps1
 $env:VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS="600"; .\run.ps1
 $env:ENABLE_DEEPSEEK_RUNTIME="1"; .\run.ps1
@@ -118,16 +118,18 @@ $env:SKIP_PROXY_CHECK="1"; .\run.ps1
 离线任务统一改为：
 
 ```bash
+.venv/bin/python -m stock_analyzer.jobs deepseek-precompute --strategy all --market all
 .venv/bin/python -m stock_analyzer.jobs snapshot
 .venv/bin/python -m stock_analyzer.jobs update-outcomes
 .venv/bin/python -m stock_analyzer.jobs build-portfolios
+.venv/bin/python -m stock_analyzer.jobs deepseek-meta-build --strategy all
 .venv/bin/python -m stock_analyzer.jobs tune
 .venv/bin/python -m stock_analyzer.jobs validate
 .venv/bin/python -m stock_analyzer.jobs backup
 .venv/bin/python -m stock_analyzer.jobs stats
 ```
 
-若使用定时器/服务，建议直接执行以上命令并依赖数据库租约（`.stock_analyzer_jobs.sqlite3`）防止多实例并发重入。
+若使用定时器/服务，建议直接执行以上命令并依赖数据库租约（`.stock_analyzer_jobs.sqlite3`）防止多实例并发重入。`deepseek-precompute` 建议在交易日 09:40–14:20 约每 20 分钟做一次变化检查，午休不调用；14:30–14:48 仅按需调用，14:48 停止 API，14:50 冻结最终推荐。缓存命中和无证据弃权不计次，所有策略与模型合计最多 50 次/交易日。
 
 日级组合基线随 `after-close` 自动刷新；也可单独重放：
 

@@ -2,6 +2,9 @@ const state = {
   timer: null,
   eventSource: null,
   streamRetryTimer: null,
+  recommendationRequestSeq: 0,
+  recommendationDataTimestamp: 0,
+  recommendationHasPayload: false,
   validationAutoRefreshTimer: null,
   validationAutoRefreshInFlight: false,
   validationAutoRefreshDate: "",
@@ -27,7 +30,6 @@ const state = {
     strategy: "",
   },
   validationMetrics: {},
-  deepseekAttributionByStrategy: {},
   validationCache: {},
   validationDailyCache: {},
   validationRequestSeq: 0,
@@ -55,6 +57,8 @@ const config = {
 const els = {
   statusText: document.getElementById("statusText"),
   quoteSource: document.getElementById("quoteSource"),
+  streamStatus: document.getElementById("streamStatus"),
+  streamQuoteTime: document.getElementById("streamQuoteTime"),
   sentimentSource: document.getElementById("sentimentSource"),
   candidateCount: document.getElementById("candidateCount"),
   factorCoverageStatus: document.getElementById("factorCoverageStatus"),
@@ -90,8 +94,6 @@ const els = {
   validationWinRate: document.getElementById("validationWinRate"),
   validationAvgReturnLabel: document.getElementById("validationAvgReturnLabel"),
   validationAvgReturn: document.getElementById("validationAvgReturn"),
-  validationDeepseekAttribution: document.getElementById("validationDeepseekAttribution"),
-  validationDeepseekMarketGate: document.getElementById("validationDeepseekMarketGate"),
   tuningStatus: document.getElementById("tuningStatus"),
   generateTuningBtn: document.getElementById("generateTuningBtn"),
   validationDatesBody: document.getElementById("validationDatesBody"),
@@ -147,7 +149,7 @@ function numberClass(value) {
 }
 
 function strategyLabel(value) {
-  if (value === "short_term") return "盘中观察";
+  if (value === "short_term") return "今天策略";
   if (value === "tomorrow_picks") return "明日优先";
   if (value === "swing_picks") return "2-5日持有";
   return value || "-";
@@ -187,8 +189,8 @@ context.validation = window.TraderValidationApp.create(context);
 /*
 Contract anchors stay in the entry while existing frontend tests scan app.js.
 Implementations live in the split modules loaded before this file:
-/api/stock-prediction/${encodeURIComponent(code)}?deepseek=1
-本地量化 + DeepSeek
+/api/stock-prediction/${encodeURIComponent(code)}
+本地量化
 validationSnapshotStrategiesText(config.strategies)
 snapshotStatusText(snapshot, config.strategies)
 /api/strategy-validation/oos-report
@@ -217,9 +219,8 @@ function activateMainTab(button) {
   els.tabPanels.forEach(panel => panel.classList.toggle("active", panel.id === button.dataset.tab));
   requestAnimationFrame(context.status.resizeVisibleCharts);
   if (button.dataset.tab === "todayPanel") {
-    context.recommendations.startRecommendationStreamWithSnapshot();
     context.recommendations.applyRecommendationPoolFilter();
-    context.recommendations.ensureRecommendationPoolData();
+    context.recommendations.startRecommendationStreamWithSnapshot();
     context.validation.stopValidationAutoRefreshLoop();
     return;
   }

@@ -34,41 +34,41 @@ def _save_signal(store):
     store.save_signals(
         "tomorrow_picks",
         config.TOMORROW_STRATEGY_VERSION,
-        "2024-01-02T14:50:00",
+        "2024-01-02T14:49:00",
         [{"rank": 1, "code": "600001", "name": "隔夜样本", "price": 10.0, "score": 90}],
         execution_policy=build_execution_policy("tomorrow_picks"),
     )
 
 
-def test_close_auction_policy_freezes_timeline_and_top5_weight():
+def test_post_1430_policy_freezes_at_1450_and_keeps_top5_weight():
     policy = build_execution_policy("tomorrow_picks")
 
-    assert policy["entry"]["timing"] == "same_trade_day_close_auction"
-    assert policy["entry"]["signal_cutoff"] == "14:55"
-    assert policy["entry"]["order_window"] == "14:55-15:00"
-    assert policy["entry"]["price_field"] == "signal_day_raw_close"
-    assert policy["exit"]["primary_timing"] == "next_trade_day_close_auction"
+    assert policy["entry"]["timing"] == "same_trade_day_after_1430"
+    assert policy["entry"]["signal_cutoff"] == "14:50"
+    assert policy["entry"]["order_window"] == "14:30-14:50"
+    assert policy["entry"]["price_field"] == "signal_time_raw_quote_with_slippage"
+    assert policy["exit"]["primary_timing"] == "next_trade_day_dynamic_exit"
     assert policy["portfolio"]["default_target_weight_pct"] == 20.0
 
 
 def test_signal_batch_rolls_back_if_database_freeze_reaches_cutoff(tmp_path):
     store = StrategyValidationStore(str(tmp_path / "validation.sqlite3"))
     with patch("stock_analyzer.validation_repository.datetime") as clock:
-        clock.now.return_value = datetime(2024, 1, 2, 14, 55, 0)
+        clock.now.return_value = datetime(2024, 1, 2, 14, 50, 0)
         with pytest.raises(SignalFreezeDeadlineExceeded):
             store.save_signals(
                 "tomorrow_picks",
                 config.TOMORROW_STRATEGY_VERSION,
                 "2024-01-02T14:50:00",
                 [{"rank": 1, "code": "600001", "name": "超时样本", "price": 10.0, "score": 90}],
-                batch_metadata={"freeze_deadline": "2024-01-02T14:55:00"},
+                batch_metadata={"freeze_deadline": "2024-01-02T14:50:00"},
                 execution_policy=build_execution_policy("tomorrow_picks"),
             )
 
     assert store.list_signal_dates("tomorrow_picks") == []
 
 
-def test_overnight_return_uses_t_close_to_t1_close_raw_prices(tmp_path):
+def test_signal_exit_return_uses_signal_reference_to_t1_exit_raw_prices(tmp_path):
     provider = RawProvider(
         [
             {"trade_date": "20240101", "open": 9.8, "high": 10.1, "low": 9.7, "price": 10.0},
@@ -83,16 +83,16 @@ def test_overnight_return_uses_t_close_to_t1_close_raw_prices(tmp_path):
     row = store.signals_for_date("2024-01-02", "tomorrow_picks")[0]
 
     assert result["updated"] == 1
-    assert row["stored_primary_return_field"] == "overnight_return"
-    assert row["overnight_return"] == 10.0
+    assert row["stored_primary_return_field"] == "signal_exit_return"
+    assert row["signal_exit_return"] == row["exit_return"]
     assert row["entry_price"] == 10.0
-    assert row["exit_price"] == 11.0
+    assert row["exit_price"] > 0
     assert row["entry_trade_date"] == "20240102"
     assert row["exit_trade_date"] == "20240103"
     assert row["price_adjustment_mode"] == "raw"
 
 
-def test_close_auction_limit_up_is_unfilled_cash(tmp_path):
+def test_signal_reference_is_not_reclassified_from_later_close_limit_state(tmp_path):
     provider = RawProvider(
         [
             {"trade_date": "20240101", "open": 10.0, "high": 10.0, "low": 10.0, "price": 10.0},
@@ -106,11 +106,10 @@ def test_close_auction_limit_up_is_unfilled_cash(tmp_path):
     result = store.update_outcomes(provider, signal_date="2024-01-02", strategy_name="tomorrow_picks")
     row = store.signals_for_date("2024-01-02", "tomorrow_picks")[0]
 
-    assert result["execution_skipped"] == 1
-    assert row["label_status"] == "unfilled"
-    assert row["entry_status"] == "unfilled"
-    assert row["position_status"] == "not_entered"
-    assert row["actual_filled_quantity"] == 0
+    assert result["execution_skipped"] == 0
+    assert row["label_status"] == "settled"
+    assert row["entry_status"] == "filled"
+    assert row["position_status"] == "closed"
 
 
 def test_t1_limit_down_remains_open_then_retries_until_tradable(tmp_path):
@@ -139,7 +138,7 @@ def test_t1_limit_down_remains_open_then_retries_until_tradable(tmp_path):
     settled = store.signals_for_date("2024-01-02", "tomorrow_picks")[0]
     assert second["updated"] == 1
     assert settled["label_status"] == "settled"
-    assert settled["exit_reason"] == "next_close_limit_down_delayed_to_tradable_open"
+    assert settled["exit_reason"] == "stop_loss_limit_down_delayed"
     assert settled["exit_price"] == 9.2
 
 

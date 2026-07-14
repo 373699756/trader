@@ -77,6 +77,8 @@ class ValidationSchemaManager:
                 "0011_add_query_indexes",
                 ValidationSchemaManager._migration_add_query_indexes,
             ),
+            ("0012_deepseek_feature_pipeline", ValidationSchemaManager._migration_deepseek_feature_pipeline),
+            ("0013_deepseek_daily_call_limit", ValidationSchemaManager._migration_deepseek_daily_call_limit),
         )
 
     @staticmethod
@@ -136,6 +138,27 @@ class ValidationSchemaManager:
             conn.execute(statement)
 
     @staticmethod
+    def _migration_deepseek_feature_pipeline(conn) -> None:
+        for statement in _DEEPSEEK_FEATURE_TABLES + _DEEPSEEK_FEATURE_INDEXES:
+            conn.execute(statement)
+
+    @staticmethod
+    def _migration_deepseek_daily_call_limit(conn) -> None:
+        ValidationSchemaManager._add_columns(
+            conn,
+            "deepseek_analysis_batches",
+            {"api_called": "INTEGER NOT NULL DEFAULT 0"},
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_deepseek_batches_api_day "
+            "ON deepseek_analysis_batches(api_called, requested_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_deepseek_batches_trade_date_api_called "
+            "ON deepseek_analysis_batches(substr(requested_at, 1, 10), api_called)"
+        )
+
+    @staticmethod
     def _add_columns(conn, table: str, columns) -> None:
         existing_columns = {row[1] for row in conn.execute("PRAGMA table_info({})".format(table)).fetchall()}
         for column, column_type in columns.items():
@@ -143,7 +166,42 @@ class ValidationSchemaManager:
                 conn.execute("ALTER TABLE {} ADD COLUMN {} {}".format(table, column, column_type))
 
 
+_DEEPSEEK_FEATURE_TABLES = (
+    """CREATE TABLE IF NOT EXISTS deepseek_analysis_batches (
+        batch_id TEXT PRIMARY KEY, strategy_name TEXT NOT NULL, snapshot_id TEXT NOT NULL DEFAULT '',
+        cutoff_at TEXT NOT NULL, prompt_version TEXT NOT NULL, feature_schema_version TEXT NOT NULL,
+        model_name TEXT NOT NULL DEFAULT '', model_tier TEXT NOT NULL DEFAULT 'flash', market_filter TEXT NOT NULL DEFAULT 'all',
+        status TEXT NOT NULL DEFAULT 'pending', api_called INTEGER NOT NULL DEFAULT 0,
+        request_hash TEXT NOT NULL DEFAULT '', response_hash TEXT NOT NULL DEFAULT '',
+        candidate_count INTEGER NOT NULL DEFAULT 0, valid_count INTEGER NOT NULL DEFAULT 0, abstain_count INTEGER NOT NULL DEFAULT 0,
+        rejected_count INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_hit_tokens INTEGER NOT NULL DEFAULT 0, cache_miss_tokens INTEGER NOT NULL DEFAULT 0, latency_ms INTEGER NOT NULL DEFAULT 0,
+        error_type TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT '', requested_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS deepseek_candidate_features (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL, strategy_name TEXT NOT NULL, code TEXT NOT NULL,
+        snapshot_id TEXT NOT NULL DEFAULT '', cutoff_at TEXT NOT NULL, completed_at TEXT NOT NULL, expires_at TEXT NOT NULL DEFAULT '',
+        prompt_version TEXT NOT NULL, feature_schema_version TEXT NOT NULL, model_name TEXT NOT NULL DEFAULT '', evidence_hash TEXT NOT NULL DEFAULT '',
+        evidence_ids_json TEXT NOT NULL DEFAULT '[]', abstain INTEGER NOT NULL DEFAULT 1, valid INTEGER NOT NULL DEFAULT 0,
+        validation_error TEXT NOT NULL DEFAULT '', feature_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+        UNIQUE(batch_id, code), FOREIGN KEY(batch_id) REFERENCES deepseek_analysis_batches(batch_id))""",
+    """CREATE TABLE IF NOT EXISTS deepseek_counterfactual_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, strategy_name TEXT NOT NULL, signal_date TEXT NOT NULL,
+        strategy_version TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '', model_name TEXT NOT NULL DEFAULT '',
+        local_codes_json TEXT NOT NULL DEFAULT '[]', challenger_codes_json TEXT NOT NULL DEFAULT '[]', replacements_json TEXT NOT NULL DEFAULT '[]',
+        local_net_return REAL, challenger_net_return REAL, incremental_net_return REAL, local_max_drawdown REAL, challenger_max_drawdown REAL,
+        status TEXT NOT NULL DEFAULT 'pending', outcome_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(strategy_name, signal_date, prompt_version, model_name))""",
+)
+
+_DEEPSEEK_FEATURE_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_deepseek_batches_strategy_cutoff ON deepseek_analysis_batches(strategy_name, cutoff_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_deepseek_features_strategy_code_cutoff ON deepseek_candidate_features(strategy_name, code, cutoff_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_deepseek_counterfactual_strategy_date ON deepseek_counterfactual_outcomes(strategy_name, signal_date DESC)",
+)
+
 _TABLES = (
+    *_DEEPSEEK_FEATURE_TABLES,
     """
     CREATE TABLE IF NOT EXISTS strategy_signal_batches (
         strategy_name TEXT NOT NULL,
@@ -379,25 +437,6 @@ _TABLES = (
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS deepseek_market_gate_reviews (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        review_date TEXT NOT NULL,
-        review_time TEXT NOT NULL,
-        market_filter TEXT NOT NULL DEFAULT 'all',
-        regime TEXT NOT NULL DEFAULT '',
-        size_factor REAL NOT NULL DEFAULT 1,
-        confidence REAL NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT '',
-        source TEXT NOT NULL DEFAULT '',
-        reason TEXT NOT NULL DEFAULT '',
-        context_json TEXT NOT NULL,
-        result_json TEXT NOT NULL,
-        counts_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        UNIQUE(review_date, market_filter)
-    )
-    """,
-    """
     CREATE TABLE IF NOT EXISTS strategy_oos_reports (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         strategy_name TEXT NOT NULL,
@@ -532,7 +571,6 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_strategy_execution_skips_code ON strategy_execution_skips(code)",
     "CREATE INDEX IF NOT EXISTS idx_deepseek_shadow_strategy_date ON strategy_deepseek_shadow_signals(strategy_name, signal_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_deepseek_shadow_code ON strategy_deepseek_shadow_signals(code)",
-    "CREATE INDEX IF NOT EXISTS idx_deepseek_market_gate_date ON deepseek_market_gate_reviews(review_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_oos_reports_strategy_time ON strategy_oos_reports(strategy_name, generated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_fold_predictions_exp_date ON strategy_fold_predictions(experiment_id, test_date)",
     "CREATE INDEX IF NOT EXISTS idx_strategy_fold_predictions_strategy_date ON strategy_fold_predictions(strategy_name, test_date DESC)",

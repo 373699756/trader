@@ -51,30 +51,13 @@ from .validation_stance import (
 from .validation_statistics import (
     average as _avg,
     daily_metrics as _daily_metrics,
-    deepseek_action as _deepseek_action,
-    deepseek_avoid_or_veto as _deepseek_avoid_or_veto,
-    deepseek_blend_alpha as _deepseek_blend_alpha,
-    deepseek_budget_recommendation as _deepseek_budget_recommendation,
-    deepseek_counterfactual_n as _deepseek_counterfactual_n,
-    deepseek_counterfactual_topn as _deepseek_counterfactual_topn,
-    deepseek_covered as _deepseek_covered,
-    deepseek_group_delta as _deepseek_group_delta,
-    deepseek_local_rank as _deepseek_local_rank,
-    deepseek_shadow_rank as _deepseek_shadow_rank,
-    deepseek_token_cost_summary as _deepseek_token_cost_summary,
-    deepseek_token_value_metrics as _deepseek_token_value_metrics,
-    has_deepseek_review as _has_deepseek_review,
-    market_gate_hit as _market_gate_hit,
-    market_gate_outcome_summary as _market_gate_outcome_summary,
     mean_confidence_interval as _mean_confidence_interval,
     next_day_compare as _next_day_compare,
     next_low_return_from_signal as _next_low_return_from_signal,
     portfolio_max_drawdown as _portfolio_max_drawdown,
     rate as _rate,
-    return_summary as _return_summary,
     top_k_sensitivity as _top_k_sensitivity,
     wilson_lower_bound as _wilson_lower_bound,
-    write_deepseek_attribution_snapshot as _write_deepseek_attribution_snapshot,
 )
 from .validation_outcomes import StrategyOutcomeService
 from .validation_repository import ValidationRepository
@@ -161,6 +144,43 @@ class StrategyValidationStore:
             rows,
         )
 
+    def save_deepseek_analysis_batch(self, batch: Dict[str, object]) -> Dict[str, object]:
+        return self.repository.save_deepseek_analysis_batch(batch)
+
+    def save_deepseek_candidate_features(
+        self,
+        batch: Dict[str, object],
+        rows: Iterable[Dict[str, object]],
+    ) -> Dict[str, int]:
+        return self.repository.save_deepseek_candidate_features(batch, rows)
+
+    def latest_deepseek_candidate_features(
+        self,
+        strategy_name: str,
+        codes: Iterable[str],
+        cutoff_at: str,
+        prompt_version: str = "",
+        model_name: str = "",
+        feature_schema_version: str = "",
+    ) -> Dict[str, Dict[str, object]]:
+        return self.repository.latest_deepseek_candidate_features(
+            strategy_name,
+            codes,
+            cutoff_at,
+            prompt_version=prompt_version,
+            model_name=model_name,
+            feature_schema_version=feature_schema_version,
+        )
+
+    def save_deepseek_counterfactual_outcome(self, row: Dict[str, object]) -> Dict[str, object]:
+        return self.repository.save_deepseek_counterfactual_outcome(row)
+
+    def save_deepseek_counterfactual_outcomes(
+        self,
+        rows: Iterable[Dict[str, object]],
+    ) -> List[Dict[str, object]]:
+        return self.repository.save_deepseek_counterfactual_outcomes(rows)
+
     def list_signal_dates(self, strategy_name: str = "") -> List[Dict[str, object]]:
         return self.repository.list_signal_dates(strategy_name=strategy_name)
 
@@ -209,9 +229,8 @@ class StrategyValidationStore:
         days: int,
         plan: Dict[str, object],
         metrics: Dict[str, object],
-        deepseek_review: Dict[str, object],
     ) -> Dict[str, object]:
-        return self.repository.save_tuning_run(strategy_name, days, plan, metrics, deepseek_review)
+        return self.repository.save_tuning_run(strategy_name, days, plan, metrics, {})
 
     def latest_tuning_run(self, strategy_name: str) -> Dict[str, object]:
         return self.repository.latest_tuning_run(strategy_name)
@@ -293,8 +312,6 @@ class StrategyValidationStore:
     def metrics(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
         return self.metrics_service.metrics(strategy_name=strategy_name, days=days)
 
-    def deepseek_attribution(self, strategy_name: str = "", days: int = 20) -> Dict[str, object]:
-        return self.metrics_service.deepseek_attribution(strategy_name=strategy_name, days=days)
 
     def signal_status_counts(
         self,
@@ -334,12 +351,6 @@ class StrategyValidationStore:
             days=days,
             strategy_version=strategy_version,
         )
-
-    def save_market_gate_review(self, market_gate: Dict[str, object], market_filter: str = "all") -> Dict[str, object]:
-        return self.repository.save_market_gate_review(market_gate, market_filter=market_filter)
-
-    def market_gate_metrics(self, days: int = 120) -> Dict[str, object]:
-        return self.repository.market_gate_metrics(days=days)
 
     def save_oos_report(
         self,
@@ -505,6 +516,10 @@ def _is_close_auction_entry_policy(policy: Dict[str, object]) -> bool:
     return str((policy.get("entry") or {}).get("timing") or "") == "same_trade_day_close_auction"
 
 
+def _is_post_1430_entry_policy(policy: Dict[str, object]) -> bool:
+    return str((policy.get("entry") or {}).get("timing") or "") == "same_trade_day_after_1430"
+
+
 def _first_tradable_exit_after_limit_down(
     future: pd.DataFrame,
     limit_pct: float,
@@ -528,6 +543,8 @@ def _compute_close_auction_outcome(
     security_state: Dict[str, str],
 ) -> Dict[str, object]:
     code = str(_mapping_get(signal, "code", ""))
+    strategy_name = str(_mapping_get(signal, "strategy_name", ""))
+    post_1430 = _is_post_1430_entry_policy(frozen_policy)
     try:
         history, price_mode, fill_source = _load_execution_history(provider, code, days=180)
     except Exception as exc:
@@ -554,7 +571,11 @@ def _compute_close_auction_outcome(
             raw_prices=_raw_price_rows(raw_context),
         )
     entry_row = entry_rows.iloc[-1]
-    entry_price = coerce_number(entry_row.get("price"))
+    entry_price = (
+        coerce_number(_mapping_get(signal, "price_at_signal", 0.0))
+        if post_1430
+        else coerce_number(entry_row.get("price"))
+    )
     prior_close = (
         coerce_number(prior_rows.iloc[-1].get("price"))
         if not prior_rows.empty
@@ -567,14 +588,22 @@ def _compute_close_auction_outcome(
     if entry_price <= 0:
         return _stateful_unresolved_outcome(
             "unfilled",
-            "invalid_close_auction_entry_price",
+            "invalid_post_1430_reference_price" if post_1430 else "invalid_close_auction_entry_price",
             security_state,
             raw_prices=_raw_price_rows(raw_context),
         )
-    if _is_unbuyable_limit_up(entry_row, prior_close, limit_pct):
+    # 14:30 后参考入场不能使用收盘后的完整日线形态判断是否可买，
+    # 否则会把 14:30 之后才封板的股票错误标成当时无法成交。
+    signal_limit_price = prior_close * (1.0 + limit_pct / 100.0) if prior_close > 0 else 0.0
+    entry_unbuyable = (
+        entry_price >= signal_limit_price * 0.995
+        if post_1430 and signal_limit_price > 0
+        else _is_unbuyable_limit_up(entry_row, prior_close, limit_pct)
+    )
+    if entry_unbuyable:
         return _stateful_unresolved_outcome(
             "unfilled",
-            "close_auction_limit_up_unfilled",
+            "post_1430_limit_up_unfilled" if post_1430 else "close_auction_limit_up_unfilled",
             security_state,
             raw_prices=_raw_price_rows(raw_context),
             position_status="not_entered",
@@ -586,7 +615,7 @@ def _compute_close_auction_outcome(
         status = "unknown" if _signal_is_stale(signal) else "pending"
         return _stateful_unresolved_outcome(
             status,
-            "close_auction_entry_filled_waiting_t1",
+            "post_1430_entry_waiting_future_trade" if post_1430 else "close_auction_entry_filled_waiting_t1",
             security_state,
             raw_prices=raw_prices,
             entry_filled=True,
@@ -604,20 +633,35 @@ def _compute_close_auction_outcome(
     exit_price = next_close
     exit_reason = "next_trade_day_close_auction"
     exit_index = 0
-    if _is_sealed_limit_down(first, entry_price, limit_pct):
+    if post_1430:
+        exit_policy = dict(frozen_policy.get("exit") or {})
+        holding_days = 1 if strategy_name == "tomorrow_picks" else max(2, int(coerce_number(exit_policy.get("holding_days"), 5)))
+        exit_policy["holding_days"] = holding_days
+        exit_policy["limit_down_pct"] = limit_pct
+        if strategy_name == "swing_picks":
+            exit_policy["take_profit_earliest_offset_days"] = max(1, int(coerce_number(exit_policy.get("take_profit_earliest_offset_days"), 1)))
+        exit_result = simulate_exit(future, entry_price, holding_days=holding_days, policy=exit_policy)
+        if not exit_result.get("ok"):
+            return _stateful_unresolved_outcome("pending", str(exit_result.get("reason") or "exit_not_ready"), security_state, raw_prices=raw_prices, entry_filled=True, primary_entry_price=round(entry_price, 4), position_status="open_position", entry_trade_date=entry_date, earliest_exit_date=earliest_exit_date)
+        exit_reason = str(exit_result.get("exit_reason") or "hold_to_term")
+        if len(future) < holding_days and exit_reason == "hold_to_term":
+            if security_state.get("status") == "delisted":
+                exit_index = len(future) - 1
+                exit_row = future.iloc[exit_index]
+                exit_price = coerce_number(exit_row.get("price")) or coerce_number(exit_row.get("open"))
+                exit_reason = "delisted_last_tradable_liquidation"
+            else:
+                return _stateful_unresolved_outcome("pending", "insufficient_future_data", security_state, raw_prices=raw_prices, entry_filled=True, primary_entry_price=round(entry_price, 4), position_status="open_position", entry_trade_date=entry_date, earliest_exit_date=earliest_exit_date)
+        if exit_reason.endswith("_unfilled"):
+            return _stateful_unresolved_outcome("pending", exit_reason, security_state, raw_prices=raw_prices, entry_filled=True, primary_entry_price=round(entry_price, 4), position_status="exit_pending", entry_trade_date=entry_date, earliest_exit_date=earliest_exit_date)
+        if exit_reason != "delisted_last_tradable_liquidation":
+            exit_price = coerce_number(exit_result.get("exit_price"))
+            exit_index = max(0, int(coerce_number(exit_result.get("exit_days"), 1)) - 1)
+            exit_row = future.iloc[min(len(future) - 1, exit_index)]
+    elif _is_sealed_limit_down(first, entry_price, limit_pct):
         delayed = _first_tradable_exit_after_limit_down(future.iloc[1:], limit_pct, next_close)
         if delayed is None:
-            return _stateful_unresolved_outcome(
-                "pending",
-                "t1_limit_down_exit_pending",
-                security_state,
-                raw_prices=raw_prices,
-                entry_filled=True,
-                primary_entry_price=round(entry_price, 4),
-                position_status="exit_pending",
-                entry_trade_date=entry_date,
-                earliest_exit_date=earliest_exit_date,
-            )
+            return _stateful_unresolved_outcome("pending", "t1_limit_down_exit_pending", security_state, raw_prices=raw_prices, entry_filled=True, primary_entry_price=round(entry_price, 4), position_status="exit_pending", entry_trade_date=entry_date, earliest_exit_date=earliest_exit_date)
         exit_row = delayed["row"]
         exit_index = delayed["index"]
         exit_price = coerce_number(delayed["exit_price"])
@@ -647,7 +691,10 @@ def _compute_close_auction_outcome(
     three_day_window = future.head(3)
     max_high = max(coerce_number(value) for value in three_day_window.get("high", pd.Series([next_high])).tolist())
     min_low = min(coerce_number(value) for value in three_day_window.get("low", pd.Series([next_low])).tolist())
-    overnight_return = round((exit_price / entry_price - 1) * 100, 4)
+    realized_exit_return = round((exit_price / entry_price - 1) * 100, 4)
+    overnight_open_return = (
+        round((next_open / entry_price - 1) * 100, 4) if next_open > 0 else 0.0
+    )
     raw_price_verified = price_mode == "raw"
     return {
         "next_trade_date": str(first.get("trade_date")),
@@ -658,7 +705,11 @@ def _compute_close_auction_outcome(
         "next_close": round(next_close, 4),
         "next_open_return": round((next_open / entry_price - 1) * 100, 4) if next_open > 0 else 0.0,
         "next_close_return": round((next_close / next_open - 1) * 100, 4) if next_open > 0 else 0.0,
-        "overnight_return": overnight_return,
+        "overnight_return": (
+            overnight_open_return if post_1430 and strategy_name == "tomorrow_picks"
+            else realized_exit_return if strategy_name == "tomorrow_picks"
+            else 0.0
+        ),
         "intraday_high_return": round((next_high / next_open - 1) * 100, 4) if next_open > 0 else 0.0,
         "hold_3d_return": round((hold_3d_close / entry_price - 1) * 100, 4),
         "hold_5d_return": round((hold_5d_close / entry_price - 1) * 100, 4),
@@ -678,8 +729,8 @@ def _compute_close_auction_outcome(
         "signal_max_drawdown_3d": round((min_low / entry_price - 1) * 100, 4),
         "signal_hit_3pct": max_high / entry_price - 1 >= 0.03,
         "signal_hit_5pct": max_high / entry_price - 1 >= 0.05,
-        "exit_return": overnight_return,
-        "signal_exit_return": overnight_return,
+        "exit_return": realized_exit_return,
+        "signal_exit_return": realized_exit_return,
         "exit_reason": exit_reason,
         "exit_days": int(exit_index) + 1,
         "exit_date": str(exit_row.get("trade_date")),
@@ -689,15 +740,126 @@ def _compute_close_auction_outcome(
         "entry_trade_date": entry_date,
         "earliest_exit_date": earliest_exit_date,
         "exit_trade_date": str(exit_row.get("trade_date")),
-        "delisting_status": "not_applicable",
+        "delisting_status": (
+            "liquidated_last_tradable"
+            if exit_reason == "delisted_last_tradable_liquidation"
+            else "not_applicable"
+        ),
+        "survivorship_corrected": exit_reason == "delisted_last_tradable_liquidation",
+        "correction_reason": (
+            "delisted_last_tradable_liquidation"
+            if exit_reason == "delisted_last_tradable_liquidation"
+            else ""
+        ),
         "promotion_eligible": raw_price_verified,
         "primary_entry_price": round(entry_price, 4),
         "primary_exit_price": round(exit_price, 4),
         "primary_holding_days": int(exit_index) + 1,
         "price_adjustment_mode": price_mode or "unknown",
-        "fill_source": fill_source,
+        "fill_source": "{}_signal_reference".format(fill_source) if post_1430 else fill_source,
         "raw_prices": raw_prices,
         "return_reproducible": raw_price_verified,
+    }
+
+
+def _compute_today_continuation_outcome(
+    provider,
+    signal,
+    security_state: Dict[str, str],
+) -> Dict[str, object]:
+    """Label the 14:30-to-close observation without inventing a trade fill."""
+    code = str(_mapping_get(signal, "code", ""))
+    try:
+        history, price_mode, source = _load_execution_history(provider, code, days=180)
+    except Exception as exc:
+        return _stateful_unresolved_outcome(
+            "unknown",
+            "today_execution_history_fetch_failed",
+            security_state,
+            error=str(exc),
+        )
+    if history is None or history.empty or "trade_date" not in history.columns:
+        return _stateful_unresolved_outcome("unknown", "today_signal_day_bar_missing", security_state)
+    df = rename_known_columns(history.copy()).sort_values("trade_date").reset_index(drop=True)
+    if "price" not in df.columns:
+        return _stateful_unresolved_outcome("unknown", "today_raw_close_missing", security_state)
+    df["prev_close"] = df["price"].shift(1)
+    signal_date = str(_mapping_get(signal, "signal_date", "")).replace("-", "")
+    date_keys = df["trade_date"].astype(str).str.replace("-", "", regex=False)
+    signal_rows = df[date_keys == signal_date]
+    prior_rows = df[date_keys < signal_date]
+    raw_context = pd.concat([prior_rows.tail(1), signal_rows.tail(1)])
+    if signal_rows.empty:
+        status = "unknown" if _signal_is_stale(signal) else "pending"
+        return _stateful_unresolved_outcome(
+            status,
+            "today_signal_day_bar_missing",
+            security_state,
+            raw_prices=_raw_price_rows(raw_context),
+        )
+    reference_price = coerce_number(_mapping_get(signal, "price_at_signal", 0.0))
+    close_row = signal_rows.iloc[-1]
+    close_price = coerce_number(close_row.get("price"))
+    if reference_price <= 0 or close_price <= 0:
+        return _stateful_unresolved_outcome(
+            "unknown",
+            "today_reference_or_close_invalid",
+            security_state,
+            raw_prices=_raw_price_rows(raw_context),
+        )
+    observed_return = round((close_price / reference_price - 1.0) * 100.0, 4)
+    trade_date = str(close_row.get("trade_date") or _mapping_get(signal, "signal_date", ""))
+    raw_verified = price_mode == "raw"
+    return {
+        "next_trade_date": trade_date,
+        "future_days": 0,
+        "next_open": None,
+        "next_high": None,
+        "next_low": None,
+        "next_close": None,
+        "next_open_return": None,
+        "next_close_return": None,
+        "overnight_return": None,
+        "intraday_high_return": None,
+        "hold_3d_return": None,
+        "hold_5d_return": None,
+        "hold_10d_return": None,
+        "hold_20d_return": None,
+        "max_gain_3d": None,
+        "max_drawdown_3d": None,
+        "hit_3pct": None,
+        "hit_5pct": None,
+        "signal_next_close_return": None,
+        "signal_intraday_high_return": None,
+        "signal_hold_3d_return": None,
+        "signal_hold_5d_return": None,
+        "signal_hold_10d_return": None,
+        "signal_hold_20d_return": None,
+        "signal_max_gain_3d": None,
+        "signal_max_drawdown_3d": None,
+        "signal_hit_3pct": None,
+        "signal_hit_5pct": None,
+        "today_continuation_return": observed_return,
+        "exit_return": observed_return,
+        "signal_exit_return": observed_return,
+        "exit_reason": "same_day_close_observation",
+        "exit_days": 0,
+        "exit_date": trade_date,
+        "label_status": "settled",
+        "status_reason": "settled",
+        "position_status": "observation_closed",
+        "entry_trade_date": trade_date,
+        "earliest_exit_date": trade_date,
+        "exit_trade_date": trade_date,
+        "delisting_status": "not_applicable",
+        "promotion_eligible": raw_verified,
+        "primary_entry_price": round(reference_price, 4),
+        "primary_exit_price": round(close_price, 4),
+        "primary_holding_days": 0,
+        "price_adjustment_mode": price_mode or "unknown",
+        "fill_source": "{}_same_day_observation".format(source),
+        "raw_prices": _raw_price_rows(raw_context.drop_duplicates(subset=["trade_date"])),
+        "return_reproducible": raw_verified,
     }
 
 
@@ -727,6 +889,10 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     strategy_name = str(_mapping_get(signal, "strategy_name", ""))
     frozen_policy = policy_from_signal(signal, strategy_name)
     security_state = _provider_security_state(provider, code)
+    if strategy_name == "short_term":
+        return _compute_today_continuation_outcome(provider, signal, security_state)
+    if strategy_name in {"tomorrow_picks", "swing_picks"} and _is_post_1430_entry_policy(frozen_policy):
+        return _compute_close_auction_outcome(provider, signal, frozen_policy, security_state)
     if strategy_name == "tomorrow_picks" and _is_close_auction_entry_policy(frozen_policy):
         return _compute_close_auction_outcome(provider, signal, frozen_policy, security_state)
     try:
@@ -986,3 +1152,4 @@ def _diagnose_pending_outcome(provider, signal) -> str:
     if open_entry <= 0:
         return "invalid_entry_price"
     return "insufficient_future_data"
+

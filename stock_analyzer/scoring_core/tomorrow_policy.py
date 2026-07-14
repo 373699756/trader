@@ -187,7 +187,7 @@ def _tomorrow_primary_eligibility(row: Dict[str, object], gate_min_score: float)
 
 
 def _tomorrow_analysis_window() -> str:
-    raw = str(getattr(config, "VALIDATION_AUTO_SNAPSHOT_TIME", "14:50")).strip() or "14:50"
+    raw = str(getattr(config, "VALIDATION_AUTO_SNAPSHOT_TIME", "14:30")).strip() or "14:30"
     if ":" not in raw:
         return "15:00"
     try:

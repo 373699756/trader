@@ -32,16 +32,16 @@ def _prioritize_deadline_strategy(strategies: List[str]) -> List[str]:
 
 
 def analysis_window(snapshot_time: str) -> str:
-    raw = str(snapshot_time or "14:50").strip() or "14:50"
+    raw = str(snapshot_time or "14:30").strip() or "14:30"
     if ":" not in raw:
-        return "14:50"
+        return "14:30"
     try:
         hour_text, minute_text = raw.split(":", 1)
         hour = max(0, min(23, int(hour_text)))
         minute = max(0, min(59, int(minute_text)))
         return "{:02d}:{:02d}".format(hour, minute)
     except Exception:
-        return "14:50"
+        return "14:30"
 
 
 def set_status(lock, status: Dict[str, object], **values) -> None:
@@ -50,14 +50,14 @@ def set_status(lock, status: Dict[str, object], **values) -> None:
 
 
 def auto_snapshot_time_parts(snapshot_time: str) -> Tuple[int, int]:
-    raw = str(snapshot_time or "14:50").strip()
+    raw = str(snapshot_time or "14:30").strip()
     try:
         hour_text, minute_text = raw.split(":", 1)
         hour = min(23, max(0, int(hour_text)))
         minute = min(59, max(0, int(minute_text)))
         return hour, minute
     except Exception:
-        return 14, 50
+        return 14, 30
 
 
 def time_parts(value: str, fallback: Tuple[int, int]) -> Tuple[int, int]:
@@ -115,36 +115,26 @@ def after_auto_snapshot_time(now: datetime, snapshot_time: str) -> bool:
 def run_validation_tuning_once(
     validation_store,
     cached_metrics: Callable[[str, int], Dict[str, object]],
-    deepseek_review_builder: Callable[[str, Dict[str, object], int], Dict[str, object]],
     strategies: List[str],
     days: int = 20,
-    use_deepseek: bool = True,
 ) -> Dict[str, object]:
     result = {
         "ok": True,
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "days": int(days),
-        "use_deepseek": bool(use_deepseek),
         "runs": [],
     }
     for strategy in strategies:
         try:
             dates = validation_store.list_signal_dates(strategy)
             metrics = cached_metrics(strategy, days)
-            deepseek_review = deepseek_review_builder(strategy, metrics, days) if use_deepseek else {
-                "enabled": False,
-                "status": "skipped",
-            }
-            if use_deepseek:
-                deepseek_review = _attach_deepseek_oos_evaluations(validation_store, strategy, deepseek_review, days)
             plan = build_strategy_tuning_plan(
                 strategy_name=strategy,
                 metrics=metrics,
                 dates=dates,
-                deepseek_review=deepseek_review,
                 days=days,
             )
-            saved = validation_store.save_tuning_run(strategy, days, plan, metrics, deepseek_review)
+            saved = validation_store.save_tuning_run(strategy, days, plan, metrics)
             result["runs"].append(
                 {
                     "ok": True,
@@ -160,48 +150,6 @@ def run_validation_tuning_once(
             result["runs"].append({"ok": False, "strategy": strategy, "error": str(exc)})
     result["finished_at"] = datetime.now().isoformat(timespec="seconds")
     return result
-
-
-def _attach_deepseek_oos_evaluations(
-    validation_store,
-    strategy: str,
-    deepseek_review: Dict[str, object],
-    days: int,
-) -> Dict[str, object]:
-    if not isinstance(deepseek_review, dict) or not deepseek_review.get("rule_candidates"):
-        return deepseek_review
-    try:
-        from .calibrate import calibrate_blend_alpha, evaluate_deepseek_rule
-
-        samples = validation_store.live_weight_samples(strategy, days=max(60, int(days)))
-        top_k = 5 if strategy == "tomorrow_picks" else 10
-        evaluations = []
-        next_rules = []
-        for rule in (deepseek_review.get("rule_candidates") or [])[:4]:
-            if not isinstance(rule, dict):
-                continue
-            evaluation = evaluate_deepseek_rule(strategy, rule, samples, top_k=top_k, dry_run=True)
-            enriched_rule = dict(rule)
-            enriched_rule["oos_evaluation"] = evaluation
-            enriched_rule["can_apply"] = bool(evaluation.get("can_apply"))
-            evaluations.append(evaluation)
-            next_rules.append(enriched_rule)
-        result = dict(deepseek_review)
-        result["rule_candidates"] = next_rules
-        result["rule_evaluations"] = evaluations
-        result["blend_alpha_calibration"] = calibrate_blend_alpha(
-            strategy,
-            samples,
-            top_k=top_k,
-            dry_run=True,
-            write_alpha_zero=bool(getattr(config, "DEEPSEEK_WRITE_ALPHA_ZERO", True)),
-        )
-        return result
-    except Exception as exc:
-        result = dict(deepseek_review)
-        result["oos_error"] = str(exc)
-        return result
-
 
 def run_validation_auto_snapshot_once(
     *,
@@ -244,7 +192,7 @@ def run_validation_auto_snapshot_once(
                 int(getattr(config, "STRATEGY_DECAY_MIN_REAL_DAYS", 60)),
                 int(getattr(config, "STRATEGY_VALIDATION_GATE_WINDOW_DAYS", 120)),
             )
-            tuning_result = run_validation_tuning_once_fn(strategies, days=tuning_days, use_deepseek=True)
+            tuning_result = run_validation_tuning_once_fn(strategies, days=tuning_days)
             result["tuning"] = tuning_result
             set_auto_snapshot_status(
                 last_tuning_date=now.date().isoformat(),
@@ -495,8 +443,8 @@ def start_validation_auto_snapshot_worker(
                 now = datetime.now()
                 if not snapshot_result.get("ok"):
                     cutoff_hour, cutoff_minute = time_parts(
-                        getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55"),
-                        (14, 55),
+                        getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50"),
+                        (14, 35),
                     )
                     cutoff_today = now.replace(
                         hour=cutoff_hour,
@@ -524,3 +472,5 @@ def start_validation_auto_snapshot_worker(
     set_auto_snapshot_status(started=True)
     thread = threading.Thread(target=_worker_loop, name="validation-auto-snapshot", daemon=True)
     thread.start()
+
+

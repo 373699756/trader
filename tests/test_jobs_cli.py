@@ -120,12 +120,11 @@ def test_stats_command_exposes_readiness_and_backup_snapshot(tmp_path):
 
 def test_tune_command_passes_days_and_strategy_filter(tmp_path):
     with patch("stock_analyzer.jobs.run_validation_tuning_once", return_value={"ok": True, "runs": []}) as tuning_call:
-        with patch("stock_analyzer.jobs.deepseek_validation_review", return_value={"ok": True}):
-            code, tune_payload = _run_jobs_cli_patched(
-                ["tune", "--strategy", "tomorrow_picks", "--days", "13", "--no-deepseek"],
-                config_db_path=str(tmp_path / "validation.sqlite3"),
-                config_backup_path=str(tmp_path / "validation.backup.sqlite3"),
-            )
+        code, tune_payload = _run_jobs_cli_patched(
+            ["tune", "--strategy", "tomorrow_picks", "--days", "13"],
+            config_db_path=str(tmp_path / "validation.sqlite3"),
+            config_backup_path=str(tmp_path / "validation.backup.sqlite3"),
+        )
 
     assert code == 0
     assert tune_payload["ok"] is True
@@ -133,7 +132,6 @@ def test_tune_command_passes_days_and_strategy_filter(tmp_path):
     assert tune_payload["tuning"]["ok"] is True
     tuning_call.assert_called_once()
     assert tuning_call.call_args.kwargs["days"] == 13
-    assert tuning_call.call_args.kwargs["use_deepseek"] is False
 
 
 def test_command_failure_records_error_and_failure_metric(tmp_path):
@@ -225,3 +223,4 @@ def test_update_outcomes_command_aggregates_summary_fields_from_each_strategy(tm
     assert payload["metrics"]["elapsed_seconds"] >= 0
     assert payload["metrics"]["lock_wait_seconds"] >= 0
     assert payload["metrics"]["success_count"] >= 1
+

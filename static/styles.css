@@ -2349,99 +2349,6 @@ footer {
   font-size: 16px;
   line-height: 1.2;
 }
-.deepseek-attribution-panel {
-  margin: 0 0 12px;
-}
-.deepseek-attribution-note {
-  color: var(--muted);
-  font-size: 12px;
-}
-.deepseek-attribution-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-.deepseek-market-gate {
-  margin-top: 10px;
-}
-.deepseek-attribution-card,
-.deepseek-market-gate-card {
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-}
-.deepseek-attribution-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.deepseek-attribution-head strong {
-  font-size: 14px;
-}
-.deepseek-attribution-stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.deepseek-attribution-stats div,
-.deepseek-attribution-lines div {
-  min-width: 0;
-}
-.deepseek-attribution-stats span,
-.deepseek-attribution-lines span,
-.deepseek-attribution-foot {
-  color: var(--muted);
-  font-size: 12px;
-}
-.deepseek-attribution-stats strong {
-  display: block;
-  margin-top: 3px;
-  font-size: 15px;
-  font-variant-numeric: tabular-nums;
-}
-.deepseek-attribution-lines {
-  display: grid;
-  gap: 7px;
-}
-.deepseek-attribution-lines div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.deepseek-attribution-lines strong {
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.deepseek-attribution-foot {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 10px;
-}
-.deepseek-attribution-budget {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.45;
-}
-.deepseek-attribution-budget span:last-child {
-  min-width: 0;
-}
-.deepseek-attribution-warning {
-  margin-top: 8px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.45;
-}
 .validation-insight-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(340px, 430px);
@@ -2531,9 +2438,6 @@ footer {
     width: 100%;
   }
   .validation-workbench {
-    grid-template-columns: 1fr;
-  }
-  .deepseek-attribution-grid {
     grid-template-columns: 1fr;
   }
   .validation-batches table {

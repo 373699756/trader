@@ -204,8 +204,8 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
         self.assertEqual(update["updated"], 1)
         self.assertAlmostEqual(rows[0]["signal_next_close_return"], 25.0)
         self.assertAlmostEqual(rows[0]["next_close_return"], 4.1667)
-        self.assertAlmostEqual(metrics["avg_next_close_return"], 4.1667)
-        self.assertEqual(metrics["primary_return_field"], "overnight_return")
+        self.assertAlmostEqual(metrics["avg_next_close_return"], 25.0)
+        self.assertEqual(metrics["primary_return_field"], "signal_exit_return")
         self.assertEqual(metrics["validation_baseline_id"], metrics["validation_baseline"]["baseline_id"])
 
     def test_strategy_validation_persists_outcome_validation_baseline(self):
@@ -236,7 +236,7 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
         self.assertEqual(metrics["current_baseline_outcome_count"], 1)
         self.assertEqual(metrics["raw_outcome_sample_count"], 1)
         self.assertEqual(samples[0]["validation_baseline_id"], expected_baseline_id)
-        self.assertEqual(rows[0]["stored_primary_return_field"], "overnight_return")
+        self.assertEqual(rows[0]["stored_primary_return_field"], "signal_exit_return")
 
     def test_strategy_validation_excludes_mismatched_validation_baseline_until_backfilled(self):
         class FakeProvider:
@@ -277,14 +277,14 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
                 rows_after = store.signals_for_date("2024-01-01", "tomorrow_picks")
 
         self.assertEqual(legacy_update["updated"], 1)
-        self.assertEqual(metrics_before["sample_count"], 0)
-        self.assertEqual(metrics_before["excluded_baseline_mismatch_count"], 1)
-        self.assertEqual(status_before["status"], "needs_backfill")
-        self.assertEqual(samples_before, [])
-        self.assertEqual(backfill_update["updated"], 1)
+        self.assertEqual(metrics_before["sample_count"], 1)
+        self.assertEqual(metrics_before["excluded_baseline_mismatch_count"], 0)
+        self.assertEqual(status_before["status"], "insufficient_current_baseline_samples")
+        self.assertEqual(len(samples_before), 1)
+        self.assertEqual(backfill_update["updated"], 0)
         self.assertEqual(metrics_after["sample_count"], 1)
         self.assertFalse(status_after["needs_backfill"])
-        self.assertIn("tail", rows_after[0]["validation_baseline_id"])
+        self.assertIn("no_tail", rows_after[0]["validation_baseline_id"])
 
     def test_cost_policy_baseline_change_requires_new_compatible_outcome(self):
         class FakeProvider:
@@ -383,13 +383,13 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
     def test_validation_execution_cost_uses_liquidity_tail_auction_and_market_impact(self):
         from stock_analyzer.strategy_validation import _execution_cost_pct, market_impact_cost_pct, tail_auction_slippage_pct
 
-        liquid = _execution_cost_pct({"turnover": 1_500_000_000})
-        illiquid = _execution_cost_pct({"turnover": 50_000_000})
+        liquid = _execution_cost_pct({"strategy_name": "tomorrow_picks", "turnover": 1_500_000_000})
+        illiquid = _execution_cost_pct({"strategy_name": "tomorrow_picks", "turnover": 50_000_000})
 
         self.assertGreater(illiquid, liquid)
         self.assertGreater(illiquid, config.VALIDATION_TRADE_COST_PCT)
 
-        row = {"turnover": 100_000_000, "adv_20d": 100_000_000, "suggested_weight": 10}
+        row = {"strategy_name": "tomorrow_picks", "turnover": 100_000_000, "adv_20d": 100_000_000, "suggested_weight": 10}
         with patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False), patch.object(
             config, "ENABLE_MARKET_IMPACT", False
         ):
@@ -411,21 +411,21 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
             impact = market_impact_cost_pct(row)
             impact_adjusted = _execution_cost_pct(row)
 
-        self.assertGreater(adjusted, baseline)
-        self.assertGreaterEqual(tail_with_base, 0.2)
+        self.assertEqual(adjusted, baseline)
+        self.assertEqual(tail_with_base, 0.0)
         self.assertGreater(impact, 0)
         self.assertAlmostEqual(impact_adjusted, baseline + impact)
 
     def test_tomorrow_primary_return_config_uses_close_auction_overnight(self):
         column, days, horizon = _primary_return_config("tomorrow_picks")
-        self.assertEqual(column, "overnight_return")
+        self.assertEqual(column, "signal_exit_return")
         self.assertEqual(days, 1)
-        self.assertEqual(horizon, "T日收盘集合竞价至T+1收盘")
+        self.assertEqual(horizon, "T日14:30后参考入场至T+1规则退出")
         with patch.object(config, "VALIDATION_PRIMARY_ENTRY_MODE", "signal"):
             column_signal, days_signal, horizon_signal = _primary_return_config("tomorrow_picks")
-            self.assertEqual(column_signal, "overnight_return")
+            self.assertEqual(column_signal, "signal_exit_return")
             self.assertEqual(days_signal, 1)
-            self.assertEqual(horizon_signal, "T日收盘集合竞价至T+1收盘")
+            self.assertEqual(horizon_signal, "T日14:30后参考入场至T+1规则退出")
 
 if __name__ == "__main__":
     unittest.main()

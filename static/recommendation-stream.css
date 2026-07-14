@@ -1,0 +1,21 @@
+#streamStatus {
+  font-variant-numeric: tabular-nums;
+}
+
+#streamStatus[data-state="live"] {
+  color: #18794e;
+}
+
+#streamStatus[data-state="connecting"],
+#streamStatus[data-state="delayed"] {
+  color: #9a6700;
+}
+
+#streamStatus[data-state="stale"] {
+  color: #c62828;
+}
+
+#streamQuoteTime {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

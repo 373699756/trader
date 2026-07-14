@@ -50,14 +50,11 @@ class TodayScorer:
             horizon="short",
             market_regime=market_regime,
         )
-        return self.risk_policy.apply_rule_penalty("short_term", item)
+        return item
 
     def _mark_display_row(self, row: Dict[str, object]) -> None:
-        self.risk_policy.mark_backup_watch(row, label="盘中强势观察", reason="今日策略尚无同日可执行验证，暂不形成买入指令")
-        row["observation_mode"] = "intraday_strength"
-        row["recommendation_class"] = "intraday_observation"
-        row["recommendation_class_label"] = "盘中强势观察"
-        row["profit_window"] = "仅盘中观察"
+        self.risk_policy.mark_backup_watch(row, label="今日延续推荐", reason="目标是信号时点至当日收盘继续上涨；不模拟当日新买后卖出")
+        row.update(observation_mode="remaining_session_continuation", recommendation_class="today_continuation", recommendation_class_label="今日延续推荐", profit_window="信号时点至T日收盘", execution_allowed=False)
 
     def _empty_meta(self, top_n: int, market_filter: str) -> Dict[str, object]:
         return {
@@ -66,7 +63,7 @@ class TodayScorer:
             "top_n": top_n,
             "market_filter": market_filter,
             "strategy_version": config.SHORT_TERM_STRATEGY_VERSION,
-            "strategy_label": "盘中强势观察",
+            "strategy_label": "今日延续推荐",
         }
 
     def _build_meta(
@@ -87,12 +84,16 @@ class TodayScorer:
             "top_n": top_n,
             "market_filter": market_filter,
             "strategy_version": config.SHORT_TERM_STRATEGY_VERSION,
-            "strategy_label": "盘中强势观察",
-            "recommendation_class": "intraday_observation",
-            "recommendation_class_label": "盘中强势观察",
+            "strategy_label": "今日与明日延续推荐",
+            "recommendation_class": "today_next_day_continuation_v2",
+            "recommendation_class_label": "今日上涨且明日延续",
+            "selection_contract_version": "today_next_day_v2",
             "execution_allowed": False,
+            "holding_discipline": "信号时点至T日收盘延续收益，并要求明日策略同步确认；不模拟当日新建仓交易",
+            "profit_window": "信号时点至T日收盘，并验证T+1延续",
+            "deepseek_mode": "precomputed_features_shadow",
             "strategy": {
-                "short_term": "盘中强势观察：涨跌幅、涨速、量比、换手、热度、舆情；同日验证补齐前仓位为0",
+                "short_term": "双门槛推荐：预测信号后继续上涨到收盘，且明日策略同步确认",
             },
         }
 

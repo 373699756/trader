@@ -172,6 +172,8 @@ def _apply_market_impact_capacity_filter(
         for row, weight in zip(selected, weights):
             check_row = dict(row)
             check_row["suggested_weight"] = round(weight * 100.0, 4)
+            if check_row.get("strategy_name") not in {"tomorrow_picks", "swing_picks"}:
+                check_row["strategy_name"] = "tomorrow_picks"
             impact = market_impact_cost_pct(check_row)
             row["impact_pct"] = impact
             row["market_impact_pct"] = impact

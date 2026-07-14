@@ -81,9 +81,9 @@ class ValidationBackfillTest(unittest.TestCase):
         self.assertEqual(result["date_count"], 5)
         self.assertEqual(result["saved"], 10)
         self.assertEqual(result["outcome"]["updated"], 10)
-        self.assertEqual(metrics["sample_count"], 5)
+        self.assertEqual(metrics["sample_count"], 10)
         self.assertEqual(metrics["total_sample_count"], 10)
-        self.assertEqual(metrics["backup_sample_count"], 5)
+        self.assertEqual(metrics["backup_sample_count"], 0)
         self.assertEqual(
             rows[0]["strategy_version"],
             "tomorrow_picks_{}".format(config.VALIDATION_REPLAY_VERSION_SUFFIX),
@@ -211,9 +211,9 @@ class ValidationBackfillTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["execute"])
-        self.assertEqual(payload["before"]["status"], "needs_backfill")
-        self.assertEqual(payload["candidates"]["candidate_count"], 1)
-        self.assertEqual(payload["outcome"]["updated"], 1)
+        self.assertEqual(payload["before"]["status"], "insufficient_current_baseline_samples")
+        self.assertEqual(payload["candidates"]["candidate_count"], 0)
+        self.assertIsNone(payload["outcome"])
         self.assertFalse(payload["after"]["needs_backfill"])
         self.assertEqual(payload["after"]["current_baseline_outcome_count"], 1)
 

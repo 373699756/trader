@@ -104,11 +104,12 @@ def app_patch_context(tmp_path: Path, **overrides):
 
 
 def score_tech_potential_candidates(candidates: pd.DataFrame, top_n: int = 10):
-    from stock_analyzer import scoring
+    from stock_analyzer.scoring_core.explanations import _attach_signal_explanation
+    from stock_analyzer.scoring_core.theme_scores import _tech_theme_score
 
     rows = []
     for _, row in candidates.iterrows():
-        theme, theme_score = scoring._tech_theme_score(row)
+        theme, theme_score = _tech_theme_score(row)
         if not theme:
             continue
         heat_penalty = max(0.0, float(row.get("sixty_day_pct", 0) or 0) - 45.0) * 0.5
@@ -122,7 +123,7 @@ def score_tech_potential_candidates(candidates: pd.DataFrame, top_n: int = 10):
                 "horizon": "tech_potential",
             }
         )
-        scoring._attach_signal_explanation(item, row, "tech_potential", "科技潜力", "科技潜力")
+        _attach_signal_explanation(item, row, "tech_potential", "科技潜力", "科技潜力")
         rows.append(item)
     rows.sort(key=lambda item: item.get("score", 0), reverse=True)
     for index, row in enumerate(rows[:top_n], start=1):

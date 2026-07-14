@@ -22,7 +22,7 @@ LEGACY_STRATEGY_NAMES = {
 }
 
 STRATEGY_LABELS = {
-    TODAY_PICKS: "盘中强势观察",
+    TODAY_PICKS: "今日延续推荐",
     TOMORROW_PICKS: "明日优先",
     SWING_2_5D_PICKS: "2-5日持有",
 }

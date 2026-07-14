@@ -11,7 +11,7 @@ from .scoring_core.weights import WEIGHTS
 SUPPORTED_TUNING_STRATEGIES = ("short_term", "tomorrow_picks", "swing_picks")
 
 _STRATEGY_LABELS = {
-    "short_term": "盘中强势观察",
+    "short_term": "今日延续推荐",
     "tomorrow_picks": "明日优先",
     "swing_picks": "2-5日持有",
 }
@@ -21,7 +21,6 @@ def build_strategy_tuning_plan(
     strategy_name: str,
     metrics: Dict[str, object],
     dates: List[Dict[str, object]],
-    deepseek_review: Dict[str, object] | None = None,
     days: int = 20,
 ) -> Dict[str, object]:
     if strategy_name not in SUPPORTED_TUNING_STRATEGIES:
@@ -114,27 +113,20 @@ def build_strategy_tuning_plan(
         issues.append("最新批次为空，说明当前门槛下没有合格标的；空推荐本身可以保留。")
 
     suggestions.extend(_strategy_suggestions(strategy_name, win_rate, avg_return, latest_count))
-    suggestions.extend(_deepseek_rule_suggestions(deepseek_review or {}))
 
     gate_passed = all(item["passed"] for item in gates)
-    deepseek_upgrade = _deepseek_applicable_upgrade(deepseek_review or {})
     can_apply = False
     shadow_mode = True
     status = "shadow_only"
-    reason = "建议先进入影子验证，不直接改正式策略。"
+    reason = "调参建议只进入影子验证；正式晋级必须走冻结版本的Meta/OOS门控。"
     if not gate_passed:
         status = "blocked"
         reason = "未通过自动应用门控，只保存为调参建议。"
-    elif deepseek_upgrade:
-        can_apply = True
-        shadow_mode = False
-        status = "ready_for_confirmation"
-        reason = "DeepSeek 候选已通过 OOS 门槛，可进入人工确认采纳。"
     if strategy_name == "short_term":
         can_apply = False
         shadow_mode = True
         status = "observation_only"
-        reason = "盘中强势策略没有同日可执行验证，仅允许观察和影子分析。"
+        reason = "今天策略按信号至收盘收益验证，但不模拟当日新建仓，参数变更仅进入影子分析。"
 
     return {
         "ok": True,
@@ -166,7 +158,6 @@ def build_strategy_tuning_plan(
             "latest_signal_count": latest_count,
         },
         "current_weights": current_weights,
-        "deepseek": _compact_deepseek(deepseek_review or {}),
     }
 
 
@@ -186,12 +177,12 @@ def _strategy_suggestions(strategy_name: str, win_rate, avg_return, latest_count
     if strategy_name == "short_term":
         if weak:
             return [
-                _suggest("reversal_tilt", "+0.10", "盘中强势若验证偏弱，影子增加短线反转修正。"),
-                _suggest("overheat_penalty", "+10%", "降低高涨幅、高换手、高量比样本权重。"),
+                _suggest("continuation_quality", "+0.10", "今日延续若验证偏弱，影子加强趋势、承接和收盘位置质量。"),
+                _suggest("overheat_penalty", "+10%", "降低高涨幅、高换手、高量比样本权重，减少尾盘回落风险。"),
             ]
         if empty:
-            return [_suggest("shadow_min_score", "-1", "仅影子分析轻微放宽盘中观察门槛。")]
-        return [_suggest("keep", "no_change", "当前先保持参数，继续观察。")]
+            return [_suggest("shadow_min_score", "-1", "仅影子分析轻微放宽今日延续门槛。")]
+        return [_suggest("keep", "no_change", "当前先保持参数，继续积累信号至收盘的真实样本。")]
     if strategy_name == "swing_picks":
         if weak:
             return [
@@ -201,49 +192,6 @@ def _strategy_suggestions(strategy_name: str, win_rate, avg_return, latest_count
             ]
         return [_suggest("keep", "no_change", "当前先保持参数，等待5日样本成熟。")]
     return []
-
-
-def _deepseek_rule_suggestions(review: Dict[str, object]) -> List[Dict[str, object]]:
-    if not review or review.get("enabled") is False:
-        return []
-    rules = review.get("rule_candidates") or []
-    result = []
-    for rule in rules[:4]:
-        if not isinstance(rule, dict):
-            continue
-        field = str(rule.get("field") or "").strip()
-        if not field:
-            continue
-        result.append(
-            _suggest(
-                "deepseek_rule",
-                {
-                    "field": field,
-                    "operator": rule.get("operator"),
-                    "threshold": rule.get("threshold"),
-                    "penalty": rule.get("penalty"),
-                    "can_apply": bool(rule.get("can_apply")),
-                    "oos_improvement": (rule.get("oos_evaluation") or {}).get("oos_improvement"),
-                    "positive_folds": (rule.get("oos_evaluation") or {}).get("positive_folds"),
-                    "fold_count": (rule.get("oos_evaluation") or {}).get("fold_count"),
-                },
-                str(rule.get("reason") or "DeepSeek 建议进入影子规则验证。"),
-                source="deepseek",
-            )
-        )
-    return result
-
-
-def _deepseek_applicable_upgrade(review: Dict[str, object]) -> bool:
-    if not isinstance(review, dict):
-        return False
-    for rule in review.get("rule_candidates") or []:
-        if isinstance(rule, dict) and rule.get("can_apply"):
-            return True
-    alpha = review.get("blend_alpha_calibration")
-    if isinstance(alpha, dict) and alpha.get("can_apply"):
-        return True
-    return False
 
 
 def _suggest(parameter: str, value, reason: str, source: str = "local") -> Dict[str, object]:
@@ -270,15 +218,3 @@ def _unique(values: List[str]) -> List[str]:
     return result
 
 
-def _compact_deepseek(review: Dict[str, object]) -> Dict[str, object]:
-    if not review:
-        return {"enabled": False, "status": "not_requested"}
-    return {
-        "enabled": bool(review.get("enabled")),
-        "status": review.get("status", ""),
-        "source": review.get("source", ""),
-        "decision": review.get("decision", ""),
-        "summary": review.get("summary", ""),
-        "avoid_conditions": review.get("avoid_conditions") or [],
-        "rule_candidates": review.get("rule_candidates") or [],
-    }

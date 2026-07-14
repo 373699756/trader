@@ -5,10 +5,7 @@ import pandas as pd
 
 from . import config
 from .app_runtime_support import (
-    apply_deepseek_rerank,
-    apply_deepseek_rerank_batch,
     finalize_deepseek_meta,
-    merge_deepseek_shadow_rows,
     risk_blacklist_summary,
     skipped_deepseek_meta,
 )
@@ -21,6 +18,7 @@ from .app_support import (
     validation_gate_window_days,
 )
 from .calibrate import evaluate_expected_return_ranker
+from .deepseek.runtime_features import attach_persisted_deepseek_features
 from .expected_return_model import (
     build_expected_return_artifact,
     expected_return_artifact_promotion_gate,
@@ -72,7 +70,8 @@ def scored_strategy_rows(
         raise ValueError(f"Unsupported strategy for scored rows: {strategy_name}")
     meta["expected_return_ranking"] = expected_context["meta"]
     if apply_deepseek:
-        rows, deepseek_meta = apply_deepseek_rerank(strategy_name, rows, market)
+        rows = attach_persisted_deepseek_features(rows, strategy_name, validation_store)
+        deepseek_meta = _persisted_feature_meta(strategy_name, rows)
     else:
         deepseek_meta = skipped_deepseek_meta(strategy_name)
     finalize_deepseek_meta(meta, rows, deepseek_meta)
@@ -85,25 +84,55 @@ def apply_deepseek_to_reviewable_rows(
     rows: List[Dict[str, object]],
     market: str,
     meta: Dict[str, object] = None,
+    validation_store=None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     source_rows = list(rows or [])
-    review_rows = _deepseek_review_rows(source_rows)
     if not source_rows:
         deepseek_meta = {"enabled": False, "status": "empty", "strategy": strategy_name}
         result_rows = source_rows
-    elif not review_rows:
-        deepseek_meta = skipped_deepseek_meta(
-            strategy_name,
-            status="skipped_no_executable_rows",
-            reason="Validation gate left no executable rows; DeepSeek rerank was skipped.",
-        )
-        result_rows = source_rows
     else:
-        reviewed_rows, deepseek_meta = apply_deepseek_rerank(strategy_name, review_rows, market)
-        result_rows = merge_deepseek_shadow_rows(source_rows, reviewed_rows)
+        result_rows = attach_persisted_deepseek_features(
+            source_rows,
+            strategy_name,
+            validation_store,
+        )
+        deepseek_meta = _persisted_feature_meta(strategy_name, result_rows)
     if meta is not None:
         finalize_deepseek_meta(meta, result_rows, deepseek_meta)
     return result_rows, deepseek_meta
+
+
+def _persisted_feature_meta(
+    strategy_name: str,
+    rows: List[Dict[str, object]],
+) -> Dict[str, object]:
+    covered = sum(
+        1
+        for row in rows or []
+        if str(row.get("deepseek_feature_status") or "") in {"precomputed", "abstain"}
+    )
+    feature_enabled = bool(getattr(config, "ENABLE_DEEPSEEK_FEATURES", True))
+    return {
+        "enabled": feature_enabled,
+        "status": (
+            "precomputed_features"
+            if covered
+            else "local_only_no_precomputed_features"
+            if feature_enabled
+            else "precomputed_features_disabled"
+        ),
+        "strategy": strategy_name,
+        "source": "validation_db_point_in_time_cache",
+        "requested": len(rows or []),
+        "reviewed": covered,
+        "coverage_pct": round(covered * 100.0 / max(1, len(rows or [])), 2),
+        "production_applied": False,
+        "reason": (
+            "推荐链只读取14:48前完成的结构化特征，不同步调用模型；14:50冻结最终结果。"
+            if feature_enabled
+            else "DeepSeek结构化特征读取已关闭，保持本地基线。"
+        ),
+    }
 
 
 def expected_return_ranking_context(
@@ -223,6 +252,7 @@ def prediction_strategy_rows(
     short_term_rows_override: List[Dict[str, object]] = None,
     short_term_meta_override: Dict[str, object] = None,
     cached_metrics_fn=None,
+    validation_store=None,
 ) -> Tuple[Dict[str, List[Dict[str, object]]], Dict[str, Dict[str, object]]]:
     today_rows, today_meta = score_today_picks(
         candidates,
@@ -241,7 +271,12 @@ def prediction_strategy_rows(
             reason="Short-term rows came from the recommendation snapshot override.",
         )
     else:
-        short_rows, short_deepseek_meta = apply_deepseek_to_reviewable_rows("short_term", short_rows, "all")
+        short_rows, short_deepseek_meta = apply_deepseek_to_reviewable_rows(
+            "short_term",
+            short_rows,
+            "all",
+            validation_store=validation_store,
+        )
 
     tomorrow_rows, tomorrow_meta, _ = scored_strategy_rows(
         "tomorrow_picks",
@@ -250,6 +285,7 @@ def prediction_strategy_rows(
         market="all",
         market_regime=market_regime,
         apply_deepseek=False,
+        validation_store=validation_store,
     )
     if callable(cached_metrics_fn):
         try:
@@ -267,7 +303,13 @@ def prediction_strategy_rows(
                 "reason": reason,
             }
             demote_tomorrow_rows_to_backup(tomorrow_rows, tomorrow_meta, reason)
-    tomorrow_rows, _ = apply_deepseek_to_reviewable_rows("tomorrow_picks", tomorrow_rows, "all", tomorrow_meta)
+    tomorrow_rows, _ = apply_deepseek_to_reviewable_rows(
+        "tomorrow_picks",
+        tomorrow_rows,
+        "all",
+        tomorrow_meta,
+        validation_store=validation_store,
+    )
     swing_rows, swing_meta, _ = scored_strategy_rows(
         "swing_picks",
         candidates,
@@ -275,10 +317,17 @@ def prediction_strategy_rows(
         market="all",
         market_regime=market_regime,
         apply_deepseek=False,
+        validation_store=validation_store,
     )
     if callable(cached_metrics_fn):
         _apply_validation_gate_safe("swing_picks", swing_rows, swing_meta, cached_metrics_fn)
-    swing_rows, _ = apply_deepseek_to_reviewable_rows("swing_picks", swing_rows, "all", swing_meta)
+    swing_rows, _ = apply_deepseek_to_reviewable_rows(
+        "swing_picks",
+        swing_rows,
+        "all",
+        swing_meta,
+        validation_store=validation_store,
+    )
     rows_by_strategy = {
         "short_term": short_rows,
         "tomorrow_picks": tomorrow_rows,
@@ -384,13 +433,6 @@ class RecommendationService:
         finalize_deepseek_meta(tomorrow_meta, tomorrow_rows, tomorrow_deepseek_meta)
         finalize_deepseek_meta(swing_meta, swing_rows, swing_deepseek_meta)
 
-        market_gate = _review_market_gate(candidates, market_regime, apply_deepseek=apply_deepseek)
-        if market_gate.get("enabled") and market_gate.get("status") in {"ok", "fallback"}:
-            gated_rows, gate_counts = _apply_market_gate(recommendations_by_horizon, market_gate)
-            if not bool(getattr(config, "DEEPSEEK_SHADOW_ONLY", False)):
-                recommendations_by_horizon = gated_rows
-            market_gate["counts"] = gate_counts
-            short_meta["deepseek_market_gate"] = market_gate
         strategy_metas = {
             "short_term": short_meta,
             "tomorrow_picks": tomorrow_meta,
@@ -467,70 +509,27 @@ class RecommendationService:
     ) -> Dict[str, Dict[str, object]]:
         if not apply_deepseek:
             return {
-                "short_term": skipped_deepseek_meta("short_term"),
-                "tomorrow_picks": skipped_deepseek_meta("tomorrow_picks"),
-                "swing_picks": skipped_deepseek_meta("swing_picks"),
+                strategy: skipped_deepseek_meta(
+                    strategy,
+                    status="precomputed_features_disabled",
+                    reason="Persisted DeepSeek feature attachment was disabled for this request.",
+                )
+                for strategy in recommendations_by_horizon
             }
-        review_input = {}
         meta = {}
         for strategy, rows in recommendations_by_horizon.items():
             source_rows = list(rows or [])
-            review_rows = _deepseek_review_rows(source_rows)
             if not source_rows:
                 meta[strategy] = {"enabled": False, "status": "empty", "strategy": strategy}
-            elif not review_rows:
-                meta[strategy] = skipped_deepseek_meta(
-                    strategy,
-                    status="skipped_no_executable_rows",
-                    reason="Validation gate left no executable rows; DeepSeek rerank was skipped.",
-                )
             else:
-                review_input[strategy] = review_rows
-        if not review_input:
-            return meta
-        reranked, batch_meta = apply_deepseek_rerank_batch(review_input, market)
-        if bool(getattr(config, "DEEPSEEK_SHADOW_ONLY", False)):
-            for strategy in review_input:
-                strategy_meta = batch_meta.setdefault(strategy, {})
-                strategy_meta.setdefault("mode", "shadow_only")
-                strategy_meta.setdefault("production_applied", False)
-        for strategy, rows in reranked.items():
-            recommendations_by_horizon[strategy] = merge_deepseek_shadow_rows(
-                recommendations_by_horizon.get(strategy, []),
-                rows,
-            )
-        meta.update(batch_meta)
+                attached = attach_persisted_deepseek_features(
+                    source_rows,
+                    strategy,
+                    self.validation_store,
+                )
+                recommendations_by_horizon[strategy] = attached
+                meta[strategy] = _persisted_feature_meta(strategy, attached)
         return meta
-
-    def _deepseek_review_rows(self, rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
-        return _deepseek_review_rows(rows)
-
-
-def _deepseek_review_rows(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
-    return [
-        row for row in rows or []
-        if _is_deepseek_reviewable_row(row)
-    ]
-
-
-def _is_deepseek_reviewable_row(row: Dict[str, object]) -> bool:
-    if not isinstance(row, dict):
-        return False
-    if row.get("execution_allowed") is False:
-        return False
-    if str(row.get("tier") or "").strip().lower() == "backup_pool":
-        return False
-    if str(row.get("observation_mode") or "").strip().lower() == "intraday_provisional":
-        return False
-    trade_action = row.get("trade_action") if isinstance(row.get("trade_action"), dict) else {}
-    if trade_action:
-        action = str(trade_action.get("action") or "").strip().lower()
-        if action == "watch_only":
-            return False
-        if "position_size" in trade_action and coerce_number(trade_action.get("position_size"), 0.0) <= 0:
-            return False
-    return True
-
 
 def _apply_validation_gate_safe(
     strategy_name: str,
@@ -557,101 +556,6 @@ def _apply_validation_gate_safe(
             demote_strategy_rows_to_backup(strategy_name, rows, meta, reason)
         return meta["validation_gate"]
 
-
-def _review_market_gate(candidates: pd.DataFrame, market_regime: Dict[str, object], apply_deepseek: bool) -> Dict[str, object]:
-    if not apply_deepseek or not getattr(config, "ENABLE_DEEPSEEK_MARKET_GATE", False):
-        return {"enabled": False, "status": "disabled"}
-    context = _market_gate_context(candidates, market_regime)
-    try:
-        from .deepseek_client import review_market_regime
-
-        result = review_market_regime(context)
-        result["context"] = context
-        if bool(getattr(config, "DEEPSEEK_SHADOW_ONLY", False)):
-            result["mode"] = "shadow_only"
-            result["production_applied"] = False
-        return result
-    except Exception as exc:
-        return {"enabled": True, "status": "fallback", "error": str(exc), "context": context}
-
-
-def _market_gate_context(candidates: pd.DataFrame, market_regime: Dict[str, object]) -> Dict[str, object]:
-    if isinstance(market_regime, dict) and int(market_regime.get("breadth_sample_count") or 0) > 0:
-        total = int(market_regime.get("breadth_sample_count") or 0)
-        up_count = int(market_regime.get("up_count") or 0)
-        down_count = int(market_regime.get("down_count") or 0)
-        return {
-            "market_regime": market_regime or {},
-            "sample_count": total,
-            "breadth_source": "full_market_snapshot",
-            "up_count": up_count,
-            "down_count": down_count,
-            "up_ratio_pct": round(up_count / max(total, 1) * 100.0, 2),
-            "down_ratio_pct": round(down_count / max(total, 1) * 100.0, 2),
-            "limit_up_count": int(market_regime.get("limit_up_count") or 0),
-            "limit_down_count": int(market_regime.get("limit_down_count") or 0),
-            "avg_pct_chg": market_regime.get("avg_pct_chg", market_regime.get("median_pct_chg", 0.0)),
-            "median_pct_chg": market_regime.get("median_pct_chg", 0.0),
-            "turnover_total": None,
-        }
-    if candidates is None or candidates.empty:
-        return {"market_regime": market_regime or {}, "sample_count": 0}
-    pct_source = candidates["pct_chg"] if "pct_chg" in candidates else pd.Series([0.0] * len(candidates))
-    turnover_source = candidates["turnover"] if "turnover" in candidates else pd.Series([0.0] * len(candidates))
-    pct = pd.to_numeric(pct_source, errors="coerce").fillna(0.0)
-    turnover = pd.to_numeric(turnover_source, errors="coerce").fillna(0.0)
-    total = int(len(candidates))
-    up_count = int((pct > 0).sum())
-    down_count = int((pct < 0).sum())
-    limit_up_count = int((pct >= 9.5).sum())
-    limit_down_count = int((pct <= -9.5).sum())
-    return {
-        "market_regime": market_regime or {},
-        "sample_count": total,
-        "breadth_source": "candidate_pool",
-        "up_count": up_count,
-        "down_count": down_count,
-        "up_ratio_pct": round(up_count / max(total, 1) * 100.0, 2),
-        "down_ratio_pct": round(down_count / max(total, 1) * 100.0, 2),
-        "limit_up_count": limit_up_count,
-        "limit_down_count": limit_down_count,
-        "avg_pct_chg": round(float(pct.mean()), 4),
-        "median_pct_chg": round(float(pct.median()), 4),
-        "turnover_total": round(float(turnover.sum()), 2),
-    }
-
-
-def _apply_market_gate(
-    recommendations_by_horizon: Dict[str, List[Dict[str, object]]],
-    market_gate: Dict[str, object],
-) -> Tuple[Dict[str, List[Dict[str, object]]], Dict[str, Dict[str, int]]]:
-    factor = max(0.0, min(1.0, float(market_gate.get("size_factor") or 1.0)))
-    regime = str(market_gate.get("regime") or "balanced")
-    if factor >= 0.999 and regime != "risk_off":
-        return recommendations_by_horizon, {
-            strategy: {"before": len(rows or []), "after": len(rows or [])}
-            for strategy, rows in recommendations_by_horizon.items()
-        }
-    gated: Dict[str, List[Dict[str, object]]] = {}
-    counts: Dict[str, Dict[str, int]] = {}
-    risk_off_min_score = coerce_market_gate_tomorrow_min_score() if regime == "risk_off" else None
-    for strategy, rows in recommendations_by_horizon.items():
-        source_rows = list(rows or [])
-        filtered_rows = source_rows
-        if strategy == "tomorrow_picks" and risk_off_min_score is not None:
-            threshold_rows = [row for row in source_rows if float(row.get("score") or 0.0) >= risk_off_min_score]
-            if threshold_rows:
-                filtered_rows = threshold_rows
-        keep = max(1, int(math.ceil(len(filtered_rows) * factor))) if filtered_rows else 0
-        gated[strategy] = filtered_rows[:keep]
-        counts[strategy] = {"before": len(source_rows), "after": len(gated[strategy])}
-    return gated, counts
-
-
-def coerce_market_gate_tomorrow_min_score() -> float:
-    base = float(getattr(config, "TOMORROW_PRIMARY_MIN_SCORE", 68.0))
-    bonus = float(getattr(config, "DEEPSEEK_MARKET_GATE_RISK_OFF_SCORE_BONUS", 5.0))
-    return base + bonus
 
 
 def finalize_recommendation_payload_meta(

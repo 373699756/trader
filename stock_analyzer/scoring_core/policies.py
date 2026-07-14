@@ -4,15 +4,11 @@ from typing import Dict, Iterable, List, Tuple
 
 import pandas as pd
 
-from ..deepseek_rules import apply_rule_penalty
 from . import expected_return, explanations, risk, scoring_math, theme_limits, tomorrow_policy
 
 
 class RiskPolicy:
     """Risk gates and penalties shared by concrete strategy scorers."""
-
-    def apply_rule_penalty(self, strategy_name: str, item: Dict[str, object]) -> Dict[str, object]:
-        return apply_rule_penalty(strategy_name, item)
 
     def sum_penalty(self, parts: Dict[str, float]) -> float:
         return risk._sum_penalty(parts)

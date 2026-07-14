@@ -49,9 +49,6 @@ class TomorrowScorer:
             market_regime=market_regime,
             intraday_relaxed=intraday_relaxed,
         )
-        rule_override = self.scoring_context.get("apply_rule_penalty")
-        if callable(rule_override):
-            item = rule_override("tomorrow_picks", item)
         return item
 
     def _select_display_rows(
@@ -97,9 +94,6 @@ class TomorrowScorer:
                 market_regime=market_regime,
                 provisional=intraday_relaxed,
             )
-            rule_override = self.scoring_context.get("apply_rule_penalty")
-            if callable(rule_override):
-                backup_rows = [rule_override("tomorrow_picks", row) for row in backup_rows]
             backup_candidates = [row for row in backup_rows if row["score"] >= backup_min_score]
             backup_candidate_count = len(backup_candidates)
             display_rows = self.ranking_policy.limit_tomorrow_display_concentration(backup_candidates, display_limit)
@@ -271,15 +265,12 @@ class TomorrowScorer:
             "strategy_label": "明日优先",
             "prediction_type": "rank_score",
             "score_note": "综合分是量价/趋势/风险排序分，不等于上涨概率，也不代表保证收益。",
-            "holding_discipline": "T日14:50形成推荐，14:55前冻结发布；系统不下单，验证假设14:55-15:00集合竞价入场、T+1收盘退出",
-            "profit_window": "隔夜至T+1收盘",
-            "recommendation_class": "close_auction_overnight",
-            "recommendation_class_label": "尾盘隔夜",
-            "challenger_strategy_version": str(
-                getattr(config, "TOMORROW_CHALLENGER_STRATEGY_VERSION", "")
-            ),
-            "challenger_mode": str(getattr(config, "TOMORROW_CHALLENGER_MODE", "shadow_only")),
-            "strategy": "{} 尾盘隔夜推荐：T日14:50形成并在14:55前冻结发布；系统不实际购买，模拟验证按收盘集合竞价成交近似，主收益为T日收盘至T+1收盘".format(
+            "holding_discipline": "T日14:30形成推荐，14:50冻结；验证使用14:30后信号参考价并按T+1规则退出",
+            "profit_window": "T日14:30后至T+1规则退出",
+            "recommendation_class": "post_1430_next_day",
+            "recommendation_class_label": "明日收益",
+            "deepseek_mode": "precomputed_features_shadow",
+            "strategy": "{} 明日策略：T日14:30形成并在14:50冻结推荐；系统只推荐不下单".format(
                 analysis_window,
             ),
             "policy": self._ctx("_tomorrow_policy", tomorrow_policy._tomorrow_policy)(),

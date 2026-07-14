@@ -1,12 +1,11 @@
-import copy
 from datetime import datetime
-import threading
 from typing import Dict, Iterable, List
 from uuid import uuid4
 
 from . import config
-from .app_runtime_support import apply_deepseek_rerank, finalize_deepseek_meta
+from .app_runtime_support import finalize_deepseek_meta
 from .daily_data import load_history_frames
+from .deepseek.runtime_features import attach_persisted_deepseek_features
 from .event_risk import attach_event_risk, load_event_risk
 from .execution_policy import build_execution_policy
 from .factors import build_alphalite_factors, merge_alphalite
@@ -20,14 +19,11 @@ from .point_in_time import (
 from .production_baseline import attach_generation_provenance
 from .scoring_core.candidate_filters import prepare_candidates
 from .scoring_core.market_regime import build_market_regime
-from .scoring_core.tomorrow_score import attach_tomorrow_challenger_scores
 from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks, storage_strategy_name
 from .validation_repository import SignalFreezeDeadlineExceeded
 
 
 SNAPSHOT_STRATEGIES = tuple(config.SNAPSHOT_STRATEGIES)
-_SHADOW_ANALYSIS_JOBS = set()
-_SHADOW_ANALYSIS_LOCK = threading.Lock()
 
 
 def run_snapshot(
@@ -57,44 +53,50 @@ def run_snapshot(
     market_regime = dict(context["market_regime"])
     common_signal_time = str(context.get("signal_time") or snapshot_cutoff)
     context["signal_time"] = common_signal_time
-    if strategy == "tomorrow_picks" and _signal_at_or_after_tomorrow_cutoff(common_signal_time):
-        return _tomorrow_freeze_rejection(
+    if _signal_at_or_after_freeze_cutoff(common_signal_time):
+        return _freeze_rejection(
             strategy,
             {"generated_at": common_signal_time, "snapshot_id": snapshot_id},
         )
     rows, meta, version = _score_snapshot_strategy(provider, candidates, quotes, strategy, market, market_regime)
+    _attach_frozen_regime(rows, market_regime)
     meta["generated_at"] = common_signal_time
     meta["snapshot_id"] = snapshot_id
     scored_candidate_rows = meta.pop("_candidate_pool_rows", None)
-    shadow_source_rows = []
-    if strategy == "tomorrow_picks":
-        shadow_source_rows = copy.deepcopy(rows)
-        rows = _production_v10_rows(rows)
-        deepseek_meta = {
-            "enabled": bool(getattr(config, "ENABLE_DEEPSEEK_RUNTIME", False)),
-            "status": "deferred_until_recommendation_frozen",
-            "mode": "shadow_only",
-            "production_applied": False,
-            "strategy": strategy,
-        }
-    else:
-        rows, deepseek_meta = _apply_snapshot_deepseek_rerank(rows, strategy, market)
+    _attach_frozen_regime(scored_candidate_rows, market_regime)
+    rows = attach_persisted_deepseek_features(
+        rows,
+        strategy,
+        validation_store,
+        signal_time=common_signal_time,
+    )
+    feature_count = sum(
+        1
+        for row in rows
+        if str(row.get("deepseek_feature_status") or "") in {"precomputed", "abstain"}
+    )
+    feature_enabled = bool(getattr(config, "ENABLE_DEEPSEEK_FEATURES", True))
+    deepseek_meta = {
+        "enabled": feature_enabled,
+        "status": (
+            "precomputed_features"
+            if feature_count
+            else "local_only_no_precomputed_features"
+            if feature_enabled
+            else "precomputed_features_disabled"
+        ),
+        "strategy": strategy,
+        "source": "validation_db_point_in_time_cache",
+        "requested": len(rows),
+        "reviewed": feature_count,
+        "production_applied": False,
+        "reason": (
+            "快照只读取14:30前完成的DeepSeek结构化特征。"
+            if feature_enabled
+            else "DeepSeek结构化特征读取已关闭，保持本地基线。"
+        ),
+    }
     finalize_deepseek_meta(meta, rows, deepseek_meta)
-    if strategy != "tomorrow_picks" and _after_close_anchor_time(meta["generated_at"]):
-        rows, close_anchor = _apply_close_anchor_prices(provider, rows, meta["generated_at"], quotes)
-        meta["close_anchor"] = {
-            "enabled": True,
-            **close_anchor,
-            "time": getattr(config, "VALIDATION_CLOSE_ANCHOR_TIME", "15:00"),
-        }
-        if close_anchor["count"] < close_anchor["total"]:
-            return {
-                "ok": False,
-                "strategy": strategy,
-                "error": "15:00后收盘锚点不完整，拒绝保存为回溯锚点。",
-                "saved": {"saved": 0, "replaced": 0},
-                "meta": meta,
-            }
     provider_health = _provider_health(provider)
     provenance = attach_generation_provenance(meta, strategy, rows, candidates)
     candidate_rows = build_candidate_snapshot_rows(
@@ -126,24 +128,17 @@ def run_snapshot(
         "events": event_payload.get("point_in_time") or {},
     }
     meta["execution_policy_version"] = execution_policy["policy_version"]
-    freeze_deadline = ""
-    if strategy == "tomorrow_picks":
-        freeze_ready_at = datetime.now().isoformat(timespec="seconds")
-        meta["freeze_ready_at"] = freeze_ready_at
-        if _signal_at_or_after_tomorrow_cutoff(freeze_ready_at):
-            return _tomorrow_freeze_rejection(strategy, meta)
-        freeze_deadline = _tomorrow_freeze_deadline(common_signal_time)
+    freeze_ready_at = datetime.now().isoformat(timespec="seconds")
+    meta["freeze_ready_at"] = freeze_ready_at
+    if _signal_at_or_after_freeze_cutoff(freeze_ready_at):
+        return _freeze_rejection(strategy, meta)
+    freeze_deadline = _freeze_deadline(common_signal_time)
     try:
         saved = validation_store.save_signals(
             strategy,
             version,
             meta["generated_at"],
             rows,
-            deepseek_shadow_rows=(
-                []
-                if str(deepseek_meta.get("mode") or "") == "shadow_only"
-                else deepseek_meta.get("filtered_rows") or []
-            ),
             candidate_rows=candidate_rows,
             batch_metadata={
                 "data_source_timestamp": data_source_timestamp,
@@ -156,21 +151,11 @@ def run_snapshot(
         )
     except SignalFreezeDeadlineExceeded as exc:
         meta["freeze_completed_at"] = exc.observed_at
-        return _tomorrow_freeze_rejection(strategy, meta)
+        return _freeze_rejection(strategy, meta)
     meta["freeze_completed_at"] = str(
         saved.get("freeze_transaction_checked_at") or datetime.now().isoformat(timespec="seconds")
     )
-    if strategy == "tomorrow_picks":
-        meta["recommendation_frozen_at"] = meta["freeze_completed_at"]
-        meta["shadow_analysis"] = _schedule_shadow_analysis(
-            validation_store,
-            strategy,
-            version,
-            meta["generated_at"],
-            shadow_source_rows,
-            market,
-            snapshot_id,
-        )
+    meta["recommendation_frozen_at"] = meta["freeze_completed_at"]
     return {"ok": True, "strategy": strategy, "saved": saved, "meta": meta}
 
 
@@ -180,6 +165,88 @@ def run_snapshots(provider, validation_store, strategies: Iterable[str], market:
         run_snapshot(provider, validation_store, strategy, market=market, _context=context)
         for strategy in strategies
     ]
+
+
+def build_deepseek_precompute_rows(
+    provider,
+    strategies: Iterable[str],
+    market: str = "all",
+) -> Dict[str, object]:
+    """Build the same local candidate pools used by snapshots, without freezing signals."""
+    context = _prepare_snapshot_context(provider)
+    if context.get("error"):
+        return {"ok": False, "error": context["error"], "rows_by_strategy": {}}
+    limit = max(1, int(getattr(config, "DEEPSEEK_FEATURE_REVIEW_LIMIT", 30)))
+    rows_by_strategy: Dict[str, List[Dict[str, object]]] = {}
+    meta_by_strategy: Dict[str, Dict[str, object]] = {}
+    for raw_strategy in strategies or []:
+        strategy = storage_strategy_name(raw_strategy)
+        if strategy not in SNAPSHOT_STRATEGIES:
+            continue
+        rows, meta, version = _score_snapshot_strategy(
+            provider,
+            context["candidates"].copy(deep=True),
+            context["quotes"],
+            strategy,
+            market,
+            dict(context["market_regime"]),
+        )
+        candidate_pool = meta.get("_candidate_pool_rows") if isinstance(meta, dict) else None
+        candidate_pool = candidate_pool if isinstance(candidate_pool, list) and candidate_pool else rows
+        _attach_frozen_regime(candidate_pool, context["market_regime"])
+        eligible = [
+            dict(row)
+            for row in candidate_pool or []
+            if isinstance(row, dict) and row.get("eligible") is not False
+        ]
+        rows_by_strategy[strategy] = eligible[:limit]
+        meta_by_strategy[strategy] = {
+            "strategy_version": version,
+            "candidate_count": len(candidate_pool or []),
+            "selected_count": len(rows_by_strategy[strategy]),
+        }
+    rows_by_strategy, shared_count = _shared_deepseek_candidate_pool(rows_by_strategy)
+    for strategy, meta in meta_by_strategy.items():
+        meta["selected_count"] = len(rows_by_strategy.get(strategy) or [])
+        meta["shared_candidate_count"] = shared_count
+    return {
+        "ok": True,
+        "snapshot_id": str(context["snapshot_id"]),
+        "cutoff_at": str(context["snapshot_cutoff"]),
+        "rows_by_strategy": rows_by_strategy,
+        "meta_by_strategy": meta_by_strategy,
+    }
+
+
+def _shared_deepseek_candidate_pool(rows_by_strategy: Dict[str, List[Dict[str, object]]]):
+    limit = max(1, int(getattr(config, "DEEPSEEK_SHARED_RESEARCH_LIMIT", 24)))
+    allocations = (("tomorrow_picks", 12), ("short_term", 8), ("swing_picks", 8))
+    shared_codes = []
+    for strategy, allocation in allocations:
+        for row in (rows_by_strategy.get(strategy) or [])[:allocation]:
+            code = normalize_code(row.get("code"))
+            if code and code not in shared_codes:
+                shared_codes.append(code)
+            if len(shared_codes) >= limit:
+                break
+        if len(shared_codes) >= limit:
+            break
+    if len(shared_codes) < limit:
+        for rows in rows_by_strategy.values():
+            for row in rows or []:
+                code = normalize_code(row.get("code"))
+                if code and code not in shared_codes:
+                    shared_codes.append(code)
+                if len(shared_codes) >= limit:
+                    break
+            if len(shared_codes) >= limit:
+                break
+    allowed = set(shared_codes)
+    limited = {
+        strategy: [dict(row) for row in rows or [] if normalize_code(row.get("code")) in allowed]
+        for strategy, rows in rows_by_strategy.items()
+    }
+    return limited, len(shared_codes)
 
 
 def _prepare_snapshot_context(provider) -> Dict[str, object]:
@@ -208,117 +275,41 @@ def _prepare_snapshot_context(provider) -> Dict[str, object]:
     }
 
 
-def _signal_at_or_after_tomorrow_cutoff(signal_time: str) -> bool:
+def _attach_frozen_regime(rows, market_regime: Dict[str, object]) -> None:
+    if not isinstance(rows, list):
+        return
+    regime = dict(market_regime or {})
+    level = str(regime.get("level") or "unknown")
+    label = str(regime.get("label") or level)
+    for row in rows:
+        if isinstance(row, dict):
+            row["market_regime"] = level
+            row["market_regime_label"] = label
+
+
+def _signal_at_or_after_freeze_cutoff(signal_time: str) -> bool:
     text = str(signal_time or "")
     clock = text.split("T", 1)[1][:5] if "T" in text else ""
-    cutoff = str(getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55"))[:5]
+    cutoff = str(getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50"))[:5]
     return bool(clock and cutoff and clock >= cutoff)
 
 
-def _tomorrow_freeze_deadline(signal_time: str) -> str:
+def _freeze_deadline(signal_time: str) -> str:
     signal_date = str(signal_time or "")[:10]
-    cutoff = str(getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55"))[:5]
+    cutoff = str(getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50"))[:5]
     return "{}T{}:00".format(signal_date, cutoff) if signal_date and cutoff else ""
 
 
-def _tomorrow_freeze_rejection(strategy: str, meta: Dict[str, object]) -> Dict[str, object]:
+def _freeze_rejection(strategy: str, meta: Dict[str, object]) -> Dict[str, object]:
     return {
         "ok": False,
         "strategy": strategy,
-        "error": "尾盘隔夜推荐未能在{}前完成冻结，拒绝保存当日集合竞价推荐批次。".format(
-            getattr(config, "TOMORROW_SIGNAL_CUTOFF_TIME", "14:55")
+        "error": "{}未能在{}前完成冻结，拒绝保存当日推荐批次。".format(
+            strategy,
+            getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50")
         ),
         "saved": {"saved": 0, "replaced": 0},
         "meta": meta,
-    }
-
-
-def _production_v10_rows(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
-    production_rows = []
-    for row in rows or []:
-        item = copy.deepcopy(row)
-        for key in (
-            "challenger_score",
-            "challenger_rank",
-            "challenger_strategy_version",
-            "challenger_mode",
-        ):
-            item.pop(key, None)
-        production_rows.append(item)
-    return production_rows
-
-
-def _schedule_shadow_analysis(
-    validation_store,
-    strategy: str,
-    strategy_version: str,
-    signal_time: str,
-    rows: List[Dict[str, object]],
-    market: str,
-    snapshot_id: str,
-) -> Dict[str, object]:
-    if not rows:
-        return {"status": "empty", "production_applied": False}
-    job_key = "{}|{}|{}|{}".format(
-        getattr(validation_store, "db_path", ""),
-        strategy,
-        signal_time[:10],
-        snapshot_id,
-    )
-    with _SHADOW_ANALYSIS_LOCK:
-        if job_key in _SHADOW_ANALYSIS_JOBS:
-            return {"status": "already_scheduled", "production_applied": False}
-        _SHADOW_ANALYSIS_JOBS.add(job_key)
-
-    def _worker() -> None:
-        try:
-            challenger_rows = attach_tomorrow_challenger_scores(copy.deepcopy(rows))
-            reviewed_rows, deepseek_meta = _apply_snapshot_deepseek_rerank(
-                challenger_rows,
-                strategy,
-                market,
-            )
-            generated_at = datetime.now().isoformat(timespec="seconds")
-            shadow_rows = []
-            for row in reviewed_rows or challenger_rows:
-                item = copy.deepcopy(row)
-                item["shadow_analysis_generated_at"] = generated_at
-                item["shadow_analysis_status"] = str(deepseek_meta.get("status") or "completed")
-                item["shadow_production_applied"] = False
-                item["snapshot_id"] = snapshot_id
-                shadow_rows.append(item)
-            validation_store.save_shadow_analysis_signals(
-                strategy,
-                strategy_version,
-                signal_time,
-                shadow_rows,
-            )
-        except Exception:
-            # Shadow research must never change or delay the frozen production recommendation.
-            pass
-        finally:
-            with _SHADOW_ANALYSIS_LOCK:
-                _SHADOW_ANALYSIS_JOBS.discard(job_key)
-
-    thread = threading.Thread(
-        target=_worker,
-        name="tomorrow-shadow-analysis-{}".format(signal_time[:10]),
-        daemon=True,
-    )
-    try:
-        thread.start()
-    except Exception as exc:
-        with _SHADOW_ANALYSIS_LOCK:
-            _SHADOW_ANALYSIS_JOBS.discard(job_key)
-        return {
-            "status": "schedule_failed",
-            "production_applied": False,
-            "error": str(exc),
-        }
-    return {
-        "status": "scheduled",
-        "production_applied": False,
-        "snapshot_id": snapshot_id,
     }
 
 
@@ -351,17 +342,6 @@ def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market
     scorer, top_n, extra_kwargs = scorers[strategy]
     rows, meta = scorer(candidates, top_n=top_n, market_filter=market, market_regime=market_regime, **extra_kwargs)
     return rows, meta, meta.get("strategy_version", strategy)
-
-
-def _apply_snapshot_deepseek_rerank(rows: List[Dict[str, object]], strategy: str, market: str):
-    return apply_deepseek_rerank(strategy, rows, market)
-
-
-def _deepseek_rerank_disabled_strategies() -> set:
-    raw = str(getattr(config, "DEEPSEEK_RERANK_DISABLED_STRATEGIES", "") or "").strip()
-    if not raw:
-        return set()
-    return {item.strip() for item in raw.replace("，", ",").split(",") if item.strip()}
 
 
 def _attach_snapshot_history_factors(provider, candidates):
@@ -406,142 +386,32 @@ def _attach_snapshot_history_factors(provider, candidates):
     return merge_alphalite(candidates, factors)
 
 
-def _apply_close_anchor_prices(provider, rows: List[Dict[str, object]], signal_time: str, quotes):
-    if not rows or not _after_close_anchor_time(signal_time):
-        return rows, {"count": 0, "total": len(rows or []), "missing": []}
-    signal_date = str(signal_time or "")[:10]
-    quote_anchors = _quote_anchor_lookup(quotes)
-    allow_quote_fallback = _allow_quote_close_fallback(provider, signal_time)
-    anchored: List[Dict[str, object]] = []
-    missing: List[str] = []
-    for row in rows:
-        item = dict(row)
-        code = normalize_code(item.get("code"))
-        close_price, pct_chg = _history_anchor_for_date(provider, code, signal_date)
-        source = "history_close" if close_price > 0 else ""
-        if close_price <= 0 and allow_quote_fallback:
-            quote_anchor = quote_anchors.get(code, {})
-            close_price = coerce_number(quote_anchor.get("price"))
-            pct_chg = coerce_number(quote_anchor.get("pct_chg"))
-            source = "quote_close" if close_price > 0 else ""
-        if close_price > 0:
-            item["price"] = round(close_price, 4)
-            item["pct_chg"] = round(pct_chg, 4)
-            item["anchor_price_source"] = source
-            item["anchor_price_time"] = signal_time
-        else:
-            missing.append(code or str(item.get("code") or ""))
-        anchored.append(item)
-    return anchored, {"count": len(anchored) - len(missing), "total": len(anchored), "missing": missing[:10]}
-
-
-def _after_close_anchor_time(signal_time: str) -> bool:
-    raw_time = str(signal_time or "")
-    if "T" not in raw_time:
-        return False
-    try:
-        stamp = datetime.fromisoformat(raw_time)
-    except ValueError:
-        return False
-    hour, minute = _time_parts(getattr(config, "VALIDATION_CLOSE_ANCHOR_TIME", "15:00"), (15, 0))
-    close_at = stamp.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    return stamp >= close_at
-
-
-def _time_parts(value: str, fallback: tuple) -> tuple:
-    raw = str(value or "").strip()
-    try:
-        hour_text, minute_text = raw.split(":", 1)
-        return min(23, max(0, int(hour_text))), min(59, max(0, int(minute_text)))
-    except Exception:
-        return fallback
-
-
-def _quote_anchor_lookup(quotes) -> Dict[str, Dict[str, float]]:
-    if quotes is None or getattr(quotes, "empty", True) or "code" not in quotes.columns:
-        return {}
-    lookup: Dict[str, Dict[str, float]] = {}
-    for _, row in quotes.iterrows():
-        code = normalize_code(row.get("code"))
-        price = coerce_number(row.get("price"))
-        if code and price > 0:
-            lookup[code] = {"price": price, "pct_chg": coerce_number(row.get("pct_chg"))}
-    return lookup
-
-
-def _history_anchor_for_date(provider, code: str, signal_date: str):
-    if not code or not signal_date:
-        return 0.0, 0.0
-    target = signal_date.replace("-", "")
-    try:
-        history = provider.get_history(code, days=10)
-    except Exception:
-        return 0.0, 0.0
-    if history is None or history.empty or "trade_date" not in history.columns:
-        return 0.0, 0.0
-    history = history.copy()
-    history["_date"] = history["trade_date"].astype(str).str.replace("-", "", regex=False)
-    history = history.sort_values("_date").reset_index(drop=True)
-    today = history[history["_date"] == target]
-    if today.empty:
-        return 0.0, 0.0
-    today_index = int(today.index[-1])
-    row = history.iloc[today_index]
-    close_price = coerce_number(row.get("price") if "price" in history.columns else row.get("close"))
-    pct_chg = coerce_number(row.get("pct_chg")) if "pct_chg" in history.columns else 0.0
-    if not pct_chg and today_index > 0:
-        prev = history.iloc[today_index - 1]
-        prev_close = coerce_number(prev.get("price") if "price" in history.columns else prev.get("close"))
-        if close_price > 0 and prev_close > 0:
-            pct_chg = round((close_price / prev_close - 1) * 100, 4)
-    return close_price, pct_chg
-
-
-def _allow_quote_close_fallback(provider, signal_time: str) -> bool:
-    health_fn = getattr(provider, "health", None)
-    if not callable(health_fn):
-        return True
-    health = health_fn() or {}
-    source = str(health.get("quotes_source") or "")
-    if "快照" not in source:
-        return True
-    refreshed = health.get("last_quote_refresh")
-    try:
-        refreshed_at = datetime.fromisoformat(str(refreshed))
-        stamp = datetime.fromisoformat(str(signal_time))
-    except Exception:
-        return False
-    hour, minute = _time_parts(getattr(config, "VALIDATION_CLOSE_ANCHOR_TIME", "15:00"), (15, 0))
-    close_at = stamp.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    return refreshed_at >= close_at
-
-
 def _quote_freshness_error(provider, quotes) -> str:
     if quotes is None or quotes.empty:
-        return "行情为空，拒绝保存明天预测快照。"
+        return "行情为空，拒绝保存推荐快照。"
     min_rows = int(getattr(config, "QUOTE_SNAPSHOT_MIN_ROWS", 50))
     if len(quotes) < min_rows:
-        return "行情行数不足 {} 条，拒绝保存明天预测快照。".format(min_rows)
+        return "行情行数不足 {} 条，拒绝保存推荐快照。".format(min_rows)
     health_fn = getattr(provider, "health", None)
     if not callable(health_fn):
         return ""
     health = health_fn() or {}
     source = str(health.get("quotes_source") or "")
     if not source or source == "unavailable":
-        return "行情来源不可用，拒绝保存明天预测快照。"
+        return "行情来源不可用，拒绝保存推荐快照。"
     if "快照" in source and not getattr(config, "VALIDATION_ALLOW_LOCAL_QUOTE_SNAPSHOT", False):
-        return "当前行情来自本地快照，拒绝保存为今日真实预测。"
+        return "当前行情来自本地快照，拒绝保存为今日真实推荐。"
     refreshed = health.get("last_quote_refresh")
     if not refreshed:
-        return "缺少行情刷新时间，拒绝保存明天预测快照。"
+        return "缺少行情刷新时间，拒绝保存推荐快照。"
     try:
         refreshed_at = datetime.fromisoformat(str(refreshed))
     except ValueError:
-        return "行情刷新时间格式异常，拒绝保存明天预测快照。"
+        return "行情刷新时间格式异常，拒绝保存推荐快照。"
     max_age = int(getattr(config, "VALIDATION_SNAPSHOT_MAX_QUOTE_AGE_SECONDS", 900))
     age = (datetime.now() - refreshed_at).total_seconds()
     if age > max_age:
-        return "行情已超过 {} 秒未刷新，拒绝保存明天预测快照。".format(max_age)
+        return "行情已超过 {} 秒未刷新，拒绝保存推荐快照。".format(max_age)
     return ""
 
 

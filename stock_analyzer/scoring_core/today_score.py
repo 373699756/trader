@@ -167,7 +167,7 @@ def _score_row(
         "horizon": horizon,
     }
     return explanations._with_regime_reason(
-        explanations._attach_signal_explanation(item, row, "short_term", "短线推荐", "盘中强势"),
+        explanations._attach_signal_explanation(item, row, "short_term", "今天策略", "延续至收盘"),
         market_regime,
         regime_bonus,
     )

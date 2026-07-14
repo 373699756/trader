@@ -10,12 +10,84 @@ from . import config
 from .candidate_pipeline import CandidatePipeline
 from .providers import MarketDataProvider, TimedCache
 from .recommendation_snapshot import save_recommendation_snapshot
+from .recommendation_freeze import recommendation_is_frozen
+from .realtime_schedule import realtime_refresh_profile
 from .stability import TopKDropoutTracker
 from .strategy_validation import StrategyValidationStore
 from .tomorrow_iteration import TomorrowIterationService
 from .validation_cache import ValidationMetricsCache
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class RealtimeMarketScheduler:
+    """Single in-process owner for full-market and targeted quote refresh cadence."""
+
+    def __init__(self, container) -> None:
+        self.container = container
+        self._lock = threading.Lock()
+        self._started = False
+        self._last_full_started = 0.0
+        self._last_full_success = ""
+        self._final_full_date = ""
+        self._profile = {}
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._started:
+                return False
+            self._started = True
+        threading.Thread(target=self._run, name="realtime-market-scheduler", daemon=True).start()
+        return True
+
+    def status(self) -> Dict[str, object]:
+        with self._lock:
+            return {
+                "started": self._started,
+                "profile": dict(self._profile),
+                "last_full_success": self._last_full_success,
+                "final_full_date": self._final_full_date,
+            }
+
+    def _run(self) -> None:
+        while True:
+            now = datetime.now()
+            profile = realtime_refresh_profile(now)
+            with self._lock:
+                self._profile = dict(profile)
+            if profile.get("active"):
+                self.container.candidate_pipeline.refresh_recommendation_quote_groups(profile)
+                self._schedule_full_market_refresh(profile, now)
+            self._accept_completed_full_refresh()
+            time.sleep(1.0)
+
+    def _schedule_full_market_refresh(self, profile, now: datetime) -> None:
+        interval = profile.get("full_market_seconds")
+        if interval is None:
+            return
+        force_final = bool(profile.get("force_final_full"))
+        current_date = now.date().isoformat()
+        due = not self._last_full_started or time.monotonic() - self._last_full_started >= float(interval)
+        if force_final and self._final_full_date != current_date:
+            due = True
+        if not due:
+            return
+        started = self.container.provider.refresh_realtime_quotes_async(force=True)
+        if started:
+            self._last_full_started = time.monotonic()
+            if force_final:
+                self._final_full_date = current_date
+
+    def _accept_completed_full_refresh(self) -> None:
+        status = self.container.provider.quote_refresh_status()
+        success = str(status.get("last_success_at") or "")
+        if not success or success == self._last_full_success:
+            return
+        self._last_full_success = success
+        self.container.quotes_cache.clear()
+        if not recommendation_is_frozen():
+            self.container.recommendation_cache.clear()
+            self.container.horizon_cache.clear()
 
 
 class AsyncSnapshotWriter:
@@ -35,6 +107,8 @@ class AsyncSnapshotWriter:
         self._last_payload_size = 0
 
     def schedule(self, payload: Dict[str, object]) -> None:
+        if recommendation_is_frozen():
+            return
         payload_size = self._estimate_payload_size(payload)
         with self._lock:
             if payload_size > 0:
@@ -286,7 +360,12 @@ class ApplicationContainer:
 
     def __init__(self) -> None:
         self.provider = MarketDataProvider(web_nonblocking=True)
-        self.quotes_cache = TimedCache(config.REFRESH_SECONDS)
+        self.quotes_cache = TimedCache(
+            max(1, int(getattr(config, "QUOTE_CACHE_TTL_SECONDS", config.REFRESH_SECONDS)))
+        )
+        self.recommendation_quotes_cache = TimedCache(
+            max(1, int(getattr(config, "RECOMMENDATION_QUOTE_CACHE_TTL_SECONDS", 15)))
+        )
         self.hot_cache = TimedCache(config.REFRESH_SECONDS * 2)
         self.industry_cache = TimedCache(config.REFRESH_SECONDS * 5)
         self.market_news_cache = TimedCache(config.REFRESH_SECONDS * 3)
@@ -312,6 +391,7 @@ class ApplicationContainer:
         self.validation_cache = ValidationMetricsCache(self.validation_store)
         self.snapshot_writer = AsyncSnapshotWriter(config.RECOMMENDATION_SNAPSHOT_PATH)
         self.candidate_pipeline = CandidatePipeline(self.provider, self)
+        self.realtime_scheduler = RealtimeMarketScheduler(self)
         self.tomorrow_iteration = TomorrowIterationService()
 
     def cached_metrics(self, strategy_name: str, days: int):
@@ -326,6 +406,7 @@ class ApplicationContainer:
     def cache_health(self) -> Dict[str, object]:
         return {
             "quotes_cache": self.quotes_cache.stats(),
+            "recommendation_quotes_cache": self.recommendation_quotes_cache.stats(),
             "hot_cache": self.hot_cache.stats(),
             "industry_cache": self.industry_cache.stats(),
             "market_news_cache": self.market_news_cache.stats(),
@@ -334,6 +415,8 @@ class ApplicationContainer:
             "factors_cache": self.factors_cache.stats(),
             "recommendation_cache": self.recommendation_cache.stats(),
             "horizon_cache": self.horizon_cache.stats(),
+            "realtime_scheduler": self.realtime_scheduler.status(),
+            "recommendation_quote_groups": self.candidate_pipeline.recommendation_quote_status(),
         }
 
     def snapshot_writer_health(self) -> Dict[str, object]:

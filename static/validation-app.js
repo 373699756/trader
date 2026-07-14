@@ -87,10 +87,6 @@
             renderValidationMetrics(payload.metrics, payload.validation_gate || {});
             loadValidationOosReport(strategy, days, requestSeq);
           }
-          state.deepseekAttributionByStrategy = payload.deepseek_attribution_by_strategy || {};
-          renderValidationDeepseekAttribution(state.deepseekAttributionByStrategy);
-          renderValidationDeepseekMarketGate(payload.deepseek_market_gate || {});
-          renderValidationDeepseekReview(payload.deepseek_review || {});
           if (!options.skipAutoOutcomeUpdate) {
             autoFillMissingValidationOutcomes(payload.metrics || {}, payload.dates || []);
           }
@@ -139,13 +135,6 @@
         if (payload.metrics) {
           state.validationMetrics = payload.metrics || {};
           renderValidationMetrics(state.validationMetrics, payload.validation_gate || {});
-        }
-        if (payload.deepseek_attribution_by_strategy) {
-          state.deepseekAttributionByStrategy = payload.deepseek_attribution_by_strategy || {};
-          renderValidationDeepseekAttribution(state.deepseekAttributionByStrategy);
-        }
-        if (payload.deepseek_market_gate) {
-          renderValidationDeepseekMarketGate(payload.deepseek_market_gate || {});
         }
         renderValidationDates(payload.dates || []);
         syncValidationSelection(payload.dates || []);
@@ -539,135 +528,12 @@
         }
       }
 
-      function renderValidationDeepseekAttribution(attributionByStrategy) {
-        if (!els.validationDeepseekAttribution) return;
-        const strategies = ["short_term", "tomorrow_picks", "swing_picks"];
-        const cards = strategies.map(strategy => {
-          const item = attributionByStrategy?.[strategy] || {};
-          const counter = item.counterfactual_topn || {};
-          const priorityDelta = item.priority_vs_watch || {};
-          const avoid = item.avoid_veto || {};
-          const tokenCost = item.token_cost || {};
-          const tokenValue = item.token_value || {};
-          const budget = item.budget_recommendation || {};
-          const sortDelta = Number(counter.avg_return_delta_pct);
-          const winDelta = Number(counter.win_rate_delta_pct);
-          const priorityWinDelta = Number(priorityDelta.win_rate_delta_pct);
-          const valuePer1k = Number(tokenValue.value_per_1k_tokens ?? item.value_per_1k_tokens);
-          const falsePositiveLoss = Number(tokenValue.false_positive_profit_loss_pct);
-          const notes = Array.isArray(item.notes) ? item.notes.slice(0, 1) : [];
-          const budgetAction = budget.action || (item.worth_expanding_budget ? "expand" : "");
-          const budgetReason = budget.reason || deepseekBudgetActionText(budgetAction);
-          return `
-            <div class="deepseek-attribution-card">
-              <div class="deepseek-attribution-head">
-                <strong>${escapeHtml(strategyLabel(strategy))}</strong>
-                <span class="tag ${deepseekAttributionTagClass(item.status)}">${escapeHtml(deepseekAttributionStatusText(item.status))}</span>
-              </div>
-              <div class="deepseek-attribution-stats">
-                <div><span>真实/全部</span><strong>${Number(item.real_sample_count || 0)}/${Number(item.sample_count || 0)}</strong></div>
-                <div><span>覆盖</span><strong>${formatNumber(item.covered_ratio_pct, 1)}%</strong></div>
-                <div><span>tokens</span><strong>${formatNumber(tokenCost.total_tokens, 0)}</strong></div>
-              </div>
-              <div class="deepseek-attribution-lines">
-                <div><span>排序净收益增益</span><strong class="${numberClass(sortDelta)}">${formatSignedPct(sortDelta)}</strong></div>
-                <div><span>排序净胜率增益</span><strong class="${numberClass(winDelta)}">${formatSignedPct(winDelta)}</strong></div>
-                <div><span>priority-watch 净胜率差</span><strong class="${numberClass(priorityWinDelta)}">${formatSignedPct(priorityWinDelta)}</strong></div>
-                <div><span>avoid/veto 平均净收益</span><strong class="${numberClass(avoid.avg_primary_return_net)}">${formatSignedPct(avoid.avg_primary_return_net)}</strong></div>
-                <div><span>跳过亏损收益</span><strong class="${numberClass(tokenValue.skipped_loss_saved_pct)}">${formatSignedPct(tokenValue.skipped_loss_saved_pct)}</strong></div>
-                <div><span>误杀盈利损失</span><strong class="${numberClass(-falsePositiveLoss)}">${formatSignedPct(-falsePositiveLoss)}</strong></div>
-                <div><span>value/1k tokens</span><strong class="${numberClass(valuePer1k)}">${formatSignedPct(valuePer1k)}</strong></div>
-              </div>
-              <div class="deepseek-attribution-foot">
-                <span>local top${Number(counter.top_n || 0)} vs DeepSeek top${Number(counter.top_n || 0)}</span>
-                <span>alpha ${formatNumber(item.blend_alpha_avg, 2)} · 重排 ${Number(item.reordered_sample_count || 0)} 条</span>
-              </div>
-              ${budgetAction ? `<div class="deepseek-attribution-budget"><span class="tag ${deepseekBudgetTagClass(budgetAction)}">${escapeHtml(deepseekBudgetActionText(budgetAction))}</span><span>${escapeHtml(budgetReason)}</span></div>` : ""}
-              ${notes.length ? `<div class="deepseek-attribution-warning">${escapeHtml(notes[0])}</div>` : ""}
-            </div>
-          `;
-        }).join("");
-        els.validationDeepseekAttribution.innerHTML = cards || '<div class="empty">暂无 DeepSeek 归因数据</div>';
-      }
-
-      function renderValidationDeepseekMarketGate(metrics) {
-        if (!els.validationDeepseekMarketGate) return;
-        const sampleCount = Number(metrics?.sample_count || 0);
-        if (!sampleCount) {
-          els.validationDeepseekMarketGate.innerHTML = '<div class="empty">暂无大盘 Gate 验证数据</div>';
-          return;
-        }
-        const recent = Array.isArray(metrics.recent) ? (metrics.recent[0] || {}) : {};
-        const avgReturn = Number(recent.avg_primary_return_net);
-        const hit = recent.hit === true ? "命中" : recent.hit === false ? "偏离" : "待回填";
-        const hitClass = recent.hit === true ? "stable" : recent.hit === false ? "warning" : "muted";
-        els.validationDeepseekMarketGate.innerHTML = `
-          <div class="deepseek-market-gate-card">
-            <div class="deepseek-attribution-head">
-              <strong>大盘 Gate</strong>
-              <span class="tag ${hitClass}">${hit}</span>
-            </div>
-            <div class="deepseek-attribution-stats">
-              <div><span>回填/判断</span><strong>${Number(metrics.outcome_sample_count || 0)}/${sampleCount}</strong></div>
-              <div><span>命中率</span><strong>${formatNumber(metrics.hit_rate, 1)}%</strong></div>
-              <div><span>最近 regime</span><strong>${escapeHtml(marketGateRegimeText(recent.regime))}</strong></div>
-            </div>
-            <div class="deepseek-attribution-lines">
-              <div><span>缩量系数</span><strong>${formatNumber(recent.size_factor, 2)}</strong></div>
-              <div><span>同日平均净收益</span><strong class="${numberClass(avgReturn)}">${formatSignedPct(avgReturn)}</strong></div>
-              <div><span>实际状态</span><strong>${escapeHtml(marketGateRegimeText(recent.actual_regime))}</strong></div>
-            </div>
-          </div>
-        `;
-      }
-
-      function marketGateRegimeText(regime) {
-        if (regime === "risk_on") return "risk_on";
-        if (regime === "risk_off") return "risk_off";
-        if (regime === "balanced") return "balanced";
-        if (regime === "unknown") return "待回填";
-        return regime || "-";
-      }
-
-      function deepseekAttributionStatusText(status) {
-        if (status === "ok") return "可评估";
-        if (status === "insufficient_real_samples") return "样本不足";
-        if (status === "no_deepseek_samples") return "无归因样本";
-        if (status === "empty") return "暂无回填";
-        if (status === "missing_strategy") return "缺少策略";
-        return status || "未计算";
-      }
-
-      function deepseekAttributionTagClass(status) {
-        if (status === "ok") return "stable";
-        if (status === "insufficient_real_samples") return "warning";
-        if (status === "no_deepseek_samples" || status === "empty") return "muted";
-        return "validation";
-      }
-
-      function deepseekBudgetTagClass(action) {
-        if (action === "expand") return "stable";
-        if (action === "shrink") return "warning";
-        return "muted";
-      }
-
-      function deepseekBudgetActionText(action) {
-        if (action === "expand") return "可扩大";
-        if (action === "shrink") return "收缩范围";
-        if (action === "observe") return "观察";
-        return "未判断";
-      }
-
       function formatSignedPct(value) {
         if (value == null || value === "") return "-";
         const num = Number(value);
         if (!Number.isFinite(num)) return "-";
         const sign = num > 0 ? "+" : "";
         return `${sign}${formatNumber(num, 2)}%`;
-      }
-
-      function renderValidationDeepseekReview(review) {
-        state.latestDeepseekReview = review || {};
       }
 
       function renderValidationMetrics(metrics, validationGate = {}) {

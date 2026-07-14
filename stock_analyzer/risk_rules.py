@@ -91,6 +91,7 @@ def simulate_exit(
     trailing_stop_pct = max(0.0, coerce_number(policy.get("trailing_stop_pct")))
     limit_down_pct = max(1.0, coerce_number(policy.get("limit_down_pct"), 10.0))
     earliest_exit_index = max(0, int(coerce_number(policy.get("earliest_exit_offset_days"), 0)))
+    take_profit_earliest_index = max(earliest_exit_index, int(coerce_number(policy.get("take_profit_earliest_offset_days"), earliest_exit_index)))
 
     full = future.reset_index(drop=True)
     window = full.head(max_days)
@@ -136,7 +137,7 @@ def simulate_exit(
             exit_price = open_price if 0 < open_price < stop_price else stop_price
             exit_reason = "stop_loss"
             break
-        if take_price > 0 and high >= take_price:
+        if idx >= take_profit_earliest_index and take_price > 0 and high >= take_price:
             exit_price = take_price
             exit_reason = "take_profit"
             break
