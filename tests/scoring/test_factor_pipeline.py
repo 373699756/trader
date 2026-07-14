@@ -4,7 +4,7 @@ import pandas as pd
 from unittest.mock import patch
 
 from stock_analyzer import app_support, config
-from stock_analyzer.app import _attach_alphalite_factors
+from stock_analyzer.app_support import attach_alphalite_factors as _attach_alphalite_factors
 from stock_analyzer.factor_ic import compute_factor_ic
 from stock_analyzer.factors import compute_alphalite_for_stock
 from stock_analyzer.fundamentals import attach_fundamental_factors, load_fundamentals

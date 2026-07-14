@@ -130,7 +130,7 @@ class ValidationGatesTest(unittest.TestCase):
         self.assertIn("position_scale", meta["validation_gate"])
 
     def test_tomorrow_validation_gate_demotes_primary_when_retired(self):
-        from stock_analyzer.app import _apply_tomorrow_validation_gate
+        from stock_analyzer.app_support import apply_tomorrow_validation_gate as _apply_tomorrow_validation_gate
 
         rows = [
             {"code": "600001", "tier": "primary_watch", "tier_label": "primary", "reasons": []},

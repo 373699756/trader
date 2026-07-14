@@ -687,7 +687,7 @@ class TomorrowStrategyTest(unittest.TestCase):
         self.assertEqual(decision["position_scale"], 1.0)
 
     def test_tomorrow_validation_gate_demotes_primary_when_retired(self):
-        from stock_analyzer.app import _apply_tomorrow_validation_gate
+        from stock_analyzer.app_support import apply_tomorrow_validation_gate as _apply_tomorrow_validation_gate
 
         rows = [
             {"code": "600001", "tier": "primary_watch", "tier_label": "重点观察", "reasons": []},
@@ -722,7 +722,7 @@ class TomorrowStrategyTest(unittest.TestCase):
         self.assertIn("允许备选观察", decision["reason"])
 
     def test_tomorrow_validation_gate_demotes_primary_without_outcomes(self):
-        from stock_analyzer.app import _apply_tomorrow_validation_gate
+        from stock_analyzer.app_support import apply_tomorrow_validation_gate as _apply_tomorrow_validation_gate
 
         rows = [{"code": "600001", "tier": "primary_watch", "tier_label": "重点观察", "reasons": []}]
         meta = {"primary_watch_count": 1, "primary_gate_count": 1}

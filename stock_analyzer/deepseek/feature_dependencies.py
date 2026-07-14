@@ -23,13 +23,14 @@ def feature_runtime_config() -> Dict[str, object]:
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     return {
         "enabled": bool(getattr(config, "ENABLE_DEEPSEEK_RUNTIME", True))
-        and _env_bool("DEEPSEEK_ENABLED", bool(api_key)),
-        "base_url": _coerce_base_url(os.getenv("DEEPSEEK_BASE_URL", _DEFAULT_BASE_URL)),
+        and bool(getattr(config, "DEEPSEEK_ENABLED", True))
+        and bool(api_key),
+        "base_url": _coerce_base_url(getattr(config, "DEEPSEEK_BASE_URL", _DEFAULT_BASE_URL)),
         "api_key": api_key,
         "model": str(getattr(config, "DEEPSEEK_FEATURE_MODEL", "deepseek-v4-flash")),
-        "pro_model": str(os.getenv("DEEPSEEK_PRO_MODEL", "deepseek-v4-pro") or "deepseek-v4-pro"),
-        "max_tokens": max(80, _env_int("DEEPSEEK_MAX_TOKENS", 800)),
-        "timeout_seconds": max(2.0, _env_float("DEEPSEEK_TIMEOUT_SECONDS", 12.0)),
+        "pro_model": str(getattr(config, "DEEPSEEK_PRO_MODEL", "deepseek-v4-pro") or "deepseek-v4-pro"),
+        "max_tokens": max(80, int(getattr(config, "DEEPSEEK_MAX_TOKENS", 800))),
+        "timeout_seconds": max(2.0, float(getattr(config, "DEEPSEEK_TIMEOUT_SECONDS", 12.0))),
     }
 
 
@@ -80,13 +81,8 @@ def _load_dotenv_if_needed() -> None:
     if _DOTENV_LOADED:
         return
     _DOTENV_LOADED = True
-    configured = os.path.expanduser(os.getenv("DEEPSEEK_ENV_FILE", ".env").strip() or ".env")
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    candidates = [configured] if os.path.isabs(configured) else [
-        os.path.abspath(configured),
-        os.path.join(project_root, configured),
-    ]
-    path = next((item for item in candidates if os.path.exists(item)), "")
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    path = os.path.join(project_root, ".deepseek_key")
     if not path:
         return
     try:
@@ -97,33 +93,10 @@ def _load_dotenv_if_needed() -> None:
                     continue
                 key, value = line.split("=", 1)
                 key = key.strip()
-                if key and key not in os.environ:
+                if key in {"DEEPSEEK_API_KEY", "TUSHARE_TOKEN"} and key not in os.environ:
                     os.environ[key] = value.strip().strip('"').strip("'")
     except Exception:
         return
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    return os.getenv(name, "1" if default else "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)).strip())
-    except Exception:
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)).strip())
-    except Exception:
-        return default
 
 
 def _market_data_provider_factory():

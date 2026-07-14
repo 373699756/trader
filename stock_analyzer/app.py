@@ -3,7 +3,7 @@ from __future__ import annotations
 from flask import Flask
 
 from .app_container import ApplicationContainer
-from .app_support import apply_tomorrow_validation_gate, attach_alphalite_factors, load_local_history_frames
+from .app_support import attach_alphalite_factors, load_local_history_frames
 from .backtest import run_alphalite_backtest, run_rolling_alphalite_backtest
 from .daily_data import list_market_data_codes
 from .providers import MarketDataProvider, TimedCache
@@ -12,11 +12,6 @@ from .routes.prediction import bp as prediction_bp
 from .routes.recommendations import bp as recommendations_bp
 from .routes.validation import bp as validation_bp
 from .services.app_services import AppServiceHooks, AppServices
-
-
-# Compatibility aliases kept for existing tests and local imports.
-_attach_alphalite_factors = attach_alphalite_factors
-_apply_tomorrow_validation_gate = apply_tomorrow_validation_gate
 
 
 def create_app() -> Flask:

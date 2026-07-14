@@ -370,7 +370,8 @@ class LegacyRemainingScoringTest(unittest.TestCase):
                     self.assertTrue(0.0 <= thresholds["overheat_damp_floor"] <= 1.0)
 
     def test_alphalite_attach_uses_cache_only_by_default_to_avoid_request_blocking(self):
-        from stock_analyzer.app import TimedCache, _attach_alphalite_factors
+        from stock_analyzer.app_support import attach_alphalite_factors as _attach_alphalite_factors
+        from stock_analyzer.providers import TimedCache
 
         quotes = pd.DataFrame(
             [
@@ -397,7 +398,8 @@ class LegacyRemainingScoringTest(unittest.TestCase):
     def test_alphalite_attach_schedules_missing_history_without_sync_fetch(self):
         import threading
 
-        from stock_analyzer.app import TimedCache, _attach_alphalite_factors
+        from stock_analyzer.app_support import attach_alphalite_factors as _attach_alphalite_factors
+        from stock_analyzer.providers import TimedCache
 
         quotes = pd.DataFrame(
             [
@@ -440,7 +442,8 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         self.assertTrue(refreshed.wait(timeout=1.0))
 
     def test_alphalite_attach_reuses_factor_cache_for_same_history(self):
-        from stock_analyzer.app import TimedCache, _attach_alphalite_factors
+        from stock_analyzer.app_support import attach_alphalite_factors as _attach_alphalite_factors
+        from stock_analyzer.providers import TimedCache
 
         quotes = pd.DataFrame(
             [

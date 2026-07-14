@@ -1,555 +1,61 @@
+"""Load the application's single non-secret runtime configuration document."""
+
+from __future__ import annotations
+
 import json
 import os
+from typing import Dict
+
+from dotenv import load_dotenv
 
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PRODUCTION_BASELINE_MANIFEST_PATH = os.getenv(
-    "PRODUCTION_BASELINE_MANIFEST_PATH",
-    os.path.join(_PROJECT_ROOT, "config", "production_baseline.json"),
-)
-PRODUCTION_FREEZE_ENABLED = os.getenv("PRODUCTION_FREEZE_ENABLED", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-EXPERIMENT_REGISTRY_PATH = os.getenv("EXPERIMENT_REGISTRY_PATH", "experiments/registry.jsonl")
+RUNTIME_CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config", "runtime.json")
+_SECRET_ENV_KEYS = {"DEEPSEEK_API_KEY", "TUSHARE_TOKEN"}
 
 
-def _load_production_baseline_manifest():
+def _load_runtime_config() -> Dict[str, object]:
     try:
-        with open(PRODUCTION_BASELINE_MANIFEST_PATH, "r", encoding="utf-8") as handle:
+        with open(RUNTIME_CONFIG_PATH, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
     except Exception as exc:
-        if PRODUCTION_FREEZE_ENABLED:
-            raise RuntimeError("production baseline manifest is unavailable: {}".format(exc)) from exc
-        return {}
+        raise RuntimeError("runtime configuration is unavailable: {}".format(exc)) from exc
     if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != 1:
-        if PRODUCTION_FREEZE_ENABLED:
-            raise RuntimeError("production baseline manifest has an unsupported schema")
-        return {}
+        raise RuntimeError("runtime configuration has an unsupported schema")
+    settings = payload.get("settings")
+    baseline = payload.get("production_baseline")
+    tuple_settings = payload.get("tuple_settings") or []
+    if not isinstance(settings, dict) or not settings:
+        raise RuntimeError("runtime configuration settings must be a non-empty object")
+    if not isinstance(baseline, dict) or int(baseline.get("schema_version") or 0) != 1:
+        raise RuntimeError("runtime configuration production_baseline is invalid")
+    if not isinstance(tuple_settings, list) or any(not isinstance(key, str) for key in tuple_settings):
+        raise RuntimeError("runtime configuration tuple_settings must be a string array")
+    invalid_keys = [
+        key
+        for key in settings
+        if not isinstance(key, str) or not key.isupper() or key in _SECRET_ENV_KEYS
+    ]
+    if invalid_keys:
+        raise RuntimeError("runtime configuration contains invalid setting keys: {}".format(invalid_keys))
+    payload["tuple_settings"] = tuple_settings
     return payload
 
 
-PRODUCTION_BASELINE_MANIFEST = _load_production_baseline_manifest()
+load_dotenv(os.path.join(_PROJECT_ROOT, ".deepseek_key"), override=False)
 
+_RUNTIME_CONFIG = _load_runtime_config()
+_TUPLE_SETTINGS = set(_RUNTIME_CONFIG["tuple_settings"])
+for _name, _value in _RUNTIME_CONFIG["settings"].items():
+    globals()[_name] = tuple(_value) if _name in _TUPLE_SETTINGS else _value
 
-REFRESH_SECONDS = int(os.getenv("REFRESH_SECONDS", "60"))
-QUOTE_CACHE_TTL_SECONDS = int(os.getenv("QUOTE_CACHE_TTL_SECONDS", "300"))
-RECOMMENDATION_DISPLAY_LIMIT = int(os.getenv("RECOMMENDATION_DISPLAY_LIMIT", "18"))
-DEFAULT_TOP_N = min(int(os.getenv("DEFAULT_TOP_N", str(RECOMMENDATION_DISPLAY_LIMIT))), RECOMMENDATION_DISPLAY_LIMIT)
-RECOMMENDATION_MAX_TOP_N = min(int(os.getenv("RECOMMENDATION_MAX_TOP_N", str(RECOMMENDATION_DISPLAY_LIMIT))), RECOMMENDATION_DISPLAY_LIMIT)
-TOMORROW_TOP_N = min(int(os.getenv("TOMORROW_TOP_N", str(RECOMMENDATION_DISPLAY_LIMIT))), RECOMMENDATION_DISPLAY_LIMIT)
-TODAY_RECOMMENDATION_MIN_SCORE = float(os.getenv("TODAY_RECOMMENDATION_MIN_SCORE", "60"))
-SWING_RECOMMENDATION_MIN_SCORE = float(os.getenv("SWING_RECOMMENDATION_MIN_SCORE", "60"))
-TOMORROW_PRIMARY_WATCH_N = int(os.getenv("TOMORROW_PRIMARY_WATCH_N", "5"))
-SHORT_TERM_STRATEGY_VERSION = os.getenv("SHORT_TERM_STRATEGY_VERSION", "today_picks_v2_today_and_next_day")
-TOMORROW_STRATEGY_VERSION = os.getenv(
-    "TOMORROW_STRATEGY_VERSION",
-    "tomorrow_picks_v12_post_1430_t1_exit",
-)
-SWING_STRATEGY_VERSION = os.getenv("SWING_STRATEGY_VERSION", "swing_2_5d_v4_post_1430_entry")
-VALIDATION_REPLAY_VERSION_SUFFIX = os.getenv("VALIDATION_REPLAY_VERSION_SUFFIX", "replay_v2_production")
-TOMORROW_RECOMMENDATION_DISPLAY_LIMIT = int(os.getenv("TOMORROW_RECOMMENDATION_DISPLAY_LIMIT", "8"))
-TOMORROW_SNAPSHOT_TOP_N = int(os.getenv("TOMORROW_SNAPSHOT_TOP_N", "5"))
-TOMORROW_PRIMARY_MIN_SCORE = float(os.getenv("TOMORROW_PRIMARY_MIN_SCORE", "68"))
-TOMORROW_BACKUP_MIN_SCORE = float(os.getenv("TOMORROW_BACKUP_MIN_SCORE", "45"))
-TOMORROW_MAX_PRIMARY_PER_THEME = int(os.getenv("TOMORROW_MAX_PRIMARY_PER_THEME", "2"))
-TOMORROW_MAX_DISPLAY_PER_THEME = int(os.getenv("TOMORROW_MAX_DISPLAY_PER_THEME", "5"))
-RECOMMENDATION_MAX_DISPLAY_PER_THEME = int(os.getenv("RECOMMENDATION_MAX_DISPLAY_PER_THEME", "3"))
-TOMORROW_MID_GAIN_MIN_PCT = float(os.getenv("TOMORROW_MID_GAIN_MIN_PCT", "4.5"))
-TOMORROW_MID_GAIN_MAX_PCT = float(os.getenv("TOMORROW_MID_GAIN_MAX_PCT", "7.0"))
-TOMORROW_MID_GAIN_WEAK_CLOSE_LOCATION = float(os.getenv("TOMORROW_MID_GAIN_WEAK_CLOSE_LOCATION", "0.6"))
-TOMORROW_MID_GAIN_WEAK_CLOSE_PENALTY = float(os.getenv("TOMORROW_MID_GAIN_WEAK_CLOSE_PENALTY", "7"))
-USE_SMOOTH_PENALTY = os.getenv("USE_SMOOTH_PENALTY", "1").lower() in ("1", "true", "yes", "on")
-TOMORROW_HIGH_OPEN_SKIP_PCT = float(os.getenv("TOMORROW_HIGH_OPEN_SKIP_PCT", "3.0"))
-FACTOR_COVERAGE_ALERT_ZERO_RATIO = float(os.getenv("FACTOR_COVERAGE_ALERT_ZERO_RATIO", "0.30"))
-SWING_MIN_HISTORY_FACTOR_COVERAGE = float(os.getenv("SWING_MIN_HISTORY_FACTOR_COVERAGE", "0.30"))
-SWING_DEGRADED_DISPLAY_LIMIT = int(os.getenv("SWING_DEGRADED_DISPLAY_LIMIT", "8"))
-TOMORROW_PRIMARY_MAX_RISK_PENALTY = float(os.getenv("TOMORROW_PRIMARY_MAX_RISK_PENALTY", "12"))
-TOMORROW_PRIMARY_MIN_OVERHEAT_DAMP = float(os.getenv("TOMORROW_PRIMARY_MIN_OVERHEAT_DAMP", "0.72"))
-TOMORROW_PRIMARY_MAX_SIXTY_DAY_PCT = float(os.getenv("TOMORROW_PRIMARY_MAX_SIXTY_DAY_PCT", "90"))
-TOMORROW_PRIMARY_MAX_YTD_PCT = float(os.getenv("TOMORROW_PRIMARY_MAX_YTD_PCT", "130"))
-MIN_TURNOVER = float(os.getenv("MIN_TURNOVER", "50000000"))
-MAX_RECOMMENDED_GAIN = float(os.getenv("MAX_RECOMMENDED_GAIN", "12"))
-MAX_BUYABLE_GAIN_MAIN = float(os.getenv("MAX_BUYABLE_GAIN_MAIN", "6.5"))
-MAX_BUYABLE_GAIN_GROWTH = float(os.getenv("MAX_BUYABLE_GAIN_GROWTH", "10"))
-TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
-ALLOW_SLOW_QUOTE_FALLBACK = os.getenv("ALLOW_SLOW_QUOTE_FALLBACK", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-STATE_PATH = os.getenv("STATE_PATH", ".runtime/recommendation_state.json")
-RECOMMENDATION_SNAPSHOT_PATH = os.getenv("RECOMMENDATION_SNAPSHOT_PATH", ".runtime/latest_recommendations.json")
-RECOMMENDATION_SNAPSHOT_MAX_AGE_SECONDS = int(os.getenv("RECOMMENDATION_SNAPSHOT_MAX_AGE_SECONDS", "300"))
-STRATEGY_STATUS_PATH = os.getenv("STRATEGY_STATUS_PATH", ".runtime/strategy_status.json")
-QUOTE_SNAPSHOT_PATH = os.getenv("QUOTE_SNAPSHOT_PATH", ".runtime/latest_quotes.json")
-QUOTE_SNAPSHOT_MAX_AGE_SECONDS = int(os.getenv("QUOTE_SNAPSHOT_MAX_AGE_SECONDS", "21600"))
-QUOTE_SNAPSHOT_INTRADAY_MAX_AGE_SECONDS = int(os.getenv("QUOTE_SNAPSHOT_INTRADAY_MAX_AGE_SECONDS", "360"))
-QUOTE_BACKGROUND_REFRESH_INTERVAL_SECONDS = int(os.getenv("QUOTE_BACKGROUND_REFRESH_INTERVAL_SECONDS", "300"))
-QUOTE_REFRESH_WAIT_SECONDS = float(os.getenv("QUOTE_REFRESH_WAIT_SECONDS", "12"))
-RECOMMENDATION_QUOTE_CACHE_TTL_SECONDS = int(os.getenv("RECOMMENDATION_QUOTE_CACHE_TTL_SECONDS", "15"))
-RECOMMENDATION_QUOTE_TIMEOUT_SECONDS = float(os.getenv("RECOMMENDATION_QUOTE_TIMEOUT_SECONDS", "4"))
-RECOMMENDATION_QUOTE_STALE_SECONDS = int(os.getenv("RECOMMENDATION_QUOTE_STALE_SECONDS", "30"))
-RECOMMENDATION_QUOTE_MAX_SOURCE_DEVIATION_PCT = float(
-    os.getenv("RECOMMENDATION_QUOTE_MAX_SOURCE_DEVIATION_PCT", "0.5")
-)
-RECOMMENDATION_CANDIDATE_POOL_SIZE = int(os.getenv("RECOMMENDATION_CANDIDATE_POOL_SIZE", "150"))
-FULL_MARKET_REFRESH_NORMAL_SECONDS = int(os.getenv("FULL_MARKET_REFRESH_NORMAL_SECONDS", "300"))
-FULL_MARKET_REFRESH_WARMUP_SECONDS = int(os.getenv("FULL_MARKET_REFRESH_WARMUP_SECONDS", "180"))
-FULL_MARKET_REFRESH_DECISION_SECONDS = int(os.getenv("FULL_MARKET_REFRESH_DECISION_SECONDS", "120"))
-CANDIDATE_POOL_REFRESH_NORMAL_SECONDS = int(os.getenv("CANDIDATE_POOL_REFRESH_NORMAL_SECONDS", "60"))
-CANDIDATE_POOL_REFRESH_WARMUP_SECONDS = int(os.getenv("CANDIDATE_POOL_REFRESH_WARMUP_SECONDS", "30"))
-CANDIDATE_POOL_REFRESH_DECISION_SECONDS = int(os.getenv("CANDIDATE_POOL_REFRESH_DECISION_SECONDS", "15"))
-RECOMMENDATION_POOL_REFRESH_NORMAL_SECONDS = int(os.getenv("RECOMMENDATION_POOL_REFRESH_NORMAL_SECONDS", "15"))
-RECOMMENDATION_POOL_REFRESH_WARMUP_SECONDS = int(os.getenv("RECOMMENDATION_POOL_REFRESH_WARMUP_SECONDS", "10"))
-RECOMMENDATION_POOL_REFRESH_DECISION_SECONDS = int(os.getenv("RECOMMENDATION_POOL_REFRESH_DECISION_SECONDS", "5"))
-RECOMMENDATION_POOL_REFRESH_FROZEN_SECONDS = int(os.getenv("RECOMMENDATION_POOL_REFRESH_FROZEN_SECONDS", "15"))
-REALTIME_MARKET_SCHEDULER_ENABLED = os.getenv("REALTIME_MARKET_SCHEDULER_ENABLED", "1") == "1"
-RECOMMENDATION_STREAM_POLL_SECONDS = float(os.getenv("RECOMMENDATION_STREAM_POLL_SECONDS", "1"))
-RECOMMENDATION_STREAM_HEARTBEAT_SECONDS = float(os.getenv("RECOMMENDATION_STREAM_HEARTBEAT_SECONDS", "15"))
-QUOTE_SNAPSHOT_MIN_ROWS = int(os.getenv("QUOTE_SNAPSHOT_MIN_ROWS", "50"))
-VALIDATION_SNAPSHOT_MAX_QUOTE_AGE_SECONDS = int(os.getenv("VALIDATION_SNAPSHOT_MAX_QUOTE_AGE_SECONDS", "3600"))
-VALIDATION_ALLOW_LOCAL_QUOTE_SNAPSHOT = os.getenv("VALIDATION_ALLOW_LOCAL_QUOTE_SNAPSHOT", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-VALIDATION_DB_PATH = os.getenv("VALIDATION_DB_PATH", ".runtime/strategy_validation.sqlite3")
-VALIDATION_BACKUP_PATH = os.getenv("VALIDATION_BACKUP_PATH", ".runtime/strategy_validation.backup.sqlite3")
-HISTORY_FACTOR_LIMIT = int(os.getenv("HISTORY_FACTOR_LIMIT", "40"))
-HISTORY_FACTORS_FETCH_ON_REQUEST = os.getenv("HISTORY_FACTORS_FETCH_ON_REQUEST", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-HISTORY_FACTORS_MAX_REQUEST_FETCHES = int(os.getenv("HISTORY_FACTORS_MAX_REQUEST_FETCHES", "8"))
-HISTORY_CACHE_PATH = os.getenv("HISTORY_CACHE_PATH", ".runtime/history_cache.sqlite3")
-HISTORY_CACHE_FRESHNESS_HOURS = int(os.getenv("HISTORY_CACHE_FRESHNESS_HOURS", "18"))
-_DEFAULT_MARKET_DATA_DB_PATH = ".runtime/market_data" if os.path.isdir(".runtime/market_data") else ".runtime/market_data.sqlite3"
-MARKET_DATA_DB_PATH = os.getenv("MARKET_DATA_DB_PATH", _DEFAULT_MARKET_DATA_DB_PATH)
-VALIDATION_AUTO_UPDATE_ENABLED = os.getenv("VALIDATION_AUTO_UPDATE_ENABLED", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS = int(os.getenv("VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS", "600"))
-VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS = int(os.getenv("VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS", "600"))
-VALIDATION_AUTO_UPDATE_START_TIME = os.getenv("VALIDATION_AUTO_UPDATE_START_TIME", "14:30")
-VALIDATION_AUTO_UPDATE_UNTIL_TIME = os.getenv("VALIDATION_AUTO_UPDATE_UNTIL_TIME", "23:59")
-VALIDATION_AUTO_UPDATE_BATCH_SIZE = int(os.getenv("VALIDATION_AUTO_UPDATE_BATCH_SIZE", "40"))
-VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN = int(os.getenv("VALIDATION_AUTO_UPDATE_MAX_CODES_PER_RUN", "160"))
-VALIDATION_AUTO_UPDATE_HISTORY_DAYS = int(os.getenv("VALIDATION_AUTO_UPDATE_HISTORY_DAYS", "220"))
-WEB_BACKGROUND_WORKERS_ENABLED = os.getenv("WEB_BACKGROUND_WORKERS_ENABLED", "0").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-ENABLE_SURVIVORSHIP_CORRECTION = os.getenv("ENABLE_SURVIVORSHIP_CORRECTION", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-SURVIVORSHIP_CORRECTION_STALE_DAYS = int(os.getenv("SURVIVORSHIP_CORRECTION_STALE_DAYS", "30"))
-# Deprecated compatibility setting. Validation labels never synthesize a delisting return.
-DELISTED_DEFAULT_LOSS_PCT = float(os.getenv("DELISTED_DEFAULT_LOSS_PCT", "-30.0"))
-TOMORROW_INTRADAY_RELAX_UNTIL = os.getenv("TOMORROW_INTRADAY_RELAX_UNTIL", "14:30")
-TOMORROW_INTRADAY_RELAX_START = os.getenv("TOMORROW_INTRADAY_RELAX_START", "09:30")
-VALIDATION_AUTO_SNAPSHOT_ENABLED = os.getenv("VALIDATION_AUTO_SNAPSHOT_ENABLED", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-VALIDATION_AUTO_SNAPSHOT_TIME = os.getenv("VALIDATION_AUTO_SNAPSHOT_TIME", "14:48")
-RECOMMENDATION_FREEZE_CUTOFF_TIME = "14:50"
-# Deprecated read-only alias; legacy environment values no longer override the final freeze.
-TOMORROW_SIGNAL_CUTOFF_TIME = RECOMMENDATION_FREEZE_CUTOFF_TIME
-VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS = int(os.getenv("VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS", "60"))
-VALIDATION_AUTO_SNAPSHOT_MARKET = os.getenv("VALIDATION_AUTO_SNAPSHOT_MARKET", "all")
-VALIDATION_AUTO_SNAPSHOT_STRATEGIES = os.getenv("VALIDATION_AUTO_SNAPSHOT_STRATEGIES", "")
-TOMORROW_RECOMMENDATION_BUY_WINDOW_START = os.getenv("TOMORROW_RECOMMENDATION_BUY_WINDOW_START", "14:30")
-TOMORROW_RECOMMENDATION_BUY_WINDOW_END = "14:50"
-ENABLE_DEEPSEEK_RUNTIME = os.getenv("ENABLE_DEEPSEEK_RUNTIME", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-ENABLE_DEEPSEEK_FEATURES = os.getenv("ENABLE_DEEPSEEK_FEATURES", "1").lower() in ("1", "true", "yes", "on")
-DEEPSEEK_FEATURE_REVIEW_LIMIT = int(os.getenv("DEEPSEEK_FEATURE_REVIEW_LIMIT", "30"))
-DEEPSEEK_PRE_1430_REVIEW_LIMIT = int(os.getenv("DEEPSEEK_PRE_1430_REVIEW_LIMIT", "12"))
-DEEPSEEK_POST_1430_REVIEW_LIMIT = int(os.getenv("DEEPSEEK_POST_1430_REVIEW_LIMIT", "20"))
-DEEPSEEK_SHARED_RESEARCH_LIMIT = max(1, int(os.getenv("DEEPSEEK_SHARED_RESEARCH_LIMIT", "24")))
-DEEPSEEK_DAILY_CALL_LIMIT = max(0, int(os.getenv("DEEPSEEK_DAILY_CALL_LIMIT", "50")))
-DEEPSEEK_PRE_1430_CALL_LIMIT = max(0, int(os.getenv("DEEPSEEK_PRE_1430_CALL_LIMIT", "30")))
-DEEPSEEK_FEATURE_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
-DEEPSEEK_FEATURE_CACHE_ENABLED = os.getenv("DEEPSEEK_FEATURE_CACHE_ENABLED", "1").lower() in ("1", "true", "yes", "on")
-DEEPSEEK_FEATURE_CACHE_PATH = os.getenv("DEEPSEEK_FEATURE_CACHE_PATH", ".runtime/deepseek_feature_cache.json")
-DEEPSEEK_FEATURE_CACHE_TTL_SECONDS = int(os.getenv("DEEPSEEK_FEATURE_CACHE_TTL_SECONDS", "21600"))
-DEEPSEEK_FEATURE_CACHE_MAX_ENTRIES = int(os.getenv("DEEPSEEK_FEATURE_CACHE_MAX_ENTRIES", "2000"))
-DEEPSEEK_META_ARTIFACT_DIR = os.getenv("DEEPSEEK_META_ARTIFACT_DIR", ".runtime")
-DEEPSEEK_META_RETURN_INCREMENT_CAP_PCT = float(os.getenv("DEEPSEEK_META_RETURN_INCREMENT_CAP_PCT", "1.0"))
-DEEPSEEK_META_PRODUCTION_ENABLED = False
-DEEPSEEK_PRECOMPUTE_TIMES = tuple(v.strip() for v in os.getenv("DEEPSEEK_PRECOMPUTE_TIMES", "09:40,10:00,10:20,10:40,11:00,11:20,13:00,13:20,13:40,14:00,14:20").split(",") if v.strip())
-DEEPSEEK_ON_DEMAND_START = os.getenv("DEEPSEEK_ON_DEMAND_START", "14:30")
-DEEPSEEK_PRECOMPUTE_DEADLINE = os.getenv("DEEPSEEK_PRECOMPUTE_DEADLINE", "14:48")
-DEEPSEEK_INTERNAL_SCHEDULER_ENABLED = os.getenv(
-    "DEEPSEEK_INTERNAL_SCHEDULER_ENABLED",
-    "1",
-).lower() in ("1", "true", "yes", "on")
-DEEPSEEK_SCHEDULER_POLL_SECONDS = int(os.getenv("DEEPSEEK_SCHEDULER_POLL_SECONDS", "15"))
-DEEPSEEK_SCHEDULER_SLOT_WINDOW_SECONDS = int(
-    os.getenv("DEEPSEEK_SCHEDULER_SLOT_WINDOW_SECONDS", "180")
-)
-DEEPSEEK_SCHEDULER_LEASE_SECONDS = int(os.getenv("DEEPSEEK_SCHEDULER_LEASE_SECONDS", "1200"))
-DEEPSEEK_SCHEDULER_JOB_TIMEOUT_SECONDS = int(
-    os.getenv("DEEPSEEK_SCHEDULER_JOB_TIMEOUT_SECONDS", "900")
-)
-DEEPSEEK_SCHEDULER_DB_PATH = os.getenv(
-    "DEEPSEEK_SCHEDULER_DB_PATH",
-    ".runtime/deepseek_scheduler.sqlite3",
-)
-DEEPSEEK_SHADOW_ONLY = os.getenv("DEEPSEEK_SHADOW_ONLY", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-VALIDATION_TRADE_COST_PCT = float(os.getenv("VALIDATION_TRADE_COST_PCT", "0.25"))
-VALIDATION_PRIMARY_ENTRY_MODE = os.getenv("VALIDATION_PRIMARY_ENTRY_MODE", "post_1430_signal_reference").lower()
-VALIDATION_EXECUTION_PRICE_MODE = os.getenv("VALIDATION_EXECUTION_PRICE_MODE", "raw").lower()
-VALIDATION_SLIPPAGE_HIGH_TURNOVER_PCT = float(os.getenv("VALIDATION_SLIPPAGE_HIGH_TURNOVER_PCT", "0.05"))
-VALIDATION_SLIPPAGE_MID_TURNOVER_PCT = float(os.getenv("VALIDATION_SLIPPAGE_MID_TURNOVER_PCT", "0.12"))
-VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT = float(os.getenv("VALIDATION_SLIPPAGE_LOW_TURNOVER_PCT", "0.25"))
-VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT = float(os.getenv("VALIDATION_SLIPPAGE_MICRO_TURNOVER_PCT", "0.45"))
-ENABLE_TAIL_AUCTION_SLIPPAGE = os.getenv("ENABLE_TAIL_AUCTION_SLIPPAGE", "0").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-TAIL_AUCTION_LIQUIDITY_RATIO = float(os.getenv("TAIL_AUCTION_LIQUIDITY_RATIO", "0.05"))
-TAIL_AUCTION_MAX_EXTRA_SLIPPAGE_PCT = float(os.getenv("TAIL_AUCTION_MAX_EXTRA_SLIPPAGE_PCT", "0.8"))
-ENABLE_MARKET_IMPACT = os.getenv("ENABLE_MARKET_IMPACT", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-VALIDATION_PORTFOLIO_CAPITAL = float(os.getenv("VALIDATION_PORTFOLIO_CAPITAL", "1000000"))
-VALIDATION_DEFAULT_POSITION_PCT = float(os.getenv("VALIDATION_DEFAULT_POSITION_PCT", "10"))
-VALIDATION_BENCHMARK_MAX_PEERS = int(os.getenv("VALIDATION_BENCHMARK_MAX_PEERS", "120"))
-MARKET_IMPACT_COEFFICIENT = float(os.getenv("MARKET_IMPACT_COEFFICIENT", "0.1"))
-MARKET_IMPACT_MAX_COST_PCT = float(os.getenv("MARKET_IMPACT_MAX_COST_PCT", "5.0"))
-MAX_ACCEPTABLE_IMPACT_PCT = float(os.getenv("MAX_ACCEPTABLE_IMPACT_PCT", "1.0"))
-STRATEGY_DECAY_MIN_REAL_SAMPLES = int(os.getenv("STRATEGY_DECAY_MIN_REAL_SAMPLES", "60"))
-STRATEGY_DECAY_MIN_REAL_DAYS = int(
-    os.getenv("STRATEGY_DECAY_MIN_REAL_DAYS", str(STRATEGY_DECAY_MIN_REAL_SAMPLES))
-)
-STRATEGY_VALIDATION_GATE_WINDOW_DAYS = int(os.getenv("STRATEGY_VALIDATION_GATE_WINDOW_DAYS", "120"))
-STRATEGY_DECAY_WIN_RATE_FLOOR = float(os.getenv("STRATEGY_DECAY_WIN_RATE_FLOOR", "42"))
-STRATEGY_DECAY_AVG_RETURN_FLOOR = float(os.getenv("STRATEGY_DECAY_AVG_RETURN_FLOOR", "0"))
-STRATEGY_DECAY_SOFT_WEIGHT = float(os.getenv("STRATEGY_DECAY_SOFT_WEIGHT", "0.5"))
-ENABLE_DYNAMIC_POSITION_SCALING = os.getenv("ENABLE_DYNAMIC_POSITION_SCALING", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-STRATEGY_POSITION_SCALE_MIN = float(os.getenv("STRATEGY_POSITION_SCALE_MIN", "0.35"))
-STRATEGY_POSITION_SCALE_PROBATION = float(os.getenv("STRATEGY_POSITION_SCALE_PROBATION", "0.6"))
-STRATEGY_RETIRE_WINRATE = float(os.getenv("STRATEGY_RETIRE_WINRATE", "48"))
-STRATEGY_VALIDATION_MIN_WIN_RATE = float(os.getenv("STRATEGY_VALIDATION_MIN_WIN_RATE", "50"))
-STRATEGY_VALIDATION_MAX_AVG_DRAWDOWN_PCT = float(
-    os.getenv("STRATEGY_VALIDATION_MAX_AVG_DRAWDOWN_PCT", "-8")
-)
-STRATEGY_VALIDATION_REQUIRE_POSITIVE_CI = os.getenv(
-    "STRATEGY_VALIDATION_REQUIRE_POSITIVE_CI",
-    "1",
-).lower() in ("1", "true", "yes", "on")
-PORTFOLIO_MAX_POSITIONS = int(os.getenv("PORTFOLIO_MAX_POSITIONS", "10"))
-PORTFOLIO_SINGLE_CAP = float(os.getenv("PORTFOLIO_SINGLE_CAP", "0.15"))
-PORTFOLIO_THEME_CAP = float(os.getenv("PORTFOLIO_THEME_CAP", "0.35"))
-ENABLE_REGIME_THEME_CAP = os.getenv("ENABLE_REGIME_THEME_CAP", "1").lower() in ("1", "true", "yes", "on")
-PORTFOLIO_THEME_CAP_RISK_OFF_MULTIPLIER = float(os.getenv("PORTFOLIO_THEME_CAP_RISK_OFF_MULTIPLIER", "0.7"))
-PORTFOLIO_THEME_CAP_BALANCED_MULTIPLIER = float(os.getenv("PORTFOLIO_THEME_CAP_BALANCED_MULTIPLIER", "0.9"))
-PORTFOLIO_THEME_CAP_RISK_ON_MULTIPLIER = float(os.getenv("PORTFOLIO_THEME_CAP_RISK_ON_MULTIPLIER", "1.0"))
-RECOMMENDATION_THEME_CAP_RISK_OFF_DELTA = int(os.getenv("RECOMMENDATION_THEME_CAP_RISK_OFF_DELTA", "1"))
-PORTFOLIO_GROSS_RISK_ON = float(os.getenv("PORTFOLIO_GROSS_RISK_ON", "1.0"))
-PORTFOLIO_GROSS_BALANCED = float(os.getenv("PORTFOLIO_GROSS_BALANCED", "0.7"))
-PORTFOLIO_GROSS_RISK_OFF = float(os.getenv("PORTFOLIO_GROSS_RISK_OFF", "0.4"))
-PORTFOLIO_DD_LEVEL_1 = float(os.getenv("PORTFOLIO_DD_LEVEL_1", "8.0"))
-PORTFOLIO_DD_FACTOR_1 = float(os.getenv("PORTFOLIO_DD_FACTOR_1", "0.7"))
-PORTFOLIO_DD_LEVEL_2 = float(os.getenv("PORTFOLIO_DD_LEVEL_2", "15.0"))
-PORTFOLIO_DD_FACTOR_2 = float(os.getenv("PORTFOLIO_DD_FACTOR_2", "0.4"))
-ENABLE_VOLATILITY_TARGETING = os.getenv("ENABLE_VOLATILITY_TARGETING", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-PORTFOLIO_TARGET_VOLATILITY_PCT = float(os.getenv("PORTFOLIO_TARGET_VOLATILITY_PCT", "5.0"))
-PORTFOLIO_VOL_SCALE_MIN = float(os.getenv("PORTFOLIO_VOL_SCALE_MIN", "0.35"))
-PORTFOLIO_VOL_SCALE_MAX = float(os.getenv("PORTFOLIO_VOL_SCALE_MAX", "1.15"))
-ENABLE_PORTFOLIO_OPTIMIZATION = os.getenv("ENABLE_PORTFOLIO_OPTIMIZATION", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-PORTFOLIO_CORRELATION_GROUP_CAP = float(os.getenv("PORTFOLIO_CORRELATION_GROUP_CAP", "0.45"))
-PAPER_TRADING_DB_PATH = os.getenv("PAPER_TRADING_DB_PATH", ".runtime/paper_trading.sqlite3")
-PAPER_TRADING_HISTORY_DAYS = int(os.getenv("PAPER_TRADING_HISTORY_DAYS", "220"))
-PAPER_TRADING_SPREAD_CAPITAL_BY_HOLDING_DAYS = os.getenv("PAPER_TRADING_SPREAD_CAPITAL_BY_HOLDING_DAYS", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-PORTFOLIO_BASELINE_VERSION = os.getenv("PORTFOLIO_BASELINE_VERSION", "daily_equal_weight_v1")
-PORTFOLIO_BASELINE_TOP_K = int(os.getenv("PORTFOLIO_BASELINE_TOP_K", "5"))
-PORTFOLIO_BASELINE_RANDOM_SEED = int(os.getenv("PORTFOLIO_BASELINE_RANDOM_SEED", "20260712"))
-PORTFOLIO_BASELINE_RANDOM_REPEATS = max(
-    1000,
-    int(os.getenv("PORTFOLIO_BASELINE_RANDOM_REPEATS", "1000")),
-)
-PORTFOLIO_BASELINE_INDEX_CODE = os.getenv("PORTFOLIO_BASELINE_INDEX_CODE", "000300")
-PORTFOLIO_BASELINE_INDEX_LABEL = os.getenv("PORTFOLIO_BASELINE_INDEX_LABEL", "沪深300")
-PORTFOLIO_BASELINE_STRATEGIES = tuple(
-    item.strip()
-    for item in os.getenv("PORTFOLIO_BASELINE_STRATEGIES", "tomorrow_picks").replace("，", ",").split(",")
-    if item.strip()
-)
-ENABLE_STANCE_TRACKING = os.getenv("ENABLE_STANCE_TRACKING", "0").lower() in ("1", "true", "yes", "on")
-STANCE_TRACKING_HOLDING_DAYS = int(os.getenv("STANCE_TRACKING_HOLDING_DAYS", "5"))
-ENABLE_EVENT_RISK = os.getenv("ENABLE_EVENT_RISK", "0").lower() in ("1", "true", "yes", "on")
-EVENT_RISK_CACHE_PATH = os.getenv("EVENT_RISK_CACHE_PATH", ".runtime/event_risk.json")
-EVENT_RISK_CACHE_HOURS = int(os.getenv("EVENT_RISK_CACHE_HOURS", "24"))
-EVENT_RISK_LOOKAHEAD_DAYS = int(os.getenv("EVENT_RISK_LOOKAHEAD_DAYS", "30"))
-EVENT_RISK_UNLOCK_WARN_RATIO = float(os.getenv("EVENT_RISK_UNLOCK_WARN_RATIO", "3.0"))
-EVENT_RISK_UNLOCK_HIGH_RATIO = float(os.getenv("EVENT_RISK_UNLOCK_HIGH_RATIO", "8.0"))
-EVENT_RISK_PLEDGE_WARN_RATIO = float(os.getenv("EVENT_RISK_PLEDGE_WARN_RATIO", "35.0"))
-EVENT_RISK_PLEDGE_HIGH_RATIO = float(os.getenv("EVENT_RISK_PLEDGE_HIGH_RATIO", "55.0"))
-EVENT_RISK_REPORT_WINDOW_DAYS = int(os.getenv("EVENT_RISK_REPORT_WINDOW_DAYS", "5"))
-EVENT_RISK_REDUCTION_LOOKBACK_DAYS = int(os.getenv("EVENT_RISK_REDUCTION_LOOKBACK_DAYS", "120"))
-EVENT_RISK_PENALTY_LOW = float(os.getenv("EVENT_RISK_PENALTY_LOW", "4.0"))
-EVENT_RISK_PENALTY_MEDIUM = float(os.getenv("EVENT_RISK_PENALTY_MEDIUM", "9.0"))
-EVENT_RISK_PENALTY_HIGH = float(os.getenv("EVENT_RISK_PENALTY_HIGH", "18.0"))
-EVENT_RISK_MAX_PENALTY = float(os.getenv("EVENT_RISK_MAX_PENALTY", "30.0"))
-EVENT_RISK_HARD_PENALTY = float(os.getenv("EVENT_RISK_HARD_PENALTY", "24.0"))
-EVENT_RISK_HARD_FILTER = os.getenv("EVENT_RISK_HARD_FILTER", "1").lower() in ("1", "true", "yes", "on")
-ENABLE_RISK_BLACKLIST = os.getenv("ENABLE_RISK_BLACKLIST", "1").lower() in ("1", "true", "yes", "on")
-RISK_BLACKLIST_PATH = os.getenv("RISK_BLACKLIST_PATH", ".runtime/risk_blacklist.json")
-RISK_BLACKLIST_CSV_PATH = os.getenv("RISK_BLACKLIST_CSV_PATH", ".runtime/risk_blacklist.csv")
-RISK_BLACKLIST_HARD_FILTER = os.getenv("RISK_BLACKLIST_HARD_FILTER", "1").lower() in ("1", "true", "yes", "on")
-RISK_BLACKLIST_HIGH_LEVELS = tuple(
-    item.strip().lower()
-    for item in os.getenv("RISK_BLACKLIST_HIGH_LEVELS", "high,critical").split(",")
-    if item.strip()
-)
-ENABLE_FUNDAMENTALS = os.getenv("ENABLE_FUNDAMENTALS", "1").lower() in ("1", "true", "yes", "on")
-FUNDAMENTAL_CACHE_PATH = os.getenv("FUNDAMENTAL_CACHE_PATH", ".runtime/fundamentals.json")
-FUNDAMENTAL_CACHE_HOURS = int(os.getenv("FUNDAMENTAL_CACHE_HOURS", "24"))
-FUNDAMENTAL_FETCH_LIMIT = int(os.getenv("FUNDAMENTAL_FETCH_LIMIT", "200"))
-FACTOR_IC_PATH = os.getenv("FACTOR_IC_PATH", ".runtime/factor_ic.json")
-FACTOR_SNAPSHOT_DB_PATH = os.getenv("FACTOR_SNAPSHOT_DB_PATH", ".runtime/factor_snapshots.sqlite3")
-FACTOR_SNAPSHOT_BATCH_SIZE = int(os.getenv("FACTOR_SNAPSHOT_BATCH_SIZE", "200"))
-FACTOR_SNAPSHOT_HISTORY_DAYS = int(os.getenv("FACTOR_SNAPSHOT_HISTORY_DAYS", "120"))
-ENABLE_FACTOR_IC_WEIGHTING = os.getenv("ENABLE_FACTOR_IC_WEIGHTING", "0").lower() in ("1", "true", "yes", "on")
-FACTOR_IC_MIN_SAMPLES = int(os.getenv("FACTOR_IC_MIN_SAMPLES", "30"))
-FACTOR_IC_WEIGHT_BAND = float(os.getenv("FACTOR_IC_WEIGHT_BAND", "0.3"))
-EXIT_STOP_LOSS_PCT = float(os.getenv("EXIT_STOP_LOSS_PCT", "5.0"))
-EXIT_TAKE_PROFIT_PCT = float(os.getenv("EXIT_TAKE_PROFIT_PCT", "8.0"))
-EXIT_TRAILING_STOP_PCT = float(os.getenv("EXIT_TRAILING_STOP_PCT", "4.0"))
-SWING_VALIDATION_TAKE_PROFIT_PCT = float(os.getenv("SWING_VALIDATION_TAKE_PROFIT_PCT", "8.0"))
-SWING_VALIDATION_STOP_LOSS_PCT = float(os.getenv("SWING_VALIDATION_STOP_LOSS_PCT", "5.0"))
-SWING_VALIDATION_TRAILING_STOP_PCT = float(os.getenv("SWING_VALIDATION_TRAILING_STOP_PCT", "4.0"))
-TOMORROW_AUXILIARY_TAKE_PROFIT_PCT = float(os.getenv("TOMORROW_AUXILIARY_TAKE_PROFIT_PCT", "8.0"))
-TOMORROW_AUXILIARY_STOP_LOSS_PCT = float(os.getenv("TOMORROW_AUXILIARY_STOP_LOSS_PCT", "5.0"))
-TOMORROW_AUXILIARY_TRAILING_STOP_PCT = float(os.getenv("TOMORROW_AUXILIARY_TRAILING_STOP_PCT", "4.0"))
-ENABLE_HISTORY_FACTORS = os.getenv("ENABLE_HISTORY_FACTORS", "1").lower() in ("1", "true", "yes", "on")
-ENABLE_INLINE_SENTIMENT = os.getenv("ENABLE_INLINE_SENTIMENT", "0").lower() in ("1", "true", "yes", "on")
-ENABLE_MARKET_NEWS = os.getenv("ENABLE_MARKET_NEWS", "0").lower() in ("1", "true", "yes", "on")
-ENABLE_DEEPSEEK_NEWS_CONTEXT = os.getenv("ENABLE_DEEPSEEK_NEWS_CONTEXT", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-DEEPSEEK_NEWS_CACHE_PATH = os.getenv("DEEPSEEK_NEWS_CACHE_PATH", ".runtime/deepseek_news_context.json")
-NEWS_CACHE_HOURS = int(os.getenv("NEWS_CACHE_HOURS", "6"))
-DEEPSEEK_NEWS_CONTEXT_LIMIT = int(os.getenv("DEEPSEEK_NEWS_CONTEXT_LIMIT", "3"))
-DEEPSEEK_NEWS_CACHE_MAX_ENTRIES = int(os.getenv("DEEPSEEK_NEWS_CACHE_MAX_ENTRIES", "1000"))
-DEEPSEEK_CASCADE_FILTER_ENABLED = os.getenv("DEEPSEEK_CASCADE_FILTER_ENABLED", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-DEEPSEEK_CASCADE_MAX_REVIEW = int(os.getenv("DEEPSEEK_CASCADE_MAX_REVIEW", "8"))
-ENABLE_DEEPSEEK_MARKET_GATE = os.getenv("ENABLE_DEEPSEEK_MARKET_GATE", "0").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-DEEPSEEK_MARKET_GATE_MIN_SIZE_FACTOR = float(os.getenv("DEEPSEEK_MARKET_GATE_MIN_SIZE_FACTOR", "0.25"))
-DEEPSEEK_MARKET_GATE_RISK_OFF_SCORE_BONUS = float(os.getenv("DEEPSEEK_MARKET_GATE_RISK_OFF_SCORE_BONUS", "5"))
-ENABLE_HOT_RANKS = os.getenv("ENABLE_HOT_RANKS", "0").lower() in ("1", "true", "yes", "on")
-ENABLE_INDUSTRY_STRENGTH = os.getenv("ENABLE_INDUSTRY_STRENGTH", "0").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-EASTMONEY_TIMEOUT_SECONDS = float(os.getenv("EASTMONEY_TIMEOUT_SECONDS", "2.5"))
-EASTMONEY_PAGE_SIZE = int(os.getenv("EASTMONEY_PAGE_SIZE", "500"))
-EASTMONEY_MAX_PAGES = int(os.getenv("EASTMONEY_MAX_PAGES", "0"))
-EASTMONEY_SORT_FIELD = os.getenv("EASTMONEY_SORT_FIELD", "f12")
-EASTMONEY_CONCURRENCY = int(os.getenv("EASTMONEY_CONCURRENCY", "6"))
-EASTMONEY_PAGE_RETRIES = int(os.getenv("EASTMONEY_PAGE_RETRIES", "1"))
-EASTMONEY_BATCH_TIMEOUT_SECONDS = float(os.getenv("EASTMONEY_BATCH_TIMEOUT_SECONDS", "45"))
-QUOTE_PAGE_WORKER_LIMIT = int(os.getenv("QUOTE_PAGE_WORKER_LIMIT", "4"))
-SINA_QUOTE_TIMEOUT_SECONDS = float(os.getenv("SINA_QUOTE_TIMEOUT_SECONDS", "5"))
-SINA_QUOTE_PAGE_SIZE = int(os.getenv("SINA_QUOTE_PAGE_SIZE", "80"))
-SINA_QUOTE_CONCURRENCY = int(os.getenv("SINA_QUOTE_CONCURRENCY", "6"))
-SINA_QUOTE_PAGE_RETRIES = int(os.getenv("SINA_QUOTE_PAGE_RETRIES", "1"))
-SINA_QUOTE_BATCH_TIMEOUT_SECONDS = float(os.getenv("SINA_QUOTE_BATCH_TIMEOUT_SECONDS", "90"))
-QUOTE_DOWNLOAD_MIN_COVERAGE_RATIO = float(os.getenv("QUOTE_DOWNLOAD_MIN_COVERAGE_RATIO", "0.98"))
-PAYLOAD_CACHE_MAX_ENTRIES = int(os.getenv("PAYLOAD_CACHE_MAX_ENTRIES", "64"))
-PAYLOAD_CACHE_TTL_SECONDS = int(os.getenv("PAYLOAD_CACHE_TTL_SECONDS", "300"))
+PRODUCTION_BASELINE_MANIFEST_PATH = RUNTIME_CONFIG_PATH
+PRODUCTION_BASELINE_MANIFEST = _RUNTIME_CONFIG["production_baseline"]
+TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "").strip()
 
-# 回测校准脚本（calibrate.py）写出的权重覆盖文件；scoring/backtest 启动时若存在则加载。
-WEIGHTS_OVERRIDE_PATH = os.getenv("WEIGHTS_OVERRIDE_PATH", ".runtime/weights.json")
-TOMORROW_ITERATION_PATH = os.getenv("TOMORROW_ITERATION_PATH", ".runtime/tomorrow_iteration.json")
-CALIBRATE_MIN_SAMPLES = int(os.getenv("CALIBRATE_MIN_SAMPLES", "30"))
-CALIBRATE_IMPROVE_MARGIN = float(os.getenv("CALIBRATE_IMPROVE_MARGIN", "0.05"))
-CALIBRATE_WALK_FORWARD_FOLDS = int(os.getenv("CALIBRATE_WALK_FORWARD_FOLDS", "4"))
-CALIBRATE_MIN_COVERAGE = float(os.getenv("CALIBRATE_MIN_COVERAGE", "0.5"))
-CALIBRATE_USE_SORTINO = os.getenv("CALIBRATE_USE_SORTINO", "1").lower() in ("1", "true", "yes", "on")
-CALIBRATE_USE_TIME_DECAY = os.getenv("CALIBRATE_USE_TIME_DECAY", "1").lower() in ("1", "true", "yes", "on")
-CALIBRATE_TIME_DECAY_HALF_LIFE = int(os.getenv("CALIBRATE_TIME_DECAY_HALF_LIFE", "60"))
-CALIBRATE_TOMORROW_DIRECTION_FOCUSED = os.getenv("CALIBRATE_TOMORROW_DIRECTION_FOCUSED", "1").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-ENABLE_EXPECTED_RETURN_RANKING = os.getenv("ENABLE_EXPECTED_RETURN_RANKING", "0").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-EXPECTED_RETURN_MIN_REAL_DAYS = int(os.getenv("EXPECTED_RETURN_MIN_REAL_DAYS", "60"))
-EXPECTED_RETURN_MIN_OOS_DELTA = float(os.getenv("EXPECTED_RETURN_MIN_OOS_DELTA", "0.05"))
-EXPECTED_RETURN_ARTIFACT_DIR = os.getenv("EXPECTED_RETURN_ARTIFACT_DIR", ".runtime/expected_return_models")
-EXPECTED_RETURN_ARTIFACT_MAX_AGE_DAYS = int(os.getenv("EXPECTED_RETURN_ARTIFACT_MAX_AGE_DAYS", "7"))
-ENABLE_INTERACTION_TERMS = os.getenv("ENABLE_INTERACTION_TERMS", "0").lower() in ("1", "true", "yes", "on")
-INTERACTION_TERM_MAX_PAIRS = int(os.getenv("INTERACTION_TERM_MAX_PAIRS", "8"))
-INTERACTION_MIN_TRAIN_SAMPLES = int(os.getenv("INTERACTION_MIN_TRAIN_SAMPLES", "20"))
-INTERACTION_SCORE_SCALE = float(os.getenv("INTERACTION_SCORE_SCALE", "6.0"))
-INTERACTION_SCORE_DELTA_CAP = float(os.getenv("INTERACTION_SCORE_DELTA_CAP", "12.0"))
-INTERACTION_MIN_ABS_CORR = float(os.getenv("INTERACTION_MIN_ABS_CORR", "0.02"))
-ENABLE_CALIBRATE_FDR = os.getenv("ENABLE_CALIBRATE_FDR", "1").lower() in ("1", "true", "yes", "on")
-CALIBRATE_FDR_Q = float(os.getenv("CALIBRATE_FDR_Q", "0.1"))
-ENABLE_REGIME_SPECIFIC_WEIGHTS = os.getenv("ENABLE_REGIME_SPECIFIC_WEIGHTS", "0").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-REGIME_SPECIFIC_MIN_TRAIN_SAMPLES = int(os.getenv("REGIME_SPECIFIC_MIN_TRAIN_SAMPLES", "20"))
-ENABLE_META_LABELING = os.getenv("ENABLE_META_LABELING", "0").lower() in ("1", "true", "yes", "on")
-META_LABELING_MIN_SAMPLES = int(os.getenv("META_LABELING_MIN_SAMPLES", "50"))
-META_LABELING_FULL_THRESHOLD = float(os.getenv("META_LABELING_FULL_THRESHOLD", "0.65"))
-META_LABELING_REDUCED_THRESHOLD = float(os.getenv("META_LABELING_REDUCED_THRESHOLD", "0.50"))
-META_LABELING_ENFORCE_ACTION = os.getenv("META_LABELING_ENFORCE_ACTION", "0").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-ENABLE_ENHANCED_FACTORS = os.getenv("ENABLE_ENHANCED_FACTORS", "0").lower() in ("1", "true", "yes", "on")
-ENABLE_EVENT_ALPHA = os.getenv("ENABLE_EVENT_ALPHA", "0").lower() in ("1", "true", "yes", "on")
-EVENT_ALPHA_MIN_SCORE = float(os.getenv("EVENT_ALPHA_MIN_SCORE", "60"))
-ENABLE_ENSEMBLE = os.getenv("ENABLE_ENSEMBLE", "0").lower() in ("1", "true", "yes", "on")
-ENSEMBLE_MODEL_WEIGHTS = os.getenv("ENSEMBLE_MODEL_WEIGHTS", "")
-ENABLE_STRESS_TEST = os.getenv("ENABLE_STRESS_TEST", "1").lower() in ("1", "true", "yes", "on")
-STRESS_TEST_SCENARIOS_PATH = os.getenv("STRESS_TEST_SCENARIOS_PATH", ".runtime/stress_scenarios.json")
-SCORE_CALIBRATOR_DIR = os.getenv("SCORE_CALIBRATOR_DIR", ".runtime")
-SCORE_CALIBRATION_MIN_SAMPLES = int(os.getenv("SCORE_CALIBRATION_MIN_SAMPLES", "20"))
-SCORE_CALIBRATION_BUCKETS = int(os.getenv("SCORE_CALIBRATION_BUCKETS", "5"))
+if bool(globals().get("PRODUCTION_FREEZE_ENABLED", True)):
+    if str(PRODUCTION_BASELINE_MANIFEST.get("status") or "") != "frozen":
+        raise RuntimeError("production baseline must be frozen when production freeze is enabled")
 
-# 小市值策略的流通市值下限（元），过滤纯壳/退市风险股。默认 8 亿。
-SMALLCAP_MIN_FLOAT_CAP = float(os.getenv("SMALLCAP_MIN_FLOAT_CAP", "800000000"))
-
-SUPPORTED_PREFIXES = (
-    "600",
-    "601",
-    "603",
-    "605",
-    "000",
-    "001",
-    "002",
-    "003",
-    "300",
-    "301",
-    "688",
-)
-
-MAIN_BOARD_PREFIXES = ("600", "601", "603", "605", "000", "001", "002", "003")
-CHINEXT_PREFIXES = ("300", "301")
-STAR_PREFIXES = ("688",)
-
-MARKET_LABELS = {
-    "all": "A股",
-    "main": "主板",
-    "chinext": "创业板",
-    "star": "科创板",
-}
-# 三策略口径（不再保留旧策略兼容清单）
-SNAPSHOT_STRATEGIES = (
-    "short_term",
-    "tomorrow_picks",
-    "swing_picks",
-)
-ACTIVE_STRATEGIES = (
-    "tomorrow_picks",
-    "swing_picks",
-)
-AUTO_SNAPSHOT_STRATEGIES = (
-    "tomorrow_picks",
-    "swing_picks",
-    "short_term",
-)
-
-
-def _apply_production_freeze() -> None:
-    if not PRODUCTION_FREEZE_ENABLED:
-        return
-    switches = PRODUCTION_BASELINE_MANIFEST.get("switches") or {}
-    locked_config = PRODUCTION_BASELINE_MANIFEST.get("locked_config") or {}
-    for name, value in switches.items():
-        globals()[str(name)] = bool(value)
-    for name, value in locked_config.items():
-        globals()[str(name)] = value
-
-
-_apply_production_freeze()
-PRODUCTION_RESEARCH_STRATEGY = str(
-    (PRODUCTION_BASELINE_MANIFEST.get("research") or {}).get("first_strategy") or "tomorrow_picks"
-)
-PRODUCTION_TOP_K = int((PRODUCTION_BASELINE_MANIFEST.get("research") or {}).get("production_top_k") or 5)
-RESEARCH_TOP_K_SENSITIVITY = tuple(
-    int(value)
-    for value in (PRODUCTION_BASELINE_MANIFEST.get("research") or {}).get("sensitivity_top_k", (3, 5, 10))
-)
+del _name
+del _value

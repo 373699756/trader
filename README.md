@@ -46,8 +46,8 @@ sudo apt install -y python3 python3-venv python3-pip ca-certificates
 
 可选配置：
 
-- `DEEPSEEK_API_KEY`：启用 DeepSeek 后台证据预计算和盘后研究；也可以写入项目根目录 `.env`。
-- `TUSHARE_TOKEN`：启用 Tushare 作为备用行情/历史数据源；没有也可以运行。
+- `DEEPSEEK_API_KEY`：启用 DeepSeek 后台证据预计算和盘后研究；也可以写入项目根目录 `.deepseek_key`。
+- `TUSHARE_TOKEN`：启用 Tushare 作为备用行情/历史数据源；也可以写入同一个 `.deepseek_key` 文件，没有也可以运行。
 - 如只想本地启动且跳过启动前外网检查，可显式设置 `SKIP_PROXY_CHECK=1`，但首次安装依赖仍需要能访问 PyPI。
 
 ## 启动

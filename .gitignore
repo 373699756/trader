@@ -1,6 +1,7 @@
 .venv/
 .venc/
 .env
+.deepseek_key
 .runtime/
 *.sqlite3
 .agents/

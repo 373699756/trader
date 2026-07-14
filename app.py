@@ -1,16 +1,14 @@
-import os
-
 from stock_analyzer.app import create_app
+from stock_analyzer import config
 
 
 app = create_app()
 
 
 if __name__ == "__main__":
-    debug = os.getenv("DEBUG", "0") == "1"
     app.run(
-        host=os.getenv("HOST", "127.0.0.1"),
-        port=int(os.getenv("PORT", "5000")),
-        debug=debug,
-        use_reloader=debug and os.getenv("FLASK_USE_RELOADER", "0") == "1",
+        host=str(config.SERVER_HOST),
+        port=int(config.SERVER_PORT),
+        debug=bool(config.SERVER_DEBUG),
+        use_reloader=bool(config.SERVER_DEBUG) and bool(config.SERVER_USE_RELOADER),
     )
