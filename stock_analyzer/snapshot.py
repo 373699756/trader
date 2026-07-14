@@ -2,6 +2,8 @@ from datetime import datetime
 from typing import Dict, Iterable, List
 from uuid import uuid4
 
+import pandas as pd
+
 from . import config
 from .app_runtime_support import finalize_deepseek_meta
 from .daily_data import load_history_frames
@@ -24,6 +26,7 @@ from .validation_repository import SignalFreezeDeadlineExceeded
 
 
 SNAPSHOT_STRATEGIES = tuple(config.SNAPSHOT_STRATEGIES)
+SNAPSHOT_REQUIRED_FACTOR_FIELDS = ("volume_ratio", "turnover_rate", "amplitude")
 
 
 def run_snapshot(
@@ -254,6 +257,9 @@ def _prepare_snapshot_context(provider) -> Dict[str, object]:
     freshness_error = _quote_freshness_error(provider, quotes)
     if freshness_error:
         return {"error": freshness_error}
+    factor_quality_error = _snapshot_factor_quality_error(quotes)
+    if factor_quality_error:
+        return {"error": factor_quality_error}
     snapshot_cutoff = datetime.now().isoformat(timespec="seconds")
     event_payload = filter_point_in_time_events(load_event_risk(provider), snapshot_cutoff)
     candidates = attach_event_risk(prepare_candidates(quotes), event_payload)
@@ -273,6 +279,35 @@ def _prepare_snapshot_context(provider) -> Dict[str, object]:
         "candidates": candidates,
         "market_regime": build_market_regime(candidates, breadth_source=quotes),
     }
+
+
+def _snapshot_factor_quality_error(quotes) -> str:
+    if quotes is None or quotes.empty:
+        return "实时行情为空，拒绝生成验证快照。"
+    minimum_ratio = min(
+        1.0,
+        max(0.0, float(getattr(config, "VALIDATION_REQUIRED_FACTOR_COVERAGE_RATIO", 0.99))),
+    )
+    if "price" in quotes.columns:
+        active = quotes[pd.to_numeric(quotes["price"], errors="coerce").fillna(0) > 0]
+    else:
+        active = quotes
+    if active.empty:
+        return "实时行情没有有效价格，拒绝生成验证快照。"
+    degraded = []
+    for field in SNAPSHOT_REQUIRED_FACTOR_FIELDS:
+        if field not in active.columns:
+            coverage = 0.0
+        else:
+            coverage = float(pd.to_numeric(active[field], errors="coerce").notna().mean())
+        if coverage < minimum_ratio:
+            degraded.append("{}={:.1%}".format(field, coverage))
+    if not degraded:
+        return ""
+    return "快照关键评分字段覆盖不足（最低 {:.0%}）：{}；拒绝把缺失值当 0 写入验证样本。".format(
+        minimum_ratio,
+        ", ".join(degraded),
+    )
 
 
 def _attach_frozen_regime(rows, market_regime: Dict[str, object]) -> None:

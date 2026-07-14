@@ -1,4 +1,5 @@
 import math
+from bisect import bisect_right
 from typing import Any, Iterable, Optional
 
 import pandas as pd
@@ -61,6 +62,23 @@ COLUMN_ALIASES = {
 }
 
 
+class SortedNumericValues(tuple):
+    def __new__(cls, values: Iterable[float]):
+        nums = [
+            float(value)
+            for value in values
+            if isinstance(value, (int, float)) and math.isfinite(float(value))
+        ]
+        nums.sort()
+        return super().__new__(cls, nums)
+
+
+def sorted_numeric_values(values: Iterable[float]) -> SortedNumericValues:
+    if isinstance(values, SortedNumericValues):
+        return values
+    return SortedNumericValues(values)
+
+
 def rename_known_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename_map = {}
     for column in df.columns:
@@ -114,11 +132,18 @@ def finite_series(df: pd.DataFrame, column: str) -> pd.Series:
 
 
 def percentile_score(value: float, values: Iterable[float], higher_is_better: bool = True) -> float:
-    clean_values = sorted([v for v in values if isinstance(v, (int, float)) and math.isfinite(v)])
+    if isinstance(values, SortedNumericValues):
+        clean_values = values
+    else:
+        clean_values = sorted([v for v in values if isinstance(v, (int, float)) and math.isfinite(v)])
     if not clean_values:
         return 50.0
+    value = coerce_number(value, clean_values[0])
     value = max(min(value, clean_values[-1]), clean_values[0])
-    below = sum(1 for item in clean_values if item <= value)
+    if isinstance(clean_values, SortedNumericValues):
+        below = bisect_right(clean_values, value)
+    else:
+        below = sum(1 for item in clean_values if item <= value)
     pct = below / len(clean_values) * 100
     if not higher_is_better:
         pct = 100 - pct

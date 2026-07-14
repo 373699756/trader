@@ -14,7 +14,6 @@ from .execution_policy import (
 )
 from .validation_benchmarks import CandidateBenchmarkCalculator
 from .validation_policy import (
-    execution_cost_pct as _execution_cost_pct,
     increment_reason as _increment_reason,
     legacy_validation_baseline_id,
     matches_current_validation_baseline as _matches_current_validation_baseline,
@@ -22,6 +21,12 @@ from .validation_policy import (
     validation_baseline_outcome_fingerprint,
     validation_baseline_config,
 )
+
+
+def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object]]:
+    from .strategy_validation import _compute_outcome as _strategy_compute_outcome
+
+    return _strategy_compute_outcome(provider, signal)
 
 
 def _mapping_get(row, key: str, default=None):

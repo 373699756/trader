@@ -24,6 +24,21 @@
         return 0;
       }
 
+      function isExecutableRow(row) {
+        if (!row || typeof row !== "object") {
+          return false;
+        }
+        if (row.execution_allowed === false) {
+          return false;
+        }
+        const tradeAction = row.trade_action || {};
+        const positionSize = Number(tradeAction.position_size);
+        if (Number.isFinite(positionSize) && positionSize <= 0) {
+          return false;
+        }
+        return true;
+      }
+
       function applyRecommendationsPayload(payload) {
         if (!payload.ok) {
           throw new Error(payload.error || "接口返回异常");
@@ -344,7 +359,15 @@
           sortMode: DEFAULT_SORT_MODE,
         });
         if (!displayRows.length) {
-          els.shortTermBody.innerHTML = '<tr><td colspan="17" class="empty">暂无符合条件的股票</td></tr>';
+          const rawRows = Array.isArray(rows) ? rows : [];
+          const hasRows = rawRows.length > 0;
+          const hasExecutable = rawRows.some(isExecutableRow);
+          const hasObservation = hasRows && !hasExecutable;
+          let emptyText = "暂无符合条件的股票";
+          if (hasObservation) {
+            emptyText = "暂无可执行推荐，当前仅有观察备选";
+          }
+          els.shortTermBody.innerHTML = `<tr><td colspan="17" class="empty">${escapeHtml(emptyText)}</td></tr>`;
           return;
         }
         els.shortTermBody.innerHTML = RecommendationTables.renderShortTermTableRows(displayRows, {

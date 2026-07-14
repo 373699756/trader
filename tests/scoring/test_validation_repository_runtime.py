@@ -40,12 +40,77 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
         self.assertEqual(report["readiness"]["real_oos_day_count"], 0)
         self.assertEqual(report["readiness"]["portfolio_day_count"], 0)
         self.assertEqual(report["readiness"]["deepseek_event_day_count"], 0)
+        self.assertEqual(
+            report["current_version_chains"]["tomorrow_picks"]["strategy_version"],
+            config.TOMORROW_STRATEGY_VERSION,
+        )
+        self.assertEqual(
+            report["current_version_chains"]["tomorrow_picks"]["signal_days"],
+            0,
+        )
         blocker_tasks = {item["task"] for item in report["blockers"]}
+        self.assertIn("P0-CURRENT-VERSION-SAMPLE-CHAIN", blocker_tasks)
         self.assertIn("P3-REAL-OOS-SAMPLE-GATE", blocker_tasks)
         self.assertIn("P4-REBUILDABLE-RETURN-ARTIFACT", blocker_tasks)
         self.assertIn("P5-PORTFOLIO-ABLATION-EVIDENCE", blocker_tasks)
         self.assertIn("P6-DEEPSEEK-EVENT-COUNTERFACTUAL", blocker_tasks)
         self.assertIn("P7-GRAY-ROLLBACK", blocker_tasks)
+
+    def test_validation_readiness_report_tracks_only_current_version_chain(self):
+        class FakeProvider:
+            def get_history(self, code, days=180):
+                return _validation_history("2026-07-10", future_days=3, final_price=10.6)
+
+            def get_execution_bars_raw(self, code, days=180):
+                frame = self.get_history(code, days=days)
+                frame.attrs["price_adjustment_mode"] = "raw"
+                return frame
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = "{}/validation.sqlite3".format(tmpdir)
+            store = StrategyValidationStore(path)
+            store.save_signals(
+                "tomorrow_picks",
+                config.TOMORROW_STRATEGY_VERSION,
+                "2026-07-10T14:30:00",
+                [{"rank": 1, "code": "600001", "name": "当前版本", "price": 10, "score": 80}],
+                candidate_rows=[
+                    {
+                        "code": "600001",
+                        "name": "当前版本",
+                        "eligible": True,
+                        "selected": True,
+                        "rank": 1,
+                        "score": 80,
+                        "point_in_time_valid": True,
+                    }
+                ],
+                execution_policy=build_execution_policy("tomorrow_picks"),
+            )
+            update = store.update_outcomes(
+                FakeProvider(),
+                signal_date="2026-07-10",
+                strategy_name="tomorrow_picks",
+            )
+
+            report = build_validation_readiness_report(path)
+
+        chain = report["current_version_chains"]["tomorrow_picks"]
+        self.assertEqual(chain["batch_count"], 1)
+        self.assertEqual(chain["nonempty_batch_count"], 1)
+        self.assertEqual(chain["signal_days"], 1)
+        self.assertEqual(chain["signal_count"], 1)
+        self.assertEqual(chain["candidate_count"], 1)
+        self.assertEqual(chain["selected_candidate_count"], 1)
+        self.assertEqual(chain["production_baseline_match_count"], 1)
+        self.assertEqual(update["updated"], 1)
+        self.assertEqual(chain["execution_record_count"], 1)
+        self.assertEqual(chain["outcome_count"], 1)
+        self.assertEqual(chain["validation_baseline_match_count"], 1)
+        self.assertEqual(chain["unknown_count"], 0)
+        self.assertEqual(chain["promotion_eligible_count"], 0)
+        self.assertEqual(chain["settled_promotion_days"], 0)
+        self.assertEqual(chain["status"], "collecting")
 
     def test_strategy_validation_persists_fold_predictions_for_oos_audit(self):
         with tempfile.TemporaryDirectory() as tmpdir:

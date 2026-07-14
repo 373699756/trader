@@ -5,7 +5,13 @@ import json
 import sqlite3
 
 from . import config
+from .production_baseline import production_baseline_id
 from .strategy_validation import StrategyValidationStore
+from .validation_policy import (
+    current_strategy_version,
+    matches_current_validation_baseline,
+    validation_baseline_config,
+)
 
 
 _READINESS_TABLES = (
@@ -44,6 +50,121 @@ def _count_distinct_days(conn, sql: str) -> int:
         return 0
 
 
+def _current_version_chain(conn, strategy_name: str) -> dict:
+    strategy_version = current_strategy_version(strategy_name)
+    expected_production_baseline = production_baseline_id()
+    expected_validation_baseline = str(
+        validation_baseline_config(strategy_name).get("baseline_id") or ""
+    )
+    batches = conn.execute(
+        """
+        SELECT signal_date, saved_count, candidate_count, selected_count, generation_json
+        FROM strategy_signal_batches
+        WHERE strategy_name = ? AND strategy_version = ?
+        ORDER BY signal_date
+        """,
+        (strategy_name, strategy_version),
+    ).fetchall()
+    signal_rows = conn.execute(
+        """
+        SELECT s.signal_date, s.id,
+               COALESCE(o.validation_baseline_id, '') AS validation_baseline_id,
+               CASE WHEN o.signal_id IS NULL THEN 0 ELSE 1 END AS has_outcome,
+               COALESCE(e.label_status, o.label_status,
+                        CASE WHEN o.signal_id IS NULL THEN 'pending' ELSE 'settled' END) AS label_status,
+               COALESCE(e.promotion_eligible, 0) AS promotion_eligible,
+               CASE WHEN e.signal_id IS NULL THEN 0 ELSE 1 END AS has_execution
+        FROM strategy_signals s
+        LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
+        LEFT JOIN strategy_execution_records e ON e.signal_id = s.id
+        WHERE s.strategy_name = ? AND s.strategy_version = ?
+        ORDER BY s.signal_date, s.rank
+        """,
+        (strategy_name, strategy_version),
+    ).fetchall()
+    candidate_count, candidate_days, selected_candidates = conn.execute(
+        """
+        SELECT COUNT(*), COUNT(DISTINCT signal_date), COALESCE(SUM(selected), 0)
+        FROM strategy_candidate_snapshots
+        WHERE strategy_name = ? AND strategy_version = ?
+        """,
+        (strategy_name, strategy_version),
+    ).fetchone()
+
+    production_match_count = 0
+    nonempty_batch_rows = [row for row in batches if int(row[1] or 0) > 0]
+    for _signal_date, _saved, _candidates, _selected, generation_json in nonempty_batch_rows:
+        try:
+            generation = json.loads(generation_json or "{}")
+        except (TypeError, ValueError):
+            generation = {}
+        if (
+            str(generation.get("baseline_id") or "") == expected_production_baseline
+            and str(generation.get("baseline_status") or "") == "frozen"
+            and not (generation.get("drift") or [])
+        ):
+            production_match_count += 1
+
+    outcome_rows = [row for row in signal_rows if bool(row[3])]
+    validation_match_count = sum(
+        1
+        for row in outcome_rows
+        if matches_current_validation_baseline(
+            row[2],
+            strategy_name,
+            expected_validation_baseline,
+        )
+    )
+    settled_promotion_dates = {
+        str(row[0])
+        for row in signal_rows
+        if str(row[4]) == "settled"
+        and bool(row[5])
+        and matches_current_validation_baseline(
+            row[2],
+            strategy_name,
+            expected_validation_baseline,
+        )
+    }
+    signal_days = len({str(row[0]) for row in signal_rows})
+    nonempty_batches = len(nonempty_batch_rows)
+    baseline_mismatch = (
+        production_match_count < nonempty_batches
+        or validation_match_count < len(outcome_rows)
+    )
+    if baseline_mismatch:
+        status = "baseline_mismatch"
+    elif signal_days < 5:
+        status = "collecting"
+    elif any(str(row[4]) in {"pending", "unknown"} for row in signal_rows):
+        status = "labeling"
+    else:
+        status = "ready"
+    return {
+        "status": status,
+        "strategy_name": strategy_name,
+        "strategy_version": strategy_version,
+        "batch_count": len(batches),
+        "nonempty_batch_count": nonempty_batches,
+        "empty_batch_count": len(batches) - nonempty_batches,
+        "signal_count": len(signal_rows),
+        "signal_days": signal_days,
+        "candidate_count": int(candidate_count or 0),
+        "candidate_days": int(candidate_days or 0),
+        "selected_candidate_count": int(selected_candidates or 0),
+        "execution_record_count": sum(1 for row in signal_rows if bool(row[6])),
+        "outcome_count": len(outcome_rows),
+        "pending_count": sum(1 for row in signal_rows if str(row[4]) == "pending"),
+        "unknown_count": sum(1 for row in signal_rows if str(row[4]) == "unknown"),
+        "promotion_eligible_count": sum(1 for row in signal_rows if bool(row[5])),
+        "settled_promotion_days": len(settled_promotion_dates),
+        "expected_production_baseline_id": expected_production_baseline,
+        "production_baseline_match_count": production_match_count,
+        "expected_validation_baseline_id": expected_validation_baseline,
+        "validation_baseline_match_count": validation_match_count,
+    }
+
+
 def build_validation_readiness_report(db_path: str) -> dict:
     min_oos_days = int(getattr(config, "EXPECTED_RETURN_MIN_REAL_DAYS", 60) or 60)
     formal_oos_days = max(120, min_oos_days)
@@ -51,14 +172,12 @@ def build_validation_readiness_report(db_path: str) -> dict:
     StrategyValidationStore(db_path)
     with sqlite3.connect(db_path) as conn:
         table_counts = {table: _count_rows(conn, table) for table in _READINESS_TABLES}
-        real_oos_day_count = _count_distinct_days(
-            conn,
-            """
-            SELECT COUNT(DISTINCT s.signal_date)
-            FROM strategy_outcomes o
-            JOIN strategy_signals s ON s.id = o.signal_id
-            WHERE COALESCE(o.label_status, 'settled') = 'settled'
-            """,
+        current_version_chains = {
+            strategy_name: _current_version_chain(conn, strategy_name)
+            for strategy_name in ("short_term", "tomorrow_picks", "swing_picks")
+        }
+        real_oos_day_count = int(
+            current_version_chains["tomorrow_picks"]["settled_promotion_days"]
         )
         portfolio_day_count = _count_distinct_days(
             conn,
@@ -77,6 +196,19 @@ def build_validation_readiness_report(db_path: str) -> dict:
             """,
         )
     blockers = []
+    for strategy_name, chain in current_version_chains.items():
+        if int(chain["signal_days"]) < 5:
+            blockers.append(
+                {
+                    "task": "P0-CURRENT-VERSION-SAMPLE-CHAIN",
+                    "code": "current_version_signal_days_insufficient",
+                    "strategy_name": strategy_name,
+                    "strategy_version": chain["strategy_version"],
+                    "observed_days": int(chain["signal_days"]),
+                    "required_days": 5,
+                    "missing_days": 5 - int(chain["signal_days"]),
+                }
+            )
     if real_oos_day_count < min_oos_days:
         blockers.append(
             {
@@ -139,6 +271,7 @@ def build_validation_readiness_report(db_path: str) -> dict:
             "formal_oos_days": formal_oos_days,
             "min_event_days": min_event_days,
         },
+        "current_version_chains": current_version_chains,
         "blockers": blockers,
     }
 

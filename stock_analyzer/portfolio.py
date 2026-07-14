@@ -1,8 +1,8 @@
 from typing import Dict, List
 
 from . import config
+from .execution_policy import market_impact_cost_pct
 from .normalization import coerce_number
-from .strategy_validation import market_impact_cost_pct
 
 
 def build_portfolio(

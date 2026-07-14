@@ -1074,6 +1074,11 @@ SINA_NUMERIC_COLUMN_MAP = {
     "low": "最低",
     "volume": "成交量",
     "amount": "成交额",
+    "per": "市盈率-动态",
+    "pb": "市净率",
+    "mktcap": "总市值",
+    "nmc": "流通市值",
+    "turnoverratio": "换手率",
 }
 
 
@@ -1088,13 +1093,6 @@ def _fetch_tencent_recommendation_quotes(codes) -> pd.DataFrame:
     if not normalized_codes:
         return pd.DataFrame()
 
-    def symbol(code: str) -> str:
-        if code.startswith(("6", "9")):
-            return "sh" + code
-        if code.startswith(("4", "8")):
-            return "bj" + code
-        return "sz" + code
-
     last_error: Optional[Exception] = None
     content = b""
     headers = {
@@ -1106,7 +1104,9 @@ def _fetch_tencent_recommendation_quotes(codes) -> pd.DataFrame:
             with requests.Session() as session:
                 session.trust_env = trust_env
                 response = session.get(
-                    "https://qt.gtimg.cn/q={}".format(",".join(symbol(code) for code in normalized_codes)),
+                    "https://qt.gtimg.cn/q={}".format(
+                        ",".join(_tencent_quote_symbol(code) for code in normalized_codes)
+                    ),
                     headers=headers,
                     timeout=max(1.0, float(getattr(config, "RECOMMENDATION_QUOTE_TIMEOUT_SECONDS", 4))),
                 )
@@ -1180,6 +1180,15 @@ def _fetch_tencent_recommendation_quotes(codes) -> pd.DataFrame:
     return frame
 
 
+def _tencent_quote_symbol(code: str) -> str:
+    normalized = normalize_code(code)
+    if normalized.startswith("6"):
+        return "sh" + normalized
+    if normalized.startswith(("4", "8", "9")):
+        return "bj" + normalized
+    return "sz" + normalized
+
+
 def _fetch_sina_spot_dataframe() -> pd.DataFrame:
     count_text = _request_sina_text(SINA_QUOTE_COUNT_URL, {"node": "hs_a"})
     count_match = re.search(r"\d+", count_text)
@@ -1214,7 +1223,15 @@ def _fetch_sina_spot_dataframe() -> pd.DataFrame:
     )
     raw = pd.DataFrame([row for page in sorted(page_rows) for row in page_rows[page]])
     raw = _validate_quote_coverage(raw, "code", total, "新浪", fallback_code_column="symbol")
-    return _normalize_sina_spot(raw)
+    normalized = _normalize_sina_spot(raw)
+    try:
+        normalized = _enrich_sina_factors_with_tencent(normalized)
+    except Exception:
+        # Keep the live base quote usable for display.  Validation snapshots
+        # independently enforce required-factor coverage and will reject this
+        # frame if Tencent enrichment did not supply enough volume ratios.
+        pass
+    return normalized
 
 
 def _request_sina_text(url: str, params: Dict[str, str]) -> str:
@@ -1272,8 +1289,49 @@ def _normalize_sina_spot(raw: pd.DataFrame) -> pd.DataFrame:
     for source_column, target_column in SINA_NUMERIC_COLUMN_MAP.items():
         values = raw.get(source_column, pd.Series(index=raw.index, dtype=float))
         result[target_column] = pd.to_numeric(values, errors="coerce")
+    previous_close = pd.to_numeric(result.get("昨收"), errors="coerce")
+    high = pd.to_numeric(result.get("最高"), errors="coerce")
+    low = pd.to_numeric(result.get("最低"), errors="coerce")
+    result["振幅"] = ((high - low) / previous_close.where(previous_close > 0) * 100).round(4)
     result = result[result["代码"].astype(str).str.len() == 6]
     return result.sort_values("代码", kind="stable").reset_index(drop=True)
+
+
+def _enrich_sina_factors_with_tencent(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty or "代码" not in frame.columns:
+        return frame
+    codes = [normalize_code(code) for code in frame["代码"].tolist() if normalize_code(code)]
+    batch_size = max(20, int(getattr(config, "SINA_TENCENT_ENRICH_BATCH_SIZE", 200)))
+    batches = [codes[index : index + batch_size] for index in range(0, len(codes), batch_size)]
+
+    def fetch_batch(page: int):
+        enriched = _fetch_tencent_recommendation_quotes(batches[page - 1])
+        return enriched.to_dict(orient="records")
+
+    page_rows = _download_quote_pages(
+        range(1, len(batches) + 1),
+        fetch_batch,
+        source="腾讯因子补充",
+        max_workers=int(getattr(config, "SINA_TENCENT_ENRICH_CONCURRENCY", 4)),
+        retries=int(getattr(config, "SINA_TENCENT_ENRICH_RETRIES", 1)),
+        batch_timeout_seconds=float(getattr(config, "SINA_TENCENT_ENRICH_TIMEOUT_SECONDS", 90.0)),
+    )
+    enriched = pd.DataFrame([row for page in sorted(page_rows) for row in page_rows[page]])
+    if enriched.empty:
+        return frame
+    enriched["代码"] = enriched["代码"].map(normalize_code)
+    enriched = enriched.drop_duplicates(subset=["代码"], keep="last").set_index("代码")
+    result = frame.copy()
+    for field in ("量比", "换手率", "振幅"):
+        values = result["代码"].map(enriched[field]) if field in enriched.columns else None
+        if values is None:
+            continue
+        if field not in result.columns:
+            result[field] = values
+        else:
+            current = pd.to_numeric(result[field], errors="coerce")
+            result[field] = current.where(current.notna(), pd.to_numeric(values, errors="coerce"))
+    return result
 
 
 def _download_quote_pages(

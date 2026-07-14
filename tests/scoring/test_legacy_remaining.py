@@ -1502,12 +1502,15 @@ class LegacyRemainingScoringTest(unittest.TestCase):
 
     def test_backtest_trade_cost_reuses_validation_cost_model(self):
         from stock_analyzer.backtest import _backtest_trade_cost_pct
-        from stock_analyzer.strategy_validation import _execution_cost_pct
+        from stock_analyzer.execution_policy import execution_cost_for_strategy
 
         with patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False), patch.object(
             config, "ENABLE_MARKET_IMPACT", False
         ):
-            self.assertEqual(_backtest_trade_cost_pct(100_000_000), _execution_cost_pct({"turnover": 100_000_000}))
+            self.assertEqual(
+                _backtest_trade_cost_pct(100_000_000),
+                execution_cost_for_strategy({"turnover": 100_000_000}, strategy_name="tomorrow_picks"),
+            )
 
     def test_strategy_validation_splits_real_and_replay_samples(self):
         import tempfile

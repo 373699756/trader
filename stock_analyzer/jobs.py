@@ -56,6 +56,7 @@ def _job_owner() -> str:
 def _job_lock(command: str, lease_seconds: int = 3600):
     db_path = _job_lock_db_path()
     acquired = False
+    owner = _job_owner()
     start_time = time.time()
     conn = sqlite3.connect(db_path, timeout=2)
     try:
@@ -87,31 +88,39 @@ def _job_lock(command: str, lease_seconds: int = 3600):
             (command,),
         ).fetchone()
         if existing:
-            owner, expires_at = existing
+            existing_owner, expires_at = existing
             if float(expires_at) > now:
                 conn.rollback()
                 raise RuntimeError(
                     "job {} is locked by {} (expires at {})".format(
                         command,
-                        owner,
+                        existing_owner,
                         time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(expires_at))),
                     )
                 )
         conn.execute(
             "INSERT OR REPLACE INTO job_lease (command, owner, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
-            (command, _job_owner(), now, now + max(1, int(lease_seconds))),
+            (command, owner, now, now + max(1, int(lease_seconds))),
         )
-        acquired = True
-        yield {
-            "lock_wait_seconds": round(time.time() - start_time, 3),
-            "acquired_at": now,
-            "lease_seconds": max(1, int(lease_seconds)),
-        }
-        conn.execute("DELETE FROM job_lease WHERE command = ?", (command,))
+        # The committed lease row owns the command lock.  Holding BEGIN
+        # IMMEDIATE for the job duration would block every other command and
+        # keep this lease invisible to readers.
         conn.commit()
+        acquired = True
+        try:
+            yield {
+                "lock_wait_seconds": round(time.time() - start_time, 3),
+                "acquired_at": now,
+                "lease_seconds": max(1, int(lease_seconds)),
+            }
+        finally:
+            conn.execute(
+                "DELETE FROM job_lease WHERE command = ? AND owner = ?",
+                (command, owner),
+            )
+            conn.commit()
     except Exception:
-        if acquired:
-            conn.rollback()
+        conn.rollback()
         raise
     finally:
         conn.close()

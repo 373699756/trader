@@ -9,6 +9,7 @@ from .execution_policy import (
     build_execution_policy,
     estimated_order_amount as _policy_estimated_order_amount,
     execution_cost_components as _policy_execution_cost_components,
+    execution_cost_for_strategy as _policy_execution_cost_for_strategy,
     market_impact_cost_pct as _policy_market_impact_cost_pct,
     policy_from_signal,
     tail_auction_slippage_pct as _policy_tail_auction_slippage_pct,
@@ -306,6 +307,12 @@ def market_impact_cost_pct(row) -> float:
 
 def execution_cost_pct(row) -> float:
     return _policy_execution_cost_components(row, policy_from_signal(row))["total_pct"]
+
+
+def execution_cost_for_strategy(row, strategy_name: str, policy: Dict[str, object] = None) -> float:
+    if not strategy_name and not policy:
+        return _policy_execution_cost_components(row, policy_from_signal(row))["total_pct"]
+    return _policy_execution_cost_for_strategy(row, strategy_name=strategy_name, policy=policy)
 
 
 def stored_or_current_trade_cost_pct(row) -> float:

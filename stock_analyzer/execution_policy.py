@@ -255,7 +255,7 @@ def market_impact_cost_pct(row, policy: Dict[str, object] = None) -> float:
 
 
 def execution_cost_components(row, policy: Dict[str, object] = None) -> Dict[str, float]:
-    policy = policy or build_execution_policy(str(_mapping_get(row, "strategy_name", "")))
+    policy = policy or build_execution_policy(str(_mapping_get(row, "strategy_name", "")), str(_mapping_get(row, "market", "")))
     fee = coerce_number(
         ((policy.get("cost") or {}).get("fee_round_trip_pct")),
         getattr(config, "VALIDATION_TRADE_COST_PCT", 0.25),
@@ -271,8 +271,19 @@ def execution_cost_components(row, policy: Dict[str, object] = None) -> Dict[str
     }
 
 
+def execution_cost_for_strategy(row, strategy_name: str, policy: Dict[str, object] = None) -> float:
+    if not policy and not strategy_name:
+        raise ValueError("strategy_name is required for explicit execution cost calculation")
+    if not policy:
+        strategy = str(strategy_name or _mapping_get(row, "strategy_name", ""))
+        if not strategy:
+            raise ValueError("strategy_name is required for explicit execution cost calculation")
+        policy = build_execution_policy(strategy, str(_mapping_get(row, "market", "")))
+    return execution_cost_components(row, policy)["total_pct"]
+
+
 def cost_scenarios(row, policy: Dict[str, object] = None) -> Dict[str, Dict[str, float]]:
-    policy = policy or build_execution_policy(str(_mapping_get(row, "strategy_name", "")))
+    policy = policy or build_execution_policy(str(_mapping_get(row, "strategy_name", "")), str(_mapping_get(row, "market", "")))
     components = execution_cost_components(row, policy)
     multipliers = ((policy.get("cost") or {}).get("scenario_multipliers") or {})
     scenarios: Dict[str, Dict[str, float]] = {}

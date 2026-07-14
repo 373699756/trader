@@ -26,6 +26,7 @@ def _quotes(count=35):
                 "volume": 1_000_000,
                 "volume_ratio": 1.5,
                 "turnover_rate": 3.0,
+                "amplitude": 4.0,
                 "industry": "行业A" if index % 2 else "行业B",
                 "market_cap": 10_000_000_000 + index * 5_000_000_000,
                 "sixty_day_pct": 8.0,
@@ -69,6 +70,8 @@ def test_snapshot_persists_full_evaluated_pool_not_only_top_k(tmp_path):
     meta = {"generated_at": "2024-01-01T14:50:00", "top_n": 2}
     with patch.object(config, "QUOTE_SNAPSHOT_MIN_ROWS", 1), patch.object(
         config, "TOMORROW_SIGNAL_CUTOFF_TIME", "23:59"
+    ), patch.object(
+        config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "23:59"
     ), patch.object(
         config, "ENABLE_HISTORY_FACTORS", False
     ), patch(

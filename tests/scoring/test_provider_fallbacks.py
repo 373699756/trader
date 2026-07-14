@@ -13,9 +13,11 @@ from stock_analyzer.normalization import rename_known_columns
 from stock_analyzer.providers import (
     MarketDataProvider,
     _download_quote_pages,
+    _enrich_sina_factors_with_tencent,
     _normalize_eastmoney_spot,
     _normalize_sina_spot,
     _request_eastmoney_page,
+    _tencent_quote_symbol,
     _validate_quote_coverage,
 )
 
@@ -53,6 +55,12 @@ def test_eastmoney_normalization_maps_required_quote_fields():
     assert result.iloc[0]["price"] == 12.3
     assert result.iloc[0]["turnover"] == 90000000
     assert str(result.attrs.get("quote_timestamp") or "").startswith("2026-07-09T15:00")
+
+
+def test_tencent_symbol_maps_new_beijing_92_prefix_to_bj():
+    assert _tencent_quote_symbol("920001") == "bj920001"
+    assert _tencent_quote_symbol("688001") == "sh688001"
+    assert _tencent_quote_symbol("300001") == "sz300001"
 
 
 def test_provider_prefers_direct_eastmoney_quotes():
@@ -310,11 +318,15 @@ def test_sina_normalization_matches_provider_quote_contract():
                 "code": "600001",
                 "name": "样本股份",
                 "trade": "12.30",
+                "settlement": "11.77",
+                "high": "12.50",
+                "low": "11.90",
                 "pricechange": "0.53",
                 "changepercent": "4.50",
                 "volume": "1000",
                 "amount": "90000000",
                 "ticktime": "15:00:00",
+                "turnoverratio": "3.20",
             }
         ]
     )
@@ -326,6 +338,33 @@ def test_sina_normalization_matches_provider_quote_contract():
     assert result.iloc[0]["price"] == 12.3
     assert result.iloc[0]["pct_chg"] == 4.5
     assert result.iloc[0]["turnover"] == 90000000
+    assert result.iloc[0]["turnover_rate"] == 3.2
+    assert result.iloc[0]["amplitude"] == pytest.approx((12.5 - 11.9) / 11.77 * 100, abs=0.0001)
+
+
+def test_sina_fallback_is_enriched_with_tencent_volume_ratio():
+    base = pd.DataFrame(
+        [
+            {"代码": "600001", "名称": "样本A", "最新价": 10.0, "换手率": 2.1, "振幅": 3.2},
+            {"代码": "000001", "名称": "样本B", "最新价": 12.0, "换手率": 3.1, "振幅": 4.2},
+        ]
+    )
+
+    def fake_tencent(codes):
+        return pd.DataFrame(
+            [
+                {"代码": code, "量比": 1.5 + index, "换手率": 9.0, "振幅": 8.0}
+                for index, code in enumerate(codes)
+            ]
+        )
+
+    with patch("stock_analyzer.providers._fetch_tencent_recommendation_quotes", side_effect=fake_tencent):
+        result = _enrich_sina_factors_with_tencent(base)
+
+    ratios = dict(zip(result["代码"], result["量比"]))
+    assert ratios == {"600001": 1.5, "000001": 2.5}
+    assert result["换手率"].tolist() == [2.1, 3.1]
+    assert result["振幅"].tolist() == [3.2, 4.2]
 
 
 def test_health_endpoint_exposes_factor_coverage_alerts_in_provider_health(tmp_path):

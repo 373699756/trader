@@ -1,5 +1,6 @@
 import io
 import json
+import sqlite3
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
@@ -8,7 +9,7 @@ import pytest
 pytest.importorskip("pandas")
 
 from stock_analyzer import config
-from stock_analyzer.jobs import main as jobs_main
+from stock_analyzer.jobs import _job_lock, main as jobs_main
 
 
 class _FakeStore:
@@ -66,6 +67,50 @@ def _run_jobs_cli(argv, *, config_db_path, config_backup_path, config_active="")
 
 def _run_jobs_cli_patched(argv, config_db_path, config_backup_path):
     return _run_jobs_cli(argv, config_db_path=config_db_path, config_backup_path=config_backup_path)
+
+
+def test_job_lease_is_committed_without_holding_global_sqlite_write_lock(tmp_path):
+    validation_path = str(tmp_path / "validation.sqlite3")
+    with patch.object(config, "VALIDATION_DB_PATH", validation_path):
+        with _job_lock("first-command", lease_seconds=60):
+            lock_path = tmp_path / ".stock_analyzer_jobs.sqlite3"
+            other = sqlite3.connect(str(lock_path), timeout=1)
+            try:
+                row = other.execute(
+                    "SELECT command, owner FROM job_lease WHERE command = ?",
+                    ("first-command",),
+                ).fetchone()
+                other.execute("BEGIN IMMEDIATE")
+                other.rollback()
+            finally:
+                other.close()
+            assert row is not None
+
+        with sqlite3.connect(str(lock_path)) as check:
+            assert check.execute(
+                "SELECT COUNT(*) FROM job_lease WHERE command = ?",
+                ("first-command",),
+            ).fetchone()[0] == 0
+
+
+def test_expired_job_lease_is_replaced_with_the_new_owner(tmp_path):
+    validation_path = str(tmp_path / "validation.sqlite3")
+    lock_path = tmp_path / ".stock_analyzer_jobs.sqlite3"
+    with patch.object(config, "VALIDATION_DB_PATH", validation_path):
+        with _job_lock("seed", lease_seconds=60):
+            pass
+        with sqlite3.connect(str(lock_path)) as conn:
+            conn.execute(
+                "INSERT INTO job_lease (command, owner, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+                ("stale-command", "stale-owner", 0, 0),
+            )
+        with _job_lock("stale-command", lease_seconds=60):
+            with sqlite3.connect(str(lock_path)) as conn:
+                owner = conn.execute(
+                    "SELECT owner FROM job_lease WHERE command = ?",
+                    ("stale-command",),
+                ).fetchone()[0]
+            assert owner != "stale-owner"
 
 
 def test_snapshot_and_update_commands_record_metrics_and_dispatch(tmp_path):
@@ -223,4 +268,3 @@ def test_update_outcomes_command_aggregates_summary_fields_from_each_strategy(tm
     assert payload["metrics"]["elapsed_seconds"] >= 0
     assert payload["metrics"]["lock_wait_seconds"] >= 0
     assert payload["metrics"]["success_count"] >= 1
-

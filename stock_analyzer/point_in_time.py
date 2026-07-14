@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime
+from functools import lru_cache
 from typing import Dict, Iterable, List
 
 import pandas as pd
@@ -161,31 +162,34 @@ def build_candidate_snapshot_rows(
     market_cutoff = str(signal_time or quote_timestamp)
     event_timestamp = str((event_payload or {}).get("generated_at") or "")
     fundamental_timestamp = str((fundamental_payload or {}).get("generated_at") or "")
-    event_items = (event_payload or {}).get("items") or {}
-    fundamental_items = (fundamental_payload or {}).get("items") or {}
+    event_items = _normalized_payload_items((event_payload or {}).get("items") or {})
+    fundamental_items = _normalized_payload_items((fundamental_payload or {}).get("items") or {})
 
+    source_rows = source_frame.to_dict(orient="records")
+    normalized_source_rows = _normalized_source_rows(source_frame)
     candidate_lookup = _frame_lookup(candidates)
-    selected_lookup = {
-        normalize_code(row.get("code")): make_json_safe(dict(row))
-        for row in selected_rows or []
-        if normalize_code(row.get("code"))
-    }
+    selected_lookup = _json_row_lookup(selected_rows)
     strategy_pool_captured = scored_rows is not None
-    scored_lookup = {
-        normalize_code(row.get("code")): make_json_safe(dict(row))
-        for row in (scored_rows if scored_rows is not None else selected_rows) or []
-        if normalize_code(row.get("code"))
-    }
+    scored_lookup = _json_row_lookup(
+        scored_rows if scored_rows is not None else selected_rows
+    )
+    selected_codes = set(selected_lookup)
+    scored_codes = set(scored_lookup)
+    candidate_codes = set(candidate_lookup)
     records: List[Dict[str, object]] = []
     seen = set()
-    original_rows = list(source_frame.to_dict(orient="records"))
-    for position, (_, base_row) in enumerate(base.iterrows()):
+    base_records = base.to_dict(orient="records")
+    for position, base_row in enumerate(base_records):
         code = normalize_code(base_row.get("code"))
         if not code or code in seen:
             continue
         seen.add(code)
-        raw = make_json_safe(original_rows[position] if position < len(original_rows) else dict(base_row))
-        raw_normalized = _normalized_source_row(raw)
+        raw = make_json_safe(source_rows[position] if position < len(source_rows) else base_row)
+        raw_normalized = (
+            normalized_source_rows[position]
+            if position < len(normalized_source_rows)
+            else _normalized_source_row(raw)
+        )
         enriched = make_json_safe(candidate_lookup.get(code) or {})
         displayed = selected_lookup.get(code) or {}
         scored = dict(scored_lookup.get(code) or {})
@@ -201,10 +205,10 @@ def build_candidate_snapshot_rows(
             failed_keys.append("event_risk_hard_exclude")
         eligible = (
             not failed_keys
-            and code in candidate_lookup
-            and (not strategy_pool_captured or code in scored_lookup)
+            and code in candidate_codes
+            and (not strategy_pool_captured or code in scored_codes)
         )
-        selected = code in selected_lookup
+        selected = code in selected_codes
         reasons = [
             {"key": key, "label": HARD_FILTER_LABELS.get(key, "事件风险硬过滤")}
             for key in failed_keys
@@ -335,6 +339,40 @@ def build_candidate_snapshot_rows(
     return records
 
 
+def _normalized_payload_items(payload_items: Dict[str, object]) -> Dict[str, Dict[str, object]]:
+    if not isinstance(payload_items, dict):
+        return {}
+    normalized = {}
+    for raw_code, item in payload_items.items():
+        code = normalize_code(raw_code)
+        if not code or not isinstance(item, dict):
+            continue
+        normalized[code] = make_json_safe(item)
+    return normalized
+
+
+def _json_row_lookup(rows: Iterable[Dict[str, object]]) -> Dict[str, Dict[str, object]]:
+    result: Dict[str, Dict[str, object]] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        code = normalize_code(row.get("code"))
+        if not code:
+            continue
+        result[code] = make_json_safe(dict(row))
+    return result
+
+
+def _normalized_source_rows(raw_frame: pd.DataFrame) -> List[Dict[str, object]]:
+    if raw_frame is None or raw_frame.empty:
+        return []
+    try:
+        normalized = rename_known_columns(raw_frame.copy())
+    except Exception:
+        normalized = raw_frame.copy()
+    return [make_json_safe(row) for row in normalized.to_dict(orient="records")]
+
+
 def _signal_at_or_after_cutoff(signal_time: str, cutoff: str) -> bool:
     text = str(signal_time or "")
     clock = text.split("T", 1)[1][:5] if "T" in text else ""
@@ -456,6 +494,11 @@ def _parse_timestamp(value: object, end_of_day: bool = False):
     if is_missing(value):
         return None
     text = str(value).strip()
+    return _parse_timestamp_text(text, bool(end_of_day))
+
+
+@lru_cache(maxsize=16384)
+def _parse_timestamp_text(text: str, end_of_day: bool = False):
     try:
         parsed = pd.to_datetime(text, errors="coerce")
     except Exception:

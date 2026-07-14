@@ -3,10 +3,10 @@ from typing import Dict, Iterable, List
 import pandas as pd
 
 from . import config
+from .execution_policy import execution_cost_for_strategy
 from .factors import compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code, rename_known_columns
 from .risk_rules import simulate_exit
-from .strategy_validation import _execution_cost_pct
 
 
 # AlphaLite 信号权重。calibrate.py 离线扫描后写入 .runtime/weights.json 的
@@ -50,6 +50,7 @@ def run_alphalite_backtest(
     top_k: int = 10,
     holding_days: int = 3,
     cost_rate: float = None,
+    strategy_name: str = "tomorrow_picks",
 ) -> Dict[str, object]:
     rows = []
     for code, history in history_by_code.items():
@@ -69,7 +70,11 @@ def run_alphalite_backtest(
             fixed_exit_price / entry_price - 1
         ) * 100
         fixed_gross_return = (fixed_exit_price / entry_price - 1) * 100
-        trade_cost_pct = _backtest_trade_cost_pct(prepared["turnover"].iloc[-holding_days - 1], cost_rate)
+        trade_cost_pct = _backtest_trade_cost_pct(
+            prepared["turnover"].iloc[-holding_days - 1],
+            cost_rate,
+            strategy_name=strategy_name,
+        )
         net_return = gross_return - trade_cost_pct
         rows.append(
             {
@@ -120,6 +125,7 @@ def run_rolling_alphalite_backtest(
     rebalance_step: int = 1,
     cost_rate: float = None,
     weights: Dict[str, float] = None,
+    strategy_name: str = "tomorrow_picks",
 ) -> Dict[str, object]:
     prepared = {
         normalize_code(code): _prepare_history(code, history)
@@ -142,16 +148,20 @@ def run_rolling_alphalite_backtest(
     equity_curve = []
     equity = 1.0
 
-    for signal_point in signal_dates[:: max(1, rebalance_step)]:
+    factor_panels = _build_rolling_alphalite_panels(prepared, signal_dates, holding_days, lookback_days)
+
+    step = max(1, rebalance_step)
+    for signal_point in signal_dates[::step]:
         signals = []
+        signal_text = str(signal_point)
         for code, history in prepared.items():
-            signal_index = _history_signal_index(history, signal_point)
-            if signal_index is None or signal_index + holding_days >= len(history):
+            state = factor_panels.get(code)
+            if not state:
                 continue
-            window = history.iloc[: signal_index + 1]
-            if len(window) < lookback_days:
+            signal_index = state["date_index"].get(signal_text)
+            if signal_index is None:
                 continue
-            factor = compute_alphalite_for_stock(code, window.tail(max(lookback_days, 25)))
+            factor = state["factors"].get(signal_index)
             if not factor:
                 continue
             entry_price = history["price"].iloc[signal_index]
@@ -164,7 +174,11 @@ def run_rolling_alphalite_backtest(
                 fixed_exit_price / entry_price - 1
             ) * 100
             fixed_gross_return = (fixed_exit_price / entry_price - 1) * 100
-            trade_cost_pct = _backtest_trade_cost_pct(history["turnover"].iloc[signal_index], cost_rate)
+            trade_cost_pct = _backtest_trade_cost_pct(
+                history["turnover"].iloc[signal_index],
+                cost_rate,
+                strategy_name=strategy_name,
+            )
             net_return = gross_return - trade_cost_pct
             signals.append(
                 {
@@ -232,6 +246,40 @@ def run_rolling_alphalite_backtest(
     }
 
 
+def _build_rolling_alphalite_panels(
+    prepared: Dict[str, pd.DataFrame],
+    signal_points: List[object],
+    holding_days: int,
+    lookback_days: int,
+) -> Dict[str, Dict[str, object]]:
+    if not prepared:
+        return {}
+    lookback_window = max(lookback_days, 25)
+    panels: Dict[str, Dict[str, object]] = {}
+    for code, history in prepared.items():
+        if "_trade_date_key" not in history.columns or len(history) < lookback_days + holding_days:
+            continue
+        date_index = {}
+        for index, value in enumerate(history["_trade_date_key"].tolist()):
+            date_index[str(value)] = int(index)
+            date_index[str(index)] = int(index)
+        factors: Dict[int, Dict[str, float]] = {}
+        for signal_point in signal_points:
+            signal_text = str(signal_point)
+            signal_index = date_index.get(signal_text)
+            if signal_index is None or signal_index < lookback_days:
+                continue
+            if signal_index + holding_days >= len(history):
+                continue
+            factor = compute_alphalite_for_stock(code, history.iloc[: signal_index + 1].tail(lookback_window))
+            if factor:
+                factors[int(signal_index)] = factor
+        if not date_index:
+            continue
+        panels[code] = {"date_index": date_index, "factors": factors}
+    return panels
+
+
 def parse_code_list(value: str, default_codes: Iterable[str] = ()) -> List[str]:
     if value:
         raw_codes = value.replace("，", ",").replace(" ", ",").split(",")
@@ -278,10 +326,20 @@ def _alphalite_signal(factor: Dict[str, float], weights: Dict[str, float] = None
     )
 
 
-def _backtest_trade_cost_pct(turnover: float, cost_rate: float = None) -> float:
+def _backtest_trade_cost_pct(
+    turnover: float,
+    cost_rate: float = None,
+    *,
+    strategy_name: str = "tomorrow_picks",
+    execution_policy: Dict[str, object] = None,
+) -> float:
     if cost_rate is not None:
         return coerce_number(cost_rate) * 100.0
-    return _execution_cost_pct({"turnover": turnover})
+    return execution_cost_for_strategy(
+        {"turnover": turnover, "strategy_name": str(strategy_name or ""), "market": ""},
+        strategy_name=strategy_name,
+        policy=execution_policy,
+    )
 
 
 def _trade_date(history: pd.DataFrame, index: int) -> str:
@@ -308,17 +366,6 @@ def _aligned_trade_dates(
             if index >= lookback_days and index + holding_days < len(history):
                 dates.add(str(value))
     return sorted(dates)
-
-
-def _history_signal_index(history: pd.DataFrame, signal_point) -> int:
-    if isinstance(signal_point, int):
-        return signal_point
-    if "_trade_date_key" not in history.columns:
-        return None
-    matched = history.index[history["_trade_date_key"] == str(signal_point)].tolist()
-    if not matched:
-        return None
-    return int(matched[0])
 
 
 def _max_drawdown(equity_values: List[float]) -> float:

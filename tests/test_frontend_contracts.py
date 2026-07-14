@@ -241,6 +241,326 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("blockers", app_source)
         self.assertIn("暂无真实 OOS", app_source)
 
+    def test_short_term_recommendations_empty_message_when_only_observation_rows_are_filtered_out(self):
+        result = self.run_node(
+            """
+            global.window = {};
+            global.document = {
+              querySelector: () => ({ dataset: { poolFilter: "today" } }),
+            };
+
+            require('./static/recommendation-utils.js');
+            require('./static/recommendation-renderers.js');
+            require('./static/recommendation-tables.js');
+            require('./static/recommendation-app.js');
+
+            const state = {
+              recommendationRequestSeq: 0,
+              recommendationDataTimestamp: 0,
+              recommendationHasPayload: false,
+              renderFingerprints: {},
+              tomorrowLoaded: false,
+              horizonLoaded: false,
+              lastRows: {
+                shortTerm: [],
+                tomorrow: [],
+                swing: [],
+              },
+            };
+
+            const shortTermBody = { innerHTML: "" };
+            const tomorrowBody = { innerHTML: "" };
+            const swingBody = { innerHTML: "" };
+            const recommendationActionSummary = { innerHTML: "" };
+            const config = {
+              DEFAULT_ACTION_FILTER: "wait",
+              DEFAULT_MARKET: "all",
+              DEFAULT_SORT_MODE: "rank",
+            };
+
+            const helpers = {
+              escapeHtml: (value) => String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\"/g, "&quot;")
+                .replace(/'/g, "&#039;"),
+              formatMoney: (value) => String(value ?? ""),
+              formatNumber: (value) => String(Number(value)).replace(/\\.([0-9]+)$/, ".0$1"),
+              hasRows: (rows) => Array.isArray(rows) && rows.length > 0,
+              rememberFingerprint: (key, value) => {
+                const next = JSON.stringify(value ?? null);
+                if (state.renderFingerprints[key] === next) return false;
+                state.renderFingerprints[key] = next;
+                return true;
+              },
+            };
+
+            const els = {
+              shortTermBody,
+              tomorrowBody,
+              swingBody,
+              recommendationActionSummary,
+            };
+
+            const status = {
+              renderMetrics: () => {},
+              setStatus: () => {},
+              startPushStatusCountdown: () => {},
+            };
+
+            const app = window.TraderRecommendationApp.create({
+              state,
+              els,
+              helpers,
+              config,
+              status,
+            });
+
+            global.fetch = async () => ({
+              json: async () => ({
+                ok: true,
+                recommendations: {
+                  short_term: [
+                    {
+                      code: "000001",
+                      name: "测试股份",
+                      action_label: "只观察",
+                      execution_allowed: false,
+                      trade_action: { action: "watch_only", label: "只观察", position_size: 0 },
+                    },
+                  ],
+                  tomorrow_picks: [],
+                  swing_picks: [],
+                },
+                meta: {
+                  short_term_observation_count: 1,
+                  generated_at: "2026-07-14T14:30:00",
+                  quote_timestamp: "2026-07-14T14:30:00",
+                },
+                health: {},
+                market_sentiment: {},
+              }),
+            });
+
+            (async () => {
+              await app.loadRecommendations({ background: true });
+              process.stdout.write(JSON.stringify({ shortTermBody: shortTermBody.innerHTML }));
+            })();
+            """
+        )
+        self.assertIn("暂无可执行推荐，当前仅有观察备选", result["shortTermBody"])
+
+    def test_short_term_recommendations_empty_message_when_observation_rows_without_meta_count(self):
+        result = self.run_node(
+            """
+            global.window = {};
+            global.document = {
+              querySelector: () => ({ dataset: { poolFilter: "today" } }),
+            };
+
+            require('./static/recommendation-utils.js');
+            require('./static/recommendation-renderers.js');
+            require('./static/recommendation-tables.js');
+            require('./static/recommendation-app.js');
+
+            const state = {
+              recommendationRequestSeq: 0,
+              recommendationDataTimestamp: 0,
+              recommendationHasPayload: false,
+              renderFingerprints: {},
+              tomorrowLoaded: false,
+              horizonLoaded: false,
+              lastRows: {
+                shortTerm: [],
+                tomorrow: [],
+                swing: [],
+              },
+            };
+
+            const shortTermBody = { innerHTML: "" };
+            const tomorrowBody = { innerHTML: "" };
+            const swingBody = { innerHTML: "" };
+            const recommendationActionSummary = { innerHTML: "" };
+            const config = {
+              DEFAULT_ACTION_FILTER: "all",
+              DEFAULT_MARKET: "all",
+              DEFAULT_SORT_MODE: "rank",
+            };
+
+            const helpers = {
+              escapeHtml: (value) => String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\"/g, "&quot;")
+                .replace(/'/g, "&#039;"),
+              formatMoney: (value) => String(value ?? ""),
+              formatNumber: (value) => String(Number(value)),
+              hasRows: (rows) => Array.isArray(rows) && rows.length > 0,
+              rememberFingerprint: (key, value) => {
+                const next = JSON.stringify(value ?? null);
+                if (state.renderFingerprints[key] === next) return false;
+                state.renderFingerprints[key] = next;
+                return true;
+              },
+            };
+
+            const els = {
+              shortTermBody,
+              tomorrowBody,
+              swingBody,
+              recommendationActionSummary,
+            };
+
+            const status = {
+              renderMetrics: () => {},
+              setStatus: () => {},
+              startPushStatusCountdown: () => {},
+            };
+
+            const app = window.TraderRecommendationApp.create({
+              state,
+              els,
+              helpers,
+              config,
+              status,
+            });
+
+            global.fetch = async () => ({
+              json: async () => ({
+                ok: true,
+                recommendations: {
+                  short_term: [
+                    {
+                      code: "000001",
+                      name: "测试股份",
+                      action_label: "只观察",
+                      execution_allowed: false,
+                      trade_action: { action: "watch_only", label: "只观察", position_size: 0 },
+                    },
+                  ],
+                  tomorrow_picks: [],
+                  swing_picks: [],
+                },
+                meta: {
+                  generated_at: "2026-07-14T14:30:00",
+                  quote_timestamp: "2026-07-14T14:30:00",
+                },
+                health: {},
+                market_sentiment: {},
+              }),
+            });
+
+            (async () => {
+              await app.loadRecommendations({ background: true });
+              process.stdout.write(JSON.stringify({ shortTermBody: shortTermBody.innerHTML }));
+            })();
+            """
+        )
+        self.assertIn("暂无可执行推荐，当前仅有观察备选", result["shortTermBody"])
+
+    def test_short_term_recommendations_empty_message_when_no_rows(self):
+        result = self.run_node(
+            """
+            global.window = {};
+            global.document = {
+              querySelector: () => ({ dataset: { poolFilter: "today" } }),
+            };
+
+            require('./static/recommendation-utils.js');
+            require('./static/recommendation-renderers.js');
+            require('./static/recommendation-tables.js');
+            require('./static/recommendation-app.js');
+
+            const state = {
+              recommendationRequestSeq: 0,
+              recommendationDataTimestamp: 0,
+              recommendationHasPayload: false,
+              renderFingerprints: {},
+              tomorrowLoaded: false,
+              horizonLoaded: false,
+              lastRows: {
+                shortTerm: [],
+                tomorrow: [],
+                swing: [],
+              },
+            };
+
+            const shortTermBody = { innerHTML: "" };
+            const tomorrowBody = { innerHTML: "" };
+            const swingBody = { innerHTML: "" };
+            const recommendationActionSummary = { innerHTML: "" };
+            const config = {
+              DEFAULT_ACTION_FILTER: "all",
+              DEFAULT_MARKET: "all",
+              DEFAULT_SORT_MODE: "rank",
+            };
+
+            const helpers = {
+              escapeHtml: (value) => String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\"/g, "&quot;")
+                .replace(/'/g, "&#039;"),
+              formatMoney: (value) => String(value ?? ""),
+              formatNumber: (value) => String(Number(value)),
+              hasRows: (rows) => Array.isArray(rows) && rows.length > 0,
+              rememberFingerprint: (key, value) => {
+                const next = JSON.stringify(value ?? null);
+                if (state.renderFingerprints[key] === next) return false;
+                state.renderFingerprints[key] = next;
+                return true;
+              },
+            };
+
+            const els = {
+              shortTermBody,
+              tomorrowBody,
+              swingBody,
+              recommendationActionSummary,
+            };
+
+            const status = {
+              renderMetrics: () => {},
+              setStatus: () => {},
+              startPushStatusCountdown: () => {},
+            };
+
+            const app = window.TraderRecommendationApp.create({
+              state,
+              els,
+              helpers,
+              config,
+              status,
+            });
+
+            global.fetch = async () => ({
+              json: async () => ({
+                ok: true,
+                recommendations: {
+                  short_term: [],
+                  tomorrow_picks: [],
+                  swing_picks: [],
+                },
+                meta: {
+                  generated_at: "2026-07-14T14:30:00",
+                  quote_timestamp: "2026-07-14T14:30:00",
+                },
+                health: {},
+                market_sentiment: {},
+              }),
+            });
+
+            (async () => {
+              await app.loadRecommendations({ background: true });
+              process.stdout.write(JSON.stringify({ shortTermBody: shortTermBody.innerHTML }));
+            })();
+            """
+        )
+        self.assertIn("暂无符合条件的股票", result["shortTermBody"])
+
 
 if __name__ == "__main__":
     unittest.main()

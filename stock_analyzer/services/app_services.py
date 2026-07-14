@@ -989,6 +989,18 @@ class _AppServiceContext:
     def _recommendation_cache_key(self, top_n: int, market: str) -> tuple:
         return int(top_n), str(market)
 
+    @staticmethod
+    def _is_executable_row(row: Dict[str, object]) -> bool:
+        if not isinstance(row, dict):
+            return False
+        if row.get("execution_allowed") is False:
+            return False
+        action = row.get("trade_action")
+        position_size = coerce_number((action or {}).get("position_size"), None) if isinstance(action, dict) else None
+        if position_size is None:
+            return True
+        return float(position_size) > 0
+
     def _horizon_cache_key(self, strategy: str, top_n: int, market: str) -> tuple:
         return str(strategy), int(top_n), str(market)
 
@@ -1056,7 +1068,7 @@ class _AppServiceContext:
     def _snapshot_entry(self, top_n: int, market: str) -> Dict[str, object] | None:
         snapshot = load_recommendation_snapshot(
             config.RECOMMENDATION_SNAPSHOT_PATH,
-            max_age_seconds=0,
+            max_age_seconds=getattr(config, "RECOMMENDATION_SNAPSHOT_MAX_AGE_SECONDS", 300),
             expected_market=market,
             expected_top_n=top_n,
         )
@@ -1348,6 +1360,13 @@ class _AppServiceContext:
             )
             meta["factor_coverage"] = coverage
             meta["today_next_day_gate"] = today_next_day_gate
+            short_display_count = len(short_display_rows)
+            short_executable_count = sum(1 for row in short_display_rows if self._is_executable_row(row))
+            meta["display_count"] = short_display_count
+            meta["short_term_executable_count"] = short_executable_count
+            meta["short_term_observation_count"] = short_display_count - short_executable_count
+            if "candidate_count" not in meta:
+                meta["candidate_count"] = int(today_next_day_gate.get("short_term_candidate_count") or 0)
             meta["quote_timestamp"] = str(
                 (getattr(quotes, "attrs", {}) or {}).get("quote_timestamp") or ""
             )

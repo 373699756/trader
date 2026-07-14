@@ -13,7 +13,8 @@ from .execution_policy import build_execution_policy, cost_scenarios, market_imp
 from .normalization import coerce_number, normalize_code, rename_known_columns
 from .production_baseline import production_baseline_id
 from .sqlite_support import sqlite_transaction
-from .strategy_validation import _compute_outcome, _primary_return_config, validation_baseline_config
+from .validation_policy import primary_return_config as _primary_return_config, validation_baseline_config
+from .validation_outcomes import _compute_outcome
 from .validation_statistics import block_bootstrap_mean_confidence_interval
 
 

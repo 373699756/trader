@@ -116,7 +116,7 @@ def _candidate_filter_masks(df: pd.DataFrame) -> Dict[str, pd.Series]:
         "min_turnover": df["turnover"] >= config.MIN_TURNOVER,
         "deep_drop": df["pct_chg"] > -8,
         "max_gain": df["pct_chg"] <= config.MAX_RECOMMENDED_GAIN,
-        "buyable_gain": df.apply(_is_buyable_gain, axis=1),
+        "buyable_gain": _buyable_gain_mask(df),
         "one_word_limit": ~((df["high"] > 0) & (df["high"] == df["low"]) & (df["pct_chg"] > 8)),
     }
 
@@ -128,9 +128,14 @@ def _combine_candidate_masks(masks: Dict[str, pd.Series]) -> pd.Series:
     return combined
 
 
+def _buyable_gain_mask(df: pd.DataFrame) -> pd.Series:
+    pct = df["pct_chg"] if "pct_chg" in df.columns else 0.0
+    market = df["market"] if "market" in df.columns else ""
+    high_growth = market.isin(("chinext", "star"))
+    return (high_growth & (pct <= config.MAX_BUYABLE_GAIN_GROWTH)) | (
+        ~high_growth & (pct <= config.MAX_BUYABLE_GAIN_MAIN)
+    )
+
+
 def _is_buyable_gain(row: pd.Series) -> bool:
-    pct = coerce_number(row.get("pct_chg"))
-    market = row.get("market")
-    if market in ("chinext", "star"):
-        return pct <= config.MAX_BUYABLE_GAIN_GROWTH
-    return pct <= config.MAX_BUYABLE_GAIN_MAIN
+    return bool(_buyable_gain_mask(pd.DataFrame([row]))[0])

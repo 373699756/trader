@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import pandas as pd
 
 from .. import config
 from ..factor_ic import load_factor_ic
-from ..normalization import coerce_number, finite_series, percentile_score
+from ..normalization import (
+    SortedNumericValues,
+    coerce_number,
+    finite_series,
+    sorted_numeric_values,
+    percentile_score,
+)
 from . import horizon
 from .weights import COMPONENT_FACTOR_KEYS, STRATEGY_COMBINERS, THRESHOLDS, WEIGHTS
 
 
-_FACTOR_IC_CACHE = {"mtime": None, "payload": {}}
+_FACTOR_IC_CACHE = {"path": None, "mtime_ns": None, "payload": {}}
 
 
 __all__ = [
@@ -46,32 +52,34 @@ __all__ = [
 ]
 
 
-def _score_context(df: pd.DataFrame, industry_strength: Dict[str, float]) -> Dict[str, List[float]]:
+def _score_context(
+    df: pd.DataFrame, industry_strength: Dict[str, float]
+) -> Dict[str, Union[List[float], SortedNumericValues]]:
     return {
-        "pct_values": finite_series(df, "pct_chg").tolist(),
-        "speed_values": _combined_speed(df).tolist(),
-        "volume_ratio_values": finite_series(df, "volume_ratio").tolist(),
-        "turnover_rate_values": finite_series(df, "turnover_rate").tolist(),
-        "turnover_values": finite_series(df, "turnover").tolist(),
-        "sixty_day_values": finite_series(df, "sixty_day_pct").tolist(),
-        "ytd_values": finite_series(df, "ytd_pct").tolist(),
-        "amplitude_values": finite_series(df, "amplitude").tolist(),
-        "ret_3d_values": finite_series(df, "ret_3d").tolist(),
-        "ret_5d_values": finite_series(df, "ret_5d").tolist(),
-        "ret_10d_values": finite_series(df, "ret_10d").tolist(),
-        "ret_20d_values": finite_series(df, "ret_20d").tolist(),
-        "ma5_gap_values": finite_series(df, "ma5_gap").tolist(),
-        "ma20_gap_values": finite_series(df, "ma20_gap").tolist(),
-        "ma10_gap_values": finite_series(df, "ma10_gap").tolist(),
-        "ma60_gap_values": finite_series(df, "ma60_gap").tolist(),
-        "vol_ma5_ratio_values": finite_series(df, "vol_ma5_ratio").tolist(),
-        "vol_amount_5d_values": finite_series(df, "vol_amount_5d").tolist(),
-        "breakout_20d_values": finite_series(df, "breakout_20d").tolist(),
-        "volatility_20d_values": finite_series(df, "volatility_20d").tolist(),
-        "float_market_cap_values": finite_series(df, "float_market_cap").tolist(),
-        "pe_dynamic_values": finite_series(df, "pe_dynamic").tolist(),
-        "pb_values": finite_series(df, "pb").tolist(),
-        "industry_values": list(industry_strength.values()),
+        "pct_values": sorted_numeric_values(finite_series(df, "pct_chg").tolist()),
+        "speed_values": sorted_numeric_values(_combined_speed(df).tolist()),
+        "volume_ratio_values": sorted_numeric_values(finite_series(df, "volume_ratio").tolist()),
+        "turnover_rate_values": sorted_numeric_values(finite_series(df, "turnover_rate").tolist()),
+        "turnover_values": sorted_numeric_values(finite_series(df, "turnover").tolist()),
+        "sixty_day_values": sorted_numeric_values(finite_series(df, "sixty_day_pct").tolist()),
+        "ytd_values": sorted_numeric_values(finite_series(df, "ytd_pct").tolist()),
+        "amplitude_values": sorted_numeric_values(finite_series(df, "amplitude").tolist()),
+        "ret_3d_values": sorted_numeric_values(finite_series(df, "ret_3d").tolist()),
+        "ret_5d_values": sorted_numeric_values(finite_series(df, "ret_5d").tolist()),
+        "ret_10d_values": sorted_numeric_values(finite_series(df, "ret_10d").tolist()),
+        "ret_20d_values": sorted_numeric_values(finite_series(df, "ret_20d").tolist()),
+        "ma5_gap_values": sorted_numeric_values(finite_series(df, "ma5_gap").tolist()),
+        "ma20_gap_values": sorted_numeric_values(finite_series(df, "ma20_gap").tolist()),
+        "ma10_gap_values": sorted_numeric_values(finite_series(df, "ma10_gap").tolist()),
+        "ma60_gap_values": sorted_numeric_values(finite_series(df, "ma60_gap").tolist()),
+        "vol_ma5_ratio_values": sorted_numeric_values(finite_series(df, "vol_ma5_ratio").tolist()),
+        "vol_amount_5d_values": sorted_numeric_values(finite_series(df, "vol_amount_5d").tolist()),
+        "breakout_20d_values": sorted_numeric_values(finite_series(df, "breakout_20d").tolist()),
+        "volatility_20d_values": sorted_numeric_values(finite_series(df, "volatility_20d").tolist()),
+        "float_market_cap_values": sorted_numeric_values(finite_series(df, "float_market_cap").tolist()),
+        "pe_dynamic_values": sorted_numeric_values(finite_series(df, "pe_dynamic").tolist()),
+        "pb_values": sorted_numeric_values(finite_series(df, "pb").tolist()),
+        "industry_values": sorted_numeric_values(industry_strength.values()),
     }
 
 
@@ -448,15 +456,17 @@ def _factor_ic_multiplier(component: str) -> float:
 
 
 def _factor_ic_payload() -> Dict[str, object]:
-    path = getattr(config, "FACTOR_IC_PATH", ".runtime/factor_ic.json")
+    path = os.path.realpath(str(getattr(config, "FACTOR_IC_PATH", ".runtime/factor_ic.json")))
     try:
-        mtime = os.path.getmtime(path)
+        mtime_ns = os.stat(path).st_mtime_ns
     except Exception:
-        _FACTOR_IC_CACHE["mtime"] = None
+        _FACTOR_IC_CACHE["path"] = path
+        _FACTOR_IC_CACHE["mtime_ns"] = None
         _FACTOR_IC_CACHE["payload"] = {}
         return {}
-    if _FACTOR_IC_CACHE.get("mtime") != mtime:
-        _FACTOR_IC_CACHE["mtime"] = mtime
+    if _FACTOR_IC_CACHE.get("path") != path or _FACTOR_IC_CACHE.get("mtime_ns") != mtime_ns:
+        _FACTOR_IC_CACHE["path"] = path
+        _FACTOR_IC_CACHE["mtime_ns"] = mtime_ns
         _FACTOR_IC_CACHE["payload"] = load_factor_ic()
     return _FACTOR_IC_CACHE.get("payload") or {}
 

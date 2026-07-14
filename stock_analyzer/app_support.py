@@ -18,7 +18,8 @@ from .scoring_core.candidate_filters import prepare_candidates
 from .scoring_core.explanations import mark_backup_watch
 from .sentiment import score_stock_sentiment
 from .strategy_health import strategy_status
-from .strategy_validation import StrategyValidationStore, _primary_return_config, validation_baseline_config
+from .strategy_validation import StrategyValidationStore
+from .validation_policy import primary_return_config as _primary_return_config, validation_baseline_config
 
 _SENTIMENT_CACHE_LOCK = threading.Lock()
 _HISTORY_REFRESH_LOCK = threading.Lock()

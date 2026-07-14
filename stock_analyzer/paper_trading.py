@@ -7,15 +7,15 @@ from typing import Dict, List, Tuple
 import pandas as pd
 
 from . import config
+from .execution_policy import execution_cost_for_strategy, policy_from_signal
 from .normalization import coerce_number, normalize_code
 from .portfolio import build_portfolio
 from .risk_rules import simulate_exit
 from .sqlite_support import sqlite_transaction
-from .strategy_validation import (
-    _daily_limit_pct,
-    _execution_cost_pct,
-    _is_unbuyable_limit_up,
-    _primary_return_config,
+from .validation_policy import (
+    daily_limit_pct as _daily_limit_pct,
+    is_unbuyable_limit_up as _is_unbuyable_limit_up,
+    primary_return_config as _primary_return_config,
 )
 
 
@@ -381,6 +381,8 @@ def _snapshot_rows(validation_store, strategy_name: str, signal_date: str = "") 
         item.setdefault("theme", signal.get("theme"))
         item.setdefault("market_label", signal.get("market"))
         item.setdefault("score", signal.get("score"))
+        item.setdefault("execution_policy_json", signal.get("execution_policy_json"))
+        item.setdefault("strategy_name", signal.get("strategy_name"))
         rows.append(item)
     rows.sort(key=lambda row: int(row.get("rank") or 9999))
     return selected_date, rows
@@ -390,7 +392,12 @@ def _evaluate_trade(provider, strategy_name: str, signal_date: str, row: Dict[st
     code = normalize_code(row.get("code"))
     weight = coerce_number(row.get("suggested_weight"))
     signal_price = coerce_number(row.get("price"))
-    trade_cost = _execution_cost_pct({"turnover": row.get("turnover")})
+    policy = policy_from_signal(row, strategy_name=strategy_name)
+    trade_cost = execution_cost_for_strategy(
+        {"turnover": row.get("turnover"), "strategy_name": str(strategy_name), "market": str(row.get("market_label") or row.get("market") or "")},
+        strategy_name=strategy_name,
+        policy=policy,
+    )
     try:
         history = provider.get_history(code, days=int(getattr(config, "PAPER_TRADING_HISTORY_DAYS", 220)))
     except Exception:

@@ -81,3 +81,60 @@ def test_async_snapshot_writer_records_success_and_failure_metrics(tmp_path):
         assert failure_stats["failure_count"] >= 1
         assert "io failure" in str(failure_stats["last_error"])
         assert logger_call.called
+
+
+def test_async_snapshot_writer_writes_when_frozen_and_snapshot_missing(tmp_path):
+    path = str(tmp_path / "snapshot.json")
+    target = AsyncSnapshotWriter(path)
+
+    with patch("stock_analyzer.app_container.recommendation_is_frozen", return_value=True), patch(
+        "stock_analyzer.app_container.os.path.exists",
+        return_value=False,
+    ), patch("stock_analyzer.app_container.save_recommendation_snapshot") as writer:
+        target.schedule({"ok": True})
+        assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
+        assert writer.called
+
+
+def test_async_snapshot_writer_skips_when_frozen_and_snapshot_exists(tmp_path):
+    path = str(tmp_path / "snapshot.json")
+    target = AsyncSnapshotWriter(path)
+
+    with patch("stock_analyzer.app_container.recommendation_is_frozen", return_value=True), patch(
+        "stock_analyzer.app_container.os.path.exists",
+        return_value=True,
+    ), patch(
+        "stock_analyzer.app_container.load_recommendation_snapshot",
+        return_value={"ok": True, "status": "ok"},
+    ), patch("stock_analyzer.app_container.save_recommendation_snapshot") as writer:
+        target.schedule({"ok": True})
+        assert not target.stats()["running"]
+        assert not writer.called
+
+
+def test_async_snapshot_writer_rewrites_when_frozen_snapshot_invalid(tmp_path):
+    path = str(tmp_path / "snapshot.json")
+    target = AsyncSnapshotWriter(path)
+
+    with patch("stock_analyzer.app_container.recommendation_is_frozen", return_value=True), patch(
+        "stock_analyzer.app_container.os.path.exists",
+        return_value=True,
+    ), patch(
+        "stock_analyzer.app_container.load_recommendation_snapshot",
+        return_value={"ok": False, "status": "invalid"},
+    ), patch("stock_analyzer.app_container.save_recommendation_snapshot") as writer:
+        target.schedule({"ok": True})
+        assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
+        assert writer.called
+
+
+def test_async_snapshot_writer_falls_back_to_write_when_snapshot_check_fails(tmp_path):
+    path = str(tmp_path / "snapshot.json")
+    target = AsyncSnapshotWriter(path)
+
+    with patch("stock_analyzer.app_container.recommendation_is_frozen", return_value=True), patch(
+        "stock_analyzer.app_container.os.path.exists", side_effect=OSError("fs check fail")
+    ), patch("stock_analyzer.app_container.save_recommendation_snapshot") as writer:
+        target.schedule({"ok": True})
+        assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
+        assert writer.called

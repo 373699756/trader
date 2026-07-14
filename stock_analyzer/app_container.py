@@ -1,5 +1,6 @@
 import copy
 import logging
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -9,7 +10,7 @@ from typing import Dict
 from . import config
 from .candidate_pipeline import CandidatePipeline
 from .providers import MarketDataProvider, TimedCache
-from .recommendation_snapshot import save_recommendation_snapshot
+from .recommendation_snapshot import load_recommendation_snapshot, save_recommendation_snapshot
 from .recommendation_freeze import recommendation_is_frozen
 from .realtime_schedule import realtime_refresh_profile
 from .stability import TopKDropoutTracker
@@ -108,7 +109,8 @@ class AsyncSnapshotWriter:
 
     def schedule(self, payload: Dict[str, object]) -> None:
         if recommendation_is_frozen():
-            return
+            if not self._should_write_frozen_snapshot(payload):
+                return
         payload_size = self._estimate_payload_size(payload)
         with self._lock:
             if payload_size > 0:
@@ -147,6 +149,28 @@ class AsyncSnapshotWriter:
                     self._failure_count += 1
                     self._last_failure_ts = time.time()
                     self._last_error = str(exc)
+
+    def _should_write_frozen_snapshot(self, payload: Dict[str, object]) -> bool:
+        if not os.path.exists(self.path):
+            return True
+        try:
+            meta = payload.get("meta") if isinstance(payload, dict) else None
+            if not isinstance(meta, dict):
+                meta = {}
+            expected_market = str(meta.get("market_filter") or "")
+            expected_top_n = int(meta.get("top_n") or 0)
+            max_age_seconds = int(getattr(config, "RECOMMENDATION_SNAPSHOT_MAX_AGE_SECONDS", 300) or 0)
+            snapshot = load_recommendation_snapshot(
+                self.path,
+                max_age_seconds=max_age_seconds,
+                expected_market=expected_market,
+                expected_top_n=expected_top_n,
+            )
+            return not bool(snapshot.get("ok"))
+        except Exception as exc:
+            # If the frozen cache check fails, allow one write attempt to recover.
+            _LOGGER.warning("冷启动快照检查失败，改为允许落盘: %s", exc)
+            return True
 
     def stats(self) -> Dict[str, object]:
         with self._lock:

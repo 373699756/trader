@@ -28,7 +28,7 @@ from .expected_return_model import (
 from .normalization import coerce_number
 from .production_baseline import attach_generation_provenance
 from .scoring_core.theme_limits import limit_theme_concentration
-from .strategy_validation import validation_baseline_config
+from .validation_policy import validation_baseline_config
 from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks
 
 
@@ -596,6 +596,7 @@ def finalize_recommendation_payload_meta(
     meta["display_theme_limited"] = {
         "short_term": short_theme_limited,
     }
+    meta["display_count"] = len(short_display_rows)
     return short_display_rows, meta
 
 

@@ -68,7 +68,6 @@ __all__ = [
     "ExperimentRepository",
     "MigrationRepository",
     "TuningRepository",
-    "MarketGateRepository",
     "ResearchRepository",
     "OOSReportRepository",
     "PredictionRepository",
@@ -3041,4 +3040,3 @@ class ValidationRepository(_RepositoryBase):
 
     def table_exists(self, table_name: str) -> bool:
         return self.migrations.table_exists(table_name)
-

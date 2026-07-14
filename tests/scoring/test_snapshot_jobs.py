@@ -12,7 +12,12 @@ from helpers import app_patch_context
 from stock_analyzer import config, daily_job
 from stock_analyzer.app_response_support import saved_tomorrow_fallback_payload
 from stock_analyzer.scoring import prepare_candidates
-from stock_analyzer.snapshot import SNAPSHOT_STRATEGIES, _score_snapshot_strategy, run_snapshot
+from stock_analyzer.snapshot import (
+    SNAPSHOT_STRATEGIES,
+    _score_snapshot_strategy,
+    _snapshot_factor_quality_error,
+    run_snapshot,
+)
 from stock_analyzer.strategy_validation import StrategyValidationStore
 from stock_analyzer.validation_backup import backup_validation_db, list_validation_backups, restore_validation_db
 from stock_analyzer.validation_runtime_support import run_validation_auto_update_once
@@ -265,6 +270,8 @@ def test_run_snapshot_saves_strategy_rows_without_web_route(tmp_path):
     store = StrategyValidationStore(str(tmp_path / "validation.sqlite3"))
     with patch.object(config, "QUOTE_SNAPSHOT_MIN_ROWS", 1), patch.object(
         config, "TOMORROW_SIGNAL_CUTOFF_TIME", "23:59"
+    ), patch.object(
+        config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "23:59"
     ), patch(
         "stock_analyzer.snapshot._signal_at_or_after_freeze_cutoff", return_value=False
     ):
@@ -274,6 +281,17 @@ def test_run_snapshot_saves_strategy_rows_without_web_route(tmp_path):
     assert result["ok"]
     assert result["saved"]["saved"] > 0
     assert dates[0]["strategy_name"] == "tomorrow_picks"
+
+
+def test_snapshot_rejects_fallback_quotes_missing_required_scoring_factors():
+    quotes = _snapshot_quotes().drop(columns=["volume_ratio", "turnover_rate", "amplitude"])
+
+    with patch.object(config, "VALIDATION_REQUIRED_FACTOR_COVERAGE_RATIO", 0.99):
+        error = _snapshot_factor_quality_error(quotes)
+
+    assert "关键评分字段覆盖不足" in error
+    assert "volume_ratio=0.0%" in error
+    assert "缺失值当 0" in error
 
 
 def test_auto_snapshot_includes_intraday_observation_without_making_it_executable():
@@ -411,6 +429,10 @@ def test_run_snapshot_allows_fresh_local_quote_snapshot_when_enabled(tmp_path):
     with patch.object(config, "VALIDATION_ALLOW_LOCAL_QUOTE_SNAPSHOT", True), patch.object(
         config,
         "TOMORROW_SIGNAL_CUTOFF_TIME",
+        "23:59",
+    ), patch.object(
+        config,
+        "RECOMMENDATION_FREEZE_CUTOFF_TIME",
         "23:59",
     ), patch(
         "stock_analyzer.snapshot._signal_at_or_after_freeze_cutoff", return_value=False,
