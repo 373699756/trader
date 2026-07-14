@@ -227,6 +227,9 @@ class ValidationRepositoryFacadeProtocol(Protocol):
     ) -> List[sqlite3.Row]:
         ...
 
+    def list_experiment_ids(self, strategy_name: str = "") -> List[str]:
+        ...
+
     def fetch_signals_for_outcome_update(self, where: str, params: List[object]) -> List[sqlite3.Row]:
         ...
 
@@ -670,6 +673,13 @@ class SignalRepository(_RepositoryBase):
         execution_policy_json = json.dumps(execution_policy, ensure_ascii=False, sort_keys=True, default=str)
         execution_policy_version = str(execution_policy.get("policy_version") or "")
         portfolio_capital = coerce_number((execution_policy.get("portfolio") or {}).get("capital"))
+        sample_type = str(batch_metadata.get("sample_type") or "")
+        if not sample_type:
+            sample_type = "real_forward"
+        sample_source = str(
+            batch_metadata.get("sample_source")
+            or ("point_in_time" if sample_type == "real_forward" else "daily_bar_proxy")
+        )
         saved = 0
         shadow_saved = 0
         candidate_saved = 0
@@ -683,8 +693,8 @@ class SignalRepository(_RepositoryBase):
                 (strategy_name, strategy_version, signal_date, signal_time, saved_count,
                  candidate_count, selected_count, data_source_timestamp, market_data_cutoff,
                  execution_policy_version, execution_policy_json, generation_json,
-                 portfolio_capital, snapshot_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 portfolio_capital, snapshot_id, sample_type, sample_source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     strategy_name,
@@ -701,6 +711,8 @@ class SignalRepository(_RepositoryBase):
                     json.dumps(batch_metadata.get("generation") or {}, ensure_ascii=False, sort_keys=True, default=str),
                     portfolio_capital,
                     str(batch_metadata.get("snapshot_id") or ""),
+                    sample_type,
+                    sample_source,
                     now_ts,
                 ),
             )
@@ -817,19 +829,21 @@ class SignalRepository(_RepositoryBase):
                         1 if row.get("selected") else 0,
                         int(coerce_number(row.get("rank")) or 0),
                         coerce_number(row.get("score")),
-                        1 if row.get("point_in_time_valid") else 0,
-                        json.dumps(row.get("eligibility_reasons") or [], ensure_ascii=False, default=str),
-                        json.dumps(row.get("feature_values") or {}, ensure_ascii=False, default=str),
-                        json.dumps(row.get("missing_mask") or {}, ensure_ascii=False, default=str),
-                        json.dumps(row.get("source_timestamps") or {}, ensure_ascii=False, default=str),
-                        str(row.get("announcement_time") or ""),
-                        str(row.get("market_data_cutoff") or signal_time),
-                        json.dumps(row.get("point_in_time_violations") or [], ensure_ascii=False, default=str),
-                        json.dumps(row.get("raw") or {}, ensure_ascii=False, default=str),
-                        str(row.get("snapshot_id") or batch_metadata.get("snapshot_id") or ""),
-                        now_ts,
-                    )
+                    1 if row.get("point_in_time_valid") else 0,
+                    json.dumps(row.get("eligibility_reasons") or [], ensure_ascii=False, default=str),
+                    json.dumps(row.get("feature_values") or {}, ensure_ascii=False, default=str),
+                    json.dumps(row.get("missing_mask") or {}, ensure_ascii=False, default=str),
+                    json.dumps(row.get("source_timestamps") or {}, ensure_ascii=False, default=str),
+                    str(row.get("announcement_time") or ""),
+                    str(row.get("market_data_cutoff") or signal_time),
+                    json.dumps(row.get("point_in_time_violations") or [], ensure_ascii=False, default=str),
+                    str(row.get("sample_type") or sample_type),
+                    str(row.get("sample_source") or sample_source),
+                    json.dumps(row.get("raw") or {}, ensure_ascii=False, default=str),
+                    str(row.get("snapshot_id") or batch_metadata.get("snapshot_id") or ""),
+                    now_ts,
                 )
+            )
             if candidate_rows_to_save:
                 conn.executemany(
                     """
@@ -838,8 +852,8 @@ class SignalRepository(_RepositoryBase):
                      industry, style_bucket, eligible, selected, rank, score, point_in_time_valid,
                      eligibility_reasons_json, feature_values_json, missing_mask_json,
                     source_timestamps_json, announcement_time, market_data_cutoff,
-                     point_in_time_violations_json, raw_json, snapshot_id, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     point_in_time_violations_json, sample_type, sample_source, raw_json, snapshot_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     candidate_rows_to_save,
                 )
@@ -2371,6 +2385,25 @@ class TuningRepository(_RepositoryBase):
 class ResearchRepository(_RepositoryBase):
     """Persists research fold predictions for OOS audit and replay."""
 
+    def list_experiment_ids(self, strategy_name: str = "") -> List[str]:
+        strategy_name = str(strategy_name or "").strip()
+        where = "WHERE 1=1"
+        params: List[object] = []
+        if strategy_name:
+            where += " AND strategy_name = ?"
+            params.append(strategy_name)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT experiment_id
+                FROM strategy_fold_predictions
+                {}
+                ORDER BY experiment_id
+                """.format(where),
+                params,
+            ).fetchall()
+        return [str(row[0]).strip() for row in rows if str(row[0]).strip()]
+
     def save_fold_predictions(
         self,
         experiment_id: str,
@@ -2507,54 +2540,82 @@ class OOSReportRepository(_RepositoryBase):
         validation_gate = report.get("validation_gate") if isinstance(report.get("validation_gate"), dict) else {}
         baseline_status = report.get("baseline_status") if isinstance(report.get("baseline_status"), dict) else {}
         requirements = report.get("requirements") if isinstance(report.get("requirements"), dict) else {}
+        experiment_audit = report.get("experiment_audit")
+        if not isinstance(experiment_audit, dict):
+            experiment_audit = {}
         baseline_id = str(
             report.get("validation_baseline_id")
             or baseline_status.get("validation_baseline_id")
             or ""
         )
         with self.connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO strategy_oos_reports
-                (strategy_name, generated_date, generated_at, trigger, days, oos_status, baseline_id,
-                 sample_count, real_day_count, avg_primary_return_net, real_avg_primary_return_net,
-                 real_avg_primary_return_net_ci95_low, real_avg_primary_return_net_ci95_high,
-                 real_portfolio_max_drawdown_pct, gate_blocked, gate_reason,
-                 report_json, baseline_status_json, validation_gate_json, requirements_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+            existing_columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(strategy_oos_reports)").fetchall()
+            }
+            has_experiment_audit_json = "experiment_audit_json" in existing_columns
+            columns = [
+                "strategy_name",
+                "generated_date",
+                "generated_at",
+                "trigger",
+                "days",
+                "oos_status",
+                "baseline_id",
+                "sample_count",
+                "real_day_count",
+                "avg_primary_return_net",
+                "real_avg_primary_return_net",
+                "real_avg_primary_return_net_ci95_low",
+                "real_avg_primary_return_net_ci95_high",
+                "real_portfolio_max_drawdown_pct",
+                "gate_blocked",
+                "gate_reason",
+                "report_json",
+                "baseline_status_json",
+                "validation_gate_json",
+                "requirements_json",
+                "created_at",
+            ]
+            values = [
+                strategy_name,
+                generated_date,
+                generated_at,
+                str(trigger or "manual"),
+                int(report.get("days") or 0),
+                str(report.get("oos_status") or ""),
+                baseline_id,
+                int(summary.get("sample_count") or 0),
+                int(summary.get("real_day_count") or 0),
+                coerce_number(summary.get("avg_primary_return_net")),
+                coerce_number(summary.get("real_avg_primary_return_net")),
                 (
-                    strategy_name,
-                    generated_date,
-                    generated_at,
-                    str(trigger or "manual"),
-                    int(report.get("days") or 0),
-                    str(report.get("oos_status") or ""),
-                    baseline_id,
-                    int(summary.get("sample_count") or 0),
-                    int(summary.get("real_day_count") or 0),
-                    coerce_number(summary.get("avg_primary_return_net")),
-                    coerce_number(summary.get("real_avg_primary_return_net")),
-                    (
-                        coerce_number(summary.get("real_avg_primary_return_net_ci95_low"))
-                        if summary.get("real_avg_primary_return_net_ci95_low") is not None
-                        else None
-                    ),
-                    (
-                        coerce_number(summary.get("real_avg_primary_return_net_ci95_high"))
-                        if summary.get("real_avg_primary_return_net_ci95_high") is not None
-                        else None
-                    ),
-                    coerce_number(summary.get("real_portfolio_max_drawdown_pct")),
-                    1 if validation_gate.get("blocked") else 0,
-                    str(validation_gate.get("reason") or "")[:500],
-                    json.dumps(report, ensure_ascii=False),
-                    json.dumps(baseline_status, ensure_ascii=False),
-                    json.dumps(validation_gate, ensure_ascii=False),
-                    json.dumps(requirements, ensure_ascii=False),
-                    datetime.now().isoformat(timespec="seconds"),
+                    coerce_number(summary.get("real_avg_primary_return_net_ci95_low"))
+                    if summary.get("real_avg_primary_return_net_ci95_low") is not None
+                    else None
                 ),
+                (
+                    coerce_number(summary.get("real_avg_primary_return_net_ci95_high"))
+                    if summary.get("real_avg_primary_return_net_ci95_high") is not None
+                    else None
+                ),
+                coerce_number(summary.get("real_portfolio_max_drawdown_pct")),
+                1 if validation_gate.get("blocked") else 0,
+                str(validation_gate.get("reason") or "")[:500],
+                json.dumps(report, ensure_ascii=False),
+                json.dumps(baseline_status, ensure_ascii=False),
+                json.dumps(validation_gate, ensure_ascii=False),
+                json.dumps(requirements, ensure_ascii=False),
+                datetime.now().isoformat(timespec="seconds"),
+            ]
+            if has_experiment_audit_json:
+                columns.insert(16, "experiment_audit_json")
+                values.insert(16, json.dumps(experiment_audit, ensure_ascii=False))
+            statement = "INSERT INTO strategy_oos_reports ({}) VALUES ({})".format(
+                ", ".join(columns),
+                ", ".join(["?"] * len(columns)),
             )
+            cursor = conn.execute(statement, tuple(values))
             report_id = int(cursor.lastrowid)
         return {
             "saved": 1,
@@ -3019,6 +3080,9 @@ class ValidationRepository(_RepositoryBase):
             fold_id=fold_id,
             limit=limit,
         )
+
+    def list_experiment_ids(self, strategy_name: str = "") -> List[str]:
+        return self.research.list_experiment_ids(strategy_name=strategy_name)
 
     def save_oos_report(self, report: Dict[str, object], trigger: str = "manual") -> Dict[str, object]:
         return self.oos_reports.save_oos_report(report, trigger=trigger)

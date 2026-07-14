@@ -1,6 +1,6 @@
 import threading
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -19,6 +19,7 @@ from .scoring_core.explanations import mark_backup_watch
 from .sentiment import score_stock_sentiment
 from .strategy_health import strategy_status
 from .strategy_validation import StrategyValidationStore
+from .oos_report import _experiment_audit_summary
 from .validation_policy import primary_return_config as _primary_return_config, validation_baseline_config
 
 _SENTIMENT_CACHE_LOCK = threading.Lock()
@@ -551,21 +552,104 @@ def validation_batch_summary(rows: List[Dict[str, object]], strategy_name: str) 
 def strategy_validation_gate_decision(
     metrics: Dict[str, object],
     strategy_name: str = "",
+    experiment_audit: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
     blocked_scale = {
         "position_scale": 0.0,
         "position_scale_reason": "验证未通过，仓位归零",
     }
     if not metrics:
+        if experiment_audit is None or not isinstance(experiment_audit, dict):
+            experiment_audit = _experiment_audit_summary(strategy_name)
+        attempted_experiment_ids = [
+            str(value).strip()
+            for value in (metrics or {}).get("attempted_experiment_ids", [])
+            if str(value).strip()
+        ]
+        attempted_experiment_count = len(set(attempted_experiment_ids))
+        registered_trial_ids = [
+            str(value).strip()
+            for value in (
+                experiment_audit.get("registered_trial_ids_for_strategy")
+                if isinstance(experiment_audit, dict)
+                else []
+            )
+            if str(value).strip()
+        ]
+        unregistered_attempt_ids = sorted(
+            [value for value in set(attempted_experiment_ids) if value not in set(registered_trial_ids)]
+        )
+        requires_registration = bool(
+            getattr(config, "STRATEGY_VALIDATION_REQUIRE_EXPERIMENT_REGISTRATION", True)
+        )
+        if requires_registration and unregistered_attempt_ids:
+            return {
+                "blocked": True,
+                "allows_backup": True,
+                "validated": False,
+                "reason": "存在未登记的试验 id（{}），实验登记核验未通过。".format(
+                    ",".join(unregistered_attempt_ids[:3])
+                ),
+                "state": "pending",
+                "position_scale": 0.0,
+                "position_scale_reason": "实验登记核验不通过，仓位归零",
+                "experiment_audit": experiment_audit,
+                "attempted_experiment_ids": attempted_experiment_ids,
+                "unregistered_attempt_ids": unregistered_attempt_ids,
+                "attempted_experiment_count": attempted_experiment_count,
+                "experiment_audit_requirements": {
+                    "strategy_registered_experiments": int(
+                        experiment_audit.get("strategy_registered_experiments") or 0
+                    ),
+                    "requires_registration": requires_registration,
+                    "status": experiment_audit.get("status"),
+                    "attempted_experiment_count": attempted_experiment_count,
+                    "registered_experiment_count": len(registered_trial_ids),
+                    "unregistered_experiment_count": len(unregistered_attempt_ids),
+                },
+            }
+        require_experiment_registration = bool(
+            getattr(config, "STRATEGY_VALIDATION_REQUIRE_EXPERIMENT_REGISTRATION", True)
+        )
+        strategy_registered_experiments = int(
+            experiment_audit.get("strategy_registered_experiments") or 0
+        )
         return {
             "blocked": True,
             "allows_backup": True,
             "validated": False,
             "reason": "验证样本不足，暂不形成可执行推荐，仅保留备选观察",
             "state": "pending",
+            "experiment_audit": experiment_audit,
             **blocked_scale,
+            "experiment_audit_requirements": {
+                "strategy_registered_experiments": strategy_registered_experiments,
+                "requires_registration": require_experiment_registration,
+                "status": experiment_audit.get("status"),
+            },
         }
     strategy_name = str(strategy_name or metrics.get("strategy_name") or "")
+    if experiment_audit is None or not isinstance(experiment_audit, dict):
+        experiment_audit = _experiment_audit_summary(strategy_name)
+    attempted_experiment_ids = [
+        str(value).strip()
+        for value in (metrics or {}).get("attempted_experiment_ids", [])
+        if str(value).strip()
+    ]
+    attempted_experiment_count = len(set(attempted_experiment_ids))
+    registered_trial_ids = [
+        str(value).strip()
+        for value in (
+            experiment_audit.get("registered_trial_ids_for_strategy")
+            if isinstance(experiment_audit, dict)
+            else []
+        )
+        if str(value).strip()
+    ]
+    registered_trial_set = set(registered_trial_ids)
+    unregistered_attempt_ids = sorted(
+        [value for value in set(attempted_experiment_ids) if value not in registered_trial_set]
+    )
     status = strategy_status(metrics)
     primary_outcomes = int(metrics.get("outcome_sample_count") or metrics.get("sample_count") or 0)
     avg_net = coerce_number(metrics.get("avg_primary_return_net"))
@@ -585,6 +669,9 @@ def strategy_validation_gate_decision(
         "reason": "",
         "state": status.get("state", "unknown"),
         "label": status.get("label", ""),
+        "attempted_experiment_ids": attempted_experiment_ids,
+        "attempted_experiment_count": attempted_experiment_count,
+        "unregistered_attempt_ids": unregistered_attempt_ids,
         "outcome_sample_count": primary_outcomes,
         "total_outcome_sample_count": int(metrics.get("total_outcome_sample_count") or 0),
         "avg_primary_return_net": avg_net,
@@ -600,7 +687,48 @@ def strategy_validation_gate_decision(
         "unknown_outcome_count": int(metrics.get("unknown_outcome_count") or 0),
         "position_scale": 1.0,
         "position_scale_reason": "验证通过，标准仓位",
+        "experiment_audit": experiment_audit,
+        "experiment_audit_requirements": {
+            "strategy_registered_experiments": int(
+                experiment_audit.get("strategy_registered_experiments") or 0
+            ),
+            "requires_registration": bool(
+                getattr(config, "STRATEGY_VALIDATION_REQUIRE_EXPERIMENT_REGISTRATION", True)
+            ),
+            "status": experiment_audit.get("status"),
+            "attempted_experiment_count": attempted_experiment_count,
+            "registered_experiment_count": len(registered_trial_ids),
+            "unregistered_experiment_count": len(unregistered_attempt_ids),
+        },
     }
+    require_experiment_registration = bool(
+        getattr(config, "STRATEGY_VALIDATION_REQUIRE_EXPERIMENT_REGISTRATION", True)
+    )
+    if require_experiment_registration:
+        if unregistered_attempt_ids:
+            decision["blocked"] = True
+            decision["reason"] = (
+                "存在未登记的试验 id（{}），实验登记核验不通过。".format(",".join(unregistered_attempt_ids[:3]))
+                + ("..." if len(unregistered_attempt_ids) > 3 else "")
+            )
+            decision["position_scale"] = 0.0
+            decision["position_scale_reason"] = "试验登记校验不通过，仓位归零"
+            return decision
+        strategy_registered_experiments = int(
+            experiment_audit.get("strategy_registered_experiments") or 0
+        )
+        if experiment_audit.get("status") != "ok" or strategy_registered_experiments <= 0:
+            decision["blocked"] = True
+            decision["reason"] = "未完成实验登记核验，无法形成可执行推荐。"
+            if experiment_audit.get("status") != "ok":
+                decision["reason"] = (
+                    "实验登记核验失败（{}），暂缓晋级。".format(experiment_audit.get("status"))
+                    if str(experiment_audit.get("status"))
+                    else "实验登记核验失败（未知原因），暂缓晋级。"
+                )
+            decision["position_scale"] = 0.0
+            decision["position_scale_reason"] = "实验登记校验不通过，仓位归零"
+            return decision
     if decision["unknown_outcome_count"] > 0:
         decision["blocked"] = True
         decision["reason"] = "存在数据状态未知样本，修复行情或证券状态后才能晋级"

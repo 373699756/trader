@@ -48,7 +48,13 @@ def tuning_row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
 
 def oos_report_row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
     item = dict(row)
-    for key in ("report_json", "baseline_status_json", "validation_gate_json", "requirements_json"):
+    for key in (
+        "report_json",
+        "baseline_status_json",
+        "validation_gate_json",
+        "requirements_json",
+        "experiment_audit_json",
+    ):
         target = key.replace("_json", "")
         try:
             item[target] = json.loads(item.get(key) or "{}")
@@ -61,4 +67,5 @@ def oos_report_row_to_dict(row: sqlite3.Row) -> Dict[str, object]:
         item.setdefault("summary", report.get("summary") or {})
         item.setdefault("validation_baseline", report.get("validation_baseline") or {})
         item.setdefault("validation_baseline_id", report.get("validation_baseline_id") or item.get("baseline_id"))
+        item.setdefault("experiment_audit", report.get("experiment_audit") or item.get("experiment_audit"))
     return item

@@ -143,6 +143,69 @@ def _cleanup_stale_lock(port: int) -> None:
     _terminate_process(pid)
 
 
+def _tcp_socket_inodes_for_port(port: int) -> set[str]:
+    target_port = int(port)
+    inodes: set[str] = set()
+    for table_path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table_path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+        for line in lines[1:]:
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            local_addr = parts[1]
+            if ":" not in local_addr:
+                continue
+            try:
+                _, port_hex = local_addr.rsplit(":", 1)
+                if int(port_hex, 16) != target_port:
+                    continue
+            except Exception:
+                continue
+            inode = str(parts[-1]).strip()
+            if inode:
+                inodes.add(inode)
+    return inodes
+
+
+def _cleanup_stale_port_holders(port: int) -> None:
+    inodes = _tcp_socket_inodes_for_port(port)
+    if not inodes:
+        return
+    for pid_text in os.listdir("/proc"):
+        if not pid_text.isdigit():
+            continue
+        pid = int(pid_text)
+        if pid == _CURRENT_PID:
+            continue
+        if not _is_process_alive(pid):
+            continue
+        if not _is_our_app_process(pid):
+            continue
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except Exception:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(f"{fd_dir}/{fd}")
+            except Exception:
+                continue
+            if not target.startswith("socket:["):
+                continue
+            inode = target[8:-1]
+            if inode in inodes:
+                print(f"检测到端口 {port} 被本项目旧进程 {pid} 持有，尝试退出该进程。")
+                _terminate_process(pid)
+                break
+
+
 def _acquire_port(host: str, port: int) -> int:
     retries = max(0, int(os.getenv("PORT_CLEANUP_RETRIES", "20")))
     interval = float(os.getenv("PORT_CLEANUP_RETRY_INTERVAL_SECONDS", "0.5") or 0.5)
@@ -153,6 +216,7 @@ def _acquire_port(host: str, port: int) -> int:
 
     for _ in range(retries + 1):
         _cleanup_stale_lock(port)
+        _cleanup_stale_port_holders(port)
         if _is_port_free(host, port):
             _write_lock_file(host, port)
             return port

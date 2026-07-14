@@ -13,6 +13,8 @@ from .strategies import score_swing_2_5d_picks, score_tomorrow_picks
 
 REPLAY_VERSION_SUFFIX = str(getattr(config, "VALIDATION_REPLAY_VERSION_SUFFIX", "replay_v2_production"))
 SUPPORTED_REPLAY_STRATEGIES = {"tomorrow_picks", "swing_picks"}
+REPLAY_SAMPLE_TYPE = "daily_proxy_replay"
+REPLAY_SAMPLE_SOURCE = "daily_bar_proxy"
 
 
 def backfill_strategy_validation_samples(
@@ -90,6 +92,10 @@ def backfill_strategy_validation_samples(
     replaced = 0
     skipped_dates = 0
     saved_dates = []
+    replay_batch_metadata = {
+        "sample_type": REPLAY_SAMPLE_TYPE,
+        "sample_source": REPLAY_SAMPLE_SOURCE,
+    }
     for trade_date_key in selected_dates:
         rows = _rank_replay_rows(
             strategy_name,
@@ -110,6 +116,7 @@ def backfill_strategy_validation_samples(
             signal_time,
             rows,
             execution_policy=build_execution_policy(strategy_name),
+            batch_metadata=replay_batch_metadata,
         )
         saved += int(result.get("saved") or 0)
         replaced += int(result.get("replaced") or 0)
@@ -275,6 +282,8 @@ def _rank_replay_rows(
         item["strategy_version"] = "{}_{}".format(strategy_name, REPLAY_VERSION_SUFFIX)
         item["replay"] = True
         item["replay_source"] = "production_scorer"
+        item["sample_type"] = REPLAY_SAMPLE_TYPE
+        item["sample_source"] = REPLAY_SAMPLE_SOURCE
         item["reasons"] = _unique_reasons(
             list(item.get("reasons") or []) + _replay_reasons(strategy_name, item)
         )

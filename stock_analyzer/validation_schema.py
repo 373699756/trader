@@ -79,6 +79,8 @@ class ValidationSchemaManager:
             ),
             ("0012_deepseek_feature_pipeline", ValidationSchemaManager._migration_deepseek_feature_pipeline),
             ("0013_deepseek_daily_call_limit", ValidationSchemaManager._migration_deepseek_daily_call_limit),
+            ("0014_sample_type_columns", ValidationSchemaManager._migration_sample_type_columns),
+            ("0015_oos_report_experiment_audit", ValidationSchemaManager._migration_oos_report_experiment_audit),
         )
 
     @staticmethod
@@ -159,6 +161,27 @@ class ValidationSchemaManager:
         )
 
     @staticmethod
+    def _migration_sample_type_columns(conn) -> None:
+        ValidationSchemaManager._add_columns(
+            conn,
+            "strategy_signal_batches",
+            _BATCH_MIGRATION_COLUMNS,
+        )
+        ValidationSchemaManager._add_columns(
+            conn,
+            "strategy_candidate_snapshots",
+            _CANDIDATE_MIGRATION_COLUMNS,
+        )
+
+    @staticmethod
+    def _migration_oos_report_experiment_audit(conn) -> None:
+        ValidationSchemaManager._add_columns(
+            conn,
+            "strategy_oos_reports",
+            _OOS_REPORT_MIGRATION_COLUMNS,
+        )
+
+    @staticmethod
     def _add_columns(conn, table: str, columns) -> None:
         existing_columns = {row[1] for row in conn.execute("PRAGMA table_info({})".format(table)).fetchall()}
         for column, column_type in columns.items():
@@ -218,6 +241,8 @@ _TABLES = (
         generation_json TEXT NOT NULL DEFAULT '{}',
         portfolio_capital REAL NOT NULL DEFAULT 0,
         snapshot_id TEXT NOT NULL DEFAULT '',
+        sample_type TEXT NOT NULL DEFAULT 'unknown',
+        sample_source TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         PRIMARY KEY(strategy_name, signal_date, strategy_version)
     )
@@ -246,6 +271,8 @@ _TABLES = (
         announcement_time TEXT NOT NULL DEFAULT '',
         market_data_cutoff TEXT NOT NULL DEFAULT '',
         point_in_time_violations_json TEXT NOT NULL DEFAULT '[]',
+        sample_type TEXT NOT NULL DEFAULT 'unknown',
+        sample_source TEXT NOT NULL DEFAULT '',
         raw_json TEXT NOT NULL DEFAULT '{}',
         snapshot_id TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
@@ -455,6 +482,7 @@ _TABLES = (
         real_portfolio_max_drawdown_pct REAL NOT NULL DEFAULT 0,
         gate_blocked INTEGER NOT NULL DEFAULT 0,
         gate_reason TEXT NOT NULL DEFAULT '',
+        experiment_audit_json TEXT NOT NULL DEFAULT '{}',
         report_json TEXT NOT NULL,
         baseline_status_json TEXT NOT NULL,
         validation_gate_json TEXT NOT NULL,
@@ -644,10 +672,14 @@ _BATCH_MIGRATION_COLUMNS = {
     "generation_json": "TEXT NOT NULL DEFAULT '{}'",
     "portfolio_capital": "REAL NOT NULL DEFAULT 0",
     "snapshot_id": "TEXT NOT NULL DEFAULT ''",
+    "sample_type": "TEXT NOT NULL DEFAULT 'unknown'",
+    "sample_source": "TEXT NOT NULL DEFAULT ''",
 }
 
 _CANDIDATE_MIGRATION_COLUMNS = {
     "snapshot_id": "TEXT NOT NULL DEFAULT ''",
+    "sample_type": "TEXT NOT NULL DEFAULT 'unknown'",
+    "sample_source": "TEXT NOT NULL DEFAULT ''",
 }
 
 _SHADOW_OUTCOME_MIGRATION_COLUMNS = {
@@ -677,4 +709,8 @@ _FOLD_PREDICTION_MIGRATION_COLUMNS = {
     "baseline_score": "REAL",
     "predicted_probability": "REAL",
     "feature_schema_hash": "TEXT NOT NULL DEFAULT ''",
+}
+
+_OOS_REPORT_MIGRATION_COLUMNS = {
+    "experiment_audit_json": "TEXT NOT NULL DEFAULT '{}'",
 }

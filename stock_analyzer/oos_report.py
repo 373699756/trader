@@ -1,10 +1,67 @@
 from __future__ import annotations
 
 from datetime import datetime
+from collections import Counter
 from typing import Callable, Dict
 
 from . import config
+from .experiment_registry import list_experiments as _list_experiments
 from .normalization import coerce_number
+
+
+def _experiment_audit_summary(strategy: str) -> Dict[str, object]:
+    strategy = str(strategy or "").strip()
+    try:
+        experiments = _list_experiments()
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "error": str(exc),
+            "total_registered_experiments": 0,
+            "strategy_registered_experiments": 0,
+            "registered_trials_for_strategy": 0,
+        }
+    all_records = list(experiments or [])
+    strategy_records = [
+        row
+        for row in all_records
+        if str(row.get("strategy") or "").strip() == strategy
+    ]
+    latest_registered_at = ""
+    latest_registered_at_ts = None
+    fallback_latest = ""
+    for record in all_records:
+        raw_at = str(record.get("registered_at") or "").strip()
+        if not raw_at:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw_at.replace("Z", "+00:00"))
+        except Exception:
+            if raw_at > fallback_latest:
+                fallback_latest = raw_at
+                latest_registered_at = raw_at
+            continue
+        if latest_registered_at_ts is None or parsed > latest_registered_at_ts:
+            latest_registered_at_ts = parsed
+            latest_registered_at = raw_at
+    decision_counter = Counter(
+        str(row.get("decision") or "unknown") for row in strategy_records
+    )
+    result_counter = Counter(str(row.get("result") or "unknown") for row in strategy_records)
+    return {
+        "status": "ok",
+        "total_registered_experiments": len(all_records),
+        "strategy_registered_experiments": len(strategy_records),
+        "registered_trial_ids_for_strategy": [
+            str(record.get("experiment_id") or "")
+            for record in strategy_records
+            if str(record.get("experiment_id") or "").strip()
+        ],
+        "registered_trials_for_strategy": len(strategy_records),
+        "decision_distribution": dict(decision_counter),
+        "result_distribution": dict(result_counter),
+        "latest_registered_at": latest_registered_at,
+    }
 
 
 def build_strategy_oos_report(
@@ -138,6 +195,10 @@ def build_strategy_oos_report(
             "portfolio_random_percentile": portfolio_baseline.get("rule_vs_random_percentile"),
         }
     )
+    experiment_audit = gate_decision.get("experiment_audit")
+    if not isinstance(experiment_audit, dict):
+        experiment_audit = _experiment_audit_summary(strategy)
+    summary["experiment_audit"] = experiment_audit
     requirements = {
         "min_oos_days": min_oos_days,
         "min_real_days": int(
@@ -174,6 +235,7 @@ def build_strategy_oos_report(
         or baseline_status.get("validation_baseline_id"),
         "baseline_status": baseline_status,
         "validation_gate": gate_decision,
+        "experiment_audit": experiment_audit,
         "portfolio_baseline": portfolio_baseline,
         "summary": summary,
         "requirements": requirements,

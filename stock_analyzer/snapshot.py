@@ -23,10 +23,13 @@ from .scoring_core.candidate_filters import prepare_candidates
 from .scoring_core.market_regime import build_market_regime
 from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks, storage_strategy_name
 from .validation_repository import SignalFreezeDeadlineExceeded
+from .validation_policy import current_strategy_version
 
 
 SNAPSHOT_STRATEGIES = tuple(config.SNAPSHOT_STRATEGIES)
 SNAPSHOT_REQUIRED_FACTOR_FIELDS = ("volume_ratio", "turnover_rate", "amplitude")
+SNAPSHOT_SAMPLE_TYPE = "real_forward"
+SNAPSHOT_SAMPLE_SOURCE = "intraday_pit_14_30"
 
 
 def run_snapshot(
@@ -41,12 +44,23 @@ def run_snapshot(
         return {"ok": False, "strategy": strategy, "error": "unknown_strategy"}
     context = _context or _prepare_snapshot_context(provider)
     if context.get("error"):
-        return {
-            "ok": False,
-            "strategy": strategy,
-            "error": context["error"],
-            "saved": {"saved": 0, "replaced": 0},
-        }
+        return _snapshot_error_rejection(
+            strategy=strategy,
+            provider=provider,
+            validation_store=validation_store,
+            snapshot_id=str(context.get("snapshot_id") or "snapshot_{}".format(uuid4().hex)),
+            signal_time=str(context.get("snapshot_cutoff") or datetime.now().isoformat(timespec="seconds")),
+            candidates=context.get("candidates") or pd.DataFrame(),
+            quotes=context.get("quotes"),
+            event_payload=context.get("event_payload") or {},
+            fundamental_payload=context.get("fundamental_payload") or {},
+            error=context["error"],
+            market=market,
+            market_regime=dict(context.get("market_regime") or {}),
+            generation_status="context_rejection",
+            reason="snapshot_context_rejected",
+        )
+
     quotes = context["quotes"]
     snapshot_cutoff = str(context["snapshot_cutoff"])
     snapshot_id = str(context["snapshot_id"])
@@ -61,7 +75,28 @@ def run_snapshot(
             strategy,
             {"generated_at": common_signal_time, "snapshot_id": snapshot_id},
         )
-    rows, meta, version = _score_snapshot_strategy(provider, candidates, quotes, strategy, market, market_regime)
+    try:
+        rows, meta, version = _score_snapshot_strategy(
+            provider, candidates, quotes, strategy, market, market_regime
+        )
+    except Exception as exc:
+        return _snapshot_error_rejection(
+            strategy=strategy,
+            provider=provider,
+            validation_store=validation_store,
+            snapshot_id=snapshot_id,
+            signal_time=common_signal_time,
+            candidates=candidates,
+            quotes=quotes,
+            event_payload=event_payload,
+            fundamental_payload=fundamental_payload,
+            error=exc,
+            market=market,
+            market_regime=market_regime,
+        )
+    version = str(version or "").strip() or current_strategy_version(strategy)
+    if not version:
+        version = str(strategy)
     _attach_frozen_regime(rows, market_regime)
     meta["generated_at"] = common_signal_time
     meta["snapshot_id"] = snapshot_id
@@ -114,6 +149,9 @@ def run_snapshot(
         strategy_name=strategy,
         snapshot_id=snapshot_id,
     )
+    for row in candidate_rows:
+        row.setdefault("sample_type", SNAPSHOT_SAMPLE_TYPE)
+        row.setdefault("sample_source", SNAPSHOT_SAMPLE_SOURCE)
     execution_policy = build_execution_policy(strategy, market)
     data_source_timestamp = str(
         (quotes.attrs or {}).get("quote_timestamp")
@@ -149,6 +187,8 @@ def run_snapshot(
                 "generation": provenance,
                 "snapshot_id": snapshot_id,
                 "freeze_deadline": freeze_deadline,
+                "sample_type": SNAPSHOT_SAMPLE_TYPE,
+                "sample_source": SNAPSHOT_SAMPLE_SOURCE,
             },
             execution_policy=execution_policy,
         )
@@ -164,10 +204,146 @@ def run_snapshot(
 
 def run_snapshots(provider, validation_store, strategies: Iterable[str], market: str = "all") -> List[Dict[str, object]]:
     context = _prepare_snapshot_context(provider)
-    return [
-        run_snapshot(provider, validation_store, strategy, market=market, _context=context)
-        for strategy in strategies
-    ]
+    if not context.get("snapshot_id"):
+        context["snapshot_id"] = "snapshot_{}".format(uuid4().hex)
+    if not context.get("snapshot_cutoff"):
+        context["snapshot_cutoff"] = datetime.now().isoformat(timespec="seconds")
+    results: List[Dict[str, object]] = []
+    for strategy in strategies:
+        try:
+            results.append(
+                run_snapshot(
+                    provider,
+                    validation_store,
+                    strategy,
+                    market=market,
+                    _context=context,
+                )
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "ok": False,
+                    "strategy": strategy,
+                    "error": str(exc),
+                    "saved": {"saved": 0, "replaced": 0},
+                    "meta": {
+                        "generated_at": str(context.get("signal_time") or context.get("snapshot_cutoff") or ""),
+                        "snapshot_id": str(context.get("snapshot_id") or ""),
+                        "rejection": "unhandled_exception",
+                    },
+                }
+            )
+    return results
+
+
+def _snapshot_error_rejection(
+    *,
+    strategy: str,
+    provider,
+    validation_store,
+    snapshot_id: str,
+    signal_time: str,
+    candidates,
+    quotes,
+    event_payload: Dict[str, object],
+    fundamental_payload: Dict[str, object],
+    error: object,
+    market: str,
+    market_regime: Dict[str, object],
+    generation_status: str = "runtime_exception",
+    reason: str = "snapshot_scoring_failed",
+) -> Dict[str, object]:
+    strategy = storage_strategy_name(strategy)
+    error_text = str(error)
+    generated_at = str(signal_time)
+    provider_health = _provider_health(provider)
+    quote_timestamp = ""
+    if quotes is not None:
+        try:
+            quote_timestamp = str((quotes.attrs or {}).get("quote_timestamp") or "")
+        except Exception:
+            quote_timestamp = ""
+    data_source_timestamp = str(
+        quote_timestamp
+        or provider_health.get("last_quote_refresh")
+        or ""
+    )
+    candidate_rows: List[Dict[str, object]] = []
+    try:
+        candidate_rows = build_candidate_snapshot_rows(
+            quotes,
+            candidates,
+            [],
+            generated_at,
+            event_payload=event_payload,
+            fundamental_payload=fundamental_payload,
+            provider_health=provider_health,
+            strategy_name=strategy,
+            snapshot_id=snapshot_id,
+        )
+        _attach_frozen_regime(candidate_rows, market_regime)
+    except Exception:
+        candidate_rows = []
+    generation = {
+        "status": str(generation_status or "runtime_exception"),
+        "strategy": strategy,
+        "reason": str(reason or "snapshot_scoring_failed"),
+        "error": error_text,
+    }
+    execution_policy = build_execution_policy(strategy, market)
+    version = str(current_strategy_version(strategy) or strategy)
+    try:
+        saved = validation_store.save_signals(
+            strategy,
+            version,
+            generated_at,
+            [],
+            candidate_rows=candidate_rows,
+            batch_metadata={
+                "data_source_timestamp": data_source_timestamp,
+                "market_data_cutoff": generated_at,
+                "generation": generation,
+                "snapshot_id": snapshot_id,
+                "sample_type": SNAPSHOT_SAMPLE_TYPE,
+                "sample_source": SNAPSHOT_SAMPLE_SOURCE,
+            },
+            execution_policy=execution_policy,
+        )
+    except SignalFreezeDeadlineExceeded as exc:
+        return _freeze_rejection(
+            strategy,
+            {
+                "generated_at": generated_at,
+                "snapshot_id": snapshot_id,
+                "error": str(exc),
+                "rejection": "freeze_deadline_exceeded_during_error_batch",
+            },
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "strategy": strategy,
+            "error": str(exc),
+            "saved": {"saved": 0, "replaced": 0},
+            "meta": {
+                "generated_at": generated_at,
+                "snapshot_id": snapshot_id,
+                "rejection": "snapshot_error_save_failed",
+                "original_error": error_text,
+            },
+        }
+    return {
+        "ok": False,
+        "strategy": strategy,
+        "saved": saved,
+        "meta": {
+            "generated_at": generated_at,
+            "snapshot_id": snapshot_id,
+            "rejection": str(generation_status or "runtime_exception"),
+            "error": error_text,
+        },
+    }
 
 
 def build_deepseek_precompute_rows(

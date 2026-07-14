@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 from typing import Dict, List
@@ -48,6 +49,12 @@ class ValidationMetricsService:
             days=days,
             strategy_version=current_version,
         )
+        attempted_experiment_ids = [
+            str(value).strip()
+            for value in self.repository.list_experiment_ids(strategy_name=strategy_name)
+            if str(value).strip()
+        ]
+        attempted_experiment_count = len(attempted_experiment_ids)
         validation_baseline = validation_baseline_config(strategy_name)
         current_baseline_id = str(validation_baseline.get("baseline_id") or "")
         rows = self.repository.fetch_validation_metric_rows(
@@ -121,6 +128,8 @@ class ValidationMetricsService:
                 "win_rate_primary_net_all": 0.0,
                 "win_rate_all": 0.0,
                 "win_rate_survivors": 0.0,
+                "attempted_experiment_ids": attempted_experiment_ids,
+                "attempted_experiment_count": attempted_experiment_count,
                 "execution_skipped_count": execution_skipped_count,
                 "real_return_ci_method": "moving_block_bootstrap",
                 **self._portfolio_metrics(strategy_name, days),
@@ -355,6 +364,8 @@ class ValidationMetricsService:
             "daily": _daily_metrics(primary_rows),
             "real_daily": real_daily,
             "replay_daily": replay_daily,
+            "attempted_experiment_ids": attempted_experiment_ids,
+            "attempted_experiment_count": attempted_experiment_count,
             "execution_skipped_count": execution_skipped_count,
             **self._portfolio_metrics(strategy_name, days),
             **signal_status,
@@ -651,4 +662,3 @@ class ValidationBaselineService:
             "dates": dates,
             "validation_baseline_id": current_baseline_id,
         }
-
