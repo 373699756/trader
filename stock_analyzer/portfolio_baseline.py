@@ -9,12 +9,16 @@ from datetime import datetime
 from typing import Dict, Iterable, List, Optional
 
 from . import config
-from .execution_policy import build_execution_policy, cost_scenarios, market_impact_cost_pct
+from .execution_policy import build_execution_policy, cost_scenarios
 from .normalization import coerce_number, normalize_code, rename_known_columns
 from .production_baseline import production_baseline_id
 from .sqlite_support import sqlite_transaction
-from .validation_policy import primary_return_config as _primary_return_config, validation_baseline_config
-from .validation_outcomes import _compute_outcome
+from .validation_policy import (
+    market_impact_cost_pct,
+    primary_return_config as _primary_return_config,
+    validation_baseline_config,
+)
+from .validation_outcomes import compute_outcome
 from .validation_statistics import block_bootstrap_mean_confidence_interval
 
 
@@ -539,7 +543,7 @@ class DailyPortfolioBaselineService:
                     outcomes[code] = stored_outcome
                     continue
             signal = _synthetic_signal(candidate, strategy_name, signal_date, policy)
-            outcome = _compute_outcome(provider, signal)
+            outcome = compute_outcome(provider, signal)
             outcomes[code] = _computed_execution_outcome(candidate, outcome, policy, strategy_name)
         return outcomes
 

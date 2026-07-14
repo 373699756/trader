@@ -1,9 +1,7 @@
-from __future__ import annotations
-
 import json
 import sqlite3
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 from .normalization import coerce_number, normalize_code
 from .execution_policy import (
@@ -22,11 +20,36 @@ from .validation_policy import (
     validation_baseline_config,
 )
 
+_compute_outcome_impl: Optional[Callable[..., Optional[Dict[str, object]]]] = None
+
+
+def register_compute_outcome_fn(fn: Callable[..., Optional[Dict[str, object]]]) -> None:
+    global _compute_outcome_impl
+    _compute_outcome_impl = fn
+
 
 def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object]]:
-    from .strategy_validation import _compute_outcome as _strategy_compute_outcome
+    global _compute_outcome_impl
+    if _compute_outcome_impl is None:
+        try:
+            from importlib import import_module
 
-    return _strategy_compute_outcome(provider, signal)
+            module = import_module("stock_analyzer.strategy_validation")
+            impl = getattr(module, "compute_outcome", None)
+            if callable(impl):
+                _compute_outcome_impl = impl
+            else:
+                raise RuntimeError("validation outcome compute backend is not callable")
+        except Exception as exc:
+            raise RuntimeError(
+                "validation outcome compute backend is not configured; "
+                "import stock_analyzer.strategy_validation once so strategy_validation can register"
+            ) from exc
+    return _compute_outcome_impl(provider, signal)
+
+
+def compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object]]:
+    return _compute_outcome(provider, signal)
 
 
 def _mapping_get(row, key: str, default=None):

@@ -78,7 +78,7 @@
           } else if (coverage.history_factors_enabled === false) {
             text = "关闭";
             level = "warn";
-            title = "历史因子未开启，明日优先和2-5日持有的历史类因子不会参与打分。";
+              title = "历史因子未开启，明日与2-5日的历史类因子不会参与打分。";
           } else {
             text = `${formatNumber(readyPct, 0)}%`;
             level = "ok";

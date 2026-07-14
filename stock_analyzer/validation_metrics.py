@@ -10,7 +10,6 @@ from .normalization import coerce_number, normalize_code
 from .validation_policy import (
     current_replay_strategy_version,
     current_strategy_version,
-    execution_cost_pct as _execution_cost_pct,
     exit_holding_days as _exit_holding_days,
     is_primary_validation_signal as _is_primary_validation_signal,
     is_replay_version as _is_replay_version,

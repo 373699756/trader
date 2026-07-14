@@ -505,11 +505,16 @@ def attach_meta_labeling(
     apply_meta_labeling(rows, model, enforce=False)
 
 
-def validation_batch_summary(rows: List[Dict[str, object]], strategy_name: str) -> Dict[str, object]:
+def validation_batch_summary(
+    rows: List[Dict[str, object]],
+    strategy_name: str,
+    batch: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
     primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
     valid_returns = []
     pending = 0
     skipped = 0
+    sample_type = str((batch or {}).get("sample_type") or "").strip().lower()
     for row in rows or []:
         if row.get("skip_reason"):
             skipped += 1
@@ -538,6 +543,7 @@ def validation_batch_summary(rows: List[Dict[str, object]], strategy_name: str) 
         "primary_return_field": primary_column,
         "primary_holding_days": primary_days,
         "primary_horizon_label": primary_label,
+        "sample_type": sample_type or None,
         "sample_count": sample,
         "up_count": up,
         "down_count": down,

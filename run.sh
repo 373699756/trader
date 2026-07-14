@@ -393,7 +393,7 @@ if [ "$RUN_MODE" = "after-close" ] || [ "$RUN_MODE" = "daily-job" ]; then
   export ENABLE_HISTORY_FACTORS="${ENABLE_HISTORY_FACTORS:-1}"
   printf '\n运行盘后流水线: market_data --download -> daily_job snapshot/update/factors\n'
   printf '历史因子: ENABLE_HISTORY_FACTORS=%s\n\n' "$ENABLE_HISTORY_FACTORS"
-  exec "$VENV_DIR/bin/python" -m stock_analyzer.daily_job --after-close "$@"
+  exec "$VENV_DIR/bin/python" -m stock_analyzer.daily_job --after-close --snapshot "$@"
 fi
 
 printf '\n启动看板: http://%s:%s\n' "$HOST" "$PORT"

@@ -40,30 +40,23 @@
             </div>
           </div>
           <div class="pool-tabs" role="tablist" aria-label="推荐周期筛选">
-            <button class="pool-tab active" type="button" data-pool-filter="today">今天策略</button>
-            <button class="pool-tab" type="button" data-pool-filter="next">明日优先</button>
-            <button class="pool-tab" type="button" data-pool-filter="swing">2-5日持有</button>
+            <button class="pool-tab active" type="button" data-pool-filter="today">今日</button>
+            <button class="pool-tab" type="button" data-pool-filter="next">明日</button>
+            <button class="pool-tab" type="button" data-pool-filter="swing">2-5日</button>
           </div>
         </section>
         <div class="board rec-pool-group" data-pool-group="today">
           <div class="table-wrap">
-            <table class="rec-table slim-table rec-short">
+            <table class="rec-table slim-table">
               <thead>
                 <tr>
                   <th>排名</th>
                   <th>股票</th>
-                  <th>名称</th>
-                  <th>市场</th>
-                  <th>最新价</th>
-                  <th>涨跌幅</th>
-                  <th>涨速</th>
-                  <th>量比</th>
-                  <th>换手</th>
-                  <th>成交额</th>
+                  <th class="col-latest-price">最新价</th>
+                  <th class="col-pct-today">今日涨跌</th>
+                  <th class="col-turnover-rate">换手</th>
+                  <th class="col-turnover">成交额</th>
                   <th class="col-market-cap">总市值</th>
-                  <th>行业</th>
-                  <th>动能分</th>
-                  <th>舆情分</th>
                   <th class="col-score">操作评分</th>
                   <th class="col-action">动作</th>
                   <th class="col-reasons">解释/风险/验证</th>
@@ -71,7 +64,7 @@
               </thead>
               <tbody id="shortTermBody">
                 <tr>
-                  <td colspan="17" class="empty">加载中...</td>
+                  <td colspan="10" class="empty">加载中...</td>
                 </tr>
               </tbody>
             </table>
@@ -79,23 +72,16 @@
         </div>
         <div class="board rec-pool-group" data-pool-group="next">
           <div class="table-wrap">
-            <table class="rec-table slim-table rec-tomorrow">
+            <table class="rec-table slim-table">
               <thead>
                 <tr>
                   <th>排名</th>
                   <th>股票</th>
-                  <th>名称</th>
-                  <th>市场</th>
-                  <th>最新价</th>
-                  <th>今日涨跌</th>
-                  <th>量比</th>
-                  <th>换手</th>
-                  <th>成交额</th>
+                  <th class="col-latest-price">最新价</th>
+                  <th class="col-pct-today">今日涨跌</th>
+                  <th class="col-turnover-rate">换手</th>
+                  <th class="col-turnover">成交额</th>
                   <th class="col-market-cap">总市值</th>
-                  <th>60日</th>
-                  <th>流动性</th>
-                  <th>动能</th>
-                  <th>趋势</th>
                   <th class="col-score">操作评分</th>
                   <th class="col-action">动作</th>
                   <th class="col-reasons">解释/风险/验证</th>
@@ -103,7 +89,7 @@
               </thead>
               <tbody id="tomorrowBody">
                 <tr>
-                  <td colspan="17" class="empty">切换到本页后加载</td>
+                  <td colspan="10" class="empty">切换到本页后加载</td>
                 </tr>
               </tbody>
             </table>
@@ -111,23 +97,16 @@
         </div>
         <div class="board rec-pool-group" data-pool-group="swing">
           <div class="table-wrap">
-            <table class="rec-table slim-table rec-swing">
+            <table class="rec-table slim-table">
               <thead>
                 <tr>
                   <th>排名</th>
                   <th>股票</th>
-                  <th>名称</th>
-                  <th>市场</th>
-                  <th>最新价</th>
-                  <th>今日涨跌</th>
-                  <th>5日</th>
-                  <th>10日</th>
-                  <th>20日</th>
-                  <th>20日线</th>
-                  <th>成交额</th>
+                  <th class="col-latest-price">最新价</th>
+                  <th class="col-pct-today">今日涨跌</th>
+                  <th class="col-turnover-rate">换手</th>
+                  <th class="col-turnover">成交额</th>
                   <th class="col-market-cap">总市值</th>
-                  <th>动量</th>
-                  <th>趋势</th>
                   <th class="col-score">操作评分</th>
                   <th class="col-action">动作</th>
                   <th class="col-reasons">解释/风险/验证</th>
@@ -135,7 +114,7 @@
               </thead>
               <tbody id="swingBody">
                 <tr>
-                  <td colspan="17" class="empty">切换到本页后加载</td>
+                  <td colspan="10" class="empty">切换到本页后加载</td>
                 </tr>
               </tbody>
             </table>
@@ -152,9 +131,9 @@
             </div>
             <div class="validation-controls">
               <select id="validationStrategySelect" hidden>
-                <option value="short_term">今天策略</option>
-                <option value="tomorrow_picks">明日优先</option>
-                <option value="swing_picks">2-5日持有</option>
+                <option value="short_term">今日</option>
+                <option value="tomorrow_picks">明日</option>
+                <option value="swing_picks">2-5日</option>
               </select>
               <label class="validation-window-select">
                 <span>统计窗口</span>
@@ -231,9 +210,9 @@
             <section class="validation-batches">
               <div class="validation-section-head">
                 <div class="validation-strategy-tabs" role="tablist" aria-label="保存批次类型">
-                  <button class="validation-strategy-tab active" type="button" data-validation-strategy="short_term" role="tab" aria-selected="true">今天策略</button>
-                  <button class="validation-strategy-tab" type="button" data-validation-strategy="tomorrow_picks" role="tab" aria-selected="false">明日优先</button>
-                  <button class="validation-strategy-tab" type="button" data-validation-strategy="swing_picks" role="tab" aria-selected="false">2-5日持有</button>
+                  <button class="validation-strategy-tab active" type="button" data-validation-strategy="short_term" role="tab" aria-selected="true">今日</button>
+                  <button class="validation-strategy-tab" type="button" data-validation-strategy="tomorrow_picks" role="tab" aria-selected="false">明日</button>
+                  <button class="validation-strategy-tab" type="button" data-validation-strategy="swing_picks" role="tab" aria-selected="false">2-5日</button>
                 </div>
                 <div class="validation-pager" id="validationDatesPager">
                   <button id="validationDatesPrev" type="button">上一页</button>

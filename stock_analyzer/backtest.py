@@ -3,7 +3,7 @@ from typing import Dict, Iterable, List
 import pandas as pd
 
 from . import config
-from .execution_policy import execution_cost_for_strategy
+from .execution_policy import build_execution_policy, execution_cost_for_strategy
 from .factors import compute_alphalite_for_stock
 from .normalization import coerce_number, normalize_code, rename_known_columns
 from .risk_rules import simulate_exit
@@ -53,6 +53,9 @@ def run_alphalite_backtest(
     strategy_name: str = "tomorrow_picks",
 ) -> Dict[str, object]:
     rows = []
+    cost_policy_version = ""
+    if cost_rate is None:
+        cost_policy_version = str(build_execution_policy(strategy_name).get("policy_version") or "")
     for code, history in history_by_code.items():
         prepared = _prepare_history(code, history)
         if len(prepared) < holding_days + 25:
@@ -84,6 +87,7 @@ def run_alphalite_backtest(
                 "fixed_gross_return": round(fixed_gross_return, 4),
                 "net_return": round(net_return, 4),
                 "trade_cost_pct": round(trade_cost_pct, 4),
+                "trade_cost_policy_version": cost_policy_version if cost_rate is None else "override",
                 "exit_reason": exit_result.get("exit_reason", "hold_to_term"),
                 "exit_days": exit_result.get("exit_days", holding_days),
                 "exit_date": exit_result.get("exit_date", _trade_date(prepared, len(prepared) - 1)),
@@ -107,6 +111,7 @@ def run_alphalite_backtest(
         "top_k": top_k,
         "holding_days": holding_days,
         "cost_rate": cost_rate,
+        "cost_policy_version": cost_policy_version if cost_rate is None else "override",
         "cost_model": "override" if cost_rate is not None else "validation_liquidity_slippage",
         "avg_trade_cost_pct": round(sum(item["trade_cost_pct"] for item in selected) / len(selected), 4),
         "avg_net_return": round(sum(returns) / len(returns), 4),
@@ -135,6 +140,10 @@ def run_rolling_alphalite_backtest(
     prepared = {code: df for code, df in prepared.items() if len(df) >= lookback_days + holding_days + 5}
     if not prepared:
         return {"ok": False, "error": "没有足够历史数据可滚动回测", "trades": [], "metrics": {}}
+
+    cost_policy_version = ""
+    if cost_rate is None:
+        cost_policy_version = str(build_execution_policy(strategy_name).get("policy_version") or "")
 
     aligned_dates = _aligned_trade_dates(prepared, lookback_days=lookback_days, holding_days=holding_days)
     if aligned_dates:
@@ -188,6 +197,7 @@ def run_rolling_alphalite_backtest(
                     "gross_return": gross_return,
                     "fixed_gross_return": fixed_gross_return,
                     "trade_cost_pct": trade_cost_pct,
+                    "trade_cost_policy_version": cost_policy_version if cost_rate is None else "override",
                     "trade_date": _trade_date(history, signal_index),
                     "exit_date": exit_result.get("exit_date") or _trade_date(history, signal_index + holding_days),
                     "exit_reason": exit_result.get("exit_reason", "hold_to_term"),
@@ -225,6 +235,7 @@ def run_rolling_alphalite_backtest(
         "overlap_exposure_multiplier": round(holding_days / max(1, rebalance_step), 4),
         "date_aligned": bool(aligned_dates),
         "cost_rate": cost_rate,
+        "cost_policy_version": cost_policy_version if cost_rate is None else "override",
         "cost_model": "override" if cost_rate is not None else "validation_liquidity_slippage",
         "avg_trade_cost_pct": round(
             sum(item["trade_cost_pct"] for trade in trades for item in trade["selected"])

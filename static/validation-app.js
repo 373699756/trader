@@ -470,7 +470,7 @@
         const cacheKey = `${strategy}:${date}`;
         const cached = state.validationDailyCache[cacheKey];
         if (cached) {
-          renderValidationDetail(cached.data || []);
+          renderValidationDetail(cached.data || [], cached.batch || null);
           renderValidationBatchSummary(cached.data || [], date, strategy, cached.summary || null);
         } else {
           els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">加载中...</td></tr>';
@@ -491,7 +491,7 @@
             return;
           }
           state.validationDailyCache[cacheKey] = payload;
-          renderValidationDetail(payload.data || []);
+          renderValidationDetail(payload.data || [], payload.batch || null);
           renderValidationBatchSummary(payload.data || [], date, strategy, payload.summary || null);
           if ((payload.data || []).length) {
             refreshValidationDailyQuotes(date, strategy, cacheKey);
@@ -887,9 +887,20 @@
         }
       }
 
-      function renderValidationDetail(rows) {
+      function getValidationDateRow(date, strategy) {
+        return state.validationDateRows.find(item =>
+          item.signal_date === (date || "") &&
+          item.strategy_name === (strategy || "")
+        ) || null;
+      }
+
+      function renderValidationDetail(rows, batch = null) {
         if (!rows.length) {
-          els.validationDetailBody.innerHTML = '<tr><td colspan="11" class="empty">暂无明细</td></tr>';
+          const selectedBatch = batch || getValidationDateRow(state.selectedValidation.date, state.selectedValidation.strategy);
+          const emptyText = selectedBatch && selectedBatch.sample_type === "empty"
+            ? "空批次（无可执行样本）"
+            : "暂无明细";
+          els.validationDetailBody.innerHTML = `<tr><td colspan="11" class="empty">${escapeHtml(emptyText)}</td></tr>`;
           return;
         }
         els.validationDetailBody.innerHTML = ValidationRenderers.renderValidationDetailRows(rows, {
@@ -923,7 +934,7 @@
           row.strategy_name === state.selectedValidation.strategy
         );
         if (!exists) {
-          const first = rows.find(row => Number(row.real_count || 0) > 0) || rows[0];
+          const first = rows[0];
           state.selectedValidation = first
             ? { date: first.signal_date, strategy: first.strategy_name }
             : { date: "", strategy: "" };
@@ -940,7 +951,9 @@
           els.validationSelectionLabel.textContent = `未选择${strategyLabel(currentValidationStrategy())}批次`;
           return;
         }
-        els.validationSelectionLabel.textContent = `${state.selectedValidation.date} ${strategyLabel(state.selectedValidation.strategy)}`;
+        const batch = getValidationDateRow(state.selectedValidation.date, state.selectedValidation.strategy);
+        const batchSuffix = batch && batch.sample_type === "empty" ? "（空批次）" : "";
+        els.validationSelectionLabel.textContent = `${state.selectedValidation.date} ${strategyLabel(state.selectedValidation.strategy)}${batchSuffix}`;
       }
 
       function markSelectedValidationRow() {

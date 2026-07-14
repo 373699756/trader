@@ -62,6 +62,7 @@ def main() -> int:
         args.download_market_data = True
         args.update = True
         args.portfolio_baseline = True
+        args.snapshot = True
         args.factor_snapshot = True
         args.factor_ic = True
 

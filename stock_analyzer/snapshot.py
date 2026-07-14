@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 from uuid import uuid4
 
 import pandas as pd
@@ -44,12 +44,21 @@ def run_snapshot(
         return {"ok": False, "strategy": strategy, "error": "unknown_strategy"}
     context = _context or _prepare_snapshot_context(provider)
     if context.get("error"):
+        common_signal_time = str(context.get("snapshot_cutoff") or datetime.now().isoformat(timespec="seconds"))
+        batch_metadata = {
+            "data_source_timestamp": "",
+            "market_data_cutoff": common_signal_time,
+            "snapshot_id": str(context.get("snapshot_id") or "snapshot_{}".format(uuid4().hex)),
+            "freeze_deadline": _freeze_deadline(common_signal_time),
+            "sample_type": SNAPSHOT_SAMPLE_TYPE,
+            "sample_source": SNAPSHOT_SAMPLE_SOURCE,
+        }
         return _snapshot_error_rejection(
             strategy=strategy,
             provider=provider,
             validation_store=validation_store,
-            snapshot_id=str(context.get("snapshot_id") or "snapshot_{}".format(uuid4().hex)),
-            signal_time=str(context.get("snapshot_cutoff") or datetime.now().isoformat(timespec="seconds")),
+            snapshot_id=str(batch_metadata["snapshot_id"]),
+            signal_time=common_signal_time,
             candidates=context.get("candidates") or pd.DataFrame(),
             quotes=context.get("quotes"),
             event_payload=context.get("event_payload") or {},
@@ -59,6 +68,7 @@ def run_snapshot(
             market_regime=dict(context.get("market_regime") or {}),
             generation_status="context_rejection",
             reason="snapshot_context_rejected",
+            batch_metadata=batch_metadata,
         )
 
     quotes = context["quotes"]
@@ -75,6 +85,7 @@ def run_snapshot(
             strategy,
             {"generated_at": common_signal_time, "snapshot_id": snapshot_id},
         )
+    freeze_deadline = _freeze_deadline(common_signal_time)
     try:
         rows, meta, version = _score_snapshot_strategy(
             provider, candidates, quotes, strategy, market, market_regime
@@ -93,6 +104,14 @@ def run_snapshot(
             error=exc,
             market=market,
             market_regime=market_regime,
+            batch_metadata={
+                "data_source_timestamp": "",
+                "market_data_cutoff": common_signal_time,
+                "snapshot_id": snapshot_id,
+                "freeze_deadline": freeze_deadline,
+                "sample_type": SNAPSHOT_SAMPLE_TYPE,
+                "sample_source": SNAPSHOT_SAMPLE_SOURCE,
+            },
         )
     version = str(version or "").strip() or current_strategy_version(strategy)
     if not version:
@@ -174,6 +193,14 @@ def run_snapshot(
     if _signal_at_or_after_freeze_cutoff(freeze_ready_at):
         return _freeze_rejection(strategy, meta)
     freeze_deadline = _freeze_deadline(common_signal_time)
+    batch_metadata = {
+        "data_source_timestamp": "",
+        "market_data_cutoff": meta["generated_at"],
+        "snapshot_id": snapshot_id,
+        "freeze_deadline": freeze_deadline,
+        "sample_type": SNAPSHOT_SAMPLE_TYPE,
+        "sample_source": SNAPSHOT_SAMPLE_SOURCE,
+    }
     try:
         saved = validation_store.save_signals(
             strategy,
@@ -182,13 +209,9 @@ def run_snapshot(
             rows,
             candidate_rows=candidate_rows,
             batch_metadata={
+                **batch_metadata,
                 "data_source_timestamp": data_source_timestamp,
-                "market_data_cutoff": meta["generated_at"],
                 "generation": provenance,
-                "snapshot_id": snapshot_id,
-                "freeze_deadline": freeze_deadline,
-                "sample_type": SNAPSHOT_SAMPLE_TYPE,
-                "sample_source": SNAPSHOT_SAMPLE_SOURCE,
             },
             execution_policy=execution_policy,
         )
@@ -253,6 +276,7 @@ def _snapshot_error_rejection(
     market_regime: Dict[str, object],
     generation_status: str = "runtime_exception",
     reason: str = "snapshot_scoring_failed",
+    batch_metadata: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
     strategy = storage_strategy_name(strategy)
     error_text = str(error)
@@ -291,6 +315,14 @@ def _snapshot_error_rejection(
         "reason": str(reason or "snapshot_scoring_failed"),
         "error": error_text,
     }
+    batch_metadata = dict(batch_metadata or {})
+    batch_metadata.setdefault("snapshot_id", snapshot_id)
+    batch_metadata.setdefault("data_source_timestamp", data_source_timestamp)
+    batch_metadata.setdefault("market_data_cutoff", generated_at)
+    batch_metadata.setdefault("freeze_deadline", _freeze_deadline(generated_at))
+    batch_metadata.setdefault("sample_type", SNAPSHOT_SAMPLE_TYPE)
+    batch_metadata.setdefault("sample_source", SNAPSHOT_SAMPLE_SOURCE)
+    batch_metadata["generation"] = generation
     execution_policy = build_execution_policy(strategy, market)
     version = str(current_strategy_version(strategy) or strategy)
     try:
@@ -300,14 +332,7 @@ def _snapshot_error_rejection(
             generated_at,
             [],
             candidate_rows=candidate_rows,
-            batch_metadata={
-                "data_source_timestamp": data_source_timestamp,
-                "market_data_cutoff": generated_at,
-                "generation": generation,
-                "snapshot_id": snapshot_id,
-                "sample_type": SNAPSHOT_SAMPLE_TYPE,
-                "sample_source": SNAPSHOT_SAMPLE_SOURCE,
-            },
+            batch_metadata=batch_metadata,
             execution_policy=execution_policy,
         )
     except SignalFreezeDeadlineExceeded as exc:

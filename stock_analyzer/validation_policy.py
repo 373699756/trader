@@ -301,8 +301,8 @@ def tail_auction_slippage_pct(row, base_slippage: float = 0.0) -> float:
     return _policy_tail_auction_slippage_pct(row, base_slippage, policy_from_signal(row))
 
 
-def market_impact_cost_pct(row) -> float:
-    return _policy_market_impact_cost_pct(row, policy_from_signal(row))
+def market_impact_cost_pct(row, policy: Dict[str, object] = None) -> float:
+    return _policy_market_impact_cost_pct(row, policy or policy_from_signal(row))
 
 
 def execution_cost_pct(row) -> float:
@@ -311,7 +311,9 @@ def execution_cost_pct(row) -> float:
 
 def execution_cost_for_strategy(row, strategy_name: str, policy: Dict[str, object] = None) -> float:
     if not strategy_name and not policy:
-        return _policy_execution_cost_components(row, policy_from_signal(row))["total_pct"]
+        strategy_name = str(mapping_get(row, "strategy_name", ""))
+    if not strategy_name and not policy:
+        raise ValueError("strategy_name is required for explicit execution cost calculation")
     return _policy_execution_cost_for_strategy(row, strategy_name=strategy_name, policy=policy)
 
 

@@ -149,9 +149,9 @@ function numberClass(value) {
 }
 
 function strategyLabel(value) {
-  if (value === "short_term") return "今天策略";
-  if (value === "tomorrow_picks") return "明日优先";
-  if (value === "swing_picks") return "2-5日持有";
+  if (value === "short_term") return "今日";
+  if (value === "tomorrow_picks") return "明日";
+  if (value === "swing_picks") return "2-5日";
   return value || "-";
 }
 

@@ -53,6 +53,7 @@ from ..selfcheck import factor_coverage
 from ..sentiment import build_market_sentiment_index
 from ..snapshot import SNAPSHOT_STRATEGIES, run_snapshot, run_snapshots
 from ..strategies import storage_strategy_name
+from ..validation_policy import validation_baseline_config
 from ..validation_replay import backfill_strategy_validation_samples
 from ..validation_audit_cli import build_validation_readiness_report
 from ..validation_runtime_support import (
@@ -715,8 +716,6 @@ class _AppServiceContext:
             return self.error_payload(exc)
 
     def strategy_validation_runtime_config(self, strategy: str, days: int) -> Tuple[Dict[str, object], int]:
-        from ..strategy_validation import validation_baseline_config
-
         baseline = validation_baseline_config(strategy)
         baseline_status = self.validation_store.validation_baseline_status(strategy, days=days)
         return self.json_payload(
@@ -770,6 +769,7 @@ class _AppServiceContext:
         if not signal_date:
             return self.bad_request_payload("缺少 date 参数")
         try:
+            batch = self._validation_batch_row(signal_date, strategy)
             rows = self.validation_store.signals_for_date(signal_date, strategy)
             rows, update_result = self._refresh_validation_rows_if_needed(
                 rows,
@@ -778,8 +778,15 @@ class _AppServiceContext:
                 should_update=should_update,
             )
             self._attach_validation_daily_quotes(rows, include_quotes)
-            summary = validation_batch_summary(rows, strategy)
-            return self.json_payload(ok=True, date=signal_date, data=rows, summary=summary, update=update_result)
+            summary = validation_batch_summary(rows, strategy, batch=batch)
+            return self.json_payload(
+                ok=True,
+                date=signal_date,
+                data=rows,
+                summary=summary,
+                batch=batch or {},
+                update=update_result,
+            )
         except Exception as exc:
             return self.error_payload(exc)
 
@@ -1217,6 +1224,12 @@ class _AppServiceContext:
             row["current_price"] = current_price
             row["current_pct_chg"] = current_pct_chg
             row["anchor_to_now_return"] = anchor_to_now_return
+
+    def _validation_batch_row(self, signal_date: str, strategy_name: str) -> Dict[str, object] | None:
+        for row in self.validation_store.list_signal_dates(strategy_name):
+            if str(row.get("signal_date") or "") == str(signal_date or "") and str(row.get("strategy_name") or "") == str(strategy_name or ""):
+                return dict(row)
+        return None
 
     def _configured_auto_snapshot_strategies(self) -> List[str]:
         return configured_auto_snapshot_strategies(DEFAULT_AUTO_SNAPSHOT_STRATEGIES, SNAPSHOT_STRATEGIES)

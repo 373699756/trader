@@ -59,7 +59,10 @@ from .validation_statistics import (
     top_k_sensitivity as _top_k_sensitivity,
     wilson_lower_bound as _wilson_lower_bound,
 )
-from .validation_outcomes import StrategyOutcomeService
+from .validation_outcomes import (
+    StrategyOutcomeService,
+    register_compute_outcome_fn,
+)
 from .validation_repository import ValidationRepository
 from .validation_schema import ValidationSchemaManager
 from .validation_metrics import ValidationBaselineService, ValidationMetricsService
@@ -1153,3 +1156,6 @@ def _diagnose_pending_outcome(provider, signal) -> str:
         return "invalid_entry_price"
     return "insufficient_future_data"
 
+
+compute_outcome = _compute_outcome
+register_compute_outcome_fn(compute_outcome)

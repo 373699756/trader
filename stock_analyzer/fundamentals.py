@@ -8,7 +8,13 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 import pandas as pd
 
 from . import config
-from .normalization import coerce_number, finite_series, normalize_code, percentile_score
+from .normalization import (
+    SortedNumericValues,
+    coerce_number,
+    finite_series,
+    normalize_code,
+    percentile_score,
+)
 from .runtime_json import atomic_write_json
 
 
@@ -338,11 +344,11 @@ def attach_fundamental_factors(df: pd.DataFrame, fundamentals: Dict[str, Dict[st
             result[column] = 0.0
         result[column] = result[column].map(coerce_number)
 
-    roe_values = _nonzero_values(result, "roe")
-    gross_values = _nonzero_values(result, "gross_margin")
-    debt_values = _nonzero_values(result, "debt_ratio")
-    pe_values = [value for value in finite_series(result, "pe_dynamic").tolist() if value > 0]
-    pb_values = [value for value in finite_series(result, "pb").tolist() if value > 0]
+    roe_values = SortedNumericValues(_nonzero_values(result, "roe"))
+    gross_values = SortedNumericValues(_nonzero_values(result, "gross_margin"))
+    debt_values = SortedNumericValues(_nonzero_values(result, "debt_ratio"))
+    pe_values = SortedNumericValues([value for value in finite_series(result, "pe_dynamic").tolist() if value > 0])
+    pb_values = SortedNumericValues([value for value in finite_series(result, "pb").tolist() if value > 0])
     surprise_values = _nonzero_values(result, "earnings_surprise")
     revision_values = _nonzero_values(result, "rating_revision")
     degraded = not any((roe_values, gross_values, debt_values, pe_values, pb_values, surprise_values, revision_values))

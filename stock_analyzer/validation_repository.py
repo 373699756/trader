@@ -10,7 +10,6 @@ from .performance import json_loads_cached, validation_metrics_cache_key as _val
 from .validation_policy import (
     current_replay_strategy_version,
     current_strategy_version,
-    execution_cost_pct as _execution_cost_pct,
     exit_holding_days as _exit_holding_days,
     is_primary_tomorrow_signal as _is_primary_tomorrow_signal,
     is_primary_validation_signal as _is_primary_validation_signal,
@@ -2519,6 +2518,12 @@ class ResearchRepository(_RepositoryBase):
                 params,
             ).fetchall()
         return [_fold_prediction_to_dict(row) for row in rows]
+
+
+# Deprecated compatibility aliases to avoid duplicated repository implementations.
+# New code uses TuningRepository and ResearchRepository as the authoritative classes.
+PortfolioRepository = TuningRepository
+ExperimentRepository = ResearchRepository
 
 
 class OOSReportRepository(_RepositoryBase):

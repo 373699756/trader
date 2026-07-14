@@ -1,7 +1,7 @@
 from typing import Dict, List
 
 from . import config
-from .execution_policy import market_impact_cost_pct
+from .validation_policy import market_impact_cost_pct
 from .normalization import coerce_number
 
 

@@ -100,7 +100,7 @@
         } catch (err) {
           if (requestSeq !== state.recommendationRequestSeq) return false;
           if (!state.recommendationHasPayload) {
-            const message = `<tr><td colspan="17" class="empty">${escapeHtml(err.message)}</td></tr>`;
+          const message = `<tr><td colspan="10" class="empty">${escapeHtml(err.message)}</td></tr>`;
             els.shortTermBody.innerHTML = message;
           }
           if (!background) setStatus(`刷新失败：${err.message}`);
@@ -233,13 +233,13 @@
         state.tomorrowLoaded = true;
         const background = Boolean(options.background);
         const hasCachedRows = hasRows(state.lastRows.tomorrow);
-        if (hasCachedRows) {
+            if (hasCachedRows) {
           renderTomorrowTable(state.lastRows.tomorrow);
           if (!background) {
-            setStatus("明日优先已显示；证据特征由盘中后台任务预计算");
+            setStatus("明日已显示；证据特征由盘中后台任务预计算");
           }
         } else {
-          els.tomorrowBody.innerHTML = '<tr><td colspan="17" class="empty">加载中...</td></tr>';
+          els.tomorrowBody.innerHTML = '<tr><td colspan="10" class="empty">加载中...</td></tr>';
         }
         const params = new URLSearchParams({
           top_n: String(window.APP_CONFIG.defaultTopN || 18),
@@ -265,15 +265,15 @@
               renderTomorrowTable(state.lastRows.tomorrow);
             }
             if (!background) {
-              setStatus(`明日优先更新时间 ${payload.meta.generated_at || "最近快照"}`);
+            setStatus(`明日本次更新时间 ${payload.meta.generated_at || "最近快照"}`);
             }
           } catch (err) {
             state.tomorrowLoaded = false;
             if (!background || !hasRows(state.lastRows.tomorrow)) {
-              els.tomorrowBody.innerHTML = `<tr><td colspan="17" class="empty">${escapeHtml(err.message)}</td></tr>`;
+              els.tomorrowBody.innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(err.message)}</td></tr>`;
             }
             if (!background) {
-              setStatus(`明日优先加载失败：${err.message}`);
+              setStatus(`明日加载失败：${err.message}`);
             }
           } finally {
             state.tomorrowLoading = null;
@@ -289,7 +289,7 @@
         state.horizonLoaded = true;
         const background = Boolean(options.background);
         if (!background || !hasRows(state.lastRows.swing)) {
-          els.swingBody.innerHTML = '<tr><td colspan="17" class="empty">加载中...</td></tr>';
+          els.swingBody.innerHTML = '<tr><td colspan="10" class="empty">加载中...</td></tr>';
         }
         const params = new URLSearchParams({
           top_n: String(window.APP_CONFIG.defaultTopN || 18),
@@ -315,15 +315,15 @@
               renderSwingTable(state.lastRows.swing);
             }
             if (!background) {
-              setStatus(`2-5日持有更新时间 ${swingPayload.meta.generated_at}`);
+            setStatus(`2-5日更新时间 ${swingPayload.meta.generated_at}`);
             }
           } catch (err) {
             state.horizonLoaded = false;
             if (!background || !hasRows(state.lastRows.swing)) {
-              els.swingBody.innerHTML = `<tr><td colspan="17" class="empty">${escapeHtml(err.message)}</td></tr>`;
+              els.swingBody.innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(err.message)}</td></tr>`;
             }
             if (!background) {
-              setStatus(`2-5日持有加载失败：${err.message}`);
+            setStatus(`2-5日加载失败：${err.message}`);
             }
           } finally {
             state.horizonLoading = null;
@@ -367,7 +367,7 @@
           if (hasObservation) {
             emptyText = "暂无可执行推荐，当前仅有观察备选";
           }
-          els.shortTermBody.innerHTML = `<tr><td colspan="17" class="empty">${escapeHtml(emptyText)}</td></tr>`;
+          els.shortTermBody.innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(emptyText)}</td></tr>`;
           return;
         }
         els.shortTermBody.innerHTML = RecommendationTables.renderShortTermTableRows(displayRows, {
@@ -391,7 +391,7 @@
           sortMode: DEFAULT_SORT_MODE,
         });
         if (!displayRows.length) {
-          els.tomorrowBody.innerHTML = '<tr><td colspan="17" class="empty">暂无符合条件的股票</td></tr>';
+          els.tomorrowBody.innerHTML = '<tr><td colspan="10" class="empty">暂无符合条件的股票</td></tr>';
           return;
         }
         els.tomorrowBody.innerHTML = RecommendationTables.renderTomorrowTableRows(displayRows, {
@@ -415,7 +415,7 @@
           sortMode: DEFAULT_SORT_MODE,
         });
         if (!displayRows.length) {
-          els.swingBody.innerHTML = '<tr><td colspan="17" class="empty">暂无符合条件的2-5日持有股票</td></tr>';
+          els.swingBody.innerHTML = '<tr><td colspan="10" class="empty">暂无符合条件的2-5日股票</td></tr>';
           return;
         }
         els.swingBody.innerHTML = RecommendationTables.renderSwingTableRows(displayRows, {

@@ -923,15 +923,14 @@ table {
 
 .rec-table {
   --rank-col: 44px;
-  --stock-col: 96px;
-  --market-col: 52px;
-  --price-col: 62px;
-  --change-col: 64px;
-  --money-col: 72px;
-  --cap-col: 78px;
-  --metric-col: 60px;
-  --score-col: 118px;
-  --action-col: 170px;
+  --stock-col: 132px;
+  --latest-price-col: 90px;
+  --pct-today-col: 78px;
+  --turnover-rate-col: 76px;
+  --turnover-col: 102px;
+  --cap-col: 80px;
+  --score-col: 102px;
+  --action-col: 168px;
   --reasons-col: 420px;
   width: max-content;
   min-width: 100%;
@@ -1005,11 +1004,6 @@ th {
   white-space: nowrap;
 }
 
-.rec-table th:nth-child(3),
-.rec-table td:not(.empty):nth-child(3) {
-  display: none;
-}
-
 .rec-table .stock-cell {
   line-height: 1.25;
 }
@@ -1065,68 +1059,35 @@ th {
   display: none;
 }
 
-.rec-table th:nth-child(5),
-.rec-table td:not(.empty):nth-child(5),
-.rec-table th:nth-child(6),
-.rec-table td:not(.empty):nth-child(6) {
-  width: var(--price-col);
-  min-width: var(--price-col);
-  max-width: var(--price-col);
+.rec-table th.col-latest-price,
+.rec-table td.col-latest-price {
+  width: var(--latest-price-col);
+  min-width: var(--latest-price-col);
+  max-width: var(--latest-price-col);
   white-space: nowrap;
 }
 
-.rec-table th:nth-child(4),
-.rec-table td:not(.empty):nth-child(4) {
-  width: var(--market-col);
-  min-width: var(--market-col);
-  max-width: var(--market-col);
+.rec-table th.col-pct-today,
+.rec-table td.col-pct-today {
+  width: var(--pct-today-col);
+  min-width: var(--pct-today-col);
+  max-width: var(--pct-today-col);
   white-space: nowrap;
 }
 
-.rec-table th:nth-child(7),
-.rec-table td:not(.empty):nth-child(7),
-.rec-table th:nth-child(8),
-.rec-table td:not(.empty):nth-child(8),
-.rec-table th:nth-child(9),
-.rec-table td:not(.empty):nth-child(9),
-.rec-table th:nth-child(10),
-.rec-table td:not(.empty):nth-child(10),
-.rec-table th:nth-child(12),
-.rec-table td:not(.empty):nth-child(12),
-.rec-table th:nth-child(13),
-.rec-table td:not(.empty):nth-child(13),
-.rec-table th:nth-child(14),
-.rec-table td:not(.empty):nth-child(14) {
-  width: var(--metric-col);
-  min-width: var(--metric-col);
-  max-width: var(--metric-col);
+.rec-table th.col-turnover-rate,
+.rec-table td.col-turnover-rate {
+  width: var(--turnover-rate-col);
+  min-width: var(--turnover-rate-col);
+  max-width: var(--turnover-rate-col);
   white-space: nowrap;
 }
 
-.rec-table th:nth-child(11),
-.rec-table td:not(.empty):nth-child(11) {
-  width: var(--money-col);
-  min-width: var(--money-col);
-  max-width: var(--money-col);
-  white-space: nowrap;
-}
-
-.rec-table th:nth-child(6),
-.rec-table td:not(.empty):nth-child(6),
-.rec-table th:nth-child(7),
-.rec-table td:not(.empty):nth-child(7),
-.rec-table th:nth-child(8),
-.rec-table td:not(.empty):nth-child(8),
-.rec-table th:nth-child(9),
-.rec-table td:not(.empty):nth-child(9),
-.rec-table th:nth-child(10),
-.rec-table td:not(.empty):nth-child(10),
-.rec-table th:nth-child(12),
-.rec-table td:not(.empty):nth-child(12),
-.rec-table th:nth-child(13),
-.rec-table td:not(.empty):nth-child(13),
-.rec-table th:nth-child(14),
-.rec-table td:not(.empty):nth-child(14) {
+.rec-table th.col-turnover,
+.rec-table td.col-turnover {
+  width: var(--turnover-col);
+  min-width: var(--turnover-col);
+  max-width: var(--turnover-col);
   white-space: nowrap;
 }
 
@@ -1269,51 +1230,6 @@ th {
 
 .rec-table td:not(.empty).reasons {
   text-align: left;
-}
-
-.rec-short th:nth-child(4),
-.rec-short td:nth-child(4),
-.rec-short th:nth-child(7),
-.rec-short td:nth-child(7),
-.rec-short th:nth-child(8),
-.rec-short td:nth-child(8),
-.rec-short th:nth-child(9),
-.rec-short td:nth-child(9),
-.rec-short th:nth-child(12),
-.rec-short td:nth-child(12),
-.rec-short th:nth-child(13),
-.rec-short td:nth-child(13),
-.rec-short th:nth-child(14),
-.rec-short td:nth-child(14),
-.rec-tomorrow th:nth-child(4),
-.rec-tomorrow td:nth-child(4),
-.rec-tomorrow th:nth-child(7),
-.rec-tomorrow td:nth-child(7),
-.rec-tomorrow th:nth-child(8),
-.rec-tomorrow td:nth-child(8),
-.rec-tomorrow th:nth-child(11),
-.rec-tomorrow td:nth-child(11),
-.rec-tomorrow th:nth-child(12),
-.rec-tomorrow td:nth-child(12),
-.rec-tomorrow th:nth-child(13),
-.rec-tomorrow td:nth-child(13),
-.rec-tomorrow th:nth-child(14),
-.rec-tomorrow td:nth-child(14),
-.rec-swing th:nth-child(4),
-.rec-swing td:nth-child(4),
-.rec-swing th:nth-child(7),
-.rec-swing td:nth-child(7),
-.rec-swing th:nth-child(8),
-.rec-swing td:nth-child(8),
-.rec-swing th:nth-child(9),
-.rec-swing td:nth-child(9),
-.rec-swing th:nth-child(10),
-.rec-swing td:nth-child(10),
-.rec-swing th:nth-child(13),
-.rec-swing td:nth-child(13),
-.rec-swing th:nth-child(14),
-.rec-swing td:nth-child(14) {
-  display: none;
 }
 
 .rec-table th:nth-child(-n+2) {
