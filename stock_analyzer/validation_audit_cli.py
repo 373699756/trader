@@ -73,10 +73,15 @@ def _current_version_chain(conn, strategy_name: str) -> dict:
                COALESCE(e.label_status, o.label_status,
                         CASE WHEN o.signal_id IS NULL THEN 'pending' ELSE 'settled' END) AS label_status,
                COALESCE(e.promotion_eligible, 0) AS promotion_eligible,
-               CASE WHEN e.signal_id IS NULL THEN 0 ELSE 1 END AS has_execution
+               CASE WHEN e.signal_id IS NULL THEN 0 ELSE 1 END AS has_execution,
+               COALESCE(b.sample_type, 'unknown') AS sample_type
         FROM strategy_signals s
         LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
         LEFT JOIN strategy_execution_records e ON e.signal_id = s.id
+        LEFT JOIN strategy_signal_batches b
+          ON b.strategy_name = s.strategy_name
+         AND b.strategy_version = s.strategy_version
+         AND b.signal_date = s.signal_date
         WHERE s.strategy_name = ? AND s.strategy_version = ?
         ORDER BY s.signal_date, s.rank
         """,
@@ -120,6 +125,7 @@ def _current_version_chain(conn, strategy_name: str) -> dict:
         for row in signal_rows
         if str(row[4]) == "settled"
         and bool(row[5])
+        and str(row[7] or "unknown") == "real_forward"
         and matches_current_validation_baseline(
             row[2],
             strategy_name,
@@ -162,6 +168,16 @@ def _current_version_chain(conn, strategy_name: str) -> dict:
         "production_baseline_match_count": production_match_count,
         "expected_validation_baseline_id": expected_validation_baseline,
         "validation_baseline_match_count": validation_match_count,
+        "real_forward_signal_count": sum(
+            1 for row in signal_rows if str(row[7] or "unknown") == "real_forward"
+        ),
+        "real_forward_signal_days": len(
+            {
+                str(row[0])
+                for row in signal_rows
+                if str(row[7] or "unknown") == "real_forward"
+            }
+        ),
     }
 
 
@@ -282,11 +298,24 @@ def main(argv=None) -> int:
     parser.add_argument("--strategy", default="", help="仅审计指定策略")
     parser.add_argument("--sample-size", type=int, default=30, help="抽查已入选信号数量")
     parser.add_argument("--readiness", action="store_true", help="输出 OOS 样本、组合和 DeepSeek 事件门槛报告")
+    parser.add_argument("--health", action="store_true", help="生成并归档 P0/P1/P2 数据健康日报")
+    parser.add_argument("--market-data-db", default=config.MARKET_DATA_DB_PATH, help="本地全市场日线数据库")
+    parser.add_argument("--output", default="", help="健康日报输出路径")
     args = parser.parse_args(argv)
     if args.readiness:
         report = build_validation_readiness_report(args.db_path)
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if report.get("ok") else 1
+    if args.health:
+        from .data_health import build_and_save_data_health_report
+
+        report = build_and_save_data_health_report(
+            args.db_path,
+            args.market_data_db,
+            output_path=args.output,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
     report = StrategyValidationStore(args.db_path).audit_point_in_time(
         strategy_name=args.strategy,
         sample_size=args.sample_size,

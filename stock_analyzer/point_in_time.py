@@ -53,6 +53,7 @@ _QUOTE_SOURCE_FIELDS = {
     "pb",
 }
 _ALPHALITE_FIELDS = set(ALPHALITE_COLUMNS) | set(ALPHALITE_META_COLUMNS)
+_FUNDAMENTAL_FIELDS = set(ALL_FUNDAMENTAL_COLUMNS)
 _FUNDAMENTAL_DERIVED_FIELDS = {
     "fundamental_quality_score",
     "fundamental_value_score",
@@ -151,7 +152,11 @@ def build_candidate_snapshot_rows(
 ) -> List[Dict[str, object]]:
     if quotes is None or quotes.empty:
         return []
-    source_frame = quotes.copy()
+    raw_source_frame = quotes.copy()
+    try:
+        source_frame = rename_known_columns(raw_source_frame.copy())
+    except Exception:
+        source_frame = raw_source_frame.copy()
     base = _candidate_base_frame(source_frame)
     masks = _candidate_filter_masks(base)
     quote_timestamp = str(
@@ -165,17 +170,46 @@ def build_candidate_snapshot_rows(
     event_items = _normalized_payload_items((event_payload or {}).get("items") or {})
     fundamental_items = _normalized_payload_items((fundamental_payload or {}).get("items") or {})
 
-    source_rows = source_frame.to_dict(orient="records")
-    normalized_source_rows = _normalized_source_rows(source_frame)
+    source_rows = raw_source_frame.to_dict(orient="records")
+    normalized_source_rows = [
+        make_json_safe(row) for row in source_frame.to_dict(orient="records")
+    ]
     candidate_lookup = _frame_lookup(candidates)
-    selected_lookup = _json_row_lookup(selected_rows)
+    selected_input = list(selected_rows or [])
+    selected_lookup = _json_row_lookup(selected_input)
     strategy_pool_captured = scored_rows is not None
-    scored_lookup = _json_row_lookup(
-        scored_rows if scored_rows is not None else selected_rows
-    )
+    scored_input = list(scored_rows) if scored_rows is not None else selected_input
+    scored_lookup = _json_row_lookup(scored_input)
     selected_codes = set(selected_lookup)
     scored_codes = set(scored_lookup)
     candidate_codes = set(candidate_lookup)
+    hard_filter_failures = _hard_filter_failures(masks, len(base))
+
+    cutoff_boundary = _parse_timestamp(market_cutoff, end_of_day=True)
+    quote_timestamp_valid = bool(
+        quote_timestamp
+        and _timestamp_not_after_boundary(quote_timestamp, cutoff_boundary)
+    )
+    common_point_in_time_violations = []
+    if not quote_timestamp:
+        common_point_in_time_violations.append("missing_quote_observed_at")
+    elif not quote_timestamp_valid:
+        common_point_in_time_violations.append(
+            "future_quote_observed_at:{}".format(quote_timestamp)
+        )
+    if not market_cutoff:
+        common_point_in_time_violations.append("missing_market_data_cutoff")
+    recommendation_cutoff = str(
+        getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:35")
+    )
+    if strategy_name in {"short_term", "tomorrow_picks", "swing_picks"} and _signal_at_or_after_cutoff(
+        market_cutoff,
+        recommendation_cutoff,
+    ):
+        common_point_in_time_violations.append(
+            "signal_after_recommendation_cutoff:{}".format(recommendation_cutoff)
+        )
+
     records: List[Dict[str, object]] = []
     seen = set()
     base_records = base.to_dict(orient="records")
@@ -190,7 +224,7 @@ def build_candidate_snapshot_rows(
             if position < len(normalized_source_rows)
             else _normalized_source_row(raw)
         )
-        enriched = make_json_safe(candidate_lookup.get(code) or {})
+        enriched = dict(candidate_lookup.get(code) or {})
         displayed = selected_lookup.get(code) or {}
         scored = dict(scored_lookup.get(code) or {})
         if displayed:
@@ -199,7 +233,7 @@ def build_candidate_snapshot_rows(
             scored["frozen_rule_rank"] = frozen_rule_rank
         model_features = dict(enriched)
         model_features.update(scored)
-        failed_keys = [key for key in HARD_FILTER_LABELS if not bool(masks[key].iloc[position])]
+        failed_keys = list(hard_filter_failures[position])
         event_item = event_items.get(code) if isinstance(event_items, dict) else {}
         if isinstance(event_item, dict) and event_item.get("hard_exclude"):
             failed_keys.append("event_risk_hard_exclude")
@@ -222,26 +256,19 @@ def build_candidate_snapshot_rows(
 
         fundamental_item = fundamental_items.get(code) if isinstance(fundamental_items, dict) else {}
         announcement_times = _announcement_times(fundamental_item, event_item, scored)
-        point_in_time_violations = [
-            "future_announcement:{}".format(value)
-            for value in announcement_times
-            if not timestamp_not_after(value, market_cutoff)
-        ]
-        if not quote_timestamp:
-            point_in_time_violations.append("missing_quote_observed_at")
-        elif not timestamp_not_after(quote_timestamp, market_cutoff):
-            point_in_time_violations.append("future_quote_observed_at:{}".format(quote_timestamp))
-        if not market_cutoff:
-            point_in_time_violations.append("missing_market_data_cutoff")
-        if strategy_name in {"short_term", "tomorrow_picks", "swing_picks"} and _signal_at_or_after_cutoff(
-            market_cutoff,
-            str(getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:35")),
-        ):
-            point_in_time_violations.append(
-                "signal_after_recommendation_cutoff:{}".format(
-                    getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:35")
+        point_in_time_violations = list(common_point_in_time_violations)
+        timestamp_validity = {
+            market_cutoff: cutoff_boundary is not None,
+        }
+        if quote_timestamp:
+            timestamp_validity[quote_timestamp] = quote_timestamp_valid
+        for value in announcement_times:
+            valid = _timestamp_not_after_boundary(value, cutoff_boundary)
+            timestamp_validity[value] = valid
+            if not valid:
+                point_in_time_violations.append(
+                    "future_announcement:{}".format(value)
                 )
-            )
         source_timestamps = {
             "snapshot_id": str(snapshot_id or ""),
             "quote_observed_at": quote_timestamp,
@@ -257,20 +284,27 @@ def build_candidate_snapshot_rows(
         missing_mask = {
             "raw_source.{}".format(key): is_missing(value) for key, value in raw.items()
         }
+        alphalite_ready = bool(
+            _finite_number(model_features.get("alphalite_factor_ready"))
+        )
+        fundamental_degraded = bool(model_features.get("fundamental_degraded"))
+        event_risk_available = str(
+            model_features.get("event_risk_status") or ""
+        ) in {"ok", "cached"}
         for key, value in model_features.items():
-            if key in ALL_FUNDAMENTAL_COLUMNS:
+            if key in _FUNDAMENTAL_FIELDS:
                 source_value = (fundamental_item or {}).get(key) if isinstance(fundamental_item, dict) else None
                 if is_missing(source_value):
                     source_value = raw_normalized.get(key)
                 missing = is_missing(source_value)
             elif key in _FUNDAMENTAL_DERIVED_FIELDS:
-                missing = bool(model_features.get("fundamental_degraded"))
+                missing = fundamental_degraded
             elif str(key).startswith("event_risk_") and key != "event_risk_status":
-                missing = str(model_features.get("event_risk_status") or "") not in {"ok", "cached"}
+                missing = not event_risk_available
             elif key in _QUOTE_SOURCE_FIELDS:
                 missing = key not in raw_normalized or is_missing(raw_normalized.get(key))
             elif key in _ALPHALITE_FIELDS:
-                missing = not bool(_finite_number(model_features.get("alphalite_factor_ready")))
+                missing = not alphalite_ready
             else:
                 missing = is_missing(value)
             missing_mask["model_input.{}".format(key)] = missing
@@ -278,8 +312,12 @@ def build_candidate_snapshot_rows(
             "raw_source.{}".format(key): quote_timestamp for key in raw
         }
         latest_announcement = max(announcement_times) if announcement_times else ""
+        history_observed_at = (
+            _market_data_timestamp(model_features.get("history_data_cutoff"))
+            or market_cutoff
+        )
         for key in model_features:
-            if key in ALL_FUNDAMENTAL_COLUMNS or key in _FUNDAMENTAL_DERIVED_FIELDS or key in {
+            if key in _FUNDAMENTAL_FIELDS or key in _FUNDAMENTAL_DERIVED_FIELDS or key in {
                 "announcement_time",
                 "report_period",
             }:
@@ -287,7 +325,7 @@ def build_candidate_snapshot_rows(
             elif str(key).startswith("event_risk_"):
                 observed_at = latest_announcement or event_timestamp or market_cutoff
             elif key in _ALPHALITE_FIELDS or key == "history_data_cutoff":
-                observed_at = _market_data_timestamp(model_features.get("history_data_cutoff")) or market_cutoff
+                observed_at = history_observed_at
             else:
                 observed_at = market_cutoff
             feature_observed_at["model_input.{}".format(key)] = observed_at
@@ -297,7 +335,13 @@ def build_candidate_snapshot_rows(
                 continue
             if not observed_at:
                 point_in_time_violations.append("missing_feature_timestamp:{}".format(feature_key))
-            elif not timestamp_not_after(observed_at, market_cutoff):
+                continue
+            if observed_at not in timestamp_validity:
+                timestamp_validity[observed_at] = _timestamp_not_after_boundary(
+                    observed_at,
+                    cutoff_boundary,
+                )
+            if not timestamp_validity[observed_at]:
                 point_in_time_violations.append(
                     "future_feature_timestamp:{}:{}".format(feature_key, observed_at)
                 )
@@ -331,8 +375,8 @@ def build_candidate_snapshot_rows(
                     "candidate": enriched,
                     "scored": scored,
                     "selected": displayed,
-                    "event": make_json_safe(event_item or {}),
-                    "fundamental": make_json_safe(fundamental_item or {}),
+                    "event": dict(event_item or {}),
+                    "fundamental": dict(fundamental_item or {}),
                 },
             }
         )
@@ -373,6 +417,23 @@ def _normalized_source_rows(raw_frame: pd.DataFrame) -> List[Dict[str, object]]:
     return [make_json_safe(row) for row in normalized.to_dict(orient="records")]
 
 
+def _hard_filter_failures(
+    masks: Dict[str, pd.Series],
+    row_count: int,
+) -> List[List[str]]:
+    failures: List[List[str]] = [[] for _ in range(max(0, int(row_count)))]
+    for key in HARD_FILTER_LABELS:
+        mask = masks.get(key)
+        if mask is None:
+            values = [False] * len(failures)
+        else:
+            values = mask.fillna(False).astype(bool).tolist()
+        for position, passed in enumerate(values[: len(failures)]):
+            if not passed:
+                failures[position].append(key)
+    return failures
+
+
 def _signal_at_or_after_cutoff(signal_time: str, cutoff: str) -> bool:
     text = str(signal_time or "")
     clock = text.split("T", 1)[1][:5] if "T" in text else ""
@@ -390,11 +451,13 @@ def first_announcement_time(item: Dict[str, object]) -> str:
 
 
 def timestamp_not_after(value: object, cutoff: object) -> bool:
-    observed = _parse_timestamp(value, end_of_day=True)
     boundary = _parse_timestamp(cutoff, end_of_day=True)
-    if observed is None or boundary is None:
-        return False
-    return observed <= boundary
+    return _timestamp_not_after_boundary(value, boundary)
+
+
+def _timestamp_not_after_boundary(value: object, boundary) -> bool:
+    observed = _parse_timestamp(value, end_of_day=True)
+    return bool(observed is not None and boundary is not None and observed <= boundary)
 
 
 def normalize_timestamp(value: object) -> str:

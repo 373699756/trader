@@ -63,11 +63,13 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         self.assertTrue(row["agent_committee"]["bull_cases"])
         self.assertTrue(row["agent_committee"]["bear_cases"])
         self.assertIn("serenity_profile", row)
-        self.assertEqual(row["serenity_profile"]["version"], "serenity_profile_v1")
+        self.assertEqual(row["serenity_profile"]["version"], "serenity_profile_v2")
         self.assertIn(row["serenity_profile"]["level"], {"good", "risk", "watch", "neutral"})
         self.assertIn("quality_score", row["serenity_profile"])
         self.assertIn("risk_score", row["serenity_profile"])
-        self.assertIn("confidence_score", row["serenity_profile"])
+        self.assertIn("rule_consistency_score", row["serenity_profile"])
+        self.assertNotIn("confidence_score", row["serenity_profile"])
+        self.assertNotIn("signal_coverage_score", row["serenity_profile"])
         self.assertIn("agent_committee_score", row["serenity_profile"])
 
     def test_build_market_regime_identifies_risk_on_environment(self):
@@ -192,7 +194,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
 
         self.assertEqual(baseline["primary_return_field"], "signal_exit_return")
         self.assertEqual(baseline["net_return_formula"], "signal_exit_return - trade_cost_pct")
-        self.assertFalse(baseline["cost_model"]["tail_auction_slippage_enabled"])
+        self.assertTrue(baseline["cost_model"]["tail_auction_slippage_enabled"])
         self.assertTrue(baseline["cost_model"]["market_impact_enabled"])
         self.assertTrue(baseline["survivorship"]["enabled"])
         self.assertTrue(baseline["separate_legacy_baseline_required"])
@@ -824,7 +826,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         self.assertFalse(latest["can_apply"])
         self.assertTrue(latest["shadow_mode"])
 
-    def test_strategy_validation_tuning_endpoint_creates_shadow_plan(self):
+    def test_strategy_validation_tuning_endpoint_reuses_unchanged_shadow_plan(self):
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -841,14 +843,23 @@ class LegacyRemainingScoringTest(unittest.TestCase):
                 config, "ENABLE_DEEPSEEK_RUNTIME", False
             ):
                 app = create_app()
-                response = app.test_client().post("/api/strategy-validation/tuning?strategy=tomorrow_picks&days=20")
+                client = app.test_client()
+                response = client.post("/api/strategy-validation/tuning?strategy=tomorrow_picks&days=20")
+                repeated = client.post("/api/strategy-validation/tuning?strategy=tomorrow_picks&days=20")
+                tuning_runs = StrategyValidationStore(db_path).list_tuning_runs("tomorrow_picks")
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
+        repeated_payload = repeated.get_json()
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["plan"]["shadow_mode"])
         self.assertFalse(payload["plan"]["can_apply"])
         self.assertIn(payload["plan"]["status"], {"blocked", "shadow_only"})
+        self.assertTrue(payload["input_fingerprint"])
+        self.assertFalse(payload["reused"])
+        self.assertTrue(repeated_payload["reused"])
+        self.assertEqual(payload["saved"]["id"], repeated_payload["saved"]["id"])
+        self.assertEqual(len(tuning_runs), 1)
 
     def test_event_risk_can_hard_filter_and_tag_candidates(self):
         from datetime import datetime, timedelta
@@ -1463,7 +1474,11 @@ class LegacyRemainingScoringTest(unittest.TestCase):
     def test_validation_execution_cost_adds_tail_auction_slippage_when_enabled(self):
         from stock_analyzer.strategy_validation import _execution_cost_pct, tail_auction_slippage_pct
 
-        row = {"turnover": 50_000_000, "suggested_weight": 10}
+        row = {
+            "strategy_name": "tomorrow_picks",
+            "turnover": 50_000_000,
+            "suggested_weight": 10,
+        }
         with patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False), patch.object(
             config, "ENABLE_MARKET_IMPACT", False
         ):
@@ -1478,8 +1493,8 @@ class LegacyRemainingScoringTest(unittest.TestCase):
             adjusted = _execution_cost_pct(row)
             tail_with_base = tail_auction_slippage_pct(row, base_slippage=0.2)
 
-        self.assertEqual(adjusted, baseline)
-        self.assertEqual(tail_with_base, 0.0)
+        self.assertGreater(adjusted, baseline)
+        self.assertGreater(tail_with_base, 0.2)
 
     def test_validation_execution_cost_adds_market_impact_when_enabled(self):
         from stock_analyzer.strategy_validation import _execution_cost_pct, market_impact_cost_pct

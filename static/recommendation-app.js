@@ -88,7 +88,7 @@
         const background = Boolean(options.background);
         if (!background) setStatus("刷新中...");
         const params = new URLSearchParams({
-          top_n: String(window.APP_CONFIG.defaultTopN || 18),
+          top_n: String((window.APP_CONFIG || {}).defaultTopN || 18),
           market: DEFAULT_MARKET,
           _: String(Date.now()),
         });
@@ -110,9 +110,9 @@
 
       async function loadLatestRecommendationSnapshot(requestSeq) {
         const params = new URLSearchParams({
-          top_n: String(window.APP_CONFIG.defaultTopN || 18),
+          top_n: String((window.APP_CONFIG || {}).defaultTopN || 18),
           market: DEFAULT_MARKET,
-          max_age: String(window.APP_CONFIG.recommendationSnapshotMaxAgeSeconds || 300),
+          max_age: String((window.APP_CONFIG || {}).recommendationSnapshotMaxAgeSeconds || 300),
         });
         try {
           const res = await fetch(`/api/recommendations/latest?${params.toString()}`);
@@ -148,18 +148,18 @@
 
       function connectRecommendationStream() {
         stopRecommendationStream({ invalidate: false });
-        state.countdown = window.APP_CONFIG.refreshSeconds;
+        state.countdown = (window.APP_CONFIG || {}).refreshSeconds || 0;
         setStatus("正在连接实时推荐流...");
         startPushStatusCountdown();
         state.timer = setInterval(() => {
           void loadRecommendations({ background: true });
-        }, Math.max(60, window.APP_CONFIG.refreshSeconds || 60) * 1000);
+        }, Math.max(60, (window.APP_CONFIG || {}).refreshSeconds || 60) * 1000);
         if (!("EventSource" in window)) {
           setStatus("浏览器不支持实时推送，已使用60秒轮询");
           return;
         }
         const params = new URLSearchParams({
-          top_n: String(window.APP_CONFIG.defaultTopN || 18),
+          top_n: String((window.APP_CONFIG || {}).defaultTopN || 18),
           market: DEFAULT_MARKET,
         });
         const eventSource = new EventSource(`/api/recommendations/stream?${params.toString()}`);
@@ -242,7 +242,7 @@
           els.tomorrowBody.innerHTML = '<tr><td colspan="10" class="empty">加载中...</td></tr>';
         }
         const params = new URLSearchParams({
-          top_n: String(window.APP_CONFIG.defaultTopN || 18),
+          top_n: String((window.APP_CONFIG || {}).defaultTopN || 18),
           market: DEFAULT_MARKET,
         });
         state.tomorrowLoading = (async () => {
@@ -292,7 +292,7 @@
           els.swingBody.innerHTML = '<tr><td colspan="10" class="empty">加载中...</td></tr>';
         }
         const params = new URLSearchParams({
-          top_n: String(window.APP_CONFIG.defaultTopN || 18),
+          top_n: String((window.APP_CONFIG || {}).defaultTopN || 18),
           market: DEFAULT_MARKET,
         });
         state.horizonLoading = (async () => {
@@ -354,12 +354,15 @@
       }
 
       function renderShortTermTable(rows) {
-        const displayRows = RecommendationUtils.filterAndSortRows(rows, {
+        const rawRows = Array.isArray(rows) ? rows : [];
+        // Short-term observation rows are evidence, not executable recommendations.
+        // Keep them out of the recommendation table even when the action filter is "all".
+        const executableRows = rawRows.filter(isExecutableRow);
+        const displayRows = RecommendationUtils.filterAndSortRows(executableRows, {
           actionFilter: DEFAULT_ACTION_FILTER,
           sortMode: DEFAULT_SORT_MODE,
         });
         if (!displayRows.length) {
-          const rawRows = Array.isArray(rows) ? rows : [];
           const hasRows = rawRows.length > 0;
           const hasExecutable = rawRows.some(isExecutableRow);
           const hasObservation = hasRows && !hasExecutable;

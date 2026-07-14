@@ -33,8 +33,11 @@ def create_app() -> Flask:
     )
     # The quote scheduler is process-local and owns one coalesced refresh loop.
     # Other research/validation jobs remain outside the web process.
-    if bool(getattr(config, "REALTIME_MARKET_SCHEDULER_ENABLED", True)):
-        container.realtime_scheduler.start()
+    realtime_scheduler = getattr(container, "realtime_scheduler", None)
+    if bool(getattr(config, "REALTIME_MARKET_SCHEDULER_ENABLED", True)) and callable(
+        getattr(realtime_scheduler, "start", None)
+    ):
+        realtime_scheduler.start()
 
     app.extensions["app_container"] = container
     app.extensions["app_services"] = services

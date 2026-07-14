@@ -51,6 +51,17 @@ def test_post_1430_policy_freezes_at_1450_and_keeps_top5_weight():
     assert policy["portfolio"]["default_target_weight_pct"] == 20.0
 
 
+def test_tail_auction_switch_changes_frozen_execution_policy():
+    with patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False):
+        baseline = build_execution_policy("tomorrow_picks")
+    with patch.object(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", True):
+        research = build_execution_policy("tomorrow_picks")
+
+    assert not baseline["cost"]["tail_auction"]["enabled"]
+    assert research["cost"]["tail_auction"]["enabled"]
+    assert baseline["policy_version"] != research["policy_version"]
+
+
 def test_signal_batch_rolls_back_if_database_freeze_reaches_cutoff(tmp_path):
     store = StrategyValidationStore(str(tmp_path / "validation.sqlite3"))
     with patch("stock_analyzer.validation_repository.datetime") as clock:

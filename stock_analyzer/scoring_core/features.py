@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict
 
 import pandas as pd
 
@@ -19,7 +19,7 @@ class FeatureBuilder:
     def market_regime(self, df: pd.DataFrame, breadth_source: pd.DataFrame = None) -> Dict[str, object]:
         return market_regime_core.build_market_regime(df, breadth_source=breadth_source)
 
-    def score_context(self, df: pd.DataFrame, industry_strength: Dict[str, float] = None) -> Dict[str, List[float]]:
+    def score_context(self, df: pd.DataFrame, industry_strength: Dict[str, float] = None) -> Dict[str, object]:
         return scoring_math._score_context(df, industry_strength or {})
 
     def market_regime_with_history(self, market_regime: Dict[str, object], df: pd.DataFrame) -> Dict[str, object]:

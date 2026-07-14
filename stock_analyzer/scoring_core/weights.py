@@ -62,7 +62,7 @@ _DEFAULT_WEIGHTS = {
         "base_score": 0.32,
         "execution_score": 0.20,
         "quality_score": 0.18,
-        "confidence_score": 0.12,
+        "rule_consistency_score": 0.12,
         "committee_score": 0.10,
         "risk_guard": 0.08,
     },
@@ -168,4 +168,3 @@ def _load_weight_overrides() -> Tuple[Dict[str, object], Dict[str, object]]:
 
 
 WEIGHTS, THRESHOLDS = _load_weight_overrides()
-

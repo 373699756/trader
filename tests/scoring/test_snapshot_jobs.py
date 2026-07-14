@@ -178,6 +178,9 @@ def test_daily_job_after_close_runs_market_data_snapshot_update_and_backup(tmp_p
     ), patch(
         "stock_analyzer.validation_backup.backup_validation_db",
         return_value={"ok": True},
+    ), patch(
+        "stock_analyzer.data_health.build_and_save_data_health_report",
+        return_value={"ok": False, "status": "blocked", "blockers": []},
     ):
         with redirect_stdout(io.StringIO()) as stdout:
             result = daily_job.main()

@@ -6,6 +6,7 @@ import pandas as pd
 from stock_analyzer import config
 from stock_analyzer.app import create_app
 from stock_analyzer.backtest import run_alphalite_backtest, run_rolling_alphalite_backtest
+from stock_analyzer.factors import compute_alphalite_for_stock, compute_alphalite_panel
 from stock_analyzer.risk_rules import simulate_exit
 
 
@@ -196,6 +197,38 @@ class BacktestExitTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("max_drawdown", result["metrics"])
         self.assertGreater(result["metrics"]["period_count"], 0)
+
+    def test_rolling_factor_panel_matches_single_window_calculation(self):
+        history = pd.DataFrame(
+            {
+                "price": [10 + index * 0.05 + (index % 5) * 0.01 for index in range(100)],
+                "open": [9.95 + index * 0.05 for index in range(100)],
+                "high": [10.10 + index * 0.05 for index in range(100)],
+                "low": [9.85 + index * 0.05 for index in range(100)],
+                "turnover": [10_000_000 + index * 100_000 for index in range(100)],
+                "volume": [100_000 + index * 1_000 for index in range(100)],
+            }
+        )
+        signal_indices = [30, 40, 59, 60, 90]
+
+        for enhanced in (False, True):
+            with self.subTest(enhanced=enhanced), patch.object(
+                config,
+                "ENABLE_ENHANCED_FACTORS",
+                enhanced,
+            ):
+                panel = compute_alphalite_panel(
+                    "600001",
+                    history,
+                    signal_indices,
+                    lookback_window=30,
+                )
+                for index in signal_indices:
+                    reference = compute_alphalite_for_stock(
+                        "600001",
+                        history.iloc[: index + 1].tail(30),
+                    )
+                    self.assertEqual(panel[index], reference)
 
 
 if __name__ == "__main__":

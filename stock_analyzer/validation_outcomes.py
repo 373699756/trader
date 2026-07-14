@@ -456,12 +456,14 @@ class StrategyOutcomeService:
                         str(signal["strategy_name"] or ""),
                         str(signal["strategy_version"] or ""),
                         str(signal["signal_date"] or ""),
+                        str(_mapping_get(signal, "snapshot_phase", "legacy_unknown") or "legacy_unknown"),
                     )
                     if batch_key not in benchmark_calculators:
                         candidates = self.repository.candidate_snapshots_for_date(
                             batch_key[2],
                             strategy_name=batch_key[0],
                             strategy_version=batch_key[1],
+                            snapshot_phase=batch_key[3],
                         )
                         candidate_batches[batch_key] = candidates
                         benchmark_calculators[batch_key] = CandidateBenchmarkCalculator(provider, candidates)

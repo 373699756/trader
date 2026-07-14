@@ -64,11 +64,13 @@ class RecommendationStrategiesTest(unittest.TestCase):
         self.assertTrue(row["agent_committee"]["bull_cases"])
         self.assertTrue(row["agent_committee"]["bear_cases"])
         self.assertIn("serenity_profile", row)
-        self.assertEqual(row["serenity_profile"]["version"], "serenity_profile_v1")
+        self.assertEqual(row["serenity_profile"]["version"], "serenity_profile_v2")
         self.assertIn(row["serenity_profile"]["level"], {"good", "risk", "watch", "neutral"})
         self.assertIn("quality_score", row["serenity_profile"])
         self.assertIn("risk_score", row["serenity_profile"])
-        self.assertIn("confidence_score", row["serenity_profile"])
+        self.assertIn("rule_consistency_score", row["serenity_profile"])
+        self.assertNotIn("confidence_score", row["serenity_profile"])
+        self.assertNotIn("signal_coverage_score", row["serenity_profile"])
         self.assertIn("agent_committee_score", row["serenity_profile"])
 
     def test_short_term_returns_today_top_10(self):
@@ -170,6 +172,8 @@ class RecommendationStrategiesTest(unittest.TestCase):
                     "vol_amount_5d": 1.4,
                     "breakout_20d": 1,
                     "volatility_20d": 2.5,
+                    "alphalite_factor_ready": 1,
+                    "alphalite_coverage": 1.0,
                 },
                 {
                     "code": "600002",
@@ -190,12 +194,15 @@ class RecommendationStrategiesTest(unittest.TestCase):
                     "vol_amount_5d": 3.5,
                     "breakout_20d": 1,
                     "volatility_20d": 9,
+                    "alphalite_factor_ready": 1,
+                    "alphalite_coverage": 1.0,
                 },
             ]
         )
         candidates = prepare_candidates(quotes)
 
-        rows, meta = score_swing_candidates(candidates, top_n=30)
+        with patch.object(config, "SWING_RECOMMENDATION_MIN_SCORE", 0):
+            rows, meta = score_swing_candidates(candidates, top_n=30)
 
         self.assertEqual(rows[0]["code"], "600001")
         self.assertEqual(meta["strategy_version"], config.SWING_STRATEGY_VERSION)

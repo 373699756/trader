@@ -608,10 +608,6 @@ button:hover {
   font-size: 13px;
 }
 
-.tool-action-row-secondary button {
-  min-width: 112px;
-}
-
 .validation-baseline-actions {
   display: none;
   margin: -4px 0 12px;
@@ -923,8 +919,8 @@ table {
 
 .rec-table {
   --rank-col: 44px;
-  --stock-col: 132px;
-  --latest-price-col: 90px;
+  --stock-col: 88px;
+  --latest-price-col: 60px;
   --pct-today-col: 78px;
   --turnover-rate-col: 76px;
   --turnover-col: 102px;
@@ -1149,6 +1145,13 @@ th {
   display: flex;
   align-items: baseline;
   gap: 4px;
+  white-space: nowrap;
+}
+
+.score-diagnostic-line {
+  color: var(--muted);
+  font-size: 0.78em;
+  line-height: 1.1;
   white-space: nowrap;
 }
 
@@ -1691,10 +1694,6 @@ footer {
     align-items: stretch;
   }
 
-  .tool-action-row-secondary button {
-    min-width: 116px;
-  }
-
   .tool-action-card {
     justify-items: stretch;
   }
@@ -2095,6 +2094,16 @@ footer {
 .strategy-tuning-body {
   display: grid;
   gap: 8px;
+}
+.strategy-validation-combined,
+.strategy-validation-report,
+.strategy-tuning-report {
+  display: grid;
+  gap: 8px;
+}
+.strategy-tuning-report {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
 }
 .tuning-line {
   display: flex;

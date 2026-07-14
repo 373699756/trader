@@ -112,6 +112,37 @@ def after_auto_snapshot_time(now: datetime, snapshot_time: str) -> bool:
     return now >= scheduled_today
 
 
+def auto_snapshot_retry_schedule(
+    now: datetime,
+    cutoff_time: str,
+    retry_seconds: int,
+) -> Dict[str, object]:
+    cutoff_hour, cutoff_minute = time_parts(cutoff_time, (14, 50))
+    cutoff_at = now.replace(
+        hour=cutoff_hour,
+        minute=cutoff_minute,
+        second=0,
+        microsecond=0,
+    )
+    if now >= cutoff_at:
+        return {
+            "retry": False,
+            "deadline_missed": True,
+            "cutoff_at": cutoff_at,
+            "next_run_at": None,
+            "wait_seconds": 0,
+        }
+    interval = max(60, int(retry_seconds or 60))
+    next_run_at = min(cutoff_at, now + timedelta(seconds=interval))
+    return {
+        "retry": True,
+        "deadline_missed": False,
+        "cutoff_at": cutoff_at,
+        "next_run_at": next_run_at,
+        "wait_seconds": max(1, int((next_run_at - now).total_seconds())),
+    }
+
+
 def run_validation_tuning_once(
     validation_store,
     cached_metrics: Callable[[str, int], Dict[str, object]],
@@ -134,7 +165,20 @@ def run_validation_tuning_once(
                 dates=dates,
                 days=days,
             )
-            saved = validation_store.save_tuning_run(strategy, days, plan, metrics)
+            latest = validation_store.latest_tuning_run(strategy)
+            latest_plan = latest.get("plan") if isinstance(latest.get("plan"), dict) else {}
+            input_fingerprint = str(plan.get("input_fingerprint") or "")
+            reused = bool(
+                input_fingerprint
+                and input_fingerprint == str(latest_plan.get("input_fingerprint") or "")
+            )
+            if reused:
+                saved = {
+                    "id": latest.get("id"),
+                    "run_time": latest.get("run_time"),
+                }
+            else:
+                saved = validation_store.save_tuning_run(strategy, days, plan, metrics)
             result["runs"].append(
                 {
                     "ok": True,
@@ -142,6 +186,8 @@ def run_validation_tuning_once(
                     "status": plan.get("status"),
                     "can_apply": bool(plan.get("can_apply")),
                     "shadow_mode": bool(plan.get("shadow_mode")),
+                    "input_fingerprint": input_fingerprint,
+                    "reused": reused,
                     "saved": saved,
                 }
             )
@@ -150,6 +196,7 @@ def run_validation_tuning_once(
             result["runs"].append({"ok": False, "strategy": strategy, "error": str(exc)})
     result["finished_at"] = datetime.now().isoformat(timespec="seconds")
     return result
+
 
 def run_validation_auto_snapshot_once(
     *,
@@ -198,6 +245,15 @@ def run_validation_auto_snapshot_once(
                 last_tuning_date=now.date().isoformat(),
                 last_tuning_result=tuning_result,
             )
+        try:
+            from .data_health import build_and_save_data_health_report
+
+            result["data_health"] = build_and_save_data_health_report(
+                validation_db_path=config.VALIDATION_DB_PATH,
+                market_data_db_path=config.MARKET_DATA_DB_PATH,
+            )
+        except Exception as exc:
+            result["data_health"] = {"ok": False, "status": "report_failed", "error": str(exc)}
         result["backup"] = backup_validation_db(
             config.VALIDATION_DB_PATH,
             config.VALIDATION_BACKUP_PATH,
@@ -207,6 +263,7 @@ def run_validation_auto_snapshot_once(
         set_auto_snapshot_status(
             running=False,
             last_attempt_date=datetime.now().date().isoformat(),
+            retry_count=0,
             deadline_missed=False,
             last_finished_at=result["finished_at"],
             last_result=result,
@@ -257,11 +314,27 @@ def run_validation_auto_update_once(
                 item
                 for item in result["oos_summary"].get("statuses", [])
                 if item.get("oos_status")
-                in ("empty", "insufficient_oos_days", "needs_backfill", "gate_blocked", "portfolio_blocked")
+                in (
+                    "empty",
+                    "insufficient_oos_days",
+                    "needs_backfill",
+                    "gate_blocked",
+                    "portfolio_blocked",
+                    "statistical_gate_blocked",
+                )
             ]
             if alert_statuses:
                 result["status"] = "oos_attention_required"
                 result["alerts"] = alert_statuses
+        try:
+            from .data_health import build_and_save_data_health_report
+
+            result["data_health"] = build_and_save_data_health_report(
+                validation_db_path=config.VALIDATION_DB_PATH,
+                market_data_db_path=config.MARKET_DATA_DB_PATH,
+            )
+        except Exception as exc:
+            result["data_health"] = {"ok": False, "status": "report_failed", "error": str(exc)}
         result["finished_at"] = datetime.now().isoformat(timespec="seconds")
         set_auto_update_status(
             running=False,
@@ -316,6 +389,7 @@ def _oos_report_summary(reports: List[Dict[str, object]]) -> Dict[str, object]:
         "needs_backfill_count": 0,
         "gate_blocked_count": 0,
         "portfolio_blocked_count": 0,
+        "statistical_gate_blocked_count": 0,
         "insufficient_oos_days_count": 0,
         "oos_passed_count": 0,
         "empty_count": 0,
@@ -338,6 +412,8 @@ def _oos_report_summary(reports: List[Dict[str, object]]) -> Dict[str, object]:
             summary["gate_blocked_count"] += 1
         elif oos_status == "portfolio_blocked":
             summary["portfolio_blocked_count"] += 1
+        elif oos_status == "statistical_gate_blocked":
+            summary["statistical_gate_blocked_count"] += 1
         elif oos_status == "insufficient_oos_days":
             summary["insufficient_oos_days_count"] += 1
         elif oos_status == "oos_passed":
@@ -360,6 +436,7 @@ def _oos_report_summary(reports: List[Dict[str, object]]) -> Dict[str, object]:
         + summary["needs_backfill_count"]
         + summary["gate_blocked_count"]
         + summary["portfolio_blocked_count"]
+        + summary["statistical_gate_blocked_count"]
     )
     return summary
 
@@ -442,27 +519,26 @@ def start_validation_auto_snapshot_worker(
                 snapshot_result = run_validation_auto_snapshot_once_fn()
                 now = datetime.now()
                 if not snapshot_result.get("ok"):
-                    cutoff_hour, cutoff_minute = time_parts(
+                    retry_schedule = auto_snapshot_retry_schedule(
+                        now,
                         getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50"),
-                        (14, 35),
+                        getattr(config, "VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS", 60),
                     )
-                    cutoff_today = now.replace(
-                        hour=cutoff_hour,
-                        minute=cutoff_minute,
-                        second=0,
-                        microsecond=0,
-                    )
-                    if now >= cutoff_today:
+                    if not retry_schedule["retry"]:
                         set_auto_snapshot_status(
                             last_attempt_date=today,
                             deadline_missed=True,
                             deadline_missed_at=now.isoformat(timespec="seconds"),
                         )
                         continue
-                    retry_seconds = max(60, int(getattr(config, "VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS", 60)))
-                    next_run_at = now + timedelta(seconds=retry_seconds)
-                    set_auto_snapshot_status(next_run_at=next_run_at.isoformat(timespec="seconds"))
-                    time.sleep(retry_seconds)
+                    next_run_at = retry_schedule["next_run_at"]
+                    with auto_snapshot_lock:
+                        retry_count = int(auto_snapshot_status.get("retry_count") or 0) + 1
+                    set_auto_snapshot_status(
+                        retry_count=retry_count,
+                        next_run_at=next_run_at.isoformat(timespec="seconds"),
+                    )
+                    time.sleep(int(retry_schedule["wait_seconds"]))
                     continue
             next_run_at = next_auto_snapshot_at_fn(now)
             set_auto_snapshot_status(next_run_at=next_run_at.isoformat(timespec="seconds"))
@@ -472,5 +548,3 @@ def start_validation_auto_snapshot_worker(
     set_auto_snapshot_status(started=True)
     thread = threading.Thread(target=_worker_loop, name="validation-auto-snapshot", daemon=True)
     thread.start()
-
-

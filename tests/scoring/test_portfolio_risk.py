@@ -64,7 +64,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "name": "样本{}".format(idx),
                 "theme": theme,
                 "score": 90 - idx,
-                "serenity_profile": {"confidence_score": 80 - idx, "risk_score": 40 + idx},
+                "serenity_profile": {"rule_consistency_score": 80 - idx, "risk_score": 40 + idx},
             }
             for idx, theme in enumerate(["半导体", "半导体", "算力", "算力", "军工", "医药"])
         ]
@@ -87,7 +87,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 60,
                 "tier": "backup_pool",
                 "theme": "半导体",
-                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 80, "risk_score": 40},
             },
             {
                 "rank": 2,
@@ -96,7 +96,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 58,
                 "tier": "backup_pool",
                 "theme": "算力",
-                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 80, "risk_score": 40},
             },
         ]
 
@@ -116,7 +116,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 80,
                 "tier": "primary_watch",
                 "theme": "半导体",
-                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 80, "risk_score": 40},
             },
             {
                 "rank": 2,
@@ -125,7 +125,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 60,
                 "tier": "backup_pool",
                 "theme": "算力",
-                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 80, "risk_score": 40},
             },
         ]
 
@@ -142,7 +142,7 @@ class PortfolioRiskTest(unittest.TestCase):
                     "code": "600001",
                     "score": 80,
                     "execution_allowed": False,
-                    "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+                    "serenity_profile": {"rule_consistency_score": 80, "risk_score": 40},
                 }
             ]
         )
@@ -158,7 +158,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "name": "低流动",
                 "score": 90,
                 "turnover": 5_000_000,
-                "serenity_profile": {"confidence_score": 90, "risk_score": 30},
+                "serenity_profile": {"rule_consistency_score": 90, "risk_score": 30},
             },
             {
                 "rank": 2,
@@ -166,7 +166,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "name": "高流动A",
                 "score": 88,
                 "turnover": 1_000_000_000,
-                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 80, "risk_score": 40},
             },
             {
                 "rank": 3,
@@ -174,7 +174,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "name": "高流动B",
                 "score": 86,
                 "turnover": 1_000_000_000,
-                "serenity_profile": {"confidence_score": 75, "risk_score": 45},
+                "serenity_profile": {"rule_consistency_score": 75, "risk_score": 45},
             },
         ]
 
@@ -251,7 +251,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "theme": "主题{}".format(idx),
                 "score": 90 - idx,
                 "volatility_20d": 10.0,
-                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 80, "risk_score": 40},
             }
             for idx in range(4)
         ]
@@ -285,7 +285,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 95,
                 "expected_return_net": 2.0,
                 "p_win": 0.65,
-                "serenity_profile": {"confidence_score": 95, "risk_score": 25},
+                "serenity_profile": {"rule_consistency_score": 95, "risk_score": 25},
             },
             {
                 "rank": 2,
@@ -296,7 +296,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 93,
                 "expected_return_net": 1.8,
                 "p_win": 0.63,
-                "serenity_profile": {"confidence_score": 90, "risk_score": 28},
+                "serenity_profile": {"rule_consistency_score": 90, "risk_score": 28},
             },
             {
                 "rank": 3,
@@ -307,7 +307,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 80,
                 "expected_return_net": 0.8,
                 "p_win": 0.56,
-                "serenity_profile": {"confidence_score": 70, "risk_score": 45},
+                "serenity_profile": {"rule_consistency_score": 70, "risk_score": 45},
             },
             {
                 "rank": 4,
@@ -318,7 +318,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 78,
                 "expected_return_net": 0.6,
                 "p_win": 0.54,
-                "serenity_profile": {"confidence_score": 68, "risk_score": 48},
+                "serenity_profile": {"rule_consistency_score": 68, "risk_score": 48},
             },
         ]
 
@@ -346,7 +346,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "model_confidence": "ready",
                 "ranking_source": "expected_return_predicted_net_return",
                 "expected_return_rank": 1,
-                "serenity_profile": {"confidence_score": 70, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 70, "risk_score": 40},
             },
             {
                 "rank": 2,
@@ -360,7 +360,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "model_confidence": "ready",
                 "ranking_source": "expected_return_predicted_net_return",
                 "expected_return_rank": 2,
-                "serenity_profile": {"confidence_score": 70, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 70, "risk_score": 40},
             },
         ]
 
@@ -384,7 +384,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "expected_return_net": 2.0,
                 "p_win": 0.66,
                 "model_confidence": "low",
-                "serenity_profile": {"confidence_score": 70, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 70, "risk_score": 40},
             },
             {
                 "rank": 2,
@@ -396,7 +396,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "expected_return_net": -1.0,
                 "p_win": 0.45,
                 "model_confidence": "low",
-                "serenity_profile": {"confidence_score": 70, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 70, "risk_score": 40},
             },
         ]
 
@@ -422,7 +422,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "model_confidence": "ready",
                 "ranking_source": "expected_return_predicted_net_return",
                 "expected_return_rank": 1,
-                "serenity_profile": {"confidence_score": 70, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 70, "risk_score": 40},
             },
             {
                 "rank": 2,
@@ -436,7 +436,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "model_confidence": "ready",
                 "ranking_source": "expected_return_predicted_net_return",
                 "expected_return_rank": 2,
-                "serenity_profile": {"confidence_score": 70, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 70, "risk_score": 40},
             },
         ]
 
@@ -456,7 +456,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "name": "样本{}".format(idx),
                 "theme": "半导体" if idx < 3 else "医药",
                 "score": 90 - idx,
-                "serenity_profile": {"confidence_score": 80 - idx, "risk_score": 40 + idx},
+                "serenity_profile": {"rule_consistency_score": 80 - idx, "risk_score": 40 + idx},
             }
             for idx in range(5)
         ]
@@ -486,7 +486,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 90,
                 "theme": "半导体",
                 "turnover": 500000000,
-                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 80, "risk_score": 40},
             },
             {
                 "rank": 2,
@@ -496,7 +496,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 80,
                 "theme": "算力",
                 "turnover": 500000000,
-                "serenity_profile": {"confidence_score": 70, "risk_score": 45},
+                "serenity_profile": {"rule_consistency_score": 70, "risk_score": 45},
             },
         ]
         histories = {
@@ -581,7 +581,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "price": 10 + idx,
                 "score": 90 - idx,
                 "theme": ["半导体", "算力", "军工", "医药"][idx],
-                "serenity_profile": {"confidence_score": 80 - idx, "risk_score": 40 + idx},
+                "serenity_profile": {"rule_consistency_score": 80 - idx, "risk_score": 40 + idx},
             }
             for idx in range(4)
         ]
@@ -611,7 +611,7 @@ class PortfolioRiskTest(unittest.TestCase):
                 "score": 90,
                 "theme": "半导体",
                 "turnover": 500000000,
-                "serenity_profile": {"confidence_score": 80, "risk_score": 40},
+                "serenity_profile": {"rule_consistency_score": 80, "risk_score": 40},
             }
         ]
         history = pd.DataFrame(

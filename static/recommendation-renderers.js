@@ -279,13 +279,18 @@ window.TraderRecommendationRenderers = {
   },
 
   scoreCell(row, helpers) {
-    const { escapeHtml, rowScore } = helpers;
+    const { escapeHtml, rowScore, formatNumber } = helpers;
     const overall = this.scorePairValue(rowScore(row), 1, "当前生产综合排序分", "综", helpers);
+    const displayQuality = this.finiteNumber(row.decision_score);
     const risk = this.riskScoreValue(row.sell_risk?.score ?? row.serenity_profile?.risk_score ?? row.avg_risk, 0, "风险评分", "险", helpers);
     const expectedLines = this.expectedReturnScoreLines(row, helpers);
+    const qualityLine = displayQuality == null
+      ? ""
+      : `<div class="score-diagnostic-line" title="展示质量诊断分，仅用于解释，不参与生产排序">质${formatNumber(displayQuality, 1)}</div>`;
     const number = `
-      <div class="score-stack" title="当前生产综合排序分 / 风险评分">
+      <div class="score-stack" title="当前生产综合排序分 / 风险评分；质量分仅作诊断">
         <div class="score-line">${overall}<span class="score-pair-separator">/</span>${risk}</div>
+        ${qualityLine}
         ${expectedLines}
       </div>
     `;

@@ -103,6 +103,8 @@
     "DEEPSEEK_STRATEGIES": "short_term,tomorrow_picks",
     "DEEPSEEK_TIMEOUT_SECONDS": 12.0,
     "DEEPSEEK_WRITE_ALPHA_ZERO": true,
+    "DATA_HEALTH_ARCHIVE_DIR": ".runtime/data_health",
+    "DATA_HEALTH_REPORT_PATH": ".runtime/data_health_report.json",
     "DEFAULT_TOP_N": 18,
     "DELISTED_DEFAULT_LOSS_PCT": -30.0,
     "EASTMONEY_BATCH_TIMEOUT_SECONDS": 45.0,
@@ -166,6 +168,9 @@
     "EXPECTED_RETURN_ARTIFACT_MAX_AGE_DAYS": 7,
     "EXPECTED_RETURN_MIN_OOS_DELTA": 0.05,
     "EXPECTED_RETURN_MIN_REAL_DAYS": 60,
+    "EXPERIMENT_BOOTSTRAP_SAMPLES": 2000,
+    "EXPERIMENT_DSR_MIN_PROBABILITY": 0.95,
+    "EXPERIMENT_FDR_Q": 0.1,
     "EXPERIMENT_REGISTRY_PATH": "experiments/registry.jsonl",
     "FACTOR_COVERAGE_ALERT_ZERO_RATIO": 0.3,
     "FACTOR_IC_MIN_SAMPLES": 30,
@@ -266,6 +271,7 @@
     "RECOMMENDATION_CANDIDATE_POOL_SIZE": 150,
     "RECOMMENDATION_DISPLAY_LIMIT": 18,
     "RECOMMENDATION_FREEZE_CUTOFF_TIME": "14:50",
+    "MARKET_CLOSE_TIME": "15:00",
     "RECOMMENDATION_MAX_DISPLAY_PER_THEME": 3,
     "RECOMMENDATION_MAX_TOP_N": 18,
     "RECOMMENDATION_POOL_REFRESH_DECISION_SECONDS": 5,
@@ -298,7 +304,7 @@
     "SCORE_CALIBRATION_BUCKETS": 5,
     "SCORE_CALIBRATION_MIN_SAMPLES": 20,
     "SCORE_CALIBRATOR_DIR": ".runtime",
-    "SHORT_TERM_STRATEGY_VERSION": "today_picks_v1_remaining_session",
+    "SHORT_TERM_STRATEGY_VERSION": "today_picks_v2_missing_history_neutral",
     "SINA_QUOTE_BATCH_TIMEOUT_SECONDS": 90.0,
     "SINA_QUOTE_CONCURRENCY": 6,
     "SINA_QUOTE_PAGE_RETRIES": 1,
@@ -350,7 +356,7 @@
     "SWING_DEGRADED_DISPLAY_LIMIT": 8,
     "SWING_MIN_HISTORY_FACTOR_COVERAGE": 0.3,
     "SWING_RECOMMENDATION_MIN_SCORE": 60.0,
-    "SWING_STRATEGY_VERSION": "swing_2_5d_v4_post_1430_entry",
+    "SWING_STRATEGY_VERSION": "swing_2_5d_v5_missing_history_neutral",
     "SWING_VALIDATION_STOP_LOSS_PCT": 5.0,
     "SWING_VALIDATION_TAKE_PROFIT_PCT": 8.0,
     "SWING_VALIDATION_TRAILING_STOP_PCT": 4.0,
@@ -382,7 +388,7 @@
     "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT": 8,
     "TOMORROW_SIGNAL_CUTOFF_TIME": "14:50",
     "TOMORROW_SNAPSHOT_TOP_N": 5,
-    "TOMORROW_STRATEGY_VERSION": "tomorrow_picks_v12_post_1430_t1_exit",
+    "TOMORROW_STRATEGY_VERSION": "tomorrow_picks_v13_missing_history_neutral",
     "TOMORROW_TOP_N": 5,
     "USE_SMOOTH_PENALTY": true,
     "VALIDATION_ALLOW_LOCAL_QUOTE_SNAPSHOT": true,
@@ -414,13 +420,13 @@
     "VALIDATION_SLIPPAGE_MID_TURNOVER_PCT": 0.12,
     "VALIDATION_SNAPSHOT_MAX_QUOTE_AGE_SECONDS": 3600,
     "VALIDATION_TRADE_COST_PCT": 0.25,
-    "WEB_BACKGROUND_WORKERS_ENABLED": true,
+    "WEB_BACKGROUND_WORKERS_ENABLED": false,
     "WEIGHTS_OVERRIDE_PATH": ".runtime/weights.json"
   },
   "production_baseline": {
     "schema_version": 1,
-    "baseline_name": "p0_three_strategy_1430_deepseek_features_2026_07_13",
-    "frozen_at": "2026-07-13T00:00:00+08:00",
+    "baseline_name": "p1_missing_history_neutral_2026_07_14",
+    "frozen_at": "2026-07-14T00:00:00+08:00",
     "status": "frozen",
     "research": {
       "first_strategy": "tomorrow_picks",
@@ -433,9 +439,9 @@
       "selection_policy": "K=5 is pre-registered for production; K=3/10 are diagnostics and must not be selected for promotion."
     },
     "strategy_versions": {
-      "short_term": "today_picks_v1_remaining_session",
-      "tomorrow_picks": "tomorrow_picks_v12_post_1430_t1_exit",
-      "swing_picks": "swing_2_5d_v4_post_1430_entry"
+      "short_term": "today_picks_v2_missing_history_neutral",
+      "tomorrow_picks": "tomorrow_picks_v13_missing_history_neutral",
+      "swing_picks": "swing_2_5d_v5_missing_history_neutral"
     },
     "ranking": {
       "tomorrow_picks": {
@@ -501,12 +507,12 @@
       "VALIDATION_ALLOW_LOCAL_QUOTE_SNAPSHOT": true,
       "VALIDATION_AUTO_SNAPSHOT_ENABLED": true,
       "VALIDATION_AUTO_UPDATE_ENABLED": true,
-      "WEB_BACKGROUND_WORKERS_ENABLED": true
+      "WEB_BACKGROUND_WORKERS_ENABLED": false
     },
     "locked_config": {
-      "SHORT_TERM_STRATEGY_VERSION": "today_picks_v1_remaining_session",
-      "TOMORROW_STRATEGY_VERSION": "tomorrow_picks_v12_post_1430_t1_exit",
-      "SWING_STRATEGY_VERSION": "swing_2_5d_v4_post_1430_entry",
+      "SHORT_TERM_STRATEGY_VERSION": "today_picks_v2_missing_history_neutral",
+      "TOMORROW_STRATEGY_VERSION": "tomorrow_picks_v13_missing_history_neutral",
+      "SWING_STRATEGY_VERSION": "swing_2_5d_v5_missing_history_neutral",
       "TOMORROW_TOP_N": 5,
       "TOMORROW_PRIMARY_WATCH_N": 5,
       "TOMORROW_RECOMMENDATION_DISPLAY_LIMIT": 8,
@@ -592,7 +598,7 @@
         "base_score": 0.32,
         "execution_score": 0.2,
         "quality_score": 0.18,
-        "confidence_score": 0.12,
+        "rule_consistency_score": 0.12,
         "committee_score": 0.1,
         "risk_guard": 0.08
       }

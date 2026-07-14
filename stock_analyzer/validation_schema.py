@@ -81,6 +81,8 @@ class ValidationSchemaManager:
             ("0013_deepseek_daily_call_limit", ValidationSchemaManager._migration_deepseek_daily_call_limit),
             ("0014_sample_type_columns", ValidationSchemaManager._migration_sample_type_columns),
             ("0015_oos_report_experiment_audit", ValidationSchemaManager._migration_oos_report_experiment_audit),
+            ("0016_pit_market_snapshots", ValidationSchemaManager._migration_pit_market_snapshots),
+            ("0017_snapshot_phase_columns", ValidationSchemaManager._migration_snapshot_phase_columns),
         )
 
     @staticmethod
@@ -182,6 +184,29 @@ class ValidationSchemaManager:
         )
 
     @staticmethod
+    def _migration_pit_market_snapshots(conn) -> None:
+        from .pit_snapshot import PIT_SNAPSHOT_INDEXES, PIT_SNAPSHOT_TABLES
+
+        for statement in PIT_SNAPSHOT_TABLES + PIT_SNAPSHOT_INDEXES:
+            conn.execute(statement)
+
+    @staticmethod
+    def _migration_snapshot_phase_columns(conn) -> None:
+        for table in (
+            "strategy_signal_batches",
+            "strategy_candidate_snapshots",
+            "strategy_signals",
+            "strategy_deepseek_shadow_signals",
+        ):
+            ValidationSchemaManager._add_columns(
+                conn,
+                table,
+                {"snapshot_phase": "TEXT NOT NULL DEFAULT 'legacy_unknown'"},
+            )
+        for statement in _SNAPSHOT_PHASE_INDEXES:
+            conn.execute(statement)
+
+    @staticmethod
     def _add_columns(conn, table: str, columns) -> None:
         existing_columns = {row[1] for row in conn.execute("PRAGMA table_info({})".format(table)).fetchall()}
         for column, column_type in columns.items():
@@ -243,6 +268,7 @@ _TABLES = (
         snapshot_id TEXT NOT NULL DEFAULT '',
         sample_type TEXT NOT NULL DEFAULT 'unknown',
         sample_source TEXT NOT NULL DEFAULT '',
+        snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
         created_at TEXT NOT NULL,
         PRIMARY KEY(strategy_name, signal_date, strategy_version)
     )
@@ -273,6 +299,7 @@ _TABLES = (
         point_in_time_violations_json TEXT NOT NULL DEFAULT '[]',
         sample_type TEXT NOT NULL DEFAULT 'unknown',
         sample_source TEXT NOT NULL DEFAULT '',
+        snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
         raw_json TEXT NOT NULL DEFAULT '{}',
         snapshot_id TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
@@ -301,6 +328,7 @@ _TABLES = (
         score REAL NOT NULL DEFAULT 0,
         reasons_json TEXT NOT NULL,
         raw_json TEXT NOT NULL,
+        snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
         created_at TEXT NOT NULL,
         UNIQUE(strategy_name, strategy_version, signal_date, code)
     )
@@ -434,6 +462,7 @@ _TABLES = (
         deepseek_penalty REAL NOT NULL DEFAULT 0,
         filter_reason TEXT NOT NULL DEFAULT '',
         raw_json TEXT NOT NULL,
+        snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
         created_at TEXT NOT NULL,
         UNIQUE(strategy_name, strategy_version, signal_date, code)
     )
@@ -615,6 +644,12 @@ _QUERY_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_strategy_outcomes_code_trade_date ON strategy_outcomes(code, next_trade_date)",
 )
 
+_SNAPSHOT_PHASE_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_signal_batches_phase_date ON strategy_signal_batches(strategy_name, snapshot_phase, signal_date DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_signals_phase_date ON strategy_signals(strategy_name, snapshot_phase, signal_date DESC, rank)",
+    "CREATE INDEX IF NOT EXISTS idx_candidates_phase_date ON strategy_candidate_snapshots(strategy_name, snapshot_phase, signal_date DESC)",
+)
+
 _OUTCOME_MIGRATION_COLUMNS = {
     "overnight_return": "REAL NOT NULL DEFAULT 0",
     "signal_next_close_return": "REAL",
@@ -674,12 +709,14 @@ _BATCH_MIGRATION_COLUMNS = {
     "snapshot_id": "TEXT NOT NULL DEFAULT ''",
     "sample_type": "TEXT NOT NULL DEFAULT 'unknown'",
     "sample_source": "TEXT NOT NULL DEFAULT ''",
+    "snapshot_phase": "TEXT NOT NULL DEFAULT 'legacy_unknown'",
 }
 
 _CANDIDATE_MIGRATION_COLUMNS = {
     "snapshot_id": "TEXT NOT NULL DEFAULT ''",
     "sample_type": "TEXT NOT NULL DEFAULT 'unknown'",
     "sample_source": "TEXT NOT NULL DEFAULT ''",
+    "snapshot_phase": "TEXT NOT NULL DEFAULT 'legacy_unknown'",
 }
 
 _SHADOW_OUTCOME_MIGRATION_COLUMNS = {

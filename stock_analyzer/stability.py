@@ -18,7 +18,12 @@ class TopKDropoutTracker:
         previous_codes = horizon_state.get("codes", [])
         streaks = horizon_state.get("streaks", {})
         previous_set = set(previous_codes)
-        ranked_codes = [row["code"] for row in ranked_rows[: self.buffer_k]]
+        normalized_rows = []
+        for index, row in enumerate(ranked_rows or [], start=1):
+            item = dict(row)
+            item.setdefault("selection_rank", index)
+            normalized_rows.append(item)
+        ranked_codes = [row["code"] for row in normalized_rows[: self.buffer_k]]
         ranked_set = set(ranked_codes)
 
         retained = [code for code in previous_codes if code in ranked_set]
@@ -31,11 +36,22 @@ class TopKDropoutTracker:
         for code in stable_codes:
             updated_streaks[code] = int(streaks.get(code, 0)) + 1
 
-        row_by_code = {row["code"]: row for row in ranked_rows}
+        row_by_code = {row["code"]: row for row in normalized_rows}
         stable_rows = []
-        for rank, code in enumerate(stable_codes, start=1):
+        # Stability controls membership only.  Current production score order
+        # remains the display order; it must not be replaced by yesterday's
+        # retained-code order.
+        stable_codes = sorted(
+            stable_codes,
+            key=lambda code: (
+                int(row_by_code.get(code, {}).get("selection_rank") or 999999),
+                str(code),
+            ),
+        )
+        for display_rank, code in enumerate(stable_codes, start=1):
             row = dict(row_by_code[code])
-            row["rank"] = rank
+            row["display_rank"] = display_rank
+            row["rank"] = row["selection_rank"]
             row["stability_status"] = "retained" if code in previous_set else "new"
             row["streak"] = updated_streaks.get(code, 1)
             stable_rows.append(row)

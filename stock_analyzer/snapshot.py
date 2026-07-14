@@ -13,6 +13,7 @@ from .execution_policy import build_execution_policy
 from .factors import build_alphalite_factors, merge_alphalite
 from .fundamentals import attach_fundamental_factors, load_fundamentals
 from .normalization import coerce_number, normalize_code
+from .pit_snapshot import CLOSE_FORWARD, PointInTimeSnapshotStore
 from .point_in_time import (
     build_candidate_snapshot_rows,
     filter_point_in_time_events,
@@ -22,6 +23,14 @@ from .production_baseline import attach_generation_provenance
 from .scoring_core.candidate_filters import prepare_candidates
 from .scoring_core.market_regime import build_market_regime
 from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks, storage_strategy_name
+from .snapshot_phase import (
+    CLOSE_FALLBACK,
+    PRECLOSE_TRADEABLE,
+    close_quote_is_valid,
+    market_close_reached,
+    normalize_snapshot_phase,
+    phase_payload,
+)
 from .validation_repository import SignalFreezeDeadlineExceeded
 from .validation_policy import current_strategy_version
 
@@ -30,6 +39,8 @@ SNAPSHOT_STRATEGIES = tuple(config.SNAPSHOT_STRATEGIES)
 SNAPSHOT_REQUIRED_FACTOR_FIELDS = ("volume_ratio", "turnover_rate", "amplitude")
 SNAPSHOT_SAMPLE_TYPE = "real_forward"
 SNAPSHOT_SAMPLE_SOURCE = "intraday_pit_14_30"
+CLOSE_SNAPSHOT_SAMPLE_TYPE = CLOSE_FORWARD
+CLOSE_SNAPSHOT_SAMPLE_SOURCE = "official_close_fallback"
 
 
 def run_snapshot(
@@ -38,8 +49,13 @@ def run_snapshot(
     strategy: str,
     market: str = "all",
     _context: Dict[str, object] = None,
+    snapshot_phase: str = PRECLOSE_TRADEABLE,
 ) -> Dict[str, object]:
     strategy = storage_strategy_name(strategy)
+    snapshot_phase = normalize_snapshot_phase(snapshot_phase, PRECLOSE_TRADEABLE)
+    close_fallback = snapshot_phase == CLOSE_FALLBACK
+    sample_type = CLOSE_SNAPSHOT_SAMPLE_TYPE if close_fallback else SNAPSHOT_SAMPLE_TYPE
+    sample_source = CLOSE_SNAPSHOT_SAMPLE_SOURCE if close_fallback else SNAPSHOT_SAMPLE_SOURCE
     if strategy not in SNAPSHOT_STRATEGIES:
         return {"ok": False, "strategy": strategy, "error": "unknown_strategy"}
     context = _context or _prepare_snapshot_context(provider)
@@ -50,8 +66,9 @@ def run_snapshot(
             "market_data_cutoff": common_signal_time,
             "snapshot_id": str(context.get("snapshot_id") or "snapshot_{}".format(uuid4().hex)),
             "freeze_deadline": _freeze_deadline(common_signal_time),
-            "sample_type": SNAPSHOT_SAMPLE_TYPE,
-            "sample_source": SNAPSHOT_SAMPLE_SOURCE,
+            "sample_type": "unknown",
+            "sample_source": "snapshot_context_rejected",
+            "snapshot_phase": snapshot_phase,
         }
         return _snapshot_error_rejection(
             strategy=strategy,
@@ -69,6 +86,7 @@ def run_snapshot(
             generation_status="context_rejection",
             reason="snapshot_context_rejected",
             batch_metadata=batch_metadata,
+            snapshot_phase=snapshot_phase,
         )
 
     quotes = context["quotes"]
@@ -80,12 +98,97 @@ def run_snapshot(
     market_regime = dict(context["market_regime"])
     common_signal_time = str(context.get("signal_time") or snapshot_cutoff)
     context["signal_time"] = common_signal_time
-    if _signal_at_or_after_freeze_cutoff(common_signal_time):
+    if not close_fallback and _signal_at_or_after_freeze_cutoff(common_signal_time):
         return _freeze_rejection(
             strategy,
             {"generated_at": common_signal_time, "snapshot_id": snapshot_id},
         )
-    freeze_deadline = _freeze_deadline(common_signal_time)
+    try:
+        quote_timestamp = str((getattr(quotes, "attrs", {}) or {}).get("quote_timestamp") or "")
+        if close_fallback and not close_quote_is_valid(
+            quote_timestamp,
+            signal_date=common_signal_time[:10],
+            close_time=str(getattr(config, "MARKET_CLOSE_TIME", "15:00")),
+        ):
+            return {
+                "ok": False,
+                "strategy": strategy,
+                "error": "收盘行情时间戳无效，拒绝生成盘后补充样本。",
+                "saved": {"saved": 0, "replaced": 0},
+                "meta": {
+                    **phase_payload(snapshot_phase, as_of=common_signal_time),
+                    "generated_at": common_signal_time,
+                    "snapshot_id": snapshot_id,
+                    "quote_timestamp": quote_timestamp,
+                    "rejection": "close_quote_timestamp_invalid",
+                },
+            }
+        pit_archive = _archive_point_in_time_quotes(
+            validation_store,
+            context,
+            provider,
+            sample_type=sample_type,
+            sample_source=sample_source,
+        )
+    except Exception as exc:
+        return _snapshot_error_rejection(
+            strategy=strategy,
+            provider=provider,
+            validation_store=validation_store,
+            snapshot_id=snapshot_id,
+            signal_time=common_signal_time,
+            candidates=candidates,
+            quotes=quotes,
+            event_payload=event_payload,
+            fundamental_payload=fundamental_payload,
+            error="原始全市场点时行情归档失败：{}".format(exc),
+            market=market,
+            market_regime=market_regime,
+            generation_status="pit_archive_failed",
+            reason="raw_market_snapshot_not_persisted",
+            batch_metadata={
+                "data_source_timestamp": "",
+                "market_data_cutoff": common_signal_time,
+                "snapshot_id": snapshot_id,
+                "freeze_deadline": _freeze_deadline(common_signal_time),
+                "sample_type": "unknown",
+                "sample_source": "pit_archive_failed",
+                "snapshot_phase": snapshot_phase,
+            },
+            snapshot_phase=snapshot_phase,
+        )
+    if str(pit_archive.get("sample_type") or "") != sample_type:
+        return _snapshot_error_rejection(
+            strategy=strategy,
+            provider=provider,
+            validation_store=validation_store,
+            snapshot_id=snapshot_id,
+            signal_time=common_signal_time,
+            candidates=candidates,
+            quotes=quotes,
+            event_payload=event_payload,
+            fundamental_payload=fundamental_payload,
+            error=(
+                "收盘行情缺少可信的15:00后来源时间，不能标记为收盘补充样本。"
+                if close_fallback
+                else "点时行情缺少 14:30-14:50 的可信来源时间，不能标记为真实前瞻样本。"
+            ),
+            market=market,
+            market_regime=market_regime,
+            generation_status="pit_timestamp_invalid",
+            reason="raw_market_snapshot_not_real_forward",
+            batch_metadata={
+                "data_source_timestamp": str(pit_archive.get("data_source_timestamp") or ""),
+                "market_data_cutoff": common_signal_time,
+                "snapshot_id": snapshot_id,
+                "freeze_deadline": _freeze_deadline(common_signal_time),
+                "sample_type": str(pit_archive.get("sample_type") or "unknown"),
+                "sample_source": sample_source,
+                "snapshot_phase": snapshot_phase,
+            },
+            snapshot_phase=snapshot_phase,
+        )
+    freeze_deadline = "" if close_fallback else _freeze_deadline(common_signal_time)
     try:
         rows, meta, version = _score_snapshot_strategy(
             provider, candidates, quotes, strategy, market, market_regime
@@ -109,14 +212,19 @@ def run_snapshot(
                 "market_data_cutoff": common_signal_time,
                 "snapshot_id": snapshot_id,
                 "freeze_deadline": freeze_deadline,
-                "sample_type": SNAPSHOT_SAMPLE_TYPE,
-                "sample_source": SNAPSHOT_SAMPLE_SOURCE,
+                "sample_type": sample_type,
+                "sample_source": sample_source,
+                "snapshot_phase": snapshot_phase,
             },
+            snapshot_phase=snapshot_phase,
         )
     version = str(version or "").strip() or current_strategy_version(strategy)
     if not version:
         version = str(strategy)
     _attach_frozen_regime(rows, market_regime)
+    for row in rows:
+        row["snapshot_phase"] = snapshot_phase
+        row["price_basis"] = "official_close" if close_fallback else "signal_time_quote"
     meta["generated_at"] = common_signal_time
     meta["snapshot_id"] = snapshot_id
     scored_candidate_rows = meta.pop("_candidate_pool_rows", None)
@@ -148,7 +256,7 @@ def run_snapshot(
         "reviewed": feature_count,
         "production_applied": False,
         "reason": (
-            "快照只读取14:30前完成的DeepSeek结构化特征。"
+            "快照只读取信号形成前完成的DeepSeek结构化特征。"
             if feature_enabled
             else "DeepSeek结构化特征读取已关闭，保持本地基线。"
         ),
@@ -169,9 +277,10 @@ def run_snapshot(
         snapshot_id=snapshot_id,
     )
     for row in candidate_rows:
-        row.setdefault("sample_type", SNAPSHOT_SAMPLE_TYPE)
-        row.setdefault("sample_source", SNAPSHOT_SAMPLE_SOURCE)
-    execution_policy = build_execution_policy(strategy, market)
+        row["sample_type"] = sample_type
+        row["sample_source"] = sample_source
+        row["snapshot_phase"] = snapshot_phase
+    execution_policy = build_execution_policy(strategy, market, snapshot_phase=snapshot_phase)
     data_source_timestamp = str(
         (quotes.attrs or {}).get("quote_timestamp")
         or provider_health.get("last_quote_refresh")
@@ -186,20 +295,23 @@ def run_snapshot(
         "data_source_timestamp": data_source_timestamp,
         "fundamentals": fundamental_payload.get("point_in_time") or {},
         "events": event_payload.get("point_in_time") or {},
+        "market_archive": pit_archive,
     }
+    meta.update(phase_payload(snapshot_phase, as_of=common_signal_time))
     meta["execution_policy_version"] = execution_policy["policy_version"]
     freeze_ready_at = datetime.now().isoformat(timespec="seconds")
     meta["freeze_ready_at"] = freeze_ready_at
-    if _signal_at_or_after_freeze_cutoff(freeze_ready_at):
+    if not close_fallback and _signal_at_or_after_freeze_cutoff(freeze_ready_at):
         return _freeze_rejection(strategy, meta)
-    freeze_deadline = _freeze_deadline(common_signal_time)
+    freeze_deadline = "" if close_fallback else _freeze_deadline(common_signal_time)
     batch_metadata = {
         "data_source_timestamp": "",
         "market_data_cutoff": meta["generated_at"],
         "snapshot_id": snapshot_id,
         "freeze_deadline": freeze_deadline,
-        "sample_type": SNAPSHOT_SAMPLE_TYPE,
-        "sample_source": SNAPSHOT_SAMPLE_SOURCE,
+        "sample_type": sample_type,
+        "sample_source": sample_source,
+        "snapshot_phase": snapshot_phase,
     }
     try:
         saved = validation_store.save_signals(
@@ -221,11 +333,20 @@ def run_snapshot(
     meta["freeze_completed_at"] = str(
         saved.get("freeze_transaction_checked_at") or datetime.now().isoformat(timespec="seconds")
     )
-    meta["recommendation_frozen_at"] = meta["freeze_completed_at"]
+    if close_fallback:
+        meta["recommendation_closed_at"] = meta["freeze_completed_at"]
+    else:
+        meta["recommendation_frozen_at"] = meta["freeze_completed_at"]
     return {"ok": True, "strategy": strategy, "saved": saved, "meta": meta}
 
 
-def run_snapshots(provider, validation_store, strategies: Iterable[str], market: str = "all") -> List[Dict[str, object]]:
+def run_snapshots(
+    provider,
+    validation_store,
+    strategies: Iterable[str],
+    market: str = "all",
+    snapshot_phase: str = PRECLOSE_TRADEABLE,
+) -> List[Dict[str, object]]:
     context = _prepare_snapshot_context(provider)
     if not context.get("snapshot_id"):
         context["snapshot_id"] = "snapshot_{}".format(uuid4().hex)
@@ -241,6 +362,7 @@ def run_snapshots(provider, validation_store, strategies: Iterable[str], market:
                     strategy,
                     market=market,
                     _context=context,
+                    snapshot_phase=snapshot_phase,
                 )
             )
         except Exception as exc:
@@ -260,6 +382,125 @@ def run_snapshots(provider, validation_store, strategies: Iterable[str], market:
     return results
 
 
+def run_missing_close_snapshots(
+    provider,
+    validation_store,
+    strategies: Iterable[str],
+    market: str = "all",
+    *,
+    now: datetime | None = None,
+    _context: Dict[str, object] = None,
+) -> Dict[str, object]:
+    observed = now or datetime.now()
+    close_time = str(getattr(config, "MARKET_CLOSE_TIME", "15:00"))
+    signal_date = observed.date().isoformat()
+    normalized_strategies = [storage_strategy_name(item) for item in strategies or []]
+    normalized_strategies = [item for item in normalized_strategies if item in SNAPSHOT_STRATEGIES]
+    if not market_close_reached(observed, close_time):
+        return {
+            "ok": False,
+            "status": "market_not_closed",
+            "signal_date": signal_date,
+            "snapshots": [],
+        }
+
+    existing = {}
+    missing = []
+    for strategy in normalized_strategies:
+        batch = validation_store.saved_signal_batch(strategy, signal_date)
+        if batch:
+            existing[strategy] = batch
+        else:
+            missing.append(strategy)
+    results = [
+        {
+            "ok": True,
+            "strategy": strategy,
+            "status": "already_saved",
+            "saved": {"saved": int(batch.get("saved_count") or 0), "replaced": 0},
+            "meta": {
+                **phase_payload(batch.get("snapshot_phase"), as_of=batch.get("signal_time")),
+                "generated_at": str(batch.get("signal_time") or ""),
+                "snapshot_id": str(batch.get("snapshot_id") or ""),
+            },
+        }
+        for strategy, batch in existing.items()
+    ]
+    if missing:
+        context = _context or _prepare_snapshot_context(provider)
+        context = dict(context or {})
+        signal_time = observed.isoformat(timespec="seconds")
+        context["snapshot_cutoff"] = signal_time
+        context["signal_time"] = signal_time
+        context["snapshot_id"] = "close_snapshot_{}".format(uuid4().hex)
+        context.pop("pit_archive", None)
+        generated = [
+            run_snapshot(
+                provider,
+                validation_store,
+                strategy,
+                market=market,
+                _context=context,
+                snapshot_phase=CLOSE_FALLBACK,
+            )
+            for strategy in missing
+        ]
+        for item in generated:
+            if item.get("ok") and int((item.get("saved") or {}).get("saved") or 0) <= 0:
+                item["ok"] = False
+                item["error"] = "收盘评分没有产生可保存的推荐股票。"
+                item["status"] = "empty_close_recommendations"
+        results.extend(generated)
+    failed = [item for item in results if not item.get("ok")]
+    return {
+        "ok": not failed,
+        "status": "complete" if not failed else "partial_failure",
+        "signal_date": signal_date,
+        "existing_strategies": sorted(existing),
+        "generated_strategies": [item.get("strategy") for item in results if item.get("status") != "already_saved"],
+        "snapshots": results,
+    }
+
+
+def _archive_point_in_time_quotes(
+    validation_store,
+    context: Dict[str, object],
+    provider,
+    sample_type: str = SNAPSHOT_SAMPLE_TYPE,
+    sample_source: str = SNAPSHOT_SAMPLE_SOURCE,
+) -> Dict[str, object]:
+    cached = context.get("pit_archive")
+    if isinstance(cached, dict) and cached.get("snapshot_id"):
+        return cached
+    db_path = str(getattr(validation_store, "db_path", "") or "").strip()
+    if not db_path:
+        return {"status": "unavailable", "reason": "validation_db_path_missing"}
+    quotes = context.get("quotes")
+    health = _provider_health(provider)
+    quote_timestamp = ""
+    try:
+        quote_timestamp = str((quotes.attrs or {}).get("quote_timestamp") or "")
+    except Exception:
+        quote_timestamp = ""
+    archived = PointInTimeSnapshotStore(db_path).save(
+        str(context.get("snapshot_id") or ""),
+        quotes,
+        captured_at=str(context.get("signal_time") or context.get("snapshot_cutoff") or ""),
+        data_source_timestamp=str(
+            quote_timestamp
+            or health.get("last_quote_refresh")
+            or context.get("signal_time")
+            or context.get("snapshot_cutoff")
+            or ""
+        ),
+        source=str(health.get("quotes_source") or ""),
+        sample_type=sample_type,
+        sample_source=sample_source,
+    )
+    context["pit_archive"] = archived
+    return archived
+
+
 def _snapshot_error_rejection(
     *,
     strategy: str,
@@ -277,6 +518,7 @@ def _snapshot_error_rejection(
     generation_status: str = "runtime_exception",
     reason: str = "snapshot_scoring_failed",
     batch_metadata: Optional[Dict[str, object]] = None,
+    snapshot_phase: str = PRECLOSE_TRADEABLE,
 ) -> Dict[str, object]:
     strategy = storage_strategy_name(strategy)
     error_text = str(error)
@@ -316,14 +558,29 @@ def _snapshot_error_rejection(
         "error": error_text,
     }
     batch_metadata = dict(batch_metadata or {})
+    snapshot_phase = normalize_snapshot_phase(snapshot_phase, PRECLOSE_TRADEABLE)
     batch_metadata.setdefault("snapshot_id", snapshot_id)
     batch_metadata.setdefault("data_source_timestamp", data_source_timestamp)
     batch_metadata.setdefault("market_data_cutoff", generated_at)
     batch_metadata.setdefault("freeze_deadline", _freeze_deadline(generated_at))
     batch_metadata.setdefault("sample_type", SNAPSHOT_SAMPLE_TYPE)
     batch_metadata.setdefault("sample_source", SNAPSHOT_SAMPLE_SOURCE)
+    batch_metadata.setdefault("snapshot_phase", snapshot_phase)
     batch_metadata["generation"] = generation
-    execution_policy = build_execution_policy(strategy, market)
+    if snapshot_phase == CLOSE_FALLBACK:
+        return {
+            "ok": False,
+            "strategy": strategy,
+            "saved": {"saved": 0, "replaced": 0},
+            "meta": {
+                **phase_payload(snapshot_phase, as_of=generated_at),
+                "generated_at": generated_at,
+                "snapshot_id": snapshot_id,
+                "rejection": str(generation_status or "runtime_exception"),
+                "error": error_text,
+            },
+        }
+    execution_policy = build_execution_policy(strategy, market, snapshot_phase=snapshot_phase)
     version = str(current_strategy_version(strategy) or strategy)
     try:
         saved = validation_store.save_signals(
@@ -336,15 +593,22 @@ def _snapshot_error_rejection(
             execution_policy=execution_policy,
         )
     except SignalFreezeDeadlineExceeded as exc:
-        return _freeze_rejection(
-            strategy,
-            {
+        # Preserve the actionable source error (for example, a forbidden
+        # local quote snapshot) when the diagnostic batch itself misses the
+        # publication deadline.  The rejected batch must not mask its cause.
+        return {
+            "ok": False,
+            "strategy": strategy,
+            "error": error_text,
+            "saved": {"saved": 0, "replaced": 0},
+            "meta": {
                 "generated_at": generated_at,
                 "snapshot_id": snapshot_id,
-                "error": str(exc),
                 "rejection": "freeze_deadline_exceeded_during_error_batch",
+                "original_error": error_text,
+                "freeze_error": str(exc),
             },
-        )
+        }
     except Exception as exc:
         return {
             "ok": False,

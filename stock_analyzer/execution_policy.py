@@ -7,13 +7,20 @@ from typing import Dict
 
 from . import config
 from .normalization import coerce_number
+from .snapshot_phase import CLOSE_FALLBACK, PRECLOSE_TRADEABLE, normalize_snapshot_phase
 
 
 EXECUTION_POLICY_FAMILY = "cn_a_post_1430_recommendation_v3"
 
 
-def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, object]:
+def build_execution_policy(
+    strategy_name: str,
+    market: str = "",
+    snapshot_phase: str = "",
+) -> Dict[str, object]:
     """Return the complete, immutable policy used to label a signal."""
+    snapshot_phase = normalize_snapshot_phase(snapshot_phase, PRECLOSE_TRADEABLE)
+    close_research = snapshot_phase == CLOSE_FALLBACK
     holding_days = 1 if strategy_name == "tomorrow_picks" else 5 if strategy_name == "swing_picks" else 0
     executable = strategy_name in {"tomorrow_picks", "swing_picks"}
     prefix = "TOMORROW_AUXILIARY" if strategy_name == "tomorrow_picks" else "SWING_VALIDATION"
@@ -39,25 +46,33 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
         "schema_version": 3,
         "policy_family": EXECUTION_POLICY_FAMILY,
         "strategy_name": str(strategy_name or ""),
+        "snapshot_phase": snapshot_phase,
         "market": str(market or ""),
         "entry": {
             "timing": (
-                "same_trade_day_after_1430" if executable else "same_trade_day_observation"
+                "same_trade_day_close_research" if close_research
+                else "same_trade_day_after_1430" if executable
+                else "same_trade_day_observation"
             ),
             "price_field": (
-                "signal_time_raw_quote_with_slippage" if executable else "signal_time_raw_quote"
+                "official_close_theoretical" if close_research
+                else "signal_time_raw_quote_with_slippage" if executable
+                else "signal_time_raw_quote"
             ),
             "sealed_limit_up": "unfilled",
             "suspension": "unfilled_until_tradable",
-            "signal_cutoff": str(getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50")),
+            "signal_cutoff": "15:00" if close_research else str(
+                getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50")
+            ),
             "order_window": (
                 "{}-{}".format(
                     getattr(config, "TOMORROW_RECOMMENDATION_BUY_WINDOW_START", "14:30"),
                     getattr(config, "TOMORROW_RECOMMENDATION_BUY_WINDOW_END", "14:55"),
                 )
-                if executable
+                if executable and not close_research
                 else None
             ),
+            "research_only": bool(close_research),
         },
         "exit": exit_policy,
         "price_limits": {
@@ -87,7 +102,9 @@ def build_execution_policy(strategy_name: str, market: str = "") -> Dict[str, ob
                 ) if executable else 0.0,
             },
             "tail_auction": {
-                "enabled": False,
+                "enabled": executable and bool(
+                    getattr(config, "ENABLE_TAIL_AUCTION_SLIPPAGE", False)
+                ),
                 "liquidity_ratio": coerce_number(getattr(config, "TAIL_AUCTION_LIQUIDITY_RATIO", 0.05), 0.05),
                 "max_extra_pct": coerce_number(
                     getattr(config, "TAIL_AUCTION_MAX_EXTRA_SLIPPAGE_PCT", 0.8), 0.8

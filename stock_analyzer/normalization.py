@@ -138,6 +138,11 @@ def percentile_score(value: float, values: Iterable[float], higher_is_better: bo
         clean_values = sorted([v for v in values if isinstance(v, (int, float)) and math.isfinite(v)])
     if not clean_values:
         return 50.0
+    # A percentile has no discriminatory meaning for a singleton or a
+    # constant sample.  Treat it as neutral instead of turning a missing
+    # factor (normally normalized to zero) into an artificial 100 score.
+    if len(clean_values) < 2 or clean_values[0] == clean_values[-1]:
+        return 50.0
     value = coerce_number(value, clean_values[0])
     value = max(min(value, clean_values[-1]), clean_values[0])
     if isinstance(clean_values, SortedNumericValues):

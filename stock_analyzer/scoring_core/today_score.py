@@ -48,34 +48,43 @@ def _score_row(
     hot_rank = hot_ranks.get(code)
     sentiment = sentiment_lookup.get(code, {"score": 50.0, "summary": "未拉取到个股舆情"})
     execution_score = scoring_math._execution_score(row)
+    history_ready = scoring_math._historical_factors_ready(row)
+
+    def historical_score(value, values, **kwargs):
+        return scoring_math._optional_factor_score(
+            value,
+            values,
+            available=history_ready,
+            **kwargs,
+        )
 
     momentum_score = (
         percentile_score(pct_chg, context["pct_values"]) * 0.24
         + percentile_score(speed, context["speed_values"]) * 0.24
         + percentile_score(volume_ratio, context["volume_ratio_values"]) * 0.18
-        + scoring_math._optional_factor_score(ret_3d, context["ret_3d_values"]) * 0.12
-        + scoring_math._optional_factor_score(ret_5d, context["ret_5d_values"]) * 0.10
-        + scoring_math._optional_factor_score(vol_amount_5d, context["vol_amount_5d_values"]) * 0.08
-        + scoring_math._optional_factor_score(breakout_20d, context["breakout_20d_values"]) * 0.04
+        + historical_score(ret_3d, context["ret_3d_values"]) * 0.12
+        + historical_score(ret_5d, context["ret_5d_values"]) * 0.10
+        + historical_score(vol_amount_5d, context["vol_amount_5d_values"]) * 0.08
+        + historical_score(breakout_20d, context["breakout_20d_values"]) * 0.04
     )
     liquidity_score = (
         percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.45
         + percentile_score(turnover, context["turnover_values"]) * 0.55
     )
     trend_score = (
-        scoring_math._optional_factor_score(
+        historical_score(
             ret_20d,
             context["ret_20d_values"],
             fallback=sixty_day_pct,
             fallback_values=context["sixty_day_values"],
         )
         * 0.24
-        + percentile_score(sixty_day_pct, context["sixty_day_values"]) * 0.20
-        + percentile_score(ytd_pct, context["ytd_values"]) * 0.14
-        + scoring_math._optional_factor_score(ma20_gap, context["ma20_gap_values"]) * 0.14
-        + scoring_math._optional_factor_score(ret_10d, context["ret_10d_values"]) * 0.12
-        + scoring_math._optional_factor_score(vol_amount_5d, context["vol_amount_5d_values"]) * 0.08
-        + scoring_math._optional_factor_score(
+        + historical_score(sixty_day_pct, context["sixty_day_values"]) * 0.20
+        + historical_score(ytd_pct, context["ytd_values"]) * 0.14
+        + historical_score(ma20_gap, context["ma20_gap_values"]) * 0.14
+        + historical_score(ret_10d, context["ret_10d_values"]) * 0.12
+        + historical_score(vol_amount_5d, context["vol_amount_5d_values"]) * 0.08
+        + historical_score(
             volatility_20d,
             context["volatility_20d_values"],
             higher_is_better=False,
@@ -116,6 +125,7 @@ def _score_row(
         "short_term",
         market_regime=market_regime,
         row=row,
+        factor_ic_payload=context.get("factor_ic_payload"),
     )
     final_score = combined["score"]
     item = {

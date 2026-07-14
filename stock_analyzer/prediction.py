@@ -274,11 +274,11 @@ def _filtered_stock_prediction(
         risk_score = max(95.0, risk_score)
     label = "高风险/不建议参与" if risk_score >= 80 else "偏弱/风险较高" if risk_score >= 55 else "未入选推荐池"
     score = round(max(5.0, 48.0 - risk_score * 0.38), 2)
-    confidence = round(min(95.0, 45.0 + risk_score * 0.45), 2)
+    rule_consistency = round(min(95.0, 45.0 + risk_score * 0.45), 2)
     common = {
         "direction": "down" if risk_score >= 55 else "neutral",
         "label": label,
-        "confidence": confidence,
+        "rule_consistency": rule_consistency,
         "score": score,
         "risk_level": "high" if risk_score >= 70 else "medium" if risk_score >= 40 else "unknown",
         "avg_risk": risk_score,
@@ -445,7 +445,7 @@ def _strategy_hit(
         or "观察",
         "risk_score": coerce_number(profile.get("risk_score"), 50.0),
         "quality_score": coerce_number(profile.get("quality_score"), row.get("score")),
-        "confidence_score": coerce_number(profile.get("confidence_score"), 50.0),
+        "rule_consistency_score": coerce_number(profile.get("rule_consistency_score"), 50.0),
         "verdict": row.get("verdict") or {},
         "reasons": list(row.get("reasons") or [])[:4],
         "failure_reasons": list(row.get("failure_reasons") or [])[:4],
@@ -462,10 +462,16 @@ def _direction_score(row: Dict[str, object]) -> float:
     committee = row.get("agent_committee") or {}
     base = coerce_number(row.get("score"), 50.0)
     quality = coerce_number(profile.get("quality_score"), base)
-    confidence = coerce_number(profile.get("confidence_score"), 50.0)
+    rule_consistency = coerce_number(profile.get("rule_consistency_score"), 50.0)
     risk = coerce_number(profile.get("risk_score"), 50.0)
     agent = coerce_number(committee.get("final_score"), quality)
-    score = base * 0.30 + quality * 0.24 + confidence * 0.18 + agent * 0.18 + (100.0 - risk) * 0.10
+    score = (
+        base * 0.30
+        + quality * 0.24
+        + rule_consistency * 0.18
+        + agent * 0.18
+        + (100.0 - risk) * 0.10
+    )
     return round(max(0.0, min(100.0, score)), 2)
 
 
@@ -480,7 +486,7 @@ def _prediction_verdict(
         return {
             "direction": "neutral",
             "label": "震荡/不确定",
-            "confidence": 22.0,
+            "rule_consistency": 22.0,
             "score": 45.0,
             "advice": _horizon_no_hit_advice(horizon),
             "risk_level": "unknown",
@@ -492,7 +498,7 @@ def _prediction_verdict(
         return {
             "direction": "neutral",
             "label": "备选观察/不构成推荐",
-            "confidence": 20.0,
+            "rule_consistency": 20.0,
             "score": 45.0,
             "risk_level": "high" if avg_risk >= 70 else "medium" if avg_risk >= 50 else "unknown",
             "avg_risk": round(avg_risk, 2),
@@ -510,7 +516,10 @@ def _prediction_verdict(
     regime_adjust = (regime_score - 50.0) * 0.08
     raw_score = avg_direction + consensus_bonus + regime_adjust - max(0.0, avg_risk - 65.0) * 0.22
     score = round(max(0.0, min(100.0, raw_score)), 2)
-    confidence = round(max(0.0, min(100.0, 35.0 + len(hits) * 12.0 + consensus_bonus + (100.0 - avg_risk) * 0.12)), 2)
+    rule_consistency = round(
+        max(0.0, min(100.0, 35.0 + len(hits) * 12.0 + consensus_bonus + (100.0 - avg_risk) * 0.12)),
+        2,
+    )
     risk_level = "high" if avg_risk >= 70 else "medium" if avg_risk >= 50 else "low"
     if score >= 68 and avg_risk < 70:
         direction = "up"
@@ -527,7 +536,7 @@ def _prediction_verdict(
     return {
         "direction": direction,
         "label": label,
-        "confidence": confidence,
+        "rule_consistency": rule_consistency,
         "score": score,
         "risk_level": risk_level,
         "avg_risk": round(avg_risk, 2),

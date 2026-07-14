@@ -32,7 +32,7 @@ class StockPredictionTest(unittest.TestCase):
                     "trade_action": {"action": "watch_only", "position_size": 0.0},
                     "serenity_profile": {
                         "quality_score": 90.0,
-                        "confidence_score": 90.0,
+                        "rule_consistency_score": 90.0,
                         "risk_score": 20.0,
                     },
                 }
@@ -55,6 +55,12 @@ class StockPredictionTest(unittest.TestCase):
         self.assertEqual(payload["consensus"]["observation_appearances"], 1)
         self.assertEqual(payload["prediction"]["direction"], "neutral")
         self.assertEqual(payload["prediction"]["label"], "备选观察/不构成推荐")
+        self.assertEqual(payload["prediction"]["rule_consistency"], 20.0)
+        self.assertNotIn("confidence", payload["prediction"])
+        self.assertNotIn("signal_coverage", payload["prediction"])
+        self.assertEqual(hit["rule_consistency_score"], 90.0)
+        self.assertNotIn("confidence_score", hit)
+        self.assertNotIn("signal_coverage_score", hit)
 
 
 if __name__ == "__main__":

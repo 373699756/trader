@@ -253,7 +253,10 @@ def _rank_replay_rows(
                 "sixty_day_pct": _period_return(past["price"], 60),
                 "ytd_pct": _period_return(past["price"], min(len(past) - 1, 120)),
                 "trade_date": "{}T15:00:00".format(_display_date(trade_date_key)),
-                "industry": "历史量价回放",
+                # Historical bars do not carry a trustworthy industry label. A
+                # code-specific unknown bucket avoids inventing one shared theme
+                # that would incorrectly collapse Top-K replay samples.
+                "industry": "历史行业未知-{}".format(code),
                 **factor,
             }
         )
@@ -264,12 +267,16 @@ def _rank_replay_rows(
         return []
     market_regime = build_market_regime(candidates, breadth_source=candidates)
     if strategy_name == "tomorrow_picks":
-        selected, _ = score_tomorrow_picks(
+        selected, meta = score_tomorrow_picks(
             candidates,
             top_n=max(1, int(top_n)),
             market_regime=market_regime,
             display_cap=0,
+            capture_candidate_pool=True,
         )
+        research_pool = meta.get("_candidate_pool_rows") if isinstance(meta, dict) else None
+        if isinstance(research_pool, list) and research_pool:
+            selected = research_pool[: max(1, int(top_n))]
     else:
         selected, _ = score_swing_2_5d_picks(
             candidates,
@@ -284,6 +291,10 @@ def _rank_replay_rows(
         item["replay_source"] = "production_scorer"
         item["sample_type"] = REPLAY_SAMPLE_TYPE
         item["sample_source"] = REPLAY_SAMPLE_SOURCE
+        # The full ranked Top-K is the replay research portfolio. Its explicit
+        # sample type keeps it out of production promotion.
+        item["tier"] = "primary_watch"
+        item["execution_allowed"] = True
         item["reasons"] = _unique_reasons(
             list(item.get("reasons") or []) + _replay_reasons(strategy_name, item)
         )

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>A 股实时强势股推荐</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260714-2') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='recommendation-stream.css', v='20260714-1') }}" />
   </head>
   <body>
@@ -157,8 +157,8 @@
               </div>
               <div class="tool-action-divider" aria-hidden="true"></div>
               <div class="tool-action-block">
-                <div class="tool-action-row tool-action-row-secondary">
-                <button id="generateTuningBtn" class="primary-action" type="button">策略验证</button>
+                <div class="tool-action-row">
+                  <button id="generateTuningBtn" class="primary-action" type="button">策略验证</button>
                 </div>
                 <div class="ops-status" id="tuningStatus"></div>
               </div>
@@ -291,13 +291,13 @@
     ></script>
     <script src="{{ url_for('static', filename='validation-ui.js') }}"></script>
     <script src="{{ url_for('static', filename='validation-renderers.js') }}"></script>
-    <script src="{{ url_for('static', filename='recommendation-utils.js') }}"></script>
-    <script src="{{ url_for('static', filename='recommendation-renderers.js') }}"></script>
-    <script src="{{ url_for('static', filename='recommendation-tables.js') }}"></script>
+    <script src="{{ url_for('static', filename='recommendation-utils.js', v='20260714-2') }}"></script>
+    <script src="{{ url_for('static', filename='recommendation-renderers.js', v='20260714-2') }}"></script>
+    <script src="{{ url_for('static', filename='recommendation-tables.js', v='20260714-2') }}"></script>
     <script src="{{ url_for('static', filename='recommendation-status.js') }}"></script>
     <script src="{{ url_for('static', filename='recommendation-app.js') }}"></script>
-    <script src="{{ url_for('static', filename='validation-stock-prediction.js') }}"></script>
-    <script src="{{ url_for('static', filename='validation-app.js') }}"></script>
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script src="{{ url_for('static', filename='validation-stock-prediction.js', v='20260714-2') }}"></script>
+    <script src="{{ url_for('static', filename='validation-app.js', v='20260714-2') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260714-2') }}"></script>
   </body>
 </html>

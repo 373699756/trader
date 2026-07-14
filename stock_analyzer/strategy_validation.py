@@ -39,6 +39,7 @@ from .validation_policy import (
     tail_auction_slippage_pct,
     validation_baseline_config,
 )
+from .snapshot_phase import CLOSE_FALLBACK
 from .validation_serialization import (
     oos_report_row_to_dict as _oos_report_row_to_dict,
     signal_row_to_dict as _row_to_dict,
@@ -190,22 +191,45 @@ class StrategyValidationStore:
     def existing_validation_dates(self, strategy_name: str, replay_version: str = "") -> List[str]:
         return self.repository.existing_validation_dates(strategy_name, replay_version=replay_version)
 
-    def signals_for_date(self, signal_date: str, strategy_name: str = "") -> List[Dict[str, object]]:
-        return self.repository.signals_for_date(signal_date, strategy_name=strategy_name)
+    def signals_for_date(
+        self,
+        signal_date: str,
+        strategy_name: str = "",
+        snapshot_phase: str = "",
+    ) -> List[Dict[str, object]]:
+        return self.repository.signals_for_date(
+            signal_date,
+            strategy_name=strategy_name,
+            snapshot_phase=snapshot_phase,
+        )
 
-    def latest_signal_rows(self, strategy_name: str) -> List[Dict[str, object]]:
-        return self.repository.latest_signal_rows(strategy_name)
+    def latest_signal_rows(
+        self,
+        strategy_name: str,
+        signal_date: str = "",
+        snapshot_phase: str = "",
+    ) -> List[Dict[str, object]]:
+        return self.repository.latest_signal_rows(
+            strategy_name,
+            signal_date=signal_date,
+            snapshot_phase=snapshot_phase,
+        )
+
+    def saved_signal_batch(self, strategy_name: str, signal_date: str) -> Dict[str, object]:
+        return self.repository.saved_signal_batch(strategy_name, signal_date)
 
     def candidate_snapshots_for_date(
         self,
         signal_date: str,
         strategy_name: str = "",
         strategy_version: str = "",
+        snapshot_phase: str = "",
     ) -> List[Dict[str, object]]:
         return self.repository.candidate_snapshots_for_date(
             signal_date,
             strategy_name=strategy_name,
             strategy_version=strategy_version,
+            snapshot_phase=snapshot_phase,
         )
 
     def latest_candidate_snapshots(self, strategy_name: str) -> List[Dict[str, object]]:
@@ -523,6 +547,10 @@ def _is_post_1430_entry_policy(policy: Dict[str, object]) -> bool:
     return str((policy.get("entry") or {}).get("timing") or "") == "same_trade_day_after_1430"
 
 
+def _is_close_research_entry_policy(policy: Dict[str, object]) -> bool:
+    return str((policy.get("entry") or {}).get("timing") or "") == "same_trade_day_close_research"
+
+
 def _first_tradable_exit_after_limit_down(
     future: pd.DataFrame,
     limit_pct: float,
@@ -548,6 +576,7 @@ def _compute_close_auction_outcome(
     code = str(_mapping_get(signal, "code", ""))
     strategy_name = str(_mapping_get(signal, "strategy_name", ""))
     post_1430 = _is_post_1430_entry_policy(frozen_policy)
+    close_research = _is_close_research_entry_policy(frozen_policy)
     try:
         history, price_mode, fill_source = _load_execution_history(provider, code, days=180)
     except Exception as exc:
@@ -576,7 +605,7 @@ def _compute_close_auction_outcome(
     entry_row = entry_rows.iloc[-1]
     entry_price = (
         coerce_number(_mapping_get(signal, "price_at_signal", 0.0))
-        if post_1430
+        if post_1430 or close_research
         else coerce_number(entry_row.get("price"))
     )
     prior_close = (
@@ -601,7 +630,7 @@ def _compute_close_auction_outcome(
     entry_unbuyable = (
         entry_price >= signal_limit_price * 0.995
         if post_1430 and signal_limit_price > 0
-        else _is_unbuyable_limit_up(entry_row, prior_close, limit_pct)
+        else _is_unbuyable_limit_up(entry_row, prior_close, limit_pct) if not close_research else False
     )
     if entry_unbuyable:
         return _stateful_unresolved_outcome(
@@ -636,7 +665,8 @@ def _compute_close_auction_outcome(
     exit_price = next_close
     exit_reason = "next_trade_day_close_auction"
     exit_index = 0
-    if post_1430:
+    dynamic_exit = post_1430 or (close_research and strategy_name == "swing_picks")
+    if dynamic_exit:
         exit_policy = dict(frozen_policy.get("exit") or {})
         holding_days = 1 if strategy_name == "tomorrow_picks" else max(2, int(coerce_number(exit_policy.get("holding_days"), 5)))
         exit_policy["holding_days"] = holding_days
@@ -759,7 +789,11 @@ def _compute_close_auction_outcome(
         "primary_exit_price": round(exit_price, 4),
         "primary_holding_days": int(exit_index) + 1,
         "price_adjustment_mode": price_mode or "unknown",
-        "fill_source": "{}_signal_reference".format(fill_source) if post_1430 else fill_source,
+        "fill_source": (
+            "{}_close_research".format(fill_source)
+            if close_research
+            else "{}_signal_reference".format(fill_source) if post_1430 else fill_source
+        ),
         "raw_prices": raw_prices,
         "return_reproducible": raw_price_verified,
     }
@@ -892,6 +926,8 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     strategy_name = str(_mapping_get(signal, "strategy_name", ""))
     frozen_policy = policy_from_signal(signal, strategy_name)
     security_state = _provider_security_state(provider, code)
+    if _is_close_research_entry_policy(frozen_policy):
+        return _compute_close_auction_outcome(provider, signal, frozen_policy, security_state)
     if strategy_name == "short_term":
         return _compute_today_continuation_outcome(provider, signal, security_state)
     if strategy_name in {"tomorrow_picks", "swing_picks"} and _is_post_1430_entry_policy(frozen_policy):

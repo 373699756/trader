@@ -43,11 +43,21 @@ class RankingPolicy:
 
     def score_desc(self, rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
         rows.sort(key=lambda item: item["score"], reverse=True)
+        self.assign_selection_rank(rows)
         return rows
+
+    def assign_selection_rank(self, rows: Iterable[Dict[str, object]], start: int = 1) -> None:
+        """Persist production score order independently of display order."""
+        for rank, row in enumerate(rows, start=start):
+            row["selection_rank"] = rank
 
     def assign_rank(self, rows: Iterable[Dict[str, object]], start: int = 1) -> None:
         for rank, row in enumerate(rows, start=start):
-            row["rank"] = rank
+            row.setdefault("selection_rank", rank)
+            row["display_rank"] = rank
+            # Keep the legacy field for validation/snapshot consumers while
+            # making its meaning explicit: production selection order.
+            row["rank"] = row["selection_rank"]
 
     def combine_details(
         self,
@@ -55,8 +65,15 @@ class RankingPolicy:
         strategy_name: str,
         market_regime: Dict[str, object] = None,
         row: pd.Series = None,
+        factor_ic_payload: Dict[str, object] = None,
     ) -> Dict[str, float]:
-        return scoring_math._combine_details(components, strategy_name, market_regime=market_regime, row=row)
+        return scoring_math._combine_details(
+            components,
+            strategy_name,
+            market_regime=market_regime,
+            row=row,
+            factor_ic_payload=factor_ic_payload,
+        )
 
     def attach_expected_return_prediction(
         self,

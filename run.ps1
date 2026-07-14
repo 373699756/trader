@@ -479,7 +479,7 @@ try {
             $env:ENABLE_HISTORY_FACTORS = "1"
         }
         Write-Host ""
-        Write-Host "运行盘后流水线: market_data --download -> daily_job snapshot/update/factors"
+        Write-Host "运行盘后流水线: market_data --download -> daily_job update/factors"
         Write-Host "历史因子: ENABLE_HISTORY_FACTORS=$env:ENABLE_HISTORY_FACTORS"
         Write-Host ""
         $dailyJobArgs = @("-m", "stock_analyzer.daily_job", "--after-close") + @($RunArgs)

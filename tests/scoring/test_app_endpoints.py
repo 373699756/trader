@@ -21,7 +21,7 @@ def test_portfolio_endpoint_ignores_latest_saved_snapshot_and_returns_404(tmp_pa
             "price": 10 + index,
             "score": 90 - index,
             "theme": ["半导体", "算力", "军工", "医药"][index],
-            "serenity_profile": {"confidence_score": 80 - index, "risk_score": 40 + index},
+            "serenity_profile": {"rule_consistency_score": 80 - index, "risk_score": 40 + index},
         }
         for index in range(4)
     ]

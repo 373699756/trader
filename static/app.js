@@ -239,7 +239,7 @@ function bindEvents() {
       context.stockPrediction.loadStockPrediction();
     }
   });
-  els.generateTuningBtn?.addEventListener("click", context.stockPrediction.loadStockOptimization);
+  els.generateTuningBtn?.addEventListener("click", context.validation.loadStrategyValidationReport);
   els.poolTabs.forEach(button => {
     button.addEventListener("click", () => {
       context.recommendations.selectRecommendationPool(button.dataset.poolFilter || "today");

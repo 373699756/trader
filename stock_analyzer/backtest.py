@@ -4,7 +4,7 @@ import pandas as pd
 
 from . import config
 from .execution_policy import build_execution_policy, execution_cost_for_strategy
-from .factors import compute_alphalite_for_stock
+from .factors import compute_alphalite_for_stock, compute_alphalite_panel
 from .normalization import coerce_number, normalize_code, rename_known_columns
 from .risk_rules import simulate_exit
 
@@ -272,9 +272,9 @@ def _build_rolling_alphalite_panels(
             continue
         date_index = {}
         for index, value in enumerate(history["_trade_date_key"].tolist()):
-            date_index[str(value)] = int(index)
+            date_index.setdefault(str(value), int(index))
             date_index[str(index)] = int(index)
-        factors: Dict[int, Dict[str, float]] = {}
+        signal_indices = []
         for signal_point in signal_points:
             signal_text = str(signal_point)
             signal_index = date_index.get(signal_text)
@@ -282,9 +282,13 @@ def _build_rolling_alphalite_panels(
                 continue
             if signal_index + holding_days >= len(history):
                 continue
-            factor = compute_alphalite_for_stock(code, history.iloc[: signal_index + 1].tail(lookback_window))
-            if factor:
-                factors[int(signal_index)] = factor
+            signal_indices.append(int(signal_index))
+        factors = compute_alphalite_panel(
+            code,
+            history,
+            signal_indices,
+            lookback_window=lookback_window,
+        )
         if not date_index:
             continue
         panels[code] = {"date_index": date_index, "factors": factors}

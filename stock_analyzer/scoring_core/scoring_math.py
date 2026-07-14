@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple
 
 import pandas as pd
 
@@ -20,6 +20,28 @@ from .weights import COMPONENT_FACTOR_KEYS, STRATEGY_COMBINERS, THRESHOLDS, WEIG
 
 _FACTOR_IC_CACHE = {"path": None, "mtime_ns": None, "payload": {}}
 
+# These values are computed from the local historical panel.  When the panel
+# is not ready, zero-filled placeholders must not participate in a cross-stock
+# percentile distribution.
+_HISTORICAL_CONTEXT_COLUMNS = frozenset(
+    {
+        "sixty_day_pct",
+        "ytd_pct",
+        "ret_3d",
+        "ret_5d",
+        "ret_10d",
+        "ret_20d",
+        "ma5_gap",
+        "ma20_gap",
+        "ma10_gap",
+        "ma60_gap",
+        "vol_ma5_ratio",
+        "vol_amount_5d",
+        "breakout_20d",
+        "volatility_20d",
+    }
+)
+
 
 __all__ = [
     "_close_location",
@@ -31,6 +53,7 @@ __all__ = [
     "_factor_ic_multiplier",
     "_factor_ic_payload",
     "_has_signal",
+    "_historical_factors_ready",
     "_horizon_meta",
     "_horizon_row",
     "_hot_rank_score",
@@ -54,32 +77,49 @@ __all__ = [
 
 def _score_context(
     df: pd.DataFrame, industry_strength: Dict[str, float]
-) -> Dict[str, Union[List[float], SortedNumericValues]]:
+) -> Dict[str, object]:
+    ready_mask = None
+    if "alphalite_factor_ready" in df.columns:
+        ready_mask = finite_series(df, "alphalite_factor_ready") > 0
+
+    def context_values(column: str) -> SortedNumericValues:
+        source = df
+        if ready_mask is not None and column in _HISTORICAL_CONTEXT_COLUMNS:
+            # A ranking needs at least two real observations.  With fewer,
+            # return an empty distribution so optional factors stay neutral.
+            source = df.loc[ready_mask] if int(ready_mask.sum()) >= 2 else df.iloc[0:0]
+        return sorted_numeric_values(finite_series(source, column).tolist())
+
     return {
-        "pct_values": sorted_numeric_values(finite_series(df, "pct_chg").tolist()),
+        "pct_values": context_values("pct_chg"),
         "speed_values": sorted_numeric_values(_combined_speed(df).tolist()),
-        "volume_ratio_values": sorted_numeric_values(finite_series(df, "volume_ratio").tolist()),
-        "turnover_rate_values": sorted_numeric_values(finite_series(df, "turnover_rate").tolist()),
-        "turnover_values": sorted_numeric_values(finite_series(df, "turnover").tolist()),
-        "sixty_day_values": sorted_numeric_values(finite_series(df, "sixty_day_pct").tolist()),
-        "ytd_values": sorted_numeric_values(finite_series(df, "ytd_pct").tolist()),
-        "amplitude_values": sorted_numeric_values(finite_series(df, "amplitude").tolist()),
-        "ret_3d_values": sorted_numeric_values(finite_series(df, "ret_3d").tolist()),
-        "ret_5d_values": sorted_numeric_values(finite_series(df, "ret_5d").tolist()),
-        "ret_10d_values": sorted_numeric_values(finite_series(df, "ret_10d").tolist()),
-        "ret_20d_values": sorted_numeric_values(finite_series(df, "ret_20d").tolist()),
-        "ma5_gap_values": sorted_numeric_values(finite_series(df, "ma5_gap").tolist()),
-        "ma20_gap_values": sorted_numeric_values(finite_series(df, "ma20_gap").tolist()),
-        "ma10_gap_values": sorted_numeric_values(finite_series(df, "ma10_gap").tolist()),
-        "ma60_gap_values": sorted_numeric_values(finite_series(df, "ma60_gap").tolist()),
-        "vol_ma5_ratio_values": sorted_numeric_values(finite_series(df, "vol_ma5_ratio").tolist()),
-        "vol_amount_5d_values": sorted_numeric_values(finite_series(df, "vol_amount_5d").tolist()),
-        "breakout_20d_values": sorted_numeric_values(finite_series(df, "breakout_20d").tolist()),
-        "volatility_20d_values": sorted_numeric_values(finite_series(df, "volatility_20d").tolist()),
-        "float_market_cap_values": sorted_numeric_values(finite_series(df, "float_market_cap").tolist()),
-        "pe_dynamic_values": sorted_numeric_values(finite_series(df, "pe_dynamic").tolist()),
-        "pb_values": sorted_numeric_values(finite_series(df, "pb").tolist()),
+        "volume_ratio_values": context_values("volume_ratio"),
+        "turnover_rate_values": context_values("turnover_rate"),
+        "turnover_values": context_values("turnover"),
+        "sixty_day_values": context_values("sixty_day_pct"),
+        "ytd_values": context_values("ytd_pct"),
+        "amplitude_values": context_values("amplitude"),
+        "ret_3d_values": context_values("ret_3d"),
+        "ret_5d_values": context_values("ret_5d"),
+        "ret_10d_values": context_values("ret_10d"),
+        "ret_20d_values": context_values("ret_20d"),
+        "ma5_gap_values": context_values("ma5_gap"),
+        "ma20_gap_values": context_values("ma20_gap"),
+        "ma10_gap_values": context_values("ma10_gap"),
+        "ma60_gap_values": context_values("ma60_gap"),
+        "vol_ma5_ratio_values": context_values("vol_ma5_ratio"),
+        "vol_amount_5d_values": context_values("vol_amount_5d"),
+        "breakout_20d_values": context_values("breakout_20d"),
+        "volatility_20d_values": context_values("volatility_20d"),
+        "float_market_cap_values": context_values("float_market_cap"),
+        "pe_dynamic_values": context_values("pe_dynamic"),
+        "pb_values": context_values("pb"),
         "industry_values": sorted_numeric_values(industry_strength.values()),
+        "factor_ic_payload": (
+            _factor_ic_payload()
+            if getattr(config, "ENABLE_FACTOR_IC_WEIGHTING", False)
+            else {}
+        ),
     }
 
 
@@ -230,7 +270,10 @@ def _optional_factor_score(
     higher_is_better: bool = True,
     fallback=None,
     fallback_values: List[float] = None,
+    available: bool = True,
 ) -> float:
+    if not available:
+        return 50.0
     if _has_signal(values):
         return percentile_score(value, values, higher_is_better=higher_is_better)
     if fallback is not None and fallback_values is not None:
@@ -240,6 +283,12 @@ def _optional_factor_score(
 
 def _has_signal(values: List[float]) -> bool:
     return any(abs(coerce_number(value)) > 1e-9 for value in values)
+
+
+def _historical_factors_ready(row) -> bool:
+    if "alphalite_factor_ready" not in row:
+        return True
+    return coerce_number(row.get("alphalite_factor_ready")) > 0
 
 
 def _composite_score(parts: List[float]) -> float:
@@ -363,6 +412,7 @@ def _combine(
     market_regime: Dict[str, object] = None,
     row: pd.Series = None,
     regime_weight_profile: Dict[str, object] = None,
+    factor_ic_payload: Dict[str, object] = None,
 ) -> float:
     return _combine_details(
         components,
@@ -371,6 +421,7 @@ def _combine(
         market_regime=market_regime,
         row=row,
         regime_weight_profile=regime_weight_profile,
+        factor_ic_payload=factor_ic_payload,
     )["score"]
 
 
@@ -381,6 +432,7 @@ def _combine_details(
     market_regime: Dict[str, object] = None,
     row: pd.Series = None,
     regime_weight_profile: Dict[str, object] = None,
+    factor_ic_payload: Dict[str, object] = None,
 ) -> Dict[str, float]:
     spec = STRATEGY_COMBINERS.get(strategy)
     if not spec:
@@ -390,6 +442,13 @@ def _combine_details(
     base = 0.0
     term_total = 0.0
     weighted_terms = []
+    resolved_factor_ic_payload = factor_ic_payload
+    if resolved_factor_ic_payload is None and getattr(
+        config,
+        "ENABLE_FACTOR_IC_WEIGHTING",
+        False,
+    ):
+        resolved_factor_ic_payload = _factor_ic_payload()
     for term in spec["terms"]:
         key = term["component"]
         weight_key = term["weight_key"]
@@ -403,7 +462,10 @@ def _combine_details(
                 value = _regime_component_from_profile(value, regime_key, regime_weight_profile)
             else:
                 value = _regime_component(value, regime_key, market_regime)
-        adjusted_weight = weight * _factor_ic_multiplier(key)
+        adjusted_weight = weight * _factor_ic_multiplier(
+            key,
+            payload=resolved_factor_ic_payload,
+        )
         weighted_terms.append((value, weight, adjusted_weight))
         term_total += weight
 
@@ -438,13 +500,17 @@ def _combine_details(
     }
 
 
-def _factor_ic_multiplier(component: str) -> float:
+def _factor_ic_multiplier(
+    component: str,
+    payload: Dict[str, object] = None,
+) -> float:
     if not getattr(config, "ENABLE_FACTOR_IC_WEIGHTING", False):
         return 1.0
     factor_key = COMPONENT_FACTOR_KEYS.get(component)
     if not factor_key:
         return 1.0
-    payload = _factor_ic_payload()
+    if payload is None:
+        payload = _factor_ic_payload()
     info = ((payload or {}).get("ic") or {}).get(factor_key) or {}
     if info.get("status") != "ok":
         return 1.0

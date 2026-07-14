@@ -7,6 +7,15 @@ from typing import Dict, Iterable, List, Optional, Protocol
 
 from .normalization import coerce_number, normalize_code
 from .performance import json_loads_cached, validation_metrics_cache_key as _validation_metrics_cache_key
+from .snapshot_phase import LEGACY_UNKNOWN, normalize_snapshot_phase
+from .pit_snapshot import (
+    DAILY_PROXY_REPLAY,
+    INTRADAY_PIT_REPLAY,
+    LEGACY_BASELINE,
+    REAL_FORWARD,
+    UNKNOWN_SAMPLE,
+    normalize_sample_type,
+)
 from .validation_policy import (
     current_replay_strategy_version,
     current_strategy_version,
@@ -53,6 +62,57 @@ def _check_signal_freeze_deadline(batch_metadata: Dict[str, object]) -> str:
     if observed_at >= deadline:
         raise SignalFreezeDeadlineExceeded(deadline, observed_at)
     return observed_at
+
+
+_SAMPLE_TYPE_ALIASES = {
+    "real": REAL_FORWARD,
+    "live": REAL_FORWARD,
+    "forward": REAL_FORWARD,
+    "production": REAL_FORWARD,
+    "replay": DAILY_PROXY_REPLAY,
+    "daily_proxy": DAILY_PROXY_REPLAY,
+    "daily_bar_proxy": DAILY_PROXY_REPLAY,
+    "intraday": INTRADAY_PIT_REPLAY,
+    "pit_replay": INTRADAY_PIT_REPLAY,
+    "legacy": LEGACY_BASELINE,
+}
+
+
+def _canonical_sample_type(value: object) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in _SAMPLE_TYPE_ALIASES:
+        return _SAMPLE_TYPE_ALIASES[raw]
+    return normalize_sample_type(raw)
+
+
+def _classify_sample(batch_metadata: Dict[str, object], strategy_version: str):
+    """Classify a validation batch without treating missing provenance as live data."""
+    metadata = batch_metadata if isinstance(batch_metadata, dict) else {}
+    explicit = str(metadata.get("sample_type") or "").strip()
+    if explicit:
+        sample_type = _canonical_sample_type(explicit)
+    else:
+        version = str(strategy_version or "").strip().lower()
+        source = str(metadata.get("sample_source") or "").strip().lower()
+        if bool(metadata.get("replay")) or "replay" in version or "proxy" in source:
+            sample_type = DAILY_PROXY_REPLAY
+        elif "intraday" in source or "pit" in source:
+            sample_type = INTRADAY_PIT_REPLAY
+        elif bool(metadata.get("legacy_baseline")) or "legacy" in version:
+            sample_type = LEGACY_BASELINE
+        else:
+            # A current-looking version is not evidence of a point-in-time quote.
+            sample_type = UNKNOWN_SAMPLE
+    source = str(metadata.get("sample_source") or "").strip()
+    if not source:
+        source = {
+            REAL_FORWARD: "unclassified_forward",
+            INTRADAY_PIT_REPLAY: "intraday_pit_replay",
+            DAILY_PROXY_REPLAY: "daily_bar_proxy",
+            LEGACY_BASELINE: "legacy_baseline",
+            UNKNOWN_SAMPLE: "unclassified",
+        }.get(sample_type, "unclassified")
+    return sample_type, source
 
 
 __all__ = [
@@ -181,7 +241,12 @@ class ValidationRepositoryFacadeProtocol(Protocol):
     def existing_validation_dates(self, strategy_name: str, replay_version: str = "") -> List[str]:
         ...
 
-    def signals_for_date(self, signal_date: str, strategy_name: str = "") -> List[Dict[str, object]]:
+    def signals_for_date(
+        self,
+        signal_date: str,
+        strategy_name: str = "",
+        snapshot_phase: str = "",
+    ) -> List[Dict[str, object]]:
         ...
 
     def candidate_snapshots_for_date(
@@ -189,13 +254,22 @@ class ValidationRepositoryFacadeProtocol(Protocol):
         signal_date: str,
         strategy_name: str = "",
         strategy_version: str = "",
+        snapshot_phase: str = "",
     ) -> List[Dict[str, object]]:
         ...
 
     def latest_candidate_snapshots(self, strategy_name: str) -> List[Dict[str, object]]:
         ...
 
-    def latest_signal_rows(self, strategy_name: str) -> List[Dict[str, object]]:
+    def latest_signal_rows(
+        self,
+        strategy_name: str,
+        signal_date: str = "",
+        snapshot_phase: str = "",
+    ) -> List[Dict[str, object]]:
+        ...
+
+    def saved_signal_batch(self, strategy_name: str, signal_date: str) -> Dict[str, object]:
         ...
 
     def prune_strategies(self, allowed_strategies: Iterable[str]) -> Dict[str, int]:
@@ -334,6 +408,7 @@ class CandidateSnapshotRepository(_RepositoryBase):
         signal_date: str,
         strategy_name: str = "",
         strategy_version: str = "",
+        snapshot_phase: str = "",
     ) -> List[Dict[str, object]]:
         where = "WHERE signal_date = ?"
         params: List[object] = [signal_date]
@@ -343,6 +418,9 @@ class CandidateSnapshotRepository(_RepositoryBase):
         if strategy_version:
             where += " AND strategy_version = ?"
             params.append(strategy_version)
+        if snapshot_phase:
+            where += " AND snapshot_phase = ?"
+            params.append(normalize_snapshot_phase(snapshot_phase))
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -360,7 +438,7 @@ class CandidateSnapshotRepository(_RepositoryBase):
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT signal_date, strategy_version
+                SELECT signal_date, strategy_version, snapshot_phase
                 FROM strategy_signal_batches
                 WHERE strategy_name = ? AND candidate_count > 0
                   AND lower(strategy_version) NOT LIKE '%replay%'
@@ -371,7 +449,9 @@ class CandidateSnapshotRepository(_RepositoryBase):
             ).fetchone()
         if not row:
             return []
-        return self.candidate_snapshots_for_date(row[0], strategy_name, row[1])
+        return self.candidate_snapshots_for_date(
+            row[0], strategy_name, row[1], snapshot_phase=row[2]
+        )
 
     def save_candidate_snapshots(self, snapshot_rows: List[tuple]) -> int:
         if not snapshot_rows:
@@ -672,13 +752,8 @@ class SignalRepository(_RepositoryBase):
         execution_policy_json = json.dumps(execution_policy, ensure_ascii=False, sort_keys=True, default=str)
         execution_policy_version = str(execution_policy.get("policy_version") or "")
         portfolio_capital = coerce_number((execution_policy.get("portfolio") or {}).get("capital"))
-        sample_type = str(batch_metadata.get("sample_type") or "")
-        if not sample_type:
-            sample_type = "real_forward"
-        sample_source = str(
-            batch_metadata.get("sample_source")
-            or ("point_in_time" if sample_type == "real_forward" else "daily_bar_proxy")
-        )
+        sample_type, sample_source = _classify_sample(batch_metadata, strategy_version)
+        snapshot_phase = normalize_snapshot_phase(batch_metadata.get("snapshot_phase"), LEGACY_UNKNOWN)
         saved = 0
         shadow_saved = 0
         candidate_saved = 0
@@ -692,8 +767,9 @@ class SignalRepository(_RepositoryBase):
                 (strategy_name, strategy_version, signal_date, signal_time, saved_count,
                  candidate_count, selected_count, data_source_timestamp, market_data_cutoff,
                  execution_policy_version, execution_policy_json, generation_json,
-                 portfolio_capital, snapshot_id, sample_type, sample_source, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 portfolio_capital, snapshot_id, sample_type, sample_source,
+                 snapshot_phase, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     strategy_name,
@@ -712,6 +788,7 @@ class SignalRepository(_RepositoryBase):
                     str(batch_metadata.get("snapshot_id") or ""),
                     sample_type,
                     sample_source,
+                    snapshot_phase,
                     now_ts,
                 ),
             )
@@ -721,72 +798,83 @@ class SignalRepository(_RepositoryBase):
                     SELECT id
                     FROM strategy_signals
                     WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                      AND snapshot_phase = ?
                     """,
-                    (strategy_name, strategy_version, signal_date),
+                    (strategy_name, strategy_version, signal_date, snapshot_phase),
                 ).fetchall()
                 delete_sql = """
                     DELETE FROM strategy_signals
                     WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                      AND snapshot_phase = ?
                     """
-                delete_params = (strategy_name, strategy_version, signal_date)
+                delete_params = (strategy_name, strategy_version, signal_date, snapshot_phase)
                 old_shadow_ids = conn.execute(
                     """
                     SELECT id
                     FROM strategy_deepseek_shadow_signals
                     WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                      AND snapshot_phase = ?
                     """,
-                    (strategy_name, strategy_version, signal_date),
+                    (strategy_name, strategy_version, signal_date, snapshot_phase),
                 ).fetchall()
                 shadow_delete_sql = """
                     DELETE FROM strategy_deepseek_shadow_signals
                     WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                      AND snapshot_phase = ?
                     """
-                shadow_delete_params = (strategy_name, strategy_version, signal_date)
+                shadow_delete_params = (strategy_name, strategy_version, signal_date, snapshot_phase)
                 candidate_delete_sql = """
                     DELETE FROM strategy_candidate_snapshots
                     WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                      AND snapshot_phase = ?
                     """
-                candidate_delete_params = (strategy_name, strategy_version, signal_date)
+                candidate_delete_params = (strategy_name, strategy_version, signal_date, snapshot_phase)
             else:
                 conn.execute(
                     """
                     DELETE FROM strategy_signal_batches
                     WHERE strategy_name = ? AND signal_date = ? AND strategy_version != ?
+                      AND snapshot_phase = ?
                       AND lower(strategy_version) NOT LIKE '%replay%'
                     """,
-                    (strategy_name, signal_date, strategy_version),
+                    (strategy_name, signal_date, strategy_version, snapshot_phase),
                 )
                 old_ids = conn.execute(
                     """
                     SELECT id
                     FROM strategy_signals
                     WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                      AND snapshot_phase = ?
                     """,
-                    (strategy_name, signal_date),
+                    (strategy_name, signal_date, snapshot_phase),
                 ).fetchall()
                 delete_sql = """
                     DELETE FROM strategy_signals
                     WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                      AND snapshot_phase = ?
                     """
-                delete_params = (strategy_name, signal_date)
+                delete_params = (strategy_name, signal_date, snapshot_phase)
                 old_shadow_ids = conn.execute(
                     """
                     SELECT id
                     FROM strategy_deepseek_shadow_signals
                     WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                      AND snapshot_phase = ?
                     """,
-                    (strategy_name, signal_date),
+                    (strategy_name, signal_date, snapshot_phase),
                 ).fetchall()
                 shadow_delete_sql = """
                     DELETE FROM strategy_deepseek_shadow_signals
                     WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                      AND snapshot_phase = ?
                     """
-                shadow_delete_params = (strategy_name, signal_date)
+                shadow_delete_params = (strategy_name, signal_date, snapshot_phase)
                 candidate_delete_sql = """
                     DELETE FROM strategy_candidate_snapshots
                     WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                      AND snapshot_phase = ?
                     """
-                candidate_delete_params = (strategy_name, signal_date)
+                candidate_delete_params = (strategy_name, signal_date, snapshot_phase)
             if old_ids:
                 conn.executemany(
                     "DELETE FROM strategy_execution_skips WHERE signal_id = ?",
@@ -836,11 +924,12 @@ class SignalRepository(_RepositoryBase):
                     str(row.get("announcement_time") or ""),
                     str(row.get("market_data_cutoff") or signal_time),
                     json.dumps(row.get("point_in_time_violations") or [], ensure_ascii=False, default=str),
-                    str(row.get("sample_type") or sample_type),
+                    _canonical_sample_type(row.get("sample_type") or sample_type),
                     str(row.get("sample_source") or sample_source),
                     json.dumps(row.get("raw") or {}, ensure_ascii=False, default=str),
-                    str(row.get("snapshot_id") or batch_metadata.get("snapshot_id") or ""),
-                    now_ts,
+                        str(row.get("snapshot_id") or batch_metadata.get("snapshot_id") or ""),
+                        snapshot_phase,
+                        now_ts,
                 )
             )
             if candidate_rows_to_save:
@@ -851,8 +940,9 @@ class SignalRepository(_RepositoryBase):
                      industry, style_bucket, eligible, selected, rank, score, point_in_time_valid,
                      eligibility_reasons_json, feature_values_json, missing_mask_json,
                     source_timestamps_json, announcement_time, market_data_cutoff,
-                     point_in_time_violations_json, sample_type, sample_source, raw_json, snapshot_id, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     point_in_time_violations_json, sample_type, sample_source, raw_json, snapshot_id,
+                     snapshot_phase, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     candidate_rows_to_save,
                 )
@@ -883,6 +973,7 @@ class SignalRepository(_RepositoryBase):
                         coerce_number(row.get("score")),
                         json.dumps(row.get("reasons", []), ensure_ascii=False),
                         json.dumps(row, ensure_ascii=False),
+                        snapshot_phase,
                         now_ts,
                     )
                 )
@@ -892,8 +983,9 @@ class SignalRepository(_RepositoryBase):
                     INSERT OR REPLACE INTO strategy_signals
                     (strategy_name, strategy_version, signal_date, signal_time, rank, code, name,
                      market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
-                     turnover_rate, sixty_day_pct, ytd_pct, score, reasons_json, raw_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     turnover_rate, sixty_day_pct, ytd_pct, score, reasons_json, raw_json,
+                     snapshot_phase, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     signal_rows_to_save,
                 )
@@ -932,6 +1024,7 @@ class SignalRepository(_RepositoryBase):
                         coerce_number(row.get("deepseek_penalty")),
                         str(row.get("deepseek_filter_reason") or ""),
                         json.dumps(row, ensure_ascii=False),
+                        snapshot_phase,
                         now_ts,
                     )
                 )
@@ -942,8 +1035,8 @@ class SignalRepository(_RepositoryBase):
                     (strategy_name, strategy_version, signal_date, signal_time, rank, local_rank, code, name,
                      market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
                      turnover_rate, sixty_day_pct, ytd_pct, score, deepseek_rank_score, deepseek_action,
-                     deepseek_veto, deepseek_penalty, filter_reason, raw_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     deepseek_veto, deepseek_penalty, filter_reason, raw_json, snapshot_phase, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     shadow_rows_to_save,
                 )
@@ -959,6 +1052,9 @@ class SignalRepository(_RepositoryBase):
             "candidate_saved": candidate_saved,
             "deepseek_shadow_saved": shadow_saved,
             "deepseek_shadow_replaced": len(old_shadow_ids),
+            "sample_type": sample_type,
+            "sample_source": sample_source,
+            "snapshot_phase": snapshot_phase,
             "freeze_transaction_checked_at": freeze_transaction_checked_at,
         }
 
@@ -1054,7 +1150,8 @@ class SignalRepository(_RepositoryBase):
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT b.signal_date, b.strategy_name, COALESCE(COUNT(s.id), 0) AS count, MAX(b.signal_time) AS signal_time,
+                SELECT b.signal_date, b.strategy_name, b.snapshot_phase,
+                       COALESCE(COUNT(s.id), 0) AS count, MAX(b.signal_time) AS signal_time,
                        COALESCE(SUM(CASE WHEN s.id IS NOT NULL AND lower(s.strategy_version) LIKE '%replay%' THEN 0 WHEN s.id IS NOT NULL THEN 1 ELSE 0 END), 0) AS real_count,
                        COALESCE(SUM(CASE WHEN s.id IS NOT NULL AND lower(s.strategy_version) LIKE '%replay%' THEN 1 ELSE 0 END), 0) AS replay_count
                 FROM strategy_signal_batches b
@@ -1062,9 +1159,10 @@ class SignalRepository(_RepositoryBase):
                   ON s.strategy_name = b.strategy_name
                  AND s.signal_date = b.signal_date
                  AND s.strategy_version = b.strategy_version
+                 AND s.snapshot_phase = b.snapshot_phase
                 {}
-                GROUP BY b.signal_date, b.strategy_name
-                ORDER BY b.signal_date DESC, b.strategy_name ASC
+                GROUP BY b.signal_date, b.strategy_name, b.snapshot_phase
+                ORDER BY b.signal_date DESC, b.strategy_name ASC, b.signal_time DESC
                 LIMIT 120
                 """.format(where),
                 params,
@@ -1073,16 +1171,17 @@ class SignalRepository(_RepositoryBase):
             {
                 "signal_date": row[0],
                 "strategy_name": row[1],
-                "count": row[2],
-                "signal_time": row[3],
-                "real_count": row[4] or 0,
-                "replay_count": row[5] or 0,
+                "snapshot_phase": normalize_snapshot_phase(row[2]),
+                "count": row[3],
+                "signal_time": row[4],
+                "real_count": row[5] or 0,
+                "replay_count": row[6] or 0,
                 "sample_type": (
                     "empty"
-                    if not (row[2] or 0)
+                    if not (row[3] or 0)
                     else "mixed"
-                    if (row[4] or 0) and (row[5] or 0)
-                    else ("replay" if (row[5] or 0) else "real")
+                    if (row[5] or 0) and (row[6] or 0)
+                    else ("replay" if (row[6] or 0) else "real")
                 ),
             }
             for row in rows
@@ -1103,12 +1202,20 @@ class SignalRepository(_RepositoryBase):
         return [str(row[0]) for row in rows if row and row[0]]
 
 
-    def signals_for_date(self, signal_date: str, strategy_name: str = "") -> List[Dict[str, object]]:
+    def signals_for_date(
+        self,
+        signal_date: str,
+        strategy_name: str = "",
+        snapshot_phase: str = "",
+    ) -> List[Dict[str, object]]:
         where = "WHERE s.signal_date = ?"
         params = [signal_date]
         if strategy_name:
             where += " AND s.strategy_name = ?"
             params.append(strategy_name)
+        if snapshot_phase:
+            where += " AND s.snapshot_phase = ?"
+            params.append(normalize_snapshot_phase(snapshot_phase))
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -1177,6 +1284,7 @@ class SignalRepository(_RepositoryBase):
         signal_date: str,
         strategy_name: str = "",
         strategy_version: str = "",
+        snapshot_phase: str = "",
     ) -> List[Dict[str, object]]:
         where = "WHERE signal_date = ?"
         params: List[object] = [signal_date]
@@ -1186,6 +1294,9 @@ class SignalRepository(_RepositoryBase):
         if strategy_version:
             where += " AND strategy_version = ?"
             params.append(strategy_version)
+        if snapshot_phase:
+            where += " AND snapshot_phase = ?"
+            params.append(normalize_snapshot_phase(snapshot_phase))
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -1204,7 +1315,7 @@ class SignalRepository(_RepositoryBase):
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT signal_date, strategy_version
+                SELECT signal_date, strategy_version, snapshot_phase
                 FROM strategy_signal_batches
                 WHERE strategy_name = ? AND candidate_count > 0
                   AND lower(strategy_version) NOT LIKE '%replay%'
@@ -1215,27 +1326,44 @@ class SignalRepository(_RepositoryBase):
             ).fetchone()
         if not row:
             return []
-        return self.candidate_snapshots_for_date(row[0], strategy_name, row[1])
+        return self.candidate_snapshots_for_date(
+            row[0], strategy_name, row[1], snapshot_phase=row[2]
+        )
 
 
-    def latest_signal_rows(self, strategy_name: str) -> List[Dict[str, object]]:
+    def latest_signal_rows(
+        self,
+        strategy_name: str,
+        signal_date: str = "",
+        snapshot_phase: str = "",
+    ) -> List[Dict[str, object]]:
+        where = "strategy_name = ? AND lower(strategy_version) NOT LIKE '%replay%'"
+        params: List[object] = [strategy_name]
+        if signal_date:
+            where += " AND signal_date = ?"
+            params.append(str(signal_date)[:10])
+        if snapshot_phase:
+            where += " AND snapshot_phase = ?"
+            params.append(normalize_snapshot_phase(snapshot_phase))
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT signal_date, strategy_version
+                SELECT signal_date, strategy_version, snapshot_phase, signal_time
                 FROM strategy_signal_batches
-                WHERE strategy_name = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                WHERE {}
                 ORDER BY signal_date DESC, signal_time DESC
                 LIMIT 1
-                """,
-                (strategy_name,),
+                """.format(where),
+                params,
             ).fetchone()
         if not row:
             return []
-        signal_date, strategy_version = row
+        signal_date, strategy_version, selected_phase, signal_time = row
         signals = [
             signal
-            for signal in self.signals_for_date(signal_date, strategy_name)
+            for signal in self.signals_for_date(
+                signal_date, strategy_name, snapshot_phase=selected_phase
+            )
             if signal.get("strategy_version") == strategy_version
         ]
         rows = []
@@ -1246,9 +1374,40 @@ class SignalRepository(_RepositoryBase):
                 item["rank"] = signal.get("rank")
                 item["strategy_version"] = signal.get("strategy_version")
                 item["signal_date"] = signal.get("signal_date")
+                item["signal_time"] = signal_time
+                item["snapshot_phase"] = normalize_snapshot_phase(selected_phase)
                 rows.append(item)
         rows.sort(key=lambda item: int(item.get("rank") or 9999))
         return rows
+
+    def saved_signal_batch(self, strategy_name: str, signal_date: str) -> Dict[str, object]:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT *
+                FROM strategy_signal_batches
+                WHERE strategy_name = ? AND signal_date = ?
+                  AND lower(strategy_version) NOT LIKE '%replay%'
+                  AND saved_count > 0
+                ORDER BY CASE snapshot_phase
+                           WHEN 'preclose_tradeable' THEN 0
+                           WHEN 'close_fallback' THEN 1
+                           ELSE 2
+                         END,
+                         signal_time DESC
+                LIMIT 1
+                """,
+                (str(strategy_name or ""), str(signal_date or "")[:10]),
+            ).fetchone()
+        if not row:
+            return {}
+        item = dict(row)
+        item["snapshot_phase"] = normalize_snapshot_phase(item.get("snapshot_phase"))
+        item["price_basis"] = (
+            "official_close" if item["snapshot_phase"] == "close_fallback" else "signal_time_quote"
+        )
+        return item
 
 
     def prune_strategies(self, allowed_strategies: Iterable[str]) -> Dict[str, int]:
@@ -1541,13 +1700,14 @@ class SignalRepository(_RepositoryBase):
             conn.row_factory = sqlite3.Row
             return conn.execute(
                 """
-                SELECT s.signal_date, s.strategy_name, s.strategy_version, s.rank, s.raw_json,
+                SELECT s.signal_date, s.strategy_name, s.strategy_version, s.snapshot_phase, s.rank, s.raw_json,
                        o.signal_id AS outcome_signal_id,
                        COALESCE(o.validation_baseline_id, '') AS validation_baseline_id,
                        COALESCE(o.future_days, 1) AS future_days,
                        k.signal_id AS skip_signal_id,
                        CASE WHEN COALESCE(b.candidate_count, 0) > 0
                             THEN COALESCE(e.promotion_eligible, 0) ELSE 1 END AS promotion_eligible
+                       ,COALESCE(b.sample_type, 'unknown') AS sample_type
                 FROM strategy_signals s
                 LEFT JOIN strategy_outcomes o ON o.signal_id = s.id
                 LEFT JOIN strategy_execution_skips k ON k.signal_id = s.id
@@ -1556,6 +1716,7 @@ class SignalRepository(_RepositoryBase):
                   ON b.strategy_name = s.strategy_name
                  AND b.strategy_version = s.strategy_version
                  AND b.signal_date = s.signal_date
+                 AND b.snapshot_phase = s.snapshot_phase
                 {}
                 ORDER BY s.signal_date DESC, s.rank ASC
                 """.format(row_where),
@@ -2034,7 +2195,7 @@ class OutcomeRepository(_RepositoryBase):
             return conn.execute(
                 """
                 SELECT s.signal_date, s.strategy_name, s.rank,
-                       s.strategy_version, s.turnover, s.market, s.raw_json,
+                       s.strategy_version, s.snapshot_phase, s.turnover, s.market, s.raw_json,
                        COALESCE(o.signal_next_close_return, o.next_close_return) AS signal_next_close_return,
                        o.next_open_return,
                        o.next_close_return,
@@ -2079,6 +2240,7 @@ class OutcomeRepository(_RepositoryBase):
                   ON b.strategy_name = s.strategy_name
                  AND b.strategy_version = s.strategy_version
                  AND b.signal_date = s.signal_date
+                 AND b.snapshot_phase = s.snapshot_phase
                 {} {}
                 ORDER BY s.signal_date DESC, s.rank ASC
                 """.format(where, date_filter),
@@ -2102,6 +2264,7 @@ class OutcomeRepository(_RepositoryBase):
                            WHERE b.strategy_name = strategy_signals.strategy_name
                              AND b.strategy_version = strategy_signals.strategy_version
                              AND b.signal_date = strategy_signals.signal_date
+                             AND b.snapshot_phase = strategy_signals.snapshot_phase
                        ), '') AS execution_policy_version,
                        COALESCE((
                            SELECT b.execution_policy_json
@@ -2109,6 +2272,7 @@ class OutcomeRepository(_RepositoryBase):
                            WHERE b.strategy_name = strategy_signals.strategy_name
                              AND b.strategy_version = strategy_signals.strategy_version
                              AND b.signal_date = strategy_signals.signal_date
+                             AND b.snapshot_phase = strategy_signals.snapshot_phase
                        ), '') AS execution_policy_json
                 FROM strategy_signals
                 LEFT JOIN strategy_outcomes existing_outcome
@@ -2276,7 +2440,7 @@ class TuningRepository(_RepositoryBase):
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                SELECT s.signal_date, s.strategy_name, s.strategy_version, s.rank, s.code,
+                SELECT s.signal_date, s.strategy_name, s.strategy_version, s.snapshot_phase, s.rank, s.code,
                        s.name, s.score, s.turnover, s.market, s.raw_json,
                        COALESCE(o.{primary_column}, 0) AS primary_return,
                        COALESCE(o.next_open_return, 0) AS next_open_return,
@@ -2300,6 +2464,7 @@ class TuningRepository(_RepositoryBase):
                   ON b.strategy_name = s.strategy_name
                  AND b.strategy_version = s.strategy_version
                  AND b.signal_date = s.signal_date
+                 AND b.snapshot_phase = s.snapshot_phase
                 WHERE s.strategy_name = ? {version_filter}
                 ORDER BY s.signal_date DESC, s.rank ASC
                 """.format(
@@ -2880,26 +3045,49 @@ class ValidationRepository(_RepositoryBase):
     def existing_validation_dates(self, strategy_name: str, replay_version: str = "") -> List[str]:
         return self.signals.existing_validation_dates(strategy_name, replay_version=replay_version)
 
-    def signals_for_date(self, signal_date: str, strategy_name: str = "") -> List[Dict[str, object]]:
-        return self.signals.signals_for_date(signal_date, strategy_name=strategy_name)
+    def signals_for_date(
+        self,
+        signal_date: str,
+        strategy_name: str = "",
+        snapshot_phase: str = "",
+    ) -> List[Dict[str, object]]:
+        return self.signals.signals_for_date(
+            signal_date,
+            strategy_name=strategy_name,
+            snapshot_phase=snapshot_phase,
+        )
 
     def candidate_snapshots_for_date(
         self,
         signal_date: str,
         strategy_name: str = "",
         strategy_version: str = "",
+        snapshot_phase: str = "",
     ) -> List[Dict[str, object]]:
         return self.candidates.candidate_snapshots_for_date(
             signal_date,
             strategy_name=strategy_name,
             strategy_version=strategy_version,
+            snapshot_phase=snapshot_phase,
         )
 
     def latest_candidate_snapshots(self, strategy_name: str) -> List[Dict[str, object]]:
         return self.candidates.latest_candidate_snapshots(strategy_name)
 
-    def latest_signal_rows(self, strategy_name: str) -> List[Dict[str, object]]:
-        return self.signals.latest_signal_rows(strategy_name)
+    def latest_signal_rows(
+        self,
+        strategy_name: str,
+        signal_date: str = "",
+        snapshot_phase: str = "",
+    ) -> List[Dict[str, object]]:
+        return self.signals.latest_signal_rows(
+            strategy_name,
+            signal_date=signal_date,
+            snapshot_phase=snapshot_phase,
+        )
+
+    def saved_signal_batch(self, strategy_name: str, signal_date: str) -> Dict[str, object]:
+        return self.signals.saved_signal_batch(strategy_name, signal_date)
 
     def prune_strategies(self, allowed_strategies: Iterable[str]) -> Dict[str, int]:
         return self.signals.prune_strategies(allowed_strategies)

@@ -164,6 +164,7 @@ class DeepSeekMetaTrainingService:
                   ON b.strategy_name = c.strategy_name
                  AND b.strategy_version = c.strategy_version
                  AND b.signal_date = c.signal_date
+                 AND b.snapshot_phase = c.snapshot_phase
                 WHERE c.strategy_name = ?
                   AND c.eligible = 1
                   AND c.point_in_time_valid = 1
@@ -533,4 +534,3 @@ def _increment_concentration(pairs: Iterable[Tuple[str, float]]) -> Dict[str, ob
         "positive_increment_total": round(total, 6),
         "groups": {key: round(value, 6) for key, value in sorted(grouped.items())},
     }
-

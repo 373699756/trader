@@ -20,6 +20,8 @@ from .validation_policy import (
 )
 from .validation_outcomes import compute_outcome
 from .validation_statistics import block_bootstrap_mean_confidence_interval
+from .validation_statistics import paired_increment_statistics, unified_experiment_fdr
+from .experiment_registry import list_experiments
 
 
 COMPARISON_LABELS = {
@@ -263,6 +265,7 @@ class DailyPortfolioBaselineService:
             key: _group_metrics(daily, key)
             for key in COMPARISON_LABELS
         }
+        paired = _paired_daily_comparison(daily, trial_count=_registered_trial_count())
         rule_random_percentile = _paired_random_percentile(settled)
         paired_dates = [item.get("signal_date") for item in settled]
         latest_record = records[-1] if records else {}
@@ -282,6 +285,10 @@ class DailyPortfolioBaselineService:
             "rule_vs_random_percentile": rule_random_percentile,
             "groups": groups,
             "daily": daily,
+            "paired_daily_increments": paired.get("increments", []),
+            "paired_statistics": paired.get("statistics", {}),
+            "unified_fdr": paired.get("unified_fdr", {}),
+            "promotion_gate": paired.get("promotion_gate", {}),
             "latest": latest,
         }
 
@@ -1295,6 +1302,96 @@ def _group_metrics(daily: List[Dict[str, object]], key: str) -> Dict[str, object
         "avg_capacity_utilization_pct": _average(item.get("capacity_utilization_pct") for item in rows),
         "avg_unfilled_rate_pct": _average(item.get("unfilled_rate_pct") for item in rows),
     }
+
+
+def _paired_daily_comparison(
+    daily: List[Dict[str, object]],
+    *,
+    trial_count: int,
+) -> Dict[str, object]:
+    increments = []
+    baseline_values = []
+    challenger_values = []
+    for item in daily or []:
+        groups = item.get("groups") if isinstance(item, dict) else {}
+        groups = groups if isinstance(groups, dict) else {}
+        baseline = groups.get("frozen_rule_top_k") or {}
+        challenger = groups.get("model_top_k") or {}
+        if baseline.get("status") != "settled" or challenger.get("status") != "settled":
+            continue
+        baseline_return = coerce_number(baseline.get("net_return_pct"), None)
+        challenger_return = coerce_number(challenger.get("net_return_pct"), None)
+        if baseline_return is None or challenger_return is None:
+            continue
+        increment = challenger_return - baseline_return
+        baseline_values.append(baseline_return)
+        challenger_values.append(challenger_return)
+        increments.append(
+            {
+                "signal_date": str(item.get("signal_date") or ""),
+                "baseline_net_return_pct": round(baseline_return, 6),
+                "challenger_net_return_pct": round(challenger_return, 6),
+                "incremental_net_return_pct": round(increment, 6),
+            }
+        )
+    statistics_result = paired_increment_statistics(
+        baseline_values,
+        challenger_values,
+        samples=max(200, int(getattr(config, "EXPERIMENT_BOOTSTRAP_SAMPLES", 2000))),
+        trial_count=max(1, int(trial_count or 1)),
+        dsr_probability=coerce_number(
+            getattr(config, "EXPERIMENT_DSR_MIN_PROBABILITY", 0.95),
+            0.95,
+        ),
+    )
+    current_id = "portfolio_challenger_runtime"
+    registry = []
+    try:
+        registry = list_experiments()
+    except Exception:
+        registry = []
+    current_record = {
+        "experiment_id": current_id,
+        "experiment_family": "portfolio_challenger",
+        "trial_count": 1,
+        "result": {"p_value": statistics_result.get("p_value")},
+    }
+    fdr = unified_experiment_fdr(
+        [*(registry or []), current_record],
+        q=coerce_number(getattr(config, "EXPERIMENT_FDR_Q", 0.1), 0.1),
+    )
+    fdr_passed = current_id in set(fdr.get("rejected_experiment_ids") or [])
+    dsr = statistics_result.get("dsr") or {}
+    promotion_gate = {
+        "status": "passed" if (
+            statistics_result.get("economic_increment_passed")
+            and statistics_result.get("confidence_interval_passed")
+            and fdr_passed
+            and bool(dsr.get("passed"))
+        ) else "blocked",
+        "economic_increment_passed": bool(statistics_result.get("economic_increment_passed")),
+        "confidence_interval_passed": bool(statistics_result.get("confidence_interval_passed")),
+        "fdr_passed": fdr_passed,
+        "dsr_passed": bool(dsr.get("passed")),
+        "sample_count": int(statistics_result.get("sample_count") or 0),
+    }
+    return {
+        "increments": increments,
+        "statistics": statistics_result,
+        "unified_fdr": fdr,
+        "promotion_gate": promotion_gate,
+    }
+
+
+def _registered_trial_count() -> int:
+    try:
+        records = list_experiments()
+    except Exception:
+        return 1
+    return max(
+        1,
+        sum(max(1, int(coerce_number(record.get("trial_count"), 1))) for record in records if isinstance(record, dict)),
+    )
 
 
 def _paired_random_percentile(records: List[Dict[str, object]]):

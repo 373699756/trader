@@ -6,14 +6,6 @@
       const { renderToolResult, setOpsStatus } = status;
 
       async function loadStockPrediction() {
-        await loadStockPredictionWithMode("prediction");
-      }
-
-      async function loadStockOptimization() {
-        await loadStockPredictionWithMode("validation");
-      }
-
-      async function loadStockPredictionWithMode(mode) {
         const raw = els.stockPredictionInput.value.trim();
         const code = raw.replace(/\D/g, "").slice(0, 6);
         if (code.length !== 6) {
@@ -22,17 +14,10 @@
           return;
         }
         const label = els.stockPredictionBtn.textContent;
-        const tuningLabel = els.generateTuningBtn.textContent;
         els.stockPredictionBtn.disabled = true;
-        els.generateTuningBtn.disabled = true;
-        if (mode === "prediction") els.stockPredictionBtn.textContent = "预测中…";
-        if (mode === "validation") els.generateTuningBtn.textContent = "验证中…";
-        setOpsStatus(
-          els.stockPredictionStatus,
-          mode === "prediction" ? "正在计算本地量价与三策略命中…" : "正在读取本地走势预测与验证状态…",
-          "pending"
-        );
-        setOpsStatus(els.tuningStatus, mode === "validation" ? "本地策略验证中…" : "", mode === "validation" ? "pending" : "");
+        if (els.generateTuningBtn) els.generateTuningBtn.disabled = true;
+        els.stockPredictionBtn.textContent = "预测中…";
+        setOpsStatus(els.stockPredictionStatus, "正在计算本地量价与三策略命中…", "pending");
         try {
           const res = await fetch(`/api/stock-prediction/${encodeURIComponent(code)}`);
           const payload = await res.json();
@@ -45,13 +30,6 @@
             "本地量化预测已更新。",
             "ok"
           );
-          setOpsStatus(
-            els.tuningStatus,
-            mode === "validation"
-              ? "本地策略验证已更新。"
-              : "",
-            mode === "validation" ? "ok" : ""
-          );
         } catch (err) {
           renderToolResult(`
             <div class="prediction-empty">
@@ -60,12 +38,10 @@
             </div>
           `);
           setOpsStatus(els.stockPredictionStatus, `预测失败：${err.message}`, "bad");
-          if (mode === "validation") setOpsStatus(els.tuningStatus, `验证失败：${err.message}`, "bad");
         } finally {
           els.stockPredictionBtn.disabled = false;
-          els.generateTuningBtn.disabled = false;
+          if (els.generateTuningBtn) els.generateTuningBtn.disabled = false;
           els.stockPredictionBtn.textContent = label;
-          els.generateTuningBtn.textContent = tuningLabel;
         }
       }
 
@@ -97,7 +73,7 @@
                 <strong>${escapeHtml(p.label || "-")}</strong>
                 <div class="prediction-inline-metrics">
                   <span>本地量化 ${formatNumber(p.score, 1)}</span>
-                  <span>本地置信 ${formatNumber(p.confidence, 1)}%</span>
+                  <span title="规则条件的匹配程度，不是上涨概率">规则一致度 ${formatNumber(p.rule_consistency, 1)}%</span>
                   <span>风险 ${escapeHtml(riskLevelLabel(p.risk_level))}</span>
                 </div>
               </div>
@@ -166,7 +142,6 @@
       }
 
       return {
-        loadStockOptimization,
         loadStockPrediction,
       };
     },

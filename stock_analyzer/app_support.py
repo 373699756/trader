@@ -707,34 +707,6 @@ def strategy_validation_gate_decision(
             "unregistered_experiment_count": len(unregistered_attempt_ids),
         },
     }
-    require_experiment_registration = bool(
-        getattr(config, "STRATEGY_VALIDATION_REQUIRE_EXPERIMENT_REGISTRATION", True)
-    )
-    if require_experiment_registration:
-        if unregistered_attempt_ids:
-            decision["blocked"] = True
-            decision["reason"] = (
-                "存在未登记的试验 id（{}），实验登记核验不通过。".format(",".join(unregistered_attempt_ids[:3]))
-                + ("..." if len(unregistered_attempt_ids) > 3 else "")
-            )
-            decision["position_scale"] = 0.0
-            decision["position_scale_reason"] = "试验登记校验不通过，仓位归零"
-            return decision
-        strategy_registered_experiments = int(
-            experiment_audit.get("strategy_registered_experiments") or 0
-        )
-        if experiment_audit.get("status") != "ok" or strategy_registered_experiments <= 0:
-            decision["blocked"] = True
-            decision["reason"] = "未完成实验登记核验，无法形成可执行推荐。"
-            if experiment_audit.get("status") != "ok":
-                decision["reason"] = (
-                    "实验登记核验失败（{}），暂缓晋级。".format(experiment_audit.get("status"))
-                    if str(experiment_audit.get("status"))
-                    else "实验登记核验失败（未知原因），暂缓晋级。"
-                )
-            decision["position_scale"] = 0.0
-            decision["position_scale_reason"] = "实验登记校验不通过，仓位归零"
-            return decision
     if decision["unknown_outcome_count"] > 0:
         decision["blocked"] = True
         decision["reason"] = "存在数据状态未知样本，修复行情或证券状态后才能晋级"
@@ -811,6 +783,26 @@ def strategy_validation_gate_decision(
             decision["position_scale"] = 0.0
             decision["position_scale_reason"] = "组合统计显著性未通过，仓位归零"
             return decision
+    challenger_stats = metrics.get("paired_increment_statistics")
+    if not isinstance(challenger_stats, dict):
+        challenger_payload = metrics.get("challenger_statistics")
+        if isinstance(challenger_payload, dict):
+            challenger_stats = challenger_payload.get("paired_statistics")
+    challenger_gate = metrics.get("promotion_gate")
+    if not isinstance(challenger_gate, dict):
+        challenger_payload = metrics.get("challenger_statistics")
+        if isinstance(challenger_payload, dict):
+            challenger_gate = challenger_payload.get("promotion_gate")
+    if isinstance(challenger_stats, dict) and challenger_stats:
+        challenger_gate = challenger_gate if isinstance(challenger_gate, dict) else {}
+        decision["challenger_statistics"] = challenger_stats
+        decision["challenger_promotion_gate"] = challenger_gate
+        if challenger_gate.get("status") != "passed":
+            decision["blocked"] = True
+            decision["reason"] = "挑战模型日级配对增量的 bootstrap/FDR/DSR 统计门禁未通过"
+            decision["position_scale"] = 0.0
+            decision["position_scale_reason"] = "挑战模型统计门禁未通过，仓位归零"
+            return decision
     min_win_rate = coerce_number(getattr(config, "STRATEGY_VALIDATION_MIN_WIN_RATE", 50.0), 50.0)
     ci_low_raw = metrics.get("real_avg_primary_return_net_ci95_low")
     ci_low = coerce_number(ci_low_raw) if ci_low_raw is not None else None
@@ -833,6 +825,34 @@ def strategy_validation_gate_decision(
         decision["position_scale"] = 0.0
         decision["position_scale_reason"] = "验证指标不达标，仓位归零"
         return decision
+    require_experiment_registration = bool(
+        getattr(config, "STRATEGY_VALIDATION_REQUIRE_EXPERIMENT_REGISTRATION", True)
+    )
+    if require_experiment_registration:
+        if unregistered_attempt_ids:
+            decision["blocked"] = True
+            decision["reason"] = (
+                "存在未登记的试验 id（{}），实验登记核验不通过。".format(",".join(unregistered_attempt_ids[:3]))
+                + ("..." if len(unregistered_attempt_ids) > 3 else "")
+            )
+            decision["position_scale"] = 0.0
+            decision["position_scale_reason"] = "试验登记校验不通过，仓位归零"
+            return decision
+        strategy_registered_experiments = int(
+            experiment_audit.get("strategy_registered_experiments") or 0
+        )
+        if experiment_audit.get("status") != "ok" or strategy_registered_experiments <= 0:
+            decision["blocked"] = True
+            decision["reason"] = "未完成实验登记核验，无法形成可执行推荐。"
+            if experiment_audit.get("status") != "ok":
+                decision["reason"] = (
+                    "实验登记核验失败（{}），暂缓晋级。".format(experiment_audit.get("status"))
+                    if str(experiment_audit.get("status"))
+                    else "实验登记核验失败（未知原因），暂缓晋级。"
+                )
+            decision["position_scale"] = 0.0
+            decision["position_scale_reason"] = "实验登记校验不通过，仓位归零"
+            return decision
     decision["validated"] = True
     scale_info = dynamic_position_scaling(metrics, status)
     decision.update(scale_info)

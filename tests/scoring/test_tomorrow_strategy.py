@@ -392,11 +392,11 @@ class TomorrowStrategyTest(unittest.TestCase):
                 market_regime={"level": "risk_off", "label": "偏防守", "score": 38},
             )
 
-        self.assertGreater(len(rows), 0)
-        self.assertTrue(all(row["tier"] == "backup_pool" for row in rows))
+        self.assertEqual(rows, [])
         self.assertEqual(meta["primary_watch_count"], 0)
+        self.assertEqual(meta["display_count"], 0)
         self.assertIn("测试严格门控", meta["gate_reason"])
-        self.assertEqual(meta["fallback_mode"], "backup_pool")
+        self.assertEqual(meta["fallback_mode"], "")
 
     def test_tomorrow_can_return_empty_when_strict_filter_rejects_everything(self):
         quotes = pd.DataFrame(
@@ -425,12 +425,11 @@ class TomorrowStrategyTest(unittest.TestCase):
                 market_regime={"level": "risk_off", "label": "偏防守", "score": 25},
             )
 
-        self.assertGreater(len(rows), 0)
-        self.assertTrue(all(row["tier"] == "backup_pool" for row in rows))
+        self.assertEqual(rows, [])
         self.assertEqual(meta["primary_watch_count"], 0)
+        self.assertEqual(meta["display_count"], 0)
         self.assertIn("不足则不推荐", meta["gate_reason"])
-        self.assertEqual(meta["fallback_mode"], "backup_pool")
-        self.assertIn("降级显示备选观察", meta["gate_reason"])
+        self.assertEqual(meta["fallback_mode"], "")
 
     def test_tomorrow_weak_history_breadth_disables_primary_watch(self):
         quotes = pd.DataFrame(
@@ -559,7 +558,10 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch("stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode", return_value=False):
+        with patch.object(config, "TOMORROW_PRIMARY_MIN_SCORE", 60), patch(
+            "stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode",
+            return_value=False,
+        ):
             rows, meta = score_tomorrow_candidates(
                 prepare_candidates(quotes),
                 top_n=4,

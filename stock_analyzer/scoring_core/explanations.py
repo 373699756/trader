@@ -408,7 +408,7 @@ def _build_serenity_profile(item: Dict[str, object], row: pd.Series) -> Dict[str
         + max(0.0, agent_risk_score - 62.0) * 0.35,
     )
     data_coverage = _data_coverage(row)
-    confidence_score = min(
+    rule_consistency_score = min(
         100.0,
         max(
             0.0,
@@ -427,7 +427,7 @@ def _build_serenity_profile(item: Dict[str, object], row: pd.Series) -> Dict[str
             0.0,
             score * 0.36
             + component_average * 0.25
-            + confidence_score * 0.16
+            + rule_consistency_score * 0.16
             + agent_score * 0.15
             - risk_score * 0.20,
         ),
@@ -474,10 +474,11 @@ def _build_serenity_profile(item: Dict[str, object], row: pd.Series) -> Dict[str
         evidence.append({"label": case, "score": round(agent_score, 2), "level": "positive"})
 
     return {
-        "version": "serenity_profile_v1",
+        "version": "serenity_profile_v2",
         "quality_score": round(quality_score, 2),
         "risk_score": round(risk_score, 2),
-        "confidence_score": round(confidence_score, 2),
+        # Deterministic rule/evidence coverage, not a calibrated probability.
+        "rule_consistency_score": round(rule_consistency_score, 2),
         "agent_committee_score": round(agent_score, 2),
         "data_coverage": round(data_coverage, 2),
         "level": level,
@@ -546,7 +547,7 @@ def _decision_score(item: Dict[str, object], profile: Dict[str, object]) -> floa
     base_score = coerce_number(item.get("score"), 0.0)
     execution_score = coerce_number(item.get("execution_score"), 50.0)
     quality_score = coerce_number(profile.get("quality_score"), base_score)
-    confidence_score = coerce_number(profile.get("confidence_score"), 50.0)
+    rule_consistency_score = coerce_number(profile.get("rule_consistency_score"), 50.0)
     committee_score = coerce_number(committee.get("final_score"), 50.0)
     risk_score = coerce_number(profile.get("risk_score"), 50.0)
     weights = WEIGHTS.get("decision_score") or {}
@@ -554,7 +555,7 @@ def _decision_score(item: Dict[str, object], profile: Dict[str, object]) -> floa
         base_score * coerce_number(weights.get("base_score"), 0.32)
         + execution_score * coerce_number(weights.get("execution_score"), 0.20)
         + quality_score * coerce_number(weights.get("quality_score"), 0.18)
-        + confidence_score * coerce_number(weights.get("confidence_score"), 0.12)
+        + rule_consistency_score * coerce_number(weights.get("rule_consistency_score"), 0.12)
         + committee_score * coerce_number(weights.get("committee_score"), 0.10)
         + max(0.0, 100.0 - risk_score) * coerce_number(weights.get("risk_guard"), 0.08)
     )
@@ -631,7 +632,7 @@ def _trade_action(item: Dict[str, object], profile: Dict[str, object]) -> Dict[s
     sell_risk = item.get("sell_risk") or {}
     sell_risk_score = coerce_number(sell_risk.get("score"), 50.0)
     risk_score = coerce_number(profile.get("risk_score"), 50.0)
-    confidence = coerce_number(profile.get("confidence_score"), 50.0)
+    rule_consistency = coerce_number(profile.get("rule_consistency_score"), 50.0)
     verdict_tier = str((item.get("verdict") or {}).get("tier") or "")
 
     action = "watch_only"
@@ -643,7 +644,7 @@ def _trade_action(item: Dict[str, object], profile: Dict[str, object]) -> Dict[s
         decision_score >= 78
         and sell_risk_score <= 38
         and risk_score <= 42
-        and confidence >= 60
+        and rule_consistency >= 60
         and verdict_tier in ("strong_buy", "buy", "watch")
     ):
         action = "buy_confirmed"
@@ -1076,4 +1077,3 @@ def _build_position_reasons(
     if risk_penalty >= 9:
         reasons.append("中长期风险扣分")
     return reasons[:6] or ["中期趋势、流动性和风险控制综合靠前"]
-

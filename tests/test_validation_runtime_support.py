@@ -1,10 +1,81 @@
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from stock_analyzer import validation_runtime_support as support
 
 
 class ValidationRuntimeSupportTest(unittest.TestCase):
+    def test_tuning_run_is_reused_until_semantic_inputs_change(self):
+        class TuningStore:
+            def __init__(self):
+                self.latest = {}
+                self.saved_plans = []
+
+            def list_signal_dates(self, strategy):
+                return [{"signal_date": "2026-07-14", "count": 5}]
+
+            def latest_tuning_run(self, strategy):
+                return self.latest
+
+            def save_tuning_run(self, strategy, days, plan, metrics):
+                saved = {"id": len(self.saved_plans) + 1, "run_time": plan["generated_at"]}
+                self.saved_plans.append(plan)
+                self.latest = {**saved, "strategy_name": strategy, "plan": plan}
+                return saved
+
+        metrics = {
+            "day_count": 60,
+            "real_day_count": 60,
+            "pending_outcome_count": 0,
+            "unknown_outcome_count": 0,
+            "real_win_rate_primary_net": 55.0,
+            "real_avg_primary_return_net": 0.6,
+            "real_avg_primary_return_net_ci95_low": 0.1,
+            "real_avg_max_drawdown_primary": -2.0,
+        }
+        store = TuningStore()
+        load_metrics = lambda strategy, days: dict(metrics)
+
+        first = support.run_validation_tuning_once(store, load_metrics, ["tomorrow_picks"], days=60)
+        second = support.run_validation_tuning_once(store, load_metrics, ["tomorrow_picks"], days=60)
+        metrics["real_avg_primary_return_net_ci95_low"] = 0.2
+        changed = support.run_validation_tuning_once(store, load_metrics, ["tomorrow_picks"], days=60)
+
+        self.assertFalse(first["runs"][0]["reused"])
+        self.assertTrue(second["runs"][0]["reused"])
+        self.assertEqual(first["runs"][0]["saved"]["id"], second["runs"][0]["saved"]["id"])
+        self.assertFalse(changed["runs"][0]["reused"])
+        self.assertNotEqual(
+            first["runs"][0]["input_fingerprint"],
+            changed["runs"][0]["input_fingerprint"],
+        )
+        self.assertEqual(len(store.saved_plans), 2)
+
+    def test_auto_snapshot_retry_is_clamped_to_freeze_cutoff(self):
+        regular = support.auto_snapshot_retry_schedule(
+            datetime(2026, 7, 14, 14, 45, 0),
+            "14:50",
+            60,
+        )
+        final = support.auto_snapshot_retry_schedule(
+            datetime(2026, 7, 14, 14, 49, 30),
+            "14:50",
+            60,
+        )
+        missed = support.auto_snapshot_retry_schedule(
+            datetime(2026, 7, 14, 14, 50, 0),
+            "14:50",
+            60,
+        )
+
+        self.assertTrue(regular["retry"])
+        self.assertEqual(regular["wait_seconds"], 60)
+        self.assertEqual(final["next_run_at"], datetime(2026, 7, 14, 14, 50, 0))
+        self.assertEqual(final["wait_seconds"], 30)
+        self.assertFalse(missed["retry"])
+        self.assertTrue(missed["deadline_missed"])
+
     def test_configured_auto_snapshot_strategies_no_longer_falls_back_to_auto_update_strategies(self):
         with patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", ""), patch.object(
             support.config,

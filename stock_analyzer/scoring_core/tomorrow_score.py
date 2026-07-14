@@ -17,7 +17,7 @@ __all__ = [
 
 
 def _tomorrow_historical_edge_score(row: pd.Series, context: Dict[str, List[float]]) -> float:
-    if coerce_number(row.get("alphalite_factor_ready")) <= 0:
+    if not scoring_math._historical_factors_ready(row):
         return 50.0
     ret_5d = coerce_number(row.get("ret_5d"))
     ret_10d = coerce_number(row.get("ret_10d"))
@@ -122,6 +122,15 @@ def _tomorrow_component_scores(
     vol_amount_5d = coerce_number(row.get("vol_amount_5d"))
     volatility_20d = coerce_number(row.get("volatility_20d"))
     breakout_20d = coerce_number(row.get("breakout_20d"))
+    history_ready = scoring_math._historical_factors_ready(row)
+
+    def historical_score(value, values):
+        return scoring_math._optional_factor_score(
+            value,
+            values,
+            available=history_ready,
+        )
+
     liquidity_score = (
         percentile_score(turnover, context["turnover_values"]) * 0.58
         + percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.42
@@ -130,12 +139,14 @@ def _tomorrow_component_scores(
         percentile_score(pct_chg, context["pct_values"]) * momentum_weights["pct_chg"]
         + percentile_score(speed, context["speed_values"]) * momentum_weights["speed"]
         + percentile_score(volume_ratio, context["volume_ratio_values"]) * momentum_weights["volume_ratio"]
-        + scoring_math._optional_factor_score(sixty_day_pct, context["sixty_day_values"])
+        + historical_score(sixty_day_pct, context["sixty_day_values"])
         * momentum_weights["sixty_day_pct"]
     )
     trend_score = (
-        percentile_score(sixty_day_pct, context["sixty_day_values"]) * trend_weights["sixty_day_pct"]
-        + percentile_score(ytd_pct, context["ytd_values"]) * trend_weights["ytd_pct"]
+        historical_score(sixty_day_pct, context["sixty_day_values"])
+        * trend_weights["sixty_day_pct"]
+        + historical_score(ytd_pct, context["ytd_values"])
+        * trend_weights["ytd_pct"]
         + scoring_math._optional_factor_score(amplitude, context["amplitude_values"], higher_is_better=False)
         * trend_weights["amplitude"]
     )
@@ -163,6 +174,7 @@ def _tomorrow_component_scores(
         "tomorrow_picks",
         market_regime=market_regime,
         row=row,
+        factor_ic_payload=context.get("factor_ic_payload"),
     )
     return {
         "pct_chg": pct_chg,

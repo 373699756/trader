@@ -50,6 +50,7 @@ def _write_lock_file(host: str, port: int) -> None:
                     "pid": _CURRENT_PID,
                     "host": host,
                     "port": port,
+                    "process_start_ticks": _process_start_ticks(_CURRENT_PID),
                     "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 },
                 ensure_ascii=False,
@@ -84,16 +85,66 @@ def _is_process_alive(pid: int) -> bool:
     return True
 
 
-def _is_our_app_process(pid: int) -> bool:
+def _process_cmdline(pid: int) -> list[str]:
     if os.name != "posix":
-        return False
+        return []
     cmdline = Path(f"/proc/{pid}/cmdline")
     if not cmdline.exists():
+        return []
+    try:
+        return [
+            item.decode("utf-8", errors="ignore")
+            for item in cmdline.read_bytes().split(b"\0")
+            if item
+        ]
+    except Exception:
+        return []
+
+
+def _process_start_ticks(pid: int) -> str:
+    if os.name != "posix":
+        return ""
+    try:
+        # /proc/<pid>/stat field 22 is the kernel start time.  Split after the
+        # final ')' because the process name itself may contain spaces.
+        fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+        return str(fields[19])
+    except (IndexError, OSError, ValueError):
+        return ""
+
+
+def _entry_script_arg(args: list[str]) -> str:
+    if not args:
+        return ""
+    if Path(args[0]).name.startswith("app.py"):
+        return args[0]
+    index = 1
+    flags_with_value = {"-W", "-X"}
+    while index < len(args) and args[index].startswith("-"):
+        if args[index] in {"-c", "-m"}:
+            return ""
+        index += 2 if args[index] in flags_with_value else 1
+    if index >= len(args):
+        return ""
+    return args[index]
+
+
+def _is_our_app_process(pid: int) -> bool:
+    """Accept only the exact project entry point recorded by our lock file."""
+    args = _process_cmdline(pid)
+    if not args:
+        return False
+    expected_entry = _PROJECT_ROOT / "app.py"
+    entry_arg = _entry_script_arg(args)
+    if not entry_arg:
         return False
     try:
-        text = cmdline.read_bytes().decode("utf-8", errors="ignore")
-        return "app.py" in text or "stock_analyzer.app" in text
-    except Exception:
+        entry = Path(entry_arg)
+        if not entry.is_absolute():
+            process_cwd = Path(f"/proc/{pid}/cwd").resolve()
+            entry = process_cwd / entry
+        return entry.resolve() == expected_entry
+    except (OSError, RuntimeError):
         return False
 
 
@@ -119,91 +170,32 @@ def _terminate_process(pid: int) -> None:
         pass
 
 
-def _cleanup_stale_lock(port: int) -> None:
+def _cleanup_stale_lock(port: int) -> str:
     lock = _load_lock_file()
     if not lock:
-        return
+        return "missing"
     if int(lock.get("port") or 0) != port:
-        return
+        return "other_port"
     pid = int(lock.get("pid") or 0)
     if not pid or pid == _CURRENT_PID:
-        return
+        return "invalid"
 
     if not _is_process_alive(pid):
         try:
             _LOCK_FILE.unlink()
         except FileNotFoundError:
             pass
-        return
+        return "removed"
 
     if not _is_our_app_process(pid):
-        return
+        return "foreign"
+    lock_start_ticks = str(lock.get("process_start_ticks") or "")
+    if not lock_start_ticks or lock_start_ticks != _process_start_ticks(pid):
+        return "foreign"
 
     print(f"检测到端口 {port} 残留锁文件，旧进程 {pid} 可能未退出，尝试退出该进程。")
     _terminate_process(pid)
-
-
-def _tcp_socket_inodes_for_port(port: int) -> set[str]:
-    target_port = int(port)
-    inodes: set[str] = set()
-    for table_path in ("/proc/net/tcp", "/proc/net/tcp6"):
-        try:
-            with open(table_path, "r", encoding="utf-8") as handle:
-                lines = handle.readlines()
-        except FileNotFoundError:
-            continue
-        except Exception:
-            continue
-        for line in lines[1:]:
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            local_addr = parts[1]
-            if ":" not in local_addr:
-                continue
-            try:
-                _, port_hex = local_addr.rsplit(":", 1)
-                if int(port_hex, 16) != target_port:
-                    continue
-            except Exception:
-                continue
-            inode = str(parts[-1]).strip()
-            if inode:
-                inodes.add(inode)
-    return inodes
-
-
-def _cleanup_stale_port_holders(port: int) -> None:
-    inodes = _tcp_socket_inodes_for_port(port)
-    if not inodes:
-        return
-    for pid_text in os.listdir("/proc"):
-        if not pid_text.isdigit():
-            continue
-        pid = int(pid_text)
-        if pid == _CURRENT_PID:
-            continue
-        if not _is_process_alive(pid):
-            continue
-        if not _is_our_app_process(pid):
-            continue
-        fd_dir = f"/proc/{pid}/fd"
-        try:
-            fds = os.listdir(fd_dir)
-        except Exception:
-            continue
-        for fd in fds:
-            try:
-                target = os.readlink(f"{fd_dir}/{fd}")
-            except Exception:
-                continue
-            if not target.startswith("socket:["):
-                continue
-            inode = target[8:-1]
-            if inode in inodes:
-                print(f"检测到端口 {port} 被本项目旧进程 {pid} 持有，尝试退出该进程。")
-                _terminate_process(pid)
-                break
+    return "terminated"
 
 
 def _acquire_port(host: str, port: int) -> int:
@@ -215,8 +207,15 @@ def _acquire_port(host: str, port: int) -> int:
         return port
 
     for _ in range(retries + 1):
-        _cleanup_stale_lock(port)
-        _cleanup_stale_port_holders(port)
+        lock_status = _cleanup_stale_lock(port)
+        if lock_status == "foreign":
+            raise RuntimeError(
+                f"端口 {port} 已被占用，锁文件 PID 不是本项目入口；拒绝终止其他进程。"
+            )
+        if lock_status in {"missing", "other_port", "invalid"}:
+            raise RuntimeError(
+                f"端口 {port} 已被其他进程占用，请先关闭该进程或改用其他端口。"
+            )
         if _is_port_free(host, port):
             _write_lock_file(host, port)
             return port

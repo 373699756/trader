@@ -59,6 +59,10 @@ window.TraderRecommendationUtils = {
   },
 
   rowScore(row) {
-    return Number(row.decision_score ?? row.score ?? 0);
+    return Number(row.score ?? 0);
+  },
+
+  rowDisplayQuality(row) {
+    return Number(row.decision_score ?? row.serenity_profile?.quality_score ?? row.score ?? 0);
   },
 };

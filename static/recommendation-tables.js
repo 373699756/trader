@@ -46,7 +46,7 @@ window.TraderRecommendationTables = {
       const turnover = this.formatMoneyText(row.turnover, formatMoney);
       return `
         <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-          <td class="num">${row.rank}</td>
+          <td class="num" title="生产排序序号">${row.selection_rank ?? row.rank}</td>
           ${this.codeCell(row, { escapeHtml, rowIndustryLabel })}
           <td class="num col-latest-price">${latestPrice}</td>
           <td class="col-pct-today">${todayPct}</td>
@@ -72,7 +72,7 @@ window.TraderRecommendationTables = {
       const turnover = this.formatMoneyText(row.turnover, formatMoney);
       return `
         <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-          <td class="num">${row.rank}</td>
+          <td class="num" title="生产排序序号">${row.selection_rank ?? row.rank}</td>
           ${this.codeCell(row, { escapeHtml, rowIndustryLabel })}
           <td class="num col-latest-price">${latestPrice}</td>
           <td class="col-pct-today">${todayPct}</td>
@@ -98,7 +98,7 @@ window.TraderRecommendationTables = {
       const turnover = this.formatMoneyText(row.turnover, formatMoney);
       return `
         <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
-          <td class="num">${row.rank}</td>
+          <td class="num" title="生产排序序号">${row.selection_rank ?? row.rank}</td>
           ${this.codeCell(row, { escapeHtml, rowIndustryLabel })}
           <td class="num col-latest-price">${latestPrice}</td>
           <td class="col-pct-today">${todayPct}</td>

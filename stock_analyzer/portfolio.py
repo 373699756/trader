@@ -226,11 +226,11 @@ def _capacity_overflow_summary(rows: List[Dict[str, object]]) -> List[Dict[str, 
 
 def _raw_weight(row: Dict[str, object]) -> float:
     profile = row.get("serenity_profile") or {}
-    confidence = coerce_number(profile.get("confidence_score"), coerce_number(row.get("confidence_score"), 50.0))
+    rule_consistency = coerce_number(profile.get("rule_consistency_score"), 50.0)
     risk = max(5.0, coerce_number(profile.get("risk_score"), coerce_number(row.get("risk_score"), 50.0)))
     volatility = coerce_number(row.get("volatility_20d")) or coerce_number(row.get("amplitude"))
     vol_penalty = max(1.0, volatility / 5.0) if volatility > 0 else 1.0
-    base = confidence / risk / vol_penalty
+    base = rule_consistency / risk / vol_penalty
     if bool(getattr(config, "ENABLE_PORTFOLIO_OPTIMIZATION", True)):
         base *= _expected_edge_multiplier(row)
     return max(0.01, base)

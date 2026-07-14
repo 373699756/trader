@@ -55,21 +55,30 @@ class SwingScorer:
         volume_ratio = coerce_number(row.get("volume_ratio"))
         sixty_day_pct = coerce_number(row.get("sixty_day_pct"))
         ytd_pct = coerce_number(row.get("ytd_pct"))
+        history_ready = scoring_math._historical_factors_ready(row)
+
+        def historical_score(value, values, **kwargs):
+            return scoring_math._optional_factor_score(
+                value,
+                values,
+                available=history_ready,
+                **kwargs,
+            )
 
         momentum_score = (
-            scoring_math._optional_factor_score(ret_5d, context["ret_5d_values"], fallback=pct_chg, fallback_values=context["pct_values"]) * 0.24
-            + scoring_math._optional_factor_score(ret_10d, context["ret_10d_values"], fallback=sixty_day_pct, fallback_values=context["sixty_day_values"]) * 0.22
-            + scoring_math._optional_factor_score(ma5_gap, context["ma5_gap_values"], fallback=pct_chg, fallback_values=context["pct_values"]) * 0.16
-            + scoring_math._optional_factor_score(vol_amount_5d, context["vol_amount_5d_values"], fallback=volume_ratio, fallback_values=context["volume_ratio_values"]) * 0.18
+            historical_score(ret_5d, context["ret_5d_values"], fallback=pct_chg, fallback_values=context["pct_values"]) * 0.24
+            + historical_score(ret_10d, context["ret_10d_values"], fallback=sixty_day_pct, fallback_values=context["sixty_day_values"]) * 0.22
+            + historical_score(ma5_gap, context["ma5_gap_values"], fallback=pct_chg, fallback_values=context["pct_values"]) * 0.16
+            + historical_score(vol_amount_5d, context["vol_amount_5d_values"], fallback=volume_ratio, fallback_values=context["volume_ratio_values"]) * 0.18
             + percentile_score(volume_ratio, context["volume_ratio_values"]) * 0.12
-            + scoring_math._optional_factor_score(breakout_20d, context["breakout_20d_values"]) * 0.08
+            + historical_score(breakout_20d, context["breakout_20d_values"]) * 0.08
         )
         trend_score = (
-            scoring_math._optional_factor_score(ret_20d, context["ret_20d_values"], fallback=sixty_day_pct, fallback_values=context["sixty_day_values"]) * 0.30
-            + percentile_score(sixty_day_pct, context["sixty_day_values"]) * 0.26
-            + scoring_math._optional_factor_score(ma20_gap, context["ma20_gap_values"], fallback=sixty_day_pct, fallback_values=context["sixty_day_values"]) * 0.22
-            + percentile_score(ytd_pct, context["ytd_values"]) * 0.10
-            + scoring_math._optional_factor_score(volatility_20d, context["volatility_20d_values"], higher_is_better=False, fallback=coerce_number(row.get("amplitude")), fallback_values=context["amplitude_values"]) * 0.12
+            historical_score(ret_20d, context["ret_20d_values"], fallback=sixty_day_pct, fallback_values=context["sixty_day_values"]) * 0.30
+            + historical_score(sixty_day_pct, context["sixty_day_values"]) * 0.26
+            + historical_score(ma20_gap, context["ma20_gap_values"], fallback=sixty_day_pct, fallback_values=context["sixty_day_values"]) * 0.22
+            + historical_score(ytd_pct, context["ytd_values"]) * 0.10
+            + historical_score(volatility_20d, context["volatility_20d_values"], higher_is_better=False, fallback=coerce_number(row.get("amplitude")), fallback_values=context["amplitude_values"]) * 0.12
         )
         liquidity_score = (
             percentile_score(turnover, context["turnover_values"]) * 0.62
@@ -97,6 +106,7 @@ class SwingScorer:
             "swing_picks",
             market_regime=market_regime,
             row=row,
+            factor_ic_payload=context.get("factor_ic_payload"),
         )
         final_score = combined["score"]
         item = scoring_math._horizon_row(row, {
@@ -230,11 +240,13 @@ class SwingScorer:
             samples=expected_return_samples,
             use_ranking=use_expected_return_ranking,
         )
+        self.ranking_policy.assign_selection_rank(rows)
         candidate_pool_rows = []
         for frozen_rank, row in enumerate(rows, start=1):
             item = dict(row)
-            item["rank"] = frozen_rank
-            item["frozen_rule_rank"] = frozen_rank
+            item["rank"] = row.get("selection_rank", frozen_rank)
+            item["frozen_rule_rank"] = row.get("selection_rank", frozen_rank)
+            item["display_rank"] = frozen_rank
             candidate_pool_rows.append(item)
         min_score = coerce_number(getattr(config, "SWING_RECOMMENDATION_MIN_SCORE", 60.0), 60.0)
         eligible_rows = [row for row in rows if self._ranking_gate_score(row) >= min_score]

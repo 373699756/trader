@@ -134,8 +134,9 @@ class TodayScorer:
         candidate_pool_rows = []
         for frozen_rank, row in enumerate(short_rows, start=1):
             item = dict(row)
-            item["rank"] = frozen_rank
-            item["frozen_rule_rank"] = frozen_rank
+            item["rank"] = row.get("selection_rank", frozen_rank)
+            item["frozen_rule_rank"] = row.get("selection_rank", frozen_rank)
+            item["display_rank"] = frozen_rank
             candidate_pool_rows.append(item)
         min_score = coerce_number(getattr(config, "TODAY_RECOMMENDATION_MIN_SCORE", 60.0), 60.0)
         eligible_rows = [row for row in short_rows if coerce_number(row.get("score")) >= min_score]

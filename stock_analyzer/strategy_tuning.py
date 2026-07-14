@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Dict, List
 
@@ -9,6 +11,7 @@ from .scoring_core.weights import WEIGHTS
 
 
 SUPPORTED_TUNING_STRATEGIES = ("short_term", "tomorrow_picks", "swing_picks")
+TUNING_PLAN_VERSION = "strategy_tuning_plan_v1"
 
 _STRATEGY_LABELS = {
     "short_term": "今日延续推荐",
@@ -128,8 +131,9 @@ def build_strategy_tuning_plan(
         status = "observation_only"
         reason = "今天策略按信号至收盘收益验证，但不模拟当日新建仓，参数变更仅进入影子分析。"
 
-    return {
+    plan = {
         "ok": True,
+        "plan_version": TUNING_PLAN_VERSION,
         "strategy": strategy_name,
         "strategy_label": _STRATEGY_LABELS.get(strategy_name, strategy_name),
         "days": int(days),
@@ -153,12 +157,30 @@ def build_strategy_tuning_plan(
             "unknown_outcome_count": unknown_count,
             "win_rate_primary_net": win_rate,
             "avg_primary_return_net": avg_return,
+            "avg_primary_return_net_ci95_low": avg_return_ci_low,
             "avg_max_drawdown_primary": drawdown,
             "latest_signal_date": latest.get("signal_date", ""),
             "latest_signal_count": latest_count,
         },
         "current_weights": current_weights,
     }
+    plan["input_fingerprint"] = _tuning_plan_fingerprint(plan)
+    return plan
+
+
+def _tuning_plan_fingerprint(plan: Dict[str, object]) -> str:
+    semantic_plan = {
+        key: value
+        for key, value in plan.items()
+        if key not in {"generated_at", "input_fingerprint"}
+    }
+    payload = json.dumps(
+        semantic_plan,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _strategy_suggestions(strategy_name: str, win_rate, avg_return, latest_count: int) -> List[Dict[str, object]]:
@@ -216,5 +238,4 @@ def _unique(values: List[str]) -> List[str]:
         if value and value not in result:
             result.append(value)
     return result
-
 

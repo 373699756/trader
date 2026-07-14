@@ -43,6 +43,7 @@ def main() -> int:
     parser.add_argument("--portfolio-random-repeats", type=int, default=0, help="随机抽样次数；最低 1000")
     parser.add_argument("--factor-snapshot", action="store_true", help="基于本地 market_data 生成 Qlib 风格因子快照表")
     parser.add_argument("--factor-ic", action="store_true", help="基于真实验证样本刷新因子 IC 文件")
+    parser.add_argument("--data-health", action="store_true", help="生成并归档 P0/P1/P2 数据健康日报")
     parser.add_argument("--calibrate-live", action="store_true", help="基于明天预测真实验证样本校准权重")
     parser.add_argument("--write-weights", action="store_true", help="与 --calibrate-live 配合，确认写入 weights.json")
     parser.add_argument("--backup-validation", action="store_true", help="备份荐股验证数据库")
@@ -62,9 +63,10 @@ def main() -> int:
         args.download_market_data = True
         args.update = True
         args.portfolio_baseline = True
-        args.snapshot = True
         args.factor_snapshot = True
         args.factor_ic = True
+        args.data_health = True
+        args.backup_validation = True
 
     if not any(
         (
@@ -75,6 +77,7 @@ def main() -> int:
             args.portfolio_baseline,
             args.factor_snapshot,
             args.factor_ic,
+            args.data_health,
             args.calibrate_live,
             args.backup_validation,
             args.list_validation_backups,
@@ -116,6 +119,7 @@ def main() -> int:
         "portfolio_baseline": [],
         "factor_snapshot": {},
         "factor_ic": {},
+        "data_health": {},
         "calibrate_live": {},
         "backup_validation": {},
     }
@@ -211,6 +215,13 @@ def main() -> int:
         payload["tomorrow_iteration"] = _save_iteration_payload(
             payload["calibrate_live"],
             applied=payload["calibrate_live"].get("status") == "written",
+        )
+    if args.data_health:
+        from .data_health import build_and_save_data_health_report
+
+        payload["data_health"] = build_and_save_data_health_report(
+            config.VALIDATION_DB_PATH,
+            config.MARKET_DATA_DB_PATH,
         )
     if args.backup_validation:
         payload["backup_validation"] = backup_validation_db(

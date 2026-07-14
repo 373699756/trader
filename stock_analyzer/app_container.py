@@ -151,9 +151,9 @@ class AsyncSnapshotWriter:
                     self._last_error = str(exc)
 
     def _should_write_frozen_snapshot(self, payload: Dict[str, object]) -> bool:
-        if not os.path.exists(self.path):
-            return True
         try:
+            if not os.path.exists(self.path):
+                return True
             meta = payload.get("meta") if isinstance(payload, dict) else None
             if not isinstance(meta, dict):
                 meta = {}

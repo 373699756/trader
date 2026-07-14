@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Iterable, Optional
 
 import pandas as pd
 
@@ -50,14 +50,9 @@ def build_alphalite_factors(history_by_code: Dict[str, pd.DataFrame]) -> pd.Data
 def compute_alphalite_for_stock(code: str, history: pd.DataFrame) -> Dict[str, float]:
     if history is None or history.empty:
         return {}
-    df = rename_known_columns(history.copy())
-    if "code" not in df.columns:
-        df["code"] = code
-    df["code"] = df["code"].map(normalize_code)
-    for column in ("price", "close", "open", "high", "low", "turnover", "volume"):
-        if column not in df.columns:
-            df[column] = 0.0
-        df[column] = df[column].map(coerce_number)
+    df = _prepare_alphalite_frame(code, history)
+    if df is None:
+        return {}
     if "price" in df.columns and df["price"].abs().sum() > 0:
         close = df["price"]
     else:
@@ -121,6 +116,179 @@ def compute_alphalite_for_stock(code: str, history: pd.DataFrame) -> Dict[str, f
         "alphalite_factor_ready": 1.0,
         "alphalite_coverage": round(coverage, 4),
     }
+
+
+def compute_alphalite_panel(
+    code: str,
+    history: pd.DataFrame,
+    indices: Iterable[int],
+    lookback_window: int = 25,
+) -> Dict[int, Dict[str, float]]:
+    """Compute AlphaLite factors for many signal dates from one normalized frame.
+
+    Rolling Series are built once per stock.  Windows that are too short or use a
+    different source-column fallback use the reference single-window calculator,
+    preserving its missing-data semantics.
+    """
+    df = _prepare_alphalite_frame(code, history)
+    if df is None or df.empty:
+        return {}
+    target_indices = sorted(
+        {
+            int(index)
+            for index in (indices or [])
+            if isinstance(index, (int, float)) and 0 <= int(index) < len(df)
+        }
+    )
+    if not target_indices:
+        return {}
+    window = max(25, int(lookback_window or 25))
+    price = df["price"]
+    close_column = df["close"]
+    price_mode = bool(price.abs().sum() > 0)
+    close = price if price_mode else close_column
+    open_column = df["open"]
+    low_column = df["low"]
+    open_mode = bool(open_column.abs().sum() > 0)
+    low_mode = bool(low_column.abs().sum() > 0)
+    turnover = df["turnover"]
+    volume = df["volume"]
+
+    rolling_5 = close.rolling(5, min_periods=1).mean()
+    rolling_10 = close.rolling(10, min_periods=1).mean()
+    rolling_20 = close.rolling(20, min_periods=1).mean()
+    rolling_60 = close.rolling(60, min_periods=1).mean()
+    turnover_5 = turnover.rolling(5, min_periods=1).mean()
+    previous_turnover_5 = turnover.shift(5).rolling(5, min_periods=5).mean()
+    high_20 = df["high"].rolling(20, min_periods=1).max()
+    volume_5 = volume.rolling(5, min_periods=1).mean()
+    turnover_20 = turnover.rolling(20, min_periods=1).mean()
+    returns = close.pct_change()
+    volatility_20 = returns.rolling(20, min_periods=20).std() * 100
+    enhanced_enabled = bool(getattr(config, "ENABLE_ENHANCED_FACTORS", False))
+    result: Dict[int, Dict[str, float]] = {}
+
+    for index in target_indices:
+        end = index + 1
+        start = max(0, end - window)
+        window_length = end - start
+        if window_length < window:
+            reference = compute_alphalite_for_stock(
+                code,
+                df.iloc[start:end],
+            )
+            if reference:
+                result[index] = reference
+            continue
+        window_price_mode = bool(price.iloc[start:end].abs().sum() > 0)
+        window_open_mode = bool(open_column.iloc[start:end].abs().sum() > 0)
+        window_low_mode = bool(low_column.iloc[start:end].abs().sum() > 0)
+        if (
+            window_price_mode != price_mode
+            or window_open_mode != open_mode
+            or window_low_mode != low_mode
+        ):
+            reference = compute_alphalite_for_stock(code, df.iloc[start:end])
+            if reference:
+                result[index] = reference
+            continue
+        latest = coerce_number(close.iloc[index])
+        if latest <= 0:
+            continue
+
+        def period_return(days: int) -> float:
+            base_index = index - days
+            if base_index < start:
+                return 0.0
+            base = coerce_number(close.iloc[base_index])
+            return round((latest / base - 1) * 100, 4) if base > 0 else 0.0
+
+        def moving_average_gap(days: int) -> float:
+            if window_length < days:
+                return 0.0
+            average = coerce_number(
+                (rolling_5 if days == 5 else rolling_10 if days == 10 else rolling_20 if days == 20 else rolling_60).iloc[index]
+            )
+            return round((latest / average - 1) * 100, 4) if average > 0 else 0.0
+
+        current_turnover_5 = coerce_number(turnover_5.iloc[index])
+        previous = coerce_number(previous_turnover_5.iloc[index])
+        if window_length < 10:
+            previous = current_turnover_5
+        high_value = coerce_number(high_20.iloc[index])
+        volatility = coerce_number(volatility_20.iloc[index])
+        average_volume = coerce_number(volume_5.iloc[index])
+        volume_ratio = round(coerce_number(volume.iloc[index]) / average_volume, 4) if average_volume > 0 else 0.0
+        availability = {
+            "ret_3d": index - 3 >= start and coerce_number(close.iloc[index - 3]) > 0,
+            "ret_5d": index - 5 >= start and coerce_number(close.iloc[index - 5]) > 0,
+            "ret_10d": index - 10 >= start and coerce_number(close.iloc[index - 10]) > 0,
+            "ret_20d": index - 20 >= start and coerce_number(close.iloc[index - 20]) > 0,
+            "ma5_gap": window_length >= 5 and coerce_number(rolling_5.iloc[index]) > 0,
+            "ma20_gap": window_length >= 20 and coerce_number(rolling_20.iloc[index]) > 0,
+            "vol_amount_5d": window_length >= 10 and previous > 0,
+            "breakout_20d": window_length >= 20 and high_value > 0,
+            # ``pct_change().dropna()`` counts infinite returns in the
+            # reference implementation, even when the resulting std is NaN.
+            "volatility_20d": window_length >= 21,
+        }
+        coverage = round(
+            sum(1 for value in availability.values() if value) / len(availability),
+            4,
+        )
+        if enhanced_enabled:
+            open_values = open_column.iloc[start:end] if open_mode else close.iloc[start:end]
+            low_values = low_column.iloc[start:end] if low_mode else close.iloc[start:end]
+            enhanced = _enhanced_factors(
+                open_values,
+                df["high"].iloc[start:end],
+                low_values,
+                close.iloc[start:end],
+            )
+        else:
+            enhanced = _empty_enhanced_factors()
+        result[index] = {
+            "code": normalize_code(code),
+            "ret_3d": period_return(3),
+            "ret_5d": period_return(5),
+            "ret_10d": period_return(10),
+            "ret_20d": period_return(20),
+            "ma5_gap": moving_average_gap(5),
+            "ma10_gap": moving_average_gap(10),
+            "ma20_gap": moving_average_gap(20),
+            "ma60_gap": moving_average_gap(60),
+            "ma_bull_aligned": 1.0
+            if window_length >= 60
+            and rolling_5.iloc[index] > rolling_10.iloc[index] > rolling_20.iloc[index] > rolling_60.iloc[index]
+            else 0.0,
+            "vol_amount_5d": _ratio(current_turnover_5, previous),
+            "vol_ma5_ratio": volume_ratio,
+            "turnover_20d": round(coerce_number(turnover_20.iloc[index]), 4),
+            "breakout_20d": 1.0 if high_value > 0 and latest >= high_value * 0.995 else 0.0,
+            "volatility_20d": round(volatility, 4),
+            **enhanced,
+            "alphalite_factor_ready": 1.0,
+            "alphalite_coverage": coverage,
+        }
+    return result
+
+
+def _prepare_alphalite_frame(code: str, history: pd.DataFrame) -> Optional[pd.DataFrame]:
+    if history is None or history.empty:
+        return None
+    df = rename_known_columns(history.copy())
+    if df.columns.duplicated().any():
+        # Prefer the first canonical column when a source supplies both an
+        # alias (for example ``close``) and its canonical counterpart.
+        df = df.loc[:, ~df.columns.duplicated(keep="first")]
+    if "code" not in df.columns:
+        df["code"] = code
+    df["code"] = df["code"].map(normalize_code)
+    for column in ("price", "close", "open", "high", "low", "turnover", "volume"):
+        if column not in df.columns:
+            df[column] = 0.0
+        df[column] = df[column].map(coerce_number)
+    return df
 
 
 def merge_alphalite(candidates: pd.DataFrame, factors: pd.DataFrame) -> pd.DataFrame:

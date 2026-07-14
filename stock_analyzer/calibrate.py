@@ -40,6 +40,14 @@ from .strategy_validation import StrategyValidationStore
 from .expected_return_model import predict_expected_return
 from .meta_labeling import predict_meta_confidence, train_meta_label_model
 from .probability_calibration import build_and_save_calibrator, train_score_calibrator
+from .validation_statistics import (
+    benjamini_hochberg_fdr as _benjamini_hochberg_fdr,
+    deflated_sharpe_ratio,
+    moving_block_bootstrap_positive_mean_p_value,
+    paired_increment_statistics,
+    unified_experiment_fdr,
+)
+from .experiment_registry import list_experiments
 
 
 def _cached_codes(db_path: str) -> List[str]:
@@ -449,6 +457,8 @@ def evaluate_expected_return_ranker(
                 "baseline_avg_return": baseline_metrics.get("absolute_avg_period_return", 0.0),
                 "predicted_net_return_avg_return": rank_metrics.get("absolute_avg_period_return", 0.0),
                 "rank_score_avg_return": rank_metrics.get("absolute_avg_period_return", 0.0),
+                "baseline_return_series_with_dates": baseline_metrics.get("return_series_with_dates", []),
+                "predicted_return_series_with_dates": rank_metrics.get("return_series_with_dates", []),
             }
         )
     baseline_values = [coerce_number(row["baseline_oos_objective"]) for row in rows]
@@ -463,7 +473,11 @@ def evaluate_expected_return_ranker(
     rank_oos = round(sum(rank_values) / len(rank_values), 4)
     positive_folds = sum(1 for value in improvements if value > 0)
     fold_count = len(rows)
-    fdr_result = _calibrate_fdr_result(positive_folds, fold_count)
+    daily_increments = _daily_increment_series(
+        rows, "baseline_return_series_with_dates", "predicted_return_series_with_dates"
+    )
+    fdr_result = _calibrate_fdr_result(positive_folds, fold_count, increments=daily_increments)
+    dsr_result = fdr_result.get("dsr") or {}
     ci_low, ci_high = _mean_ci(avg_return_improvements)
     ci_result = {
         "method": "normal_approx_fold_avg_return_delta",
@@ -475,12 +489,19 @@ def evaluate_expected_return_ranker(
         "passed": ci_low is not None and ci_low >= 0.0,
     }
     oos_passed = rank_oos > baseline_oos + margin and positive_folds > fold_count // 2
-    can_promote = oos_passed and bool(fdr_result.get("passed")) and bool(ci_result.get("passed"))
+    can_promote = (
+        oos_passed
+        and bool(fdr_result.get("passed"))
+        and bool(ci_result.get("passed"))
+        and bool(dsr_result.get("passed"))
+    )
     status = "oos_passed" if can_promote else "shadow_only"
     if oos_passed and not fdr_result.get("passed"):
         status = "fdr_blocked"
     elif oos_passed and fdr_result.get("passed") and not ci_result.get("passed"):
         status = "ci_blocked"
+    elif oos_passed and fdr_result.get("passed") and ci_result.get("passed") and not dsr_result.get("passed"):
+        status = "dsr_blocked"
     return {
         "ok": True,
         "strategy": strategy,
@@ -495,6 +516,7 @@ def evaluate_expected_return_ranker(
         "fold_count": fold_count,
         "oos_passed": oos_passed,
         "fdr": fdr_result,
+        "dsr": dsr_result,
         "ci": ci_result,
         "avg_return_improvement": round(sum(avg_return_improvements) / len(avg_return_improvements), 4),
         "avg_return_improvement_ci95_low": ci_low,
@@ -502,6 +524,7 @@ def evaluate_expected_return_ranker(
         "margin": margin,
         "can_promote": can_promote,
         "folds": rows,
+        "daily_increment_series": daily_increments,
     }
 
 
@@ -555,6 +578,8 @@ def evaluate_interaction_ranker(
                 "oos_improvement": round(interaction_obj - baseline_obj, 4),
                 "baseline_avg_return": baseline_metrics.get("absolute_avg_period_return", 0.0),
                 "interaction_avg_return": interaction_metrics.get("absolute_avg_period_return", 0.0),
+                "baseline_return_series_with_dates": baseline_metrics.get("return_series_with_dates", []),
+                "interaction_return_series_with_dates": interaction_metrics.get("return_series_with_dates", []),
             }
         )
 
@@ -566,12 +591,18 @@ def evaluate_interaction_ranker(
     interaction_oos = round(sum(interaction_values) / len(interaction_values), 4)
     positive_folds = sum(1 for value in improvements if value > 0)
     fold_count = len(rows)
-    fdr_result = _calibrate_fdr_result(positive_folds, fold_count)
+    daily_increments = _daily_increment_series(
+        rows, "baseline_return_series_with_dates", "interaction_return_series_with_dates"
+    )
+    fdr_result = _calibrate_fdr_result(positive_folds, fold_count, increments=daily_increments)
+    dsr_result = fdr_result.get("dsr") or {}
     oos_passed = interaction_oos > baseline_oos + margin and positive_folds > fold_count // 2
-    can_promote = oos_passed and bool(fdr_result.get("passed"))
+    can_promote = oos_passed and bool(fdr_result.get("passed")) and bool(dsr_result.get("passed"))
     status = "oos_passed" if can_promote else "shadow_only"
     if oos_passed and not fdr_result.get("passed"):
         status = "fdr_blocked"
+    elif oos_passed and fdr_result.get("passed") and not dsr_result.get("passed"):
+        status = "dsr_blocked"
     final_model = _fit_interaction_terms(strategy, samples, max_pairs=max_pairs)
     return {
         "ok": True,
@@ -587,9 +618,11 @@ def evaluate_interaction_ranker(
         "fold_count": fold_count,
         "margin": margin,
         "fdr": fdr_result,
+        "dsr": dsr_result,
         "can_promote": can_promote,
         "selected_interactions": final_model.get("interactions", []),
         "folds": rows,
+        "daily_increment_series": daily_increments,
     }
 
 
@@ -651,6 +684,8 @@ def evaluate_regime_specific_weights(
                 "oos_improvement": round(regime_obj - baseline_obj, 4),
                 "baseline_avg_return": baseline_metrics.get("absolute_avg_period_return", 0.0),
                 "regime_avg_return": regime_metrics.get("absolute_avg_period_return", 0.0),
+                "baseline_return_series_with_dates": baseline_metrics.get("return_series_with_dates", []),
+                "regime_return_series_with_dates": regime_metrics.get("return_series_with_dates", []),
             }
         )
 
@@ -662,12 +697,18 @@ def evaluate_regime_specific_weights(
     regime_oos = round(sum(regime_values) / len(regime_values), 4)
     positive_folds = sum(1 for value in improvements if value > 0)
     fold_count = len(rows)
-    fdr_result = _calibrate_fdr_result(positive_folds, fold_count)
+    daily_increments = _daily_increment_series(
+        rows, "baseline_return_series_with_dates", "regime_return_series_with_dates"
+    )
+    fdr_result = _calibrate_fdr_result(positive_folds, fold_count, increments=daily_increments)
+    dsr_result = fdr_result.get("dsr") or {}
     oos_passed = regime_oos > baseline_oos + margin and positive_folds > fold_count // 2
-    can_promote = oos_passed and bool(fdr_result.get("passed"))
+    can_promote = oos_passed and bool(fdr_result.get("passed")) and bool(dsr_result.get("passed"))
     status = "oos_passed" if can_promote else "shadow_only"
     if oos_passed and not fdr_result.get("passed"):
         status = "fdr_blocked"
+    elif oos_passed and fdr_result.get("passed") and not dsr_result.get("passed"):
+        status = "dsr_blocked"
     final_model = _fit_regime_specific_weights(
         strategy,
         samples,
@@ -690,11 +731,13 @@ def evaluate_regime_specific_weights(
         "fold_count": fold_count,
         "margin": margin,
         "fdr": fdr_result,
+        "dsr": dsr_result,
         "can_promote": can_promote,
         "weights_by_regime": final_model.get("weights", {}),
         "regime_sample_counts": final_model.get("sample_counts", {}),
         "fallback_regimes": sorted(final_model.get("fallback_regimes", [])),
         "folds": rows,
+        "daily_increment_series": daily_increments,
     }
 
 
@@ -742,6 +785,8 @@ def evaluate_meta_labeling_gate(
                 "oos_improvement": round(meta_obj - baseline_obj, 4),
                 "baseline_avg_return": baseline_metrics.get("absolute_avg_period_return", 0.0),
                 "meta_avg_return": meta_metrics.get("absolute_avg_period_return", 0.0),
+                "baseline_return_series_with_dates": baseline_metrics.get("return_series_with_dates", []),
+                "meta_return_series_with_dates": meta_metrics.get("return_series_with_dates", []),
             }
         )
     baseline_values = [coerce_number(row["baseline_oos_objective"]) for row in rows]
@@ -752,12 +797,18 @@ def evaluate_meta_labeling_gate(
     meta_oos = round(sum(meta_values) / len(meta_values), 4)
     positive_folds = sum(1 for value in improvements if value > 0)
     fold_count = len(rows)
-    fdr_result = _calibrate_fdr_result(positive_folds, fold_count)
+    daily_increments = _daily_increment_series(
+        rows, "baseline_return_series_with_dates", "meta_return_series_with_dates"
+    )
+    fdr_result = _calibrate_fdr_result(positive_folds, fold_count, increments=daily_increments)
+    dsr_result = fdr_result.get("dsr") or {}
     oos_passed = meta_oos > baseline_oos + margin and positive_folds > fold_count // 2
-    can_enforce = oos_passed and bool(fdr_result.get("passed"))
+    can_enforce = oos_passed and bool(fdr_result.get("passed")) and bool(dsr_result.get("passed"))
     status = "oos_passed" if can_enforce else "shadow_only"
     if oos_passed and not fdr_result.get("passed"):
         status = "fdr_blocked"
+    elif oos_passed and fdr_result.get("passed") and not dsr_result.get("passed"):
+        status = "dsr_blocked"
     final_model = train_meta_label_model(strategy, samples)
     return {
         "ok": True,
@@ -773,12 +824,35 @@ def evaluate_meta_labeling_gate(
         "fold_count": fold_count,
         "margin": margin,
         "fdr": fdr_result,
+        "dsr": dsr_result,
         "can_enforce": can_enforce,
         "model_status": final_model.get("status"),
         "model_sample_count": final_model.get("sample_count", 0),
         "folds": rows,
+        "daily_increment_series": daily_increments,
     }
 
+
+
+def _daily_increment_series(
+    rows: List[Dict[str, object]],
+    baseline_field: str,
+    challenger_field: str,
+) -> List[float]:
+    """Collapse cross-sectional fold outputs to one paired observation per day."""
+    baseline_by_date: Dict[str, List[float]] = {}
+    challenger_by_date: Dict[str, List[float]] = {}
+    for row in rows or []:
+        for date_value, value in row.get(baseline_field) or []:
+            baseline_by_date.setdefault(str(date_value), []).append(coerce_number(value))
+        for date_value, value in row.get(challenger_field) or []:
+            challenger_by_date.setdefault(str(date_value), []).append(coerce_number(value))
+    increments = []
+    for date_value in sorted(set(baseline_by_date) & set(challenger_by_date)):
+        baseline = sum(baseline_by_date[date_value]) / len(baseline_by_date[date_value])
+        challenger = sum(challenger_by_date[date_value]) / len(challenger_by_date[date_value])
+        increments.append(round(challenger - baseline, 6))
+    return increments
 
 
 def _metrics_from_score_rank(samples: List[Dict[str, object]], score_key: str, top_k: int) -> Dict[str, object]:
@@ -1143,18 +1217,54 @@ def _interaction_score_delta(components: Dict[str, object], model: Dict[str, obj
     return max(-delta_cap, min(delta_cap, delta))
 
 
-def _calibrate_fdr_result(positive_folds: int, fold_count: int) -> Dict[str, object]:
-    p_value = _binomial_tail_probability(positive_folds, fold_count)
+def _calibrate_fdr_result(
+    positive_folds: int,
+    fold_count: int,
+    increments: List[object] = None,
+    experiment_id: str = "",
+) -> Dict[str, object]:
+    increments = [coerce_number(value) for value in (increments or []) if value is not None]
+    p_value = (
+        moving_block_bootstrap_positive_mean_p_value(increments)
+        if len(increments) >= 2
+        else _binomial_tail_probability(positive_folds, fold_count)
+    )
     q = coerce_number(getattr(config, "CALIBRATE_FDR_Q", 0.1), 0.1)
     enabled = bool(getattr(config, "ENABLE_CALIBRATE_FDR", False))
-    passed = (not enabled) or p_value <= q
+    candidate_id = str(experiment_id or "runtime_candidate")
+    records = []
+    try:
+        records = list_experiments()
+    except Exception:
+        records = []
+    records = [record for record in records if isinstance(record, dict)]
+    records.append(
+        {
+            "experiment_id": candidate_id,
+            "experiment_family": "runtime_calibration",
+            "trial_count": 1,
+            "result": {"p_value": p_value},
+        }
+    )
+    family_fdr = unified_experiment_fdr(records, q=q)
+    passed = (not enabled) or candidate_id in set(family_fdr.get("rejected_experiment_ids") or [])
+    dsr = deflated_sharpe_ratio(
+        increments,
+        trial_count=max(1, int(sum(int(record.get("trial_count") or 1) for record in records))),
+        probability_threshold=coerce_number(getattr(config, "EXPERIMENT_DSR_MIN_PROBABILITY", 0.95), 0.95),
+    )
     return {
         "enabled": enabled,
-        "method": "fold_sign_test",
+        "method": "unified_bh_fdr",
+        "scope": "full_experiment_family",
         "q": q,
-        "p_value": round(p_value, 6),
+        "p_value": round(coerce_number(p_value, 1.0), 8),
         "passed": passed,
         "status": "passed" if passed else "blocked",
+        "tested_count": family_fdr.get("tested_count", 0),
+        "rejected_experiment_ids": family_fdr.get("rejected_experiment_ids", []),
+        "adjusted_p_values": family_fdr.get("adjusted_p_values", []),
+        "dsr": dsr,
     }
 
 
@@ -1172,32 +1282,7 @@ def _mean_ci(values: List[object], z_score: float = 1.96) -> tuple:
 
 
 def benjamini_hochberg_fdr(p_values: List[object], q: float = 0.1) -> Dict[str, object]:
-    valid = []
-    for index, value in enumerate(p_values or []):
-        p_value = coerce_number(value, None)
-        if p_value is None or p_value < 0 or p_value > 1:
-            continue
-        valid.append((p_value, index))
-    if not valid:
-        return {"q": q, "tested_count": 0, "rejected": [], "rejected_count": 0, "threshold": None}
-    valid.sort(key=lambda item: item[0])
-    q = max(0.0, min(1.0, coerce_number(q, 0.1)))
-    threshold = None
-    rejected_rank = 0
-    tested_count = len(valid)
-    for rank, (p_value, _original_index) in enumerate(valid, start=1):
-        candidate_threshold = q * rank / tested_count
-        if p_value <= candidate_threshold:
-            threshold = candidate_threshold
-            rejected_rank = rank
-    rejected = [original_index for _p_value, original_index in valid[:rejected_rank]]
-    return {
-        "q": q,
-        "tested_count": tested_count,
-        "rejected": rejected,
-        "rejected_count": len(rejected),
-        "threshold": round(threshold, 6) if threshold is not None else None,
-    }
+    return _benjamini_hochberg_fdr(p_values, q=q)
 
 
 def calibrate_with_fdr_guard(
@@ -1730,4 +1815,3 @@ def _write_weights_override(patch: Dict[str, object]) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

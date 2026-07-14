@@ -90,7 +90,6 @@
           if (!options.skipAutoOutcomeUpdate) {
             autoFillMissingValidationOutcomes(payload.metrics || {}, payload.dates || []);
           }
-          loadTuningLatest(strategy);
         } catch (err) {
           /* 指标慢或失败不影响批次列表和明细查看 */
         }
@@ -140,50 +139,162 @@
         syncValidationSelection(payload.dates || []);
       }
 
-      async function loadTuningLatest(strategy = currentValidationStrategy()) {
-        if (!els.toolResultPane) return;
-        const params = new URLSearchParams({ strategy });
-        try {
-          const res = await fetch(`/api/strategy-validation/tuning?${params.toString()}`);
-          const payload = await res.json();
-          if (!payload.ok || strategy !== currentValidationStrategy()) {
-            return;
-          }
-        } catch (err) {
-          /* 调参建议不影响验证主流程 */
+      function tuningRunMarkup(payload, error = "") {
+        if (error) {
+          return `
+            <section class="strategy-tuning-report" aria-label="影子调参建议">
+              <div class="tuning-line">
+                <strong>影子调参建议暂不可用</strong>
+                <span>${escapeHtml(error)}</span>
+              </div>
+            </section>
+          `;
         }
-      }
-
-      function renderTuningRun(run, strategy = currentValidationStrategy()) {
-        if (!els.toolResultPane) return;
-        const plan = run?.plan || run || null;
+        const run = payload?.latest || {};
+        const plan = run?.plan || payload?.plan || null;
         if (!plan || !Object.keys(plan).length) {
-          renderToolResult('<div class="empty">暂无调参建议</div>');
-          return;
+          return `
+            <section class="strategy-tuning-report" aria-label="影子调参建议">
+              <div class="empty">暂无影子调参建议</div>
+            </section>
+          `;
         }
         const issues = (plan.issues || []).slice(0, 4);
         const suggestions = (plan.suggestions || []).slice(0, 6);
         const gate = plan.gate || {};
         const gateItems = (gate.items || []).slice(0, 4);
         const statusText = plan.can_apply
-          ? "允许应用"
+          ? "影子建议满足门槛"
           : plan.shadow_mode
           ? "影子验证"
           : "仅记录";
+        return `
+          <section class="strategy-tuning-report" aria-label="影子调参建议">
+            <div class="tuning-line">
+              <strong>${escapeHtml(statusText)}</strong>
+              <span class="tag muted">${payload?.reused ? "复用已有建议" : "建议已更新"}</span>
+              <span>${escapeHtml(plan.reason || "-")}</span>
+              <span>${escapeHtml(plan.generated_at || run?.run_time || "")}</span>
+            </div>
+            <div class="tuning-tags">
+              ${issues.length ? issues.map(item => `<span class="tag warning">${escapeHtml(item)}</span>`).join("") : '<span class="tag muted">暂无主要问题</span>'}
+            </div>
+            <div class="tuning-tags">
+              ${suggestions.length ? suggestions.map(item => `<span class="tag validation">${escapeHtml(item.parameter)}：${escapeHtml(formatTuningValue(item.value))}</span>`).join("") : '<span class="tag muted">暂无参数建议</span>'}
+            </div>
+            <div class="tuning-tags">
+              ${gateItems.map(item => `<span class="tag ${item.passed ? "stable" : "risk"}">${escapeHtml(item.name)} ${item.passed ? "通过" : "阻断"}</span>`).join("")}
+            </div>
+          </section>
+        `;
+      }
+
+      async function loadStrategyValidationReport() {
+        const strategy = currentValidationStrategy();
+        const days = String(els.validationDaysSelect.value || "20");
+        const buttonLabel = els.generateTuningBtn?.textContent || "策略验证";
+        if (els.generateTuningBtn) {
+          els.generateTuningBtn.disabled = true;
+          els.generateTuningBtn.textContent = "验证中…";
+        }
+        if (els.stockPredictionBtn) els.stockPredictionBtn.disabled = true;
+        setOpsStatus(
+          els.tuningStatus,
+          `正在读取${strategyLabel(strategy)}策略近${days}日历史验证报告…`,
+          "pending",
+        );
+        renderToolResult('<div class="empty">正在汇总真实样本与验证门控...</div>');
+        const params = new URLSearchParams({ strategy, days });
+        try {
+          const validationRes = await fetch(`/api/strategy-validation?${params.toString()}`);
+          const validationPayload = await validationRes.json();
+          if (!validationRes.ok || !validationPayload.ok) {
+            throw new Error(validationPayload.error || "策略验证报告接口返回异常");
+          }
+          if (strategy !== currentValidationStrategy()) return;
+          if (validationPayload.metrics && els.validationSampleCount) {
+            state.validationMetrics = validationPayload.metrics;
+            renderValidationMetrics(validationPayload.metrics, validationPayload.validation_gate || {});
+          }
+
+          let tuningPayload = null;
+          let tuningError = "";
+          try {
+            const tuningRes = await fetch(`/api/strategy-validation/tuning?${params.toString()}`, {
+              method: "POST",
+            });
+            tuningPayload = await tuningRes.json();
+            if (!tuningRes.ok || !tuningPayload.ok) {
+              throw new Error(tuningPayload.error || "影子调参建议接口返回异常");
+            }
+          } catch (err) {
+            tuningError = err.message || String(err);
+          }
+          if (strategy !== currentValidationStrategy()) return;
+
+          renderStrategyValidationReport(validationPayload, strategy, days, tuningPayload, tuningError);
+          if (tuningError) {
+            setOpsStatus(
+              els.tuningStatus,
+              `${strategyLabel(strategy)}策略验证已完成；调参建议生成失败：${tuningError}`,
+              "bad",
+            );
+          } else {
+            const tuningStatus = tuningPayload?.reused ? "已复用现有调参建议" : "调参建议已更新";
+            setOpsStatus(
+              els.tuningStatus,
+              `${strategyLabel(strategy)}策略近${days}日验证已完成，${tuningStatus}。`,
+              "ok",
+            );
+          }
+        } catch (err) {
+          renderToolResult(`
+            <div class="prediction-empty">
+              <strong>策略验证失败</strong>
+              <p>${escapeHtml(err.message)}</p>
+            </div>
+          `);
+          setOpsStatus(els.tuningStatus, `验证失败：${err.message}`, "bad");
+        } finally {
+          if (els.generateTuningBtn) {
+            els.generateTuningBtn.disabled = false;
+            els.generateTuningBtn.textContent = buttonLabel;
+          }
+          if (els.stockPredictionBtn) els.stockPredictionBtn.disabled = false;
+        }
+      }
+
+      function renderStrategyValidationReport(payload, strategy, days, tuningPayload = null, tuningError = "") {
+        const metrics = payload.metrics || {};
+        const gate = payload.validation_gate || {};
+        const sampleCount = Number(metrics.sample_count || 0);
+        const realDays = Number(metrics.real_day_count || 0);
+        const pending = Number(metrics.pending_outcome_count || 0);
+        const winRate = metrics.real_win_rate_primary_net ?? metrics.win_rate_primary_net;
+        const avgReturn = metrics.real_avg_primary_return_net ?? metrics.avg_primary_return_net;
+        const verdict = sampleCount <= 0
+          ? "暂无可验证样本"
+          : gate.blocked
+          ? "验证门控未通过"
+          : "验证门控通过";
+        const verdictClass = sampleCount <= 0 || gate.blocked ? "warning" : "stable";
         renderToolResult(`
-          <div class="tuning-line">
-            <strong>${escapeHtml(statusText)}</strong>
-            <span>${escapeHtml(plan.reason || "-")}</span>
-            <span>${escapeHtml(plan.generated_at || run?.run_time || "")}</span>
-          </div>
-          <div class="tuning-tags">
-            ${issues.length ? issues.map(item => `<span class="tag warning">${escapeHtml(item)}</span>`).join("") : '<span class="tag muted">暂无主要问题</span>'}
-          </div>
-          <div class="tuning-tags">
-            ${suggestions.length ? suggestions.map(item => `<span class="tag validation">${escapeHtml(item.parameter)}：${escapeHtml(formatTuningValue(item.value))}</span>`).join("") : '<span class="tag muted">暂无参数建议</span>'}
-          </div>
-          <div class="tuning-tags">
-            ${gateItems.map(item => `<span class="tag ${item.passed ? "stable" : "risk"}">${escapeHtml(item.name)} ${item.passed ? "通过" : "阻断"}</span>`).join("")}
+          <div class="strategy-validation-combined">
+            <section class="strategy-validation-report" aria-label="策略验证报告">
+              <div class="tuning-line">
+                <strong>${escapeHtml(strategyLabel(strategy))} · 近${escapeHtml(days)}日</strong>
+                <span class="tag ${verdictClass}">${escapeHtml(verdict)}</span>
+              </div>
+              <div class="tuning-tags">
+                <span class="tag validation">真实交易日 ${realDays}</span>
+                <span class="tag validation">有效样本 ${sampleCount}</span>
+                <span class="tag ${pending ? "warning" : "muted"}">待回填 ${pending}</span>
+                <span class="tag validation">净胜率 ${winRate == null ? "-" : `${formatNumber(winRate, 1)}%`}</span>
+                <span class="tag validation">净收益 ${formatSignedPct(avgReturn)}</span>
+              </div>
+              <p>${escapeHtml(gate.reason || "以真实样本、交易成本和当前策略版本统计。")}</p>
+            </section>
+            ${tuningRunMarkup(tuningPayload, tuningError)}
           </div>
         `);
       }
@@ -996,6 +1107,7 @@
       return {
         handleValidationDaysChange,
         handleValidationStrategyChange,
+        loadStrategyValidationReport,
         loadValidation,
         moveValidationDatePage,
         runValidationBaselineBackfill,

@@ -165,6 +165,9 @@ def test_horizon_refresh_failure_is_cached_without_thread_traceback(tmp_path):
     ), patch(
         "stock_analyzer.providers.MarketDataProvider.health",
         return_value={"quotes_source": "测试行情", "errors": []},
+    ), patch(
+        "stock_analyzer.services.app_services.recommendation_is_frozen",
+        return_value=False,
     ), app_patch_context(tmp_path) as app:
         client = app.test_client()
         first = client.get("/api/tomorrow-picks?top_n=18&market=all")
@@ -180,4 +183,3 @@ def test_horizon_refresh_failure_is_cached_without_thread_traceback(tmp_path):
     assert payload["meta"]["fallback"] == "live_refresh_failed"
     assert not payload["ok"]
     assert "东方财富直连行情失败" in payload["error"]
-

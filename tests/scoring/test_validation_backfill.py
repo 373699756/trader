@@ -211,9 +211,9 @@ class ValidationBackfillTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["execute"])
-        self.assertEqual(payload["before"]["status"], "insufficient_current_baseline_samples")
-        self.assertEqual(payload["candidates"]["candidate_count"], 0)
-        self.assertIsNone(payload["outcome"])
+        self.assertEqual(payload["before"]["status"], "needs_backfill")
+        self.assertEqual(payload["candidates"]["candidate_count"], 1)
+        self.assertEqual(payload["outcome"]["updated"], 1)
         self.assertFalse(payload["after"]["needs_backfill"])
         self.assertEqual(payload["after"]["current_baseline_outcome_count"], 1)
 

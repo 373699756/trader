@@ -67,6 +67,7 @@ class FrontendContractTest(unittest.TestCase):
             const renderer = window.TraderRecommendationRenderers;
             const row = {
               score: 72.4,
+              decision_score: 91.7,
               avg_risk: 31,
               predicted_net_return: 1.25,
               expected_return_net: 1.25,
@@ -88,6 +89,7 @@ class FrontendContractTest(unittest.TestCase):
         )
 
         self.assertIn("综72.4", result["scoreHtml"])
+        self.assertIn("质91.7", result["scoreHtml"])
         self.assertIn("险31", result["scoreHtml"])
         self.assertIn("模型影子", result["scoreHtml"])
         self.assertIn("E+1.25%", result["scoreHtml"])
@@ -97,6 +99,16 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("模型胜率61.2%", result["explanation"])
         self.assertIn("置信影子", result["explanation"])
         self.assertNotIn("影子排序分", result["explanation"])
+
+    def test_stock_prediction_labels_rule_consistency_not_probability_confidence(self):
+        with open("static/validation-stock-prediction.js", encoding="utf-8") as source:
+            prediction_source = source.read()
+
+        self.assertIn("规则一致度", prediction_source)
+        self.assertIn("formatNumber(p.rule_consistency, 1)", prediction_source)
+        self.assertNotIn("p.signal_coverage", prediction_source)
+        self.assertNotIn("p.confidence", prediction_source)
+        self.assertNotIn("本地置信", prediction_source)
 
     def test_empty_recommendation_action_summary_keeps_card_layout(self):
         result = self.run_node(
@@ -194,7 +206,133 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("本地量化", prediction_source)
         self.assertIn('id="stockPredictionBtn" class="primary-action" type="button">走势预测</button>', template_source)
         self.assertIn('id="generateTuningBtn" class="primary-action" type="button">策略验证</button>', template_source)
+        self.assertNotIn("shadowTuningBtn", template_source + app_source + prediction_source)
         self.assertIn('class="tool-action-divider"', template_source)
+
+    def test_strategy_validation_uses_history_without_stock_code(self):
+        result = self.run_node(
+            """
+            global.window = {
+              TraderValidationUI: {},
+              TraderValidationRenderers: {},
+            };
+            require('./static/validation-app.js');
+            const calls = [];
+            let failTuning = false;
+            global.fetch = async (url, options = {}) => {
+              calls.push({url, method: options.method || 'GET'});
+              if (!url.includes('/tuning?')) {
+                return {
+                  ok: true,
+                  json: async () => ({
+                    ok: true,
+                    metrics: {
+                      sample_count: 12,
+                      real_day_count: 8,
+                      pending_outcome_count: 1,
+                      real_win_rate_primary_net: 52.5,
+                      real_avg_primary_return_net: 0.4,
+                    },
+                    validation_gate: {blocked: false, reason: '真实样本验证完成'},
+                  }),
+                };
+              }
+              if (failTuning) {
+                return {
+                  ok: false,
+                  json: async () => ({ok: false, error: '调参服务暂不可用'}),
+                };
+              }
+              const plan = {
+                can_apply: false,
+                shadow_mode: true,
+                reason: '调参建议只进入影子验证',
+                generated_at: '2026-07-14T18:00:00',
+                issues: [],
+                suggestions: [],
+                gate: {items: []},
+              };
+              return {
+                ok: true,
+                json: async () => ({ok: true, reused: true, plan, latest: {plan}}),
+              };
+            };
+            const resultPane = {innerHTML: ''};
+            const tuningStatus = {};
+            const app = window.TraderValidationApp.create({
+              state: {},
+              els: {
+                validationStrategySelect: {value: 'tomorrow_picks'},
+                validationDaysSelect: {value: '60'},
+                generateTuningBtn: {textContent: '策略验证', disabled: false},
+                stockPredictionBtn: {disabled: false},
+                tuningStatus,
+                toolResultPane: resultPane,
+              },
+              helpers: {
+                escapeHtml: value => String(value),
+                formatNumber: value => String(value),
+                numberClass: () => '',
+                strategyLabel: strategy => strategy === 'tomorrow_picks' ? '明日' : strategy,
+                validationSnapshotStrategiesText: () => '',
+              },
+              config: {VALIDATION_AUTO_REFRESH_MS: 30000, VALIDATION_DATE_PAGE_SIZE: 5},
+              status: {
+                renderToolResult: html => { resultPane.innerHTML = html; },
+                setOpsStatus: (target, text, level) => {
+                  target.textContent = text;
+                  target.level = level;
+                },
+                setStatus: () => {},
+              },
+            });
+            (async () => {
+              await app.loadStrategyValidationReport();
+              const success = {
+                calls: calls.slice(),
+                status: {...tuningStatus},
+                html: resultPane.innerHTML,
+              };
+              failTuning = true;
+              await app.loadStrategyValidationReport();
+              process.stdout.write(JSON.stringify({
+                success,
+                partial: {
+                  status: tuningStatus,
+                  html: resultPane.innerHTML,
+                },
+              }));
+            })().catch(error => {
+              process.stderr.write(String(error));
+              process.exit(1);
+            });
+            """
+        )
+
+        self.assertEqual(
+            result["success"]["calls"],
+            [
+                {
+                    "url": "/api/strategy-validation?strategy=tomorrow_picks&days=60",
+                    "method": "GET",
+                },
+                {
+                    "url": "/api/strategy-validation/tuning?strategy=tomorrow_picks&days=60",
+                    "method": "POST",
+                },
+            ],
+        )
+        self.assertEqual(result["success"]["status"]["level"], "ok")
+        self.assertIn("近60日验证已完成", result["success"]["status"]["textContent"])
+        self.assertIn("真实样本验证完成", result["success"]["html"])
+        self.assertIn("真实交易日 8", result["success"]["html"])
+        self.assertIn("调参建议只进入影子验证", result["success"]["html"])
+        self.assertIn("复用已有建议", result["success"]["html"])
+        self.assertEqual(result["partial"]["status"]["level"], "bad")
+        self.assertIn("策略验证已完成", result["partial"]["status"]["textContent"])
+        self.assertIn("真实交易日 8", result["partial"]["html"])
+        self.assertIn("影子调参建议暂不可用", result["partial"]["html"])
+        self.assertIn("调参服务暂不可用", result["partial"]["html"])
 
     def test_validation_snapshot_status_uses_backend_strategy_list(self):
         with open("static/app.js", encoding="utf-8") as source:

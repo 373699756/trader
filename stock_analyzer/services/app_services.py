@@ -51,7 +51,8 @@ from ..recommendation_snapshot import load_recommendation_snapshot
 from ..risk_blacklist import load_risk_blacklist
 from ..selfcheck import factor_coverage
 from ..sentiment import build_market_sentiment_index
-from ..snapshot import SNAPSHOT_STRATEGIES, run_snapshot, run_snapshots
+from ..snapshot import SNAPSHOT_STRATEGIES, run_missing_close_snapshots, run_snapshot, run_snapshots
+from ..snapshot_phase import market_close_reached, normalize_snapshot_phase, phase_payload
 from ..strategies import storage_strategy_name
 from ..validation_policy import validation_baseline_config
 from ..validation_replay import backfill_strategy_validation_samples
@@ -116,6 +117,7 @@ class _AppServiceContext:
             "schedule_time": config.VALIDATION_AUTO_SNAPSHOT_TIME,
             "market": config.VALIDATION_AUTO_SNAPSHOT_MARKET,
             "last_attempt_date": "",
+            "retry_count": 0,
             "deadline_missed": False,
             "deadline_missed_at": "",
             "last_started_at": "",
@@ -259,6 +261,13 @@ class _AppServiceContext:
         return metrics
 
     def recommendations_payload(self, top_n: int, market: str) -> Tuple[Dict[str, object], int]:
+        if market_close_reached(
+            datetime.now(),
+            str(getattr(config, "MARKET_CLOSE_TIME", "15:00")),
+        ):
+            after_close = self._after_close_recommendations_payload(top_n, market)
+            if after_close is not None:
+                return self._overlay_live_quotes_on_payload(after_close), 200
         refresh_after_seconds = max(5, int(config.REFRESH_SECONDS))
         entry = self._cached_recommendation_entry(top_n, market) or self._snapshot_entry(top_n, market)
         if entry is not None:
@@ -303,6 +312,13 @@ class _AppServiceContext:
         market: str,
         max_age: int,
     ) -> Tuple[Dict[str, object], int]:
+        if market_close_reached(
+            datetime.now(),
+            str(getattr(config, "MARKET_CLOSE_TIME", "15:00")),
+        ):
+            after_close = self._after_close_recommendations_payload(top_n, market)
+            if after_close is not None:
+                return self._overlay_live_quotes_on_payload(after_close), 200
         snapshot = load_recommendation_snapshot(
             config.RECOMMENDATION_SNAPSHOT_PATH,
             max_age_seconds=max_age,
@@ -321,6 +337,25 @@ class _AppServiceContext:
 
     def horizon_payload(self, strategy: str, top_n: int, market: str) -> Tuple[Dict[str, object], int]:
         try:
+            if market_close_reached(
+                datetime.now(),
+                str(getattr(config, "MARKET_CLOSE_TIME", "15:00")),
+            ):
+                signal_date = datetime.now().date().isoformat()
+                run_missing_close_snapshots(
+                    self.provider,
+                    self.validation_store,
+                    [strategy],
+                    market=market,
+                )
+                saved = self._saved_horizon_payload(
+                    strategy,
+                    top_n,
+                    market,
+                    signal_date=signal_date,
+                )
+                if saved is not None:
+                    return self._overlay_live_quotes_on_payload(saved), 200
             payload, status = self._horizon_payload(strategy, top_n, market)
             return self._overlay_live_quotes_on_payload(payload), status
         except Exception as exc:
@@ -740,18 +775,23 @@ class _AppServiceContext:
                     ok=True,
                     include_health=False,
                     strategy=strategy,
+                    operation="shadow_tuning_suggestion",
                     latest=self.validation_store.latest_tuning_run(strategy),
                 )
             tuning_result = self.run_validation_tuning_once([strategy], days=days)
             self.invalidate_metrics_cache()
             latest = self.validation_store.latest_tuning_run(strategy)
             plan = latest.get("plan") or {}
+            run = (tuning_result.get("runs") or [{}])[0]
             return self.json_payload(
                 ok=bool(tuning_result.get("ok")),
                 include_health=False,
                 strategy=strategy,
+                operation="shadow_tuning_suggestion",
                 plan=plan,
-                saved=(tuning_result.get("runs") or [{}])[0].get("saved", {}),
+                input_fingerprint=str(run.get("input_fingerprint") or plan.get("input_fingerprint") or ""),
+                reused=bool(run.get("reused")),
+                saved=run.get("saved", {}),
                 latest=latest,
                 tuning=tuning_result,
             )
@@ -1021,8 +1061,9 @@ class _AppServiceContext:
         stage: str = "ready",
         saved_at: str = "",
         saved_at_ts: float | None = None,
+        _skip_frozen_lookup: bool = False,
     ) -> Dict[str, object]:
-        if recommendation_is_frozen():
+        if recommendation_is_frozen() and not _skip_frozen_lookup:
             frozen = self._cached_recommendation_entry(top_n, market) or self._snapshot_entry(top_n, market)
             if frozen is not None:
                 return frozen
@@ -1089,6 +1130,7 @@ class _AppServiceContext:
             stage="ready",
             saved_at=str(snapshot.get("saved_at") or ""),
             saved_at_ts=time.time() - float(snapshot.get("age_seconds") or 0.0),
+            _skip_frozen_lookup=True,
         )
 
     def _safe_provider_health(self) -> Dict[str, object]:
@@ -1171,6 +1213,73 @@ class _AppServiceContext:
             meta=meta,
         )
         return self._remember_horizon_payload(strategy, top_n, market, payload)["payload"]
+
+    def _after_close_recommendations_payload(
+        self,
+        top_n: int,
+        market: str,
+    ) -> Dict[str, object] | None:
+        signal_date = datetime.now().date().isoformat()
+        strategies = list(self._configured_auto_snapshot_strategies())
+        close_result = run_missing_close_snapshots(
+            self.provider,
+            self.validation_store,
+            strategies,
+            market=market,
+        )
+        rows_by_strategy: Dict[str, List[Dict[str, object]]] = {}
+        phases: Dict[str, Dict[str, object]] = {}
+        generated_times = []
+        for strategy in strategies:
+            batch = self.validation_store.saved_signal_batch(strategy, signal_date)
+            if not batch:
+                rows_by_strategy[strategy] = []
+                continue
+            phase = normalize_snapshot_phase(batch.get("snapshot_phase"))
+            rows = self.validation_store.latest_signal_rows(
+                strategy,
+                signal_date=signal_date,
+                snapshot_phase=phase,
+            )
+            rows_by_strategy[strategy] = rows[: max(0, int(top_n or 0))]
+            phases[strategy] = phase_payload(phase, as_of=str(batch.get("signal_time") or ""))
+            if batch.get("signal_time"):
+                generated_times.append(str(batch["signal_time"]))
+        if not any(rows_by_strategy.values()):
+            return None
+        distinct_phases = sorted({item["snapshot_phase"] for item in phases.values()})
+        distinct_price_bases = sorted({item["price_basis"] for item in phases.values()})
+        generated_at = max(generated_times) if generated_times else ""
+        short_rows = rows_by_strategy.get("short_term") or []
+        return {
+            "ok": True,
+            "data": short_rows,
+            "recommendations": {
+                "short_term": short_rows,
+                "tomorrow_picks": rows_by_strategy.get("tomorrow_picks") or [],
+                "swing_picks": rows_by_strategy.get("swing_picks") or [],
+            },
+            "meta": {
+                "generated_at": generated_at,
+                "as_of": generated_at,
+                "signal_date": signal_date,
+                "snapshot_phase": distinct_phases[0] if len(distinct_phases) == 1 else "mixed",
+                "price_basis": distinct_price_bases[0] if len(distinct_price_bases) == 1 else "mixed",
+                "phases": phases,
+                "display_count": len(short_rows),
+                "display_limit": top_n,
+                "top_n": top_n,
+                "market_filter": market,
+                "close_snapshot": close_result,
+            },
+            "health": self._safe_provider_health(),
+            "disclaimer": self.research_disclaimer(),
+            "snapshot": {
+                "saved_at": generated_at,
+                "source": "validation_db_daily_snapshot",
+                "stage": "ready",
+            },
+        }
 
     def _live_candidates_with_regime(self, attach_codes=None) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, object]]:
         quotes = self._current_quotes()
@@ -1658,12 +1767,24 @@ class _AppServiceContext:
         worker.start()
         return True
 
-    def _saved_horizon_payload(self, strategy: str, top_n: int, market: str) -> Dict[str, object] | None:
-        saved_rows = self.validation_store.latest_signal_rows(strategy)
+    def _saved_horizon_payload(
+        self,
+        strategy: str,
+        top_n: int,
+        market: str,
+        signal_date: str = "",
+    ) -> Dict[str, object] | None:
+        batch = self.validation_store.saved_signal_batch(strategy, signal_date) if signal_date else {}
+        phase = normalize_snapshot_phase(batch.get("snapshot_phase")) if batch else ""
+        saved_rows = self.validation_store.latest_signal_rows(
+            strategy,
+            signal_date=signal_date,
+            snapshot_phase=phase,
+        )
         if not saved_rows:
             return None
         if strategy == "tomorrow_picks":
-            return saved_tomorrow_fallback_payload(
+            payload = saved_tomorrow_fallback_payload(
                 saved_rows=saved_rows,
                 top_n=top_n,
                 market=market,
@@ -1675,15 +1796,23 @@ class _AppServiceContext:
                 provider_health_fn=self.provider.health,
                 research_disclaimer_fn=self.research_disclaimer,
             )
-        return saved_swing_fallback_payload(
-            saved_rows=saved_rows,
-            top_n=top_n,
-            market=market,
-            validation_store=self.validation_store,
-            cached_metrics_fn=self.cached_metrics,
-            provider_health_fn=self.provider.health,
-            research_disclaimer_fn=self.research_disclaimer,
-        )
+        else:
+            payload = saved_swing_fallback_payload(
+                saved_rows=saved_rows,
+                top_n=top_n,
+                market=market,
+                validation_store=self.validation_store,
+                cached_metrics_fn=self.cached_metrics,
+                provider_health_fn=self.provider.health,
+                research_disclaimer_fn=self.research_disclaimer,
+            )
+        meta = dict(payload.get("meta") or {})
+        if batch:
+            meta.update(phase_payload(phase, as_of=str(batch.get("signal_time") or "")))
+            meta["generated_at"] = str(batch.get("signal_time") or "")
+            meta["signal_date"] = str(batch.get("signal_date") or signal_date)
+        payload["meta"] = meta
+        return payload
 
     def _horizon_payload(self, strategy: str, top_n: int, market: str) -> tuple:
         refresh_after_seconds = max(5, int(config.REFRESH_SECONDS))

@@ -158,13 +158,16 @@ def expected_return_artifact_promotion_gate(
     oos_passed = _oos_gate_passed(oos_result)
     fdr_passed = _fdr_gate_passed(oos_result)
     ci_passed = _ci_gate_passed(oos_result)
-    can_promote = oos_passed and fdr_passed and ci_passed
+    dsr_passed = _dsr_gate_passed(oos_result)
+    can_promote = oos_passed and fdr_passed and ci_passed and dsr_passed
     if can_promote:
         status = "active"
     elif not oos_passed:
         status = "oos_blocked"
     elif not fdr_passed:
         status = "fdr_blocked"
+    elif not dsr_passed:
+        status = "dsr_blocked"
     else:
         status = "ci_blocked"
     return {
@@ -174,6 +177,7 @@ def expected_return_artifact_promotion_gate(
         "oos_passed": oos_passed,
         "fdr_passed": fdr_passed,
         "ci_passed": ci_passed,
+        "dsr_passed": dsr_passed,
     }
 
 
@@ -481,6 +485,16 @@ def _ci_gate_passed(oos_result: Dict[str, object]) -> bool:
         return bool(ci.get("passed"))
     low = coerce_number(oos_result.get("avg_return_improvement_ci95_low"), None)
     return low is not None and low >= 0.0
+
+
+def _dsr_gate_passed(oos_result: Dict[str, object]) -> bool:
+    dsr = oos_result.get("dsr") if isinstance(oos_result, dict) else None
+    if not isinstance(dsr, dict):
+        fdr = oos_result.get("fdr") if isinstance(oos_result, dict) else {}
+        dsr = fdr.get("dsr") if isinstance(fdr, dict) else None
+    # Legacy artifacts predate DSR. They remain readable, while all newly built
+    # calibration results carry an explicit DSR object and are gated by it.
+    return True if not isinstance(dsr, dict) else bool(dsr.get("passed"))
 
 
 def _safe_filename(value: str) -> str:

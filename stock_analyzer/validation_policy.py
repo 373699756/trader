@@ -113,6 +113,14 @@ def validation_baseline_config(
 ) -> Dict[str, object]:
     primary_field, primary_days, primary_label = primary_return_config(strategy_name)
     execution_policy = execution_policy or build_execution_policy(strategy_name)
+    close_research = str((execution_policy.get("entry") or {}).get("timing") or "") == "same_trade_day_close_research"
+    if close_research:
+        primary_days = 5 if strategy_name == "swing_picks" else 1
+        primary_label = (
+            "T日收盘理论价至T+2-T+5规则退出"
+            if strategy_name == "swing_picks"
+            else "T日收盘理论价至T+1收盘"
+        )
     frozen_cost = execution_policy.get("cost") or {}
     tail_enabled = bool((frozen_cost.get("tail_auction") or {}).get("enabled"))
     impact_enabled = bool((frozen_cost.get("market_impact") or {}).get("enabled"))
@@ -134,6 +142,7 @@ def validation_baseline_config(
             outcome_policy_version=outcome_policy_version,
         ),
         "strategy_name": str(strategy_name or ""),
+        "snapshot_phase": str(execution_policy.get("snapshot_phase") or "legacy_unknown"),
         "primary_return_field": primary_field,
         "primary_holding_days": primary_days,
         "primary_horizon_label": primary_label,

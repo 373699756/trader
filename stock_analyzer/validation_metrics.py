@@ -99,6 +99,7 @@ class ValidationMetricsService:
                 "validation_baseline_id": validation_baseline["baseline_id"],
                 "current_baseline_outcome_count": 0,
                 "raw_outcome_sample_count": 0,
+                "phase_breakdown": {},
                 "legacy_baseline_outcome_count": 0,
                 "excluded_baseline_mismatch_count": 0,
                 "excluded_promotion_ineligible_count": 0,
@@ -136,6 +137,16 @@ class ValidationMetricsService:
                 "daily": [],
             }
         raw_rows = [dict(row) for row in rows]
+        phase_breakdown: Dict[str, Dict[str, object]] = {}
+        for row in raw_rows:
+            phase = str(row.get("snapshot_phase") or "legacy_unknown")
+            phase_row = phase_breakdown.setdefault(
+                phase,
+                {"outcome_sample_count": 0, "trade_days": set(), "primary_returns_net": []},
+            )
+            phase_row["outcome_sample_count"] += 1
+            phase_row["trade_days"].add(str(row.get("signal_date") or ""))
+            phase_row["primary_returns_net"].append(coerce_number(row.get("stored_primary_return_net")))
         current_baseline_rows: List[Dict[str, object]] = []
         baseline_mismatch_rows: List[Dict[str, object]] = []
         legacy_baseline_rows: List[Dict[str, object]] = []
@@ -234,7 +245,13 @@ class ValidationMetricsService:
                     else "hold_{}d_return".format(holding_days)
                 )
                 row["_hold_{}d_return".format(holding_days)] = coerce_number(row.get(key))
-            row["_is_replay"] = _is_replay_version(row["strategy_version"])
+            row["_sample_type"] = str(row.get("sample_type") or "unknown")
+            row["_is_replay"] = row["_sample_type"] in {
+                "daily_proxy_replay",
+                "intraday_pit_replay",
+                "legacy_baseline",
+            } or _is_replay_version(row["strategy_version"])
+            row["_is_real_forward"] = row["_sample_type"] == "real_forward"
             row["_survivorship_corrected"] = bool(row.get("survivorship_corrected"))
             row["_primary_ready"] = _outcome_ready(row, row_primary_days)
             row["_exit_ready"] = _outcome_ready(row, _exit_holding_days(strategy_name or row["strategy_name"]))
@@ -305,6 +322,14 @@ class ValidationMetricsService:
             "validation_baseline_id": validation_baseline["baseline_id"],
             "current_baseline_outcome_count": len(current_baseline_rows),
             "raw_outcome_sample_count": len(raw_rows),
+            "phase_breakdown": {
+                phase: {
+                    "outcome_sample_count": int(item["outcome_sample_count"]),
+                    "trade_day_count": len([value for value in item["trade_days"] if value]),
+                    "avg_primary_return_net": _avg(item["primary_returns_net"]),
+                }
+                for phase, item in phase_breakdown.items()
+            },
             "legacy_baseline_outcome_count": len(legacy_baseline_rows),
             "excluded_baseline_mismatch_count": len(baseline_mismatch_rows),
             "excluded_promotion_ineligible_count": len(promotion_ineligible_rows),
@@ -391,7 +416,7 @@ class ValidationMetricsService:
         except Exception:
             report = {}
         frozen = (report.get("groups") or {}).get("frozen_rule_top_k") or {}
-        return {
+        result = {
             "portfolio_day_count": int(report.get("day_count") or 0),
             "portfolio_pending_day_count": int(report.get("pending_day_count") or 0),
             "portfolio_unknown_day_count": int(report.get("unknown_day_count") or 0),
@@ -403,6 +428,21 @@ class ValidationMetricsService:
             "portfolio_max_drawdown_pct": coerce_number(frozen.get("max_drawdown_pct")),
             "portfolio_baseline_id": str(report.get("portfolio_baseline_id") or ""),
         }
+        if (
+            str(report.get("model_id") or "frozen_rule") != "frozen_rule"
+            or str(report.get("ranking_field") or "score") != "score"
+        ):
+            result.update(
+                {
+                    "challenger_statistics": {
+                        "paired_daily_increments": report.get("paired_daily_increments") or [],
+                        "paired_statistics": report.get("paired_statistics") or {},
+                        "unified_fdr": report.get("unified_fdr") or {},
+                        "promotion_gate": report.get("promotion_gate") or {},
+                    }
+                }
+            )
+        return result
 
 
 

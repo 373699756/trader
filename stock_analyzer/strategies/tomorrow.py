@@ -180,11 +180,11 @@ class TomorrowScorer:
             else:
                 if not eligible:
                     ineligible_count += 1
-                elif primary_watch_n <= 0:
-                    self.explanation_builder.append_unique_reason(row, "盘面门控仅备选")
-                elif not theme_allowed:
+                if primary_watch_n > 0 and not theme_allowed:
                     theme_limited_count += 1
                     self.explanation_builder.append_unique_reason(row, "同主题重点观察已达上限")
+                elif primary_watch_n <= 0:
+                    self.explanation_builder.append_unique_reason(row, "盘面门控仅备选")
                 self.risk_policy.mark_tomorrow_backup_watch(row)
             row["prediction_type"] = "rank_score"
             row["score_note"] = "综合分用于排序，不是上涨概率或预期收益率。"
@@ -320,11 +320,13 @@ class TomorrowScorer:
             samples=expected_return_samples,
             use_ranking=use_expected_return_ranking,
         )
+        self.ranking_policy.assign_selection_rank(rows)
         candidate_pool_rows = []
         for frozen_rank, row in enumerate(rows, start=1):
             item = dict(row)
-            item["rank"] = frozen_rank
-            item["frozen_rule_rank"] = frozen_rank
+            item["rank"] = row.get("selection_rank", frozen_rank)
+            item["frozen_rule_rank"] = row.get("selection_rank", frozen_rank)
+            item["display_rank"] = frozen_rank
             candidate_pool_rows.append(item)
         display_state = self._select_display_rows(
             rows,

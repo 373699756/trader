@@ -5,7 +5,7 @@ from collections import Counter
 from typing import Callable, Dict
 
 from . import config
-from .experiment_registry import list_experiments as _list_experiments
+from .experiment_registry import list_experiments as _list_experiments, validate_experiment
 from .normalization import coerce_number
 
 
@@ -22,15 +22,27 @@ def _experiment_audit_summary(strategy: str) -> Dict[str, object]:
             "registered_trials_for_strategy": 0,
         }
     all_records = list(experiments or [])
+    invalid_records = []
+    valid_records = []
+    for record in all_records:
+        try:
+            valid_records.append(validate_experiment(record))
+        except Exception as exc:
+            invalid_records.append(
+                {
+                    "experiment_id": str((record or {}).get("experiment_id") or ""),
+                    "error": str(exc),
+                }
+            )
     strategy_records = [
         row
-        for row in all_records
+        for row in valid_records
         if str(row.get("strategy") or "").strip() == strategy
     ]
     latest_registered_at = ""
     latest_registered_at_ts = None
     fallback_latest = ""
-    for record in all_records:
+    for record in valid_records:
         raw_at = str(record.get("registered_at") or "").strip()
         if not raw_at:
             continue
@@ -49,8 +61,10 @@ def _experiment_audit_summary(strategy: str) -> Dict[str, object]:
     )
     result_counter = Counter(str(row.get("result") or "unknown") for row in strategy_records)
     return {
-        "status": "ok",
+        "status": "invalid" if invalid_records else "ok",
         "total_registered_experiments": len(all_records),
+        "valid_registered_experiments": len(valid_records),
+        "invalid_records": invalid_records,
         "strategy_registered_experiments": len(strategy_records),
         "registered_trial_ids_for_strategy": [
             str(record.get("experiment_id") or "")
@@ -193,8 +207,27 @@ def build_strategy_oos_report(
             ),
             "portfolio_sortino": frozen_portfolio.get("sortino"),
             "portfolio_random_percentile": portfolio_baseline.get("rule_vs_random_percentile"),
+            "paired_increment_statistics": portfolio_baseline.get("paired_statistics") or {},
+            "unified_fdr": portfolio_baseline.get("unified_fdr") or {},
+            "deflated_sharpe_ratio": (
+                (portfolio_baseline.get("paired_statistics") or {}).get("dsr") or {}
+            ),
         }
     )
+    challenger_gate = portfolio_baseline.get("promotion_gate") or {}
+    has_challenger = bool(
+        str(portfolio_baseline.get("model_id") or "frozen_rule") != "frozen_rule"
+        or str(portfolio_baseline.get("ranking_field") or "score") != "score"
+    )
+    if status == "oos_passed" and has_challenger and challenger_gate.get("status") != "passed":
+        status = "statistical_gate_blocked"
+        blockers.append(
+            {
+                "code": "challenger_statistics_blocked",
+                "message": "挑战模型的日级配对增量、块 bootstrap、统一 FDR 或 DSR 未同时通过。",
+                "promotion_gate": challenger_gate,
+            }
+        )
     experiment_audit = gate_decision.get("experiment_audit")
     if not isinstance(experiment_audit, dict):
         experiment_audit = _experiment_audit_summary(strategy)
@@ -237,6 +270,12 @@ def build_strategy_oos_report(
         "validation_gate": gate_decision,
         "experiment_audit": experiment_audit,
         "portfolio_baseline": portfolio_baseline,
+        "challenger_statistics": {
+            "paired_daily_increments": portfolio_baseline.get("paired_daily_increments") or [],
+            "paired_statistics": portfolio_baseline.get("paired_statistics") or {},
+            "unified_fdr": portfolio_baseline.get("unified_fdr") or {},
+            "promotion_gate": challenger_gate,
+        },
         "summary": summary,
         "requirements": requirements,
     }

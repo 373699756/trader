@@ -78,6 +78,13 @@ def test_snapshot_persists_full_evaluated_pool_not_only_top_k(tmp_path):
         "stock_analyzer.snapshot._quote_freshness_error", return_value=""
     ), patch("stock_analyzer.snapshot._score_snapshot_strategy", return_value=(selected, meta, "pit_v1")), patch(
         "stock_analyzer.snapshot._signal_at_or_after_freeze_cutoff", return_value=False
+    ), patch(
+        "stock_analyzer.snapshot._archive_point_in_time_quotes",
+        return_value={
+            "snapshot_id": "pit-test",
+            "sample_type": "real_forward",
+            "data_source_timestamp": "2024-01-01T15:00:00",
+        },
     ):
         result = run_snapshot(Provider(), store, "tomorrow_picks")
 
@@ -94,6 +101,97 @@ def test_snapshot_persists_full_evaluated_pool_not_only_top_k(tmp_path):
         row["source_timestamps"]["market_data_cutoff"] == result["meta"]["generated_at"]
         for row in candidates
     )
+
+
+def test_candidate_snapshot_normalizes_aliases_and_keeps_first_duplicate():
+    quotes = pd.DataFrame(
+        [
+            {
+                "代码": "600001",
+                "名称": "首条名称",
+                "最新价": 10.0,
+                "涨跌幅": 2.0,
+                "成交额": 500_000_000,
+                "最高": 10.2,
+                "最低": 9.8,
+                "市值": 10_000_000_000,
+            },
+            {
+                "代码": "600001.0",
+                "名称": "重复名称",
+                "最新价": 11.0,
+                "涨跌幅": 3.0,
+                "成交额": 500_000_000,
+                "最高": 11.2,
+                "最低": 10.8,
+            },
+        ]
+    )
+    quotes.attrs["quote_timestamp"] = "2024-01-01T13:59:00"
+    candidates = pd.DataFrame(
+        [{"code": "600001", "name": "首条名称", "price": 10.0, "market": "main"}]
+    )
+    selected = [{"code": "600001", "rank": 1, "score": 90.0}]
+
+    rows = build_candidate_snapshot_rows(
+        quotes,
+        candidates,
+        selected,
+        "2024-01-01T14:00:00",
+        strategy_name="tomorrow_picks",
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["code"] == "600001"
+    assert rows[0]["name"] == "首条名称"
+    assert rows[0]["raw"]["quote"]["代码"] == "600001"
+    assert rows[0]["raw"]["quote"]["最新价"] == 10.0
+    assert rows[0]["point_in_time_valid"]
+
+
+def test_candidate_snapshot_batches_common_and_future_pit_violations():
+    quotes = _quotes(1)
+    quotes.attrs["quote_timestamp"] = "2024-01-01T15:01:00"
+    candidates = prepare_candidates(quotes)
+    selected = [{"code": "600000", "rank": 1, "score": 90.0}]
+    event_payload = {
+        "items": {
+            "600000": {
+                "hard_exclude": True,
+                "flags": [
+                    {
+                        "announcement_time": "2024-01-01T15:02:00",
+                        "level": "high",
+                        "penalty": 30,
+                    }
+                ],
+            }
+        }
+    }
+    fundamental_payload = {
+        "items": {
+            "600000": {
+                "announcement_date": "2024-01-02",
+                "roe": 10.0,
+            }
+        }
+    }
+
+    rows = build_candidate_snapshot_rows(
+        quotes,
+        candidates,
+        selected,
+        "2024-01-01T15:00:00",
+        event_payload=event_payload,
+        fundamental_payload=fundamental_payload,
+        strategy_name="tomorrow_picks",
+    )
+
+    row = rows[0]
+    assert not row["eligible"]
+    assert "event_risk_hard_exclude" in {item["key"] for item in row["eligibility_reasons"]}
+    assert "future_quote_observed_at:2024-01-01T15:01:00" in row["point_in_time_violations"]
+    assert any(item.startswith("future_announcement:") for item in row["point_in_time_violations"])
 
 
 def test_missing_history_is_unknown_and_never_fabricates_delisting_return(tmp_path):

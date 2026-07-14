@@ -342,14 +342,14 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
                 rows_after = store.signals_for_date("2024-01-01", "tomorrow_picks")
 
         self.assertEqual(legacy_update["updated"], 1)
-        self.assertEqual(metrics_before["sample_count"], 1)
-        self.assertEqual(metrics_before["excluded_baseline_mismatch_count"], 0)
-        self.assertEqual(status_before["status"], "insufficient_current_baseline_samples")
-        self.assertEqual(len(samples_before), 1)
-        self.assertEqual(backfill_update["updated"], 0)
+        self.assertEqual(metrics_before["sample_count"], 0)
+        self.assertEqual(metrics_before["excluded_baseline_mismatch_count"], 1)
+        self.assertEqual(status_before["status"], "needs_backfill")
+        self.assertEqual(len(samples_before), 0)
+        self.assertEqual(backfill_update["updated"], 1)
         self.assertEqual(metrics_after["sample_count"], 1)
         self.assertFalse(status_after["needs_backfill"])
-        self.assertIn("no_tail", rows_after[0]["validation_baseline_id"])
+        self.assertIn("__tail__", rows_after[0]["validation_baseline_id"])
 
     def test_cost_policy_baseline_change_requires_new_compatible_outcome(self):
         class FakeProvider:
@@ -476,8 +476,8 @@ class ValidationRepositoryRuntimeTest(unittest.TestCase):
             impact = market_impact_cost_pct(row)
             impact_adjusted = _execution_cost_pct(row)
 
-        self.assertEqual(adjusted, baseline)
-        self.assertEqual(tail_with_base, 0.0)
+        self.assertGreater(adjusted, baseline)
+        self.assertGreater(tail_with_base, 0.2)
         self.assertGreater(impact, 0)
         self.assertAlmostEqual(impact_adjusted, baseline + impact)
 

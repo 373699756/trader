@@ -51,6 +51,7 @@ def audit_point_in_time(store, strategy_name: str = "", sample_size: int = 30) -
               ON b.strategy_name = c.strategy_name
              AND b.strategy_version = c.strategy_version
              AND b.signal_date = c.signal_date
+             AND b.snapshot_phase = c.snapshot_phase
             {}
             ORDER BY c.signal_date DESC, c.strategy_name, c.rank
             LIMIT ?
@@ -96,6 +97,7 @@ def audit_point_in_time(store, strategy_name: str = "", sample_size: int = 30) -
               ON c.strategy_name = b.strategy_name
              AND c.strategy_version = b.strategy_version
              AND c.signal_date = b.signal_date
+             AND c.snapshot_phase = b.snapshot_phase
             {strategy_filter}
             GROUP BY b.strategy_name, b.strategy_version, b.signal_date
             """.format(strategy_filter="WHERE b.strategy_name = ?" if strategy_name else ""),
