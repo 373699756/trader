@@ -246,6 +246,9 @@ def test_factor_ic_uses_daily_cross_section_rank_ic_when_dates_exist():
             samples.append(
                 {
                     "signal_date": signal_date,
+                    "strategy_name": "tomorrow_picks",
+                    "validation_baseline_id": "baseline_a",
+                    "feature_schema_hash": "schema_a",
                     "primary_return_net": ret,
                     "raw": {"momentum_score": score},
                 }
@@ -261,6 +264,23 @@ def test_factor_ic_uses_daily_cross_section_rank_ic_when_dates_exist():
     assert info["sample_count"] == 6
     assert info["ic"] > 0
     assert info["windows"]["20"]["daily_count"] == 2
+    assert info["bootstrap_ci"]["method"] == "block_bootstrap_daily_mean"
+    assert ic["baseline_id"] == "baseline_a"
+    assert ic["feature_schema_hash"] == "schema_a"
+    assert ic["artifact_role"] == "research_training_fold_only"
+    assert ic["production_weighting_allowed"] is False
+
+
+def test_factor_ic_research_artifact_is_not_used_for_production_multiplier():
+    payload = {
+        "production_weighting_allowed": False,
+        "ic": {"momentum_score": {"status": "ok", "sample_count": 100, "ic": 0.8}},
+    }
+
+    with patch.object(config, "ENABLE_FACTOR_IC_WEIGHTING", True), patch.object(config, "FACTOR_IC_MIN_SAMPLES", 1):
+        multiplier = scoring_math._factor_ic_multiplier("momentum", payload)
+
+    assert multiplier == 1.0
 
 
 def test_fundamental_loader_uses_daily_cache(tmp_path):

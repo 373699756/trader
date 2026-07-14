@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import datetime
 from typing import Dict, Iterable, List
@@ -24,8 +25,20 @@ DEFAULT_FACTOR_KEYS = (
 def compute_factor_ic(samples: Iterable[Dict[str, object]], factor_keys: Iterable[str] = None) -> Dict[str, object]:
     keys = list(factor_keys or DEFAULT_FACTOR_KEYS)
     rows: List[Dict[str, float]] = []
+    strategies = set()
+    baselines = set()
+    schema_hashes = set()
     for sample in samples or []:
         raw = sample.get("raw") if isinstance(sample.get("raw"), dict) else sample
+        strategy_name = str(sample.get("strategy_name") or "").strip()
+        baseline_id = str(sample.get("validation_baseline_id") or "").strip()
+        schema_hash = str(sample.get("feature_schema_hash") or raw.get("feature_schema_hash") or "").strip()
+        if strategy_name:
+            strategies.add(strategy_name)
+        if baseline_id:
+            baselines.add(baseline_id)
+        if schema_hash:
+            schema_hashes.add(schema_hash)
         item = {
             "signal_date": str(sample.get("signal_date") or ""),
             "return": coerce_number(sample.get("primary_return_net")),
@@ -83,12 +96,15 @@ def compute_factor_ic(samples: Iterable[Dict[str, object]], factor_keys: Iterabl
             "status": "ok",
             "method": "daily_cross_section_spearman_rank_ic",
             "windows": _ic_windows(daily, windows=(20, 60, 120)),
+            "bootstrap_ci": _bootstrap_ci(values),
         }
+    metadata = _artifact_metadata(rows, keys, strategies, baselines, schema_hashes)
     return {
         "factor_count": len(keys),
         "sample_count": len(rows),
         "daily_count": len({row["signal_date"] for row in rows if row.get("signal_date")}),
         "method": "daily_cross_section_spearman_rank_ic",
+        **metadata,
         "ic": result,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -116,6 +132,7 @@ def _compute_pooled_factor_ic(df: pd.DataFrame, keys: List[str]) -> Dict[str, ob
         "sample_count": len(df),
         "daily_count": 0,
         "method": "pooled_spearman_rank_ic_legacy",
+        "artifact_role": "legacy_diagnostic",
         "ic": result,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -143,6 +160,55 @@ def _std(values: List[float]) -> float:
         return 0.0
     mean = _avg(values)
     return (sum((value - mean) ** 2 for value in values) / (len(values) - 1)) ** 0.5
+
+
+def _bootstrap_ci(values: List[float], samples: int = None) -> Dict[str, object]:
+    if not values:
+        return {"low": 0.0, "high": 0.0, "samples": 0, "method": "block_bootstrap_daily_mean"}
+    iterations = max(100, min(5000, int(samples or getattr(config, "FACTOR_IC_BOOTSTRAP_SAMPLES", 1000))))
+    draws = []
+    size = len(values)
+    state = int(hashlib.sha256(json.dumps(values, sort_keys=True).encode("utf-8")).hexdigest()[:16], 16)
+    for _idx in range(iterations):
+        total = 0.0
+        for _ in range(size):
+            state = (1103515245 * state + 12345) & 0x7FFFFFFF
+            total += values[state % size]
+        draws.append(total / size)
+    draws.sort()
+    low_index = max(0, min(len(draws) - 1, int(len(draws) * 0.025)))
+    high_index = max(0, min(len(draws) - 1, int(len(draws) * 0.975)))
+    return {
+        "low": round(draws[low_index], 4),
+        "high": round(draws[high_index], 4),
+        "samples": iterations,
+        "method": "block_bootstrap_daily_mean",
+    }
+
+
+def _artifact_metadata(
+    rows: List[Dict[str, object]],
+    keys: List[str],
+    strategies: set,
+    baselines: set,
+    schema_hashes: set,
+) -> Dict[str, object]:
+    dates = sorted({str(row.get("signal_date") or "") for row in rows if str(row.get("signal_date") or "")})
+    baseline_id = next(iter(baselines)) if len(baselines) == 1 else ""
+    schema_hash = next(iter(schema_hashes)) if len(schema_hashes) == 1 else ""
+    return {
+        "artifact_role": "research_training_fold_only",
+        "production_weighting_allowed": False,
+        "baseline_id": baseline_id,
+        "baseline_status": "bound" if baseline_id else "unbound",
+        "feature_schema_hash": schema_hash,
+        "feature_schema_status": "bound" if schema_hash else "unbound",
+        "factor_keys": keys,
+        "strategies": sorted(strategies),
+        "date_start": dates[0] if dates else "",
+        "date_end": dates[-1] if dates else "",
+        "weight_multiplier_scope": "train_fold_only",
+    }
 
 
 def save_factor_ic(payload: Dict[str, object]) -> None:

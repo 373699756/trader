@@ -570,6 +570,8 @@ def _factor_ic_multiplier(
         return 1.0
     if payload is None:
         payload = _factor_ic_payload()
+    if (payload or {}).get("production_weighting_allowed") is False:
+        return 1.0
     info = ((payload or {}).get("ic") or {}).get(factor_key) or {}
     if info.get("status") != "ok":
         return 1.0

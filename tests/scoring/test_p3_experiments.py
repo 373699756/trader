@@ -22,6 +22,8 @@ def test_p3_exit_policy_evaluation_uses_conservative_stop_first_order():
         {
             "signal_date": "2024-01-02",
             "entry_price": 100.0,
+            "rank": 2,
+            "score": 60.0,
             "raw_prices": pd.DataFrame(
                 [
                     {
@@ -33,14 +35,76 @@ def test_p3_exit_policy_evaluation_uses_conservative_stop_first_order():
                     }
                 ]
             ),
-        }
+        },
+        {
+            "signal_date": "2024-01-02",
+            "entry_price": 100.0,
+            "rank": 1,
+            "score": 80.0,
+            "raw_prices": pd.DataFrame(
+                [
+                    {
+                        "trade_date": "20240103",
+                        "open": 100.0,
+                        "high": 103.0,
+                        "low": 99.0,
+                        "price": 102.0,
+                    }
+                ]
+            ),
+        },
     ]
 
-    result = evaluate_exit_policy_candidates("tomorrow_picks", samples)
+    result = evaluate_exit_policy_candidates("tomorrow_picks", samples, top_k=1)
     current = next(item for item in result["results"] if item["candidate_id"] == "current_8_5_4")
 
     assert result["candidate_count"] <= MAX_EXIT_CANDIDATES
     assert result["multiple_testing_trials"] == result["candidate_count"]
     assert result["conservative_intraday_order"] == "stop_first_when_daily_bar_hits_stop_and_take_profit"
     assert current["status"] == "ok"
-    assert current["avg_portfolio_return"] == -5.0
+    assert current["selected_count"] == 1
+    assert current["avg_portfolio_return"] == 2.0
+    assert current["max_drawdown"] == 0.0
+
+
+def test_p3_exit_policy_evaluation_reports_stop_first_drawdown():
+    samples = [
+        {
+            "signal_date": "2024-01-02",
+            "entry_price": 100.0,
+            "rank": 1,
+            "raw_prices": pd.DataFrame(
+                [
+                    {
+                        "trade_date": "20240103",
+                        "open": 100.0,
+                        "high": 110.0,
+                        "low": 94.0,
+                        "price": 101.0,
+                    }
+                ]
+            ),
+        },
+        {
+            "signal_date": "2024-01-03",
+            "entry_price": 100.0,
+            "rank": 1,
+            "raw_prices": pd.DataFrame(
+                [
+                    {
+                        "trade_date": "20240104",
+                        "open": 100.0,
+                        "high": 101.0,
+                        "low": 99.0,
+                        "price": 101.0,
+                    }
+                ]
+            ),
+        },
+    ]
+
+    result = evaluate_exit_policy_candidates("tomorrow_picks", samples, top_k=1)
+    current = next(item for item in result["results"] if item["candidate_id"] == "current_8_5_4")
+
+    assert current["avg_portfolio_return"] == -2.0
+    assert current["max_drawdown"] == -5.0

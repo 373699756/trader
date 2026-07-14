@@ -74,7 +74,7 @@ def _candidate(
 
 def _evaluate_candidate(candidate: Dict[str, object], samples: List[Dict[str, object]], top_k: int) -> Dict[str, object]:
     policy = dict(candidate.get("policy") or {})
-    daily_returns: Dict[str, List[float]] = {}
+    daily_rows: Dict[str, List[Dict[str, object]]] = {}
     skipped = 0
     for sample in samples:
         signal_date = str(sample.get("signal_date") or "")
@@ -95,19 +95,38 @@ def _evaluate_candidate(candidate: Dict[str, object], samples: List[Dict[str, ob
         if not result.get("ok"):
             skipped += 1
             continue
-        daily_returns.setdefault(signal_date, []).append(coerce_number(result.get("exit_return")))
+        daily_rows.setdefault(signal_date, []).append(
+            {
+                "rank": int(coerce_number(sample.get("rank"), 999999)),
+                "score": coerce_number(sample.get("score"), coerce_number(sample.get("stored_score"), 0.0)),
+                "code": str(sample.get("code") or ""),
+                "exit_return": coerce_number(result.get("exit_return")),
+            }
+        )
     portfolio_returns = []
-    for signal_date, values in sorted(daily_returns.items()):
-        selected = values[:top_k]
+    selected_count = 0
+    for signal_date, values in sorted(daily_rows.items()):
+        ranked = sorted(values, key=lambda item: (int(item["rank"]), -coerce_number(item["score"]), str(item["code"])))
+        selected = ranked[:top_k]
         if selected:
-            portfolio_returns.append({"signal_date": signal_date, "net_return": _avg(selected)})
+            selected_count += len(selected)
+            portfolio_returns.append(
+                {
+                    "signal_date": signal_date,
+                    "net_return": round(_avg([coerce_number(item["exit_return"]) for item in selected]), 4),
+                    "selected_count": len(selected),
+                }
+            )
+    returns = [coerce_number(item["net_return"]) for item in portfolio_returns]
     return {
         "candidate_id": str(candidate.get("candidate_id") or ""),
         "policy": policy,
-        "sample_count": sum(len(values) for values in daily_returns.values()),
+        "sample_count": sum(len(values) for values in daily_rows.values()),
+        "selected_count": selected_count,
         "skipped": skipped,
         "day_count": len(portfolio_returns),
-        "avg_portfolio_return": round(_avg([item["net_return"] for item in portfolio_returns]), 4),
+        "avg_portfolio_return": round(_avg(returns), 4),
+        "max_drawdown": round(_max_drawdown(returns), 4),
         "portfolio_returns": portfolio_returns,
         "status": "ok" if portfolio_returns else "insufficient_samples",
     }
@@ -139,3 +158,15 @@ def _future_frame(sample: Dict[str, object]) -> pd.DataFrame:
 
 def _avg(values: List[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _max_drawdown(returns: List[float]) -> float:
+    equity = 1.0
+    peak = 1.0
+    max_drawdown = 0.0
+    for value in returns:
+        equity *= 1.0 + coerce_number(value) / 100.0
+        peak = max(peak, equity)
+        if peak > 0:
+            max_drawdown = min(max_drawdown, (equity / peak - 1.0) * 100.0)
+    return max_drawdown
