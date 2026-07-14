@@ -246,6 +246,28 @@ def test_quote_page_download_retries_transient_page_failure():
     assert calls[2] == 2
 
 
+def test_quote_page_download_repairs_missing_page_serially_after_batch():
+    calls = {2: 0}
+
+    def fetch_page(page):
+        calls[page] = calls.get(page, 0) + 1
+        if page == 2 and calls[page] == 1:
+            raise RuntimeError("concurrent batch throttled")
+        return [{"code": "{:06d}".format(page)}]
+
+    result = _download_quote_pages(
+        [1, 2, 3],
+        fetch_page,
+        source="测试",
+        max_workers=3,
+        retries=0,
+        batch_timeout_seconds=2,
+    )
+
+    assert sorted(result) == [1, 2, 3]
+    assert calls[2] == 2
+
+
 def test_quote_page_download_rejects_missing_page():
     def fetch_page(page):
         if page == 2:

@@ -1318,6 +1318,33 @@ def _download_quote_pages(
                 results[page] = future.result()
             except Exception as exc:
                 errors[page] = str(exc)
+
+    # Public quote endpoints occasionally throttle the tail of a concurrent batch.
+    # Repair only the missing pages serially with a fresh, bounded deadline.  The
+    # caller still validates full-universe code coverage afterwards, so this does
+    # not turn an incomplete download into an accepted snapshot.
+    if errors:
+        repair_deadline = time.monotonic() + max(5.0, min(30.0, float(batch_timeout_seconds)))
+        repair_attempts = max(2, int(retries) + 1)
+        for page in sorted(list(errors)):
+            last_error: Optional[Exception] = None
+            for attempt in range(repair_attempts):
+                if time.monotonic() >= repair_deadline:
+                    last_error = RuntimeError("缺页修复超过截止时间")
+                    break
+                if attempt:
+                    time.sleep(min(0.5 * attempt, 1.0))
+                try:
+                    rows = fetch_page(page)
+                    if not rows:
+                        raise RuntimeError("返回空分页")
+                    results[page] = rows
+                    errors.pop(page, None)
+                    break
+                except Exception as exc:
+                    last_error = exc
+            if page in errors and last_error is not None:
+                errors[page] = str(last_error)
     if errors:
         details = ", ".join("{}={}".format(page, errors[page]) for page in sorted(errors)[:5])
         raise RuntimeError("{}分页下载失败: {}".format(source, details))

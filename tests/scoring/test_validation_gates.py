@@ -5,6 +5,15 @@ from stock_analyzer import config
 
 
 class ValidationGatesTest(unittest.TestCase):
+    def test_frozen_production_baseline_has_no_runtime_drift(self):
+        from stock_analyzer.production_baseline import production_baseline_status
+
+        status = production_baseline_status()
+
+        self.assertTrue(status["freeze_enabled"])
+        self.assertEqual(status["status"], "frozen")
+        self.assertEqual(status["drift"], [])
+
     def test_strategy_status_does_not_fallback_when_real_metric_is_zero(self):
         from stock_analyzer.strategy_health import strategy_status
 
