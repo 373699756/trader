@@ -33,6 +33,7 @@ const state = {
   validationCache: {},
   validationDailyCache: {},
   validationRequestSeq: 0,
+  validationReportRequestSeq: 0,
   validationDailyRequestSeq: 0,
   validationQuotesRequestSeq: 0,
   validationDateRows: [],

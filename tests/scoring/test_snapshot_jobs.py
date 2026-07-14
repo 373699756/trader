@@ -149,6 +149,10 @@ def test_daily_job_after_close_runs_market_data_snapshot_update_and_backup(tmp_p
         calls.append(("snapshot", tuple(strategies)))
         return [{"ok": True}]
 
+    def fake_run_missing_close_snapshots(provider, store, strategies, market="all"):
+        calls.append(("close_snapshot", tuple(strategies)))
+        return {"ok": True, "status": "complete", "snapshots": []}
+
     argv = ["daily_job", "--after-close", "--strategy", "tomorrow_picks", "--market-data-limit", "3"]
     with patch.object(sys, "argv", argv), patch.object(
         config,
@@ -166,6 +170,9 @@ def test_daily_job_after_close_runs_market_data_snapshot_update_and_backup(tmp_p
     ), patch(
         "stock_analyzer.snapshot.run_snapshots",
         side_effect=fake_run_snapshots,
+    ), patch(
+        "stock_analyzer.snapshot.run_missing_close_snapshots",
+        side_effect=fake_run_missing_close_snapshots,
     ), patch(
         "stock_analyzer.factor_snapshot.build_factor_snapshots",
         return_value={"ok": True, "count": 0},
@@ -187,9 +194,11 @@ def test_daily_job_after_close_runs_market_data_snapshot_update_and_backup(tmp_p
     payload = json.loads(stdout.getvalue())
 
     assert result == 0
-    assert calls[0] == ("download", 3)
+    assert calls[0] == ("close_snapshot", ("tomorrow_picks",))
+    assert calls[1] == ("download", 3)
     assert ("snapshot", ("tomorrow_picks",)) not in calls
     assert ("update", "tomorrow_picks") in calls
+    assert payload["close_snapshot"]["status"] == "complete"
     assert payload["market_data"]["downloaded"] == 1
 
 
@@ -212,6 +221,9 @@ def test_daily_job_after_close_fails_when_market_data_empty(tmp_path):
     ), patch(
         "stock_analyzer.snapshot.run_snapshots",
         side_effect=AssertionError("should not save snapshots without usable market data"),
+    ), patch(
+        "stock_analyzer.snapshot.run_missing_close_snapshots",
+        return_value={"ok": True, "status": "complete", "snapshots": []},
     ):
         with redirect_stdout(io.StringIO()) as stdout:
             result = daily_job.main()

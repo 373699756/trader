@@ -152,9 +152,16 @@ def _tomorrow_component_scores(
     )
     execution_score = scoring_math._execution_score(row)
     tail_setup_score = 50.0 if provisional else scoring_math._tail_close_setup_score(row)
+    enhanced_adjustment = scoring_math._enhanced_factor_adjustment(row, context, "tomorrow_picks")
+    tail_setup_score = max(
+        0.0,
+        min(100.0, tail_setup_score + coerce_number(enhanced_adjustment.get("score_delta"))),
+    )
     historical_edge_score = _tomorrow_historical_edge_score(row, context)
     risk_penalty_parts = risk._tomorrow_risk_penalty_parts(row, provisional=provisional)
-    risk_penalty = risk._sum_penalty(risk_penalty_parts) + risk_penalty_extra
+    risk_penalty = risk._sum_penalty(risk_penalty_parts) + risk_penalty_extra + coerce_number(
+        enhanced_adjustment.get("risk_delta")
+    )
     regime_bonus = scoring_math._market_regime_adjustment(row, market_regime, "tomorrow")
     regime_profile = scoring_math._regime_weight_profile(
         market_regime,
@@ -199,6 +206,7 @@ def _tomorrow_component_scores(
         "tail_setup_score": tail_setup_score,
         "risk_penalty": risk_penalty,
         "risk_penalty_parts": risk_penalty_parts,
+        "enhanced_factor_adjustment": enhanced_adjustment,
         "regime_bonus": regime_bonus,
         "regime_weight_profile": regime_profile,
         "combined": combined,

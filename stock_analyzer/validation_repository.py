@@ -2359,6 +2359,38 @@ class OutcomeRepository(_RepositoryBase):
 class TuningRepository(_RepositoryBase):
     """Persists tuning runs and live-weight training samples."""
 
+    @staticmethod
+    def _insert_tuning_run(
+        conn,
+        strategy_name: str,
+        days: int,
+        plan: Dict[str, object],
+        metrics: Dict[str, object],
+        deepseek_review: Dict[str, object],
+    ) -> Dict[str, object]:
+        now = datetime.now().isoformat(timespec="seconds")
+        cursor = conn.execute(
+            """
+            INSERT INTO strategy_tuning_runs
+            (strategy_name, run_time, days, status, can_apply, shadow_mode,
+             plan_json, metrics_json, deepseek_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                strategy_name,
+                now,
+                int(days),
+                str(plan.get("status", "")),
+                1 if plan.get("can_apply") else 0,
+                1 if plan.get("shadow_mode") else 0,
+                json.dumps(plan, ensure_ascii=False),
+                json.dumps(metrics or {}, ensure_ascii=False),
+                json.dumps(deepseek_review or {}, ensure_ascii=False),
+                now,
+            ),
+        )
+        return {"id": int(cursor.lastrowid), "run_time": now}
+
     def save_tuning_run(
         self,
         strategy_name: str,
@@ -2367,30 +2399,62 @@ class TuningRepository(_RepositoryBase):
         metrics: Dict[str, object],
         deepseek_review: Dict[str, object],
     ) -> Dict[str, object]:
-        now = datetime.now().isoformat(timespec="seconds")
         with self.connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO strategy_tuning_runs
-                (strategy_name, run_time, days, status, can_apply, shadow_mode,
-                 plan_json, metrics_json, deepseek_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    strategy_name,
-                    now,
-                    int(days),
-                    str(plan.get("status", "")),
-                    1 if plan.get("can_apply") else 0,
-                    1 if plan.get("shadow_mode") else 0,
-                    json.dumps(plan, ensure_ascii=False),
-                    json.dumps(metrics or {}, ensure_ascii=False),
-                    json.dumps(deepseek_review or {}, ensure_ascii=False),
-                    now,
-                ),
+            return self._insert_tuning_run(
+                conn,
+                strategy_name,
+                days,
+                plan,
+                metrics,
+                deepseek_review,
             )
-            run_id = int(cursor.lastrowid)
-        return {"id": run_id, "run_time": now}
+
+    def save_or_reuse_tuning_run(
+        self,
+        strategy_name: str,
+        days: int,
+        plan: Dict[str, object],
+        metrics: Dict[str, object],
+        deepseek_review: Dict[str, object],
+    ) -> Dict[str, object]:
+        input_fingerprint = str(plan.get("input_fingerprint") or "")
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT *
+                FROM strategy_tuning_runs
+                WHERE strategy_name = ?
+                ORDER BY run_time DESC, id DESC
+                LIMIT 1
+                """,
+                (strategy_name,),
+            ).fetchone()
+            latest = _tuning_row_to_dict(row) if row else {}
+            latest_plan = latest.get("plan") if isinstance(latest.get("plan"), dict) else {}
+            reused = bool(
+                input_fingerprint
+                and input_fingerprint == str(latest_plan.get("input_fingerprint") or "")
+            )
+            if reused:
+                saved = {"id": latest.get("id"), "run_time": latest.get("run_time")}
+                run = latest
+            else:
+                saved = self._insert_tuning_run(
+                    conn,
+                    strategy_name,
+                    days,
+                    plan,
+                    metrics,
+                    deepseek_review,
+                )
+                current_row = conn.execute(
+                    "SELECT * FROM strategy_tuning_runs WHERE id = ?",
+                    (saved["id"],),
+                ).fetchone()
+                run = _tuning_row_to_dict(current_row)
+        return {"reused": reused, "saved": saved, "run": run}
 
 
     def latest_tuning_run(self, strategy_name: str) -> Dict[str, object]:
@@ -3224,6 +3288,22 @@ class ValidationRepository(_RepositoryBase):
         deepseek_review: Dict[str, object],
     ) -> Dict[str, object]:
         return self.tuning.save_tuning_run(strategy_name, days, plan, metrics, deepseek_review)
+
+    def save_or_reuse_tuning_run(
+        self,
+        strategy_name: str,
+        days: int,
+        plan: Dict[str, object],
+        metrics: Dict[str, object],
+        deepseek_review: Dict[str, object],
+    ) -> Dict[str, object]:
+        return self.tuning.save_or_reuse_tuning_run(
+            strategy_name,
+            days,
+            plan,
+            metrics,
+            deepseek_review,
+        )
 
     def latest_tuning_run(self, strategy_name: str) -> Dict[str, object]:
         return self.tuning.latest_tuning_run(strategy_name)

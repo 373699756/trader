@@ -780,9 +780,9 @@ class _AppServiceContext:
                 )
             tuning_result = self.run_validation_tuning_once([strategy], days=days)
             self.invalidate_metrics_cache()
-            latest = self.validation_store.latest_tuning_run(strategy)
-            plan = latest.get("plan") or {}
             run = (tuning_result.get("runs") or [{}])[0]
+            latest = run.get("latest") or self.validation_store.latest_tuning_run(strategy)
+            plan = latest.get("plan") or {}
             return self.json_payload(
                 ok=bool(tuning_result.get("ok")),
                 include_health=False,
@@ -1278,6 +1278,9 @@ class _AppServiceContext:
                 "saved_at": generated_at,
                 "source": "validation_db_daily_snapshot",
                 "stage": "ready",
+                "snapshot_phase": distinct_phases[0] if len(distinct_phases) == 1 else "mixed",
+                "as_of": generated_at,
+                "price_basis": distinct_price_bases[0] if len(distinct_price_bases) == 1 else "mixed",
             },
         }
 
@@ -1808,10 +1811,24 @@ class _AppServiceContext:
             )
         meta = dict(payload.get("meta") or {})
         if batch:
-            meta.update(phase_payload(phase, as_of=str(batch.get("signal_time") or "")))
+            phase_meta = phase_payload(phase, as_of=str(batch.get("signal_time") or ""))
+            meta.update(phase_meta)
             meta["generated_at"] = str(batch.get("signal_time") or "")
             meta["signal_date"] = str(batch.get("signal_date") or signal_date)
         payload["meta"] = meta
+        snapshot = dict(payload.get("snapshot") or {})
+        if batch:
+            snapshot.update(
+                {
+                    "saved_at": str(batch.get("signal_time") or ""),
+                    "source": snapshot.get("source") or "validation_db_daily_snapshot",
+                    "stage": snapshot.get("stage") or "ready",
+                    "snapshot_phase": meta.get("snapshot_phase"),
+                    "as_of": meta.get("as_of"),
+                    "price_basis": meta.get("price_basis"),
+                }
+            )
+            payload["snapshot"] = snapshot
         return payload
 
     def _horizon_payload(self, strategy: str, top_n: int, market: str) -> tuple:

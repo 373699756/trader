@@ -24,8 +24,22 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
                 self.latest = {**saved, "strategy_name": strategy, "plan": plan}
                 return saved
 
+            def save_or_reuse_tuning_run(self, strategy, days, plan, metrics):
+                latest_plan = self.latest.get("plan") or {}
+                reused = bool(
+                    plan.get("input_fingerprint")
+                    and plan.get("input_fingerprint") == latest_plan.get("input_fingerprint")
+                )
+                if reused:
+                    saved = {"id": self.latest["id"], "run_time": self.latest["run_time"]}
+                else:
+                    saved = self.save_tuning_run(strategy, days, plan, metrics)
+                return {"reused": reused, "saved": saved, "run": self.latest}
+
         metrics = {
             "day_count": 60,
+            "sample_count": 100,
+            "outcome_sample_count": 100,
             "real_day_count": 60,
             "pending_outcome_count": 0,
             "unknown_outcome_count": 0,
@@ -39,18 +53,25 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
 
         first = support.run_validation_tuning_once(store, load_metrics, ["tomorrow_picks"], days=60)
         second = support.run_validation_tuning_once(store, load_metrics, ["tomorrow_picks"], days=60)
+        metrics["sample_count"] = 101
+        sample_changed = support.run_validation_tuning_once(store, load_metrics, ["tomorrow_picks"], days=60)
         metrics["real_avg_primary_return_net_ci95_low"] = 0.2
-        changed = support.run_validation_tuning_once(store, load_metrics, ["tomorrow_picks"], days=60)
+        metric_changed = support.run_validation_tuning_once(store, load_metrics, ["tomorrow_picks"], days=60)
 
         self.assertFalse(first["runs"][0]["reused"])
         self.assertTrue(second["runs"][0]["reused"])
         self.assertEqual(first["runs"][0]["saved"]["id"], second["runs"][0]["saved"]["id"])
-        self.assertFalse(changed["runs"][0]["reused"])
+        self.assertFalse(sample_changed["runs"][0]["reused"])
         self.assertNotEqual(
             first["runs"][0]["input_fingerprint"],
-            changed["runs"][0]["input_fingerprint"],
+            sample_changed["runs"][0]["input_fingerprint"],
         )
-        self.assertEqual(len(store.saved_plans), 2)
+        self.assertFalse(metric_changed["runs"][0]["reused"])
+        self.assertNotEqual(
+            sample_changed["runs"][0]["input_fingerprint"],
+            metric_changed["runs"][0]["input_fingerprint"],
+        )
+        self.assertEqual(len(store.saved_plans), 3)
 
     def test_auto_snapshot_retry_is_clamped_to_freeze_cutoff(self):
         regular = support.auto_snapshot_retry_schedule(

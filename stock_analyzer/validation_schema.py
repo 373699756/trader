@@ -48,6 +48,9 @@ class ValidationSchemaManager:
         )
 
     def _run_migration(self, conn, migration_id: str, migration) -> None:
+        foreign_keys_disabled = migration_id == "0018_snapshot_phase_unique_keys"
+        if foreign_keys_disabled:
+            conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("BEGIN IMMEDIATE")
         try:
             migration(conn)
@@ -56,6 +59,9 @@ class ValidationSchemaManager:
         except Exception:
             conn.rollback()
             raise
+        finally:
+            if foreign_keys_disabled:
+                conn.execute("PRAGMA foreign_keys = ON")
 
     @staticmethod
     def _migrations():
@@ -83,6 +89,7 @@ class ValidationSchemaManager:
             ("0015_oos_report_experiment_audit", ValidationSchemaManager._migration_oos_report_experiment_audit),
             ("0016_pit_market_snapshots", ValidationSchemaManager._migration_pit_market_snapshots),
             ("0017_snapshot_phase_columns", ValidationSchemaManager._migration_snapshot_phase_columns),
+            ("0018_snapshot_phase_unique_keys", ValidationSchemaManager._migration_snapshot_phase_unique_keys),
         )
 
     @staticmethod
@@ -207,6 +214,44 @@ class ValidationSchemaManager:
             conn.execute(statement)
 
     @staticmethod
+    def _migration_snapshot_phase_unique_keys(conn) -> None:
+        for table, statement in _PHASE_AWARE_TABLES.items():
+            ValidationSchemaManager._rebuild_table(conn, table, statement)
+        for statement in _INDEXES + _QUERY_INDEXES + _SNAPSHOT_PHASE_INDEXES:
+            conn.execute(statement)
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError("foreign key check failed during snapshot phase migration")
+
+    @staticmethod
+    def _rebuild_table(conn, table: str, create_statement: str) -> None:
+        existing_columns = [
+            row[1]
+            for row in conn.execute("PRAGMA table_info({})".format(table)).fetchall()
+        ]
+        if not existing_columns:
+            return
+        temp_table = "{}__phase_migration".format(table)
+        conn.execute("DROP TABLE IF EXISTS {}".format(temp_table))
+        conn.execute(create_statement.replace("{table_name}", temp_table))
+        target_columns = [
+            row[1]
+            for row in conn.execute("PRAGMA table_info({})".format(temp_table)).fetchall()
+        ]
+        copy_columns = [column for column in target_columns if column in existing_columns]
+        quoted_columns = ", ".join(copy_columns)
+        conn.execute(
+            "INSERT OR IGNORE INTO {} ({}) SELECT {} FROM {}".format(
+                temp_table,
+                quoted_columns,
+                quoted_columns,
+                table,
+            )
+        )
+        conn.execute("DROP TABLE {}".format(table))
+        conn.execute("ALTER TABLE {} RENAME TO {}".format(temp_table, table))
+
+    @staticmethod
     def _add_columns(conn, table: str, columns) -> None:
         existing_columns = {row[1] for row in conn.execute("PRAGMA table_info({})".format(table)).fetchall()}
         for column, column_type in columns.items():
@@ -270,7 +315,7 @@ _TABLES = (
         sample_source TEXT NOT NULL DEFAULT '',
         snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
         created_at TEXT NOT NULL,
-        PRIMARY KEY(strategy_name, signal_date, strategy_version)
+        PRIMARY KEY(strategy_name, signal_date, strategy_version, snapshot_phase)
     )
     """,
     """
@@ -303,7 +348,7 @@ _TABLES = (
         raw_json TEXT NOT NULL DEFAULT '{}',
         snapshot_id TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
-        UNIQUE(strategy_name, strategy_version, signal_date, code)
+        UNIQUE(strategy_name, strategy_version, signal_date, snapshot_phase, code)
     )
     """,
     """
@@ -330,7 +375,7 @@ _TABLES = (
         raw_json TEXT NOT NULL,
         snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
         created_at TEXT NOT NULL,
-        UNIQUE(strategy_name, strategy_version, signal_date, code)
+        UNIQUE(strategy_name, strategy_version, signal_date, snapshot_phase, code)
     )
     """,
     """
@@ -464,7 +509,7 @@ _TABLES = (
         raw_json TEXT NOT NULL,
         snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
         created_at TEXT NOT NULL,
-        UNIQUE(strategy_name, strategy_version, signal_date, code)
+        UNIQUE(strategy_name, strategy_version, signal_date, snapshot_phase, code)
     )
     """,
     """
@@ -611,6 +656,124 @@ _TABLES = (
     )
     """,
 )
+
+_PHASE_AWARE_TABLES = {
+    "strategy_signal_batches": """
+    CREATE TABLE IF NOT EXISTS {table_name} (
+        strategy_name TEXT NOT NULL,
+        strategy_version TEXT NOT NULL,
+        signal_date TEXT NOT NULL,
+        signal_time TEXT NOT NULL,
+        saved_count INTEGER NOT NULL DEFAULT 0,
+        candidate_count INTEGER NOT NULL DEFAULT 0,
+        selected_count INTEGER NOT NULL DEFAULT 0,
+        data_source_timestamp TEXT NOT NULL DEFAULT '',
+        market_data_cutoff TEXT NOT NULL DEFAULT '',
+        execution_policy_version TEXT NOT NULL DEFAULT '',
+        execution_policy_json TEXT NOT NULL DEFAULT '',
+        generation_json TEXT NOT NULL DEFAULT '{}',
+        portfolio_capital REAL NOT NULL DEFAULT 0,
+        snapshot_id TEXT NOT NULL DEFAULT '',
+        sample_type TEXT NOT NULL DEFAULT 'unknown',
+        sample_source TEXT NOT NULL DEFAULT '',
+        snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(strategy_name, signal_date, strategy_version, snapshot_phase)
+    )
+    """,
+    "strategy_candidate_snapshots": """
+    CREATE TABLE IF NOT EXISTS {table_name} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name TEXT NOT NULL,
+        strategy_version TEXT NOT NULL,
+        signal_date TEXT NOT NULL,
+        signal_time TEXT NOT NULL,
+        code TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        market TEXT NOT NULL DEFAULT '',
+        industry TEXT NOT NULL DEFAULT '',
+        style_bucket TEXT NOT NULL DEFAULT 'unknown',
+        eligible INTEGER NOT NULL DEFAULT 0,
+        selected INTEGER NOT NULL DEFAULT 0,
+        rank INTEGER NOT NULL DEFAULT 0,
+        score REAL NOT NULL DEFAULT 0,
+        point_in_time_valid INTEGER NOT NULL DEFAULT 0,
+        eligibility_reasons_json TEXT NOT NULL DEFAULT '[]',
+        feature_values_json TEXT NOT NULL DEFAULT '{}',
+        missing_mask_json TEXT NOT NULL DEFAULT '{}',
+        source_timestamps_json TEXT NOT NULL DEFAULT '{}',
+        announcement_time TEXT NOT NULL DEFAULT '',
+        market_data_cutoff TEXT NOT NULL DEFAULT '',
+        point_in_time_violations_json TEXT NOT NULL DEFAULT '[]',
+        sample_type TEXT NOT NULL DEFAULT 'unknown',
+        sample_source TEXT NOT NULL DEFAULT '',
+        snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
+        raw_json TEXT NOT NULL DEFAULT '{}',
+        snapshot_id TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        UNIQUE(strategy_name, strategy_version, signal_date, snapshot_phase, code)
+    )
+    """,
+    "strategy_signals": """
+    CREATE TABLE IF NOT EXISTS {table_name} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name TEXT NOT NULL,
+        strategy_version TEXT NOT NULL,
+        signal_date TEXT NOT NULL,
+        signal_time TEXT NOT NULL,
+        rank INTEGER NOT NULL,
+        code TEXT NOT NULL,
+        name TEXT NOT NULL,
+        market TEXT NOT NULL,
+        theme TEXT NOT NULL DEFAULT '',
+        price_at_signal REAL NOT NULL DEFAULT 0,
+        pct_chg_at_signal REAL NOT NULL DEFAULT 0,
+        turnover REAL NOT NULL DEFAULT 0,
+        volume_ratio REAL NOT NULL DEFAULT 0,
+        turnover_rate REAL NOT NULL DEFAULT 0,
+        sixty_day_pct REAL NOT NULL DEFAULT 0,
+        ytd_pct REAL NOT NULL DEFAULT 0,
+        score REAL NOT NULL DEFAULT 0,
+        reasons_json TEXT NOT NULL,
+        raw_json TEXT NOT NULL,
+        snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
+        created_at TEXT NOT NULL,
+        UNIQUE(strategy_name, strategy_version, signal_date, snapshot_phase, code)
+    )
+    """,
+    "strategy_deepseek_shadow_signals": """
+    CREATE TABLE IF NOT EXISTS {table_name} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name TEXT NOT NULL,
+        strategy_version TEXT NOT NULL,
+        signal_date TEXT NOT NULL,
+        signal_time TEXT NOT NULL,
+        rank INTEGER NOT NULL DEFAULT 0,
+        local_rank INTEGER NOT NULL DEFAULT 0,
+        code TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        market TEXT NOT NULL DEFAULT '',
+        theme TEXT NOT NULL DEFAULT '',
+        price_at_signal REAL NOT NULL DEFAULT 0,
+        pct_chg_at_signal REAL NOT NULL DEFAULT 0,
+        turnover REAL NOT NULL DEFAULT 0,
+        volume_ratio REAL NOT NULL DEFAULT 0,
+        turnover_rate REAL NOT NULL DEFAULT 0,
+        sixty_day_pct REAL NOT NULL DEFAULT 0,
+        ytd_pct REAL NOT NULL DEFAULT 0,
+        score REAL NOT NULL DEFAULT 0,
+        deepseek_rank_score REAL NOT NULL DEFAULT 0,
+        deepseek_action TEXT NOT NULL DEFAULT '',
+        deepseek_veto INTEGER NOT NULL DEFAULT 0,
+        deepseek_penalty REAL NOT NULL DEFAULT 0,
+        filter_reason TEXT NOT NULL DEFAULT '',
+        raw_json TEXT NOT NULL,
+        snapshot_phase TEXT NOT NULL DEFAULT 'legacy_unknown',
+        created_at TEXT NOT NULL,
+        UNIQUE(strategy_name, strategy_version, signal_date, snapshot_phase, code)
+    )
+    """,
+}
 
 _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_strategy_signals_date ON strategy_signals(signal_date)",

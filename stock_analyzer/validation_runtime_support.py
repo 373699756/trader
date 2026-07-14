@@ -165,20 +165,16 @@ def run_validation_tuning_once(
                 dates=dates,
                 days=days,
             )
-            latest = validation_store.latest_tuning_run(strategy)
-            latest_plan = latest.get("plan") if isinstance(latest.get("plan"), dict) else {}
             input_fingerprint = str(plan.get("input_fingerprint") or "")
-            reused = bool(
-                input_fingerprint
-                and input_fingerprint == str(latest_plan.get("input_fingerprint") or "")
+            persistence = validation_store.save_or_reuse_tuning_run(
+                strategy,
+                days,
+                plan,
+                metrics,
             )
-            if reused:
-                saved = {
-                    "id": latest.get("id"),
-                    "run_time": latest.get("run_time"),
-                }
-            else:
-                saved = validation_store.save_tuning_run(strategy, days, plan, metrics)
+            reused = bool(persistence.get("reused"))
+            saved = persistence.get("saved") or {}
+            persisted_run = persistence.get("run") or {}
             result["runs"].append(
                 {
                     "ok": True,
@@ -189,6 +185,7 @@ def run_validation_tuning_once(
                     "input_fingerprint": input_fingerprint,
                     "reused": reused,
                     "saved": saved,
+                    "latest": persisted_run,
                 }
             )
         except Exception as exc:

@@ -259,6 +259,21 @@ class StrategyValidationStore:
     ) -> Dict[str, object]:
         return self.repository.save_tuning_run(strategy_name, days, plan, metrics, {})
 
+    def save_or_reuse_tuning_run(
+        self,
+        strategy_name: str,
+        days: int,
+        plan: Dict[str, object],
+        metrics: Dict[str, object],
+    ) -> Dict[str, object]:
+        return self.repository.save_or_reuse_tuning_run(
+            strategy_name,
+            days,
+            plan,
+            metrics,
+            {},
+        )
+
     def latest_tuning_run(self, strategy_name: str) -> Dict[str, object]:
         return self.repository.latest_tuning_run(strategy_name)
 

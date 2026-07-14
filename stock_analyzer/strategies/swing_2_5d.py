@@ -85,10 +85,20 @@ class SwingScorer:
             + percentile_score(turnover_rate, context["turnover_rate_values"]) * 0.38
         )
         execution_score = self.risk_policy.execution_score(row)
+        enhanced_adjustment = scoring_math._enhanced_factor_adjustment(row, context, "swing_picks")
         risk_penalty_parts = self.risk_policy.swing_risk_penalty_parts(row)
-        risk_penalty = self.risk_policy.sum_penalty(risk_penalty_parts)
+        risk_penalty = self.risk_policy.sum_penalty(risk_penalty_parts) + coerce_number(
+            enhanced_adjustment.get("risk_delta")
+        )
         regime_bonus = scoring_math._market_regime_adjustment(row, market_regime, "swing")
-        not_overextended_score = self.risk_policy.not_overextended_score(row)
+        not_overextended_score = max(
+            0.0,
+            min(
+                100.0,
+                self.risk_policy.not_overextended_score(row)
+                + coerce_number(enhanced_adjustment.get("score_delta")),
+            ),
+        )
         regime_profile = scoring_math._regime_weight_profile(
             market_regime,
             ["momentum", "trend", "liquidity", "quality"],
@@ -125,6 +135,7 @@ class SwingScorer:
             "not_overextended_score": not_overextended_score,
             "risk_penalty": risk_penalty,
             "risk_penalty_parts": risk_penalty_parts,
+            "enhanced_factor_adjustment": enhanced_adjustment,
             "regime_bonus": regime_bonus,
             "regime_weight_profile": regime_profile,
             "base_score": combined["base_score"],

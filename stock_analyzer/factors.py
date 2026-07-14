@@ -21,6 +21,7 @@ ALPHALITE_COLUMNS = (
     "turnover_20d",
     "breakout_20d",
     "volatility_20d",
+    "close_vs_typical_price",
     "close_vs_vwap",
     "upper_wick_ratio",
     "lower_wick_ratio",
@@ -94,7 +95,7 @@ def compute_alphalite_for_stock(code: str, history: pd.DataFrame) -> Dict[str, f
         "volatility_20d": len(returns) >= 20,
     }
     coverage = sum(1 for value in availability.values() if value) / len(availability)
-    enhanced = _enhanced_factors(open_price, high, low, close) if getattr(config, "ENABLE_ENHANCED_FACTORS", False) else _empty_enhanced_factors()
+    enhanced = _selected_enhanced_factors(open_price, high, low, close)
 
     return {
         "code": normalize_code(code),
@@ -239,7 +240,7 @@ def compute_alphalite_panel(
         if enhanced_enabled:
             open_values = open_column.iloc[start:end] if open_mode else close.iloc[start:end]
             low_values = low_column.iloc[start:end] if low_mode else close.iloc[start:end]
-            enhanced = _enhanced_factors(
+            enhanced = _selected_enhanced_factors(
                 open_values,
                 df["high"].iloc[start:end],
                 low_values,
@@ -350,7 +351,7 @@ def _enhanced_factors(
     latest_low = coerce_number(low.iloc[-1]) if len(low) else latest_close
     latest_open = coerce_number(open_price.iloc[-1]) if len(open_price) else latest_close
     typical = (latest_high + latest_low + latest_close) / 3.0
-    close_vs_vwap = (latest_close / typical - 1.0) * 100 if typical > 0 else 0.0
+    close_vs_typical_price = (latest_close / typical - 1.0) * 100 if typical > 0 else 0.0
     daily_range = latest_high - latest_low
     if daily_range > 0:
         upper_wick_ratio = (latest_high - max(latest_open, latest_close)) / daily_range
@@ -363,7 +364,8 @@ def _enhanced_factors(
     price_position_20d = (latest_close - low_20) / (high_20 - low_20) * 100 if high_20 > low_20 else 50.0
     streak = _consecutive_direction(close)
     return {
-        "close_vs_vwap": round(coerce_number(close_vs_vwap), 4),
+        "close_vs_typical_price": round(coerce_number(close_vs_typical_price), 4),
+        "close_vs_vwap": round(coerce_number(close_vs_typical_price), 4),
         "upper_wick_ratio": round(max(0.0, min(1.0, coerce_number(upper_wick_ratio))), 4),
         "lower_wick_ratio": round(max(0.0, min(1.0, coerce_number(lower_wick_ratio))), 4),
         "price_position_20d": round(max(0.0, min(100.0, coerce_number(price_position_20d))), 4),
@@ -373,8 +375,41 @@ def _enhanced_factors(
     }
 
 
+def _selected_enhanced_factors(
+    open_price: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+) -> Dict[str, float]:
+    if not getattr(config, "ENABLE_ENHANCED_FACTORS", False):
+        return _empty_enhanced_factors()
+    factors = _enhanced_factors(open_price, high, low, close)
+    selected = _configured_enhanced_factor_keys()
+    if not selected:
+        return factors
+    aliases = {"close_vs_vwap": "close_vs_typical_price"}
+    selected = {aliases.get(key, key) for key in selected}
+    payload = _empty_enhanced_factors()
+    for key in selected:
+        if key in factors:
+            payload[key] = factors[key]
+    if "close_vs_typical_price" in selected:
+        payload["close_vs_vwap"] = payload["close_vs_typical_price"]
+    return payload
+
+
+def _configured_enhanced_factor_keys() -> set:
+    raw = getattr(config, "P3_ENHANCED_FACTOR_KEYS", ())
+    if isinstance(raw, str):
+        values = [item.strip() for item in raw.replace("，", ",").split(",")]
+    else:
+        values = [str(item).strip() for item in raw or ()]
+    return {item for item in values if item}
+
+
 def _empty_enhanced_factors() -> Dict[str, float]:
     return {
+        "close_vs_typical_price": 0.0,
         "close_vs_vwap": 0.0,
         "upper_wick_ratio": 0.0,
         "lower_wick_ratio": 0.0,

@@ -39,6 +39,14 @@ _HISTORICAL_CONTEXT_COLUMNS = frozenset(
         "vol_amount_5d",
         "breakout_20d",
         "volatility_20d",
+        "close_vs_typical_price",
+        "close_vs_vwap",
+        "upper_wick_ratio",
+        "lower_wick_ratio",
+        "price_position_20d",
+        "consecutive_up_days",
+        "consecutive_down_days",
+        "amplitude_5d_mean",
     }
 )
 
@@ -50,6 +58,7 @@ __all__ = [
     "_combined_speed",
     "_composite_score",
     "_execution_score",
+    "_enhanced_factor_adjustment",
     "_factor_ic_multiplier",
     "_factor_ic_payload",
     "_has_signal",
@@ -111,6 +120,13 @@ def _score_context(
         "vol_amount_5d_values": context_values("vol_amount_5d"),
         "breakout_20d_values": context_values("breakout_20d"),
         "volatility_20d_values": context_values("volatility_20d"),
+        "close_vs_typical_price_values": context_values("close_vs_typical_price"),
+        "upper_wick_ratio_values": context_values("upper_wick_ratio"),
+        "lower_wick_ratio_values": context_values("lower_wick_ratio"),
+        "price_position_20d_values": context_values("price_position_20d"),
+        "consecutive_up_days_values": context_values("consecutive_up_days"),
+        "consecutive_down_days_values": context_values("consecutive_down_days"),
+        "amplitude_5d_mean_values": context_values("amplitude_5d_mean"),
         "float_market_cap_values": context_values("float_market_cap"),
         "pe_dynamic_values": context_values("pe_dynamic"),
         "pb_values": context_values("pb"),
@@ -120,7 +136,50 @@ def _score_context(
             if getattr(config, "ENABLE_FACTOR_IC_WEIGHTING", False)
             else {}
         ),
+}
+
+
+def _enhanced_factor_adjustment(row: pd.Series, context: Dict[str, object], strategy: str) -> Dict[str, object]:
+    if not bool(getattr(config, "P3_ENHANCED_FACTOR_EXPERIMENT_ENABLED", False)):
+        return {"active": False, "factor": "", "score_delta": 0.0, "risk_delta": 0.0}
+    factors = _active_enhanced_experiment_factors()
+    if len(factors) != 1 or coerce_number(row.get("alphalite_factor_ready")) <= 0:
+        return {"active": False, "factor": "", "score_delta": 0.0, "risk_delta": 0.0}
+    factor = factors[0]
+    aliases = {"close_vs_vwap": "close_vs_typical_price"}
+    factor = aliases.get(factor, factor)
+    value = coerce_number(row.get(factor), None)
+    if value is None:
+        return {"active": False, "factor": factor, "score_delta": 0.0, "risk_delta": 0.0}
+    values = context.get("{}_values".format(factor)) or []
+    cap = max(0.0, min(8.0, coerce_number(getattr(config, "P3_ENHANCED_FACTOR_SCORE_DELTA_CAP", 4.0), 4.0)))
+    if factor in {"upper_wick_ratio", "amplitude_5d_mean", "consecutive_down_days"}:
+        direction = -1.0
+    elif factor == "consecutive_up_days" and strategy == "swing_picks":
+        direction = -1.0
+    else:
+        direction = 1.0
+    percentile = _optional_factor_score(value, values, available=True, higher_is_better=direction > 0)
+    centered = (percentile - 50.0) / 50.0
+    score_delta = max(-cap, min(cap, centered * cap))
+    risk_delta = max(0.0, -score_delta) if factor in {"upper_wick_ratio", "amplitude_5d_mean", "consecutive_down_days"} else 0.0
+    return {
+        "active": True,
+        "factor": factor,
+        "value": round(value, 4),
+        "score_delta": round(score_delta, 4),
+        "risk_delta": round(risk_delta, 4),
+        "mode": "single_factor_shadow",
     }
+
+
+def _active_enhanced_experiment_factors() -> List[str]:
+    raw = getattr(config, "P3_ENHANCED_FACTOR_KEYS", ())
+    if isinstance(raw, str):
+        values = [item.strip() for item in raw.replace("，", ",").split(",")]
+    else:
+        values = [str(item).strip() for item in raw or ()]
+    return [item for item in values if item]
 
 
 def _stddev(values: List[float]) -> float:

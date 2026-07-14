@@ -11,6 +11,7 @@ from stock_analyzer.fundamentals import attach_fundamental_factors, load_fundame
 from stock_analyzer.history_cache import HistoryCache
 from stock_analyzer.providers import MarketDataProvider, ProviderStatus, TimedCache
 from stock_analyzer.scoring import prepare_candidates
+from stock_analyzer.scoring_core import scoring_math
 
 
 def _quote_frame():
@@ -162,8 +163,59 @@ def test_alphalite_and_enhanced_factor_contracts():
     with patch.object(config, "ENABLE_ENHANCED_FACTORS", True):
         enabled = compute_alphalite_for_stock("600001", trend.tail(25))
 
+    assert disabled["close_vs_typical_price"] == 0.0
     assert disabled["close_vs_vwap"] == 0.0
+    assert enabled["close_vs_typical_price"] == enabled["close_vs_vwap"]
     assert enabled["price_position_20d"] > 50.0
+
+
+def test_enhanced_factors_can_be_selected_one_at_a_time():
+    trend = _history_frame(70)
+
+    with patch.object(config, "ENABLE_ENHANCED_FACTORS", True), patch.object(
+        config,
+        "P3_ENHANCED_FACTOR_KEYS",
+        ("price_position_20d",),
+        create=True,
+    ):
+        selected = compute_alphalite_for_stock("600001", trend.tail(25))
+
+    assert selected["price_position_20d"] > 50.0
+    assert selected["upper_wick_ratio"] == 0.0
+    assert selected["lower_wick_ratio"] == 0.0
+    assert selected["amplitude_5d_mean"] == 0.0
+
+
+def test_enhanced_factor_adjustment_requires_single_active_factor():
+    candidates = pd.DataFrame(
+        [
+            {"code": "600001", "alphalite_factor_ready": 1, "price_position_20d": 90.0},
+            {"code": "600002", "alphalite_factor_ready": 1, "price_position_20d": 40.0},
+            {"code": "600003", "alphalite_factor_ready": 1, "price_position_20d": 10.0},
+        ]
+    )
+    context = scoring_math._score_context(candidates, {})
+
+    with patch.object(config, "P3_ENHANCED_FACTOR_EXPERIMENT_ENABLED", True, create=True), patch.object(
+        config,
+        "P3_ENHANCED_FACTOR_KEYS",
+        ("price_position_20d",),
+        create=True,
+    ):
+        active = scoring_math._enhanced_factor_adjustment(candidates.iloc[0], context, "tomorrow_picks")
+
+    with patch.object(config, "P3_ENHANCED_FACTOR_EXPERIMENT_ENABLED", True, create=True), patch.object(
+        config,
+        "P3_ENHANCED_FACTOR_KEYS",
+        ("price_position_20d", "upper_wick_ratio"),
+        create=True,
+    ):
+        inactive = scoring_math._enhanced_factor_adjustment(candidates.iloc[0], context, "tomorrow_picks")
+
+    assert active["active"] is True
+    assert active["factor"] == "price_position_20d"
+    assert active["score_delta"] > 0
+    assert inactive["active"] is False
 
 
 def test_fundamental_factors_and_factor_ic():
@@ -185,6 +237,30 @@ def test_fundamental_factors_and_factor_ic():
 
     assert enriched.iloc[0]["fundamental_quality_score"] > enriched.iloc[1]["fundamental_quality_score"]
     assert ic["ic"]["fundamental_quality_score"]["ic"] > 0
+
+
+def test_factor_ic_uses_daily_cross_section_rank_ic_when_dates_exist():
+    samples = []
+    for signal_date in ("2024-01-02", "2024-01-03"):
+        for score, ret in ((10, -1.0), (20, 0.5), (30, 2.0)):
+            samples.append(
+                {
+                    "signal_date": signal_date,
+                    "primary_return_net": ret,
+                    "raw": {"momentum_score": score},
+                }
+            )
+
+    ic = compute_factor_ic(samples, factor_keys=["momentum_score"])
+    info = ic["ic"]["momentum_score"]
+
+    assert ic["method"] == "daily_cross_section_spearman_rank_ic"
+    assert ic["daily_count"] == 2
+    assert info["method"] == "daily_cross_section_spearman_rank_ic"
+    assert info["daily_count"] == 2
+    assert info["sample_count"] == 6
+    assert info["ic"] > 0
+    assert info["windows"]["20"]["daily_count"] == 2
 
 
 def test_fundamental_loader_uses_daily_cache(tmp_path):

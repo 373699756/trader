@@ -2,6 +2,7 @@ import tempfile
 import unittest
 
 from stock_analyzer import config
+from stock_analyzer.snapshot_phase import CLOSE_FALLBACK, PRECLOSE_TRADEABLE
 from stock_analyzer.strategy_validation import StrategyValidationStore
 
 
@@ -75,6 +76,43 @@ class ValidationStoreTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["code"], "600001")
         self.assertEqual(rows[0]["name"], "new")
+
+    def test_strategy_validation_keeps_same_day_phase_snapshots_separate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StrategyValidationStore("{}/validation.sqlite3".format(tmpdir))
+            version = "tomorrow_phase_v1"
+            store.save_signals(
+                "tomorrow_picks",
+                version,
+                "2026-07-08T14:30:00",
+                [{"rank": 1, "code": "600001", "name": "盘中", "price": 10, "score": 80}],
+                batch_metadata={"snapshot_phase": PRECLOSE_TRADEABLE},
+            )
+            store.save_signals(
+                "tomorrow_picks",
+                version,
+                "2026-07-08T15:01:00",
+                [{"rank": 1, "code": "600001", "name": "收盘", "price": 11, "score": 85}],
+                batch_metadata={"snapshot_phase": CLOSE_FALLBACK},
+            )
+
+            preclose = store.latest_signal_rows(
+                "tomorrow_picks",
+                signal_date="2026-07-08",
+                snapshot_phase=PRECLOSE_TRADEABLE,
+            )
+            close = store.latest_signal_rows(
+                "tomorrow_picks",
+                signal_date="2026-07-08",
+                snapshot_phase=CLOSE_FALLBACK,
+            )
+            dates = store.list_signal_dates("tomorrow_picks")
+            preferred = store.saved_signal_batch("tomorrow_picks", "2026-07-08")
+
+        self.assertEqual(preclose[0]["name"], "盘中")
+        self.assertEqual(close[0]["name"], "收盘")
+        self.assertEqual([row["snapshot_phase"] for row in dates], [CLOSE_FALLBACK, PRECLOSE_TRADEABLE])
+        self.assertEqual(preferred["snapshot_phase"], PRECLOSE_TRADEABLE)
 
     def test_strategy_validation_records_empty_saved_batch(self):
         with tempfile.TemporaryDirectory() as tmpdir:

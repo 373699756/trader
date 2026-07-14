@@ -61,33 +61,19 @@ def run_snapshot(
     context = _context or _prepare_snapshot_context(provider)
     if context.get("error"):
         common_signal_time = str(context.get("snapshot_cutoff") or datetime.now().isoformat(timespec="seconds"))
-        batch_metadata = {
-            "data_source_timestamp": "",
-            "market_data_cutoff": common_signal_time,
-            "snapshot_id": str(context.get("snapshot_id") or "snapshot_{}".format(uuid4().hex)),
-            "freeze_deadline": _freeze_deadline(common_signal_time),
-            "sample_type": "unknown",
-            "sample_source": "snapshot_context_rejected",
-            "snapshot_phase": snapshot_phase,
+        snapshot_id = str(context.get("snapshot_id") or "snapshot_{}".format(uuid4().hex))
+        return {
+            "ok": False,
+            "strategy": strategy,
+            "error": str(context["error"]),
+            "saved": {"saved": 0, "replaced": 0},
+            "meta": {
+                **phase_payload(snapshot_phase, as_of=common_signal_time),
+                "generated_at": common_signal_time,
+                "snapshot_id": snapshot_id,
+                "rejection": "snapshot_context_rejected",
+            },
         }
-        return _snapshot_error_rejection(
-            strategy=strategy,
-            provider=provider,
-            validation_store=validation_store,
-            snapshot_id=str(batch_metadata["snapshot_id"]),
-            signal_time=common_signal_time,
-            candidates=context.get("candidates") or pd.DataFrame(),
-            quotes=context.get("quotes"),
-            event_payload=context.get("event_payload") or {},
-            fundamental_payload=context.get("fundamental_payload") or {},
-            error=context["error"],
-            market=market,
-            market_regime=dict(context.get("market_regime") or {}),
-            generation_status="context_rejection",
-            reason="snapshot_context_rejected",
-            batch_metadata=batch_metadata,
-            snapshot_phase=snapshot_phase,
-        )
 
     quotes = context["quotes"]
     snapshot_cutoff = str(context["snapshot_cutoff"])

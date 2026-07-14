@@ -34,7 +34,17 @@ def build_strategy_tuning_plan(
             "error": "unsupported_strategy",
         }
 
-    sample_count = int(coerce_number(metrics.get("day_count"), 0))
+    day_count = int(coerce_number(metrics.get("day_count"), 0))
+    sample_count = int(coerce_number(metrics.get("sample_count"), 0))
+    outcome_sample_count = int(coerce_number(metrics.get("outcome_sample_count"), 0))
+    total_sample_count = int(coerce_number(metrics.get("total_sample_count"), sample_count))
+    total_outcome_sample_count = int(
+        coerce_number(metrics.get("total_outcome_sample_count"), outcome_sample_count)
+    )
+    real_sample_count = int(coerce_number(metrics.get("real_sample_count"), 0))
+    replay_sample_count = int(coerce_number(metrics.get("replay_sample_count"), 0))
+    real_outcome_sample_count = int(coerce_number(metrics.get("real_outcome_sample_count"), 0))
+    replay_outcome_sample_count = int(coerce_number(metrics.get("replay_outcome_sample_count"), 0))
     real_count = int(coerce_number(metrics.get("real_day_count"), 0))
     replay_count = int(coerce_number(metrics.get("replay_day_count"), 0))
     pending_count = int(coerce_number(metrics.get("pending_outcome_count"), 0))
@@ -56,11 +66,11 @@ def build_strategy_tuning_plan(
     suggestions: List[Dict[str, object]] = []
     gates: List[Dict[str, object]] = []
 
-    if sample_count < 30:
-        gates.append(_gate("min_day_count", False, sample_count, 30, "有效交易日不足，不能自动应用。"))
+    if day_count < 30:
+        gates.append(_gate("min_day_count", False, day_count, 30, "有效交易日不足，不能自动应用。"))
         issues.append("有效交易日少，先影子运行，不直接改正式策略。")
     else:
-        gates.append(_gate("min_day_count", True, sample_count, 30, "有效交易日达到最低门槛。"))
+        gates.append(_gate("min_day_count", True, day_count, 30, "有效交易日达到最低门槛。"))
 
     min_real_days = int(getattr(config, "STRATEGY_DECAY_MIN_REAL_DAYS", 20))
     if real_count < min_real_days:
@@ -150,7 +160,15 @@ def build_strategy_tuning_plan(
             "items": gates,
         },
         "metrics_snapshot": {
-            "day_count": sample_count,
+            "day_count": day_count,
+            "sample_count": sample_count,
+            "outcome_sample_count": outcome_sample_count,
+            "total_sample_count": total_sample_count,
+            "total_outcome_sample_count": total_outcome_sample_count,
+            "real_sample_count": real_sample_count,
+            "replay_sample_count": replay_sample_count,
+            "real_outcome_sample_count": real_outcome_sample_count,
+            "replay_outcome_sample_count": replay_outcome_sample_count,
             "real_day_count": real_count,
             "replay_day_count": replay_count,
             "pending_outcome_count": pending_count,
@@ -238,4 +256,3 @@ def _unique(values: List[str]) -> List[str]:
         if value and value not in result:
             result.append(value)
     return result
-

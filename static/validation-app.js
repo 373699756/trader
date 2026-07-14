@@ -159,10 +159,10 @@
             </section>
           `;
         }
-        const issues = (plan.issues || []).slice(0, 4);
-        const suggestions = (plan.suggestions || []).slice(0, 6);
+        const issues = plan.issues || [];
+        const suggestions = plan.suggestions || [];
         const gate = plan.gate || {};
-        const gateItems = (gate.items || []).slice(0, 4);
+        const gateItems = gate.items || [];
         const statusText = plan.can_apply
           ? "影子建议满足门槛"
           : plan.shadow_mode
@@ -183,7 +183,7 @@
               ${suggestions.length ? suggestions.map(item => `<span class="tag validation">${escapeHtml(item.parameter)}：${escapeHtml(formatTuningValue(item.value))}</span>`).join("") : '<span class="tag muted">暂无参数建议</span>'}
             </div>
             <div class="tuning-tags">
-              ${gateItems.map(item => `<span class="tag ${item.passed ? "stable" : "risk"}">${escapeHtml(item.name)} ${item.passed ? "通过" : "阻断"}</span>`).join("")}
+              ${gateItems.map(item => `<span class="tag ${item.passed ? "stable" : "risk"}">${escapeHtml(item.name)} ${item.passed ? "通过" : "阻断"} · 实际 ${escapeHtml(formatTuningValue(item.actual))} · 门槛 ${escapeHtml(formatTuningValue(item.required))}</span>`).join("")}
             </div>
           </section>
         `;
@@ -192,6 +192,13 @@
       async function loadStrategyValidationReport() {
         const strategy = currentValidationStrategy();
         const days = String(els.validationDaysSelect.value || "20");
+        const requestSeq = Number(state.validationReportRequestSeq || 0) + 1;
+        state.validationReportRequestSeq = requestSeq;
+        const isCurrentRequest = () => (
+          requestSeq === state.validationReportRequestSeq &&
+          strategy === currentValidationStrategy() &&
+          days === String(els.validationDaysSelect.value || "20")
+        );
         const buttonLabel = els.generateTuningBtn?.textContent || "策略验证";
         if (els.generateTuningBtn) {
           els.generateTuningBtn.disabled = true;
@@ -211,7 +218,7 @@
           if (!validationRes.ok || !validationPayload.ok) {
             throw new Error(validationPayload.error || "策略验证报告接口返回异常");
           }
-          if (strategy !== currentValidationStrategy()) return;
+          if (!isCurrentRequest()) return;
           if (validationPayload.metrics && els.validationSampleCount) {
             state.validationMetrics = validationPayload.metrics;
             renderValidationMetrics(validationPayload.metrics, validationPayload.validation_gate || {});
@@ -230,7 +237,7 @@
           } catch (err) {
             tuningError = err.message || String(err);
           }
-          if (strategy !== currentValidationStrategy()) return;
+          if (!isCurrentRequest()) return;
 
           renderStrategyValidationReport(validationPayload, strategy, days, tuningPayload, tuningError);
           if (tuningError) {
@@ -248,6 +255,7 @@
             );
           }
         } catch (err) {
+          if (!isCurrentRequest()) return;
           renderToolResult(`
             <div class="prediction-empty">
               <strong>策略验证失败</strong>
@@ -256,11 +264,11 @@
           `);
           setOpsStatus(els.tuningStatus, `验证失败：${err.message}`, "bad");
         } finally {
-          if (els.generateTuningBtn) {
+          if (isCurrentRequest() && els.generateTuningBtn) {
             els.generateTuningBtn.disabled = false;
             els.generateTuningBtn.textContent = buttonLabel;
           }
-          if (els.stockPredictionBtn) els.stockPredictionBtn.disabled = false;
+          if (isCurrentRequest() && els.stockPredictionBtn) els.stockPredictionBtn.disabled = false;
         }
       }
 
@@ -272,6 +280,9 @@
         const pending = Number(metrics.pending_outcome_count || 0);
         const winRate = metrics.real_win_rate_primary_net ?? metrics.win_rate_primary_net;
         const avgReturn = metrics.real_avg_primary_return_net ?? metrics.avg_primary_return_net;
+        const drawdown = metrics.real_portfolio_max_drawdown_pct ??
+          metrics.real_avg_max_drawdown_primary ??
+          metrics.avg_max_drawdown_primary;
         const verdict = sampleCount <= 0
           ? "暂无可验证样本"
           : gate.blocked
@@ -291,6 +302,7 @@
                 <span class="tag ${pending ? "warning" : "muted"}">待回填 ${pending}</span>
                 <span class="tag validation">净胜率 ${winRate == null ? "-" : `${formatNumber(winRate, 1)}%`}</span>
                 <span class="tag validation">净收益 ${formatSignedPct(avgReturn)}</span>
+                <span class="tag validation">回撤 ${formatSignedPct(drawdown)}</span>
               </div>
               <p>${escapeHtml(gate.reason || "以真实样本、交易成本和当前策略版本统计。")}</p>
             </section>
@@ -1077,11 +1089,22 @@
         });
       }
 
+      function invalidateStrategyValidationReportRequest() {
+        state.validationReportRequestSeq = Number(state.validationReportRequestSeq || 0) + 1;
+        if (els.generateTuningBtn) {
+          els.generateTuningBtn.disabled = false;
+          els.generateTuningBtn.textContent = "策略验证";
+        }
+        if (els.stockPredictionBtn) els.stockPredictionBtn.disabled = false;
+      }
+
       function resetValidationView() {
+        invalidateStrategyValidationReportRequest();
         state.selectedValidation = { date: "", strategy: "" };
         state.validationAutoRefreshDate = "";
         state.validationDatePage = 0;
         setOpsStatus(els.validationBaselineStatus, "", "");
+        setOpsStatus(els.tuningStatus, "", "");
         renderToolResult('<div class="empty">点击左侧按钮后在这里显示结果</div>');
       }
 
@@ -1099,8 +1122,11 @@
       }
 
       function handleValidationDaysChange() {
+        invalidateStrategyValidationReportRequest();
         state.validationDatePage = 0;
         setOpsStatus(els.validationBaselineStatus, "", "");
+        setOpsStatus(els.tuningStatus, "", "");
+        renderToolResult('<div class="empty">点击左侧按钮后在这里显示结果</div>');
         loadValidation();
       }
 

@@ -134,6 +134,95 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("暂无明确卖点", result["html"])
         self.assertNotIn("当前筛选下暂无动作汇总", result["appSource"])
 
+    def test_recommendation_status_marks_close_fallback_phase(self):
+        result = self.run_node(
+            """
+            global.window = {};
+            global.document = {
+              querySelector: () => ({ dataset: { poolFilter: "today" } }),
+            };
+            require('./static/recommendation-utils.js');
+            require('./static/recommendation-renderers.js');
+            require('./static/recommendation-tables.js');
+            require('./static/recommendation-app.js');
+
+            const state = {
+              recommendationRequestSeq: 0,
+              recommendationDataTimestamp: 0,
+              recommendationHasPayload: false,
+              renderFingerprints: {},
+              tomorrowLoaded: false,
+              horizonLoaded: false,
+              lastRows: { shortTerm: [], tomorrow: [], swing: [] },
+            };
+            const statuses = [];
+            const app = window.TraderRecommendationApp.create({
+              state,
+              els: {
+                shortTermBody: { innerHTML: "" },
+                tomorrowBody: { innerHTML: "" },
+                swingBody: { innerHTML: "" },
+                recommendationActionSummary: { innerHTML: "" },
+              },
+              helpers: {
+                escapeHtml: value => String(value ?? ""),
+                formatMoney: value => String(value ?? ""),
+                formatNumber: value => String(value ?? ""),
+                hasRows: rows => Array.isArray(rows) && rows.length > 0,
+                rememberFingerprint: (key, value) => {
+                  const next = JSON.stringify(value ?? null);
+                  if (state.renderFingerprints[key] === next) return false;
+                  state.renderFingerprints[key] = next;
+                  return true;
+                },
+              },
+              config: {
+                DEFAULT_ACTION_FILTER: "all",
+                DEFAULT_MARKET: "all",
+                DEFAULT_SORT_MODE: "rank",
+              },
+              status: {
+                renderMetrics: () => {},
+                setStatus: text => statuses.push(text),
+                startPushStatusCountdown: () => {},
+              },
+            });
+            global.fetch = async () => ({
+              json: async () => ({
+                ok: true,
+                recommendations: {
+                  short_term: [{ code: "600001", name: "测试", price: 10, trade_action: { position_size: 1 } }],
+                  tomorrow_picks: [],
+                  swing_picks: [],
+                },
+                meta: {
+                  generated_at: "2026-07-14T15:01:00",
+                  as_of: "2026-07-14T15:01:00",
+                  snapshot_phase: "close_fallback",
+                },
+                health: {},
+              }),
+            });
+            (async () => {
+              await app.loadRecommendations({ background: true });
+              process.stdout.write(JSON.stringify({ statuses }));
+            })().catch(error => {
+              process.stderr.write(String(error));
+              process.exit(1);
+            });
+            """
+        )
+
+        self.assertTrue(any("收盘补充" in item for item in result["statuses"]))
+
+    def test_recommendation_table_width_contract_keeps_stock_and_price_compact(self):
+        with open("static/styles.css", encoding="utf-8") as source:
+            styles_source = source.read()
+
+        self.assertIn("--stock-col: 88px;", styles_source)
+        self.assertIn("--latest-price-col: 60px;", styles_source)
+        self.assertIn("th.col-latest-price", styles_source)
+
     def test_backup_only_recommendation_summary_is_not_executable(self):
         result = self.run_node(
             """
@@ -232,6 +321,7 @@ class FrontendContractTest(unittest.TestCase):
                       pending_outcome_count: 1,
                       real_win_rate_primary_net: 52.5,
                       real_avg_primary_return_net: 0.4,
+                      real_portfolio_max_drawdown_pct: -3.2,
                     },
                     validation_gate: {blocked: false, reason: '真实样本验证完成'},
                   }),
@@ -250,7 +340,13 @@ class FrontendContractTest(unittest.TestCase):
                 generated_at: '2026-07-14T18:00:00',
                 issues: [],
                 suggestions: [],
-                gate: {items: []},
+                gate: {items: [
+                  {name: 'min_day_count', passed: true, actual: 60, required: 30},
+                  {name: 'min_real_day_count', passed: true, actual: 40, required: 20},
+                  {name: 'no_pending_outcomes', passed: false, actual: 1, required: 0},
+                  {name: 'positive_avg_net_return', passed: true, actual: 0.4, required: '> 0'},
+                  {name: 'max_primary_drawdown', passed: true, actual: -3.2, required: '> -8'},
+                ]},
               };
               return {
                 ok: true,
@@ -271,7 +367,7 @@ class FrontendContractTest(unittest.TestCase):
               },
               helpers: {
                 escapeHtml: value => String(value),
-                formatNumber: value => String(value),
+                formatNumber: (value, digits = 0) => Number(value).toFixed(digits),
                 numberClass: () => '',
                 strategyLabel: strategy => strategy === 'tomorrow_picks' ? '明日' : strategy,
                 validationSnapshotStrategiesText: () => '',
@@ -326,13 +422,97 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("近60日验证已完成", result["success"]["status"]["textContent"])
         self.assertIn("真实样本验证完成", result["success"]["html"])
         self.assertIn("真实交易日 8", result["success"]["html"])
+        self.assertIn("回撤 -3.20%", result["success"]["html"])
         self.assertIn("调参建议只进入影子验证", result["success"]["html"])
         self.assertIn("复用已有建议", result["success"]["html"])
+        self.assertIn("max_primary_drawdown", result["success"]["html"])
+        self.assertIn("实际 -3.2", result["success"]["html"])
+        self.assertIn("门槛 > -8", result["success"]["html"])
         self.assertEqual(result["partial"]["status"]["level"], "bad")
         self.assertIn("策略验证已完成", result["partial"]["status"]["textContent"])
         self.assertIn("真实交易日 8", result["partial"]["html"])
         self.assertIn("影子调参建议暂不可用", result["partial"]["html"])
         self.assertIn("调参服务暂不可用", result["partial"]["html"])
+
+    def test_strategy_switch_ignores_stale_validation_failure(self):
+        result = self.run_node(
+            """
+            global.window = {
+              TraderValidationUI: {
+                validationStrategyMeta: strategy => ({label: strategy, outcome: '', horizon: ''}),
+              },
+              TraderValidationRenderers: {},
+            };
+            require('./static/validation-app.js');
+            const pending = [];
+            global.fetch = url => new Promise(resolve => pending.push({url, resolve}));
+            const state = {
+              validationCache: {},
+              validationRequestSeq: 0,
+              validationReportRequestSeq: 0,
+              selectedValidation: {date: '', strategy: ''},
+            };
+            const strategySelect = {value: 'tomorrow_picks'};
+            const resultPane = {innerHTML: ''};
+            const tuningStatus = {};
+            const button = {textContent: '策略验证', disabled: false};
+            const app = window.TraderValidationApp.create({
+              state,
+              els: {
+                validationStrategySelect: strategySelect,
+                validationStrategyTabs: [],
+                validationDaysSelect: {value: '60'},
+                validationDatesBody: {innerHTML: ''},
+                validationDetailBody: {innerHTML: ''},
+                validationBaselineStatus: {},
+                updateStatus: {textContent: ''},
+                generateTuningBtn: button,
+                stockPredictionBtn: {disabled: false},
+                tuningStatus,
+                toolResultPane: resultPane,
+              },
+              helpers: {
+                escapeHtml: value => String(value),
+                formatNumber: value => String(value),
+                numberClass: () => '',
+                strategyLabel: value => value,
+                validationSnapshotStrategiesText: () => '',
+              },
+              config: {VALIDATION_AUTO_REFRESH_MS: 30000, VALIDATION_DATE_PAGE_SIZE: 5},
+              status: {
+                renderToolResult: html => { resultPane.innerHTML = html; },
+                setOpsStatus: (target, text, level) => Object.assign(target, {textContent: text, level}),
+                setStatus: () => {},
+              },
+            });
+            (async () => {
+              const staleRequest = app.loadStrategyValidationReport();
+              strategySelect.value = 'swing_picks';
+              app.handleValidationStrategyChange();
+              pending[0].resolve({
+                ok: false,
+                json: async () => ({ok: false, error: 'old request failed'}),
+              });
+              await staleRequest;
+              process.stdout.write(JSON.stringify({
+                html: resultPane.innerHTML,
+                status: tuningStatus,
+                button,
+                calls: pending.map(item => item.url),
+              }));
+            })().catch(error => {
+              process.stderr.write(String(error));
+              process.exit(1);
+            });
+            """
+        )
+
+        self.assertEqual(len(result["calls"]), 2)
+        self.assertIn("strategy=swing_picks", result["calls"][1])
+        self.assertNotIn("old request failed", result["html"])
+        self.assertEqual(result["status"].get("textContent", ""), "")
+        self.assertFalse(result["button"]["disabled"])
+        self.assertEqual(result["button"]["textContent"], "策略验证")
 
     def test_validation_snapshot_status_uses_backend_strategy_list(self):
         with open("static/app.js", encoding="utf-8") as source:

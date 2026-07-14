@@ -24,6 +24,25 @@
         return 0;
       }
 
+      function snapshotPhaseLabel(payload) {
+        const phase = String(payload?.meta?.snapshot_phase || payload?.snapshot?.snapshot_phase || "");
+        if (phase === "preclose_tradeable") return "盘中冻结";
+        if (phase === "close_fallback") return "收盘补充";
+        if (phase === "mixed") return "阶段混合";
+        return "";
+      }
+
+      function recommendationStatusText(payload, fallbackPrefix = "推荐更新") {
+        const phaseLabel = snapshotPhaseLabel(payload);
+        const quoteAt = payload.meta?.quote_timestamp || payload.health?.last_quote_refresh;
+        const generatedAt = payload.meta?.as_of || payload.meta?.generated_at || payload.snapshot?.saved_at || "最近快照";
+        const phaseSuffix = phaseLabel ? ` · ${phaseLabel}` : "";
+        if (quoteAt) {
+          return `行情更新 ${quoteAt} · 排名 ${generatedAt}${phaseSuffix}`;
+        }
+        return `${fallbackPrefix} ${generatedAt}${phaseSuffix}`;
+      }
+
       function isExecutableRow(row) {
         if (!row || typeof row !== "object") {
           return false;
@@ -76,9 +95,7 @@
           prefetchRecommendationPools();
         }
         if (shouldRenderTables) {
-          const quoteAt = payload.meta?.quote_timestamp || payload.health?.last_quote_refresh;
-          const generatedAt = payload.meta?.generated_at || "最近快照";
-          setStatus(quoteAt ? `行情更新 ${quoteAt} · 排名 ${generatedAt}` : `推荐更新 ${generatedAt}`);
+          setStatus(recommendationStatusText(payload));
         }
         return true;
       }
@@ -122,8 +139,9 @@
           const payload = await res.json();
           if (requestSeq !== state.recommendationRequestSeq) return false;
           if (!applyRecommendationsPayload(payload)) return false;
-          const savedAt = payload.snapshot?.saved_at || payload.meta?.generated_at || "最近快照";
-          setStatus(`已加载快照 ${savedAt}，正在拉取最新行情...`);
+          const savedAt = payload.snapshot?.as_of || payload.snapshot?.saved_at || payload.meta?.as_of || payload.meta?.generated_at || "最近快照";
+          const phaseLabel = snapshotPhaseLabel(payload);
+          setStatus(`已加载快照 ${savedAt}${phaseLabel ? ` · ${phaseLabel}` : ""}，正在拉取最新行情...`);
           return true;
         } catch (err) {
           return false;
@@ -265,7 +283,7 @@
               renderTomorrowTable(state.lastRows.tomorrow);
             }
             if (!background) {
-            setStatus(`明日本次更新时间 ${payload.meta.generated_at || "最近快照"}`);
+            setStatus(`明日本次更新时间 ${payload.meta?.as_of || payload.meta?.generated_at || "最近快照"}${snapshotPhaseLabel(payload) ? ` · ${snapshotPhaseLabel(payload)}` : ""}`);
             }
           } catch (err) {
             state.tomorrowLoaded = false;
@@ -315,7 +333,7 @@
               renderSwingTable(state.lastRows.swing);
             }
             if (!background) {
-            setStatus(`2-5日更新时间 ${swingPayload.meta.generated_at}`);
+            setStatus(`2-5日更新时间 ${swingPayload.meta?.as_of || swingPayload.meta?.generated_at || "最近快照"}${snapshotPhaseLabel(swingPayload) ? ` · ${snapshotPhaseLabel(swingPayload)}` : ""}`);
             }
           } catch (err) {
             state.horizonLoaded = false;

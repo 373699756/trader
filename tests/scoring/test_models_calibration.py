@@ -371,6 +371,7 @@ class ModelsCalibrationTest(unittest.TestCase):
         self.assertEqual(ranked[0]["ranking_source"], "expected_return_predicted_net_return")
         self.assertGreater(ranked[0]["predicted_net_return"], ranked[1]["predicted_net_return"])
         self.assertNotIn("rank_score", ranked[0])
+        self.assertIn("expected_return_rank_score", ranked[0])
 
     def test_expected_return_prediction_keeps_shadow_order_until_ready(self):
         from stock_analyzer.scoring_core.expected_return import _attach_expected_return_prediction
@@ -404,6 +405,91 @@ class ModelsCalibrationTest(unittest.TestCase):
         self.assertIn("predicted_net_return", ranked[0])
         self.assertNotIn("rank_score", ranked[0])
         self.assertNotIn("expected_return_rank", ranked[0])
+
+    def test_expected_return_ranking_falls_back_when_uncertainty_gate_fails(self):
+        from stock_analyzer.scoring_core.expected_return import _attach_expected_return_prediction
+
+        rows = [
+            {"code": "A", "score": 80},
+            {"code": "B", "score": 70},
+        ]
+        enriched_rows = [
+            {
+                "code": "A",
+                "score": 80,
+                "model_confidence": "ready",
+                "expected_return_peer_method": "feature_nearest",
+                "expected_return_sample_count": 25,
+                "expected_return_uncertainty": 0.5,
+                "predicted_net_return": 1.0,
+                "predicted_probability": 0.55,
+            },
+            {
+                "code": "B",
+                "score": 70,
+                "model_confidence": "ready",
+                "expected_return_peer_method": "feature_nearest",
+                "expected_return_sample_count": 25,
+                "expected_return_uncertainty": 9.0,
+                "predicted_net_return": 4.0,
+                "predicted_probability": 0.7,
+            },
+        ]
+
+        with patch(
+            "stock_analyzer.scoring_core.expected_return.predict_expected_return",
+            return_value=enriched_rows,
+        ), patch.object(config, "EXPECTED_RETURN_MAX_RANKING_UNCERTAINTY", 2.0, create=True):
+            ranked = _attach_expected_return_prediction("tomorrow_picks", rows, samples=[], use_ranking=True)
+
+        self.assertEqual([row["code"] for row in ranked], ["A", "B"])
+        self.assertNotIn("expected_return_rank", ranked[0])
+        self.assertNotIn("expected_return_rank", ranked[1])
+
+    def test_expected_return_ranking_uses_uncertainty_adjusted_score(self):
+        from stock_analyzer.scoring_core.expected_return import _attach_expected_return_prediction
+
+        rows = [
+            {"code": "A", "score": 80},
+            {"code": "B", "score": 70},
+        ]
+        enriched_rows = [
+            {
+                "code": "A",
+                "score": 80,
+                "model_confidence": "ready",
+                "expected_return_peer_method": "feature_nearest",
+                "expected_return_sample_count": 25,
+                "expected_return_uncertainty": 0.1,
+                "predicted_net_return": 2.0,
+                "predicted_probability": 0.55,
+            },
+            {
+                "code": "B",
+                "score": 70,
+                "model_confidence": "ready",
+                "expected_return_peer_method": "feature_nearest",
+                "expected_return_sample_count": 25,
+                "expected_return_uncertainty": 8.0,
+                "predicted_net_return": 3.0,
+                "predicted_probability": 0.7,
+            },
+        ]
+
+        with patch(
+            "stock_analyzer.scoring_core.expected_return.predict_expected_return",
+            return_value=enriched_rows,
+        ), patch.object(config, "EXPECTED_RETURN_MAX_RANKING_UNCERTAINTY", 10.0, create=True), patch.object(
+            config,
+            "EXPECTED_RETURN_UNCERTAINTY_PENALTY",
+            0.25,
+            create=True,
+        ):
+            ranked = _attach_expected_return_prediction("tomorrow_picks", rows, samples=[], use_ranking=True)
+
+        self.assertEqual([row["code"] for row in ranked], ["A", "B"])
+        self.assertEqual(ranked[0]["expected_return_rank"], 1)
+        self.assertGreater(ranked[0]["expected_return_rank_score"], ranked[1]["expected_return_rank_score"])
 
     def test_walk_forward_splits_leave_purge_gap_before_test_dates(self):
         from stock_analyzer.calibrate import _walk_forward_splits

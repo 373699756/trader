@@ -101,7 +101,7 @@ def main() -> int:
         return 0 if payload.get("ok") else 1
 
     from .providers import MarketDataProvider
-    from .snapshot import SNAPSHOT_STRATEGIES, run_snapshots
+    from .snapshot import SNAPSHOT_STRATEGIES, run_missing_close_snapshots, run_snapshots
     from .strategy_validation import StrategyValidationStore
 
     provider = MarketDataProvider()
@@ -112,6 +112,7 @@ def main() -> int:
     )
     payload = {
         "ok": True,
+        "close_snapshot": {},
         "market_data": {},
         "snapshot": [],
         "update": [],
@@ -123,6 +124,16 @@ def main() -> int:
         "calibrate_live": {},
         "backup_validation": {},
     }
+
+    if args.after_close:
+        payload["close_snapshot"] = run_missing_close_snapshots(
+            provider,
+            store,
+            validation_strategies,
+            market=args.market,
+        )
+        if not payload["close_snapshot"].get("ok"):
+            payload["ok"] = False
 
     if args.download_market_data:
         from .market_data import download_market_data
