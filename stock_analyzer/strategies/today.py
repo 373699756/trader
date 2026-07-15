@@ -64,7 +64,7 @@ class TodayScorer:
             profit_window="信号时点至T日收盘",
             holding_discipline="信号时点至收盘延续观察，不模拟当日新买后卖出",
             execution_allowed=False,
-            score_note="{} 分以上进入今日延续强观察池；未与明日策略重合会转入备选观察。".format(min_score),
+            score_note="{} 分以上形成今日延续重点观察；不形成执行动作。".format(min_score),
         )
         action = row.get("trade_action") if isinstance(row.get("trade_action"), dict) else {}
         action["label"] = "高优先观察"
@@ -86,7 +86,7 @@ class TodayScorer:
             "strategy_version": config.SHORT_TERM_STRATEGY_VERSION,
             "strategy_label": "今日延续推荐",
             "strategy": {
-                "short_term": "双层观察：今日延续重点观察 + 今日观察（未与明日重合时）。",
+                "short_term": "仅返回重点观察主池；不足则空。",
             },
             "primary_count": 0,
             "backup_count": 0,
@@ -100,9 +100,6 @@ class TodayScorer:
         primary_count: int,
         backup_count: int,
         min_score: float,
-        fallback_min_score: float = None,
-        fallback_mode: str = "",
-        fallback_count: int = 0,
         top_n: int,
         market_filter: str,
     ) -> Dict[str, object]:
@@ -119,22 +116,16 @@ class TodayScorer:
             "strategy_version": config.SHORT_TERM_STRATEGY_VERSION,
             "strategy_label": "今日延续推荐",
             "recommendation_class": "today_next_day_continuation_tiered",
-            "recommendation_class_label": "今日延续（重点观察 + 备选观察）",
+            "recommendation_class_label": "今日延续（重点观察）",
             "selection_contract_version": "today_next_day_v2_tiered",
             "execution_allowed": False,
             "holding_discipline": "信号时点至T日收盘延续收益观察；明日重合仅作为优先级加权，不替代今日延续观察目标。",
             "profit_window": "信号时点至T日收盘，并记录T+1重合状态",
             "deepseek_mode": "precomputed_features_shadow",
             "strategy": {
-                "short_term": "双层观察：强信号优先展示，未满足则补齐备选观察；明日未重合仅降级观察标签。",
+                "short_term": "仅返回重点观察主池；不足时不补齐。",
             },
         }
-        if fallback_mode:
-            meta["fallback_mode"] = fallback_mode
-            meta["fallback_count"] = int(fallback_count)
-            if fallback_mode == "backup_min_score":
-                meta["fallback_min_score"] = coerce_number(fallback_min_score)
-            meta["min_score"] = min_score
         return {
             "generated_at": meta["generated_at"],
             "candidate_count": meta["candidate_count"],
@@ -155,11 +146,6 @@ class TodayScorer:
             "profit_window": meta["profit_window"],
             "deepseek_mode": meta["deepseek_mode"],
             "strategy": meta["strategy"],
-            **({
-                "fallback_mode": meta["fallback_mode"],
-                "fallback_count": meta["fallback_count"],
-                "fallback_min_score": meta.get("fallback_min_score"),
-            } if fallback_mode else {}),
         }
 
     def score(
@@ -205,54 +191,21 @@ class TodayScorer:
             candidate_pool_rows.append(item)
 
         min_score = coerce_number(getattr(config, "TODAY_RECOMMENDATION_MIN_SCORE", 60.0), 60.0)
-        backup_min_score = coerce_number(getattr(config, "TODAY_BACKUP_MIN_SCORE", 45.0), 45.0)
 
         eligible_rows = [row for row in short_rows if coerce_number(row.get("score")) >= min_score]
         if top_n < 0:
             top_n = 0
 
-        primary_rows = list(eligible_rows[:top_n]) if top_n > 0 else []
-        primary_ids = {id(row) for row in primary_rows}
-        display_rows = list(primary_rows)
-
-        fallback_mode = ""
-        fallback_rows = []
-        remaining_slots = int(top_n) - len(display_rows) if top_n > 0 else 0
-
-        if remaining_slots > 0:
-            backup_candidates = [
-                row
-                for row in short_rows
-                if id(row) not in primary_ids
-                and coerce_number(row.get("score")) >= backup_min_score
-            ]
-            if backup_candidates:
-                fallback_rows = backup_candidates[:remaining_slots]
-                fallback_mode = "backup_min_score"
-            else:
-                fallback_rows = [
-                    row
-                    for row in short_rows
-                    if id(row) not in primary_ids
-                ][:remaining_slots]
-                if fallback_rows:
-                    fallback_mode = "rank_tail_fill"
-
-        if fallback_rows:
-            display_rows.extend(fallback_rows)
+        display_rows = list(eligible_rows[:top_n]) if top_n > 0 else []
 
         self.ranking_policy.assign_rank(display_rows)
 
         primary_count = 0
         for row in display_rows:
-            if id(row) in primary_ids:
-                primary_count += 1
-                self._mark_primary_row(row, min_score)
-            else:
-                self._mark_backup_row(row)
+            primary_count += 1
+            self._mark_primary_row(row, min_score)
 
-        backup_count = max(0, len(display_rows) - primary_count)
-        fallback_count = len(fallback_rows)
+        backup_count = 0
 
         meta = self._build_meta(
             len(df),
@@ -261,9 +214,6 @@ class TodayScorer:
             primary_count,
             backup_count,
             min_score,
-            fallback_count=fallback_count,
-            fallback_min_score=backup_min_score,
-            fallback_mode=fallback_mode,
             top_n=top_n,
             market_filter=market_filter,
         )
