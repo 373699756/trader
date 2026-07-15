@@ -6,7 +6,7 @@ PYTEST_XDIST_WORKERS ?= auto
 .PHONY: test
 
 PYTHON ?= .venv/bin/python
-MODERNIZED_PYTHON_FILES := scripts/dependency_fingerprint.py stock_analyzer/background_workers.py stock_analyzer/config.py stock_analyzer/deepseek_scheduler.py stock_analyzer/realtime_quotes.py stock_analyzer/runtime.py stock_analyzer/server_security.py stock_analyzer/services/recommendation_cache.py stock_analyzer/snapshot_writer.py tests/test_background_workers.py tests/test_config_environment.py tests/test_deepseek_scheduler.py tests/test_dependency_fingerprint.py tests/test_recommendation_cache_services.py tests/test_runtime_supervisor.py tests/test_server_security.py tests/test_web_quote_background.py
+MODERNIZED_PYTHON_FILES := scripts/dependency_fingerprint.py stock_analyzer/background_workers.py stock_analyzer/config.py stock_analyzer/deepseek_scheduler.py stock_analyzer/realtime_quotes.py stock_analyzer/runtime.py stock_analyzer/server_security.py stock_analyzer/services/recommendation_cache.py stock_analyzer/services/recommendation_quotes.py stock_analyzer/snapshot_writer.py tests/test_background_workers.py tests/test_config_environment.py tests/test_deepseek_scheduler.py tests/test_dependency_fingerprint.py tests/test_recommendation_cache_services.py tests/test_recommendation_quote_refresh.py tests/test_runtime_supervisor.py tests/test_server_security.py tests/test_web_quote_background.py
 ISOLATED_MYPY_FILES := stock_analyzer/services/recommendation_cache.py stock_analyzer/snapshot_writer.py
 
 help:

@@ -52,12 +52,14 @@ def test_app_services_stop_owned_transient_workers():
 
     with (
         patch.object(services.context.recommendation_refresh, "stop") as stop_recommendation_refresh,
+        patch.object(services.container.recommendation_quote_refresh, "stop") as stop_recommendation_quotes,
         patch.object(services.provider, "stop_realtime_quotes") as stop_realtime_quotes,
         patch.object(services.container.snapshot_writer, "stop") as stop_snapshot_writer,
     ):
         services.stop_transient_workers(timeout_seconds=0.25)
 
     stop_recommendation_refresh.assert_called_once_with(0.25)
+    stop_recommendation_quotes.assert_called_once_with(0.25)
     stop_realtime_quotes.assert_called_once_with(0.25)
     stop_snapshot_writer.assert_called_once_with(0.25)
 
@@ -122,6 +124,28 @@ def test_runtime_supervisor_continues_stopping_after_component_failure():
     stop_deepseek.assert_called_once_with(0.25)
     assert realtime.stop_calls == [0.25]
     log_exception.assert_called_once()
+
+
+def test_runtime_supervisor_stops_realtime_producer_before_transient_workers():
+    stop_order = []
+    realtime = _Scheduler()
+    realtime.stop = Mock(side_effect=lambda _timeout: stop_order.append("realtime"))
+    stop_transient_workers = Mock(side_effect=lambda _timeout: stop_order.append("transient"))
+    supervisor = RuntimeSupervisor(
+        realtime,
+        start_deepseek=Mock(return_value=False),
+        stop_transient_workers=stop_transient_workers,
+    )
+
+    with (
+        patch.object(config, "REALTIME_MARKET_SCHEDULER_ENABLED", True),
+        patch.object(config, "DEEPSEEK_INTERNAL_SCHEDULER_ENABLED", False),
+        patch.object(config, "WEB_BACKGROUND_WORKERS_ENABLED", False),
+    ):
+        supervisor.start()
+        supervisor.stop(0.25)
+
+    assert stop_order == ["realtime", "transient"]
 
 
 def test_runtime_supervisor_does_not_start_disabled_validation_workers():

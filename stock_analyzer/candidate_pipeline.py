@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 import time
 from typing import Dict, Tuple
 
@@ -18,21 +17,46 @@ from .performance import records_from_columns
 from .risk_blacklist import attach_risk_blacklist, load_risk_blacklist
 from .scoring_core.candidate_filters import candidate_filter_report, prepare_candidates
 from .scoring_core.market_regime import build_market_regime
+from .services.recommendation_quotes import RecommendationQuoteRefreshService
 
 
 class CandidatePipeline:
     """Builds recommendation candidate frames and side inputs from live quotes."""
 
-    def __init__(self, provider, caches) -> None:
+    def __init__(
+        self,
+        provider,
+        caches,
+        *,
+        quote_refresh_service: RecommendationQuoteRefreshService | None = None,
+    ) -> None:
         self.provider = provider
         self.caches = caches
-        self._recommendation_quotes_lock = threading.Lock()
-        self._recommendation_quotes_network_lock = threading.Lock()
-        self._recommendation_watched_codes = set()
-        self._recommendation_group_state = {
-            "display": {"running": False, "last_started": 0.0, "last_success": 0.0, "error": "", "snapshot": pd.DataFrame()},
-            "candidate": {"running": False, "last_started": 0.0, "last_success": 0.0, "error": "", "snapshot": pd.DataFrame()},
-        }
+        self.quote_refresh_service = quote_refresh_service or self._build_compat_quote_refresh_service(provider, caches)
+
+    @staticmethod
+    def _build_compat_quote_refresh_service(provider, caches) -> RecommendationQuoteRefreshService | None:
+        fetch_quotes = getattr(provider, "get_recommendation_quotes", None)
+        quotes_cache = getattr(caches, "quotes_cache", None)
+        display_cache = getattr(caches, "recommendation_quotes_cache", None)
+        recommendation_cache = getattr(caches, "recommendation_cache", None)
+        horizon_cache = getattr(caches, "horizon_cache", None)
+        capabilities = (
+            fetch_quotes,
+            getattr(quotes_cache, "get", None),
+            getattr(display_cache, "set", None),
+            getattr(recommendation_cache, "clear", None),
+            getattr(horizon_cache, "clear", None),
+        )
+        if not all(callable(capability) for capability in capabilities):
+            return None
+        return RecommendationQuoteRefreshService(
+            fetch_quotes=fetch_quotes,
+            load_full_quotes=quotes_cache.get,
+            cache_display_quotes=display_cache.set,
+            clear_recommendation_cache=recommendation_cache.clear,
+            clear_horizon_cache=horizon_cache.clear,
+        )
 
     def current_quotes(self) -> pd.DataFrame:
         quotes = self.caches.quotes_cache.get()
@@ -68,136 +92,23 @@ class CandidatePipeline:
         return self.current_quotes_or_empty()
 
     def recommendation_quotes(self, codes) -> Tuple[pd.DataFrame, str]:
-        normalized_codes = sorted(
-            {
-                str(code or "").strip()[-6:]
-                for code in (codes or [])
-                if len(str(code or "").strip()) >= 6
-            }
-        )
-        if not normalized_codes:
-            return pd.DataFrame(), "推荐池没有股票代码"
-        with self._recommendation_quotes_lock:
-            self._recommendation_watched_codes.update(normalized_codes)
-            state = self._recommendation_group_state["display"]
-            snapshot = state["snapshot"]
-            status = str(state["error"] or "")
-            if state["running"] and not status:
-                status = "推荐池行情后台刷新中"
-        self._start_recommendation_group_refresh("display", normalized_codes, 0)
-        return (snapshot if snapshot is not None else pd.DataFrame()), status
+        if self.quote_refresh_service is None:
+            return pd.DataFrame(), "推荐池行情刷新服务不可用"
+        return self.quote_refresh_service.recommendation_quotes(codes)
 
     def refresh_recommendation_quote_groups(self, profile) -> None:
-        recommendation_seconds = profile.get("recommendation_seconds")
-        candidate_seconds = profile.get("candidate_seconds")
-        with self._recommendation_quotes_lock:
-            display_codes = sorted(self._recommendation_watched_codes)
-        if recommendation_seconds is not None and display_codes:
-            self._start_recommendation_group_refresh("display", display_codes, float(recommendation_seconds))
-        if candidate_seconds is not None:
-            candidate_codes = self._select_candidate_codes()
-            if candidate_codes:
-                self._start_recommendation_group_refresh("candidate", candidate_codes, float(candidate_seconds))
+        if self.quote_refresh_service is not None:
+            self.quote_refresh_service.refresh_groups(profile)
 
     def recommendation_quote_status(self):
-        with self._recommendation_quotes_lock:
-            return {
-                key: {
-                    "running": bool(value["running"]),
-                    "last_success_monotonic": float(value["last_success"]),
-                    "error": str(value["error"] or ""),
-                    "row_count": int(len(value["snapshot"])) if value["snapshot"] is not None else 0,
-                }
-                for key, value in self._recommendation_group_state.items()
-            }
-
-    def _start_recommendation_group_refresh(self, group, normalized_codes, interval_seconds) -> bool:
-        now = time.monotonic()
-        with self._recommendation_quotes_lock:
-            state = self._recommendation_group_state[group]
-            if state["running"] or (state["last_started"] and now - state["last_started"] < interval_seconds):
-                return False
-            state["running"] = True
-            state["last_started"] = now
-        worker = threading.Thread(
-            target=self._refresh_recommendation_group_worker,
-            args=(group, list(normalized_codes)),
-            name=f"recommendation-{group}-quotes-refresh",
-            daemon=True,
-        )
-        try:
-            worker.start()
-        except Exception as exc:
-            with self._recommendation_quotes_lock:
-                state = self._recommendation_group_state[group]
-                state["running"] = False
-                state["error"] = str(exc)
-            return False
-        return True
-
-    def _refresh_recommendation_group_worker(self, group, normalized_codes) -> None:
-        try:
-            with self._recommendation_quotes_network_lock:
-                quotes = self.provider.get_recommendation_quotes(normalized_codes)
-        except Exception as exc:
-            with self._recommendation_quotes_lock:
-                state = self._recommendation_group_state[group]
-                state["error"] = str(exc)
-                state["running"] = False
-            return
-        with self._recommendation_quotes_lock:
-            state = self._recommendation_group_state[group]
-            state["snapshot"] = quotes
-            state["error"] = ""
-            state["last_success"] = time.monotonic()
-            state["running"] = False
-        if group == "display":
-            self.caches.recommendation_quotes_cache.set(quotes)
-        else:
-            self.caches.recommendation_cache.clear()
-            self.caches.horizon_cache.clear()
-
-    def _select_candidate_codes(self):
-        quotes = self.caches.quotes_cache.get()
-        if quotes is None or quotes.empty or "code" not in quotes.columns:
-            return []
-        frame = quotes.copy()
-        score = pd.Series(0.0, index=frame.index)
-        for column, weight in (("turnover", 0.45), ("pct_chg", 0.3), ("volume_ratio", 0.25)):
-            if column in frame.columns:
-                values = pd.to_numeric(frame[column], errors="coerce").fillna(0.0)
-                score += values.rank(pct=True) * weight
-        frame["_candidate_refresh_score"] = score
-        if "price" in frame.columns:
-            frame = frame[pd.to_numeric(frame["price"], errors="coerce").fillna(0.0) > 0]
-        size = max(1, int(getattr(config, "RECOMMENDATION_CANDIDATE_POOL_SIZE", 150)))
-        return frame.nlargest(size, "_candidate_refresh_score")["code"].astype(str).tolist()
+        if self.quote_refresh_service is None:
+            return {}
+        return self.quote_refresh_service.status()
 
     def _overlay_candidate_quotes(self, quotes):
-        if quotes is None or quotes.empty or "code" not in quotes.columns:
+        if self.quote_refresh_service is None:
             return quotes
-        with self._recommendation_quotes_lock:
-            candidate = self._recommendation_group_state["candidate"]["snapshot"]
-        if candidate is None or candidate.empty or "code" not in candidate.columns:
-            return quotes
-        result = quotes.copy()
-        update_fields = (
-            "price", "pct_chg", "volume_ratio", "turnover_rate", "turnover", "volume",
-            "amplitude", "high", "low", "open", "quote_timestamp", "quote_source",
-        )
-        candidate_index = candidate.drop_duplicates("code", keep="last").set_index("code")
-        codes = result["code"].astype(str)
-        for field in update_fields:
-            if field not in candidate_index.columns:
-                continue
-            updates = codes.map(candidate_index[field])
-            if field in result.columns:
-                result[field] = updates.where(updates.notna(), result[field])
-            else:
-                result[field] = updates
-        result.attrs.update(getattr(quotes, "attrs", {}) or {})
-        result.attrs["candidate_quote_timestamp"] = str((candidate.attrs or {}).get("quote_timestamp") or "")
-        return result
+        return self.quote_refresh_service.overlay_candidate_quotes(quotes)
 
     def attach_static_risk_layers(self, candidates: pd.DataFrame) -> pd.DataFrame:
         payload = load_event_risk(self.provider)

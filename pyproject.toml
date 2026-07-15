@@ -55,6 +55,7 @@ files = [
     "stock_analyzer/realtime_quotes.py",
     "stock_analyzer/runtime.py",
     "stock_analyzer/server_security.py",
+    "stock_analyzer/services/recommendation_quotes.py",
 ]
 check_untyped_defs = true
 disallow_untyped_defs = true

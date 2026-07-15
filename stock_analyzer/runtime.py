@@ -80,14 +80,14 @@ class RuntimeSupervisor:
             self._owns_deepseek = False
             self._owns_validation_workers = False
             self._started = False
-        if self._stop_transient_workers is not None:
-            self._stop_safely("transient workers", self._stop_transient_workers, timeout_seconds)
+        if owns_realtime and self._realtime_scheduler is not None:
+            self._stop_safely("realtime scheduler", self._realtime_scheduler.stop, timeout_seconds)
         if self._stop_validation_workers is not None:
             self._stop_safely("validation workers", self._stop_validation_workers, timeout_seconds)
         if owns_deepseek:
             self._stop_safely("DeepSeek scheduler", self._stop_deepseek, timeout_seconds)
-        if owns_realtime and self._realtime_scheduler is not None:
-            self._stop_safely("realtime scheduler", self._realtime_scheduler.stop, timeout_seconds)
+        if self._stop_transient_workers is not None:
+            self._stop_safely("transient workers", self._stop_transient_workers, timeout_seconds)
 
     @staticmethod
     def _stop_safely(

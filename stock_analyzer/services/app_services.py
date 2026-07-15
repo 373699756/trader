@@ -2093,6 +2093,7 @@ class AppServices:
 
     def stop_transient_workers(self, timeout_seconds: float = 5.0) -> None:
         self.stop_recommendation_refresh_workers(timeout_seconds)
+        self.container.recommendation_quote_refresh.stop(timeout_seconds)
         stop_realtime_quotes = getattr(self.provider, "stop_realtime_quotes", None)
         if callable(stop_realtime_quotes):
             stop_realtime_quotes(timeout_seconds)
@@ -2104,9 +2105,9 @@ class AppServices:
         return bool(realtime_started or validation_started)
 
     def stop_background_workers(self, timeout_seconds: float = 5.0) -> None:
-        self.stop_transient_workers(timeout_seconds)
-        self.stop_validation_workers(timeout_seconds)
         self.context.container.realtime_scheduler.stop(timeout_seconds)
+        self.stop_validation_workers(timeout_seconds)
+        self.stop_transient_workers(timeout_seconds)
 
     def index_context(self) -> Dict[str, object]:
         return self.recommendations.index_context()

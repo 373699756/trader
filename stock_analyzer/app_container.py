@@ -11,6 +11,7 @@ from .candidate_pipeline import CandidatePipeline
 from .providers import MarketDataProvider, TimedCache
 from .realtime_schedule import realtime_refresh_profile
 from .recommendation_freeze import recommendation_is_frozen
+from .services.recommendation_quotes import RecommendationQuoteRefreshService
 from .snapshot_writer import AsyncSnapshotWriter
 from .stability import TopKDropoutTracker
 from .strategy_validation import StrategyValidationStore
@@ -341,9 +342,20 @@ class ApplicationContainer:
         self.validation_store = StrategyValidationStore(config.VALIDATION_DB_PATH)
         self.validation_cache = ValidationMetricsCache(self.validation_store)
         self.snapshot_writer = AsyncSnapshotWriter(config.RECOMMENDATION_SNAPSHOT_PATH)
-        self.candidate_pipeline = CandidatePipeline(self.provider, self)
+        self.recommendation_quote_refresh = RecommendationQuoteRefreshService(
+            fetch_quotes=self.provider.get_recommendation_quotes,
+            load_full_quotes=self.quotes_cache.get,
+            cache_display_quotes=self.recommendation_quotes_cache.set,
+            clear_recommendation_cache=self.recommendation_cache.clear,
+            clear_horizon_cache=self.horizon_cache.clear,
+        )
+        self.candidate_pipeline = CandidatePipeline(
+            self.provider,
+            self,
+            quote_refresh_service=self.recommendation_quote_refresh,
+        )
         self.realtime_scheduler = RealtimeMarketScheduler(
-            refresh_quote_groups=self.candidate_pipeline.refresh_recommendation_quote_groups,
+            refresh_quote_groups=self.recommendation_quote_refresh.refresh_groups,
             refresh_full_market=self.provider.refresh_realtime_quotes_async,
             quote_refresh_status=self.provider.quote_refresh_status,
             clear_quotes_cache=self.quotes_cache.clear,
@@ -374,7 +386,7 @@ class ApplicationContainer:
             "recommendation_cache": self.recommendation_cache.stats(),
             "horizon_cache": self.horizon_cache.stats(),
             "realtime_scheduler": self.realtime_scheduler.status(),
-            "recommendation_quote_groups": self.candidate_pipeline.recommendation_quote_status(),
+            "recommendation_quote_groups": self.recommendation_quote_refresh.status(),
         }
 
     def snapshot_writer_health(self) -> Dict[str, object]:
