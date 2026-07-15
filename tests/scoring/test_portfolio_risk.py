@@ -2,12 +2,13 @@ import json
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
 from stock_analyzer import config
 from stock_analyzer.app import create_app
+from stock_analyzer.app_container import PayloadCache
 from stock_analyzer.paper_trading import PaperTradingStore
 from stock_analyzer.portfolio import build_portfolio
 
@@ -53,8 +54,13 @@ class PortfolioRiskTest(unittest.TestCase):
             return signals
 
     class FakeAppContainer:
-        provider = object()
-        validation_store = object()
+        def __init__(self):
+            self.provider = object()
+            self.validation_store = object()
+            self.recommendation_cache = PayloadCache(max_entries=2, ttl_seconds=60)
+            self.horizon_cache = PayloadCache(max_entries=2, ttl_seconds=60)
+            self.candidate_pipeline = Mock()
+            self.realtime_scheduler = Mock()
 
     def test_build_portfolio_respects_position_single_and_theme_caps(self):
         rows = [

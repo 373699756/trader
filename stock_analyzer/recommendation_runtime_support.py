@@ -25,6 +25,7 @@ from .expected_return_model import (
     load_expected_return_artifact,
     save_expected_return_artifact,
 )
+from .long_term_watch import LongTermWatchScorer
 from .normalization import coerce_number
 from .production_baseline import attach_generation_provenance
 from .scoring_core.theme_limits import limit_theme_concentration
@@ -441,6 +442,11 @@ class RecommendationService:
         for strategy_name, strategy_rows in recommendations_by_horizon.items():
             strategy_metas[strategy_name]["market_regime"] = market_regime
             attach_generation_provenance(strategy_metas[strategy_name], strategy_name, strategy_rows, candidates)
+        recommendations_by_horizon["long_term_watch"] = LongTermWatchScorer().score(
+            recommendations_by_horizon,
+            candidates,
+            top_n,
+        )
         return recommendations_by_horizon, short_meta, {
             "today_term": short_deepseek_meta,
             "tomorrow_picks": tomorrow_deepseek_meta,

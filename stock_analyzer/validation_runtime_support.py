@@ -1,11 +1,14 @@
 from datetime import datetime, timedelta
+import logging
 import threading
-import time
 from typing import Callable, Dict, List, Tuple
 
 from . import config
 from .strategy_tuning import build_strategy_tuning_plan
 from .validation_backup import backup_validation_db
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def configured_auto_snapshot_strategies(
@@ -231,7 +234,11 @@ def run_validation_auto_snapshot_once(
         now = datetime.now()
         with auto_snapshot_lock:
             last_tuning_date = str(auto_snapshot_status.get("last_tuning_date") or "")
-        if now.weekday() < 5 and after_auto_snapshot_time(now, config.VALIDATION_AUTO_SNAPSHOT_TIME) and last_tuning_date != now.date().isoformat():
+        if (
+            now.weekday() < 5
+            and after_auto_snapshot_time(now, config.VALIDATION_AUTO_SNAPSHOT_TIME)
+            and last_tuning_date != now.date().isoformat()
+        ):
             tuning_days = max(
                 int(getattr(config, "STRATEGY_DECAY_MIN_REAL_DAYS", 60)),
                 int(getattr(config, "STRATEGY_VALIDATION_GATE_WINDOW_DAYS", 120)),
@@ -446,38 +453,51 @@ def start_validation_auto_update_worker(
     within_auto_update_window_fn: Callable[[datetime], bool],
     next_auto_update_window_start_fn: Callable[[datetime], datetime],
     run_validation_auto_update_once_fn: Callable[[], Dict[str, object]],
-) -> None:
+    stop_event: threading.Event | None = None,
+) -> threading.Thread | None:
     if not config.VALIDATION_AUTO_UPDATE_ENABLED:
-        return
+        return None
+    worker_stop_event = stop_event or threading.Event()
     worker_key = "{}|{}".format(config.VALIDATION_DB_PATH, config.HISTORY_CACHE_PATH)
     with worker_lock:
         if worker_key in worker_set:
-            return
+            return None
         worker_set.add(worker_key)
 
     def _worker_loop():
-        initial_delay = max(0, int(config.VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS))
-        if initial_delay:
-            time.sleep(initial_delay)
-        while True:
-            interval = max(60, int(config.VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS))
-            now = datetime.now()
-            if within_auto_update_window_fn(now):
-                run_validation_auto_update_once_fn()
-                set_auto_update_status(next_run_after_seconds=interval)
-                time.sleep(interval)
-                continue
-            next_run_at = next_auto_update_window_start_fn(now)
-            sleep_seconds = max(60, min(3600, int((next_run_at - now).total_seconds())))
-            set_auto_update_status(
-                next_run_after_seconds=sleep_seconds,
-                next_run_at=next_run_at.isoformat(timespec="seconds"),
-            )
-            time.sleep(sleep_seconds)
+        try:
+            initial_delay = max(0, int(config.VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS))
+            if initial_delay and worker_stop_event.wait(initial_delay):
+                return
+            while not worker_stop_event.is_set():
+                interval = max(60, int(config.VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS))
+                now = datetime.now()
+                if within_auto_update_window_fn(now):
+                    run_validation_auto_update_once_fn()
+                    set_auto_update_status(next_run_after_seconds=interval)
+                    if worker_stop_event.wait(interval):
+                        return
+                    continue
+                next_run_at = next_auto_update_window_start_fn(now)
+                sleep_seconds = max(60, min(3600, int((next_run_at - now).total_seconds())))
+                set_auto_update_status(
+                    next_run_after_seconds=sleep_seconds,
+                    next_run_at=next_run_at.isoformat(timespec="seconds"),
+                )
+                if worker_stop_event.wait(sleep_seconds):
+                    return
+        except Exception as exc:
+            _LOGGER.exception("validation auto-update worker failed")
+            set_auto_update_status(last_error=str(exc))
+        finally:
+            with worker_lock:
+                worker_set.discard(worker_key)
+            set_auto_update_status(started=False, running=False)
 
     set_auto_update_status(started=True)
     thread = threading.Thread(target=_worker_loop, name="validation-auto-update", daemon=True)
     thread.start()
+    return thread
 
 
 def start_validation_auto_snapshot_worker(
@@ -490,9 +510,11 @@ def start_validation_auto_snapshot_worker(
     next_auto_snapshot_at_fn: Callable[[datetime], datetime],
     set_auto_snapshot_status: Callable[..., None],
     run_validation_auto_snapshot_once_fn: Callable[[], Dict[str, object]],
-) -> None:
+    stop_event: threading.Event | None = None,
+) -> threading.Thread | None:
     if not config.VALIDATION_AUTO_SNAPSHOT_ENABLED:
-        return
+        return None
+    worker_stop_event = stop_event or threading.Event()
     worker_key = "snapshot|{}|{}|{}|{}".format(
         config.VALIDATION_DB_PATH,
         config.VALIDATION_AUTO_SNAPSHOT_TIME,
@@ -501,47 +523,58 @@ def start_validation_auto_snapshot_worker(
     )
     with worker_lock:
         if worker_key in worker_set:
-            return
+            return None
         worker_set.add(worker_key)
 
     def _worker_loop():
-        while True:
-            now = datetime.now()
-            hour, minute = auto_snapshot_time_parts_fn()
-            scheduled_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            today = now.date().isoformat()
-            with auto_snapshot_lock:
-                last_attempt_date = auto_snapshot_status.get("last_attempt_date", "")
-            if now.weekday() < 5 and now >= scheduled_today and last_attempt_date != today:
-                snapshot_result = run_validation_auto_snapshot_once_fn()
+        try:
+            while not worker_stop_event.is_set():
                 now = datetime.now()
-                if not snapshot_result.get("ok"):
-                    retry_schedule = auto_snapshot_retry_schedule(
-                        now,
-                        getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50"),
-                        getattr(config, "VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS", 60),
-                    )
-                    if not retry_schedule["retry"]:
-                        set_auto_snapshot_status(
-                            last_attempt_date=today,
-                            deadline_missed=True,
-                            deadline_missed_at=now.isoformat(timespec="seconds"),
+                hour, minute = auto_snapshot_time_parts_fn()
+                scheduled_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                today = now.date().isoformat()
+                with auto_snapshot_lock:
+                    last_attempt_date = auto_snapshot_status.get("last_attempt_date", "")
+                if now.weekday() < 5 and now >= scheduled_today and last_attempt_date != today:
+                    snapshot_result = run_validation_auto_snapshot_once_fn()
+                    now = datetime.now()
+                    if not snapshot_result.get("ok"):
+                        retry_schedule = auto_snapshot_retry_schedule(
+                            now,
+                            getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50"),
+                            getattr(config, "VALIDATION_AUTO_SNAPSHOT_RETRY_SECONDS", 60),
                         )
+                        if not retry_schedule["retry"]:
+                            set_auto_snapshot_status(
+                                last_attempt_date=today,
+                                deadline_missed=True,
+                                deadline_missed_at=now.isoformat(timespec="seconds"),
+                            )
+                            continue
+                        next_run_at = retry_schedule["next_run_at"]
+                        with auto_snapshot_lock:
+                            retry_count = int(auto_snapshot_status.get("retry_count") or 0) + 1
+                        set_auto_snapshot_status(
+                            retry_count=retry_count,
+                            next_run_at=next_run_at.isoformat(timespec="seconds"),
+                        )
+                        if worker_stop_event.wait(int(retry_schedule["wait_seconds"])):
+                            return
                         continue
-                    next_run_at = retry_schedule["next_run_at"]
-                    with auto_snapshot_lock:
-                        retry_count = int(auto_snapshot_status.get("retry_count") or 0) + 1
-                    set_auto_snapshot_status(
-                        retry_count=retry_count,
-                        next_run_at=next_run_at.isoformat(timespec="seconds"),
-                    )
-                    time.sleep(int(retry_schedule["wait_seconds"]))
-                    continue
-            next_run_at = next_auto_snapshot_at_fn(now)
-            set_auto_snapshot_status(next_run_at=next_run_at.isoformat(timespec="seconds"))
-            sleep_seconds = max(30, min(3600, int((next_run_at - now).total_seconds())))
-            time.sleep(sleep_seconds)
+                next_run_at = next_auto_snapshot_at_fn(now)
+                set_auto_snapshot_status(next_run_at=next_run_at.isoformat(timespec="seconds"))
+                sleep_seconds = max(30, min(3600, int((next_run_at - now).total_seconds())))
+                if worker_stop_event.wait(sleep_seconds):
+                    return
+        except Exception as exc:
+            _LOGGER.exception("validation auto-snapshot worker failed")
+            set_auto_snapshot_status(last_error=str(exc))
+        finally:
+            with worker_lock:
+                worker_set.discard(worker_key)
+            set_auto_snapshot_status(started=False, running=False)
 
     set_auto_snapshot_status(started=True)
     thread = threading.Thread(target=_worker_loop, name="validation-auto-snapshot", daemon=True)
     thread.start()
+    return thread

@@ -12,46 +12,46 @@ from stock_analyzer.providers import MarketDataProvider, TimedCache
 
 
 def _quotes():
-    return pd.DataFrame(
-        [{"code": "600001", "name": "样本", "price": 10.0, "pct_chg": 1.0, "turnover": 100000000}]
-    )
+    return pd.DataFrame([{"code": "600001", "name": "样本", "price": 10.0, "pct_chg": 1.0, "turnover": 100000000}])
 
 
 def test_web_quotes_return_snapshot_without_waiting_for_remote_download():
     provider = MarketDataProvider(web_nonblocking=True)
+    realtime_quotes = provider.realtime_quotes
     snapshot = _quotes()
     snapshot.attrs["snapshot_mtime"] = "2026-07-12T09:00:00"
-    provider._load_quote_snapshot = MagicMock(return_value=snapshot)
-    provider.refresh_realtime_quotes_async = MagicMock(return_value=True)
-    provider._fetch_eastmoney_quotes = MagicMock(side_effect=AssertionError("web path must not fetch synchronously"))
+    realtime_quotes.snapshot_store.load = MagicMock(return_value=snapshot)
+    realtime_quotes.refresh_async = MagicMock(return_value=True)
+    realtime_quotes.fetchers.eastmoney = MagicMock(side_effect=AssertionError("web path must not fetch synchronously"))
 
     result = provider.get_realtime_quotes()
 
     assert result is snapshot
     assert provider.status.quotes_source == "本地快照"
-    provider.refresh_realtime_quotes_async.assert_called_once_with()
-    provider._fetch_eastmoney_quotes.assert_not_called()
+    realtime_quotes.refresh_async.assert_called_once_with()
+    realtime_quotes.fetchers.eastmoney.assert_not_called()
 
 
 def test_web_quotes_without_snapshot_start_background_refresh_and_fail_fast():
     provider = MarketDataProvider(web_nonblocking=True)
-    provider._load_quote_snapshot = MagicMock(return_value=None)
-    provider.refresh_realtime_quotes_async = MagicMock(return_value=True)
-    provider._fetch_eastmoney_quotes = MagicMock(side_effect=AssertionError("web path must not fetch synchronously"))
+    realtime_quotes = provider.realtime_quotes
+    realtime_quotes.snapshot_store.load = MagicMock(return_value=None)
+    realtime_quotes.refresh_async = MagicMock(return_value=True)
+    realtime_quotes.fetchers.eastmoney = MagicMock(side_effect=AssertionError("web path must not fetch synchronously"))
     provider._fetch_akshare_quotes = MagicMock(side_effect=AssertionError("slow fallback must stay off-request"))
 
     with pytest.raises(RuntimeError, match="后台刷新"):
         provider.get_realtime_quotes()
 
-    provider.refresh_realtime_quotes_async.assert_called_once_with()
-    provider._fetch_eastmoney_quotes.assert_not_called()
+    realtime_quotes.refresh_async.assert_called_once_with()
+    realtime_quotes.fetchers.eastmoney.assert_not_called()
     provider._fetch_akshare_quotes.assert_not_called()
 
 
 def test_background_quote_refresh_is_single_flight():
-    provider = MarketDataProvider()
-    with patch("stock_analyzer.providers.threading.Thread") as thread_class:
+    with patch("stock_analyzer.realtime_quotes.threading.Thread") as thread_class:
         thread_class.return_value.start.return_value = None
+        provider = MarketDataProvider()
 
         assert provider.refresh_realtime_quotes_async()
         assert not provider.refresh_realtime_quotes_async()
@@ -61,9 +61,9 @@ def test_background_quote_refresh_is_single_flight():
 
 
 def test_background_quote_refresh_recovers_when_thread_cannot_start():
-    provider = MarketDataProvider()
-    with patch("stock_analyzer.providers.threading.Thread") as thread_class:
+    with patch("stock_analyzer.realtime_quotes.threading.Thread") as thread_class:
         thread_class.return_value.start.side_effect = RuntimeError("thread unavailable")
+        provider = MarketDataProvider()
 
         assert not provider.refresh_realtime_quotes_async()
 
@@ -72,18 +72,45 @@ def test_background_quote_refresh_recovers_when_thread_cannot_start():
     assert status["last_error"] == "thread unavailable"
 
 
+def test_background_quote_refresh_recovers_when_thread_cannot_be_created():
+    with patch("stock_analyzer.realtime_quotes.threading.Thread", side_effect=RuntimeError("thread factory failed")):
+        provider = MarketDataProvider()
+
+        assert not provider.refresh_realtime_quotes_async()
+
+    status = provider.quote_refresh_status()
+    assert not status["running"]
+    assert status["last_error"] == "thread factory failed"
+
+
+def test_background_quote_refresh_can_restart_after_stop():
+    provider = MarketDataProvider()
+    realtime_quotes = provider.realtime_quotes
+    realtime_quotes.fetchers.eastmoney = MagicMock(return_value=_quotes())
+    realtime_quotes.snapshot_store.save = MagicMock()
+
+    assert provider.refresh_realtime_quotes_async(force=True)
+    provider.stop_realtime_quotes(timeout_seconds=1.0)
+    assert provider.quote_refresh_status()["stopping"] is False
+
+    assert provider.refresh_realtime_quotes_async(force=True)
+    provider.stop_realtime_quotes(timeout_seconds=1.0)
+    assert realtime_quotes.fetchers.eastmoney.call_count == 2
+
+
 def test_background_quote_refresh_skips_akshare_serial_quote_download():
     provider = MarketDataProvider()
-    provider._fetch_eastmoney_quotes = MagicMock(side_effect=RuntimeError("eastmoney unavailable"))
+    realtime_quotes = provider.realtime_quotes
+    realtime_quotes.fetchers.eastmoney = MagicMock(side_effect=RuntimeError("eastmoney unavailable"))
     provider._fetch_akshare_quotes = MagicMock(side_effect=AssertionError("serial AkShare download must not run"))
-    provider._fetch_sina_quotes = MagicMock(return_value=_quotes())
-    provider._save_quote_snapshot = MagicMock()
+    realtime_quotes.fetchers.sina = MagicMock(return_value=_quotes())
+    realtime_quotes.snapshot_store.save = MagicMock()
 
     with patch.object(config, "ALLOW_SLOW_QUOTE_FALLBACK", True):
         provider._refresh_realtime_quotes_worker()
 
     provider._fetch_akshare_quotes.assert_not_called()
-    provider._fetch_sina_quotes.assert_called_once_with()
+    realtime_quotes.fetchers.sina.assert_called_once_with()
     assert provider.status.quotes_source == "新浪并发行情"
     assert provider.quote_refresh_status()["last_error"] == ""
 
@@ -98,8 +125,8 @@ def test_web_request_does_not_wait_for_running_remote_download():
         release_download.wait(timeout=2)
         return _quotes()
 
-    provider._load_quote_snapshot = MagicMock(return_value=None)
-    provider._fetch_eastmoney_quotes = slow_remote_download
+    provider.realtime_quotes.snapshot_store.load = MagicMock(return_value=None)
+    provider.realtime_quotes.fetchers.eastmoney = slow_remote_download
     started_at = time.monotonic()
     try:
         with pytest.raises(RuntimeError, match="后台刷新"):
@@ -111,6 +138,21 @@ def test_web_request_does_not_wait_for_running_remote_download():
         assert provider.quote_refresh_status()["running"]
     finally:
         release_download.set()
+
+
+def test_realtime_quote_component_owns_state_without_facade_back_reference():
+    provider = MarketDataProvider()
+    realtime_quotes = provider.realtime_quotes
+    realtime_quotes.fetchers.eastmoney = MagicMock(return_value=_quotes())
+    realtime_quotes.snapshot_store.save = MagicMock()
+
+    result = provider.get_realtime_quotes()
+
+    assert result.iloc[0]["code"] == "600001"
+    assert provider.status is realtime_quotes.status
+    assert not hasattr(realtime_quotes, "owner")
+    assert realtime_quotes.status.quote_fetch_count == 1
+    assert realtime_quotes.status.quote_fetch_success_count == 1
 
 
 def test_candidate_pipeline_keeps_existing_provider_contract():
@@ -183,7 +225,9 @@ def test_cold_web_endpoints_return_while_quote_download_runs(tmp_path):
         if "request_thread" in locals():
             request_thread.join(timeout=1)
         deadline = time.monotonic() + 1
-        while app.extensions["app_container"].provider.quote_refresh_status()["running"] and time.monotonic() < deadline:
+        while (
+            app.extensions["app_container"].provider.quote_refresh_status()["running"] and time.monotonic() < deadline
+        ):
             time.sleep(0.01)
         for item in reversed(patches):
             item.stop()

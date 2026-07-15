@@ -2,24 +2,50 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import TypedDict
 
 from . import config
 
-
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_LOGGER = logging.getLogger(__name__)
+
+
+class DeepSeekLastRun(TypedDict, total=False):
+    slot: str
+    status: str
+    started_at: str
+    completed_at: str
+    exit_code: int | None
+    message: str
+
+
+class DeepSeekScheduleStatus(TypedDict):
+    enabled: bool
+    mode: str
+    running: bool
+    date: str
+    precompute_times: list[str]
+    on_demand_start: str
+    deadline: str
+    freeze_at: str
+    daily_call_limit: int
+    last_run: DeepSeekLastRun
+    production_applied: bool
 
 
 class DeepSeekPrecomputeScheduler:
-    def __init__(self) -> None:
+    def __init__(self, *, thread_factory: Callable[..., threading.Thread] | None = None) -> None:
+        self._thread_factory = thread_factory or threading.Thread
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -31,18 +57,31 @@ class DeepSeekPrecomputeScheduler:
             if self._thread is not None and self._thread.is_alive():
                 return False
             self._stop_event.clear()
-            self._thread = threading.Thread(
-                target=self._run_loop,
-                name="deepseek-precompute-scheduler",
-                daemon=True,
-            )
-            self._thread.start()
+            try:
+                thread = self._thread_factory(
+                    target=self._run_loop,
+                    name="deepseek-precompute-scheduler",
+                    daemon=True,
+                )
+                self._thread = thread
+                thread.start()
+            except Exception:
+                self._thread = None
+                self._stop_event.set()
+                raise
             return True
 
-    def stop(self) -> None:
+    def stop(self, timeout_seconds: float = 5.0) -> None:
         self._stop_event.set()
+        with self._lock:
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(max(0.0, timeout_seconds))
+        with self._lock:
+            if thread is None or not thread.is_alive():
+                self._thread = None
 
-    def status(self, now: datetime | None = None) -> Dict[str, object]:
+    def status(self, now: datetime | None = None) -> DeepSeekScheduleStatus:
         timestamp = now or datetime.now()
         thread = self._thread
         return {
@@ -65,27 +104,25 @@ class DeepSeekPrecomputeScheduler:
             try:
                 self._run_due_slot(datetime.now())
             except Exception:
-                pass
+                _LOGGER.exception("DeepSeek scheduler slot failed")
             self._stop_event.wait(poll_seconds)
 
     def _run_due_slot(self, now: datetime) -> None:
-        if now.weekday() >= 5 or now.strftime("%H:%M") >= str(
-            getattr(config, "DEEPSEEK_ON_DEMAND_START", "14:30")
-        )[:5]:
+        if now.weekday() >= 5 or now.strftime("%H:%M") >= str(getattr(config, "DEEPSEEK_ON_DEMAND_START", "14:30"))[:5]:
             return
         window_seconds = max(30, int(getattr(config, "DEEPSEEK_SCHEDULER_SLOT_WINDOW_SECONDS", 180)))
         for clock in self._schedule_times():
-            scheduled_at = datetime.fromisoformat("{}T{}:00".format(now.date().isoformat(), clock[:5]))
+            scheduled_at = datetime.fromisoformat(f"{now.date().isoformat()}T{clock[:5]}:00")
             delay = (now - scheduled_at).total_seconds()
             if 0 <= delay <= window_seconds:
-                slot_key = "{}T{}".format(now.date().isoformat(), clock[:5])
+                slot_key = f"{now.date().isoformat()}T{clock[:5]}"
                 if self._claim(slot_key, now):
                     self._execute(slot_key)
                 return
 
     def _claim(self, slot_key: str, now: datetime) -> bool:
         lease_seconds = max(60, int(getattr(config, "DEEPSEEK_SCHEDULER_LEASE_SECONDS", 1200)))
-        owner = "{}:{}".format(os.getpid(), threading.get_ident())
+        owner = f"{os.getpid()}:{threading.get_ident()}"
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -134,16 +171,17 @@ class DeepSeekPrecomputeScheduler:
             message = str(exc)[:1000]
             exit_code = -1
         with closing(self._connect()) as conn:
-            conn.execute(
-                """
-                UPDATE deepseek_scheduler_leases
-                SET status = ?, completed_at = ?, lease_until = '', exit_code = ?, message = ?
-                WHERE slot_key = ?
-                """,
-                (status, datetime.now().isoformat(), exit_code, message, slot_key),
-            )
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE deepseek_scheduler_leases
+                    SET status = ?, completed_at = ?, lease_until = '', exit_code = ?, message = ?
+                    WHERE slot_key = ?
+                    """,
+                    (status, datetime.now().isoformat(), exit_code, message, slot_key),
+                )
 
-    def _last_run(self) -> Dict[str, object]:
+    def _last_run(self) -> DeepSeekLastRun:
         try:
             with closing(self._connect()) as conn:
                 row = conn.execute(
@@ -166,7 +204,7 @@ class DeepSeekPrecomputeScheduler:
         except Exception:
             return {}
 
-    def _connect(self):
+    def _connect(self) -> sqlite3.Connection:
         path = str(getattr(config, "DEEPSEEK_SCHEDULER_DB_PATH", ".runtime/deepseek_scheduler.sqlite3"))
         target = Path(path)
         if not target.is_absolute():
@@ -196,7 +234,7 @@ class DeepSeekPrecomputeScheduler:
         )
 
     @staticmethod
-    def _schedule_times() -> Tuple[str, ...]:
+    def _schedule_times() -> tuple[str, ...]:
         return tuple(str(value)[:5] for value in getattr(config, "DEEPSEEK_PRECOMPUTE_TIMES", ()))
 
 
@@ -207,12 +245,18 @@ def start_deepseek_scheduler() -> bool:
     return _SCHEDULER.start()
 
 
-def stop_deepseek_scheduler() -> None:
-    _SCHEDULER.stop()
+def stop_deepseek_scheduler(timeout_seconds: float = 5.0) -> None:
+    _SCHEDULER.stop(timeout_seconds)
 
 
-def deepseek_schedule_status(now: datetime = None) -> Dict[str, object]:
+def deepseek_schedule_status(now: datetime | None = None) -> DeepSeekScheduleStatus:
     return _SCHEDULER.status(now)
 
 
-__all__ = ["deepseek_schedule_status", "start_deepseek_scheduler", "stop_deepseek_scheduler"]
+__all__ = [
+    "DeepSeekLastRun",
+    "DeepSeekScheduleStatus",
+    "deepseek_schedule_status",
+    "start_deepseek_scheduler",
+    "stop_deepseek_scheduler",
+]

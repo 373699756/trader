@@ -772,6 +772,9 @@ class SignalRepository(_RepositoryBase):
 
         def _run_transaction() -> Dict[str, object]:
             now_ts = datetime.now().isoformat(timespec="seconds")
+            saved = 0
+            shadow_saved = 0
+            candidate_saved = 0
             with self.connect() as conn:
                 conn.execute("PRAGMA busy_timeout = 2500")
                 conn.execute("BEGIN IMMEDIATE")

@@ -66,7 +66,7 @@ def test_tencent_symbol_maps_new_beijing_92_prefix_to_bj():
 def test_provider_prefers_direct_eastmoney_quotes():
     provider = MarketDataProvider()
     provider._fetch_akshare_quotes = lambda: (_ for _ in ()).throw(RuntimeError("akshare failed"))
-    provider._fetch_eastmoney_quotes = lambda: pd.DataFrame(
+    provider.realtime_quotes.fetchers.eastmoney = lambda: pd.DataFrame(
         [{"code": "600001", "name": "样本股份", "price": 12, "pct_chg": 3, "turnover": 90000000}]
     )
 
@@ -79,7 +79,7 @@ def test_provider_prefers_direct_eastmoney_quotes():
 
 def test_provider_fails_fast_when_quote_fallback_disabled(tmp_path):
     provider = MarketDataProvider()
-    provider._fetch_eastmoney_quotes = lambda: (_ for _ in ()).throw(RuntimeError("eastmoney failed"))
+    provider.realtime_quotes.fetchers.eastmoney = lambda: (_ for _ in ()).throw(RuntimeError("eastmoney failed"))
 
     with patch.object(config, "QUOTE_SNAPSHOT_PATH", str(tmp_path / "missing.json")), patch.object(
         config,
@@ -104,8 +104,8 @@ def test_provider_uses_quote_snapshot_when_live_quote_sources_fail(tmp_path):
         [{"code": "600001", "name": "样本股份", "price": 12, "pct_chg": 3, "turnover": 90000000}]
     )
     snapshot.attrs["quote_timestamp"] = "2026-07-09T15:00:00"
-    provider._fetch_eastmoney_quotes = lambda: (_ for _ in ()).throw(RuntimeError("eastmoney failed"))
-    provider._fetch_sina_quotes = lambda: (_ for _ in ()).throw(RuntimeError("sina failed"))
+    provider.realtime_quotes.fetchers.eastmoney = lambda: (_ for _ in ()).throw(RuntimeError("eastmoney failed"))
+    provider.realtime_quotes.fetchers.sina = lambda: (_ for _ in ()).throw(RuntimeError("sina failed"))
 
     with patch.object(config, "QUOTE_SNAPSHOT_PATH", str(tmp_path / "quotes.json")), patch.object(
         config,
@@ -157,9 +157,9 @@ def test_provider_get_history_uses_local_market_data(tmp_path):
 
 def test_provider_falls_back_to_concurrent_sina_quotes_when_enabled():
     provider = MarketDataProvider()
-    provider._fetch_eastmoney_quotes = lambda: (_ for _ in ()).throw(RuntimeError("eastmoney failed"))
+    provider.realtime_quotes.fetchers.eastmoney = lambda: (_ for _ in ()).throw(RuntimeError("eastmoney failed"))
     provider._fetch_akshare_quotes = MagicMock(side_effect=AssertionError("serial AkShare download must not run"))
-    provider._fetch_sina_quotes = lambda: pd.DataFrame(
+    provider.realtime_quotes.fetchers.sina = lambda: pd.DataFrame(
         [{"code": "600001", "name": "样本股份", "price": 12, "pct_chg": 3, "turnover": 90000000}]
     )
 

@@ -558,7 +558,14 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        with patch.object(config, "TOMORROW_PRIMARY_MIN_SCORE", 60), patch(
+        with patch.object(config, "TOMORROW_PRIMARY_MIN_SCORE", 0), patch.object(
+            config,
+            "TOMORROW_MAX_INDUSTRY_PER_RECOMMENDATION",
+            10,
+        ), patch(
+            "stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_display_gate",
+            return_value=(4, 0.0, "测试固定展示门槛"),
+        ), patch(
             "stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_intraday_relaxed_mode",
             return_value=False,
         ):
@@ -601,11 +608,15 @@ class TomorrowStrategyTest(unittest.TestCase):
             ]
         )
 
-        rows, meta = score_tomorrow_candidates(
-            prepare_candidates(quotes),
-            top_n=8,
-            market_regime={"level": "risk_on", "label": "偏进攻", "score": 75},
-        )
+        with patch.object(config, "TOMORROW_MAX_INDUSTRY_PER_RECOMMENDATION", 10), patch(
+            "stock_analyzer.strategies.tomorrow.tomorrow_policy._tomorrow_display_gate",
+            return_value=(8, 0.0, "测试固定展示门槛"),
+        ):
+            rows, meta = score_tomorrow_candidates(
+                prepare_candidates(quotes),
+                top_n=8,
+                market_regime={"level": "risk_on", "label": "偏进攻", "score": 75},
+            )
 
         self.assertLessEqual(meta["theme_distribution"].get("半导体", 0), config.TOMORROW_MAX_DISPLAY_PER_THEME)
         self.assertGreaterEqual(meta["display_theme_limited_count"], 1)

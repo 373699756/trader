@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from typing import Callable, Dict, List, Tuple
 import pandas as pd
 
 from .. import config
+from ..background_workers import BackgroundWorkerGroup
 from ..recommendation_freeze import recommendation_is_frozen
 from ..app_response_support import (
     error_payload,
@@ -70,11 +72,13 @@ from ..validation_runtime_support import (
     start_validation_auto_update_worker,
     within_auto_update_window,
 )
+from .recommendation_cache import RecommendationRefreshService, RecommendationSnapshotService
 
 
 DEFAULT_AUTO_SNAPSHOT_STRATEGIES = tuple(config.AUTO_SNAPSHOT_STRATEGIES)
 _VALIDATION_AUTO_WORKERS = set()
 _VALIDATION_AUTO_WORKERS_LOCK = threading.Lock()
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -90,12 +94,34 @@ class AppServiceHooks:
 class _AppServiceContext:
     """Shared collaborators and helper operations used by application use cases."""
 
-    def __init__(self, container, hooks: AppServiceHooks, owner=None) -> None:
+    def __init__(
+        self,
+        container,
+        hooks: AppServiceHooks,
+        schedule_snapshot_save: Callable[[Dict[str, object]], None] | None = None,
+    ) -> None:
         self.container = container
         self.hooks = hooks
-        self.owner = owner
+        self._schedule_snapshot_save_callback = schedule_snapshot_save
         self.provider = container.provider
         self.validation_store = container.validation_store
+        self.recommendation_snapshots = RecommendationSnapshotService(
+            container.recommendation_cache,
+            container.horizon_cache,
+            is_frozen=self.recommendation_is_frozen,
+            overlay_live_quotes=self._overlay_live_quotes_on_payload,
+            snapshot_path=config.RECOMMENDATION_SNAPSHOT_PATH,
+            snapshot_max_age_seconds=getattr(config, "RECOMMENDATION_SNAPSHOT_MAX_AGE_SECONDS", 300),
+        )
+        self.recommendation_refresh = RecommendationRefreshService(
+            self.recommendation_snapshots,
+            refresh_quotes=container.candidate_pipeline.refresh_quotes,
+            build_recommendations=self._build_recommendations_payload,
+            build_horizon=self._build_horizon_payload,
+            provider_health=self._safe_provider_health,
+            research_disclaimer=self.research_disclaimer,
+            is_frozen=self.recommendation_is_frozen,
+        )
         self.auto_update_lock = threading.Lock()
         self.auto_update_status = {
             "enabled": bool(config.VALIDATION_AUTO_UPDATE_ENABLED),
@@ -127,9 +153,12 @@ class _AppServiceContext:
             "last_tuning_result": {},
             "next_run_at": "",
         }
+        self._validation_workers = BackgroundWorkerGroup(
+            (self._start_auto_update_worker, self._start_auto_snapshot_worker)
+        )
 
-    def start_background_workers(self) -> None:
-        start_validation_auto_update_worker(
+    def _start_auto_update_worker(self, stop_event: threading.Event) -> threading.Thread | None:
+        return start_validation_auto_update_worker(
             worker_set=_VALIDATION_AUTO_WORKERS,
             worker_lock=_VALIDATION_AUTO_WORKERS_LOCK,
             set_auto_update_status=self._set_auto_update_status,
@@ -144,8 +173,11 @@ class _AppServiceContext:
                 getattr(config, "VALIDATION_AUTO_UPDATE_UNTIL_TIME", "23:59"),
             ),
             run_validation_auto_update_once_fn=self.run_validation_auto_update_once,
+            stop_event=stop_event,
         )
-        start_validation_auto_snapshot_worker(
+
+    def _start_auto_snapshot_worker(self, stop_event: threading.Event) -> threading.Thread | None:
+        return start_validation_auto_snapshot_worker(
             worker_set=_VALIDATION_AUTO_WORKERS,
             worker_lock=_VALIDATION_AUTO_WORKERS_LOCK,
             auto_snapshot_lock=self.auto_snapshot_lock,
@@ -154,7 +186,14 @@ class _AppServiceContext:
             next_auto_snapshot_at_fn=lambda now: next_auto_snapshot_at(now, config.VALIDATION_AUTO_SNAPSHOT_TIME),
             set_auto_snapshot_status=self._set_auto_snapshot_status,
             run_validation_auto_snapshot_once_fn=self.run_validation_auto_snapshot_once,
+            stop_event=stop_event,
         )
+
+    def start_background_workers(self) -> bool:
+        return self._validation_workers.start()
+
+    def stop_background_workers(self, timeout_seconds: float = 5.0) -> None:
+        self._validation_workers.stop(timeout_seconds)
 
     def index_context(self) -> Dict[str, object]:
         return {
@@ -192,6 +231,7 @@ class _AppServiceContext:
         try:
             provider_health["cache"] = self.container.cache_health()
             provider_health["snapshot_writer"] = self.container.snapshot_writer_health()
+            provider_health["recommendation_refresh_workers"] = self.recommendation_refresh.status()
         except Exception:
             pass
         health_metrics = self._validation_health_metrics()
@@ -374,6 +414,11 @@ class _AppServiceContext:
                         research_disclaimer_fn=self.research_disclaimer,
                     )
                     return self._overlay_live_quotes_on_payload(payload), 200
+            try:
+                payload, status = self._horizon_payload(strategy, top_n, market)
+                return self._overlay_live_quotes_on_payload(payload), status
+            except Exception:
+                pass
             return self.error_payload(exc, include_disclaimer=True)
 
     def stock_prediction_payload(self, code: str) -> Tuple[Dict[str, object], int]:
@@ -1027,13 +1072,13 @@ class _AppServiceContext:
             return self.container.stability_tracker.update(horizon, rows)
 
     def _schedule_snapshot_save(self, payload: Dict[str, object]) -> None:
-        if self.owner is not None:
-            self.owner._schedule_snapshot_save(payload)
+        if self._schedule_snapshot_save_callback is not None:
+            self._schedule_snapshot_save_callback(payload)
             return
         self.container.snapshot_writer.schedule(payload)
 
     def _recommendation_cache_key(self, top_n: int, market: str) -> tuple:
-        return int(top_n), str(market)
+        return self.recommendation_snapshots.recommendation_cache_key(top_n, market)
 
     @staticmethod
     def _is_executable_row(row: Dict[str, object]) -> bool:
@@ -1048,7 +1093,7 @@ class _AppServiceContext:
         return float(position_size) > 0
 
     def _horizon_cache_key(self, strategy: str, top_n: int, market: str) -> tuple:
-        return str(strategy), int(top_n), str(market)
+        return self.recommendation_snapshots.horizon_cache_key(strategy, top_n, market)
 
     def _remember_recommendation_payload(
         self,
@@ -1062,28 +1107,19 @@ class _AppServiceContext:
         saved_at_ts: float | None = None,
         _skip_frozen_lookup: bool = False,
     ) -> Dict[str, object]:
-        if recommendation_is_frozen() and not _skip_frozen_lookup:
-            frozen = self._cached_recommendation_entry(top_n, market) or self._snapshot_entry(top_n, market)
-            if frozen is not None:
-                return frozen
-        snapshot_meta = {
-            "source": source,
-            "stage": stage,
-            "saved_at": saved_at or datetime.now().isoformat(timespec="seconds"),
-            "saved_at_ts": float(saved_at_ts if saved_at_ts is not None else time.time()),
-        }
-        return self.container.recommendation_cache.remember(
-            self._recommendation_cache_key(top_n, market),
+        return self.recommendation_snapshots.remember_recommendation_payload(
+            top_n,
+            market,
             payload,
-            source=str(snapshot_meta.get("source") or source),
-            stage=str(snapshot_meta.get("stage") or stage),
-            saved_at=str(snapshot_meta.get("saved_at") or ""),
-            saved_at_ts=float(snapshot_meta.get("saved_at_ts") or time.time()),
-            include_snapshot=True,
+            source=source,
+            stage=stage,
+            saved_at=saved_at,
+            saved_at_ts=saved_at_ts,
+            skip_frozen_lookup=_skip_frozen_lookup,
         )
 
     def _cached_recommendation_entry(self, top_n: int, market: str) -> Dict[str, object] | None:
-        return self.container.recommendation_cache.get(self._recommendation_cache_key(top_n, market))
+        return self.recommendation_snapshots.cached_recommendation_entry(top_n, market)
 
     def _remember_horizon_payload(
         self,
@@ -1096,41 +1132,21 @@ class _AppServiceContext:
         saved_at_ts: float | None = None,
         source: str = "live",
     ) -> Dict[str, object]:
-        if recommendation_is_frozen():
-            frozen = self._cached_horizon_entry(strategy, top_n, market)
-            if frozen is not None:
-                return frozen
-        return self.container.horizon_cache.remember(
-            self._horizon_cache_key(strategy, top_n, market),
+        return self.recommendation_snapshots.remember_horizon_payload(
+            strategy,
+            top_n,
+            market,
             payload,
-            source=source,
             saved_at=saved_at,
             saved_at_ts=saved_at_ts,
-            include_snapshot=False,
+            source=source,
         )
 
     def _cached_horizon_entry(self, strategy: str, top_n: int, market: str) -> Dict[str, object] | None:
-        return self.container.horizon_cache.get(self._horizon_cache_key(strategy, top_n, market))
+        return self.recommendation_snapshots.cached_horizon_entry(strategy, top_n, market)
 
     def _snapshot_entry(self, top_n: int, market: str) -> Dict[str, object] | None:
-        snapshot = load_recommendation_snapshot(
-            config.RECOMMENDATION_SNAPSHOT_PATH,
-            max_age_seconds=getattr(config, "RECOMMENDATION_SNAPSHOT_MAX_AGE_SECONDS", 300),
-            expected_market=market,
-            expected_top_n=top_n,
-        )
-        if not snapshot.get("ok"):
-            return None
-        return self._remember_recommendation_payload(
-            top_n,
-            market,
-            dict(snapshot.get("payload") or {}),
-            source="disk_snapshot",
-            stage="ready",
-            saved_at=str(snapshot.get("saved_at") or ""),
-            saved_at_ts=time.time() - float(snapshot.get("age_seconds") or 0.0),
-            _skip_frozen_lookup=True,
-        )
+        return self.recommendation_snapshots.snapshot_entry(top_n, market)
 
     def _safe_provider_health(self) -> Dict[str, object]:
         try:
@@ -1238,12 +1254,20 @@ class _AppServiceContext:
     ) -> Dict[str, object] | None:
         signal_date = datetime.now().date().isoformat()
         strategies = list(self._configured_auto_snapshot_strategies())
-        close_result = run_missing_close_snapshots(
-            self.provider,
-            self.validation_store,
-            strategies,
-            market=market,
-        )
+        try:
+            close_result = run_missing_close_snapshots(
+                self.provider,
+                self.validation_store,
+                strategies,
+                market=market,
+            )
+        except Exception as exc:
+            message = "盘后推荐补缺失败，降级为已有推荐结果: {}".format(exc)
+            _LOGGER.warning(message)
+            append_error = getattr(self.provider, "append_status_error", None)
+            if callable(append_error):
+                append_error(message)
+            return None
         rows_by_strategy: Dict[str, List[Dict[str, object]]] = {}
         phases: Dict[str, Dict[str, object]] = {}
         generated_times = []
@@ -1362,6 +1386,9 @@ class _AppServiceContext:
 
     def _configured_auto_snapshot_strategies(self) -> List[str]:
         return configured_auto_snapshot_strategies(DEFAULT_AUTO_SNAPSHOT_STRATEGIES, SNAPSHOT_STRATEGIES)
+
+    def recommendation_is_frozen(self) -> bool:
+        return recommendation_is_frozen()
 
     def _set_auto_update_status(self, **values) -> None:
         set_status(self.auto_update_lock, self.auto_update_status, **values)
@@ -1543,15 +1570,10 @@ class _AppServiceContext:
             return error_payload(self.provider.health, self.research_disclaimer, exc), 502
 
     def _recommendation_snapshot_info(self, entry: Dict[str, object]) -> Dict[str, object]:
-        snapshot = dict(entry.get("snapshot") or {})
-        saved_at_ts = float(snapshot.get("saved_at_ts") or 0.0)
-        snapshot["age_seconds"] = round(max(0.0, time.time() - saved_at_ts), 2) if saved_at_ts else None
-        return snapshot
+        return self.recommendation_snapshots.snapshot_info(entry)
 
     def _serve_recommendation_payload(self, entry: Dict[str, object]) -> Dict[str, object]:
-        payload = dict(entry.get("payload") or {})
-        payload["snapshot"] = self._recommendation_snapshot_info(entry)
-        return self._overlay_live_quotes_on_payload(payload)
+        return self.recommendation_snapshots.serve_recommendation_payload(entry)
 
     def _overlay_live_quotes_on_payload(self, payload: Dict[str, object]) -> Dict[str, object]:
         if not isinstance(payload, dict) or not payload.get("ok"):
@@ -1714,75 +1736,16 @@ class _AppServiceContext:
         return payload
 
     def _refresh_recommendation_cache(self, top_n: int, market: str) -> None:
-        key = self._recommendation_cache_key(top_n, market)
-        try:
-            if recommendation_is_frozen():
-                return
-            self.container.candidate_pipeline.refresh_quotes()
-            self._build_recommendations_payload(top_n, market, include_deepseek=True)
-        finally:
-            self.container.recommendation_cache.discard_refreshing(key)
+        return self.recommendation_refresh.refresh_recommendation_cache(top_n, market)
 
     def _schedule_recommendation_refresh(self, top_n: int, market: str) -> bool:
-        if recommendation_is_frozen():
-            return False
-        key = self._recommendation_cache_key(top_n, market)
-        if not self.container.recommendation_cache.mark_refreshing(key):
-            return False
-        worker = threading.Thread(
-            target=self._refresh_recommendation_cache,
-            args=(top_n, market),
-            name=f"recommendation-refresh-{market}-{top_n}",
-            daemon=True,
-        )
-        worker.start()
-        return True
+        return self.recommendation_refresh.schedule_recommendation_refresh(top_n, market)
 
     def _refresh_horizon_cache(self, strategy: str, top_n: int, market: str) -> None:
-        key = self._horizon_cache_key(strategy, top_n, market)
-        try:
-            if recommendation_is_frozen():
-                return
-            self.container.candidate_pipeline.refresh_quotes()
-            self._build_horizon_payload(strategy, top_n, market)
-        except Exception as exc:
-            payload = response_payload(
-                self._safe_provider_health,
-                self.research_disclaimer,
-                ok=False,
-                include_disclaimer=True,
-                error=str(exc),
-                data=[],
-                meta={
-                    "generated_at": datetime.now().isoformat(timespec="seconds"),
-                    "candidate_count": 0,
-                    "display_count": 0,
-                    "display_limit": top_n,
-                    "top_n": top_n,
-                    "market_filter": market,
-                    "strategy_label": "明日优先" if strategy == "tomorrow_picks" else "2-5日持有",
-                    "strategy": "实时行情刷新失败",
-                    "fallback": "live_refresh_failed",
-                },
-            )
-            self._remember_horizon_payload(strategy, top_n, market, payload, source="live_refresh_failed")
-        finally:
-            self.container.horizon_cache.discard_refreshing(key)
+        return self.recommendation_refresh.refresh_horizon_cache(strategy, top_n, market)
 
     def _schedule_horizon_refresh(self, strategy: str, top_n: int, market: str) -> bool:
-        if recommendation_is_frozen():
-            return False
-        key = self._horizon_cache_key(strategy, top_n, market)
-        if not self.container.horizon_cache.mark_refreshing(key):
-            return False
-        worker = threading.Thread(
-            target=self._refresh_horizon_cache,
-            args=(strategy, top_n, market),
-            name=f"horizon-refresh-{strategy}-{market}-{top_n}",
-            daemon=True,
-        )
-        worker.start()
-        return True
+        return self.recommendation_refresh.schedule_horizon_refresh(strategy, top_n, market)
 
     def _saved_horizon_payload(
         self,
@@ -2079,8 +2042,11 @@ class HealthUseCase(_UseCase):
 
 
 class BackgroundWorkerService(_UseCase):
-    def start_background_workers(self) -> None:
-        self.context.start_background_workers()
+    def start_background_workers(self) -> bool:
+        return self.context.start_background_workers()
+
+    def stop_background_workers(self, timeout_seconds: float = 5.0) -> None:
+        self.context.stop_background_workers(timeout_seconds)
 
     def run_validation_tuning_once(
         self,
@@ -2100,7 +2066,11 @@ class AppServices:
     """Facade and composition root for route-facing application use cases."""
 
     def __init__(self, container, hooks: AppServiceHooks) -> None:
-        self.context = _AppServiceContext(container, hooks, owner=self)
+        self.context = _AppServiceContext(
+            container,
+            hooks,
+            schedule_snapshot_save=self._schedule_snapshot_save,
+        )
         self.container = container
         self.hooks = hooks
         self.provider = self.context.provider
@@ -2112,9 +2082,31 @@ class AppServices:
         self.health = HealthUseCase(self.context)
         self.background_workers = BackgroundWorkerService(self.context)
 
-    def start_background_workers(self) -> None:
-        self.context.container.realtime_scheduler.start()
-        self.background_workers.start_background_workers()
+    def start_validation_workers(self) -> bool:
+        return self.background_workers.start_background_workers()
+
+    def stop_validation_workers(self, timeout_seconds: float = 5.0) -> None:
+        self.background_workers.stop_background_workers(timeout_seconds)
+
+    def stop_recommendation_refresh_workers(self, timeout_seconds: float = 5.0) -> None:
+        self.context.recommendation_refresh.stop(timeout_seconds)
+
+    def stop_transient_workers(self, timeout_seconds: float = 5.0) -> None:
+        self.stop_recommendation_refresh_workers(timeout_seconds)
+        stop_realtime_quotes = getattr(self.provider, "stop_realtime_quotes", None)
+        if callable(stop_realtime_quotes):
+            stop_realtime_quotes(timeout_seconds)
+        self.container.snapshot_writer.stop(timeout_seconds)
+
+    def start_background_workers(self) -> bool:
+        realtime_started = self.context.container.realtime_scheduler.start()
+        validation_started = self.start_validation_workers()
+        return bool(realtime_started or validation_started)
+
+    def stop_background_workers(self, timeout_seconds: float = 5.0) -> None:
+        self.stop_transient_workers(timeout_seconds)
+        self.stop_validation_workers(timeout_seconds)
+        self.context.container.realtime_scheduler.stop(timeout_seconds)
 
     def index_context(self) -> Dict[str, object]:
         return self.recommendations.index_context()

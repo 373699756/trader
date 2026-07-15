@@ -16,11 +16,11 @@
 
 ## 运行环境与安装
 
-启动脚本会自动创建 `.venv`，并从 `requirements.txt` 安装 Flask、akshare、pandas、numpy、requests、tushare、pytest 等 Python 依赖。机器上需要先准备的是 Python 和基础命令环境；不需要安装 Node、Redis、MySQL、PostgreSQL 或额外数据库服务，运行数据会写入本地 `.runtime/` 下的 SQLite/JSON 文件。
+启动脚本会自动创建 `.venv`，并根据 `pyproject.toml` 和 `requirements/runtime.txt` 安装运行依赖。依赖声明、Python 小版本和平台没有变化时，后续启动会通过 `.runtime/runtime-dependencies.sha256` 校验后跳过联网安装；设置 `FORCE_INSTALL_DEPS=1` 可强制重装。开发工具通过根目录 `requirements.txt` 或 `pip install -e ".[dev]"` 单独安装。机器上不需要 Node、Redis、MySQL、PostgreSQL 或额外数据库服务，运行数据会写入本地 `.runtime/` 下的 SQLite/JSON 文件。
 
 通用要求：
 
-- Python 3.9-3.14，建议安装 64 位 CPython，并确保 `python`/`python3` 或 Windows 的 `py` 启动器可用。
+- Python 3.10-3.14，建议安装 64 位 CPython，并确保 `python`/`python3` 或 Windows 的 `py` 启动器可用。
 - `pip` 和 `venv`。Windows 的 python.org 安装包通常自带；Ubuntu/Debian 需要安装 `python3-venv`。
 - 能访问 PyPI 安装依赖，并能访问公开行情数据源。网络需要代理时，用 `PROXY_MODE`、`PROXY_HOST`、`PROXY_PORT` 配置。
 - Git 只在需要 `git clone` 获取项目时必需；拿到源码目录后运行本项目不依赖 Git。
@@ -29,12 +29,12 @@ Windows 需要：
 
 - Windows 10/11 或同等 Windows Server 环境。
 - PowerShell 5.1+，系统自带即可；也可以从 CMD 运行 `run.bat`。
-- Python 3.9-3.14。安装时建议勾选 `Add python.exe to PATH`，或者保留 Python Launcher `py.exe`。
+- Python 3.10-3.14。安装时建议勾选 `Add python.exe to PATH`，或者保留 Python Launcher `py.exe`。
 
 Linux/macOS/WSL 需要：
 
 - Bash。
-- Python 3.9-3.14、`pip`、`venv`。
+- Python 3.10-3.14、`pip`、`venv`。
 - Ubuntu/Debian 示例：
 
 ```bash
@@ -42,7 +42,7 @@ sudo apt update
 sudo apt install -y python3 python3-venv python3-pip ca-certificates
 ```
 
-- macOS 可使用系统 Python、python.org 安装包或 Homebrew Python，只要版本满足 3.9-3.14 即可。
+- macOS 可使用系统 Python、python.org 安装包或 Homebrew Python，只要版本满足 3.10-3.14 即可。
 
 可选配置：
 
@@ -52,7 +52,7 @@ sudo apt install -y python3 python3-venv python3-pip ca-certificates
 
 ## 启动
 
-首次启动会自动创建 `.venv` 并安装依赖。
+首次启动会自动创建 `.venv` 并安装依赖；依赖未变化的后续启动可以离线完成。
 
 ### Linux/macOS/WSL
 
@@ -85,11 +85,9 @@ Linux/macOS/WSL 常用环境变量：
 
 ```bash
 PORT=5050 ./run.sh
-ENABLE_HISTORY_FACTORS=1 ./run.sh
-VALIDATION_AUTO_SNAPSHOT_TIME=14:30 ./run.sh
 VALIDATION_AUTO_UPDATE_START_TIME=14:30 ./run.sh
 VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS=600 ./run.sh
-ENABLE_DEEPSEEK_RUNTIME=1 ./run.sh
+DEEPSEEK_PRECOMPUTE_TIMES='["09:40","10:00"]' ./run.sh
 PROXY_MODE=on PROXY_PORT=7890 ./run.sh
 SKIP_PROXY_CHECK=1 ./run.sh
 ```
@@ -98,14 +96,16 @@ Windows PowerShell 常用环境变量：
 
 ```powershell
 $env:PORT="5050"; .\run.ps1
-$env:ENABLE_HISTORY_FACTORS="1"; .\run.ps1
-$env:VALIDATION_AUTO_SNAPSHOT_TIME="14:30"; .\run.ps1
 $env:VALIDATION_AUTO_UPDATE_START_TIME="14:30"; .\run.ps1
 $env:VALIDATION_AUTO_UPDATE_INTERVAL_SECONDS="600"; .\run.ps1
-$env:ENABLE_DEEPSEEK_RUNTIME="1"; .\run.ps1
+$env:DEEPSEEK_PRECOMPUTE_TIMES='["09:40","10:00"]'; .\run.ps1
 $env:PROXY_MODE="on"; $env:PROXY_PORT="7890"; .\run.ps1
 $env:SKIP_PROXY_CHECK="1"; .\run.ps1
 ```
+
+可覆盖的运行参数由 `config/runtime.json` 的 `env_overrides` 白名单定义，并按原配置值类型解析。生产基线中的策略开关和锁定参数不可通过环境变量修改；若设置为不同值，程序会在启动时明确报错，避免产生未记录的策略漂移。
+
+看板没有远程身份认证，默认只允许监听回环地址。若确实要绑定 `0.0.0.0`、局域网地址或主机名，必须显式设置 `SERVER_ALLOW_INSECURE_NON_LOOPBACK=1`；这只表示接受风险，不会自动增加认证，建议仍通过带访问控制的反向代理隔离。
 
 盘后任务：
 
@@ -129,7 +129,20 @@ $env:SKIP_PROXY_CHECK="1"; .\run.ps1
 .venv/bin/python -m stock_analyzer.jobs stats
 ```
 
-若使用定时器/服务，建议直接执行以上命令并依赖数据库租约（`.stock_analyzer_jobs.sqlite3`）防止多实例并发重入。`deepseek-precompute` 建议在交易日 09:40–14:20 约每 20 分钟做一次变化检查，午休不调用；14:30–14:48 仅按需调用，14:48 停止 API，14:50 冻结最终推荐。缓存命中和无证据弃权不计次，所有策略与模型合计最多 50 次/交易日。
+直接运行 `app.py` 时，进程内 supervisor 会统一启动和停止实时行情、DeepSeek、自动快照与结果回填线程；`create_app()` 本身不创建后台线程。使用其他 WSGI 入口时，需要显式调用 `create_app(start_runtime=True)`，或由外部任务平台执行上述命令，但不要同时启用两套调度。后台线程共享可中断的停止信号，进程退出无需等待完整轮询周期。任务依赖 SQLite 租约防止相同槽位并发重入。`deepseek-precompute` 在交易日 09:40–14:20 约每 20 分钟做一次变化检查，午休不调用；14:30–14:48 仅按需调用，14:48 停止 API，14:50 冻结最终推荐。缓存命中和无证据弃权不计次，所有策略与模型合计最多 50 次/交易日。
+
+## 开发质量检查
+
+```bash
+.venv/bin/python -m pip install -e ".[dev]"
+make quality
+make test-fast
+make test-integration
+make coverage-fast
+make package
+```
+
+`make lint` 对全部产品代码执行正确性规则；完整 Ruff、格式和 mypy 门禁先覆盖新增或已迁移模块，再随模块重构逐步扩大。快速测试分支覆盖率当前以 50% 为最低基线，后续只能逐步提高。CI 在 Python 3.10–3.14 上执行快速测试，Python 3.11 单独执行覆盖率门禁和集成测试，慢速测试由 nightly 工作流执行。
 
 日级组合基线随 `after-close` 自动刷新；也可单独重放：
 

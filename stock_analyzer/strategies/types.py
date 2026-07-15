@@ -21,7 +21,7 @@ LEGACY_STRATEGY_NAMES = {
     SWING_2_5D_PICKS: "swing_picks",
 }
 
-    STRATEGY_LABELS = {
+STRATEGY_LABELS = {
     TODAY_PICKS: "今早",
     TOMORROW_PICKS: "明日优先",
     SWING_2_5D_PICKS: "2-5日持有",

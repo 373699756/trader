@@ -6,17 +6,21 @@ import tempfile
 from typing import Any
 
 
-def atomic_write_json(path: str, payload: Any, **dump_kwargs) -> None:
+def atomic_write_json(
+    path: str | os.PathLike[str],
+    payload: object,
+    **dump_kwargs: Any,
+) -> None:
     text = json.dumps(payload, **dump_kwargs)
     atomic_write_text(path, text)
 
 
-def atomic_write_text(path: str, text: str) -> None:
+def atomic_write_text(path: str | os.PathLike[str], text: str) -> None:
     target = os.fspath(path)
     directory = os.path.dirname(target) or "."
     os.makedirs(directory, exist_ok=True)
     fd, temporary = tempfile.mkstemp(
-        prefix=".{}-".format(os.path.basename(target)),
+        prefix=f".{os.path.basename(target)}-",
         suffix=".tmp",
         dir=directory,
     )

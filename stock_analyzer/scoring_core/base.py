@@ -289,6 +289,7 @@ def score_today_candidates(
     market_filter: str = "all",
     market_regime: Dict[str, object] = None,
     capture_candidate_pool: bool = False,
+    scoring_context: Dict[str, object] = None,
 ) -> Tuple[Dict[str, List[Dict[str, object]]], Dict[str, object]]:
     from ..strategies.today import TodayScorer
 
@@ -301,6 +302,7 @@ def score_today_candidates(
         market_filter=market_filter,
         market_regime=market_regime,
         capture_candidate_pool=capture_candidate_pool,
+        scoring_context=scoring_context,
     )
 
 

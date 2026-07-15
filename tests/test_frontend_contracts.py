@@ -110,6 +110,19 @@ class FrontendContractTest(unittest.TestCase):
         self.assertNotIn("p.confidence", prediction_source)
         self.assertNotIn("本地置信", prediction_source)
 
+    def test_long_term_watch_is_backend_driven_observation_pool(self):
+        with open("static/recommendation-app.js", encoding="utf-8") as source:
+            app_source = source.read()
+        with open("templates/index.html", encoding="utf-8") as source:
+            template_source = source.read()
+
+        self.assertIn("recommendations.long_term_watch", app_source)
+        self.assertNotIn("longTermCandidateRows", app_source)
+        self.assertNotIn("LONG_TERM_LONG_HORIZON", app_source)
+        self.assertIn("长期观察依据", template_source)
+        self.assertNotIn("长期高收益依据", template_source)
+        self.assertNotIn("添加后涨跌", template_source)
+
     def test_empty_recommendation_action_summary_keeps_card_layout(self):
         result = self.run_node(
             """

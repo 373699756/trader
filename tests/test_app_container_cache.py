@@ -1,5 +1,6 @@
+import threading
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
@@ -63,18 +64,17 @@ def _wait_until(predicate, timeout_seconds=1.0, sleep_seconds=0.01):
 
 def test_async_snapshot_writer_records_success_and_failure_metrics(tmp_path):
     path = str(tmp_path / "snapshot.json")
-    target = AsyncSnapshotWriter(path)
+    writer = Mock()
+    target = AsyncSnapshotWriter(path, save_snapshot=writer, is_frozen=lambda: False)
 
-    with patch("stock_analyzer.app_container.save_recommendation_snapshot"):
-        target.schedule({"ok": True})
-        assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
-        success_stats = target.stats()
-        assert success_stats["success_count"] >= 1
-        assert success_stats["last_error"] == ""
+    target.schedule({"ok": True})
+    assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
+    success_stats = target.stats()
+    assert success_stats["success_count"] >= 1
+    assert success_stats["last_error"] == ""
 
-    with patch("stock_analyzer.app_container.save_recommendation_snapshot", side_effect=RuntimeError("io failure")), patch(
-        "stock_analyzer.app_container._LOGGER.exception"
-    ) as logger_call:
+    writer.side_effect = RuntimeError("io failure")
+    with patch("stock_analyzer.snapshot_writer._LOGGER.exception") as logger_call:
         target.schedule({"ok": False})
         assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["failure_count"] >= 1)
         failure_stats = target.stats()
@@ -85,56 +85,150 @@ def test_async_snapshot_writer_records_success_and_failure_metrics(tmp_path):
 
 def test_async_snapshot_writer_writes_when_frozen_and_snapshot_missing(tmp_path):
     path = str(tmp_path / "snapshot.json")
-    target = AsyncSnapshotWriter(path)
+    writer = Mock()
+    target = AsyncSnapshotWriter(
+        path,
+        save_snapshot=writer,
+        is_frozen=lambda: True,
+        path_exists=lambda _path: False,
+    )
 
-    with patch("stock_analyzer.app_container.recommendation_is_frozen", return_value=True), patch(
-        "stock_analyzer.app_container.os.path.exists",
-        return_value=False,
-    ), patch("stock_analyzer.app_container.save_recommendation_snapshot") as writer:
-        target.schedule({"ok": True})
-        assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
-        assert writer.called
+    target.schedule({"ok": True})
+    assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
+    assert writer.called
 
 
 def test_async_snapshot_writer_skips_when_frozen_and_snapshot_exists(tmp_path):
     path = str(tmp_path / "snapshot.json")
-    target = AsyncSnapshotWriter(path)
+    writer = Mock()
+    target = AsyncSnapshotWriter(
+        path,
+        save_snapshot=writer,
+        load_snapshot=Mock(return_value={"ok": True, "status": "ok"}),
+        is_frozen=lambda: True,
+        path_exists=lambda _path: True,
+    )
 
-    with patch("stock_analyzer.app_container.recommendation_is_frozen", return_value=True), patch(
-        "stock_analyzer.app_container.os.path.exists",
-        return_value=True,
-    ), patch(
-        "stock_analyzer.app_container.load_recommendation_snapshot",
-        return_value={"ok": True, "status": "ok"},
-    ), patch("stock_analyzer.app_container.save_recommendation_snapshot") as writer:
-        target.schedule({"ok": True})
-        assert not target.stats()["running"]
-        assert not writer.called
+    target.schedule({"ok": True})
+    assert not target.stats()["running"]
+    assert not writer.called
 
 
 def test_async_snapshot_writer_rewrites_when_frozen_snapshot_invalid(tmp_path):
     path = str(tmp_path / "snapshot.json")
-    target = AsyncSnapshotWriter(path)
+    writer = Mock()
+    target = AsyncSnapshotWriter(
+        path,
+        save_snapshot=writer,
+        load_snapshot=Mock(return_value={"ok": False, "status": "invalid"}),
+        is_frozen=lambda: True,
+        path_exists=lambda _path: True,
+    )
 
-    with patch("stock_analyzer.app_container.recommendation_is_frozen", return_value=True), patch(
-        "stock_analyzer.app_container.os.path.exists",
-        return_value=True,
-    ), patch(
-        "stock_analyzer.app_container.load_recommendation_snapshot",
-        return_value={"ok": False, "status": "invalid"},
-    ), patch("stock_analyzer.app_container.save_recommendation_snapshot") as writer:
-        target.schedule({"ok": True})
-        assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
-        assert writer.called
+    target.schedule({"ok": True})
+    assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
+    assert writer.called
 
 
 def test_async_snapshot_writer_falls_back_to_write_when_snapshot_check_fails(tmp_path):
     path = str(tmp_path / "snapshot.json")
-    target = AsyncSnapshotWriter(path)
+    writer = Mock()
+    target = AsyncSnapshotWriter(
+        path,
+        save_snapshot=writer,
+        is_frozen=lambda: True,
+        path_exists=Mock(side_effect=OSError("fs check fail")),
+    )
 
-    with patch("stock_analyzer.app_container.recommendation_is_frozen", return_value=True), patch(
-        "stock_analyzer.app_container.os.path.exists", side_effect=OSError("fs check fail")
-    ), patch("stock_analyzer.app_container.save_recommendation_snapshot") as writer:
-        target.schedule({"ok": True})
-        assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
-        assert writer.called
+    target.schedule({"ok": True})
+    assert _wait_until(lambda: target.stats()["running"] is False and target.stats()["success_count"] >= 1)
+    assert writer.called
+
+
+def test_async_snapshot_writer_takes_payload_ownership_before_background_write(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    saved_payloads = []
+
+    def save_snapshot(_path, payload):
+        started.set()
+        assert release.wait(1.0)
+        saved_payloads.append(payload)
+
+    target = AsyncSnapshotWriter(
+        str(tmp_path / "snapshot.json"),
+        save_snapshot=save_snapshot,
+        is_frozen=lambda: False,
+    )
+    payload = {"rows": [{"code": "600001"}]}
+
+    target.schedule(payload)
+    assert started.wait(1.0)
+    payload["rows"][0]["code"] = "changed"
+    release.set()
+    target.stop(1.0)
+
+    assert saved_payloads == [{"rows": [{"code": "600001"}]}]
+
+
+def test_async_snapshot_writer_recovers_after_thread_start_failure(tmp_path):
+    calls = 0
+
+    class FailingThread:
+        def start(self):
+            raise RuntimeError("thread unavailable")
+
+        def is_alive(self):
+            return False
+
+    def thread_factory(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return FailingThread()
+        return threading.Thread(**kwargs)
+
+    writer = Mock()
+    target = AsyncSnapshotWriter(
+        str(tmp_path / "snapshot.json"),
+        save_snapshot=writer,
+        is_frozen=lambda: False,
+        thread_factory=thread_factory,
+    )
+
+    target.schedule({"attempt": 1})
+    assert target.stats()["running"] is False
+    assert target.stats()["failure_count"] == 1
+
+    target.schedule({"attempt": 2})
+    assert _wait_until(lambda: target.stats()["success_count"] == 1)
+    assert writer.call_args.args[1] == {"attempt": 2}
+
+
+def test_async_snapshot_writer_stop_waits_for_active_write(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    stopped = threading.Event()
+
+    def save_snapshot(_path, _payload):
+        started.set()
+        assert release.wait(1.0)
+
+    target = AsyncSnapshotWriter(
+        str(tmp_path / "snapshot.json"),
+        save_snapshot=save_snapshot,
+        is_frozen=lambda: False,
+    )
+    target.schedule({"ok": True})
+    assert started.wait(1.0)
+
+    stop_thread = threading.Thread(target=lambda: (target.stop(1.0), stopped.set()))
+    stop_thread.start()
+    assert not stopped.wait(0.05)
+    assert target.stats()["stopping"] is True
+
+    release.set()
+    assert stopped.wait(1.0)
+    stop_thread.join(1.0)
+    assert target.stats()["running"] is False
+    assert target.stats()["stopping"] is False

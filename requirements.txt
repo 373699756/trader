@@ -1,10 +1,3 @@
-# Python >=3.9 required. Current pinned versions were too old for CPython 3.14 wheels.
-akshare>=1.14.0
-Flask>=2.2,<3.1
-numpy>=1.24,<3
-pandas>=1.5,<3
-python-dotenv>=1.0,<2
-requests>=2.22.0
-tushare>=1.2.89
-pytest>=7,<9
-pytest-xdist>=3,<4
+# Compatibility entry point for contributors and existing automation.
+# Runtime launchers install requirements/runtime.txt instead.
+-r requirements/dev.txt

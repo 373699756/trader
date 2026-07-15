@@ -114,6 +114,7 @@ class RecommendationStrategiesTest(unittest.TestCase):
             industry_strength={"半导体": 1.2, "电力": 1.5},
             sentiment_lookup={"600002": {"score": 68, "summary": "舆情偏正面"}},
             top_n=10,
+            scoring_context={"as_of": "15:01"},
         )
 
         self.assertIn("today_term", result)
@@ -121,10 +122,11 @@ class RecommendationStrategiesTest(unittest.TestCase):
         self.assertEqual(meta["top_n"], 10)
         self.assertEqual(result["today_term"][0]["code"], "600001")
         self.assertEqual(meta["strategy_version"], config.TODAY_TERM_STRATEGY_VERSION)
-        self.assertEqual(result["today_term"][0]["tier"], "backup_pool")
+        self.assertEqual(result["today_term"][0]["tier"], "primary_watch")
         self.assertFalse(result["today_term"][0]["execution_allowed"])
         self.assertEqual(result["today_term"][0]["trade_action"]["position_size"], 0.0)
-        self.assertEqual(result["today_term"][0]["recommendation_class_label"], "今日延续推荐")
+        self.assertEqual(result["today_term"][0]["trade_action"]["action"], "watch_only")
+        self.assertEqual(result["today_term"][0]["recommendation_class_label"], "今早重点买入")
         self.assertHasExplanationFields(result["today_term"][0], "today_term")
 
     def test_short_term_rows_carry_verdict_and_bull_bear(self):

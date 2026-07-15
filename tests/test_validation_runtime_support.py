@@ -1,11 +1,81 @@
 import unittest
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from stock_analyzer import validation_runtime_support as support
 
 
 class ValidationRuntimeSupportTest(unittest.TestCase):
+    def test_auto_update_worker_can_stop_during_initial_delay(self):
+        workers = set()
+        worker_lock = threading.Lock()
+        stop_event = threading.Event()
+        status = {}
+        run_calls = []
+
+        with (
+            patch.object(support.config, "VALIDATION_AUTO_UPDATE_ENABLED", True),
+            patch.object(support.config, "VALIDATION_AUTO_UPDATE_INITIAL_DELAY_SECONDS", 3600),
+            patch.object(support.config, "VALIDATION_DB_PATH", "validation-test.db"),
+            patch.object(support.config, "HISTORY_CACHE_PATH", "history-test"),
+        ):
+            thread = support.start_validation_auto_update_worker(
+                worker_set=workers,
+                worker_lock=worker_lock,
+                set_auto_update_status=lambda **values: status.update(values),
+                within_auto_update_window_fn=lambda now: True,
+                next_auto_update_window_start_fn=lambda now: now + timedelta(days=1),
+                run_validation_auto_update_once_fn=lambda: run_calls.append(True) or {"ok": True},
+                stop_event=stop_event,
+            )
+            self.assertIsNotNone(thread)
+            stop_event.set()
+            thread.join(1.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(workers, set())
+        self.assertFalse(status["started"])
+        self.assertFalse(status["running"])
+        self.assertEqual(run_calls, [])
+
+    def test_auto_snapshot_worker_can_stop_during_schedule_wait(self):
+        workers = set()
+        worker_lock = threading.Lock()
+        snapshot_lock = threading.Lock()
+        stop_event = threading.Event()
+        today = datetime.now().date().isoformat()
+        status = {"last_attempt_date": today}
+        run_calls = []
+
+        with (
+            patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_ENABLED", True),
+            patch.object(support.config, "VALIDATION_DB_PATH", "validation-test.db"),
+            patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_TIME", "14:30"),
+            patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_MARKET", "cn"),
+            patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", "tomorrow_picks"),
+        ):
+            thread = support.start_validation_auto_snapshot_worker(
+                worker_set=workers,
+                worker_lock=worker_lock,
+                auto_snapshot_lock=snapshot_lock,
+                auto_snapshot_status=status,
+                auto_snapshot_time_parts_fn=lambda: (14, 30),
+                next_auto_snapshot_at_fn=lambda now: now + timedelta(days=1),
+                set_auto_snapshot_status=lambda **values: status.update(values),
+                run_validation_auto_snapshot_once_fn=lambda: run_calls.append(True) or {"ok": True},
+                stop_event=stop_event,
+            )
+            self.assertIsNotNone(thread)
+            stop_event.set()
+            thread.join(1.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(workers, set())
+        self.assertFalse(status["started"])
+        self.assertFalse(status["running"])
+        self.assertEqual(run_calls, [])
+
     def test_tuning_run_is_reused_until_semantic_inputs_change(self):
         class TuningStore:
             def __init__(self):
@@ -98,11 +168,14 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
         self.assertTrue(missed["deadline_missed"])
 
     def test_configured_auto_snapshot_strategies_no_longer_falls_back_to_auto_update_strategies(self):
-        with patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", ""), patch.object(
-            support.config,
-            "VALIDATION_AUTO_UPDATE_STRATEGIES",
-            "tomorrow_picks",
-            create=True,
+        with (
+            patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", ""),
+            patch.object(
+                support.config,
+                "VALIDATION_AUTO_UPDATE_STRATEGIES",
+                "tomorrow_picks",
+                create=True,
+            ),
         ):
             strategies = support.configured_auto_snapshot_strategies(
                 default_snapshot_strategies=("today_term", "tomorrow_picks"),

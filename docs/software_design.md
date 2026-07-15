@@ -44,6 +44,8 @@ services/app_services.py
 | 文件 | 职责 |
 |---|---|
 | `stock_analyzer/app.py` | Flask 初始化、路由注册和依赖容器 |
+| `stock_analyzer/runtime.py` | 进程级后台组件所有权与启停顺序 |
+| `stock_analyzer/background_workers.py` | 共享停止信号、线程去重、异常回滚和限时回收 |
 | `stock_analyzer/services/app_services.py` | 推荐、个股预测、验证和后台刷新用例 |
 | `stock_analyzer/recommendation_runtime_support.py` | 三策略编排、验证门控、预计算特征只读接入 |
 | `stock_analyzer/app_runtime_support.py` | 推荐响应公共元数据与风险摘要 |
@@ -231,7 +233,7 @@ python -m stock_analyzer.jobs <command>
 | `backup` | 验证库备份 |
 | `stats` | 数据库和迁移健康快照 |
 
-任务使用 SQLite lease 防止相同命令并发运行。盘中预计算的 13:50/14:10/14:25 调度应由 cron、systemd timer 或现有任务平台负责；应用 HTTP 线程不承担计时调用。
+任务使用 SQLite lease 防止相同命令或调度槽位并发运行。直接运行 `app.py` 时，进程级 `RuntimeSupervisor` 在 09:40–14:20 按 `DEEPSEEK_PRECOMPUTE_TIMES` 启动 DeepSeek 变化检查，并统一拥有实时行情、DeepSeek、自动快照和结果回填线程。校验 worker 共享停止信号，关闭时会中断日程等待并在统一超时内回收；部分启动失败会停止已经启动的同组线程。应用 HTTP 请求线程不执行这些任务。`create_app()` 默认只组装依赖，其他 WSGI 入口必须显式使用 `create_app(start_runtime=True)`，或完全交由 cron、systemd timer、任务平台调度，不能同时启用两套所有者。
 
 ## 11. 本地文件
 
@@ -250,7 +252,7 @@ python -m stock_analyzer.jobs <command>
 
 ## 12. 生产冻结
 
-机器事实源为 `config/production_baseline.json`。启动时 `PRODUCTION_FREEZE_ENABLED` 会锁定：
+机器事实源为 `config/runtime.json` 中的 `production_baseline`。启动时 `PRODUCTION_FREEZE_ENABLED` 会锁定：
 
 - 策略版本；
 - 候选阈值和 Top K；

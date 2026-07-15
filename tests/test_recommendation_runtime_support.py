@@ -60,6 +60,54 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
         self.assertEqual(rows["tomorrow_picks"][0]["tier"], "backup_pool")
         self.assertFalse(rows["tomorrow_picks"][0]["execution_allowed"])
 
+    def test_build_recommendation_horizons_attaches_long_term_watch_without_changing_primary_rows(self):
+        candidates = pd.DataFrame(
+            [
+                {
+                    "code": "002371",
+                    "name": "北方华创",
+                    "industry": "半导体设备 国产替代",
+                    "market_cap": 1200e8,
+                    "fundamental_value_score": 68,
+                    "fundamental_quality_score": 74,
+                    "roe": 16,
+                    "revenue_yoy": 20,
+                    "net_profit_yoy": 25,
+                    "sixty_day_pct": 12,
+                    "ytd_pct": 18,
+                }
+            ]
+        )
+        with patch.object(
+            support,
+            "score_today_picks",
+            return_value=({"today_term": [{"code": "002371", "score": 80}]}, {"strategy_version": "today_v1"}),
+        ), patch.object(
+            support,
+            "score_tomorrow_picks",
+            return_value=([], {"strategy_version": config.TOMORROW_STRATEGY_VERSION}),
+        ), patch.object(
+            support,
+            "score_swing_2_5d_picks",
+            return_value=([], {"strategy_version": "swing_v1"}),
+        ), patch.object(config, "ENABLE_DEEPSEEK_MARKET_GATE", False):
+            rows, _, _ = support.build_recommendation_horizons(
+                candidates=candidates,
+                top_n=5,
+                market="all",
+                market_regime={},
+                hot_ranks={},
+                industry_strength={},
+                sentiment_lookup={},
+                cached_metrics_fn=lambda strategy, days: {"sample_count": 0},
+                apply_deepseek=False,
+            )
+
+        self.assertEqual(rows["today_term"][0]["code"], "002371")
+        self.assertIn("long_term_watch", rows)
+        self.assertEqual(rows["long_term_watch"][0]["code"], "002371")
+        self.assertFalse(rows["long_term_watch"][0]["execution_allowed"])
+
     def test_scored_strategy_rows_promotes_expected_return_ranking_after_gate_passes(self):
         class Store:
             def live_weight_samples(self, strategy_name, days=180):
@@ -265,4 +313,3 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
         self.assertEqual(meta["base_display_theme_cap"], 3)
         self.assertEqual(meta["display_theme_cap"], 2)
         self.assertEqual([row["code"] for row in rows], ["000001", "000004", "000002"])
-

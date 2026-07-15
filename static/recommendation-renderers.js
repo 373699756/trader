@@ -152,19 +152,24 @@ window.TraderRecommendationRenderers = {
 
   longTermExplanationTags(row, helpers) {
     const deepseek = row.deepseek_features || {};
-    const profile = row.longTermProfile || {};
+    const profile = row.long_term_profile || row.longTermProfile || {};
     const longTermScore = [];
-    const valueScore = this.finiteNumber(profile.valueScore);
-    const growthScore = this.finiteNumber(profile.growthScore);
-    const supportScore = this.finiteNumber(profile.supportScore);
-    const potentialScore = this.finiteNumber(profile.longTermPotential);
-    if (valueScore != null) longTermScore.push(`价值${Math.round(valueScore * 100)}分`);
-    if (growthScore != null) longTermScore.push(`成长${Math.round(growthScore * 100)}分`);
-    if (supportScore != null) longTermScore.push(`支撑${Math.round(supportScore * 100)}分`);
+    const valueScore = this.finiteNumber(profile.valuation_score ?? profile.valueScore);
+    const leaderScore = this.finiteNumber(profile.leader_score ?? profile.leaderScore);
+    const strategicScore = this.finiteNumber(profile.strategic_score ?? profile.strategicScore);
+    const growthScore = this.finiteNumber(profile.growth_quality_score ?? profile.growthQualityScore ?? profile.growthScore);
+    const potentialScore = this.finiteNumber(profile.long_term_potential ?? profile.longTermPotential);
+    if (valueScore != null) longTermScore.push(`估值${Math.round(valueScore * 100)}分`);
+    if (leaderScore != null) longTermScore.push(`龙头${Math.round(leaderScore * 100)}分`);
+    if (strategicScore != null) longTermScore.push(`战略${Math.round(strategicScore * 100)}分`);
+    if (growthScore != null) longTermScore.push(`成长质量${Math.round(growthScore * 100)}分`);
     if (potentialScore != null) longTermScore.push(`综合${Math.round(potentialScore * 100)}分`);
+    const strategicHits = profile.strategic_hits || profile.strategicHits || [];
 
     const explanationTexts = this.uniqueReasonTexts([
-      longTermScore.length ? `长期评分：${longTermScore.join(" / ")}` : "",
+      longTermScore.length ? `长期观察评分：${longTermScore.join(" / ")}` : "",
+      profile.strategic_segment || profile.strategicSegment ? `产业链：${profile.strategic_segment || profile.strategicSegment}` : "",
+      Array.isArray(strategicHits) && strategicHits.length ? `线索：${strategicHits.slice(0, 4).join("、")}` : "",
       row.reason,
       row.summary,
       row.note,

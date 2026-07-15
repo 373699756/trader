@@ -1,20 +1,38 @@
-import os
+import atexit
 import errno
 import json
+import os
+import signal
 import socket
 import time
-import signal
-import atexit
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, NamedTuple
 
-from stock_analyzer.app import create_app
 from stock_analyzer import config
-
+from stock_analyzer.app import create_app
+from stock_analyzer.server_security import validate_server_bind
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _LOCK_FILE = _PROJECT_ROOT / ".runtime" / "app_server_port.lock"
 _CURRENT_PID = os.getpid()
+
+
+class _ServerProcessPlan(NamedTuple):
+    acquire_port: bool
+    start_runtime: bool
+
+
+def _server_process_plan(
+    use_reloader: bool,
+    environment: Mapping[str, str] | None = None,
+) -> _ServerProcessPlan:
+    environ = os.environ if environment is None else environment
+    is_reloader_child = use_reloader and str(environ.get("WERKZEUG_RUN_MAIN") or "").lower() == "true"
+    return _ServerProcessPlan(
+        acquire_port=not is_reloader_child,
+        start_runtime=not use_reloader or is_reloader_child,
+    )
 
 
 def _is_port_free(host: str, port: int) -> bool:
@@ -29,7 +47,7 @@ def _is_port_free(host: str, port: int) -> bool:
         raise
 
 
-def _load_lock_file() -> Optional[Dict[str, Any]]:
+def _load_lock_file() -> dict[str, Any] | None:
     if not _LOCK_FILE.exists():
         return None
     try:
@@ -231,12 +249,28 @@ if __name__ == "__main__":
     host = os.getenv("HOST") or os.getenv("FLASK_RUN_HOST") or str(config.SERVER_HOST)
     port_raw = os.getenv("PORT") or os.getenv("FLASK_RUN_PORT") or str(config.SERVER_PORT)
     port = int(port_raw)
-    resolved_port = _acquire_port(host, port)
-    atexit.register(_release_lock_file)
+    use_reloader = bool(config.SERVER_DEBUG) and bool(config.SERVER_USE_RELOADER)
+    process_plan = _server_process_plan(use_reloader)
+    validate_server_bind(host)
+    resolved_port = _acquire_port(host, port) if process_plan.acquire_port else port
+    runtime_supervisor = app.extensions["runtime_supervisor"]
+    runtime_started = False
+    if process_plan.acquire_port:
+        atexit.register(_release_lock_file)
+    if process_plan.start_runtime:
+        runtime_started = runtime_supervisor.start()
+        if runtime_started:
+            atexit.register(runtime_supervisor.stop)
 
-    app.run(
-        host=host,
-        port=resolved_port,
-        debug=bool(config.SERVER_DEBUG),
-        use_reloader=bool(config.SERVER_DEBUG) and bool(config.SERVER_USE_RELOADER),
-    )
+    try:
+        app.run(
+            host=host,
+            port=resolved_port,
+            debug=bool(config.SERVER_DEBUG),
+            use_reloader=use_reloader,
+        )
+    finally:
+        if runtime_started:
+            runtime_supervisor.stop()
+        if process_plan.acquire_port:
+            _release_lock_file()

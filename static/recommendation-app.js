@@ -8,273 +8,6 @@
       const RecommendationUtils = window.TraderRecommendationUtils;
       const RecommendationRenderers = window.TraderRecommendationRenderers;
       const RecommendationTables = window.TraderRecommendationTables;
-      const DEFAULT_LONG_TERM_TOP_N = Number((window.APP_CONFIG || {}).defaultTopN || 18);
-      const LONG_TERM_LONG_TERM_SOURCE_ORDER = ["today", "tomorrow"];
-      const LONG_TERM_LONG_HORIZON = {
-        weights: {
-          value: 0.45,
-          growth: 0.35,
-          support: 0.20,
-        },
-        requireChokepoint: true,
-        valueHints: {
-          valueWords: ["低估", "估值", "价值", "低位", "低价", "折价", "便宜"],
-          qualityWords: ["质量", "经营", "现金流", "负债", "ROE", "roe", "毛利", "盈利能力"],
-        },
-        chokepointWords: [
-          "卡脖子",
-          "卡脖子产业",
-          "核心零部件",
-          "关键",
-          "替代",
-          "自主",
-          "国产化",
-          "供应链",
-          "技术突破",
-          "产业链安全",
-        ],
-        growthHints: {
-          growthWords: ["增长", "扩张", "景气", "上升", "复苏", "回暖", "国产替代", "龙头", "业绩"],
-          longCycleWords: ["中长期", "未来", "1-5", "多年", "三五年", "五年"],
-        },
-        supportHints: {
-          supportWords: ["政策", "扶持", "专项", "战略", "受益", "入局", "增持", "基金", "资金", "订单", "上车", "国家"],
-          securityWords: ["卡脖子", "关键", "替代", "自主", "国产化", "供应链", "产业链", "安全"],
-        },
-        thresholds: {
-          predictedFloor: 1.0,
-          riskLimit: 90,
-          potentialFloor: 0.34,
-        },
-      };
-
-      function longTermToNumber(value) {
-        const num = Number(value);
-        return Number.isFinite(num) ? num : null;
-      }
-
-      function longTermNormalize(value, min, max, betterHigher) {
-        if (value == null || min === max) return null;
-        if (betterHigher) {
-          return Math.max(0, Math.min(1, (value - min) / (max - min)));
-        }
-        return Math.max(0, Math.min(1, (max - value) / (max - min)));
-      }
-
-      function longTermTextBag(row) {
-        return [
-          row?.name,
-          row?.industry,
-          row?.theme,
-          row?.sub_theme,
-          row?.reason,
-          ...(Array.isArray(row?.reasons) ? row.reasons : []),
-          row?.deepseek_features?.event_type,
-          row?.deepseek_features?.reason,
-          row?.deepseek_features?.evidence_summary,
-          row?.notes,
-          row?.summary,
-          row?.note,
-        ]
-          .filter((value) => value != null)
-          .map((value) => String(value).toLowerCase())
-          .join(" ");
-      }
-
-      function longTermHasChokepointSignal(row, bagText = "") {
-        const text = (bagText || longTermTextBag(row));
-        return LONG_TERM_LONG_HORIZON.chokepointWords.some((word) => text.includes(String(word).toLowerCase()));
-      }
-
-      function longTermContainsAny(text, words) {
-        return (words || []).some((word) => text.includes(String(word).toLowerCase()));
-      }
-
-      function longTermValuePotential(row, bagText) {
-        const fundamentalValue = longTermToNumber(row.fundamental_value_score);
-        const valueFactor = fundamentalValue == null ? null : longTermNormalize(fundamentalValue, 0, 100, true);
-        const qualityFactor = longTermNormalize(longTermToNumber(row.fundamental_quality_score), 0, 100, true);
-        const pe = longTermToNumber(row.pe_dynamic ?? row.pe);
-        const pb = longTermToNumber(row.pb);
-        const roe = longTermToNumber(row.roe ?? (row.fundamentals && row.fundamentals.roe));
-
-        let score = 0;
-        if (valueFactor != null) score += 0.52 * valueFactor;
-        if (qualityFactor != null) score += 0.2 * qualityFactor;
-        if (pe != null && pe > 0) score += 0.16 * longTermNormalize(pe, 0, 50, false);
-        if (pb != null && pb > 0) score += 0.09 * longTermNormalize(pb, 0.2, 8, false);
-        if (roe != null) score += 0.03 * Math.max(0, Math.min(1, (roe / 30)));
-
-        if (valueFactor == null && qualityFactor == null) {
-          if (longTermContainsAny(bagText, LONG_TERM_LONG_HORIZON.valueHints.valueWords)) score += 0.25;
-          if (longTermContainsAny(bagText, LONG_TERM_LONG_HORIZON.valueHints.qualityWords)) score += 0.1;
-        }
-        return Math.min(1, score);
-      }
-
-      function longTermGrowthPotential(row, bagText) {
-        const revYoy = longTermToNumber(row.revenue_yoy ?? (row.fundamentals && row.fundamentals.revenue_yoy));
-        const profitYoy = longTermToNumber(row.net_profit_yoy ?? (row.fundamentals && row.fundamentals.net_profit_yoy));
-        const revScore = revYoy == null ? null : longTermNormalize(revYoy, -20, 60, true);
-        const profitScore = profitYoy == null ? null : longTermNormalize(profitYoy, -20, 60, true);
-        const ytd = longTermToNumber(row.ytd_pct);
-        const sixty = longTermToNumber(row.sixty_day_pct);
-        const ytdScore = ytd == null ? null : longTermNormalize(ytd, -60, 45, true);
-        const sixtyScore = sixty == null ? null : longTermNormalize(sixty, -30, 30, true);
-        const vol = longTermToNumber(row.volatility_20d);
-        const volScore = vol == null ? null : longTermNormalize(vol, 8, 55, false);
-        const industryGrowth = longTermToNumber(row.industry_revenue_growth);
-
-        let score = 0;
-        if (revScore != null) score += 0.26 * revScore;
-        if (profitScore != null) score += 0.22 * profitScore;
-        if (industryGrowth != null) score += 0.12 * longTermNormalize(industryGrowth, -10, 60, true);
-        if (ytdScore != null) score += 0.18 * ytdScore;
-        if (sixtyScore != null) score += 0.12 * sixtyScore;
-        if (volScore != null) score += 0.1 * volScore;
-
-        if (longTermContainsAny(bagText, LONG_TERM_LONG_HORIZON.growthHints.growthWords)) score += 0.15;
-        if (longTermContainsAny(bagText, LONG_TERM_LONG_HORIZON.growthHints.longCycleWords)) score += 0.08;
-        return Math.min(1, score);
-      }
-
-      function longTermSupportPotential(row, bagText) {
-        const themeScore = longTermNormalize(longTermToNumber(row.theme_score), 0, 100, true);
-        const industryScore = longTermNormalize(longTermToNumber(row.industry_score), 0, 100, true);
-        let score = 0;
-
-        if (themeScore != null) score += 0.28 * themeScore;
-        if (industryScore != null) score += 0.22 * industryScore;
-
-        if (longTermContainsAny(bagText, LONG_TERM_LONG_HORIZON.supportHints.supportWords)) score += 0.28;
-        if (longTermContainsAny(bagText, LONG_TERM_LONG_HORIZON.supportHints.securityWords)) score += 0.22;
-        return Math.min(1, score);
-      }
-
-      function longTermLongTermPotentialScore(row) {
-        const bagText = longTermTextBag(row);
-        const value = longTermValuePotential(row, bagText);
-        const growth = longTermGrowthPotential(row, bagText);
-        const support = longTermSupportPotential(row, bagText);
-        const longTermPotential = value * LONG_TERM_LONG_HORIZON.weights.value
-          + growth * LONG_TERM_LONG_HORIZON.weights.growth
-          + support * LONG_TERM_LONG_HORIZON.weights.support;
-        return {
-          bagText,
-          valueScore: Math.round(value * 1000) / 1000,
-          growthScore: Math.round(growth * 1000) / 1000,
-          supportScore: Math.round(support * 1000) / 1000,
-          longTermPotential: Math.round(longTermPotential * 1000) / 1000,
-        };
-      }
-
-      function normalizeRowsForLongTerm(rows) {
-        const safeRows = Array.isArray(rows) ? rows : [];
-        const seen = new Map();
-        for (const row of safeRows) {
-          const code = String(row?.code || "").trim();
-          if (!code) continue;
-          const current = seen.get(code);
-          if (!current) {
-            seen.set(code, row);
-            continue;
-          }
-          const currentPred = Number(current?.predicted_net_return ?? current?.expected_return_net);
-          const nextPred = Number(row?.predicted_net_return ?? row?.expected_return_net);
-          if (!Number.isFinite(nextPred) || (Number.isFinite(currentPred) && nextPred <= currentPred)) continue;
-          seen.set(code, row);
-        }
-        return Array.from(seen.values());
-      }
-
-      function longTermSeedRowsFromRecommendations({ shortTerm = [], tomorrow = [], swing = [] }) {
-        const rows = [];
-        for (const sourceName of LONG_TERM_LONG_TERM_SOURCE_ORDER) {
-          const sourceRows = sourceName === "today"
-            ? shortTerm
-            : tomorrow;
-          if (!Array.isArray(sourceRows)) continue;
-          rows.push(...sourceRows);
-        }
-        return normalizeRowsForLongTerm(rows);
-      }
-
-      function longTermCandidateRows(rows) {
-        const candidates = Array.isArray(rows) ? rows : [];
-        const scored = candidates
-          .map(row => {
-            const predicted = Number(row.predicted_net_return ?? row.expected_return_net);
-            const longTermPotential = longTermLongTermPotentialScore(row);
-            const hasChokepoint = longTermHasChokepointSignal(row, longTermPotential.bagText || "");
-            const stableRisk = Number(row.sell_risk?.score ?? row.serenity_profile?.risk_score ?? row.avg_risk ?? 100);
-            const todayPct = Number(row.pct_chg ?? 0);
-            const longTermProfile = {
-              valueScore: longTermPotential.valueScore,
-              growthScore: longTermPotential.growthScore,
-              supportScore: longTermPotential.supportScore,
-              longTermPotential: longTermPotential.longTermPotential,
-            };
-            return {
-              row: {
-                ...row,
-                longTermProfile,
-              },
-              predicted: Number.isFinite(predicted) ? predicted : Number.NEGATIVE_INFINITY,
-              todayPct,
-              stableRisk,
-              hasChokepoint,
-              longTermPotential: longTermPotential.longTermPotential,
-              valueScore: longTermPotential.valueScore,
-              growthScore: longTermPotential.growthScore,
-              supportScore: longTermPotential.supportScore,
-            };
-          })
-          .filter(item => item.longTermPotential >= LONG_TERM_LONG_HORIZON.thresholds.potentialFloor
-            && item.stableRisk <= LONG_TERM_LONG_HORIZON.thresholds.riskLimit
-            && item.predicted >= LONG_TERM_LONG_HORIZON.thresholds.predictedFloor
-            && (!LONG_TERM_LONG_HORIZON.requireChokepoint || item.hasChokepoint))
-          .sort((left, right) => {
-            if (right.longTermPotential !== left.longTermPotential) return right.longTermPotential - left.longTermPotential;
-            if (right.predicted !== left.predicted) return right.predicted - left.predicted;
-            if (right.todayPct !== left.todayPct) return right.todayPct - left.todayPct;
-            return left.stableRisk - right.stableRisk;
-          });
-
-        if (scored.length) {
-          return scored.slice(0, DEFAULT_LONG_TERM_TOP_N).map(item => item.row);
-        }
-
-        return candidates
-          .map(row => {
-            const predicted = Number(row.predicted_net_return ?? row.expected_return_net);
-            const longTermPotential = longTermLongTermPotentialScore(row);
-            const hasChokepoint = longTermHasChokepointSignal(row, longTermPotential.bagText || "");
-            const todayPct = Number(row.pct_chg ?? 0);
-            const longTermProfile = {
-              valueScore: longTermPotential.valueScore,
-              growthScore: longTermPotential.growthScore,
-              supportScore: longTermPotential.supportScore,
-              longTermPotential: longTermPotential.longTermPotential,
-            };
-            return {
-              row: {
-                ...row,
-                longTermProfile,
-              },
-              predicted: Number.isFinite(predicted) ? predicted : Number.NEGATIVE_INFINITY,
-              hasChokepoint,
-              todayPct,
-              longTermPotential: longTermPotential.longTermPotential,
-            };
-          })
-          .filter(item => (!LONG_TERM_LONG_HORIZON.requireChokepoint || item.hasChokepoint))
-          .sort((left, right) => {
-            if (right.predicted !== left.predicted) return right.predicted - left.predicted;
-            return right.todayPct - left.todayPct;
-          })
-          .slice(0, DEFAULT_LONG_TERM_TOP_N)
-          .map(item => item.row);
-      }
 
       function payloadMarketTimestamp(payload) {
         const values = [
@@ -325,13 +58,8 @@
         const hasSwing = Object.prototype.hasOwnProperty.call(recommendations, "swing_picks");
         const tomorrow = hasTomorrow ? (recommendations.tomorrow_picks || []) : state.lastRows.tomorrow;
         const swing = hasSwing ? (recommendations.swing_picks || []) : state.lastRows.swing;
-        const canBuildLongTermPool = hasToday || hasTomorrow || hasSwing || Object.prototype.hasOwnProperty.call(payload, "data");
-        const longTermSeedRows = canBuildLongTermPool ? longTermSeedRowsFromRecommendations({
-          shortTerm: shortTerm,
-          tomorrow: tomorrow,
-          swing: swing,
-        }) : [];
-        const swingLongTerm = canBuildLongTermPool ? longTermCandidateRows(longTermSeedRows) : state.lastRows.swingLongTerm || [];
+        const hasLongTerm = Object.prototype.hasOwnProperty.call(recommendations, "long_term_watch");
+        const swingLongTerm = hasLongTerm ? (recommendations.long_term_watch || []) : state.lastRows.swingLongTerm || [];
         const marketRegime = payload.meta?.market_regime || {};
         const shouldRenderTables = rememberFingerprint("recommendations", {
           shortTerm,
@@ -593,17 +321,10 @@
             const swingRows = swingPayload.data || [];
             const shouldRenderSwing = rememberFingerprint("swing", swingRows);
             state.lastRows.swing = swingRows;
-            const longTermSeedRows = longTermSeedRowsFromRecommendations({
-              shortTerm: state.lastRows.shortTerm || [],
-              tomorrow: state.lastRows.tomorrow || [],
-              swing: swingRows,
-            });
-            state.lastRows.swingLongTerm = longTermCandidateRows(longTermSeedRows);
             if (marketTimestamp) state.recommendationDataTimestamp = marketTimestamp;
             renderMetrics({ health: swingPayload.health, meta: swingPayload.meta, market_sentiment: {} });
             if (shouldRenderSwing) {
               renderSwingTable(state.lastRows.swing);
-              renderSwingLongTermTable(state.lastRows.swingLongTerm);
             }
             if (!background) {
             setStatus(`2-5日更新时间 ${swingPayload.meta?.as_of || swingPayload.meta?.generated_at || "最近快照"}${snapshotPhaseLabel(swingPayload) ? ` · ${snapshotPhaseLabel(swingPayload)}` : ""}`);
@@ -650,6 +371,11 @@
 
       function renderShortTermTable(rows) {
         const rawRows = Array.isArray(rows) ? rows : [];
+        const executableRows = rawRows.filter(row => RecommendationUtils.isExecutableActionRow(row));
+        if (rawRows.length && !executableRows.length) {
+          els.shortTermBody.innerHTML = '<tr><td colspan="10" class="empty">暂无可执行推荐，当前仅有观察备选</td></tr>';
+          return;
+        }
         // Short-term recommendations now include observation rows for today strategy visibility.
         const displayRows = RecommendationUtils.filterAndSortRows(rawRows, {
           actionFilter: DEFAULT_ACTION_FILTER,
@@ -658,7 +384,7 @@
         if (!displayRows.length) {
           let emptyText = "暂无符合条件的股票";
           if (rawRows.length) {
-            emptyText = "暂无符合筛选条件，当前策略可能为观察备选";
+            emptyText = "暂无可执行推荐，当前仅有观察备选";
           }
           els.shortTermBody.innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(emptyText)}</td></tr>`;
           return;

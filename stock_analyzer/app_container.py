@@ -1,33 +1,50 @@
 import copy
-import logging
-import os
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import datetime
 from typing import Dict
 
 from . import config
 from .candidate_pipeline import CandidatePipeline
 from .providers import MarketDataProvider, TimedCache
-from .recommendation_snapshot import load_recommendation_snapshot, save_recommendation_snapshot
-from .recommendation_freeze import recommendation_is_frozen
 from .realtime_schedule import realtime_refresh_profile
+from .recommendation_freeze import recommendation_is_frozen
+from .snapshot_writer import AsyncSnapshotWriter
 from .stability import TopKDropoutTracker
 from .strategy_validation import StrategyValidationStore
 from .tomorrow_iteration import TomorrowIterationService
 from .validation_cache import ValidationMetricsCache
 
-_LOGGER = logging.getLogger(__name__)
-
 
 class RealtimeMarketScheduler:
     """Single in-process owner for full-market and targeted quote refresh cadence."""
 
-    def __init__(self, container) -> None:
-        self.container = container
+    def __init__(
+        self,
+        *,
+        refresh_quote_groups: Callable[[Dict[str, object]], object],
+        refresh_full_market: Callable[[bool], bool],
+        quote_refresh_status: Callable[[], Dict[str, object]],
+        clear_quotes_cache: Callable[[], None],
+        clear_recommendation_cache: Callable[[], None],
+        clear_horizon_cache: Callable[[], None],
+        is_frozen: Callable[[], bool] = recommendation_is_frozen,
+        thread_factory: Callable[..., threading.Thread] | None = None,
+    ) -> None:
+        self._refresh_quote_groups = refresh_quote_groups
+        self._refresh_full_market = refresh_full_market
+        self._quote_refresh_status = quote_refresh_status
+        self._clear_quotes_cache = clear_quotes_cache
+        self._clear_recommendation_cache = clear_recommendation_cache
+        self._clear_horizon_cache = clear_horizon_cache
+        self._is_frozen = is_frozen
+        self._thread_factory = thread_factory or threading.Thread
         self._lock = threading.Lock()
         self._started = False
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
         self._last_full_started = 0.0
         self._last_full_success = ""
         self._final_full_date = ""
@@ -35,32 +52,53 @@ class RealtimeMarketScheduler:
 
     def start(self) -> bool:
         with self._lock:
-            if self._started:
+            if self._thread is not None and self._thread.is_alive():
                 return False
+            self._stop_event.clear()
             self._started = True
-        threading.Thread(target=self._run, name="realtime-market-scheduler", daemon=True).start()
+            try:
+                thread = self._thread_factory(target=self._run, name="realtime-market-scheduler", daemon=True)
+                self._thread = thread
+                thread.start()
+            except Exception:
+                self._started = False
+                self._thread = None
+                self._stop_event.set()
+                raise
         return True
+
+    def stop(self, timeout_seconds: float = 5.0) -> None:
+        self._stop_event.set()
+        with self._lock:
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(max(0.0, timeout_seconds))
+        with self._lock:
+            if thread is None or not thread.is_alive():
+                self._started = False
+                self._thread = None
 
     def status(self) -> Dict[str, object]:
         with self._lock:
             return {
                 "started": self._started,
+                "running": bool(self._thread is not None and self._thread.is_alive()),
                 "profile": dict(self._profile),
                 "last_full_success": self._last_full_success,
                 "final_full_date": self._final_full_date,
             }
 
     def _run(self) -> None:
-        while True:
+        while not self._stop_event.is_set():
             now = datetime.now()
             profile = realtime_refresh_profile(now)
             with self._lock:
                 self._profile = dict(profile)
             if profile.get("active"):
-                self.container.candidate_pipeline.refresh_recommendation_quote_groups(profile)
+                self._refresh_quote_groups(profile)
                 self._schedule_full_market_refresh(profile, now)
             self._accept_completed_full_refresh()
-            time.sleep(1.0)
+            self._stop_event.wait(1.0)
 
     def _schedule_full_market_refresh(self, profile, now: datetime) -> None:
         interval = profile.get("full_market_seconds")
@@ -73,133 +111,22 @@ class RealtimeMarketScheduler:
             due = True
         if not due:
             return
-        started = self.container.provider.refresh_realtime_quotes_async(force=True)
+        started = self._refresh_full_market(True)
         if started:
             self._last_full_started = time.monotonic()
             if force_final:
                 self._final_full_date = current_date
 
     def _accept_completed_full_refresh(self) -> None:
-        status = self.container.provider.quote_refresh_status()
+        status = self._quote_refresh_status()
         success = str(status.get("last_success_at") or "")
         if not success or success == self._last_full_success:
             return
         self._last_full_success = success
-        self.container.quotes_cache.clear()
-        if not recommendation_is_frozen():
-            self.container.recommendation_cache.clear()
-            self.container.horizon_cache.clear()
-
-
-class AsyncSnapshotWriter:
-    """Coalesces recommendation snapshot writes onto one background worker."""
-
-    def __init__(self, path: str) -> None:
-        self.path = path
-        self._lock = threading.Lock()
-        self._running = False
-        self._payload: Dict[str, object] | None = None
-        self._success_count = 0
-        self._failure_count = 0
-        self._last_success_ts = 0.0
-        self._last_failure_ts = 0.0
-        self._last_error = ""
-        self._last_duration_ms = 0.0
-        self._last_payload_size = 0
-
-    def schedule(self, payload: Dict[str, object]) -> None:
-        if recommendation_is_frozen():
-            if not self._should_write_frozen_snapshot(payload):
-                return
-        payload_size = self._estimate_payload_size(payload)
-        with self._lock:
-            if payload_size > 0:
-                self._last_payload_size = max(self._last_payload_size, payload_size)
-            self._payload = payload
-            if self._running:
-                return
-            self._running = True
-        worker = threading.Thread(
-            target=self._worker,
-            name="recommendation-snapshot-save",
-            daemon=True,
-        )
-        worker.start()
-
-    def _worker(self) -> None:
-        while True:
-            with self._lock:
-                payload = self._payload
-                self._payload = None
-                if payload is None:
-                    self._running = False
-                    return
-            try:
-                start = time.perf_counter()
-                save_recommendation_snapshot(self.path, payload)
-                elapsed_ms = max(0.0, (time.perf_counter() - start) * 1000.0)
-                with self._lock:
-                    self._success_count += 1
-                    self._last_success_ts = time.time()
-                    self._last_error = ""
-                    self._last_duration_ms = elapsed_ms
-            except Exception as exc:
-                _LOGGER.exception("推荐快照写入失败: %s", exc)
-                with self._lock:
-                    self._failure_count += 1
-                    self._last_failure_ts = time.time()
-                    self._last_error = str(exc)
-
-    def _should_write_frozen_snapshot(self, payload: Dict[str, object]) -> bool:
-        try:
-            if not os.path.exists(self.path):
-                return True
-            meta = payload.get("meta") if isinstance(payload, dict) else None
-            if not isinstance(meta, dict):
-                meta = {}
-            expected_market = str(meta.get("market_filter") or "")
-            expected_top_n = int(meta.get("top_n") or 0)
-            max_age_seconds = int(getattr(config, "RECOMMENDATION_SNAPSHOT_MAX_AGE_SECONDS", 300) or 0)
-            snapshot = load_recommendation_snapshot(
-                self.path,
-                max_age_seconds=max_age_seconds,
-                expected_market=expected_market,
-                expected_top_n=expected_top_n,
-            )
-            return not bool(snapshot.get("ok"))
-        except Exception as exc:
-            # If the frozen cache check fails, allow one write attempt to recover.
-            _LOGGER.warning("冷启动快照检查失败，改为允许落盘: %s", exc)
-            return True
-
-    def stats(self) -> Dict[str, object]:
-        with self._lock:
-            return {
-                "running": self._running,
-                "pending": self._payload is not None,
-                "success_count": int(self._success_count),
-                "failure_count": int(self._failure_count),
-                "last_success_at": (
-                    datetime.fromtimestamp(self._last_success_ts).isoformat(timespec="seconds")
-                    if self._last_success_ts
-                    else ""
-                ),
-                "last_failure_at": (
-                    datetime.fromtimestamp(self._last_failure_ts).isoformat(timespec="seconds")
-                    if self._last_failure_ts
-                    else ""
-                ),
-                "last_error": str(self._last_error),
-                "last_duration_ms": float(self._last_duration_ms),
-                "last_payload_size": int(self._last_payload_size),
-            }
-
-    @staticmethod
-    def _estimate_payload_size(payload: Dict[str, object]) -> int:
-        try:
-            return len(str(payload))
-        except Exception:
-            return 0
+        self._clear_quotes_cache()
+        if not self._is_frozen():
+            self._clear_recommendation_cache()
+            self._clear_horizon_cache()
 
 
 class PayloadCache:
@@ -415,7 +342,14 @@ class ApplicationContainer:
         self.validation_cache = ValidationMetricsCache(self.validation_store)
         self.snapshot_writer = AsyncSnapshotWriter(config.RECOMMENDATION_SNAPSHOT_PATH)
         self.candidate_pipeline = CandidatePipeline(self.provider, self)
-        self.realtime_scheduler = RealtimeMarketScheduler(self)
+        self.realtime_scheduler = RealtimeMarketScheduler(
+            refresh_quote_groups=self.candidate_pipeline.refresh_recommendation_quote_groups,
+            refresh_full_market=self.provider.refresh_realtime_quotes_async,
+            quote_refresh_status=self.provider.quote_refresh_status,
+            clear_quotes_cache=self.quotes_cache.clear,
+            clear_recommendation_cache=self.recommendation_cache.clear,
+            clear_horizon_cache=self.horizon_cache.clear,
+        )
         self.tomorrow_iteration = TomorrowIterationService()
 
     def cached_metrics(self, strategy_name: str, days: int):

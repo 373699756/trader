@@ -10,6 +10,13 @@ from .. import config
 from ..normalization import coerce_number
 from ..scoring_core import ExplanationBuilder, FeatureBuilder, RankingPolicy, RiskPolicy
 from ..scoring_core import theme_limits, today_score
+from .today_policies import (
+    IndustryDiversificationPolicy,
+    TodayBackupThresholdPolicy,
+    TodayExecutionWindowPolicy,
+    collect_regime_aliases,
+    normalize_regime_aliases,
+)
 
 
 class TodayScorer:
@@ -28,7 +35,10 @@ class TodayScorer:
         self.ranking_policy = ranking_policy or RankingPolicy()
         self.explanation_builder = explanation_builder or ExplanationBuilder()
         self.scoring_context = MappingProxyType(dict(scoring_context or {}))
-        self._backup_threshold_plan = self._load_backup_threshold_plan()
+        self.execution_window_policy = TodayExecutionWindowPolicy()
+        self.backup_threshold_policy = TodayBackupThresholdPolicy()
+        self.industry_diversification_policy = IndustryDiversificationPolicy(self._industry_key)
+        self._backup_threshold_plan = self.backup_threshold_policy.plan
 
     @staticmethod
     def _to_lower(value: object) -> str:
@@ -36,21 +46,11 @@ class TodayScorer:
 
     @staticmethod
     def _normalize_regime_aliases(regime: object) -> List[str]:
-        if not isinstance(regime, str):
-            return []
-        normalized = TodayScorer._to_lower(regime)
-        return [item for item in dict.fromkeys([normalized, normalized.replace("_", "-"), normalized.replace("-", "_")]) if item]
+        return normalize_regime_aliases(regime)
 
     @staticmethod
     def _collect_aliases(value: object) -> List[str]:
-        if isinstance(value, str):
-            return TodayScorer._normalize_regime_aliases(value)
-        if isinstance(value, (list, tuple, set)):
-            aliases: List[str] = []
-            for item in value:
-                aliases.extend(TodayScorer._normalize_regime_aliases(item))
-            return list(dict.fromkeys(aliases))
-        return []
+        return collect_regime_aliases(value)
 
     def _theme_key(self, row: Dict[str, object]) -> str:
         return self._to_lower(theme_limits._tomorrow_theme_key(row))
@@ -59,11 +59,7 @@ class TodayScorer:
         return self._to_lower(row.get("industry") or "")
 
     def _industry_distribution(self, rows: List[Dict[str, object]]) -> Dict[str, int]:
-        distribution: Dict[str, int] = {}
-        for row in rows:
-            key = self._industry_key(row)
-            distribution[key] = distribution.get(key, 0) + 1
-        return distribution
+        return self.industry_diversification_policy.distribution(rows)
 
     def _apply_industry_cap(
         self,
@@ -71,27 +67,7 @@ class TodayScorer:
         limit: int,
         cap: int,
     ) -> Tuple[List[Dict[str, object]], Dict[str, int], int]:
-        display_limit = max(0, int(limit or 0))
-        cap_value = int(cap or 0)
-        if display_limit <= 0:
-            return [], {}, 0
-        if cap_value <= 0:
-            selected = list(rows)[:display_limit]
-            return selected, self._industry_distribution(selected), 0
-
-        selected: List[Dict[str, object]] = []
-        industry_counts: Dict[str, int] = {}
-        industry_limited_count = 0
-        for row in rows:
-            if len(selected) >= display_limit:
-                break
-            key = self._industry_key(row)
-            if industry_counts.get(key, 0) >= cap_value:
-                industry_limited_count += 1
-                continue
-            selected.append(row)
-            industry_counts[key] = industry_counts.get(key, 0) + 1
-        return selected, industry_counts, industry_limited_count
+        return self.industry_diversification_policy.select(rows, limit=limit, cap=cap)
 
     @staticmethod
     def _parse_hhmm(value: object) -> Tuple[int, int] | None:
@@ -140,99 +116,10 @@ class TodayScorer:
         )
 
     def _execution_window_state(self, now: datetime) -> Tuple[bool, str, str, str]:
-        start = self._parse_hhmm(getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_START", "09:30"))
-        end = self._parse_hhmm(getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_END", "14:00"))
-        start_label = str(getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_START", "09:30"))
-        end_label = str(getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_END", "14:00"))
-        if start is None or end is None:
-            return (
-                True,
-                "immediate",
-                "immediate",
-                "执行窗口配置异常，按可执行口径兜底。",
-            )
-        now_time = now.time().replace(second=0, microsecond=0)
-        start_time = now.replace(hour=start[0], minute=start[1], second=0, microsecond=0).time()
-        end_time = now.replace(hour=end[0], minute=end[1], second=0, microsecond=0).time()
-        if now_time < start_time:
-            return (
-                False,
-                "backup_only",
-                "backup_only",
-                f"{start_label}前先观察，{start_label}-{end_label}期间可执行。",
-            )
-        if now_time <= end_time:
-            return True, "immediate", "immediate", f"{start_label}-{end_label}窗口内可执行。"
-        return False, "backup_only", "backup_only", f"{end_label}后仅观察。"
+        return self.execution_window_policy.state(now)
 
     def _load_backup_threshold_plan(self) -> Dict[str, object]:
-        raw = getattr(config, "TODAY_BACKUP_MIN_SCORE", 45.0)
-        base = coerce_number(raw if not isinstance(raw, dict) else raw.get("base"), 45.0)
-        if not isinstance(raw, dict):
-            return {
-                "base": base,
-                "by_regime": {},
-                "experiments": [],
-                "dynamic": {
-                    "volatility_20d": {
-                        "high_threshold": 12.0,
-                        "high_delta": 3.0,
-                        "low_threshold": 6.0,
-                        "low_delta": -1.0,
-                    },
-                    "turnover_rate": {
-                        "high_threshold": 18.0,
-                        "high_delta": 2.0,
-                        "mid_threshold": 10.0,
-                        "mid_delta": 1.0,
-                        "low_threshold": 5.0,
-                        "low_delta": -0.5,
-                    },
-                    "order_imbalance": {
-                        "high_threshold": 8.0,
-                        "high_delta": 2.0,
-                        "mid_threshold": 4.0,
-                        "mid_delta": 1.0,
-                    },
-                },
-            }
-        profile = dict(raw or {})
-        by_regime = profile.get("by_regime")
-        if not isinstance(by_regime, dict):
-            by_regime = {}
-        dynamic = profile.get("dynamic")
-        if not isinstance(dynamic, dict):
-            dynamic = {}
-        experiments = profile.get("experiments")
-        if not isinstance(experiments, list):
-            fallback = getattr(config, "TODAY_BACKUP_MIN_SCORE_EXPERIMENTS", None)
-            experiments = fallback if isinstance(fallback, list) else []
-
-        normalized_experiments: List[Dict[str, object]] = []
-        for exp in experiments:
-            if not isinstance(exp, dict):
-                continue
-            exp_regimes = exp.get("regime")
-            if exp_regimes is None:
-                exp_regimes = exp.get("regimes")
-            if exp_regimes is None:
-                exp_regimes = exp.get("market_regime")
-            if exp_regimes is None:
-                exp_regimes = exp.get("market_regimes")
-            normalized_experiments.append(
-                {
-                    "name": str(exp.get("name") or exp.get("id") or "experiment"),
-                    "base": coerce_number(exp.get("base"), base),
-                    "dynamic": exp.get("dynamic") if isinstance(exp.get("dynamic"), dict) else dynamic,
-                    "regime_aliases": self._collect_aliases(exp_regimes),
-                }
-            )
-        return {
-            "base": coerce_number(profile.get("base"), base),
-            "by_regime": by_regime,
-            "experiments": normalized_experiments,
-            "dynamic": dynamic,
-        }
+        return self.backup_threshold_policy.plan
 
     def _regime_key(self, market_regime: Dict[str, object]) -> str:
         return self._to_lower(
@@ -243,54 +130,7 @@ class TodayScorer:
         )
 
     def _resolve_backup_threshold_profile(self, market_regime: Dict[str, object]) -> Dict[str, object]:
-        plan = self._backup_threshold_plan
-        base = coerce_number(plan.get("base"), 45.0)
-        dynamic = plan.get("dynamic")
-        if not isinstance(dynamic, dict):
-            dynamic = {}
-        source = "base"
-        used_experiment = False
-
-        key = self._regime_key(market_regime)
-        experiments = plan.get("experiments")
-        if isinstance(experiments, list):
-            aliases = set(self._normalize_regime_aliases(key))
-            for experiment in experiments:
-                if not aliases:
-                    continue
-                exp_aliases = experiment.get("regime_aliases")
-                if isinstance(exp_aliases, list) and aliases.intersection(exp_aliases):
-                    base = coerce_number(experiment.get("base"), base)
-                    exp_dynamic = experiment.get("dynamic")
-                    if isinstance(exp_dynamic, dict):
-                        dynamic = exp_dynamic
-                    source = str(experiment.get("name") or "experiment")
-                    used_experiment = True
-                    break
-
-        by_regime = plan.get("by_regime")
-        if not used_experiment and isinstance(by_regime, dict):
-            if key:
-                regime_aliases = set(self._normalize_regime_aliases(key))
-                found_regime_base = None
-                for alias in regime_aliases:
-                    if alias in by_regime:
-                        found_regime_base = coerce_number(by_regime.get(alias))
-                        break
-                if found_regime_base is None and "balanced" in by_regime:
-                    found_regime_base = coerce_number(by_regime.get("balanced"))
-                if found_regime_base is not None:
-                    base = found_regime_base
-                    source = "by_regime"
-                if base < 0:
-                    base = coerce_number(plan.get("base"), 45.0)
-                    source = "base"
-
-        return {
-            "base": base,
-            "dynamic": dynamic,
-            "source": source,
-        }
+        return self.backup_threshold_policy.resolve(market_regime)
 
     def _rule_adjustment(self, value: float, cfg: Dict[str, object], *, use_abs: bool = False) -> float:
         if use_abs:
@@ -316,21 +156,7 @@ class TodayScorer:
         backup_profile: Dict[str, object],
         min_score: float,
     ) -> float:
-        dynamic = backup_profile.get("dynamic")
-        if not isinstance(dynamic, dict):
-            dynamic = {}
-        threshold = coerce_number(backup_profile.get("base"), 45.0)
-        threshold += self._rule_adjustment(coerce_number(row.get("volatility_20d")), dynamic.get("volatility_20d"))
-        threshold += self._rule_adjustment(coerce_number(row.get("turnover_rate")), dynamic.get("turnover_rate"))
-        threshold += self._rule_adjustment(
-            coerce_number(row.get("order_imbalance")),
-            dynamic.get("order_imbalance"),
-            use_abs=True,
-        )
-        threshold = max(0.0, min(100.0, threshold))
-        if threshold >= min_score:
-            threshold = max(0.0, min_score - 0.1)
-        return round(threshold, 2)
+        return self.backup_threshold_policy.row_min_score(row, backup_profile, min_score)
 
     def _ctx(self, name: str, default):
         return self.scoring_context.get(name, default)

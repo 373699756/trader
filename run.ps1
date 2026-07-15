@@ -393,20 +393,31 @@ function Install-Dependencies {
     }
 
     Write-Host "安装/更新依赖..."
-    Invoke-Native $Script:VenvPython (@("-m", "pip", "install") + $pipArgs + @("--upgrade", "pip"))
-    Invoke-Native $Script:VenvPython (@("-m", "pip", "install") + $pipArgs + @("--upgrade", "setuptools", "wheel"))
-
-    if (Invoke-NativeOk $Script:VenvPython (@("-m", "pip", "install") + $pipArgs + @("--prefer-binary", "-r", "requirements.txt"))) {
+    if (Invoke-NativeOk $Script:VenvPython (@("-m", "pip", "install") + $pipArgs + @("--prefer-binary", "-r", "requirements/runtime.txt"))) {
+        Write-DependencyFingerprint
         return
     }
 
     Write-Host "首次安装失败，重试一次：关闭构建隔离后再次安装（适配 Python 3.14）。"
-    if (Invoke-NativeOk $Script:VenvPython (@("-m", "pip", "install") + $pipArgs + @("--no-build-isolation", "--prefer-binary", "-r", "requirements.txt"))) {
+    if (Invoke-NativeOk $Script:VenvPython (@("-m", "pip", "install") + $pipArgs + @("--no-build-isolation", "--prefer-binary", "-r", "requirements/runtime.txt"))) {
+        Write-DependencyFingerprint
         return
     }
 
     Write-Host "再次失败，尝试允许写入受限环境（外部管理环境兼容）。"
-    Invoke-Native $Script:VenvPython (@("-m", "pip", "install") + $pipArgs + @("--break-system-packages", "--no-build-isolation", "--prefer-binary", "-r", "requirements.txt"))
+    Invoke-Native $Script:VenvPython (@("-m", "pip", "install") + $pipArgs + @("--break-system-packages", "--no-build-isolation", "--prefer-binary", "-r", "requirements/runtime.txt"))
+    Write-DependencyFingerprint
+}
+
+function Write-DependencyFingerprint {
+    Invoke-Native $Script:VenvPython (@("scripts/dependency_fingerprint.py", "write", "--root", $RootDir))
+}
+
+function Test-DependenciesReady {
+    if (-not (Invoke-NativeOk $Script:VenvPython (@("scripts/dependency_fingerprint.py", "check", "--root", $RootDir)))) {
+        return $false
+    }
+    return (Invoke-NativeOk $Script:VenvPython (@("-m", "pip", "check")))
 }
 
 try {
@@ -444,7 +455,7 @@ try {
     $Script:VenvPython = Join-Path $Script:VenvDir $venvPythonRelative
     $Script:ListenHost = Get-EnvValue "HOST" "127.0.0.1"
     $Script:Port = Get-EnvValue "PORT" "5000"
-    $Script:PythonMinMinor = [int](Get-EnvValue "PYTHON_MIN_MINOR" "9")
+    $Script:PythonMinMinor = [int](Get-EnvValue "PYTHON_MIN_MINOR" "10")
     $Script:PythonMaxMinor = [int](Get-EnvValue "PYTHON_MAX_MINOR" "14")
     $Script:ProxyMode = Get-EnvValue "PROXY_MODE" "auto"
     $Script:ProxyScheme = Get-EnvValue "PROXY_SCHEME" "http"
@@ -459,11 +470,11 @@ try {
     Show-ProxyEnv
     Write-Host ""
 
-    $venvAlreadyReady = Test-Path $Script:VenvPython
     Ensure-Venv
 
-    if (($RunMode -eq "after-close" -or $RunMode -eq "daily-job") -and $venvAlreadyReady -and (Get-EnvValue "AFTER_CLOSE_INSTALL_DEPS" "0") -ne "1") {
-        Write-Host "盘后模式: 已检测到虚拟环境，跳过依赖安装检查。"
+    $forceInstall = Get-EnvValue "FORCE_INSTALL_DEPS" (Get-EnvValue "AFTER_CLOSE_INSTALL_DEPS" "0")
+    if ((Test-DependenciesReady) -and $forceInstall -ne "1") {
+        Write-Host "依赖声明和 Python 环境未变化，跳过联网安装。"
     } else {
         Check-InternetConnectivity
         Install-Dependencies
@@ -475,24 +486,18 @@ try {
     $env:FLASK_RUN_PORT = $Script:Port
 
     if ($RunMode -eq "after-close" -or $RunMode -eq "daily-job") {
-        if ([string]::IsNullOrWhiteSpace((Get-EnvValue "ENABLE_HISTORY_FACTORS" ""))) {
-            $env:ENABLE_HISTORY_FACTORS = "1"
-        }
         Write-Host ""
         Write-Host "运行盘后流水线: market_data --download -> daily_job update/factors"
-        Write-Host "历史因子: ENABLE_HISTORY_FACTORS=$env:ENABLE_HISTORY_FACTORS"
+        Write-Host "历史因子与策略开关使用 config/runtime.json 中的冻结基线。"
         Write-Host ""
         $dailyJobArgs = @("-m", "stock_analyzer.daily_job", "--after-close") + @($RunArgs)
         & $Script:VenvPython @dailyJobArgs
         exit $LASTEXITCODE
     }
 
-    if ([string]::IsNullOrWhiteSpace((Get-EnvValue "ENABLE_HISTORY_FACTORS" ""))) {
-        $env:ENABLE_HISTORY_FACTORS = "1"
-    }
     Write-Host ""
     Write-Host "启动看板: http://$($Script:ListenHost):$($Script:Port)"
-    Write-Host "历史因子: ENABLE_HISTORY_FACTORS=$env:ENABLE_HISTORY_FACTORS（可显式设为 0 关闭）"
+    Write-Host "历史因子与策略开关使用 config/runtime.json 中的冻结基线。"
     Write-Host "按 Ctrl+C 停止。"
     Write-Host ""
 

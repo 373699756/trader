@@ -1,13 +1,10 @@
 import math
 import re
 import copy
-import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -17,255 +14,55 @@ from . import config
 from .daily_data import load_execution_history_frames, load_history_frames
 from .history_cache import HistoryCache
 from .normalization import normalize_code, rename_known_columns
-from .runtime_json import atomic_write_text
-
-_LOGGER = logging.getLogger(__name__)
-
-
-@dataclass
-class ProviderStatus:
-    quotes_source: str = "unavailable"
-    sentiment_source: str = "unavailable"
-    last_quote_refresh: Optional[str] = None
-    last_sentiment_refresh: Optional[str] = None
-    last_quote_latency_ms: Optional[float] = None
-    quote_fetch_count: int = 0
-    quote_fetch_success_count: int = 0
-    quote_fetch_error_count: int = 0
-    quote_last_error: str = ""
-    errors: List[str] = field(default_factory=list)
+from .realtime_quotes import ProviderStatus, QuoteFetchers, RealtimeQuoteProvider
 
 
 class MarketDataProvider:
     def __init__(self, web_nonblocking: bool = False) -> None:
-        self.status = ProviderStatus()
-        self._web_nonblocking = bool(web_nonblocking)
         self._akshare = None
         self._tushare = None
         self._tushare_api = None
-        self._status_lock = threading.Lock()
-        self._quote_refresh_lock = threading.Lock()
-        self._quote_refresh_running = False
-        self._quote_refresh_last_started_at = ""
-        self._quote_refresh_last_finished_at = ""
-        self._quote_refresh_last_success_at = ""
-        self._quote_refresh_last_error = ""
-        self._quote_refresh_last_started_ts = 0.0
         self._history_cache = HistoryCache(
             config.HISTORY_CACHE_PATH,
             freshness_hours=config.HISTORY_CACHE_FRESHNESS_HOURS,
         )
-
-    def _record_quote_fetch_result(self, *, source: str, success: bool, latency_ms: Optional[float], error: str = "") -> None:
-        with self._status_lock:
-            self.status.quote_fetch_count += 1
-            self.status.last_quote_latency_ms = latency_ms
-            if success:
-                self.status.quote_fetch_success_count += 1
-                self.status.quote_last_error = ""
-            else:
-                self.status.quote_fetch_error_count += 1
-                self.status.quote_last_error = error
-            self.status.quotes_source = source if success else self.status.quotes_source
-
-    def _append_status_error(self, message: str) -> None:
-        with self._status_lock:
-            self.status.errors.append(message)
-            self.status.errors = self.status.errors[-20:]
-
-    def _set_status_errors(self, messages: List[str]) -> None:
-        with self._status_lock:
-            self.status.errors = list(messages)[-20:]
-
-    def _set_quote_source(self, source: str, refresh_time: str) -> None:
-        with self._status_lock:
-            self.status.quotes_source = source
-            self.status.last_quote_refresh = refresh_time
-
-    def _record_quote_latency(self, source: str, start_time: float) -> None:
-        latency_ms = max(0.0, (time.perf_counter() - start_time) * 1000.0)
-        self._record_quote_fetch_result(source=source, success=True, latency_ms=latency_ms)
+        self.realtime_quotes = RealtimeQuoteProvider(
+            QuoteFetchers(
+                eastmoney=self._fetch_eastmoney_quotes,
+                sina=self._fetch_sina_quotes,
+                tushare=self._fetch_tushare_quotes,
+                recommendation=_fetch_tencent_recommendation_quotes,
+                normalize_code=normalize_code,
+                normalize_columns=rename_known_columns,
+            ),
+            web_nonblocking=web_nonblocking,
+        )
+        self.status = self.realtime_quotes.status
 
     def get_realtime_quotes(self) -> pd.DataFrame:
-        if self._web_nonblocking:
-            return self.get_web_realtime_quotes()
-        errors = []
-        start_time = time.perf_counter()
-        try:
-            df = self._fetch_eastmoney_quotes()
-            self._record_quote_latency("东方财富直连", start_time)
-            return self._accept_realtime_quotes(df, "东方财富直连", errors)
-        except Exception as exc:  # pragma: no cover - depends on remote services
-            self._record_quote_fetch_result(
-                source="东方财富直连",
-                success=False,
-                latency_ms=None,
-                error=str(exc),
-            )
-            errors.append("东方财富直连行情失败: {}".format(exc))
-
-        if config.ALLOW_SLOW_QUOTE_FALLBACK:
-            try:
-                start_time = time.perf_counter()
-                df = self._fetch_sina_quotes()
-                self._record_quote_latency("新浪并发行情", start_time)
-                return self._accept_realtime_quotes(df, "新浪并发行情", errors)
-            except Exception as exc:  # pragma: no cover - depends on remote services
-                self._record_quote_fetch_result(
-                    source="新浪并发行情",
-                    success=False,
-                    latency_ms=None,
-                    error=str(exc),
-                )
-                errors.append("新浪行情失败: {}".format(exc))
-
-            if config.TUSHARE_TOKEN:
-                try:
-                    start_time = time.perf_counter()
-                    df = self._fetch_tushare_quotes()
-                    self._record_quote_latency("Tushare", start_time)
-                    return self._accept_realtime_quotes(df, "Tushare", errors)
-                except Exception as exc:  # pragma: no cover - depends on remote services
-                    self._record_quote_fetch_result(
-                        source="Tushare",
-                        success=False,
-                        latency_ms=None,
-                        error=str(exc),
-                    )
-                    errors.append("Tushare 行情失败: {}".format(exc))
-
-        snapshot = self._load_quote_snapshot()
-        if snapshot is not None and not snapshot.empty:
-            refresh_time = snapshot.attrs.get("snapshot_mtime") or datetime.now().isoformat(timespec="seconds")
-            self._set_quote_source("本地快照", refresh_time)
-            self._set_status_errors(errors)
-            return snapshot
-
-        self._set_quote_source("unavailable", datetime.now().isoformat(timespec="seconds"))
-        self._set_status_errors(errors)
-        raise RuntimeError("; ".join(errors))
+        return self.realtime_quotes.get_realtime_quotes()
 
     def get_web_realtime_quotes(self) -> pd.DataFrame:
         """Serve a local snapshot immediately; perform all remote work in background."""
-        snapshot = self._load_quote_snapshot()
-        self.refresh_realtime_quotes_async()
-        if snapshot is not None and not snapshot.empty:
-            refresh_time = snapshot.attrs.get("snapshot_mtime") or datetime.now().isoformat(timespec="seconds")
-            self._set_quote_source("本地快照", refresh_time)
-            return snapshot
-        message = "实时行情正在后台刷新，Web 请求未等待行情下载"
-        self._set_quote_source("后台刷新中", datetime.now().isoformat(timespec="seconds"))
-        self._append_status_error(message)
-        raise RuntimeError(message)
+        return self.realtime_quotes.get_web_realtime_quotes()
 
     def refresh_realtime_quotes_async(self, force: bool = False) -> bool:
-        now = time.time()
-        min_interval = max(30, int(getattr(config, "QUOTE_BACKGROUND_REFRESH_INTERVAL_SECONDS", 300)))
-        with self._quote_refresh_lock:
-            if self._quote_refresh_running:
-                return False
-            if not force and self._quote_refresh_last_started_ts and now - self._quote_refresh_last_started_ts < min_interval:
-                return False
-            self._quote_refresh_running = True
-            self._quote_refresh_last_started_ts = now
-            self._quote_refresh_last_started_at = datetime.now().isoformat(timespec="seconds")
-            self._quote_refresh_last_error = ""
-        worker = threading.Thread(
-            target=self._refresh_realtime_quotes_worker,
-            name="market-quotes-background-refresh",
-            daemon=True,
-        )
-        try:
-            worker.start()
-        except Exception as exc:
-            with self._quote_refresh_lock:
-                self._quote_refresh_running = False
-                self._quote_refresh_last_finished_at = datetime.now().isoformat(timespec="seconds")
-                self._quote_refresh_last_error = str(exc)
-            return False
-        return True
+        return self.realtime_quotes.refresh_async(force=force)
 
     def quote_refresh_status(self) -> Dict[str, object]:
-        with self._quote_refresh_lock:
-            return {
-                "running": self._quote_refresh_running,
-                "last_started_at": self._quote_refresh_last_started_at,
-                "last_finished_at": self._quote_refresh_last_finished_at,
-                "last_success_at": self._quote_refresh_last_success_at,
-                "last_error": self._quote_refresh_last_error,
-            }
+        return dict(self.realtime_quotes.refresh_status())
+
+    def stop_realtime_quotes(self, timeout_seconds: float = 5.0) -> None:
+        self.realtime_quotes.stop(timeout_seconds)
+
+    def append_status_error(self, message: str) -> None:
+        self.realtime_quotes.append_error(message)
+
+    def _append_status_error(self, message: str) -> None:
+        self.append_status_error(message)
 
     def _refresh_realtime_quotes_worker(self) -> None:
-        error = ""
-        success = False
-        errors = list(self.status.errors)
-        try:
-            try:
-                start_time = time.perf_counter()
-                quotes = self._fetch_eastmoney_quotes()
-                self._record_quote_latency("东方财富直连", start_time)
-                self._accept_realtime_quotes(quotes, "东方财富直连", errors)
-                success = True
-            except Exception as exc:  # pragma: no cover - depends on remote services
-                self._record_quote_fetch_result(
-                    source="东方财富直连",
-                    success=False,
-                    latency_ms=None,
-                    error=str(exc),
-                )
-                errors.append("东方财富直连行情失败: {}".format(exc))
-            if not success and config.ALLOW_SLOW_QUOTE_FALLBACK:
-                try:
-                    start_time = time.perf_counter()
-                    quotes = self._fetch_sina_quotes()
-                    self._record_quote_latency("新浪并发行情", start_time)
-                    self._accept_realtime_quotes(quotes, "新浪并发行情", errors)
-                    success = True
-                except Exception as exc:  # pragma: no cover - depends on remote services
-                    self._record_quote_fetch_result(
-                        source="新浪并发行情",
-                        success=False,
-                        latency_ms=None,
-                        error=str(exc),
-                    )
-                    errors.append("新浪行情失败: {}".format(exc))
-            if not success and config.TUSHARE_TOKEN:
-                try:
-                    start_time = time.perf_counter()
-                    quotes = self._fetch_tushare_quotes()
-                    self._record_quote_latency("Tushare", start_time)
-                    self._accept_realtime_quotes(quotes, "Tushare", errors)
-                    success = True
-                except Exception as exc:  # pragma: no cover - depends on remote services
-                    self._record_quote_fetch_result(
-                        source="Tushare",
-                        success=False,
-                        latency_ms=None,
-                        error=str(exc),
-                    )
-                    errors.append("Tushare 行情失败: {}".format(exc))
-            if not success:
-                error = "; ".join(errors[-3:]) or "后台行情刷新没有可用数据源"
-                self._set_status_errors(errors)
-        except Exception as exc:
-            error = str(exc)
-            _LOGGER.exception("行情刷新任务异常: %s", error)
-        finished_at = datetime.now().isoformat(timespec="seconds")
-        with self._quote_refresh_lock:
-            self._quote_refresh_running = False
-            self._quote_refresh_last_finished_at = finished_at
-            self._quote_refresh_last_error = error
-            if success:
-                self._quote_refresh_last_success_at = finished_at
-
-    def _accept_realtime_quotes(self, df: pd.DataFrame, source: str, errors: List[str]) -> pd.DataFrame:
-        refresh_time = datetime.now().isoformat(timespec="seconds")
-        df.attrs.setdefault("quote_timestamp", refresh_time)
-        self._set_quote_source(source, refresh_time)
-        self._set_status_errors(errors)
-        self._record_quote_fetch_result(source=source, success=True, latency_ms=None, error="")
-        self._save_quote_snapshot(df)
-        return df
+        self.realtime_quotes.run_refresh_worker()
 
     def get_hot_ranks(self) -> Dict[str, int]:
         ak = self._get_akshare()
@@ -339,8 +136,7 @@ class MarketDataProvider:
                 continue
             news.extend(_extract_news_rows(df, source, limit, keyword=name or code))
 
-        self.status.sentiment_source = "AKShare 新闻/电报"
-        self.status.last_sentiment_refresh = datetime.now().isoformat(timespec="seconds")
+        self.realtime_quotes.record_sentiment_refresh("AKShare 新闻/电报")
         return news[:limit]
 
     def get_market_news(self, limit: int = 100) -> List[Dict[str, str]]:
@@ -357,8 +153,7 @@ class MarketDataProvider:
                 self._record_sentiment_error("{}失败: {}".format(source, exc))
                 continue
             news.extend(_extract_news_rows(df, source, limit))
-        self.status.sentiment_source = "AKShare 新闻/电报"
-        self.status.last_sentiment_refresh = datetime.now().isoformat(timespec="seconds")
+        self.realtime_quotes.record_sentiment_refresh("AKShare 新闻/电报")
         return news[:limit]
 
     def get_share_unlock_events(self) -> List[Dict[str, object]]:
@@ -683,23 +478,7 @@ class MarketDataProvider:
         return output
 
     def health(self) -> Dict[str, object]:
-        with self._status_lock:
-            status = {
-                "quotes_source": self.status.quotes_source,
-                "sentiment_source": self.status.sentiment_source,
-                "last_quote_refresh": self.status.last_quote_refresh,
-                "last_sentiment_refresh": self.status.last_sentiment_refresh,
-                "last_quote_latency_ms": self.status.last_quote_latency_ms,
-                "quote_fetch_count": self.status.quote_fetch_count,
-                "quote_fetch_success_count": self.status.quote_fetch_success_count,
-                "quote_fetch_error_count": self.status.quote_fetch_error_count,
-                "quote_last_error": self.status.quote_last_error,
-                "errors": list(self.status.errors[-10:]),
-            }
-        return {
-            **status,
-            "quote_background_refresh": self.quote_refresh_status(),
-        }
+        return self.realtime_quotes.health()
 
     def _fetch_eastmoney_quotes(self) -> pd.DataFrame:
         df = _fetch_eastmoney_spot_dataframe()
@@ -714,37 +493,7 @@ class MarketDataProvider:
         return rename_known_columns(df)
 
     def get_recommendation_quotes(self, codes) -> pd.DataFrame:
-        start_time = time.perf_counter()
-        try:
-            raw = _fetch_tencent_recommendation_quotes(codes)
-            quote_timestamp = str((raw.attrs or {}).get("quote_timestamp") or "")
-            frame = rename_known_columns(raw)
-            timestamp_by_code = {
-                normalize_code(row.get("代码")): str(row.get("时间戳") or "")
-                for row in raw.to_dict(orient="records")
-            }
-            frame["quote_timestamp"] = frame["code"].map(timestamp_by_code).fillna(quote_timestamp)
-            frame["quote_source"] = "腾讯推荐池批量行情"
-            frame.attrs["quote_timestamp"] = quote_timestamp
-            frame.attrs["quote_source"] = "腾讯推荐池批量行情"
-            requested = {normalize_code(code) for code in (codes or []) if normalize_code(code)}
-            received = set(frame["code"].astype(str)) if "code" in frame.columns else set()
-            frame.attrs["missing_codes"] = sorted(requested - received)
-            frame.attrs["coverage_ratio"] = round(len(received & requested) / max(1, len(requested)), 4)
-            self._record_quote_fetch_result(
-                source="腾讯推荐池批量行情",
-                success=True,
-                latency_ms=max(0.0, (time.perf_counter() - start_time) * 1000.0),
-            )
-            return frame
-        except Exception as exc:
-            self._record_quote_fetch_result(
-                source="腾讯推荐池批量行情",
-                success=False,
-                latency_ms=max(0.0, (time.perf_counter() - start_time) * 1000.0),
-                error=str(exc),
-            )
-            raise
+        return self.realtime_quotes.get_recommendation_quotes(codes)
 
     def _fetch_tushare_quotes(self) -> pd.DataFrame:
         token = config.TUSHARE_TOKEN
@@ -783,58 +532,19 @@ class MarketDataProvider:
         return self._tushare_api
 
     def _record_sentiment_error(self, message: str) -> None:
-        lock = getattr(self, "_status_lock", None)
-        if lock is None:
+        realtime_quotes = getattr(self, "realtime_quotes", None)
+        if realtime_quotes is None:
             errors = list(getattr(self.status, "errors", []) or [])
             errors.append(message)
             self.status.errors = errors[-20:]
             return
-        with lock:
-            self.status.errors.append(message)
-            self.status.errors = self.status.errors[-20:]
+        realtime_quotes.append_error(message)
 
     def _save_quote_snapshot(self, df: pd.DataFrame) -> None:
-        if df is None or df.empty or len(df) < config.QUOTE_SNAPSHOT_MIN_ROWS:
-            return
-        path = Path(config.QUOTE_SNAPSHOT_PATH)
-        try:
-            snapshot = df.copy()
-            quote_timestamp = str((df.attrs or {}).get("quote_timestamp") or "").strip()
-            if quote_timestamp:
-                snapshot["__quote_timestamp"] = quote_timestamp
-            atomic_write_text(path, snapshot.to_json(orient="records", force_ascii=False))
-        except Exception:
-            return
+        self.realtime_quotes.save_snapshot(df)
 
     def _load_quote_snapshot(self) -> Optional[pd.DataFrame]:
-        path = Path(config.QUOTE_SNAPSHOT_PATH)
-        try:
-            if not path.exists():
-                return None
-            stat = path.stat()
-            age = time.time() - stat.st_mtime
-            max_age = int(getattr(config, "QUOTE_SNAPSHOT_MAX_AGE_SECONDS", 21600))
-            now = datetime.now()
-            clock = now.strftime("%H:%M")
-            if now.weekday() < 5 and ("09:15" <= clock <= "11:35" or "13:00" <= clock <= "15:10"):
-                max_age = min(
-                    max_age,
-                    max(30, int(getattr(config, "QUOTE_SNAPSHOT_INTRADAY_MAX_AGE_SECONDS", 90))),
-                )
-            if age > max_age:
-                return None
-            df = pd.read_json(path)
-        except Exception:
-            return None
-        if df.empty or len(df) < config.QUOTE_SNAPSHOT_MIN_ROWS:
-            return None
-        if "__quote_timestamp" in df.columns:
-            timestamps = [str(value).strip() for value in df["__quote_timestamp"].dropna().tolist() if str(value).strip()]
-            if timestamps:
-                df.attrs["quote_timestamp"] = timestamps[0]
-            df = df.drop(columns=["__quote_timestamp"])
-        df.attrs["snapshot_mtime"] = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
-        return df
+        return self.realtime_quotes.load_snapshot()
 
 
 class TimedCache:

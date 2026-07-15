@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-5000}"
-PYTHON_MIN_MINOR="${PYTHON_MIN_MINOR:-9}"
+PYTHON_MIN_MINOR="${PYTHON_MIN_MINOR:-10}"
 PYTHON_MAX_MINOR="${PYTHON_MAX_MINOR:-14}"
 
 # 代理模式:
@@ -232,10 +232,6 @@ find_python() {
     command -v python3.10
     return
   fi
-  if command -v python3.9 >/dev/null 2>&1; then
-    command -v python3.9
-    return
-  fi
   if command -v python3 >/dev/null 2>&1; then
     command -v python3
     return
@@ -349,20 +345,25 @@ pip_install() {
   fi
 
   printf '安装/更新依赖...\n'
-  "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --upgrade pip
-  "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --upgrade setuptools wheel
-
-  if "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --prefer-binary -r requirements.txt; then
+  if "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --prefer-binary -r requirements/runtime.txt; then
+    "$VENV_DIR/bin/python" scripts/dependency_fingerprint.py write --root "$ROOT_DIR"
     return 0
   fi
 
   printf '首次安装失败，重试一次：关闭构建隔离后再次安装（适配 Python 3.14）。\n'
-  if "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --no-build-isolation --prefer-binary -r requirements.txt; then
+  if "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --no-build-isolation --prefer-binary -r requirements/runtime.txt; then
+    "$VENV_DIR/bin/python" scripts/dependency_fingerprint.py write --root "$ROOT_DIR"
     return 0
   fi
 
   printf '再次失败，尝试允许写入受限环境（外部管理环境兼容）。\n'
-  "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --break-system-packages --no-build-isolation --prefer-binary -r requirements.txt
+  "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --break-system-packages --no-build-isolation --prefer-binary -r requirements/runtime.txt
+  "$VENV_DIR/bin/python" scripts/dependency_fingerprint.py write --root "$ROOT_DIR"
+}
+
+dependencies_ready() {
+  "$VENV_DIR/bin/python" scripts/dependency_fingerprint.py check --root "$ROOT_DIR" >/dev/null 2>&1 \
+    && "$VENV_DIR/bin/python" -m pip check >/dev/null 2>&1
 }
 
 mkdir -p "$ROOT_DIR/.runtime"
@@ -370,15 +371,9 @@ configure_proxy
 show_proxy_env
 printf '\n'
 
-VENV_ALREADY_READY=0
-if [ -x "$VENV_DIR/bin/python" ]; then
-  VENV_ALREADY_READY=1
-fi
 ensure_venv
-if { [ "$RUN_MODE" = "after-close" ] || [ "$RUN_MODE" = "daily-job" ]; } \
-  && [ "$VENV_ALREADY_READY" = "1" ] \
-  && [ "${AFTER_CLOSE_INSTALL_DEPS:-0}" != "1" ]; then
-  printf '盘后模式: 已检测到虚拟环境，跳过依赖安装检查。\n'
+if dependencies_ready && [ "${FORCE_INSTALL_DEPS:-${AFTER_CLOSE_INSTALL_DEPS:-0}}" != "1" ]; then
+  printf '依赖声明和 Python 环境未变化，跳过联网安装。\n'
 else
   check_internet_connectivity "$VENV_DIR/bin/python"
   pip_install
@@ -390,15 +385,13 @@ export FLASK_RUN_HOST="$HOST"
 export FLASK_RUN_PORT="$PORT"
 
 if [ "$RUN_MODE" = "after-close" ] || [ "$RUN_MODE" = "daily-job" ]; then
-  export ENABLE_HISTORY_FACTORS="${ENABLE_HISTORY_FACTORS:-1}"
   printf '\n运行盘后流水线: market_data --download -> daily_job update/factors\n'
-  printf '历史因子: ENABLE_HISTORY_FACTORS=%s\n\n' "$ENABLE_HISTORY_FACTORS"
+  printf '历史因子与策略开关使用 config/runtime.json 中的冻结基线。\n\n'
   exec "$VENV_DIR/bin/python" -m stock_analyzer.daily_job --after-close "$@"
 fi
 
 printf '\n启动看板: http://%s:%s\n' "$HOST" "$PORT"
-printf '历史因子: ENABLE_HISTORY_FACTORS=%s（可显式设为 0 关闭）\n' "${ENABLE_HISTORY_FACTORS:-1}"
+printf '历史因子与策略开关使用 config/runtime.json 中的冻结基线。\n'
 printf '按 Ctrl+C 停止。\n\n'
 
-export ENABLE_HISTORY_FACTORS="${ENABLE_HISTORY_FACTORS:-1}"
 exec "$VENV_DIR/bin/python" app.py
