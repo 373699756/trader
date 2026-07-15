@@ -266,7 +266,9 @@ def _sha256(value) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _json_value(value):
+def _json_value(value, _seen_ids=None):
+    if _seen_ids is None:
+        _seen_ids = set()
     if value is None or isinstance(value, (str, int, bool)):
         return value
     if isinstance(value, float):
@@ -274,12 +276,26 @@ def _json_value(value):
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, dict):
-        return {str(key): _json_value(item) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
+        value_id = id(value)
+        if value_id in _seen_ids:
+            return "__recursive_reference__";
+        _seen_ids.add(value_id)
+        try:
+            return {str(key): _json_value(item, _seen_ids) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
+        finally:
+            _seen_ids.discard(value_id)
     if isinstance(value, (list, tuple, set)):
-        return [_json_value(item) for item in value]
+        value_id = id(value)
+        if value_id in _seen_ids:
+            return "__recursive_reference__";
+        _seen_ids.add(value_id)
+        try:
+            return [_json_value(item, _seen_ids) for item in value]
+        finally:
+            _seen_ids.discard(value_id)
     if hasattr(value, "item"):
         try:
-            return _json_value(value.item())
+            return _json_value(value.item(), _seen_ids)
         except Exception:
             pass
     return str(value)

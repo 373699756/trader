@@ -28,20 +28,21 @@ def _ensure_dict(row: Dict[str, object], key: str) -> Dict[str, object]:
 
 
 def _mark_short_term_unconfirmed(row: Dict[str, object]) -> None:
-    row.setdefault("tier", row.get("tier") or "backup_pool")
-    row.setdefault("tier_label", row.get("tier_label") or "盘中观察")
+    row["tier"] = "backup_pool"
+    row["tier_label"] = "盘中观察"
     row["execution_allowed"] = False
     row["today_next_day_gate_status"] = "unconfirmed"
     row["execution_block_reason"] = "未与明日优先策略重合，转为观察"
     action = _ensure_dict(row, "trade_action")
-    action["action"] = action.get("action") or "watch_only"
-    action["label"] = action.get("label") or "只观察"
+    action["action"] = "watch_only"
+    action["label"] = "只观察"
     action["position_size"] = 0.0
-    if action.get("reason") is None:
-        action["reason"] = "未与明日优先策略重合，转为观察"
+    action["reason"] = "未与明日优先策略重合，转为观察"
     row["trade_action"] = action
-    row["recommendation_class"] = row.get("recommendation_class") or "backup"
-    row["recommendation_class_label"] = row.get("recommendation_class_label") or "备选观察"
+    row["recommendation_class"] = "today_continuation_backup_watch"
+    row["recommendation_class_label"] = "今日延续备选观察"
+    row["prediction_type"] = "rank_score"
+    row["score_note"] = "今日延续重点观察未与明日优先重合，降级为备选观察。"
     _set_reason(row, "未与明日优先策略重合，转为观察")
     row["execution_status_updated_at"] = row.get("execution_status_updated_at") or ""
 

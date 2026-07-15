@@ -52,6 +52,18 @@
         els.quoteSource.textContent = health.quotes_source || "-";
         els.sentimentSource.textContent = health.sentiment_source || "-";
         els.candidateCount.textContent = meta.candidate_count ?? "-";
+        if (els.deepseekApiCallCount) {
+          const deepseekCalls = Number(meta.deepseek_api_call_count);
+          if (Number.isFinite(deepseekCalls)) {
+            els.deepseekApiCallCount.textContent = `${deepseekCalls}次`;
+            els.deepseekApiCallCount.dataset.level = deepseekCalls > 0 ? "ok" : "warn";
+            els.deepseekApiCallCount.title = `今日DeepSeek API实际调用${deepseekCalls}次`;
+          } else {
+            els.deepseekApiCallCount.textContent = "-";
+            els.deepseekApiCallCount.dataset.level = "neutral";
+            els.deepseekApiCallCount.title = "";
+          }
+        }
         renderFactorCoverageStatus(health.factor_coverage || meta.factor_coverage || payload.factor_coverage);
         renderHardFilterStatus(meta.hard_filter_report);
         els.marketSentiment.textContent = marketSentiment.score ? `${marketSentiment.score}` : "-";
@@ -133,8 +145,84 @@
         state.timer = null;
       }
 
+      function normalizeStatusTime(value) {
+        return String(value || "")
+          .replace(/^\s+|\s+$/g, "")
+          .replace(/[T]/g, " ")
+          .replace(/\.[0-9]+(?:Z)?$/i, "")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      let lastStatusValue = "";
+
       function setStatus(text) {
-        els.statusText.textContent = text;
+        const value = typeof text === "string" ? text : String(text || "等待刷新");
+        const statusValue = value.trim();
+        if (!statusValue) {
+          if (lastStatusValue === "等待刷新") return;
+          lastStatusValue = "等待刷新";
+        } else if (statusValue === lastStatusValue) {
+          return;
+        } else {
+          lastStatusValue = statusValue;
+        }
+        let statusTag = "状态";
+        let quoteText = "-";
+        let rankText = "-";
+
+        if (!statusValue) {
+          statusTag = "等待刷新";
+          quoteText = "等待刷新";
+        } else if (/^\s*已加载快照\b/.test(statusValue)) {
+          statusTag = "行情更新";
+          const loadedMatch = statusValue.match(/^\s*已加载快照\s+([^\s，,。·•]+)/);
+          if (loadedMatch) {
+            quoteText = normalizeStatusTime(loadedMatch[1]);
+          }
+        } else if (/^\s*行情更新\b/.test(statusValue)) {
+          statusTag = "行情更新";
+          const fullMatch = statusValue.match(/^\s*行情更新\s+([^\s，,。·•]+)\s*[·•]\s*排名\s*([^\s，,。·•]+)/);
+          if (fullMatch) {
+            quoteText = normalizeStatusTime(fullMatch[1]);
+            rankText = normalizeStatusTime(fullMatch[2]);
+          } else {
+            const quoteMatch = statusValue.match(/行情更新\s+([0-9T:\.-]+)/);
+            if (quoteMatch) {
+              quoteText = normalizeStatusTime(quoteMatch[1]);
+            }
+            const rankMatch = statusValue.match(/排名\s*([0-9T:\.-]+)/);
+            if (rankMatch) {
+              rankText = normalizeStatusTime(rankMatch[1]);
+            }
+          }
+        } else {
+          const genericMatch = statusValue.match(/^\s*(.+?)\s+([0-9T:\.-]+)(?:\s*[·•]\s*排名\s*([0-9T:\.-]+))?(?:\s*[·•].*)?$/);
+          if (genericMatch) {
+            statusTag = genericMatch[1].trim();
+            quoteText = normalizeStatusTime(genericMatch[2]);
+            rankText = normalizeStatusTime(genericMatch[3] || "-");
+          } else {
+            statusTag = statusValue;
+          }
+        }
+
+        if (quoteText && rankText && normalizeStatusTime(quoteText) === normalizeStatusTime(rankText)) {
+          rankText = "-";
+        }
+
+        if (els.statusTag) {
+          els.statusTag.textContent = statusTag || "状态";
+          els.statusTag.title = statusTag || "";
+        }
+        if (els.statusQuoteTime) {
+          els.statusQuoteTime.textContent = quoteText;
+          els.statusQuoteTime.title = quoteText || "";
+        }
+        if (els.statusRank) {
+          els.statusRank.textContent = rankText;
+          els.statusRank.title = rankText || "";
+        }
       }
 
       function resizeCharts() {

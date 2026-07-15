@@ -1160,6 +1160,24 @@ class _AppServiceContext:
                 health["alerts"] = alerts
         return health
 
+    def _today_deepseek_api_call_count(self) -> int:
+        if not self.validation_store:
+            return 0
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            with self.validation_store.repository.connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(api_called), 0)
+                    FROM deepseek_analysis_batches
+                    WHERE substr(requested_at, 1, 10) = ?
+                    """,
+                    (today,),
+                ).fetchone()
+            return int(row[0] or 0)
+        except Exception:
+            return 0
+
     def _build_horizon_payload(self, strategy: str, top_n: int, market: str) -> Dict[str, object]:
         if recommendation_is_frozen():
             frozen = self._cached_horizon_entry(strategy, top_n, market)
@@ -1492,6 +1510,7 @@ class _AppServiceContext:
             meta["short_term_observation_count"] = short_display_count - short_executable_count
             if "candidate_count" not in meta:
                 meta["candidate_count"] = int(today_next_day_gate.get("short_term_candidate_count") or 0)
+            meta["deepseek_api_call_count"] = self._today_deepseek_api_call_count()
             meta["quote_timestamp"] = str(
                 (getattr(quotes, "attrs", {}) or {}).get("quote_timestamp") or ""
             )

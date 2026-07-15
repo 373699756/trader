@@ -38,24 +38,9 @@
         const generatedAt = payload.meta?.as_of || payload.meta?.generated_at || payload.snapshot?.saved_at || "最近快照";
         const phaseSuffix = phaseLabel ? ` · ${phaseLabel}` : "";
         if (quoteAt) {
-          return `行情更新 ${quoteAt} · 排名 ${generatedAt}${phaseSuffix}`;
+          return `行情更新 ${generatedAt} · 排名 ${quoteAt}${phaseSuffix}`;
         }
         return `${fallbackPrefix} ${generatedAt}${phaseSuffix}`;
-      }
-
-      function isExecutableRow(row) {
-        if (!row || typeof row !== "object") {
-          return false;
-        }
-        if (row.execution_allowed === false) {
-          return false;
-        }
-        const tradeAction = row.trade_action || {};
-        const positionSize = Number(tradeAction.position_size);
-        if (Number.isFinite(positionSize) && positionSize <= 0) {
-          return false;
-        }
-        return true;
       }
 
       function applyRecommendationsPayload(payload) {
@@ -103,7 +88,9 @@
       async function loadRecommendations(options = {}) {
         const requestSeq = options.requestSeq || ++state.recommendationRequestSeq;
         const background = Boolean(options.background);
-        if (!background) setStatus("刷新中...");
+        if (!background && !state.recommendationHasPayload) {
+          setStatus("刷新中...");
+        }
         const params = new URLSearchParams({
           top_n: String((window.APP_CONFIG || {}).defaultTopN || 18),
           market: DEFAULT_MARKET,
@@ -139,9 +126,6 @@
           const payload = await res.json();
           if (requestSeq !== state.recommendationRequestSeq) return false;
           if (!applyRecommendationsPayload(payload)) return false;
-          const savedAt = payload.snapshot?.as_of || payload.snapshot?.saved_at || payload.meta?.as_of || payload.meta?.generated_at || "最近快照";
-          const phaseLabel = snapshotPhaseLabel(payload);
-          setStatus(`已加载快照 ${savedAt}${phaseLabel ? ` · ${phaseLabel}` : ""}，正在拉取最新行情...`);
           return true;
         } catch (err) {
           return false;
@@ -167,7 +151,9 @@
       function connectRecommendationStream() {
         stopRecommendationStream({ invalidate: false });
         state.countdown = (window.APP_CONFIG || {}).refreshSeconds || 0;
-        setStatus("正在连接实时推荐流...");
+        if (!state.recommendationHasPayload) {
+          setStatus("正在连接实时推荐流...");
+        }
         startPushStatusCountdown();
         state.timer = setInterval(() => {
           void loadRecommendations({ background: true });
@@ -373,20 +359,15 @@
 
       function renderShortTermTable(rows) {
         const rawRows = Array.isArray(rows) ? rows : [];
-        // Short-term observation rows are evidence, not executable recommendations.
-        // Keep them out of the recommendation table even when the action filter is "all".
-        const executableRows = rawRows.filter(isExecutableRow);
-        const displayRows = RecommendationUtils.filterAndSortRows(executableRows, {
+        // Short-term recommendations now include observation rows for today strategy visibility.
+        const displayRows = RecommendationUtils.filterAndSortRows(rawRows, {
           actionFilter: DEFAULT_ACTION_FILTER,
           sortMode: DEFAULT_SORT_MODE,
         });
         if (!displayRows.length) {
-          const hasRows = rawRows.length > 0;
-          const hasExecutable = rawRows.some(isExecutableRow);
-          const hasObservation = hasRows && !hasExecutable;
           let emptyText = "暂无符合条件的股票";
-          if (hasObservation) {
-            emptyText = "暂无可执行推荐，当前仅有观察备选";
+          if (rawRows.length) {
+            emptyText = "暂无符合筛选条件，当前策略可能为观察备选";
           }
           els.shortTermBody.innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(emptyText)}</td></tr>`;
           return;

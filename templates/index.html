@@ -16,16 +16,58 @@
             <button class="tab-button" type="button" data-tab="validationPanel">策略验证</button>
           </nav>
           <section class="status-line" aria-label="数据状态">
-            <span class="status-text-wrap"><strong id="statusText">等待刷新</strong></span>
-            <span>行情 <strong id="quoteSource">-</strong></span>
-            <span>推送 <strong id="streamStatus" data-state="connecting">连接中</strong></span>
-            <span>行情时间 <strong id="streamQuoteTime">-</strong></span>
-            <span>舆情 <strong id="sentimentSource">-</strong></span>
-            <span>候选 <strong id="candidateCount">-</strong></span>
-            <span>因子 <strong id="factorCoverageStatus">-</strong></span>
-            <span>剔除 <strong id="hardFilterCount">-</strong></span>
-            <span>市场 <strong id="marketSentiment">-</strong></span>
-            <span>黑名单 <strong id="riskBlacklistStatus">-</strong></span>
+            <article class="status-card">
+              <span>状态</span>
+              <strong id="statusTag">等待刷新</strong>
+            </article>
+            <article class="status-card">
+              <span>行情更新</span>
+              <strong id="statusQuoteTime">-</strong>
+            </article>
+            <article class="status-card">
+              <span>排名</span>
+              <strong id="statusRank">-</strong>
+            </article>
+            <article class="status-card">
+              <span>行情源</span>
+              <strong id="quoteSource">-</strong>
+            </article>
+            <article class="status-card">
+              <span>推送</span>
+              <strong id="streamStatus" data-state="connecting">连接中</strong>
+            </article>
+            <article class="status-card">
+              <span>行情时间</span>
+              <strong id="streamQuoteTime">-</strong>
+            </article>
+            <article class="status-card">
+              <span>舆情源</span>
+              <strong id="sentimentSource">-</strong>
+            </article>
+            <article class="status-card">
+              <span>候选</span>
+              <strong id="candidateCount">-</strong>
+            </article>
+            <article class="status-card">
+              <span>因子</span>
+              <strong id="factorCoverageStatus">-</strong>
+            </article>
+            <article class="status-card">
+              <span>剔除</span>
+              <strong id="hardFilterCount">-</strong>
+            </article>
+            <article class="status-card">
+              <span>市场</span>
+              <strong id="marketSentiment">-</strong>
+            </article>
+            <article class="status-card">
+              <span>黑名单</span>
+              <strong id="riskBlacklistStatus">-</strong>
+            </article>
+            <article class="status-card">
+              <span>DeepSeek API</span>
+              <strong id="deepseekApiCallCount">-</strong>
+            </article>
           </section>
           <div class="toolbar">
             <button id="refreshButton" type="button">刷新</button>
@@ -294,10 +336,10 @@
     <script src="{{ url_for('static', filename='recommendation-utils.js', v='20260714-2') }}"></script>
     <script src="{{ url_for('static', filename='recommendation-renderers.js', v='20260714-2') }}"></script>
     <script src="{{ url_for('static', filename='recommendation-tables.js', v='20260714-2') }}"></script>
-    <script src="{{ url_for('static', filename='recommendation-status.js') }}"></script>
-    <script src="{{ url_for('static', filename='recommendation-app.js') }}"></script>
+    <script src="{{ url_for('static', filename='recommendation-status.js', v='20260715-2') }}"></script>
+    <script src="{{ url_for('static', filename='recommendation-app.js', v='20260715-1') }}"></script>
     <script src="{{ url_for('static', filename='validation-stock-prediction.js', v='20260714-2') }}"></script>
     <script src="{{ url_for('static', filename='validation-app.js', v='20260714-2') }}"></script>
-    <script src="{{ url_for('static', filename='app.js', v='20260714-2') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260715-1') }}"></script>
   </body>
 </html>

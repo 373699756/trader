@@ -56,7 +56,9 @@ const config = {
 };
 
 const els = {
-  statusText: document.getElementById("statusText"),
+  statusTag: document.getElementById("statusTag"),
+  statusQuoteTime: document.getElementById("statusQuoteTime"),
+  statusRank: document.getElementById("statusRank"),
   quoteSource: document.getElementById("quoteSource"),
   streamStatus: document.getElementById("streamStatus"),
   streamQuoteTime: document.getElementById("streamQuoteTime"),
@@ -66,6 +68,7 @@ const els = {
   hardFilterCount: document.getElementById("hardFilterCount"),
   marketSentiment: document.getElementById("marketSentiment"),
   riskBlacklistStatus: document.getElementById("riskBlacklistStatus"),
+  deepseekApiCallCount: document.getElementById("deepseekApiCallCount"),
   refreshButton: document.getElementById("refreshButton"),
   tabButtons: document.querySelectorAll(".tab-button"),
   tabPanels: document.querySelectorAll(".tab-panel"),
