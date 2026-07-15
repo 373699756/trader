@@ -150,6 +150,53 @@ window.TraderRecommendationRenderers = {
     return lines.join("");
   },
 
+  longTermExplanationTags(row, helpers) {
+    const deepseek = row.deepseek_features || {};
+    const profile = row.longTermProfile || {};
+    const longTermScore = [];
+    const valueScore = this.finiteNumber(profile.valueScore);
+    const growthScore = this.finiteNumber(profile.growthScore);
+    const supportScore = this.finiteNumber(profile.supportScore);
+    const potentialScore = this.finiteNumber(profile.longTermPotential);
+    if (valueScore != null) longTermScore.push(`价值${Math.round(valueScore * 100)}分`);
+    if (growthScore != null) longTermScore.push(`成长${Math.round(growthScore * 100)}分`);
+    if (supportScore != null) longTermScore.push(`支撑${Math.round(supportScore * 100)}分`);
+    if (potentialScore != null) longTermScore.push(`综合${Math.round(potentialScore * 100)}分`);
+
+    const explanationTexts = this.uniqueReasonTexts([
+      longTermScore.length ? `长期评分：${longTermScore.join(" / ")}` : "",
+      row.reason,
+      row.summary,
+      row.note,
+      deepseek.reason,
+      ...(row.reasons || []),
+    ], 4);
+
+    const riskTexts = this.uniqueReasonTexts([
+      ...(deepseek.risk_flags || []),
+      ...(row.deepseek_risk_flags || []),
+      row.sell_risk?.label || "",
+      ...(row.sell_risk?.reasons || []),
+    ], 4);
+
+    const validationTexts = this.uniqueReasonTexts([
+      this.expectedReturnSummary(row, helpers),
+      row.holding_discipline,
+      row.trade_action_stats?.sample_count ? this.tradeActionSummary(row, helpers) : "",
+      row.exit_action_stats?.sample_count ? this.exitActionSummary(row, helpers) : "",
+      row.decision_calibration?.label,
+      row.sell_risk_calibration?.label,
+      row.similar_signal_stats?.sample_count ? this.decisionCalibrationSummary(row, helpers) : "",
+    ], 4);
+
+    const lines = [
+      this.reasonLine(`解释：${explanationTexts.join("；") || "暂无"}`, "", helpers),
+      this.reasonLine(`风险：${riskTexts.join("；") || "暂无"}`, riskTexts.length ? "warning" : "stable", helpers),
+      this.reasonLine(`验证：${validationTexts.join("；") || "暂无"}`, "validation", helpers),
+    ];
+    return lines.join("");
+  },
+
   finiteNumber(value) {
     const num = Number(value);
     return Number.isFinite(num) ? num : null;

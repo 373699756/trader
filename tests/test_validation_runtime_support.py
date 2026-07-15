@@ -105,26 +105,26 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
             create=True,
         ):
             strategies = support.configured_auto_snapshot_strategies(
-                default_snapshot_strategies=("short_term", "tomorrow_picks"),
-                snapshot_strategies=("short_term", "tomorrow_picks"),
+                default_snapshot_strategies=("today_term", "tomorrow_picks"),
+                snapshot_strategies=("today_term", "tomorrow_picks"),
             )
 
-        self.assertEqual(strategies, ["tomorrow_picks", "short_term"])
+        self.assertEqual(strategies, ["tomorrow_picks", "today_term"])
 
     def test_default_auto_snapshot_strategies_include_intraday_observation(self):
         with patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", ""):
             strategies = support.configured_auto_snapshot_strategies(
-                default_snapshot_strategies=("short_term", "tomorrow_picks", "swing_picks"),
-                snapshot_strategies=("short_term", "tomorrow_picks", "swing_picks"),
+                default_snapshot_strategies=("today_term", "tomorrow_picks", "swing_picks"),
+                snapshot_strategies=("today_term", "tomorrow_picks", "swing_picks"),
             )
 
-        self.assertEqual(strategies, ["tomorrow_picks", "short_term", "swing_picks"])
+        self.assertEqual(strategies, ["tomorrow_picks", "today_term", "swing_picks"])
 
     def test_explicit_auto_snapshot_strategy_override_is_respected(self):
         with patch.object(support.config, "VALIDATION_AUTO_SNAPSHOT_STRATEGIES", "tomorrow_picks"):
             strategies = support.configured_auto_snapshot_strategies(
-                default_snapshot_strategies=("short_term", "tomorrow_picks", "swing_picks"),
-                snapshot_strategies=("short_term", "tomorrow_picks", "swing_picks"),
+                default_snapshot_strategies=("today_term", "tomorrow_picks", "swing_picks"),
+                snapshot_strategies=("today_term", "tomorrow_picks", "swing_picks"),
             )
 
         self.assertEqual(strategies, ["tomorrow_picks"])
@@ -187,7 +187,7 @@ class ValidationRuntimeSupportTest(unittest.TestCase):
                     {"strategy": "young_picks", "report": {"oos_status": "insufficient_oos_days"}},
                     {"strategy": "tomorrow_picks", "report": {"oos_status": "needs_backfill"}},
                     {"strategy": "swing_picks", "report": {"oos_status": "gate_blocked"}},
-                    {"strategy": "short_term", "report": {"oos_status": "oos_passed"}},
+                    {"strategy": "today_term", "report": {"oos_status": "oos_passed"}},
                 ],
             },
         )

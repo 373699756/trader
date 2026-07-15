@@ -100,7 +100,7 @@ def _score_row(
     regime_profile = scoring_math._regime_weight_profile(market_regime, ["momentum", "liquidity"])
 
     risk_penalty_parts = {}
-    reversal_tilt = coerce_number(WEIGHTS["short_term"].get("reversal_tilt"), 0.0)
+    reversal_tilt = coerce_number(WEIGHTS["today_term"].get("reversal_tilt"), 0.0)
     if reversal_tilt > 0:
         recent_gain = coerce_number(row.get("ret_5d"), pct_chg)
         risk_penalty_parts["reversal_tilt"] = max(0.0, recent_gain) * reversal_tilt
@@ -122,7 +122,7 @@ def _score_row(
             "risk_penalty": risk_penalty,
             "regime_bonus": regime_bonus,
         },
-        "short_term",
+        "today_term",
         market_regime=market_regime,
         row=row,
         factor_ic_payload=context.get("factor_ic_payload"),
@@ -177,7 +177,13 @@ def _score_row(
         "horizon": horizon,
     }
     return explanations._with_regime_reason(
-        explanations._attach_signal_explanation(item, row, "short_term", "今天策略", "延续至收盘"),
+        explanations._attach_signal_explanation(
+            item,
+            row,
+            "today_term",
+            "今早执行",
+            "信号后至明日/后日规则退出",
+        ),
         market_regime,
         regime_bonus,
     )

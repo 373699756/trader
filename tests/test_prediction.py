@@ -21,7 +21,7 @@ class StockPredictionTest(unittest.TestCase):
             ]
         )
         strategy_rows = {
-            "short_term": [],
+            "today_term": [],
             "tomorrow_picks": [
                 {
                     "code": "600001",

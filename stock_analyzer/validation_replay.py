@@ -314,7 +314,7 @@ def _replay_reasons(strategy_name: str, factor: Dict[str, float]) -> List[str]:
         reasons.append("近5日成交额放大")
     if coerce_number(factor.get("volatility_20d")) >= 4:
         reasons.append("波动偏高，需降仓位")
-    if strategy_name == "short_term":
+    if strategy_name == "today_term":
         reasons.append("今日盘中策略使用量价反应打分")
     if strategy_name == "swing_picks":
         reasons.append("2-5天策略强调趋势和量能延续")

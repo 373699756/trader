@@ -112,4 +112,31 @@ window.TraderRecommendationTables = {
       `;
     }).join("");
   },
+
+  renderSwingLongTermTableRows(rows, helpers) {
+    const { escapeHtml, formatNumber, explanationTags } = helpers;
+    return (rows || []).map(row => {
+      const explanation = explanationTags(row);
+      const todayPct = this.formatMetricText(row.pct_chg, formatNumber, 2, { withClass: true, forceSign: true, suffix: "%" });
+      const afterPct = this.formatMetricText(
+        row.predicted_net_return ?? row.expected_return_net,
+        formatNumber,
+        2,
+        { withClass: true, forceSign: true, suffix: "%" }
+      );
+      return `
+        <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
+          <td class="stock-cell stock-cell-wide">
+            <span class="code-main">${escapeHtml(row.code)}</span>
+            <span class="stock-name-inline">${escapeHtml(row.name || "-")}</span>
+            <span class="code-sub">${escapeHtml(row.industry || row.theme || "行业未知")}</span>
+          </td>
+          <td class="col-pct-today">${todayPct}</td>
+          <td class="col-pct-after">${afterPct}</td>
+          <td class="reasons">${explanation}</td>
+        </tr>
+      `;
+    }).join("");
+  },
+
 };

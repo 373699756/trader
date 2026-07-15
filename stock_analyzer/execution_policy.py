@@ -21,9 +21,17 @@ def build_execution_policy(
     """Return the complete, immutable policy used to label a signal."""
     snapshot_phase = normalize_snapshot_phase(snapshot_phase, PRECLOSE_TRADEABLE)
     close_research = snapshot_phase == CLOSE_FALLBACK
-    holding_days = 1 if strategy_name == "tomorrow_picks" else 5 if strategy_name == "swing_picks" else 0
-    executable = strategy_name in {"tomorrow_picks", "swing_picks"}
-    prefix = "TOMORROW_AUXILIARY" if strategy_name == "tomorrow_picks" else "SWING_VALIDATION"
+    holding_days = (
+        1
+        if strategy_name == "tomorrow_picks"
+        else 5 if strategy_name == "swing_picks" else 2 if strategy_name == "today_term" else 0
+    )
+    executable = strategy_name in {"today_term", "tomorrow_picks", "swing_picks"}
+    prefix = (
+        "TOMORROW_AUXILIARY"
+        if strategy_name == "tomorrow_picks"
+        else "SWING_VALIDATION"
+    )
     exit_policy = {
         "holding_days": holding_days,
         "take_profit_pct": _configured_pct(prefix, "TAKE_PROFIT_PCT", 8.0),
@@ -33,14 +41,8 @@ def build_execution_policy(
         "earliest_exit_offset_days": 0,
         "take_profit_earliest_offset_days": 1 if strategy_name == "swing_picks" else 0,
     }
-    if strategy_name not in {"tomorrow_picks", "swing_picks"}:
-        exit_policy = {
-            "holding_days": holding_days,
-            "take_profit_pct": 0.0,
-            "stop_loss_pct": 0.0,
-            "trailing_stop_pct": 0.0,
-            "sealed_limit_down": "delay_until_first_tradable_open",
-        }
+    if strategy_name == "swing_picks":
+        exit_policy.update({"take_profit_earliest_offset_days": 1})
 
     body = {
         "schema_version": 3,
@@ -51,6 +53,7 @@ def build_execution_policy(
         "entry": {
             "timing": (
                 "same_trade_day_close_research" if close_research
+                else "same_trade_day_before_1430" if strategy_name == "today_term"
                 else "same_trade_day_after_1430" if executable
                 else "same_trade_day_observation"
             ),
@@ -66,8 +69,24 @@ def build_execution_policy(
             ),
             "order_window": (
                 "{}-{}".format(
-                    getattr(config, "TOMORROW_RECOMMENDATION_BUY_WINDOW_START", "14:30"),
-                    getattr(config, "TOMORROW_RECOMMENDATION_BUY_WINDOW_END", "14:55"),
+                    getattr(
+                        config,
+                        "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_START",
+                        "09:30",
+                    ) if strategy_name == "today_term" else getattr(
+                        config,
+                        "TOMORROW_RECOMMENDATION_BUY_WINDOW_START",
+                        "14:30",
+                    ),
+                    getattr(
+                        config,
+                        "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_END",
+                        "14:00",
+                    ) if strategy_name == "today_term" else getattr(
+                        config,
+                        "TOMORROW_RECOMMENDATION_BUY_WINDOW_END",
+                        "14:55",
+                    ),
                 )
                 if executable and not close_research
                 else None
@@ -128,7 +147,7 @@ def build_execution_policy(
                 round(100.0 / max(1, int(getattr(config, "PRODUCTION_TOP_K", 5))), 6)
                 if strategy_name == "tomorrow_picks"
                 else coerce_number(getattr(config, "VALIDATION_DEFAULT_POSITION_PCT", 10.0), 10.0)
-                if strategy_name == "swing_picks"
+                if strategy_name in {"today_term", "swing_picks"}
                 else 0.0
             ),
             "board_lot": 100,
@@ -148,9 +167,9 @@ def build_execution_policy(
         },
     }
     body["exit"]["primary_timing"] = (
-        "next_trade_day_dynamic_exit" if strategy_name == "tomorrow_picks" else "dynamic_t2_t5"
-        if strategy_name == "swing_picks"
-        else "same_trade_day_close_observation"
+        "next_trade_day_dynamic_exit"
+        if strategy_name in {"today_term", "tomorrow_picks"}
+        else "dynamic_t2_t5" if strategy_name == "swing_picks" else "same_day_close"
     )
     body["exit"]["primary_holding_days"] = holding_days if executable else 0
     body["exit"]["auxiliary_holding_days"] = holding_days

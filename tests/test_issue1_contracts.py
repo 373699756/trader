@@ -130,14 +130,14 @@ def test_stability_membership_keeps_current_selection_order(tmp_path):
 
     tracker = TopKDropoutTracker(str(tmp_path / "state.json"), keep_k=2, buffer_k=3)
     tracker.update(
-        "short_term",
+        "today_term",
         [
             {"code": "600001", "score": 90.0, "selection_rank": 1},
             {"code": "600002", "score": 80.0, "selection_rank": 2},
         ],
     )
     current = tracker.update(
-        "short_term",
+        "today_term",
         [
             {"code": "600003", "score": 99.0, "selection_rank": 1},
             {"code": "600002", "score": 95.0, "selection_rank": 2},

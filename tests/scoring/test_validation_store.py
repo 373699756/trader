@@ -173,7 +173,7 @@ class ValidationStoreTest(unittest.TestCase):
                 "2026-07-08T15:00:00",
                 [{"rank": 1, "code": "600002", "name": "delete", "price": 11, "score": 70}],
             )
-            result = store.prune_strategies(("short_term", "tomorrow_picks", "swing_picks"))
+            result = store.prune_strategies(("today_term", "tomorrow_picks", "swing_picks"))
             active_dates = store.list_signal_dates("tomorrow_picks")
             inactive_dates = store.list_signal_dates("position_picks")
 

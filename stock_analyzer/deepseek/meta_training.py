@@ -274,7 +274,7 @@ class DeepSeekMetaTrainingService:
                         "code": code,
                         "production_selected": bool(
                             candidate.get("selected")
-                            if strategy == "short_term"
+                            if strategy == "today_term"
                             else candidate.get("current_rule_selected")
                         ),
                         "local_score": row["local_score"],

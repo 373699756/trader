@@ -191,7 +191,7 @@ class FrontendContractTest(unittest.TestCase):
               json: async () => ({
                 ok: true,
                 recommendations: {
-                  short_term: [{ code: "600001", name: "测试", price: 10, trade_action: { position_size: 1 } }],
+                  today_term: [{ code: "600001", name: "测试", price: 10, trade_action: { position_size: 1 } }],
                   tomorrow_picks: [],
                   swing_picks: [],
                 },
@@ -639,7 +639,7 @@ class FrontendContractTest(unittest.TestCase):
               json: async () => ({
                 ok: true,
                 recommendations: {
-                  short_term: [
+                  today_term: [
                     {
                       code: "000001",
                       name: "测试股份",
@@ -749,7 +749,7 @@ class FrontendContractTest(unittest.TestCase):
               json: async () => ({
                 ok: true,
                 recommendations: {
-                  short_term: [
+                  today_term: [
                     {
                       code: "000001",
                       name: "测试股份",
@@ -858,7 +858,7 @@ class FrontendContractTest(unittest.TestCase):
               json: async () => ({
                 ok: true,
                 recommendations: {
-                  short_term: [],
+                  today_term: [],
                   tomorrow_picks: [],
                   swing_picks: [],
                 },

@@ -324,7 +324,7 @@
       }
 
       function currentValidationStrategy() {
-        return els.validationStrategySelect?.value || "short_term";
+        return els.validationStrategySelect?.value || "today_term";
       }
 
       function syncValidationStrategyTabs(strategy) {
@@ -1110,7 +1110,7 @@
 
       function selectValidationStrategy(strategy) {
         if (els.validationStrategySelect) {
-          els.validationStrategySelect.value = strategy || "short_term";
+          els.validationStrategySelect.value = strategy || "today_term";
         }
         resetValidationView();
         loadValidation();

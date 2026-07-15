@@ -10,7 +10,6 @@ import pandas as pd
 
 from .. import config
 from ..recommendation_freeze import recommendation_is_frozen
-from ..recommendation_policy import apply_today_next_day_gate
 from ..app_response_support import (
     error_payload,
     response_payload,
@@ -291,7 +290,7 @@ class _AppServiceContext:
                 ok=True,
                 include_disclaimer=True,
                 data=[],
-                recommendations={"short_term": [], "tomorrow_picks": [], "swing_picks": []},
+                recommendations={"today_term": [], "tomorrow_picks": [], "swing_picks": []},
                 meta={
                     "generated_at": "",
                     "candidate_count": 0,
@@ -411,7 +410,7 @@ class _AppServiceContext:
             if snapshot.get("ok"):
                 snapshot_payload = snapshot.get("payload") or {}
                 short_term_snapshot_rows = (
-                    (snapshot_payload.get("recommendations") or {}).get("short_term")
+                    (snapshot_payload.get("recommendations") or {}).get("today_term")
                     or snapshot_payload.get("data")
                     or []
                 )
@@ -487,7 +486,7 @@ class _AppServiceContext:
             return self.error_payload(exc)
 
     def strategy_snapshot(self, strategy: str, market: str) -> Tuple[Dict[str, object], int]:
-        strategy = strategy if strategy in SNAPSHOT_STRATEGIES else "short_term"
+        strategy = strategy if strategy in SNAPSHOT_STRATEGIES else "today_term"
         try:
             result = run_snapshot(self.provider, self.validation_store, strategy, market=market)
             self.invalidate_metrics_cache()
@@ -1268,12 +1267,12 @@ class _AppServiceContext:
         distinct_phases = sorted({item["snapshot_phase"] for item in phases.values()})
         distinct_price_bases = sorted({item["price_basis"] for item in phases.values()})
         generated_at = max(generated_times) if generated_times else ""
-        short_rows = rows_by_strategy.get("short_term") or []
+        short_rows = rows_by_strategy.get("today_term") or []
         return {
             "ok": True,
             "data": short_rows,
             "recommendations": {
-                "short_term": short_rows,
+                "today_term": short_rows,
                 "tomorrow_picks": rows_by_strategy.get("tomorrow_picks") or [],
                 "swing_picks": rows_by_strategy.get("swing_picks") or [],
             },
@@ -1486,11 +1485,8 @@ class _AppServiceContext:
                 apply_deepseek=include_deepseek,
                 validation_store=self.validation_store,
             )
-            recommendations_by_horizon, today_next_day_gate = apply_today_next_day_gate(
-                recommendations_by_horizon
-            )
             short_display_rows, meta = finalize_recommendation_payload_meta(
-                recommendations_by_horizon["short_term"],
+                recommendations_by_horizon["today_term"],
                 meta,
                 blacklist_payload,
                 hard_filter_report,
@@ -1502,22 +1498,21 @@ class _AppServiceContext:
                 self.cached_metrics,
             )
             meta["factor_coverage"] = coverage
-            meta["today_next_day_gate"] = today_next_day_gate
             short_display_count = len(short_display_rows)
             short_executable_count = sum(1 for row in short_display_rows if self._is_executable_row(row))
             meta["display_count"] = short_display_count
             meta["short_term_executable_count"] = short_executable_count
             meta["short_term_observation_count"] = short_display_count - short_executable_count
-            if "candidate_count" not in meta:
-                meta["candidate_count"] = int(today_next_day_gate.get("short_term_candidate_count") or 0)
+            meta["today_term_executable_count"] = short_executable_count
+            meta["today_term_observation_count"] = short_display_count - short_executable_count
             meta["deepseek_api_call_count"] = self._today_deepseek_api_call_count()
             meta["quote_timestamp"] = str(
                 (getattr(quotes, "attrs", {}) or {}).get("quote_timestamp") or ""
             )
             from ..production_baseline import attach_generation_provenance
 
-            attach_generation_provenance(meta, "short_term", short_display_rows, candidates)
-            recommendations_by_horizon["short_term"] = short_display_rows
+            attach_generation_provenance(meta, "today_term", short_display_rows, candidates)
+            recommendations_by_horizon["today_term"] = short_display_rows
             payload = {
                 "ok": True,
                 "data": short_display_rows,
@@ -2328,10 +2323,10 @@ def normalize_market(value: str) -> str:
     return "all"
 
 
-def normalize_validation_strategy(raw_strategy: str = "", default: str = "short_term") -> str:
+def normalize_validation_strategy(raw_strategy: str = "", default: str = "today_term") -> str:
     strategy = storage_strategy_name(raw_strategy or default)
     if strategy not in SNAPSHOT_STRATEGIES:
-        strategy = default if default in SNAPSHOT_STRATEGIES else "short_term"
+        strategy = default if default in SNAPSHOT_STRATEGIES else "today_term"
     return strategy
 
 

@@ -18,7 +18,7 @@ from .normalization import coerce_number, normalize_code
 
 
 PRIMARY_RETURN_BY_STRATEGY = {
-    "short_term": ("signal_exit_return", 0, "信号时点至T日收盘延续收益（非新建仓交易）"),
+    "today_term": ("signal_exit_return", 2, "信号时点至明日/后日动态规则退出"),
     "tomorrow_picks": ("signal_exit_return", 1, "T日14:30后参考入场至T+1规则退出"),
     "swing_picks": ("signal_exit_return", 5, "T日14:30后参考入场至T+2-T+5规则退出"),
 }
@@ -30,7 +30,7 @@ EXECUTABLE_PRIMARY_RETURN_BY_STRATEGY = {
 
 def current_strategy_version(strategy_name: str) -> str:
     return {
-        "short_term": str(getattr(config, "SHORT_TERM_STRATEGY_VERSION", "today_picks_v1_remaining_session")),
+        "today_term": str(getattr(config, "TODAY_TERM_STRATEGY_VERSION", "today_picks_v1_remaining_session")),
         "tomorrow_picks": str(
             getattr(config, "TOMORROW_STRATEGY_VERSION", "tomorrow_picks_v12_post_1430_t1_exit")
         ),
@@ -347,9 +347,6 @@ def is_primary_tomorrow_signal(rank, raw: Dict[str, object]) -> bool:
 def is_primary_validation_signal(strategy_name: str, rank, raw: Dict[str, object]) -> bool:
     if not isinstance(raw, dict):
         raw = {}
-    # 今天策略是非交易观察，但仍需要作为“信号至收盘”的主验证样本。
-    if strategy_name == "short_term":
-        return True
     if raw.get("execution_allowed") is False:
         return False
     tier = str(raw.get("tier") or "").strip()

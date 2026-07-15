@@ -32,6 +32,46 @@ class SwingScorer:
         return self.scoring_context.get(name, default)
 
     @staticmethod
+    def _industry_key(row: Dict[str, object]) -> str:
+        return str(row.get("industry") or "").strip().lower()
+
+    @staticmethod
+    def _industry_distribution(rows: List[Dict[str, object]]) -> Dict[str, int]:
+        distribution: Dict[str, int] = {}
+        for row in rows:
+            key = SwingScorer._industry_key(row)
+            distribution[key] = distribution.get(key, 0) + 1
+        return distribution
+
+    def _apply_industry_cap(
+        self,
+        rows: List[Dict[str, object]],
+        limit: int,
+        cap: int,
+    ) -> Tuple[List[Dict[str, object]], Dict[str, int], int]:
+        display_limit = max(0, int(limit or 0))
+        cap_value = int(cap or 0)
+        if display_limit <= 0:
+            return [], {}, 0
+        if cap_value <= 0:
+            selected = list(rows)[:display_limit]
+            return selected, self._industry_distribution(selected), 0
+
+        selected: List[Dict[str, object]] = []
+        industry_counts: Dict[str, int] = {}
+        industry_limited_count = 0
+        for row in rows:
+            if len(selected) >= display_limit:
+                break
+            key = self._industry_key(row)
+            if industry_counts.get(key, 0) >= cap_value:
+                industry_limited_count += 1
+                continue
+            selected.append(row)
+            industry_counts[key] = industry_counts.get(key, 0) + 1
+        return selected, industry_counts, industry_limited_count
+
+    @staticmethod
     def _ranking_gate_score(row: Dict[str, object]) -> float:
         return coerce_number(row.get("score"))
 
@@ -187,6 +227,8 @@ class SwingScorer:
         min_score: float,
         history_factor_ratio: float,
         factor_degraded: bool,
+        industry_distribution: Dict[str, int],
+        industry_limited_count: int,
     ) -> Dict[str, object]:
         meta = scoring_math._horizon_meta(top_n, market_filter, candidate_count, config.SWING_STRATEGY_VERSION, "2-5日持有")
         meta["eligible_count"] = eligible_count
@@ -204,6 +246,9 @@ class SwingScorer:
         meta["deepseek_mode"] = "precomputed_features_shadow"
         if factor_degraded:
             meta["degraded_reason"] = "历史因子覆盖不足，2-5天趋势延续因子降级；仅供观察。"
+        meta["industry_cap"] = getattr(config, "SWING_MAX_INDUSTRY_PER_RECOMMENDATION", 2)
+        meta["industry_distribution"] = industry_distribution
+        meta["industry_limited_count"] = industry_limited_count
         meta["strategy"] = "2-5日策略：T日14:30后参考入场，T+1保护性止损，T+2至T+5兑现收益"
         return meta
 
@@ -262,13 +307,18 @@ class SwingScorer:
         min_score = coerce_number(getattr(config, "SWING_RECOMMENDATION_MIN_SCORE", 60.0), 60.0)
         eligible_rows = [row for row in rows if self._ranking_gate_score(row) >= min_score]
         display_limit = int(top_n)
+        industry_cap = int(coerce_number(getattr(config, "SWING_MAX_INDUSTRY_PER_RECOMMENDATION", 2), 2))
         if factor_degraded:
             display_limit = min(display_limit, int(getattr(config, "SWING_DEGRADED_DISPLAY_LIMIT", 8)))
             for row in eligible_rows[:display_limit]:
                 self.explanation_builder.append_unique_reason(row, "历史因子覆盖不足，2-5天策略降级观察")
                 row["factor_degraded"] = True
                 self.risk_policy.mark_backup_watch(row, reason="历史因子覆盖不足，2-5日策略禁用执行")
-        display_rows = eligible_rows[:display_limit]
+        display_rows, industry_distribution, industry_limited_count = self._apply_industry_cap(
+            eligible_rows,
+            display_limit,
+            industry_cap,
+        )
         self._mark_display_rows(display_rows, factor_degraded)
         meta = self._build_meta(
             top_n,
@@ -280,6 +330,8 @@ class SwingScorer:
             min_score,
             history_factor_ratio,
             factor_degraded,
+            industry_distribution,
+            industry_limited_count,
         )
         if capture_candidate_pool:
             meta["_candidate_pool_rows"] = candidate_pool_rows

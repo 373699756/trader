@@ -18,6 +18,7 @@ const state = {
     shortTerm: [],
     tomorrow: [],
     swing: [],
+    swingLongTerm: [],
   },
   tomorrowLoaded: false,
   horizonLoaded: false,
@@ -82,6 +83,7 @@ const els = {
   shortTermBody: document.getElementById("shortTermBody"),
   tomorrowBody: document.getElementById("tomorrowBody"),
   swingBody: document.getElementById("swingBody"),
+  swingLongTermBody: document.getElementById("swingLongTermBody"),
   updateStatus: document.getElementById("updateStatus"),
   validationSimpleDecision: document.getElementById("validationSimpleDecision"),
   validationOosReport: document.getElementById("validationOosReport"),
@@ -153,7 +155,7 @@ function numberClass(value) {
 }
 
 function strategyLabel(value) {
-  if (value === "short_term") return "今日";
+  if (value === "today_term") return "今日";
   if (value === "tomorrow_picks") return "明日";
   if (value === "swing_picks") return "2-5日";
   return value || "-";
@@ -255,7 +257,7 @@ function bindEvents() {
   els.validationStrategySelect?.addEventListener("change", context.validation.handleValidationStrategyChange);
   els.validationStrategyTabs.forEach(button => {
     button.addEventListener("click", () => {
-      context.validation.selectValidationStrategy(button.dataset.validationStrategy || "short_term");
+      context.validation.selectValidationStrategy(button.dataset.validationStrategy || "today_term");
     });
   });
   els.validationDatesPrev?.addEventListener("click", () => context.validation.moveValidationDatePage(-1));

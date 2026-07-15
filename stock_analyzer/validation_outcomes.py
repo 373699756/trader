@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import time
 from datetime import datetime
 from typing import Callable, Dict, Iterable, List, Optional
 
@@ -52,6 +53,15 @@ def compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object]
     return _compute_outcome(provider, signal)
 
 
+def _is_sqlite_lock_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if error_code in (sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_BUSY):
+        return True
+    return "locked" in str(exc).lower() or "database is locked" in str(exc).lower()
+
+
 def _mapping_get(row, key: str, default=None):
     if hasattr(row, "get"):
         return row.get(key, default)
@@ -88,7 +98,7 @@ def _needs_outcome_refresh(signal, strategy_name: str, current_baseline_id: str)
         current_baseline_id,
     ):
         return True
-    required_days = 1 if strategy_name == "tomorrow_picks" else 5 if strategy_name == "swing_picks" else 0
+    required_days = 2 if strategy_name == "today_term" else 1 if strategy_name == "tomorrow_picks" else 5 if strategy_name == "swing_picks" else 0
     return (
         required_days > 0
         and int(signal["existing_future_days"] or 0) < required_days
@@ -106,7 +116,6 @@ def _build_execution_record(
 ) -> Dict[str, object]:
     label_status = str(outcome.get("label_status") or "unknown")
     settled = label_status == "settled"
-    observation_only = str(_mapping_get(signal, "strategy_name", "")) == "short_term"
     entry_price = coerce_number(outcome.get("primary_entry_price"), None)
     if entry_price is None or entry_price <= 0:
         entry_price = coerce_number(_mapping_get(signal, "price_at_signal"), 0.0)
@@ -124,8 +133,8 @@ def _build_execution_record(
         else None
     )
     if settled:
-        entry_status = "observed" if observation_only else "filled"
-        exit_status = "observed" if observation_only else "filled"
+        entry_status = "filled"
+        exit_status = "filled"
         fill_source = str(outcome.get("fill_source") or "simulated_daily_bar")
     elif label_status == "unfilled" and entry_was_filled:
         entry_status = "filled"
@@ -165,7 +174,7 @@ def _build_execution_record(
             settled
             and outcome.get("promotion_eligible", True)
             and outcome.get("return_reproducible")
-            and (benchmark_ready or observation_only)
+            and benchmark_ready
         ),
         **quantities,
         "actual_filled_quantity": filled_quantity,
@@ -255,8 +264,9 @@ class StrategyOutcomeService:
                         existing_outcome.signal_id IS NULL
                         OR NOT ({compatible_filter})
                         OR (
-                            strategy_signals.strategy_name IN ('tomorrow_picks', 'swing_picks')
+                            strategy_signals.strategy_name IN ('today_term', 'tomorrow_picks', 'swing_picks')
                             AND COALESCE(existing_outcome.future_days, 0) < CASE
+                                WHEN strategy_signals.strategy_name = 'today_term' THEN 2
                                 WHEN strategy_signals.strategy_name = 'tomorrow_picks' THEN 1
                                 ELSE 5
                             END
@@ -276,11 +286,12 @@ class StrategyOutcomeService:
                         SELECT 1 FROM strategy_outcomes o WHERE o.signal_id = strategy_signals.id
                     )
                     OR (
-                        strategy_signals.strategy_name IN ('tomorrow_picks', 'swing_picks')
+                        strategy_signals.strategy_name IN ('today_term', 'tomorrow_picks', 'swing_picks')
                         AND COALESCE((
                             SELECT o.future_days FROM strategy_outcomes o
                             WHERE o.signal_id = strategy_signals.id
                         ), 0) < CASE
+                            WHEN strategy_signals.strategy_name = 'today_term' THEN 2
                             WHEN strategy_signals.strategy_name = 'tomorrow_picks' THEN 1
                             ELSE 5
                         END
@@ -564,23 +575,31 @@ class StrategyOutcomeService:
                         )
                     )
                     updated += 1
-                with self.repository.connect() as conn:
-                    if signal_ids:
-                        self.repository.delete_execution_skips(signal_ids, connection=conn)
-                        self.repository.delete_strategy_outcomes(signal_ids, connection=conn)
-                    if skip_rows:
-                        conn.executemany(
-                            """
-                            INSERT OR REPLACE INTO strategy_execution_skips
-                            (signal_id, code, skip_reason, updated_at)
-                            VALUES (?, ?, ?, ?)
-                            """,
-                            skip_rows,
-                        )
-                    if execution_records:
-                        self.repository.save_execution_records(execution_records, connection=conn)
-                    if outcome_rows:
-                        self.repository.save_strategy_outcomes(outcome_columns, outcome_rows, connection=conn)
+                for attempt in range(4):
+                    try:
+                        with self.repository.connect() as conn:
+                            conn.execute("PRAGMA busy_timeout = 2500")
+                            if signal_ids:
+                                self.repository.delete_execution_skips(signal_ids, connection=conn)
+                                self.repository.delete_strategy_outcomes(signal_ids, connection=conn)
+                            if skip_rows:
+                                conn.executemany(
+                                    """
+                                    INSERT OR REPLACE INTO strategy_execution_skips
+                                    (signal_id, code, skip_reason, updated_at)
+                                    VALUES (?, ?, ?, ?)
+                                    """,
+                                    skip_rows,
+                                )
+                            if execution_records:
+                                self.repository.save_execution_records(execution_records, connection=conn)
+                            if outcome_rows:
+                                self.repository.save_strategy_outcomes(outcome_columns, outcome_rows, connection=conn)
+                        break
+                    except sqlite3.OperationalError as exc:
+                        if not _is_sqlite_lock_error(exc) or attempt >= 3:
+                            raise
+                        time.sleep(0.25 * (2 ** attempt))
         shadow = self.update_deepseek_shadow_outcomes(
             provider,
             signal_date=signal_date,
@@ -668,10 +687,18 @@ class StrategyOutcomeService:
                 )
             if not (shadow_ids or to_save):
                 continue
-            with self.repository.connect() as conn:
-                if shadow_ids:
-                    self.repository.delete_deepseek_shadow_outcomes(shadow_ids, connection=conn)
-                if to_save:
-                    self.repository.save_deepseek_shadow_outcomes(to_save, connection=conn)
-                    updated += len(to_save)
+            for attempt in range(4):
+                try:
+                    with self.repository.connect() as conn:
+                        conn.execute("PRAGMA busy_timeout = 2500")
+                        if shadow_ids:
+                            self.repository.delete_deepseek_shadow_outcomes(shadow_ids, connection=conn)
+                        if to_save:
+                            self.repository.save_deepseek_shadow_outcomes(to_save, connection=conn)
+                            updated += len(to_save)
+                    break
+                except sqlite3.OperationalError as exc:
+                    if not _is_sqlite_lock_error(exc) or attempt >= 3:
+                        raise
+                    time.sleep(0.25 * (2 ** attempt))
         return {"updated": updated, "skipped": skipped}

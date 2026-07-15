@@ -82,7 +82,7 @@
             <div class="prediction-levels">
               ${renderPredictionLevel("次日走势", nextDayOutlook, "text")}
               ${renderPredictionLevel("2-5日走势", swingOutlook, "text")}
-              ${renderPredictionLevel("今日策略", hits.some(item => ["short_term", "today_picks"].includes(item.strategy)) ? "命中候选" : "未命中", "text")}
+              ${renderPredictionLevel("今日策略", hits.some(item => ["today_term", "today_picks"].includes(item.strategy)) ? "命中候选" : "未命中", "text")}
               ${renderPredictionLevel("策略验证", "以真实样本外收益为准", "text")}
             </div>
             <div class="prediction-diagnosis-grid">

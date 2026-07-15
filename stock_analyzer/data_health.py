@@ -113,7 +113,7 @@ def build_and_save_data_health_report(
 
 def _sample_summary(conn) -> Dict[str, object]:
     result = {}
-    for strategy in ("short_term", "tomorrow_picks", "swing_picks"):
+    for strategy in ("today_term", "tomorrow_picks", "swing_picks"):
         version = current_strategy_version(strategy)
         rows = conn.execute(
             """
@@ -149,7 +149,7 @@ def _candidate_pit_summary(conn) -> Dict[str, object]:
     result = {}
     all_missing_masks = []
     violation_counter = Counter()
-    for strategy in ("short_term", "tomorrow_picks", "swing_picks"):
+    for strategy in ("today_term", "tomorrow_picks", "swing_picks"):
         version = current_strategy_version(strategy)
         aggregate = conn.execute(
             """

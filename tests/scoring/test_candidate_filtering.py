@@ -215,6 +215,6 @@ def test_score_candidates_orders_by_combined_signal(quotes):
         top_n=2,
     )
 
-    rows = result["short_term"]
+    rows = result["today_term"]
     assert rows[0]["code"] == "600001"
     assert rows[0]["score"] > 0

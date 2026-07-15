@@ -75,8 +75,8 @@ def test_daily_job_strategy_all_and_explicit_strategy_sets():
     assert validation == list(config.AUTO_SNAPSHOT_STRATEGIES)
     assert executable == list(config.ACTIVE_STRATEGIES)
 
-    validation, executable = daily_job._task_strategy_sets("short_term", SNAPSHOT_STRATEGIES)
-    assert validation == ["short_term"]
+    validation, executable = daily_job._task_strategy_sets("today_term", SNAPSHOT_STRATEGIES)
+    assert validation == ["today_term"]
     assert executable == []
 
 
@@ -310,8 +310,8 @@ def test_snapshot_rejects_fallback_quotes_missing_required_scoring_factors():
 
 
 def test_auto_snapshot_includes_intraday_observation_without_making_it_executable():
-    assert "short_term" in config.AUTO_SNAPSHOT_STRATEGIES
-    assert "short_term" not in config.ACTIVE_STRATEGIES
+    assert "today_term" in config.AUTO_SNAPSHOT_STRATEGIES
+    assert "today_term" not in config.ACTIVE_STRATEGIES
 
 
 def test_snapshot_tomorrow_keeps_wide_validation_candidates():
@@ -364,7 +364,7 @@ def test_snapshot_short_and_swing_capture_full_scored_pools():
     candidates = prepare_candidates(quotes)
     market_regime = {"level": "risk_on", "label": "偏进攻", "score": 75}
 
-    for strategy in ("short_term", "swing_picks"):
+    for strategy in ("today_term", "swing_picks"):
         rows, meta, _version = _score_snapshot_strategy(
             None,
             candidates,

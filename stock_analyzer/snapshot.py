@@ -674,7 +674,7 @@ def build_deepseek_precompute_rows(
 
 def _shared_deepseek_candidate_pool(rows_by_strategy: Dict[str, List[Dict[str, object]]]):
     limit = max(1, int(getattr(config, "DEEPSEEK_SHARED_RESEARCH_LIMIT", 24)))
-    allocations = (("tomorrow_picks", 12), ("short_term", 8), ("swing_picks", 8))
+    allocations = (("tomorrow_picks", 12), ("today_term", 8), ("swing_picks", 8))
     shared_codes = []
     for strategy, allocation in allocations:
         for row in (rows_by_strategy.get(strategy) or [])[:allocation]:
@@ -800,7 +800,7 @@ def _freeze_rejection(strategy: str, meta: Dict[str, object]) -> Dict[str, objec
 
 
 def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market: str, market_regime: Dict[str, object]):
-    if strategy == "short_term":
+    if strategy == "today_term":
         rows_by_horizon, meta = score_today_picks(
             candidates,
             hot_ranks={},
@@ -811,8 +811,8 @@ def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market
             market_regime=market_regime,
             capture_candidate_pool=True,
         )
-        rows = rows_by_horizon.get("short_term", [])
-        return rows, meta, config.SHORT_TERM_STRATEGY_VERSION
+        rows = rows_by_horizon.get("today_term", [])
+        return rows, meta, config.TODAY_TERM_STRATEGY_VERSION
     scorers = {
         "tomorrow_picks": (
             score_tomorrow_picks,

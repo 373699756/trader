@@ -252,7 +252,7 @@
 | market_impact_cost_pct | `execution_policy.py:233` | `strategy_validation`（被 `portfolio.py:5` 引用） | 统一委托（R6） |
 | 三策略 Scorer 构造器/样板 | `strategies/tomorrow.py:18` | `strategies/today.py`/`swing_2_5d.py` 同构造器 | 提取 BaseScorer（R5） |
 | 评分组件→combine→payload→reasons 流程 | `scoring_core/tomorrow_score.py:90` | `scoring_core/today_score.py:16` 同构 | 流程上提到 BaseScorer 模板方法（R5） |
-| 三策略 risk_penalty_parts | `scoring_core/risk.py:81` tomorrow / `:196` swing | short_term 在 `today_score.py:93` 内联 | 统一到 `risk.py`（补 `_short_risk_penalty_parts`） |
+| 三策略 risk_penalty_parts | `scoring_core/risk.py:81` tomorrow / `:196` swing | today_term 在 `today_score.py:93` 内联 | 统一到 `risk.py`（补 `_short_risk_penalty_parts`） |
 | 权重加载（读 weights.json） | `scoring_core/weights.py:144` | `backtest.py:31` `_load_alphalite_weights` | 统一到 `weights.py` 一个加载器 |
 | 退市/涨停判断 | `strategy_validation.py` 多处 | `risk_rules.py:27` `_is_sealed_limit_down` | 抽 `security_status.py` 共享 |
 

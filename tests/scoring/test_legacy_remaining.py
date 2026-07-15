@@ -303,7 +303,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
 
         status = strategy_status(
             {
-                "strategy_name": "short_term",
+                "strategy_name": "today_term",
                 "sample_count": 25,
                 "day_count": 2,
                 "real_sample_count": 25,
@@ -344,7 +344,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
 
         item = {"code": "600001", "name": "样本", "score": 60.0}
         row = pd.Series({"code": "600001", "name": "样本", "pct_chg": 2.0, "market": "main"})
-        out = _attach_signal_explanation(item, row, "short_term", "短线", "盘中强势")
+        out = _attach_signal_explanation(item, row, "today_term", "短线", "盘中强势")
         # 即使委员会缺失，bear_score 也应回退到中性 50（而非 0）。
         self.assertIsInstance(out["bear_score"], (int, float))
         self.assertGreaterEqual(out["bull_score"], 0)
@@ -713,11 +713,11 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tracker = TopKDropoutTracker("{}/state.json".format(tmpdir), keep_k=2, buffer_k=3)
             first = tracker.update(
-                "short_term",
+                "today_term",
                 [{"code": "600001", "score": 90}, {"code": "600002", "score": 80}],
             )
             second = tracker.update(
-                "short_term",
+                "today_term",
                 [{"code": "600002", "score": 95}, {"code": "600003", "score": 85}],
             )
 
@@ -732,7 +732,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         ranked_rows = [{"code": "600{:03d}".format(index), "score": 100 - index} for index in range(35)]
         with tempfile.TemporaryDirectory() as tmpdir:
             tracker = TopKDropoutTracker("{}/state.json".format(tmpdir), keep_k=30, buffer_k=50)
-            result = tracker.update("short_term", ranked_rows)
+            result = tracker.update("today_term", ranked_rows)
 
         self.assertEqual(len(result["rows"]), 30)
         self.assertEqual(result["rows"][0]["code"], "600000")
@@ -798,7 +798,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
                 "2026-07-08T15:00:00",
                 [{"rank": 1, "code": "600002", "name": "删除", "price": 11, "score": 70}],
             )
-            result = store.prune_strategies(("short_term", "tomorrow_picks", "swing_picks"))
+            result = store.prune_strategies(("today_term", "tomorrow_picks", "swing_picks"))
             active_dates = store.list_signal_dates("tomorrow_picks")
             inactive_dates = store.list_signal_dates("position_picks")
 

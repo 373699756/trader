@@ -116,16 +116,16 @@ class RecommendationStrategiesTest(unittest.TestCase):
             top_n=10,
         )
 
-        self.assertIn("short_term", result)
+        self.assertIn("today_term", result)
         self.assertNotIn("long_term", result)
         self.assertEqual(meta["top_n"], 10)
-        self.assertEqual(result["short_term"][0]["code"], "600001")
-        self.assertEqual(meta["strategy_version"], config.SHORT_TERM_STRATEGY_VERSION)
-        self.assertEqual(result["short_term"][0]["tier"], "backup_pool")
-        self.assertFalse(result["short_term"][0]["execution_allowed"])
-        self.assertEqual(result["short_term"][0]["trade_action"]["position_size"], 0.0)
-        self.assertEqual(result["short_term"][0]["recommendation_class_label"], "今日延续推荐")
-        self.assertHasExplanationFields(result["short_term"][0], "short_term")
+        self.assertEqual(result["today_term"][0]["code"], "600001")
+        self.assertEqual(meta["strategy_version"], config.TODAY_TERM_STRATEGY_VERSION)
+        self.assertEqual(result["today_term"][0]["tier"], "backup_pool")
+        self.assertFalse(result["today_term"][0]["execution_allowed"])
+        self.assertEqual(result["today_term"][0]["trade_action"]["position_size"], 0.0)
+        self.assertEqual(result["today_term"][0]["recommendation_class_label"], "今日延续推荐")
+        self.assertHasExplanationFields(result["today_term"][0], "today_term")
 
     def test_short_term_rows_carry_verdict_and_bull_bear(self):
         quotes = pd.DataFrame(
@@ -140,7 +140,7 @@ class RecommendationStrategiesTest(unittest.TestCase):
         )
         candidates = prepare_candidates(quotes)
         result, _ = score_today_candidates(candidates, {}, {}, {}, top_n=10)
-        short_rows = result["short_term"]
+        short_rows = result["today_term"]
         self.assertTrue(short_rows)
         row = short_rows[0]
         self.assertIn("verdict", row)

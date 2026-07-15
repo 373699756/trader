@@ -9,7 +9,7 @@ from .scoring_core.constants import STRATEGY_LABELS
 
 
 HORIZON_STRATEGIES = {
-    "short": ("short_term", "tomorrow_picks", "swing_picks"),
+    "short": ("today_term", "tomorrow_picks", "swing_picks"),
     "long": (),
 }
 

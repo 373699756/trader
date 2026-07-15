@@ -95,7 +95,7 @@ class ValidationBackfillTest(unittest.TestCase):
         result = backfill_strategy_validation_samples(
             provider=None,
             validation_store=None,
-            strategy_name="short_term",
+            strategy_name="today_term",
             codes=[],
         )
 

@@ -17,9 +17,9 @@ def test_strategy_document_matches_runtime_strategy_names_and_snapshot_semantics
     assert "不进入默认自动快照" not in text
     assert "可以进入自动快照作为辅助验证样本" in text
     assert "验证库、API 参数、指标缓存、`baseline_id`" in text
-    assert "short_term" in config.AUTO_SNAPSHOT_STRATEGIES
-    assert "short_term" not in config.ACTIVE_STRATEGIES
-    assert storage_strategy_name("today_picks") == "short_term"
+    assert "today_term" in config.AUTO_SNAPSHOT_STRATEGIES
+    assert "today_term" not in config.ACTIVE_STRATEGIES
+    assert storage_strategy_name("today_picks") == "today_term"
     assert storage_strategy_name("swing_2_5d_picks") == "swing_picks"
 
 

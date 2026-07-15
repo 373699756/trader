@@ -15,7 +15,7 @@ from .common import bool_arg, int_arg, json_result, services
 bp = Blueprint("validation", __name__)
 
 
-def _validation_strategy(default: str = "short_term") -> str:
+def _validation_strategy(default: str = "today_term") -> str:
     return normalize_validation_strategy(request.args.get("strategy", default), default=default)
 
 
@@ -30,7 +30,7 @@ def _direction_focus_arg():
 def strategy_snapshot():
     return json_result(
         services().strategy_snapshot(
-            request.args.get("strategy", "short_term"),
+            request.args.get("strategy", "today_term"),
             normalize_market(request.args.get("market", "all")),
         )
     )

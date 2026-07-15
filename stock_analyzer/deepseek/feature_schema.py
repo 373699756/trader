@@ -11,17 +11,17 @@ from ..strategies.types import storage_strategy_name
 from .evidence_validation import availability_invariant_error
 
 
-FEATURE_SCHEMA_VERSION = "deepseek_five_dimension_features_v2"
+FEATURE_SCHEMA_VERSION = "deepseek_five_dimension_features_v3"
 PROMPT_VERSIONS = {
-    "short_term": "today_five_dimension_v2",
-    "tomorrow_picks": "tomorrow_five_dimension_v2",
-    "swing_picks": "swing_2_5d_five_dimension_v2",
+    "today_term": "today_five_dimension_v3",
+    "tomorrow_picks": "tomorrow_five_dimension_v3",
+    "swing_picks": "swing_2_5d_five_dimension_v3",
 }
 CONTRACTS = {
-    "short_term": {
-        "label": "今天策略",
+    "today_term": {
+        "label": "今早执行",
         "horizon": "today",
-        "focus": "信号时点至当日收盘的事件影响",
+        "focus": "信号后买入窗口（09:30-14:00）至明日/后日退出的事件延续",
     },
     "tomorrow_picks": {
         "label": "明日策略",
@@ -233,6 +233,16 @@ def candidate_feature_input(row: Dict[str, object], cutoff_at: str) -> Dict[str,
             financial_available=financial_available,
         )
     )
+    research_input = _build_research_input(
+        row,
+        fundamentals,
+        market_context,
+        market_state,
+        financial_available=financial_available,
+        cashflow_available=cashflow_available,
+        main_flow_available=main_flow_available,
+        evidence=evidence,
+    )
     return {
         "code": normalize_code(row.get("code")),
         "name": str(row.get("name") or "")[:40],
@@ -246,6 +256,8 @@ def candidate_feature_input(row: Dict[str, object], cutoff_at: str) -> Dict[str,
         },
         "market_context": market_context,
         "market_regime": str(row.get("market_regime") or "unknown")[:20],
+        "research_input": research_input,
+        "research_input_version": "deepseek_research_input_v1",
         "data_availability": {
             "financial": financial_available,
             "cashflow": cashflow_available,
@@ -265,6 +277,129 @@ def candidate_feature_input(row: Dict[str, object], cutoff_at: str) -> Dict[str,
             json.dumps(market_state, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
     }
+
+
+def _build_research_input(
+    row: Dict[str, object],
+    fundamentals: Dict[str, object],
+    market_context: Dict[str, object],
+    market_state: Dict[str, object],
+    *,
+    financial_available: bool,
+    cashflow_available: bool,
+    main_flow_available: bool,
+    evidence: List[Dict[str, str]],
+) -> Dict[str, object]:
+    policy_evidence_count = 0
+    for item in evidence:
+        title = str(item.get("title") or "")
+        source = str(item.get("source") or "")
+        if ("政策" in title) or ("policy" in title.lower()) or ("政策" in source) or ("policy" in source.lower()):
+            policy_evidence_count += 1
+    value_score = coerce_number(fundamentals.get("fundamental_value_score"))
+    quality_score = coerce_number(fundamentals.get("fundamental_quality_score"))
+    month_flow_accel = coerce_number(market_context.get("main_net_flow_20d")) - coerce_number(
+        market_context.get("main_net_flow_5d")
+    )
+    industry_growth_proxy = coerce_number(row.get("industry_revenue_growth"))
+    policy_support_proxy = coerce_number(row.get("policy_support_score"))
+    execution_risk_proxy = coerce_number(row.get("execution_risk_score"))
+    return {
+        "value_quality_context": {
+            "valuation": {
+                "roe": fundamentals.get("roe", 0.0),
+                "gross_margin": fundamentals.get("gross_margin", 0.0),
+                "pe_dynamic": fundamentals.get("pe_dynamic", 0.0),
+                "pb": fundamentals.get("pb", 0.0),
+                "debt_ratio": fundamentals.get("debt_ratio", 0.0),
+                "fundamental_value_score": round(value_score, 2),
+            },
+            "quality_score_combo": {
+                "fundamental_value_score": round(value_score, 2),
+                "fundamental_quality_score": round(quality_score, 2),
+                "earning_quality_ratio": coerce_number(
+                    fundamentals.get("gross_margin", 0.0)
+                ),
+                "industry_growth_proxy": industry_growth_proxy,
+            },
+        },
+        "financial_health_context": {
+            "profitability": {
+                "revenue_yoy": fundamentals.get("revenue_yoy", 0.0),
+                "net_profit_yoy": fundamentals.get("net_profit_yoy", 0.0),
+                "earnings_surprise": fundamentals.get("earnings_surprise", 0.0),
+                "rating_revision": fundamentals.get("rating_revision", 0.0),
+            },
+            "cashflow": {
+                "operating_cashflow": coerce_number(fundamentals.get("operating_cashflow")),
+                "operating_cashflow_yoy": coerce_number(fundamentals.get("operating_cashflow_yoy")),
+                "free_cashflow": coerce_number(fundamentals.get("free_cashflow")),
+                "current_ratio": coerce_number(fundamentals.get("current_ratio")),
+                "receivables_yoy": coerce_number(fundamentals.get("receivables_yoy")),
+                "inventory_yoy": coerce_number(fundamentals.get("inventory_yoy")),
+                "goodwill_ratio": coerce_number(fundamentals.get("goodwill_ratio")),
+                "interest_bearing_debt_ratio": coerce_number(fundamentals.get("interest_bearing_debt_ratio")),
+                "financial_data_available": int(financial_available),
+                "cashflow_data_available": int(cashflow_available),
+            },
+        },
+        "market_and_flow_context": {
+            "context_1m": {
+                "pct_chg": coerce_number(market_context.get("pct_chg")),
+                "speed": coerce_number(market_context.get("speed")),
+                "amplitude": coerce_number(market_context.get("amplitude")),
+                "turnover_rate": coerce_number(market_context.get("turnover_rate")),
+                "main_net_flow_1d": coerce_number(market_context.get("main_net_flow_1d")),
+                "main_net_flow_5d": coerce_number(market_context.get("main_net_flow_5d")),
+                "main_net_flow_10d": coerce_number(market_context.get("main_net_flow_10d")),
+                "main_net_flow_20d": coerce_number(market_context.get("main_net_flow_20d")),
+                "main_flow_acceleration_20d_vs_5d": round(month_flow_accel, 2),
+                "main_fund_flow_available": int(main_flow_available),
+            },
+            "execution_context": {
+                "market_state": market_state,
+                "order_imbalance": coerce_number(market_context.get("order_imbalance")),
+                "volume_ratio": coerce_number(market_context.get("volume_ratio")),
+                "turnover_rate": coerce_number(market_context.get("turnover_rate")),
+                "volatility_20d": coerce_number(market_context.get("volatility_20d")),
+                "vol_amount_5d": coerce_number(market_context.get("vol_amount_5d")),
+                "execution_risk_score": execution_risk_proxy,
+            },
+        },
+        "industry_policy_context": {
+            "industry": str(row.get("industry") or row.get("theme") or ""),
+            "industry_regime": str(row.get("market_regime") or "unknown"),
+            "industry_growth_proxy": round(industry_growth_proxy, 2),
+            "policy_signal_count": policy_evidence_count,
+            "policy_support_score": round(policy_support_proxy, 2),
+            "policy_support_hint": _policy_support_hint(policy_support_proxy),
+            "recent_policy_titles": _strings(
+                [
+                    item.get("title")
+                    for item in evidence
+                    if ("政策" in str(item.get("title") or "")) or ("policy" in str(item.get("title") or "").lower())
+                ],
+                3,
+            ),
+        },
+        "risk_context": {
+            "verified_risk_flags": _verified_risk_flags(row),
+            "evidence_count": len(evidence),
+            "risk_pressure_score": execution_risk_proxy,
+            "market_state": str(row.get("market_regime") or "unknown"),
+            "policy_dependency": "direct" if policy_evidence_count > 0 else "none",
+        },
+    }
+
+
+def _policy_support_hint(value: float) -> str:
+    if value >= 80:
+        return "strong"
+    if value >= 50:
+        return "moderate"
+    if value >= 20:
+        return "weak"
+    return "none"
 
 
 def _material_market_state(values: Dict[str, object]) -> Dict[str, float]:
@@ -583,7 +718,7 @@ def adapt_feature_to_strategy(feature: Dict[str, object], strategy: str) -> Dict
     today_support = coerce_number(support.get("today"))
     next_day_support = coerce_number(support.get("next_day"))
     swing_support = coerce_number(support.get("2_5d"))
-    if normalized == "short_term":
+    if normalized == "today_term":
         matched = today_support >= 60.0 and next_day_support >= 60.0
     elif normalized == "tomorrow_picks":
         matched = next_day_support >= 60.0

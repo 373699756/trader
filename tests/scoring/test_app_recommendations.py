@@ -59,9 +59,9 @@ def test_recommendations_endpoint_returns_market_regime(tmp_path):
     assert response.status_code == 200
     assert payload["ok"]
     assert payload["meta"]["market_regime"]["level"] == "risk_on"
-    assert payload["recommendations"]["short_term"][0]["code"] == "600001"
-    assert "serenity_profile" in payload["recommendations"]["short_term"][0]
-    assert "agent_committee" in payload["recommendations"]["short_term"][0]
+    assert payload["recommendations"]["today_term"][0]["code"] == "600001"
+    assert "serenity_profile" in payload["recommendations"]["today_term"][0]
+    assert "agent_committee" in payload["recommendations"]["today_term"][0]
 
 
 def test_latest_recommendations_rejects_snapshot_for_other_market(tmp_path):
@@ -70,7 +70,7 @@ def test_latest_recommendations_rejects_snapshot_for_other_market(tmp_path):
         str(snapshot_path),
         {
             "ok": True,
-            "recommendations": {"short_term": [{"code": "600001"}]},
+            "recommendations": {"today_term": [{"code": "600001"}]},
             "meta": {"market_filter": "all", "top_n": 18},
         },
     )
@@ -87,13 +87,13 @@ def test_latest_recommendations_rejects_snapshot_for_other_market(tmp_path):
     assert mismatch.status_code == 404
     assert mismatch.get_json()["snapshot"]["status"] == "market_mismatch"
     assert matched.status_code == 200
-    assert matched.get_json()["recommendations"]["short_term"][0]["code"] == "600001"
+    assert matched.get_json()["recommendations"]["today_term"][0]["code"] == "600001"
 
 
 def test_recommendation_snapshot_rejects_market_and_top_n_mismatch(tmp_path):
     payload = {
         "ok": True,
-        "recommendations": {"short_term": [{"code": "600001"}]},
+        "recommendations": {"today_term": [{"code": "600001"}]},
         "meta": {"market_filter": "all", "top_n": 18},
     }
     snapshot_path = tmp_path / "latest.json"
@@ -112,7 +112,7 @@ def test_recommendations_prefers_cached_snapshot_before_live_recompute(tmp_path)
     payload = {
         "ok": True,
         "data": [{"code": "600001", "name": "快照样本"}],
-        "recommendations": {"short_term": [{"code": "600001", "name": "快照样本"}]},
+        "recommendations": {"today_term": [{"code": "600001", "name": "快照样本"}]},
         "meta": {"market_filter": "all", "top_n": 18},
     }
     snapshot_path = tmp_path / "latest.json"
@@ -131,7 +131,7 @@ def test_recommendations_prefers_cached_snapshot_before_live_recompute(tmp_path)
     body = response.get_json()
     assert response.status_code == 200
     assert body["ok"]
-    assert body["recommendations"]["short_term"][0]["code"] == "600001"
+    assert body["recommendations"]["today_term"][0]["code"] == "600001"
     assert body["snapshot"]["source"] == "disk_snapshot"
 
 

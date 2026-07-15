@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Protocol
 
@@ -62,6 +63,16 @@ def _check_signal_freeze_deadline(batch_metadata: Dict[str, object]) -> str:
     if observed_at >= deadline:
         raise SignalFreezeDeadlineExceeded(deadline, observed_at)
     return observed_at
+
+
+def _is_sqlite_lock_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    sqlite_errorcode = getattr(exc, "sqlite_errorcode", None)
+    if sqlite_errorcode in (sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_BUSY):
+        return True
+    message = str(exc).lower()
+    return "locked" in message or "database is locked" in message
 
 
 _SAMPLE_TYPE_ALIASES = {
@@ -758,300 +769,330 @@ class SignalRepository(_RepositoryBase):
         shadow_saved = 0
         candidate_saved = 0
         freeze_transaction_checked_at = ""
-        with self.connect() as conn:
-            freeze_transaction_checked_at = _check_signal_freeze_deadline(batch_metadata)
+
+        def _run_transaction() -> Dict[str, object]:
             now_ts = datetime.now().isoformat(timespec="seconds")
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO strategy_signal_batches
-                (strategy_name, strategy_version, signal_date, signal_time, saved_count,
-                 candidate_count, selected_count, data_source_timestamp, market_data_cutoff,
-                 execution_policy_version, execution_policy_json, generation_json,
-                 portfolio_capital, snapshot_id, sample_type, sample_source,
-                 snapshot_phase, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    strategy_name,
-                    strategy_version,
-                    signal_date,
-                    signal_time,
-                    len(rows),
-                    len(candidate_rows),
-                    len(rows),
-                    str(batch_metadata.get("data_source_timestamp") or ""),
-                    str(batch_metadata.get("market_data_cutoff") or signal_time),
-                    execution_policy_version,
-                    execution_policy_json,
-                    json.dumps(batch_metadata.get("generation") or {}, ensure_ascii=False, sort_keys=True, default=str),
-                    portfolio_capital,
-                    str(batch_metadata.get("snapshot_id") or ""),
-                    sample_type,
-                    sample_source,
-                    snapshot_phase,
-                    now_ts,
-                ),
-            )
-            if "replay" in str(strategy_version or "").lower():
-                old_ids = conn.execute(
-                    """
-                    SELECT id
-                    FROM strategy_signals
-                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
-                      AND snapshot_phase = ?
-                    """,
-                    (strategy_name, strategy_version, signal_date, snapshot_phase),
-                ).fetchall()
-                delete_sql = """
-                    DELETE FROM strategy_signals
-                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
-                      AND snapshot_phase = ?
-                    """
-                delete_params = (strategy_name, strategy_version, signal_date, snapshot_phase)
-                old_shadow_ids = conn.execute(
-                    """
-                    SELECT id
-                    FROM strategy_deepseek_shadow_signals
-                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
-                      AND snapshot_phase = ?
-                    """,
-                    (strategy_name, strategy_version, signal_date, snapshot_phase),
-                ).fetchall()
-                shadow_delete_sql = """
-                    DELETE FROM strategy_deepseek_shadow_signals
-                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
-                      AND snapshot_phase = ?
-                    """
-                shadow_delete_params = (strategy_name, strategy_version, signal_date, snapshot_phase)
-                candidate_delete_sql = """
-                    DELETE FROM strategy_candidate_snapshots
-                    WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
-                      AND snapshot_phase = ?
-                    """
-                candidate_delete_params = (strategy_name, strategy_version, signal_date, snapshot_phase)
-            else:
+            with self.connect() as conn:
+                conn.execute("PRAGMA busy_timeout = 2500")
+                conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     """
-                    DELETE FROM strategy_signal_batches
-                    WHERE strategy_name = ? AND signal_date = ? AND strategy_version != ?
-                      AND snapshot_phase = ?
-                      AND lower(strategy_version) NOT LIKE '%replay%'
-                    """,
-                    (strategy_name, signal_date, strategy_version, snapshot_phase),
-                )
-                old_ids = conn.execute(
-                    """
-                    SELECT id
-                    FROM strategy_signals
-                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
-                      AND snapshot_phase = ?
-                    """,
-                    (strategy_name, signal_date, snapshot_phase),
-                ).fetchall()
-                delete_sql = """
-                    DELETE FROM strategy_signals
-                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
-                      AND snapshot_phase = ?
-                    """
-                delete_params = (strategy_name, signal_date, snapshot_phase)
-                old_shadow_ids = conn.execute(
-                    """
-                    SELECT id
-                    FROM strategy_deepseek_shadow_signals
-                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
-                      AND snapshot_phase = ?
-                    """,
-                    (strategy_name, signal_date, snapshot_phase),
-                ).fetchall()
-                shadow_delete_sql = """
-                    DELETE FROM strategy_deepseek_shadow_signals
-                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
-                      AND snapshot_phase = ?
-                    """
-                shadow_delete_params = (strategy_name, signal_date, snapshot_phase)
-                candidate_delete_sql = """
-                    DELETE FROM strategy_candidate_snapshots
-                    WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
-                      AND snapshot_phase = ?
-                    """
-                candidate_delete_params = (strategy_name, signal_date, snapshot_phase)
-            if old_ids:
-                conn.executemany(
-                    "DELETE FROM strategy_execution_skips WHERE signal_id = ?",
-                    [(row[0],) for row in old_ids],
-                )
-                conn.executemany(
-                    "DELETE FROM strategy_outcomes WHERE signal_id = ?",
-                    [(row[0],) for row in old_ids],
-                )
-                conn.executemany(
-                    "DELETE FROM strategy_execution_records WHERE signal_id = ?",
-                    [(row[0],) for row in old_ids],
-                )
-                conn.execute(delete_sql, delete_params)
-            if old_shadow_ids:
-                conn.executemany(
-                    "DELETE FROM strategy_deepseek_shadow_outcomes WHERE shadow_id = ?",
-                    [(row[0],) for row in old_shadow_ids],
-                )
-                conn.execute(shadow_delete_sql, shadow_delete_params)
-            conn.execute(candidate_delete_sql, candidate_delete_params)
-            candidate_rows_to_save = []
-            for row in candidate_rows:
-                code = normalize_code(row.get("code"))
-                if not code:
-                    continue
-                candidate_rows_to_save.append(
-                    (
-                        strategy_name,
-                        strategy_version,
-                        signal_date,
-                        signal_time,
-                        code,
-                        str(row.get("name") or ""),
-                        str(row.get("market") or ""),
-                        str(row.get("industry") or ""),
-                        str(row.get("style_bucket") or "unknown"),
-                        1 if row.get("eligible") else 0,
-                        1 if row.get("selected") else 0,
-                        int(coerce_number(row.get("rank")) or 0),
-                        coerce_number(row.get("score")),
-                    1 if row.get("point_in_time_valid") else 0,
-                    json.dumps(row.get("eligibility_reasons") or [], ensure_ascii=False, default=str),
-                    json.dumps(row.get("feature_values") or {}, ensure_ascii=False, default=str),
-                    json.dumps(row.get("missing_mask") or {}, ensure_ascii=False, default=str),
-                    json.dumps(row.get("source_timestamps") or {}, ensure_ascii=False, default=str),
-                    str(row.get("announcement_time") or ""),
-                    str(row.get("market_data_cutoff") or signal_time),
-                    json.dumps(row.get("point_in_time_violations") or [], ensure_ascii=False, default=str),
-                    _canonical_sample_type(row.get("sample_type") or sample_type),
-                    str(row.get("sample_source") or sample_source),
-                    json.dumps(row.get("raw") or {}, ensure_ascii=False, default=str),
-                        str(row.get("snapshot_id") or batch_metadata.get("snapshot_id") or ""),
-                        snapshot_phase,
-                        now_ts,
-                )
-            )
-            if candidate_rows_to_save:
-                conn.executemany(
-                    """
-                    INSERT OR REPLACE INTO strategy_candidate_snapshots
-                    (strategy_name, strategy_version, signal_date, signal_time, code, name, market,
-                     industry, style_bucket, eligible, selected, rank, score, point_in_time_valid,
-                     eligibility_reasons_json, feature_values_json, missing_mask_json,
-                    source_timestamps_json, announcement_time, market_data_cutoff,
-                     point_in_time_violations_json, sample_type, sample_source, raw_json, snapshot_id,
+                    INSERT OR REPLACE INTO strategy_signal_batches
+                    (strategy_name, strategy_version, signal_date, signal_time, saved_count,
+                     candidate_count, selected_count, data_source_timestamp, market_data_cutoff,
+                     execution_policy_version, execution_policy_json, generation_json,
+                     portfolio_capital, snapshot_id, sample_type, sample_source,
                      snapshot_phase, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    candidate_rows_to_save,
-                )
-                candidate_saved = len(candidate_rows_to_save)
-
-            signal_rows_to_save = []
-            for row in rows:
-                code = normalize_code(row.get("code"))
-                rank = int(row.get("rank") or 0)
-                signal_rows_to_save.append(
                     (
                         strategy_name,
                         strategy_version,
                         signal_date,
                         signal_time,
-                        rank,
-                        code,
-                        str(row.get("name", "")),
-                        str(row.get("market_label") or row.get("market") or ""),
-                        str(row.get("theme", "")),
-                        coerce_number(row.get("price")),
-                        coerce_number(row.get("pct_chg")),
-                        coerce_number(row.get("turnover")),
-                        coerce_number(row.get("volume_ratio")),
-                        coerce_number(row.get("turnover_rate")),
-                        coerce_number(row.get("sixty_day_pct")),
-                        coerce_number(row.get("ytd_pct")),
-                        coerce_number(row.get("score")),
-                        json.dumps(row.get("reasons", []), ensure_ascii=False),
-                        json.dumps(row, ensure_ascii=False),
+                        len(rows),
+                        len(candidate_rows),
+                        len(rows),
+                        str(batch_metadata.get("data_source_timestamp") or ""),
+                        str(batch_metadata.get("market_data_cutoff") or signal_time),
+                        execution_policy_version,
+                        execution_policy_json,
+                        json.dumps(batch_metadata.get("generation") or {}, ensure_ascii=False, sort_keys=True, default=str),
+                        portfolio_capital,
+                        str(batch_metadata.get("snapshot_id") or ""),
+                        sample_type,
+                        sample_source,
                         snapshot_phase,
                         now_ts,
+                    ),
+                )
+                if "replay" in str(strategy_version or "").lower():
+                    old_ids = conn.execute(
+                        """
+                        SELECT id
+                        FROM strategy_signals
+                        WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                          AND snapshot_phase = ?
+                        """,
+                        (strategy_name, strategy_version, signal_date, snapshot_phase),
+                    ).fetchall()
+                    delete_sql = """
+                        DELETE FROM strategy_signals
+                        WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                          AND snapshot_phase = ?
+                        """
+                    delete_params = (strategy_name, strategy_version, signal_date, snapshot_phase)
+                    old_shadow_ids = conn.execute(
+                        """
+                        SELECT id
+                        FROM strategy_deepseek_shadow_signals
+                        WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                          AND snapshot_phase = ?
+                        """,
+                        (strategy_name, strategy_version, signal_date, snapshot_phase),
+                    ).fetchall()
+                    shadow_delete_sql = """
+                        DELETE FROM strategy_deepseek_shadow_signals
+                        WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                          AND snapshot_phase = ?
+                        """
+                    shadow_delete_params = (strategy_name, strategy_version, signal_date, snapshot_phase)
+                    candidate_delete_sql = """
+                        DELETE FROM strategy_candidate_snapshots
+                        WHERE strategy_name = ? AND strategy_version = ? AND signal_date = ?
+                          AND snapshot_phase = ?
+                        """
+                    candidate_delete_params = (strategy_name, strategy_version, signal_date, snapshot_phase)
+                else:
+                    conn.execute(
+                        """
+                        DELETE FROM strategy_signal_batches
+                        WHERE strategy_name = ? AND signal_date = ? AND strategy_version != ?
+                          AND snapshot_phase = ?
+                          AND lower(strategy_version) NOT LIKE '%replay%'
+                        """,
+                        (strategy_name, signal_date, strategy_version, snapshot_phase),
                     )
-                )
-            if signal_rows_to_save:
-                conn.executemany(
-                    """
-                    INSERT OR REPLACE INTO strategy_signals
-                    (strategy_name, strategy_version, signal_date, signal_time, rank, code, name,
-                     market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
-                     turnover_rate, sixty_day_pct, ytd_pct, score, reasons_json, raw_json,
-                     snapshot_phase, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    signal_rows_to_save,
-                )
-                saved = len(signal_rows_to_save)
+                    old_ids = conn.execute(
+                        """
+                        SELECT id
+                        FROM strategy_signals
+                        WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                          AND snapshot_phase = ?
+                        """,
+                        (strategy_name, signal_date, snapshot_phase),
+                    ).fetchall()
+                    delete_sql = """
+                        DELETE FROM strategy_signals
+                        WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                          AND snapshot_phase = ?
+                        """
+                    delete_params = (strategy_name, signal_date, snapshot_phase)
+                    old_shadow_ids = conn.execute(
+                        """
+                        SELECT id
+                        FROM strategy_deepseek_shadow_signals
+                        WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                          AND snapshot_phase = ?
+                        """,
+                        (strategy_name, signal_date, snapshot_phase),
+                    ).fetchall()
+                    shadow_delete_sql = """
+                        DELETE FROM strategy_deepseek_shadow_signals
+                        WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                          AND snapshot_phase = ?
+                        """
+                    shadow_delete_params = (strategy_name, signal_date, snapshot_phase)
+                    candidate_delete_sql = """
+                        DELETE FROM strategy_candidate_snapshots
+                        WHERE strategy_name = ? AND signal_date = ? AND lower(strategy_version) NOT LIKE '%replay%'
+                          AND snapshot_phase = ?
+                        """
+                    candidate_delete_params = (strategy_name, signal_date, snapshot_phase)
+                if old_ids:
+                    conn.executemany(
+                        "DELETE FROM strategy_execution_skips WHERE signal_id = ?",
+                        [(row[0],) for row in old_ids],
+                    )
+                    conn.executemany(
+                        "DELETE FROM strategy_outcomes WHERE signal_id = ?",
+                        [(row[0],) for row in old_ids],
+                    )
+                    conn.executemany(
+                        "DELETE FROM strategy_execution_records WHERE signal_id = ?",
+                        [(row[0],) for row in old_ids],
+                    )
+                    conn.execute(delete_sql, delete_params)
+                if old_shadow_ids:
+                    conn.executemany(
+                        "DELETE FROM strategy_deepseek_shadow_outcomes WHERE shadow_id = ?",
+                        [(row[0],) for row in old_shadow_ids],
+                    )
+                    conn.execute(shadow_delete_sql, shadow_delete_params)
+                conn.execute(candidate_delete_sql, candidate_delete_params)
+                candidate_rows_to_save = []
+                for row in candidate_rows:
+                    code = normalize_code(row.get("code"))
+                    if not code:
+                        continue
+                    candidate_rows_to_save.append(
+                        (
+                            strategy_name,
+                            strategy_version,
+                            signal_date,
+                            signal_time,
+                            code,
+                            str(row.get("name") or ""),
+                            str(row.get("market") or ""),
+                            str(row.get("industry") or ""),
+                            str(row.get("style_bucket") or "unknown"),
+                            1 if row.get("eligible") else 0,
+                            1 if row.get("selected") else 0,
+                            int(coerce_number(row.get("rank")) or 0),
+                            coerce_number(row.get("score")),
+                            1 if row.get("point_in_time_valid") else 0,
+                            json.dumps(row.get("eligibility_reasons") or [], ensure_ascii=False, default=str),
+                            json.dumps(row.get("feature_values") or {}, ensure_ascii=False, default=str),
+                            json.dumps(row.get("missing_mask") or {}, ensure_ascii=False, default=str),
+                            json.dumps(row.get("source_timestamps") or {}, ensure_ascii=False, default=str),
+                            str(row.get("announcement_time") or ""),
+                            str(row.get("market_data_cutoff") or signal_time),
+                            json.dumps(row.get("point_in_time_violations") or [], ensure_ascii=False, default=str),
+                            _canonical_sample_type(row.get("sample_type") or sample_type),
+                            str(row.get("sample_source") or sample_source),
+                            json.dumps(row.get("raw") or {}, ensure_ascii=False, default=str),
+                            str(row.get("snapshot_id") or batch_metadata.get("snapshot_id") or ""),
+                            snapshot_phase,
+                            now_ts,
+                        )
+                    )
+                if candidate_rows_to_save:
+                    conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO strategy_candidate_snapshots
+                        (strategy_name, strategy_version, signal_date, signal_time, code, name, market,
+                         industry, style_bucket, eligible, selected, rank, score, point_in_time_valid,
+                         eligibility_reasons_json, feature_values_json, missing_mask_json,
+                        source_timestamps_json, announcement_time, market_data_cutoff,
+                         point_in_time_violations_json, sample_type, sample_source, raw_json, snapshot_id,
+                         snapshot_phase, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        candidate_rows_to_save,
+                    )
+                    candidate_saved = len(candidate_rows_to_save)
 
-            shadow_rows_to_save = []
-            for row in deepseek_shadow_rows:
-                code = normalize_code(row.get("code"))
-                if not code:
-                    continue
-                rank = int(coerce_number(row.get("rank"), coerce_number(row.get("local_rank"), 0)) or 0)
-                local_rank = int(coerce_number(row.get("local_rank"), rank) or 0)
-                shadow_rows_to_save.append(
-                    (
-                        strategy_name,
-                        strategy_version,
-                        signal_date,
-                        signal_time,
-                        rank,
-                        local_rank,
-                        code,
-                        str(row.get("name", "")),
-                        str(row.get("market_label") or row.get("market") or ""),
-                        str(row.get("theme", "")),
-                        coerce_number(row.get("price")),
-                        coerce_number(row.get("pct_chg")),
-                        coerce_number(row.get("turnover")),
-                        coerce_number(row.get("volume_ratio")),
-                        coerce_number(row.get("turnover_rate")),
-                        coerce_number(row.get("sixty_day_pct")),
-                        coerce_number(row.get("ytd_pct")),
-                        coerce_number(row.get("score")),
-                        coerce_number(row.get("deepseek_rank_score")),
-                        str(row.get("deepseek_action") or ""),
-                        1 if row.get("deepseek_veto") else 0,
-                        coerce_number(row.get("deepseek_penalty")),
-                        str(row.get("deepseek_filter_reason") or ""),
-                        json.dumps(row, ensure_ascii=False),
-                        snapshot_phase,
-                        now_ts,
+                signal_rows_to_save = []
+                for row in rows:
+                    code = normalize_code(row.get("code"))
+                    rank = int(row.get("rank") or 0)
+                    signal_rows_to_save.append(
+                        (
+                            strategy_name,
+                            strategy_version,
+                            signal_date,
+                            signal_time,
+                            rank,
+                            code,
+                            str(row.get("name", "")),
+                            str(row.get("market_label") or row.get("market") or ""),
+                            str(row.get("theme", "")),
+                            coerce_number(row.get("price")),
+                            coerce_number(row.get("pct_chg")),
+                            coerce_number(row.get("turnover")),
+                            coerce_number(row.get("volume_ratio")),
+                            coerce_number(row.get("turnover_rate")),
+                            coerce_number(row.get("sixty_day_pct")),
+                            coerce_number(row.get("ytd_pct")),
+                            coerce_number(row.get("score")),
+                            json.dumps(row.get("reasons", []), ensure_ascii=False),
+                            json.dumps(row, ensure_ascii=False),
+                            snapshot_phase,
+                            now_ts,
+                        )
                     )
-                )
-            if shadow_rows_to_save:
-                conn.executemany(
-                    """
-                    INSERT OR REPLACE INTO strategy_deepseek_shadow_signals
-                    (strategy_name, strategy_version, signal_date, signal_time, rank, local_rank, code, name,
-                     market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
-                     turnover_rate, sixty_day_pct, ytd_pct, score, deepseek_rank_score, deepseek_action,
-                     deepseek_veto, deepseek_penalty, filter_reason, raw_json, snapshot_phase, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    shadow_rows_to_save,
-                )
-                shadow_saved = len(shadow_rows_to_save)
-            # This check is deliberately inside the transaction. Raising here
-            # rolls back all replacements/inserts, so a late batch cannot look
-            # executable merely because its calculation started before cutoff.
-            freeze_transaction_checked_at = _check_signal_freeze_deadline(batch_metadata)
+                if signal_rows_to_save:
+                    conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO strategy_signals
+                        (strategy_name, strategy_version, signal_date, signal_time, rank, code, name,
+                         market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
+                         turnover_rate, sixty_day_pct, ytd_pct, score, reasons_json, raw_json,
+                         snapshot_phase, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        signal_rows_to_save,
+                    )
+                    saved = len(signal_rows_to_save)
+
+                shadow_rows_to_save = []
+                for row in deepseek_shadow_rows:
+                    code = normalize_code(row.get("code"))
+                    if not code:
+                        continue
+                    rank = int(coerce_number(row.get("rank"), coerce_number(row.get("local_rank"), 0)) or 0)
+                    local_rank = int(coerce_number(row.get("local_rank"), rank) or 0)
+                    shadow_rows_to_save.append(
+                        (
+                            strategy_name,
+                            strategy_version,
+                            signal_date,
+                            signal_time,
+                            rank,
+                            local_rank,
+                            code,
+                            str(row.get("name", "")),
+                            str(row.get("market_label") or row.get("market") or ""),
+                            str(row.get("theme", "")),
+                            coerce_number(row.get("price")),
+                            coerce_number(row.get("pct_chg")),
+                            coerce_number(row.get("turnover")),
+                            coerce_number(row.get("volume_ratio")),
+                            coerce_number(row.get("turnover_rate")),
+                            coerce_number(row.get("sixty_day_pct")),
+                            coerce_number(row.get("ytd_pct")),
+                            coerce_number(row.get("score")),
+                            coerce_number(row.get("deepseek_rank_score")),
+                            str(row.get("deepseek_action") or ""),
+                            1 if row.get("deepseek_veto") else 0,
+                            coerce_number(row.get("deepseek_penalty")),
+                            str(row.get("deepseek_filter_reason") or ""),
+                            json.dumps(row, ensure_ascii=False),
+                            snapshot_phase,
+                            now_ts,
+                        )
+                    )
+                if shadow_rows_to_save:
+                    conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO strategy_deepseek_shadow_signals
+                        (strategy_name, strategy_version, signal_date, signal_time, rank, local_rank, code, name,
+                         market, theme, price_at_signal, pct_chg_at_signal, turnover, volume_ratio,
+                         turnover_rate, sixty_day_pct, ytd_pct, score, deepseek_rank_score, deepseek_action,
+                         deepseek_veto, deepseek_penalty, filter_reason, raw_json, snapshot_phase, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        shadow_rows_to_save,
+                    )
+                    shadow_saved = len(shadow_rows_to_save)
+                # This check is deliberately inside the transaction. Raising here
+                # rolls back all replacements/inserts, so a late batch cannot look
+                # executable merely because its calculation started before cutoff.
+                freeze_transaction_checked_at = _check_signal_freeze_deadline(batch_metadata)
+
+                return {
+                    "signal_date": signal_date,
+                    "saved": saved,
+                    "replaced": len(old_ids),
+                    "candidate_saved": candidate_saved,
+                    "deepseek_shadow_saved": shadow_saved,
+                    "deepseek_shadow_replaced": len(old_shadow_ids),
+                    "sample_type": sample_type,
+                    "sample_source": sample_source,
+                    "snapshot_phase": snapshot_phase,
+                    "freeze_transaction_checked_at": freeze_transaction_checked_at,
+                }
+
+        lock_error: Optional[sqlite3.OperationalError] = None
+        for attempt in range(4):
+            try:
+                return _run_transaction()
+            except sqlite3.OperationalError as exc:
+                if not _is_sqlite_lock_error(exc):
+                    raise
+                lock_error = exc
+                if attempt >= 3:
+                    raise
+                time.sleep(0.25 * (2 ** attempt))
+        if lock_error is not None:
+            raise lock_error
         return {
             "signal_date": signal_date,
-            "saved": saved,
-            "replaced": len(old_ids),
-            "candidate_saved": candidate_saved,
-            "deepseek_shadow_saved": shadow_saved,
-            "deepseek_shadow_replaced": len(old_shadow_ids),
+            "saved": 0,
+            "replaced": 0,
+            "candidate_saved": 0,
+            "deepseek_shadow_saved": 0,
+            "deepseek_shadow_replaced": 0,
             "sample_type": sample_type,
             "sample_source": sample_source,
             "snapshot_phase": snapshot_phase,
@@ -2491,8 +2532,8 @@ class TuningRepository(_RepositoryBase):
 
     def live_weight_samples(self, strategy_name: str, days: int = 120) -> List[Dict[str, object]]:
         primary_column, primary_days, primary_label = _primary_return_config(strategy_name)
-        drawdown_column = "signal_max_drawdown_3d" if strategy_name == "short_term" else "max_drawdown_3d"
-        exit_column = "signal_exit_return" if strategy_name == "short_term" else "exit_return"
+        drawdown_column = "signal_max_drawdown_3d" if strategy_name == "today_term" else "max_drawdown_3d"
+        exit_column = "signal_exit_return" if strategy_name == "today_term" else "exit_return"
         version_filter = ""
         params = [strategy_name]
         current_version = current_strategy_version(strategy_name)

@@ -32,7 +32,7 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
         with patch.object(
             support,
             "score_today_picks",
-            return_value=({"short_term": []}, {"strategy_version": "today_v1"}),
+            return_value=({"today_term": []}, {"strategy_version": "today_v1"}),
         ), patch.object(
             support,
             "score_tomorrow_picks",
@@ -204,7 +204,7 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
             blacklist_payload={"status": "ok", "items": {"000001": {}}, "sources": ["risk.json"], "errors": []},
             hard_filter_report={"raw_count": 10, "passed_count": 2, "rejected_count": 8},
             market_regime={"label": "偏强"},
-            deepseek_meta_by_strategy={"short_term": {"status": "ok"}},
+            deepseek_meta_by_strategy={"today_term": {"status": "ok"}},
             top_n=2,
             stability_update_fn=lambda horizon, rows: {
                 "rows": rows,
@@ -222,7 +222,7 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
         self.assertEqual(meta["risk_blacklist"]["item_count"], 1)
         self.assertEqual(meta["hard_filter_report"]["passed_count"], 2)
         self.assertEqual(meta["market_regime"]["label"], "偏强")
-        self.assertEqual(meta["stability"]["short_term"]["new_entries"], ["000001"])
+        self.assertEqual(meta["stability"]["today_term"]["new_entries"], ["000001"])
         self.assertEqual(meta["display_theme_cap"], 3)
 
     def test_finalize_payload_tightens_display_theme_cap_in_risk_off(self):

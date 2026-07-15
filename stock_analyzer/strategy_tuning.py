@@ -10,11 +10,11 @@ from .normalization import coerce_number
 from .scoring_core.weights import WEIGHTS
 
 
-SUPPORTED_TUNING_STRATEGIES = ("short_term", "tomorrow_picks", "swing_picks")
+SUPPORTED_TUNING_STRATEGIES = ("today_term", "tomorrow_picks", "swing_picks")
 TUNING_PLAN_VERSION = "strategy_tuning_plan_v1"
 
 _STRATEGY_LABELS = {
-    "short_term": "今日延续推荐",
+    "today_term": "今早执行推荐",
     "tomorrow_picks": "明日优先",
     "swing_picks": "2-5日持有",
 }
@@ -135,11 +135,11 @@ def build_strategy_tuning_plan(
     if not gate_passed:
         status = "blocked"
         reason = "未通过自动应用门控，只保存为调参建议。"
-    if strategy_name == "short_term":
-        can_apply = False
+    if strategy_name == "today_term":
+        status = "shadow_only"
         shadow_mode = True
-        status = "observation_only"
-        reason = "今天策略按信号至收盘收益验证，但不模拟当日新建仓，参数变更仅进入影子分析。"
+        can_apply = False
+        reason = "今早策略按信号后可执行样本评估，参数建议先留给调参观察，不直接变更生产执行参数。"
 
     plan = {
         "ok": True,
@@ -214,15 +214,15 @@ def _strategy_suggestions(strategy_name: str, win_rate, avg_return, latest_count
         if empty:
             return [_suggest("shadow_min_score", "-1", "仅影子验证轻微放宽门槛，正式策略继续允许空推荐。")]
         return [_suggest("keep", "no_change", "当前先保持参数，继续积累真实样本。")]
-    if strategy_name == "short_term":
+    if strategy_name == "today_term":
         if weak:
             return [
-                _suggest("continuation_quality", "+0.10", "今日延续若验证偏弱，影子加强趋势、承接和收盘位置质量。"),
-                _suggest("overheat_penalty", "+10%", "降低高涨幅、高换手、高量比样本权重，减少尾盘回落风险。"),
+                _suggest("execution_quality", "+0.10", "今早策略若验证偏弱，可适度提高趋势、承接和尾盘执行质量权重。"),
+                _suggest("overheat_penalty", "+10%", "降低高涨幅、高换手、高量比样本权重，减少回落和流动性风险。"),
             ]
         if empty:
-            return [_suggest("shadow_min_score", "-1", "仅影子分析轻微放宽今日延续门槛。")]
-        return [_suggest("keep", "no_change", "当前先保持参数，继续积累信号至收盘的真实样本。")]
+            return [_suggest("shadow_min_score", "-1", "仅在调参观察内轻微放宽今早门槛。")]
+        return [_suggest("keep", "no_change", "当前先保持参数，继续积累今早执行口径的真实样本。")]
     if strategy_name == "swing_picks":
         if weak:
             return [

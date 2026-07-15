@@ -559,7 +559,8 @@ def _is_close_auction_entry_policy(policy: Dict[str, object]) -> bool:
 
 
 def _is_post_1430_entry_policy(policy: Dict[str, object]) -> bool:
-    return str((policy.get("entry") or {}).get("timing") or "") == "same_trade_day_after_1430"
+    timing = str((policy.get("entry") or {}).get("timing") or "")
+    return timing in {"same_trade_day_after_1430", "same_trade_day_before_1430"}
 
 
 def _is_close_research_entry_policy(policy: Dict[str, object]) -> bool:
@@ -943,9 +944,7 @@ def _compute_outcome(provider, signal: sqlite3.Row) -> Optional[Dict[str, object
     security_state = _provider_security_state(provider, code)
     if _is_close_research_entry_policy(frozen_policy):
         return _compute_close_auction_outcome(provider, signal, frozen_policy, security_state)
-    if strategy_name == "short_term":
-        return _compute_today_continuation_outcome(provider, signal, security_state)
-    if strategy_name in {"tomorrow_picks", "swing_picks"} and _is_post_1430_entry_policy(frozen_policy):
+    if strategy_name in {"today_term", "tomorrow_picks", "swing_picks"} and _is_post_1430_entry_policy(frozen_policy):
         return _compute_close_auction_outcome(provider, signal, frozen_policy, security_state)
     if strategy_name == "tomorrow_picks" and _is_close_auction_entry_policy(frozen_policy):
         return _compute_close_auction_outcome(provider, signal, frozen_policy, security_state)

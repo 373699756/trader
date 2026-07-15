@@ -85,6 +85,7 @@
             <button class="pool-tab active" type="button" data-pool-filter="today">今日</button>
             <button class="pool-tab" type="button" data-pool-filter="next">明日</button>
             <button class="pool-tab" type="button" data-pool-filter="swing">2-5日</button>
+            <button class="pool-tab" type="button" data-pool-filter="swingLongTerm">长期</button>
           </div>
         </section>
         <div class="board rec-pool-group" data-pool-group="today">
@@ -162,6 +163,25 @@
             </table>
           </div>
         </div>
+        <div class="board rec-pool-group" data-pool-group="swingLongTerm">
+          <div class="table-wrap">
+            <table class="rec-table slim-table rec-table-long-term">
+              <thead>
+                <tr>
+                  <th class="col-stock-wide">股票</th>
+                  <th class="col-pct-today">当前涨跌</th>
+                  <th class="col-pct-after">添加后涨跌</th>
+                  <th class="col-reasons">长期高收益依据（解释/风险/验证）</th>
+                </tr>
+              </thead>
+              <tbody id="swingLongTermBody">
+                <tr>
+                  <td colspan="4" class="empty">切换到本页后加载</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <section class="tab-panel" id="validationPanel">
@@ -173,7 +193,7 @@
             </div>
             <div class="validation-controls">
               <select id="validationStrategySelect" hidden>
-                <option value="short_term">今日</option>
+                <option value="today_term">今日</option>
                 <option value="tomorrow_picks">明日</option>
                 <option value="swing_picks">2-5日</option>
               </select>
@@ -252,7 +272,7 @@
             <section class="validation-batches">
               <div class="validation-section-head">
                 <div class="validation-strategy-tabs" role="tablist" aria-label="保存批次类型">
-                  <button class="validation-strategy-tab active" type="button" data-validation-strategy="short_term" role="tab" aria-selected="true">今日</button>
+                  <button class="validation-strategy-tab active" type="button" data-validation-strategy="today_term" role="tab" aria-selected="true">今日</button>
                   <button class="validation-strategy-tab" type="button" data-validation-strategy="tomorrow_picks" role="tab" aria-selected="false">明日</button>
                   <button class="validation-strategy-tab" type="button" data-validation-strategy="swing_picks" role="tab" aria-selected="false">2-5日</button>
                 </div>

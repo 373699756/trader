@@ -262,17 +262,17 @@ def prediction_strategy_rows(
         top_n=top_n,
         market_regime=market_regime,
     )
-    short_rows = today_rows.get("short_term", [])
+    short_rows = today_rows.get("today_term", [])
     if short_term_rows_override is not None:
         short_rows = list(short_term_rows_override)
         short_deepseek_meta = skipped_deepseek_meta(
-            "short_term",
+            "today_term",
             status="snapshot_override",
             reason="Short-term rows came from the recommendation snapshot override.",
         )
     else:
         short_rows, short_deepseek_meta = apply_deepseek_to_reviewable_rows(
-            "short_term",
+            "today_term",
             short_rows,
             "all",
             validation_store=validation_store,
@@ -329,12 +329,12 @@ def prediction_strategy_rows(
         validation_store=validation_store,
     )
     rows_by_strategy = {
-        "short_term": short_rows,
+        "today_term": short_rows,
         "tomorrow_picks": tomorrow_rows,
         "swing_picks": swing_rows,
     }
     metas_by_strategy = {
-        "short_term": {**today_meta, "deepseek": short_deepseek_meta, **(short_term_meta_override or {})},
+        "today_term": {**today_meta, "deepseek": short_deepseek_meta, **(short_term_meta_override or {})},
         "tomorrow_picks": tomorrow_meta,
         "swing_picks": swing_meta,
     }
@@ -423,18 +423,18 @@ class RecommendationService:
             market,
             apply_deepseek=apply_deepseek,
         )
-        short_deepseek_meta = deepseek_meta_by_strategy.get("short_term", skipped_deepseek_meta("short_term"))
+        short_deepseek_meta = deepseek_meta_by_strategy.get("today_term", skipped_deepseek_meta("today_term"))
         tomorrow_deepseek_meta = deepseek_meta_by_strategy.get("tomorrow_picks", skipped_deepseek_meta("tomorrow_picks"))
         swing_deepseek_meta = deepseek_meta_by_strategy.get("swing_picks", skipped_deepseek_meta("swing_picks"))
 
         tomorrow_rows = recommendations_by_horizon.get("tomorrow_picks", tomorrow_rows)
         swing_rows = recommendations_by_horizon.get("swing_picks", swing_rows)
-        finalize_deepseek_meta(short_meta, recommendations_by_horizon.get("short_term", []), short_deepseek_meta)
+        finalize_deepseek_meta(short_meta, recommendations_by_horizon.get("today_term", []), short_deepseek_meta)
         finalize_deepseek_meta(tomorrow_meta, tomorrow_rows, tomorrow_deepseek_meta)
         finalize_deepseek_meta(swing_meta, swing_rows, swing_deepseek_meta)
 
         strategy_metas = {
-            "short_term": short_meta,
+            "today_term": short_meta,
             "tomorrow_picks": tomorrow_meta,
             "swing_picks": swing_meta,
         }
@@ -442,7 +442,7 @@ class RecommendationService:
             strategy_metas[strategy_name]["market_regime"] = market_regime
             attach_generation_provenance(strategy_metas[strategy_name], strategy_name, strategy_rows, candidates)
         return recommendations_by_horizon, short_meta, {
-            "short_term": short_deepseek_meta,
+            "today_term": short_deepseek_meta,
             "tomorrow_picks": tomorrow_deepseek_meta,
             "swing_picks": swing_deepseek_meta,
         }
@@ -570,16 +570,16 @@ def finalize_recommendation_payload_meta(
     validation_store,
     cached_metrics_fn,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
-    short_stability = stability_update_fn("short_term", short_rows)
+    short_stability = stability_update_fn("today_term", short_rows)
     base_theme_cap = int(getattr(config, "RECOMMENDATION_MAX_DISPLAY_PER_THEME", 3))
     theme_cap = regime_aware_display_theme_cap(market_regime, base_theme_cap)
     short_display_rows, short_theme_limited = limit_theme_concentration(short_stability["rows"], top_n, theme_cap)
-    attach_validation_summary(short_display_rows, validation_store, "short_term", metrics_fn=cached_metrics_fn)
+    attach_validation_summary(short_display_rows, validation_store, "today_term", metrics_fn=cached_metrics_fn)
     meta["top_n"] = top_n
     meta["risk_blacklist"] = risk_blacklist_summary(blacklist_payload)
     meta["hard_filter_report"] = hard_filter_report
     meta["stability"] = {
-        "short_term": {
+        "today_term": {
             "new_entries": short_stability["new_entries"],
             "dropped": short_stability["dropped"],
             "retained": short_stability["retained"],
@@ -594,7 +594,7 @@ def finalize_recommendation_payload_meta(
     meta["display_theme_cap"] = theme_cap
     meta["base_display_theme_cap"] = base_theme_cap
     meta["display_theme_limited"] = {
-        "short_term": short_theme_limited,
+        "today_term": short_theme_limited,
     }
     meta["display_count"] = len(short_display_rows)
     return short_display_rows, meta

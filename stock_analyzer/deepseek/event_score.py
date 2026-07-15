@@ -53,7 +53,7 @@ def coerce_time_sensitivity(value: object) -> str:
 def event_fit_score(strategy_name: str, item: Dict[str, object]) -> float:
     time_sensitivity = coerce_time_sensitivity(item.get("time_sensitivity"))
     desired = {
-        "short_term": {"今天", "明天"},
+        "today_term": {"今天", "明天"},
         "today_picks": {"今天", "明天"},
         "tomorrow_picks": {"明天"},
         "swing_picks": {"2-5天"},
@@ -65,7 +65,7 @@ def event_fit_score(strategy_name: str, item: Dict[str, object]) -> float:
         return 100.0
     if strategy_name in {"swing_picks", "swing_2_5d_picks"} and time_sensitivity == "明天":
         return 70.0
-    if strategy_name in {"short_term", "today_picks", "tomorrow_picks"} and time_sensitivity == "2-5天":
+    if strategy_name in {"today_term", "today_picks", "tomorrow_picks"} and time_sensitivity == "2-5天":
         return 65.0
     return 35.0
 

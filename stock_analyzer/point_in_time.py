@@ -202,7 +202,7 @@ def build_candidate_snapshot_rows(
     recommendation_cutoff = str(
         getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:35")
     )
-    if strategy_name in {"short_term", "tomorrow_picks", "swing_picks"} and _signal_at_or_after_cutoff(
+    if strategy_name in {"today_term", "tomorrow_picks", "swing_picks"} and _signal_at_or_after_cutoff(
         market_cutoff,
         recommendation_cutoff,
     ):

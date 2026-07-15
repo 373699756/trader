@@ -191,7 +191,7 @@ class ValidationMetricsService:
         validation_baseline = validation_baseline_config(strategy_name)
         next_day_column = (
             "signal_next_close_return"
-            if strategy_name in {"short_term", "tomorrow_picks", "swing_picks"}
+            if strategy_name in {"today_term", "tomorrow_picks", "swing_picks"}
             else "next_close_return"
         )
         for row in selected_all:

@@ -190,7 +190,7 @@ def build_validation_readiness_report(db_path: str) -> dict:
         table_counts = {table: _count_rows(conn, table) for table in _READINESS_TABLES}
         current_version_chains = {
             strategy_name: _current_version_chain(conn, strategy_name)
-            for strategy_name in ("short_term", "tomorrow_picks", "swing_picks")
+            for strategy_name in ("today_term", "tomorrow_picks", "swing_picks")
         }
         real_oos_day_count = int(
             current_version_chains["tomorrow_picks"]["settled_promotion_days"]

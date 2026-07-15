@@ -282,7 +282,7 @@ def compare_momentum(
     """对比"动量倾向"vs"反转倾向"两套 AlphaLite 信号在滚动回测上的表现。
 
     A 股短线证据显示反转优于动量。本函数用回测数据验证：把近期收益权重取正
-    （动量）vs 取负（反转），看哪套 win_rate+收益更好，据此建议 short_term 的
+    （动量）vs 取负（反转），看哪套 win_rate+收益更好，据此建议 today_term 的
     reversal_tilt 取值（0 = 维持动量；>0 = 启用反转修正）。
     """
     momentum_w = copy.deepcopy(_DEFAULT_ALPHALITE_WEIGHTS)  # 默认即动量倾向（ret 正权重）
@@ -1502,7 +1502,7 @@ def _strategy_oos_purge_days(strategy: str) -> int:
     strategy = str(strategy or "")
     if strategy == "swing_picks":
         return 5
-    if strategy in {"tomorrow_picks", "short_term"}:
+    if strategy in {"tomorrow_picks", "today_term"}:
         return 1
     return 0
 
@@ -1759,7 +1759,7 @@ def main() -> int:
             print("回测显示动量不劣于反转，保持 reversal_tilt=0，不覆盖。")
             return 0
         _write_weights_override(
-            {"weights": {"short_term": {"reversal_tilt": cmp["suggested_reversal_tilt"]}}}
+            {"weights": {"today_term": {"reversal_tilt": cmp["suggested_reversal_tilt"]}}}
         )
         print("已写入 reversal_tilt={} 到 {}".format(cmp["suggested_reversal_tilt"], config.WEIGHTS_OVERRIDE_PATH))
         return 0

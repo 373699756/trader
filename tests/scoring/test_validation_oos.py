@@ -240,7 +240,7 @@ class ValidationOosTest(unittest.TestCase):
                     {"strategy": "young_picks", "report": {"oos_status": "insufficient_oos_days"}},
                     {"strategy": "tomorrow_picks", "report": {"oos_status": "needs_backfill"}},
                     {"strategy": "swing_picks", "report": {"oos_status": "gate_blocked"}},
-                    {"strategy": "short_term", "report": {"oos_status": "oos_passed"}},
+                    {"strategy": "today_term", "report": {"oos_status": "oos_passed"}},
                 ],
             },
         )

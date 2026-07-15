@@ -951,6 +951,34 @@ table {
   table-layout: fixed;
 }
 
+.rec-table.rec-table-long-term {
+  --stock-col: 120px;
+  --pct-today-col: 120px;
+  --pct-after-col: 120px;
+  --reasons-col: 0;
+  width: 100%;
+}
+
+.rec-table.rec-table-long-term th.col-stock-wide,
+.rec-table.rec-table-long-term td.stock-cell-wide {
+  width: 120px !important;
+  min-width: 120px !important;
+  max-width: 120px !important;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.rec-table.rec-table-long-term td.stock-cell-wide {
+  white-space: normal;
+}
+
+.rec-table.rec-table-long-term th:nth-child(1),
+.rec-table.rec-table-long-term td:not(.empty):nth-child(1) {
+  width: 120px !important;
+  min-width: 120px !important;
+  max-width: 120px !important;
+}
+
 .rec-table td.empty {
   width: auto;
 }
@@ -1016,6 +1044,13 @@ th {
   min-width: var(--stock-col);
   max-width: var(--stock-col);
   white-space: nowrap;
+}
+
+.rec-table.rec-table-long-term th:nth-child(2),
+.rec-table.rec-table-long-term td:not(.empty):nth-child(2) {
+  width: 120px !important;
+  min-width: 120px !important;
+  max-width: 120px !important;
 }
 
 .rec-table .stock-cell {
@@ -1087,6 +1122,36 @@ th {
   min-width: var(--pct-today-col);
   max-width: var(--pct-today-col);
   white-space: nowrap;
+}
+
+.rec-table.rec-table-long-term th.col-pct-after,
+.rec-table.rec-table-long-term td.col-pct-after {
+  width: var(--pct-after-col);
+  min-width: var(--pct-after-col);
+  max-width: var(--pct-after-col);
+  white-space: nowrap;
+}
+
+.rec-table.rec-table-long-term th.col-pct-today,
+.rec-table.rec-table-long-term td.col-pct-today,
+.rec-table.rec-table-long-term th.col-pct-after,
+.rec-table.rec-table-long-term td.col-pct-after {
+  width: 120px !important;
+  min-width: 120px !important;
+  max-width: 120px !important;
+  overflow: hidden;
+}
+
+.rec-table.rec-table-long-term th.col-reasons,
+.rec-table.rec-table-long-term td:not(.empty).reasons {
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+}
+
+.rec-table.rec-table-long-term.slim-table .reasons {
+  min-width: 0 !important;
+  max-width: none !important;
 }
 
 .rec-table th.col-turnover-rate,

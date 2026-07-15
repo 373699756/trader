@@ -23,6 +23,21 @@ window.TraderRecommendationUtils = {
     if (actionFilter === "observe") {
       return label.includes("只观察");
     }
+    if (actionFilter === "immediate") {
+      const strategyName = String(row?.strategy_name || row?.strategy || "").trim();
+      const isTodayTerm = strategyName === "today_term";
+      return isTodayTerm
+        ? (row?.execution_window_status === "immediate" || this.isExecutableActionRow(row))
+        : this.isExecutableActionRow(row);
+    }
+    if (actionFilter === "backup_only") {
+      const strategyName = String(row?.strategy_name || row?.strategy || "").trim();
+      const isTodayTerm = strategyName === "today_term";
+      if (isTodayTerm) {
+        return row?.execution_window_status === "backup_only" || row?.execution_allowed === false;
+      }
+      return row?.execution_allowed === false;
+    }
     return true;
   },
 
@@ -48,6 +63,15 @@ window.TraderRecommendationUtils = {
 
   isPriorityAction(label) {
     return String(label || "").includes("优先");
+  },
+
+  isExecutableActionRow(row) {
+    if (row?.execution_allowed === false) return false;
+    const positionSize = Number(row?.trade_action?.position_size);
+    if (Number.isFinite(positionSize)) {
+      return positionSize > 0;
+    }
+    return true;
   },
 
   rowQuality(row) {

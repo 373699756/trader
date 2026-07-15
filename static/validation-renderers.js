@@ -19,7 +19,7 @@ window.TraderValidationRenderers = {
   primaryValidationLabel(row) {
     const strategy = row.strategy_name || "";
     if (strategy === "swing_picks") return "2-5日退出";
-    if (strategy === "short_term") return "信号至收盘";
+    if (strategy === "today_term") return "信号至收盘";
     return "次日";
   },
 

@@ -4,8 +4,8 @@ window.TraderValidationUI = {
     if (strategy === "swing_picks") {
       return { label, horizon: "2-5日退出", focus: "2-5日样本", outcome: "2-5日退出净收益" };
     }
-    if (strategy === "short_term") {
-      return { label, horizon: "信号至收盘", focus: "今日延续样本", outcome: "同日收盘延续" };
+    if (strategy === "today_term") {
+      return { label, horizon: "信号后至明日/后日退出", focus: "今早执行样本", outcome: "动态退出净收益" };
     }
     return { label, horizon: "次日", focus: "明日样本", outcome: "次日净收益" };
   },
@@ -42,9 +42,9 @@ window.TraderValidationUI = {
     } = data;
     let level = "neutral";
     let text = "结论：数据正在更新，先关注锚点方向与锚点到现在变化。";
-    if (strategy === "short_term") {
+    if (strategy === "today_term") {
       level = "watch";
-      text = "结论：今日策略评价信号时点至T日收盘的延续收益，不模拟当日新建仓；execution_allowed=false。";
+      text = "结论：今早策略在信号窗口（09:30-14:00）形成执行候选，按动态规则在明日或后日退出，不再以同日收盘延续作为唯一口径。";
     } else if (Number(pendingOutcome || 0) > 0 && sample <= 0) {
       text = `结论：还有 ${pendingOutcome} 条信号待回填，当前先不要用胜率下结论。`;
     } else if (outcome <= 0 && sample <= 0) {

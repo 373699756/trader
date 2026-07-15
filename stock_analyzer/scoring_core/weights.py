@@ -9,7 +9,7 @@ from .. import config
 
 
 _DEFAULT_WEIGHTS = {
-    "short_term": {
+    "today_term": {
         "momentum": 0.35,
         "liquidity": 0.25,
         "industry": 0.10,
@@ -70,7 +70,7 @@ _DEFAULT_WEIGHTS = {
 
 
 STRATEGY_COMBINERS = {
-    "short_term": {
+    "today_term": {
         "apply_damp": True,
         "terms": (
             {"component": "momentum_score", "weight_key": "momentum", "regime_key": "momentum"},

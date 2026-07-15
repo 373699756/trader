@@ -33,8 +33,62 @@ class TomorrowScorer:
         return self.scoring_context.get(name, default)
 
     @staticmethod
+    def _industry_key(row: Dict[str, object]) -> str:
+        return str(row.get("industry") or "").strip().lower()
+
+    @staticmethod
+    def _industry_distribution(rows: List[Dict[str, object]]) -> Dict[str, int]:
+        distribution: Dict[str, int] = {}
+        for row in rows:
+            key = TomorrowScorer._industry_key(row)
+            distribution[key] = distribution.get(key, 0) + 1
+        return distribution
+
+    @staticmethod
     def _ranking_gate_score(row: Dict[str, object]) -> float:
         return coerce_number(row.get("score"))
+
+    def _apply_display_diversity(
+        self,
+        rows: List[Dict[str, object]],
+        limit: int,
+        theme_cap: int,
+        industry_cap: int,
+    ) -> Tuple[List[Dict[str, object]], int, int]:
+        display_limit = max(0, int(limit or 0))
+        theme_limit = int(theme_cap or 0)
+        industry_limit = int(industry_cap or 0)
+        if display_limit <= 0:
+            return [], 0, 0
+
+        tomorrow_theme_key = self._ctx("_tomorrow_theme_key", theme_limits._tomorrow_theme_key)
+        selected: List[Dict[str, object]] = []
+        theme_counts: Dict[str, int] = {}
+        industry_counts: Dict[str, int] = {}
+        theme_limited_count = 0
+        industry_limited_count = 0
+
+        for row in rows:
+            if len(selected) >= display_limit:
+                break
+
+            theme_key = tomorrow_theme_key(row)
+            industry_key = self._industry_key(row)
+
+            if theme_limit > 0 and theme_counts.get(theme_key, 0) >= theme_limit:
+                theme_limited_count += 1
+                continue
+            if industry_limit > 0 and industry_counts.get(industry_key, 0) >= industry_limit:
+                industry_limited_count += 1
+                continue
+
+            selected.append(row)
+            if theme_limit > 0:
+                theme_counts[theme_key] = theme_counts.get(theme_key, 0) + 1
+            if industry_limit > 0:
+                industry_counts[industry_key] = industry_counts.get(industry_key, 0) + 1
+
+        return selected, theme_limited_count, industry_limited_count
 
     def _build_candidate_row(
         self,
@@ -77,8 +131,12 @@ class TomorrowScorer:
 
         display_floor = min_score
         display_candidates = [row for row in rows if self._ranking_gate_score(row) >= display_floor]
-        display_rows = self.ranking_policy.limit_tomorrow_display_concentration(display_candidates, display_limit)
-        display_theme_limited_count = max(0, len(display_candidates) - len(display_rows))
+        display_rows, display_theme_limited_count, display_industry_limited_count = self._apply_display_diversity(
+            display_candidates,
+            display_limit,
+            getattr(config, "TOMORROW_MAX_DISPLAY_PER_THEME", 5),
+            getattr(config, "TOMORROW_MAX_INDUSTRY_PER_RECOMMENDATION", 2),
+        )
         fallback_mode = ""
         backup_candidate_count = 0
         backup_min_score = coerce_number(getattr(config, "TOMORROW_BACKUP_MIN_SCORE", 45.0), 45.0)
@@ -96,8 +154,12 @@ class TomorrowScorer:
             )
             backup_candidates = [row for row in backup_rows if row["score"] >= backup_min_score]
             backup_candidate_count = len(backup_candidates)
-            display_rows = self.ranking_policy.limit_tomorrow_display_concentration(backup_candidates, display_limit)
-            display_theme_limited_count = max(0, len(backup_candidates) - len(display_rows))
+            display_rows, display_theme_limited_count, display_industry_limited_count = self._apply_display_diversity(
+                backup_candidates,
+                display_limit,
+                getattr(config, "TOMORROW_MAX_DISPLAY_PER_THEME", 5),
+                getattr(config, "TOMORROW_MAX_INDUSTRY_PER_RECOMMENDATION", 2),
+            )
             if display_rows:
                 fallback_mode = "backup_pool"
                 display_floor = backup_min_score
@@ -114,6 +176,7 @@ class TomorrowScorer:
             "display_cap": display_cap,
             "display_floor": display_floor,
             "display_theme_limited_count": display_theme_limited_count,
+            "display_industry_limited_count": display_industry_limited_count,
             "fallback_mode": fallback_mode,
             "backup_candidate_count": backup_candidate_count,
             "backup_min_score": backup_min_score,
@@ -222,6 +285,7 @@ class TomorrowScorer:
         tier_state: Dict[str, int],
         market_regime: Dict[str, object],
         theme_distribution: Dict[str, int],
+        industry_distribution: Dict[str, int],
         top_n: int,
         market_filter: str,
         intraday_relaxed: bool,
@@ -253,9 +317,12 @@ class TomorrowScorer:
             "primary_ineligible_count": tier_state["ineligible_count"],
             "theme_limited_count": tier_state["theme_limited_count"],
             "display_theme_limited_count": display_state["display_theme_limited_count"],
+            "display_industry_limited_count": display_state["display_industry_limited_count"],
             "theme_cap": getattr(config, "TOMORROW_MAX_PRIMARY_PER_THEME", 2),
             "display_theme_cap": getattr(config, "TOMORROW_MAX_DISPLAY_PER_THEME", 5),
+            "industry_cap": getattr(config, "TOMORROW_MAX_INDUSTRY_PER_RECOMMENDATION", 2),
             "theme_distribution": theme_distribution,
+            "industry_distribution": industry_distribution,
             "top_n": top_n,
             "market_filter": market_filter,
             "intraday_relaxed_mode": intraday_relaxed,
@@ -350,6 +417,7 @@ class TomorrowScorer:
             theme_limits._tomorrow_theme_distribution,
         )
         theme_distribution = theme_distribution_fn(display_rows)
+        industry_distribution = self._industry_distribution(display_rows)
         meta = self._build_meta(
             df,
             rows,
@@ -358,6 +426,7 @@ class TomorrowScorer:
             tier_state,
             market_regime,
             theme_distribution,
+            industry_distribution,
             top_n,
             market_filter,
             intraday_relaxed,
