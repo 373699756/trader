@@ -233,7 +233,7 @@ python -m stock_analyzer.jobs <command>
 | `backup` | 验证库备份 |
 | `stats` | 数据库和迁移健康快照 |
 
-任务使用 SQLite lease 防止相同命令或调度槽位并发运行。直接运行 `app.py` 时，进程级 `RuntimeSupervisor` 在 09:40–14:20 按 `DEEPSEEK_PRECOMPUTE_TIMES` 启动 DeepSeek 变化检查，并统一拥有实时行情、DeepSeek、自动快照和结果回填线程。校验 worker 共享停止信号，关闭时会中断日程等待并在统一超时内回收；部分启动失败会停止已经启动的同组线程。应用 HTTP 请求线程不执行这些任务。`create_app()` 默认只组装依赖，其他 WSGI 入口必须显式使用 `create_app(start_runtime=True)`，或完全交由 cron、systemd timer、任务平台调度，不能同时启用两套所有者。
+任务使用 SQLite lease 防止相同命令或调度槽位并发运行。直接运行 `app.py` 时，进程级 `RuntimeSupervisor` 在 09:40–14:20 按 `DEEPSEEK_PRECOMPUTE_TIMES` 启动 DeepSeek 变化检查，并统一拥有实时行情、推荐池行情、DeepSeek、自动快照和结果回填线程。周期 worker 共享停止信号；推荐池行情等一次性 worker 由独立服务持有线程引用、拒绝停止期间的新任务并在统一超时内等待。关闭顺序先停止实时调度生产者，再回收其派生 worker；部分启动失败会停止已经启动的同组线程。应用 HTTP 请求线程不执行这些任务。`create_app()` 默认只组装依赖，其他 WSGI 入口必须显式使用 `create_app(start_runtime=True)`，或完全交由 cron、systemd timer、任务平台调度，不能同时启用两套所有者。
 
 ## 11. 本地文件
 
