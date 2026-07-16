@@ -10,6 +10,49 @@ from .feature_schema import FEATURE_SCHEMA_VERSION, adapt_feature_to_strategy, p
 from .meta_model import load_meta_artifact, score_meta_features
 
 
+_FEATURE_FIELDS = (
+    "event_type",
+    "event_direction",
+    "event_strength",
+    "event_reliability",
+    "novelty",
+    "priced_in",
+    "overnight_risk",
+    "regulatory_risk",
+    "theme_truth",
+    "uncertainty",
+    "strategy_fit",
+    "horizon_fit",
+    "deepseek_score",
+    "confidence",
+    "veto",
+    "risk_penalty",
+    "horizon_match",
+    "abstain",
+    "value_quality",
+    "financial_health",
+    "market_flow",
+    "industry_policy",
+    "risk_assessment",
+    "horizon_support",
+)
+_DERIVED_FIELDS = (
+    "deepseek_features",
+    "deepseek_score",
+    "deepseek_selected",
+    "deepseek_veto",
+    "deepseek_strategy_fit",
+    "deepseek_horizon_fit",
+    "deepseek_period_mismatch",
+    "deepseek_reason",
+    "deepseek_risk_flags",
+    "deepseek_risk_penalty",
+    "deepseek_production_applied",
+    "deepseek_meta_shadow",
+    "deepseek_meta_production_applied",
+)
+
+
 def hard_feature_cutoff(signal_time: str = "") -> str:
     value = str(signal_time or datetime.now().isoformat(timespec="seconds"))
     day = value[:10] if len(value) >= 10 else datetime.now().date().isoformat()
@@ -33,6 +76,8 @@ def attach_persisted_deepseek_features(
     strategy = storage_strategy_name(strategy_name)
     result = [dict(row) for row in rows or [] if isinstance(row, dict)]
     cutoff = str(cutoff_at or hard_feature_cutoff(signal_time))
+    for row in result:
+        _clear_attached_feature(row)
     if not bool(getattr(config, "ENABLE_DEEPSEEK_FEATURES", True)):
         for row in result:
             row["deepseek_feature_status"] = "local_only"
@@ -60,36 +105,29 @@ def attach_persisted_deepseek_features(
             continue
         feature = adapt_feature_to_strategy(feature, strategy)
         row["deepseek_features"] = feature
-        row["deepseek_feature_status"] = "abstain" if feature.get("abstain") else "precomputed"
+        row["deepseek_feature_status"] = (
+            "abstain"
+            if feature.get("abstain")
+            else "cache_hit"
+            if feature.get("batch_status") == "cache_hit"
+            else "precomputed"
+        )
         row["deepseek_feature_cutoff"] = cutoff
-        for key in (
-            "event_type",
-            "event_direction",
-            "event_strength",
-            "event_reliability",
-            "novelty",
-            "priced_in",
-            "overnight_risk",
-            "regulatory_risk",
-            "theme_truth",
-            "uncertainty",
-            "horizon_match",
-            "abstain",
-            "value_quality",
-            "financial_health",
-            "market_flow",
-            "industry_policy",
-            "risk_assessment",
-            "horizon_support",
-        ):
+        for key in _FEATURE_FIELDS:
             row["deepseek_{}".format(key)] = feature.get(key)
         meta = score_meta_features(row, feature, artifact)
         if meta.get("available"):
             row["deepseek_meta_shadow"] = meta
             row["deepseek_meta_production_applied"] = bool(
-                getattr(config, "DEEPSEEK_META_PRODUCTION_ENABLED", False)
-                and meta.get("production_eligible")
+                getattr(config, "DEEPSEEK_META_PRODUCTION_ENABLED", False) and meta.get("production_eligible")
             )
         else:
             row["deepseek_meta_production_applied"] = False
     return result
+
+
+def _clear_attached_feature(row: Dict[str, object]) -> None:
+    for key in _DERIVED_FIELDS:
+        row.pop(key, None)
+    for key in _FEATURE_FIELDS:
+        row.pop("deepseek_{}".format(key), None)

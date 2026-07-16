@@ -4,9 +4,9 @@ import unittest
 
 import pandas as pd
 
-from stock_analyzer import app_support
 from stock_analyzer.history_cache import HistoryCache
-from stock_analyzer.providers import MarketDataProvider, ProviderStatus
+from stock_analyzer.providers import MarketDataProvider, ProviderStatus, TimedCache
+from stock_analyzer.services.factor_sentiment_refresh import FactorSentimentRefreshService
 
 
 def sample_history():
@@ -71,15 +71,20 @@ class HistoryCacheResilienceTest(unittest.TestCase):
                 self.errors.append(message)
 
         provider = BrokenProvider()
-        code = "600001"
-        with app_support._HISTORY_REFRESH_LOCK:
-            app_support._HISTORY_REFRESHING.add(code)
+        service = FactorSentimentRefreshService(
+            refresh_history=lambda codes: provider.prefetch_history(list(codes), days=90),
+            score_sentiment=lambda _code, _name: {},
+            sentiment_cache=TimedCache(60),
+            normalize_code=lambda value: str(value or "")[-6:],
+            record_error=provider._record_sentiment_error,
+        )
 
-        app_support._refresh_history_factor_entries(provider, [code])
+        self.assertTrue(service.schedule_history(["600001"]))
+        service.stop(timeout_seconds=1.0)
 
         self.assertTrue(any("后台历史因子刷新失败" in error for error in provider.errors))
-        with app_support._HISTORY_REFRESH_LOCK:
-            self.assertNotIn(code, app_support._HISTORY_REFRESHING)
+        self.assertEqual(service.status()["history"]["refreshing_items"], 0)
+        self.assertEqual(service.status()["history"]["failure_count"], 1)
 
 
 if __name__ == "__main__":

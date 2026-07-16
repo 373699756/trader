@@ -443,6 +443,7 @@ class _AppServiceContext:
                     self.provider,
                     self.container.sentiment_cache,
                     candidate_subset[["code", "name"]].to_dict("records"),
+                    refresh_service=self.container.factor_sentiment_refresh,
                 )
             short_term_snapshot_rows = None
             short_term_snapshot_meta = None
@@ -1209,7 +1210,7 @@ class _AppServiceContext:
             top_n=top_n,
             market=market,
             market_regime=market_regime,
-            apply_deepseek=False,
+            apply_deepseek=True,
             validation_store=self.validation_store,
         )
         try:
@@ -1532,7 +1533,12 @@ class _AppServiceContext:
             meta["short_term_observation_count"] = short_display_count - short_executable_count
             meta["today_term_executable_count"] = short_executable_count
             meta["today_term_observation_count"] = short_display_count - short_executable_count
-            meta["deepseek_api_call_count"] = self._today_deepseek_api_call_count()
+            deepseek_overview = meta.get("deepseek") if isinstance(meta.get("deepseek"), dict) else {}
+            meta["deepseek_api_call_count"] = int(
+                deepseek_overview.get("used")
+                if deepseek_overview.get("used") is not None
+                else self._today_deepseek_api_call_count()
+            )
             meta["quote_timestamp"] = str(
                 (getattr(quotes, "attrs", {}) or {}).get("quote_timestamp") or ""
             )
@@ -2098,6 +2104,7 @@ class AppServices:
         if callable(stop_realtime_quotes):
             stop_realtime_quotes(timeout_seconds)
         self.container.snapshot_writer.stop(timeout_seconds)
+        self.container.factor_sentiment_refresh.stop(timeout_seconds)
 
     def start_background_workers(self) -> bool:
         realtime_started = self.context.container.realtime_scheduler.start()

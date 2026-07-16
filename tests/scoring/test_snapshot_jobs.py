@@ -292,10 +292,28 @@ def test_run_snapshot_saves_strategy_rows_without_web_route(tmp_path):
     ):
         result = run_snapshot(FakeProvider(), store, "tomorrow_picks", market="all")
     dates = store.list_signal_dates("tomorrow_picks")
+    with store.repository.connect() as conn:
+        generation = json.loads(
+            conn.execute(
+                """
+                SELECT generation_json
+                FROM strategy_signal_batches
+                WHERE strategy_name = ?
+                ORDER BY signal_time DESC
+                LIMIT 1
+                """,
+                ("tomorrow_picks",),
+            ).fetchone()[0]
+        )
 
     assert result["ok"]
     assert result["saved"]["saved"] > 0
     assert dates[0]["strategy_name"] == "tomorrow_picks"
+    assert set(generation["deepseek_ranking_groups"]) == {
+        "local_top_codes",
+        "deepseek_top_codes",
+        "final_top_codes",
+    }
 
 
 def test_snapshot_rejects_fallback_quotes_missing_required_scoring_factors():

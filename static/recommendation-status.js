@@ -52,22 +52,90 @@
         els.quoteSource.textContent = health.quotes_source || "-";
         els.sentimentSource.textContent = health.sentiment_source || "-";
         els.candidateCount.textContent = meta.candidate_count ?? "-";
+        renderDeepSeekStatus(meta);
+        renderFactorCoverageStatus(health.factor_coverage || meta.factor_coverage || payload.factor_coverage);
+        renderHardFilterStatus(meta.hard_filter_report);
+        els.marketSentiment.textContent = marketSentiment.score ? `${marketSentiment.score}` : "-";
+        renderRiskBlacklistStatus(meta.risk_blacklist || payload.risk_blacklist);
+      }
+
+      function renderDeepSeekStatus(meta) {
+        const deepseek = meta.deepseek || {};
+        const byStrategy = deepseek.by_strategy || {};
+        const statusLabels = {
+          precomputed: "已参与",
+          cache_hit: "缓存参与",
+          local_only: "仅本地策略",
+          abstain: "无证据放弃",
+          daily_call_limit: "额度用尽",
+          deadline_skipped: "超时跳过",
+          disabled: "已关闭",
+          error: "API失败",
+        };
+        if (els.deepseekParticipation) {
+          const applied = deepseek.production_applied === true;
+          els.deepseekParticipation.textContent = applied ? "已参与综合评分" : (statusLabels[deepseek.status] || "仅本地策略");
+          els.deepseekParticipation.dataset.level = applied ? "ok" : (deepseek.status === "error" ? "error" : "warn");
+          els.deepseekParticipation.title = deepseek.reason || "DeepSeek不可绕过本地硬过滤";
+        }
+        if (els.deepseekWeight) {
+          const weight = Number(deepseek.weight);
+          els.deepseekWeight.textContent = Number.isFinite(weight) ? `${Math.round(weight * 100)}%` : "25%";
+          els.deepseekWeight.dataset.level = deepseek.production_applied ? "ok" : "neutral";
+        }
         if (els.deepseekApiCallCount) {
-          const deepseekCalls = Number(meta.deepseek_api_call_count);
+          const deepseekCalls = Number(deepseek.used ?? meta.deepseek_api_call_count);
+          const remaining = Number(deepseek.remaining);
+          const dailyLimit = Number(deepseek.daily_limit ?? 188);
           if (Number.isFinite(deepseekCalls)) {
-            els.deepseekApiCallCount.textContent = `${deepseekCalls}次`;
+            els.deepseekApiCallCount.textContent = `${deepseekCalls}/${Number.isFinite(remaining) ? remaining : Math.max(0, dailyLimit - deepseekCalls)}`;
             els.deepseekApiCallCount.dataset.level = deepseekCalls > 0 ? "ok" : "warn";
-            els.deepseekApiCallCount.title = `今日DeepSeek API实际调用${deepseekCalls}次`;
+            els.deepseekApiCallCount.title = `今日DeepSeek API已用${deepseekCalls}次，硬上限${dailyLimit}次`;
           } else {
             els.deepseekApiCallCount.textContent = "-";
             els.deepseekApiCallCount.dataset.level = "neutral";
             els.deepseekApiCallCount.title = "";
           }
         }
-        renderFactorCoverageStatus(health.factor_coverage || meta.factor_coverage || payload.factor_coverage);
-        renderHardFilterStatus(meta.hard_filter_report);
-        els.marketSentiment.textContent = marketSentiment.score ? `${marketSentiment.score}` : "-";
-        renderRiskBlacklistStatus(meta.risk_blacklist || payload.risk_blacklist);
+        if (els.deepseekStrategyUsage) {
+          const usage = deepseek.usage_by_strategy || {};
+          const limits = { today_term: 70, tomorrow_picks: 45, swing_picks: 35, long_term_watch: 18 };
+          const labels = { today_term: "今", tomorrow_picks: "明", swing_picks: "波", long_term_watch: "长" };
+          els.deepseekStrategyUsage.textContent = Object.keys(limits)
+            .map(key => `${labels[key]}${Number(usage[key] || 0)}/${limits[key]}`)
+            .join(" · ");
+          els.deepseekStrategyUsage.title = Object.entries(byStrategy)
+            .map(([key, item]) => `${key}: ${item.reviewed || 0}/${item.requested || 0}`)
+            .join("；");
+        }
+        if (els.deepseekCoverage) {
+          const requested = Number(deepseek.requested || 0);
+          const reviewed = Number(deepseek.reviewed || 0);
+          const coverage = Number(deepseek.coverage_pct || 0);
+          els.deepseekCoverage.textContent = `${reviewed}/${requested} · ${formatNumber(coverage, 1)}%`;
+          els.deepseekCoverage.dataset.level = coverage >= 80 ? "ok" : reviewed > 0 ? "warn" : "neutral";
+          els.deepseekCoverage.title = `弃权${Number(deepseek.abstain_count || 0)}，缓存命中${Number(deepseek.cache_hit_count || 0)}`;
+        }
+        if (els.todayExecutionPhase) {
+          const phase = deepseek.today_phase || byStrategy.today_term?.today_phase || {};
+          els.todayExecutionPhase.textContent = phase.label || "仅观察";
+          els.todayExecutionPhase.dataset.level = phase.execution_allowed ? "ok" : "warn";
+        }
+        if (els.deepseekLastBatch) {
+          const batch = String(deepseek.last_batch_id || "");
+          const completedAt = String(deepseek.completed_at || "").replace("T", " ").slice(5, 16);
+          els.deepseekLastBatch.textContent = batch ? `${batch.slice(-8)}${completedAt ? ` · ${completedAt}` : ""}` : "-";
+          els.deepseekLastBatch.title = `${batch || "无批次"}${deepseek.completed_at ? ` · ${deepseek.completed_at}` : ""}`;
+        }
+        if (els.deepseekFailure) {
+          const message = String(deepseek.error_message || "");
+          const statusText = statusLabels[deepseek.status] || deepseek.status || "正常";
+          const isError = deepseek.status === "error";
+          const isApplied = deepseek.production_applied === true || ["precomputed", "cache_hit"].includes(deepseek.status);
+          els.deepseekFailure.textContent = message || statusText;
+          els.deepseekFailure.dataset.level = isError ? "error" : message ? "warn" : isApplied ? "ok" : "warn";
+          els.deepseekFailure.title = `${deepseek.error_type || ""}${message ? `: ${message}` : ""}`;
+        }
       }
 
       function renderFactorCoverageStatus(coverage) {

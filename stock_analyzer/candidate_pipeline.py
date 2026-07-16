@@ -17,6 +17,7 @@ from .performance import records_from_columns
 from .risk_blacklist import attach_risk_blacklist, load_risk_blacklist
 from .scoring_core.candidate_filters import candidate_filter_report, prepare_candidates
 from .scoring_core.market_regime import build_market_regime
+from .services.factor_sentiment_refresh import FactorSentimentRefreshService
 from .services.recommendation_quotes import RecommendationQuoteRefreshService
 
 
@@ -29,10 +30,12 @@ class CandidatePipeline:
         caches,
         *,
         quote_refresh_service: RecommendationQuoteRefreshService | None = None,
+        factor_sentiment_refresh: FactorSentimentRefreshService | None = None,
     ) -> None:
         self.provider = provider
         self.caches = caches
         self.quote_refresh_service = quote_refresh_service or self._build_compat_quote_refresh_service(provider, caches)
+        self.factor_sentiment_refresh = factor_sentiment_refresh
 
     @staticmethod
     def _build_compat_quote_refresh_service(provider, caches) -> RecommendationQuoteRefreshService | None:
@@ -126,7 +129,12 @@ class CandidatePipeline:
         if attach_codes:
             candidates = attach_alphalite_factors_for_codes(self.provider, candidates, attach_codes)
         else:
-            candidates = attach_alphalite_factors(self.provider, self.caches.factors_cache, candidates)
+            candidates = attach_alphalite_factors(
+                self.provider,
+                self.caches.factors_cache,
+                candidates,
+                refresh_service=self.factor_sentiment_refresh,
+            )
         market_regime = build_market_regime(candidates, breadth_source=quotes)
         return candidates, market_regime
 
@@ -166,6 +174,7 @@ class CandidatePipeline:
             self.provider,
             self.caches.sentiment_cache,
             records_from_columns(candidates, ["code", "name"], limit=80, sort_by="pct_chg", ascending=False),
+            refresh_service=self.factor_sentiment_refresh,
         )
         return {
             "quotes": quotes,

@@ -398,8 +398,6 @@ class LegacyRemainingScoringTest(unittest.TestCase):
         self.assertEqual(enriched.iloc[0]["alphalite_factor_ready"], 0.0)
 
     def test_alphalite_attach_schedules_missing_history_without_sync_fetch(self):
-        import threading
-
         from stock_analyzer.app_support import attach_alphalite_factors as _attach_alphalite_factors
         from stock_analyzer.providers import TimedCache
 
@@ -418,8 +416,6 @@ class LegacyRemainingScoringTest(unittest.TestCase):
                 }
             ]
         )
-        refreshed = threading.Event()
-
         class BackgroundProvider:
             def get_cached_history(self, code, days=90):
                 return pd.DataFrame()
@@ -427,9 +423,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
             def get_history(self, code, days=90):
                 raise AssertionError("request path must not synchronously fetch history")
 
-            def prefetch_history(self, codes, days=90):
-                refreshed.set()
-                return {"downloaded": len(codes)}
+        refresh_service = MagicMock()
 
         with patch.object(config, "ENABLE_HISTORY_FACTORS", True), patch.object(
             config, "HISTORY_FACTORS_FETCH_ON_REQUEST", True
@@ -438,10 +432,11 @@ class LegacyRemainingScoringTest(unittest.TestCase):
                 BackgroundProvider(),
                 TimedCache(1),
                 prepare_candidates(quotes),
+                refresh_service=refresh_service,
             )
 
         self.assertEqual(enriched.iloc[0]["alphalite_factor_ready"], 0.0)
-        self.assertTrue(refreshed.wait(timeout=1.0))
+        refresh_service.schedule_history.assert_called_once_with(["600001"])
 
     def test_alphalite_attach_reuses_factor_cache_for_same_history(self):
         from stock_analyzer.app_support import attach_alphalite_factors as _attach_alphalite_factors
@@ -501,13 +496,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
             }
         )
 
-        with patch.object(config, "ENABLE_INLINE_SENTIMENT", True), patch(
-            "stock_analyzer.app_support.threading.Thread.start",
-            return_value=None,
-        ) as start_mock, patch(
-            "stock_analyzer.app_support.score_stock_sentiment",
-            side_effect=AssertionError("stale cache should be returned immediately"),
-        ):
+        with patch.object(config, "ENABLE_INLINE_SENTIMENT", True):
             lookup = sentiment_for_candidates(
                 object(),
                 cache,
@@ -516,7 +505,6 @@ class LegacyRemainingScoringTest(unittest.TestCase):
 
         self.assertEqual(lookup["600001"]["score"], 71.0)
         self.assertEqual(lookup["600001"]["summary"], "旧缓存")
-        self.assertEqual(start_mock.call_count, 1)
 
     def test_sentiment_for_candidates_returns_placeholder_for_missing_cache(self):
         from stock_analyzer.app_support import sentiment_for_candidates
@@ -524,13 +512,7 @@ class LegacyRemainingScoringTest(unittest.TestCase):
 
         cache = TimedCache(60)
 
-        with patch.object(config, "ENABLE_INLINE_SENTIMENT", True), patch(
-            "stock_analyzer.app_support.threading.Thread.start",
-            return_value=None,
-        ) as start_mock, patch(
-            "stock_analyzer.app_support.score_stock_sentiment",
-            side_effect=AssertionError("missing cache should not block on sync sentiment fetch"),
-        ):
+        with patch.object(config, "ENABLE_INLINE_SENTIMENT", True):
             lookup = sentiment_for_candidates(
                 object(),
                 cache,
@@ -539,7 +521,6 @@ class LegacyRemainingScoringTest(unittest.TestCase):
 
         self.assertEqual(lookup["600001"]["score"], 50.0)
         self.assertEqual(lookup["600001"]["summary"], "舆情刷新中")
-        self.assertEqual(start_mock.call_count, 1)
 
     def test_factors_compute_ma_alignment_and_volume(self):
         n = 70

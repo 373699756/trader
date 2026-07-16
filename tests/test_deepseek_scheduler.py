@@ -73,7 +73,8 @@ def test_scheduler_status_reports_internal_sqlite_mode(tmp_path):
         status = scheduler.status(datetime(2026, 7, 14, 10, 0))
 
     assert status["mode"] == "in_process_sqlite_lease"
-    assert status["daily_call_limit"] == 50
+    assert status["daily_call_limit"] == 188
+    assert status["production_applied"] is True
 
 
 def test_scheduler_persists_successful_execution_status(tmp_path):

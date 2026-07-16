@@ -90,6 +90,7 @@ class ValidationSchemaManager:
             ("0016_pit_market_snapshots", ValidationSchemaManager._migration_pit_market_snapshots),
             ("0017_snapshot_phase_columns", ValidationSchemaManager._migration_snapshot_phase_columns),
             ("0018_snapshot_phase_unique_keys", ValidationSchemaManager._migration_snapshot_phase_unique_keys),
+            ("0019_deepseek_budget_dimensions", ValidationSchemaManager._migration_deepseek_budget_dimensions),
         )
 
     @staticmethod
@@ -167,6 +168,21 @@ class ValidationSchemaManager:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_deepseek_batches_trade_date_api_called "
             "ON deepseek_analysis_batches(substr(requested_at, 1, 10), api_called)"
+        )
+
+    @staticmethod
+    def _migration_deepseek_budget_dimensions(conn) -> None:
+        ValidationSchemaManager._add_columns(
+            conn,
+            "deepseek_analysis_batches",
+            {
+                "call_phase": "TEXT NOT NULL DEFAULT ''",
+                "budget_bucket": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_deepseek_batches_budget_day "
+            "ON deepseek_analysis_batches(substr(requested_at, 1, 10), api_called, budget_bucket, call_phase)"
         )
 
     @staticmethod
@@ -265,6 +281,7 @@ _DEEPSEEK_FEATURE_TABLES = (
         cutoff_at TEXT NOT NULL, prompt_version TEXT NOT NULL, feature_schema_version TEXT NOT NULL,
         model_name TEXT NOT NULL DEFAULT '', model_tier TEXT NOT NULL DEFAULT 'flash', market_filter TEXT NOT NULL DEFAULT 'all',
         status TEXT NOT NULL DEFAULT 'pending', api_called INTEGER NOT NULL DEFAULT 0,
+        call_phase TEXT NOT NULL DEFAULT '', budget_bucket TEXT NOT NULL DEFAULT '',
         request_hash TEXT NOT NULL DEFAULT '', response_hash TEXT NOT NULL DEFAULT '',
         candidate_count INTEGER NOT NULL DEFAULT 0, valid_count INTEGER NOT NULL DEFAULT 0, abstain_count INTEGER NOT NULL DEFAULT 0,
         rejected_count INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,

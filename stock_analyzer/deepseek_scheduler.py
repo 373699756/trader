@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import TypedDict
 
 from . import config
+from .deepseek.budget import daily_hard_limit, phase_at, strategies_for_phase
+from .deepseek.production_merge import production_enabled
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _LOGGER = logging.getLogger(__name__)
@@ -41,6 +43,8 @@ class DeepSeekScheduleStatus(TypedDict):
     daily_call_limit: int
     last_run: DeepSeekLastRun
     production_applied: bool
+    current_phase: str
+    eligible_strategies: list[str]
 
 
 class DeepSeekPrecomputeScheduler:
@@ -93,9 +97,11 @@ class DeepSeekPrecomputeScheduler:
             "on_demand_start": str(getattr(config, "DEEPSEEK_ON_DEMAND_START", "14:30")),
             "deadline": str(getattr(config, "DEEPSEEK_PRECOMPUTE_DEADLINE", "14:48")),
             "freeze_at": str(getattr(config, "RECOMMENDATION_FREEZE_CUTOFF_TIME", "14:50")),
-            "daily_call_limit": int(getattr(config, "DEEPSEEK_DAILY_CALL_LIMIT", 50)),
+            "daily_call_limit": daily_hard_limit(),
             "last_run": self._last_run(),
-            "production_applied": False,
+            "production_applied": production_enabled(),
+            "current_phase": phase_at(timestamp),
+            "eligible_strategies": list(strategies_for_phase(phase_at(timestamp))),
         }
 
     def _run_loop(self) -> None:
@@ -154,8 +160,22 @@ class DeepSeekPrecomputeScheduler:
     def _execute(self, slot_key: str) -> None:
         timeout = max(60, int(getattr(config, "DEEPSEEK_SCHEDULER_JOB_TIMEOUT_SECONDS", 900)))
         try:
+            slot_time = datetime.fromisoformat(slot_key)
+        except ValueError:
+            slot_time = datetime.now()
+        strategies = strategies_for_phase(phase_at(slot_time))
+        if not strategies:
+            return
+        try:
             result = subprocess.run(
-                [sys.executable, "-m", "stock_analyzer.jobs", "deepseek-precompute"],
+                [
+                    sys.executable,
+                    "-m",
+                    "stock_analyzer.jobs",
+                    "deepseek-precompute",
+                    "--strategy",
+                    ",".join(strategies),
+                ],
                 cwd=str(_PROJECT_ROOT),
                 env=os.environ.copy(),
                 capture_output=True,

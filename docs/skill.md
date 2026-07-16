@@ -17,12 +17,12 @@
 - 快照写入类边界：`AsyncSnapshotWriter` 已成为独立线程所有者，显式注入持久化、冻结检查和线程工厂，调度时深拷贝取得 payload 所有权，并负责启动失败恢复、停止、等待和指标；`RuntimeSupervisor` 的瞬时 worker 停止链已纳入该组件。
 - 实时调度类边界：`RealtimeMarketScheduler` 不再持有完整 `ApplicationContainer`，只依赖行情刷新、状态查询和缓存失效能力；线程启动失败会原子恢复状态。
 - 推荐池行情类边界：`RecommendationQuoteRefreshService` 独立拥有 watched codes、display/candidate 快照、网络串行锁、单飞线程、失败指标和停止等待；`CandidatePipeline` 只保留兼容委托，服务通过抓取、缓存读取和失效能力注入，不持有 `container/owner/context`。
+- 历史因子与舆情刷新生命周期：`FactorSentimentRefreshService` 通过历史预热、舆情评分、缓存读写和错误记录能力注入，统一拥有两类单飞线程、停止等待和成功/失败/耗时指标；健康接口可观察其状态，`RuntimeSupervisor` 的瞬时 worker 停止链负责回收。
 - 开发服务器重载生命周期：Werkzeug reloader 父进程只持有端口锁，子进程只启动 runtime，避免重复后台任务及子进程误清理/终止父进程。
 - 长期观察收益语义：长期综合观察分不再写入 `expected_return_net`/`predicted_net_return`，长期池明确使用 `long_term_composite_score` 排序来源，避免把未校准评分伪装成预测收益。
 
 ### 部分解决
 
-- 进程生命周期：`RuntimeSupervisor` 已统一管理实时调度器、DeepSeek 调度器、验证线程、推荐刷新线程、实时行情刷新线程、推荐池行情刷新线程和快照写入线程；但历史因子和舆情刷新等一次性线程仍未全部纳入可停止的统一所有权。
 - Provider 拆分：实时行情已完成独立类重构，历史行情、新闻/事件、基本面和第三方客户端仍集中在 `MarketDataProvider`，`providers.py` 仍约 1,300 行。
 - 应用服务拆分：推荐缓存与快照写入职责已抽出，但 `_AppServiceContext` 仍约 1,760 行，承载推荐、预测、验证、回测、健康检查及大量共享 helper；现有路由 use case 多数仍只是转发 facade。
 - 验证仓储拆分：文件内已有 signals、outcomes、experiments、reports 等类，但仍共享一个 3,400 余行模块，部分仓储类本身仍过大，尚未形成稳定的跨模块端口和事务所有权。
@@ -32,7 +32,6 @@
 ### 尚未解决
 
 - 类级垂直拆分：继续从 `_AppServiceContext` 提取真正拥有依赖和行为的推荐、预测、验证、回测、健康用例；禁止只移动方法后通过 `context/owner` 回调原类。
-- 后台资源统一收口：为历史因子和舆情刷新建立可观测、可停止、可等待的线程所有者，并由 `RuntimeSupervisor` 统一停止。
 - 错误与类型契约：宽泛异常捕获和 `Dict[str, object]` 仍大量存在，应优先建模 RecommendationPayload、SignalBatch、ExecutionRecord、ProviderHealth、ValidationResult，并在外部边界统一异常分类。
 - 远程写接口认证：当前只有默认拒绝非回环监听；显式允许非回环后仍没有应用层认证。对外部署必须增加认证/授权或移除不安全绕过。
 - 性能证据：缓存深拷贝、全量大小统计和 SSE 轮询尚未建立基准、容量上限与背压指标，不能仅凭代码直觉优化。

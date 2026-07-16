@@ -1893,13 +1893,15 @@ class OutcomeRepository(_RepositoryBase):
                 INSERT INTO deepseek_analysis_batches (
                     batch_id, strategy_name, snapshot_id, cutoff_at, prompt_version,
                     feature_schema_version, model_name, model_tier, market_filter,
-                    status, request_hash, response_hash, candidate_count, valid_count,
+                    status, call_phase, budget_bucket, request_hash, response_hash, candidate_count, valid_count,
                     abstain_count, rejected_count, prompt_tokens, completion_tokens,
                     cache_hit_tokens, cache_miss_tokens, latency_ms, error_type,
                     error_message, requested_at, completed_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(batch_id) DO UPDATE SET
                     status = excluded.status,
+                    call_phase = excluded.call_phase,
+                    budget_bucket = excluded.budget_bucket,
                     response_hash = excluded.response_hash,
                     valid_count = excluded.valid_count,
                     abstain_count = excluded.abstain_count,
@@ -1924,6 +1926,8 @@ class OutcomeRepository(_RepositoryBase):
                     str(payload.get("model_tier") or "flash"),
                     str(payload.get("market_filter") or "all"),
                     str(payload.get("status") or "pending"),
+                    str(payload.get("call_phase") or ""),
+                    str(payload.get("budget_bucket") or ""),
                     str(payload.get("request_hash") or ""),
                     str(payload.get("response_hash") or ""),
                     int(coerce_number(payload.get("candidate_count"), 0)),
@@ -2064,6 +2068,7 @@ class OutcomeRepository(_RepositoryBase):
             feature["prompt_version"] = item.get("prompt_version")
             feature["model_name"] = item.get("model_name")
             feature["model_tier"] = item.get("model_tier")
+            feature["batch_status"] = item.get("batch_status")
             result[code] = feature
         return result
 

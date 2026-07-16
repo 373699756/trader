@@ -273,6 +273,96 @@ class RecommendationRuntimeSupportTest(unittest.TestCase):
         self.assertEqual(meta["stability"]["today_term"]["new_entries"], ["000001"])
         self.assertEqual(meta["display_theme_cap"], 3)
 
+    def test_finalize_recommendation_payload_meta_preserves_operational_deepseek_statuses(self):
+        class DummyValidationStore:
+            def metrics(self, strategy_name, days=20):
+                return {"sample_count": 0}
+
+            def live_weight_samples(self, strategy_name, days=60):
+                return []
+
+        def finalize(status, **extra):
+            _, result = support.finalize_recommendation_payload_meta(
+                short_rows=[{"code": "000001", "score": 90}],
+                meta={},
+                blacklist_payload={"status": "ok", "items": {}, "sources": [], "errors": []},
+                hard_filter_report={},
+                market_regime={},
+                deepseek_meta_by_strategy={"today_term": {"status": status, **extra}},
+                top_n=1,
+                stability_update_fn=lambda horizon, rows: {
+                    "rows": rows,
+                    "new_entries": [],
+                    "dropped": [],
+                    "retained": [],
+                    "last_updated": "",
+                },
+                validation_store=DummyValidationStore(),
+                cached_metrics_fn=lambda strategy, days: {"sample_count": 0},
+            )
+            return result["deepseek"]["status"]
+
+        for status in ("daily_call_limit", "deadline_skipped", "disabled", "abstain"):
+            self.assertEqual(finalize(status), status)
+        self.assertEqual(
+            finalize("error", error_type="api_error", error_message="request failed"),
+            "error",
+        )
+
+    def test_finalize_recommendation_payload_meta_reports_cache_only_and_production_states(self):
+        class DummyValidationStore:
+            def metrics(self, strategy_name, days=20):
+                return {"sample_count": 0}
+
+        def finalize(items):
+            _, result = support.finalize_recommendation_payload_meta(
+                short_rows=[{"code": "000001", "score": 90}],
+                meta={},
+                blacklist_payload={"status": "ok", "items": {}, "sources": [], "errors": []},
+                hard_filter_report={},
+                market_regime={},
+                deepseek_meta_by_strategy=items,
+                top_n=1,
+                stability_update_fn=lambda horizon, rows: {
+                    "rows": rows,
+                    "new_entries": [],
+                    "dropped": [],
+                    "retained": [],
+                    "last_updated": "",
+                },
+                validation_store=DummyValidationStore(),
+                cached_metrics_fn=lambda strategy, days: {"sample_count": 0},
+            )
+            return result["deepseek"]
+
+        cache_only = finalize(
+            {
+                "today_term": {
+                    "status": "cache_hit",
+                    "production_applied": True,
+                }
+            }
+        )
+        self.assertEqual(cache_only["status"], "cache_hit")
+        self.assertTrue(cache_only["production_applied"])
+        mixed_production = finalize(
+            {
+                "today_term": {"status": "cache_hit", "production_applied": True},
+                "tomorrow_picks": {"status": "precomputed", "production_applied": True},
+            }
+        )
+        self.assertEqual(mixed_production["status"], "precomputed")
+
+    def test_apply_deepseek_after_gate_uses_public_disabled_status_when_skipped(self):
+        service = support.RecommendationService(cached_metrics_fn=lambda strategy, days: {})
+        meta = service._apply_deepseek_after_gate(
+            {"today_term": [{"code": "000001", "score": 80}]},
+            "all",
+            apply_deepseek=False,
+        )
+
+        self.assertEqual(meta["today_term"]["status"], "disabled")
+
     def test_finalize_payload_tightens_display_theme_cap_in_risk_off(self):
         short_rows = [
             {"code": "000001", "theme": "AI", "score": 90},

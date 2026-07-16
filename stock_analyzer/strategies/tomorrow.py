@@ -336,7 +336,7 @@ class TomorrowScorer:
             "profit_window": "T日14:30后至T+1规则退出",
             "recommendation_class": "post_1430_next_day",
             "recommendation_class_label": "明日收益",
-            "deepseek_mode": "precomputed_features_shadow",
+            "deepseek_mode": "production_75_local_25_deepseek",
             "strategy": "{} 明日策略：T日14:30形成并在14:50冻结推荐；系统只推荐不下单".format(
                 analysis_window,
             ),
@@ -381,6 +381,9 @@ class TomorrowScorer:
             rows.append(self._build_candidate_row(row, context, market_regime, intraday_relaxed))
 
         self.ranking_policy.score_desc(rows)
+        post_score_rows = self._ctx("_post_score_rows", None)
+        if callable(post_score_rows):
+            rows = post_score_rows(rows)
         rows = self.ranking_policy.attach_expected_return_prediction(
             "tomorrow_picks",
             rows,

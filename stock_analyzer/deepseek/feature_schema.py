@@ -9,19 +9,21 @@ from zoneinfo import ZoneInfo
 from ..normalization import coerce_number, normalize_code
 from ..strategies.types import storage_strategy_name
 from .evidence_validation import availability_invariant_error
+from .research_policy import qualitative_evidence_hash
 
 
-FEATURE_SCHEMA_VERSION = "deepseek_five_dimension_features_v3"
+FEATURE_SCHEMA_VERSION = "deepseek_five_dimension_decision_v4"
 PROMPT_VERSIONS = {
-    "today_term": "today_five_dimension_v3",
-    "tomorrow_picks": "tomorrow_five_dimension_v3",
-    "swing_picks": "swing_2_5d_five_dimension_v3",
+    "today_term": "today_five_dimension_decision_v4",
+    "tomorrow_picks": "tomorrow_five_dimension_decision_v4",
+    "swing_picks": "swing_2_5d_five_dimension_decision_v4",
+    "long_term_watch": "long_term_five_dimension_decision_v4",
 }
 CONTRACTS = {
     "today_term": {
         "label": "今早执行",
         "horizon": "today",
-        "focus": "信号后买入窗口（09:30-14:00）至明日/后日退出的事件延续",
+        "focus": "09:36后执行窗口的追高、冲高回落、资金背离、封板失败与当天兑现风险",
     },
     "tomorrow_picks": {
         "label": "明日策略",
@@ -32,6 +34,11 @@ CONTRACTS = {
         "label": "2-5日策略",
         "horizon": "2_5d",
         "focus": "催化能否持续2至5个交易日",
+    },
+    "long_term_watch": {
+        "label": "长期观察",
+        "horizon": "long_term",
+        "focus": "低估值、财务质量、国产替代、关键产业链、真实政策扶持与龙头地位",
     },
 }
 EVENT_TYPES = {
@@ -68,6 +75,12 @@ REQUIRED_FIELDS = {
     "evidence_ids",
     "risk_flags",
     "reason",
+    "strategy_fit",
+    "horizon_fit",
+    "deepseek_score",
+    "confidence",
+    "veto",
+    "risk_penalty",
     "value_quality",
     "financial_health",
     "market_flow",
@@ -85,6 +98,9 @@ NUMERIC_RANGES = {
     "regulatory_risk": (0.0, 100.0),
     "theme_truth": (0.0, 100.0),
     "uncertainty": (0.0, 100.0),
+    "deepseek_score": (0.0, 100.0),
+    "confidence": (0.0, 100.0),
+    "risk_penalty": (0.0, 30.0),
 }
 ASSESSMENTS = {"positive", "neutral", "negative", "unknown"}
 FINANCIAL_TRENDS = {"improving", "stable", "deteriorating", "unknown"}
@@ -143,8 +159,7 @@ def build_candidate_evidence(
         source = str(item.get("source") or "")
         identity = "|".join((normalize_code(row.get("code")), source, published, title))
         evidence_id = str(
-            item.get("evidence_id")
-            or "e_{}".format(hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24])
+            item.get("evidence_id") or "e_{}".format(hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24])
         )
         if evidence_id in seen:
             continue
@@ -246,6 +261,7 @@ def candidate_feature_input(row: Dict[str, object], cutoff_at: str) -> Dict[str,
     return {
         "code": normalize_code(row.get("code")),
         "name": str(row.get("name") or "")[:40],
+        "local_score": round(coerce_number(row.get("local_score", row.get("score"))), 2),
         "market": str(row.get("market") or "")[:20],
         "industry": str(row.get("industry") or row.get("theme") or "")[:60],
         "fundamentals": fundamentals,
@@ -266,13 +282,7 @@ def candidate_feature_input(row: Dict[str, object], cutoff_at: str) -> Dict[str,
         },
         "verified_risk_flags": _verified_risk_flags(row),
         "evidence": evidence,
-        "evidence_hash": hashlib.sha256(
-            json.dumps(
-                [str(item.get("evidence_id") or "") for item in evidence],
-                ensure_ascii=False,
-                sort_keys=True,
-            ).encode("utf-8")
-        ).hexdigest(),
+        "evidence_hash": qualitative_evidence_hash(evidence),
         "market_state_hash": hashlib.sha256(
             json.dumps(market_state, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
@@ -317,9 +327,7 @@ def _build_research_input(
             "quality_score_combo": {
                 "fundamental_value_score": round(value_score, 2),
                 "fundamental_quality_score": round(quality_score, 2),
-                "earning_quality_ratio": coerce_number(
-                    fundamentals.get("gross_margin", 0.0)
-                ),
+                "earning_quality_ratio": coerce_number(fundamentals.get("gross_margin", 0.0)),
                 "industry_growth_proxy": industry_growth_proxy,
             },
         },
@@ -468,11 +476,7 @@ def validate_feature_response(
     candidates: Iterable[Dict[str, object]],
 ) -> Tuple[List[Dict[str, object]], List[Dict[str, str]]]:
     strategy = storage_strategy_name(strategy_name)
-    source = {
-        normalize_code(item.get("code")): item
-        for item in candidates or []
-        if isinstance(item, dict)
-    }
+    source = {normalize_code(item.get("code")): item for item in candidates or [] if isinstance(item, dict)}
     results = parsed.get("results") if isinstance(parsed, dict) else None
     if not isinstance(results, list):
         return [], [{"code": "", "reason": "missing_results_array"}]
@@ -490,9 +494,7 @@ def validate_feature_response(
 
         missing_fields = sorted(REQUIRED_FIELDS - set(raw))
         if missing_fields:
-            errors.append(
-                {"code": code, "reason": "missing_fields:{}".format(",".join(missing_fields))}
-            )
+            errors.append({"code": code, "reason": "missing_fields:{}".format(",".join(missing_fields))})
             continue
         if not _valid_array_fields(raw):
             errors.append({"code": code, "reason": "invalid_array_field"})
@@ -505,14 +507,12 @@ def validate_feature_response(
         if invariant_error:
             errors.append({"code": code, "reason": invariant_error})
             continue
-        if not isinstance(raw.get("abstain"), bool):
-            errors.append({"code": code, "reason": "abstain_must_be_boolean"})
+        if any(not isinstance(raw.get(key), bool) for key in ("abstain", "strategy_fit", "horizon_fit", "veto")):
+            errors.append({"code": code, "reason": "decision_flags_must_be_boolean"})
             continue
         invalid_numeric = _invalid_numeric_field(raw)
         if invalid_numeric:
-            errors.append(
-                {"code": code, "reason": "invalid_numeric_range:{}".format(invalid_numeric)}
-            )
+            errors.append({"code": code, "reason": "invalid_numeric_range:{}".format(invalid_numeric)})
             continue
         if str(raw.get("event_type")) not in EVENT_TYPES:
             errors.append({"code": code, "reason": "invalid_event_type"})
@@ -522,9 +522,7 @@ def validate_feature_response(
             errors.append({"code": code, "reason": "invalid_time_horizon"})
             continue
 
-        allowed_evidence = {
-            str(item.get("evidence_id")) for item in candidate.get("evidence") or []
-        }
+        allowed_evidence = {str(item.get("evidence_id")) for item in candidate.get("evidence") or []}
         cited_evidence = _strings(raw.get("evidence_ids") or [], 8)
         if any(item not in allowed_evidence for item in cited_evidence):
             errors.append({"code": code, "reason": "evidence_out_of_scope"})
@@ -550,6 +548,12 @@ def validate_feature_response(
             "regulatory_risk": _clamp(raw.get("regulatory_risk"), 0, 100),
             "theme_truth": _clamp(raw.get("theme_truth"), 0, 100),
             "uncertainty": _clamp(raw.get("uncertainty"), 0, 100),
+            "strategy_fit": bool(raw.get("strategy_fit")),
+            "horizon_fit": bool(raw.get("horizon_fit")),
+            "deepseek_score": _clamp(raw.get("deepseek_score"), 0, 100),
+            "confidence": _clamp(raw.get("confidence"), 0, 100),
+            "veto": bool(raw.get("veto")),
+            "risk_penalty": _clamp(raw.get("risk_penalty"), 0, 30),
             "abstain": abstain,
             "evidence_ids": [] if abstain else cited_evidence,
             "evidence_hash": str(candidate.get("evidence_hash") or ""),
@@ -585,7 +589,7 @@ def validate_feature_response(
             },
             "horizon_support": {
                 key: _clamp(raw["horizon_support"].get(key), 0, 100)
-                for key in ("today", "next_day", "2_5d")
+                for key in ("today", "next_day", "2_5d", "long_term")
             },
             "valid": True,
         }
@@ -630,11 +634,7 @@ def _verified_risk_flags(row: Dict[str, object]) -> List[str]:
 def _valid_array_fields(raw: Dict[str, object]) -> bool:
     for key, limit in (("evidence_ids", 8), ("risk_flags", 5)):
         value = raw.get(key)
-        if (
-            not isinstance(value, list)
-            or len(value) > limit
-            or any(not isinstance(item, str) for item in value)
-        ):
+        if not isinstance(value, list) or len(value) > limit or any(not isinstance(item, str) for item in value):
             return False
     return isinstance(raw.get("reason"), str)
 
@@ -642,9 +642,17 @@ def _valid_array_fields(raw: Dict[str, object]) -> bool:
 def _research_section_error(raw: Dict[str, object]) -> str:
     sections = {
         "value_quality": (("assessment", "confidence", "flags"), "assessment", ASSESSMENTS),
-        "financial_health": (("profit_trend", "cashflow_trend", "confidence", "flags"), "profit_trend", FINANCIAL_TRENDS),
+        "financial_health": (
+            ("profit_trend", "cashflow_trend", "confidence", "flags"),
+            "profit_trend",
+            FINANCIAL_TRENDS,
+        ),
         "market_flow": (("flow_health", "price_flow_divergence", "confidence", "flags"), "flow_health", FLOW_HEALTH),
-        "industry_policy": (("industry_outlook", "policy_relevance", "confidence", "flags"), "industry_outlook", INDUSTRY_OUTLOOKS),
+        "industry_policy": (
+            ("industry_outlook", "policy_relevance", "confidence", "flags"),
+            "industry_outlook",
+            INDUSTRY_OUTLOOKS,
+        ),
         "risk_assessment": (("risk_level", "confidence", "flags"), "risk_level", RISK_LEVELS),
     }
     for name, (required, enum_key, enum_values) in sections.items():
@@ -654,7 +662,11 @@ def _research_section_error(raw: Dict[str, object]) -> str:
         if str(section.get(enum_key)) not in enum_values:
             return "invalid_research_enum:{}".format(name)
         confidence = section.get("confidence")
-        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= float(confidence) <= 100:
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 0 <= float(confidence) <= 100
+        ):
             return "invalid_research_confidence:{}".format(name)
         flags = section.get("flags")
         if not isinstance(flags, list) or len(flags) > 5 or any(not isinstance(item, str) for item in flags):
@@ -669,7 +681,7 @@ def _research_section_error(raw: Dict[str, object]) -> str:
     if str(industry.get("policy_relevance")) not in POLICY_RELEVANCE:
         return "invalid_policy_relevance"
     support = raw.get("horizon_support")
-    if not isinstance(support, dict) or set(support) != {"today", "next_day", "2_5d"}:
+    if not isinstance(support, dict) or set(support) != {"today", "next_day", "2_5d", "long_term"}:
         return "invalid_horizon_support"
     for value in support.values():
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= float(value) <= 100:
@@ -698,6 +710,12 @@ def _neutral_feature(row: Dict[str, object]) -> Dict[str, object]:
         regulatory_risk=50.0,
         theme_truth=50.0,
         uncertainty=100.0,
+        strategy_fit=False,
+        horizon_fit=False,
+        deepseek_score=0.0,
+        confidence=0.0,
+        veto=False,
+        risk_penalty=0.0,
         horizon_match=False,
         evidence_ids=[],
         risk_flags=[],
@@ -706,7 +724,7 @@ def _neutral_feature(row: Dict[str, object]) -> Dict[str, object]:
         market_flow={"flow_health": "unknown", "price_flow_divergence": False, "confidence": 0.0, "flags": []},
         industry_policy={"industry_outlook": "unknown", "policy_relevance": "unknown", "confidence": 0.0, "flags": []},
         risk_assessment={"risk_level": "unknown", "confidence": 0.0, "flags": []},
-        horizon_support={"today": 0.0, "next_day": 0.0, "2_5d": 0.0},
+        horizon_support={"today": 0.0, "next_day": 0.0, "2_5d": 0.0, "long_term": 0.0},
     )
     return row
 
@@ -718,16 +736,20 @@ def adapt_feature_to_strategy(feature: Dict[str, object], strategy: str) -> Dict
     today_support = coerce_number(support.get("today"))
     next_day_support = coerce_number(support.get("next_day"))
     swing_support = coerce_number(support.get("2_5d"))
+    long_term_support = coerce_number(support.get("long_term"))
     if normalized == "today_term":
         matched = today_support >= 60.0 and next_day_support >= 60.0
     elif normalized == "tomorrow_picks":
         matched = next_day_support >= 60.0
     elif normalized == "swing_picks":
         matched = swing_support >= 60.0
+    elif normalized == "long_term_watch":
+        matched = long_term_support >= 60.0
     else:
         matched = False
     result["strategy"] = normalized
-    result["horizon_match"] = bool(matched)
+    result["horizon_fit"] = bool(result.get("horizon_fit", True) and matched)
+    result["horizon_match"] = result["horizon_fit"]
     return result
 
 

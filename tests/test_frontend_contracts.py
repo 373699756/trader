@@ -100,6 +100,134 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("置信影子", result["explanation"])
         self.assertNotIn("影子排序分", result["explanation"])
 
+    def test_deepseek_status_and_per_stock_score_contracts_are_rendered(self):
+        with open("templates/index.html", encoding="utf-8") as source:
+            template_source = source.read()
+        with open("static/recommendation-status.js", encoding="utf-8") as source:
+            status_source = source.read()
+
+        for element_id in (
+            "deepseekParticipation",
+            "deepseekWeight",
+            "deepseekApiCallCount",
+            "deepseekStrategyUsage",
+            "deepseekCoverage",
+            "todayExecutionPhase",
+            "deepseekLastBatch",
+            "deepseekFailure",
+        ):
+            self.assertIn(f'id="{element_id}"', template_source)
+        for field in (
+            "production_applied",
+            "usage_by_strategy",
+            "coverage_pct",
+            "last_batch_id",
+            "error_message",
+        ):
+            self.assertIn(field, status_source)
+
+        result = self.run_node(
+            """
+            global.window = {};
+            require('./static/recommendation-renderers.js');
+            const renderer = window.TraderRecommendationRenderers;
+            const row = {
+              score: 79,
+              local_score: 80,
+              deepseek_score: 90,
+              risk_penalty: 4,
+              final_score: 79,
+              deepseek_selected: true,
+              deepseek_veto: true,
+              deepseek_production_applied: true,
+              deepseek_feature_status: 'precomputed',
+              deepseek_features: {
+                event_type: '政策',
+                evidence_ids: ['e_1'],
+                value_quality: {assessment: 'positive'},
+                financial_health: {profit_trend: 'stable'},
+                market_flow: {flow_health: 'healthy'},
+                industry_policy: {policy_relevance: 'direct'},
+                risk_assessment: {risk_level: 'high'},
+                risk_flags: ['监管'],
+              },
+            };
+            const helpers = {
+              rowScore: item => Number(item.score || 0),
+              formatNumber: (value, digits) => Number(value).toFixed(digits),
+              escapeHtml: value => String(value),
+            };
+            process.stdout.write(JSON.stringify({
+              score: renderer.scoreCell(row, helpers),
+              explanation: renderer.explanationTags(row, helpers),
+            }));
+            """
+        )
+
+        self.assertIn("综79.0", result["score"])
+        self.assertIn("本80", result["score"])
+        self.assertIn("D90", result["score"])
+        self.assertIn("扣4.0 · veto", result["score"])
+        self.assertIn("本地80 × 75% + DeepSeek90 × 25%", result["explanation"])
+        self.assertIn("五维：价值positive", result["explanation"])
+        self.assertIn("DeepSeek强风险veto", result["explanation"])
+
+        local_only = self.run_node(
+            """
+            global.window = {};
+            require('./static/recommendation-renderers.js');
+            const renderer = window.TraderRecommendationRenderers;
+            const helpers = {
+              rowScore: item => Number(item.score || 0),
+              formatNumber: (value, digits) => Number(value).toFixed(digits),
+              escapeHtml: value => String(value),
+            };
+            process.stdout.write(JSON.stringify(renderer.scoreCell({score: 79, local_score: 79, deepseek_score: null}, helpers)));
+            """
+        )
+        self.assertIn("D-", local_only)
+        self.assertNotIn("D0", local_only)
+
+    def test_deepseek_operational_statuses_are_not_rendered_as_api_failures(self):
+        result = self.run_node(
+            """
+            global.window = {addEventListener() {}};
+            require('./static/recommendation-status.js');
+            const element = () => ({
+              textContent: '',
+              title: '',
+              className: '',
+              dataset: {},
+              parentElement: {classList: {toggle() {}}},
+            });
+            const els = {
+              quoteSource: element(),
+              sentimentSource: element(),
+              candidateCount: element(),
+              marketSentiment: element(),
+              deepseekFailure: element(),
+            };
+            const status = window.TraderStatusRefresh.create({
+              state: {charts: {}},
+              els,
+              helpers: {formatNumber: value => String(value)},
+            });
+            const render = deepseek => {
+              status.renderMetrics({meta: {deepseek}, health: {}, market_sentiment: {}});
+              return {text: els.deepseekFailure.textContent, level: els.deepseekFailure.dataset.level};
+            };
+            process.stdout.write(JSON.stringify({
+              deadline: render({status: 'deadline_skipped', error_message: 'deadline reached'}),
+              cache: render({status: 'cache_hit', production_applied: true}),
+              error: render({status: 'error', error_message: 'request failed'}),
+            }));
+            """
+        )
+
+        self.assertEqual(result["deadline"], {"text": "deadline reached", "level": "warn"})
+        self.assertEqual(result["cache"], {"text": "缓存参与", "level": "ok"})
+        self.assertEqual(result["error"], {"text": "request failed", "level": "error"})
+
     def test_stock_prediction_labels_rule_consistency_not_probability_confidence(self):
         with open("static/validation-stock-prediction.js", encoding="utf-8") as source:
             prediction_source = source.read()

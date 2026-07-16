@@ -60,15 +60,25 @@ class TodayExecutionWindowPolicy:
         now_time = now.time().replace(second=0, microsecond=0)
         start_time = now.replace(hour=self.start[0], minute=self.start[1], second=0, microsecond=0).time()
         end_time = now.replace(hour=self.end[0], minute=self.end[1], second=0, microsecond=0).time()
-        if now_time < start_time:
+        open_observe_start = now.replace(hour=9, minute=30, second=0, microsecond=0).time()
+        main_end = now.replace(hour=10, minute=30, second=0, microsecond=0).time()
+        late_end = now.replace(hour=11, minute=20, second=0, microsecond=0).time()
+        afternoon_start = now.replace(hour=13, minute=0, second=0, microsecond=0).time()
+        if open_observe_start <= now_time < start_time:
             return (
                 False,
-                "backup_only",
-                "backup_only",
-                f"{self.start_label}前先观察，{self.start_label}-{self.end_label}期间可执行。",
+                "open_observe",
+                "open_observe",
+                f"09:30-{self.start_label}开盘观察，{self.start_label}后才允许执行。",
             )
-        if now_time <= end_time:
-            return True, "immediate", "immediate", f"{self.start_label}-{self.end_label}窗口内可执行。"
+        if start_time <= now_time < main_end:
+            return True, "main_execution", "main_execution", f"{self.start_label}-10:30主执行窗口。"
+        if main_end <= now_time <= late_end:
+            return True, "late_execution", "late_execution", "10:30-11:20降级执行，综合门槛提高。"
+        if afternoon_start <= now_time <= end_time:
+            return False, "afternoon_observe", "afternoon_observe", "13:00-14:00午后只观察或转入明日/波段候选。"
+        if now_time < start_time:
+            return False, "backup_only", "backup_only", f"{self.start_label}前仅观察。"
         return False, "backup_only", "backup_only", f"{self.end_label}后仅观察。"
 
 

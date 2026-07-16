@@ -77,7 +77,8 @@ class PayloadBuilder:
             {
                 "role": "system",
                 "content": (
-                    "你是A股五维点时研究结构化器，只能使用输入字段，不得补造现金流、主力资金、政策或公司事实；不得新增股票，不输出目标价、llm_score、排名或交易动作。"
+                    "你是A股五维点时研究结构化器，只能使用输入candidates和evidence，不得补造现金流、主力资金、政策、订单、业绩、公告或公司事实；不得新增股票。"
+                    "不得输出目标价、保证收益、排名或直接买卖指令。"
                     "所有输出字段必须是JSON可解析值，部分缺失时该维必须填unknown/[]/false，不得推断补齐。"
                     "若证据为空或无法判定，必须 abstain=true；否则需给出 evidence_ids 且为输入子集。"
                 ),
@@ -88,15 +89,16 @@ class PayloadBuilder:
                     f"策略={strategy_label}；周期={strategy_horizon}；重点={strategy_focus}。"
                     "请对每只股票在五维框架下给出一次事件判断：价值质量、财务健康、市场资金、行业政策、综合风险。"
                     "输出必须为JSON对象，结果放在results数组，且每只股票只出现一次。"
-                    "【必须字段】code,event_type,event_direction,event_strength,event_reliability,novelty,priced_in,time_horizon,overnight_risk,"
-                    "regulatory_risk,theme_truth,uncertainty,abstain,evidence_ids,risk_flags,reason。"
+                    "【必须字段】code,strategy_fit,horizon_fit,deepseek_score,confidence,veto,risk_penalty,event_type,event_direction,"
+                    "event_strength,event_reliability,novelty,priced_in,time_horizon,overnight_risk,regulatory_risk,theme_truth,"
+                    "uncertainty,abstain,evidence_ids,risk_flags,reason。"
                     "【五维结构】value_quality/financial_health/market_flow/industry_policy/risk_assessment/horizon_support。"
                     "value_quality字段：assessment枚举为positive/neutral/negative/unknown，外加confidence和flags。"
                     "financial_health字段：profit_trend枚举为improving/stable/deteriorating/unknown，cashflow_trend枚举为improving/stable/deteriorating/unknown，外加confidence和flags。"
                     "market_flow字段：flow_health枚举为healthy/neutral/unhealthy/unknown，price_flow_divergence为布尔，外加confidence和flags。"
                     "industry_policy字段：industry_outlook枚举为growing/stable/contracting/unknown，policy_relevance枚举为direct/indirect/none/unknown，外加confidence和flags。"
                     "risk_assessment字段：risk_level枚举为low/medium/high/unknown，外加confidence和flags。"
-                    "horizon_support包含today/next_day/2_5d，所有confidence和horizon_support为0-100数值。"
+                    "horizon_support包含today/next_day/2_5d/long_term，所有confidence、deepseek_score和horizon_support为0-100数值；risk_penalty为0-30。"
                     "event_type可选项：业绩/订单/政策/并购/重组/涨价/监管/减持/解禁/诉讼/传闻/行业/其他/未知；"
                     "time_horizon可选项：today/next_day/2_5d/long_term/unknown。"
                     "abstain必须是JSON布尔值； evidence_ids只能是输入evidence中已有的evidence_id。"
@@ -104,7 +106,9 @@ class PayloadBuilder:
                     "1) 未提供现金流数据时financial_health.cashflow_trend=unknown；"
                     "2) 未提供主力资金数据时market_flow.flow_health=unknown且price_flow_divergence=false；"
                     "3) policy evidence为0时industry_policy.policy_relevance=unknown；"
-                    "4) 输入中无可判定事实时可设abstain=true并可将reason写明。"
+                    "4) 输入中无可判定事实时必须abstain=true、deepseek_score=0、strategy_fit=false、horizon_fit=false、veto=false；"
+                    "5) 必须判断追高/利好已兑现(priced_in)/资金背离/周期匹配，以及减持、解禁、监管、诉讼、财务恶化；强风险可veto；"
+                    "6) DeepSeek高分不得抵消输入中的硬风险，缺少证据不得给高分。"
                     "输入载荷="
                     + json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 ),

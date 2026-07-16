@@ -62,6 +62,40 @@ def test_recommendations_endpoint_returns_market_regime(tmp_path):
     assert payload["recommendations"]["today_term"][0]["code"] == "600001"
     assert "serenity_profile" in payload["recommendations"]["today_term"][0]
     assert "agent_committee" in payload["recommendations"]["today_term"][0]
+    assert {
+        "enabled",
+        "production_applied",
+        "weight",
+        "daily_limit",
+        "used",
+        "remaining",
+        "usage_by_strategy",
+        "status",
+        "requested",
+        "reviewed",
+        "coverage_pct",
+        "abstain_count",
+        "cache_hit_count",
+        "last_batch_id",
+        "completed_at",
+        "error_type",
+        "error_message",
+    } <= payload["meta"]["deepseek"].keys()
+    assert {
+        "local_score",
+        "deepseek_score",
+        "risk_penalty",
+        "final_score",
+        "deepseek_selected",
+        "deepseek_feature_status",
+        "deepseek_veto",
+        "deepseek_reason",
+        "deepseek_value_quality",
+        "deepseek_financial_health",
+        "deepseek_market_flow",
+        "deepseek_industry_policy",
+        "deepseek_risk_assessment",
+    } <= payload["recommendations"]["today_term"][0].keys()
 
 
 def test_latest_recommendations_rejects_snapshot_for_other_market(tmp_path):

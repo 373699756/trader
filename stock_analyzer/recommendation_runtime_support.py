@@ -18,7 +18,14 @@ from .app_support import (
     validation_gate_window_days,
 )
 from .calibrate import evaluate_expected_return_ranker
-from .deepseek.runtime_features import attach_persisted_deepseek_features
+from .deepseek.budget import latest_strategy_batch, usage_summary
+from .deepseek.production_merge import (
+    attach_and_merge_rows,
+    deepseek_meta_for_rows,
+    merge_and_rank_rows,
+    ranking_groups,
+    today_phase,
+)
 from .expected_return_model import (
     build_expected_return_artifact,
     expected_return_artifact_promotion_gate,
@@ -30,7 +37,69 @@ from .normalization import coerce_number
 from .production_baseline import attach_generation_provenance
 from .scoring_core.theme_limits import limit_theme_concentration
 from .validation_policy import validation_baseline_config
-from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks
+from .strategies import score_swing_2_5d_picks, score_today_picks, score_tomorrow_picks, storage_strategy_name
+
+
+_DEEPSEEK_PUBLIC_STATUSES = {
+    "precomputed",
+    "cache_hit",
+    "local_only",
+    "abstain",
+    "daily_call_limit",
+    "deadline_skipped",
+    "disabled",
+    "error",
+}
+_DEEPSEEK_OPERATIONAL_STATUS_ALIASES = {
+    "deadline": "deadline_skipped",
+    "disabled": "disabled",
+    "daily_call_limit": "daily_call_limit",
+}
+_DEEPSEEK_STATUS_PRIORITY = (
+    "error",
+    "daily_call_limit",
+    "deadline_skipped",
+    "disabled",
+    "abstain",
+    "cache_hit",
+    "precomputed",
+    "local_only",
+)
+
+
+def _deepseek_item_status(item: Dict[str, object]) -> str:
+    status = str(item.get("status") or "").strip()
+    if status in _DEEPSEEK_PUBLIC_STATUSES:
+        return status
+    error_type = str(item.get("error_type") or "").strip()
+    if error_type in _DEEPSEEK_OPERATIONAL_STATUS_ALIASES:
+        return _DEEPSEEK_OPERATIONAL_STATUS_ALIASES[error_type]
+    if status == "no_evidence":
+        return "abstain"
+    if status in {"partial", "late_shadow"}:
+        return "error" if item.get("error_type") or item.get("error_message") else "local_only"
+    if error_type or item.get("error_message"):
+        return "error"
+    return "local_only"
+
+
+def _overall_deepseek_status(
+    strategy_rows: List[Dict[str, object]],
+    *,
+    production_applied: bool,
+) -> str:
+    """Collapse per-strategy DeepSeek states without hiding operational outcomes."""
+    if production_applied:
+        applied_rows = [item for item in strategy_rows if bool(item.get("production_applied"))]
+        if applied_rows and all(_deepseek_item_status(item) == "cache_hit" for item in applied_rows):
+            return "cache_hit"
+        return "precomputed"
+
+    statuses = [_deepseek_item_status(item) for item in strategy_rows]
+    for status in _DEEPSEEK_STATUS_PRIORITY:
+        if status in statuses:
+            return status
+    return "local_only"
 
 
 def scored_strategy_rows(
@@ -51,6 +120,8 @@ def scored_strategy_rows(
         "expected_return_samples": expected_context["samples"],
         "use_expected_return_ranking": expected_context["use_ranking"],
     }
+    if apply_deepseek:
+        expected_kwargs["scoring_context"] = _deepseek_scoring_context(strategy_name, validation_store)
     if strategy_name == "tomorrow_picks":
         rows, meta = score_tomorrow_picks(
             candidates,
@@ -71,8 +142,8 @@ def scored_strategy_rows(
         raise ValueError(f"Unsupported strategy for scored rows: {strategy_name}")
     meta["expected_return_ranking"] = expected_context["meta"]
     if apply_deepseek:
-        rows = attach_persisted_deepseek_features(rows, strategy_name, validation_store)
-        deepseek_meta = _persisted_feature_meta(strategy_name, rows)
+        rows = merge_and_rank_rows(rows, strategy_name)
+        deepseek_meta = _persisted_feature_meta(strategy_name, rows, validation_store)
     else:
         deepseek_meta = skipped_deepseek_meta(strategy_name)
     finalize_deepseek_meta(meta, rows, deepseek_meta)
@@ -89,51 +160,59 @@ def apply_deepseek_to_reviewable_rows(
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     source_rows = list(rows or [])
     if not source_rows:
-        deepseek_meta = {"enabled": False, "status": "empty", "strategy": strategy_name}
+        deepseek_meta = {"enabled": False, "status": "local_only", "strategy": strategy_name}
         result_rows = source_rows
     else:
-        result_rows = attach_persisted_deepseek_features(
-            source_rows,
-            strategy_name,
-            validation_store,
-        )
-        deepseek_meta = _persisted_feature_meta(strategy_name, result_rows)
+        result_rows = attach_and_merge_rows(source_rows, strategy_name, validation_store)
+        deepseek_meta = _persisted_feature_meta(strategy_name, result_rows, validation_store)
     if meta is not None:
         finalize_deepseek_meta(meta, result_rows, deepseek_meta)
     return result_rows, deepseek_meta
 
 
+def _deepseek_scoring_context(strategy_name: str, validation_store) -> Dict[str, object]:
+    return {
+        "_post_score_rows": lambda rows: attach_and_merge_rows(
+            rows,
+            strategy_name,
+            validation_store,
+        )
+    }
+
+
 def _persisted_feature_meta(
     strategy_name: str,
     rows: List[Dict[str, object]],
+    validation_store=None,
 ) -> Dict[str, object]:
-    covered = sum(
-        1
-        for row in rows or []
-        if str(row.get("deepseek_feature_status") or "") in {"precomputed", "abstain"}
+    meta = deepseek_meta_for_rows(rows, strategy_name)
+    meta.update(usage_summary(validation_store))
+    batch = latest_strategy_batch(validation_store, strategy_name)
+    if batch:
+        batch_status = str(batch.get("status") or "")
+        meta.update({key: value for key, value in batch.items() if key != "status"})
+        meta["coverage_pct"] = round(meta.get("reviewed", 0) * 100.0 / max(1, meta.get("requested", 0)), 2)
+        if meta.get("production_applied"):
+            meta["status"] = "cache_hit" if batch_status == "cache_hit" else "precomputed"
+        else:
+            meta["status"] = {
+                "no_evidence": "abstain",
+                "daily_call_limit": "daily_call_limit",
+                "deadline_skipped": "deadline_skipped",
+                "disabled": "disabled",
+                "error": "error",
+                "partial": "error",
+            }.get(batch_status, meta.get("status", "local_only"))
+    meta["source"] = "validation_db_point_in_time_cache"
+    meta["ranking_groups"] = ranking_groups(rows, top_k=5)
+    meta["reason"] = (
+        "使用截止时间前完成的五维结构化审查，以25%权重参与综合评分；API失败或缺失时回退本地分。"
+        if meta.get("production_applied")
+        else "未取得可用DeepSeek审查，保持本地策略结果。"
     )
-    feature_enabled = bool(getattr(config, "ENABLE_DEEPSEEK_FEATURES", True))
-    return {
-        "enabled": feature_enabled,
-        "status": (
-            "precomputed_features"
-            if covered
-            else "local_only_no_precomputed_features"
-            if feature_enabled
-            else "precomputed_features_disabled"
-        ),
-        "strategy": strategy_name,
-        "source": "validation_db_point_in_time_cache",
-        "requested": len(rows or []),
-        "reviewed": covered,
-        "coverage_pct": round(covered * 100.0 / max(1, len(rows or [])), 2),
-        "production_applied": False,
-        "reason": (
-            "推荐链只读取14:48前完成的结构化特征，不同步调用模型；14:50冻结最终结果。"
-            if feature_enabled
-            else "DeepSeek结构化特征读取已关闭，保持本地基线。"
-        ),
-    }
+    if storage_strategy_name(strategy_name) == "today_term":
+        meta["today_phase"] = today_phase()
+    return meta
 
 
 def expected_return_ranking_context(
@@ -180,7 +259,9 @@ def expected_return_ranking_context(
     artifact_load = load_expected_return_artifact(strategy_name, baseline_id=baseline_id)
     artifact = artifact_load.get("artifact") if artifact_load.get("ok") else None
     if artifact is not None:
-        meta["artifact"] = _expected_return_artifact_meta(artifact, artifact_load.get("status"), artifact_load.get("path"))
+        meta["artifact"] = _expected_return_artifact_meta(
+            artifact, artifact_load.get("status"), artifact_load.get("path")
+        )
         gate_meta = _expected_return_gate_meta(artifact.get("oos_result") if isinstance(artifact, dict) else {})
         meta["gate"] = gate_meta
     else:
@@ -399,6 +480,9 @@ class RecommendationService:
             top_n=top_n,
             market_filter=market,
             market_regime=market_regime,
+            scoring_context=(
+                _deepseek_scoring_context("today_term", self.validation_store) if apply_deepseek else None
+            ),
         )
         tomorrow_rows, tomorrow_meta = self._score_expected_return_strategy(
             "tomorrow_picks",
@@ -406,6 +490,7 @@ class RecommendationService:
             top_n,
             market,
             market_regime,
+            apply_deepseek=apply_deepseek,
         )
         swing_rows, swing_meta = self._score_expected_return_strategy(
             "swing_picks",
@@ -413,6 +498,7 @@ class RecommendationService:
             top_n,
             market,
             market_regime,
+            apply_deepseek=apply_deepseek,
         )
 
         self._apply_validation_gates(tomorrow_rows, tomorrow_meta, swing_rows, swing_meta)
@@ -425,7 +511,9 @@ class RecommendationService:
             apply_deepseek=apply_deepseek,
         )
         short_deepseek_meta = deepseek_meta_by_strategy.get("today_term", skipped_deepseek_meta("today_term"))
-        tomorrow_deepseek_meta = deepseek_meta_by_strategy.get("tomorrow_picks", skipped_deepseek_meta("tomorrow_picks"))
+        tomorrow_deepseek_meta = deepseek_meta_by_strategy.get(
+            "tomorrow_picks", skipped_deepseek_meta("tomorrow_picks")
+        )
         swing_deepseek_meta = deepseek_meta_by_strategy.get("swing_picks", skipped_deepseek_meta("swing_picks"))
 
         tomorrow_rows = recommendations_by_horizon.get("tomorrow_picks", tomorrow_rows)
@@ -446,12 +534,28 @@ class RecommendationService:
             recommendations_by_horizon,
             candidates,
             top_n,
+            validation_store=self.validation_store if apply_deepseek else None,
         )
-        return recommendations_by_horizon, short_meta, {
-            "today_term": short_deepseek_meta,
-            "tomorrow_picks": tomorrow_deepseek_meta,
-            "swing_picks": swing_deepseek_meta,
-        }
+        long_term_rows = recommendations_by_horizon["long_term_watch"]
+        if not apply_deepseek:
+            long_term_rows = merge_and_rank_rows(long_term_rows, "long_term_watch")
+            recommendations_by_horizon["long_term_watch"] = long_term_rows
+        long_term_meta = (
+            _persisted_feature_meta("long_term_watch", long_term_rows, self.validation_store)
+            if apply_deepseek
+            else skipped_deepseek_meta("long_term_watch")
+        )
+        deepseek_meta_by_strategy["long_term_watch"] = long_term_meta
+        return (
+            recommendations_by_horizon,
+            short_meta,
+            {
+                "today_term": short_deepseek_meta,
+                "tomorrow_picks": tomorrow_deepseek_meta,
+                "swing_picks": swing_deepseek_meta,
+                "long_term_watch": long_term_meta,
+            },
+        )
 
     def _score_expected_return_strategy(
         self,
@@ -460,6 +564,8 @@ class RecommendationService:
         top_n: int,
         market: str,
         market_regime: Dict[str, object],
+        *,
+        apply_deepseek: bool = True,
     ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
         context = expected_return_ranking_context(
             strategy_name,
@@ -473,6 +579,8 @@ class RecommendationService:
             "expected_return_samples": context["samples"],
             "use_expected_return_ranking": context["use_ranking"],
         }
+        if apply_deepseek:
+            kwargs["scoring_context"] = _deepseek_scoring_context(strategy_name, self.validation_store)
         if strategy_name == "tomorrow_picks":
             rows, meta = score_tomorrow_picks(candidates, **kwargs)
         elif strategy_name == "swing_picks":
@@ -514,28 +622,26 @@ class RecommendationService:
         apply_deepseek: bool,
     ) -> Dict[str, Dict[str, object]]:
         if not apply_deepseek:
-            return {
-                strategy: skipped_deepseek_meta(
+            meta = {}
+            for strategy, rows in recommendations_by_horizon.items():
+                recommendations_by_horizon[strategy] = merge_and_rank_rows(rows or [], strategy)
+                meta[strategy] = skipped_deepseek_meta(
                     strategy,
-                    status="precomputed_features_disabled",
+                    status="disabled",
                     reason="Persisted DeepSeek feature attachment was disabled for this request.",
                 )
-                for strategy in recommendations_by_horizon
-            }
+            return meta
         meta = {}
         for strategy, rows in recommendations_by_horizon.items():
             source_rows = list(rows or [])
             if not source_rows:
-                meta[strategy] = {"enabled": False, "status": "empty", "strategy": strategy}
+                meta[strategy] = {"enabled": False, "status": "local_only", "strategy": strategy}
             else:
-                attached = attach_persisted_deepseek_features(
-                    source_rows,
-                    strategy,
-                    self.validation_store,
-                )
+                attached = merge_and_rank_rows(source_rows, strategy)
                 recommendations_by_horizon[strategy] = attached
-                meta[strategy] = _persisted_feature_meta(strategy, attached)
+                meta[strategy] = _persisted_feature_meta(strategy, attached, self.validation_store)
         return meta
+
 
 def _apply_validation_gate_safe(
     strategy_name: str,
@@ -561,7 +667,6 @@ def _apply_validation_gate_safe(
         else:
             demote_strategy_rows_to_backup(strategy_name, rows, meta, reason)
         return meta["validation_gate"]
-
 
 
 def finalize_recommendation_payload_meta(
@@ -592,9 +697,30 @@ def finalize_recommendation_payload_meta(
             "last_updated": short_stability["last_updated"],
         },
     }
+    by_strategy = {
+        strategy: _public_deepseek_meta(item) for strategy, item in (deepseek_meta_by_strategy or {}).items()
+    }
+    budget = usage_summary(validation_store)
+    strategy_rows = list(by_strategy.values())
+    requested = sum(int(item.get("requested") or 0) for item in strategy_rows)
+    reviewed = sum(int(item.get("reviewed") or 0) for item in strategy_rows)
+    production_applied = any(bool(item.get("production_applied")) for item in strategy_rows)
+    errors = [item for item in strategy_rows if _deepseek_item_status(item) == "error"]
+    overall_status = _overall_deepseek_status(strategy_rows, production_applied=production_applied)
     meta["deepseek"] = {
-        strategy: _public_deepseek_meta(item)
-        for strategy, item in (deepseek_meta_by_strategy or {}).items()
+        "enabled": bool(getattr(config, "ENABLE_DEEPSEEK_FEATURES", True)),
+        "production_applied": production_applied,
+        "weight": 0.25,
+        **budget,
+        "status": overall_status,
+        "requested": requested,
+        "reviewed": reviewed,
+        "coverage_pct": round(reviewed * 100.0 / max(1, requested), 2),
+        "abstain_count": sum(int(item.get("abstain_count") or 0) for item in strategy_rows),
+        "by_strategy": by_strategy,
+        "today_phase": today_phase(),
+        "error_type": str((errors[-1] if errors else {}).get("error_type") or budget.get("error_type") or ""),
+        "error_message": str((errors[-1] if errors else {}).get("error_message") or budget.get("error_message") or ""),
     }
     meta["market_regime"] = market_regime
     meta["display_theme_cap"] = theme_cap

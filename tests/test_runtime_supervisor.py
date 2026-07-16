@@ -55,6 +55,7 @@ def test_app_services_stop_owned_transient_workers():
         patch.object(services.container.recommendation_quote_refresh, "stop") as stop_recommendation_quotes,
         patch.object(services.provider, "stop_realtime_quotes") as stop_realtime_quotes,
         patch.object(services.container.snapshot_writer, "stop") as stop_snapshot_writer,
+        patch.object(services.container.factor_sentiment_refresh, "stop") as stop_factor_sentiment_refresh,
     ):
         services.stop_transient_workers(timeout_seconds=0.25)
 
@@ -62,6 +63,17 @@ def test_app_services_stop_owned_transient_workers():
     stop_recommendation_quotes.assert_called_once_with(0.25)
     stop_realtime_quotes.assert_called_once_with(0.25)
     stop_snapshot_writer.assert_called_once_with(0.25)
+    stop_factor_sentiment_refresh.assert_called_once_with(0.25)
+
+
+def test_app_container_exposes_factor_sentiment_refresh_health():
+    app = create_app()
+
+    status = app.extensions["app_container"].cache_health()["factor_sentiment_refresh"]
+
+    assert status["stopping"] is False
+    assert status["history"]["active_threads"] == 0
+    assert status["sentiment"]["active_threads"] == 0
 
 
 def test_runtime_supervisor_owns_and_stops_started_components():

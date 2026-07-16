@@ -23,12 +23,13 @@ def test_strategy_document_matches_runtime_strategy_names_and_snapshot_semantics
     assert storage_strategy_name("swing_2_5d_picks") == "swing_picks"
 
 
-def test_strategy_document_preserves_oos_return_and_shadow_boundaries():
+def test_strategy_document_preserves_oos_return_and_meta_shadow_boundaries():
     text = _strategy_doc()
 
     assert "shadow_rank_key" in text
     assert "production_ranking_key = predicted_net_return" not in text
-    assert "`DEEPSEEK_META_PRODUCTION_ENABLED` 硬编码为 false" in text
+    assert "`DEEPSEEK_META_PRODUCTION_ENABLED` 保持 false" in text
     assert "primary_return_net" in text
     assert "涨跌停未成交按现金零收益处理" in text
-    assert "DeepSeek 不能单独否决" in text
+    assert "固定 25% 五维结构化评分已进入生产" in text
+    assert "不能新增股票或绕过本地硬过滤" in text

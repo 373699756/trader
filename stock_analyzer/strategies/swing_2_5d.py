@@ -243,7 +243,7 @@ class SwingScorer:
         meta["recommendation_class_label"] = "2-5日持有"
         meta["profit_window"] = "T日14:30后参考入场，T+2至T+5退出"
         meta["holding_discipline"] = "T+1只允许保护性止损；正常止盈最早T+2，T+5强制退出"
-        meta["deepseek_mode"] = "precomputed_features_shadow"
+        meta["deepseek_mode"] = "production_75_local_25_deepseek"
         if factor_degraded:
             meta["degraded_reason"] = "历史因子覆盖不足，2-5天趋势延续因子降级；仅供观察。"
         meta["industry_cap"] = getattr(config, "SWING_MAX_INDUSTRY_PER_RECOMMENDATION", 2)
@@ -290,6 +290,9 @@ class SwingScorer:
             rows.append(self._build_candidate_row(row, context, market_regime))
 
         self.ranking_policy.score_desc(rows)
+        post_score_rows = self._ctx("_post_score_rows", None)
+        if callable(post_score_rows):
+            rows = post_score_rows(rows)
         rows = self.ranking_policy.attach_expected_return_prediction(
             "swing_picks",
             rows,

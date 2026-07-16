@@ -8,11 +8,17 @@ from . import config
 from .app_runtime_support import finalize_deepseek_meta
 from .daily_data import load_history_frames
 from .deepseek.runtime_features import attach_persisted_deepseek_features
+from .deepseek.production_merge import (
+    attach_and_merge_rows,
+    deepseek_meta_for_rows,
+    ranking_groups,
+)
 from .event_risk import attach_event_risk, load_event_risk
 from .execution_policy import build_execution_policy
 from .factors import build_alphalite_factors, merge_alphalite
 from .fundamentals import attach_fundamental_factors, load_fundamentals
 from .normalization import coerce_number, normalize_code
+from .long_term_watch import LongTermWatchScorer
 from .pit_snapshot import CLOSE_FORWARD, PointInTimeSnapshotStore
 from .point_in_time import (
     build_candidate_snapshot_rows,
@@ -177,7 +183,14 @@ def run_snapshot(
     freeze_deadline = "" if close_fallback else _freeze_deadline(common_signal_time)
     try:
         rows, meta, version = _score_snapshot_strategy(
-            provider, candidates, quotes, strategy, market, market_regime
+            provider,
+            candidates,
+            quotes,
+            strategy,
+            market,
+            market_regime,
+            validation_store=validation_store,
+            signal_time=common_signal_time,
         )
     except Exception as exc:
         return _snapshot_error_rejection(
@@ -215,41 +228,23 @@ def run_snapshot(
     meta["snapshot_id"] = snapshot_id
     scored_candidate_rows = meta.pop("_candidate_pool_rows", None)
     _attach_frozen_regime(scored_candidate_rows, market_regime)
-    rows = attach_persisted_deepseek_features(
+    rows = attach_and_merge_rows(
         rows,
         strategy,
         validation_store,
         signal_time=common_signal_time,
     )
-    feature_count = sum(
-        1
-        for row in rows
-        if str(row.get("deepseek_feature_status") or "") in {"precomputed", "abstain"}
+    deepseek_meta = deepseek_meta_for_rows(rows, strategy)
+    comparison_groups = ranking_groups(scored_candidate_rows or rows, top_k=5)
+    deepseek_meta.update(
+        source="validation_db_point_in_time_cache",
+        ranking_groups=comparison_groups,
+        reason="快照冻结本地、DeepSeek和75/25综合三组结果，API失败时综合组回退本地组。",
     )
-    feature_enabled = bool(getattr(config, "ENABLE_DEEPSEEK_FEATURES", True))
-    deepseek_meta = {
-        "enabled": feature_enabled,
-        "status": (
-            "precomputed_features"
-            if feature_count
-            else "local_only_no_precomputed_features"
-            if feature_enabled
-            else "precomputed_features_disabled"
-        ),
-        "strategy": strategy,
-        "source": "validation_db_point_in_time_cache",
-        "requested": len(rows),
-        "reviewed": feature_count,
-        "production_applied": False,
-        "reason": (
-            "快照只读取信号形成前完成的DeepSeek结构化特征。"
-            if feature_enabled
-            else "DeepSeek结构化特征读取已关闭，保持本地基线。"
-        ),
-    }
     finalize_deepseek_meta(meta, rows, deepseek_meta)
     provider_health = _provider_health(provider)
     provenance = attach_generation_provenance(meta, strategy, rows, candidates)
+    provenance["deepseek_ranking_groups"] = comparison_groups
     candidate_rows = build_candidate_snapshot_rows(
         quotes,
         candidates,
@@ -633,7 +628,8 @@ def build_deepseek_precompute_rows(
     limit = max(1, int(getattr(config, "DEEPSEEK_FEATURE_REVIEW_LIMIT", 30)))
     rows_by_strategy: Dict[str, List[Dict[str, object]]] = {}
     meta_by_strategy: Dict[str, Dict[str, object]] = {}
-    for raw_strategy in strategies or []:
+    requested_strategies = [storage_strategy_name(item) for item in strategies or []]
+    for raw_strategy in requested_strategies:
         strategy = storage_strategy_name(raw_strategy)
         if strategy not in SNAPSHOT_STRATEGIES:
             continue
@@ -659,6 +655,18 @@ def build_deepseek_precompute_rows(
             "candidate_count": len(candidate_pool or []),
             "selected_count": len(rows_by_strategy[strategy]),
         }
+    if "long_term_watch" in requested_strategies:
+        long_term_rows = LongTermWatchScorer().score(
+            rows_by_strategy,
+            context["candidates"],
+            top_n=limit,
+        )
+        rows_by_strategy["long_term_watch"] = long_term_rows
+        meta_by_strategy["long_term_watch"] = {
+            "strategy_version": "long_term_watch_v1_deepseek_25pct",
+            "candidate_count": len(long_term_rows),
+            "selected_count": len(long_term_rows),
+        }
     rows_by_strategy, shared_count = _shared_deepseek_candidate_pool(rows_by_strategy)
     for strategy, meta in meta_by_strategy.items():
         meta["selected_count"] = len(rows_by_strategy.get(strategy) or [])
@@ -674,7 +682,12 @@ def build_deepseek_precompute_rows(
 
 def _shared_deepseek_candidate_pool(rows_by_strategy: Dict[str, List[Dict[str, object]]]):
     limit = max(1, int(getattr(config, "DEEPSEEK_SHARED_RESEARCH_LIMIT", 24)))
-    allocations = (("tomorrow_picks", 12), ("today_term", 8), ("swing_picks", 8))
+    allocations = (
+        ("today_term", 35),
+        ("tomorrow_picks", 30),
+        ("swing_picks", 30),
+        ("long_term_watch", 25),
+    )
     shared_codes = []
     for strategy, allocation in allocations:
         for row in (rows_by_strategy.get(strategy) or [])[:allocation]:
@@ -799,7 +812,27 @@ def _freeze_rejection(strategy: str, meta: Dict[str, object]) -> Dict[str, objec
     }
 
 
-def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market: str, market_regime: Dict[str, object]):
+def _score_snapshot_strategy(
+    provider,
+    candidates,
+    quotes,
+    strategy: str,
+    market: str,
+    market_regime: Dict[str, object],
+    *,
+    validation_store=None,
+    signal_time: str = "",
+):
+    scoring_context = None
+    if validation_store is not None:
+        scoring_context = {
+            "_post_score_rows": lambda rows: attach_and_merge_rows(
+                rows,
+                strategy,
+                validation_store,
+                signal_time=signal_time,
+            )
+        }
     if strategy == "today_term":
         rows_by_horizon, meta = score_today_picks(
             candidates,
@@ -810,6 +843,7 @@ def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market
             market_filter=market,
             market_regime=market_regime,
             capture_candidate_pool=True,
+            scoring_context=scoring_context,
         )
         rows = rows_by_horizon.get("today_term", [])
         return rows, meta, config.TODAY_TERM_STRATEGY_VERSION
@@ -817,12 +851,12 @@ def _score_snapshot_strategy(provider, candidates, quotes, strategy: str, market
         "tomorrow_picks": (
             score_tomorrow_picks,
             getattr(config, "TOMORROW_SNAPSHOT_TOP_N", config.TOMORROW_TOP_N),
-            {"display_cap": 0, "capture_candidate_pool": True},
+            {"display_cap": 0, "capture_candidate_pool": True, "scoring_context": scoring_context},
         ),
         "swing_picks": (
             score_swing_2_5d_picks,
             getattr(config, "RECOMMENDATION_DISPLAY_LIMIT", 18),
-            {"capture_candidate_pool": True},
+            {"capture_candidate_pool": True, "scoring_context": scoring_context},
         ),
     }
     scorer, top_n, extra_kwargs = scorers[strategy]

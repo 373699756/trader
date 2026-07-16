@@ -54,7 +54,7 @@ window.TraderRecommendationRenderers = {
       : this.tradeActionIntent(tradeAction.action);
     const detail = executionBlocked ? (row.tier_label || "备选观察") : (tradeAction.label || tradeIntent.label);
     const tradeNote = executionBlocked
-      ? "仓位0 · 不执行"
+      ? (row.non_executable_reason || tradeAction.reason || "仓位0 · 不执行")
       : Number(row.trade_action_stats?.sample_count || 0)
         ? `${formatNumber(row.trade_action_stats.sample_count, 0)}样本`
         : "样本不足";
@@ -118,7 +118,18 @@ window.TraderRecommendationRenderers = {
       : row.deepseek_feature_status === "abstain"
         ? `DeepSeek预计算：弃权 · ${deepseek.reason || "证据不足"}`
         : "";
+    const deepseekScoreTrace = row.deepseek_production_applied
+      ? `综合评分：本地${row.local_score ?? "-"} × 75% + DeepSeek${row.deepseek_score ?? "-"} × 25% - 风险${row.risk_penalty ?? 0} = ${row.final_score ?? row.score ?? "-"}`
+      : `综合评分：仅本地${row.local_score ?? row.score ?? "-"}（DeepSeek${row.deepseek_feature_status || "local_only"}）`;
+    const dimensionTrace = deepseek.value_quality
+      ? `五维：价值${deepseek.value_quality.assessment || "unknown"} / 财务${deepseek.financial_health?.profit_trend || "unknown"} / 资金${deepseek.market_flow?.flow_health || "unknown"} / 政策${deepseek.industry_policy?.policy_relevance || "unknown"} / 风险${deepseek.risk_assessment?.risk_level || "unknown"}`
+      : "";
     const explanationTexts = this.uniqueReasonTexts([
+      deepseekScoreTrace,
+      `DeepSeek推荐：${row.deepseek_selected ? "是" : "否"}${row.deepseek_veto ? " · veto" : ""}`,
+      dimensionTrace,
+      row.deepseek_veto ? "DeepSeek强风险veto，不可执行" : "",
+      row.non_executable_reason,
       row.deepseek_features?.reason,
       deepseekTrace,
       ...(row.reasons || []),
@@ -167,6 +178,14 @@ window.TraderRecommendationRenderers = {
     const strategicHits = profile.strategic_hits || profile.strategicHits || [];
 
     const explanationTexts = this.uniqueReasonTexts([
+      row.deepseek_production_applied
+        ? `综合评分：本地${row.local_score ?? "-"} × 75% + DeepSeek${row.deepseek_score ?? "-"} × 25% - 风险${row.risk_penalty ?? 0} = ${row.final_score ?? row.score ?? "-"}`
+        : `综合评分：仅本地${row.local_score ?? row.score ?? "-"}`,
+      `DeepSeek推荐：${row.deepseek_selected ? "是" : "否"}${row.deepseek_veto ? " · veto" : ""}`,
+      deepseek.value_quality
+        ? `五维：价值${deepseek.value_quality.assessment || "unknown"} / 财务${deepseek.financial_health?.profit_trend || "unknown"} / 资金${deepseek.market_flow?.flow_health || "unknown"} / 政策${deepseek.industry_policy?.policy_relevance || "unknown"} / 风险${deepseek.risk_assessment?.risk_level || "unknown"}`
+        : "",
+      row.deepseek_veto ? "DeepSeek强风险veto，长期池剔除" : "",
       longTermScore.length ? `长期观察评分：${longTermScore.join(" / ")}` : "",
       profile.strategic_segment || profile.strategicSegment ? `产业链：${profile.strategic_segment || profile.strategicSegment}` : "",
       Array.isArray(strategicHits) && strategicHits.length ? `线索：${strategicHits.slice(0, 4).join("、")}` : "",
@@ -273,6 +292,9 @@ window.TraderRecommendationRenderers = {
 
   scorePairValue(value, digits, title, label = "", helpers) {
     const { escapeHtml, formatNumber } = helpers;
+    if (value == null || value === "") {
+      return `<span class="score-pair-value score-grade-empty" title="${escapeHtml(title || "暂无数据")}">${escapeHtml(label)}-</span>`;
+    }
     const num = Number(value);
     const prefix = escapeHtml(label);
     if (!Number.isFinite(num)) {
@@ -332,7 +354,9 @@ window.TraderRecommendationRenderers = {
 
   scoreCell(row, helpers) {
     const { escapeHtml, rowScore, formatNumber } = helpers;
-    const overall = this.scorePairValue(rowScore(row), 1, "当前生产综合排序分", "综", helpers);
+    const overall = this.scorePairValue(row.final_score ?? rowScore(row), 1, "最终综合排序分", "综", helpers);
+    const local = this.scorePairValue(row.local_score ?? rowScore(row), 0, "本地策略评分", "本", helpers);
+    const deepseek = this.scorePairValue(row.deepseek_score, 0, "DeepSeek五维评分，生产权重25%", "D", helpers);
     const displayQuality = this.finiteNumber(row.decision_score);
     const risk = this.riskScoreValue(row.sell_risk?.score ?? row.serenity_profile?.risk_score ?? row.avg_risk, 0, "风险评分", "险", helpers);
     const expectedLines = this.expectedReturnScoreLines(row, helpers);
@@ -342,6 +366,8 @@ window.TraderRecommendationRenderers = {
     const number = `
       <div class="score-stack" title="当前生产综合排序分 / 风险评分；质量分仅作诊断">
         <div class="score-line">${overall}<span class="score-pair-separator">/</span>${risk}</div>
+        <div class="score-line">${local}<span class="score-pair-separator">/</span>${deepseek}</div>
+        <div class="score-diagnostic-line" title="DeepSeek与本地综合风险扣分，0-30">扣${formatNumber(Number(row.risk_penalty || 0), 1)}${row.deepseek_veto ? " · veto" : ""}</div>
         ${qualityLine}
         ${expectedLines}
       </div>

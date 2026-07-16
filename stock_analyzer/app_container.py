@@ -8,9 +8,12 @@ from typing import Dict
 
 from . import config
 from .candidate_pipeline import CandidatePipeline
+from .normalization import normalize_code
 from .providers import MarketDataProvider, TimedCache
 from .realtime_schedule import realtime_refresh_profile
 from .recommendation_freeze import recommendation_is_frozen
+from .sentiment import score_stock_sentiment
+from .services.factor_sentiment_refresh import FactorSentimentRefreshService
 from .services.recommendation_quotes import RecommendationQuoteRefreshService
 from .snapshot_writer import AsyncSnapshotWriter
 from .stability import TopKDropoutTracker
@@ -342,6 +345,13 @@ class ApplicationContainer:
         self.validation_store = StrategyValidationStore(config.VALIDATION_DB_PATH)
         self.validation_cache = ValidationMetricsCache(self.validation_store)
         self.snapshot_writer = AsyncSnapshotWriter(config.RECOMMENDATION_SNAPSHOT_PATH)
+        self.factor_sentiment_refresh = FactorSentimentRefreshService(
+            refresh_history=lambda codes: self.provider.prefetch_history(list(codes), days=90),
+            score_sentiment=lambda code, name: score_stock_sentiment(self.provider, code, name=name),
+            sentiment_cache=self.sentiment_cache,
+            normalize_code=normalize_code,
+            record_error=self.provider.append_status_error,
+        )
         self.recommendation_quote_refresh = RecommendationQuoteRefreshService(
             fetch_quotes=self.provider.get_recommendation_quotes,
             load_full_quotes=self.quotes_cache.get,
@@ -353,6 +363,7 @@ class ApplicationContainer:
             self.provider,
             self,
             quote_refresh_service=self.recommendation_quote_refresh,
+            factor_sentiment_refresh=self.factor_sentiment_refresh,
         )
         self.realtime_scheduler = RealtimeMarketScheduler(
             refresh_quote_groups=self.recommendation_quote_refresh.refresh_groups,
@@ -387,6 +398,7 @@ class ApplicationContainer:
             "horizon_cache": self.horizon_cache.stats(),
             "realtime_scheduler": self.realtime_scheduler.status(),
             "recommendation_quote_groups": self.recommendation_quote_refresh.status(),
+            "factor_sentiment_refresh": self.factor_sentiment_refresh.status(),
         }
 
     def snapshot_writer_health(self) -> Dict[str, object]:

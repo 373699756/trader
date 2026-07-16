@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List, Tuple
 import pandas as pd
 
 from .normalization import coerce_number, normalize_code
+from .deepseek.production_merge import attach_and_merge_rows, select_top_rows
 from .scoring_core.theme_scores import CHOKEPOINT_INDUSTRY_LEADERS, _chain_segment, _chokepoint_score
 
 
@@ -298,7 +299,13 @@ class LongTermWatchScorer:
     def __init__(self, source: LongTermCandidateSource | None = None) -> None:
         self.source = source or LongTermCandidateSource()
 
-    def score(self, recommendations: Dict[str, object], candidates, top_n: int) -> List[Dict[str, object]]:
+    def score(
+        self,
+        recommendations: Dict[str, object],
+        candidates,
+        top_n: int,
+        validation_store=None,
+    ) -> List[Dict[str, object]]:
         universe = self.source.rows(recommendations, candidates)
         builder = LongTermProfileBuilder(universe)
         scored = []
@@ -308,7 +315,10 @@ class LongTermWatchScorer:
                 enriched = self._enrich(row, score, eligible=score.eligible)
                 scored.append(enriched)
         scored.sort(key=self._sort_key)
-        return scored[: max(0, int(top_n or 0))]
+        if validation_store is None:
+            return scored[: max(0, int(top_n or 0))]
+        merged = attach_and_merge_rows(scored, "long_term_watch", validation_store)
+        return select_top_rows(merged, "long_term_watch", top_n, include_veto_observations=False)
 
     def _enrich(self, row: Dict[str, object], score: LongTermScore, *, eligible: bool) -> Dict[str, object]:
         profile = {
@@ -352,6 +362,8 @@ class LongTermWatchScorer:
         item["expected_return_net"] = None
         item["predicted_net_return"] = None
         item["ranking_source"] = "long_term_composite_score"
+        item["score"] = round(score.composite_score * 100.0, 2)
+        item["local_score"] = item["score"]
         return item
 
     @staticmethod

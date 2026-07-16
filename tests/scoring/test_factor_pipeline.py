@@ -1,7 +1,6 @@
-import threading
+from unittest.mock import Mock, patch
 
 import pandas as pd
-from unittest.mock import patch
 
 from stock_analyzer import app_support, config
 from stock_analyzer.app_support import attach_alphalite_factors as _attach_alphalite_factors
@@ -67,8 +66,6 @@ def test_alphalite_attach_uses_cache_only_by_default_without_sync_fetch():
 
 
 def test_alphalite_attach_schedules_missing_history_without_blocking_request():
-    refreshed = threading.Event()
-
     class BackgroundProvider:
         def get_cached_history(self, code, days=90):
             return pd.DataFrame()
@@ -76,9 +73,7 @@ def test_alphalite_attach_schedules_missing_history_without_blocking_request():
         def get_history(self, code, days=90):
             raise AssertionError("request path must not synchronously fetch history")
 
-        def prefetch_history(self, codes, days=90):
-            refreshed.set()
-            return {"downloaded": len(codes)}
+    refresh_service = Mock()
 
     with patch.object(config, "ENABLE_HISTORY_FACTORS", True), patch.object(
         config,
@@ -89,10 +84,11 @@ def test_alphalite_attach_schedules_missing_history_without_blocking_request():
             BackgroundProvider(),
             TimedCache(1),
             prepare_candidates(_quote_frame()),
+            refresh_service=refresh_service,
         )
 
     assert enriched.iloc[0]["alphalite_factor_ready"] == 0.0
-    assert refreshed.wait(timeout=1.0)
+    refresh_service.schedule_history.assert_called_once_with(["600001"])
 
 
 def test_alphalite_factor_cache_reuses_same_local_history():

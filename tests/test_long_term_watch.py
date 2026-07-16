@@ -92,11 +92,12 @@ def test_long_term_watch_keeps_missing_fundamentals_neutral_not_high_score():
 
 
 def test_today_execution_window_policy_marks_only_buy_window_immediate():
-    policy = TodayExecutionWindowPolicy(start="09:30", end="14:00")
+    policy = TodayExecutionWindowPolicy(start="09:36", end="14:00")
 
-    assert policy.state(pd.Timestamp("2026-07-15 09:29").to_pydatetime())[1] == "backup_only"
-    assert policy.state(pd.Timestamp("2026-07-15 09:30").to_pydatetime())[1] == "immediate"
-    assert policy.state(pd.Timestamp("2026-07-15 14:00").to_pydatetime())[1] == "immediate"
+    assert policy.state(pd.Timestamp("2026-07-15 09:35").to_pydatetime())[1] == "open_observe"
+    assert policy.state(pd.Timestamp("2026-07-15 09:36").to_pydatetime())[1] == "main_execution"
+    assert policy.state(pd.Timestamp("2026-07-15 10:30").to_pydatetime())[1] == "late_execution"
+    assert policy.state(pd.Timestamp("2026-07-15 14:00").to_pydatetime())[1] == "afternoon_observe"
     assert policy.state(pd.Timestamp("2026-07-15 14:01").to_pydatetime())[1] == "backup_only"
 
 

@@ -65,8 +65,36 @@
               <strong id="riskBlacklistStatus">-</strong>
             </article>
             <article class="status-card">
-              <span>DeepSeek API</span>
+              <span>DeepSeek</span>
+              <strong id="deepseekParticipation">-</strong>
+            </article>
+            <article class="status-card">
+              <span>权重</span>
+              <strong id="deepseekWeight">-</strong>
+            </article>
+            <article class="status-card">
+              <span>API 已用/剩余</span>
               <strong id="deepseekApiCallCount">-</strong>
+            </article>
+            <article class="status-card">
+              <span>分策略调用</span>
+              <strong id="deepseekStrategyUsage">-</strong>
+            </article>
+            <article class="status-card">
+              <span>审查覆盖</span>
+              <strong id="deepseekCoverage">-</strong>
+            </article>
+            <article class="status-card">
+              <span>Today 阶段</span>
+              <strong id="todayExecutionPhase">-</strong>
+            </article>
+            <article class="status-card">
+              <span>最近批次</span>
+              <strong id="deepseekLastBatch">-</strong>
+            </article>
+            <article class="status-card">
+              <span>DeepSeek 状态</span>
+              <strong id="deepseekFailure">-</strong>
             </article>
           </section>
           <div class="toolbar">
@@ -171,12 +199,13 @@
                   <th class="col-stock-wide">股票</th>
                   <th class="col-pct-today">估值分</th>
                   <th class="col-pct-after">长期分</th>
+                  <th class="col-score">本地/DeepSeek/扣分/最终</th>
                   <th class="col-reasons">长期观察依据（解释/风险/验证）</th>
                 </tr>
               </thead>
               <tbody id="swingLongTermBody">
                 <tr>
-                  <td colspan="4" class="empty">切换到本页后加载</td>
+                  <td colspan="5" class="empty">切换到本页后加载</td>
                 </tr>
               </tbody>
             </table>

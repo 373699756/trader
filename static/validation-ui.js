@@ -44,7 +44,7 @@ window.TraderValidationUI = {
     let text = "结论：数据正在更新，先关注锚点方向与锚点到现在变化。";
     if (strategy === "today_term") {
       level = "watch";
-      text = "结论：今早策略在信号窗口（09:30-14:00）形成执行候选，按动态规则在明日或后日退出，不再以同日收盘延续作为唯一口径。";
+      text = "结论：今早策略09:30-09:35只观察，09:36-11:20分阶段形成执行候选，13:00后只观察，并按动态规则在明日或后日退出。";
     } else if (Number(pendingOutcome || 0) > 0 && sample <= 0) {
       text = `结论：还有 ${pendingOutcome} 条信号待回填，当前先不要用胜率下结论。`;
     } else if (outcome <= 0 && sample <= 0) {

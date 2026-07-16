@@ -68,8 +68,10 @@ services/app_services.py
 
 | 文件 | 职责 |
 |---|---|
-| `stock_analyzer/deepseek/feature_schema.py` | 三策略 Prompt 版本、证据边界和严格输出校验 |
+| `stock_analyzer/deepseek/feature_schema.py` | 四策略 Prompt 版本、五维决策契约、证据边界和严格输出校验 |
 | `stock_analyzer/deepseek/payload_builder.py` | 构建不含本地最终排名的结构化请求 |
+| `stock_analyzer/deepseek/budget.py` | 188 次每日硬上限、分策略/分窗口原子预算和使用统计 |
+| `stock_analyzer/deepseek/production_merge.py` | 75/25 综合评分、veto、周期匹配、today 阶段降级和三组排名 |
 | `stock_analyzer/deepseek/feature_dependencies.py` | 仅供结构化特征任务使用的 HTTP、新闻和环境配置装配边界 |
 | `stock_analyzer/deepseek/feature_service.py` | 截止时间前的批量 API 预计算、缓存和降级 |
 | `stock_analyzer/deepseek/runtime_features.py` | 推荐链数据库只读接入；没有 HTTP 依赖 |
@@ -100,14 +102,16 @@ services/app_services.py
 实时行情
   → prepare_candidates
   → 历史/事件/基本面点时特征
-  → score_today / score_tomorrow / score_swing
+  → score_today / score_tomorrow / score_swing / long_term_watch
+  → 宽候选读取DeepSeek预计算决策
+  → final_score = local*75% + deepseek*25% - risk_penalty
+  → veto、周期匹配和本地硬过滤复核
   → 后端验证门控
-  → attach_persisted_deepseek_features
   → 主题与展示收口
   → 内存缓存和推荐快照
 ```
 
-`attach_persisted_deepseek_features` 只调用 `StrategyValidationStore.latest_deepseek_candidate_features`。即使数据库不可用、无特征或读取失败，也只标记 `local_only` 并保留原本的本地顺序。
+`attach_persisted_deepseek_features` 只调用 `StrategyValidationStore.latest_deepseek_candidate_features`，不发 HTTP 请求。即使数据库不可用、无特征或读取失败，也标记 `local_only` 并以 `final_score=local_score` 正常返回。
 
 推荐入口使用内存缓存和本地快照降低慢数据源延迟。同一缓存键只允许一个后台刷新线程；后台失败通过响应 `meta` 或 `health` 暴露，不能中断已有可用结果。
 
@@ -128,9 +132,9 @@ stock_analyzer.jobs deepseek-precompute
 
 约束：
 
-- 每个策略一个批量请求，不逐股调用；
-- 盘中约每 20 分钟只检查候选和证据变化，14:30 后改为按需触发；
-- 缓存命中和无证据弃权不计入 API 次数，所有策略和模型共享每日 50 次上限；
+- 每个策略一个批量请求，不逐股调用；候选池由本地先构建，默认最多 120 只；
+- 调度按共享预热、today 开盘观察/主执行/降级、午后三策略、14:20 补审分流，today 不能占用午后三策略预算；
+- 缓存命中和无证据弃权不计入 API 次数，所有策略和模型共享每日 188 次硬上限，并受分策略和分窗口上限约束；
 - API Key 只来自环境变量；
 - 调用不跨 14:48 生产截止时间重试，14:50 冻结最终推荐；
 - 迟到批次状态为 `late_shadow`；
@@ -148,6 +152,7 @@ stock_analyzer.jobs deepseek-precompute
 - 不可变执行策略及版本哈希；
 - 生产基线 provenance；
 - DeepSeek 预计算状态和结构化特征。
+- 纯本地、DeepSeek、最终综合三组 Top5 代码及逐行 `local_score/deepseek_score/risk_penalty/final_score`。
 
 带截止要求的批次在数据库写事务前再次校验 `freeze_deadline`。超过截止抛出 `SignalFreezeDeadlineExceeded`，避免生成名义上准时、实际上迟到的信号。
 
@@ -233,7 +238,7 @@ python -m stock_analyzer.jobs <command>
 | `backup` | 验证库备份 |
 | `stats` | 数据库和迁移健康快照 |
 
-任务使用 SQLite lease 防止相同命令或调度槽位并发运行。直接运行 `app.py` 时，进程级 `RuntimeSupervisor` 在 09:40–14:20 按 `DEEPSEEK_PRECOMPUTE_TIMES` 启动 DeepSeek 变化检查，并统一拥有实时行情、推荐池行情、DeepSeek、自动快照和结果回填线程。周期 worker 共享停止信号；推荐池行情等一次性 worker 由独立服务持有线程引用、拒绝停止期间的新任务并在统一超时内等待。关闭顺序先停止实时调度生产者，再回收其派生 worker；部分启动失败会停止已经启动的同组线程。应用 HTTP 请求线程不执行这些任务。`create_app()` 默认只组装依赖，其他 WSGI 入口必须显式使用 `create_app(start_runtime=True)`，或完全交由 cron、systemd timer、任务平台调度，不能同时启用两套所有者。
+任务使用 SQLite lease 防止相同命令或调度槽位并发运行。直接运行 `app.py` 时，进程级 `RuntimeSupervisor` 从 09:15 预热到 14:20 补审按 `DEEPSEEK_PRECOMPUTE_TIMES` 启动 DeepSeek 变化检查，并统一拥有实时行情、推荐池行情、DeepSeek、自动快照和结果回填线程。DeepSeek 将一次逻辑审查拆为最多 8 只股票的物理小批次，每个 HTTP 请求独立预留预算并落库，逻辑汇总批次只负责覆盖率和状态，不计入 188 次硬上限。周期 worker 共享停止信号；推荐池行情等一次性 worker 由独立服务持有线程引用、拒绝停止期间的新任务并在统一超时内等待。关闭顺序先停止实时调度生产者，再回收其派生 worker；部分启动失败会停止已经启动的同组线程。应用 HTTP 请求线程不执行这些任务。`create_app()` 默认只组装依赖，其他 WSGI 入口必须显式使用 `create_app(start_runtime=True)`，或完全交由 cron、systemd timer、任务平台调度，不能同时启用两套所有者。
 
 ## 11. 本地文件
 
@@ -262,7 +267,7 @@ python -m stock_analyzer.jobs <command>
 
 推荐和验证信号携带 generation provenance。配置、代码输入或权重指纹漂移时必须建立新基线，不能把结果并入旧实验。
 
-DeepSeek Meta 当前硬性不进入生产。即使 artifact 的统计门槛通过，也需要新基线和人工确认才能开放。
+固定 25% 五维结构化评分已在 `deepseek_25pct_production_2026_07_16` 基线中进入生产；学习型 DeepSeek Meta artifact 仍硬性不进入生产，即使统计门槛通过也需要新基线和人工确认。
 
 ## 13. 备份和恢复
 

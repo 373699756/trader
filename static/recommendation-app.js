@@ -459,7 +459,7 @@
         });
         if (!displayRows.length) {
           if (els.swingLongTermBody) {
-            els.swingLongTermBody.innerHTML = '<tr><td colspan="4" class="empty">暂无符合条件的长期股</td></tr>';
+            els.swingLongTermBody.innerHTML = '<tr><td colspan="5" class="empty">暂无符合条件的长期股</td></tr>';
           }
           return;
         }

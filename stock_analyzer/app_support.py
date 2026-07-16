@@ -1,5 +1,3 @@
-import threading
-import time
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -16,16 +14,11 @@ from .probability_calibration import apply_score_calibration, load_calibrator, t
 from .risk_blacklist import attach_risk_blacklist, load_risk_blacklist
 from .scoring_core.candidate_filters import prepare_candidates
 from .scoring_core.explanations import mark_backup_watch
-from .sentiment import score_stock_sentiment
+from .services.factor_sentiment_refresh import FactorSentimentRefreshService
 from .strategy_health import strategy_status
 from .strategy_validation import StrategyValidationStore
 from .oos_report import _experiment_audit_summary
 from .validation_policy import primary_return_config as _primary_return_config, validation_baseline_config
-
-_SENTIMENT_CACHE_LOCK = threading.Lock()
-_HISTORY_REFRESH_LOCK = threading.Lock()
-_HISTORY_REFRESHING = set()
-
 
 def load_local_history_frames(codes, days: int = 90) -> Dict[str, pd.DataFrame]:
     try:
@@ -90,34 +83,39 @@ def stock_exists_in_quotes(code: str, quotes) -> bool:
     return normalize_code(code) in set(df["code"].map(normalize_code).astype(str))
 
 
-def sentiment_for_candidates(provider, cache, candidates) -> Dict[str, Dict[str, object]]:
+def sentiment_for_candidates(
+    provider,
+    cache,
+    candidates,
+    *,
+    refresh_service: FactorSentimentRefreshService | None = None,
+) -> Dict[str, Dict[str, object]]:
     if not config.ENABLE_INLINE_SENTIMENT:
         return {}
+    if refresh_service is not None:
+        return refresh_service.sentiment_for_candidates(candidates)
     lookup: Dict[str, Dict[str, object]] = {}
     state = _sentiment_cache_state(cache)
-    now = time.time()
-    pending = []
     for item in candidates[:30]:
         code = normalize_code(item.get("code"))
         if not code:
             continue
         entry = state["entries"].get(code) or {}
         value = entry.get("value")
-        expires_at = float(entry.get("expires_at") or 0.0)
         if isinstance(value, dict):
             lookup[code] = dict(value)
-            if expires_at <= now:
-                pending.append({"code": code, "name": item.get("name", "")})
             continue
-        lookup[code] = _default_sentiment("舆情刷新中")
-        pending.append({"code": code, "name": item.get("name", "")})
-    _schedule_sentiment_refresh(provider, cache, pending)
-    if cache is not None:
-        cache.set(state)
+        lookup[code] = FactorSentimentRefreshService.default_sentiment("舆情刷新中")
     return lookup
 
 
-def attach_alphalite_factors(provider, cache, candidates):
+def attach_alphalite_factors(
+    provider,
+    cache,
+    candidates,
+    *,
+    refresh_service: FactorSentimentRefreshService | None = None,
+):
     if not config.ENABLE_HISTORY_FACTORS or config.HISTORY_FACTOR_LIMIT <= 0:
         return candidates
     history_by_code = {}
@@ -142,53 +140,10 @@ def attach_alphalite_factors(provider, cache, candidates):
             history_by_code[code] = history
         else:
             missing_codes.append(code)
-    if fetch_on_request and max_request_fetches > 0:
-        _schedule_history_factor_refresh(provider, missing_codes[:max_request_fetches])
+    if fetch_on_request and max_request_fetches > 0 and refresh_service is not None:
+        refresh_service.schedule_history(missing_codes[:max_request_fetches])
     factors = _cached_alphalite_factors(cache, history_by_code)
     return merge_alphalite(candidates, factors)
-
-
-def _schedule_history_factor_refresh(provider, codes) -> None:
-    queued = []
-    with _HISTORY_REFRESH_LOCK:
-        for value in codes or []:
-            code = normalize_code(value)
-            if not code or code in _HISTORY_REFRESHING:
-                continue
-            _HISTORY_REFRESHING.add(code)
-            queued.append(code)
-    if not queued:
-        return
-    worker = threading.Thread(
-        target=_refresh_history_factor_entries,
-        args=(provider, queued),
-        name="history-factor-refresh",
-        daemon=True,
-    )
-    worker.start()
-
-
-def _refresh_history_factor_entries(provider, codes) -> None:
-    try:
-        if hasattr(provider, "prefetch_history"):
-            provider.prefetch_history(codes, days=90)
-        else:
-            for code in codes:
-                try:
-                    provider.get_history(code, days=90)
-                except Exception:
-                    continue
-    except Exception as exc:
-        recorder = getattr(provider, "_record_sentiment_error", None)
-        if callable(recorder):
-            try:
-                recorder("后台历史因子刷新失败: {}".format(exc))
-            except Exception:
-                pass
-    finally:
-        with _HISTORY_REFRESH_LOCK:
-            for code in codes:
-                _HISTORY_REFRESHING.discard(normalize_code(code))
 
 
 def attach_alphalite_factors_for_codes(provider, candidates, codes):
@@ -277,10 +232,6 @@ def _cached_alphalite_factors(cache, history_by_code: Dict[str, pd.DataFrame]) -
     return pd.DataFrame(rows)
 
 
-def _default_sentiment(summary: str = "舆情接口暂不可用") -> Dict[str, object]:
-    return {"score": 50.0, "summary": summary, "risk_words": [], "trigger_words": [], "items": []}
-
-
 def _sentiment_cache_state(cache) -> Dict[str, object]:
     cached = cache.get() if cache is not None else None
     if not isinstance(cached, dict):
@@ -291,62 +242,6 @@ def _sentiment_cache_state(cache) -> Dict[str, object]:
         "entries": entries if isinstance(entries, dict) else {},
         "refreshing": refreshing if isinstance(refreshing, set) else set(),
     }
-
-
-def _schedule_sentiment_refresh(provider, cache, candidates) -> None:
-    if not candidates:
-        return
-    with _SENTIMENT_CACHE_LOCK:
-        state = _sentiment_cache_state(cache)
-        queued = []
-        for item in candidates:
-            code = normalize_code(item.get("code"))
-            if not code or code in state["refreshing"]:
-                continue
-            state["refreshing"].add(code)
-            queued.append({"code": code, "name": item.get("name", "")})
-        if not queued:
-            if cache is not None:
-                cache.set(state)
-            return
-        if cache is not None:
-            cache.set(state)
-    worker = threading.Thread(
-        target=_refresh_sentiment_entries,
-        args=(provider, cache, queued),
-        name="sentiment-refresh",
-        daemon=True,
-    )
-    worker.start()
-
-
-def _refresh_sentiment_entries(provider, cache, candidates) -> None:
-    ttl_seconds = max(30, int(getattr(cache, "ttl_seconds", 0) or 0))
-    now = time.time()
-    refreshed = {}
-    for item in candidates:
-        code = normalize_code(item.get("code"))
-        if not code:
-            continue
-        try:
-            value = score_stock_sentiment(provider, code, name=item.get("name", ""))
-        except Exception:
-            value = _default_sentiment()
-        refreshed[code] = {
-            "value": value,
-            "expires_at": now + ttl_seconds,
-        }
-    with _SENTIMENT_CACHE_LOCK:
-        state = _sentiment_cache_state(cache)
-        for code, entry in refreshed.items():
-            state["entries"][code] = entry
-            state["refreshing"].discard(code)
-        for item in candidates:
-            code = normalize_code(item.get("code"))
-            if code:
-                state["refreshing"].discard(code)
-        if cache is not None:
-            cache.set(state)
 
 
 def attach_validation_summary(

@@ -52,6 +52,7 @@ files = [
     "stock_analyzer/background_workers.py",
     "stock_analyzer/config.py",
     "stock_analyzer/deepseek_scheduler.py",
+    "stock_analyzer/services/factor_sentiment_refresh.py",
     "stock_analyzer/realtime_quotes.py",
     "stock_analyzer/runtime.py",
     "stock_analyzer/server_security.py",

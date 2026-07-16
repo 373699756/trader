@@ -29,7 +29,7 @@ class DeepSeekCache:
         except Exception:
             return
 
-    def merge(self, path: str, updates: Dict[str, object]) -> None:
+    def merge(self, path: str, updates: Dict[str, object], max_entries: int | None = None) -> None:
         """Merge cache entries while holding a process-safe lock."""
         if not updates:
             return
@@ -37,6 +37,19 @@ class DeepSeekCache:
             with self._exclusive_lock(path):
                 current = self.read(path)
                 current.update(updates)
+                if max_entries is not None:
+                    limit = max(1, int(max_entries))
+                    current = dict(
+                        sorted(
+                            current.items(),
+                            key=lambda item: (
+                                float((item[1] or {}).get("cached_at") or (item[1] or {}).get("created_at_ts") or 0.0)
+                                if isinstance(item[1], dict)
+                                else 0.0
+                            ),
+                            reverse=True,
+                        )[:limit]
+                    )
                 atomic_write_json(path, current, ensure_ascii=False, separators=(",", ":"))
         except Exception:
             return

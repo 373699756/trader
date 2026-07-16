@@ -31,6 +31,8 @@ def availability_invariant_error(
         return "cashflow_opinion_requires_cashflow_data"
     if not availability.get("main_fund_flow") and market_flow.get("flow_health") not in UNKNOWN_VALUES:
         return "flow_opinion_requires_main_fund_flow_data"
+    if not availability.get("main_fund_flow") and bool(market_flow.get("price_flow_divergence")):
+        return "flow_divergence_requires_main_fund_flow_data"
     if industry_policy.get("policy_relevance") not in UNKNOWN_VALUES and not _has_policy_evidence(candidate):
         return "policy_opinion_requires_policy_evidence"
     return ""
@@ -47,4 +49,3 @@ def _has_policy_evidence(candidate: Dict[str, object]) -> bool:
         if "policy" in searchable.lower() or "政策" in searchable:
             return True
     return False
-

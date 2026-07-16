@@ -122,6 +122,11 @@ window.TraderRecommendationTables = {
       const longTermScore = Number(profile.long_term_potential ?? row.longTermProfile?.longTermPotential);
       const valueCell = Number.isFinite(valueScore) ? `<span>${formatNumber(valueScore * 100, 0)}</span>` : "<span>-</span>";
       const longTermCell = Number.isFinite(longTermScore) ? `<span>${formatNumber(longTermScore * 100, 0)}</span>` : "<span>-</span>";
+      const localScore = Number(row.local_score ?? row.score);
+      const deepseekScore = row.deepseek_score == null || row.deepseek_score === "" ? Number.NaN : Number(row.deepseek_score);
+      const finalScore = Number(row.final_score ?? row.score);
+      const penalty = Number(row.risk_penalty || 0);
+      const scoreTrace = `${Number.isFinite(localScore) ? formatNumber(localScore, 0) : "-"} / ${Number.isFinite(deepseekScore) ? formatNumber(deepseekScore, 0) : "-"} / -${formatNumber(penalty, 0)} / ${Number.isFinite(finalScore) ? formatNumber(finalScore, 0) : "-"}`;
       return `
         <tr data-code="${escapeHtml(row.code)}" data-name="${escapeHtml(row.name)}">
           <td class="stock-cell stock-cell-wide">
@@ -131,6 +136,7 @@ window.TraderRecommendationTables = {
           </td>
           <td class="col-pct-today">${valueCell}</td>
           <td class="col-pct-after">${longTermCell}</td>
+          <td class="num col-score" title="本地分 / DeepSeek分 / 风险扣分 / 最终分">${scoreTrace}</td>
           <td class="reasons">${explanation}</td>
         </tr>
       `;

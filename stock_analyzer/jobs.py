@@ -7,10 +7,12 @@ import sqlite3
 import socket
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any, Dict, List
 
 from . import config
 from .deepseek.feature_service import DeepSeekFeatureAnalysisService
+from .deepseek.budget import phase_at, strategies_for_phase
 from .deepseek.meta_training import DeepSeekMetaTrainingService
 from .portfolio_baseline import DailyPortfolioBaselineService
 from .providers import MarketDataProvider
@@ -30,6 +32,17 @@ def _snapshot_strategies(raw: str) -> List[str]:
     if not chosen:
         return [str(item) for item in config.AUTO_SNAPSHOT_STRATEGIES or ()]
     return chosen
+
+
+def _deepseek_strategies(raw: str, *, emergency: bool = False) -> List[str]:
+    allowed = ("today_term", "tomorrow_picks", "swing_picks", "long_term_watch")
+    requested = [item.strip() for item in str(raw or "").replace("，", ",").split(",") if item.strip()]
+    if not requested or any(item.lower() == "all" for item in requested):
+        selected = list(allowed)
+    else:
+        selected = [item for item in requested if item in allowed]
+    phase_allowed = set(strategies_for_phase(phase_at(datetime.now(), emergency=emergency)))
+    return [item for item in selected if item in phase_allowed]
 
 
 def _execution_strategies(raw: str) -> List[str]:
@@ -226,7 +239,15 @@ def _run_snapshot_command(args) -> Dict[str, Any]:
 def _run_deepseek_precompute_command(args) -> Dict[str, Any]:
     store = StrategyValidationStore(config.VALIDATION_DB_PATH)
     provider = MarketDataProvider()
-    strategies = _snapshot_strategies(args.strategy)
+    strategies = _deepseek_strategies(args.strategy, emergency=bool(args.emergency))
+    if not strategies:
+        return {
+            "ok": True,
+            "strategies": [],
+            "status": "deadline_skipped",
+            "error": "No DeepSeek strategy is eligible in the current execution window.",
+            "results": [],
+        }
     context = build_deepseek_precompute_rows(
         provider,
         strategies,
@@ -252,9 +273,18 @@ def _run_deepseek_precompute_command(args) -> Dict[str, Any]:
             market_filter=str(args.market or "all"),
             deadline_at=str(args.deadline_at or getattr(config, "DEEPSEEK_PRECOMPUTE_DEADLINE", "14:48")),
             model_tier=str(args.model_tier or "flash"),
+            emergency=bool(args.emergency),
         )
         results.append(result)
-    successful = {"ok", "partial", "cache_hit", "no_evidence", "disabled", "daily_call_limit"}
+    successful = {
+        "ok",
+        "partial",
+        "cache_hit",
+        "no_evidence",
+        "disabled",
+        "daily_call_limit",
+        "deadline_skipped",
+    }
     return {
         "ok": all(str(item.get("status") or "") in successful for item in results),
         "strategies": strategies,
@@ -459,6 +489,11 @@ def _build_parser() -> argparse.ArgumentParser:
     deepseek_precompute.add_argument("--cutoff-at", default="", help="证据截止时间ISO；默认当前候选快照时间")
     deepseek_precompute.add_argument("--deadline-at", default="", help="API硬截止时间；默认14:48")
     deepseek_precompute.add_argument("--model-tier", default="flash", choices=("flash", "pro"))
+    deepseek_precompute.add_argument(
+        "--emergency",
+        action="store_true",
+        help="仅用于监管、减持、公告、业绩或政策突发，使用每日5次预留额度",
+    )
 
     deepseek_meta = subparsers.add_parser(
         "deepseek-meta-build",

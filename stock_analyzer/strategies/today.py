@@ -197,7 +197,7 @@ class TodayScorer:
             prediction_type="rank_score",
             observation_mode="today_term_entry",
             profit_window="信号时点至明日/后日规则退出",
-            holding_discipline="09:30-14:00 信号窗口买入，按既定规则退出",
+            holding_discipline="09:36后按主执行/降级执行窗口买入，13:00后仅观察，按既定规则退出",
             execution_allowed=executable_now,
             execution_window_status=execution_window_status,
             execution_window_label=execution_window_label,
@@ -274,10 +274,7 @@ class TodayScorer:
             "execution_window_as_of": execution_window_as_of,
             "execution_window_start": str(getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_START", "09:30")),
             "execution_window_end": str(getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_END", "14:00")),
-            "execution_window": "{}-{} 可执行窗口；窗口外仅观察".format(
-                getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_START", "09:30"),
-                getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_END", "14:00"),
-            ),
+            "execution_window": "09:30-09:35开盘观察；09:36-10:30主执行；10:30-11:20降级执行；13:00-14:00午后观察",
             "industry_cap": getattr(config, "TODAY_MAX_INDUSTRY_PER_RECOMMENDATION", 2),
             "industry_distribution": {},
             "industry_limited_count": 0,
@@ -317,19 +314,12 @@ class TodayScorer:
             "execution_allowed": execution_allowed,
             "execution_window_status": execution_window_status,
             "execution_window_as_of": execution_window_as_of,
-            "execution_window_start": str(
-                getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_START", "09:30")
-            ),
-            "execution_window_end": str(
-                getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_END", "14:00")
-            ),
+            "execution_window_start": str(getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_START", "09:30")),
+            "execution_window_end": str(getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_END", "14:00")),
             "holding_discipline": "信号时点至明日/后日规则退出，明日重合仅作展示层级标记。",
-            "profit_window": "09:30-14:00 买入窗口，明日或后日按规则退出",
-            "deepseek_mode": "precomputed_features_shadow",
-            "execution_window": "{}-{} 可执行窗口；窗口外仅观察".format(
-                getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_START", "09:30"),
-                getattr(config, "TODAY_TERM_RECOMMENDATION_BUY_WINDOW_END", "14:00"),
-            ),
+            "profit_window": "09:36-11:20分阶段执行，13:00后仅观察，明日或后日按规则退出",
+            "deepseek_mode": "production_75_local_25_deepseek",
+            "execution_window": "09:30-09:35开盘观察；09:36-10:30主执行；10:30-11:20降级执行；13:00-14:00午后观察",
             "strategy": {
                 "today_term": "返回今早可执行主池，不足按备选池补齐后展示。",
             },
@@ -379,14 +369,14 @@ class TodayScorer:
             df = df[df["market"] == market_filter].copy()
         if df.empty:
             execution_now = self._as_of()
-            execution_open, _, _, _ = self._execution_window_state(execution_now)
+            execution_open, execution_status, _, _ = self._execution_window_state(execution_now)
             return {
                 "today_term": [],
             }, self._empty_meta(
                 top_n,
                 market_filter,
                 execution_allowed=execution_open,
-                execution_window_status="immediate" if execution_open else "backup_only",
+                execution_window_status=execution_status,
                 execution_window_as_of=execution_now.isoformat(timespec="seconds"),
             )
 
@@ -408,6 +398,9 @@ class TodayScorer:
             )
 
         self.ranking_policy.score_desc(short_rows)
+        post_score_rows = self._ctx("_post_score_rows", None)
+        if callable(post_score_rows):
+            short_rows = post_score_rows(short_rows)
         candidate_pool_rows = []
         for rank, row in enumerate(short_rows, start=1):
             item = dict(row)
@@ -417,6 +410,11 @@ class TodayScorer:
             candidate_pool_rows.append(item)
 
         min_score = coerce_number(getattr(config, "TODAY_RECOMMENDATION_MIN_SCORE", 60.0), 60.0)
+        if execution_window_status == "late_execution":
+            min_score = max(
+                min_score,
+                coerce_number(getattr(config, "TODAY_LATE_MIN_FINAL_SCORE", 68.0), 68.0),
+            )
         backup_profile = self._resolve_backup_threshold_profile(market_regime)
         for row in short_rows:
             row["_selection_backup_min_score"] = self._row_backup_min_score(
@@ -481,7 +479,7 @@ class TodayScorer:
             top_n=top_n,
             market_filter=market_filter,
             execution_allowed=(execution_open and primary_count > 0),
-            execution_window_status=("immediate" if execution_open else "backup_only"),
+            execution_window_status=execution_window_status,
             execution_window_as_of=execution_now.isoformat(timespec="seconds"),
         )
         meta["industry_distribution"] = industry_distribution
