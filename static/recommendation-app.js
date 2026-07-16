@@ -342,15 +342,43 @@
         return "";
       }
 
+      function deepseekStatusText(payload) {
+        const deepseek = payload?.meta?.deepseek;
+        if (!deepseek || typeof deepseek !== "object") {
+          return "";
+        }
+        const status = String(deepseek.status || "");
+        const productionApplied = !!deepseek.production_applied;
+        const used = Number(deepseek.used);
+        const remaining = Number(deepseek.remaining);
+        const requested = Number(deepseek.requested);
+        const reviewed = Number(deepseek.reviewed);
+        const reason = String(deepseek.reason || "").trim();
+        const usageText = Number.isFinite(used) && Number.isFinite(remaining)
+          ? `调用 ${Math.max(0, used)} / 剩余 ${Math.max(0, remaining)}`
+          : "";
+        const reviewText = Number.isFinite(requested) && Number.isFinite(reviewed)
+          ? `审查 ${Math.max(0, reviewed)}/${Math.max(0, requested)}`
+          : "";
+        const metaParts = [productionApplied ? "已参与DeepSeek合并" : "未参与合并"];
+        if (status) metaParts.push(`状态:${status}`);
+        if (usageText) metaParts.push(usageText);
+        if (reviewText) metaParts.push(reviewText);
+        if (reason) metaParts.push(reason);
+        return metaParts.join(" · ");
+      }
+
       function recommendationStatusText(payload, fallbackPrefix = "推荐更新") {
         const phaseLabel = snapshotPhaseLabel(payload);
         const quoteAt = payload.meta?.quote_timestamp || payload.health?.last_quote_refresh;
         const generatedAt = payload.meta?.as_of || payload.meta?.generated_at || payload.snapshot?.saved_at || "最近快照";
         const phaseSuffix = phaseLabel ? ` · ${phaseLabel}` : "";
+        const deepseek = deepseekStatusText(payload);
+        const deepseekSuffix = deepseek ? ` · ${deepseek}` : "";
         if (quoteAt) {
-          return `行情更新 ${generatedAt} · 排名 ${quoteAt}${phaseSuffix}`;
+          return `行情更新 ${generatedAt} · 排名 ${quoteAt}${phaseSuffix}${deepseekSuffix}`;
         }
-        return `${fallbackPrefix} ${generatedAt}${phaseSuffix}`;
+        return `${fallbackPrefix} ${generatedAt}${phaseSuffix}${deepseekSuffix}`;
       }
 
       function applyRecommendationsPayload(payload) {
