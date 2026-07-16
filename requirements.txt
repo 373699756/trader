@@ -1,3 +1,0 @@
-# Compatibility entry point for contributors and existing automation.
-# Runtime launchers install requirements/runtime.txt instead.
--r requirements/dev.txt

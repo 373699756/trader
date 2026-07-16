@@ -1,0 +1,173 @@
+{
+  "schema_version": 2,
+  "strategy_version": "strategy_v6_local68_deepseek32",
+  "fusion": {
+    "version": "fusion_v2_local68_deepseek32",
+    "local_weight": 0.68,
+    "deepseek_weight": 0.32,
+    "confidence_coverage_min": 0.5,
+    "minimum_known_dimensions": 2,
+    "local_risk_cap": 25,
+    "deepseek_risk_cap": 30,
+    "score_decimals": 2,
+    "rounding": "ROUND_HALF_UP"
+  },
+  "selection": {
+    "default_top_k": 10,
+    "maximum_top_k": 18,
+    "maximum_per_industry": 3,
+    "observation_margin": 5,
+    "thresholds": {
+      "today_main": 70,
+      "today_late": 76,
+      "tomorrow": 72,
+      "d25": 70
+    }
+  },
+  "candidate_weights": {
+    "liquidity": 0.35,
+    "short_momentum": 0.25,
+    "trend": 0.2,
+    "industry_strength": 0.1,
+    "data_completeness": 0.1
+  },
+  "dimension_weights": {
+    "today": {
+      "value_quality": 0.1,
+      "financial_health": 0.1,
+      "market_flow": 0.4,
+      "industry_policy": 0.15,
+      "risk_quality": 0.25
+    },
+    "tomorrow": {
+      "value_quality": 0.15,
+      "financial_health": 0.2,
+      "market_flow": 0.25,
+      "industry_policy": 0.2,
+      "risk_quality": 0.2
+    },
+    "d25": {
+      "value_quality": 0.2,
+      "financial_health": 0.25,
+      "market_flow": 0.2,
+      "industry_policy": 0.2,
+      "risk_quality": 0.15
+    },
+    "long": {
+      "value_quality": 0.3,
+      "financial_health": 0.3,
+      "market_flow": 0.1,
+      "industry_policy": 0.2,
+      "risk_quality": 0.1
+    }
+  },
+  "risk_rules": [
+    {
+      "risk_code": "near_limit_crowding",
+      "severity": "medium",
+      "penalty": 5,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 4,
+      "group": "market_crowding"
+    },
+    {
+      "risk_code": "price_volume_divergence",
+      "severity": "medium",
+      "penalty": 4,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 24,
+      "group": "market_structure"
+    },
+    {
+      "risk_code": "high_volatility",
+      "severity": "low",
+      "penalty": 3,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 24,
+      "group": "market_structure"
+    },
+    {
+      "risk_code": "reduction_or_unlock_low",
+      "severity": "low",
+      "penalty": 3,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 720,
+      "group": "ownership_change"
+    },
+    {
+      "risk_code": "reduction_or_unlock_medium",
+      "severity": "medium",
+      "penalty": 5,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 720,
+      "group": "ownership_change"
+    },
+    {
+      "risk_code": "reduction_or_unlock_high",
+      "severity": "high",
+      "penalty": 8,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 720,
+      "group": "ownership_change"
+    },
+    {
+      "risk_code": "pledge_risk_low",
+      "severity": "low",
+      "penalty": 3,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 720,
+      "group": "pledge"
+    },
+    {
+      "risk_code": "pledge_risk_medium",
+      "severity": "medium",
+      "penalty": 5,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 720,
+      "group": "pledge"
+    },
+    {
+      "risk_code": "pledge_risk_high",
+      "severity": "high",
+      "penalty": 8,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 720,
+      "group": "pledge"
+    },
+    {
+      "risk_code": "financial_deterioration",
+      "severity": "high",
+      "penalty": 6,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 2160,
+      "group": "financial"
+    },
+    {
+      "risk_code": "negative_announcement",
+      "severity": "medium",
+      "penalty": 5,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 720,
+      "group": "event"
+    },
+    {
+      "risk_code": "regulatory_risk",
+      "severity": "high",
+      "penalty": 15,
+      "minimum_confidence": 0.7,
+      "evidence_ttl_hours": 2160,
+      "group": "event"
+    }
+  ],
+  "factor_contract": {
+    "percentage_unit": "percentage_points",
+    "realtime_price_adjustment": "none",
+    "history_price_adjustment": "forward",
+    "cross_section_ties": "average_rank",
+    "non_finite": "missing",
+    "missing_score": 50,
+    "winsor_lower_quantile": 0.025,
+    "winsor_upper_quantile": 0.975,
+    "minimum_history_days": 20
+  }
+}

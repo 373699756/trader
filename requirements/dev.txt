@@ -1,2 +1,0 @@
-# Development and quality dependencies are declared in pyproject.toml.
--e .[dev]

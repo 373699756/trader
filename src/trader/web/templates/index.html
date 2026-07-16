@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>A股策略看板</title>
+    <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='2') }}" />
+    <script defer src="{{ url_for('static', filename='render.js', v='2') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard.js', v='2') }}"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand" aria-label="A股策略看板">
+        <img src="{{ url_for('static', filename='trader-mark.svg') }}" alt="" width="32" height="32" />
+        <div>
+          <h1>A股策略看板</h1>
+          <span id="marketPhase">等待运行时</span>
+        </div>
+      </div>
+      <div class="runtime-strip" aria-label="运行状态">
+        <span><i id="runtimeDot" class="status-dot" data-state="idle"></i><b id="runtimeStatus">未启动</b></span>
+        <span>行情 <b id="quoteAge">-</b></span>
+        <span>推送 <b id="streamStatus">连接中</b></span>
+        <span>DeepSeek <b id="budgetStatus">0 / 188</b></span>
+        <span>最近错误 <b id="lastError">无</b></span>
+      </div>
+      <button id="refreshButton" class="icon-button" type="button" title="刷新当前策略" aria-label="刷新当前策略">
+        <span aria-hidden="true">↻</span>
+      </button>
+    </header>
+
+    <main class="workspace">
+      <section class="control-band" aria-label="策略和日期">
+        <nav class="strategy-tabs" role="tablist" aria-label="推荐策略">
+          <button class="strategy-tab is-active" type="button" role="tab" aria-selected="true" data-strategy="today">今早</button>
+          <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="tomorrow">明日</button>
+          <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="d25">2-5日</button>
+          <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="long">长期</button>
+        </nav>
+        <label class="date-control">
+          <span>推荐日期</span>
+          <select id="dateSelect" aria-label="推荐日期">
+            <option value="">当前</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="summary-band" aria-label="推荐摘要">
+        <div class="summary-item"><span>推荐数</span><strong id="recommendationCount">-</strong></div>
+        <div class="summary-item"><span>可执行</span><strong id="executableCount">-</strong></div>
+        <div class="summary-item"><span>过滤数</span><strong id="filteredCount">-</strong></div>
+        <div class="summary-item"><span>行情源</span><strong id="dataSource">-</strong></div>
+        <div class="summary-item"><span>评分版本</span><strong id="strategyVersion">-</strong></div>
+        <div class="summary-item"><span>冻结状态</span><strong id="freezeStatus">-</strong></div>
+      </section>
+
+      <div id="notice" class="notice" data-level="idle" role="status">正在读取推荐快照</div>
+
+      <section class="table-region" aria-label="推荐列表">
+        <div class="table-scroll">
+          <table id="recommendationTable">
+            <colgroup id="tableColumns"></colgroup>
+            <thead id="tableHead"></thead>
+            <tbody id="tableBody">
+              <tr><td class="table-state" colspan="9">加载中</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+    <aside id="detailDrawer" class="detail-drawer" aria-hidden="true" aria-labelledby="drawerTitle">
+      <header class="drawer-header">
+        <div>
+          <span id="drawerCode" class="drawer-code">-</span>
+          <h2 id="drawerTitle">评分明细</h2>
+        </div>
+        <button id="drawerClose" class="icon-button" type="button" title="关闭明细" aria-label="关闭明细">
+          <span aria-hidden="true">×</span>
+        </button>
+      </header>
+      <div id="drawerContent" class="drawer-content"></div>
+    </aside>
+
+    <noscript>此看板需要浏览器启用 JavaScript。</noscript>
+  </body>
+</html>

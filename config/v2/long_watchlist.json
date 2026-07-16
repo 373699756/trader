@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "watchlist_version": "long_watch_v1_2026_07_16",
+  "items": [
+    {"code": "600036", "name": "招商银行", "industry": "银行", "target_price": null},
+    {"code": "600276", "name": "恒瑞医药", "industry": "医药", "target_price": null},
+    {"code": "600519", "name": "贵州茅台", "industry": "食品饮料", "target_price": null},
+    {"code": "600900", "name": "长江电力", "industry": "公用事业", "target_price": null},
+    {"code": "601318", "name": "中国平安", "industry": "非银金融", "target_price": null},
+    {"code": "601899", "name": "紫金矿业", "industry": "有色金属", "target_price": null},
+    {"code": "000333", "name": "美的集团", "industry": "家用电器", "target_price": null},
+    {"code": "000858", "name": "五粮液", "industry": "食品饮料", "target_price": null},
+    {"code": "002594", "name": "比亚迪", "industry": "汽车", "target_price": null},
+    {"code": "300750", "name": "宁德时代", "industry": "电力设备", "target_price": null}
+  ]
+}

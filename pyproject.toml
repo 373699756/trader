@@ -4,18 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trader-research-dashboard"
-version = "0.1.0"
-description = "Local A-share recommendation research and strategy-validation dashboard"
+version = "0.2.0"
+description = "Local A-share recommendation research dashboard"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
 dependencies = [
     "akshare>=1.14.0",
     "Flask>=2.2,<3.1",
-    "numpy>=1.24,<3",
-    "pandas>=1.5,<3",
-    "python-dotenv>=1.0,<2",
     "requests>=2.22.0",
-    "tushare>=1.2.89",
 ]
 
 [project.optional-dependencies]
@@ -28,13 +24,27 @@ dev = [
     "ruff>=0.15,<1",
 ]
 
+[project.scripts]
+trader-server = "trader.entrypoints.server:main"
+trader-cli = "trader.entrypoints.cli:main"
+
 [tool.setuptools.packages.find]
-include = ["stock_analyzer*"]
+where = ["src"]
+include = ["trader*"]
+
+[tool.setuptools.package-data]
+"trader.web" = [
+    "templates/*.html",
+    "static/*.css",
+    "static/*.js",
+    "static/*.svg",
+    "static/vendor/*",
+]
 
 [tool.ruff]
 line-length = 120
 target-version = "py310"
-extend-exclude = [".runtime", ".venv"]
+extend-exclude = [".runtime", ".venv", "docs/archive"]
 
 [tool.ruff.lint]
 # Keep the repository-wide baseline focused on correctness. New and migrated
@@ -47,17 +57,7 @@ indent-style = "space"
 
 [tool.mypy]
 python_version = "3.10"
-files = [
-    "scripts/dependency_fingerprint.py",
-    "stock_analyzer/background_workers.py",
-    "stock_analyzer/config.py",
-    "stock_analyzer/deepseek_scheduler.py",
-    "stock_analyzer/services/factor_sentiment_refresh.py",
-    "stock_analyzer/realtime_quotes.py",
-    "stock_analyzer/runtime.py",
-    "stock_analyzer/server_security.py",
-    "stock_analyzer/services/recommendation_quotes.py",
-]
+files = ["src/trader"]
 check_untyped_defs = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
@@ -69,7 +69,7 @@ warn_unused_configs = true
 
 [tool.coverage.run]
 branch = true
-source = ["stock_analyzer"]
+source = ["trader"]
 
 [tool.coverage.report]
 fail_under = 50
