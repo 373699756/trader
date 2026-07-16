@@ -8,20 +8,23 @@ from typing import Dict
 UNKNOWN_VALUES = {None, "", "unknown", "未知", "unavailable", "数据不足"}
 
 
+def _mapping(value: object) -> Dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
 def availability_invariant_error(
     raw: Dict[str, object],
     candidate: Dict[str, object],
 ) -> str:
-    availability = (
+    availability = _mapping(
         candidate.get("data_availability")
         or candidate.get("research_data_availability")
         or candidate.get("availability")
-        or {}
     )
-    value_quality = raw.get("value_quality") or {}
-    financial_health = raw.get("financial_health") or {}
-    market_flow = raw.get("market_flow") or {}
-    industry_policy = raw.get("industry_policy") or {}
+    value_quality = _mapping(raw.get("value_quality"))
+    financial_health = _mapping(raw.get("financial_health"))
+    market_flow = _mapping(raw.get("market_flow"))
+    industry_policy = _mapping(raw.get("industry_policy"))
     if not availability.get("financial") and (
         value_quality.get("assessment") not in UNKNOWN_VALUES
         or financial_health.get("profit_trend") not in UNKNOWN_VALUES
@@ -39,7 +42,10 @@ def availability_invariant_error(
 
 
 def _has_policy_evidence(candidate: Dict[str, object]) -> bool:
-    for item in candidate.get("evidence") or []:
+    evidence = candidate.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+    for item in evidence:
         if not isinstance(item, dict):
             continue
         searchable = " ".join(

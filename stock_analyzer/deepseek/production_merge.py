@@ -366,7 +366,8 @@ def _restore_execution_state(row: dict[str, object]) -> None:
         state["original"] = current
         state.pop("applied", None)
         return
-    original = state.get("original") if isinstance(state.get("original"), dict) else {}
+    original_value = state.get("original")
+    original = original_value if isinstance(original_value, dict) else {}
     for key in _EXECUTION_STATE_FIELDS:
         row.pop(key, None)
     row.update(original)

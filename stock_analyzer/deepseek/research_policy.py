@@ -70,7 +70,8 @@ def has_qualitative_evidence(evidence: object) -> bool:
 
 def qualitative_evidence_hash(evidence: object) -> str:
     qualitative = []
-    for item in evidence or []:
+    source_items = evidence if isinstance(evidence, list) else []
+    for item in source_items:
         if not isinstance(item, dict) or not has_qualitative_evidence([item]):
             continue
         normalized = dict(item)
@@ -89,7 +90,8 @@ def qualitative_evidence_hash(evidence: object) -> str:
 
 def neutralize_shared_research_messages(messages: object) -> List[Dict[str, object]]:
     """Remove first-strategy bias from research shared by all horizons."""
-    normalized = [dict(item) for item in messages or [] if isinstance(item, dict)]
+    source_items = messages if isinstance(messages, list) else []
+    normalized = [dict(item) for item in source_items if isinstance(item, dict)]
     instruction = (
         "本次分析是今日、明日、波段和长期观察策略共享的中性事实研究。"
         "提示词中出现的具体策略名称仅用于记录，不得改变事实判断、风险判断或证据权重；"
