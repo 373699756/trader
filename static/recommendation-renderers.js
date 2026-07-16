@@ -164,6 +164,20 @@ window.TraderRecommendationRenderers = {
   longTermExplanationTags(row, helpers) {
     const deepseek = row.deepseek_features || {};
     const profile = row.long_term_profile || row.longTermProfile || {};
+    const themeLabels = {
+      value: "低估值/估值修复",
+      chokepoint: "卡脖子/关键零部件",
+      growth: "成长与景气",
+      support: "政策/基金支持",
+    };
+    const hitThemeLabels = Object.entries(profile.themeSignals || {})
+      .filter(([, signal]) => signal && signal.matched)
+      .map(([groupName, signal]) => {
+        const words = Array.isArray(signal.words) && signal.words.length
+          ? signal.words.slice(0, 3).join("、")
+          : "命中关键词";
+        return `${themeLabels[groupName] || groupName}(${words})`;
+      });
     const longTermScore = [];
     const valueScore = this.finiteNumber(profile.valuation_score ?? profile.valueScore);
     const leaderScore = this.finiteNumber(profile.leader_score ?? profile.leaderScore);
@@ -176,6 +190,17 @@ window.TraderRecommendationRenderers = {
     if (growthScore != null) longTermScore.push(`成长质量${Math.round(growthScore * 100)}分`);
     if (potentialScore != null) longTermScore.push(`综合${Math.round(potentialScore * 100)}分`);
     const strategicHits = profile.strategic_hits || profile.strategicHits || [];
+    const detailScoreParts = [];
+    if (profile.themeSignalCount != null) detailScoreParts.push(`命中主题组${profile.themeSignalCount}类`);
+    if (Array.isArray(profile.valueReasons) && profile.valueReasons.length) {
+      detailScoreParts.push(`价值：${profile.valueReasons.join("；")}`);
+    }
+    if (Array.isArray(profile.growthReasons) && profile.growthReasons.length) {
+      detailScoreParts.push(`成长：${profile.growthReasons.join("；")}`);
+    }
+    if (Array.isArray(profile.supportReasons) && profile.supportReasons.length) {
+      detailScoreParts.push(`支撑：${profile.supportReasons.join("；")}`);
+    }
 
     const explanationTexts = this.uniqueReasonTexts([
       row.deepseek_production_applied
@@ -187,7 +212,10 @@ window.TraderRecommendationRenderers = {
         : "",
       row.deepseek_veto ? "DeepSeek强风险veto，长期池剔除" : "",
       longTermScore.length ? `长期观察评分：${longTermScore.join(" / ")}` : "",
+      longTermScore.length ? `长期评分：${longTermScore.join(" / ")}` : "",
       profile.strategic_segment || profile.strategicSegment ? `产业链：${profile.strategic_segment || profile.strategicSegment}` : "",
+      hitThemeLabels.length ? `线索匹配：${hitThemeLabels.join("；")}` : "",
+      detailScoreParts.length ? `核心依据：${detailScoreParts.join("；")}` : "",
       Array.isArray(strategicHits) && strategicHits.length ? `线索：${strategicHits.slice(0, 4).join("、")}` : "",
       row.reason,
       row.summary,

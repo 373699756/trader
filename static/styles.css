@@ -955,16 +955,15 @@ table {
   --stock-col: 120px;
   --pct-today-col: 120px;
   --pct-after-col: 120px;
-  --reasons-col: 0;
+  --reasons-col: auto;
   width: 100%;
 }
 
 .rec-table.rec-table-long-term th.col-stock-wide,
 .rec-table.rec-table-long-term td.stock-cell-wide {
-  width: 120px !important;
-  min-width: 120px !important;
-  max-width: 120px !important;
-  white-space: nowrap;
+  width: var(--stock-col) !important;
+  min-width: var(--stock-col) !important;
+  max-width: var(--stock-col) !important;
   overflow: hidden;
 }
 
@@ -974,9 +973,23 @@ table {
 
 .rec-table.rec-table-long-term th:nth-child(1),
 .rec-table.rec-table-long-term td:not(.empty):nth-child(1) {
-  width: 120px !important;
-  min-width: 120px !important;
-  max-width: 120px !important;
+  width: var(--stock-col) !important;
+  min-width: var(--stock-col) !important;
+  max-width: var(--stock-col) !important;
+}
+
+.rec-table.rec-table-long-term th:nth-child(2),
+.rec-table.rec-table-long-term td:not(.empty):nth-child(2) {
+  width: var(--pct-today-col) !important;
+  min-width: var(--pct-today-col) !important;
+  max-width: var(--pct-today-col) !important;
+}
+
+.rec-table.rec-table-long-term th:nth-child(3),
+.rec-table.rec-table-long-term td:not(.empty):nth-child(3) {
+  width: var(--pct-after-col) !important;
+  min-width: var(--pct-after-col) !important;
+  max-width: var(--pct-after-col) !important;
 }
 
 .rec-table td.empty {
@@ -1136,9 +1149,9 @@ th {
 .rec-table.rec-table-long-term td.col-pct-today,
 .rec-table.rec-table-long-term th.col-pct-after,
 .rec-table.rec-table-long-term td.col-pct-after {
-  width: 120px !important;
-  min-width: 120px !important;
-  max-width: 120px !important;
+  width: var(--pct-today-col);
+  min-width: var(--pct-today-col);
+  max-width: var(--pct-today-col);
   overflow: hidden;
 }
 
