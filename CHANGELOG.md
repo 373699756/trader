@@ -16,6 +16,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 协作交付改为单任务闭环：每次“继续”只处理一个最小可独立验收任务，并分别完成 Review/修复/复审、单独提交、推送和本地/上游提交核对；成功推送后停止等待下一条指令。
 - 项目入口统一为 `trader-server` 和 `trader-cli`；Linux/macOS/WSL、PowerShell 和 CMD 启动脚本只调用安装后的入口。
 - 依赖、构建、包发现、console scripts、Ruff、mypy 和 coverage 统一由 `pyproject.toml` 管理。
 - 运行配置迁移到 `config/v2`，运行数据隔离到 `.runtime/v2`，配置路径必须显式且为绝对路径。
@@ -44,6 +45,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 对 `AGENTS.md` 与 `docs/need.md` 的单任务交付规则执行一致性 Review，覆盖任务边界、Review 基线、审查与交付状态、提交粒度、推送失败重试和成功后停止条件。
 - `make quality`：Ruff format/lint、58 个源文件 mypy 和 106 个 pytest 测试全部通过。
 - `make package`：从干净生成目录成功构建 sdist 和 `py3-none-any` wheel；sdist 不包含旧包或旧测试。
 - 仓库外 `/tmp` 虚拟环境覆盖安装 wheel 后，`trader.__file__` 位于 site-packages，CLI 配置校验、首页和进程锁导入通过。
