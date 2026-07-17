@@ -16,7 +16,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
-- 协作交付改为单任务闭环：每次“继续”只处理一个最小可独立验收任务，并分别完成 Review/修复/复审、单独提交、推送和本地/上游提交核对；成功推送后停止等待下一条指令。
+- “继续”命令的交付粒度从下一个最小独立任务调整为下一个完整未完成章节；章节内全部明确子项统一实现、Review、提交和推送，同时禁止顺带合并相邻章节。
 - 项目入口统一为 `trader-server` 和 `trader-cli`；Linux/macOS/WSL、PowerShell 和 CMD 启动脚本只调用安装后的入口。
 - 依赖、构建、包发现、console scripts、Ruff、mypy 和 coverage 统一由 `pyproject.toml` 管理。
 - 运行配置迁移到 `config/v2`，运行数据隔离到 `.runtime/v2`，配置路径必须显式且为绝对路径。
@@ -47,6 +47,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 新增交付契约测试，校验 `AGENTS.md` 与 `docs/need.md` 对“继续”整节交付、章节内全部子项和相邻章节边界的语义一致，并排除旧的最小任务措辞。
 - 宿主机实测东方财富和新浪经系统代理均触发 TLS EOF、直连均返回 HTTP 200；组件测试覆盖东方财富全市场/历史、新浪全市场和腾讯定向报价的显式直连参数。
 - 新增双行情源同时失败的网关契约，以及刷新失败后沿用既有候选、继续本地推荐、记录降级状态且不输出 traceback 的流水线回归覆盖。
 - 对 `AGENTS.md` 与 `docs/need.md` 的单任务交付规则执行一致性 Review，覆盖任务边界、Review 基线、审查与交付状态、提交粒度、推送失败重试和成功后停止条件。
@@ -60,6 +61,7 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 单个章节可能包含较多子项，交付 diff 和 Review 时间会相应增长；仍必须维持一个章节、一个提交、一次推送，并通过章节内逐项证据控制范围。
 - 行情直连依赖本机网络可直接访问对应域名；若所在网络强制要求代理，三路实时行情会按既有熔断与最近快照策略显式降级。
 - 行情提供方的 TLS 可用性仍由外部网络环境决定；全部来源首次启动即失败且没有内存缓存时不会生成新推荐，只保留仓库中最近有效的只读快照并等待后续刷新恢复。
 - 尚未完成一个真实 A 股完整交易日的 v2 影子运行，因此 TopK 报价 P95、冻结点实时时延和阈值分布仍需在生产发布前留证。
