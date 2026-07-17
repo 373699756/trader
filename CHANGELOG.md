@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：今日多项 Bug 缺少集中状态记录；修改说明：新增 `docs/issues/2026-07-17.md`，逐项归纳行情降级、Tab 加载、空值展示、缺失原因、AKShare JSONP、DeepSeek 进程注入和 P2 数据缺口，并区分已修复、待运行生效、待验证和待实现。
 - 推荐 API 为 `missing_fields` 同步提供可展示的 `missing_reasons`，明细抽屉直接说明缺失数据的上游原因。
 - 候选池接入带 8 秒硬超时的 AKShare 兼容个股新闻证据，新闻证据进入特征快照、DeepSeek 输入和冻结回放；成功结果缓存 10 分钟，失败负缓存 60 秒。
 - 新增第 25 节最终验收闭环：新冻结快照保存完整市场预选输入、定向候选与经校验 DeepSeek 结果，`trader-cli verify-freeze` 可离线复算并核对过滤、评分、风险、veto 和排名；`/api/status` 新增活动 TopK 报价 P95 与 DeepSeek 物理调用验收摘要。
@@ -62,6 +63,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 今日 Bug 记录逐项包含用户问题、现状判断、修改说明、状态和后续验收，并明确未保存 DeepSeek 密钥或完整外部载荷；Ruff format/lint、58 个源文件 mypy、121 个 pytest、sdist/wheel 构建及仓库外 CLI/包资源验收全部通过。
 - 交付契约测试校验 `AGENTS.md` 与 `docs/need.md` 均强制记录问题、修改、验证和风险；Ruff format/lint、58 个源文件 mypy、121 个 pytest、sdist/wheel 构建及仓库外 `trader-cli`/包资源验收全部通过。
 - 推荐缺失原因与静态渲染契约测试通过；Ruff format/lint、58 个源文件 mypy、120 个 pytest、sdist/wheel 构建全部通过，仓库外安装后可导入包、执行 `trader-cli` 并读取模板、CSS、JavaScript 和图标。
 - Web 资源契约校验三策略预取、策略/日期缓存、同键在途请求合并、日期与推荐并行加载及 `dashboard.js?v=3` 缓存失效版本。
@@ -86,7 +88,7 @@ All notable changes to this project are documented here.
 ### Residual Risks
 
 - 问题归纳的内容完整性仍依赖交付 Review 判断；契约测试只能防止必备栏目和目标文档被删除，不能自动证明原因分析正确。
-- 本批次只修复 P0 缺失值语义；AKShare JSONP、真实 DeepSeek 进程调用以及财务、公司事件和尾盘分钟数据仍按独立 P1/P2 批次交付，当前页面会将这些真实缺失项明确标记为“未获取”或“未复核”。
+- 待办状态：AKShare JSONP 仍需真实响应验证，真实 DeepSeek 进程调用以及财务、公司事件和尾盘分钟数据仍按独立 P1/P2 批次交付；旧服务重启前 `missing_reasons` API 不会加载新序列化代码。
 - 可复算 latest/frozen 文件会增加本地 JSON 体积和序列化 I/O；全市场部分已裁剪为硬过滤和候选排序必需字段，发布前仍需在真实全市场规模下记录文件大小、冻结耗时和磁盘保留策略。
 - 第 25 节仓库门禁可重复执行，但生产最终验收仍需真实交易日证明活动 TopK P95 不超过 10 秒、真实 DeepSeek 密钥产生非零调用并输出阶段总结，以及保存三档桌面截图；任一证据缺失时不得宣告发布完成。
 - 固定输入完整日影子已覆盖冻结链和确定性，但真实 A 股 09:15-15:00 不间断影子观察仍未完成；生产发布前必须按 runbook 留存行情年龄、冻结哈希、桌面三分辨率和 v1 运行库未修改证据。
