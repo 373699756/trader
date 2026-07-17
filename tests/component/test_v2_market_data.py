@@ -13,6 +13,7 @@ from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.history import DailyBar
+from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
@@ -57,6 +58,7 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
     assert quotes[0].industry == "工业"
     assert quotes[0].source_time == NOW
     assert history[0].amount == 100000000
+    assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
 
 
 def test_tencent_normalizes_targeted_quote() -> None:
@@ -75,13 +77,44 @@ def test_tencent_normalizes_targeted_quote() -> None:
     fields[43] = "4.0"
     fields[49] = "2.0"
     body = f'v_sh600001="{"~".join(fields)}";'.encode("gb18030")
-    client = TencentClient(timeout_seconds=2, session_factory=lambda: FakeSession([body]))
+    session = FakeSession([body])
+    client = TencentClient(timeout_seconds=2, session_factory=lambda: session)
 
     quotes = client.fetch_quotes(["600001"], NOW)
 
     assert quotes[0].price == 12.0
     assert quotes[0].amount == 300000000.0
     assert quotes[0].source_time.isoformat() == "2026-07-16T10:00:00+08:00"
+    assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
+
+
+def test_sina_market_request_bypasses_environment_proxy() -> None:
+    session = FakeSession(
+        [
+            b"1",
+            [
+                {
+                    "symbol": "sh600001",
+                    "name": "测试股份",
+                    "trade": "12.00",
+                    "settlement": "11.65",
+                    "open": "11.80",
+                    "high": "12.20",
+                    "low": "11.70",
+                    "changepercent": "3.00",
+                    "turnoverratio": "3.0",
+                    "amount": "300000000",
+                    "mktcap": "3000000",
+                }
+            ],
+        ]
+    )
+    client = SinaClient(timeout_seconds=2, session_factory=lambda: session)
+
+    quotes = client.fetch_market(NOW)
+
+    assert quotes[0].code == "600001"
+    assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
 
 
 def test_gateway_falls_back_and_tracks_health() -> None:
@@ -213,6 +246,7 @@ class FakeResponse:
 class FakeSession:
     def __init__(self, payloads) -> None:
         self._payloads = iter(payloads)
+        self.calls = []
 
     def __enter__(self):
         return self
@@ -220,7 +254,8 @@ class FakeSession:
     def __exit__(self, *_args) -> None:
         return None
 
-    def get(self, *_args, **_kwargs):
+    def get(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
         return FakeResponse(next(self._payloads))
 
 

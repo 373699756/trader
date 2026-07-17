@@ -24,6 +24,7 @@ SessionFactory = Callable[[], requests.Session]
 
 FIELDS = "f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f20,f21,f22,f23,f24,f25,f100,f124"
 HOSTS = ("82.push2.eastmoney.com", "push2.eastmoney.com", "7.push2.eastmoney.com")
+_DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 
 
 class EastmoneyClient:
@@ -129,6 +130,7 @@ class EastmoneyClient:
                         params=dict(params),
                         headers=headers,
                         timeout=self._timeout_seconds,
+                        proxies=_DIRECT_PROXIES,
                     )
                     response.raise_for_status()
                     payload = response.json()

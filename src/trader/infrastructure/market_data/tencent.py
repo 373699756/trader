@@ -13,6 +13,7 @@ import requests
 from trader.domain.models import MarketQuote
 
 SessionFactory = Callable[[], requests.Session]
+_DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 
 
 class TencentClient:
@@ -30,6 +31,7 @@ class TencentClient:
                 "https://qt.gtimg.cn/q=" + ",".join(_symbol(code) for code in normalized),
                 headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
                 timeout=self._timeout_seconds,
+                proxies=_DIRECT_PROXIES,
             )
             response.raise_for_status()
             text = response.content.decode("gb18030", errors="replace")

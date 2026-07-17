@@ -14,6 +14,7 @@ from trader.domain.models import MarketQuote
 SessionFactory = Callable[[], requests.Session]
 COUNT_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount"
 QUOTE_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
+_DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 
 
 class SinaClient:
@@ -60,7 +61,11 @@ class SinaClient:
     def _get_text(self, url: str, params: Mapping[str, str]) -> str:
         with self._session_factory() as session:
             response = session.get(
-                url, params=dict(params), headers={"User-Agent": "Mozilla/5.0"}, timeout=self._timeout_seconds
+                url,
+                params=dict(params),
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=self._timeout_seconds,
+                proxies=_DIRECT_PROXIES,
             )
             response.raise_for_status()
             return response.text
@@ -68,7 +73,11 @@ class SinaClient:
     def _get_json(self, url: str, params: Mapping[str, str]) -> object:
         with self._session_factory() as session:
             response = session.get(
-                url, params=dict(params), headers={"User-Agent": "Mozilla/5.0"}, timeout=self._timeout_seconds
+                url,
+                params=dict(params),
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=self._timeout_seconds,
+                proxies=_DIRECT_PROXIES,
             )
             response.raise_for_status()
             return response.json()
