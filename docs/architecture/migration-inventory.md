@@ -1,6 +1,6 @@
 # v1 to v2 Migration Inventory
 
-Status: implementation cutover complete; production release pending
+Status: repository cutover gates complete; external full-trading-day observation pending
 Contract: `docs/need.md` v6
 
 ## Baseline
@@ -48,3 +48,21 @@ rewrite does not preserve that module layout.
   explicit configuration path.
 - Recovery tests verify staged/committed manifests, hash validation and frozen
   snapshot immutability.
+
+## Section 24 Completion Evidence
+
+| Need section | Repository evidence | Status |
+| --- | --- | --- |
+| 24.1-24.2 mapping and frozen contracts | This inventory gives every legacy area one `rewrite`, `delete`, `archive`, `preserve read-only` or isolated-v2 disposition; configuration and fixed factor/fusion contracts live in `config/v2` and their contract tests. | complete |
+| 24.3 engineering skeleton | `src/trader`, dependency-direction/app-factory contracts, package data, console scripts, Make targets and repository-external wheel smoke acceptance. | complete |
+| 24.4 domain core | Domain unit tests cover filters, factors, all four strategies, risk, stable TopK and the fixed `83.40` fusion vector without I/O imports. | complete |
+| 24.5 adapters and persistence | Component tests cover calendar fail-closed behavior, quote normalization/fallback/health, direct transport, feature completeness, SQLite/JSON manifests, hash recovery and immutable freezes. | complete |
+| 24.6 pipeline and freeze | Integration/unit tests cover the virtual trading timeline, bounded priority/coalescing queues, persisted freeze events, replay, restart gates and long non-freeze behavior. | complete |
+| 24.7 DeepSeek | Mock component tests cover schema/evidence rejection, physical retry accounting, timeout, deadline, shared cache and atomic 188-call buckets; missing real credentials remains an external smoke risk. | complete with external risk |
+| 24.8 Web and installation | Contract tests cover read-only API, ETag, SSE cursor/resync/limits, lazy app creation and package assets; desktop browser sizes remain part of release acceptance. | complete with external risk |
+| 24.9 cutover and rollback | `test_recorded_full_day_shadow_is_deterministic_and_freezes_real_repository` runs the full recorded timeline twice against real SQLite/JSON persistence and compares every JSON hash. Rollback tag `v1-rollback-20260717` identifies commit `86e3b2b1308e454adee1e1cc43fa0c8997e8bf2b`. | repository gate complete |
+
+The recorded shadow is deterministic release evidence, not a substitute for a
+live A-share day. Production release remains pending until one uninterrupted
+09:15-15:00 run records successful today/tomorrow/d25 freezes, source-age
+metrics and desktop observations without writing to the v1 runtime.
