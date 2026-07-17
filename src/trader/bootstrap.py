@@ -188,6 +188,9 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
                 penalty=rule.penalty,
                 minimum_confidence=rule.minimum_confidence,
                 group=rule.group,
+                evidence_ttl_hours=rule.evidence_ttl_hours,
+                veto=rule.veto,
+                allowed_evidence_types=rule.allowed_evidence_types,
             )
             for rule in settings.risk_rules
         },

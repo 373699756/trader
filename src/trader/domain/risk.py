@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime
 
 from trader.domain.factors import clamp
-from trader.domain.models import FeatureSnapshot, RiskFact, RiskRule
+from trader.domain.models import Evidence, FeatureSnapshot, RiskFact, RiskRule
 
 
 def derive_local_risk_facts(
@@ -41,15 +41,26 @@ def map_deepseek_risk_facts(
     local_fact_ids: set[str],
     *,
     cap: float,
+    evidence: Iterable[Evidence],
+    evaluated_at: datetime,
 ) -> tuple[tuple[RiskFact, ...], float, bool]:
     mapped: list[RiskFact] = []
     veto = False
+    evidence_by_id = {item.evidence_id: item for item in evidence}
     for raw in raw_facts:
         rule = rules.get(raw.risk_code)
-        if rule is None or raw.confidence < rule.minimum_confidence or not raw.evidence_ids:
+        if (
+            rule is None
+            or raw.confidence < rule.minimum_confidence
+            or not raw.evidence_ids
+            or not _evidence_is_valid(raw.evidence_ids, rule, evidence_by_id, evaluated_at)
+        ):
             continue
+        locally_mapped_veto = (
+            rule.veto and rule.severity == "high" and raw.confidence >= max(0.7, rule.minimum_confidence)
+        )
         if raw.risk_fact_id in local_fact_ids:
-            veto = veto or raw.veto
+            veto = veto or locally_mapped_veto
             continue
         mapped_fact = RiskFact(
             risk_fact_id=raw.risk_fact_id,
@@ -61,12 +72,33 @@ def map_deepseek_risk_facts(
             confidence=raw.confidence,
             evidence_ids=raw.evidence_ids,
             group=rule.group,
-            veto=raw.veto,
+            veto=locally_mapped_veto,
         )
         mapped.append(mapped_fact)
         veto = veto or mapped_fact.veto
     deduplicated = deduplicate_risk_facts(mapped)
     return deduplicated, aggregate_risk_penalty(deduplicated, cap=cap), veto
+
+
+def _evidence_is_valid(
+    evidence_ids: tuple[str, ...],
+    rule: RiskRule,
+    evidence_by_id: Mapping[str, Evidence],
+    evaluated_at: datetime,
+) -> bool:
+    maximum_age_seconds = rule.evidence_ttl_hours * 3600
+    for evidence_id in evidence_ids:
+        item = evidence_by_id.get(evidence_id)
+        if item is None:
+            return False
+        if rule.allowed_evidence_types and item.evidence_type not in rule.allowed_evidence_types:
+            return False
+        if item.published_at.tzinfo is None or item.published_at.utcoffset() is None:
+            return False
+        age_seconds = (evaluated_at - item.published_at).total_seconds()
+        if age_seconds < 0 or age_seconds > maximum_age_seconds:
+            return False
+    return True
 
 
 def deduplicate_risk_facts(facts: Iterable[RiskFact]) -> tuple[RiskFact, ...]:

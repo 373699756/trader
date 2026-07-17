@@ -77,8 +77,8 @@ def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]
                 "逐股输出code、abstain、五个dimensions和risk_facts。dimensions必须包含"
                 "value_quality、financial_health、market_flow、industry_policy、risk_quality；"
                 "每维包含score(0-100)、confidence(0-1)、assessment、flags、evidence_ids、unknown。"
-                "risk_facts只包含risk_code、severity(low/medium/high)、confidence、evidence_ids、"
-                "assessment、veto；不得输出生产扣分。缺证据维度设unknown=true、score=50、confidence=0。"
+                "risk_facts只包含risk_code、severity(low/medium/high)、confidence、evidence_ids和assessment；"
+                "不得输出生产扣分或veto。缺证据维度设unknown=true、score=50、confidence=0。"
                 "全部维度未知时abstain=true。evidence_ids只能引用对应股票输入中的ID。输入="
                 + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             ),
@@ -228,9 +228,6 @@ def _parse_risk_facts(
         evidence_ids = _evidence_ids(item.get("evidence_ids"), allowed_evidence)
         if not evidence_ids:
             continue
-        veto = item.get("veto", False)
-        if not isinstance(veto, bool):
-            raise DeepSeekSchemaError(f"risk fact {risk_code}.veto must be boolean")
         stable_material = f"{code}|{risk_code}|{'|'.join(sorted(evidence_ids))}"
         facts.append(
             RiskFact(
@@ -242,7 +239,7 @@ def _parse_risk_facts(
                 observed_at=completed_at,
                 confidence=confidence,
                 evidence_ids=evidence_ids,
-                veto=veto and severity == "high" and confidence >= 0.7,
+                veto=False,
             )
         )
     return tuple(facts)

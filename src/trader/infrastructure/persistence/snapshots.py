@@ -170,6 +170,9 @@ def _replay_policy_to_dict(policy: FrozenReplayPolicy) -> dict[str, object]:
                 "penalty": rule.penalty,
                 "minimum_confidence": rule.minimum_confidence,
                 "group": rule.group,
+                "evidence_ttl_hours": rule.evidence_ttl_hours,
+                "veto": rule.veto,
+                "allowed_evidence_types": list(rule.allowed_evidence_types),
             }
             for code, rule in policy.risk_rules.items()
         },
@@ -536,12 +539,26 @@ def _risk_rule_mapping(raw: Mapping[str, object]) -> dict[str, RiskRule]:
         if not isinstance(value, dict):
             raise ValueError("risk rule mappings must contain objects")
         code = _mapping_key(key)
+        ttl = value.get("evidence_ttl_hours", 876_000)
+        veto = value.get("veto", False)
+        evidence_types = value.get("allowed_evidence_types", [])
+        if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl < 1:
+            raise ValueError("risk rule evidence_ttl_hours must be a positive integer")
+        if not isinstance(veto, bool):
+            raise ValueError("risk rule veto must be boolean")
+        if not isinstance(evidence_types, list) or any(
+            not isinstance(item, str) or not item for item in evidence_types
+        ):
+            raise ValueError("risk rule allowed_evidence_types must be a list of non-empty strings")
         result[code] = RiskRule(
             risk_code=_text(value, "risk_code"),
             severity=_text(value, "severity"),
             penalty=_number(value, "penalty"),
             minimum_confidence=_number(value, "minimum_confidence"),
             group=_text(value, "group"),
+            evidence_ttl_hours=ttl,
+            veto=veto,
+            allowed_evidence_types=tuple(evidence_types),
         )
     return result
 

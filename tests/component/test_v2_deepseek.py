@@ -31,7 +31,7 @@ def test_schema_accepts_valid_dimensions_and_risk_fact() -> None:
     assert review.dimensions["market_flow"].score == 80
     assert review.risk_facts[0].risk_code == "regulatory_risk"
     assert review.risk_facts[0].penalty == 0.0
-    assert review.risk_facts[0].veto is True
+    assert review.risk_facts[0].veto is False
 
 
 def test_schema_rejects_pool_escape_and_invalid_evidence() -> None:

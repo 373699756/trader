@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 from trader.domain.factors import clamp, round_score
 from trader.domain.models import (
     DeepSeekReview,
+    Evidence,
     FusionMode,
     ReviewOutcome,
     RiskFact,
@@ -51,6 +53,9 @@ def fuse_score(
     risk_rules: Mapping[str, RiskRule],
     fusion_mode: FusionMode,
     policy: FusionPolicy | None = None,
+    *,
+    evidence: Sequence[Evidence] = (),
+    evaluated_at: datetime | None = None,
 ) -> FusionResult:
     policy = policy or FusionPolicy()
     _validate_policy(policy)
@@ -72,6 +77,8 @@ def fuse_score(
             risk_rules,
             {fact.risk_fact_id for fact in local_risk_facts},
             cap=policy.deepseek_risk_cap,
+            evidence=evidence,
+            evaluated_at=evaluated_at or review.completed_at,
         )
 
     fusion_applied = review_applies and fusion_mode is FusionMode.HYBRID and deepseek_score is not None

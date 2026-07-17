@@ -158,6 +158,8 @@ class RiskRuleSettings:
     minimum_confidence: float
     evidence_ttl_hours: int
     group: str
+    veto: bool
+    allowed_evidence_types: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -278,8 +280,8 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 2:
-        raise ConfigurationError("strategy schema_version must be 2")
+    if _integer(raw, "schema_version", minimum=1) != 3:
+        raise ConfigurationError("strategy schema_version must be 3")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     rules_raw = raw.get("risk_rules")
@@ -288,7 +290,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
     risk_rules = tuple(_parse_risk_rule(item, index) for index, item in enumerate(rules_raw))
     dimension_weights = _nested_number_mapping(raw, "dimension_weights")
     settings = StrategySettings(
-        schema_version=2,
+        schema_version=3,
         strategy_version=_text(raw, "strategy_version"),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),
@@ -362,6 +364,11 @@ def load_long_watchlist(config_path: str | os.PathLike[str]) -> LongWatchlist:
 def _parse_risk_rule(raw: object, index: int) -> RiskRuleSettings:
     if not isinstance(raw, dict):
         raise ConfigurationError(f"risk rule {index} must be an object")
+    allowed_evidence_types = raw.get("allowed_evidence_types")
+    if not isinstance(allowed_evidence_types, list) or any(
+        not isinstance(value, str) or not value for value in allowed_evidence_types
+    ):
+        raise ConfigurationError(f"risk rule {index} allowed_evidence_types must be a list of non-empty strings")
     return RiskRuleSettings(
         risk_code=_text(raw, "risk_code"),
         severity=_text(raw, "severity"),
@@ -369,6 +376,8 @@ def _parse_risk_rule(raw: object, index: int) -> RiskRuleSettings:
         minimum_confidence=_number(raw, "minimum_confidence", minimum=0.0, maximum=1.0),
         evidence_ttl_hours=_integer(raw, "evidence_ttl_hours", minimum=1),
         group=_text(raw, "group"),
+        veto=_boolean(raw, "veto"),
+        allowed_evidence_types=tuple(allowed_evidence_types),
     )
 
 

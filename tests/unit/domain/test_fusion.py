@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -8,6 +8,7 @@ from trader.domain.fusion import DIMENSION_NAMES, FusionPolicy, fuse_score
 from trader.domain.models import (
     DeepSeekReview,
     DimensionAssessment,
+    Evidence,
     FusionMode,
     ReviewOutcome,
     RiskFact,
@@ -27,8 +28,10 @@ def test_final_score_uses_68_32_and_does_not_repeat_local_risk() -> None:
         (local_fact,),
         _review(100.0, risk_facts=(deepseek_fact,)),
         DIMENSION_WEIGHTS,
-        {"deepseek_rule": RiskRule("deepseek_rule", "medium", 3.0, 0.7, "deepseek")},
+        {"deepseek_rule": RiskRule("deepseek_rule", "medium", 3.0, 0.7, "deepseek", 24, False, ("announcement",))},
         FusionMode.HYBRID,
+        evidence=(_evidence(),),
+        evaluated_at=NOW,
     )
 
     assert result.score.local_score == 80.0
@@ -44,8 +47,10 @@ def test_same_risk_fact_is_not_deducted_twice() -> None:
         (shared,),
         _review(100.0, risk_facts=(shared,)),
         DIMENSION_WEIGHTS,
-        {"shared_rule": RiskRule("shared_rule", "medium", 3.0, 0.7, "shared")},
+        {"shared_rule": RiskRule("shared_rule", "medium", 3.0, 0.7, "shared", 24, False, ("announcement",))},
         FusionMode.HYBRID,
+        evidence=(_evidence(),),
+        evaluated_at=NOW,
     )
 
     assert result.score.deepseek_risk_penalty == 0.0
@@ -114,6 +119,34 @@ def test_fusion_keeps_unrounded_local_precision_until_final_rounding() -> None:
     assert result.score.final_score == 86.40
 
 
+@pytest.mark.parametrize(
+    ("evidence", "expected_veto"),
+    [
+        (Evidence("e-1", "announcement", "risk", "exchange", NOW - timedelta(hours=1)), True),
+        (Evidence("e-1", "news", "risk", "media", NOW - timedelta(hours=1)), False),
+        (Evidence("e-1", "announcement", "risk", "exchange", NOW - timedelta(hours=25)), False),
+    ],
+)
+def test_veto_is_mapped_only_by_local_rule_with_valid_fresh_evidence(
+    evidence: Evidence,
+    expected_veto: bool,
+) -> None:
+    model_fact = _risk_fact("deepseek-risk", "regulatory_risk", 0.0, evidence_ids=("e-1",), veto=True)
+    result = fuse_score(
+        LocalScoreResult(components={"test": 80.0}, base_score=80.0),
+        (),
+        _review(80.0, risk_facts=(model_fact,)),
+        DIMENSION_WEIGHTS,
+        {"regulatory_risk": RiskRule("regulatory_risk", "high", 15.0, 0.7, "event", 24, True, ("announcement",))},
+        FusionMode.HYBRID,
+        evidence=(evidence,),
+        evaluated_at=NOW,
+    )
+
+    assert result.veto is expected_veto
+    assert bool(result.deepseek_risk_facts) is expected_veto
+
+
 def _review(score: float, *, risk_facts=()) -> DeepSeekReview:
     dimensions = {name: DimensionAssessment(name, score, 1.0, "positive") for name in DIMENSION_NAMES}
     return DeepSeekReview("600001", ReviewOutcome.APPLIED, dimensions, tuple(risk_facts), NOW)
@@ -125,6 +158,7 @@ def _risk_fact(
     penalty: float,
     *,
     evidence_ids: tuple[str, ...] = (),
+    veto: bool = False,
 ) -> RiskFact:
     return RiskFact(
         risk_fact_id=fact_id,
@@ -136,4 +170,9 @@ def _risk_fact(
         confidence=1.0,
         evidence_ids=evidence_ids,
         group=risk_code,
+        veto=veto,
     )
+
+
+def _evidence() -> Evidence:
+    return Evidence("e-1", "announcement", "risk", "exchange", NOW - timedelta(hours=1))

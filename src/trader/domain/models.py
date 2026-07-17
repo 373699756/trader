@@ -105,6 +105,9 @@ class RiskRule:
     penalty: float
     minimum_confidence: float
     group: str
+    evidence_ttl_hours: int = 876_000
+    veto: bool = False
+    allowed_evidence_types: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

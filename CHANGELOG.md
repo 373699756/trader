@@ -18,6 +18,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- DeepSeek 风险事实不再直接控制生产 veto；策略 v7 和冻结回放算法 v3 由本地风险表按风险代码、允许证据类型、证据有效期和最低置信度确定扣分与重大安全 veto。
 - 最终验收矩阵明确区分可重复仓库门禁与真实交易日、真实 DeepSeek 密钥、三档桌面截图等外部发布证据；旧 v2 快照继续可读，但不能充当新增冻结复算门禁证据。
 - 迁移清单新增 `docs/need.md` 第 24 节逐阶段完成证据；运行手册固定生产影子留证字段和回退 tag `v1-rollback-20260717`，仓库门禁完成与真实交易日发布观察明确分离。
 - “继续”命令的交付粒度从下一个最小独立任务调整为下一个完整未完成章节；章节内全部明确子项统一实现、Review、提交和推送，同时禁止顺带合并相邻章节。
@@ -30,6 +31,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复模型声明 `veto=true` 即可阻止执行、风险规则 `evidence_ttl_hours` 读取后未生效的问题；错误类型、未来或过期证据均不会进入 DeepSeek 风险扣分与 veto。
 - 东方财富、新浪和腾讯实时行情请求显式绕过会导致 TLS EOF 的系统代理，避免本机代理可用但不兼容行情域名时全市场数据持续不可用；DeepSeek 等其他外部请求仍沿用原代理环境。
 - 全市场行情源同时不可用时仅捕获明确的可恢复异常，保留既有候选和最近发布快照继续本地评分，并在运行状态中记录降级原因与失败计数；预期降级日志不再输出误导性的完整 traceback。
 - 防止本地风险在 68/32 融合中重复扣除；固定向量 `82 - 2 / 100 - 3` 得到 `83.40`。
@@ -51,6 +53,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 风险融合回归覆盖模型 veto 无效、本地监管规则有效 veto、错误证据类型和过期证据拒绝，以及策略 v3 配置字段解析。
 - 第 25 节集成回归覆盖冻结输入 JSON 往返与确定性复算、有效配置和候选触发非零物理 DeepSeek 请求，以及 TopK P95 超过 10 秒时的显式失败状态。
 - 本批次完整格式、Ruff、mypy、pytest、sdist/wheel 门禁通过；仓库外强制重装后可导入 `trader`、执行 `trader-cli` 与 `verify-freeze --help` 并读取全部 Web 资源；`run.sh` 实际状态返回 TopK P95 和 DeepSeek 零调用原因，headless Firefox 三档桌面窗口均完整加载且无页面级横向溢出。
 - 第 24 节完整日影子测试使用相同固定输入运行两次，验证三个策略 committed 冻结、long 仅展示、四策略发布和跨运行 JSON 哈希一致；迁移矩阵逐项关联 24.1-24.9 的现有门禁。
@@ -75,6 +78,6 @@ All notable changes to this project are documented here.
 - 行情直连依赖本机网络可直接访问对应域名；若所在网络强制要求代理，三路实时行情会按既有熔断与最近快照策略显式降级。
 - 行情提供方的 TLS 可用性仍由外部网络环境决定；全部来源首次启动即失败且没有内存缓存时不会生成新推荐，只保留仓库中最近有效的只读快照并等待后续刷新恢复。
 - 尚未完成一个真实 A 股完整交易日的 v2 影子运行，因此 TopK 报价 P95、冻结点实时时延和阈值分布仍需在生产发布前留证。
-- 当前环境未提供真实 `DEEPSEEK_API_KEY`，已完成 mock 的 429/超时/schema/截止/预算测试，但真实 API 冒烟尚未执行。
+- 用户已确认现有 `DEEPSEEK_API_KEY` 有效，但当前运行服务状态为 `configured=false`，说明密钥未注入该进程；密钥有效性不再列为阻塞原因，使用该密钥重启后产生非零真实调用与阶段总结仍是待留存的发布证据。
 - 当前 Linux 环境没有 PowerShell，`run.ps1`/`run.bat` 已静态审查，仍需在 Windows PC 实机验证创建虚拟环境、单进程锁和 Ctrl+C 停止。
 - 外部行情提供方可能发生字段或限流变化；组件测试使用脱敏固定响应，首次真实运行应观察来源覆盖、熔断和降级状态。

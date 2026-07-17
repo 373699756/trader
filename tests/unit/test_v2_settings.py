@@ -22,10 +22,14 @@ def test_v2_configuration_contract_is_valid() -> None:
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
     assert runtime.schema_version == 2
+    assert strategy.schema_version == 3
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
     assert sum(runtime.deepseek.strategy_limits.values()) == 188
     assert strategy.fusion.local_weight == pytest.approx(0.68)
     assert strategy.fusion.deepseek_weight == pytest.approx(0.32)
+    regulatory_rule = next(rule for rule in strategy.risk_rules if rule.risk_code == "regulatory_risk")
+    assert regulatory_rule.veto is True
+    assert regulatory_rule.allowed_evidence_types == ("announcement", "regulatory_filing")
     assert len(watchlist.items) == 10
 
 

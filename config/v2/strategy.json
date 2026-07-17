@@ -1,6 +1,6 @@
 {
-  "schema_version": 2,
-  "strategy_version": "strategy_v6_local68_deepseek32",
+  "schema_version": 3,
+  "strategy_version": "strategy_v7_local_risk_veto",
   "fusion": {
     "version": "fusion_v2_local68_deepseek32",
     "local_weight": 0.68,
@@ -68,7 +68,9 @@
       "penalty": 5,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 4,
-      "group": "market_crowding"
+      "group": "market_crowding",
+      "veto": false,
+      "allowed_evidence_types": ["structured_point_in_time"]
     },
     {
       "risk_code": "price_volume_divergence",
@@ -76,7 +78,9 @@
       "penalty": 4,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 24,
-      "group": "market_structure"
+      "group": "market_structure",
+      "veto": false,
+      "allowed_evidence_types": ["structured_point_in_time"]
     },
     {
       "risk_code": "high_volatility",
@@ -84,7 +88,9 @@
       "penalty": 3,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 24,
-      "group": "market_structure"
+      "group": "market_structure",
+      "veto": false,
+      "allowed_evidence_types": ["structured_point_in_time"]
     },
     {
       "risk_code": "reduction_or_unlock_low",
@@ -92,7 +98,9 @@
       "penalty": 3,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
-      "group": "ownership_change"
+      "group": "ownership_change",
+      "veto": false,
+      "allowed_evidence_types": ["announcement", "ownership_filing"]
     },
     {
       "risk_code": "reduction_or_unlock_medium",
@@ -100,7 +108,9 @@
       "penalty": 5,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
-      "group": "ownership_change"
+      "group": "ownership_change",
+      "veto": false,
+      "allowed_evidence_types": ["announcement", "ownership_filing"]
     },
     {
       "risk_code": "reduction_or_unlock_high",
@@ -108,7 +118,9 @@
       "penalty": 8,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
-      "group": "ownership_change"
+      "group": "ownership_change",
+      "veto": false,
+      "allowed_evidence_types": ["announcement", "ownership_filing"]
     },
     {
       "risk_code": "pledge_risk_low",
@@ -116,7 +128,9 @@
       "penalty": 3,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
-      "group": "pledge"
+      "group": "pledge",
+      "veto": false,
+      "allowed_evidence_types": ["announcement", "ownership_filing"]
     },
     {
       "risk_code": "pledge_risk_medium",
@@ -124,7 +138,9 @@
       "penalty": 5,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
-      "group": "pledge"
+      "group": "pledge",
+      "veto": false,
+      "allowed_evidence_types": ["announcement", "ownership_filing"]
     },
     {
       "risk_code": "pledge_risk_high",
@@ -132,7 +148,9 @@
       "penalty": 8,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
-      "group": "pledge"
+      "group": "pledge",
+      "veto": false,
+      "allowed_evidence_types": ["announcement", "ownership_filing"]
     },
     {
       "risk_code": "financial_deterioration",
@@ -140,7 +158,9 @@
       "penalty": 6,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 2160,
-      "group": "financial"
+      "group": "financial",
+      "veto": false,
+      "allowed_evidence_types": ["financial_snapshot", "financial_report"]
     },
     {
       "risk_code": "negative_announcement",
@@ -148,7 +168,9 @@
       "penalty": 5,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
-      "group": "event"
+      "group": "event",
+      "veto": false,
+      "allowed_evidence_types": ["announcement", "news"]
     },
     {
       "risk_code": "regulatory_risk",
@@ -156,7 +178,9 @@
       "penalty": 15,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 2160,
-      "group": "event"
+      "group": "event",
+      "veto": true,
+      "allowed_evidence_types": ["announcement", "regulatory_filing"]
     }
   ],
   "factor_contract": {
