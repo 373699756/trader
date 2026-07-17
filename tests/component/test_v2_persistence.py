@@ -8,6 +8,7 @@ import pytest
 
 from trader.domain.models import (
     CrossSectionStats,
+    Evidence,
     FeatureSnapshot,
     FilterAudit,
     FusionMode,
@@ -39,6 +40,11 @@ def test_snapshot_round_trip_preserves_frozen_input() -> None:
     normalization = restored.recommendations[0].features.normalization["relative_strength_5d"]
     assert (normalization.lower_bound, normalization.upper_bound) == (-8.0, 12.0)
     assert normalization.population_data_version == "fixture-v1"
+    tail_evidence = restored.recommendations[0].features.evidence[0]
+    assert tail_evidence.received_at == NOW
+    assert tail_evidence.data_version == "intraday-v1"
+    assert restored.recommendations[0].features.values["tail_return_30m_pct"] == 2.0
+    assert restored.recommendations[0].features.values["tail_volume_ratio_raw"] == 1.5
     payload.pop("filter_details")
     assert snapshot_from_dict(payload).filter_details == ()
 
@@ -282,9 +288,16 @@ def _snapshot() -> RecommendationSnapshot:
     )
     features = FeatureSnapshot(
         quote=quote,
-        values={"relative_strength_5d": 65.0},
+        values={
+            "relative_strength_5d": 65.0,
+            "tail_return_30m_pct": 2.0,
+            "tail_return_30m": 100.0,
+            "tail_volume_ratio_raw": 1.5,
+            "tail_volume_ratio": 75.0,
+        },
         observed_at=NOW,
         history_days=60,
+        evidence=(Evidence("tail-1", "intraday_tail", "tail input", "eastmoney_intraday", NOW, NOW, "intraday-v1"),),
         normalization={"relative_strength_5d": CrossSectionStats(-8.0, 12.0, 360, 12, 0.025, 0.975, "fixture-v1")},
     )
     score = ScoreBreakdown(

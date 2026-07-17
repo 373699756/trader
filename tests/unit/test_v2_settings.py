@@ -22,7 +22,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
     assert runtime.schema_version == 2
-    assert strategy.schema_version == 5
+    assert strategy.schema_version == 6
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
     assert runtime.market_data.research_timeout_seconds == 8
     assert sum(runtime.deepseek.strategy_limits.values()) == 188
@@ -39,6 +39,10 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.today_news_signal.positive_score == 75.0
     assert "回购" in strategy.today_news_signal.positive_keywords
     assert "减持" in strategy.today_news_signal.negative_keywords
+    assert strategy.tomorrow_tail_signal.lookback_minutes == 30
+    assert strategy.tomorrow_tail_signal.minimum_baseline_minutes == 30
+    assert strategy.tomorrow_tail_signal.return_score_points_per_pct == 25.0
+    assert strategy.tomorrow_tail_signal.volume_score_points_per_ratio == 50.0
     assert len(watchlist.items) == 10
 
 
@@ -145,4 +149,55 @@ def test_today_news_signal_fixed_window_and_scores_cannot_drift(tmp_path) -> Non
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="fixed at 72h/1h and 75/50/25"):
+        load_strategy_settings(changed_path)
+
+
+def test_tomorrow_tail_signal_is_required(tmp_path) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    del raw["tomorrow_tail_signal"]
+    changed_path = tmp_path / "strategy.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="tomorrow_tail_signal must be an object"):
+        load_strategy_settings(changed_path)
+
+
+def test_tomorrow_tail_signal_fixed_formula_cannot_drift(tmp_path) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw["tomorrow_tail_signal"]["lookback_minutes"] = 20
+    changed_path = tmp_path / "strategy.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="fixed at 30/30/25/50"):
+        load_strategy_settings(changed_path)
+
+
+def test_tomorrow_tail_signal_changes_strategy_version(tmp_path) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    baseline = load_strategy_settings(source)
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw["tomorrow_tail_signal"]["volume_score_points_per_ratio"] = 49
+    changed_path = tmp_path / "strategy.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="fixed at 30/30/25/50"):
+        load_strategy_settings(changed_path)
+    raw["tomorrow_tail_signal"]["volume_score_points_per_ratio"] = 50
+    raw["factor_registry"]["tail_volume_ratio"]["version"] = "3"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    changed = load_strategy_settings(changed_path)
+    assert changed.strategy_version != baseline.strategy_version
+
+
+def test_tomorrow_tail_factor_registry_cannot_contradict_executable_formula(tmp_path) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw["factor_registry"]["tail_return_30m"]["formula"] = "clamp(50+tail_return_30m_pct*10)"
+    changed_path = tmp_path / "strategy.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="tail_return_30m.formula"):
         load_strategy_settings(changed_path)

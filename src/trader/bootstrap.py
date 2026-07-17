@@ -75,6 +75,10 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         timeout_seconds=settings.market_data.history_timeout_seconds,
         workers=settings.pipeline.market_workers,
     )
+    intraday = EastmoneyClient(
+        timeout_seconds=settings.market_data.candidate_timeout_seconds,
+        workers=settings.pipeline.market_workers,
+    )
     market_gateway = MarketDataGateway(
         eastmoney,
         SinaClient(timeout_seconds=settings.market_data.eastmoney_timeout_seconds),
@@ -86,10 +90,14 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     market_data = MarketFeatureService(
         market_gateway,
         history,
-        FeatureBuilder(strategy.today_news_signal),
+        FeatureBuilder(strategy.today_news_signal, strategy.tomorrow_tail_signal),
         research_client=AkshareResearchClient(timeout_seconds=settings.market_data.research_timeout_seconds),
+        intraday_client=intraday,
         history_workers=settings.pipeline.market_workers,
         research_workers=settings.pipeline.market_workers,
+        intraday_workers=settings.pipeline.market_workers,
+        intraday_batch_timeout_seconds=settings.market_data.candidate_timeout_seconds,
+        intraday_cache_limit=settings.market_data.candidate_pool_size * 3,
         history_preload_limit=settings.market_data.candidate_pool_size * 3,
         market_ttl_seconds=settings.pipeline.full_market_refresh_seconds,
     )

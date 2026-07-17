@@ -26,8 +26,9 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     )
     repository = MemoryRepository()
     state = RuntimeState()
+    market_data = StaticMarketData(features)
     pipeline = RecommendationPipeline(
-        StaticMarketData(features),
+        market_data,
         TradingDayCalendar(),
         None,
         repository,
@@ -60,6 +61,7 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     clock.set(datetime.fromisoformat("2026-07-16T14:30:00+08:00"))
     afternoon = pipeline.run_once(clock.now())
     assert {snapshot.strategy for snapshot in afternoon} == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
+    assert market_data.candidate_tail_requests[-3:] == [True, False, False]
 
     clock.set(datetime.fromisoformat("2026-07-16T14:49:50+08:00"))
     pipeline.run_once(clock.now())
@@ -487,6 +489,7 @@ class TradingDayCalendar:
 class StaticMarketData:
     def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
         self._features = tuple(features)
+        self.candidate_tail_requests: list[bool] = []
 
     def fetch_market_features(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
         return tuple(_at_time(feature, observed_at) for feature in self._features)
@@ -495,7 +498,10 @@ class StaticMarketData:
         self,
         codes: Sequence[str],
         observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
     ) -> Sequence[FeatureSnapshot]:
+        self.candidate_tail_requests.append(include_intraday_tail)
         requested = set(codes)
         return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
 
@@ -524,10 +530,16 @@ class DegradingCandidateMarketData(StaticMarketData):
         self,
         codes: Sequence[str],
         observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
     ) -> Sequence[FeatureSnapshot]:
         if self.candidate_unavailable:
             raise MarketDataUnavailable("candidate quote source failed")
-        return super().fetch_candidate_features(codes, observed_at)
+        return super().fetch_candidate_features(
+            codes,
+            observed_at,
+            include_intraday_tail=include_intraday_tail,
+        )
 
 
 class MemoryRepository:

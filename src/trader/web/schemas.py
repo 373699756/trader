@@ -187,6 +187,8 @@ def _recommendation(item: Recommendation, live_quote: LiveQuote | None = None) -
                 "title": evidence.title,
                 "source": evidence.source,
                 "published_at": evidence.published_at.isoformat(),
+                "received_at": evidence.received_at.isoformat() if evidence.received_at is not None else None,
+                "data_version": evidence.data_version,
             }
             for evidence in item.features.evidence
         ],
@@ -224,8 +226,13 @@ def _missing_reason(field: str) -> str:
         "negative_announcement_level",
     }:
         return "财务或公司事件数据尚未接入"
-    if field in {"tail_return_30m", "tail_volume_ratio"}:
-        return "尾盘分钟数据尚未接入"
+    if field in {
+        "tail_return_30m_pct",
+        "tail_return_30m",
+        "tail_volume_ratio_raw",
+        "tail_volume_ratio",
+    }:
+        return "尾盘分钟数据不可用或样本不足"
     if field in {
         "industry_policy_score",
         "industry_strength",

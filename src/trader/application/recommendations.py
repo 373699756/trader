@@ -28,9 +28,10 @@ from trader.domain.models import (
 from trader.domain.ranking import CORE_FIELDS, action_for, candidate_score, minimum_selection_score, select_top_k
 from trader.domain.risk import derive_local_risk_facts
 from trader.domain.strategies import score_strategy
+from trader.domain.tail import TAIL_SIGNAL_VALUE_FIELDS
 
 REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
-REPLAY_ALGORITHM_VERSION = "engine_v7_section11_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_v8_section12_2026_07"
 _PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 
 
@@ -133,7 +134,17 @@ class RecommendationEngine:
             else ()
         )
         snapshot_id = _snapshot_id(strategy, trade_date, phase, data_version, now)
-        degraded_reasons = ("deepseek_incomplete",) if fusion_mode is FusionMode.LOCAL_DEGRADED else ()
+        degraded_reasons: list[str] = []
+        if fusion_mode is FusionMode.LOCAL_DEGRADED:
+            degraded_reasons.append("deepseek_incomplete")
+        tail_covered_count = 0
+        if strategy is Strategy.TOMORROW:
+            tail_covered_count = sum(
+                all(feature.optional_value(field) is not None for field in TAIL_SIGNAL_VALUE_FIELDS)
+                for feature in eligible
+            )
+            if tail_covered_count != len(eligible):
+                degraded_reasons.append("tomorrow_tail_data_incomplete")
         return RecommendationSnapshot(
             snapshot_id=snapshot_id,
             strategy=strategy,
@@ -149,11 +160,19 @@ class RecommendationEngine:
             filter_reasons=dict(refreshed_filter_reasons),
             filter_details=tuple(refreshed_filter_details),
             stale=any(item.features.quote.age_seconds(now) > max_age_seconds for item in selected),
-            degraded_reasons=degraded_reasons,
+            degraded_reasons=tuple(degraded_reasons),
             metadata={
                 "candidate_count": len(eligible),
                 "reviewed_count": sum(
                     review.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN} for review in reviews.values()
+                ),
+                **(
+                    {
+                        "tail_data_covered_count": tail_covered_count,
+                        "tail_data_coverage_ratio": tail_covered_count / len(eligible) if eligible else 0.0,
+                    }
+                    if strategy is Strategy.TOMORROW
+                    else {}
                 ),
             },
             replay_input=RecommendationReplayInput(

@@ -23,6 +23,7 @@ SCHEMA_VERSION = "deepseek_review_v2"
 PROMPT_VERSION = "deepseek_review_prompt_v2"
 MAX_RESPONSE_CHARACTERS = 200_000
 MAX_ASSESSMENT_CHARACTERS = 240
+MAX_PROMPT_EVIDENCE_PER_CANDIDATE = 16
 
 
 class DeepSeekSchemaError(ValueError):
@@ -150,7 +151,7 @@ def _parse_review(
     candidate: FeatureSnapshot,
     completed_at: datetime,
 ) -> DeepSeekReview:
-    allowed_evidence = {item.evidence_id for item in candidate.evidence}
+    allowed_evidence = {item.evidence_id for item in candidate.evidence[:MAX_PROMPT_EVIDENCE_PER_CANDIDATE]}
     dimensions_raw = raw.get("dimensions")
     if not isinstance(dimensions_raw, dict):
         raise DeepSeekSchemaError(f"dimensions must be an object for {candidate.quote.code}")
@@ -259,7 +260,7 @@ def _candidate_payload(candidate: FeatureSnapshot) -> dict[str, object]:
             "source": item.source[:60],
             "published_at": item.published_at.isoformat(),
         }
-        for item in candidate.evidence[:16]
+        for item in candidate.evidence[:MAX_PROMPT_EVIDENCE_PER_CANDIDATE]
     ]
     return {
         "code": candidate.quote.code,

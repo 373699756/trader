@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
+from trader.application.candidate_features import fetch_strategy_features
 from trader.application.events import BoundedEventQueue, EventPriority, event_from_audit_record, new_event
 from trader.application.ports import (
     DeepSeekReviewPort,
@@ -379,12 +380,11 @@ class RecommendationPipeline:
         codes = self._long_codes if strategy is Strategy.LONG else self._candidate_codes
         if not codes:
             return None
-        features = tuple(self._market_data.fetch_candidate_features(codes, now))
+        features, data_version = fetch_strategy_features(self._market_data, strategy, codes, now)
         if not features:
             return None
         deadline = _review_deadline(now, phase)
         review_port = self._reviews if phase not in {MarketPhase.DEEPSEEK_CUTOFF, MarketPhase.FINAL_QUOTE} else None
-        data_version = max((feature.quote.data_version for feature in features), default="unavailable")
         is_long = strategy is Strategy.LONG
         snapshot = self._engine.build_snapshot(
             strategy,

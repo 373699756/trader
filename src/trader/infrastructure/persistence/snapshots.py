@@ -555,16 +555,21 @@ def _evidence_to_dict(evidence: Evidence) -> dict[str, object]:
         "title": evidence.title,
         "source": evidence.source,
         "published_at": evidence.published_at.isoformat(),
+        "received_at": evidence.received_at.isoformat() if evidence.received_at is not None else None,
+        "data_version": evidence.data_version,
     }
 
 
 def _evidence_from_dict(raw: Mapping[str, object]) -> Evidence:
+    received_at = raw.get("received_at")
     return Evidence(
         evidence_id=_text(raw, "evidence_id"),
         evidence_type=_text(raw, "evidence_type"),
         title=_text(raw, "title"),
         source=_text(raw, "source"),
         published_at=datetime.fromisoformat(_text(raw, "published_at")),
+        received_at=datetime.fromisoformat(received_at) if isinstance(received_at, str) else None,
+        data_version=str(raw.get("data_version") or ""),
     )
 
 

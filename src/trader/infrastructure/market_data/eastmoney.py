@@ -1,4 +1,4 @@
-"""Eastmoney full-market quote and daily-history adapter."""
+"""Eastmoney full-market quote, daily-history and targeted minute adapters."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, cast
+from zoneinfo import ZoneInfo
 
 import requests
 
 from trader.domain.models import MarketQuote
+from trader.domain.tail import MinuteBar
 from trader.infrastructure.market_data.history import DailyBar
 
 
@@ -26,6 +28,7 @@ FIELDS = "f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f20,f21,f2
 HOSTS = ("82.push2.eastmoney.com", "push2.eastmoney.com", "7.push2.eastmoney.com")
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _REQUEST_ROUNDS = 2
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class EastmoneyClient:
@@ -102,6 +105,57 @@ class EastmoneyClient:
             bars.append(DailyBar(parts[0], open_price, close, high, low, volume, amount, pct_change))
         return tuple(bars[-days:])
 
+    def fetch_intraday_minutes(self, code: str, *, now: datetime | None = None) -> tuple[MinuteBar, ...]:
+        observed_at = now or datetime.now(timezone.utc)
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("intraday observation time must be timezone-aware")
+        observed_local = observed_at.astimezone(_SHANGHAI)
+        payload = self._get(
+            ("push2his.eastmoney.com",),
+            "/api/qt/stock/trends2/get",
+            {
+                "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+                "ut": "7eea3edcaed734bea9cbfc24409ed989",
+                "ndays": "1",
+                "iscr": "0",
+                "secid": _secid(code),
+            },
+            request_rounds=1,
+        )
+        trends = _object_mapping(payload.get("data")).get("trends")
+        if not isinstance(trends, list):
+            return ()
+        bars: list[MinuteBar] = []
+        for raw in trends:
+            parts = str(raw).split(",")
+            if len(parts) < 8:
+                continue
+            try:
+                source_time = datetime.strptime(parts[0], "%Y-%m-%d %H:%M").replace(tzinfo=_SHANGHAI)
+            except ValueError:
+                continue
+            close = _to_float(parts[2])
+            volume = _to_float(parts[5])
+            if (
+                source_time.date() != observed_local.date()
+                or source_time > observed_local
+                or close is None
+                or close <= 0.0
+            ):
+                continue
+            bars.append(
+                MinuteBar(
+                    source_time=source_time,
+                    close=close,
+                    volume=volume if volume is not None and volume >= 0.0 else None,
+                    source="eastmoney_intraday",
+                    received_time=observed_at,
+                    data_version=f"eastmoney-intraday:{int(observed_at.timestamp())}",
+                )
+            )
+        return tuple(bars)
+
     def _fetch_page(self, page: int) -> Mapping[str, object]:
         return self._get(
             HOSTS,
@@ -120,10 +174,17 @@ class EastmoneyClient:
             },
         )
 
-    def _get(self, hosts: Sequence[str], path: str, params: Mapping[str, str]) -> Mapping[str, object]:
+    def _get(
+        self,
+        hosts: Sequence[str],
+        path: str,
+        params: Mapping[str, str],
+        *,
+        request_rounds: int = _REQUEST_ROUNDS,
+    ) -> Mapping[str, object]:
         last_error: Exception | None = None
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
-        for _round in range(_REQUEST_ROUNDS):
+        for _round in range(max(1, request_rounds)):
             for host in hosts:
                 try:
                     with self._session_factory() as session:

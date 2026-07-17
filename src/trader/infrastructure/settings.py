@@ -12,6 +12,7 @@ from pathlib import Path
 
 from trader.domain.factors import PRODUCTION_FACTOR_IDS
 from trader.domain.news import NewsSignalPolicy
+from trader.domain.tail import TailSignalPolicy
 from trader.infrastructure.settings_parser import (
     ConfigurationError,
 )
@@ -202,6 +203,7 @@ class StrategySettings:
     selection: SelectionSettings
     candidate_weights: Mapping[str, float]
     today_news_signal: NewsSignalPolicy
+    tomorrow_tail_signal: TailSignalPolicy
     dimension_weights: Mapping[str, Mapping[str, float]]
     risk_rules: tuple[RiskRuleSettings, ...]
     factor_contract: Mapping[str, object]
@@ -315,8 +317,8 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 5:
-        raise ConfigurationError("strategy schema_version must be 5")
+    if _integer(raw, "schema_version", minimum=1) != 6:
+        raise ConfigurationError("strategy schema_version must be 6")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     rules_raw = raw.get("risk_rules")
@@ -325,13 +327,14 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
     risk_rules = tuple(_parse_risk_rule(item, index) for index, item in enumerate(rules_raw))
     dimension_weights = _nested_number_mapping(raw, "dimension_weights")
     today_news_signal = _parse_news_signal_policy(_mapping(raw, "today_news_signal"))
+    tomorrow_tail_signal = _parse_tail_signal_policy(_mapping(raw, "tomorrow_tail_signal"))
     factor_registry_raw = _mapping(raw, "factor_registry")
     factor_registry = {
         str(factor_id): _parse_factor_definition(str(factor_id), definition)
         for factor_id, definition in factor_registry_raw.items()
     }
     settings = StrategySettings(
-        schema_version=5,
+        schema_version=6,
         strategy_version=_strategy_contract_version(raw),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),
@@ -358,6 +361,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         ),
         candidate_weights=_number_mapping(raw, "candidate_weights"),
         today_news_signal=today_news_signal,
+        tomorrow_tail_signal=tomorrow_tail_signal,
         dimension_weights=dimension_weights,
         risk_rules=risk_rules,
         factor_contract=dict(_mapping(raw, "factor_contract")),
@@ -478,6 +482,18 @@ def _parse_news_signal_policy(raw: Mapping[str, object]) -> NewsSignalPolicy:
         raise ConfigurationError(f"today_news_signal {exc}") from exc
 
 
+def _parse_tail_signal_policy(raw: Mapping[str, object]) -> TailSignalPolicy:
+    try:
+        return TailSignalPolicy(
+            lookback_minutes=_integer(raw, "lookback_minutes", minimum=1),
+            minimum_baseline_minutes=_integer(raw, "minimum_baseline_minutes", minimum=1),
+            return_score_points_per_pct=_number(raw, "return_score_points_per_pct", minimum=0.01),
+            volume_score_points_per_ratio=_number(raw, "volume_score_points_per_ratio", minimum=0.01),
+        )
+    except ValueError as exc:
+        raise ConfigurationError(f"tomorrow_tail_signal {exc}") from exc
+
+
 def _keyword_tuple(raw: Mapping[str, object], key: str) -> tuple[str, ...]:
     values = raw.get(key)
     if not isinstance(values, list) or not values or any(not isinstance(value, str) for value in values):
@@ -526,6 +542,14 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         or news.negative_score != 25.0
     ):
         raise ConfigurationError("today news signal window and scores are fixed at 72h/1h and 75/50/25")
+    tail = settings.tomorrow_tail_signal
+    if (
+        tail.lookback_minutes != 30
+        or tail.minimum_baseline_minutes != 30
+        or tail.return_score_points_per_pct != 25.0
+        or tail.volume_score_points_per_ratio != 50.0
+    ):
+        raise ConfigurationError("tomorrow tail signal formula is fixed at 30/30/25/50")
     _validate_weight_sum("candidate_weights", settings.candidate_weights)
     required_candidate_weights = {
         "liquidity",
@@ -562,6 +586,7 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         missing = sorted(PRODUCTION_FACTOR_IDS - registered)
         extra = sorted(registered - PRODUCTION_FACTOR_IDS)
         raise ConfigurationError(f"factor_registry mismatch: missing={missing}, extra={extra}")
+    _validate_tomorrow_tail_factor_contract(settings)
     required_risk_codes = {
         "near_limit_crowding",
         "price_volume_divergence",
@@ -589,6 +614,88 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         existing = group_modes.setdefault(rule.group, rule.combination_mode)
         if existing != rule.combination_mode:
             raise ConfigurationError(f"risk group {rule.group} mixes combination modes")
+
+
+def _validate_tomorrow_tail_factor_contract(settings: StrategySettings) -> None:
+    _validate_tail_factor_definition(
+        settings.factor_registry["tail_return_30m_pct"],
+        raw_inputs=("unadjusted_completed_minute_close",),
+        formula="(latest_close/close_30_continuous_trading_minutes_ago-1)*100",
+        unit="percentage_points",
+        minimum_samples=31,
+        normalization="none",
+        missing_policy="missing_and_record",
+        output_range=(-100.0, 1000.0),
+    )
+    _validate_tail_factor_definition(
+        settings.factor_registry["tail_return_30m"],
+        raw_inputs=("tail_return_30m_pct",),
+        formula="clamp(50+tail_return_30m_pct*25)",
+        unit="score_0_100",
+        minimum_samples=31,
+        normalization="formula_0_100",
+        missing_policy="neutral_50_and_record",
+        output_range=(0.0, 100.0),
+    )
+    _validate_tail_factor_definition(
+        settings.factor_registry["tail_volume_ratio_raw"],
+        raw_inputs=("unadjusted_completed_minute_volume",),
+        formula="mean(last_30_continuous_trading_minute_volume)/mean(valid_same_day_pre_tail_volume)",
+        unit="ratio",
+        minimum_samples=60,
+        normalization="none",
+        missing_policy="missing_and_record",
+        output_range=(0.0, 1_000_000.0),
+    )
+    _validate_tail_factor_definition(
+        settings.factor_registry["tail_volume_ratio"],
+        raw_inputs=("tail_volume_ratio_raw",),
+        formula="clamp(50+(tail_volume_ratio_raw-1)*50)",
+        unit="score_0_100",
+        minimum_samples=60,
+        normalization="formula_0_100",
+        missing_policy="neutral_50_and_record",
+        output_range=(0.0, 100.0),
+    )
+
+
+def _validate_tail_factor_definition(
+    definition: FactorDefinition,
+    *,
+    raw_inputs: tuple[str, ...],
+    formula: str,
+    unit: str,
+    minimum_samples: int,
+    normalization: str,
+    missing_policy: str,
+    output_range: tuple[float, float],
+) -> None:
+    expected: tuple[tuple[str, object], ...] = (
+        ("strategies", ("tomorrow",)),
+        ("raw_inputs", raw_inputs),
+        ("formula", formula),
+        ("unit", unit),
+        ("direction", "higher_better"),
+        ("observation_time", "latest_completed_minute_at_or_before_observation"),
+        ("adjustment", "none"),
+        ("lookback_window", 30),
+        ("minimum_samples", minimum_samples),
+        ("winsor_enabled", False),
+        ("winsor_lower_quantile", 0.025),
+        ("winsor_upper_quantile", 0.975),
+        ("normalization", normalization),
+        ("missing_policy", missing_policy),
+        ("output_range", output_range),
+    )
+    for attribute, expected_value in expected:
+        actual = getattr(definition, attribute)
+        if attribute == "formula":
+            actual = "".join(str(actual).split())
+            expected_value = "".join(str(expected_value).split())
+        if actual != expected_value:
+            raise ConfigurationError(
+                f"factor_registry.{definition.factor_id}.{attribute} contradicts the executable tomorrow tail formula"
+            )
 
 
 def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:

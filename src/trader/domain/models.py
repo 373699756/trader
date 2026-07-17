@@ -122,6 +122,8 @@ class Evidence:
     title: str
     source: str
     published_at: datetime
+    received_at: datetime | None = None
+    data_version: str = ""
 
 
 @dataclass(frozen=True)

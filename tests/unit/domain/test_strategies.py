@@ -56,3 +56,51 @@ def test_today_score_matches_all_documented_component_and_subcomponent_weights(f
         }
     )
     assert result.base_score == pytest.approx(76.1375)
+
+
+def test_tomorrow_score_matches_all_documented_component_and_subcomponent_weights(feature_factory) -> None:
+    result = score_strategy(
+        Strategy.TOMORROW,
+        feature_factory(
+            values={
+                "relative_strength_5d": 10.0,
+                "relative_strength_20d": 20.0,
+                "price_volume_confirmation": 30.0,
+                "moderate_daily_return": 40.0,
+                "ma20_60_position": 11.0,
+                "ma_slope": 22.0,
+                "breakout_20d": 33.0,
+                "industry_trend": 44.0,
+                "risk_adjusted_return_20d": 12.0,
+                "low_drawdown_score": 24.0,
+                "upward_consistency": 36.0,
+                "capacity_score": 13.0,
+                "moderate_amplitude": 26.0,
+                "limit_distance_safety": 39.0,
+                "tail_return_30m": 14.0,
+                "tail_volume_ratio": 28.0,
+                "close_location": 42.0,
+            }
+        ),
+    )
+
+    assert result.components == pytest.approx(
+        {
+            "liquidity": 82.0,
+            "momentum": 22.0,
+            "trend": 25.3,
+            "historical_edge": 21.6,
+            "execution": 24.7,
+            "tail_structure": 28.0,
+        }
+    )
+    assert result.base_score == pytest.approx(38.77)
+
+
+def test_tomorrow_missing_tail_inputs_are_neutral_without_becoming_zero(feature_factory) -> None:
+    result = score_strategy(
+        Strategy.TOMORROW,
+        feature_factory(values={"tail_return_30m": None, "tail_volume_ratio": None}),
+    )
+
+    assert result.components["tail_structure"] == pytest.approx(57.0)

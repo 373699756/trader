@@ -117,7 +117,10 @@ class StaticMarketData:
         self,
         codes: Sequence[str],
         observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
     ) -> Sequence[FeatureSnapshot]:
+        del include_intraday_tail
         requested = set(codes)
         return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
 

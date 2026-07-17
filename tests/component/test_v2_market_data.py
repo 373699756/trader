@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +14,7 @@ from trader.application.ports import MarketDataUnavailable
 from trader.domain.models import Evidence, MarketQuote, Strategy
 from trader.domain.news import NewsSignalPolicy
 from trader.domain.strategies import score_strategy
+from trader.domain.tail import MinuteBar, TailSignalPolicy
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailable
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
@@ -24,6 +27,7 @@ from trader.infrastructure.market_data.tencent import TencentClient
 from trader.infrastructure.settings import ConfigurationError, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
+AFTERNOON = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
 NEWS_POLICY = NewsSignalPolicy(
     lookback_hours=72.0,
     freshness_full_score_hours=1.0,
@@ -32,6 +36,12 @@ NEWS_POLICY = NewsSignalPolicy(
     negative_score=25.0,
     positive_keywords=("回购", "增持", "中标"),
     negative_keywords=("减持", "立案", "亏损"),
+)
+TAIL_POLICY = TailSignalPolicy(
+    lookback_minutes=30,
+    minimum_baseline_minutes=30,
+    return_score_points_per_pct=25.0,
+    volume_score_points_per_ratio=50.0,
 )
 
 
@@ -76,6 +86,34 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
     assert quotes[0].data_version == f"eastmoney:{int(NOW.timestamp())}"
     assert history[0].amount == 100000000
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
+
+
+def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
+    payload = {
+        "data": {
+            "trends": [
+                "2026-07-16 14:49,10.00,10.10,10.20,9.90,100,1010,10.05",
+                "2026-07-16 14:50,10.10,10.20,10.30,10.00,150,1530,10.10",
+                "invalid,row",
+            ]
+        }
+    }
+    session = FakeSession([payload])
+    client = EastmoneyClient(timeout_seconds=2, session_factory=lambda: session)
+
+    bars = client.fetch_intraday_minutes("600001", now=AFTERNOON)
+
+    assert [bar.close for bar in bars] == [10.1, 10.2]
+    assert [bar.volume for bar in bars] == [100.0, 150.0]
+    assert bars[-1].source_time.isoformat() == "2026-07-16T14:50:00+08:00"
+    assert bars[-1].received_time == AFTERNOON
+    assert bars[-1].data_version == f"eastmoney-intraday:{int(AFTERNOON.timestamp())}"
+    assert bars[-1].source == "eastmoney_intraday"
+    assert session.calls[0][0][0].endswith("/api/qt/stock/trends2/get")
+    assert session.calls[0][1]["params"]["ndays"] == "1"
+    assert "fqt" not in session.calls[0][1]["params"]
+    assert session.calls[0][1]["timeout"] == 2
+    assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 
 
 def test_tencent_normalizes_targeted_quote() -> None:
@@ -220,7 +258,7 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
         for index in range(1, 61)
     )
 
-    with_history, without_history = FeatureBuilder(NEWS_POLICY).build(
+    with_history, without_history = FeatureBuilder(NEWS_POLICY, TAIL_POLICY).build(
         (quote, _quote(code="600002", industry="银行")),
         {"600001": bars},
         NOW,
@@ -234,7 +272,7 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
 
 
 def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
-    builder = FeatureBuilder(NEWS_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY)
     low = replace(_quote(code="600001"), speed=0.1)
     middle = replace(_quote(code="600002"), speed=0.2)
     high = replace(_quote(code="600003"), speed=0.3)
@@ -248,7 +286,7 @@ def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
 
 
 def test_feature_builder_partitions_cross_sections_and_excludes_missing_breadth() -> None:
-    builder = FeatureBuilder(NEWS_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY)
     quotes = (
         replace(_quote(code="600001"), speed=0.1, pct_change=1.0, data_version="v1"),
         replace(_quote(code="600002"), speed=0.2, pct_change=-1.0, data_version="v1"),
@@ -274,7 +312,7 @@ def test_market_service_bounds_history_preload_to_stratified_candidate_universe(
     service = MarketFeatureService(
         StaticGateway(quotes),
         history,
-        FeatureBuilder(NEWS_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
         history_workers=2,
         history_preload_limit=2,
     )
@@ -291,7 +329,7 @@ def test_market_service_loads_history_before_cold_start_candidate_cross_section(
     service = MarketFeatureService(
         StaticGateway((_quote(), _quote(code="600002"))),
         history,
-        FeatureBuilder(NEWS_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
         history_workers=2,
     )
 
@@ -309,7 +347,7 @@ def test_market_service_reloads_expired_history_and_reports_failed_coverage() ->
     service = MarketFeatureService(
         StaticGateway((_quote(), _quote(code="600002"))),
         history,
-        FeatureBuilder(NEWS_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
         history_workers=2,
         history_ttl_seconds=60,
         market_ttl_seconds=1,
@@ -345,6 +383,232 @@ def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
 
     with pytest.raises(ConfigurationError, match="factor_registry mismatch"):
         load_strategy_settings(target)
+
+
+def test_feature_builder_derives_auditable_tail_inputs_without_fabricating_missing_values() -> None:
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY)
+    available, missing = builder.build(
+        (_quote(), _quote(code="600002")),
+        {},
+        AFTERNOON,
+        intraday_minutes={"600001": _tail_minute_bars()},
+    )
+
+    assert available.values["tail_return_30m_pct"] == pytest.approx(2.0)
+    assert available.values["tail_return_30m"] == pytest.approx(100.0)
+    assert available.values["tail_volume_ratio_raw"] == pytest.approx(1.5)
+    assert available.values["tail_volume_ratio"] == pytest.approx(75.0)
+    tail_evidence = next(item for item in available.evidence if item.evidence_type == "intraday_tail")
+    assert tail_evidence.source == "eastmoney_intraday"
+    assert tail_evidence.published_at == AFTERNOON
+    assert tail_evidence.received_at == AFTERNOON
+    assert tail_evidence.data_version == "intraday-v1"
+    assert "30分钟收益=2.000000%" in tail_evidence.title
+    assert "量比=1.500000" in tail_evidence.title
+    assert missing.values["tail_return_30m_pct"] is None
+    assert missing.values["tail_return_30m"] is None
+    assert missing.values["tail_volume_ratio_raw"] is None
+    assert missing.values["tail_volume_ratio"] is None
+    assert "tail_return_30m" in missing.missing_fields
+
+
+def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_inputs() -> None:
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY).build(
+        (_quote(),),
+        {"600001": _history_bars()},
+        AFTERNOON,
+        intraday_minutes={"600001": _tail_minute_bars()},
+    )[0]
+
+    required = {
+        "amount_percentile_20d",
+        "relative_strength_5d",
+        "relative_strength_20d",
+        "price_volume_confirmation",
+        "moderate_daily_return",
+        "ma20_60_position",
+        "ma_slope",
+        "breakout_20d",
+        "industry_trend",
+        "risk_adjusted_return_20d",
+        "low_drawdown_score",
+        "upward_consistency",
+        "capacity_score",
+        "moderate_amplitude",
+        "limit_distance_safety",
+        "tail_return_30m",
+        "tail_volume_ratio",
+        "close_location",
+    }
+    assert all(feature.optional_value(name) is not None for name in required)
+    assert required.isdisjoint(feature.missing_fields)
+
+
+@pytest.mark.parametrize(
+    ("price", "high", "low", "expected"),
+    (
+        (10.0, 12.0, 10.0, 0.0),
+        (11.0, 12.0, 10.0, 50.0),
+        (12.0, 12.0, 10.0, 100.0),
+        (11.0, 10.0, 10.0, None),
+        (float("nan"), 12.0, 10.0, None),
+    ),
+)
+def test_close_location_has_exact_boundaries_and_preserves_missing(
+    price: float,
+    high: float,
+    low: float,
+    expected: float | None,
+) -> None:
+    quote = replace(_quote(), price=price, high=high, low=low)
+
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY).build((quote,), {}, NOW)[0]
+
+    if expected is None:
+        assert feature.optional_value("close_location") is None
+    else:
+        assert feature.optional_value("close_location") == pytest.approx(expected)
+
+
+def test_zero_historical_return_has_neutral_price_volume_confirmation() -> None:
+    bars = tuple(
+        DailyBar(
+            trade_date=f"2026-06-{index + 1:02d}",
+            open_price=10.0,
+            close=10.0,
+            high=10.1,
+            low=9.9,
+            volume=1_000_000.0,
+            amount=100_000_000.0,
+            pct_change=0.0,
+        )
+        for index in range(21)
+    )
+    quote = replace(_quote(), price=10.0, amount=100_000_000.0)
+
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY).build((quote,), {quote.code: bars}, NOW)[0]
+
+    assert feature.values["return_5d"] == pytest.approx(0.0)
+    assert feature.values["price_volume_confirmation"] == pytest.approx(50.0)
+
+
+def test_market_service_fetches_intraday_minutes_only_for_requested_candidate_mode() -> None:
+    intraday = StaticIntradayClient(_tail_minute_bars())
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        intraday_client=intraday,
+        intraday_workers=1,
+    )
+
+    service.fetch_market_features(AFTERNOON)
+    without_tail = service.fetch_candidate_features(("600001",), AFTERNOON)
+    with_tail = service.fetch_candidate_features(
+        ("600001",),
+        AFTERNOON,
+        include_intraday_tail=True,
+    )
+
+    assert intraday.calls == ["600001"]
+    assert "tail_return_30m" not in without_tail[0].values
+    assert "tail_return_30m" not in without_tail[0].missing_fields
+    assert with_tail[0].values["tail_return_30m"] == pytest.approx(100.0)
+    assert service.health()["intraday_tail_success_count"] == 1
+    assert service.health()["intraday_tail_covered_rows"] == 1
+    assert service.health()["intraday_tail_latest_source_time"] == AFTERNOON.isoformat()
+    assert service.health()["intraday_tail_sources"] == ("eastmoney_intraday",)
+    assert service.health()["intraday_tail_data_versions"] == ("intraday-v1",)
+
+
+def test_intraday_cache_has_a_hard_entry_limit() -> None:
+    intraday = StaticIntradayClient(_tail_minute_bars())
+    service = MarketFeatureService(
+        StaticGateway((_quote(), _quote(code="600002"))),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        intraday_client=intraday,
+        intraday_workers=1,
+        intraday_cache_limit=1,
+    )
+
+    service.fetch_candidate_features(("600001",), AFTERNOON, include_intraday_tail=True)
+    service.fetch_candidate_features(("600002",), AFTERNOON, include_intraday_tail=True)
+
+    assert intraday.calls == ["600001", "600002"]
+    assert service.health()["intraday_tail_cache_entries"] == 1
+
+
+def test_intraday_failure_keeps_tomorrow_features_available_and_marks_missing() -> None:
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        intraday_client=FailingIntradayClient(),
+        intraday_workers=1,
+    )
+
+    result = service.fetch_candidate_features(
+        ("600001",),
+        AFTERNOON,
+        include_intraday_tail=True,
+    )
+
+    assert len(result) == 1
+    assert result[0].values["tail_return_30m"] is None
+    assert result[0].values["tail_volume_ratio"] is None
+    assert "tail_return_30m" in result[0].missing_fields
+    assert service.health()["intraday_tail_error_count"] == 1
+    assert service.health()["intraday_tail_last_error"] == "offline"
+
+
+def test_intraday_health_requires_complete_tail_signals_for_coverage() -> None:
+    intraday = StaticIntradayClient(_tail_minute_bars()[-10:])
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        intraday_client=intraday,
+        intraday_workers=1,
+    )
+
+    result = service.fetch_candidate_features(
+        ("600001",),
+        AFTERNOON,
+        include_intraday_tail=True,
+    )
+
+    assert result[0].values["tail_return_30m"] is None
+    assert result[0].values["tail_volume_ratio"] is None
+    assert service.health()["intraday_tail_covered_rows"] == 0
+    assert service.health()["intraday_tail_coverage_ratio"] == 0.0
+    assert service.health()["intraday_tail_last_error"] == "intraday_series_incomplete"
+
+
+def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request() -> None:
+    intraday = BlockingIntradayClient()
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        intraday_client=intraday,
+        intraday_workers=1,
+        intraday_batch_timeout_seconds=0.01,
+    )
+
+    started = time.monotonic()
+    try:
+        result = service.fetch_candidate_features(
+            ("600001",),
+            AFTERNOON,
+            include_intraday_tail=True,
+        )
+    finally:
+        intraday.release.set()
+
+    assert time.monotonic() - started < 0.5
+    assert result[0].values["tail_return_30m"] is None
+    assert service.health()["intraday_tail_last_error"] == "intraday_batch_deadline"
 
 
 def test_akshare_news_is_bounded_and_normalized() -> None:
@@ -383,7 +647,7 @@ def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     service = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
         research_client=research,
         research_workers=1,
     )
@@ -402,7 +666,7 @@ def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     degraded = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
         research_client=FailingResearchClient(),
         research_workers=1,
     )
@@ -572,6 +836,31 @@ class FailingResearchClient:
         raise RuntimeError("offline")
 
 
+class StaticIntradayClient:
+    def __init__(self, bars) -> None:
+        self._bars = bars
+        self.calls = []
+
+    def fetch_intraday_minutes(self, code, *, now):
+        self.calls.append(code)
+        return self._bars
+
+
+class FailingIntradayClient:
+    @staticmethod
+    def fetch_intraday_minutes(_code, *, now):
+        raise RuntimeError("offline")
+
+
+class BlockingIntradayClient:
+    def __init__(self) -> None:
+        self.release = threading.Event()
+
+    def fetch_intraday_minutes(self, _code, *, now):
+        self.release.wait(2.0)
+        return _tail_minute_bars()
+
+
 def _quote(code: str = "600001", industry: str = "工业") -> MarketQuote:
     return MarketQuote(
         code=code,
@@ -610,4 +899,19 @@ def _history_bars() -> tuple[DailyBar, ...]:
             pct_change=0.1,
         )
         for index in range(60)
+    )
+
+
+def _tail_minute_bars() -> tuple[MinuteBar, ...]:
+    start = AFTERNOON - timedelta(minutes=60)
+    return tuple(
+        MinuteBar(
+            source_time=start + timedelta(minutes=index),
+            close=10.2 if index == 60 else 10.0,
+            volume=150.0 if index >= 31 else 100.0,
+            source="eastmoney_intraday",
+            received_time=AFTERNOON,
+            data_version="intraday-v1",
+        )
+        for index in range(61)
     )

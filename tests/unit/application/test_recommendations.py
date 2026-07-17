@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
+import pytest
+
 from trader.application.recommendations import RecommendationEngine
 from trader.domain.models import FeatureSnapshot, FilterAudit, Strategy
 
@@ -92,6 +94,45 @@ def test_candidate_pool_limit_is_not_reported_as_hard_filtering(
     assert len(candidates) == 120
     assert reasons == {}
     assert details == ()
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    (
+        "tail_return_30m_pct",
+        "tail_return_30m",
+        "tail_volume_ratio_raw",
+        "tail_volume_ratio",
+    ),
+)
+def test_tomorrow_snapshot_marks_incomplete_tail_data_as_degraded(
+    recommendation_policy,
+    application_feature_factory,
+    missing_field: str,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+    feature = application_feature_factory("600001", now)
+    feature = replace(
+        feature,
+        values={**feature.values, missing_field: None},
+        missing_fields=(*feature.missing_fields, missing_field),
+    )
+
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TOMORROW,
+        (feature,),
+        now=now,
+        phase="afternoon",
+        trade_date="2026-07-16",
+        data_version="missing-tail",
+        review_port=None,
+        review_deadline=datetime.fromisoformat("2026-07-16T14:48:00+08:00"),
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+
+    assert "tomorrow_tail_data_incomplete" in snapshot.degraded_reasons
 
 
 class RecordingReviewer:

@@ -8,7 +8,7 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import SHANGHAI
-from trader.domain.models import LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
+from trader.domain.models import Evidence, LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
 from trader.web import create_app
 from trader.web.routes import WebApiConfig
 
@@ -38,7 +38,21 @@ def test_recommendations_explain_missing_fields(recommendation_policy, applicati
     missing_fields = ("news_sentiment", "tail_return_30m", "value_score")
     for field in missing_fields:
         values[field] = None
-    features = replace(recommendation.features, values=values, missing_fields=missing_fields)
+    tail_evidence = Evidence(
+        "tail-1",
+        "intraday_tail",
+        "tail input",
+        "eastmoney_intraday",
+        NOW,
+        NOW,
+        "intraday-v1",
+    )
+    features = replace(
+        recommendation.features,
+        values=values,
+        missing_fields=missing_fields,
+        evidence=(tail_evidence,),
+    )
     snapshot = replace(snapshot, recommendations=(replace(recommendation, features=features),))
     repository = MemoryReadRepository(latest={Strategy.TODAY: snapshot})
     app, _publisher = _app(repository)
@@ -48,10 +62,12 @@ def test_recommendations_explain_missing_fields(recommendation_policy, applicati
     assert item["missing_fields"] == list(missing_fields)
     assert item["missing_reasons"] == {
         "news_sentiment": "新闻或公告证据不可用",
-        "tail_return_30m": "尾盘分钟数据尚未接入",
+        "tail_return_30m": "尾盘分钟数据不可用或样本不足",
         "value_score": "财务或公司事件数据尚未接入",
     }
     assert all(item["features"][field] is None for field in missing_fields)
+    assert item["evidence"][0]["received_at"] == NOW.isoformat()
+    assert item["evidence"][0]["data_version"] == "intraday-v1"
     assert item["anchor_to_now_pct"] is None
 
 

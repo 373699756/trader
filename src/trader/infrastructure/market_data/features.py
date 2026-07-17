@@ -11,6 +11,12 @@ from datetime import datetime
 from trader.domain.factors import band_score, clamp, percentile_scores_with_metadata
 from trader.domain.models import CrossSectionStats, Evidence, FeatureSnapshot, MarketQuote
 from trader.domain.news import NewsSignalPolicy, derive_news_signals
+from trader.domain.tail import (
+    MinuteBar,
+    TailSignalPolicy,
+    derive_tail_signals,
+    tail_signal_evidence,
+)
 from trader.infrastructure.market_data.history import (
     DailyBar,
     maximum_drawdown_pct,
@@ -23,8 +29,9 @@ from trader.infrastructure.market_data.history import (
 
 
 class FeatureBuilder:
-    def __init__(self, news_signal_policy: NewsSignalPolicy) -> None:
+    def __init__(self, news_signal_policy: NewsSignalPolicy, tail_signal_policy: TailSignalPolicy) -> None:
         self._news_signal_policy = news_signal_policy
+        self._tail_signal_policy = tail_signal_policy
 
     def build(
         self,
@@ -35,6 +42,7 @@ class FeatureBuilder:
         cross_section_reference: Mapping[str, Mapping[str, float | None]] | None = None,
         cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None = None,
         research_evidence: Mapping[str, Sequence[Evidence]] | None = None,
+        intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None = None,
     ) -> tuple[FeatureSnapshot, ...]:
         grouped: dict[str, list[MarketQuote]] = defaultdict(list)
         for quote in quotes:
@@ -49,6 +57,7 @@ class FeatureBuilder:
                 cross_section_reference=cross_section_reference,
                 cross_section_normalization_reference=cross_section_normalization_reference,
                 research_evidence=research_evidence,
+                intraday_minutes=intraday_minutes,
             ):
                 built[snapshot.quote.code] = snapshot
         return tuple(built[quote.code] for quote in quotes)
@@ -63,7 +72,20 @@ class FeatureBuilder:
         cross_section_reference: Mapping[str, Mapping[str, float | None]] | None,
         cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None,
         research_evidence: Mapping[str, Sequence[Evidence]] | None,
+        intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None,
     ) -> tuple[FeatureSnapshot, ...]:
+        tail_signals = (
+            {
+                quote.code: derive_tail_signals(
+                    tuple(intraday_minutes.get(quote.code, ())),
+                    observed_at=observed_at,
+                    policy=self._tail_signal_policy,
+                )
+                for quote in quotes
+            }
+            if intraday_minutes is not None
+            else None
+        )
         raw = {quote.code: self._raw_features(quote, histories.get(quote.code, ())) for quote in quotes}
         amount_percentiles, amount_stats = percentile_scores_with_metadata(
             {code: values.get("amount_median_20d") for code, values in raw.items()},
@@ -121,6 +143,8 @@ class FeatureBuilder:
         for quote in quotes:
             values = raw[quote.code]
             candidate_evidence = tuple((research_evidence or {}).get(quote.code, ()))[:15]
+            tail_signal = tail_signals.get(quote.code) if tail_signals is not None else None
+            intraday_evidence = tail_signal_evidence(quote.code, tail_signal) if tail_signal is not None else None
             news_signals = derive_news_signals(
                 candidate_evidence,
                 observed_at=observed_at,
@@ -146,6 +170,15 @@ class FeatureBuilder:
                     "evidence_freshness": news_signals.freshness_score,
                 }
             )
+            if tail_signal is not None:
+                values.update(
+                    {
+                        "tail_return_30m_pct": tail_signal.return_pct,
+                        "tail_return_30m": tail_signal.return_score,
+                        "tail_volume_ratio_raw": tail_signal.volume_ratio,
+                        "tail_volume_ratio": tail_signal.volume_score,
+                    }
+                )
             reference = (cross_section_reference or {}).get(quote.code, {})
             for name in _CROSS_SECTION_FIELDS:
                 if name in reference:
@@ -170,6 +203,7 @@ class FeatureBuilder:
                     missing_fields=missing,
                     evidence=(
                         _structured_evidence(quote, values, observed_at),
+                        *((intraday_evidence,) if intraday_evidence is not None else ()),
                         *candidate_evidence,
                     ),
                     normalization=normalization,
@@ -228,8 +262,6 @@ class FeatureBuilder:
             "capacity_score": capacity,
             "moderate_amplitude": _optional_band_score(quote.amplitude, 0.0, 1.0, 5.0, 12.0),
             "limit_distance_safety": None if limit_proximity is None else 100.0 * (1.0 - limit_proximity),
-            "tail_return_30m": None,
-            "tail_volume_ratio": None,
             "close_location": close_location,
             "price_executability": _optional_band_score(quote.price, 1.0, 5.0, 100.0, 300.0),
             "ma20_deviation_inverse": _ma_deviation_inverse(quote.price, ma20),
@@ -312,7 +344,10 @@ def _price_volume_confirmation(
     ):
         return None
     volume_signal = clamp(amount / median * 50.0)
-    return clamp(50.0 + math.copysign(volume_signal / 2.0, return_5d))
+    if return_5d == 0.0:
+        return 50.0
+    direction = 1.0 if return_5d > 0.0 else -1.0
+    return clamp(50.0 + direction * volume_signal / 2.0)
 
 
 def _close_location(quote: MarketQuote) -> float | None:

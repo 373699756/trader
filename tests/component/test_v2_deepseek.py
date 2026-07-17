@@ -46,6 +46,20 @@ def test_schema_rejects_pool_escape_and_invalid_evidence() -> None:
         parse_reviews(json.dumps(invalid_evidence), [candidate], NOW)
 
 
+def test_schema_rejects_evidence_omitted_by_prompt_limit() -> None:
+    original = _candidate_with_evidence()
+    evidence = tuple(replace(original.evidence[0], evidence_id=f"e-{index}") for index in range(1, 18))
+    candidate = replace(original, evidence=evidence)
+    prompt = build_messages([candidate])[1]["content"]
+    payload = _valid_payload(candidate.quote.code)
+    payload["results"][0]["dimensions"]["market_flow"]["evidence_ids"] = ["e-17"]
+
+    assert '"evidence_id":"e-16"' in prompt
+    assert '"evidence_id":"e-17"' not in prompt
+    with pytest.raises(DeepSeekSchemaError, match="invalid evidence"):
+        parse_reviews(json.dumps(payload), [candidate], NOW)
+
+
 def test_prompt_marks_external_evidence_untrusted() -> None:
     messages = build_messages([_candidate_with_evidence()])
 
