@@ -8,7 +8,7 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import SHANGHAI
-from trader.domain.models import RecommendationSnapshot, Strategy
+from trader.domain.models import LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
 from trader.web import create_app
 from trader.web.routes import WebApiConfig
 
@@ -51,6 +51,7 @@ def test_recommendations_explain_missing_fields(recommendation_policy, applicati
         "value_score": "财务或公司事件数据尚未接入",
     }
     assert all(item["features"][field] is None for field in missing_fields)
+    assert item["anchor_to_now_pct"] is None
 
 
 def test_recommendation_validation_and_empty_current(recommendation_policy, application_feature_factory) -> None:
@@ -132,6 +133,73 @@ def test_frozen_current_queries_keep_tomorrow_and_d25_isolated(
     assert d25_payload["strategy"] == "d25"
     assert "tail_structure" in tomorrow_payload["items"][0]["scores"]["components"]
     assert "not_overheated" in d25_payload["items"][0]["scores"]["components"]
+
+
+def test_frozen_current_response_applies_overlay_without_changing_anchor_or_snapshot_id(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    frozen = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        snapshot_id="frozen-overlay",
+        frozen=True,
+    )
+    live_at = NOW.replace(hour=14, minute=55)
+    overlay = LiveOverlay(
+        snapshot_id=frozen.snapshot_id,
+        strategy=frozen.strategy,
+        trade_date=frozen.trade_date,
+        version="overlay-v2",
+        observed_at=live_at,
+        quotes={
+            "600001": LiveQuote(
+                code="600001",
+                price=15.0,
+                pct_change=8.0,
+                source="tencent",
+                source_time=live_at,
+                received_time=live_at,
+                data_version="live-v2",
+            )
+        },
+    )
+    repository = MemoryReadRepository(
+        frozen={(Strategy.TOMORROW, "2026-07-16"): frozen},
+        overlays={(Strategy.TOMORROW, "2026-07-16"): overlay},
+    )
+    client = _app(repository, now=live_at)[0].test_client()
+
+    response = client.get("/api/recommendations/tomorrow")
+    payload = response.get_json()
+
+    assert payload["snapshot_id"] == "frozen-overlay"
+    assert payload["live_overlay"]["version"] == "overlay-v2"
+    assert payload["items"][0]["price"] == 15.0
+    assert payload["items"][0]["anchor_price"] != 15.0
+    assert response.headers["ETag"] != '"frozen-overlay"'
+    cached = client.get("/api/recommendations/tomorrow", headers={"If-None-Match": response.headers["ETag"]})
+    assert cached.status_code == 304
+    assert cached.headers["ETag"] == response.headers["ETag"]
+
+
+def test_previous_trade_date_is_explicit_stale_fallback(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    previous = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY),
+        snapshot_id="previous-freeze",
+        trade_date="2026-07-15",
+        frozen=True,
+    )
+    repository = MemoryReadRepository(latest={Strategy.TODAY: previous})
+    payload = _app(repository, now=NOW)[0].test_client().get("/api/recommendations/today").get_json()
+
+    assert payload["snapshot_id"] == "previous-freeze"
+    assert payload["stale"] is True
+    assert payload["fallback_date"] == "2026-07-15"
+    assert payload["fallback_reason"] == "previous_trade_date_snapshot"
+    assert "previous_trade_date_fallback" in payload["degraded_reasons"]
 
 
 def test_history_dates_not_found_and_long_rules(recommendation_policy, application_feature_factory) -> None:
@@ -234,10 +302,12 @@ class MemoryReadRepository:
         latest: Mapping[Strategy, RecommendationSnapshot] | None = None,
         frozen: Mapping[tuple[Strategy, str], RecommendationSnapshot] | None = None,
         events: Sequence[Mapping[str, object]] = (),
+        overlays: Mapping[tuple[Strategy, str], LiveOverlay] | None = None,
     ) -> None:
         self._latest = dict(latest or {})
         self._frozen = dict(frozen or {})
         self._events = tuple(events)
+        self._overlays = dict(overlays or {})
 
     def latest(self, strategy: Strategy) -> RecommendationSnapshot | None:
         return self._latest.get(strategy)
@@ -247,6 +317,13 @@ class MemoryReadRepository:
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
         return tuple(day for candidate, day in self._frozen if candidate is strategy)
+
+    def save_live_overlay(self, overlay: LiveOverlay) -> bool:
+        self._overlays[(overlay.strategy, overlay.trade_date)] = overlay
+        return True
+
+    def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
+        return self._overlays.get((strategy, trade_date))
 
     def list_events(self, *, cursor: int, limit: int) -> Sequence[Mapping[str, object]]:
         return tuple(item for item in self._events if int(item["sequence"]) > cursor)[:limit]

@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "config_version": "runtime_v2_2026_07_16",
+  "config_version": "runtime_v3_freeze_overlay_2026_07_17",
   "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",

@@ -289,6 +289,12 @@
       try { published = JSON.parse(event.data); } catch (_error) { published = null; }
       if (!state.date && published && published.strategy === state.strategy) loadRecommendations("stream");
     });
+    stream.addEventListener("live_overlay", (event) => {
+      rememberEvent(event);
+      let overlay = null;
+      try { overlay = JSON.parse(event.data); } catch (_error) { overlay = null; }
+      if (!state.date && overlay && overlay.strategy === state.strategy) loadRecommendations("overlay");
+    });
     stream.addEventListener("resync_required", (event) => {
       rememberEvent(event);
       if (!state.date) loadRecommendations("resync");

@@ -65,13 +65,22 @@ def register_routes(app: Flask, services: WebServices) -> None:
         if lookup.snapshot is None:
             return jsonify(empty_snapshot_envelope(strategy.value, trade_date))
         snapshot = lookup.snapshot
-        if trade_date is None and request.if_none_match.contains(snapshot.snapshot_id):
+        etag = lookup.etag or snapshot.snapshot_id
+        if trade_date is None and request.if_none_match.contains(etag):
             response = Response(status=304)
-            response.set_etag(snapshot.snapshot_id)
+            response.set_etag(etag)
             return response
-        response = jsonify(snapshot_envelope(snapshot, top_n=top_n))
+        response = jsonify(
+            snapshot_envelope(
+                snapshot,
+                top_n=top_n,
+                overlay=lookup.overlay,
+                fallback_date=lookup.fallback_date,
+                fallback_reason=lookup.fallback_reason,
+            )
+        )
         if trade_date is None:
-            response.set_etag(snapshot.snapshot_id)
+            response.set_etag(etag)
             response.headers["Cache-Control"] = "no-cache"
         return response
 

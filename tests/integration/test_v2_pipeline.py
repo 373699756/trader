@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
+
+import pytest
 
 from trader.application.events import EventPriority, PipelineEvent, new_event
 from trader.application.pipeline import RecommendationPipeline
@@ -10,7 +12,7 @@ from trader.application.ports import MarketDataUnavailable
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
-from trader.domain.models import FeatureSnapshot, RecommendationSnapshot, Strategy
+from trader.domain.models import FeatureSnapshot, LiveOverlay, RecommendationSnapshot, Strategy
 
 
 def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
@@ -52,6 +54,8 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     morning_freeze = pipeline.run_once(clock.now())
     assert morning_freeze[-1].strategy is Strategy.TODAY
     assert morning_freeze[-1].frozen is True
+    assert morning_freeze[-1].config_version == "config-v2"
+    assert morning_freeze[-1].metadata["freeze_anchor"]["600001"]["age_seconds"] == 10.0
 
     clock.set(datetime.fromisoformat("2026-07-16T14:30:00+08:00"))
     afternoon = pipeline.run_once(clock.now())
@@ -73,6 +77,204 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     assert pipeline.run_once(clock.now()) == ()
     assert len(repository.frozen) == 3
     assert state.latest(Strategy.LONG).frozen is False
+
+
+@pytest.mark.parametrize(
+    ("strategy", "boundary", "phase", "quote_age_seconds", "maximum_age"),
+    (
+        (Strategy.TODAY, "2026-07-16T11:20:00+08:00", "today_late", 21.0, 20.0),
+        (Strategy.TODAY, "2026-07-16T11:20:00+08:00", "today_late", -1.0, 20.0),
+        (Strategy.TOMORROW, "2026-07-16T14:50:00+08:00", "final_quote", 31.0, 30.0),
+        (Strategy.D25, "2026-07-16T14:50:00+08:00", "final_quote", 31.0, 30.0),
+    ),
+)
+def test_freeze_rejects_snapshot_when_any_quote_is_outside_boundary_age(
+    recommendation_policy,
+    application_feature_factory,
+    strategy,
+    boundary,
+    phase,
+    quote_age_seconds,
+    maximum_age,
+) -> None:
+    boundary = datetime.fromisoformat(boundary)
+    draft_time = boundary - timedelta(seconds=10)
+    state = RuntimeState()
+    repository = MemoryRepository()
+    engine = RecommendationEngine(recommendation_policy)
+    draft = engine.build_snapshot(
+        strategy,
+        (
+            application_feature_factory("600001", draft_time),
+            application_feature_factory("600002", draft_time),
+        ),
+        now=draft_time,
+        phase=phase,
+        trade_date="2026-07-16",
+        data_version="stale-anchor",
+        review_port=None,
+        review_deadline=boundary,
+        max_age_seconds=maximum_age,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    recommendation = draft.recommendations[0]
+    stale_quote = replace(
+        recommendation.features.quote,
+        source_time=boundary - timedelta(seconds=quote_age_seconds),
+    )
+    draft = replace(
+        draft,
+        recommendations=(
+            replace(recommendation, features=replace(recommendation.features, quote=stale_quote)),
+            *draft.recommendations[1:],
+        ),
+        config_version="config-v2",
+    )
+    repository.publish(draft)
+    state.publish(draft)
+    pipeline = RecommendationPipeline(
+        StaticMarketData(()),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        engine,
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: boundary,
+    )
+
+    assert pipeline._freeze_available_snapshots(boundary, (strategy.value,)) == ()
+    assert repository.frozen == {}
+    assert "quote age" in pipeline.status()["last_error"]
+
+
+@pytest.mark.parametrize(
+    ("strategy", "boundary", "phase", "maximum_age"),
+    (
+        (Strategy.TODAY, "2026-07-16T11:20:00+08:00", "today_late", 20.0),
+        (Strategy.TOMORROW, "2026-07-16T14:50:00+08:00", "final_quote", 30.0),
+        (Strategy.D25, "2026-07-16T14:50:00+08:00", "final_quote", 30.0),
+    ),
+)
+def test_freeze_accepts_exact_quote_age_boundary(
+    recommendation_policy,
+    application_feature_factory,
+    strategy,
+    boundary,
+    phase,
+    maximum_age,
+) -> None:
+    boundary = datetime.fromisoformat(boundary)
+    draft_time = boundary - timedelta(seconds=10)
+    feature = application_feature_factory("600001", draft_time)
+    feature = replace(feature, quote=replace(feature.quote, source_time=boundary - timedelta(seconds=maximum_age)))
+    state = RuntimeState()
+    repository = MemoryRepository()
+    engine = RecommendationEngine(recommendation_policy)
+    draft = engine.build_snapshot(
+        strategy,
+        (feature,),
+        now=draft_time,
+        phase=phase,
+        trade_date="2026-07-16",
+        data_version="boundary-anchor",
+        review_port=None,
+        review_deadline=boundary,
+        max_age_seconds=maximum_age,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    draft = replace(draft, config_version="config-v2")
+    repository.publish(draft)
+    state.publish(draft)
+    pipeline = RecommendationPipeline(
+        StaticMarketData(()),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        engine,
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: boundary,
+    )
+
+    frozen = pipeline._freeze_available_snapshots(boundary, (strategy.value,))
+
+    assert len(frozen) == 1
+    assert frozen[0].metadata["freeze_anchor"]["600001"]["age_seconds"] == maximum_age
+
+
+def test_frozen_topk_uses_recoverable_overlay_and_keeps_close_value(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    frozen_at = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
+    quote_at = frozen_at - timedelta(seconds=10)
+    repository = MemoryRepository()
+    state = RuntimeState()
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TOMORROW,
+        (application_feature_factory("600001", quote_at),),
+        now=quote_at,
+        phase="final_quote",
+        trade_date="2026-07-16",
+        data_version="freeze-v1",
+        review_port=None,
+        review_deadline=frozen_at,
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    frozen = replace(snapshot, frozen=True, published_at=frozen_at, config_version="config-v2")
+    repository.frozen[(Strategy.TOMORROW, frozen.trade_date)] = frozen
+    repository.published[Strategy.TOMORROW] = frozen
+    clock = MutableClock(frozen_at + timedelta(seconds=10))
+    market_data = DegradingCandidateMarketData((application_feature_factory("600001", clock.now()),))
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=clock.now,
+    )
+    pipeline.initialize()
+
+    assert pipeline.run_once(clock.now()) == ()
+    overlay = repository.overlays[(Strategy.TOMORROW, "2026-07-16")]
+    assert isinstance(overlay, LiveOverlay)
+    assert overlay.snapshot_id == frozen.snapshot_id
+    assert overlay.closing is False
+    market_data.candidate_unavailable = True
+    clock.set(datetime.fromisoformat("2026-07-16T14:50:20+08:00"))
+    pipeline.run_once(clock.now())
+    assert repository.overlays[(Strategy.TOMORROW, "2026-07-16")].version == overlay.version
+    market_data.candidate_unavailable = False
+    clock.set(datetime.fromisoformat("2026-07-16T15:00:00+08:00"))
+    pipeline.run_once(clock.now())
+    closing = repository.overlays[(Strategy.TOMORROW, "2026-07-16")]
+    assert closing.closing is True
+    clock.set(datetime.fromisoformat("2026-07-16T15:01:00+08:00"))
+    pipeline.run_once(clock.now())
+    assert repository.overlays[(Strategy.TOMORROW, "2026-07-16")].version == closing.version
 
 
 def test_initialize_restores_frozen_gate(recommendation_policy, application_feature_factory) -> None:
@@ -313,10 +515,26 @@ class DegradingMarketData(StaticMarketData):
         return super().fetch_market_features(observed_at)
 
 
+class DegradingCandidateMarketData(StaticMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
+        super().__init__(features)
+        self.candidate_unavailable = False
+
+    def fetch_candidate_features(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+    ) -> Sequence[FeatureSnapshot]:
+        if self.candidate_unavailable:
+            raise MarketDataUnavailable("candidate quote source failed")
+        return super().fetch_candidate_features(codes, observed_at)
+
+
 class MemoryRepository:
     def __init__(self) -> None:
         self.published: dict[Strategy, RecommendationSnapshot] = {}
         self.frozen: dict[tuple[Strategy, str], object] = {}
+        self.overlays: dict[tuple[Strategy, str], LiveOverlay] = {}
         self.events: list[Mapping[str, object]] = []
 
     @staticmethod
@@ -335,12 +553,24 @@ class MemoryRepository:
         if key in self.frozen:
             raise AssertionError("frozen snapshot was modified")
         self.frozen[key] = snapshot
+        self.published[snapshot.strategy] = snapshot
 
     def latest(self, strategy: Strategy) -> RecommendationSnapshot | None:
         return self.published.get(strategy)
 
     def load_frozen(self, strategy: Strategy, trade_date: str) -> RecommendationSnapshot | None:
-        return None
+        snapshot = self.frozen.get((strategy, trade_date))
+        return snapshot if isinstance(snapshot, RecommendationSnapshot) else None
+
+    def save_live_overlay(self, overlay: LiveOverlay) -> bool:
+        existing = self.overlays.get((overlay.strategy, overlay.trade_date))
+        if existing is not None and (existing.closing or existing.observed_at >= overlay.observed_at):
+            return False
+        self.overlays[(overlay.strategy, overlay.trade_date)] = overlay
+        return True
+
+    def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
+        return self.overlays.get((strategy, trade_date))
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
         return tuple(day for candidate, day in self.frozen if candidate is strategy)

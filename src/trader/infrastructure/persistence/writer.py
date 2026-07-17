@@ -10,10 +10,12 @@ import tempfile
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
-from trader.domain.models import RecommendationSnapshot, Strategy
+from trader.domain.models import LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
 from trader.infrastructure.persistence.snapshots import (
+    SNAPSHOT_SCHEMA_VERSION,
     snapshot_bytes,
     snapshot_from_dict,
     snapshot_sha256,
@@ -81,7 +83,9 @@ class SnapshotRepository:
     def freeze(self, snapshot: RecommendationSnapshot) -> None:
         if snapshot.strategy is Strategy.LONG:
             raise ValueError("long watch snapshots are never frozen")
-        frozen = snapshot if snapshot.frozen else replace(snapshot, frozen=True)
+        if snapshot.config_version and snapshot.config_version != self._config_version:
+            raise ValueError("snapshot config version does not match repository config version")
+        frozen = replace(snapshot, frozen=True, config_version=self._config_version)
         payload = snapshot_bytes(frozen)
         digest = snapshot_sha256(payload)
         relative_path = Path("frozen") / frozen.strategy.value / frozen.trade_date / f"{frozen.snapshot_id}.json"
@@ -133,6 +137,70 @@ class SnapshotRepository:
             ).fetchall()
         return tuple(str(row["recommend_date"]) for row in rows)
 
+    def save_live_overlay(self, overlay: LiveOverlay) -> bool:
+        payload = json.dumps(
+            _overlay_to_dict(overlay),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        with self._lock, connect(self._database_path) as connection:
+            manifest = connection.execute(
+                "SELECT snapshot_id FROM frozen_snapshots WHERE strategy = ? AND recommend_date = ? AND status = 'committed'",
+                (overlay.strategy.value, overlay.trade_date),
+            ).fetchone()
+            if manifest is None or str(manifest["snapshot_id"]) != overlay.snapshot_id:
+                raise SnapshotConflictError("live overlay must reference the committed frozen snapshot")
+            existing = connection.execute(
+                "SELECT snapshot_id, observed_at, closing FROM live_overlays WHERE strategy = ? AND recommend_date = ?",
+                (overlay.strategy.value, overlay.trade_date),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["snapshot_id"]) != overlay.snapshot_id:
+                    raise SnapshotConflictError("live overlay snapshot identity changed")
+                if (
+                    bool(existing["closing"])
+                    or datetime.fromisoformat(str(existing["observed_at"])) >= overlay.observed_at
+                ):
+                    return False
+            connection.execute(
+                """
+                INSERT INTO live_overlays(
+                    strategy, recommend_date, snapshot_id, version, observed_at, closing, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(strategy, recommend_date) DO UPDATE SET
+                    snapshot_id = excluded.snapshot_id,
+                    version = excluded.version,
+                    observed_at = excluded.observed_at,
+                    closing = excluded.closing,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    overlay.strategy.value,
+                    overlay.trade_date,
+                    overlay.snapshot_id,
+                    overlay.version,
+                    overlay.observed_at.isoformat(),
+                    int(overlay.closing),
+                    payload,
+                ),
+            )
+        return True
+
+    def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
+        with connect(self._database_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM live_overlays WHERE strategy = ? AND recommend_date = ?",
+                (strategy.value, trade_date),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return _overlay_from_dict(json.loads(str(row["payload_json"])))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return None
+
     def recover(self) -> Mapping[str, int]:
         recovered = 0
         quarantined = 0
@@ -142,17 +210,23 @@ class SnapshotRepository:
             ).fetchall()
             for row in staged:
                 target = self._runtime_dir / str(row["relative_path"])
-                if _matches_hash(target, str(row["sha256"])):
-                    snapshot = _read_snapshot(target)
-                    if snapshot.snapshot_id != row["snapshot_id"]:
-                        self._quarantine_staged(connection, row, target, "snapshot_id_mismatch")
-                        quarantined += 1
-                        continue
+                snapshot, error = _verified_manifest_snapshot(row, target)
+                if snapshot is not None:
                     self._commit_manifest(snapshot, connection=connection)
                     recovered += 1
                 else:
-                    self._quarantine_staged(connection, row, target, "missing_or_hash_mismatch")
+                    self._quarantine_manifest(connection, row, target, error)
                     quarantined += 1
+            committed = connection.execute(
+                "SELECT * FROM frozen_snapshots WHERE status = 'committed' ORDER BY frozen_at"
+            ).fetchall()
+            for row in committed:
+                target = self._runtime_dir / str(row["relative_path"])
+                snapshot, error = _verified_manifest_snapshot(row, target)
+                if snapshot is None:
+                    self._quarantine_manifest(connection, row, target, error)
+                    quarantined += 1
+            self._restore_invalid_published_pointers(connection)
             known_paths = {
                 str(row["relative_path"])
                 for row in connection.execute("SELECT relative_path FROM frozen_snapshots").fetchall()
@@ -161,7 +235,7 @@ class SnapshotRepository:
         return {"recovered": recovered, "quarantined": quarantined, "orphaned": orphaned}
 
     def append_event(self, event: Mapping[str, object]) -> None:
-        with connect(self._database_path) as connection:
+        with self._lock, connect(self._database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO pipeline_events(
@@ -254,9 +328,9 @@ class SnapshotRepository:
                 """
                 INSERT INTO frozen_snapshots(
                     snapshot_id, strategy, recommend_date, frozen_at, fusion_version,
-                    strategy_version, config_version, data_version, relative_path,
-                    sha256, record_count, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged')
+                    strategy_version, config_version, schema_version, data_version, relative_path,
+                    sha256, record_count, status, anchor_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', ?)
                 """,
                 (
                     snapshot.snapshot_id,
@@ -266,10 +340,12 @@ class SnapshotRepository:
                     snapshot.fusion_version,
                     snapshot.strategy_version,
                     self._config_version,
+                    SNAPSHOT_SCHEMA_VERSION,
                     snapshot.data_version,
                     relative_path.as_posix(),
                     digest,
                     len(snapshot.recommendations),
+                    _anchor_json(snapshot),
                 ),
             )
 
@@ -283,7 +359,7 @@ class SnapshotRepository:
         database = connect(self._database_path) if connection is None else connection
         try:
             manifest = database.execute(
-                "SELECT relative_path, sha256, status FROM frozen_snapshots WHERE snapshot_id = ?",
+                "SELECT * FROM frozen_snapshots WHERE snapshot_id = ?",
                 (snapshot.snapshot_id,),
             ).fetchone()
             if manifest is None:
@@ -291,6 +367,9 @@ class SnapshotRepository:
             manifest_status = str(manifest["status"])
             if manifest_status == "quarantined":
                 raise SnapshotConflictError(f"frozen snapshot is quarantined: {snapshot.snapshot_id}")
+            manifest_error = _manifest_snapshot_error(manifest, snapshot)
+            if manifest_error:
+                raise SnapshotConflictError(f"frozen manifest mismatch: {manifest_error}")
             database.execute("DELETE FROM recommendations WHERE snapshot_id = ?", (snapshot.snapshot_id,))
             for recommendation in snapshot.recommendations:
                 price = recommendation.features.quote.price
@@ -355,7 +434,7 @@ class SnapshotRepository:
             return None
         return _read_snapshot(target)
 
-    def _quarantine_staged(
+    def _quarantine_manifest(
         self,
         connection: sqlite3.Connection,
         row: Mapping[str, object],
@@ -367,9 +446,71 @@ class SnapshotRepository:
             (error, row["snapshot_id"]),
         )
         if target.exists():
-            destination = self._quarantine_dir / target.name
+            relative = Path(str(row["relative_path"]))
+            destination = self._quarantine_dir / "manifests" / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(target), str(destination))
+
+    def _restore_invalid_published_pointers(self, connection: sqlite3.Connection) -> None:
+        pointers = connection.execute("SELECT * FROM published_snapshots").fetchall()
+        for pointer in pointers:
+            target = self._runtime_dir / str(pointer["relative_path"])
+            manifest = connection.execute(
+                """
+                SELECT snapshot_id, frozen_at, relative_path, sha256, status
+                FROM frozen_snapshots
+                WHERE snapshot_id = ? AND strategy = ?
+                """,
+                (pointer["snapshot_id"], pointer["strategy"]),
+            ).fetchone()
+            if manifest is not None and str(manifest["status"]) == "committed":
+                if str(pointer["relative_path"]) != str(manifest["relative_path"]) or str(pointer["sha256"]) != str(
+                    manifest["sha256"]
+                ):
+                    connection.execute(
+                        """
+                        UPDATE published_snapshots
+                        SET published_at = ?, relative_path = ?, sha256 = ?
+                        WHERE strategy = ?
+                        """,
+                        (
+                            manifest["frozen_at"],
+                            manifest["relative_path"],
+                            manifest["sha256"],
+                            pointer["strategy"],
+                        ),
+                    )
+                continue
+            if manifest is None and _matches_hash(target, str(pointer["sha256"])):
+                continue
+            strategy = str(pointer["strategy"])
+            fallback = connection.execute(
+                """
+                SELECT snapshot_id, frozen_at, relative_path, sha256
+                FROM frozen_snapshots
+                WHERE strategy = ? AND status = 'committed'
+                ORDER BY recommend_date DESC, frozen_at DESC
+                LIMIT 1
+                """,
+                (strategy,),
+            ).fetchone()
+            if fallback is None:
+                connection.execute("DELETE FROM published_snapshots WHERE strategy = ?", (strategy,))
+                continue
+            connection.execute(
+                """
+                UPDATE published_snapshots
+                SET snapshot_id = ?, published_at = ?, relative_path = ?, sha256 = ?
+                WHERE strategy = ?
+                """,
+                (
+                    fallback["snapshot_id"],
+                    fallback["frozen_at"],
+                    fallback["relative_path"],
+                    fallback["sha256"],
+                    strategy,
+                ),
+            )
 
     def _quarantine_orphans(self, known_paths: set[str]) -> int:
         count = 0
@@ -399,6 +540,114 @@ def _atomic_replace(target: Path, payload: bytes) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def _anchor_json(snapshot: RecommendationSnapshot) -> str:
+    anchors = {
+        item.features.quote.code: {
+            "source": item.features.quote.source,
+            "source_time": item.features.quote.source_time.isoformat(),
+            "age_seconds": round((snapshot.published_at - item.features.quote.source_time).total_seconds(), 3),
+        }
+        for item in snapshot.recommendations
+    }
+    return json.dumps(anchors, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _verified_manifest_snapshot(
+    row: Mapping[str, object],
+    target: Path,
+) -> tuple[RecommendationSnapshot | None, str]:
+    if not _matches_hash(target, str(row["sha256"])):
+        return None, "missing_or_hash_mismatch"
+    try:
+        snapshot = _read_snapshot(target)
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None, "invalid_snapshot_json"
+    error = _manifest_snapshot_error(row, snapshot)
+    return (snapshot, "") if not error else (None, error)
+
+
+def _manifest_snapshot_error(row: Mapping[str, object], snapshot: RecommendationSnapshot) -> str:
+    expected = {
+        "snapshot_id": snapshot.snapshot_id,
+        "strategy": snapshot.strategy.value,
+        "recommend_date": snapshot.trade_date,
+        "fusion_version": snapshot.fusion_version,
+        "strategy_version": snapshot.strategy_version,
+        "data_version": snapshot.data_version,
+    }
+    for field, actual in expected.items():
+        if str(row[field]) != actual:
+            return f"{field}_mismatch"
+    if str(row["frozen_at"]) != snapshot.published_at.isoformat():
+        return "frozen_at_mismatch"
+    if int(str(row["record_count"])) != len(snapshot.recommendations):
+        return "record_count_mismatch"
+    expected_path = Path("frozen") / snapshot.strategy.value / snapshot.trade_date / f"{snapshot.snapshot_id}.json"
+    if str(row["relative_path"]) != expected_path.as_posix():
+        return "relative_path_mismatch"
+    if str(row["schema_version"]) != SNAPSHOT_SCHEMA_VERSION:
+        return "schema_version_mismatch"
+    if snapshot.config_version not in {str(row["config_version"]), "legacy-unrecorded"}:
+        return "config_version_mismatch"
+    if snapshot.config_version != "legacy-unrecorded" and str(row["anchor_json"]) != _anchor_json(snapshot):
+        return "anchor_json_mismatch"
+    if not snapshot.frozen:
+        return "snapshot_not_frozen"
+    return ""
+
+
+def _overlay_to_dict(overlay: LiveOverlay) -> dict[str, object]:
+    return {
+        "snapshot_id": overlay.snapshot_id,
+        "strategy": overlay.strategy.value,
+        "trade_date": overlay.trade_date,
+        "version": overlay.version,
+        "observed_at": overlay.observed_at.isoformat(),
+        "closing": overlay.closing,
+        "quotes": {
+            code: {
+                "code": quote.code,
+                "price": quote.price,
+                "pct_change": quote.pct_change,
+                "source": quote.source,
+                "source_time": quote.source_time.isoformat(),
+                "received_time": quote.received_time.isoformat(),
+                "data_version": quote.data_version,
+            }
+            for code, quote in overlay.quotes.items()
+        },
+    }
+
+
+def _overlay_from_dict(raw: Mapping[str, object]) -> LiveOverlay:
+    raw_quotes = raw.get("quotes")
+    if not isinstance(raw_quotes, dict):
+        raise ValueError("live overlay quotes must be an object")
+    quotes: dict[str, LiveQuote] = {}
+    for code, value in raw_quotes.items():
+        if not isinstance(value, dict):
+            raise ValueError("live overlay quote must be an object")
+        quote = LiveQuote(
+            code=str(value["code"]),
+            price=float(value["price"]) if value.get("price") is not None else None,
+            pct_change=float(value["pct_change"]) if value.get("pct_change") is not None else None,
+            source=str(value["source"]),
+            source_time=datetime.fromisoformat(str(value["source_time"])),
+            received_time=datetime.fromisoformat(str(value["received_time"])),
+            data_version=str(value["data_version"]),
+        )
+        quotes[str(code)] = quote
+    return LiveOverlay(
+        snapshot_id=str(raw["snapshot_id"]),
+        strategy=Strategy(str(raw["strategy"])),
+        trade_date=str(raw["trade_date"]),
+        version=str(raw["version"]),
+        observed_at=datetime.fromisoformat(str(raw["observed_at"])),
+        quotes=quotes,
+        closing=bool(raw.get("closing")),
+    )
 
 
 def _atomic_create_immutable(target: Path, payload: bytes, *, expected_sha256: str) -> None:

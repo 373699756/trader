@@ -76,6 +76,45 @@ class MarketQuote:
 
 
 @dataclass(frozen=True)
+class LiveQuote:
+    code: str
+    price: float | None
+    pct_change: float | None
+    source: str
+    source_time: datetime
+    received_time: datetime
+    data_version: str
+
+    def __post_init__(self) -> None:
+        for value in (self.source_time, self.received_time):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("live quote times must be timezone-aware")
+
+    def age_seconds(self, now: datetime) -> float:
+        return max(0.0, (now - self.source_time).total_seconds())
+
+
+@dataclass(frozen=True)
+class LiveOverlay:
+    snapshot_id: str
+    strategy: Strategy
+    trade_date: str
+    version: str
+    observed_at: datetime
+    quotes: Mapping[str, LiveQuote]
+    closing: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "quotes", MappingProxyType(dict(self.quotes)))
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("live overlay time must be timezone-aware")
+        if any(code != quote.code for code, quote in self.quotes.items()):
+            raise ValueError("live overlay quote keys must match quote codes")
+        if any(quote.source_time > self.observed_at for quote in self.quotes.values()):
+            raise ValueError("live overlay cannot contain future quotes")
+
+
+@dataclass(frozen=True)
 class Evidence:
     evidence_id: str
     evidence_type: str
@@ -283,6 +322,7 @@ class RecommendationSnapshot:
     recommendations: tuple[Recommendation, ...]
     filtered_count: int
     filter_reasons: Mapping[str, int]
+    config_version: str = ""
     stale: bool = False
     frozen: bool = False
     degraded_reasons: tuple[str, ...] = ()
@@ -302,6 +342,8 @@ __all__ = [
     "FeatureSnapshot",
     "FrozenReplayPolicy",
     "FusionMode",
+    "LiveOverlay",
+    "LiveQuote",
     "MarketQuote",
     "Recommendation",
     "RecommendationAction",

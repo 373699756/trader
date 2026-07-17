@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import Protocol
 
-from trader.domain.models import DeepSeekReview, FeatureSnapshot, RecommendationSnapshot, Strategy
+from trader.domain.models import DeepSeekReview, FeatureSnapshot, LiveOverlay, RecommendationSnapshot, Strategy
 
 
 class MarketDataUnavailable(RuntimeError):
@@ -66,6 +66,10 @@ class SnapshotRepositoryPort(Protocol):
     def load_frozen(self, strategy: Strategy, trade_date: str) -> RecommendationSnapshot | None: ...
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]: ...
+
+    def save_live_overlay(self, overlay: LiveOverlay) -> bool: ...
+
+    def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None: ...
 
     def recover(self) -> Mapping[str, int]: ...
 

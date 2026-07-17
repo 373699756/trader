@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def connect(database_path: Path) -> sqlite3.Connection:
@@ -35,12 +35,14 @@ def initialize_database(database_path: Path) -> None:
                 fusion_version TEXT NOT NULL,
                 strategy_version TEXT NOT NULL,
                 config_version TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
                 data_version TEXT NOT NULL,
                 relative_path TEXT NOT NULL,
                 sha256 TEXT NOT NULL,
                 record_count INTEGER NOT NULL,
                 status TEXT NOT NULL CHECK(status IN ('staged', 'committed', 'quarantined')),
                 error TEXT NOT NULL DEFAULT '',
+                anchor_json TEXT NOT NULL DEFAULT '{}',
                 UNIQUE(strategy, recommend_date)
             );
 
@@ -94,12 +96,52 @@ def initialize_database(database_path: Path) -> None:
                 data_age_seconds REAL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS deepseek_calls(
+                call_id TEXT PRIMARY KEY,
+                strategy TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                model TEXT NOT NULL,
+                batch_id TEXT NOT NULL,
+                requested_at TEXT NOT NULL,
+                completed_at TEXT,
+                http_status INTEGER,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                latency_ms REAL,
+                outcome TEXT NOT NULL,
+                error_code TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS live_overlays(
+                strategy TEXT NOT NULL,
+                recommend_date TEXT NOT NULL,
+                snapshot_id TEXT NOT NULL,
+                version TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                closing INTEGER NOT NULL DEFAULT 0,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY(strategy, recommend_date)
+            );
             """
         )
+        _ensure_column(
+            connection,
+            "frozen_snapshots",
+            "schema_version",
+            "TEXT NOT NULL DEFAULT 'recommendation_snapshot_v2'",
+        )
+        _ensure_column(connection, "frozen_snapshots", "anchor_json", "TEXT NOT NULL DEFAULT '{}'")
         connection.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
+
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+    columns = {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 __all__ = ["SCHEMA_VERSION", "connect", "initialize_database"]

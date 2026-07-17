@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import threading
@@ -22,7 +23,7 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import MarketPhase, decision_at, freeze_due_at, shanghai_now, trade_date_at
 from trader.application.status import RuntimeState
-from trader.domain.models import FeatureSnapshot, RecommendationSnapshot, Strategy
+from trader.domain.models import FeatureSnapshot, LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class RecommendationPipeline:
         self._filter_reasons: Mapping[str, int] = {}
         self._market_count = 0
         self._frozen_keys: set[tuple[Strategy, str]] = set()
+        self._live_overlays: dict[tuple[Strategy, str], LiveOverlay] = {}
 
     def initialize(self) -> Mapping[str, int]:
         self._repository.initialize()
@@ -85,6 +87,10 @@ class RecommendationPipeline:
             latest = self._repository.latest(strategy)
             if latest is not None:
                 self._state.restore_snapshot(latest)
+                if latest.frozen:
+                    overlay = self._repository.load_live_overlay(strategy, latest.trade_date)
+                    if overlay is not None and overlay.snapshot_id == latest.snapshot_id:
+                        self._live_overlays[(strategy, latest.trade_date)] = overlay
         now = self._now()
         trade_day = trade_date_at(now)
         catchup = self._freeze_available_snapshots(
@@ -159,7 +165,7 @@ class RecommendationPipeline:
 
     def status(self) -> dict[str, object]:
         market_data = dict(self._market_data.health())
-        market_data["topk_quote_age"] = _topk_quote_age(self._state, self._now())
+        market_data["topk_quote_age"] = _topk_quote_age(self._state, self._live_overlays, self._now())
         dependencies = {
             "market_data": market_data,
             "deepseek": dict(self._reviews.status()) if self._reviews is not None else {"enabled": False},
@@ -219,6 +225,8 @@ class RecommendationPipeline:
                 snapshots.append(snapshot)
 
         snapshots.extend(self._freeze_available_snapshots(now, freeze_strategies))
+        if phase in {MarketPhase.FROZEN, MarketPhase.AFTER_CLOSE}:
+            self._refresh_live_overlays(now, phase)
         return tuple(snapshots)
 
     def _freeze_available_snapshots(
@@ -244,14 +252,97 @@ class RecommendationPipeline:
             if (boundary - current.published_at).total_seconds() > 30:
                 self._state.record_error(f"{strategy.value} freeze unavailable: latest snapshot is stale at cutoff")
                 continue
-            frozen = replace(current, frozen=True, published_at=boundary)
+            maximum_age = 20.0 if strategy is Strategy.TODAY else 30.0
+            anchors: dict[str, object] = {}
+            invalid_quotes: list[str] = []
+            for recommendation in current.recommendations:
+                quote = recommendation.features.quote
+                age = (boundary - quote.source_time).total_seconds()
+                anchors[quote.code] = {
+                    "source": quote.source,
+                    "source_time": quote.source_time.isoformat(),
+                    "age_seconds": round(age, 3),
+                }
+                if age < 0.0 or age > maximum_age:
+                    invalid_quotes.append(f"{quote.code}:{age:.3f}")
+            if invalid_quotes:
+                self._state.record_error(
+                    f"{strategy.value} freeze unavailable: quote age outside 0-{maximum_age:.0f}s at cutoff "
+                    + ",".join(invalid_quotes)
+                )
+                continue
+            frozen = replace(
+                current,
+                frozen=True,
+                published_at=boundary,
+                config_version=self._config_version,
+                metadata={**current.metadata, "freeze_anchor": anchors},
+            )
             self._repository.freeze(frozen)
-            self._repository.publish(frozen)
             self._state.mark_frozen(frozen)
             self._publisher.publish(frozen)
             self._frozen_keys.add(key)
             snapshots.append(frozen)
         return tuple(snapshots)
+
+    def _refresh_live_overlays(self, now: datetime, phase: MarketPhase) -> None:
+        trade_date = trade_date_at(now).isoformat()
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+            snapshot = self._state.latest(strategy)
+            if snapshot is None or not snapshot.frozen or snapshot.trade_date != trade_date:
+                continue
+            key = (strategy, trade_date)
+            existing = self._live_overlays.get(key)
+            if existing is None:
+                existing = self._repository.load_live_overlay(strategy, trade_date)
+            if existing is not None and existing.snapshot_id != snapshot.snapshot_id:
+                existing = None
+            if existing is not None and existing.closing:
+                self._live_overlays[key] = existing
+                continue
+            codes = tuple(item.features.quote.code for item in snapshot.recommendations)
+            if not codes:
+                continue
+            try:
+                features = tuple(self._market_data.fetch_candidate_features(codes, now))
+            except MarketDataUnavailable as exc:
+                self._state.record_error(f"{strategy.value} live overlay degraded: {str(exc)[:500]}")
+                continue
+            quotes = dict(existing.quotes) if existing is not None else {}
+            allowed = set(codes)
+            updated_codes: set[str] = set()
+            for feature in features:
+                quote = feature.quote
+                if quote.code not in allowed or quote.source_time > now or quote.price is None or quote.price <= 0:
+                    continue
+                quotes[quote.code] = LiveQuote(
+                    code=quote.code,
+                    price=quote.price,
+                    pct_change=quote.pct_change,
+                    source=quote.source,
+                    source_time=quote.source_time,
+                    received_time=quote.received_time,
+                    data_version=quote.data_version,
+                )
+                updated_codes.add(quote.code)
+            if not updated_codes:
+                continue
+            overlay = LiveOverlay(
+                snapshot_id=snapshot.snapshot_id,
+                strategy=strategy,
+                trade_date=trade_date,
+                version=_overlay_version(snapshot.snapshot_id, now, quotes),
+                observed_at=now,
+                quotes=quotes,
+                closing=phase is MarketPhase.AFTER_CLOSE and updated_codes == allowed,
+            )
+            if not self._repository.save_live_overlay(overlay):
+                persisted = self._repository.load_live_overlay(strategy, trade_date)
+                if persisted is not None and persisted.snapshot_id == snapshot.snapshot_id:
+                    self._live_overlays[key] = persisted
+                continue
+            self._live_overlays[key] = overlay
+            self._publisher.publish_overlay(overlay)
 
     def _refresh_candidates(self, now: datetime, phase: MarketPhase) -> None:
         try:
@@ -310,6 +401,7 @@ class RecommendationPipeline:
             preselect_max_age_seconds=_maximum_age_seconds(phase),
             candidate_pool_size=self._candidate_pool_size,
         )
+        snapshot = replace(snapshot, config_version=self._config_version)
         self._repository.publish(snapshot)
         self._state.publish(snapshot)
         self._publisher.publish(snapshot)
@@ -348,7 +440,11 @@ def _freeze_boundary(now: datetime, strategy: Strategy) -> datetime:
     return local.replace(hour=14, minute=50, second=0, microsecond=0)
 
 
-def _topk_quote_age(state: RuntimeState, now: datetime) -> Mapping[str, object]:
+def _topk_quote_age(
+    state: RuntimeState,
+    overlays: Mapping[tuple[Strategy, str], LiveOverlay],
+    now: datetime,
+) -> Mapping[str, object]:
     per_strategy: dict[str, object] = {}
     active_ages: list[float] = []
     excluded_frozen: list[str] = []
@@ -357,9 +453,13 @@ def _topk_quote_age(state: RuntimeState, now: datetime) -> Mapping[str, object]:
         if snapshot is None:
             continue
         if snapshot.frozen:
-            excluded_frozen.append(strategy.value)
-            continue
-        ages = [item.features.quote.age_seconds(now) for item in snapshot.recommendations]
+            overlay = overlays.get((strategy, snapshot.trade_date))
+            if overlay is None or overlay.snapshot_id != snapshot.snapshot_id:
+                excluded_frozen.append(strategy.value)
+                continue
+            ages = [quote.age_seconds(now) for quote in overlay.quotes.values()]
+        else:
+            ages = [item.features.quote.age_seconds(now) for item in snapshot.recommendations]
         active_ages.extend(ages)
         per_strategy[strategy.value] = _age_summary(ages)
     return {
@@ -369,6 +469,15 @@ def _topk_quote_age(state: RuntimeState, now: datetime) -> Mapping[str, object]:
         "excluded_frozen_strategies": sorted(excluded_frozen),
         "measured_at": now.isoformat(),
     }
+
+
+def _overlay_version(snapshot_id: str, observed_at: datetime, quotes: Mapping[str, LiveQuote]) -> str:
+    values = [snapshot_id, observed_at.isoformat()]
+    for code, quote in sorted(quotes.items()):
+        values.extend(
+            (code, quote.data_version, quote.source_time.isoformat(), str(quote.price), str(quote.pct_change))
+        )
+    return hashlib.sha256("|".join(values).encode("utf-8")).hexdigest()[:24]
 
 
 def _age_summary(ages: Sequence[float]) -> dict[str, object]:

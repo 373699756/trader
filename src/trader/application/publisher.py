@@ -9,7 +9,7 @@ from collections import deque
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
-from trader.domain.models import RecommendationSnapshot
+from trader.domain.models import LiveOverlay, RecommendationSnapshot
 
 
 @dataclass(frozen=True)
@@ -55,6 +55,19 @@ class SnapshotPublisher:
 
     def resync(self, reason: str) -> PublishedEvent:
         return self._new_event("resync_required", {"reason": reason})
+
+    def publish_overlay(self, overlay: LiveOverlay) -> PublishedEvent:
+        return self._new_event(
+            "live_overlay",
+            {
+                "snapshot_id": overlay.snapshot_id,
+                "strategy": overlay.strategy.value,
+                "trade_date": overlay.trade_date,
+                "overlay_version": overlay.version,
+                "observed_at": overlay.observed_at.isoformat(),
+                "closing": overlay.closing,
+            },
+        )
 
     def events_after(self, sequence: int) -> tuple[PublishedEvent, ...] | None:
         with self._lock:

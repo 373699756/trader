@@ -8,6 +8,8 @@ from datetime import datetime
 from trader.domain.models import (
     DeepSeekReview,
     DimensionAssessment,
+    LiveOverlay,
+    LiveQuote,
     Recommendation,
     RecommendationSnapshot,
     RiskFact,
@@ -16,7 +18,15 @@ from trader.domain.models import (
 API_SCHEMA_VERSION = "v2"
 
 
-def snapshot_envelope(snapshot: RecommendationSnapshot, *, top_n: int) -> dict[str, object]:
+def snapshot_envelope(
+    snapshot: RecommendationSnapshot,
+    *,
+    top_n: int,
+    overlay: LiveOverlay | None = None,
+    fallback_date: str | None = None,
+    fallback_reason: str | None = None,
+) -> dict[str, object]:
+    live_quotes = overlay.quotes if overlay is not None and overlay.snapshot_id == snapshot.snapshot_id else {}
     return {
         "schema_version": API_SCHEMA_VERSION,
         "status": "ready",
@@ -27,6 +37,7 @@ def snapshot_envelope(snapshot: RecommendationSnapshot, *, top_n: int) -> dict[s
         "published_at": snapshot.published_at.isoformat(),
         "data_version": snapshot.data_version,
         "strategy_version": snapshot.strategy_version,
+        "config_version": snapshot.config_version,
         "fusion_version": snapshot.fusion_version,
         "fusion_mode": snapshot.fusion_mode.value,
         "stale": snapshot.stale,
@@ -35,7 +46,13 @@ def snapshot_envelope(snapshot: RecommendationSnapshot, *, top_n: int) -> dict[s
         "filtered_count": snapshot.filtered_count,
         "filter_reasons": dict(snapshot.filter_reasons),
         "metadata": dict(snapshot.metadata),
-        "items": [_recommendation(item) for item in snapshot.recommendations[:top_n]],
+        "fallback_date": fallback_date,
+        "fallback_reason": fallback_reason,
+        "live_overlay": _live_overlay(overlay) if overlay is not None else None,
+        "items": [
+            _recommendation(item, live_quotes.get(item.features.quote.code))
+            for item in snapshot.recommendations[:top_n]
+        ],
         "error": None,
     }
 
@@ -51,6 +68,7 @@ def empty_snapshot_envelope(strategy: str, trade_date: str | None = None) -> dic
         "published_at": None,
         "data_version": None,
         "strategy_version": None,
+        "config_version": None,
         "fusion_version": None,
         "fusion_mode": "local_degraded",
         "stale": True,
@@ -59,6 +77,9 @@ def empty_snapshot_envelope(strategy: str, trade_date: str | None = None) -> dic
         "filtered_count": 0,
         "filter_reasons": {},
         "metadata": {},
+        "fallback_date": None,
+        "fallback_reason": None,
+        "live_overlay": None,
         "items": [],
         "error": None,
     }
@@ -72,6 +93,7 @@ def error_envelope(code: str, message: str, *, details: Mapping[str, object] | N
         "published_at": None,
         "data_version": None,
         "strategy_version": None,
+        "config_version": None,
         "fusion_version": None,
         "fusion_mode": None,
         "stale": True,
@@ -85,7 +107,7 @@ def error_envelope(code: str, message: str, *, details: Mapping[str, object] | N
     }
 
 
-def _recommendation(item: Recommendation) -> dict[str, object]:
+def _recommendation(item: Recommendation, live_quote: LiveQuote | None = None) -> dict[str, object]:
     quote = item.features.quote
     score = item.score
     missing_fields = list(item.features.missing_fields)
@@ -94,9 +116,9 @@ def _recommendation(item: Recommendation) -> dict[str, object]:
         "code": quote.code,
         "name": quote.name,
         "industry": quote.industry,
-        "price": quote.price,
+        "price": live_quote.price if live_quote is not None else quote.price,
         "previous_close": quote.previous_close,
-        "pct_change": quote.pct_change,
+        "pct_change": live_quote.pct_change if live_quote is not None else quote.pct_change,
         "change_5m": quote.change_5m,
         "speed": quote.speed,
         "volume_ratio": quote.volume_ratio,
@@ -104,12 +126,13 @@ def _recommendation(item: Recommendation) -> dict[str, object]:
         "amount": quote.amount,
         "amplitude": quote.amplitude,
         "market_cap": quote.market_cap,
-        "source": quote.source,
-        "source_time": quote.source_time.isoformat(),
-        "received_time": quote.received_time.isoformat(),
-        "quote_data_version": quote.data_version,
+        "source": live_quote.source if live_quote is not None else quote.source,
+        "source_time": (live_quote.source_time if live_quote is not None else quote.source_time).isoformat(),
+        "received_time": (live_quote.received_time if live_quote is not None else quote.received_time).isoformat(),
+        "quote_data_version": live_quote.data_version if live_quote is not None else quote.data_version,
         "anchor_price": quote.price,
         "anchor_daily_return_pct": quote.pct_change,
+        "anchor_to_now_pct": _anchor_to_now(quote.price, live_quote.price) if live_quote is not None else None,
         "target_price": item.target_price,
         "action": item.action.value,
         "action_reason": item.action_reason,
@@ -145,6 +168,20 @@ def _recommendation(item: Recommendation) -> dict[str, object]:
         "deepseek_risk_facts": [_risk_fact(fact) for fact in item.deepseek_risk_facts],
         "review": _review(item.review) if item.review is not None else None,
     }
+
+
+def _live_overlay(overlay: LiveOverlay) -> dict[str, object]:
+    return {
+        "version": overlay.version,
+        "observed_at": overlay.observed_at.isoformat(),
+        "closing": overlay.closing,
+    }
+
+
+def _anchor_to_now(anchor_price: float | None, current_price: float | None) -> float | None:
+    if anchor_price is None or anchor_price <= 0 or current_price is None:
+        return None
+    return round((current_price / anchor_price - 1.0) * 100.0, 4)
 
 
 def _missing_reason(field: str) -> str:

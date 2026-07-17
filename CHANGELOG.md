@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增与冻结快照身份绑定的可恢复 `live_overlay`：冻结后只刷新 TopK 当前报价，独立持久化版本、点时时间和收盘标志，通过 SSE/ETag 通知而不改写冻结 JSON；15:00 后首份有效收盘值禁止被迟到结果覆盖。
 - 新增 `trader-cli threshold-report` 冻结输入预注册报告，按策略输出完整回放候选的分数分布、推荐数、空推荐比例、相邻 TopK Jaccard 变化、DeepSeek 覆盖、整版本地降级比例和风险拦截率，并拒绝混合策略/融合版本。
 - 用户问题：今日多项 Bug 缺少集中状态记录；修改说明：新增 `docs/issues/2026-07-17.md`，逐项归纳行情降级、Tab 加载、空值展示、缺失原因、AKShare JSONP、DeepSeek 进程注入和 P2 数据缺口，并区分已修复、待运行生效、待验证和待实现。
 - 推荐 API 为 `missing_fields` 同步提供可展示的 `missing_reasons`，明细抽屉直接说明缺失数据的上游原因。
@@ -22,6 +23,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 运行配置版本升级到 `runtime_v3_freeze_overlay_2026_07_17`，SQLite schema 升级到 v2；冻结 manifest 新增快照 schema 和逐股锚点来源/年龄，冻结 JSON 新增配置版本，运行库补齐 `deepseek_calls` 与 `live_overlays` 表。
 - 策略版本升级到 v9、冻结回放算法升级到 v4；today、tomorrow 和 d25 只在各自执行阶段应用动作门槛，预注册数据禁止跨版本混算。
 - 用户问题：此前交付规范只要求更新变更日志，没有明确把用户反馈与修改逐项归纳；修改说明：每个批次现在必须在 `Unreleased` 记录问题/诉求、原因判断、行为变化、验证证据和剩余风险，契约变化仍同步 `docs/need.md`，敏感信息禁止入文档。
 - 今早、明日和 2-5日推荐在桌面页面启动后后台预取，推荐日期与快照请求并行执行；相同策略/日期请求合并并使用 ETag 后台刷新。
@@ -39,6 +41,8 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户问题：补冻结只检查快照发布时间并把 today 错放宽到 30 秒；修改说明：冻结前逐条以边界时间检查报价，today 仅接受 0-20 秒，tomorrow/d25 仅接受 0-30 秒，未来或任一超龄报价会拒绝整版且记录股票与年龄。
+- 用户问题：冻结后页面只能看到锚点、重启恢复不校验 committed 损坏项；修改说明：恢复现在校验 staged/committed 哈希和身份/版本，隔离损坏文件并在当前指针失效时回退上一份有效冻结；当前查询对跨交易日回退显式返回 stale、原日期和原因。
 - 用户问题：today 观察期高分候选可能错误显示可执行；修改说明：09:30-09:36 观察阶段现在无条件最多为 observe，09:36 后才按 70 分主窗口门槛判断，跨策略或非执行阶段明确 unavailable。
 - 用户问题：TopK 用低分候选补满导致推荐不可能为空；修改说明：排名前先应用“动作门槛减 5 分”的最低观察边界，再按最终分、本地分和代码排序并执行单行业最多 3 只，合格候选不足时不降门槛回填。
 - 修正问题记录中“冻结 ID 稳定”的歧义：具体 ID 只作为 2026-07-17 当次连续查询证据，同一 committed 快照应保持不漂移，但新交易日、新数据版本或新合法冻结必须生成新 ID。
@@ -70,6 +74,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 第 18 节回归覆盖 today 20 秒与 tomorrow/d25 30 秒精确边界、混合超龄/未来报价拒绝、配置/schema/锚点 manifest、两阶段版本复核、staged/committed 损坏隔离与上一冻结回退、跨交易日 stale 身份、overlay 持久化/哈希不变/迟到拒绝/源失败保留/15:00 收盘固化、SSE 和组合 ETag；Ruff format/lint、59 个源文件 mypy、154 个 pytest、sdist/wheel 和仓库外 SQLite v2/资源/CLI 验收通过。Headless Firefox 在 1280x720、1440x900、1920x1080 均完整加载 `dashboard.js?v=5`，页面级横向溢出为 false。
 - 第 17 节回归覆盖 09:30、09:35:59、09:36 动作边界、主/降级窗口门槛、跨策略阶段拒绝、TopK 0-18 上界、最低观察分、0 推荐、行业限制、稳定排序、完整候选阈值报告及混合版本拒绝；Ruff format/lint、59 个源文件 mypy、138 个 pytest、sdist/wheel 构建均通过，仓库外安装后可导入 `trader`、读取五项 Web 资源并执行 `trader-cli threshold-report --help`。
 - `docs/issues/2026-07-17.md` 已登记 16 项 `need.md` 符合性缺口，每项包含需求条款、证据与影响、修复步骤、验收条件、交付章节和状态；交付契约测试约束完整编号及必备字段。Ruff format/lint、58 个源文件 mypy、126 个 pytest、sdist/wheel 构建及仓库外包资源和 `trader-cli` 验收通过。
 - 错过窗口补冻结、截止后冻结优先/草稿拒绝、策略身份及 30 秒缓存回归通过；Ruff format/lint、58 个源文件 mypy、125 个 pytest、sdist/wheel 和仓库外安装通过。重启真实服务后，today 因无截止前草稿明确返回 `not_ready`，tomorrow/d25 以不同冻结 ID 和分数连续稳定响应，页面加载 `dashboard.js?v=4`；Firefox 在 1280x720、1440x900 和 1920x1080 下切换 d25 正常且无页面级横向溢出。
@@ -97,7 +102,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 第 17 节 AUDIT-20260717-02、03 已完成；AUDIT-20260717-04 至 -16 以及 AUDIT-20260717-01 的剩余行为证据仍须按文档中的整节顺序分别实现、回归、Review、提交和推送。
+- 第 18 节后端冻结/overlay/跨日身份已完成；AUDIT-15 的第 19-21 节 API 错误契约、UI“上一交易日快照”表达和浏览器缓存验收仍按后续独立章节交付。
+- 旧 `recommendation_snapshot_v2` 文件若生成时尚未写入 JSON 内 `config_version`，仍以 `legacy-unrecorded` 兼容读取；只有 runtime v3 后的新冻结可提供完整配置版本证据。
+- 第 17 节 AUDIT-20260717-02、03 和第 18 节 AUDIT-20260717-01、05、06 已完成；AUDIT-20260717-04、07 至 -14、AUDIT-15 的前端部分及 AUDIT-16 剩余证据仍须按文档中的整节顺序分别实现、回归、Review、提交和推送。
 - 回放算法 v4 不会把旧 v3 冻结输入当作当前规则重新解释；旧快照须由对应旧 release 验证，当前阈值预注册只接受 v4 新冻结快照。
 - 2026-07-17 运行目录没有 today 截止前草稿或冻结文件，因此不能合规恢复当日 today 推荐；修复只保证后续冻结和持有截止前 30 秒内有效草稿时的重启补提交。
 - 问题归纳的内容完整性仍依赖交付 Review 判断；契约测试只能防止必备栏目和目标文档被删除，不能自动证明原因分析正确。
