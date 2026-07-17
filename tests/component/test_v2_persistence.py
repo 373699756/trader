@@ -9,6 +9,7 @@ import pytest
 from trader.domain.models import (
     CrossSectionStats,
     FeatureSnapshot,
+    FilterAudit,
     FusionMode,
     LiveOverlay,
     LiveQuote,
@@ -29,13 +30,17 @@ NOW = datetime(2026, 7, 16, 6, 50, tzinfo=timezone.utc)
 def test_snapshot_round_trip_preserves_frozen_input() -> None:
     snapshot = _snapshot()
 
-    restored = snapshot_from_dict(json.loads(snapshot_bytes(snapshot)))
+    payload = json.loads(snapshot_bytes(snapshot))
+    restored = snapshot_from_dict(payload)
 
     assert restored == snapshot
     assert restored.recommendations[0].features.values["relative_strength_5d"] == 65.0
+    assert restored.filter_details == snapshot.filter_details
     normalization = restored.recommendations[0].features.normalization["relative_strength_5d"]
     assert (normalization.lower_bound, normalization.upper_bound) == (-8.0, 12.0)
     assert normalization.population_data_version == "fixture-v1"
+    payload.pop("filter_details")
+    assert snapshot_from_dict(payload).filter_details == ()
 
 
 def test_publish_and_freeze_create_verified_manifest(tmp_path) -> None:
@@ -319,5 +324,6 @@ def _snapshot() -> RecommendationSnapshot:
         recommendations=(recommendation,),
         filtered_count=2,
         filter_reasons={"stale_quote": 2},
+        filter_details=(FilterAudit("600001", "stale_quote", "<= 20s", 21.0, "fixture", NOW),),
         config_version="runtime-v2",
     )

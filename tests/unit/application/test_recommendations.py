@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from trader.application.recommendations import RecommendationEngine
-from trader.domain.models import FeatureSnapshot, Strategy
+from trader.domain.models import FeatureSnapshot, FilterAudit, Strategy
 
 
 def test_targeted_quotes_are_hard_filtered_again_before_review_and_scoring(
@@ -29,12 +29,14 @@ def test_targeted_quotes_are_hard_filtered_again_before_review_and_scoring(
         max_age_seconds=20.0,
         filtered_count=0,
         filter_reasons={},
+        filter_details=(),
     )
 
     assert reviewer.reviewed_codes == ("600001",)
     assert [item.features.quote.code for item in snapshot.recommendations] == ["600001"]
     assert snapshot.filtered_count == 1
     assert snapshot.filter_reasons == {"main_board_too_hot": 1}
+    assert snapshot.filter_details == (FilterAudit("600002", "main_board_too_hot", "<= 8.00", 8.01, "fixture", now),)
 
 
 def test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold(
@@ -67,9 +69,29 @@ def test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold(
         max_age_seconds=20.0,
         filtered_count=0,
         filter_reasons={},
+        filter_details=(),
     )
 
     assert snapshot.recommendations == ()
+
+
+def test_candidate_pool_limit_is_not_reported_as_hard_filtering(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    market = tuple(application_feature_factory(f"600{index:03d}", now) for index in range(1, 122))
+
+    candidates, reasons, details = RecommendationEngine(recommendation_policy).preselect(
+        market,
+        now=now,
+        max_age_seconds=20.0,
+        limit=120,
+    )
+
+    assert len(candidates) == 120
+    assert reasons == {}
+    assert details == ()
 
 
 class RecordingReviewer:

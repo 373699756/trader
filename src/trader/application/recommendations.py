@@ -15,6 +15,7 @@ from trader.domain.fusion import FusionPolicy, fuse_score
 from trader.domain.models import (
     DeepSeekReview,
     FeatureSnapshot,
+    FilterAudit,
     FrozenReplayPolicy,
     FusionMode,
     Recommendation,
@@ -29,7 +30,7 @@ from trader.domain.risk import derive_local_risk_facts
 from trader.domain.strategies import score_strategy
 
 REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
-REPLAY_ALGORITHM_VERSION = "engine_v4_section17_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_v5_section9_2026_07"
 _PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 
 
@@ -44,20 +45,32 @@ class RecommendationEngine:
         now: datetime,
         max_age_seconds: float,
         limit: int,
-    ) -> tuple[tuple[FeatureSnapshot, ...], Mapping[str, int]]:
+    ) -> tuple[tuple[FeatureSnapshot, ...], Mapping[str, int], tuple[FilterAudit, ...]]:
         accepted: list[tuple[float, FeatureSnapshot]] = []
         reasons: Counter[str] = Counter()
+        details: list[FilterAudit] = []
         for snapshot in features:
             result = hard_filter(snapshot, now, max_age_seconds=max_age_seconds)
             if not result.allowed:
                 reasons.update(reason.code for reason in result.reasons)
+                details.extend(result.reasons)
                 continue
             if snapshot.missing_ratio(CORE_FIELDS) > 0.30:
                 reasons["insufficient_candidate_history"] += 1
+                details.append(
+                    FilterAudit(
+                        stock_code=snapshot.quote.code,
+                        filter_code="insufficient_candidate_history",
+                        threshold="<= 0.30",
+                        actual=round(snapshot.missing_ratio(CORE_FIELDS), 6),
+                        source=snapshot.quote.source,
+                        observed_at=snapshot.quote.source_time,
+                    )
+                )
                 continue
             accepted.append((candidate_score(snapshot, self._policy.candidate_weights), snapshot))
         accepted.sort(key=lambda item: (-item[0], item[1].quote.code))
-        return tuple(snapshot for _score, snapshot in accepted[:limit]), dict(reasons)
+        return tuple(snapshot for _score, snapshot in accepted[:limit]), dict(reasons), tuple(details)
 
     def build_snapshot(
         self,
@@ -73,6 +86,7 @@ class RecommendationEngine:
         max_age_seconds: float,
         filtered_count: int,
         filter_reasons: Mapping[str, int],
+        filter_details: Sequence[FilterAudit] = (),
         target_prices: Mapping[str, float | None] | None = None,
         market_features: Sequence[FeatureSnapshot] = (),
         requested_codes: Sequence[str] = (),
@@ -81,6 +95,7 @@ class RecommendationEngine:
     ) -> RecommendationSnapshot:
         eligible: list[FeatureSnapshot] = []
         refreshed_filter_reasons = Counter(filter_reasons)
+        refreshed_filter_details = list(filter_details)
         refreshed_filtered_count = filtered_count
         for feature in features:
             filter_result = hard_filter(feature, now, max_age_seconds=max_age_seconds)
@@ -88,6 +103,7 @@ class RecommendationEngine:
                 eligible.append(feature)
                 continue
             refreshed_filter_reasons.update(reason.code for reason in filter_result.reasons)
+            refreshed_filter_details.extend(filter_result.reasons)
             refreshed_filtered_count += 1
 
         merged, reviews, fusion_mode = self._merge_candidates(
@@ -131,6 +147,7 @@ class RecommendationEngine:
             recommendations=selected,
             filtered_count=refreshed_filtered_count,
             filter_reasons=dict(refreshed_filter_reasons),
+            filter_details=tuple(refreshed_filter_details),
             stale=any(item.features.quote.age_seconds(now) > max_age_seconds for item in selected),
             degraded_reasons=degraded_reasons,
             metadata={
@@ -226,7 +243,7 @@ class RecommendationEngine:
         if snapshot.fusion_version != replay_input.policy.fusion_version:
             raise ValueError("snapshot fusion version does not match its frozen replay policy")
 
-        candidates, filter_reasons = replay_engine.preselect(
+        candidates, filter_reasons, filter_details = replay_engine.preselect(
             replay_input.market_features,
             now=replay_input.evaluated_at,
             max_age_seconds=replay_input.preselect_max_age_seconds,
@@ -247,8 +264,9 @@ class RecommendationEngine:
             review_port=_RecordedReviewPort(replay_input.reviews),
             review_deadline=replay_input.evaluated_at,
             max_age_seconds=replay_input.score_max_age_seconds,
-            filtered_count=max(0, len(replay_input.market_features) - len(candidates)),
+            filtered_count=len({item.stock_code for item in filter_details}),
             filter_reasons=filter_reasons,
+            filter_details=filter_details,
             target_prices=replay_input.target_prices,
             market_features=replay_input.market_features,
             requested_codes=replay_input.requested_codes,
@@ -421,6 +439,7 @@ def _business_projection(snapshot: RecommendationSnapshot) -> tuple[object, ...]
         snapshot.recommendations,
         snapshot.filtered_count,
         dict(snapshot.filter_reasons),
+        snapshot.filter_details,
         snapshot.stale,
         snapshot.degraded_reasons,
         dict(snapshot.metadata),

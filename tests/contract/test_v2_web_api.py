@@ -26,6 +26,7 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
     assert response.status_code == 200
     assert response.get_json()["items"] == []
     assert response.get_json()["fusion_mode"] == "local_degraded"
+    assert response.get_json()["filter_details"] == []
     etag = response.headers["ETag"]
     assert client.get("/api/recommendations/today", headers={"If-None-Match": etag}).status_code == 304
 
@@ -63,6 +64,7 @@ def test_recommendation_validation_and_empty_current(recommendation_policy, appl
 
     assert empty.status_code == 200
     assert empty.get_json()["status"] == "not_ready"
+    assert empty.get_json()["filter_details"] == []
     assert client.get("/api/recommendations/unknown").status_code == 400
     assert client.get("/api/recommendations/today?top_n=19").status_code == 400
     assert client.get("/api/recommendations/today?top_n=01").status_code == 400

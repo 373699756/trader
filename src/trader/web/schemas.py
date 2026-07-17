@@ -45,6 +45,17 @@ def snapshot_envelope(
         "degraded_reasons": list(snapshot.degraded_reasons),
         "filtered_count": snapshot.filtered_count,
         "filter_reasons": dict(snapshot.filter_reasons),
+        "filter_details": [
+            {
+                "stock_code": item.stock_code,
+                "filter_code": item.filter_code,
+                "threshold": item.threshold,
+                "actual": item.actual,
+                "source": item.source,
+                "observed_at": item.observed_at.isoformat(),
+            }
+            for item in snapshot.filter_details
+        ],
         "metadata": dict(snapshot.metadata),
         "fallback_date": fallback_date,
         "fallback_reason": fallback_reason,
@@ -76,6 +87,7 @@ def empty_snapshot_envelope(strategy: str, trade_date: str | None = None) -> dic
         "degraded_reasons": ["snapshot_not_ready"],
         "filtered_count": 0,
         "filter_reasons": {},
+        "filter_details": [],
         "metadata": {},
         "fallback_date": None,
         "fallback_reason": None,

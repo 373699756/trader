@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增逐股 `filter_details` 审计记录，保存股票代码、`filter_code`、阈值、实际 JSON 标量、来源和时间，并随冻结 JSON 往返及通过只读 API 返回。
 - 新增第 8 节完整因子登记表和严格 schema：52 个生产因子逐项声明策略、输入、公式、单位、方向、时点、复权、窗口、样本、截尾、归一化、缺失策略、范围与版本；横截面统计随冻结输入保存并由 API 返回。
 - 新增与冻结快照身份绑定的可恢复 `live_overlay`：冻结后只刷新 TopK 当前报价，独立持久化版本、点时时间和收盘标志，通过 SSE/ETag 通知而不改写冻结 JSON；15:00 后首份有效收盘值禁止被迟到结果覆盖。
 - 新增 `trader-cli threshold-report` 冻结输入预注册报告，按策略输出完整回放候选的分数分布、推荐数、空推荐比例、相邻 TopK Jaccard 变化、DeepSeek 覆盖、整版本地降级比例和风险拦截率，并拒绝混合策略/融合版本。
@@ -24,6 +25,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 冻结回放算法升级到 `engine_v5_section9_2026_07`；硬过滤股票数改为按审计明细中的唯一股票计数，Top120 池截断不再误算为过滤，long 不再继承普通候选池的过滤记录。
 - 策略版本改为由除声明标签外的完整规范化策略配置生成 `strategy_sha256_*`；运行配置版本与该哈希组合后写入快照，任一因子、权重、风险规则、阈值或融合配置变化都会形成新版本身份。
 - 运行配置版本升级到 `runtime_v3_freeze_overlay_2026_07_17`，SQLite schema 升级到 v2；冻结 manifest 新增快照 schema 和逐股锚点来源/年龄，冻结 JSON 新增配置版本，运行库补齐 `deepseek_calls` 与 `live_overlays` 表。
 - 策略版本升级到 v9、冻结回放算法升级到 v4；today、tomorrow 和 d25 只在各自执行阶段应用动作门槛，预注册数据禁止跨版本混算。
@@ -43,6 +45,8 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户问题：20 日成交额中位数缺失或非有限时仍可进入评分；修改说明：缺失、NaN/Infinity、低于 5000 万分别使用 `missing_liquidity_history`、`invalid_liquidity_history` 和 `insufficient_liquidity` 剔除，5000 万精确通过，缺失实际值在快照中保持 `null`。
+- 硬过滤新增未来报价、非有限涨幅/跨源偏差和明显 OHLC 矛盾检查；主板 8.00/8.01、创业板与科创板 16.00/16.01、跨源偏差 0.5/0.5001 和报价年龄边界均使用确定性比较。
 - 用户问题：候选池在历史加载前形成且旧候选自我强化；修改说明：冷启动先并发加载候选池三倍大小的行业分层历史集合，再在同一行情批次 `data_version` 内构建候选横截面，预选拒绝核心历史覆盖不足；覆盖率、失败数和版本进入服务健康状态，避免全市场逐股请求拖慢刷新。
 - 用户问题：生产分位未截尾且缺失涨幅被当作下跌；修改说明：横截面因子统一执行 2.5%/97.5% 截尾与并列平均秩，NaN/Infinity 保持缺失，市场宽度只使用有效涨幅，冻结数据保存可复算边界和缺失掩码计数。
 - 用户问题：补冻结只检查快照发布时间并把 today 错放宽到 30 秒；修改说明：冻结前逐条以边界时间检查报价，today 仅接受 0-20 秒，tomorrow/d25 仅接受 0-30 秒，未来或任一超龄报价会拒绝整版且记录股票与年龄。
@@ -78,6 +82,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 第 9 节回归覆盖成交额历史缺失、NaN、Infinity、49999999/50000000 边界，报价年龄和未来时间、OHLC 矛盾、跨源偏差复核、逐股过滤明细冻结往返、旧快照兼容、Top120 计数及离线重放；Ruff format/lint、59 个源文件 mypy、173 个 pytest、sdist/wheel 构建及仓库外 wheel 导入、五项资源和 `trader-cli` 验收通过。
 - 第 8 节回归覆盖有界行业分层历史预热、冷启动加载、缓存过期重载、部分失败覆盖率、批次版本横截面隔离、宽度缺失分母、极值截尾、并列平均秩、NaN、单样本、冻结统计往返、完整因子登记及删除登记启动失败；Ruff format/lint、59 个源文件 mypy、162 个 pytest、sdist/wheel 构建及仓库外 wheel 导入、五项资源和 `trader-cli` 验收通过。
 - 第 18 节回归覆盖 today 20 秒与 tomorrow/d25 30 秒精确边界、混合超龄/未来报价拒绝、配置/schema/锚点 manifest、两阶段版本复核、staged/committed 损坏隔离与上一冻结回退、跨交易日 stale 身份、overlay 持久化/哈希不变/迟到拒绝/源失败保留/15:00 收盘固化、SSE 和组合 ETag；Ruff format/lint、59 个源文件 mypy、154 个 pytest、sdist/wheel 和仓库外 SQLite v2/资源/CLI 验收通过。Headless Firefox 在 1280x720、1440x900、1920x1080 均完整加载 `dashboard.js?v=5`，页面级横向溢出为 false。
 - 第 17 节回归覆盖 09:30、09:35:59、09:36 动作边界、主/降级窗口门槛、跨策略阶段拒绝、TopK 0-18 上界、最低观察分、0 推荐、行业限制、稳定排序、完整候选阈值报告及混合版本拒绝；Ruff format/lint、59 个源文件 mypy、138 个 pytest、sdist/wheel 构建均通过，仓库外安装后可导入 `trader`、读取五项 Web 资源并执行 `trader-cli threshold-report --help`。

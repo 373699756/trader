@@ -38,7 +38,7 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
     rejected = application_feature_factory("600002", now)
     rejected = replace(rejected, quote=replace(rejected.quote, pct_change=8.01))
     engine = RecommendationEngine(recommendation_policy)
-    candidates, reasons = engine.preselect((accepted, rejected), now=now, max_age_seconds=20.0, limit=120)
+    candidates, reasons, details = engine.preselect((accepted, rejected), now=now, max_age_seconds=20.0, limit=120)
     reviewer = RecordedReviewer(
         _review(accepted.quote.code, now, recommendation_policy.dimension_weights[Strategy.TODAY])
     )
@@ -54,6 +54,7 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
         max_age_seconds=20.0,
         filtered_count=1,
         filter_reasons=reasons,
+        filter_details=details,
         market_features=(accepted, rejected),
         requested_codes=tuple(feature.quote.code for feature in candidates),
         preselect_max_age_seconds=20.0,
@@ -74,6 +75,8 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
         "recommendation_count": 1,
     }
     assert restored.filter_reasons == {"main_board_too_hot": 1}
+    assert restored.filter_details[0].filter_code == "main_board_too_hot"
+    assert restored.filter_details[0].actual == 8.01
     assert restored.recommendations == engine.replay(restored).recommendations
     snapshot_path = (tmp_path / "frozen.json").resolve()
     snapshot_path.write_bytes(snapshot_bytes(frozen))

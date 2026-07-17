@@ -53,7 +53,7 @@ def _frozen_snapshot(engine, policy, feature_factory, now: datetime, selected_co
         values={name: (200_000_000.0 if name == "amount_median_20d" else 0.0) for name in low.values},
     )
     market = (high, low)
-    candidates, reasons = engine.preselect(market, now=now, max_age_seconds=20.0, limit=120)
+    candidates, reasons, details = engine.preselect(market, now=now, max_age_seconds=20.0, limit=120)
     snapshot = engine.build_snapshot(
         Strategy.TODAY,
         candidates,
@@ -66,6 +66,7 @@ def _frozen_snapshot(engine, policy, feature_factory, now: datetime, selected_co
         max_age_seconds=20.0,
         filtered_count=0,
         filter_reasons=reasons,
+        filter_details=details,
         market_features=market,
         requested_codes=tuple(feature.quote.code for feature in candidates),
         preselect_max_age_seconds=20.0,

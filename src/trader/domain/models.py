@@ -150,6 +150,20 @@ class RiskRule:
 
 
 @dataclass(frozen=True)
+class FilterAudit:
+    stock_code: str
+    filter_code: str
+    threshold: str
+    actual: str | float | bool | None
+    source: str
+    observed_at: datetime
+
+    @property
+    def code(self) -> str:
+        return self.filter_code
+
+
+@dataclass(frozen=True)
 class CrossSectionStats:
     lower_bound: float | None
     upper_bound: float | None
@@ -336,6 +350,7 @@ class RecommendationSnapshot:
     filtered_count: int
     filter_reasons: Mapping[str, int]
     config_version: str = ""
+    filter_details: tuple[FilterAudit, ...] = ()
     stale: bool = False
     frozen: bool = False
     degraded_reasons: tuple[str, ...] = ()
@@ -353,6 +368,7 @@ __all__ = [
     "DeepSeekReview",
     "DimensionAssessment",
     "Evidence",
+    "FilterAudit",
     "FeatureSnapshot",
     "FrozenReplayPolicy",
     "FusionMode",

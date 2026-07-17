@@ -14,6 +14,7 @@ from trader.domain.models import (
     DimensionAssessment,
     Evidence,
     FeatureSnapshot,
+    FilterAudit,
     FrozenReplayPolicy,
     FusionMode,
     MarketQuote,
@@ -46,6 +47,7 @@ def snapshot_to_dict(snapshot: RecommendationSnapshot) -> dict[str, object]:
         "published_at": snapshot.published_at.isoformat(),
         "filtered_count": snapshot.filtered_count,
         "filter_reasons": dict(snapshot.filter_reasons),
+        "filter_details": [_filter_audit_to_dict(item) for item in snapshot.filter_details],
         "stale": snapshot.stale,
         "frozen": snapshot.frozen,
         "degraded_reasons": list(snapshot.degraded_reasons),
@@ -77,6 +79,7 @@ def snapshot_from_dict(raw: Mapping[str, object]) -> RecommendationSnapshot:
         raise ValueError("recommendations must be a list")
     recommendations = tuple(_recommendation_from_dict(item) for item in recommendations_raw if isinstance(item, dict))
     filter_reasons = raw.get("filter_reasons")
+    filter_details = raw.get("filter_details")
     metadata = raw.get("metadata")
     replay_raw = raw.get("replay_input")
     degraded_raw = raw.get("degraded_reasons")
@@ -96,6 +99,9 @@ def snapshot_from_dict(raw: Mapping[str, object]) -> RecommendationSnapshot:
         filter_reasons={str(key): int(value) for key, value in filter_reasons.items()}
         if isinstance(filter_reasons, dict)
         else {},
+        filter_details=tuple(_filter_audit_from_dict(item) for item in filter_details if isinstance(item, dict))
+        if isinstance(filter_details, list)
+        else (),
         stale=bool(raw.get("stale")),
         frozen=bool(raw.get("frozen")),
         degraded_reasons=tuple(str(value) for value in degraded_raw if isinstance(value, str))
@@ -245,6 +251,33 @@ def _recommendation_from_dict(raw: Mapping[str, object]) -> Recommendation:
         veto=bool(raw.get("veto")),
         rank=_integer(raw, "rank"),
         target_price=_optional_number(raw.get("target_price")),
+    )
+
+
+def _filter_audit_to_dict(item: FilterAudit) -> dict[str, object]:
+    return {
+        "stock_code": item.stock_code,
+        "filter_code": item.filter_code,
+        "threshold": item.threshold,
+        "actual": item.actual,
+        "source": item.source,
+        "observed_at": item.observed_at.isoformat(),
+    }
+
+
+def _filter_audit_from_dict(raw: Mapping[str, object]) -> FilterAudit:
+    actual = raw.get("actual")
+    if actual is not None and not isinstance(actual, (str, int, float, bool)):
+        raise ValueError("filter audit actual must be a JSON scalar")
+    if isinstance(actual, float) and not math.isfinite(actual):
+        raise ValueError("filter audit actual must be finite")
+    return FilterAudit(
+        stock_code=_text(raw, "stock_code"),
+        filter_code=_text(raw, "filter_code"),
+        threshold=_text(raw, "threshold"),
+        actual=float(actual) if isinstance(actual, int) and not isinstance(actual, bool) else actual,
+        source=_text(raw, "source"),
+        observed_at=datetime.fromisoformat(_text(raw, "observed_at")),
     )
 
 

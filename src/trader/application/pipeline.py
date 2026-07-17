@@ -23,7 +23,7 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import MarketPhase, decision_at, freeze_due_at, shanghai_now, trade_date_at
 from trader.application.status import RuntimeState
-from trader.domain.models import FeatureSnapshot, LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
+from trader.domain.models import FeatureSnapshot, FilterAudit, LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,7 +71,8 @@ class RecommendationPipeline:
         self._candidate_features: tuple[FeatureSnapshot, ...] = ()
         self._market_features: tuple[FeatureSnapshot, ...] = ()
         self._filter_reasons: Mapping[str, int] = {}
-        self._market_count = 0
+        self._filter_details: tuple[FilterAudit, ...] = ()
+        self._filtered_count = 0
         self._frozen_keys: set[tuple[Strategy, str]] = set()
         self._live_overlays: dict[tuple[Strategy, str], LiveOverlay] = {}
 
@@ -355,17 +356,18 @@ class RecommendationPipeline:
             return
 
         maximum_age = _maximum_age_seconds(phase)
-        candidates, reasons = self._engine.preselect(
+        candidates, reasons, details = self._engine.preselect(
             market_features,
             now=now,
             max_age_seconds=maximum_age,
             limit=self._candidate_pool_size,
         )
-        self._market_count = len(market_features)
         self._market_features = market_features
         self._candidate_codes = tuple(feature.quote.code for feature in candidates)
         self._candidate_features = candidates
         self._filter_reasons = reasons
+        self._filter_details = details
+        self._filtered_count = len({item.stock_code for item in details})
 
     def _score_strategy(
         self,
@@ -383,6 +385,7 @@ class RecommendationPipeline:
         deadline = _review_deadline(now, phase)
         review_port = self._reviews if phase not in {MarketPhase.DEEPSEEK_CUTOFF, MarketPhase.FINAL_QUOTE} else None
         data_version = max((feature.quote.data_version for feature in features), default="unavailable")
+        is_long = strategy is Strategy.LONG
         snapshot = self._engine.build_snapshot(
             strategy,
             features,
@@ -393,8 +396,9 @@ class RecommendationPipeline:
             review_port=review_port,
             review_deadline=deadline,
             max_age_seconds=_maximum_age_seconds(phase, strategy),
-            filtered_count=max(0, self._market_count - len(self._candidate_codes)),
-            filter_reasons=self._filter_reasons,
+            filtered_count=0 if is_long else self._filtered_count,
+            filter_reasons={} if is_long else self._filter_reasons,
+            filter_details=() if is_long else self._filter_details,
             target_prices=self._long_target_prices if strategy is Strategy.LONG else None,
             market_features=self._market_features,
             requested_codes=codes,
