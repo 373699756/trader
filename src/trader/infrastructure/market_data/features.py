@@ -29,6 +29,7 @@ class FeatureBuilder:
         observed_at: datetime,
         *,
         cross_section_reference: Mapping[str, Mapping[str, float | None]] | None = None,
+        research_evidence: Mapping[str, Sequence[Evidence]] | None = None,
     ) -> tuple[FeatureSnapshot, ...]:
         raw = {quote.code: self._raw_features(quote, histories.get(quote.code, ())) for quote in quotes}
         amount_percentiles = percentile_scores({code: values.get("amount_median_20d") for code, values in raw.items()})
@@ -83,7 +84,10 @@ class FeatureBuilder:
                     history_days=len(histories.get(quote.code, ())),
                     market_regime=_market_regime(market_breadth),
                     missing_fields=missing,
-                    evidence=(_structured_evidence(quote, values, observed_at),),
+                    evidence=(
+                        _structured_evidence(quote, values, observed_at),
+                        *tuple((research_evidence or {}).get(quote.code, ()))[:15],
+                    ),
                 )
             )
         return tuple(snapshots)

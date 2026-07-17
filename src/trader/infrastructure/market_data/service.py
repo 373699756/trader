@@ -9,7 +9,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.domain.models import FeatureSnapshot
+from trader.domain.models import Evidence, FeatureSnapshot
+from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
@@ -22,6 +23,12 @@ class _HistoryEntry:
     expires_at: float
 
 
+@dataclass(frozen=True)
+class _ResearchEntry:
+    evidence: tuple[Evidence, ...]
+    expires_at: float
+
+
 class MarketFeatureService:
     def __init__(
         self,
@@ -29,22 +36,32 @@ class MarketFeatureService:
         history_client: EastmoneyClient,
         feature_builder: FeatureBuilder,
         *,
+        research_client: AkshareResearchClient | None = None,
         history_workers: int = 6,
+        research_workers: int = 4,
         history_ttl_seconds: float = 21_600,
+        research_ttl_seconds: float = 600,
         market_ttl_seconds: float = 30,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._gateway = gateway
         self._history_client = history_client
         self._feature_builder = feature_builder
+        self._research_client = research_client
         self._history_workers = max(1, history_workers)
+        self._research_workers = max(1, research_workers)
         self._history_ttl_seconds = max(60.0, history_ttl_seconds)
+        self._research_ttl_seconds = max(60.0, research_ttl_seconds)
         self._market_ttl_seconds = max(1.0, market_ttl_seconds)
         self._monotonic = monotonic
         self._lock = threading.Lock()
         self._market_features: tuple[FeatureSnapshot, ...] = ()
         self._market_expires_at = 0.0
         self._history: dict[str, _HistoryEntry] = {}
+        self._research: dict[str, _ResearchEntry] = {}
+        self._research_success_count = 0
+        self._research_error_count = 0
+        self._research_last_error = ""
 
     def fetch_market_features(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
         now = self._monotonic()
@@ -73,6 +90,7 @@ class MarketFeatureService:
             market = {feature.quote.code: feature.quote for feature in self.fetch_market_features(observed_at)}
             quotes = tuple((*quotes, *(market[code] for code in normalized if code not in received and code in market)))
         histories = self._load_histories(normalized)
+        research_evidence = self._load_research(normalized, observed_at)
         with self._lock:
             cross_section_reference = {feature.quote.code: feature.values for feature in self._market_features}
         return self._feature_builder.build(
@@ -80,17 +98,71 @@ class MarketFeatureService:
             histories,
             observed_at,
             cross_section_reference=cross_section_reference,
+            research_evidence=research_evidence,
         )
 
     def health(self) -> Mapping[str, object]:
         with self._lock:
             history_entries = len(self._history)
             market_cached = len(self._market_features)
+            research_entries = len(self._research)
+            research_success_count = self._research_success_count
+            research_error_count = self._research_error_count
+            research_last_error = self._research_last_error
         return {
             **dict(self._gateway.health()),
             "history_cache_entries": history_entries,
             "market_feature_rows": market_cached,
+            "research_cache_entries": research_entries,
+            "research_success_count": research_success_count,
+            "research_error_count": research_error_count,
+            "research_last_error": research_last_error,
         }
+
+    def _load_research(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+    ) -> Mapping[str, tuple[Evidence, ...]]:
+        if self._research_client is None:
+            return {}
+        now = self._monotonic()
+        result: dict[str, tuple[Evidence, ...]] = {}
+        with self._lock:
+            for code in codes:
+                entry = self._research.get(code)
+                if entry is not None and entry.expires_at > now:
+                    result[code] = entry.evidence
+                elif entry is not None:
+                    self._research.pop(code, None)
+        missing = [code for code in codes if code not in result]
+        if not missing:
+            return result
+        with ThreadPoolExecutor(
+            max_workers=min(self._research_workers, len(missing)),
+            thread_name_prefix="candidate-research",
+        ) as pool:
+            futures = {
+                pool.submit(self._research_client.fetch_news, code, observed_at=observed_at): code for code in missing
+            }
+            for future in as_completed(futures):
+                code = futures[future]
+                ttl = self._research_ttl_seconds
+                try:
+                    evidence = tuple(future.result())
+                except Exception as exc:
+                    evidence = ()
+                    ttl = min(60.0, ttl)
+                    with self._lock:
+                        self._research_error_count += 1
+                        self._research_last_error = str(exc)[:240]
+                else:
+                    with self._lock:
+                        self._research_success_count += 1
+                result[code] = evidence
+                with self._lock:
+                    self._research[code] = _ResearchEntry(evidence, self._monotonic() + ttl)
+        return result
 
     def _load_histories(self, codes: Sequence[str]) -> Mapping[str, tuple[DailyBar, ...]]:
         result = self._cached_histories(codes)

@@ -80,6 +80,7 @@ class MarketDataSettings:
     eastmoney_timeout_seconds: float
     candidate_timeout_seconds: float
     history_timeout_seconds: float
+    research_timeout_seconds: float
     minimum_market_rows: int
     candidate_pool_size: int
     single_flight: bool
@@ -240,6 +241,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             eastmoney_timeout_seconds=_number(market_raw, "eastmoney_timeout_seconds", minimum=0.1),
             candidate_timeout_seconds=_number(market_raw, "candidate_timeout_seconds", minimum=0.1),
             history_timeout_seconds=_number(market_raw, "history_timeout_seconds", minimum=0.1),
+            research_timeout_seconds=_number(market_raw, "research_timeout_seconds", minimum=0.1),
             minimum_market_rows=_integer(market_raw, "minimum_market_rows", minimum=1),
             candidate_pool_size=_integer(market_raw, "candidate_pool_size", minimum=1, maximum=1000),
             single_flight=_boolean(market_raw, "single_flight"),

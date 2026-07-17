@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 候选池接入带 8 秒硬超时的 AKShare 兼容个股新闻证据，新闻证据进入特征快照、DeepSeek 输入和冻结回放；成功结果缓存 10 分钟，失败负缓存 60 秒。
 - 新增第 25 节最终验收闭环：新冻结快照保存完整市场预选输入、定向候选与经校验 DeepSeek 结果，`trader-cli verify-freeze` 可离线复算并核对过滤、评分、风险、veto 和排名；`/api/status` 新增活动 TopK 报价 P95 与 DeepSeek 物理调用验收摘要。
 - 新增固定行情完整交易日影子门禁，按 09:20-15:00 时间线在两个隔离目录运行真实 SQLite/JSON 冻结链，对照 today/tomorrow/d25 manifest、long 非冻结和全部 JSON SHA-256 确定性。
 - 新建单一 `src/trader` 安装包，按 `domain`、`application`、`infrastructure`、`web`、`entrypoints` 和唯一组合根分层。
@@ -18,6 +19,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 策略版本升级到 v8；新闻只对候选和长期观察池抓取，全市场扫描不发起逐股新闻请求。
 - DeepSeek 风险事实不再直接控制生产 veto；策略 v7 和冻结回放算法 v3 由本地风险表按风险代码、允许证据类型、证据有效期和最低置信度确定扣分与重大安全 veto。
 - 最终验收矩阵明确区分可重复仓库门禁与真实交易日、真实 DeepSeek 密钥、三档桌面截图等外部发布证据；旧 v2 快照继续可读，但不能充当新增冻结复算门禁证据。
 - 迁移清单新增 `docs/need.md` 第 24 节逐阶段完成证据；运行手册固定生产影子留证字段和回退 tag `v1-rollback-20260717`，仓库门禁完成与真实交易日发布观察明确分离。
@@ -31,6 +33,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- AKShare 个股新闻路径不再调用无 timeout 的库内裸请求，新闻发布时间统一归一化为 `Asia/Shanghai`；新闻失败仅增加研究源错误计数并回退到结构化行情证据，不阻塞本地推荐。
 - 修复模型声明 `veto=true` 即可阻止执行、风险规则 `evidence_ttl_hours` 读取后未生效的问题；错误类型、未来或过期证据均不会进入 DeepSeek 风险扣分与 veto。
 - 东方财富、新浪和腾讯实时行情请求显式绕过会导致 TLS EOF 的系统代理，避免本机代理可用但不兼容行情域名时全市场数据持续不可用；DeepSeek 等其他外部请求仍沿用原代理环境。
 - 全市场行情源同时不可用时仅捕获明确的可恢复异常，保留既有候选和最近发布快照继续本地评分，并在运行状态中记录降级原因与失败计数；预期降级日志不再输出误导性的完整 traceback。
@@ -53,6 +56,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 组件回归覆盖 AKShare 新闻 JSONP 规范化、显式 timeout/直连参数、候选缓存复用和新闻源失败降级。
 - 风险融合回归覆盖模型 veto 无效、本地监管规则有效 veto、错误证据类型和过期证据拒绝，以及策略 v3 配置字段解析。
 - 第 25 节集成回归覆盖冻结输入 JSON 往返与确定性复算、有效配置和候选触发非零物理 DeepSeek 请求，以及 TopK P95 超过 10 秒时的显式失败状态。
 - 本批次完整格式、Ruff、mypy、pytest、sdist/wheel 门禁通过；仓库外强制重装后可导入 `trader`、执行 `trader-cli` 与 `verify-freeze --help` 并读取全部 Web 资源；`run.sh` 实际状态返回 TopK P95 和 DeepSeek 零调用原因，headless Firefox 三档桌面窗口均完整加载且无页面级横向溢出。

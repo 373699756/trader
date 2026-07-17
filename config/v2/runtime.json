@@ -27,6 +27,7 @@
     "eastmoney_timeout_seconds": 20,
     "candidate_timeout_seconds": 3,
     "history_timeout_seconds": 12,
+    "research_timeout_seconds": 8,
     "minimum_market_rows": 1000,
     "candidate_pool_size": 120,
     "single_flight": true,

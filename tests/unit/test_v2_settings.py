@@ -24,6 +24,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.schema_version == 2
     assert strategy.schema_version == 3
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
+    assert runtime.market_data.research_timeout_seconds == 8
     assert sum(runtime.deepseek.strategy_limits.values()) == 188
     assert strategy.fusion.local_weight == pytest.approx(0.68)
     assert strategy.fusion.deepseek_weight == pytest.approx(0.32)

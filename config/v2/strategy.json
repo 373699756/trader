@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "strategy_version": "strategy_v7_local_risk_veto",
+  "strategy_version": "strategy_v8_akshare_news",
   "fusion": {
     "version": "fusion_v2_local68_deepseek32",
     "local_weight": 0.68,

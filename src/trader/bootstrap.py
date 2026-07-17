@@ -21,6 +21,7 @@ from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
 from trader.infrastructure.deepseek.cache import ReviewCache
 from trader.infrastructure.deepseek.client import DeepSeekHttpClient
 from trader.infrastructure.deepseek.reviewer import DeepSeekReviewer
+from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.calendar import ChinaTradingCalendar
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
@@ -86,7 +87,9 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         market_gateway,
         history,
         FeatureBuilder(),
+        research_client=AkshareResearchClient(timeout_seconds=settings.market_data.research_timeout_seconds),
         history_workers=settings.pipeline.market_workers,
+        research_workers=settings.pipeline.market_workers,
         market_ttl_seconds=settings.pipeline.full_market_refresh_seconds,
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")

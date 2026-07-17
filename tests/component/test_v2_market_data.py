@@ -7,12 +7,14 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from trader.application.ports import MarketDataUnavailable
-from trader.domain.models import MarketQuote
+from trader.domain.models import Evidence, MarketQuote
+from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailable
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.history import DailyBar
+from trader.infrastructure.market_data.service import MarketFeatureService
 from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
 
@@ -197,6 +199,66 @@ def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
     assert targeted[0].values["speed_percentile"] == 100.0
 
 
+def test_akshare_news_is_bounded_and_normalized() -> None:
+    callback = "jQuery35101792940631092459_1764599530165"
+    payload = {
+        "result": {
+            "cmsArticleWebOld": [
+                {
+                    "title": "<em>测试股份</em>发布公告",
+                    "date": "2026-07-16 09:00:00",
+                    "mediaName": "交易所",
+                }
+            ]
+        }
+    }
+    calls = []
+
+    def get(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeResponse(f"{callback}({json.dumps(payload, ensure_ascii=False)});")
+
+    evidence = AkshareResearchClient(timeout_seconds=8, get=get).fetch_news("600001", observed_at=NOW)
+
+    assert evidence[0].evidence_type == "news"
+    assert evidence[0].title == "测试股份发布公告"
+    assert evidence[0].published_at.isoformat() == "2026-07-16T09:00:00+08:00"
+    assert calls[0][1]["timeout"] == 8
+    assert calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
+
+
+def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
+    news = Evidence("news-1", "news", "候选新闻", "fixture", NOW - timedelta(hours=1))
+    research = StaticResearchClient((news,))
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(),
+        research_client=research,
+        research_workers=1,
+    )
+
+    first = service.fetch_candidate_features(("600001",), NOW)
+    second = service.fetch_candidate_features(("600001",), NOW)
+
+    assert research.calls == 1
+    assert [item.evidence_id for item in first[0].evidence] == [first[0].evidence[0].evidence_id, "news-1"]
+    assert second[0].evidence[-1].evidence_id == "news-1"
+
+    degraded = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(),
+        research_client=FailingResearchClient(),
+        research_workers=1,
+    )
+    result = degraded.fetch_candidate_features(("600001",), NOW)
+    assert len(result) == 1
+    assert len(result[0].evidence) == 1
+    assert degraded.health()["research_error_count"] == 1
+    assert degraded.health()["research_last_error"] == "offline"
+
+
 def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
     cache = tmp_path / "calendar.json"
     cache.write_text(
@@ -234,7 +296,9 @@ class FakeResponse:
     def __init__(self, payload) -> None:
         self._payload = payload
         self.content = payload if isinstance(payload, bytes) else b""
-        self.text = payload.decode("gb18030") if isinstance(payload, bytes) else ""
+        self.text = (
+            payload.decode("gb18030") if isinstance(payload, bytes) else payload if isinstance(payload, str) else ""
+        )
 
     def raise_for_status(self) -> None:
         return None
@@ -279,6 +343,43 @@ class StaticTencentClient:
 
     def fetch_quotes(self, _codes):
         return self._quotes
+
+
+class StaticGateway:
+    def __init__(self, quotes) -> None:
+        self._quotes = quotes
+
+    def fetch_candidates(self, _codes):
+        return self._quotes
+
+    def fetch_market(self):
+        return self._quotes
+
+    @staticmethod
+    def health():
+        return {}
+
+
+class StaticHistoryClient:
+    @staticmethod
+    def fetch_history(_code, *, days):
+        return ()
+
+
+class StaticResearchClient:
+    def __init__(self, evidence) -> None:
+        self._evidence = evidence
+        self.calls = 0
+
+    def fetch_news(self, _code, *, observed_at):
+        self.calls += 1
+        return self._evidence
+
+
+class FailingResearchClient:
+    @staticmethod
+    def fetch_news(_code, *, observed_at):
+        raise RuntimeError("offline")
 
 
 def _quote(code: str = "600001", industry: str = "工业") -> MarketQuote:
