@@ -28,6 +28,17 @@ def test_each_delivery_documents_user_problem_and_change_summary() -> None:
         assert "CHANGELOG.md" in contract
 
 
+def test_need_compliance_audit_records_actionable_repair_queue() -> None:
+    audit = (PROJECT_ROOT / "docs/issues/2026-07-17.md").read_text(encoding="utf-8")
+
+    assert "## need.md 符合性审查与修复队列" in audit
+    for index in range(1, 17):
+        assert f"AUDIT-20260717-{index:02d}" in audit
+    for required_field in ("需求条款", "证据与影响", "修复步骤", "验收条件", "交付章节", "状态"):
+        assert required_field in audit
+    assert "具体 snapshot_id 只作为当次运行证据" in audit
+
+
 def _section(path: Path, start: str, end: str) -> str:
     content = path.read_text(encoding="utf-8")
     return content.split(start, 1)[1].split(end, 1)[0]
