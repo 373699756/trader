@@ -6,6 +6,65 @@ import math
 from collections.abc import Iterable, Mapping
 from decimal import ROUND_HALF_UP, Decimal
 
+from trader.domain.models import CrossSectionStats
+
+PRODUCTION_FACTOR_IDS = frozenset(
+    {
+        "amount_median_20d",
+        "amount_percentile_20d",
+        "breakout_20d",
+        "capacity_score",
+        "close_location",
+        "evidence_freshness",
+        "financial_deterioration",
+        "growth_score",
+        "industry_breadth",
+        "industry_policy_score",
+        "industry_strength",
+        "industry_trend",
+        "limit_distance_safety",
+        "limit_proximity",
+        "low_crowding_score",
+        "low_drawdown_score",
+        "low_volatility_score",
+        "ma20_60_position",
+        "ma20_60_structure",
+        "ma20_deviation_inverse",
+        "ma_slope",
+        "market_breadth",
+        "max_drawdown_20d",
+        "moderate_amplitude",
+        "moderate_daily_return",
+        "negative_announcement_level",
+        "news_sentiment",
+        "pledge_risk",
+        "price_executability",
+        "price_volume_confirmation",
+        "price_volume_divergence",
+        "quality_score",
+        "reduction_or_unlock",
+        "relative_strength_10d",
+        "relative_strength_20d",
+        "relative_strength_3d",
+        "relative_strength_5d",
+        "return_10d",
+        "return_20d",
+        "return_20d_not_overheated",
+        "return_3d",
+        "return_5d",
+        "return_60d",
+        "risk_adjusted_return_20d",
+        "risk_protection_score",
+        "speed_percentile",
+        "tail_return_30m",
+        "tail_volume_ratio",
+        "trend_score",
+        "upward_consistency",
+        "value_score",
+        "volatility_20d",
+    }
+)
+
 
 def clamp(value: float, lower: float = 0.0, upper: float = 100.0) -> float:
     if not math.isfinite(value):
@@ -46,14 +105,52 @@ def weighted_score(values: Mapping[str, float], weights: Mapping[str, float]) ->
 
 
 def percentile_scores(values: Mapping[str, float | None], *, inverse: bool = False) -> dict[str, float]:
-    finite = sorted((float(value), key) for key, value in values.items() if value is not None and math.isfinite(value))
+    scores, _ = percentile_scores_with_metadata(values, inverse=inverse)
+    return scores
+
+
+def percentile_scores_with_metadata(
+    values: Mapping[str, float | None],
+    *,
+    inverse: bool = False,
+    lower_quantile: float = 0.025,
+    upper_quantile: float = 0.975,
+    population_data_version: str = "",
+) -> tuple[dict[str, float], CrossSectionStats]:
+    if not 0.0 <= lower_quantile <= upper_quantile <= 1.0:
+        raise ValueError("invalid winsor quantiles")
+    raw_finite = sorted(
+        (float(value), key) for key, value in values.items() if value is not None and math.isfinite(value)
+    )
     result = {key: 50.0 for key in values}
-    if not finite:
-        return result
+    missing_count = len(values) - len(raw_finite)
+    if not raw_finite:
+        return result, CrossSectionStats(
+            None,
+            None,
+            0,
+            missing_count,
+            lower_quantile,
+            upper_quantile,
+            population_data_version,
+        )
+    raw_values = [value for value, _ in raw_finite]
+    lower = _quantile(raw_values, lower_quantile)
+    upper = _quantile(raw_values, upper_quantile)
+    finite = sorted((min(upper, max(lower, value)), key) for value, key in raw_finite)
+    metadata = CrossSectionStats(
+        lower,
+        upper,
+        len(finite),
+        missing_count,
+        lower_quantile,
+        upper_quantile,
+        population_data_version,
+    )
     if len(finite) == 1:
         only_key = finite[0][1]
         result[only_key] = 50.0
-        return result
+        return result, metadata
 
     index = 0
     while index < len(finite):
@@ -67,7 +164,7 @@ def percentile_scores(values: Mapping[str, float | None], *, inverse: bool = Fal
         for _, key in finite[index:end]:
             result[key] = score
         index = end
-    return result
+    return result, metadata
 
 
 def winsorize(values: Iterable[float], lower_quantile: float = 0.025, upper_quantile: float = 0.975) -> list[float]:
@@ -101,6 +198,8 @@ __all__ = [
     "band_score",
     "clamp",
     "inverse_score",
+    "percentile_scores_with_metadata",
+    "PRODUCTION_FACTOR_IDS",
     "percentile_scores",
     "round_score",
     "weighted_score",

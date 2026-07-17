@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 import requests
@@ -18,6 +19,7 @@ from trader.infrastructure.market_data.history import DailyBar
 from trader.infrastructure.market_data.service import MarketFeatureService
 from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
+from trader.infrastructure.settings import ConfigurationError, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
 
@@ -44,7 +46,7 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
                     "f20": 30000000000,
                     "f22": 0.8,
                     "f100": "工业",
-                    "f124": int(NOW.timestamp()),
+                    "f124": int((NOW - timedelta(minutes=1)).timestamp()),
                 }
             ],
         }
@@ -59,7 +61,8 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
     assert len(quotes) == 1
     assert quotes[0].code == "600001"
     assert quotes[0].industry == "工业"
-    assert quotes[0].source_time == NOW
+    assert quotes[0].source_time == NOW - timedelta(minutes=1)
+    assert quotes[0].data_version == f"eastmoney:{int(NOW.timestamp())}"
     assert history[0].amount == 100000000
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
 
@@ -233,6 +236,106 @@ def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
     assert targeted[0].values["speed_percentile"] == 100.0
 
 
+def test_feature_builder_partitions_cross_sections_and_excludes_missing_breadth() -> None:
+    builder = FeatureBuilder()
+    quotes = (
+        replace(_quote(code="600001"), speed=0.1, pct_change=1.0, data_version="v1"),
+        replace(_quote(code="600002"), speed=0.2, pct_change=-1.0, data_version="v1"),
+        replace(_quote(code="600003"), speed=0.1, pct_change=None, data_version="v2"),
+        replace(_quote(code="600004"), speed=0.2, pct_change=2.0, data_version="v2"),
+    )
+
+    features = builder.build(quotes, {}, NOW)
+
+    assert [item.values["speed_percentile"] for item in features] == [0.0, 100.0, 0.0, 100.0]
+    assert features[0].values["market_breadth"] == 50.0
+    assert features[2].values["market_breadth"] == 100.0
+    assert features[0].normalization["speed_percentile"].sample_size == 2
+    assert features[2].normalization["market_breadth"].missing_count == 1
+    assert features[2].values["limit_proximity"] is None
+    assert "pct_change" in features[2].missing_fields
+    assert "limit_proximity" in features[2].missing_fields
+
+
+def test_market_service_bounds_history_preload_to_stratified_candidate_universe() -> None:
+    history = CountingHistoryClient(_history_bars())
+    quotes = tuple(_quote(code=f"60000{index}", industry="工业" if index % 2 else "银行") for index in range(1, 6))
+    service = MarketFeatureService(
+        StaticGateway(quotes),
+        history,
+        FeatureBuilder(),
+        history_workers=2,
+        history_preload_limit=2,
+    )
+
+    features = service.fetch_market_features(NOW)
+
+    assert len(history.calls) == 2
+    assert sum(item.history_days >= 20 for item in features) == 2
+    assert service.health()["history_universe_rows"] == 2
+
+
+def test_market_service_loads_history_before_cold_start_candidate_cross_section() -> None:
+    history = CountingHistoryClient(_history_bars())
+    service = MarketFeatureService(
+        StaticGateway((_quote(), _quote(code="600002"))),
+        history,
+        FeatureBuilder(),
+        history_workers=2,
+    )
+
+    features = service.fetch_market_features(NOW)
+
+    assert sorted(history.calls) == ["600001", "600002"]
+    assert all(item.history_days == 60 for item in features)
+    assert service.health()["history_coverage_ratio"] == 1.0
+    assert service.health()["history_universe_rows"] == 2
+
+
+def test_market_service_reloads_expired_history_and_reports_failed_coverage() -> None:
+    clock = MutableMonotonic()
+    history = SelectiveHistoryClient(_history_bars(), failing_codes={"600002"})
+    service = MarketFeatureService(
+        StaticGateway((_quote(), _quote(code="600002"))),
+        history,
+        FeatureBuilder(),
+        history_workers=2,
+        history_ttl_seconds=60,
+        market_ttl_seconds=1,
+        monotonic=clock,
+    )
+
+    first = service.fetch_market_features(NOW)
+    clock.value = 61.0
+    second = service.fetch_market_features(NOW + timedelta(minutes=1))
+
+    assert history.calls.count("600001") == 2
+    assert history.calls.count("600002") == 2
+    assert first[1].optional_value("return_20d") is None
+    assert second[1].optional_value("return_20d") is None
+    assert service.health()["history_coverage_ratio"] == 0.5
+    assert service.health()["history_error_count"] == 2
+
+
+def test_strategy_factor_registry_is_complete_and_required() -> None:
+    path = Path(__file__).parents[2] / "config" / "v2" / "strategy.json"
+    settings = load_strategy_settings(path)
+
+    assert settings.factor_registry["speed_percentile"].factor_id == "speed_percentile"
+    assert settings.strategy_version.startswith("strategy_sha256_")
+
+
+def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
+    source = Path(__file__).parents[2] / "config" / "v2" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    del raw["factor_registry"]["speed_percentile"]
+    target = tmp_path / "strategy.json"
+    target.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="factor_registry mismatch"):
+        load_strategy_settings(target)
+
+
 def test_akshare_news_is_bounded_and_normalized() -> None:
     callback = "jQuery35101792940631092459_1764599530165"
     payload = {
@@ -403,6 +506,35 @@ class StaticHistoryClient:
         return ()
 
 
+class CountingHistoryClient:
+    def __init__(self, bars) -> None:
+        self._bars = bars
+        self.calls = []
+
+    def fetch_history(self, code, *, days):
+        self.calls.append(code)
+        return self._bars
+
+
+class SelectiveHistoryClient(CountingHistoryClient):
+    def __init__(self, bars, *, failing_codes) -> None:
+        super().__init__(bars)
+        self._failing_codes = set(failing_codes)
+
+    def fetch_history(self, code, *, days):
+        self.calls.append(code)
+        if code in self._failing_codes:
+            raise RuntimeError("offline")
+        return self._bars
+
+
+class MutableMonotonic:
+    value = 0.0
+
+    def __call__(self):
+        return self.value
+
+
 class StaticResearchClient:
     def __init__(self, evidence) -> None:
         self._evidence = evidence
@@ -441,4 +573,20 @@ def _quote(code: str = "600001", industry: str = "工业") -> MarketQuote:
         source_time=NOW,
         received_time=NOW,
         data_version="fixture-v1",
+    )
+
+
+def _history_bars() -> tuple[DailyBar, ...]:
+    return tuple(
+        DailyBar(
+            trade_date=f"2026-{5 + index // 30:02d}-{index % 30 + 1:02d}",
+            open_price=10.0 + index / 100,
+            close=10.0 + index / 100,
+            high=10.2 + index / 100,
+            low=9.8 + index / 100,
+            volume=1_000_000,
+            amount=100_000_000 + index,
+            pct_change=0.1,
+        )
+        for index in range(60)
     )

@@ -90,10 +90,12 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         research_client=AkshareResearchClient(timeout_seconds=settings.market_data.research_timeout_seconds),
         history_workers=settings.pipeline.market_workers,
         research_workers=settings.pipeline.market_workers,
+        history_preload_limit=settings.market_data.candidate_pool_size * 3,
         market_ttl_seconds=settings.pipeline.full_market_refresh_seconds,
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
-    repository = SnapshotRepository(settings.runtime_dir, config_version=settings.config_version)
+    effective_config_version = f"{settings.config_version}+{strategy.strategy_version}"
+    repository = SnapshotRepository(settings.runtime_dir, config_version=effective_config_version)
     budget = DeepSeekBudgetStore(
         settings.runtime_dir / "runtime.sqlite3",
         daily_hard_limit=settings.deepseek.daily_hard_limit,
@@ -122,7 +124,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         publisher,
         RecommendationEngine(policy),
         state,
-        config_version=settings.config_version,
+        config_version=effective_config_version,
         candidate_pool_size=settings.market_data.candidate_pool_size,
         event_queue_size=settings.pipeline.event_queue_size,
         priority_queue_size=settings.pipeline.priority_queue_size,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -9,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.domain.models import Evidence, FeatureSnapshot
+from trader.domain.models import Evidence, FeatureSnapshot, MarketQuote
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
@@ -39,6 +40,7 @@ class MarketFeatureService:
         research_client: AkshareResearchClient | None = None,
         history_workers: int = 6,
         research_workers: int = 4,
+        history_preload_limit: int = 360,
         history_ttl_seconds: float = 21_600,
         research_ttl_seconds: float = 600,
         market_ttl_seconds: float = 30,
@@ -50,6 +52,7 @@ class MarketFeatureService:
         self._research_client = research_client
         self._history_workers = max(1, history_workers)
         self._research_workers = max(1, research_workers)
+        self._history_preload_limit = max(1, history_preload_limit)
         self._history_ttl_seconds = max(60.0, history_ttl_seconds)
         self._research_ttl_seconds = max(60.0, research_ttl_seconds)
         self._market_ttl_seconds = max(1.0, market_ttl_seconds)
@@ -62,6 +65,10 @@ class MarketFeatureService:
         self._research_success_count = 0
         self._research_error_count = 0
         self._research_last_error = ""
+        self._history_universe_rows = 0
+        self._history_covered_rows = 0
+        self._history_error_count = 0
+        self._history_data_versions: tuple[str, ...] = ()
 
     def fetch_market_features(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
         now = self._monotonic()
@@ -69,11 +76,15 @@ class MarketFeatureService:
             if self._market_features and self._market_expires_at > now:
                 return self._market_features
         quotes = tuple(self._gateway.fetch_market())
-        histories = self._cached_histories(quote.code for quote in quotes)
+        history_codes = _history_preload_codes(quotes, self._history_preload_limit)
+        histories = self._load_histories(history_codes)
         features = self._feature_builder.build(quotes, histories, observed_at)
         with self._lock:
             self._market_features = features
             self._market_expires_at = self._monotonic() + self._market_ttl_seconds
+            self._history_universe_rows = len(history_codes)
+            self._history_covered_rows = sum(len(histories.get(code, ())) >= 20 for code in history_codes)
+            self._history_data_versions = tuple(sorted({quote.data_version for quote in quotes}))
         return features
 
     def fetch_candidate_features(
@@ -93,11 +104,15 @@ class MarketFeatureService:
         research_evidence = self._load_research(normalized, observed_at)
         with self._lock:
             cross_section_reference = {feature.quote.code: feature.values for feature in self._market_features}
+            cross_section_normalization_reference = {
+                feature.quote.code: feature.normalization for feature in self._market_features
+            }
         return self._feature_builder.build(
             quotes,
             histories,
             observed_at,
             cross_section_reference=cross_section_reference,
+            cross_section_normalization_reference=cross_section_normalization_reference,
             research_evidence=research_evidence,
         )
 
@@ -109,6 +124,10 @@ class MarketFeatureService:
             research_success_count = self._research_success_count
             research_error_count = self._research_error_count
             research_last_error = self._research_last_error
+            history_universe_rows = self._history_universe_rows
+            history_covered_rows = self._history_covered_rows
+            history_error_count = self._history_error_count
+            history_data_versions = self._history_data_versions
         return {
             **dict(self._gateway.health()),
             "history_cache_entries": history_entries,
@@ -117,6 +136,11 @@ class MarketFeatureService:
             "research_success_count": research_success_count,
             "research_error_count": research_error_count,
             "research_last_error": research_last_error,
+            "history_universe_rows": history_universe_rows,
+            "history_covered_rows": history_covered_rows,
+            "history_coverage_ratio": history_covered_rows / history_universe_rows if history_universe_rows else 0.0,
+            "history_error_count": history_error_count,
+            "history_data_versions": history_data_versions,
         }
 
     def _load_research(
@@ -180,12 +204,20 @@ class MarketFeatureService:
                     bars = tuple(future.result())
                 except Exception:
                     bars = ()
+                    with self._lock:
+                        self._history_error_count += 1
+                result[code] = bars
                 if bars:
-                    result[code] = bars
                     with self._lock:
                         self._history[code] = _HistoryEntry(
                             bars=bars,
                             expires_at=self._monotonic() + self._history_ttl_seconds,
+                        )
+                else:
+                    with self._lock:
+                        self._history[code] = _HistoryEntry(
+                            bars=(),
+                            expires_at=self._monotonic() + min(60.0, self._history_ttl_seconds),
                         )
         return result
 
@@ -203,6 +235,33 @@ class MarketFeatureService:
                     continue
                 result[code] = entry.bars
         return result
+
+
+def _history_preload_codes(quotes: Sequence[MarketQuote], limit: int) -> tuple[str, ...]:
+    groups: dict[str, list[MarketQuote]] = {}
+    for quote in quotes:
+        if quote.is_suspended or quote.price is None or not math.isfinite(quote.price) or quote.price <= 0:
+            continue
+        groups.setdefault(quote.industry or "unknown", []).append(quote)
+    for group in groups.values():
+        group.sort(key=_history_priority)
+    representatives = sorted((group[0] for group in groups.values()), key=_history_priority)
+    selected = representatives[:limit]
+    selected_codes = {quote.code for quote in selected}
+    remaining = sorted(
+        (quote for group in groups.values() for quote in group if quote.code not in selected_codes),
+        key=_history_priority,
+    )
+    selected.extend(remaining[: max(0, limit - len(selected))])
+    return tuple(quote.code for quote in selected)
+
+
+def _history_priority(quote: MarketQuote) -> tuple[float, float, str]:
+    return (
+        -(quote.amount if quote.amount is not None and math.isfinite(quote.amount) else -1.0),
+        -(abs(quote.pct_change) if quote.pct_change is not None and math.isfinite(quote.pct_change) else -1.0),
+        quote.code,
+    )
 
 
 __all__ = ["MarketFeatureService"]

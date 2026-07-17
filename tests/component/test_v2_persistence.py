@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trader.domain.models import (
+    CrossSectionStats,
     FeatureSnapshot,
     FusionMode,
     LiveOverlay,
@@ -32,6 +33,9 @@ def test_snapshot_round_trip_preserves_frozen_input() -> None:
 
     assert restored == snapshot
     assert restored.recommendations[0].features.values["relative_strength_5d"] == 65.0
+    normalization = restored.recommendations[0].features.normalization["relative_strength_5d"]
+    assert (normalization.lower_bound, normalization.upper_bound) == (-8.0, 12.0)
+    assert normalization.population_data_version == "fixture-v1"
 
 
 def test_publish_and_freeze_create_verified_manifest(tmp_path) -> None:
@@ -276,6 +280,7 @@ def _snapshot() -> RecommendationSnapshot:
         values={"relative_strength_5d": 65.0},
         observed_at=NOW,
         history_days=60,
+        normalization={"relative_strength_5d": CrossSectionStats(-8.0, 12.0, 360, 12, 0.025, 0.975, "fixture-v1")},
     )
     score = ScoreBreakdown(
         components={"momentum": 82.0},

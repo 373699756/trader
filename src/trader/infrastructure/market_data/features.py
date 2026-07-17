@@ -8,8 +8,8 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-from trader.domain.factors import band_score, clamp, percentile_scores
-from trader.domain.models import Evidence, FeatureSnapshot, MarketQuote
+from trader.domain.factors import band_score, clamp, percentile_scores_with_metadata
+from trader.domain.models import CrossSectionStats, Evidence, FeatureSnapshot, MarketQuote
 from trader.infrastructure.market_data.history import (
     DailyBar,
     maximum_drawdown_pct,
@@ -29,22 +29,89 @@ class FeatureBuilder:
         observed_at: datetime,
         *,
         cross_section_reference: Mapping[str, Mapping[str, float | None]] | None = None,
+        cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None = None,
         research_evidence: Mapping[str, Sequence[Evidence]] | None = None,
     ) -> tuple[FeatureSnapshot, ...]:
+        grouped: dict[str, list[MarketQuote]] = defaultdict(list)
+        for quote in quotes:
+            grouped[quote.data_version].append(quote)
+        built: dict[str, FeatureSnapshot] = {}
+        for data_version, group_quotes in grouped.items():
+            for snapshot in self._build_group(
+                tuple(group_quotes),
+                histories,
+                observed_at,
+                data_version=data_version,
+                cross_section_reference=cross_section_reference,
+                cross_section_normalization_reference=cross_section_normalization_reference,
+                research_evidence=research_evidence,
+            ):
+                built[snapshot.quote.code] = snapshot
+        return tuple(built[quote.code] for quote in quotes)
+
+    def _build_group(
+        self,
+        quotes: Sequence[MarketQuote],
+        histories: Mapping[str, tuple[DailyBar, ...]],
+        observed_at: datetime,
+        *,
+        data_version: str,
+        cross_section_reference: Mapping[str, Mapping[str, float | None]] | None,
+        cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None,
+        research_evidence: Mapping[str, Sequence[Evidence]] | None,
+    ) -> tuple[FeatureSnapshot, ...]:
         raw = {quote.code: self._raw_features(quote, histories.get(quote.code, ())) for quote in quotes}
-        amount_percentiles = percentile_scores({code: values.get("amount_median_20d") for code, values in raw.items()})
-        speed_percentiles = percentile_scores({quote.code: quote.speed for quote in quotes})
-        strength_percentiles = {
-            days: percentile_scores({code: values.get(f"return_{days}d") for code, values in raw.items()})
+        amount_percentiles, amount_stats = percentile_scores_with_metadata(
+            {code: values.get("amount_median_20d") for code, values in raw.items()},
+            population_data_version=data_version,
+        )
+        speed_percentiles, speed_stats = percentile_scores_with_metadata(
+            {quote.code: quote.speed for quote in quotes}, population_data_version=data_version
+        )
+        strength_results = {
+            days: percentile_scores_with_metadata(
+                {code: values.get(f"return_{days}d") for code, values in raw.items()},
+                population_data_version=data_version,
+            )
             for days in (3, 5, 10, 20)
         }
-        volatility_scores = percentile_scores(
+        volatility_scores, volatility_stats = percentile_scores_with_metadata(
             {code: values.get("volatility_20d") for code, values in raw.items()},
             inverse=True,
+            population_data_version=data_version,
         )
-        drawdown_scores = percentile_scores({code: values.get("max_drawdown_20d") for code, values in raw.items()})
-        industry_strength, industry_breadth = _industry_scores(quotes)
-        market_breadth = 100.0 * sum((quote.pct_change or 0.0) > 0 for quote in quotes) / max(1, len(quotes))
+        drawdown_scores, drawdown_stats = percentile_scores_with_metadata(
+            {code: values.get("max_drawdown_20d") for code, values in raw.items()},
+            population_data_version=data_version,
+        )
+        industry_strength, industry_strength_stats, industry_breadth = _industry_scores(quotes, data_version)
+        valid_changes = [
+            quote.pct_change for quote in quotes if quote.pct_change is not None and math.isfinite(quote.pct_change)
+        ]
+        market_breadth = (
+            100.0 * sum(value > 0 for value in valid_changes) / len(valid_changes) if valid_changes else None
+        )
+        market_breadth_stats = CrossSectionStats(
+            None,
+            None,
+            len(valid_changes),
+            len(quotes) - len(valid_changes),
+            0.025,
+            0.975,
+            data_version,
+        )
+        shared_normalization = {
+            "amount_percentile_20d": amount_stats,
+            "speed_percentile": speed_stats,
+            "relative_strength_3d": strength_results[3][1],
+            "relative_strength_5d": strength_results[5][1],
+            "relative_strength_10d": strength_results[10][1],
+            "relative_strength_20d": strength_results[20][1],
+            "industry_strength": industry_strength_stats,
+            "market_breadth": market_breadth_stats,
+            "low_volatility_score": volatility_stats,
+            "low_drawdown_score": drawdown_stats,
+        }
 
         snapshots: list[FeatureSnapshot] = []
         for quote in quotes:
@@ -55,17 +122,13 @@ class FeatureBuilder:
                         values.get("amount_median_20d"), amount_percentiles[quote.code]
                     ),
                     "speed_percentile": _if_present(quote.speed, speed_percentiles[quote.code]),
-                    "relative_strength_3d": _if_present(values.get("return_3d"), strength_percentiles[3][quote.code]),
-                    "relative_strength_5d": _if_present(values.get("return_5d"), strength_percentiles[5][quote.code]),
-                    "relative_strength_10d": _if_present(
-                        values.get("return_10d"), strength_percentiles[10][quote.code]
-                    ),
-                    "relative_strength_20d": _if_present(
-                        values.get("return_20d"), strength_percentiles[20][quote.code]
-                    ),
-                    "industry_strength": industry_strength.get(quote.industry, 50.0),
-                    "industry_breadth": industry_breadth.get(quote.industry, 50.0),
-                    "industry_trend": industry_strength.get(quote.industry, 50.0),
+                    "relative_strength_3d": _if_present(values.get("return_3d"), strength_results[3][0][quote.code]),
+                    "relative_strength_5d": _if_present(values.get("return_5d"), strength_results[5][0][quote.code]),
+                    "relative_strength_10d": _if_present(values.get("return_10d"), strength_results[10][0][quote.code]),
+                    "relative_strength_20d": _if_present(values.get("return_20d"), strength_results[20][0][quote.code]),
+                    "industry_strength": industry_strength.get(quote.industry),
+                    "industry_breadth": industry_breadth.get(quote.industry),
+                    "industry_trend": industry_strength.get(quote.industry),
                     "market_breadth": market_breadth,
                     "low_volatility_score": _if_present(values.get("volatility_20d"), volatility_scores[quote.code]),
                     "low_drawdown_score": _if_present(values.get("max_drawdown_20d"), drawdown_scores[quote.code]),
@@ -75,7 +138,16 @@ class FeatureBuilder:
             for name in _CROSS_SECTION_FIELDS:
                 if name in reference:
                     values[name] = reference[name]
-            missing = tuple(sorted(name for name, value in values.items() if value is None))
+            normalization = dict(shared_normalization)
+            normalization.update((cross_section_normalization_reference or {}).get(quote.code, {}))
+            missing = tuple(
+                sorted(
+                    {
+                        *(name for name, value in values.items() if value is None),
+                        *_missing_quote_fields(quote),
+                    }
+                )
+            )
             snapshots.append(
                 FeatureSnapshot(
                     quote=quote,
@@ -88,6 +160,7 @@ class FeatureBuilder:
                         _structured_evidence(quote, values, observed_at),
                         *tuple((research_evidence or {}).get(quote.code, ()))[:15],
                     ),
+                    normalization=normalization,
                 )
             )
         return tuple(snapshots)
@@ -104,10 +177,20 @@ class FeatureBuilder:
         breakout = _breakout_score(quote.price, bars)
         slope = _slope_score(ma5, ma20)
         capacity = (
-            None if quote.amount is None or amount_median is None else clamp(50.0 + 25.0 * quote.amount / amount_median)
+            None
+            if quote.amount is None
+            or not math.isfinite(quote.amount)
+            or amount_median is None
+            or not math.isfinite(amount_median)
+            or amount_median <= 0
+            else clamp(50.0 + 25.0 * quote.amount / amount_median)
         )
         limit = 20.0 if quote.code.startswith(("300", "301", "688", "689")) else 10.0
-        limit_proximity = min(1.0, abs(quote.pct_change or 0.0) / limit)
+        limit_proximity = (
+            min(1.0, abs(quote.pct_change) / limit)
+            if quote.pct_change is not None and math.isfinite(quote.pct_change)
+            else None
+        )
         risk_adjusted = None
         if returns[20] is not None and volatility is not None and volatility > 0:
             risk_adjusted = clamp(50.0 + returns[20] / volatility * 5.0)
@@ -123,7 +206,7 @@ class FeatureBuilder:
             "volatility_20d": volatility,
             "max_drawdown_20d": drawdown,
             "price_volume_confirmation": _price_volume_confirmation(returns[5], quote.amount, amount_median),
-            "moderate_daily_return": band_score(quote.pct_change, -2.0, 0.5, 5.0, 8.0),
+            "moderate_daily_return": _optional_band_score(quote.pct_change, -2.0, 0.5, 5.0, 8.0),
             "ma20_60_position": ma_position,
             "ma20_60_structure": ma_position,
             "ma_slope": slope,
@@ -131,22 +214,22 @@ class FeatureBuilder:
             "risk_adjusted_return_20d": risk_adjusted,
             "upward_consistency": upward_consistency(bars),
             "capacity_score": capacity,
-            "moderate_amplitude": band_score(quote.amplitude, 0.0, 1.0, 5.0, 12.0),
-            "limit_distance_safety": 100.0 * (1.0 - limit_proximity),
+            "moderate_amplitude": _optional_band_score(quote.amplitude, 0.0, 1.0, 5.0, 12.0),
+            "limit_distance_safety": None if limit_proximity is None else 100.0 * (1.0 - limit_proximity),
             "tail_return_30m": None,
             "tail_volume_ratio": None,
             "close_location": close_location,
-            "price_executability": band_score(quote.price, 1.0, 5.0, 100.0, 300.0),
+            "price_executability": _optional_band_score(quote.price, 1.0, 5.0, 100.0, 300.0),
             "ma20_deviation_inverse": _ma_deviation_inverse(quote.price, ma20),
             "return_20d_not_overheated": _not_overheated(returns[20]),
             "trend_score": trend_score,
-            "low_crowding_score": 100.0 * (1.0 - limit_proximity),
+            "low_crowding_score": None if limit_proximity is None else 100.0 * (1.0 - limit_proximity),
             "limit_proximity": limit_proximity,
-            "price_volume_divergence": 0.0,
-            "financial_deterioration": 0.0,
-            "reduction_or_unlock": 0.0,
-            "pledge_risk": 0.0,
-            "negative_announcement_level": 0.0,
+            "price_volume_divergence": None,
+            "financial_deterioration": None,
+            "reduction_or_unlock": None,
+            "pledge_risk": None,
+            "negative_announcement_level": None,
             "news_sentiment": None,
             "evidence_freshness": None,
             "value_score": None,
@@ -157,23 +240,25 @@ class FeatureBuilder:
         }
 
 
-def _industry_scores(quotes: Sequence[MarketQuote]) -> tuple[dict[str, float], dict[str, float]]:
+def _industry_scores(
+    quotes: Sequence[MarketQuote], data_version: str
+) -> tuple[dict[str, float], CrossSectionStats, dict[str, float]]:
     changes: dict[str, list[float]] = defaultdict(list)
     for quote in quotes:
-        if quote.industry and quote.pct_change is not None:
+        if quote.industry and quote.pct_change is not None and math.isfinite(quote.pct_change):
             changes[quote.industry].append(quote.pct_change)
     averages = {industry: sum(values) / len(values) for industry, values in changes.items() if values}
-    strength_by_industry = percentile_scores(averages)
+    strength_by_industry, stats = percentile_scores_with_metadata(averages, population_data_version=data_version)
     breadth = {
         industry: 100.0 * sum(value > 0 for value in values) / len(values)
         for industry, values in changes.items()
         if values
     }
-    return strength_by_industry, breadth
+    return strength_by_industry, stats, breadth
 
 
 def _ma_position(price: float | None, ma20: float | None, ma60: float | None) -> float | None:
-    if price is None or ma20 is None:
+    if not _all_finite(price, ma20) or price is None or ma20 is None:
         return None
     if ma60 is None:
         return 70.0 if price >= ma20 else 30.0
@@ -187,13 +272,13 @@ def _ma_position(price: float | None, ma20: float | None, ma60: float | None) ->
 
 
 def _slope_score(ma5: float | None, ma20: float | None) -> float | None:
-    if ma5 is None or ma20 is None or ma20 <= 0:
+    if not _all_finite(ma5, ma20) or ma5 is None or ma20 is None or ma20 <= 0:
         return None
     return clamp(50.0 + (ma5 / ma20 - 1.0) * 1000.0)
 
 
 def _breakout_score(price: float | None, bars: tuple[DailyBar, ...]) -> float | None:
-    if price is None or len(bars) < 20:
+    if not _all_finite(price) or price is None or len(bars) < 20:
         return None
     high = max(bar.high for bar in bars[-20:])
     if high <= 0:
@@ -206,27 +291,39 @@ def _price_volume_confirmation(
     amount: float | None,
     median: float | None,
 ) -> float | None:
-    if return_5d is None or amount is None or median is None or median <= 0:
+    if (
+        not _all_finite(return_5d, amount, median)
+        or return_5d is None
+        or amount is None
+        or median is None
+        or median <= 0
+    ):
         return None
     volume_signal = clamp(amount / median * 50.0)
     return clamp(50.0 + math.copysign(volume_signal / 2.0, return_5d))
 
 
 def _close_location(quote: MarketQuote) -> float | None:
-    if quote.price is None or quote.high is None or quote.low is None or quote.high <= quote.low:
+    if (
+        not _all_finite(quote.price, quote.high, quote.low)
+        or quote.price is None
+        or quote.high is None
+        or quote.low is None
+        or quote.high <= quote.low
+    ):
         return None
     return clamp((quote.price - quote.low) / (quote.high - quote.low) * 100.0)
 
 
 def _ma_deviation_inverse(price: float | None, ma20: float | None) -> float | None:
-    if price is None or ma20 is None or ma20 <= 0:
+    if not _all_finite(price, ma20) or price is None or ma20 is None or ma20 <= 0:
         return None
     deviation = abs(price / ma20 - 1.0) * 100.0
     return clamp(100.0 - deviation * 10.0)
 
 
 def _not_overheated(return_20d: float | None) -> float | None:
-    if return_20d is None:
+    if not _all_finite(return_20d) or return_20d is None:
         return None
     if return_20d <= 15.0:
         return 100.0
@@ -239,7 +336,41 @@ def _if_present(raw: float | None, score: float) -> float | None:
     return score if raw is not None and math.isfinite(raw) else None
 
 
-def _market_regime(market_breadth: float) -> str:
+def _optional_band_score(
+    value: float | None, lower: float, optimal_low: float, optimal_high: float, upper: float
+) -> float | None:
+    return band_score(value, lower, optimal_low, optimal_high, upper) if _all_finite(value) else None
+
+
+def _all_finite(*values: float | None) -> bool:
+    return all(value is not None and math.isfinite(value) for value in values)
+
+
+def _missing_quote_fields(quote: MarketQuote) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in (
+            "price",
+            "previous_close",
+            "open_price",
+            "high",
+            "low",
+            "pct_change",
+            "change_5m",
+            "speed",
+            "volume_ratio",
+            "turnover_rate",
+            "amount",
+            "amplitude",
+            "market_cap",
+        )
+        if not _all_finite(getattr(quote, name))
+    )
+
+
+def _market_regime(market_breadth: float | None) -> str:
+    if market_breadth is None:
+        return "neutral"
     if market_breadth >= 60.0:
         return "risk_on"
     if market_breadth <= 40.0:

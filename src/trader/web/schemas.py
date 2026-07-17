@@ -150,6 +150,18 @@ def _recommendation(item: Recommendation, live_quote: LiveQuote | None = None) -
             "fusion_applied": score.fusion_applied,
         },
         "features": dict(item.features.values),
+        "normalization": {
+            factor_id: {
+                "lower_bound": stats.lower_bound,
+                "upper_bound": stats.upper_bound,
+                "sample_size": stats.sample_size,
+                "missing_count": stats.missing_count,
+                "lower_quantile": stats.lower_quantile,
+                "upper_quantile": stats.upper_quantile,
+                "population_data_version": stats.population_data_version,
+            }
+            for factor_id, stats in item.features.normalization.items()
+        },
         "missing_fields": missing_fields,
         "missing_reasons": {field: _missing_reason(field) for field in missing_fields},
         "market_regime": item.features.market_regime,

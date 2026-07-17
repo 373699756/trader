@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from trader.domain.factors import PRODUCTION_FACTOR_IDS
 from trader.infrastructure.settings_parser import (
     ConfigurationError,
 )
@@ -164,6 +167,27 @@ class RiskRuleSettings:
 
 
 @dataclass(frozen=True)
+class FactorDefinition:
+    factor_id: str
+    strategies: tuple[str, ...]
+    raw_inputs: tuple[str, ...]
+    formula: str
+    unit: str
+    direction: str
+    observation_time: str
+    adjustment: str
+    lookback_window: int
+    minimum_samples: int
+    winsor_enabled: bool
+    winsor_lower_quantile: float
+    winsor_upper_quantile: float
+    normalization: str
+    missing_policy: str
+    output_range: tuple[float, float]
+    version: str
+
+
+@dataclass(frozen=True)
 class StrategySettings:
     schema_version: int
     strategy_version: str
@@ -173,6 +197,7 @@ class StrategySettings:
     dimension_weights: Mapping[str, Mapping[str, float]]
     risk_rules: tuple[RiskRuleSettings, ...]
     factor_contract: Mapping[str, object]
+    factor_registry: Mapping[str, FactorDefinition]
 
 
 @dataclass(frozen=True)
@@ -291,9 +316,14 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         raise ConfigurationError("risk_rules must be a list")
     risk_rules = tuple(_parse_risk_rule(item, index) for index, item in enumerate(rules_raw))
     dimension_weights = _nested_number_mapping(raw, "dimension_weights")
+    factor_registry_raw = _mapping(raw, "factor_registry")
+    factor_registry = {
+        str(factor_id): _parse_factor_definition(str(factor_id), definition)
+        for factor_id, definition in factor_registry_raw.items()
+    }
     settings = StrategySettings(
         schema_version=3,
-        strategy_version=_text(raw, "strategy_version"),
+        strategy_version=_strategy_contract_version(raw),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),
             local_weight=_number(fusion_raw, "local_weight", minimum=0.0, maximum=1.0),
@@ -321,6 +351,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         dimension_weights=dimension_weights,
         risk_rules=risk_rules,
         factor_contract=dict(_mapping(raw, "factor_contract")),
+        factor_registry=factor_registry,
     )
     _validate_strategy_settings(settings)
     return settings
@@ -439,6 +470,75 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         raise ConfigurationError("risk rule codes must be unique")
     if any(rule.severity not in {"low", "medium", "high"} for rule in settings.risk_rules):
         raise ConfigurationError("risk rule severity must be low, medium or high")
+    registered = set(settings.factor_registry)
+    if registered != PRODUCTION_FACTOR_IDS:
+        missing = sorted(PRODUCTION_FACTOR_IDS - registered)
+        extra = sorted(registered - PRODUCTION_FACTOR_IDS)
+        raise ConfigurationError(f"factor_registry mismatch: missing={missing}, extra={extra}")
+
+
+def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:
+    if not isinstance(raw, dict):
+        raise ConfigurationError(f"factor_registry.{factor_id} must be an object")
+    if _text(raw, "factor_id") != factor_id:
+        raise ConfigurationError(f"factor_registry.{factor_id}.factor_id must match its key")
+    strategies = raw.get("strategies")
+    raw_inputs = raw.get("raw_inputs")
+    output_range = raw.get("output_range")
+    winsor = _mapping(raw, "winsorization")
+    if (
+        not isinstance(strategies, list)
+        or not strategies
+        or any(value not in {"today", "tomorrow", "d25", "long"} for value in strategies)
+    ):
+        raise ConfigurationError(f"factor_registry.{factor_id}.strategies is invalid")
+    if (
+        not isinstance(raw_inputs, list)
+        or not raw_inputs
+        or any(not isinstance(value, str) or not value for value in raw_inputs)
+    ):
+        raise ConfigurationError(f"factor_registry.{factor_id}.raw_inputs is invalid")
+    if (
+        not isinstance(output_range, list)
+        or len(output_range) != 2
+        or any(not isinstance(value, (int, float)) or isinstance(value, bool) for value in output_range)
+        or any(not math.isfinite(float(value)) for value in output_range)
+        or float(output_range[0]) > float(output_range[1])
+    ):
+        raise ConfigurationError(f"factor_registry.{factor_id}.output_range is invalid")
+    lower = _number(winsor, "lower_quantile", minimum=0.0, maximum=1.0)
+    upper = _number(winsor, "upper_quantile", minimum=0.0, maximum=1.0)
+    if lower > upper:
+        raise ConfigurationError(f"factor_registry.{factor_id}.winsorization is invalid")
+    return FactorDefinition(
+        factor_id=factor_id,
+        strategies=tuple(strategies),
+        raw_inputs=tuple(raw_inputs),
+        formula=_text(raw, "formula"),
+        unit=_text(raw, "unit"),
+        direction=_text(raw, "direction"),
+        observation_time=_text(raw, "observation_time"),
+        adjustment=_text(raw, "adjustment"),
+        lookback_window=_integer(raw, "lookback_window", minimum=0),
+        minimum_samples=_integer(raw, "minimum_samples", minimum=0),
+        winsor_enabled=_boolean(winsor, "enabled"),
+        winsor_lower_quantile=lower,
+        winsor_upper_quantile=upper,
+        normalization=_text(raw, "normalization"),
+        missing_policy=_text(raw, "missing_policy"),
+        output_range=(float(output_range[0]), float(output_range[1])),
+        version=_text(raw, "version"),
+    )
+
+
+def _strategy_contract_version(raw: Mapping[str, object]) -> str:
+    canonical = dict(raw)
+    canonical.pop("strategy_version", None)
+    try:
+        payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except ValueError as exc:
+        raise ConfigurationError("strategy configuration numbers must be finite") from exc
+    return f"strategy_sha256_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:20]}"
 
 
 def _validate_weight_sum(name: str, weights: Mapping[str, float]) -> None:
@@ -453,6 +553,7 @@ __all__ = [
     "ConfigurationError",
     "DeepSeekSettings",
     "FusionSettings",
+    "FactorDefinition",
     "LongWatchItem",
     "LongWatchlist",
     "MarketDataSettings",

@@ -183,7 +183,7 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
         source="eastmoney",
         source_time=source_time,
         received_time=received_at,
-        data_version=f"eastmoney:{int(source_time.timestamp())}",
+        data_version=f"eastmoney:{int(received_at.timestamp())}",
         is_st="ST" in name.upper() or "退" in name,
         is_suspended=price is None or price <= 0,
         is_one_price_limit=is_one_price_limit,

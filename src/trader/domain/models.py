@@ -150,6 +150,17 @@ class RiskRule:
 
 
 @dataclass(frozen=True)
+class CrossSectionStats:
+    lower_bound: float | None
+    upper_bound: float | None
+    sample_size: int
+    missing_count: int
+    lower_quantile: float
+    upper_quantile: float
+    population_data_version: str
+
+
+@dataclass(frozen=True)
 class FeatureSnapshot:
     quote: MarketQuote
     values: Mapping[str, float | None]
@@ -159,9 +170,11 @@ class FeatureSnapshot:
     missing_fields: tuple[str, ...] = ()
     evidence: tuple[Evidence, ...] = ()
     external_risk_facts: tuple[RiskFact, ...] = ()
+    normalization: Mapping[str, CrossSectionStats] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
+        object.__setattr__(self, "normalization", MappingProxyType(dict(self.normalization)))
 
     def value(self, name: str, default: float = 50.0) -> float:
         raw = self.values.get(name)
@@ -336,6 +349,7 @@ class RecommendationSnapshot:
 
 __all__ = [
     "Board",
+    "CrossSectionStats",
     "DeepSeekReview",
     "DimensionAssessment",
     "Evidence",

@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from datetime import datetime
 
 from trader.domain.models import (
+    CrossSectionStats,
     DeepSeekReview,
     DimensionAssessment,
     Evidence,
@@ -257,6 +258,18 @@ def _features_to_dict(features: FeatureSnapshot) -> dict[str, object]:
         "missing_fields": list(features.missing_fields),
         "evidence": [_evidence_to_dict(item) for item in features.evidence],
         "external_risk_facts": [_risk_fact_to_dict(item) for item in features.external_risk_facts],
+        "normalization": {
+            factor_id: {
+                "lower_bound": item.lower_bound,
+                "upper_bound": item.upper_bound,
+                "sample_size": item.sample_size,
+                "missing_count": item.missing_count,
+                "lower_quantile": item.lower_quantile,
+                "upper_quantile": item.upper_quantile,
+                "population_data_version": item.population_data_version,
+            }
+            for factor_id, item in features.normalization.items()
+        },
     }
 
 
@@ -265,6 +278,7 @@ def _features_from_dict(raw: Mapping[str, object]) -> FeatureSnapshot:
     evidence = raw.get("evidence")
     risks = raw.get("external_risk_facts")
     missing = raw.get("missing_fields")
+    normalization = raw.get("normalization")
     return FeatureSnapshot(
         quote=_quote_from_dict(_object(raw, "quote")),
         values={str(key): _optional_number(value) for key, value in values.items()} if isinstance(values, dict) else {},
@@ -280,6 +294,21 @@ def _features_from_dict(raw: Mapping[str, object]) -> FeatureSnapshot:
         external_risk_facts=tuple(_risk_fact_from_dict(item) for item in risks if isinstance(item, dict))
         if isinstance(risks, list)
         else (),
+        normalization={
+            str(factor_id): CrossSectionStats(
+                lower_bound=_optional_number(item.get("lower_bound")),
+                upper_bound=_optional_number(item.get("upper_bound")),
+                sample_size=_integer(item, "sample_size"),
+                missing_count=_integer(item, "missing_count"),
+                lower_quantile=_number(item, "lower_quantile"),
+                upper_quantile=_number(item, "upper_quantile"),
+                population_data_version=_text(item, "population_data_version"),
+            )
+            for factor_id, item in normalization.items()
+            if isinstance(item, dict)
+        }
+        if isinstance(normalization, dict)
+        else {},
     )
 
 

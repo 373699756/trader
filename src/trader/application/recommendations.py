@@ -52,6 +52,9 @@ class RecommendationEngine:
             if not result.allowed:
                 reasons.update(reason.code for reason in result.reasons)
                 continue
+            if snapshot.missing_ratio(CORE_FIELDS) > 0.30:
+                reasons["insufficient_candidate_history"] += 1
+                continue
             accepted.append((candidate_score(snapshot, self._policy.candidate_weights), snapshot))
         accepted.sort(key=lambda item: (-item[0], item[1].quote.code))
         return tuple(snapshot for _score, snapshot in accepted[:limit]), dict(reasons)
@@ -474,6 +477,7 @@ def _preselection_replay_feature(feature: FeatureSnapshot) -> FeatureSnapshot:
     return replace(
         feature,
         values={name: feature.values.get(name) for name in dict.fromkeys(_PRESELECTION_VALUE_FIELDS)},
+        normalization=feature.normalization,
         evidence=(),
         external_risk_facts=(),
     )
