@@ -8,23 +8,29 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
-from trader.application.policy import RecommendationPolicy
+from trader.application.policy import RecommendationPolicy, SelectionPolicy
 from trader.application.ports import DeepSeekReviewPort
 from trader.domain.filters import hard_filter
-from trader.domain.fusion import fuse_score
+from trader.domain.fusion import FusionPolicy, fuse_score
 from trader.domain.models import (
     DeepSeekReview,
     FeatureSnapshot,
+    FrozenReplayPolicy,
     FusionMode,
     Recommendation,
     RecommendationAction,
+    RecommendationReplayInput,
     RecommendationSnapshot,
     ReviewOutcome,
     Strategy,
 )
-from trader.domain.ranking import action_for, candidate_score, select_top_k
+from trader.domain.ranking import CORE_FIELDS, action_for, candidate_score, select_top_k
 from trader.domain.risk import derive_local_risk_facts
 from trader.domain.strategies import score_strategy
+
+REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
+REPLAY_ALGORITHM_VERSION = "engine_v2_2026_07"
+_PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 
 
 class RecommendationEngine:
@@ -65,6 +71,10 @@ class RecommendationEngine:
         filtered_count: int,
         filter_reasons: Mapping[str, int],
         target_prices: Mapping[str, float | None] | None = None,
+        market_features: Sequence[FeatureSnapshot] = (),
+        requested_codes: Sequence[str] = (),
+        preselect_max_age_seconds: float | None = None,
+        candidate_pool_size: int = 0,
     ) -> RecommendationSnapshot:
         eligible: list[FeatureSnapshot] = []
         refreshed_filter_reasons = Counter(filter_reasons)
@@ -141,7 +151,98 @@ class RecommendationEngine:
                     review.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN} for review in reviews.values()
                 ),
             },
+            replay_input=RecommendationReplayInput(
+                schema_version=REPLAY_SCHEMA_VERSION,
+                algorithm_version=REPLAY_ALGORITHM_VERSION,
+                policy=_freeze_policy(self._policy),
+                evaluated_at=now,
+                market_features=tuple(_preselection_replay_feature(feature) for feature in market_features),
+                requested_codes=tuple(requested_codes) or tuple(feature.quote.code for feature in features),
+                candidate_features=tuple(features),
+                reviews=reviews,
+                preselect_max_age_seconds=preselect_max_age_seconds
+                if preselect_max_age_seconds is not None
+                else max_age_seconds,
+                score_max_age_seconds=max_age_seconds,
+                candidate_pool_size=candidate_pool_size,
+                target_prices=dict(target_prices or {}),
+            ),
         )
+
+    def replay(self, snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
+        replay_input = snapshot.replay_input
+        if replay_input is None:
+            raise ValueError("snapshot does not contain replay input")
+        if replay_input.schema_version != REPLAY_SCHEMA_VERSION:
+            raise ValueError("snapshot replay schema is unsupported")
+        if replay_input.algorithm_version != REPLAY_ALGORITHM_VERSION:
+            raise ValueError("snapshot replay algorithm is unsupported")
+        if not replay_input.market_features:
+            raise ValueError("snapshot replay input does not contain the frozen market universe")
+        if replay_input.candidate_pool_size < 1:
+            raise ValueError("snapshot replay input has an invalid candidate pool size")
+        replay_engine = RecommendationEngine(_restore_policy(replay_input.policy))
+        if snapshot.strategy_version != replay_input.policy.strategy_version:
+            raise ValueError("snapshot strategy version does not match its frozen replay policy")
+        if snapshot.fusion_version != replay_input.policy.fusion_version:
+            raise ValueError("snapshot fusion version does not match its frozen replay policy")
+
+        candidates, filter_reasons = replay_engine.preselect(
+            replay_input.market_features,
+            now=replay_input.evaluated_at,
+            max_age_seconds=replay_input.preselect_max_age_seconds,
+            limit=replay_input.candidate_pool_size,
+        )
+        expected_codes = tuple(feature.quote.code for feature in candidates)
+        recorded_codes = replay_input.requested_codes
+        if expected_codes != recorded_codes:
+            raise ValueError("frozen market universe does not reproduce the targeted candidate pool")
+
+        return replay_engine.build_snapshot(
+            snapshot.strategy,
+            replay_input.candidate_features,
+            now=replay_input.evaluated_at,
+            phase=snapshot.phase,
+            trade_date=snapshot.trade_date,
+            data_version=snapshot.data_version,
+            review_port=_RecordedReviewPort(replay_input.reviews),
+            review_deadline=replay_input.evaluated_at,
+            max_age_seconds=replay_input.score_max_age_seconds,
+            filtered_count=max(0, len(replay_input.market_features) - len(candidates)),
+            filter_reasons=filter_reasons,
+            target_prices=replay_input.target_prices,
+            market_features=replay_input.market_features,
+            requested_codes=replay_input.requested_codes,
+            preselect_max_age_seconds=replay_input.preselect_max_age_seconds,
+            candidate_pool_size=replay_input.candidate_pool_size,
+        )
+
+    @classmethod
+    def verify_frozen(cls, snapshot: RecommendationSnapshot) -> Mapping[str, object]:
+        replay_input = snapshot.replay_input
+        if replay_input is None:
+            raise ValueError("snapshot does not contain replay input")
+        return cls(_restore_policy(replay_input.policy)).verify_replay(snapshot)
+
+    def verify_replay(self, snapshot: RecommendationSnapshot) -> Mapping[str, object]:
+        if not snapshot.frozen:
+            raise ValueError("only frozen snapshots can be verified")
+        replayed = self.replay(snapshot)
+        expected = _business_projection(snapshot)
+        actual = _business_projection(replayed)
+        if actual != expected:
+            raise ValueError("frozen snapshot does not match deterministic replay")
+        replay_input = snapshot.replay_input
+        if replay_input is None:
+            raise ValueError("snapshot does not contain replay input")
+        return {
+            "status": "verified",
+            "snapshot_id": snapshot.snapshot_id,
+            "strategy": snapshot.strategy.value,
+            "market_input_count": len(replay_input.market_features),
+            "candidate_input_count": len(replay_input.candidate_features),
+            "recommendation_count": len(snapshot.recommendations),
+        }
 
     def _local_candidate(
         self,
@@ -206,6 +307,110 @@ def _snapshot_id(
 ) -> str:
     material = f"{strategy.value}|{trade_date}|{phase}|{data_version}|{now.isoformat()}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+class _RecordedReviewPort:
+    def __init__(self, reviews: Mapping[str, DeepSeekReview]) -> None:
+        self._reviews = dict(reviews)
+
+    def review(
+        self,
+        _strategy: Strategy,
+        candidates: Sequence[FeatureSnapshot],
+        *,
+        phase: str,
+        deadline: datetime,
+    ) -> Mapping[str, DeepSeekReview]:
+        del phase, deadline
+        codes = {candidate.quote.code for candidate in candidates}
+        return {code: review for code, review in self._reviews.items() if code in codes}
+
+    def preheat(
+        self,
+        candidates: Sequence[FeatureSnapshot],
+        *,
+        phase: str,
+        deadline: datetime,
+    ) -> Mapping[str, DeepSeekReview]:
+        return self.review(Strategy.TODAY, candidates, phase=phase, deadline=deadline)
+
+    @staticmethod
+    def status() -> Mapping[str, object]:
+        return {"source": "frozen_replay"}
+
+
+def _business_projection(snapshot: RecommendationSnapshot) -> tuple[object, ...]:
+    return (
+        snapshot.snapshot_id,
+        snapshot.strategy,
+        snapshot.trade_date,
+        snapshot.phase,
+        snapshot.data_version,
+        snapshot.strategy_version,
+        snapshot.fusion_version,
+        snapshot.fusion_mode,
+        snapshot.recommendations,
+        snapshot.filtered_count,
+        dict(snapshot.filter_reasons),
+        snapshot.stale,
+        snapshot.degraded_reasons,
+        dict(snapshot.metadata),
+    )
+
+
+def _freeze_policy(policy: RecommendationPolicy) -> FrozenReplayPolicy:
+    return FrozenReplayPolicy(
+        strategy_version=policy.strategy_version,
+        fusion_version=policy.fusion_version,
+        local_weight=policy.fusion.local_weight,
+        deepseek_weight=policy.fusion.deepseek_weight,
+        confidence_coverage_min=policy.fusion.confidence_coverage_min,
+        minimum_known_dimensions=policy.fusion.minimum_known_dimensions,
+        local_risk_cap=policy.fusion.local_risk_cap,
+        deepseek_risk_cap=policy.fusion.deepseek_risk_cap,
+        default_top_k=policy.selection.default_top_k,
+        maximum_top_k=policy.selection.maximum_top_k,
+        maximum_per_industry=policy.selection.maximum_per_industry,
+        observation_margin=policy.selection.observation_margin,
+        thresholds=policy.selection.thresholds,
+        candidate_weights=policy.candidate_weights,
+        dimension_weights={strategy.value: weights for strategy, weights in policy.dimension_weights.items()},
+        risk_rules=policy.risk_rules,
+    )
+
+
+def _restore_policy(policy: FrozenReplayPolicy) -> RecommendationPolicy:
+    return RecommendationPolicy(
+        strategy_version=policy.strategy_version,
+        fusion_version=policy.fusion_version,
+        fusion=FusionPolicy(
+            local_weight=policy.local_weight,
+            deepseek_weight=policy.deepseek_weight,
+            confidence_coverage_min=policy.confidence_coverage_min,
+            minimum_known_dimensions=policy.minimum_known_dimensions,
+            local_risk_cap=policy.local_risk_cap,
+            deepseek_risk_cap=policy.deepseek_risk_cap,
+        ),
+        selection=SelectionPolicy(
+            default_top_k=policy.default_top_k,
+            maximum_top_k=policy.maximum_top_k,
+            maximum_per_industry=policy.maximum_per_industry,
+            observation_margin=policy.observation_margin,
+            thresholds=policy.thresholds,
+        ),
+        candidate_weights=policy.candidate_weights,
+        dimension_weights={Strategy(name): weights for name, weights in policy.dimension_weights.items()},
+        risk_rules=policy.risk_rules,
+    )
+
+
+def _preselection_replay_feature(feature: FeatureSnapshot) -> FeatureSnapshot:
+    return replace(
+        feature,
+        values={name: feature.values.get(name) for name in dict.fromkeys(_PRESELECTION_VALUE_FIELDS)},
+        evidence=(),
+        external_risk_facts=(),
+    )
 
 
 __all__ = ["RecommendationEngine"]

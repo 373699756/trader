@@ -61,6 +61,17 @@ curl -sS http://127.0.0.1:5000/api/status
 
 缺少任一项时只能维持“repository cutover gates complete”，不得宣告生产发布完成。
 
+第 25 节最终验收逐项状态和证据入口见 `docs/operations/final-acceptance.md`。真实交易日必须至少每 5 秒采集一次 `/api/status` 中的 `dependencies.market_data.topk_quote_age`，只纳入正常交易阶段且 `sample_count > 0` 的横截面 P95，按 nearest-rank 方法汇总全天样本并要求最终 P95 不超过 10 秒；DeepSeek 使用 `physical_call_acceptance` 区分已通过、未配置、无候选、预算耗尽和未产生物理请求。
+
+冻结后对 today、tomorrow 和 d25 的每个文件执行离线复算：
+
+```bash
+trader-cli --config /absolute/path/to/config/v2/runtime.json \
+  verify-freeze --snapshot /absolute/path/to/.runtime/v2/frozen/today/YYYY-MM-DD/SNAPSHOT.json
+```
+
+只有命令返回 `status=verified`，且市场输入、候选输入计数均非零，才满足过滤、评分、风险、veto 和排名可复算门禁。旧格式快照保持可读，但因没有 replay input 不得用于该门禁。
+
 ## 回退
 
 回退必须停止 v2 后切换到完整 v1 tag `v1-rollback-20260717`（提交 `86e3b2b1308e454adee1e1cc43fa0c8997e8bf2b`），并继续使用旧 `.runtime`。不得只恢复部分 Python 文件，也不得把 `.runtime/v2` 数据写回旧库。记录回退原因、时间和最后成功冻结快照。

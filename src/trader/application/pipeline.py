@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -67,6 +68,7 @@ class RecommendationPipeline:
         self._worker: threading.Thread | None = None
         self._candidate_codes: tuple[str, ...] = ()
         self._candidate_features: tuple[FeatureSnapshot, ...] = ()
+        self._market_features: tuple[FeatureSnapshot, ...] = ()
         self._filter_reasons: Mapping[str, int] = {}
         self._market_count = 0
         self._frozen_keys: set[tuple[Strategy, str]] = set()
@@ -150,8 +152,10 @@ class RecommendationPipeline:
         return self._process_schedule(at, decision.phase, decision.freeze_strategies)
 
     def status(self) -> dict[str, object]:
+        market_data = dict(self._market_data.health())
+        market_data["topk_quote_age"] = _topk_quote_age(self._state, self._now())
         dependencies = {
-            "market_data": dict(self._market_data.health()),
+            "market_data": market_data,
             "deepseek": dict(self._reviews.status()) if self._reviews is not None else {"enabled": False},
             "event_queue": self._queue.status(),
             "publisher": self._publisher.status(),
@@ -245,6 +249,7 @@ class RecommendationPipeline:
             limit=self._candidate_pool_size,
         )
         self._market_count = len(market_features)
+        self._market_features = market_features
         self._candidate_codes = tuple(feature.quote.code for feature in candidates)
         self._candidate_features = candidates
         self._filter_reasons = reasons
@@ -278,6 +283,10 @@ class RecommendationPipeline:
             filtered_count=max(0, self._market_count - len(self._candidate_codes)),
             filter_reasons=self._filter_reasons,
             target_prices=self._long_target_prices if strategy is Strategy.LONG else None,
+            market_features=self._market_features,
+            requested_codes=codes,
+            preselect_max_age_seconds=_maximum_age_seconds(phase),
+            candidate_pool_size=self._candidate_pool_size,
         )
         self._repository.publish(snapshot)
         self._state.publish(snapshot)
@@ -308,6 +317,43 @@ def _review_deadline(now: datetime, phase: MarketPhase) -> datetime:
     if phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
         return local.replace(hour=11, minute=20, second=0, microsecond=0)
     return local.replace(hour=14, minute=48, second=0, microsecond=0)
+
+
+def _topk_quote_age(state: RuntimeState, now: datetime) -> Mapping[str, object]:
+    per_strategy: dict[str, object] = {}
+    active_ages: list[float] = []
+    excluded_frozen: list[str] = []
+    for strategy in Strategy:
+        snapshot = state.latest(strategy)
+        if snapshot is None:
+            continue
+        if snapshot.frozen:
+            excluded_frozen.append(strategy.value)
+            continue
+        ages = [item.features.quote.age_seconds(now) for item in snapshot.recommendations]
+        active_ages.extend(ages)
+        per_strategy[strategy.value] = _age_summary(ages)
+    return {
+        "target_seconds": 10.0,
+        **_age_summary(active_ages),
+        "per_strategy": per_strategy,
+        "excluded_frozen_strategies": sorted(excluded_frozen),
+        "measured_at": now.isoformat(),
+    }
+
+
+def _age_summary(ages: Sequence[float]) -> dict[str, object]:
+    if not ages:
+        return {"sample_count": 0, "p95_seconds": None, "maximum_seconds": None, "meets_target": None}
+    ordered = sorted(max(0.0, float(age)) for age in ages)
+    p95_index = max(0, math.ceil(len(ordered) * 0.95) - 1)
+    p95 = round(ordered[p95_index], 3)
+    return {
+        "sample_count": len(ordered),
+        "p95_seconds": p95,
+        "maximum_seconds": round(ordered[-1], 3),
+        "meets_target": p95 <= 10.0,
+    }
 
 
 __all__ = ["RecommendationPipeline"]

@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 
+from trader.application.recommendations import RecommendationEngine
+from trader.infrastructure.persistence.snapshots import snapshot_from_dict
 from trader.infrastructure.settings import load_long_watchlist, load_runtime_settings, load_strategy_settings
 
 
@@ -19,16 +21,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
+    verify = subparsers.add_parser("verify-freeze", help="Replay and verify a frozen snapshot from its inputs.")
+    verify.add_argument("--snapshot", required=True, help="Absolute path to a frozen snapshot JSON file.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    config_path = _absolute_config_path(args.config)
-    runtime = load_runtime_settings(config_path)
-    strategy = load_strategy_settings(runtime.strategy_config_path)
-    watchlist = load_long_watchlist(runtime.long_watchlist_path)
     if args.command == "validate-config":
+        config_path = _absolute_config_path(args.config)
+        runtime = load_runtime_settings(config_path)
+        strategy = load_strategy_settings(runtime.strategy_config_path)
+        watchlist = load_long_watchlist(runtime.long_watchlist_path)
         print(
             json.dumps(
                 {
@@ -43,6 +47,18 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if args.command == "verify-freeze":
+        snapshot_path = _absolute_file_path(args.snapshot, argument="--snapshot")
+        try:
+            raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("snapshot root must be an object")
+            snapshot = snapshot_from_dict(raw)
+            result = RecommendationEngine.verify_frozen(snapshot)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise SystemExit(f"freeze verification failed: {exc}") from exc
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
     return 2
 
 
@@ -52,6 +68,13 @@ def _absolute_config_path(raw_path: str) -> Path:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
         raise SystemExit("configuration path must be absolute")
+    return path.resolve()
+
+
+def _absolute_file_path(raw_path: str, *, argument: str) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        raise SystemExit(f"{argument} path must be absolute")
     return path.resolve()
 
 

@@ -195,6 +195,78 @@ class Recommendation:
 
 
 @dataclass(frozen=True)
+class FrozenReplayPolicy:
+    strategy_version: str
+    fusion_version: str
+    local_weight: float
+    deepseek_weight: float
+    confidence_coverage_min: float
+    minimum_known_dimensions: int
+    local_risk_cap: float
+    deepseek_risk_cap: float
+    default_top_k: int
+    maximum_top_k: int
+    maximum_per_industry: int
+    observation_margin: float
+    thresholds: Mapping[str, float]
+    candidate_weights: Mapping[str, float]
+    dimension_weights: Mapping[str, Mapping[str, float]]
+    risk_rules: Mapping[str, RiskRule]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "thresholds", MappingProxyType(dict(self.thresholds)))
+        object.__setattr__(self, "candidate_weights", MappingProxyType(dict(self.candidate_weights)))
+        object.__setattr__(
+            self,
+            "dimension_weights",
+            MappingProxyType(
+                {name: MappingProxyType(dict(weights)) for name, weights in self.dimension_weights.items()}
+            ),
+        )
+        object.__setattr__(self, "risk_rules", MappingProxyType(dict(self.risk_rules)))
+
+
+@dataclass(frozen=True)
+class RecommendationReplayInput:
+    schema_version: str
+    algorithm_version: str
+    policy: FrozenReplayPolicy
+    evaluated_at: datetime
+    market_features: tuple[FeatureSnapshot, ...]
+    requested_codes: tuple[str, ...]
+    candidate_features: tuple[FeatureSnapshot, ...]
+    reviews: Mapping[str, DeepSeekReview]
+    preselect_max_age_seconds: float
+    score_max_age_seconds: float
+    candidate_pool_size: int
+    target_prices: Mapping[str, float | None] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "market_features", tuple(self.market_features))
+        object.__setattr__(self, "requested_codes", tuple(self.requested_codes))
+        object.__setattr__(self, "candidate_features", tuple(self.candidate_features))
+        object.__setattr__(self, "reviews", MappingProxyType(dict(self.reviews)))
+        object.__setattr__(self, "target_prices", MappingProxyType(dict(self.target_prices)))
+        if self.evaluated_at.tzinfo is None or self.evaluated_at.utcoffset() is None:
+            raise ValueError("replay evaluation time must be timezone-aware")
+        if self.candidate_pool_size < 0:
+            raise ValueError("replay candidate pool size cannot be negative")
+        if self.preselect_max_age_seconds < 0 or self.score_max_age_seconds < 0:
+            raise ValueError("replay quote age thresholds cannot be negative")
+        if len(set(self.requested_codes)) != len(self.requested_codes):
+            raise ValueError("replay requested codes must be unique")
+        market_codes = tuple(feature.quote.code for feature in self.market_features)
+        candidate_codes = tuple(feature.quote.code for feature in self.candidate_features)
+        if len(set(market_codes)) != len(market_codes):
+            raise ValueError("replay market feature codes must be unique")
+        if len(set(candidate_codes)) != len(candidate_codes):
+            raise ValueError("replay candidate feature codes must be unique")
+        for code, review in self.reviews.items():
+            if code != review.code or code not in candidate_codes:
+                raise ValueError("replay reviews must match candidate feature codes")
+
+
+@dataclass(frozen=True)
 class RecommendationSnapshot:
     snapshot_id: str
     strategy: Strategy
@@ -212,6 +284,7 @@ class RecommendationSnapshot:
     frozen: bool = False
     degraded_reasons: tuple[str, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict)
+    replay_input: RecommendationReplayInput | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "filter_reasons", MappingProxyType(dict(self.filter_reasons)))
@@ -224,10 +297,12 @@ __all__ = [
     "DimensionAssessment",
     "Evidence",
     "FeatureSnapshot",
+    "FrozenReplayPolicy",
     "FusionMode",
     "MarketQuote",
     "Recommendation",
     "RecommendationAction",
+    "RecommendationReplayInput",
     "RecommendationSnapshot",
     "ReviewOutcome",
     "RiskFact",

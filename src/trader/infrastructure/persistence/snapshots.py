@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from datetime import datetime
 
@@ -12,13 +13,16 @@ from trader.domain.models import (
     DimensionAssessment,
     Evidence,
     FeatureSnapshot,
+    FrozenReplayPolicy,
     FusionMode,
     MarketQuote,
     Recommendation,
     RecommendationAction,
+    RecommendationReplayInput,
     RecommendationSnapshot,
     ReviewOutcome,
     RiskFact,
+    RiskRule,
     ScoreBreakdown,
     Strategy,
 )
@@ -44,6 +48,7 @@ def snapshot_to_dict(snapshot: RecommendationSnapshot) -> dict[str, object]:
         "frozen": snapshot.frozen,
         "degraded_reasons": list(snapshot.degraded_reasons),
         "metadata": dict(snapshot.metadata),
+        "replay_input": _replay_input_to_dict(snapshot.replay_input) if snapshot.replay_input is not None else None,
         "recommendations": [_recommendation_to_dict(item) for item in snapshot.recommendations],
     }
 
@@ -71,6 +76,7 @@ def snapshot_from_dict(raw: Mapping[str, object]) -> RecommendationSnapshot:
     recommendations = tuple(_recommendation_from_dict(item) for item in recommendations_raw if isinstance(item, dict))
     filter_reasons = raw.get("filter_reasons")
     metadata = raw.get("metadata")
+    replay_raw = raw.get("replay_input")
     degraded_raw = raw.get("degraded_reasons")
     return RecommendationSnapshot(
         snapshot_id=_text(raw, "snapshot_id"),
@@ -93,6 +99,107 @@ def snapshot_from_dict(raw: Mapping[str, object]) -> RecommendationSnapshot:
         if isinstance(degraded_raw, list)
         else (),
         metadata=dict(metadata) if isinstance(metadata, dict) else {},
+        replay_input=_replay_input_from_dict(replay_raw) if isinstance(replay_raw, dict) else None,
+    )
+
+
+def _replay_input_to_dict(replay_input: RecommendationReplayInput) -> dict[str, object]:
+    return {
+        "schema_version": replay_input.schema_version,
+        "algorithm_version": replay_input.algorithm_version,
+        "policy": _replay_policy_to_dict(replay_input.policy),
+        "evaluated_at": replay_input.evaluated_at.isoformat(),
+        "market_features": [_features_to_dict(item) for item in replay_input.market_features],
+        "requested_codes": list(replay_input.requested_codes),
+        "candidate_features": [_features_to_dict(item) for item in replay_input.candidate_features],
+        "reviews": {code: _review_to_dict(review) for code, review in replay_input.reviews.items()},
+        "preselect_max_age_seconds": replay_input.preselect_max_age_seconds,
+        "score_max_age_seconds": replay_input.score_max_age_seconds,
+        "candidate_pool_size": replay_input.candidate_pool_size,
+        "target_prices": dict(replay_input.target_prices),
+    }
+
+
+def _replay_input_from_dict(raw: Mapping[str, object]) -> RecommendationReplayInput:
+    market_raw = _object_list(raw, "market_features")
+    requested_raw = _string_list(raw, "requested_codes")
+    candidates_raw = _object_list(raw, "candidate_features")
+    reviews_raw = _object(raw, "reviews")
+    target_prices_raw = _object(raw, "target_prices")
+    return RecommendationReplayInput(
+        schema_version=_text(raw, "schema_version"),
+        algorithm_version=_text(raw, "algorithm_version"),
+        policy=_replay_policy_from_dict(_object(raw, "policy")),
+        evaluated_at=_aware_datetime(raw, "evaluated_at"),
+        market_features=tuple(_features_from_dict(item) for item in market_raw),
+        requested_codes=tuple(requested_raw),
+        candidate_features=tuple(_features_from_dict(item) for item in candidates_raw),
+        reviews=_review_mapping(reviews_raw),
+        preselect_max_age_seconds=_number(raw, "preselect_max_age_seconds"),
+        score_max_age_seconds=_number(raw, "score_max_age_seconds"),
+        candidate_pool_size=_integer(raw, "candidate_pool_size"),
+        target_prices={_mapping_key(code): _optional_number(value) for code, value in target_prices_raw.items()},
+    )
+
+
+def _replay_policy_to_dict(policy: FrozenReplayPolicy) -> dict[str, object]:
+    return {
+        "strategy_version": policy.strategy_version,
+        "fusion_version": policy.fusion_version,
+        "fusion": {
+            "local_weight": policy.local_weight,
+            "deepseek_weight": policy.deepseek_weight,
+            "confidence_coverage_min": policy.confidence_coverage_min,
+            "minimum_known_dimensions": policy.minimum_known_dimensions,
+            "local_risk_cap": policy.local_risk_cap,
+            "deepseek_risk_cap": policy.deepseek_risk_cap,
+        },
+        "selection": {
+            "default_top_k": policy.default_top_k,
+            "maximum_top_k": policy.maximum_top_k,
+            "maximum_per_industry": policy.maximum_per_industry,
+            "observation_margin": policy.observation_margin,
+            "thresholds": dict(policy.thresholds),
+        },
+        "candidate_weights": dict(policy.candidate_weights),
+        "dimension_weights": {name: dict(weights) for name, weights in policy.dimension_weights.items()},
+        "risk_rules": {
+            code: {
+                "risk_code": rule.risk_code,
+                "severity": rule.severity,
+                "penalty": rule.penalty,
+                "minimum_confidence": rule.minimum_confidence,
+                "group": rule.group,
+            }
+            for code, rule in policy.risk_rules.items()
+        },
+    }
+
+
+def _replay_policy_from_dict(raw: Mapping[str, object]) -> FrozenReplayPolicy:
+    fusion = _object(raw, "fusion")
+    selection = _object(raw, "selection")
+    thresholds = _object(selection, "thresholds")
+    candidate_weights = _object(raw, "candidate_weights")
+    dimension_weights = _object(raw, "dimension_weights")
+    risk_rules = _object(raw, "risk_rules")
+    return FrozenReplayPolicy(
+        strategy_version=_text(raw, "strategy_version"),
+        fusion_version=_text(raw, "fusion_version"),
+        local_weight=_number(fusion, "local_weight"),
+        deepseek_weight=_number(fusion, "deepseek_weight"),
+        confidence_coverage_min=_number(fusion, "confidence_coverage_min"),
+        minimum_known_dimensions=_integer(fusion, "minimum_known_dimensions"),
+        local_risk_cap=_number(fusion, "local_risk_cap"),
+        deepseek_risk_cap=_number(fusion, "deepseek_risk_cap"),
+        default_top_k=_integer(selection, "default_top_k"),
+        maximum_top_k=_integer(selection, "maximum_top_k"),
+        maximum_per_industry=_integer(selection, "maximum_per_industry"),
+        observation_margin=_number(selection, "observation_margin"),
+        thresholds=_number_mapping(thresholds),
+        candidate_weights=_number_mapping(candidate_weights),
+        dimension_weights=_nested_number_mapping(dimension_weights),
+        risk_rules=_risk_rule_mapping(risk_rules),
     )
 
 
@@ -383,6 +490,71 @@ def _object(raw: Mapping[str, object], key: str) -> Mapping[str, object]:
     return value
 
 
+def _object_list(raw: Mapping[str, object], key: str) -> tuple[Mapping[str, object], ...]:
+    value = raw.get(key)
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ValueError(f"{key} must be a list of objects")
+    return tuple(value)
+
+
+def _string_list(raw: Mapping[str, object], key: str) -> tuple[str, ...]:
+    value = raw.get(key)
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise ValueError(f"{key} must be a list of non-empty strings")
+    return tuple(value)
+
+
+def _aware_datetime(raw: Mapping[str, object], key: str) -> datetime:
+    value = datetime.fromisoformat(_text(raw, key))
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{key} must be timezone-aware")
+    return value
+
+
+def _mapping_key(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError("mapping keys must be non-empty strings")
+    return value
+
+
+def _number_mapping(raw: Mapping[str, object]) -> dict[str, float]:
+    return {_mapping_key(key): _required_number(value) for key, value in raw.items()}
+
+
+def _nested_number_mapping(raw: Mapping[str, object]) -> dict[str, dict[str, float]]:
+    result: dict[str, dict[str, float]] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            raise ValueError("nested number mappings must contain objects")
+        result[_mapping_key(key)] = _number_mapping(value)
+    return result
+
+
+def _risk_rule_mapping(raw: Mapping[str, object]) -> dict[str, RiskRule]:
+    result: dict[str, RiskRule] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            raise ValueError("risk rule mappings must contain objects")
+        code = _mapping_key(key)
+        result[code] = RiskRule(
+            risk_code=_text(value, "risk_code"),
+            severity=_text(value, "severity"),
+            penalty=_number(value, "penalty"),
+            minimum_confidence=_number(value, "minimum_confidence"),
+            group=_text(value, "group"),
+        )
+    return result
+
+
+def _review_mapping(raw: Mapping[str, object]) -> dict[str, DeepSeekReview]:
+    result: dict[str, DeepSeekReview] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            raise ValueError("review mappings must contain objects")
+        result[_mapping_key(key)] = _review_from_dict(value)
+    return result
+
+
 def _text(raw: Mapping[str, object], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value:
@@ -409,7 +581,17 @@ def _optional_number(value: object) -> float | None:
         return None
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise ValueError("expected a number or null")
-    return float(value)
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("numbers must be finite")
+    return result
+
+
+def _required_number(value: object) -> float:
+    result = _optional_number(value)
+    if result is None:
+        raise ValueError("expected a number")
+    return result
 
 
 __all__ = [

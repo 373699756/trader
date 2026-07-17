@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增第 25 节最终验收闭环：新冻结快照保存完整市场预选输入、定向候选与经校验 DeepSeek 结果，`trader-cli verify-freeze` 可离线复算并核对过滤、评分、风险、veto 和排名；`/api/status` 新增活动 TopK 报价 P95 与 DeepSeek 物理调用验收摘要。
 - 新增固定行情完整交易日影子门禁，按 09:20-15:00 时间线在两个隔离目录运行真实 SQLite/JSON 冻结链，对照 today/tomorrow/d25 manifest、long 非冻结和全部 JSON SHA-256 确定性。
 - 新建单一 `src/trader` 安装包，按 `domain`、`application`、`infrastructure`、`web`、`entrypoints` 和唯一组合根分层。
 - 新增 today、tomorrow、d25、long 四策略的确定性评分、硬过滤、风险事实去重、TopK 和动作判定。
@@ -17,6 +18,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 最终验收矩阵明确区分可重复仓库门禁与真实交易日、真实 DeepSeek 密钥、三档桌面截图等外部发布证据；旧 v2 快照继续可读，但不能充当新增冻结复算门禁证据。
 - 迁移清单新增 `docs/need.md` 第 24 节逐阶段完成证据；运行手册固定生产影子留证字段和回退 tag `v1-rollback-20260717`，仓库门禁完成与真实交易日发布观察明确分离。
 - “继续”命令的交付粒度从下一个最小独立任务调整为下一个完整未完成章节；章节内全部明确子项统一实现、Review、提交和推送，同时禁止顺带合并相邻章节。
 - 项目入口统一为 `trader-server` 和 `trader-cli`；Linux/macOS/WSL、PowerShell 和 CMD 启动脚本只调用安装后的入口。
@@ -49,7 +51,8 @@ All notable changes to this project are documented here.
 
 ### Verification
 
-- 仓库外虚拟环境强制重装 wheel 后可导入 `trader`、执行 `trader-cli --help` 并读取模板、CSS、JavaScript 和 SVG；headless Firefox 在 1280x720、1440x900、1920x1080 三档窗口均完整加载且无页面级横向溢出。
+- 第 25 节集成回归覆盖冻结输入 JSON 往返与确定性复算、有效配置和候选触发非零物理 DeepSeek 请求，以及 TopK P95 超过 10 秒时的显式失败状态。
+- 本批次完整格式、Ruff、mypy、pytest、sdist/wheel 门禁通过；仓库外强制重装后可导入 `trader`、执行 `trader-cli` 与 `verify-freeze --help` 并读取全部 Web 资源；`run.sh` 实际状态返回 TopK P95 和 DeepSeek 零调用原因，headless Firefox 三档桌面窗口均完整加载且无页面级横向溢出。
 - 第 24 节完整日影子测试使用相同固定输入运行两次，验证三个策略 committed 冻结、long 仅展示、四策略发布和跨运行 JSON 哈希一致；迁移矩阵逐项关联 24.1-24.9 的现有门禁。
 - 新增交付契约测试，校验 `AGENTS.md` 与 `docs/need.md` 对“继续”整节交付、章节内全部子项和相邻章节边界的语义一致，并排除旧的最小任务措辞。
 - 宿主机实测东方财富和新浪经系统代理均触发 TLS EOF、直连均返回 HTTP 200；组件测试覆盖东方财富全市场/历史、新浪全市场和腾讯定向报价的显式直连参数。
@@ -65,6 +68,8 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 可复算 latest/frozen 文件会增加本地 JSON 体积和序列化 I/O；全市场部分已裁剪为硬过滤和候选排序必需字段，发布前仍需在真实全市场规模下记录文件大小、冻结耗时和磁盘保留策略。
+- 第 25 节仓库门禁可重复执行，但生产最终验收仍需真实交易日证明活动 TopK P95 不超过 10 秒、真实 DeepSeek 密钥产生非零调用并输出阶段总结，以及保存三档桌面截图；任一证据缺失时不得宣告发布完成。
 - 固定输入完整日影子已覆盖冻结链和确定性，但真实 A 股 09:15-15:00 不间断影子观察仍未完成；生产发布前必须按 runbook 留存行情年龄、冻结哈希、桌面三分辨率和 v1 运行库未修改证据。
 - 单个章节可能包含较多子项，交付 diff 和 Review 时间会相应增长；仍必须维持一个章节、一个提交、一次推送，并通过章节内逐项证据控制范围。
 - 行情直连依赖本机网络可直接访问对应域名；若所在网络强制要求代理，三路实时行情会按既有熔断与最近快照策略显式降级。
