@@ -25,6 +25,7 @@ SessionFactory = Callable[[], requests.Session]
 FIELDS = "f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f20,f21,f22,f23,f24,f25,f100,f124"
 HOSTS = ("82.push2.eastmoney.com", "push2.eastmoney.com", "7.push2.eastmoney.com")
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
+_REQUEST_ROUNDS = 2
 
 
 class EastmoneyClient:
@@ -122,24 +123,25 @@ class EastmoneyClient:
     def _get(self, hosts: Sequence[str], path: str, params: Mapping[str, str]) -> Mapping[str, object]:
         last_error: Exception | None = None
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
-        for host in hosts:
-            try:
-                with self._session_factory() as session:
-                    response = session.get(
-                        f"https://{host}{path}",
-                        params=dict(params),
-                        headers=headers,
-                        timeout=self._timeout_seconds,
-                        proxies=_DIRECT_PROXIES,
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-            except (requests.RequestException, ValueError, OSError) as exc:
-                last_error = exc
-                continue
-            if isinstance(payload, dict) and payload.get("data"):
-                return payload
-            last_error = RuntimeError("eastmoney returned empty data")
+        for _round in range(_REQUEST_ROUNDS):
+            for host in hosts:
+                try:
+                    with self._session_factory() as session:
+                        response = session.get(
+                            f"https://{host}{path}",
+                            params=dict(params),
+                            headers=headers,
+                            timeout=self._timeout_seconds,
+                            proxies=_DIRECT_PROXIES,
+                        )
+                        response.raise_for_status()
+                        payload = response.json()
+                except (requests.RequestException, ValueError, OSError) as exc:
+                    last_error = exc
+                    continue
+                if isinstance(payload, dict) and payload.get("data"):
+                    return payload
+                last_error = RuntimeError("eastmoney returned empty data")
         raise RuntimeError(f"eastmoney request failed: {last_error}") from last_error
 
 

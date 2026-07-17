@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+import requests
 
 from trader.application.ports import MarketDataUnavailable
 from trader.domain.models import Evidence, MarketQuote
@@ -117,6 +118,39 @@ def test_sina_market_request_bypasses_environment_proxy() -> None:
 
     assert quotes[0].code == "600001"
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
+
+
+def test_market_sources_retry_transient_disconnect_and_page_504() -> None:
+    eastmoney_payload = {
+        "data": {
+            "total": 1,
+            "diff": [{"f12": "600001", "f14": "测试股份", "f124": int(NOW.timestamp())}],
+        }
+    }
+    eastmoney_session = FakeSession(
+        [
+            requests.ConnectionError("remote closed"),
+            requests.ConnectionError("remote closed"),
+            requests.ConnectionError("remote closed"),
+            eastmoney_payload,
+        ]
+    )
+    eastmoney = EastmoneyClient(timeout_seconds=2, session_factory=lambda: eastmoney_session)
+
+    assert eastmoney.fetch_market(NOW)[0].code == "600001"
+    assert len(eastmoney_session.calls) == 4
+
+    sina_session = FakeSession(
+        [
+            b"1",
+            requests.HTTPError("504 Server Error: Gateway Time-out"),
+            [{"symbol": "sh600001", "name": "测试股份", "trade": "12.00"}],
+        ]
+    )
+    sina = SinaClient(timeout_seconds=2, session_factory=lambda: sina_session)
+
+    assert sina.fetch_market(NOW)[0].code == "600001"
+    assert len(sina_session.calls) == 3
 
 
 def test_gateway_falls_back_and_tracks_health() -> None:
@@ -320,7 +354,10 @@ class FakeSession:
 
     def get(self, *args, **kwargs):
         self.calls.append((args, kwargs))
-        return FakeResponse(next(self._payloads))
+        payload = next(self._payloads)
+        if isinstance(payload, Exception):
+            raise payload
+        return FakeResponse(payload)
 
 
 class FailingMarketClient:

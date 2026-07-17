@@ -15,6 +15,7 @@ SessionFactory = Callable[[], requests.Session]
 COUNT_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount"
 QUOTE_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
+_REQUEST_ATTEMPTS = 2
 
 
 class SinaClient:
@@ -59,28 +60,31 @@ class SinaClient:
         return quotes
 
     def _get_text(self, url: str, params: Mapping[str, str]) -> str:
-        with self._session_factory() as session:
-            response = session.get(
-                url,
-                params=dict(params),
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=self._timeout_seconds,
-                proxies=_DIRECT_PROXIES,
-            )
-            response.raise_for_status()
-            return response.text
+        value = self._request(url, params, as_json=False)
+        if not isinstance(value, str):
+            raise RuntimeError("sina text response was invalid")
+        return value
 
     def _get_json(self, url: str, params: Mapping[str, str]) -> object:
-        with self._session_factory() as session:
-            response = session.get(
-                url,
-                params=dict(params),
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=self._timeout_seconds,
-                proxies=_DIRECT_PROXIES,
-            )
-            response.raise_for_status()
-            return response.json()
+        return self._request(url, params, as_json=True)
+
+    def _request(self, url: str, params: Mapping[str, str], *, as_json: bool) -> object:
+        last_error: Exception | None = None
+        for _attempt in range(_REQUEST_ATTEMPTS):
+            try:
+                with self._session_factory() as session:
+                    response = session.get(
+                        url,
+                        params=dict(params),
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=self._timeout_seconds,
+                        proxies=_DIRECT_PROXIES,
+                    )
+                    response.raise_for_status()
+                    return response.json() if as_json else response.text
+            except (requests.RequestException, ValueError, OSError) as exc:
+                last_error = exc
+        raise RuntimeError(f"sina request failed after {_REQUEST_ATTEMPTS} attempts: {last_error}") from last_error
 
 
 def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQuote | None:
