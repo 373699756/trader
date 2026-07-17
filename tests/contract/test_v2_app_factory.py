@@ -28,11 +28,19 @@ def test_create_app_has_no_thread_or_filesystem_side_effects(tmp_path, monkeypat
 
 def test_dashboard_uses_packaged_v2_assets() -> None:
     app = create_app()
+    client = app.test_client()
 
-    response = app.test_client().get("/")
+    response = client.get("/")
+    page = response.get_data(as_text=True)
+    dashboard = client.get("/static/dashboard.js").get_data(as_text=True)
 
     assert response.status_code == 200
-    assert "A股策略看板" in response.get_data(as_text=True)
-    assert "策略验证" not in response.get_data(as_text=True)
-    assert app.test_client().get("/static/dashboard.css").status_code == 200
-    assert app.test_client().get("/static/dashboard.js").status_code == 200
+    assert "A股策略看板" in page
+    assert "策略验证" not in page
+    assert "/static/dashboard.js?v=3" in page
+    assert "payloads: new Map()" in dashboard
+    assert "inflight: new Map()" in dashboard
+    assert "prefetchStrategies();" in dashboard
+    assert 'Promise.all([loadDates(), loadRecommendations("strategy")])' in dashboard
+    assert client.get("/static/dashboard.css").status_code == 200
+    assert client.get("/static/dashboard.js").status_code == 200

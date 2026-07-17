@@ -5,7 +5,9 @@
     strategy: "today",
     date: "",
     payload: null,
+    payloads: new Map(),
     etags: new Map(),
+    inflight: new Map(),
     stream: null,
     streamRetry: null,
     pollTimer: null,
@@ -44,6 +46,7 @@
     });
 
     selectStrategy("today");
+    prefetchStrategies();
     loadStatus();
     connectStream();
     window.setInterval(loadStatus, 15000);
@@ -59,8 +62,10 @@
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-selected", active ? "true" : "false");
     });
-    await loadDates();
-    await loadRecommendations("strategy");
+    const key = recommendationKey(state.strategy, state.date);
+    state.payload = state.payloads.get(key) || null;
+    if (state.payload) renderPayload(state.payload);
+    await Promise.all([loadDates(), loadRecommendations("strategy")]);
   }
 
   async function loadDates() {
@@ -87,36 +92,78 @@
     const requestId = ++state.requestSequence;
     const strategy = state.strategy;
     const selectedDate = state.date;
+    const key = recommendationKey(strategy, selectedDate);
+    const cached = state.payloads.get(key) || null;
     els.refreshButton.classList.add("is-busy");
-    if (!state.payload || reason === "strategy" || reason === "date") renderTableState("正在读取推荐快照");
-    const query = new URLSearchParams({ top_n: "18" });
-    if (selectedDate) query.set("date", selectedDate);
-    const key = `${strategy}:${selectedDate || "current"}`;
-    const headers = {};
-    if (!selectedDate && state.etags.has(key)) headers["If-None-Match"] = state.etags.get(key);
+    if (cached) {
+      if (state.payload !== cached) {
+        state.payload = cached;
+        renderPayload(cached);
+      }
+    } else if (!state.payload || reason === "strategy" || reason === "date") {
+      renderTableState("正在读取推荐快照");
+    }
     try {
+      const payload = await requestRecommendations(strategy, selectedDate);
+      if (requestId !== state.requestSequence) return;
+      if (state.payload !== payload) {
+        state.payload = payload;
+        renderPayload(payload);
+      }
+    } catch (error) {
+      if (requestId !== state.requestSequence) return;
+      if (cached) {
+        state.payload = cached;
+        setNotice("后台刷新失败，显示最近已加载快照", "warn");
+      } else {
+        renderTableState("推荐快照读取失败");
+        setNotice(error instanceof Error ? error.message : "推荐快照读取失败", "error");
+      }
+    } finally {
+      if (requestId === state.requestSequence) els.refreshButton.classList.remove("is-busy");
+    }
+  }
+
+  async function requestRecommendations(strategy, selectedDate) {
+    const key = recommendationKey(strategy, selectedDate);
+    const pending = state.inflight.get(key);
+    if (pending) return pending;
+    const request = (async () => {
+      const query = new URLSearchParams({ top_n: "18" });
+      if (selectedDate) query.set("date", selectedDate);
+      const headers = {};
+      if (!selectedDate && state.etags.has(key)) headers["If-None-Match"] = state.etags.get(key);
       const response = await fetch(`/api/recommendations/${encodeURIComponent(strategy)}?${query}`, {
         headers,
         cache: "no-store",
       });
-      if (requestId !== state.requestSequence) return;
       if (response.status === 304) {
-        setNotice("当前快照已是最新版本", "ok");
-        return;
+        const cached = state.payloads.get(key);
+        if (cached) return cached;
+        throw new Error("推荐快照缓存不可用");
       }
       const payload = await response.json();
-      if (requestId !== state.requestSequence) return;
       if (!response.ok) throw new Error(payload.error && payload.error.message ? payload.error.message : "接口请求失败");
       const etag = response.headers.get("ETag");
       if (etag) state.etags.set(key, etag);
-      state.payload = payload;
-      renderPayload(payload);
-    } catch (error) {
-      if (requestId !== state.requestSequence) return;
-      renderTableState("推荐快照读取失败");
-      setNotice(error instanceof Error ? error.message : "推荐快照读取失败", "error");
+      state.payloads.set(key, payload);
+      return payload;
+    })();
+    state.inflight.set(key, request);
+    try {
+      return await request;
     } finally {
-      if (requestId === state.requestSequence) els.refreshButton.classList.remove("is-busy");
+      if (state.inflight.get(key) === request) state.inflight.delete(key);
+    }
+  }
+
+  function recommendationKey(strategy, selectedDate) {
+    return `${strategy}:${selectedDate || "current"}`;
+  }
+
+  function prefetchStrategies() {
+    for (const strategy of ["today", "tomorrow", "d25"]) {
+      requestRecommendations(strategy, "").catch(() => {});
     }
   }
 

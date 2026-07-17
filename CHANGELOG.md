@@ -19,6 +19,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 今早、明日和 2-5日推荐在桌面页面启动后后台预取，推荐日期与快照请求并行执行；相同策略/日期请求合并并使用 ETag 后台刷新。
 - 策略版本升级到 v8；新闻只对候选和长期观察池抓取，全市场扫描不发起逐股新闻请求。
 - DeepSeek 风险事实不再直接控制生产 veto；策略 v7 和冻结回放算法 v3 由本地风险表按风险代码、允许证据类型、证据有效期和最低置信度确定扣分与重大安全 veto。
 - 最终验收矩阵明确区分可重复仓库门禁与真实交易日、真实 DeepSeek 密钥、三档桌面截图等外部发布证据；旧 v2 快照继续可读，但不能充当新增冻结复算门禁证据。
@@ -33,6 +34,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 快速切换策略 Tab 时不再清空推荐表等待重复网络请求；已加载快照立即从页面内存显示，后台刷新失败时保留缓存快照并显式提示。
 - 全市场行情请求增加有界瞬时故障重试：东方财富三个 host 首轮均断连时再尝试一轮，新浪计数或分页遇到连接错误、5xx 或无效 JSON 时最多重试一次，避免单次 `RemoteDisconnected` 或分页 504 直接触发双源降级。
 - AKShare 个股新闻路径不再调用无 timeout 的库内裸请求，新闻发布时间统一归一化为 `Asia/Shanghai`；新闻失败仅增加研究源错误计数并回退到结构化行情证据，不阻塞本地推荐。
 - 修复模型声明 `veto=true` 即可阻止执行、风险规则 `evidence_ttl_hours` 读取后未生效的问题；错误类型、未来或过期证据均不会进入 DeepSeek 风险扣分与 veto。
@@ -57,6 +59,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- Web 资源契约校验三策略预取、策略/日期缓存、同键在途请求合并、日期与推荐并行加载及 `dashboard.js?v=3` 缓存失效版本。
 - 组件回归覆盖东方财富三个 host 首轮断连后恢复，以及新浪单页首次 504 后恢复，确认重试次数有界且保留显式直连与 timeout。
 - 组件回归覆盖 AKShare 新闻 JSONP 规范化、显式 timeout/直连参数、候选缓存复用和新闻源失败降级。
 - 风险融合回归覆盖模型 veto 无效、本地监管规则有效 veto、错误证据类型和过期证据拒绝，以及策略 v3 配置字段解析。
