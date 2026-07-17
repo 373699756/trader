@@ -37,10 +37,16 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert response.status_code == 200
     assert "A股策略看板" in page
     assert "策略验证" not in page
+    assert "/static/render.js?v=3" in page
     assert "/static/dashboard.js?v=3" in page
     assert "payloads: new Map()" in dashboard
     assert "inflight: new Map()" in dashboard
     assert "prefetchStrategies();" in dashboard
     assert 'Promise.all([loadDates(), loadRecommendations("strategy")])' in dashboard
     assert client.get("/static/dashboard.css").status_code == 200
+    renderer_response = client.get("/static/render.js")
+    renderer = renderer_response.get_data(as_text=True)
+    assert renderer_response.status_code == 200
+    assert 'scores.deepseek_score == null ? "未复核"' in renderer
+    assert 'section("缺失字段"' in renderer
     assert client.get("/static/dashboard.js").status_code == 200

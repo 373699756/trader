@@ -25,6 +25,7 @@
   }
 
   function number(value, digits) {
+    if (value == null || value === "") return "-";
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return "-";
     return parsed.toLocaleString("zh-CN", {
@@ -34,6 +35,7 @@
   }
 
   function compact(value) {
+    if (value == null || value === "") return "-";
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return "-";
     const absolute = Math.abs(parsed);
@@ -43,6 +45,7 @@
   }
 
   function pct(value) {
+    if (value == null || value === "") return { text: "-", className: "" };
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return { text: "-", className: "" };
     return {
@@ -96,7 +99,8 @@
     const scores = item.scores || {};
     const action = String(item.action || "unavailable");
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
-    const deepseek = scores.deepseek_score == null ? "-" : number(scores.deepseek_score, 2);
+    const deepseek = scores.deepseek_score == null ? "未复核" : number(scores.deepseek_score, 2);
+    const deepseekPenalty = scores.deepseek_score == null ? "未复核" : number(scores.deepseek_risk_penalty, 2);
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${stock(item)}</td>
@@ -104,7 +108,7 @@
       <td class="${change.className}">${change.text}</td>
       <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack"><span><b>${number(scores.local_score, 2)}</b>本地</span><span><b>${deepseek}</b>模型</span><span><b>${number(scores.deepseek_risk_penalty, 2)}</b>扣分</span><span><b>${number(scores.final_score, 2)}</b>最终</span></div></td>
+      <td><div class="score-stack"><span><b>${number(scores.local_score, 2)}</b>本地</span><span><b>${deepseek}</b>模型</span><span><b>${deepseekPenalty}</b>扣分</span><span><b>${number(scores.final_score, 2)}</b>最终</span></div></td>
       <td><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || action)}</span></td>
       <td class="reason-cell"><span class="reason-tag">${escapeHtml(item.action_reason || "-")}</span></td>
     </tr>`;
@@ -125,6 +129,7 @@
   function drawer(item, snapshot) {
     const scores = item.scores || {};
     const review = item.review || {};
+    const reviewed = item.review != null && scores.deepseek_score != null;
     const dimensions = review.dimensions || {};
     const risks = [...(item.local_risk_facts || []), ...(item.deepseek_risk_facts || [])];
     const components = scores.components || {};
@@ -134,15 +139,16 @@
         ["基础分", number(scores.base_score, 2)],
         ["本地风险扣分", number(scores.local_risk_penalty, 2)],
         ["本地分", number(scores.local_score, 2)],
-        ["DeepSeek 分", number(scores.deepseek_score, 2)],
-        ["DeepSeek 风险扣分", number(scores.deepseek_risk_penalty, 2)],
+        ["DeepSeek 分", reviewed ? number(scores.deepseek_score, 2) : "未复核"],
+        ["DeepSeek 风险扣分", reviewed ? number(scores.deepseek_risk_penalty, 2) : "未复核"],
         ["最终分", number(scores.final_score, 2)],
-        ["置信覆盖", `${number((scores.confidence_coverage || 0) * 100, 1)}%`],
+        ["置信覆盖", reviewed ? `${number(scores.confidence_coverage * 100, 1)}%` : "未复核"],
         ["融合模式", snapshot.fusion_mode || scores.fusion_mode || "-"],
       ])),
       section("本地组件", keyValueList(components)),
       section("风险事实", riskList(risks)),
       section("DeepSeek 五维", dimensionList(dimensions, review)),
+      section("缺失字段", missingFieldList(item.missing_fields || [], item.missing_reasons || {})),
       section("原始指标", keyValueList(features)),
       section("证据", evidenceList(item.evidence || [])),
       section("快照", detailGrid([
@@ -166,6 +172,13 @@
     const entries = Object.entries(values || {}).sort(([left], [right]) => left.localeCompare(right));
     if (entries.length === 0) return '<div class="detail-value"><span>状态</span><strong>无数据</strong></div>';
     return `<ul class="detail-list">${entries.map(([key, value]) => `<li><b>${escapeHtml(key)}</b> · ${escapeHtml(number(value, 2))}</li>`).join("")}</ul>`;
+  }
+
+  function missingFieldList(fields, reasons) {
+    if (!Array.isArray(fields) || fields.length === 0) {
+      return '<div class="detail-value"><span>状态</span><strong>无缺失字段</strong></div>';
+    }
+    return `<ul class="detail-list">${fields.map((field) => `<li><b>${escapeHtml(field)}</b> · 未获取：${escapeHtml(reasons[field] || "当前快照缺少上游输入")}</li>`).join("")}</ul>`;
   }
 
   function riskList(risks) {

@@ -88,6 +88,7 @@ def error_envelope(code: str, message: str, *, details: Mapping[str, object] | N
 def _recommendation(item: Recommendation) -> dict[str, object]:
     quote = item.features.quote
     score = item.score
+    missing_fields = list(item.features.missing_fields)
     return {
         "rank": item.rank,
         "code": quote.code,
@@ -126,7 +127,8 @@ def _recommendation(item: Recommendation) -> dict[str, object]:
             "fusion_applied": score.fusion_applied,
         },
         "features": dict(item.features.values),
-        "missing_fields": list(item.features.missing_fields),
+        "missing_fields": missing_fields,
+        "missing_reasons": {field: _missing_reason(field) for field in missing_fields},
         "market_regime": item.features.market_regime,
         "history_days": item.features.history_days,
         "evidence": [
@@ -143,6 +145,34 @@ def _recommendation(item: Recommendation) -> dict[str, object]:
         "deepseek_risk_facts": [_risk_fact(fact) for fact in item.deepseek_risk_facts],
         "review": _review(item.review) if item.review is not None else None,
     }
+
+
+def _missing_reason(field: str) -> str:
+    if field in {"news_sentiment", "evidence_freshness"}:
+        return "新闻或公告证据不可用"
+    if field in {
+        "value_score",
+        "growth_score",
+        "quality_score",
+        "risk_protection_score",
+        "financial_deterioration",
+        "pledge_risk",
+        "reduction_or_unlock",
+        "negative_announcement_level",
+    }:
+        return "财务或公司事件数据尚未接入"
+    if field in {"tail_return_30m", "tail_volume_ratio"}:
+        return "尾盘分钟数据尚未接入"
+    if field in {
+        "industry_policy_score",
+        "industry_strength",
+        "industry_breadth",
+        "industry_trend",
+    }:
+        return "行业数据不可用"
+    if field == "speed_percentile":
+        return "行情源未提供瞬时速度"
+    return "当前快照缺少上游输入"
 
 
 def _review(review: DeepSeekReview) -> dict[str, object]:

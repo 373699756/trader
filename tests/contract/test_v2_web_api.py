@@ -30,6 +30,29 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
     assert client.get("/api/recommendations/today", headers={"If-None-Match": etag}).status_code == 304
 
 
+def test_recommendations_explain_missing_fields(recommendation_policy, application_feature_factory) -> None:
+    snapshot = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
+    recommendation = snapshot.recommendations[0]
+    values = dict(recommendation.features.values)
+    missing_fields = ("news_sentiment", "tail_return_30m", "value_score")
+    for field in missing_fields:
+        values[field] = None
+    features = replace(recommendation.features, values=values, missing_fields=missing_fields)
+    snapshot = replace(snapshot, recommendations=(replace(recommendation, features=features),))
+    repository = MemoryReadRepository(latest={Strategy.TODAY: snapshot})
+    app, _publisher = _app(repository)
+
+    item = app.test_client().get("/api/recommendations/today").get_json()["items"][0]
+
+    assert item["missing_fields"] == list(missing_fields)
+    assert item["missing_reasons"] == {
+        "news_sentiment": "新闻或公告证据不可用",
+        "tail_return_30m": "尾盘分钟数据尚未接入",
+        "value_score": "财务或公司事件数据尚未接入",
+    }
+    assert all(item["features"][field] is None for field in missing_fields)
+
+
 def test_recommendation_validation_and_empty_current(recommendation_policy, application_feature_factory) -> None:
     repository = MemoryReadRepository()
     app, _publisher = _app(repository)
