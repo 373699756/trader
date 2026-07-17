@@ -24,12 +24,12 @@ from trader.domain.models import (
     ReviewOutcome,
     Strategy,
 )
-from trader.domain.ranking import CORE_FIELDS, action_for, candidate_score, select_top_k
+from trader.domain.ranking import CORE_FIELDS, action_for, candidate_score, minimum_selection_score, select_top_k
 from trader.domain.risk import derive_local_risk_facts
 from trader.domain.strategies import score_strategy
 
 REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
-REPLAY_ALGORITHM_VERSION = "engine_v3_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_v4_section17_2026_07"
 _PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 
 
@@ -87,48 +87,31 @@ class RecommendationEngine:
             refreshed_filter_reasons.update(reason.code for reason in filter_result.reasons)
             refreshed_filtered_count += 1
 
-        local_candidates = [self._local_candidate(strategy, feature, now) for feature in eligible]
-        reviews = (
-            review_port.review(strategy, tuple(eligible), phase=phase, deadline=review_deadline)
-            if review_port is not None and eligible
-            else {}
+        merged, reviews, fusion_mode = self._merge_candidates(
+            strategy,
+            eligible,
+            now=now,
+            phase=phase,
+            review_port=review_port,
+            review_deadline=review_deadline,
+            max_age_seconds=max_age_seconds,
+            target_prices=target_prices,
         )
-        fusion_mode = _fusion_mode(local_candidates, reviews, self._policy.selection.thresholds, strategy, phase)
-        merged: list[Recommendation] = []
-        for local in local_candidates:
-            review = reviews.get(local.features.quote.code)
-            fusion_result = fuse_score(
-                score_strategy(strategy, local.features),
-                local.local_risk_facts,
-                review,
-                self._policy.dimension_weights[strategy],
-                self._policy.risk_rules,
-                fusion_mode,
-                self._policy.fusion,
-                evidence=local.features.evidence,
-                evaluated_at=now,
+        minimum_score = minimum_selection_score(
+            strategy,
+            self._policy.selection.thresholds,
+            phase=phase,
+            observation_margin=self._policy.selection.observation_margin,
+        )
+        selected = (
+            select_top_k(
+                merged,
+                top_k=self._policy.selection.default_top_k,
+                maximum_per_industry=self._policy.selection.maximum_per_industry,
+                minimum_final_score=minimum_score,
             )
-            stale = local.features.quote.age_seconds(now) > max_age_seconds
-            provisional = replace(
-                local,
-                score=fusion_result.score,
-                deepseek_risk_facts=fusion_result.deepseek_risk_facts,
-                review=review,
-                veto=fusion_result.veto,
-                target_price=(target_prices or {}).get(local.features.quote.code),
-            )
-            action, reason = action_for(
-                provisional,
-                self._policy.selection.thresholds,
-                phase=phase,
-                is_stale=stale,
-                observation_margin=self._policy.selection.observation_margin,
-            )
-            merged.append(replace(provisional, action=action, action_reason=reason))
-        selected = select_top_k(
-            merged,
-            top_k=self._policy.selection.default_top_k,
-            maximum_per_industry=self._policy.selection.maximum_per_industry,
+            if minimum_score is not None
+            else ()
         )
         snapshot_id = _snapshot_id(strategy, trade_date, phase, data_version, now)
         degraded_reasons = ("deepseek_incomplete",) if fusion_mode is FusionMode.LOCAL_DEGRADED else ()
@@ -170,6 +153,57 @@ class RecommendationEngine:
                 target_prices=dict(target_prices or {}),
             ),
         )
+
+    def _merge_candidates(
+        self,
+        strategy: Strategy,
+        eligible: Sequence[FeatureSnapshot],
+        *,
+        now: datetime,
+        phase: str,
+        review_port: DeepSeekReviewPort | None,
+        review_deadline: datetime,
+        max_age_seconds: float,
+        target_prices: Mapping[str, float | None] | None = None,
+    ) -> tuple[tuple[Recommendation, ...], Mapping[str, DeepSeekReview], FusionMode]:
+        local_candidates = [self._local_candidate(strategy, feature, now) for feature in eligible]
+        reviews = (
+            review_port.review(strategy, tuple(eligible), phase=phase, deadline=review_deadline)
+            if review_port is not None and eligible
+            else {}
+        )
+        fusion_mode = _fusion_mode(local_candidates, reviews, self._policy.selection.thresholds, strategy, phase)
+        merged: list[Recommendation] = []
+        for local in local_candidates:
+            review = reviews.get(local.features.quote.code)
+            fusion_result = fuse_score(
+                score_strategy(strategy, local.features),
+                local.local_risk_facts,
+                review,
+                self._policy.dimension_weights[strategy],
+                self._policy.risk_rules,
+                fusion_mode,
+                self._policy.fusion,
+                evidence=local.features.evidence,
+                evaluated_at=now,
+            )
+            provisional = replace(
+                local,
+                score=fusion_result.score,
+                deepseek_risk_facts=fusion_result.deepseek_risk_facts,
+                review=review,
+                veto=fusion_result.veto,
+                target_price=(target_prices or {}).get(local.features.quote.code),
+            )
+            action, reason = action_for(
+                provisional,
+                self._policy.selection.thresholds,
+                phase=phase,
+                is_stale=local.features.quote.age_seconds(now) > max_age_seconds,
+                observation_margin=self._policy.selection.observation_margin,
+            )
+            merged.append(replace(provisional, action=action, action_reason=reason))
+        return tuple(merged), reviews, fusion_mode
 
     def replay(self, snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
         replay_input = snapshot.replay_input
@@ -225,6 +259,36 @@ class RecommendationEngine:
         if replay_input is None:
             raise ValueError("snapshot does not contain replay input")
         return cls(_restore_policy(replay_input.policy)).verify_replay(snapshot)
+
+    @classmethod
+    def replay_candidates(cls, snapshot: RecommendationSnapshot) -> tuple[Recommendation, ...]:
+        if not snapshot.frozen:
+            raise ValueError("only frozen snapshots can provide threshold-report candidates")
+        cls.verify_frozen(snapshot)
+        replay_input = snapshot.replay_input
+        if replay_input is None:
+            raise ValueError("snapshot does not contain replay input")
+        engine = cls(_restore_policy(replay_input.policy))
+        eligible = tuple(
+            feature
+            for feature in replay_input.candidate_features
+            if hard_filter(
+                feature,
+                replay_input.evaluated_at,
+                max_age_seconds=replay_input.score_max_age_seconds,
+            ).allowed
+        )
+        merged, _reviews, _fusion_mode = engine._merge_candidates(
+            snapshot.strategy,
+            eligible,
+            now=replay_input.evaluated_at,
+            phase=snapshot.phase,
+            review_port=_RecordedReviewPort(replay_input.reviews),
+            review_deadline=replay_input.evaluated_at,
+            max_age_seconds=replay_input.score_max_age_seconds,
+            target_prices=replay_input.target_prices,
+        )
+        return merged
 
     def verify_replay(self, snapshot: RecommendationSnapshot) -> Mapping[str, object]:
         if not snapshot.frozen:

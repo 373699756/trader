@@ -80,6 +80,10 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
 
     assert cli_main(["verify-freeze", "--snapshot", str(snapshot_path)]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "verified"
+    assert cli_main(["threshold-report", "--snapshot", str(snapshot_path)]) == 0
+    threshold_report = json.loads(capsys.readouterr().out)
+    assert threshold_report["schema_version"] == "threshold_report_v1"
+    assert threshold_report["strategies"]["today"]["score_distribution"]["count"] == 1
     assert tuple(tmp_path.iterdir()) == (snapshot_path,)
 
 

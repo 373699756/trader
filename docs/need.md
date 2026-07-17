@@ -428,7 +428,7 @@ final_score = round_half_up(clamp(raw_final_score, 0, 100), 2)
 
 所有可执行项必须满足硬过滤、时间窗口、行情新鲜、无 veto 和周期匹配。
 
-上述动作门槛是 v8 当前候选值。切换生产前必须使用冻结点时输入完成离线重放，并至少报告各策略分数分布、推荐数、空推荐比例、TopK 变化、DeepSeek 覆盖、`local_degraded` 比例和风险拦截率；门槛未通过预注册验收时必须在本文和 `strategy_version` 中同步修订，禁止运行时自动调参或只改配置不升版本。
+上述动作门槛是 v9 当前候选值。切换生产前必须使用冻结点时输入完成离线重放，并至少报告各策略分数分布、推荐数、空推荐比例、TopK 变化、DeepSeek 覆盖、`local_degraded` 比例和风险拦截率；门槛未通过预注册验收时必须在本文和 `strategy_version` 中同步修订，禁止运行时自动调参或只改配置不升版本。`trader-cli threshold-report --snapshot <absolute-path>` 可重复传入同一策略版本和融合版本的冻结快照，报告必须基于完整回放候选而非仅基于已入选 TopK；混合版本输入必须拒绝，避免把不同规则的数据合并为伪基线。
 
 ## 18. 冻结与持久化
 

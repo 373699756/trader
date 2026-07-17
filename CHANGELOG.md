@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增 `trader-cli threshold-report` 冻结输入预注册报告，按策略输出完整回放候选的分数分布、推荐数、空推荐比例、相邻 TopK Jaccard 变化、DeepSeek 覆盖、整版本地降级比例和风险拦截率，并拒绝混合策略/融合版本。
 - 用户问题：今日多项 Bug 缺少集中状态记录；修改说明：新增 `docs/issues/2026-07-17.md`，逐项归纳行情降级、Tab 加载、空值展示、缺失原因、AKShare JSONP、DeepSeek 进程注入和 P2 数据缺口，并区分已修复、待运行生效、待验证和待实现。
 - 推荐 API 为 `missing_fields` 同步提供可展示的 `missing_reasons`，明细抽屉直接说明缺失数据的上游原因。
 - 候选池接入带 8 秒硬超时的 AKShare 兼容个股新闻证据，新闻证据进入特征快照、DeepSeek 输入和冻结回放；成功结果缓存 10 分钟，失败负缓存 60 秒。
@@ -21,6 +22,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 策略版本升级到 v9、冻结回放算法升级到 v4；today、tomorrow 和 d25 只在各自执行阶段应用动作门槛，预注册数据禁止跨版本混算。
 - 用户问题：此前交付规范只要求更新变更日志，没有明确把用户反馈与修改逐项归纳；修改说明：每个批次现在必须在 `Unreleased` 记录问题/诉求、原因判断、行为变化、验证证据和剩余风险，契约变化仍同步 `docs/need.md`，敏感信息禁止入文档。
 - 今早、明日和 2-5日推荐在桌面页面启动后后台预取，推荐日期与快照请求并行执行；相同策略/日期请求合并并使用 ETag 后台刷新。
 - 策略版本升级到 v8；新闻只对候选和长期观察池抓取，全市场扫描不发起逐股新闻请求。
@@ -37,6 +39,8 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户问题：today 观察期高分候选可能错误显示可执行；修改说明：09:30-09:36 观察阶段现在无条件最多为 observe，09:36 后才按 70 分主窗口门槛判断，跨策略或非执行阶段明确 unavailable。
+- 用户问题：TopK 用低分候选补满导致推荐不可能为空；修改说明：排名前先应用“动作门槛减 5 分”的最低观察边界，再按最终分、本地分和代码排序并执行单行业最多 3 只，合格候选不足时不降门槛回填。
 - 修正问题记录中“冻结 ID 稳定”的歧义：具体 ID 只作为 2026-07-17 当次连续查询证据，同一 committed 快照应保持不漂移，但新交易日、新数据版本或新合法冻结必须生成新 ID。
 - 用户问题：11:20 后 today 无数据；修改说明：启动时会将当日截止前 30 秒内最后有效草稿按固定边界补提交，当前查询在截止后只接受 committed 冻结记录，缺少符合时效的截止前草稿时明确不伪造。
 - 用户问题：tomorrow/d25 切换时先显示相同或另一波数据；修改说明：共享候选允许股票重合，但 API 和浏览器缓存按策略/日期隔离，过期草稿不再先显示后被新快照替换。
@@ -66,6 +70,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 第 17 节回归覆盖 09:30、09:35:59、09:36 动作边界、主/降级窗口门槛、跨策略阶段拒绝、TopK 0-18 上界、最低观察分、0 推荐、行业限制、稳定排序、完整候选阈值报告及混合版本拒绝；Ruff format/lint、59 个源文件 mypy、138 个 pytest、sdist/wheel 构建均通过，仓库外安装后可导入 `trader`、读取五项 Web 资源并执行 `trader-cli threshold-report --help`。
 - `docs/issues/2026-07-17.md` 已登记 16 项 `need.md` 符合性缺口，每项包含需求条款、证据与影响、修复步骤、验收条件、交付章节和状态；交付契约测试约束完整编号及必备字段。Ruff format/lint、58 个源文件 mypy、126 个 pytest、sdist/wheel 构建及仓库外包资源和 `trader-cli` 验收通过。
 - 错过窗口补冻结、截止后冻结优先/草稿拒绝、策略身份及 30 秒缓存回归通过；Ruff format/lint、58 个源文件 mypy、125 个 pytest、sdist/wheel 和仓库外安装通过。重启真实服务后，today 因无截止前草稿明确返回 `not_ready`，tomorrow/d25 以不同冻结 ID 和分数连续稳定响应，页面加载 `dashboard.js?v=4`；Firefox 在 1280x720、1440x900 和 1920x1080 下切换 d25 正常且无页面级横向溢出。
 - 今日 Bug 记录逐项包含用户问题、现状判断、修改说明、状态和后续验收，并明确未保存 DeepSeek 密钥或完整外部载荷；Ruff format/lint、58 个源文件 mypy、121 个 pytest、sdist/wheel 构建及仓库外 CLI/包资源验收全部通过。
@@ -92,7 +97,8 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 本批次只固化审计和详细修复队列，没有修改第 4-25 节相关生产实现；AUDIT-20260717-02 至 -16 仍须按文档中的整节顺序分别实现、回归、Review、提交和推送。
+- 第 17 节 AUDIT-20260717-02、03 已完成；AUDIT-20260717-04 至 -16 以及 AUDIT-20260717-01 的剩余行为证据仍须按文档中的整节顺序分别实现、回归、Review、提交和推送。
+- 回放算法 v4 不会把旧 v3 冻结输入当作当前规则重新解释；旧快照须由对应旧 release 验证，当前阈值预注册只接受 v4 新冻结快照。
 - 2026-07-17 运行目录没有 today 截止前草稿或冻结文件，因此不能合规恢复当日 today 推荐；修复只保证后续冻结和持有截止前 30 秒内有效草稿时的重启补提交。
 - 问题归纳的内容完整性仍依赖交付 Review 判断；契约测试只能防止必备栏目和目标文档被删除，不能自动证明原因分析正确。
 - 待办状态：AKShare JSONP 仍需真实响应验证，真实 DeepSeek 进程调用以及财务、公司事件和尾盘分钟数据仍按独立 P1/P2 批次交付。

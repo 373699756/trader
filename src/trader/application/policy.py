@@ -24,6 +24,8 @@ class SelectionPolicy:
             raise ValueError("TopK bounds must satisfy 0 <= default <= maximum <= 18")
         if self.maximum_per_industry < 1:
             raise ValueError("maximum_per_industry must be positive")
+        if self.observation_margin < 0.0:
+            raise ValueError("observation_margin cannot be negative")
 
 
 @dataclass(frozen=True)

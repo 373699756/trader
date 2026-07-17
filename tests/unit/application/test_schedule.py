@@ -13,6 +13,7 @@ from trader.application.schedule import SHANGHAI, MarketPhase, decision_at, free
         ("09:14:59", MarketPhase.CLOSED),
         ("09:15:00", MarketPhase.WARMUP),
         ("09:30:00", MarketPhase.TODAY_OBSERVE),
+        ("09:35:59", MarketPhase.TODAY_OBSERVE),
         ("09:36:00", MarketPhase.TODAY_MAIN),
         ("10:30:00", MarketPhase.TODAY_LATE),
         ("11:20:00", MarketPhase.MIDDAY),

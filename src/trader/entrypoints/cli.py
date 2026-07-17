@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 
 from trader.application.recommendations import RecommendationEngine
+from trader.application.threshold_report import build_threshold_report
+from trader.domain.models import RecommendationSnapshot
 from trader.infrastructure.persistence.snapshots import snapshot_from_dict
 from trader.infrastructure.settings import load_long_watchlist, load_runtime_settings, load_strategy_settings
 
@@ -23,6 +25,16 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     verify = subparsers.add_parser("verify-freeze", help="Replay and verify a frozen snapshot from its inputs.")
     verify.add_argument("--snapshot", required=True, help="Absolute path to a frozen snapshot JSON file.")
+    threshold_report = subparsers.add_parser(
+        "threshold-report",
+        help="Report pre-registration metrics from one or more frozen snapshots.",
+    )
+    threshold_report.add_argument(
+        "--snapshot",
+        required=True,
+        action="append",
+        help="Absolute frozen snapshot JSON path; repeat for multiple dates.",
+    )
     return parser
 
 
@@ -50,13 +62,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "verify-freeze":
         snapshot_path = _absolute_file_path(args.snapshot, argument="--snapshot")
         try:
-            raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError("snapshot root must be an object")
-            snapshot = snapshot_from_dict(raw)
+            snapshot = _load_snapshot(snapshot_path)
             result = RecommendationEngine.verify_frozen(snapshot)
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             raise SystemExit(f"freeze verification failed: {exc}") from exc
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.command == "threshold-report":
+        try:
+            snapshots = tuple(
+                _load_snapshot(_absolute_file_path(raw_path, argument="--snapshot")) for raw_path in args.snapshot
+            )
+            result = build_threshold_report(snapshots)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise SystemExit(f"threshold report failed: {exc}") from exc
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
     return 2
@@ -76,6 +95,13 @@ def _absolute_file_path(raw_path: str, *, argument: str) -> Path:
     if not path.is_absolute():
         raise SystemExit(f"{argument} path must be absolute")
     return path.resolve()
+
+
+def _load_snapshot(path: Path) -> RecommendationSnapshot:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("snapshot root must be an object")
+    return snapshot_from_dict(raw)
 
 
 if __name__ == "__main__":
