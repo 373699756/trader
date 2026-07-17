@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from trader.domain.factors import PRODUCTION_FACTOR_IDS
+from trader.domain.news import NewsSignalPolicy
 from trader.infrastructure.settings_parser import (
     ConfigurationError,
 )
@@ -200,6 +201,7 @@ class StrategySettings:
     fusion: FusionSettings
     selection: SelectionSettings
     candidate_weights: Mapping[str, float]
+    today_news_signal: NewsSignalPolicy
     dimension_weights: Mapping[str, Mapping[str, float]]
     risk_rules: tuple[RiskRuleSettings, ...]
     factor_contract: Mapping[str, object]
@@ -313,8 +315,8 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 4:
-        raise ConfigurationError("strategy schema_version must be 4")
+    if _integer(raw, "schema_version", minimum=1) != 5:
+        raise ConfigurationError("strategy schema_version must be 5")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     rules_raw = raw.get("risk_rules")
@@ -322,13 +324,14 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         raise ConfigurationError("risk_rules must be a list")
     risk_rules = tuple(_parse_risk_rule(item, index) for index, item in enumerate(rules_raw))
     dimension_weights = _nested_number_mapping(raw, "dimension_weights")
+    today_news_signal = _parse_news_signal_policy(_mapping(raw, "today_news_signal"))
     factor_registry_raw = _mapping(raw, "factor_registry")
     factor_registry = {
         str(factor_id): _parse_factor_definition(str(factor_id), definition)
         for factor_id, definition in factor_registry_raw.items()
     }
     settings = StrategySettings(
-        schema_version=4,
+        schema_version=5,
         strategy_version=_strategy_contract_version(raw),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),
@@ -354,6 +357,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
             thresholds=_number_mapping(selection_raw, "thresholds"),
         ),
         candidate_weights=_number_mapping(raw, "candidate_weights"),
+        today_news_signal=today_news_signal,
         dimension_weights=dimension_weights,
         risk_rules=risk_rules,
         factor_contract=dict(_mapping(raw, "factor_contract")),
@@ -459,6 +463,33 @@ def _parse_risk_rule(raw: object, index: int) -> RiskRuleSettings:
     )
 
 
+def _parse_news_signal_policy(raw: Mapping[str, object]) -> NewsSignalPolicy:
+    try:
+        return NewsSignalPolicy(
+            lookback_hours=_number(raw, "lookback_hours", minimum=0.01),
+            freshness_full_score_hours=_number(raw, "freshness_full_score_hours", minimum=0.0),
+            positive_score=_number(raw, "positive_score", minimum=0.0, maximum=100.0),
+            neutral_score=_number(raw, "neutral_score", minimum=0.0, maximum=100.0),
+            negative_score=_number(raw, "negative_score", minimum=0.0, maximum=100.0),
+            positive_keywords=_keyword_tuple(raw, "positive_keywords"),
+            negative_keywords=_keyword_tuple(raw, "negative_keywords"),
+        )
+    except ValueError as exc:
+        raise ConfigurationError(f"today_news_signal {exc}") from exc
+
+
+def _keyword_tuple(raw: Mapping[str, object], key: str) -> tuple[str, ...]:
+    values = raw.get(key)
+    if not isinstance(values, list) or not values or any(not isinstance(value, str) for value in values):
+        raise ConfigurationError(f"today_news_signal.{key} must be a non-empty string list")
+    keywords = tuple(value.strip() for value in values)
+    if any(not value or len(value) > 24 for value in keywords):
+        raise ConfigurationError(f"today_news_signal.{key} contains an invalid keyword")
+    if len(keywords) > 100:
+        raise ConfigurationError(f"today_news_signal.{key} exceeds 100 keywords")
+    return keywords
+
+
 def _validate_runtime_settings(settings: RuntimeSettings) -> None:
     if settings.api.default_top_n > settings.api.maximum_top_n:
         raise ConfigurationError("default_top_n cannot exceed maximum_top_n")
@@ -486,6 +517,15 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         raise ConfigurationError("risk caps are fixed at 25 local and 30 DeepSeek")
     if settings.selection.default_top_k > settings.selection.maximum_top_k:
         raise ConfigurationError("default_top_k cannot exceed maximum_top_k")
+    news = settings.today_news_signal
+    if (
+        news.lookback_hours != 72.0
+        or news.freshness_full_score_hours != 1.0
+        or news.positive_score != 75.0
+        or news.neutral_score != 50.0
+        or news.negative_score != 25.0
+    ):
+        raise ConfigurationError("today news signal window and scores are fixed at 72h/1h and 75/50/25")
     _validate_weight_sum("candidate_weights", settings.candidate_weights)
     required_candidate_weights = {
         "liquidity",

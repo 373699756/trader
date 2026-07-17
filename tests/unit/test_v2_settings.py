@@ -22,7 +22,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
     assert runtime.schema_version == 2
-    assert strategy.schema_version == 4
+    assert strategy.schema_version == 5
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
     assert runtime.market_data.research_timeout_seconds == 8
     assert sum(runtime.deepseek.strategy_limits.values()) == 188
@@ -34,6 +34,11 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert regulatory_rule.trigger_factor == "negative_announcement_level"
     assert regulatory_rule.trigger_thresholds == (3.0,)
     assert regulatory_rule.combination_mode == "exclusive"
+    assert strategy.today_news_signal.lookback_hours == 72.0
+    assert strategy.today_news_signal.freshness_full_score_hours == 1.0
+    assert strategy.today_news_signal.positive_score == 75.0
+    assert "回购" in strategy.today_news_signal.positive_keywords
+    assert "减持" in strategy.today_news_signal.negative_keywords
     assert len(watchlist.items) == 10
 
 
@@ -96,3 +101,48 @@ def test_risk_identity_fields_reject_non_string_values(tmp_path) -> None:
 
     with pytest.raises(ConfigurationError, match="stable identity fields"):
         load_strategy_settings(strategy_path)
+
+
+def test_today_news_signal_rejects_overlapping_keyword_sets(tmp_path) -> None:
+    strategy_path = tmp_path / "strategy.json"
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "strategy.json").read_text(encoding="utf-8"))
+    raw["today_news_signal"]["negative_keywords"].append(raw["today_news_signal"]["positive_keywords"][0])
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="must not overlap"):
+        load_strategy_settings(strategy_path)
+
+
+def test_today_news_signal_changes_strategy_version(tmp_path) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    baseline = load_strategy_settings(source)
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw["today_news_signal"]["positive_keywords"].append("订单增长")
+    changed_path = tmp_path / "strategy.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    changed = load_strategy_settings(changed_path)
+
+    assert changed.strategy_version != baseline.strategy_version
+
+
+def test_today_news_signal_is_required(tmp_path) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    del raw["today_news_signal"]
+    changed_path = tmp_path / "strategy.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="today_news_signal must be an object"):
+        load_strategy_settings(changed_path)
+
+
+def test_today_news_signal_fixed_window_and_scores_cannot_drift(tmp_path) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw["today_news_signal"]["lookback_hours"] = 48
+    changed_path = tmp_path / "strategy.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="fixed at 72h/1h and 75/50/25"):
+        load_strategy_settings(changed_path)

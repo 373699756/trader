@@ -9,7 +9,9 @@ import pytest
 import requests
 
 from trader.application.ports import MarketDataUnavailable
-from trader.domain.models import Evidence, MarketQuote
+from trader.domain.models import Evidence, MarketQuote, Strategy
+from trader.domain.news import NewsSignalPolicy
+from trader.domain.strategies import score_strategy
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailable
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
@@ -22,6 +24,15 @@ from trader.infrastructure.market_data.tencent import TencentClient
 from trader.infrastructure.settings import ConfigurationError, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
+NEWS_POLICY = NewsSignalPolicy(
+    lookback_hours=72.0,
+    freshness_full_score_hours=1.0,
+    positive_score=75.0,
+    neutral_score=50.0,
+    negative_score=25.0,
+    positive_keywords=("回购", "增持", "中标"),
+    negative_keywords=("减持", "立案", "亏损"),
+)
 
 
 def test_eastmoney_normalizes_quote_and_history() -> None:
@@ -209,7 +220,7 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
         for index in range(1, 61)
     )
 
-    with_history, without_history = FeatureBuilder().build(
+    with_history, without_history = FeatureBuilder(NEWS_POLICY).build(
         (quote, _quote(code="600002", industry="银行")),
         {"600001": bars},
         NOW,
@@ -223,7 +234,7 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
 
 
 def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
-    builder = FeatureBuilder()
+    builder = FeatureBuilder(NEWS_POLICY)
     low = replace(_quote(code="600001"), speed=0.1)
     middle = replace(_quote(code="600002"), speed=0.2)
     high = replace(_quote(code="600003"), speed=0.3)
@@ -237,7 +248,7 @@ def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
 
 
 def test_feature_builder_partitions_cross_sections_and_excludes_missing_breadth() -> None:
-    builder = FeatureBuilder()
+    builder = FeatureBuilder(NEWS_POLICY)
     quotes = (
         replace(_quote(code="600001"), speed=0.1, pct_change=1.0, data_version="v1"),
         replace(_quote(code="600002"), speed=0.2, pct_change=-1.0, data_version="v1"),
@@ -263,7 +274,7 @@ def test_market_service_bounds_history_preload_to_stratified_candidate_universe(
     service = MarketFeatureService(
         StaticGateway(quotes),
         history,
-        FeatureBuilder(),
+        FeatureBuilder(NEWS_POLICY),
         history_workers=2,
         history_preload_limit=2,
     )
@@ -280,7 +291,7 @@ def test_market_service_loads_history_before_cold_start_candidate_cross_section(
     service = MarketFeatureService(
         StaticGateway((_quote(), _quote(code="600002"))),
         history,
-        FeatureBuilder(),
+        FeatureBuilder(NEWS_POLICY),
         history_workers=2,
     )
 
@@ -298,7 +309,7 @@ def test_market_service_reloads_expired_history_and_reports_failed_coverage() ->
     service = MarketFeatureService(
         StaticGateway((_quote(), _quote(code="600002"))),
         history,
-        FeatureBuilder(),
+        FeatureBuilder(NEWS_POLICY),
         history_workers=2,
         history_ttl_seconds=60,
         market_ttl_seconds=1,
@@ -341,11 +352,13 @@ def test_akshare_news_is_bounded_and_normalized() -> None:
     payload = {
         "result": {
             "cmsArticleWebOld": [
+                {"title": "时间未知", "date": "invalid", "mediaName": "交易所"},
+                {"title": "未来新闻", "date": "2026-07-16 11:00:00", "mediaName": "交易所"},
                 {
                     "title": "<em>测试股份</em>发布公告",
                     "date": "2026-07-16 09:00:00",
                     "mediaName": "交易所",
-                }
+                },
             ]
         }
     }
@@ -355,7 +368,7 @@ def test_akshare_news_is_bounded_and_normalized() -> None:
         calls.append((args, kwargs))
         return FakeResponse(f"{callback}({json.dumps(payload, ensure_ascii=False)});")
 
-    evidence = AkshareResearchClient(timeout_seconds=8, get=get).fetch_news("600001", observed_at=NOW)
+    evidence = AkshareResearchClient(timeout_seconds=8, get=get).fetch_news("600001", observed_at=NOW, limit=1)
 
     assert evidence[0].evidence_type == "news"
     assert evidence[0].title == "测试股份发布公告"
@@ -365,12 +378,12 @@ def test_akshare_news_is_bounded_and_normalized() -> None:
 
 
 def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
-    news = Evidence("news-1", "news", "候选新闻", "fixture", NOW - timedelta(hours=1))
+    news = Evidence("news-1", "news", "公司拟回购股份", "fixture", NOW - timedelta(hours=1))
     research = StaticResearchClient((news,))
     service = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(),
+        FeatureBuilder(NEWS_POLICY),
         research_client=research,
         research_workers=1,
     )
@@ -381,17 +394,25 @@ def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     assert research.calls == 1
     assert [item.evidence_id for item in first[0].evidence] == [first[0].evidence[0].evidence_id, "news-1"]
     assert second[0].evidence[-1].evidence_id == "news-1"
+    assert first[0].values["news_sentiment"] == 75.0
+    assert first[0].values["evidence_freshness"] == 100.0
+    assert "news_sentiment" not in first[0].missing_fields
+    assert score_strategy(Strategy.TODAY, first[0]).components["sentiment"] == 87.5
 
     degraded = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(),
+        FeatureBuilder(NEWS_POLICY),
         research_client=FailingResearchClient(),
         research_workers=1,
     )
     result = degraded.fetch_candidate_features(("600001",), NOW)
     assert len(result) == 1
     assert len(result[0].evidence) == 1
+    assert result[0].values["news_sentiment"] is None
+    assert result[0].values["evidence_freshness"] is None
+    assert "news_sentiment" in result[0].missing_fields
+    assert score_strategy(Strategy.TODAY, result[0]).components["sentiment"] == 60.0
     assert degraded.health()["research_error_count"] == 1
     assert degraded.health()["research_last_error"] == "offline"
 

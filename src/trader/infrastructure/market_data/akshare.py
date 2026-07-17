@@ -41,6 +41,9 @@ class AkshareResearchClient:
     def fetch_news(self, code: str, *, observed_at: datetime, limit: int = 5) -> tuple[Evidence, ...]:
         if limit <= 0:
             return ()
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("news observation time must be timezone-aware")
+        point_in_time = _as_shanghai_time(observed_at)
         callback = "jQuery35101792940631092459_1764599530165"
         inner_param = {
             "uid": "",
@@ -54,7 +57,7 @@ class AkshareResearchClient:
                     "searchScope": "default",
                     "sort": "default",
                     "pageIndex": 1,
-                    "pageSize": min(10, max(1, limit)),
+                    "pageSize": 10,
                     "preTag": "<em>",
                     "postTag": "</em>",
                 }
@@ -74,11 +77,15 @@ class AkshareResearchClient:
         response.raise_for_status()
         rows = _news_rows(response.text, callback)
         evidence: list[Evidence] = []
-        for row in rows[:limit]:
+        for row in rows:
+            if len(evidence) >= limit:
+                break
             title = _clean_text(_first_text(row, ("title", "新闻标题", "标题")))
             if not title:
                 continue
-            published = _parse_datetime(_first_text(row, ("date", "发布时间", "时间", "publish_time")), observed_at)
+            published = _parse_datetime(_first_text(row, ("date", "发布时间", "时间", "publish_time")))
+            if published is None or published > point_in_time:
+                continue
             source = _first_text(row, ("mediaName", "文章来源", "来源", "source")) or "akshare"
             identity = hashlib.sha256(f"{code}|{published.isoformat()}|{source}|{title}".encode()).hexdigest()[:32]
             evidence.append(
@@ -142,13 +149,13 @@ def _clean_text(value: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", value)).strip()
 
 
-def _parse_datetime(raw: str, fallback: datetime) -> datetime:
+def _parse_datetime(raw: str) -> datetime | None:
     if not raw:
-        return _as_shanghai_time(fallback)
+        return None
     try:
         parsed = datetime.fromisoformat(raw.replace("/", "-").replace("Z", "+00:00"))
     except ValueError:
-        return _as_shanghai_time(fallback)
+        return None
     return _as_shanghai_time(parsed)
 
 

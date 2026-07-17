@@ -10,6 +10,7 @@ from datetime import datetime
 
 from trader.domain.factors import band_score, clamp, percentile_scores_with_metadata
 from trader.domain.models import CrossSectionStats, Evidence, FeatureSnapshot, MarketQuote
+from trader.domain.news import NewsSignalPolicy, derive_news_signals
 from trader.infrastructure.market_data.history import (
     DailyBar,
     maximum_drawdown_pct,
@@ -22,6 +23,9 @@ from trader.infrastructure.market_data.history import (
 
 
 class FeatureBuilder:
+    def __init__(self, news_signal_policy: NewsSignalPolicy) -> None:
+        self._news_signal_policy = news_signal_policy
+
     def build(
         self,
         quotes: Sequence[MarketQuote],
@@ -116,6 +120,12 @@ class FeatureBuilder:
         snapshots: list[FeatureSnapshot] = []
         for quote in quotes:
             values = raw[quote.code]
+            candidate_evidence = tuple((research_evidence or {}).get(quote.code, ()))[:15]
+            news_signals = derive_news_signals(
+                candidate_evidence,
+                observed_at=observed_at,
+                policy=self._news_signal_policy,
+            )
             values.update(
                 {
                     "amount_percentile_20d": _if_present(
@@ -132,6 +142,8 @@ class FeatureBuilder:
                     "market_breadth": market_breadth,
                     "low_volatility_score": _if_present(values.get("volatility_20d"), volatility_scores[quote.code]),
                     "low_drawdown_score": _if_present(values.get("max_drawdown_20d"), drawdown_scores[quote.code]),
+                    "news_sentiment": news_signals.sentiment_score,
+                    "evidence_freshness": news_signals.freshness_score,
                 }
             )
             reference = (cross_section_reference or {}).get(quote.code, {})
@@ -158,7 +170,7 @@ class FeatureBuilder:
                     missing_fields=missing,
                     evidence=(
                         _structured_evidence(quote, values, observed_at),
-                        *tuple((research_evidence or {}).get(quote.code, ()))[:15],
+                        *candidate_evidence,
                     ),
                     normalization=normalization,
                 )

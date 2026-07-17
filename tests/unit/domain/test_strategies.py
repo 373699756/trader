@@ -41,3 +41,18 @@ def test_d25_overheat_boundary_keeps_thirty_percent_at_point_eighty_five(feature
 
     assert at_boundary == pytest.approx(baseline * 0.85)
     assert above_boundary == pytest.approx(baseline * 0.75)
+
+
+def test_today_score_matches_all_documented_component_and_subcomponent_weights(feature_factory) -> None:
+    result = score_strategy(Strategy.TODAY, feature_factory())
+
+    assert result.components == pytest.approx(
+        {
+            "momentum": 88.75,
+            "liquidity": 82.0,
+            "industry": 60.0,
+            "sentiment": 59.5,
+            "protection": 66.75,
+        }
+    )
+    assert result.base_score == pytest.approx(76.1375)

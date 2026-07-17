@@ -35,6 +35,11 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
 ) -> None:
     now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
     accepted = application_feature_factory("600001", now)
+    accepted = replace(
+        accepted,
+        values={**accepted.values, "news_sentiment": 75.0, "evidence_freshness": 100.0},
+        evidence=(Evidence("news-1", "news", "公司拟回购股份", "fixture", now - timedelta(minutes=30)),),
+    )
     rejected = application_feature_factory("600002", now)
     rejected = replace(rejected, quote=replace(rejected.quote, pct_change=8.01))
     engine = RecommendationEngine(recommendation_policy)
@@ -61,7 +66,7 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
         candidate_pool_size=120,
     )
     assert snapshot.replay_input is not None
-    frozen = replace(snapshot, frozen=True)
+    frozen = replace(snapshot, frozen=True, config_version="runtime-v2+strategy-v11")
 
     restored = snapshot_from_dict(json.loads(snapshot_bytes(frozen)))
     result = RecommendationEngine.verify_frozen(restored)
@@ -77,6 +82,13 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
     assert restored.filter_reasons == {"main_board_too_hot": 1}
     assert restored.filter_details[0].filter_code == "main_board_too_hot"
     assert restored.filter_details[0].actual == 8.01
+    assert restored.replay_input is not None
+    assert restored.replay_input.algorithm_version == "engine_v7_section11_2026_07"
+    restored_today_input = restored.replay_input.candidate_features[0]
+    assert restored_today_input.values["news_sentiment"] == 75.0
+    assert restored_today_input.values["evidence_freshness"] == 100.0
+    assert restored_today_input.evidence[0].evidence_id == "news-1"
+    assert restored.config_version == "runtime-v2+strategy-v11"
     assert restored.recommendations == engine.replay(restored).recommendations
     snapshot_path = (tmp_path / "frozen.json").resolve()
     snapshot_path.write_bytes(snapshot_bytes(frozen))
