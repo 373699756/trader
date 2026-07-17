@@ -109,6 +109,17 @@ def trade_date_at(value: datetime) -> date:
     return shanghai_now(value).date()
 
 
+def freeze_due_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
+    if not is_trading_day:
+        return ()
+    current = shanghai_now(value).time().replace(tzinfo=None)
+    if current >= time(14, 50):
+        return ("today", "tomorrow", "d25")
+    if current >= time(11, 20):
+        return ("today",)
+    return ()
+
+
 def _freeze_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
     if not is_trading_day:
         return ()
@@ -125,6 +136,7 @@ __all__ = [
     "SHANGHAI",
     "ScheduleDecision",
     "decision_at",
+    "freeze_due_at",
     "phase_at",
     "shanghai_now",
     "trade_date_at",

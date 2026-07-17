@@ -37,6 +37,8 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户问题：11:20 后 today 无数据；修改说明：启动时会将当日截止前 30 秒内最后有效草稿按固定边界补提交，当前查询在截止后只接受 committed 冻结记录，缺少符合时效的截止前草稿时明确不伪造。
+- 用户问题：tomorrow/d25 切换时先显示相同或另一波数据；修改说明：共享候选允许股票重合，但 API 和浏览器缓存按策略/日期隔离，过期草稿不再先显示后被新快照替换。
 - 修复浏览器将 JSON `null` 经 `Number(null)` 错误显示为 `0.00` 的问题，并把未执行的 DeepSeek 评分、风险扣分和置信覆盖明确标记为“未复核”。
 - 快速切换策略 Tab 时不再清空推荐表等待重复网络请求；已加载快照立即从页面内存显示，后台刷新失败时保留缓存快照并显式提示。
 - 全市场行情请求增加有界瞬时故障重试：东方财富三个 host 首轮均断连时再尝试一轮，新浪计数或分页遇到连接错误、5xx 或无效 JSON 时最多重试一次，避免单次 `RemoteDisconnected` 或分页 504 直接触发双源降级。
@@ -63,6 +65,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 错过窗口补冻结、截止后冻结优先/草稿拒绝、策略身份及 30 秒缓存回归通过；Ruff format/lint、58 个源文件 mypy、125 个 pytest、sdist/wheel 和仓库外安装通过。重启真实服务后，today 因无截止前草稿明确返回 `not_ready`，tomorrow/d25 以不同冻结 ID 和分数连续稳定响应，页面加载 `dashboard.js?v=4`；Firefox 在 1280x720、1440x900 和 1920x1080 下切换 d25 正常且无页面级横向溢出。
 - 今日 Bug 记录逐项包含用户问题、现状判断、修改说明、状态和后续验收，并明确未保存 DeepSeek 密钥或完整外部载荷；Ruff format/lint、58 个源文件 mypy、121 个 pytest、sdist/wheel 构建及仓库外 CLI/包资源验收全部通过。
 - 交付契约测试校验 `AGENTS.md` 与 `docs/need.md` 均强制记录问题、修改、验证和风险；Ruff format/lint、58 个源文件 mypy、121 个 pytest、sdist/wheel 构建及仓库外 `trader-cli`/包资源验收全部通过。
 - 推荐缺失原因与静态渲染契约测试通过；Ruff format/lint、58 个源文件 mypy、120 个 pytest、sdist/wheel 构建全部通过，仓库外安装后可导入包、执行 `trader-cli` 并读取模板、CSS、JavaScript 和图标。
@@ -87,8 +90,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 2026-07-17 运行目录没有 today 截止前草稿或冻结文件，因此不能合规恢复当日 today 推荐；修复只保证后续冻结和持有截止前 30 秒内有效草稿时的重启补提交。
 - 问题归纳的内容完整性仍依赖交付 Review 判断；契约测试只能防止必备栏目和目标文档被删除，不能自动证明原因分析正确。
-- 待办状态：AKShare JSONP 仍需真实响应验证，真实 DeepSeek 进程调用以及财务、公司事件和尾盘分钟数据仍按独立 P1/P2 批次交付；旧服务重启前 `missing_reasons` API 不会加载新序列化代码。
+- 待办状态：AKShare JSONP 仍需真实响应验证，真实 DeepSeek 进程调用以及财务、公司事件和尾盘分钟数据仍按独立 P1/P2 批次交付。
 - 可复算 latest/frozen 文件会增加本地 JSON 体积和序列化 I/O；全市场部分已裁剪为硬过滤和候选排序必需字段，发布前仍需在真实全市场规模下记录文件大小、冻结耗时和磁盘保留策略。
 - 第 25 节仓库门禁可重复执行，但生产最终验收仍需真实交易日证明活动 TopK P95 不超过 10 秒、真实 DeepSeek 密钥产生非零调用并输出阶段总结，以及保存三档桌面截图；任一证据缺失时不得宣告发布完成。
 - 固定输入完整日影子已覆盖冻结链和确定性，但真实 A 股 09:15-15:00 不间断影子观察仍未完成；生产发布前必须按 runbook 留存行情年龄、冻结哈希、桌面三分辨率和 v1 运行库未修改证据。

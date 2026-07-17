@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from trader.application.schedule import SHANGHAI, MarketPhase, decision_at, phase_at
+from trader.application.schedule import SHANGHAI, MarketPhase, decision_at, freeze_due_at, phase_at
 
 
 @pytest.mark.parametrize(
@@ -36,3 +36,13 @@ def test_freeze_decisions_are_exact_windows() -> None:
     assert decision_at(today, is_trading_day=True).freeze_strategies == ("today",)
     assert decision_at(afternoon, is_trading_day=True).freeze_strategies == ("tomorrow", "d25")
     assert decision_at(today, is_trading_day=False).freeze_strategies == ()
+
+
+def test_freeze_due_survives_a_missed_exact_window() -> None:
+    midday = datetime(2026, 7, 16, 13, 0, tzinfo=SHANGHAI)
+    after_freeze = datetime(2026, 7, 16, 15, 0, tzinfo=SHANGHAI)
+
+    assert decision_at(midday, is_trading_day=True).freeze_strategies == ()
+    assert freeze_due_at(midday, is_trading_day=True) == ("today",)
+    assert freeze_due_at(after_freeze, is_trading_day=True) == ("today", "tomorrow", "d25")
+    assert freeze_due_at(after_freeze, is_trading_day=False) == ()

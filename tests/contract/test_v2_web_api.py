@@ -68,6 +68,72 @@ def test_recommendation_validation_and_empty_current(recommendation_policy, appl
     assert client.get("/api/recommendations/today?date=2026-02-30").status_code == 400
 
 
+def test_current_query_requires_and_prefers_today_freeze_after_cutoff(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    draft = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
+    frozen = replace(
+        draft,
+        snapshot_id="frozen-today",
+        frozen=True,
+        published_at=NOW.replace(hour=11, minute=20),
+    )
+    now = NOW.replace(hour=11, minute=30)
+    repository = MemoryReadRepository(
+        latest={Strategy.TODAY: draft},
+        frozen={(Strategy.TODAY, "2026-07-16"): frozen},
+    )
+    app, _publisher = _app(repository, now=now)
+
+    ready = app.test_client().get("/api/recommendations/today").get_json()
+
+    assert ready["snapshot_id"] == "frozen-today"
+    assert ready["frozen"] is True
+
+    missing_app, _publisher = _app(
+        MemoryReadRepository(latest={Strategy.TODAY: draft}),
+        now=now,
+    )
+    missing = missing_app.test_client().get("/api/recommendations/today").get_json()
+    assert missing["status"] == "not_ready"
+    assert missing["items"] == []
+
+
+def test_frozen_current_queries_keep_tomorrow_and_d25_isolated(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    tomorrow = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        snapshot_id="frozen-tomorrow",
+        frozen=True,
+    )
+    d25 = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.D25),
+        snapshot_id="frozen-d25",
+        frozen=True,
+    )
+    repository = MemoryReadRepository(
+        frozen={
+            (Strategy.TOMORROW, "2026-07-16"): tomorrow,
+            (Strategy.D25, "2026-07-16"): d25,
+        }
+    )
+    app, _publisher = _app(repository, now=NOW.replace(hour=14, minute=55))
+    client = app.test_client()
+
+    tomorrow_payload = client.get("/api/recommendations/tomorrow").get_json()
+    d25_payload = client.get("/api/recommendations/d25").get_json()
+
+    assert tomorrow_payload["snapshot_id"] == "frozen-tomorrow"
+    assert d25_payload["snapshot_id"] == "frozen-d25"
+    assert tomorrow_payload["strategy"] == "tomorrow"
+    assert d25_payload["strategy"] == "d25"
+    assert "tail_structure" in tomorrow_payload["items"][0]["scores"]["components"]
+    assert "not_overheated" in d25_payload["items"][0]["scores"]["components"]
+
+
 def test_history_dates_not_found_and_long_rules(recommendation_policy, application_feature_factory) -> None:
     snapshot = replace(
         _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
@@ -127,13 +193,14 @@ def _app(
     *,
     history_size: int = 8,
     maximum_subscribers: int = 4,
+    now: datetime = NOW,
 ):
     publisher = SnapshotPublisher(
         history_size=history_size,
         client_queue_size=2,
         maximum_subscribers=maximum_subscribers,
     )
-    queries = RecommendationQueries(repository, repository, now=lambda: NOW)
+    queries = RecommendationQueries(repository, repository, now=lambda: now)
     app = create_app(
         lambda: {"schema_version": "v2", "status": "running", "runtime_started": True},
         queries=queries,

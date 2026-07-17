@@ -14,6 +14,7 @@
     lastEventId: 0,
     requestSequence: 0,
   };
+  const CACHE_MAX_AGE_MS = 30000;
 
   const els = {};
 
@@ -63,7 +64,7 @@
       button.setAttribute("aria-selected", active ? "true" : "false");
     });
     const key = recommendationKey(state.strategy, state.date);
-    state.payload = state.payloads.get(key) || null;
+    state.payload = displayableCachedPayload(key, state.strategy, state.date);
     if (state.payload) renderPayload(state.payload);
     await Promise.all([loadDates(), loadRecommendations("strategy")]);
   }
@@ -93,7 +94,7 @@
     const strategy = state.strategy;
     const selectedDate = state.date;
     const key = recommendationKey(strategy, selectedDate);
-    const cached = state.payloads.get(key) || null;
+    const cached = displayableCachedPayload(key, strategy, selectedDate);
     els.refreshButton.classList.add("is-busy");
     if (cached) {
       if (state.payload !== cached) {
@@ -144,6 +145,8 @@
       }
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error && payload.error.message ? payload.error.message : "接口请求失败");
+      if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
+      if (selectedDate && payload.trade_date !== selectedDate) throw new Error("推荐快照日期不匹配");
       const etag = response.headers.get("ETag");
       if (etag) state.etags.set(key, etag);
       state.payloads.set(key, payload);
@@ -159,6 +162,16 @@
 
   function recommendationKey(strategy, selectedDate) {
     return `${strategy}:${selectedDate || "current"}`;
+  }
+
+  function displayableCachedPayload(key, strategy, selectedDate) {
+    const payload = state.payloads.get(key) || null;
+    if (!payload || payload.strategy !== strategy) return null;
+    if (selectedDate && payload.trade_date !== selectedDate) return null;
+    if (payload.frozen) return payload;
+    const publishedAt = new Date(payload.published_at).getTime();
+    if (!Number.isFinite(publishedAt) || Date.now() - publishedAt > CACHE_MAX_AGE_MS) return null;
+    return payload;
   }
 
   function prefetchStrategies() {

@@ -20,7 +20,7 @@ from trader.application.ports import (
 )
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
-from trader.application.schedule import MarketPhase, decision_at, shanghai_now, trade_date_at
+from trader.application.schedule import MarketPhase, decision_at, freeze_due_at, shanghai_now, trade_date_at
 from trader.application.status import RuntimeState
 from trader.domain.models import FeatureSnapshot, RecommendationSnapshot, Strategy
 
@@ -85,6 +85,12 @@ class RecommendationPipeline:
             latest = self._repository.latest(strategy)
             if latest is not None:
                 self._state.restore_snapshot(latest)
+        now = self._now()
+        trade_day = trade_date_at(now)
+        catchup = self._freeze_available_snapshots(
+            now,
+            freeze_due_at(now, is_trading_day=self._calendar.is_trading_day(trade_day)),
+        )
         for record in self._event_audit.pending_priority_events():
             try:
                 event = event_from_audit_record(record)
@@ -93,7 +99,7 @@ class RecommendationPipeline:
                 continue
             if self._queue.put(event):
                 self._state.increment("events_replayed")
-        return recovery
+        return {**recovery, "catchup_frozen": len(catchup)}
 
     def start(self) -> bool:
         if self._worker is not None and self._worker.is_alive():
@@ -212,17 +218,33 @@ class RecommendationPipeline:
             if snapshot is not None:
                 snapshots.append(snapshot)
 
+        snapshots.extend(self._freeze_available_snapshots(now, freeze_strategies))
+        return tuple(snapshots)
+
+    def _freeze_available_snapshots(
+        self,
+        now: datetime,
+        freeze_strategies: Sequence[str],
+    ) -> tuple[RecommendationSnapshot, ...]:
+        snapshots: list[RecommendationSnapshot] = []
+        trade_date = trade_date_at(now).isoformat()
         for raw_strategy in freeze_strategies:
             strategy = Strategy(raw_strategy)
             key = (strategy, trade_date)
-            if key in self._frozen_keys:
+            if key in self._frozen_keys or self._state.is_frozen(strategy, trade_date):
                 continue
             current = self._state.latest(strategy)
-            if current is None:
-                current = self._score_strategy(strategy, now, phase, trade_date)
-            if current is None:
+            if current is None or current.trade_date != trade_date:
+                self._state.record_error(f"{strategy.value} freeze unavailable: no current pre-cutoff snapshot")
                 continue
-            frozen = replace(current, frozen=True, published_at=now)
+            boundary = _freeze_boundary(now, strategy)
+            if current.published_at > boundary:
+                self._state.record_error(f"{strategy.value} freeze unavailable: latest snapshot is after cutoff")
+                continue
+            if (boundary - current.published_at).total_seconds() > 30:
+                self._state.record_error(f"{strategy.value} freeze unavailable: latest snapshot is stale at cutoff")
+                continue
+            frozen = replace(current, frozen=True, published_at=boundary)
             self._repository.freeze(frozen)
             self._repository.publish(frozen)
             self._state.mark_frozen(frozen)
@@ -317,6 +339,13 @@ def _review_deadline(now: datetime, phase: MarketPhase) -> datetime:
     if phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
         return local.replace(hour=11, minute=20, second=0, microsecond=0)
     return local.replace(hour=14, minute=48, second=0, microsecond=0)
+
+
+def _freeze_boundary(now: datetime, strategy: Strategy) -> datetime:
+    local = shanghai_now(now)
+    if strategy is Strategy.TODAY:
+        return local.replace(hour=11, minute=20, second=0, microsecond=0)
+    return local.replace(hour=14, minute=50, second=0, microsecond=0)
 
 
 def _topk_quote_age(state: RuntimeState, now: datetime) -> Mapping[str, object]:

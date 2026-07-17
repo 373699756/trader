@@ -46,6 +46,8 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     assert [snapshot.strategy for snapshot in today] == [Strategy.TODAY]
     assert today[0].fusion_mode.value == "local_degraded"
 
+    clock.set(datetime.fromisoformat("2026-07-16T11:19:50+08:00"))
+    pipeline.run_once(clock.now())
     clock.set(datetime.fromisoformat("2026-07-16T11:20:00+08:00"))
     morning_freeze = pipeline.run_once(clock.now())
     assert morning_freeze[-1].strategy is Strategy.TODAY
@@ -55,6 +57,8 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     afternoon = pipeline.run_once(clock.now())
     assert {snapshot.strategy for snapshot in afternoon} == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
 
+    clock.set(datetime.fromisoformat("2026-07-16T14:49:50+08:00"))
+    pipeline.run_once(clock.now())
     clock.set(datetime.fromisoformat("2026-07-16T14:50:00+08:00"))
     afternoon_freeze = pipeline.run_once(clock.now())
     assert {snapshot.strategy for snapshot in afternoon_freeze} == {Strategy.TOMORROW, Strategy.D25}
@@ -96,6 +100,58 @@ def test_initialize_restores_frozen_gate(recommendation_policy, application_feat
 
     assert pipeline.run_once(now) == ()
     assert repository.published == {}
+
+
+def test_initialize_catches_up_pre_cutoff_today_snapshot_after_missed_window(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T11:19:50+08:00"))
+    features = (application_feature_factory("600001", clock.now()),)
+    repository = MemoryRepository()
+    first = RecommendationPipeline(
+        StaticMarketData(features),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=clock.now,
+    )
+    first.initialize()
+    assert first.run_once(clock.now())[0].strategy is Strategy.TODAY
+
+    clock.set(datetime.fromisoformat("2026-07-16T13:05:00+08:00"))
+    restarted = RecommendationPipeline(
+        StaticMarketData(features),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=clock.now,
+    )
+
+    recovery = restarted.initialize()
+
+    frozen = repository.frozen[(Strategy.TODAY, "2026-07-16")]
+    assert isinstance(frozen, RecommendationSnapshot)
+    assert recovery["catchup_frozen"] == 1
+    assert frozen.frozen is True
+    assert frozen.published_at.hour == 11
+    assert frozen.published_at.minute == 20
 
 
 def test_market_data_unavailability_preserves_candidates_and_records_degradation(

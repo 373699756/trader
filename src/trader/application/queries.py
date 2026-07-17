@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.application.ports import EventAuditPort, SnapshotRepositoryPort
-from trader.application.schedule import trade_date_at
+from trader.application.schedule import freeze_due_at, trade_date_at
 from trader.domain.models import RecommendationSnapshot, Strategy
 
 
@@ -32,6 +32,16 @@ class RecommendationQueries:
 
     def recommendation(self, strategy: Strategy, trade_date: str | None = None) -> SnapshotLookup:
         if trade_date is None:
+            now = self._now()
+            current_date = trade_date_at(now)
+            if strategy is not Strategy.LONG and strategy.value in freeze_due_at(now, is_trading_day=True):
+                frozen = self._repository.load_frozen(strategy, current_date.isoformat())
+                if frozen is not None:
+                    return SnapshotLookup("ready", frozen, False)
+                latest = self._repository.latest(strategy)
+                if latest is None or latest.trade_date == current_date.isoformat() or not latest.frozen:
+                    return SnapshotLookup("not_ready", None, False)
+                return SnapshotLookup("ready", latest, False)
             snapshot = self._repository.latest(strategy)
             return SnapshotLookup("ready" if snapshot is not None else "not_ready", snapshot, False)
         if strategy is Strategy.LONG:
