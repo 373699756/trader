@@ -30,7 +30,7 @@ from trader.domain.risk import derive_local_risk_facts
 from trader.domain.strategies import score_strategy
 
 REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
-REPLAY_ALGORITHM_VERSION = "engine_v5_section9_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_v6_section10_2026_07"
 _PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 
 
@@ -337,7 +337,7 @@ class RecommendationEngine:
         features: FeatureSnapshot,
         now: datetime,
     ) -> Recommendation:
-        local_facts = derive_local_risk_facts(features, now, self._policy.risk_rules)
+        local_facts = derive_local_risk_facts(features, now, self._policy.risk_rules, strategy=strategy)
         local = score_strategy(strategy, features)
         local_result = fuse_score(
             local,

@@ -22,7 +22,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
     assert runtime.schema_version == 2
-    assert strategy.schema_version == 3
+    assert strategy.schema_version == 4
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
     assert runtime.market_data.research_timeout_seconds == 8
     assert sum(runtime.deepseek.strategy_limits.values()) == 188
@@ -31,6 +31,9 @@ def test_v2_configuration_contract_is_valid() -> None:
     regulatory_rule = next(rule for rule in strategy.risk_rules if rule.risk_code == "regulatory_risk")
     assert regulatory_rule.veto is True
     assert regulatory_rule.allowed_evidence_types == ("announcement", "regulatory_filing")
+    assert regulatory_rule.trigger_factor == "negative_announcement_level"
+    assert regulatory_rule.trigger_thresholds == (3.0,)
+    assert regulatory_rule.combination_mode == "exclusive"
     assert len(watchlist.items) == 10
 
 
@@ -61,4 +64,35 @@ def test_non_finite_configuration_number_is_rejected(tmp_path) -> None:
     strategy_path.write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="finite"):
+        load_strategy_settings(strategy_path)
+
+
+def test_incomplete_risk_trigger_contract_is_rejected(tmp_path) -> None:
+    strategy_path = tmp_path / "strategy.json"
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "strategy.json").read_text(encoding="utf-8"))
+    del raw["risk_rules"][0]["trigger"]
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="trigger"):
+        load_strategy_settings(strategy_path)
+
+
+def test_risk_rule_cannot_use_factor_outside_registered_strategy(tmp_path) -> None:
+    strategy_path = tmp_path / "strategy.json"
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "strategy.json").read_text(encoding="utf-8"))
+    high_volatility = next(rule for rule in raw["risk_rules"] if rule["risk_code"] == "high_volatility")
+    high_volatility["strategies"].append("long")
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="outside its registered strategies"):
+        load_strategy_settings(strategy_path)
+
+
+def test_risk_identity_fields_reject_non_string_values(tmp_path) -> None:
+    strategy_path = tmp_path / "strategy.json"
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "strategy.json").read_text(encoding="utf-8"))
+    raw["risk_rules"][0]["risk_fact_id_fields"] = ["stock_code", {"invalid": True}]
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="stable identity fields"):
         load_strategy_settings(strategy_path)

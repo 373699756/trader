@@ -153,10 +153,12 @@ def _recommendation(item: Recommendation, live_quote: LiveQuote | None = None) -
             "components": dict(score.components),
             "base_score": score.base_score,
             "local_risk_penalty": score.local_risk_penalty,
+            "local_risk_penalty_before_cap": sum(max(0.0, fact.penalty) for fact in item.local_risk_facts),
             "local_score": score.local_score,
             "deepseek_score": score.deepseek_score,
             "confidence_coverage": score.confidence_coverage,
             "deepseek_risk_penalty": score.deepseek_risk_penalty,
+            "deepseek_risk_penalty_before_cap": sum(max(0.0, fact.penalty) for fact in item.deepseek_risk_facts),
             "final_score": score.final_score,
             "fusion_mode": score.fusion_mode.value,
             "fusion_applied": score.fusion_applied,
@@ -268,6 +270,8 @@ def _risk_fact(fact: RiskFact) -> dict[str, object]:
         "confidence": fact.confidence,
         "evidence_ids": list(fact.evidence_ids),
         "group": fact.group,
+        "threshold": fact.threshold,
+        "actual": fact.actual,
         "veto": fact.veto,
     }
 

@@ -2,37 +2,43 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 
 from trader.domain.factors import clamp
-from trader.domain.models import Evidence, FeatureSnapshot, RiskFact, RiskRule
+from trader.domain.models import Evidence, FeatureSnapshot, RiskFact, RiskRule, Strategy
 
 
 def derive_local_risk_facts(
     snapshot: FeatureSnapshot,
     observed_at: datetime,
     rules: Mapping[str, RiskRule],
+    *,
+    strategy: Strategy,
 ) -> tuple[RiskFact, ...]:
     facts = list(snapshot.external_risk_facts)
-    checks = (
-        ("near_limit_crowding", snapshot.value("limit_proximity", 0.0) >= 0.75),
-        ("price_volume_divergence", snapshot.value("price_volume_divergence", 0.0) >= 0.5),
-        ("high_volatility", snapshot.value("volatility_20d", 0.0) >= 4.0),
-        ("financial_deterioration", snapshot.value("financial_deterioration", 0.0) >= 0.5),
-    )
-    for risk_code, triggered in checks:
-        if triggered and risk_code in rules:
-            facts.append(_fact_from_rule(snapshot.quote.code, rules[risk_code], observed_at, "local_factor"))
-
-    _append_severity_fact(facts, snapshot, observed_at, rules, "reduction_or_unlock", "reduction_or_unlock")
-    _append_severity_fact(facts, snapshot, observed_at, rules, "pledge_risk", "pledge_risk")
-    announcement_level = int(snapshot.value("negative_announcement_level", 0.0))
-    if announcement_level >= 3 and "regulatory_risk" in rules:
-        facts.append(_fact_from_rule(snapshot.quote.code, rules["regulatory_risk"], observed_at, "event"))
-    elif announcement_level >= 1 and "negative_announcement" in rules:
-        facts.append(_fact_from_rule(snapshot.quote.code, rules["negative_announcement"], observed_at, "event"))
-    return deduplicate_risk_facts(facts)
+    for rule in rules.values():
+        if rule.strategies and strategy.value not in rule.strategies:
+            continue
+        age_seconds = (observed_at - snapshot.observed_at).total_seconds()
+        if age_seconds < 0 or age_seconds > rule.evidence_ttl_hours * 3600:
+            continue
+        actual = snapshot.optional_value(rule.trigger_factor)
+        if actual is None or not _triggered(actual, rule):
+            continue
+        facts.append(
+            _fact_from_rule(
+                snapshot.quote.code,
+                rule,
+                snapshot.observed_at,
+                snapshot.quote.source,
+                actual,
+            )
+        )
+    return deduplicate_risk_facts(facts, rules=rules)
 
 
 def map_deepseek_risk_facts(
@@ -73,10 +79,12 @@ def map_deepseek_risk_facts(
             evidence_ids=raw.evidence_ids,
             group=rule.group,
             veto=locally_mapped_veto,
+            threshold=raw.threshold,
+            actual=raw.actual,
         )
         mapped.append(mapped_fact)
         veto = veto or mapped_fact.veto
-    deduplicated = deduplicate_risk_facts(mapped)
+    deduplicated = deduplicate_risk_facts(mapped, rules=rules)
     return deduplicated, aggregate_risk_penalty(deduplicated, cap=cap), veto
 
 
@@ -101,7 +109,11 @@ def _evidence_is_valid(
     return True
 
 
-def deduplicate_risk_facts(facts: Iterable[RiskFact]) -> tuple[RiskFact, ...]:
+def deduplicate_risk_facts(
+    facts: Iterable[RiskFact],
+    *,
+    rules: Mapping[str, RiskRule] | None = None,
+) -> tuple[RiskFact, ...]:
     by_id: dict[str, RiskFact] = {}
     for fact in facts:
         current = by_id.get(fact.risk_fact_id)
@@ -110,7 +122,8 @@ def deduplicate_risk_facts(facts: Iterable[RiskFact]) -> tuple[RiskFact, ...]:
     by_group: dict[str, RiskFact] = {}
     independent: list[RiskFact] = []
     for fact in by_id.values():
-        if not fact.group:
+        rule = (rules or {}).get(fact.risk_code)
+        if not fact.group or (rule is not None and rule.combination_mode == "additive"):
             independent.append(fact)
             continue
         current = by_group.get(fact.group)
@@ -123,30 +136,59 @@ def aggregate_risk_penalty(facts: Iterable[RiskFact], *, cap: float) -> float:
     return clamp(sum(max(0.0, fact.penalty) for fact in facts), 0.0, cap)
 
 
-def _append_severity_fact(
-    facts: list[RiskFact],
-    snapshot: FeatureSnapshot,
+def _triggered(actual: float, rule: RiskRule) -> bool:
+    if not math.isfinite(actual):
+        return False
+    thresholds = rule.trigger_thresholds
+    if rule.trigger_operator == "gte":
+        return actual >= thresholds[0]
+    if rule.trigger_operator == "eq":
+        return actual == thresholds[0]
+    if rule.trigger_operator == "gte_lt":
+        return thresholds[0] <= actual < thresholds[1]
+    raise ValueError(f"unsupported risk trigger operator: {rule.trigger_operator}")
+
+
+def _threshold_text(rule: RiskRule) -> str:
+    if rule.trigger_operator == "gte":
+        return f">= {rule.trigger_thresholds[0]:g}"
+    if rule.trigger_operator == "eq":
+        return f"== {rule.trigger_thresholds[0]:g}"
+    if rule.trigger_operator == "gte_lt":
+        return f">= {rule.trigger_thresholds[0]:g} and < {rule.trigger_thresholds[1]:g}"
+    raise ValueError(f"unsupported risk trigger operator: {rule.trigger_operator}")
+
+
+def _fact_from_rule(
+    code: str,
+    rule: RiskRule,
     observed_at: datetime,
-    rules: Mapping[str, RiskRule],
-    value_name: str,
-    rule_prefix: str,
-) -> None:
-    level = int(snapshot.value(value_name, 0.0))
-    suffix = {1: "low", 2: "medium", 3: "high"}.get(min(3, max(0, level)))
-    risk_code = f"{rule_prefix}_{suffix}" if suffix else ""
-    if risk_code and risk_code in rules:
-        facts.append(_fact_from_rule(snapshot.quote.code, rules[risk_code], observed_at, "local_factor"))
-
-
-def _fact_from_rule(code: str, rule: RiskRule, observed_at: datetime, source: str) -> RiskFact:
+    source: str,
+    actual: float,
+) -> RiskFact:
+    values: dict[str, object] = {
+        "stock_code": code,
+        "risk_code": rule.risk_code,
+        "actual": actual,
+        "source": source,
+        "observed_at": observed_at.isoformat(),
+        "trade_date": observed_at.date().isoformat(),
+    }
+    identity = {field: values[field] for field in rule.risk_fact_id_fields}
+    digest = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
     return RiskFact(
-        risk_fact_id=f"{code}:{rule.risk_code}:{observed_at.date().isoformat()}",
+        risk_fact_id=f"risk_{digest}",
         risk_code=rule.risk_code,
         severity=rule.severity,
         penalty=rule.penalty,
         source=source,
         observed_at=observed_at,
         group=rule.group,
+        veto=rule.veto,
+        threshold=_threshold_text(rule),
+        actual=actual,
     )
 
 

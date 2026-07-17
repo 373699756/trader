@@ -196,6 +196,12 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
                 evidence_ttl_hours=rule.evidence_ttl_hours,
                 veto=rule.veto,
                 allowed_evidence_types=rule.allowed_evidence_types,
+                strategies=rule.strategies,
+                trigger_factor=rule.trigger_factor,
+                trigger_operator=rule.trigger_operator,
+                trigger_thresholds=rule.trigger_thresholds,
+                combination_mode=rule.combination_mode,
+                risk_fact_id_fields=rule.risk_fact_id_fields,
             )
             for rule in settings.risk_rules
         },

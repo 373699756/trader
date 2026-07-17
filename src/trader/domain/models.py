@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -135,6 +136,8 @@ class RiskFact:
     evidence_ids: tuple[str, ...] = ()
     group: str = ""
     veto: bool = False
+    threshold: str = ""
+    actual: str | float | bool | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,12 @@ class RiskRule:
     evidence_ttl_hours: int = 876_000
     veto: bool = False
     allowed_evidence_types: tuple[str, ...] = ()
+    strategies: tuple[str, ...] = ()
+    trigger_factor: str = ""
+    trigger_operator: str = ""
+    trigger_thresholds: tuple[float, ...] = ()
+    combination_mode: str = "exclusive"
+    risk_fact_id_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -194,11 +203,15 @@ class FeatureSnapshot:
         raw = self.values.get(name)
         if raw is None:
             return default
-        return float(raw)
+        value = float(raw)
+        return value if math.isfinite(value) else default
 
     def optional_value(self, name: str) -> float | None:
         raw = self.values.get(name)
-        return None if raw is None else float(raw)
+        if raw is None:
+            return None
+        value = float(raw)
+        return value if math.isfinite(value) else None
 
     def missing_ratio(self, field_names: tuple[str, ...]) -> float:
         if not field_names:

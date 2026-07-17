@@ -164,6 +164,12 @@ class RiskRuleSettings:
     group: str
     veto: bool
     allowed_evidence_types: tuple[str, ...]
+    strategies: tuple[str, ...]
+    trigger_factor: str
+    trigger_operator: str
+    trigger_thresholds: tuple[float, ...]
+    combination_mode: str
+    risk_fact_id_fields: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -307,8 +313,8 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 3:
-        raise ConfigurationError("strategy schema_version must be 3")
+    if _integer(raw, "schema_version", minimum=1) != 4:
+        raise ConfigurationError("strategy schema_version must be 4")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     rules_raw = raw.get("risk_rules")
@@ -322,7 +328,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         for factor_id, definition in factor_registry_raw.items()
     }
     settings = StrategySettings(
-        schema_version=3,
+        schema_version=4,
         strategy_version=_strategy_contract_version(raw),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),
@@ -402,6 +408,39 @@ def _parse_risk_rule(raw: object, index: int) -> RiskRuleSettings:
         not isinstance(value, str) or not value for value in allowed_evidence_types
     ):
         raise ConfigurationError(f"risk rule {index} allowed_evidence_types must be a list of non-empty strings")
+    strategies = raw.get("strategies")
+    if (
+        not isinstance(strategies, list)
+        or not strategies
+        or any(not isinstance(value, str) or value not in {"today", "tomorrow", "d25", "long"} for value in strategies)
+        or len(strategies) != len(set(strategies))
+    ):
+        raise ConfigurationError(f"risk rule {index} strategies must contain supported strategies")
+    trigger = _mapping(raw, "trigger")
+    operator = _text(trigger, "operator")
+    thresholds = trigger.get("thresholds")
+    if not isinstance(thresholds, list) or any(
+        not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value))
+        for value in thresholds
+    ):
+        raise ConfigurationError(f"risk rule {index} trigger thresholds must be finite numbers")
+    expected_thresholds = {"gte": 1, "eq": 1, "gte_lt": 2}
+    if operator not in expected_thresholds or len(thresholds) != expected_thresholds[operator]:
+        raise ConfigurationError(f"risk rule {index} trigger operator or threshold count is invalid")
+    if operator == "gte_lt" and not float(thresholds[0]) < float(thresholds[1]):
+        raise ConfigurationError(f"risk rule {index} trigger range must be increasing")
+    combination_mode = _text(raw, "combination_mode")
+    if combination_mode not in {"additive", "exclusive"}:
+        raise ConfigurationError(f"risk rule {index} combination_mode must be additive or exclusive")
+    fact_id_fields = raw.get("risk_fact_id_fields")
+    required_id_fields = {"stock_code", "risk_code", "actual", "source", "trade_date"}
+    if (
+        not isinstance(fact_id_fields, list)
+        or any(not isinstance(value, str) or not value for value in fact_id_fields)
+        or len(fact_id_fields) != len(set(fact_id_fields))
+        or set(fact_id_fields) != required_id_fields
+    ):
+        raise ConfigurationError(f"risk rule {index} risk_fact_id_fields must define the stable identity fields")
     return RiskRuleSettings(
         risk_code=_text(raw, "risk_code"),
         severity=_text(raw, "severity"),
@@ -411,6 +450,12 @@ def _parse_risk_rule(raw: object, index: int) -> RiskRuleSettings:
         group=_text(raw, "group"),
         veto=_boolean(raw, "veto"),
         allowed_evidence_types=tuple(allowed_evidence_types),
+        strategies=tuple(strategies),
+        trigger_factor=_text(trigger, "factor"),
+        trigger_operator=operator,
+        trigger_thresholds=tuple(float(value) for value in thresholds),
+        combination_mode=combination_mode,
+        risk_fact_id_fields=tuple(str(value) for value in fact_id_fields),
     )
 
 
@@ -437,6 +482,8 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         raise ConfigurationError("fusion score_decimals must be 2")
     if settings.fusion.rounding != "ROUND_HALF_UP":
         raise ConfigurationError("unsupported score rounding mode")
+    if settings.fusion.local_risk_cap != 25.0 or settings.fusion.deepseek_risk_cap != 30.0:
+        raise ConfigurationError("risk caps are fixed at 25 local and 30 DeepSeek")
     if settings.selection.default_top_k > settings.selection.maximum_top_k:
         raise ConfigurationError("default_top_k cannot exceed maximum_top_k")
     _validate_weight_sum("candidate_weights", settings.candidate_weights)
@@ -475,6 +522,33 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         missing = sorted(PRODUCTION_FACTOR_IDS - registered)
         extra = sorted(registered - PRODUCTION_FACTOR_IDS)
         raise ConfigurationError(f"factor_registry mismatch: missing={missing}, extra={extra}")
+    required_risk_codes = {
+        "near_limit_crowding",
+        "price_volume_divergence",
+        "high_volatility",
+        "reduction_or_unlock_low",
+        "reduction_or_unlock_medium",
+        "reduction_or_unlock_high",
+        "pledge_risk_low",
+        "pledge_risk_medium",
+        "pledge_risk_high",
+        "financial_deterioration",
+        "negative_announcement",
+        "regulatory_risk",
+    }
+    if set(risk_codes) != required_risk_codes:
+        raise ConfigurationError("risk_rules must define the complete local risk table")
+    for rule in settings.risk_rules:
+        definition = settings.factor_registry.get(rule.trigger_factor)
+        if definition is None:
+            raise ConfigurationError(f"risk rule {rule.risk_code} trigger factor is not registered")
+        if not set(rule.strategies).issubset(definition.strategies):
+            raise ConfigurationError(f"risk rule {rule.risk_code} uses a factor outside its registered strategies")
+    group_modes: dict[str, str] = {}
+    for rule in settings.risk_rules:
+        existing = group_modes.setdefault(rule.group, rule.combination_mode)
+        if existing != rule.combination_mode:
+            raise ConfigurationError(f"risk group {rule.group} mixes combination modes")
 
 
 def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:

@@ -53,4 +53,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert renderer_response.status_code == 200
     assert 'scores.deepseek_score == null ? "未复核"' in renderer
     assert 'section("缺失字段"' in renderer
+    assert "实际 ${escapeHtml(actual)}" in renderer
+    assert "阈值 ${escapeHtml(risk.threshold" in renderer
+    assert "证据时间 ${escapeHtml(formatDateTime(risk.observed_at))}" in renderer
     assert client.get("/static/dashboard.js").status_code == 200

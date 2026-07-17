@@ -182,6 +182,12 @@ def _replay_policy_to_dict(policy: FrozenReplayPolicy) -> dict[str, object]:
                 "evidence_ttl_hours": rule.evidence_ttl_hours,
                 "veto": rule.veto,
                 "allowed_evidence_types": list(rule.allowed_evidence_types),
+                "strategies": list(rule.strategies),
+                "trigger_factor": rule.trigger_factor,
+                "trigger_operator": rule.trigger_operator,
+                "trigger_thresholds": list(rule.trigger_thresholds),
+                "combination_mode": rule.combination_mode,
+                "risk_fact_id_fields": list(rule.risk_fact_id_fields),
             }
             for code, rule in policy.risk_rules.items()
         },
@@ -454,6 +460,8 @@ def _risk_fact_to_dict(fact: RiskFact) -> dict[str, object]:
         "evidence_ids": list(fact.evidence_ids),
         "group": fact.group,
         "veto": fact.veto,
+        "threshold": fact.threshold,
+        "actual": fact.actual,
     }
 
 
@@ -472,7 +480,17 @@ def _risk_fact_from_dict(raw: Mapping[str, object]) -> RiskFact:
         else (),
         group=str(raw.get("group") or ""),
         veto=bool(raw.get("veto")),
+        threshold=str(raw.get("threshold") or ""),
+        actual=_risk_actual(raw.get("actual")),
     )
+
+
+def _risk_actual(raw: object) -> str | float | bool | None:
+    if raw is None or isinstance(raw, (str, bool)):
+        return raw
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(float(raw)):
+        return float(raw)
+    raise ValueError("risk fact actual must be a finite JSON scalar")
 
 
 def _review_to_dict(review: DeepSeekReview) -> dict[str, object]:
@@ -606,6 +624,9 @@ def _risk_rule_mapping(raw: Mapping[str, object]) -> dict[str, RiskRule]:
         ttl = value.get("evidence_ttl_hours", 876_000)
         veto = value.get("veto", False)
         evidence_types = value.get("allowed_evidence_types", [])
+        strategies = value.get("strategies", [])
+        trigger_thresholds = value.get("trigger_thresholds", [])
+        fact_id_fields = value.get("risk_fact_id_fields", [])
         if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl < 1:
             raise ValueError("risk rule evidence_ttl_hours must be a positive integer")
         if not isinstance(veto, bool):
@@ -614,6 +635,15 @@ def _risk_rule_mapping(raw: Mapping[str, object]) -> dict[str, RiskRule]:
             not isinstance(item, str) or not item for item in evidence_types
         ):
             raise ValueError("risk rule allowed_evidence_types must be a list of non-empty strings")
+        if not isinstance(strategies, list) or any(not isinstance(item, str) for item in strategies):
+            raise ValueError("risk rule strategies must be a list of strings")
+        if not isinstance(trigger_thresholds, list) or any(
+            not isinstance(item, (int, float)) or isinstance(item, bool) or not math.isfinite(float(item))
+            for item in trigger_thresholds
+        ):
+            raise ValueError("risk rule trigger_thresholds must be finite numbers")
+        if not isinstance(fact_id_fields, list) or any(not isinstance(item, str) for item in fact_id_fields):
+            raise ValueError("risk rule risk_fact_id_fields must be a list of strings")
         result[code] = RiskRule(
             risk_code=_text(value, "risk_code"),
             severity=_text(value, "severity"),
@@ -623,6 +653,12 @@ def _risk_rule_mapping(raw: Mapping[str, object]) -> dict[str, RiskRule]:
             evidence_ttl_hours=ttl,
             veto=veto,
             allowed_evidence_types=tuple(evidence_types),
+            strategies=tuple(strategies),
+            trigger_factor=str(value.get("trigger_factor") or ""),
+            trigger_operator=str(value.get("trigger_operator") or ""),
+            trigger_thresholds=tuple(float(item) for item in trigger_thresholds),
+            combination_mode=str(value.get("combination_mode") or "exclusive"),
+            risk_fact_id_fields=tuple(fact_id_fields),
         )
     return result
 

@@ -188,7 +188,8 @@
       const duplicate = seen.has(risk.risk_fact_id);
       seen.add(risk.risk_fact_id);
       const suffix = duplicate ? " · 已跨来源去重" : "";
-      return `<li><b>${escapeHtml(risk.risk_code)}</b> · ${escapeHtml(risk.severity)} · 置信 ${number((risk.confidence || 0) * 100, 0)}% · 扣分 ${number(risk.penalty, 2)}${escapeHtml(suffix)}</li>`;
+      const actual = risk.actual == null ? "-" : number(risk.actual, 4);
+      return `<li><b>${escapeHtml(risk.risk_code)}</b> · ${escapeHtml(risk.severity)} · 扣分 ${number(risk.penalty, 2)}${escapeHtml(suffix)}<br>实际 ${escapeHtml(actual)} · 阈值 ${escapeHtml(risk.threshold || "-")} · 来源 ${escapeHtml(risk.source || "-")} · 证据时间 ${escapeHtml(formatDateTime(risk.observed_at))} · 置信 ${number((risk.confidence || 0) * 100, 0)}%</li>`;
     }).join("")}</ul>`;
   }
 

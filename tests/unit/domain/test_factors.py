@@ -27,6 +27,13 @@ def test_band_score_contract(value, expected) -> None:
     assert band_score(value, 0.0, 0.2, 1.8, 3.5) == pytest.approx(expected)
 
 
+def test_band_score_treats_non_finite_as_missing_and_rejects_invalid_bounds() -> None:
+    assert band_score(float("nan"), 0.0, 0.2, 1.8, 3.5) == 50.0
+    assert band_score(float("inf"), 0.0, 0.2, 1.8, 3.5) == 50.0
+    with pytest.raises(ValueError, match="band boundaries"):
+        band_score(1.0, 0.0, 0.0, 1.8, 3.5)
+
+
 def test_percentile_scores_use_average_rank_for_ties() -> None:
     scores = percentile_scores({"a": 1.0, "b": 2.0, "c": 2.0, "d": 4.0, "missing": None})
 

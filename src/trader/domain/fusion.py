@@ -70,7 +70,7 @@ def fuse_score(
 
     mapped_risk_facts: tuple[RiskFact, ...] = ()
     mapped_penalty = 0.0
-    veto = False
+    veto = any(fact.veto for fact in local_risk_facts)
     if review is not None:
         mapped_risk_facts, mapped_penalty, veto = map_deepseek_risk_facts(
             review.risk_facts,

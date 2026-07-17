@@ -57,6 +57,21 @@ def test_same_risk_fact_is_not_deducted_twice() -> None:
     assert result.score.final_score == 86.40
 
 
+def test_local_rule_veto_is_preserved_without_model_review() -> None:
+    local_fact = _risk_fact("local-veto", "regulatory_risk", 15.0, veto=True)
+
+    result = fuse_score(
+        LocalScoreResult(components={"test": 80.0}, base_score=80.0),
+        (local_fact,),
+        None,
+        DIMENSION_WEIGHTS,
+        {},
+        FusionMode.LOCAL_DEGRADED,
+    )
+
+    assert result.veto is True
+
+
 @pytest.mark.parametrize("mode", [FusionMode.LOCAL_DEGRADED, FusionMode.HYBRID])
 def test_missing_or_degraded_review_falls_back_to_local(mode) -> None:
     review = None if mode is FusionMode.HYBRID else _review(100.0)
