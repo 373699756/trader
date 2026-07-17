@@ -84,6 +84,8 @@ def feature_factory(observed_at):
             "ma20_deviation_inverse": 60.0,
             "return_20d_not_overheated": 65.0,
             "return_20d": 10.0,
+            "d25_overheat_factor": 1.0,
+            "market_regime_factor": 1.0,
             "trend_score": 60.0,
             "value_score": 60.0,
             "growth_score": 65.0,

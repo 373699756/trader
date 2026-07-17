@@ -31,8 +31,22 @@ from trader.domain.strategies import score_strategy
 from trader.domain.tail import TAIL_SIGNAL_VALUE_FIELDS
 
 REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
-REPLAY_ALGORITHM_VERSION = "engine_v8_section12_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_v9_section13_2026_07"
 _PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
+_STRUCTURED_RISK_FIELDS = (
+    "financial_deterioration",
+    "negative_announcement_level",
+    "pledge_risk",
+    "reduction_or_unlock",
+)
+_LONG_RESEARCH_FIELDS = (
+    "value_score",
+    "growth_score",
+    "quality_score",
+    "industry_policy_score",
+    "risk_protection_score",
+    *_STRUCTURED_RISK_FIELDS,
+)
 
 
 class RecommendationEngine:
@@ -145,6 +159,17 @@ class RecommendationEngine:
             )
             if tail_covered_count != len(eligible):
                 degraded_reasons.append("tomorrow_tail_data_incomplete")
+        research_covered_count = 0
+        research_fields: tuple[str, ...] = ()
+        if strategy in {Strategy.D25, Strategy.LONG}:
+            research_fields = _LONG_RESEARCH_FIELDS if strategy is Strategy.LONG else _STRUCTURED_RISK_FIELDS
+            research_covered_count = sum(
+                all(feature.optional_value(field) is not None for field in research_fields) for feature in eligible
+            )
+            if research_covered_count != len(eligible):
+                degraded_reasons.append(
+                    "long_research_incomplete" if strategy is Strategy.LONG else "d25_structured_research_incomplete"
+                )
         return RecommendationSnapshot(
             snapshot_id=snapshot_id,
             strategy=strategy,
@@ -172,6 +197,15 @@ class RecommendationEngine:
                         "tail_data_coverage_ratio": tail_covered_count / len(eligible) if eligible else 0.0,
                     }
                     if strategy is Strategy.TOMORROW
+                    else {}
+                ),
+                **(
+                    {
+                        "research_data_covered_count": research_covered_count,
+                        "research_data_coverage_ratio": research_covered_count / len(eligible) if eligible else 0.0,
+                        "research_data_required_fields": research_fields,
+                    }
+                    if research_fields
                     else {}
                 ),
             },

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from trader.domain.factors import PRODUCTION_FACTOR_IDS
 from trader.domain.news import NewsSignalPolicy
+from trader.domain.research import D25SignalPolicy, LongResearchPolicy
 from trader.domain.tail import TailSignalPolicy
 from trader.infrastructure.settings_parser import (
     ConfigurationError,
@@ -204,6 +205,8 @@ class StrategySettings:
     candidate_weights: Mapping[str, float]
     today_news_signal: NewsSignalPolicy
     tomorrow_tail_signal: TailSignalPolicy
+    d25_signal: D25SignalPolicy
+    long_research: LongResearchPolicy
     dimension_weights: Mapping[str, Mapping[str, float]]
     risk_rules: tuple[RiskRuleSettings, ...]
     factor_contract: Mapping[str, object]
@@ -276,7 +279,12 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             eastmoney_timeout_seconds=_number(market_raw, "eastmoney_timeout_seconds", minimum=0.1),
             candidate_timeout_seconds=_number(market_raw, "candidate_timeout_seconds", minimum=0.1),
             history_timeout_seconds=_number(market_raw, "history_timeout_seconds", minimum=0.1),
-            research_timeout_seconds=_number(market_raw, "research_timeout_seconds", minimum=0.1),
+            research_timeout_seconds=_number(
+                market_raw,
+                "research_timeout_seconds",
+                minimum=0.1,
+                maximum=8.0,
+            ),
             minimum_market_rows=_integer(market_raw, "minimum_market_rows", minimum=1),
             candidate_pool_size=_integer(market_raw, "candidate_pool_size", minimum=1, maximum=1000),
             single_flight=_boolean(market_raw, "single_flight"),
@@ -317,8 +325,8 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 6:
-        raise ConfigurationError("strategy schema_version must be 6")
+    if _integer(raw, "schema_version", minimum=1) != 7:
+        raise ConfigurationError("strategy schema_version must be 7")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     rules_raw = raw.get("risk_rules")
@@ -328,13 +336,15 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
     dimension_weights = _nested_number_mapping(raw, "dimension_weights")
     today_news_signal = _parse_news_signal_policy(_mapping(raw, "today_news_signal"))
     tomorrow_tail_signal = _parse_tail_signal_policy(_mapping(raw, "tomorrow_tail_signal"))
+    d25_signal = _parse_d25_signal_policy(_mapping(raw, "d25_signal"))
+    long_research = _parse_long_research_policy(_mapping(raw, "long_research"))
     factor_registry_raw = _mapping(raw, "factor_registry")
     factor_registry = {
         str(factor_id): _parse_factor_definition(str(factor_id), definition)
         for factor_id, definition in factor_registry_raw.items()
     }
     settings = StrategySettings(
-        schema_version=6,
+        schema_version=7,
         strategy_version=_strategy_contract_version(raw),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),
@@ -362,6 +372,8 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         candidate_weights=_number_mapping(raw, "candidate_weights"),
         today_news_signal=today_news_signal,
         tomorrow_tail_signal=tomorrow_tail_signal,
+        d25_signal=d25_signal,
+        long_research=long_research,
         dimension_weights=dimension_weights,
         risk_rules=risk_rules,
         factor_contract=dict(_mapping(raw, "factor_contract")),
@@ -494,16 +506,113 @@ def _parse_tail_signal_policy(raw: Mapping[str, object]) -> TailSignalPolicy:
         raise ConfigurationError(f"tomorrow_tail_signal {exc}") from exc
 
 
-def _keyword_tuple(raw: Mapping[str, object], key: str) -> tuple[str, ...]:
+def _parse_d25_signal_policy(raw: Mapping[str, object]) -> D25SignalPolicy:
+    overheat = _mapping(raw, "overheat")
+    regime = _mapping(raw, "market_regime")
+    try:
+        return D25SignalPolicy(
+            overheat_full_return_max=_number(overheat, "full_return_max"),
+            overheat_linear_return_max=_number(overheat, "linear_return_max"),
+            overheat_linear_end_factor=_number(overheat, "linear_end_factor", minimum=0.0, maximum=1.0),
+            overheat_above_factor=_number(overheat, "above_factor", minimum=0.0, maximum=1.0),
+            risk_on_breadth_min=_number(regime, "risk_on_breadth_min", minimum=0.0, maximum=100.0),
+            risk_off_breadth_max=_number(regime, "risk_off_breadth_max", minimum=0.0, maximum=100.0),
+            risk_on_factor=_number(regime, "risk_on_factor", minimum=0.01, maximum=2.0),
+            neutral_factor=_number(regime, "neutral_factor", minimum=0.01, maximum=2.0),
+            risk_off_factor=_number(regime, "risk_off_factor", minimum=0.01, maximum=2.0),
+        )
+    except ValueError as exc:
+        raise ConfigurationError(f"d25_signal {exc}") from exc
+
+
+def _parse_long_research_policy(raw: Mapping[str, object]) -> LongResearchPolicy:
+    financial = _mapping(raw, "financial")
+    announcements = _mapping(raw, "announcements")
+    valuation = _mapping(raw, "valuation")
+    growth = _mapping(raw, "growth")
+    quality = _mapping(raw, "quality")
+    deterioration = _mapping(raw, "financial_deterioration")
+    unlock = _mapping(raw, "unlock")
+    try:
+        return LongResearchPolicy(
+            financial_max_age_days=_integer(financial, "maximum_age_days", minimum=1),
+            announcement_lookback_days=_integer(announcements, "lookback_days", minimum=1),
+            announcement_limit=_integer(announcements, "maximum_rows", minimum=1, maximum=100),
+            unlock_forward_days=_integer(unlock, "forward_days", minimum=1),
+            pe_full_score_max=_number(valuation, "pe_full_score_max", minimum=0.01),
+            pe_zero_score_min=_number(valuation, "pe_zero_score_min", minimum=0.01),
+            pb_full_score_max=_number(valuation, "pb_full_score_max", minimum=0.01),
+            pb_zero_score_min=_number(valuation, "pb_zero_score_min", minimum=0.01),
+            growth_points_per_pct=_number(growth, "score_points_per_pct", minimum=0.01),
+            quality_roe_neutral_pct=_number(quality, "roe_neutral_pct"),
+            quality_roe_points_per_pct=_number(quality, "roe_score_points_per_pct", minimum=0.01),
+            financial_revenue_deterioration_pct=_number(deterioration, "revenue_growth_lte"),
+            financial_profit_deterioration_pct=_number(deterioration, "net_profit_growth_lte"),
+            financial_core_profit_deterioration_pct=_number(deterioration, "core_profit_growth_lte"),
+            pledge_thresholds=_threshold_tuple(raw, "pledge_thresholds", section="long_research"),
+            unlock_thresholds=_threshold_tuple(unlock, "thresholds", section="long_research.unlock"),
+            policy_keyword_score_step=_number(announcements, "policy_keyword_score_step", minimum=0.01),
+            negative_high_keywords=_keyword_tuple(
+                announcements, "negative_high_keywords", section="long_research.announcements"
+            ),
+            negative_medium_keywords=_keyword_tuple(
+                announcements, "negative_medium_keywords", section="long_research.announcements"
+            ),
+            negative_low_keywords=_keyword_tuple(
+                announcements, "negative_low_keywords", section="long_research.announcements"
+            ),
+            reduction_high_keywords=_keyword_tuple(
+                announcements, "reduction_high_keywords", section="long_research.announcements"
+            ),
+            reduction_medium_keywords=_keyword_tuple(
+                announcements, "reduction_medium_keywords", section="long_research.announcements"
+            ),
+            reduction_low_keywords=_keyword_tuple(
+                announcements, "reduction_low_keywords", section="long_research.announcements"
+            ),
+            policy_positive_keywords=_keyword_tuple(
+                announcements, "policy_positive_keywords", section="long_research.announcements"
+            ),
+            policy_negative_keywords=_keyword_tuple(
+                announcements, "policy_negative_keywords", section="long_research.announcements"
+            ),
+        )
+    except ValueError as exc:
+        raise ConfigurationError(f"long_research {exc}") from exc
+
+
+def _keyword_tuple(
+    raw: Mapping[str, object],
+    key: str,
+    *,
+    section: str = "today_news_signal",
+) -> tuple[str, ...]:
     values = raw.get(key)
     if not isinstance(values, list) or not values or any(not isinstance(value, str) for value in values):
-        raise ConfigurationError(f"today_news_signal.{key} must be a non-empty string list")
+        raise ConfigurationError(f"{section}.{key} must be a non-empty string list")
     keywords = tuple(value.strip() for value in values)
     if any(not value or len(value) > 24 for value in keywords):
-        raise ConfigurationError(f"today_news_signal.{key} contains an invalid keyword")
+        raise ConfigurationError(f"{section}.{key} contains an invalid keyword")
     if len(keywords) > 100:
-        raise ConfigurationError(f"today_news_signal.{key} exceeds 100 keywords")
+        raise ConfigurationError(f"{section}.{key} exceeds 100 keywords")
     return keywords
+
+
+def _threshold_tuple(
+    raw: Mapping[str, object],
+    key: str,
+    *,
+    section: str,
+) -> tuple[float, float, float]:
+    values = raw.get(key)
+    if (
+        not isinstance(values, list)
+        or len(values) != 3
+        or any(not isinstance(value, (int, float)) or isinstance(value, bool) for value in values)
+        or any(not math.isfinite(float(value)) for value in values)
+    ):
+        raise ConfigurationError(f"{section}.{key} must contain three finite numbers")
+    return (float(values[0]), float(values[1]), float(values[2]))
 
 
 def _validate_runtime_settings(settings: RuntimeSettings) -> None:
@@ -550,6 +659,40 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         or tail.volume_score_points_per_ratio != 50.0
     ):
         raise ConfigurationError("tomorrow tail signal formula is fixed at 30/30/25/50")
+    d25 = settings.d25_signal
+    if d25 != D25SignalPolicy(
+        overheat_full_return_max=15.0,
+        overheat_linear_return_max=30.0,
+        overheat_linear_end_factor=0.85,
+        overheat_above_factor=0.75,
+        risk_on_breadth_min=60.0,
+        risk_off_breadth_max=40.0,
+        risk_on_factor=1.03,
+        neutral_factor=1.0,
+        risk_off_factor=0.92,
+    ):
+        raise ConfigurationError("d25 signal formula is fixed at 15/30/0.85/0.75 and 60/40/1.03/1/0.92")
+    long = settings.long_research
+    if (
+        long.financial_max_age_days != 550
+        or long.announcement_lookback_days != 180
+        or long.announcement_limit != 100
+        or long.unlock_forward_days != 90
+        or long.pe_full_score_max != 10.0
+        or long.pe_zero_score_min != 50.0
+        or long.pb_full_score_max != 1.0
+        or long.pb_zero_score_min != 8.0
+        or long.growth_points_per_pct != 2.0
+        or long.quality_roe_neutral_pct != 10.0
+        or long.quality_roe_points_per_pct != 2.5
+        or long.financial_revenue_deterioration_pct != -10.0
+        or long.financial_profit_deterioration_pct != -20.0
+        or long.financial_core_profit_deterioration_pct != -20.0
+        or long.pledge_thresholds != (10.0, 20.0, 35.0)
+        or long.unlock_thresholds != (1.0, 5.0, 10.0)
+        or long.policy_keyword_score_step != 10.0
+    ):
+        raise ConfigurationError("long research windows, scoring slopes and risk thresholds are fixed")
     _validate_weight_sum("candidate_weights", settings.candidate_weights)
     required_candidate_weights = {
         "liquidity",
@@ -587,6 +730,8 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         extra = sorted(registered - PRODUCTION_FACTOR_IDS)
         raise ConfigurationError(f"factor_registry mismatch: missing={missing}, extra={extra}")
     _validate_tomorrow_tail_factor_contract(settings)
+    _validate_d25_factor_contract(settings)
+    _validate_long_research_factor_contract(settings)
     required_risk_codes = {
         "near_limit_crowding",
         "price_volume_divergence",
@@ -657,6 +802,196 @@ def _validate_tomorrow_tail_factor_contract(settings: StrategySettings) -> None:
         missing_policy="neutral_50_and_record",
         output_range=(0.0, 100.0),
     )
+
+
+def _validate_d25_factor_contract(settings: StrategySettings) -> None:
+    _validate_factor_definition(
+        settings.factor_registry["d25_overheat_factor"],
+        {
+            "strategies": ("d25",),
+            "raw_inputs": ("return_20d",),
+            "formula": "1 if return_20d<=15; 1-(return_20d-15)*0.15/15 if return_20d<=30; 0.75 if return_20d>30; missing=>1",
+            "unit": "multiplier",
+            "direction": "higher_better",
+            "observation_time": "point_in_time",
+            "adjustment": "forward",
+            "lookback_window": 20,
+            "minimum_samples": 21,
+            "winsor_enabled": False,
+            "normalization": "configured_piecewise",
+            "missing_policy": "neutral_1_and_record",
+            "output_range": (0.75, 1.0),
+        },
+    )
+    _validate_factor_definition(
+        settings.factor_registry["market_regime_factor"],
+        {
+            "strategies": ("d25",),
+            "raw_inputs": ("market_breadth",),
+            "formula": "1.03 if market_breadth>=60; 0.92 if market_breadth<=40; else 1.0",
+            "unit": "multiplier",
+            "direction": "higher_better",
+            "observation_time": "same_data_version_cross_section",
+            "adjustment": "none",
+            "lookback_window": 0,
+            "minimum_samples": 1,
+            "winsor_enabled": False,
+            "normalization": "configured_regime",
+            "missing_policy": "neutral_1_and_record",
+            "output_range": (0.92, 1.03),
+        },
+    )
+    _validate_factor_definition(
+        settings.factor_registry["return_20d_not_overheated"],
+        {
+            "raw_inputs": ("return_20d",),
+            "formula": "100 if return<=15; 0 if return>=30; linear between",
+            "lookback_window": 20,
+            "minimum_samples": 21,
+            "winsor_enabled": False,
+            "normalization": "formula_0_100",
+            "missing_policy": "neutral_50_and_record",
+            "output_range": (0.0, 100.0),
+        },
+    )
+
+
+def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
+    score_common = {
+        "strategies": ("long",),
+        "unit": "score_0_100",
+        "direction": "higher_better",
+        "winsor_enabled": False,
+        "output_range": (0.0, 100.0),
+    }
+    risk_common = {
+        "strategies": ("today", "tomorrow", "d25", "long"),
+        "direction": "higher_worse",
+        "adjustment": "none",
+        "winsor_enabled": False,
+    }
+    expected = {
+        "value_score": {
+            **score_common,
+            "raw_inputs": ("unadjusted_price", "point_in_time_financial_report"),
+            "formula": "mean_known(inverse_linear(price/(EPSJB*annualizer),10,50),inverse_linear(price/BPS,1,8))",
+            "observation_time": "latest_published_before_observation",
+            "adjustment": "mixed_anchor_unadjusted_financial_point_in_time",
+            "lookback_window": 550,
+            "minimum_samples": 1,
+            "normalization": "configured_formula_0_100",
+            "missing_policy": "neutral_50_and_record",
+        },
+        "growth_score": {
+            **score_common,
+            "raw_inputs": ("point_in_time_financial_report",),
+            "formula": "clamp(50+2*mean_known(TOTALOPERATEREVETZ,PARENTNETPROFITTZ,KCFJCXSYJLRTZ))",
+            "observation_time": "latest_published_before_observation",
+            "adjustment": "none",
+            "lookback_window": 550,
+            "minimum_samples": 1,
+            "normalization": "configured_formula_0_100",
+            "missing_policy": "neutral_50_and_record",
+        },
+        "quality_score": {
+            **score_common,
+            "raw_inputs": ("point_in_time_financial_report",),
+            "formula": "mean_known(clamp(50+(ROEJQ*annualizer-10)*2.5),clamp(KCFJCXSYJLR/PARENTNETPROFIT*100))",
+            "observation_time": "latest_published_before_observation",
+            "adjustment": "none",
+            "lookback_window": 550,
+            "minimum_samples": 1,
+            "normalization": "configured_formula_0_100",
+            "missing_policy": "neutral_50_and_record",
+        },
+        "industry_policy_score": {
+            **score_common,
+            "raw_inputs": ("industry_strength", "validated_announcements"),
+            "formula": "0.6*industry_strength+0.4*clamp(50+10*(unique_positive_keyword_hits-unique_negative_keyword_hits))",
+            "observation_time": "latest_published_before_observation",
+            "adjustment": "none",
+            "lookback_window": 180,
+            "minimum_samples": 1,
+            "normalization": "configured_formula_0_100",
+            "missing_policy": "neutral_50_and_record",
+        },
+        "risk_protection_score": {
+            **score_common,
+            "raw_inputs": ("low_volatility_score", "low_drawdown_score"),
+            "formula": "0.5*low_volatility_score+0.5*low_drawdown_score",
+            "observation_time": "point_in_time",
+            "adjustment": "forward",
+            "lookback_window": 20,
+            "minimum_samples": 20,
+            "normalization": "formula_0_100",
+            "missing_policy": "neutral_50_and_record",
+        },
+        "financial_deterioration": {
+            **risk_common,
+            "raw_inputs": ("point_in_time_financial_report",),
+            "formula": "1 if revenue_yoy<=-10 or net_profit_yoy<=-20 or core_profit_yoy<=-20 else 0",
+            "unit": "risk_indicator",
+            "observation_time": "latest_published_before_observation",
+            "lookback_window": 550,
+            "minimum_samples": 1,
+            "normalization": "none",
+            "missing_policy": "missing_and_record",
+            "output_range": (0.0, 1.0),
+        },
+        "negative_announcement_level": {
+            **risk_common,
+            "raw_inputs": ("validated_announcements",),
+            "formula": "max configured keyword severity over valid 180d announcements; empty_success=0",
+            "unit": "severity_level",
+            "observation_time": "latest_published_before_observation",
+            "lookback_window": 180,
+            "minimum_samples": 0,
+            "normalization": "configured_severity_0_3",
+            "missing_policy": "missing_and_record",
+            "output_range": (0.0, 3.0),
+        },
+        "pledge_risk": {
+            **risk_common,
+            "raw_inputs": ("point_in_time_ACCUM_PLEDGE_TSR",),
+            "formula": "severity(ACCUM_PLEDGE_TSR,[10,20,35]); empty_success=0",
+            "unit": "severity_level",
+            "observation_time": "point_in_time",
+            "lookback_window": 0,
+            "minimum_samples": 0,
+            "normalization": "configured_severity_0_3",
+            "missing_policy": "missing_and_record",
+            "output_range": (0.0, 3.0),
+        },
+        "reduction_or_unlock": {
+            **risk_common,
+            "raw_inputs": ("validated_reduction_announcements", "upcoming_90d_TOTAL_RATIO"),
+            "formula": "max(configured reduction announcement severity,severity(sum(upcoming_90d_TOTAL_RATIO*100),[1,5,10]))",
+            "unit": "severity_level",
+            "observation_time": "latest_published_before_observation",
+            "lookback_window": 180,
+            "minimum_samples": 0,
+            "normalization": "configured_severity_0_3",
+            "missing_policy": "missing_and_record",
+            "output_range": (0.0, 3.0),
+        },
+    }
+    for factor_id, factor_expected in expected.items():
+        _validate_factor_definition(settings.factor_registry[factor_id], factor_expected)
+
+
+def _validate_factor_definition(
+    definition: FactorDefinition,
+    expected: Mapping[str, object],
+) -> None:
+    for attribute, expected_value in expected.items():
+        actual = getattr(definition, attribute)
+        if attribute == "formula":
+            actual = "".join(str(actual).split())
+            expected_value = "".join(str(expected_value).split())
+        if actual != expected_value:
+            raise ConfigurationError(
+                f"factor_registry.{definition.factor_id}.{attribute} contradicts the executable formula"
+            )
 
 
 def _validate_tail_factor_definition(

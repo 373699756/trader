@@ -83,7 +83,7 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
     assert restored.filter_details[0].filter_code == "main_board_too_hot"
     assert restored.filter_details[0].actual == 8.01
     assert restored.replay_input is not None
-    assert restored.replay_input.algorithm_version == "engine_v8_section12_2026_07"
+    assert restored.replay_input.algorithm_version == "engine_v9_section13_2026_07"
     restored_today_input = restored.replay_input.candidate_features[0]
     assert restored_today_input.values["news_sentiment"] == 75.0
     assert restored_today_input.values["evidence_freshness"] == 100.0
@@ -215,8 +215,9 @@ class StaticMarketData:
         _observed_at: datetime,
         *,
         include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
     ) -> Sequence[FeatureSnapshot]:
-        del include_intraday_tail
+        del include_intraday_tail, include_structured_research
         requested = set(codes)
         return tuple(feature for feature in self._features if feature.quote.code in requested)
 

@@ -13,6 +13,7 @@ import requests
 from trader.application.ports import MarketDataUnavailable
 from trader.domain.models import Evidence, MarketQuote, Strategy
 from trader.domain.news import NewsSignalPolicy
+from trader.domain.research import ResearchObservation
 from trader.domain.strategies import score_strategy
 from trader.domain.tail import MinuteBar, TailSignalPolicy
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
@@ -43,6 +44,9 @@ TAIL_POLICY = TailSignalPolicy(
     return_score_points_per_pct=25.0,
     volume_score_points_per_ratio=50.0,
 )
+_STRATEGY_SETTINGS = load_strategy_settings(Path(__file__).parents[2] / "config" / "v2" / "strategy.json")
+D25_POLICY = _STRATEGY_SETTINGS.d25_signal
+LONG_POLICY = _STRATEGY_SETTINGS.long_research
 
 
 def test_eastmoney_normalizes_quote_and_history() -> None:
@@ -258,7 +262,7 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
         for index in range(1, 61)
     )
 
-    with_history, without_history = FeatureBuilder(NEWS_POLICY, TAIL_POLICY).build(
+    with_history, without_history = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
         (quote, _quote(code="600002", industry="银行")),
         {"600001": bars},
         NOW,
@@ -272,7 +276,7 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
 
 
 def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
-    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY)
     low = replace(_quote(code="600001"), speed=0.1)
     middle = replace(_quote(code="600002"), speed=0.2)
     high = replace(_quote(code="600003"), speed=0.3)
@@ -286,7 +290,7 @@ def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
 
 
 def test_feature_builder_partitions_cross_sections_and_excludes_missing_breadth() -> None:
-    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY)
     quotes = (
         replace(_quote(code="600001"), speed=0.1, pct_change=1.0, data_version="v1"),
         replace(_quote(code="600002"), speed=0.2, pct_change=-1.0, data_version="v1"),
@@ -299,6 +303,10 @@ def test_feature_builder_partitions_cross_sections_and_excludes_missing_breadth(
     assert [item.values["speed_percentile"] for item in features] == [0.0, 100.0, 0.0, 100.0]
     assert features[0].values["market_breadth"] == 50.0
     assert features[2].values["market_breadth"] == 100.0
+    assert features[0].market_regime == "neutral"
+    assert features[0].values["market_regime_factor"] == pytest.approx(1.0)
+    assert features[2].market_regime == "risk_on"
+    assert features[2].values["market_regime_factor"] == pytest.approx(1.03)
     assert features[0].normalization["speed_percentile"].sample_size == 2
     assert features[2].normalization["market_breadth"].missing_count == 1
     assert features[2].values["limit_proximity"] is None
@@ -312,7 +320,7 @@ def test_market_service_bounds_history_preload_to_stratified_candidate_universe(
     service = MarketFeatureService(
         StaticGateway(quotes),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         history_workers=2,
         history_preload_limit=2,
     )
@@ -329,7 +337,7 @@ def test_market_service_loads_history_before_cold_start_candidate_cross_section(
     service = MarketFeatureService(
         StaticGateway((_quote(), _quote(code="600002"))),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         history_workers=2,
     )
 
@@ -347,7 +355,7 @@ def test_market_service_reloads_expired_history_and_reports_failed_coverage() ->
     service = MarketFeatureService(
         StaticGateway((_quote(), _quote(code="600002"))),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         history_workers=2,
         history_ttl_seconds=60,
         market_ttl_seconds=1,
@@ -386,7 +394,7 @@ def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
 
 
 def test_feature_builder_derives_auditable_tail_inputs_without_fabricating_missing_values() -> None:
-    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY)
     available, missing = builder.build(
         (_quote(), _quote(code="600002")),
         {},
@@ -413,7 +421,7 @@ def test_feature_builder_derives_auditable_tail_inputs_without_fabricating_missi
 
 
 def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_inputs() -> None:
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY).build(
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
         (_quote(),),
         {"600001": _history_bars()},
         AFTERNOON,
@@ -462,7 +470,7 @@ def test_close_location_has_exact_boundaries_and_preserves_missing(
 ) -> None:
     quote = replace(_quote(), price=price, high=high, low=low)
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY).build((quote,), {}, NOW)[0]
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build((quote,), {}, NOW)[0]
 
     if expected is None:
         assert feature.optional_value("close_location") is None
@@ -486,7 +494,9 @@ def test_zero_historical_return_has_neutral_price_volume_confirmation() -> None:
     )
     quote = replace(_quote(), price=10.0, amount=100_000_000.0)
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY).build((quote,), {quote.code: bars}, NOW)[0]
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
+        (quote,), {quote.code: bars}, NOW
+    )[0]
 
     assert feature.values["return_5d"] == pytest.approx(0.0)
     assert feature.values["price_volume_confirmation"] == pytest.approx(50.0)
@@ -497,7 +507,7 @@ def test_market_service_fetches_intraday_minutes_only_for_requested_candidate_mo
     service = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
     )
@@ -526,7 +536,7 @@ def test_intraday_cache_has_a_hard_entry_limit() -> None:
     service = MarketFeatureService(
         StaticGateway((_quote(), _quote(code="600002"))),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_cache_limit=1,
@@ -543,7 +553,7 @@ def test_intraday_failure_keeps_tomorrow_features_available_and_marks_missing() 
     service = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         intraday_client=FailingIntradayClient(),
         intraday_workers=1,
     )
@@ -567,7 +577,7 @@ def test_intraday_health_requires_complete_tail_signals_for_coverage() -> None:
     service = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
     )
@@ -590,7 +600,7 @@ def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request() -> 
     service = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.01,
@@ -641,13 +651,211 @@ def test_akshare_news_is_bounded_and_normalized() -> None:
     assert calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 
 
+def test_akshare_structured_research_is_point_in_time_and_builds_real_long_inputs() -> None:
+    financial_payload = {
+        "version": "financial-v1",
+        "result": {
+            "data": [
+                {
+                    "REPORT_DATE": "2026-06-30 00:00:00",
+                    "NOTICE_DATE": "2026-07-17 00:00:00",
+                    "EPSJB": 9.0,
+                    "BPS": 9.0,
+                },
+                {
+                    "REPORT_DATE": "2026-03-31 00:00:00",
+                    "NOTICE_DATE": "2026-04-30 00:00:00",
+                    "EPSJB": 1.0,
+                    "BPS": 10.0,
+                    "TOTALOPERATEREVETZ": 20.0,
+                    "PARENTNETPROFITTZ": 10.0,
+                    "KCFJCXSYJLRTZ": 0.0,
+                    "ROEJQ": 3.0,
+                    "PARENTNETPROFIT": 100.0,
+                    "KCFJCXSYJLR": 80.0,
+                },
+            ]
+        },
+        "success": True,
+    }
+    announcement_payload = {
+        "data": {
+            "list": [
+                {
+                    "art_code": "future",
+                    "display_time": "2026-07-17 09:00:00:000",
+                    "notice_date": "2026-07-17 00:00:00",
+                    "title": "未来公告",
+                    "columns": [{"column_name": "重大事项"}],
+                },
+                {
+                    "art_code": "a-1",
+                    "display_time": "2026-07-15 10:00:00:000",
+                    "notice_date": "2026-07-15 00:00:00",
+                    "title": "控股股东减持并收到监管函",
+                    "columns": [{"column_name": "持股变动"}],
+                },
+                {
+                    "art_code": "a-2",
+                    "display_time": "2026-07-14 10:00:00:000",
+                    "notice_date": "2026-07-14 00:00:00",
+                    "title": "公司获得政策支持并获批新项目",
+                    "columns": [{"column_name": "重大事项"}],
+                },
+                *(
+                    {
+                        "art_code": f"normal-{index}",
+                        "display_time": "2026-07-13 10:00:00:000",
+                        "notice_date": "2026-07-13 00:00:00",
+                        "title": f"公司日常经营公告{index}",
+                        "columns": [{"column_name": "其他"}],
+                    }
+                    for index in range(20)
+                ),
+            ],
+            "total_hits": 23,
+        },
+        "success": 1,
+    }
+    pledge_payload = {
+        "version": "pledge-v1",
+        "result": {"data": [{"NOTICE_DATE": "2026-07-01", "ACCUM_PLEDGE_TSR": 15.0}]},
+        "success": True,
+    }
+    unlock_payload = {
+        "version": "unlock-v1",
+        "result": {
+            "data": [
+                {"FREE_DATE": "2026-08-01", "TOTAL_RATIO": 0.06},
+                {"FREE_DATE": "2027-01-01", "TOTAL_RATIO": 0.50},
+            ]
+        },
+        "success": True,
+    }
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        if "securities/api/data/get" in url:
+            return FakeResponse(financial_payload)
+        if "api/security/ann" in url:
+            return FakeResponse(announcement_payload)
+        report = kwargs["params"].get("reportName")
+        if report == "RPTA_APP_ACCUMDETAILS":
+            return FakeResponse(pledge_payload)
+        if report == "RPT_LIFT_STAGE":
+            return FakeResponse(unlock_payload)
+        raise AssertionError(f"unexpected research URL: {url}")
+
+    observation = AkshareResearchClient(
+        timeout_seconds=8,
+        get=get,
+        long_research_policy=LONG_POLICY,
+    ).fetch_snapshot("600001", observed_at=AFTERNOON)
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
+        (replace(_quote(), price=20.0),),
+        {"600001": _history_bars()},
+        AFTERNOON,
+        research_observations={"600001": observation},
+    )[0]
+
+    assert observation.financial is not None
+    assert observation.financial.report_date == date(2026, 3, 31)
+    assert len(observation.announcements) == 22
+    assert observation.pledge_ratio_pct == pytest.approx(15.0)
+    assert observation.unlock_ratio_pct == pytest.approx(6.0)
+    assert feature.values["value_score"] == pytest.approx(92.8571428571)
+    assert feature.values["growth_score"] == pytest.approx(70.0)
+    assert feature.values["quality_score"] == pytest.approx(67.5)
+    assert feature.values["pledge_risk"] == 1.0
+    assert feature.values["reduction_or_unlock"] == 3.0
+    assert feature.values["negative_announcement_level"] == 2.0
+    assert {item.evidence_type for item in feature.evidence} >= {
+        "financial_snapshot",
+        "announcement",
+        "ownership_filing",
+        "research_summary",
+    }
+    financial_evidence = next(item for item in feature.evidence if item.evidence_type == "financial_snapshot")
+    pledge_evidence = next(item for item in feature.evidence if item.source == "eastmoney_pledge")
+    assert "EPS=1" in financial_evidence.title
+    assert "core_profit=80" in financial_evidence.title
+    assert pledge_evidence.published_at.isoformat() == "2026-07-01T23:59:59+08:00"
+    assert all(call[1]["timeout"] == 8 for call in calls)
+    assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in calls)
+    assert all("search-api-web" not in call[0] for call in calls)
+
+
+def test_structured_research_source_failure_preserves_null_and_other_sources() -> None:
+    observation = ResearchObservation(
+        announcements_available=True,
+        pledge_ratio_pct=None,
+        unlock_ratio_pct=0.0,
+        source_errors=("pledge:timeout",),
+    )
+
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
+        (_quote(),),
+        {"600001": _history_bars()},
+        AFTERNOON,
+        research_observations={"600001": observation},
+    )[0]
+
+    assert feature.values["pledge_risk"] is None
+    assert feature.values["reduction_or_unlock"] == 0.0
+    assert "pledge_risk" in feature.missing_fields
+    assert feature.values["risk_protection_score"] is not None
+
+
+@pytest.mark.parametrize(
+    "unlock_row",
+    (
+        {"FREE_DATE": "invalid", "TOTAL_RATIO": 0.01},
+        {"FREE_DATE": "2026-08-01", "TOTAL_RATIO": 1.01},
+    ),
+)
+def test_akshare_structured_research_contains_malformed_source_failure(unlock_row) -> None:
+    def get(url, **kwargs):
+        if "securities/api/data/get" in url:
+            return FakeResponse({"version": "financial-empty", "result": {"data": []}, "success": True})
+        if "api/security/ann" in url:
+            return FakeResponse({"data": {"list": [], "total_hits": 0}, "success": 1})
+        if kwargs["params"].get("reportName") == "RPTA_APP_ACCUMDETAILS":
+            return FakeResponse(
+                {
+                    "version": "pledge-invalid",
+                    "result": {"data": [{"NOTICE_DATE": "2026-07-01", "ACCUM_PLEDGE_TSR": "invalid"}]},
+                    "success": True,
+                }
+            )
+        return FakeResponse({"version": "unlock-invalid", "result": {"data": [unlock_row]}, "success": True})
+
+    observation = AkshareResearchClient(
+        timeout_seconds=8,
+        get=get,
+        long_research_policy=LONG_POLICY,
+    ).fetch_snapshot("600001", observed_at=AFTERNOON)
+
+    assert observation.announcements_available is True
+    assert observation.unlock_ratio_pct is None
+    assert observation.pledge_ratio_pct is None
+    assert observation.source_errors == ("pledge:ValueError", "unlock:ValueError")
+
+
+def test_akshare_research_rejects_unvalidated_stock_code() -> None:
+    client = AkshareResearchClient(get=lambda *_args, **_kwargs: FakeResponse(""))
+
+    with pytest.raises(ValueError, match="six digits"):
+        client.fetch_news('600001") OR ("1"="1', observed_at=AFTERNOON)
+
+
 def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     news = Evidence("news-1", "news", "公司拟回购股份", "fixture", NOW - timedelta(hours=1))
     research = StaticResearchClient((news,))
     service = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         research_client=research,
         research_workers=1,
     )
@@ -666,7 +874,7 @@ def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     degraded = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         research_client=FailingResearchClient(),
         research_workers=1,
     )
@@ -679,6 +887,44 @@ def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     assert score_strategy(Strategy.TODAY, result[0]).components["sentiment"] == 60.0
     assert degraded.health()["research_error_count"] == 1
     assert degraded.health()["research_last_error"] == "offline"
+
+
+def test_structured_research_upgrades_news_only_cache_and_is_reused() -> None:
+    news = Evidence("news-1", "news", "公司拟回购股份", "fixture", NOW - timedelta(hours=1))
+    research = StaticStructuredResearchClient(
+        news,
+        ResearchObservation(
+            evidence=(news,),
+            announcements_available=True,
+            pledge_ratio_pct=15.0,
+            unlock_ratio_pct=0.0,
+        ),
+    )
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=research,
+        research_workers=1,
+    )
+
+    news_only = service.fetch_candidate_features(("600001",), NOW)
+    first_full = service.fetch_candidate_features(
+        ("600001",),
+        NOW,
+        include_structured_research=True,
+    )
+    second_full = service.fetch_candidate_features(
+        ("600001",),
+        NOW,
+        include_structured_research=True,
+    )
+
+    assert research.news_calls == 1
+    assert research.snapshot_calls == 1
+    assert news_only[0].values["pledge_risk"] is None
+    assert first_full[0].values["pledge_risk"] == 1.0
+    assert second_full[0].values["pledge_risk"] == 1.0
 
 
 def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
@@ -834,6 +1080,22 @@ class FailingResearchClient:
     @staticmethod
     def fetch_news(_code, *, observed_at):
         raise RuntimeError("offline")
+
+
+class StaticStructuredResearchClient:
+    def __init__(self, news, observation) -> None:
+        self._news = (news,)
+        self._observation = observation
+        self.news_calls = 0
+        self.snapshot_calls = 0
+
+    def fetch_news(self, _code, *, observed_at):
+        self.news_calls += 1
+        return self._news
+
+    def fetch_snapshot(self, _code, *, observed_at):
+        self.snapshot_calls += 1
+        return self._observation
 
 
 class StaticIntradayClient:

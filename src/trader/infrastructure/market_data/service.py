@@ -10,7 +10,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.domain.models import Evidence, FeatureSnapshot, MarketQuote
+from trader.domain.models import FeatureSnapshot, MarketQuote
+from trader.domain.research import ResearchObservation
 from trader.domain.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
@@ -27,7 +28,7 @@ class _HistoryEntry:
 
 @dataclass(frozen=True)
 class _ResearchEntry:
-    evidence: tuple[Evidence, ...]
+    observation: ResearchObservation
     expires_at: float
 
 
@@ -78,7 +79,7 @@ class MarketFeatureService:
         self._market_features: tuple[FeatureSnapshot, ...] = ()
         self._market_expires_at = 0.0
         self._history: dict[str, _HistoryEntry] = {}
-        self._research: dict[str, _ResearchEntry] = {}
+        self._research: dict[tuple[str, bool], _ResearchEntry] = {}
         self._intraday: dict[str, _IntradayEntry] = {}
         self._research_success_count = 0
         self._research_error_count = 0
@@ -119,6 +120,7 @@ class MarketFeatureService:
         observed_at: datetime,
         *,
         include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
     ) -> Sequence[FeatureSnapshot]:
         normalized = tuple(dict.fromkeys(code for code in codes if len(code) == 6 and code.isdigit()))
         if not normalized:
@@ -129,7 +131,11 @@ class MarketFeatureService:
             market = {feature.quote.code: feature.quote for feature in self.fetch_market_features(observed_at)}
             quotes = tuple((*quotes, *(market[code] for code in normalized if code not in received and code in market)))
         histories = self._load_histories(normalized)
-        research_evidence = self._load_research(normalized, observed_at)
+        research_observations = self._load_research(
+            normalized,
+            observed_at,
+            include_structured=include_structured_research,
+        )
         intraday_minutes = self._load_intraday(normalized, observed_at) if include_intraday_tail else None
         with self._lock:
             cross_section_reference = {feature.quote.code: feature.values for feature in self._market_features}
@@ -142,7 +148,7 @@ class MarketFeatureService:
             observed_at,
             cross_section_reference=cross_section_reference,
             cross_section_normalization_reference=cross_section_normalization_reference,
-            research_evidence=research_evidence,
+            research_observations=research_observations,
             intraday_minutes=intraday_minutes,
         )
         if include_intraday_tail:
@@ -201,18 +207,21 @@ class MarketFeatureService:
         self,
         codes: Sequence[str],
         observed_at: datetime,
-    ) -> Mapping[str, tuple[Evidence, ...]]:
+        *,
+        include_structured: bool,
+    ) -> Mapping[str, ResearchObservation]:
         if self._research_client is None:
             return {}
         now = self._monotonic()
-        result: dict[str, tuple[Evidence, ...]] = {}
+        result: dict[str, ResearchObservation] = {}
         with self._lock:
+            for key in tuple(self._research):
+                if self._research[key].expires_at <= now:
+                    self._research.pop(key, None)
             for code in codes:
-                entry = self._research.get(code)
-                if entry is not None and entry.expires_at > now:
-                    result[code] = entry.evidence
-                elif entry is not None:
-                    self._research.pop(code, None)
+                entry = self._research.get((code, include_structured))
+                if entry is not None:
+                    result[code] = entry.observation
         missing = [code for code in codes if code not in result]
         if not missing:
             return result
@@ -221,15 +230,21 @@ class MarketFeatureService:
             thread_name_prefix="candidate-research",
         ) as pool:
             futures = {
-                pool.submit(self._research_client.fetch_news, code, observed_at=observed_at): code for code in missing
+                pool.submit(
+                    self._fetch_research_observation,
+                    code,
+                    observed_at,
+                    include_structured=include_structured,
+                ): code
+                for code in missing
             }
             for future in as_completed(futures):
                 code = futures[future]
                 ttl = self._research_ttl_seconds
                 try:
-                    evidence = tuple(future.result())
-                except Exception as exc:
-                    evidence = ()
+                    observation = future.result()
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    observation = ResearchObservation()
                     ttl = min(60.0, ttl)
                     with self._lock:
                         self._research_error_count += 1
@@ -237,10 +252,30 @@ class MarketFeatureService:
                 else:
                     with self._lock:
                         self._research_success_count += 1
-                result[code] = evidence
+                        if observation.source_errors:
+                            self._research_error_count += len(observation.source_errors)
+                            self._research_last_error = observation.source_errors[-1][:240]
+                            ttl = min(60.0, ttl)
+                result[code] = observation
                 with self._lock:
-                    self._research[code] = _ResearchEntry(evidence, self._monotonic() + ttl)
+                    self._research[(code, include_structured)] = _ResearchEntry(
+                        observation,
+                        self._monotonic() + ttl,
+                    )
         return result
+
+    def _fetch_research_observation(
+        self,
+        code: str,
+        observed_at: datetime,
+        *,
+        include_structured: bool,
+    ) -> ResearchObservation:
+        if self._research_client is None:
+            return ResearchObservation()
+        if include_structured:
+            return self._research_client.fetch_snapshot(code, observed_at=observed_at)
+        return ResearchObservation(evidence=tuple(self._research_client.fetch_news(code, observed_at=observed_at)))
 
     def _load_intraday(
         self,

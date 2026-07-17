@@ -14,8 +14,6 @@ COMPONENT_WEIGHTS = {
     "not_overheated": 0.10,
 }
 
-REGIME_FACTORS = {"risk_on": 1.03, "neutral": 1.0, "risk_off": 0.92}
-
 
 def score_d25(snapshot: FeatureSnapshot) -> LocalScoreResult:
     momentum = (
@@ -51,23 +49,9 @@ def score_d25(snapshot: FeatureSnapshot) -> LocalScoreResult:
         COMPONENT_WEIGHTS,
     )
     adjusted = clamp(
-        composed.base_score
-        * _overheat_factor(snapshot.optional_value("return_20d"))
-        * _regime_factor(snapshot.market_regime)
+        composed.base_score * snapshot.value("d25_overheat_factor", 1.0) * snapshot.value("market_regime_factor", 1.0)
     )
     return LocalScoreResult(components=composed.components, base_score=adjusted)
-
-
-def _overheat_factor(return_20d: float | None) -> float:
-    if return_20d is None or return_20d <= 15.0:
-        return 1.0
-    if return_20d > 30.0:
-        return 0.75
-    return 1.0 - (return_20d - 15.0) * 0.15 / 15.0
-
-
-def _regime_factor(regime: str) -> float:
-    return REGIME_FACTORS.get(regime, 1.0)
 
 
 __all__ = ["score_d25"]

@@ -90,8 +90,16 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     market_data = MarketFeatureService(
         market_gateway,
         history,
-        FeatureBuilder(strategy.today_news_signal, strategy.tomorrow_tail_signal),
-        research_client=AkshareResearchClient(timeout_seconds=settings.market_data.research_timeout_seconds),
+        FeatureBuilder(
+            strategy.today_news_signal,
+            strategy.tomorrow_tail_signal,
+            strategy.d25_signal,
+            strategy.long_research,
+        ),
+        research_client=AkshareResearchClient(
+            timeout_seconds=settings.market_data.research_timeout_seconds,
+            long_research_policy=strategy.long_research,
+        ),
         intraday_client=intraday,
         history_workers=settings.pipeline.market_workers,
         research_workers=settings.pipeline.market_workers,

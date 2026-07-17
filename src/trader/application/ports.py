@@ -26,6 +26,7 @@ class MarketDataPort(Protocol):
         observed_at: datetime,
         *,
         include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
     ) -> Sequence[FeatureSnapshot]: ...
 
     def health(self) -> Mapping[str, object]: ...

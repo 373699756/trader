@@ -11,6 +11,13 @@ from datetime import datetime
 from trader.domain.factors import band_score, clamp, percentile_scores_with_metadata
 from trader.domain.models import CrossSectionStats, Evidence, FeatureSnapshot, MarketQuote
 from trader.domain.news import NewsSignalPolicy, derive_news_signals
+from trader.domain.research import (
+    D25SignalPolicy,
+    LongResearchPolicy,
+    ResearchObservation,
+    derive_d25_signals,
+    derive_long_research_features,
+)
 from trader.domain.tail import (
     MinuteBar,
     TailSignalPolicy,
@@ -29,9 +36,17 @@ from trader.infrastructure.market_data.history import (
 
 
 class FeatureBuilder:
-    def __init__(self, news_signal_policy: NewsSignalPolicy, tail_signal_policy: TailSignalPolicy) -> None:
+    def __init__(
+        self,
+        news_signal_policy: NewsSignalPolicy,
+        tail_signal_policy: TailSignalPolicy,
+        d25_signal_policy: D25SignalPolicy,
+        long_research_policy: LongResearchPolicy,
+    ) -> None:
         self._news_signal_policy = news_signal_policy
         self._tail_signal_policy = tail_signal_policy
+        self._d25_signal_policy = d25_signal_policy
+        self._long_research_policy = long_research_policy
 
     def build(
         self,
@@ -41,7 +56,7 @@ class FeatureBuilder:
         *,
         cross_section_reference: Mapping[str, Mapping[str, float | None]] | None = None,
         cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None = None,
-        research_evidence: Mapping[str, Sequence[Evidence]] | None = None,
+        research_observations: Mapping[str, ResearchObservation] | None = None,
         intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None = None,
     ) -> tuple[FeatureSnapshot, ...]:
         grouped: dict[str, list[MarketQuote]] = defaultdict(list)
@@ -56,7 +71,7 @@ class FeatureBuilder:
                 data_version=data_version,
                 cross_section_reference=cross_section_reference,
                 cross_section_normalization_reference=cross_section_normalization_reference,
-                research_evidence=research_evidence,
+                research_observations=research_observations,
                 intraday_minutes=intraday_minutes,
             ):
                 built[snapshot.quote.code] = snapshot
@@ -71,7 +86,7 @@ class FeatureBuilder:
         data_version: str,
         cross_section_reference: Mapping[str, Mapping[str, float | None]] | None,
         cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None,
-        research_evidence: Mapping[str, Sequence[Evidence]] | None,
+        research_observations: Mapping[str, ResearchObservation] | None,
         intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None,
     ) -> tuple[FeatureSnapshot, ...]:
         tail_signals = (
@@ -142,7 +157,8 @@ class FeatureBuilder:
         snapshots: list[FeatureSnapshot] = []
         for quote in quotes:
             values = raw[quote.code]
-            candidate_evidence = tuple((research_evidence or {}).get(quote.code, ()))[:15]
+            research_observation = (research_observations or {}).get(quote.code)
+            candidate_evidence = tuple(research_observation.evidence if research_observation is not None else ())[:15]
             tail_signal = tail_signals.get(quote.code) if tail_signals is not None else None
             intraday_evidence = tail_signal_evidence(quote.code, tail_signal) if tail_signal is not None else None
             news_signals = derive_news_signals(
@@ -183,6 +199,28 @@ class FeatureBuilder:
             for name in _CROSS_SECTION_FIELDS:
                 if name in reference:
                     values[name] = reference[name]
+            d25_signals = derive_d25_signals(
+                values.get("return_20d"),
+                values.get("market_breadth"),
+                self._d25_signal_policy,
+            )
+            values.update(
+                {
+                    "return_20d_not_overheated": d25_signals.not_overheated_score,
+                    "d25_overheat_factor": d25_signals.overheat_factor,
+                    "market_regime_factor": d25_signals.market_regime_factor,
+                }
+            )
+            values.update(
+                derive_long_research_features(
+                    research_observation or ResearchObservation(),
+                    price=quote.price,
+                    industry_strength=values.get("industry_strength"),
+                    low_volatility_score=values.get("low_volatility_score"),
+                    low_drawdown_score=values.get("low_drawdown_score"),
+                    policy=self._long_research_policy,
+                )
+            )
             normalization = dict(shared_normalization)
             normalization.update((cross_section_normalization_reference or {}).get(quote.code, {}))
             missing = tuple(
@@ -199,7 +237,7 @@ class FeatureBuilder:
                     values=values,
                     observed_at=observed_at,
                     history_days=len(histories.get(quote.code, ())),
-                    market_regime=_market_regime(market_breadth),
+                    market_regime=d25_signals.market_regime,
                     missing_fields=missing,
                     evidence=(
                         _structured_evidence(quote, values, observed_at),
@@ -265,7 +303,9 @@ class FeatureBuilder:
             "close_location": close_location,
             "price_executability": _optional_band_score(quote.price, 1.0, 5.0, 100.0, 300.0),
             "ma20_deviation_inverse": _ma_deviation_inverse(quote.price, ma20),
-            "return_20d_not_overheated": _not_overheated(returns[20]),
+            "return_20d_not_overheated": None,
+            "d25_overheat_factor": None,
+            "market_regime_factor": None,
             "trend_score": trend_score,
             "low_crowding_score": None if limit_proximity is None else 100.0 * (1.0 - limit_proximity),
             "limit_proximity": limit_proximity,
@@ -369,16 +409,6 @@ def _ma_deviation_inverse(price: float | None, ma20: float | None) -> float | No
     return clamp(100.0 - deviation * 10.0)
 
 
-def _not_overheated(return_20d: float | None) -> float | None:
-    if not _all_finite(return_20d) or return_20d is None:
-        return None
-    if return_20d <= 15.0:
-        return 100.0
-    if return_20d >= 30.0:
-        return 0.0
-    return 100.0 * (30.0 - return_20d) / 15.0
-
-
 def _if_present(raw: float | None, score: float) -> float | None:
     return score if raw is not None and math.isfinite(raw) else None
 
@@ -413,16 +443,6 @@ def _missing_quote_fields(quote: MarketQuote) -> tuple[str, ...]:
         )
         if not _all_finite(getattr(quote, name))
     )
-
-
-def _market_regime(market_breadth: float | None) -> str:
-    if market_breadth is None:
-        return "neutral"
-    if market_breadth >= 60.0:
-        return "risk_on"
-    if market_breadth <= 40.0:
-        return "risk_off"
-    return "neutral"
 
 
 def _structured_evidence(

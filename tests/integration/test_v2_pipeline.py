@@ -500,7 +500,9 @@ class StaticMarketData:
         observed_at: datetime,
         *,
         include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
     ) -> Sequence[FeatureSnapshot]:
+        del include_structured_research
         self.candidate_tail_requests.append(include_intraday_tail)
         requested = set(codes)
         return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
@@ -532,6 +534,7 @@ class DegradingCandidateMarketData(StaticMarketData):
         observed_at: datetime,
         *,
         include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
     ) -> Sequence[FeatureSnapshot]:
         if self.candidate_unavailable:
             raise MarketDataUnavailable("candidate quote source failed")
@@ -539,6 +542,7 @@ class DegradingCandidateMarketData(StaticMarketData):
             codes,
             observed_at,
             include_intraday_tail=include_intraday_tail,
+            include_structured_research=include_structured_research,
         )
 
 

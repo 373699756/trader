@@ -19,10 +19,10 @@ def test_strategy_scores_are_deterministic_and_bounded(feature_factory, strategy
 
 
 def test_d25_applies_overheat_and_market_regime_coefficients(feature_factory) -> None:
-    neutral = feature_factory(values={"return_20d": 10.0})
+    neutral = feature_factory(values={"d25_overheat_factor": 1.0, "market_regime_factor": 1.0})
     overheated = FeatureSnapshot(
         quote=neutral.quote,
-        values={**neutral.values, "return_20d": 35.0},
+        values={**neutral.values, "d25_overheat_factor": 0.75, "market_regime_factor": 0.92},
         observed_at=neutral.observed_at,
         history_days=neutral.history_days,
         market_regime="risk_off",
@@ -35,9 +35,9 @@ def test_d25_applies_overheat_and_market_regime_coefficients(feature_factory) ->
 
 
 def test_d25_overheat_boundary_keeps_thirty_percent_at_point_eighty_five(feature_factory) -> None:
-    baseline = score_strategy(Strategy.D25, feature_factory(values={"return_20d": 15.0})).base_score
-    at_boundary = score_strategy(Strategy.D25, feature_factory(values={"return_20d": 30.0})).base_score
-    above_boundary = score_strategy(Strategy.D25, feature_factory(values={"return_20d": 30.01})).base_score
+    baseline = score_strategy(Strategy.D25, feature_factory(values={"d25_overheat_factor": 1.0})).base_score
+    at_boundary = score_strategy(Strategy.D25, feature_factory(values={"d25_overheat_factor": 0.85})).base_score
+    above_boundary = score_strategy(Strategy.D25, feature_factory(values={"d25_overheat_factor": 0.75})).base_score
 
     assert at_boundary == pytest.approx(baseline * 0.85)
     assert above_boundary == pytest.approx(baseline * 0.75)

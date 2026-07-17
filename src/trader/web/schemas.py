@@ -225,7 +225,7 @@ def _missing_reason(field: str) -> str:
         "reduction_or_unlock",
         "negative_announcement_level",
     }:
-        return "财务或公司事件数据尚未接入"
+        return "财务或公司事件数据不可用或不满足点时规则"
     if field in {
         "tail_return_30m_pct",
         "tail_return_30m",

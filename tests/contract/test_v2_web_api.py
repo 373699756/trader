@@ -63,7 +63,7 @@ def test_recommendations_explain_missing_fields(recommendation_policy, applicati
     assert item["missing_reasons"] == {
         "news_sentiment": "新闻或公告证据不可用",
         "tail_return_30m": "尾盘分钟数据不可用或样本不足",
-        "value_score": "财务或公司事件数据尚未接入",
+        "value_score": "财务或公司事件数据不可用或不满足点时规则",
     }
     assert all(item["features"][field] is None for field in missing_fields)
     assert item["evidence"][0]["received_at"] == NOW.isoformat()

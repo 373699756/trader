@@ -21,11 +21,32 @@ def fetch_strategy_features(
             codes,
             observed_at,
             include_intraday_tail=strategy is Strategy.TOMORROW,
+            include_structured_research=strategy in {Strategy.D25, Strategy.LONG},
         )
     )
-    if strategy is not Strategy.TOMORROW:
+    if strategy is Strategy.TODAY:
         return features, max((feature.quote.data_version for feature in features), default="unavailable")
-    material = tuple(
+    if strategy in {Strategy.D25, Strategy.LONG}:
+        research_material = tuple(
+            sorted(
+                (
+                    feature.quote.code,
+                    feature.quote.data_version,
+                    feature.market_regime,
+                    tuple(sorted((name, value) for name, value in feature.values.items())),
+                    tuple(
+                        sorted(
+                            (evidence.evidence_type, evidence.data_version, evidence.evidence_id)
+                            for evidence in feature.evidence
+                        )
+                    ),
+                )
+                for feature in features
+            )
+        )
+        digest = hashlib.sha256(repr(research_material).encode("utf-8")).hexdigest()[:20]
+        return features, f"{strategy.value}-input:{digest}"
+    tail_material = tuple(
         sorted(
             (
                 feature.quote.code,
@@ -41,7 +62,7 @@ def fetch_strategy_features(
             for feature in features
         )
     )
-    digest = hashlib.sha256(repr(material).encode("utf-8")).hexdigest()[:20]
+    digest = hashlib.sha256(repr(tail_material).encode("utf-8")).hexdigest()[:20]
     return features, f"tomorrow-input:{digest}"
 
 
