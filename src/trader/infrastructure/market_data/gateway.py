@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
+from trader.application.ports import MarketDataUnavailable
 from trader.domain.models import MarketQuote
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.sina import SinaClient
@@ -51,6 +52,7 @@ class MarketDataGateway:
     def fetch_market(self) -> Sequence[MarketQuote]:
         with self._fetch_lock:
             errors: list[str] = []
+            last_exception: Exception | None = None
             for name, fetcher in (("eastmoney", self._eastmoney.fetch_market), ("sina", self._sina.fetch_market)):
                 if self._is_open(name):
                     errors.append(f"{name}:circuit_open")
@@ -61,6 +63,7 @@ class MarketDataGateway:
                     if len(quotes) < self._minimum_market_rows:
                         raise RuntimeError(f"only {len(quotes)} market rows")
                 except Exception as exc:
+                    last_exception = exc
                     self._record(name, False, started, str(exc))
                     errors.append(f"{name}:{exc}")
                     continue
@@ -73,7 +76,10 @@ class MarketDataGateway:
                 cached = tuple(self._latest_by_code.values())
             if cached:
                 return cached
-            raise RuntimeError("market data unavailable: " + "; ".join(errors))
+            unavailable = MarketDataUnavailable("market data unavailable: " + "; ".join(errors))
+            if last_exception is not None:
+                raise unavailable from last_exception
+            raise unavailable
 
     def fetch_candidates(self, codes: Sequence[str]) -> Sequence[MarketQuote]:
         if not codes:

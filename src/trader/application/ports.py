@@ -9,6 +9,10 @@ from typing import Protocol
 from trader.domain.models import DeepSeekReview, FeatureSnapshot, RecommendationSnapshot, Strategy
 
 
+class MarketDataUnavailable(RuntimeError):
+    """All full-market sources failed and no usable cached quote set exists."""
+
+
 class Clock(Protocol):
     def now(self) -> datetime: ...
 
@@ -79,6 +83,7 @@ __all__ = [
     "DeepSeekReviewPort",
     "EventAuditPort",
     "MarketDataPort",
+    "MarketDataUnavailable",
     "SnapshotRepositoryPort",
     "TradingCalendarPort",
 ]

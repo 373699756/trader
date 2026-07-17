@@ -13,6 +13,7 @@ from trader.application.ports import (
     DeepSeekReviewPort,
     EventAuditPort,
     MarketDataPort,
+    MarketDataUnavailable,
     SnapshotRepositoryPort,
     TradingCalendarPort,
 )
@@ -227,7 +228,15 @@ class RecommendationPipeline:
         return tuple(snapshots)
 
     def _refresh_candidates(self, now: datetime, phase: MarketPhase) -> None:
-        market_features = tuple(self._market_data.fetch_market_features(now))
+        try:
+            market_features = tuple(self._market_data.fetch_market_features(now))
+        except MarketDataUnavailable as exc:
+            reason = str(exc)[:500]
+            _LOGGER.warning("candidate refresh degraded during %s: %s", phase.value, reason)
+            self._state.increment("market_refresh_failures")
+            self._state.record_error(f"market data degraded during {phase.value}: {reason}")
+            return
+
         maximum_age = _maximum_age_seconds(phase)
         candidates, reasons = self._engine.preselect(
             market_features,

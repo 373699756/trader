@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from trader.application.ports import MarketDataUnavailable
 from trader.domain.models import MarketQuote
 from trader.infrastructure.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailable
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
@@ -99,6 +100,25 @@ def test_gateway_falls_back_and_tracks_health() -> None:
 
     assert health["active_source"] == "sina"
     assert health["sources"]["eastmoney"]["circuit_open"] is True
+
+
+def test_gateway_reports_recoverable_unavailability_when_all_sources_fail() -> None:
+    gateway = MarketDataGateway(
+        FailingMarketClient(),
+        FailingMarketClient(),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=1,
+        circuit_breaker_seconds=60,
+    )
+
+    with pytest.raises(MarketDataUnavailable, match="eastmoney:offline; sina:offline"):
+        gateway.fetch_market()
+
+    health = gateway.health()
+    assert health["active_source"] == "unavailable"
+    assert health["sources"]["eastmoney"]["circuit_open"] is True
+    assert health["sources"]["sina"]["circuit_open"] is True
 
 
 def test_feature_builder_marks_history_missing_and_builds_cross_section() -> None:

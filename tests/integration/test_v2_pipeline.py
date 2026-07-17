@@ -6,6 +6,7 @@ from datetime import datetime
 
 from trader.application.events import EventPriority, PipelineEvent, new_event
 from trader.application.pipeline import RecommendationPipeline
+from trader.application.ports import MarketDataUnavailable
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
@@ -95,6 +96,44 @@ def test_initialize_restores_frozen_gate(recommendation_policy, application_feat
 
     assert pipeline.run_once(now) == ()
     assert repository.published == {}
+
+
+def test_market_data_unavailability_preserves_candidates_and_records_degradation(
+    recommendation_policy,
+    application_feature_factory,
+    caplog,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T10:00:00+08:00"))
+    market_data = DegradingMarketData((application_feature_factory("600001", clock.now()),))
+    repository = MemoryRepository()
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=clock.now,
+    )
+    pipeline.initialize()
+    assert len(pipeline.run_once(clock.now())) == 1
+
+    market_data.market_unavailable = True
+    clock.set(datetime.fromisoformat("2026-07-16T10:00:10+08:00"))
+    degraded = pipeline.run_once(clock.now())
+
+    assert len(degraded) == 1
+    assert degraded[0].recommendations
+    status = pipeline.status()
+    assert status["counters"]["market_refresh_failures"] == 1
+    assert status["last_error"] == "market data degraded during today_main: all full-market sources failed"
+    assert "Traceback" not in caplog.text
 
 
 def test_freeze_tick_uses_reserved_priority_and_is_persisted_before_enqueue(
@@ -205,6 +244,17 @@ class StaticMarketData:
     @staticmethod
     def health() -> Mapping[str, object]:
         return {"status": "ok"}
+
+
+class DegradingMarketData(StaticMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
+        super().__init__(features)
+        self.market_unavailable = False
+
+    def fetch_market_features(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
+        if self.market_unavailable:
+            raise MarketDataUnavailable("all full-market sources failed")
+        return super().fetch_market_features(observed_at)
 
 
 class MemoryRepository:

@@ -26,6 +26,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 全市场行情源同时不可用时仅捕获明确的可恢复异常，保留既有候选和最近发布快照继续本地评分，并在运行状态中记录降级原因与失败计数；预期降级日志不再输出误导性的完整 traceback。
 - 防止本地风险在 68/32 融合中重复扣除；固定向量 `82 - 2 / 100 - 3` 得到 `83.40`。
 - 融合保留未舍入本地分精度到最终计算，修正临界值被提前舍入抬高 0.01 的问题。
 - 修正 d25 在 20 日涨幅恰好 30% 时应使用 0.85、仅高于 30% 才使用 0.75 的边界。
@@ -45,6 +46,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 新增双行情源同时失败的网关契约，以及刷新失败后沿用既有候选、继续本地推荐、记录降级状态且不输出 traceback 的流水线回归覆盖。
 - 对 `AGENTS.md` 与 `docs/need.md` 的单任务交付规则执行一致性 Review，覆盖任务边界、Review 基线、审查与交付状态、提交粒度、推送失败重试和成功后停止条件。
 - `make quality`：Ruff format/lint、58 个源文件 mypy 和 106 个 pytest 测试全部通过。
 - `make package`：从干净生成目录成功构建 sdist 和 `py3-none-any` wheel；sdist 不包含旧包或旧测试。
@@ -56,6 +58,7 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 行情提供方的 TLS 可用性仍由外部网络环境决定；全部来源首次启动即失败且没有内存缓存时不会生成新推荐，只保留仓库中最近有效的只读快照并等待后续刷新恢复。
 - 尚未完成一个真实 A 股完整交易日的 v2 影子运行，因此 TopK 报价 P95、冻结点实时时延和阈值分布仍需在生产发布前留证。
 - 当前环境未提供真实 `DEEPSEEK_API_KEY`，已完成 mock 的 429/超时/schema/截止/预算测试，但真实 API 冒烟尚未执行。
 - 当前 Linux 环境没有 PowerShell，`run.ps1`/`run.bat` 已静态审查，仍需在 Windows PC 实机验证创建虚拟环境、单进程锁和 Ctrl+C 停止。
