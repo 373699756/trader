@@ -200,6 +200,42 @@ def test_frozen_current_response_applies_overlay_without_changing_anchor_or_snap
     assert cached.headers["ETag"] == response.headers["ETag"]
 
 
+def test_live_draft_response_uses_matching_topk_overlay_and_overlay_etag(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    draft = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
+    overlay = LiveOverlay(
+        snapshot_id=draft.snapshot_id,
+        strategy=draft.strategy,
+        trade_date=draft.trade_date,
+        version="draft-overlay-v2",
+        observed_at=NOW,
+        quotes={
+            "600001": LiveQuote(
+                code="600001",
+                price=13.0,
+                pct_change=4.0,
+                source="tencent",
+                source_time=NOW,
+                received_time=NOW,
+                data_version="draft-live-v2",
+            )
+        },
+    )
+    repository = MemoryReadRepository(
+        latest={Strategy.TODAY: draft},
+        overlays={(Strategy.TODAY, draft.trade_date): overlay},
+    )
+
+    response = _app(repository)[0].test_client().get("/api/recommendations/today")
+    payload = response.get_json()
+
+    assert payload["live_overlay"]["version"] == "draft-overlay-v2"
+    assert payload["items"][0]["price"] == 13.0
+    assert response.headers["ETag"] != f'"{draft.snapshot_id}"'
+
+
 def test_previous_trade_date_is_explicit_stale_fallback(
     recommendation_policy,
     application_feature_factory,
@@ -357,6 +393,3 @@ class MemoryReadRepository:
 
     def recover(self) -> Mapping[str, int]:
         return {}
-
-    def append_event(self, event: Mapping[str, object]) -> None:
-        return None

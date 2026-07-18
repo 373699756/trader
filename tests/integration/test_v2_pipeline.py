@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -396,6 +398,32 @@ def test_market_data_unavailability_preserves_candidates_and_records_degradation
     assert "Traceback" not in caplog.text
 
 
+def test_status_uses_recorded_phase_without_calling_calendar(recommendation_policy) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    state = RuntimeState()
+    state.record_tick("today_main", now)
+    repository = MemoryRepository()
+    pipeline = RecommendationPipeline(
+        StaticMarketData(()),
+        ForbiddenStatusCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+
+    status = pipeline.status()
+
+    assert status["phase"] == "today_main"
+
+
 def test_freeze_tick_uses_reserved_priority_and_is_persisted_before_enqueue(
     recommendation_policy,
     application_feature_factory,
@@ -425,6 +453,47 @@ def test_freeze_tick_uses_reserved_priority_and_is_persisted_before_enqueue(
     event = queue.events[0]
     assert event.event_type == "freeze"
     assert event.priority is EventPriority.FREEZE
+    assert repository.events[0]["status"] == "pending"
+
+
+def test_risk_event_is_persisted_before_reserved_enqueue(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    repository = MemoryRepository()
+    pipeline = RecommendationPipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=2,
+        priority_queue_size=1,
+        now=lambda: now,
+    )
+    queue = RecordingQueue()
+    pipeline._queue = queue
+    event = new_event(
+        "risk_change",
+        subject_key="600001",
+        trade_date="2026-07-16",
+        phase="today_main",
+        strategy=Strategy.TODAY,
+        priority=EventPriority.RISK,
+        data_version="risk-v1",
+        config_version="config-v2",
+        created_at=now,
+    )
+
+    assert pipeline.submit_event(event) is True
+    assert queue.events == [event]
+    assert repository.events[0]["event_id"] == event.event_id
     assert repository.events[0]["status"] == "pending"
 
 
@@ -469,6 +538,416 @@ def test_initialize_replays_persisted_priority_event(recommendation_policy, appl
     assert pipeline.status()["counters"]["events_replayed"] == 1
 
 
+def test_initialize_rejects_priority_event_from_another_config(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T11:20:00+08:00")
+    event = new_event(
+        "freeze",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="midday",
+        strategy=None,
+        priority=EventPriority.FREEZE,
+        data_version="tick:112000",
+        config_version="old-config",
+        created_at=now,
+        payload={"freeze_strategies": ["today"]},
+    )
+    repository = MemoryRepository()
+    repository.events.append(event.audit_record(status="pending"))
+    pipeline = RecommendationPipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=4,
+        priority_queue_size=1,
+        now=lambda: now,
+    )
+
+    pipeline.initialize()
+
+    assert pipeline._queue.empty() is True
+    assert repository.events[0]["status"] == "failed"
+    assert repository.events[0]["error"] == "config_version_mismatch"
+    assert "config version" in pipeline.status()["last_error"]
+
+
+def test_initialize_closes_malformed_priority_event(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T11:20:00+08:00")
+    event = new_event(
+        "freeze",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="midday",
+        strategy=None,
+        priority=EventPriority.FREEZE,
+        data_version="tick:112000",
+        config_version="config-v2",
+        created_at=now,
+        payload={"freeze_strategies": ["today"]},
+    )
+    repository = MemoryRepository()
+    repository.events.append({**event.audit_record(status="pending"), "payload": []})
+    pipeline = RecommendationPipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=4,
+        priority_queue_size=1,
+        now=lambda: now,
+    )
+
+    pipeline.initialize()
+
+    assert pipeline._queue.empty() is True
+    assert repository.events[0]["status"] == "failed"
+    assert repository.events[0]["error"] == "invalid_persisted_event"
+
+
+def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+    features = tuple(application_feature_factory(f"60000{index}", now) for index in range(1, 4))
+    repository = MemoryRepository()
+    reviewer = ThreadRecordingReviewer()
+    engine = ThreadRecordingEngine(recommendation_policy)
+    market_data = StaticMarketData(features)
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        reviewer,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        engine,
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=16,
+        priority_queue_size=4,
+        market_workers=2,
+        normalization_workers=2,
+        strategy_workers=3,
+        deepseek_workers=4,
+        now=lambda: now,
+        long_codes=("600001",),
+    )
+    pipeline.initialize()
+    assert pipeline.start() is True
+    try:
+        assert pipeline.submit_tick(now) is True
+        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+        running_status = pipeline.status()
+        running_thread_names = [thread.name for thread in threading.enumerate()]
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert market_data.fetch_threads and all(name.startswith("trader-data") for name in market_data.fetch_threads)
+    assert engine.preselect_threads and all(name.startswith("trader-normalize") for name in engine.preselect_threads)
+    assert {strategy for strategy, _name in engine.prepare_threads} == {
+        Strategy.TOMORROW,
+        Strategy.D25,
+        Strategy.LONG,
+    }
+    assert all(
+        name.startswith("trader-strategy") for strategy, name in engine.prepare_threads if strategy is not Strategy.LONG
+    )
+    assert all(name.startswith("trader-long") for strategy, name in engine.prepare_threads if strategy is Strategy.LONG)
+    assert reviewer.review_threads and all(name.startswith("trader-deepseek") for name in reviewer.review_threads)
+    assert engine.finalize_threads and all(name == "trader-merge" for name in engine.finalize_threads)
+    assert repository.write_threads and all(name.startswith("trader-persistence") for name in repository.write_threads)
+    assert {event["status"] for event in repository.events} == {"success"}
+    pools = running_status["dependencies"]["worker_pools"]
+    assert pools["data"]["workers"] == 2
+    assert pools["normalization"]["workers"] == 2
+    assert pools["strategy"]["workers"] == 3
+    assert pools["deepseek"]["workers"] == 4
+    assert pools["long"]["workers"] == 1
+    assert pools["merge"]["workers"] == 1
+    assert pools["merge"]["queue_capacity"] == 16
+    assert pools["merge"]["submitted_count"] == 1
+    assert pools["merge"]["rejected_count"] == 0
+    assert pools["merge"]["running"] is True
+    assert pools["persistence"]["workers"] == 1
+    assert sum(name.startswith("trader-data") for name in running_thread_names) == 2
+    assert sum(name.startswith("trader-normalize") for name in running_thread_names) == 2
+    assert sum(name.startswith("trader-strategy") for name in running_thread_names) == 3
+    assert sum(name.startswith("trader-deepseek") for name in running_thread_names) == 4
+    assert sum(name.startswith("trader-long") for name in running_thread_names) == 1
+    assert sum(name.startswith("trader-persistence") for name in running_thread_names) == 1
+    assert running_thread_names.count("trader-merge") == 1
+    assert not any(thread.name.startswith("trader-") for thread in threading.enumerate())
+
+
+def test_synchronous_and_worker_paths_publish_identical_business_snapshots(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+    features = tuple(application_feature_factory(f"60000{index}", now) for index in range(1, 3))
+    sync_repository = MemoryRepository()
+    async_repository = MemoryRepository()
+
+    def build(repository: MemoryRepository) -> RecommendationPipeline:
+        return RecommendationPipeline(
+            StaticMarketData(features),
+            TradingDayCalendar(),
+            None,
+            repository,
+            repository,
+            SnapshotPublisher(history_size=4, client_queue_size=2),
+            RecommendationEngine(recommendation_policy),
+            RuntimeState(),
+            config_version="config-v2",
+            candidate_pool_size=120,
+            event_queue_size=8,
+            priority_queue_size=2,
+            now=lambda: now,
+            long_codes=("600001",),
+        )
+
+    synchronous = build(sync_repository)
+    synchronous.initialize()
+    sync_snapshots = synchronous.run_once(now)
+    asynchronous = build(async_repository)
+    asynchronous.initialize()
+    asynchronous.start()
+    try:
+        assert asynchronous.submit_tick(now) is True
+        _wait_until(lambda: asynchronous.status()["counters"]["events_completed"] == 1)
+    finally:
+        asynchronous.stop(timeout_seconds=2.0)
+
+    assert tuple(sync_repository.published.values()) == tuple(async_repository.published.values())
+    assert tuple(snapshot.strategy for snapshot in sync_snapshots) == (
+        Strategy.TOMORROW,
+        Strategy.D25,
+        Strategy.LONG,
+    )
+
+
+def test_deepseek_worker_failure_falls_back_to_local_snapshot(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    repository = MemoryRepository()
+    state = RuntimeState()
+    pipeline = RecommendationPipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        FailingReviewer(),
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+    pipeline.initialize()
+    pipeline.start()
+    try:
+        assert pipeline.submit_tick(now) is True
+        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+        snapshot = state.latest(Strategy.TODAY)
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert snapshot is not None
+    assert snapshot.fusion_mode.value == "local_degraded"
+    assert "DeepSeek review degraded" in pipeline.status()["last_error"]
+
+
+def test_long_review_starts_after_shared_strategy_reviews_complete(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+    features = (application_feature_factory("600001", now),)
+    repository = MemoryRepository()
+    reviewer = SequencedReviewer()
+    pipeline = RecommendationPipeline(
+        StaticMarketData(features),
+        TradingDayCalendar(),
+        reviewer,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+        long_codes=("600001",),
+    )
+    pipeline.initialize()
+    pipeline.start()
+    try:
+        assert pipeline.submit_tick(now) is True
+        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert reviewer.out_of_order is False
+    assert reviewer.completed_strategies == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
+
+
+def test_one_strategy_data_failure_does_not_block_other_snapshots(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+    features = (application_feature_factory("600001", now),)
+    repository = MemoryRepository()
+    state = RuntimeState()
+    pipeline = RecommendationPipeline(
+        TomorrowFailingMarketData(features),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+        long_codes=("600001",),
+    )
+    pipeline.initialize()
+    pipeline.start()
+    try:
+        assert pipeline.submit_tick(now) is True
+        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert state.latest(Strategy.TOMORROW) is None
+    assert state.latest(Strategy.D25) is not None
+    assert state.latest(Strategy.LONG) is not None
+    assert "tomorrow data degraded" in pipeline.status()["last_error"]
+
+
+def test_stop_waits_for_freeze_write_then_rejects_new_events(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    draft_at = datetime.fromisoformat("2026-07-16T11:19:50+08:00")
+    freeze_at = datetime.fromisoformat("2026-07-16T11:20:00+08:00")
+    repository = BlockingFreezeRepository()
+    pipeline = RecommendationPipeline(
+        StaticMarketData((application_feature_factory("600001", draft_at),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        market_workers=1,
+        normalization_workers=1,
+        strategy_workers=3,
+        deepseek_workers=1,
+        now=lambda: freeze_at,
+    )
+    pipeline.initialize()
+    assert pipeline.run_once(draft_at)[0].strategy is Strategy.TODAY
+    assert pipeline.start() is True
+    stopper: threading.Thread | None = None
+    try:
+        assert pipeline.submit_tick(freeze_at) is True
+        assert repository.freeze_started.wait(timeout=2.0)
+
+        stopper = threading.Thread(target=pipeline.stop, kwargs={"timeout_seconds": 2.0})
+        stopper.start()
+        time.sleep(0.05)
+        assert stopper.is_alive()
+        repository.allow_freeze.set()
+        stopper.join(timeout=2.0)
+    finally:
+        repository.allow_freeze.set()
+        if stopper is not None:
+            stopper.join(timeout=2.0)
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert stopper is not None and not stopper.is_alive()
+    assert repository.frozen[(Strategy.TODAY, "2026-07-16")].frozen is True
+    assert pipeline.submit_tick(freeze_at) is False
+    assert pipeline.status()["dependencies"]["event_queue"]["closed"] is True
+    assert not any(thread.name.startswith("trader-") for thread in threading.enumerate())
+
+
+def test_partial_pipeline_start_failure_rolls_back_started_pools(
+    recommendation_policy,
+    application_feature_factory,
+    monkeypatch,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    repository = MemoryRepository()
+    pipeline = RecommendationPipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+    original_start = threading.Thread.start
+
+    def fail_normalization_start(thread: threading.Thread) -> None:
+        if thread.name.startswith("trader-normalize"):
+            raise RuntimeError("normalization start failed")
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", fail_normalization_start)
+
+    with pytest.raises(RuntimeError, match="normalization start failed"):
+        pipeline.start()
+
+    assert pipeline.status()["runtime_started"] is False
+    assert not any(thread.name.startswith("trader-") for thread in threading.enumerate())
+
+
 class MutableClock:
     def __init__(self, value: datetime) -> None:
         self._value = value
@@ -486,12 +965,27 @@ class TradingDayCalendar:
         return True
 
 
+class ForbiddenStatusCalendar:
+    @staticmethod
+    def is_trading_day(_day) -> bool:
+        raise AssertionError("status must not refresh the trading calendar")
+
+
 class StaticMarketData:
     def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
         self._features = tuple(features)
         self.candidate_tail_requests: list[bool] = []
+        self.fetch_threads: list[str] = []
 
-    def fetch_market_features(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        del force, deadline
+        self.fetch_threads.append(threading.current_thread().name)
         return tuple(_at_time(feature, observed_at) for feature in self._features)
 
     def fetch_candidate_features(
@@ -503,9 +997,71 @@ class StaticMarketData:
         include_structured_research: bool = False,
     ) -> Sequence[FeatureSnapshot]:
         del include_structured_research
+        self.fetch_threads.append(threading.current_thread().name)
         self.candidate_tail_requests.append(include_intraday_tail)
         requested = set(codes)
         return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
+
+    def refresh_candidate_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        del deadline
+        self.fetch_threads.append(threading.current_thread().name)
+        requested = set(codes)
+        return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
+
+    def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
+        return tuple(_at_time(feature, observed_at) for feature in self._features)
+
+    @staticmethod
+    def refresh_market_news(
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        deadline: datetime | None = None,
+    ) -> None:
+        del codes, observed_at, deadline
+
+    @staticmethod
+    def refresh_stock_risk(
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        deadline: datetime | None = None,
+    ) -> None:
+        del codes, observed_at, deadline
+
+    @staticmethod
+    def refresh_reference_data(
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+    ) -> None:
+        del codes, observed_at, force
+
+    @staticmethod
+    def refresh_intraday_tail(codes: Sequence[str], observed_at: datetime) -> None:
+        del codes, observed_at
+
+    def read_candidate_features(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
+    ) -> Sequence[FeatureSnapshot]:
+        return self.fetch_candidate_features(
+            codes,
+            observed_at,
+            include_intraday_tail=include_intraday_tail,
+            include_structured_research=include_structured_research,
+        )
 
     @staticmethod
     def health() -> Mapping[str, object]:
@@ -517,10 +1073,16 @@ class DegradingMarketData(StaticMarketData):
         super().__init__(features)
         self.market_unavailable = False
 
-    def fetch_market_features(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
         if self.market_unavailable:
             raise MarketDataUnavailable("all full-market sources failed")
-        return super().fetch_market_features(observed_at)
+        return super().fetch_market_features(observed_at, force=force, deadline=deadline)
 
 
 class DegradingCandidateMarketData(StaticMarketData):
@@ -545,6 +1107,36 @@ class DegradingCandidateMarketData(StaticMarketData):
             include_structured_research=include_structured_research,
         )
 
+    def refresh_candidate_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        if self.candidate_unavailable:
+            raise MarketDataUnavailable("candidate quote source failed")
+        return super().refresh_candidate_quotes(codes, observed_at, deadline=deadline)
+
+
+class TomorrowFailingMarketData(StaticMarketData):
+    def fetch_candidate_features(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
+    ) -> Sequence[FeatureSnapshot]:
+        if include_intraday_tail:
+            raise MarketDataUnavailable("tomorrow candidate source failed")
+        return super().fetch_candidate_features(
+            codes,
+            observed_at,
+            include_intraday_tail=include_intraday_tail,
+            include_structured_research=include_structured_research,
+        )
+
 
 class MemoryRepository:
     def __init__(self) -> None:
@@ -552,6 +1144,8 @@ class MemoryRepository:
         self.frozen: dict[tuple[Strategy, str], object] = {}
         self.overlays: dict[tuple[Strategy, str], LiveOverlay] = {}
         self.events: list[Mapping[str, object]] = []
+        self.write_threads: list[str] = []
+        self._event_lock = threading.Lock()
 
     @staticmethod
     def initialize() -> None:
@@ -562,9 +1156,11 @@ class MemoryRepository:
         return {"recovered": 0, "quarantined": 0, "orphaned": 0}
 
     def publish(self, snapshot: RecommendationSnapshot) -> None:
+        self.write_threads.append(threading.current_thread().name)
         self.published[snapshot.strategy] = snapshot
 
     def freeze(self, snapshot: RecommendationSnapshot) -> None:
+        self.write_threads.append(threading.current_thread().name)
         key = (snapshot.strategy, snapshot.trade_date)
         if key in self.frozen:
             raise AssertionError("frozen snapshot was modified")
@@ -579,6 +1175,7 @@ class MemoryRepository:
         return snapshot if isinstance(snapshot, RecommendationSnapshot) else None
 
     def save_live_overlay(self, overlay: LiveOverlay) -> bool:
+        self.write_threads.append(threading.current_thread().name)
         existing = self.overlays.get((overlay.strategy, overlay.trade_date))
         if existing is not None and (existing.closing or existing.observed_at >= overlay.observed_at):
             return False
@@ -591,8 +1188,39 @@ class MemoryRepository:
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
         return tuple(day for candidate, day in self.frozen if candidate is strategy)
 
-    def append_event(self, event: Mapping[str, object]) -> None:
-        self.events.append(event)
+    def reserve_event(self, event: Mapping[str, object]) -> bool:
+        self.write_threads.append(threading.current_thread().name)
+        identity = tuple(
+            event[name] for name in ("trade_date", "phase", "strategy", "event_type", "subject_key", "data_version")
+        )
+        with self._event_lock:
+            for stored in self.events:
+                stored_identity = tuple(
+                    stored[name]
+                    for name in ("trade_date", "phase", "strategy", "event_type", "subject_key", "data_version")
+                )
+                if stored_identity == identity:
+                    return False
+            self.events.append(dict(event))
+            return True
+
+    def compare_and_set_event(
+        self,
+        event_id: str,
+        *,
+        expected_status: str,
+        status: str,
+        retry_count: int,
+        error: str = "",
+    ) -> bool:
+        self.write_threads.append(threading.current_thread().name)
+        with self._event_lock:
+            for index, event in enumerate(self.events):
+                if event["event_id"] != event_id or event["status"] != expected_status:
+                    continue
+                self.events[index] = {**event, "status": status, "retry_count": retry_count, "error": error}
+                return True
+        return False
 
     def pending_priority_events(self) -> Sequence[Mapping[str, object]]:
         latest = {str(event["event_id"]): event for event in self.events}
@@ -625,3 +1253,116 @@ class RecordingQueue:
     def put(self, event: PipelineEvent) -> bool:
         self.events.append(event)
         return True
+
+
+class ThreadRecordingReviewer:
+    def __init__(self) -> None:
+        self.review_threads: list[str] = []
+
+    def review(
+        self,
+        _strategy: Strategy,
+        _candidates: Sequence[FeatureSnapshot],
+        *,
+        phase: str,
+        deadline: datetime,
+    ) -> Mapping[str, object]:
+        del phase, deadline
+        self.review_threads.append(threading.current_thread().name)
+        return {}
+
+    def preheat(
+        self,
+        candidates: Sequence[FeatureSnapshot],
+        *,
+        phase: str,
+        deadline: datetime,
+    ) -> Mapping[str, object]:
+        return self.review(Strategy.TODAY, candidates, phase=phase, deadline=deadline)
+
+    @staticmethod
+    def status() -> Mapping[str, object]:
+        return {"enabled": True}
+
+
+class FailingReviewer(ThreadRecordingReviewer):
+    def review(
+        self,
+        _strategy: Strategy,
+        _candidates: Sequence[FeatureSnapshot],
+        *,
+        phase: str,
+        deadline: datetime,
+    ) -> Mapping[str, object]:
+        del phase, deadline
+        raise RuntimeError("review transport failed")
+
+
+class SequencedReviewer(ThreadRecordingReviewer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.d25_done = threading.Event()
+        self.long_started = threading.Event()
+        self.out_of_order = False
+        self.completed_strategies: set[Strategy] = set()
+        self._lock = threading.Lock()
+
+    def review(
+        self,
+        strategy: Strategy,
+        _candidates: Sequence[FeatureSnapshot],
+        *,
+        phase: str,
+        deadline: datetime,
+    ) -> Mapping[str, object]:
+        del phase, deadline
+        if strategy is Strategy.D25:
+            self.long_started.wait(timeout=0.1)
+            self.d25_done.set()
+        elif strategy is Strategy.LONG:
+            self.out_of_order = not self.d25_done.is_set()
+            self.long_started.set()
+        with self._lock:
+            self.completed_strategies.add(strategy)
+        return {}
+
+
+class ThreadRecordingEngine(RecommendationEngine):
+    def __init__(self, policy) -> None:
+        super().__init__(policy)
+        self.preselect_threads: list[str] = []
+        self.prepare_threads: list[tuple[Strategy, str]] = []
+        self.finalize_threads: list[str] = []
+
+    def preselect(self, *args, **kwargs):
+        self.preselect_threads.append(threading.current_thread().name)
+        return super().preselect(*args, **kwargs)
+
+    def prepare_snapshot(self, strategy, *args, **kwargs):
+        self.prepare_threads.append((strategy, threading.current_thread().name))
+        return super().prepare_snapshot(strategy, *args, **kwargs)
+
+    def finalize_snapshot(self, *args, **kwargs):
+        self.finalize_threads.append(threading.current_thread().name)
+        return super().finalize_snapshot(*args, **kwargs)
+
+
+class BlockingFreezeRepository(MemoryRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.freeze_started = threading.Event()
+        self.allow_freeze = threading.Event()
+
+    def freeze(self, snapshot: RecommendationSnapshot) -> None:
+        self.freeze_started.set()
+        assert self.allow_freeze.wait(timeout=2.0)
+        super().freeze(snapshot)
+
+
+def _wait_until(predicate, *, timeout_seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition was not met before timeout")

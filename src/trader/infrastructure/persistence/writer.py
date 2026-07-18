@@ -150,18 +150,23 @@ class SnapshotRepository:
                 "SELECT snapshot_id FROM frozen_snapshots WHERE strategy = ? AND recommend_date = ? AND status = 'committed'",
                 (overlay.strategy.value, overlay.trade_date),
             ).fetchone()
-            if manifest is None or str(manifest["snapshot_id"]) != overlay.snapshot_id:
-                raise SnapshotConflictError("live overlay must reference the committed frozen snapshot")
+            published = connection.execute(
+                "SELECT snapshot_id FROM published_snapshots WHERE strategy = ?",
+                (overlay.strategy.value,),
+            ).fetchone()
+            authorized = (manifest is not None and str(manifest["snapshot_id"]) == overlay.snapshot_id) or (
+                published is not None and str(published["snapshot_id"]) == overlay.snapshot_id
+            )
+            if not authorized:
+                raise SnapshotConflictError("live overlay must reference the current published or committed snapshot")
             existing = connection.execute(
                 "SELECT snapshot_id, observed_at, closing FROM live_overlays WHERE strategy = ? AND recommend_date = ?",
                 (overlay.strategy.value, overlay.trade_date),
             ).fetchone()
             if existing is not None:
-                if str(existing["snapshot_id"]) != overlay.snapshot_id:
-                    raise SnapshotConflictError("live overlay snapshot identity changed")
-                if (
-                    bool(existing["closing"])
-                    or datetime.fromisoformat(str(existing["observed_at"])) >= overlay.observed_at
+                same_snapshot = str(existing["snapshot_id"]) == overlay.snapshot_id
+                if bool(existing["closing"]) or (
+                    same_snapshot and datetime.fromisoformat(str(existing["observed_at"])) >= overlay.observed_at
                 ):
                     return False
             connection.execute(
@@ -234,21 +239,16 @@ class SnapshotRepository:
             orphaned = self._quarantine_orphans(known_paths)
         return {"recovered": recovered, "quarantined": quarantined, "orphaned": orphaned}
 
-    def append_event(self, event: Mapping[str, object]) -> None:
+    def reserve_event(self, event: Mapping[str, object]) -> bool:
         with self._lock, connect(self._database_path) as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 INSERT INTO pipeline_events(
                     event_id, event_type, subject_key, trade_date, phase, strategy,
                     priority, data_version, config_version, status, created_at,
                     deadline, retry_count, payload_json, error
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(trade_date, phase, strategy, event_type, subject_key, data_version)
-                DO UPDATE SET
-                    status = excluded.status,
-                    retry_count = excluded.retry_count,
-                    payload_json = excluded.payload_json,
-                    error = excluded.error
+                ON CONFLICT DO NOTHING
                 """,
                 (
                     str(event["event_id"]),
@@ -268,6 +268,27 @@ class SnapshotRepository:
                     str(event.get("error") or "")[:1000],
                 ),
             )
+            return cursor.rowcount == 1
+
+    def compare_and_set_event(
+        self,
+        event_id: str,
+        *,
+        expected_status: str,
+        status: str,
+        retry_count: int,
+        error: str = "",
+    ) -> bool:
+        with self._lock, connect(self._database_path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE pipeline_events
+                SET status = ?, retry_count = ?, error = ?
+                WHERE event_id = ? AND status = ?
+                """,
+                (status, retry_count, error[:1000], event_id, expected_status),
+            )
+            return cursor.rowcount == 1
 
     def list_events(self, *, cursor: int, limit: int) -> Sequence[Mapping[str, object]]:
         with connect(self._database_path) as connection:

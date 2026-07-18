@@ -9,7 +9,11 @@
 
 ## 启动与停止
 
-执行 `./run.sh`、`.\run.ps1` 或 `run.bat`。入口先初始化 SQLite 和恢复未完成 manifest，再启动流水线和 Web。按 `Ctrl+C` 停止；关闭顺序为停止调度、排空有界队列、等待冻结写入、停止 worker。
+执行 `./run.sh`、`.\run.ps1` 或 `run.bat`。入口先初始化 SQLite 和恢复未完成 manifest，再启动流水线和 Web。按 `Ctrl+C` 停止；关闭顺序为停止调度和事件接收、由合并线程排空有界队列与冻结写入、停止计算 worker、最后停止持久化单写线程。调度或流水线关闭超时会写入 `last_error`；入口先停止流水线以解除调度依赖，再等待运行中 I/O 按其显式 timeout 退出，不能带残留 worker 返回。
+
+调度等待会对齐 09:15、09:30、09:36、10:30、11:20、13:00、14:20、14:48、14:49:50、14:50 和 15:00 边界。11:20/14:50 冻结、14:48 DeepSeek 截止和 15:00 收盘报价使用交易日内稳定幂等单点；调度延迟或重启错过计划秒时在首次后续 tick 补提交。14:49:50 最终候选报价只允许在 14:50 前补提交，冻结后不使用迟到报价重建候选；冻结补偿只提交截止前有效草稿，不以迟到数据重算冻结。
+
+运行配置现使用 schema v3；`pipeline.cadence_seconds` 是第 6 节刷新表的直接配置形态，缺任务、缺阶段或数值漂移都会在启动前失败。升级旧配置时必须整体切换仓库随附的 v3 文件，不能只手工追加部分字段。`/api/status` 的 `dependencies.cadence` 展示当前间隔、下一到期时间和运行中任务，动态计数使用 `cadence_<task>_planned/submitted/skipped_*`；同类任务仍运行时出现 skipped 属于预期背压，不会在随后补跑。
 
 入口会在 `.runtime/v2/server.lock` 获取非阻塞进程锁；同一运行目录已有服务时，第二个进程立即报错退出。不要绕过入口重复创建 supervisor。
 
@@ -23,14 +27,17 @@ curl -sS http://127.0.0.1:5000/api/status
 
 - `runtime_started` 和 `phase`。
 - 行情活动来源、失败次数和熔断状态。
-- 事件队列深度、合并数和拒绝数。
+- `market_data.freshness` 中全市场、候选和 TopK 的 `fresh/stale/degraded`、年龄及当前阶段阈值；`market_quote_age`、`candidate_quote_age` 和 `topk_quote_age` 的 P50/P95/最大值。
+- 事件队列容量、保留容量、深度、合并数、拒绝数和重放数。
+- `worker_pools` 中数据、标准化、策略、DeepSeek、long、合并和持久化 worker 的配置数、运行状态、在途数与拒绝数。
 - DeepSeek 配置状态、缓存与预算 used/remaining。
+- `publisher` 中 SSE 发布及 today 报价到评分发布的 P50/P95/最大延迟与目标。
 - `last_error`、各策略快照时间、stale、frozen 和 fusion_mode。
 
 ## 常见降级
 
 - 交易日历不可用：系统 fail-closed，不猜测交易日；恢复日历缓存或网络后重启。
-- 东方财富失败：自动回退新浪；腾讯候选报价失败时保留最近有效快照。
+- 东方财富失败：自动回退新浪；全市场同源并发请求由 single-flight 合并，连续失败 3 次熔断 60 秒，超时后只放行一个恢复探针。腾讯候选报价串行限流，失败、超时、返回空值或乱序旧版本时保留最近有效行情和 overlay，不清空推荐。
 - DeepSeek 未配置、超时或预算耗尽：整版使用 `local_degraded`，本地推荐和 Web 继续工作。
 - SSE 中断：浏览器每 15 秒轮询；SSE 恢复后自动停止轮询。
 - 冻结 manifest 为 staged：重启扫描会幂等提交完整文件，损坏或缺失项进入 quarantine。

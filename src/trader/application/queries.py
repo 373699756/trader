@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.application.ports import EventAuditPort, SnapshotRepositoryPort
+from trader.application.ports import EventReaderPort, SnapshotRepositoryPort
 from trader.application.schedule import freeze_due_at, trade_date_at
 from trader.domain.models import LiveOverlay, RecommendationSnapshot, Strategy
 
@@ -33,7 +33,7 @@ class RecommendationQueries:
     def __init__(
         self,
         repository: SnapshotRepositoryPort,
-        events: EventAuditPort,
+        events: EventReaderPort,
         *,
         now: Callable[[], datetime],
     ) -> None:
@@ -69,7 +69,7 @@ class RecommendationQueries:
     ) -> SnapshotLookup:
         if snapshot is None:
             return SnapshotLookup("not_ready", None, False)
-        overlay = self._repository.load_live_overlay(strategy, snapshot.trade_date) if snapshot.frozen else None
+        overlay = self._repository.load_live_overlay(strategy, snapshot.trade_date)
         if overlay is not None and overlay.snapshot_id != snapshot.snapshot_id:
             overlay = None
         if snapshot.trade_date == current_date:

@@ -51,7 +51,7 @@ def event_stream_response(
 
 
 def _resync_event(publisher: SnapshotPublisher, reason: str) -> PublishedEvent:
-    sequence = publisher.status()["last_sequence"]
+    sequence = publisher.last_sequence()
     return PublishedEvent(sequence, "resync_required", {"reason": reason})
 
 

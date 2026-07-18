@@ -21,10 +21,12 @@ def test_v2_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert runtime.schema_version == 2
+    assert runtime.schema_version == 3
     assert strategy.schema_version == 7
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
     assert runtime.market_data.research_timeout_seconds == 8
+    assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 2
+    assert runtime.pipeline.cadence_seconds["topk_quotes"]["today_main"] == 3
     assert sum(runtime.deepseek.strategy_limits.values()) == 188
     assert strategy.fusion.local_weight == pytest.approx(0.68)
     assert strategy.fusion.deepseek_weight == pytest.approx(0.32)
@@ -59,6 +61,16 @@ def test_research_timeout_cannot_exceed_point_in_time_source_limit(tmp_path) -> 
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="research_timeout_seconds must be at most 8.0"):
+        load_runtime_settings(changed_path)
+
+
+def test_priority_reserve_must_leave_capacity_for_normal_events(tmp_path) -> None:
+    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw["pipeline"]["priority_queue_size"] = raw["pipeline"]["event_queue_size"]
+    changed_path = tmp_path / "runtime.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="priority_queue_size must be smaller"):
         load_runtime_settings(changed_path)
 
 

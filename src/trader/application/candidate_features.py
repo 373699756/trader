@@ -24,8 +24,33 @@ def fetch_strategy_features(
             include_structured_research=strategy in {Strategy.D25, Strategy.LONG},
         )
     )
+    return bind_strategy_input_version(strategy, features)
+
+
+def read_strategy_features(
+    market_data: MarketDataPort,
+    strategy: Strategy,
+    codes: Sequence[str],
+    observed_at: datetime,
+) -> tuple[tuple[FeatureSnapshot, ...], str]:
+    features = tuple(
+        market_data.read_candidate_features(
+            codes,
+            observed_at,
+            include_intraday_tail=strategy is Strategy.TOMORROW,
+            include_structured_research=strategy in {Strategy.D25, Strategy.LONG},
+        )
+    )
+    return bind_strategy_input_version(strategy, features)
+
+
+def bind_strategy_input_version(
+    strategy: Strategy,
+    features: Sequence[FeatureSnapshot],
+) -> tuple[tuple[FeatureSnapshot, ...], str]:
+    frozen_features = tuple(features)
     if strategy is Strategy.TODAY:
-        return features, max((feature.quote.data_version for feature in features), default="unavailable")
+        return frozen_features, max((feature.quote.data_version for feature in frozen_features), default="unavailable")
     if strategy in {Strategy.D25, Strategy.LONG}:
         research_material = tuple(
             sorted(
@@ -41,11 +66,11 @@ def fetch_strategy_features(
                         )
                     ),
                 )
-                for feature in features
+                for feature in frozen_features
             )
         )
         digest = hashlib.sha256(repr(research_material).encode("utf-8")).hexdigest()[:20]
-        return features, f"{strategy.value}-input:{digest}"
+        return frozen_features, f"{strategy.value}-input:{digest}"
     tail_material = tuple(
         sorted(
             (
@@ -59,11 +84,11 @@ def fetch_strategy_features(
                     )
                 ),
             )
-            for feature in features
+            for feature in frozen_features
         )
     )
     digest = hashlib.sha256(repr(tail_material).encode("utf-8")).hexdigest()[:20]
-    return features, f"tomorrow-input:{digest}"
+    return frozen_features, f"tomorrow-input:{digest}"
 
 
-__all__ = ["fetch_strategy_features"]
+__all__ = ["bind_strategy_input_version", "fetch_strategy_features", "read_strategy_features"]

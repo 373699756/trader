@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from trader.application.publisher import SnapshotPublisher, SubscriberLimitError, encode_sse
-from trader.domain.models import LiveOverlay, Strategy
+from trader.domain.models import (
+    FusionMode,
+    LiveOverlay,
+    Recommendation,
+    RecommendationAction,
+    RecommendationSnapshot,
+    ScoreBreakdown,
+    Strategy,
+)
 
 
 def test_publisher_replays_cursor_and_drops_slow_subscriber() -> None:
@@ -65,3 +75,56 @@ def test_publisher_emits_overlay_without_republishing_snapshot(utc_now) -> None:
     assert event.event_type == "live_overlay"
     assert event.data["snapshot_id"] == "frozen-1"
     assert event.data["overlay_version"] == "overlay-1"
+
+
+def test_publisher_reports_bounded_sse_and_today_score_latency(utc_now, application_feature_factory) -> None:
+    measured_at = utc_now
+    publisher = SnapshotPublisher(
+        history_size=2,
+        client_queue_size=2,
+        now=lambda: measured_at,
+    )
+    feature = application_feature_factory("600001", utc_now - timedelta(seconds=10))
+    recommendation = Recommendation(
+        strategy=Strategy.TODAY,
+        features=feature,
+        score=ScoreBreakdown({}, 80.0, 0.0, 80.0, None, 0.0, 0.0, 80.0, FusionMode.LOCAL_DEGRADED, False),
+        local_risk_facts=(),
+        deepseek_risk_facts=(),
+        review=None,
+        action=RecommendationAction.OBSERVE,
+        action_reason="test",
+        veto=False,
+    )
+    snapshot = RecommendationSnapshot(
+        snapshot_id="today-1",
+        strategy=Strategy.TODAY,
+        trade_date="2026-07-16",
+        phase="today_main",
+        data_version="v1",
+        strategy_version="s1",
+        fusion_version="f1",
+        fusion_mode=FusionMode.LOCAL_DEGRADED,
+        published_at=utc_now - timedelta(seconds=2),
+        recommendations=(recommendation,),
+        filtered_count=0,
+        filter_reasons={},
+    )
+
+    publisher.publish(snapshot)
+
+    status = publisher.status()
+    assert status["sse_publish_latency"] == {
+        "sample_count": 1,
+        "p50_seconds": 2.0,
+        "p95_seconds": 2.0,
+        "maximum_seconds": 2.0,
+        "meets_target": True,
+    }
+    assert status["today_score_publish_latency"] == {
+        "sample_count": 1,
+        "p50_seconds": 10.0,
+        "p95_seconds": 10.0,
+        "maximum_seconds": 10.0,
+        "meets_target": True,
+    }

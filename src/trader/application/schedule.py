@@ -25,6 +25,29 @@ class MarketPhase(str, Enum):
     AFTER_CLOSE = "after_close"
 
 
+class SchedulePoint(str, Enum):
+    TODAY_FREEZE = "today_freeze"
+    DEEPSEEK_CUTOFF = "deepseek_cutoff"
+    FINAL_CANDIDATE_QUOTES = "final_candidate_quotes"
+    AFTERNOON_FREEZE = "afternoon_freeze"
+    CLOSE_QUOTES = "close_quotes"
+
+
+_PHASE_BOUNDARIES = (
+    time(9, 15),
+    time(9, 30),
+    time(9, 36),
+    time(10, 30),
+    time(11, 20),
+    time(13, 0),
+    time(14, 20),
+    time(14, 48),
+    time(14, 49, 50),
+    time(14, 50),
+    time(15, 0),
+)
+
+
 @dataclass(frozen=True)
 class ScheduleDecision:
     phase: MarketPhase
@@ -120,13 +143,42 @@ def freeze_due_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
     return ()
 
 
-def _freeze_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
+def schedule_point_at(value: datetime, *, is_trading_day: bool) -> SchedulePoint | None:
     if not is_trading_day:
-        return ()
+        return None
     current = shanghai_now(value).time().replace(tzinfo=None)
-    if time(11, 20) <= current < time(11, 21):
+    points = {
+        time(11, 20): SchedulePoint.TODAY_FREEZE,
+        time(14, 48): SchedulePoint.DEEPSEEK_CUTOFF,
+        time(14, 49, 50): SchedulePoint.FINAL_CANDIDATE_QUOTES,
+        time(14, 50): SchedulePoint.AFTERNOON_FREEZE,
+        time(15, 0): SchedulePoint.CLOSE_QUOTES,
+    }
+    return points.get(current.replace(microsecond=0))
+
+
+def seconds_until_next_schedule_boundary(value: datetime, *, maximum_seconds: float) -> float:
+    local = shanghai_now(value)
+    upcoming = (
+        local.replace(
+            hour=boundary.hour,
+            minute=boundary.minute,
+            second=boundary.second,
+            microsecond=0,
+        )
+        for boundary in _PHASE_BOUNDARIES
+    )
+    delays = tuple((boundary - local).total_seconds() for boundary in upcoming if boundary > local)
+    if not delays:
+        return maximum_seconds
+    return max(0.05, min(maximum_seconds, min(delays)))
+
+
+def _freeze_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
+    point = schedule_point_at(value, is_trading_day=is_trading_day)
+    if point is SchedulePoint.TODAY_FREEZE:
         return ("today",)
-    if time(14, 50) <= current < time(14, 51):
+    if point is SchedulePoint.AFTERNOON_FREEZE:
         return ("tomorrow", "d25")
     return ()
 
@@ -134,10 +186,13 @@ def _freeze_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
 __all__ = [
     "MarketPhase",
     "SHANGHAI",
+    "SchedulePoint",
     "ScheduleDecision",
     "decision_at",
     "freeze_due_at",
     "phase_at",
+    "schedule_point_at",
+    "seconds_until_next_schedule_boundary",
     "shanghai_now",
     "trade_date_at",
 ]

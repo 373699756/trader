@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -257,6 +258,71 @@ def test_long_snapshot_cannot_be_frozen(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="never frozen"):
         repository.freeze(replace(_snapshot(), strategy=Strategy.LONG))
+
+
+def test_event_claim_is_compare_and_set_for_one_idempotency_key(tmp_path) -> None:
+    repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
+    repository.initialize()
+    event = {
+        "event_id": "event-1",
+        "event_type": "freeze",
+        "subject_key": "market",
+        "trade_date": "2026-07-16",
+        "phase": "midday",
+        "strategy": "shared",
+        "priority": 0,
+        "data_version": "tick:112000",
+        "config_version": "runtime-v2",
+        "status": "pending",
+        "created_at": NOW.isoformat(),
+        "deadline": "",
+        "retry_count": 0,
+        "payload": {"freeze_strategies": ["today"]},
+        "error": "",
+    }
+    duplicate = {**event, "event_id": "event-2"}
+
+    assert repository.reserve_event(event) is True
+    assert repository.reserve_event(duplicate) is False
+    repositories = tuple(SnapshotRepository(tmp_path, config_version="runtime-v2") for _index in range(8))
+    barrier = threading.Barrier(9)
+    results: list[bool] = []
+    result_lock = threading.Lock()
+
+    def claim(candidate_repository: SnapshotRepository) -> None:
+        barrier.wait(timeout=2.0)
+        claimed = candidate_repository.compare_and_set_event(
+            "event-1",
+            expected_status="pending",
+            status="running",
+            retry_count=1,
+        )
+        with result_lock:
+            results.append(claimed)
+
+    threads = [threading.Thread(target=claim, args=(candidate,)) for candidate in repositories]
+    for thread in threads:
+        thread.start()
+    barrier.wait(timeout=2.0)
+    for thread in threads:
+        thread.join(timeout=2.0)
+
+    assert results.count(True) == 1
+    assert results.count(False) == 7
+    assert (
+        repository.compare_and_set_event(
+            "event-1",
+            expected_status="pending",
+            status="success",
+            retry_count=1,
+        )
+        is False
+    )
+    stored = repository.list_events(cursor=0, limit=10)
+    assert len(stored) == 1
+    assert stored[0]["event_id"] == "event-1"
+    assert stored[0]["status"] == "running"
+    assert stored[0]["retry_count"] == 1
 
 
 class SimulatedCrash(RuntimeError):

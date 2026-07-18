@@ -11,6 +11,7 @@ import pytest
 import requests
 
 from trader.application.ports import MarketDataUnavailable
+from trader.application.workers import BoundedExecutor
 from trader.domain.models import Evidence, MarketQuote, Strategy
 from trader.domain.news import NewsSignalPolicy
 from trader.domain.research import ResearchObservation
@@ -227,6 +228,57 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert health["sources"]["eastmoney"]["circuit_open"] is True
 
 
+def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_call() -> None:
+    source = BlockingMarketClient((_quote(),))
+    gateway = MarketDataGateway(
+        source,
+        StaticMarketClient(()),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+    )
+    results: list[tuple[MarketQuote, ...]] = []
+    threads = [threading.Thread(target=lambda: results.append(tuple(gateway.fetch_market()))) for _index in range(2)]
+
+    try:
+        for thread in threads:
+            thread.start()
+        assert source.started.wait(1.0)
+        time.sleep(0.02)
+    finally:
+        source.release.set()
+        for thread in threads:
+            thread.join(1.0)
+
+    assert source.calls == 1
+    assert results == [(_quote(),), (_quote(),)]
+
+
+def test_gateway_allows_one_recovery_probe_after_circuit_timeout() -> None:
+    monotonic = MutableMonotonic()
+    source = SequenceMarketClient((RuntimeError("offline"), (_quote(),)))
+    gateway = MarketDataGateway(
+        source,
+        FailingMarketClient(),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=1,
+        circuit_breaker_seconds=60,
+        monotonic=monotonic,
+    )
+
+    with pytest.raises(MarketDataUnavailable):
+        gateway.fetch_market()
+    assert gateway.health()["sources"]["eastmoney"]["circuit_open"] is True
+
+    monotonic.value = 61.0
+
+    assert gateway.fetch_market() == (_quote(),)
+    assert source.calls == 2
+    assert gateway.health()["sources"]["eastmoney"]["circuit_open"] is False
+
+
 def test_gateway_reports_recoverable_unavailability_when_all_sources_fail() -> None:
     gateway = MarketDataGateway(
         FailingMarketClient(),
@@ -244,6 +296,93 @@ def test_gateway_reports_recoverable_unavailability_when_all_sources_fail() -> N
     assert health["active_source"] == "unavailable"
     assert health["sources"]["eastmoney"]["circuit_open"] is True
     assert health["sources"]["sina"]["circuit_open"] is True
+
+
+def test_feature_service_rejects_targeted_quote_older_than_full_market_snapshot() -> None:
+    current = replace(
+        _quote(),
+        price=12.5,
+        source_time=NOW + timedelta(seconds=2),
+        received_time=NOW + timedelta(seconds=2),
+        data_version="market-v2",
+    )
+    older = replace(_quote(), price=11.5, data_version="target-v1")
+    middle = replace(
+        _quote(),
+        price=12.0,
+        source_time=NOW + timedelta(seconds=1),
+        received_time=NOW + timedelta(seconds=1),
+        data_version="target-middle",
+    )
+    gateway = StaticGatewayWithSeparateQuotes((current,), (older,))
+    service = MarketFeatureService(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        wall_clock=lambda: NOW + timedelta(seconds=5),
+    )
+    service.refresh_candidate_quotes(("600001",), NOW)
+    service.fetch_market_features(NOW + timedelta(seconds=2))
+    gateway._candidate_quotes = (middle,)
+
+    refreshed = service.refresh_candidate_quotes(("600001",), NOW + timedelta(seconds=3))
+
+    assert refreshed[0].quote.price == 12.5
+    assert refreshed[0].quote.data_version == "market-v2"
+    assert service.health()["quote_out_of_order_count"] == 1
+
+
+def test_feature_service_health_reports_bounded_quote_age_summaries() -> None:
+    measured_at = NOW + timedelta(seconds=31)
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        wall_clock=lambda: measured_at,
+    )
+    service.fetch_market_features(NOW)
+    service.refresh_candidate_quotes(("600001",), NOW)
+
+    health = service.health()
+
+    assert health["market_quote_age"] == {
+        "sample_count": 1,
+        "p50_seconds": 31.0,
+        "p95_seconds": 31.0,
+        "maximum_seconds": 31.0,
+        "latest_source_time": NOW.isoformat(),
+    }
+    assert health["candidate_quote_age"]["maximum_seconds"] == 31.0
+
+
+def test_out_of_order_intraday_refresh_keeps_last_valid_tail_input() -> None:
+    monotonic = MutableMonotonic()
+    current = _tail_minute_bars()
+    older = tuple(
+        replace(
+            bar,
+            source_time=bar.source_time - timedelta(days=1),
+            received_time=bar.received_time - timedelta(days=1),
+            data_version="intraday-old",
+        )
+        for bar in current
+    )
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        intraday_client=SequenceIntradayClient((current, older)),
+        intraday_ttl_seconds=1,
+        monotonic=monotonic,
+    )
+
+    first = service.fetch_candidate_features(("600001",), AFTERNOON, include_intraday_tail=True)
+    monotonic.value = 2.0
+    second = service.fetch_candidate_features(("600001",), AFTERNOON, include_intraday_tail=True)
+
+    assert second[0].values["tail_return_30m"] == first[0].values["tail_return_30m"]
+    assert second[0].values["tail_volume_ratio"] == first[0].values["tail_volume_ratio"]
+    assert service.health()["intraday_out_of_order_count"] == 1
 
 
 def test_feature_builder_marks_history_missing_and_builds_cross_section() -> None:
@@ -330,6 +469,30 @@ def test_market_service_bounds_history_preload_to_stratified_candidate_universe(
     assert len(history.calls) == 2
     assert sum(item.history_days >= 20 for item in features) == 2
     assert service.health()["history_universe_rows"] == 2
+
+
+def test_market_service_uses_injected_lifecycle_data_pool() -> None:
+    pool = BoundedExecutor(worker_count=1, queue_capacity=8, thread_name_prefix="shared-data")
+    history = ThreadRecordingHistoryClient(_history_bars())
+    gateway = ThreadRecordingGateway((_quote(), _quote(code="600002")))
+    service = MarketFeatureService(
+        gateway,
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        worker_pool=pool,
+        history_workers=2,
+    )
+    pool.start()
+    try:
+        features = service.fetch_market_features(NOW)
+    finally:
+        pool.stop()
+
+    assert len(features) == 2
+    assert len(history.thread_names) == 2
+    assert all(name.startswith("shared-data") for name in history.thread_names)
+    assert gateway.thread_names and all(name.startswith("shared-data") for name in gateway.thread_names)
+    assert not any(thread.name.startswith("shared-data") for thread in threading.enumerate())
 
 
 def test_market_service_loads_history_before_cold_start_candidate_cross_section() -> None:
@@ -1008,6 +1171,33 @@ class StaticMarketClient:
         return self._quotes
 
 
+class SequenceMarketClient:
+    def __init__(self, results) -> None:
+        self._results = iter(results)
+        self.calls = 0
+
+    def fetch_market(self):
+        self.calls += 1
+        result = next(self._results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+class BlockingMarketClient(StaticMarketClient):
+    def __init__(self, quotes) -> None:
+        super().__init__(quotes)
+        self.calls = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def fetch_market(self):
+        self.calls += 1
+        self.started.set()
+        self.release.wait(1.0)
+        return super().fetch_market()
+
+
 class StaticTencentClient:
     def __init__(self, quotes) -> None:
         self._quotes = quotes
@@ -1031,6 +1221,29 @@ class StaticGateway:
         return {}
 
 
+class StaticGatewayWithSeparateQuotes(StaticGateway):
+    def __init__(self, market_quotes, candidate_quotes) -> None:
+        super().__init__(market_quotes)
+        self._candidate_quotes = candidate_quotes
+
+    def fetch_candidates(self, _codes):
+        return self._candidate_quotes
+
+
+class ThreadRecordingGateway(StaticGateway):
+    def __init__(self, quotes) -> None:
+        super().__init__(quotes)
+        self.thread_names = []
+
+    def fetch_market(self):
+        self.thread_names.append(threading.current_thread().name)
+        return super().fetch_market()
+
+    def fetch_candidates(self, codes):
+        self.thread_names.append(threading.current_thread().name)
+        return super().fetch_candidates(codes)
+
+
 class StaticHistoryClient:
     @staticmethod
     def fetch_history(_code, *, days):
@@ -1045,6 +1258,16 @@ class CountingHistoryClient:
     def fetch_history(self, code, *, days):
         self.calls.append(code)
         return self._bars
+
+
+class ThreadRecordingHistoryClient(CountingHistoryClient):
+    def __init__(self, bars) -> None:
+        super().__init__(bars)
+        self.thread_names = []
+
+    def fetch_history(self, code, *, days):
+        self.thread_names.append(threading.current_thread().name)
+        return super().fetch_history(code, days=days)
 
 
 class SelectiveHistoryClient(CountingHistoryClient):
@@ -1106,6 +1329,14 @@ class StaticIntradayClient:
     def fetch_intraday_minutes(self, code, *, now):
         self.calls.append(code)
         return self._bars
+
+
+class SequenceIntradayClient:
+    def __init__(self, batches) -> None:
+        self._batches = iter(batches)
+
+    def fetch_intraday_minutes(self, _code, *, now):
+        return next(self._batches)
 
 
 class FailingIntradayClient:

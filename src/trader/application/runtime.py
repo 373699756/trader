@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Protocol
 
-from trader.application.schedule import MarketPhase, phase_at
+from trader.application.schedule import MarketPhase, phase_at, seconds_until_next_schedule_boundary
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -19,6 +19,8 @@ class ScheduledPipeline(Protocol):
     def stop(self, timeout_seconds: float = 15.0) -> None: ...
 
     def submit_tick(self, at: datetime | None = None) -> bool: ...
+
+    def submit_due(self, at: datetime | None = None) -> float: ...
 
 
 class RuntimeSupervisor:
@@ -63,7 +65,7 @@ class RuntimeSupervisor:
             self._scheduler = scheduler
             try:
                 scheduler.start()
-            except Exception:
+            except BaseException:
                 self._pipeline.stop(self._shutdown_timeout_seconds)
                 self._pipeline_started = False
                 self._scheduler = None
@@ -79,25 +81,36 @@ class RuntimeSupervisor:
             scheduler = self._scheduler
         if scheduler is not None and scheduler is not threading.current_thread():
             scheduler.join(self._shutdown_timeout_seconds)
+            scheduler_timed_out = scheduler.is_alive()
+        else:
+            scheduler_timed_out = False
         if self._pipeline_started:
             self._pipeline.stop(self._shutdown_timeout_seconds)
             self._pipeline_started = False
+        if scheduler_timed_out and scheduler is not None:
+            self._record_error("scheduler shutdown exceeded timeout")
+            scheduler.join()
 
     def _scheduler_loop(self) -> None:
         while not self._stop_event.is_set():
             now = self._now()
             try:
-                self._pipeline.submit_tick(now)
+                submit_due = getattr(self._pipeline, "submit_due", None)
+                if callable(submit_due):
+                    interval = float(submit_due(now))
+                else:
+                    self._pipeline.submit_tick(now)
+                    interval = self._interval_seconds(self._now())
             except Exception as exc:
                 _LOGGER.exception("runtime schedule tick failed")
                 self._record_error(str(exc))
-            interval = max(0.1, self._interval_seconds(now))
-            self._stop_event.wait(interval)
+                interval = self._interval_seconds(self._now())
+            self._stop_event.wait(max(0.05, interval))
 
 
 def scheduler_interval_seconds(at: datetime) -> float:
     phase = phase_at(at, is_trading_day=True)
-    return {
+    maximum = {
         MarketPhase.CLOSED: 30.0,
         MarketPhase.WARMUP: 60.0,
         MarketPhase.TODAY_OBSERVE: 30.0,
@@ -111,6 +124,7 @@ def scheduler_interval_seconds(at: datetime) -> float:
         MarketPhase.FROZEN: 10.0,
         MarketPhase.AFTER_CLOSE: 60.0,
     }[phase]
+    return seconds_until_next_schedule_boundary(at, maximum_seconds=maximum)
 
 
 __all__ = ["RuntimeSupervisor", "scheduler_interval_seconds"]

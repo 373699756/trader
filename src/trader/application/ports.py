@@ -18,9 +18,60 @@ class Clock(Protocol):
 
 
 class MarketDataPort(Protocol):
-    def fetch_market_features(self, observed_at: datetime) -> Sequence[FeatureSnapshot]: ...
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]: ...
 
     def fetch_candidate_features(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
+    ) -> Sequence[FeatureSnapshot]: ...
+
+    def refresh_candidate_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]: ...
+
+    def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]: ...
+
+    def refresh_market_news(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        deadline: datetime | None = None,
+    ) -> None: ...
+
+    def refresh_stock_risk(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        deadline: datetime | None = None,
+    ) -> None: ...
+
+    def refresh_reference_data(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+    ) -> None: ...
+
+    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None: ...
+
+    def read_candidate_features(
         self,
         codes: Sequence[str],
         observed_at: datetime,
@@ -77,10 +128,22 @@ class SnapshotRepositoryPort(Protocol):
     def recover(self) -> Mapping[str, int]: ...
 
 
-class EventAuditPort(Protocol):
-    def append_event(self, event: Mapping[str, object]) -> None: ...
-
+class EventReaderPort(Protocol):
     def list_events(self, *, cursor: int, limit: int) -> Sequence[Mapping[str, object]]: ...
+
+
+class EventAuditPort(EventReaderPort, Protocol):
+    def reserve_event(self, event: Mapping[str, object]) -> bool: ...
+
+    def compare_and_set_event(
+        self,
+        event_id: str,
+        *,
+        expected_status: str,
+        status: str,
+        retry_count: int,
+        error: str = "",
+    ) -> bool: ...
 
     def pending_priority_events(self) -> Sequence[Mapping[str, object]]: ...
 
@@ -89,6 +152,7 @@ __all__ = [
     "Clock",
     "DeepSeekReviewPort",
     "EventAuditPort",
+    "EventReaderPort",
     "MarketDataPort",
     "MarketDataUnavailable",
     "SnapshotRepositoryPort",

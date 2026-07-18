@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import queue
 import threading
 from collections import deque
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from trader.domain.models import LiveOverlay, RecommendationSnapshot
 
@@ -30,16 +32,27 @@ class SubscriberLimitError(RuntimeError):
 
 
 class SnapshotPublisher:
-    def __init__(self, *, history_size: int, client_queue_size: int, maximum_subscribers: int = 64) -> None:
+    def __init__(
+        self,
+        *,
+        history_size: int,
+        client_queue_size: int,
+        maximum_subscribers: int = 64,
+        now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    ) -> None:
         self._history: deque[PublishedEvent] = deque(maxlen=max(1, history_size))
         self._client_queue_size = max(1, client_queue_size)
         self._maximum_subscribers = max(1, maximum_subscribers)
+        self._now = now
         self._lock = threading.Lock()
         self._sequence = 0
         self._subscribers: set[queue.Queue[PublishedEvent]] = set()
         self._dropped_subscribers = 0
+        self._publish_latencies: deque[float] = deque(maxlen=512)
+        self._today_score_latencies: deque[float] = deque(maxlen=4096)
 
     def publish(self, snapshot: RecommendationSnapshot) -> PublishedEvent:
+        emitted_at = self._now()
         event = self._new_event(
             "recommendations",
             {
@@ -51,13 +64,21 @@ class SnapshotPublisher:
                 "frozen": snapshot.frozen,
             },
         )
+        with self._lock:
+            self._publish_latencies.append(max(0.0, (emitted_at - snapshot.published_at).total_seconds()))
+            if snapshot.strategy.value == "today":
+                self._today_score_latencies.extend(
+                    max(0.0, (emitted_at - item.features.quote.source_time).total_seconds())
+                    for item in snapshot.recommendations
+                )
         return event
 
     def resync(self, reason: str) -> PublishedEvent:
         return self._new_event("resync_required", {"reason": reason})
 
     def publish_overlay(self, overlay: LiveOverlay) -> PublishedEvent:
-        return self._new_event(
+        emitted_at = self._now()
+        event = self._new_event(
             "live_overlay",
             {
                 "snapshot_id": overlay.snapshot_id,
@@ -68,10 +89,17 @@ class SnapshotPublisher:
                 "closing": overlay.closing,
             },
         )
+        with self._lock:
+            self._publish_latencies.append(max(0.0, (emitted_at - overlay.observed_at).total_seconds()))
+        return event
 
     def events_after(self, sequence: int) -> tuple[PublishedEvent, ...] | None:
         with self._lock:
             return self._events_after_locked(sequence)
+
+    def last_sequence(self) -> int:
+        with self._lock:
+            return self._sequence
 
     def subscribe(self) -> queue.Queue[PublishedEvent]:
         return self.open_subscription(self._sequence).queue
@@ -102,7 +130,7 @@ class SnapshotPublisher:
             except queue.Empty:
                 yield None
 
-    def status(self) -> dict[str, int]:
+    def status(self) -> dict[str, object]:
         with self._lock:
             return {
                 "last_sequence": self._sequence,
@@ -110,6 +138,11 @@ class SnapshotPublisher:
                 "subscribers": len(self._subscribers),
                 "maximum_subscribers": self._maximum_subscribers,
                 "dropped_subscribers": self._dropped_subscribers,
+                "sse_publish_latency": _latency_summary(self._publish_latencies, target_seconds=2.0),
+                "today_score_publish_latency": _latency_summary(
+                    self._today_score_latencies,
+                    target_seconds=15.0,
+                ),
             }
 
     def _new_event(self, event_type: str, data: Mapping[str, object]) -> PublishedEvent:
@@ -139,6 +172,27 @@ class SnapshotPublisher:
 def encode_sse(event: PublishedEvent) -> str:
     body = json.dumps(event.data, ensure_ascii=False, separators=(",", ":"))
     return f"id: {event.sequence}\nevent: {event.event_type}\ndata: {body}\n\n"
+
+
+def _latency_summary(values: deque[float], *, target_seconds: float) -> dict[str, object]:
+    if not values:
+        return {
+            "sample_count": 0,
+            "p50_seconds": None,
+            "p95_seconds": None,
+            "maximum_seconds": None,
+            "meets_target": None,
+        }
+    ordered = sorted(values)
+    p50 = ordered[max(0, math.ceil(len(ordered) * 0.50) - 1)]
+    p95 = ordered[max(0, math.ceil(len(ordered) * 0.95) - 1)]
+    return {
+        "sample_count": len(ordered),
+        "p50_seconds": round(p50, 3),
+        "p95_seconds": round(p95, 3),
+        "maximum_seconds": round(ordered[-1], 3),
+        "meets_target": p95 <= target_seconds,
+    }
 
 
 __all__ = [

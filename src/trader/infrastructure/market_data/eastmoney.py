@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, cast
 from zoneinfo import ZoneInfo
 
 import requests
 
+from trader.application.workers import BoundedExecutor, borrow_executor
 from trader.domain.models import MarketQuote
 from trader.domain.tail import MinuteBar
 from trader.infrastructure.market_data.history import DailyBar
@@ -38,11 +39,13 @@ class EastmoneyClient:
         timeout_seconds: float,
         workers: int = 6,
         page_size: int = 500,
+        worker_pool: BoundedExecutor | None = None,
         session_factory: SessionFactory = requests.Session,
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._workers = max(1, workers)
         self._page_size = max(100, page_size)
+        self._worker_pool = worker_pool
         self._session_factory = session_factory
 
     def fetch_market(self, now: datetime | None = None) -> tuple[MarketQuote, ...]:
@@ -56,17 +59,29 @@ class EastmoneyClient:
         page_count = max(1, math.ceil(total / self._page_size))
         pages: dict[int, list[Mapping[str, object]]] = {1: first_rows}
         if page_count > 1:
-            with ThreadPoolExecutor(
-                max_workers=min(self._workers, page_count - 1), thread_name_prefix="eastmoney"
-            ) as pool:
-                futures = {pool.submit(self._fetch_page, page): page for page in range(2, page_count + 1)}
-                for future in as_completed(futures):
-                    page = futures[future]
-                    payload = future.result()
-                    rows = _object_rows(_object_mapping(payload.get("data")).get("diff"))
-                    if not rows:
-                        raise RuntimeError(f"eastmoney page {page} was empty")
-                    pages[page] = rows
+            remaining: list[tuple[int, Mapping[str, object]]] = []
+            worker_pool = self._worker_pool
+            if worker_pool is not None and worker_pool.owns_current_thread() and worker_pool.worker_count == 1:
+                remaining.extend((page, self._fetch_page(page)) for page in range(2, page_count + 1))
+            else:
+                with borrow_executor(
+                    worker_pool,
+                    worker_count=min(self._workers, page_count - 1),
+                    thread_name_prefix="eastmoney",
+                    queue_capacity=page_count - 1,
+                ) as pool:
+                    futures = {}
+                    for page in range(2, page_count + 1):
+                        future = pool.submit(self._fetch_page, page)
+                        if future is None:
+                            raise RuntimeError("data worker queue rejected Eastmoney page task")
+                        futures[future] = page
+                    remaining.extend((futures[future], future.result()) for future in as_completed(futures))
+            for page, payload in remaining:
+                rows = _object_rows(_object_mapping(payload.get("data")).get("diff"))
+                if not rows:
+                    raise RuntimeError(f"eastmoney page {page} was empty")
+                pages[page] = rows
         raw_rows = [row for page in sorted(pages) for row in pages[page]]
         quotes = tuple(quote for row in raw_rows if (quote := _quote_from_row(row, received_at)) is not None)
         if len({quote.code for quote in quotes}) < min(1000, total // 2):

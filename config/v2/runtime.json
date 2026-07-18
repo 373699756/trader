@@ -1,6 +1,6 @@
 {
-  "schema_version": 2,
-  "config_version": "runtime_v3_freeze_overlay_2026_07_17",
+  "schema_version": 3,
+  "config_version": "runtime_v4_cadence_2026_07_18",
   "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -19,8 +19,62 @@
     "strategy_workers": 3,
     "deepseek_workers": 4,
     "shutdown_timeout_seconds": 15,
-    "full_market_refresh_seconds": 30,
-    "candidate_refresh_seconds": 5,
+    "cadence_seconds": {
+      "full_market": {
+        "warmup": 60,
+        "today_main": 30,
+        "today_late": 60,
+        "midday": 60,
+        "afternoon": 60,
+        "final_review": 30
+      },
+      "candidate_quotes": {
+        "warmup": 10,
+        "today_main": 5,
+        "today_late": 10,
+        "midday": 60,
+        "afternoon": 10,
+        "final_review": 3,
+        "final_window": 2
+      },
+      "topk_quotes": {
+        "warmup": 5,
+        "today_main": 3,
+        "today_late": 5,
+        "midday": 60,
+        "afternoon": 5,
+        "final_review": 2,
+        "final_window": 3
+      },
+      "score": {
+        "warmup": 30,
+        "today_main": 10,
+        "today_late": 20,
+        "afternoon": 30,
+        "final_review": 10
+      },
+      "industry_heat": {
+        "warmup": 120,
+        "today_main": 60,
+        "today_late": 60,
+        "afternoon": 60,
+        "final_review": 60
+      },
+      "market_news": {
+        "warmup": 120,
+        "today_main": 60,
+        "today_late": 60,
+        "afternoon": 60,
+        "final_review": 60
+      },
+      "stock_risk": {
+        "warmup": 300,
+        "today_main": 180,
+        "today_late": 180,
+        "afternoon": 180,
+        "final_review": 120
+      }
+    },
     "publish_heartbeat_seconds": 15
   },
   "market_data": {

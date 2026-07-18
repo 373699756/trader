@@ -189,6 +189,47 @@ def test_shared_review_cache_ignores_quote_only_version_changes() -> None:
     )
 
 
+def test_strategy_independent_review_is_reused_by_long(tmp_path) -> None:
+    candidate = _candidate_with_evidence()
+    content = json.dumps(_valid_payload(candidate.quote.code), ensure_ascii=False)
+    physical_calls = 0
+
+    def post(*_args, **_kwargs):
+        nonlocal physical_calls
+        physical_calls += 1
+        return FakeHttpResponse(
+            200,
+            {"choices": [{"message": {"content": content}}], "usage": {"total_tokens": 12}},
+        )
+
+    database_path = tmp_path / "runtime.sqlite3"
+    budget = DeepSeekBudgetStore(
+        database_path,
+        daily_hard_limit=2,
+        strategy_limits={"today": 0, "tomorrow": 0, "d25": 1, "long": 1, "shared_preheat": 0, "emergency": 0},
+    )
+    budget.initialize()
+    settings = replace(
+        _settings(),
+        strategy_limits={"today": 0, "tomorrow": 0, "d25": 1, "long": 1, "shared_preheat": 0, "emergency": 0},
+    )
+    reviewer = DeepSeekReviewer(
+        settings,
+        budget,
+        DeepSeekHttpClient(post=post, sleep=lambda _seconds: None),
+        ReviewCache(),
+        now=lambda: NOW,
+    )
+
+    d25 = reviewer.review(Strategy.D25, (candidate,), phase="afternoon", deadline=NOW + timedelta(minutes=1))
+    long = reviewer.review(Strategy.LONG, (candidate,), phase="afternoon", deadline=NOW + timedelta(minutes=1))
+
+    assert d25[candidate.quote.code] == long[candidate.quote.code]
+    assert physical_calls == 1
+    assert budget.summary(NOW.date().isoformat())["used"] == 1
+    assert reviewer.status()["last_cache_hits"] == 1
+
+
 def test_reviewer_records_each_retry_attempt_independently(tmp_path) -> None:
     candidate = _candidate_with_evidence()
     content = json.dumps(_valid_payload(candidate.quote.code), ensure_ascii=False)

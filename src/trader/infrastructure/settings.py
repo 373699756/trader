@@ -76,8 +76,7 @@ class PipelineSettings:
     strategy_workers: int
     deepseek_workers: int
     shutdown_timeout_seconds: float
-    full_market_refresh_seconds: int
-    candidate_refresh_seconds: int
+    cadence_seconds: Mapping[str, Mapping[str, float]]
     publish_heartbeat_seconds: int
 
 
@@ -231,8 +230,8 @@ class LongWatchlist:
 def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 2:
-        raise ConfigurationError("runtime schema_version must be 2")
+    if _integer(raw, "schema_version", minimum=1) != 3:
+        raise ConfigurationError("runtime schema_version must be 3")
 
     config_dir = path.parent
     project_root = _infer_project_root(config_dir)
@@ -249,7 +248,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     long_watchlist_path = _resolve_config_path(config_dir, _text(raw, "long_watchlist"))
 
     settings = RuntimeSettings(
-        schema_version=2,
+        schema_version=3,
         config_version=_text(raw, "config_version"),
         config_path=path,
         project_root=project_root,
@@ -271,8 +270,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             strategy_workers=_integer(pipeline_raw, "strategy_workers", minimum=1),
             deepseek_workers=_integer(pipeline_raw, "deepseek_workers", minimum=1),
             shutdown_timeout_seconds=_number(pipeline_raw, "shutdown_timeout_seconds", minimum=0.1),
-            full_market_refresh_seconds=_integer(pipeline_raw, "full_market_refresh_seconds", minimum=1),
-            candidate_refresh_seconds=_integer(pipeline_raw, "candidate_refresh_seconds", minimum=1),
+            cadence_seconds=_nested_positive_number_mapping(pipeline_raw, "cadence_seconds"),
             publish_heartbeat_seconds=_integer(pipeline_raw, "publish_heartbeat_seconds", minimum=1),
         ),
         market_data=MarketDataSettings(
@@ -616,6 +614,8 @@ def _threshold_tuple(
 
 
 def _validate_runtime_settings(settings: RuntimeSettings) -> None:
+    if settings.pipeline.priority_queue_size >= settings.pipeline.event_queue_size:
+        raise ConfigurationError("priority_queue_size must be smaller than event_queue_size")
     if settings.api.default_top_n > settings.api.maximum_top_n:
         raise ConfigurationError("default_top_n cannot exceed maximum_top_n")
     if settings.api.event_page_limit > settings.api.maximum_event_page_limit:
@@ -625,6 +625,89 @@ def _validate_runtime_settings(settings: RuntimeSettings) -> None:
     required_buckets = {"today", "tomorrow", "d25", "long", "shared_preheat", "emergency"}
     if set(settings.deepseek.strategy_limits) != required_buckets:
         raise ConfigurationError("DeepSeek strategy limits must define all six budget buckets")
+    _validate_cadence_settings(settings.pipeline.cadence_seconds)
+
+
+def _nested_positive_number_mapping(
+    raw: Mapping[str, object],
+    key: str,
+) -> dict[str, Mapping[str, float]]:
+    values = _mapping(raw, key)
+    result: dict[str, Mapping[str, float]] = {}
+    for task, task_raw in values.items():
+        if not isinstance(task, str) or not isinstance(task_raw, dict) or not task_raw:
+            raise ConfigurationError(f"{key} must contain non-empty task objects")
+        intervals: dict[str, float] = {}
+        for band, value in task_raw.items():
+            if not isinstance(band, str) or not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ConfigurationError(f"{key}.{task} must contain numeric intervals")
+            interval = float(value)
+            if not math.isfinite(interval) or interval <= 0.0:
+                raise ConfigurationError(f"{key}.{task}.{band} must be a positive finite interval")
+            intervals[band] = interval
+        result[task] = intervals
+    return result
+
+
+def _validate_cadence_settings(cadence: Mapping[str, Mapping[str, float]]) -> None:
+    expected = {
+        "full_market": {
+            "warmup": 60.0,
+            "today_main": 30.0,
+            "today_late": 60.0,
+            "midday": 60.0,
+            "afternoon": 60.0,
+            "final_review": 30.0,
+        },
+        "candidate_quotes": {
+            "warmup": 10.0,
+            "today_main": 5.0,
+            "today_late": 10.0,
+            "midday": 60.0,
+            "afternoon": 10.0,
+            "final_review": 3.0,
+            "final_window": 2.0,
+        },
+        "topk_quotes": {
+            "warmup": 5.0,
+            "today_main": 3.0,
+            "today_late": 5.0,
+            "midday": 60.0,
+            "afternoon": 5.0,
+            "final_review": 2.0,
+            "final_window": 3.0,
+        },
+        "score": {
+            "warmup": 30.0,
+            "today_main": 10.0,
+            "today_late": 20.0,
+            "afternoon": 30.0,
+            "final_review": 10.0,
+        },
+        "industry_heat": {
+            "warmup": 120.0,
+            "today_main": 60.0,
+            "today_late": 60.0,
+            "afternoon": 60.0,
+            "final_review": 60.0,
+        },
+        "market_news": {
+            "warmup": 120.0,
+            "today_main": 60.0,
+            "today_late": 60.0,
+            "afternoon": 60.0,
+            "final_review": 60.0,
+        },
+        "stock_risk": {
+            "warmup": 300.0,
+            "today_main": 180.0,
+            "today_late": 180.0,
+            "afternoon": 180.0,
+            "final_review": 120.0,
+        },
+    }
+    if cadence != expected:
+        raise ConfigurationError("pipeline cadence_seconds must match the fixed section 6 cadence table")
 
 
 def _validate_strategy_settings(settings: StrategySettings) -> None:

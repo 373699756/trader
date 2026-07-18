@@ -110,7 +110,14 @@ class StaticMarketData:
     def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
         self._features = tuple(features)
 
-    def fetch_market_features(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        del force, deadline
         return tuple(_at_time(feature, observed_at) for feature in self._features)
 
     def fetch_candidate_features(
@@ -122,6 +129,17 @@ class StaticMarketData:
         include_structured_research: bool = False,
     ) -> Sequence[FeatureSnapshot]:
         del include_intraday_tail, include_structured_research
+        requested = set(codes)
+        return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
+
+    def refresh_candidate_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        del deadline
         requested = set(codes)
         return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
 

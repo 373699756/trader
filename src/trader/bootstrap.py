@@ -8,6 +8,7 @@ from pathlib import Path
 
 from flask import Flask
 
+from trader.application.cadence import CadencePolicy, PipelineTask
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
 from trader.application.publisher import SnapshotPublisher
@@ -15,6 +16,7 @@ from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.runtime import RuntimeSupervisor, scheduler_interval_seconds
 from trader.application.status import RuntimeState
+from trader.application.workers import BoundedExecutor
 from trader.domain.fusion import FusionPolicy
 from trader.domain.models import RiskRule, Strategy
 from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
@@ -66,18 +68,30 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     strategy = load_strategy_settings(settings.strategy_config_path)
     watchlist = load_long_watchlist(settings.long_watchlist_path)
     now = _utc_now
+    cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
+    data_pool = BoundedExecutor(
+        worker_count=settings.pipeline.market_workers,
+        queue_capacity=max(
+            settings.pipeline.event_queue_size,
+            settings.market_data.candidate_pool_size * 3,
+        ),
+        thread_name_prefix="trader-data",
+    )
 
     eastmoney = EastmoneyClient(
         timeout_seconds=settings.market_data.eastmoney_timeout_seconds,
         workers=settings.pipeline.market_workers,
+        worker_pool=data_pool,
     )
     history = EastmoneyClient(
         timeout_seconds=settings.market_data.history_timeout_seconds,
         workers=settings.pipeline.market_workers,
+        worker_pool=data_pool,
     )
     intraday = EastmoneyClient(
         timeout_seconds=settings.market_data.candidate_timeout_seconds,
         workers=settings.pipeline.market_workers,
+        worker_pool=data_pool,
     )
     market_gateway = MarketDataGateway(
         eastmoney,
@@ -107,7 +121,9 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         intraday_batch_timeout_seconds=settings.market_data.candidate_timeout_seconds,
         intraday_cache_limit=settings.market_data.candidate_pool_size * 3,
         history_preload_limit=settings.market_data.candidate_pool_size * 3,
-        market_ttl_seconds=settings.pipeline.full_market_refresh_seconds,
+        market_ttl_seconds=min(cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
+        worker_pool=data_pool,
+        wall_clock=now,
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     effective_config_version = f"{settings.config_version}+{strategy.strategy_version}"
@@ -145,6 +161,13 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         event_queue_size=settings.pipeline.event_queue_size,
         priority_queue_size=settings.pipeline.priority_queue_size,
         now=now,
+        market_workers=settings.pipeline.market_workers,
+        normalization_workers=settings.pipeline.normalization_workers,
+        strategy_workers=settings.pipeline.strategy_workers,
+        deepseek_workers=settings.pipeline.deepseek_workers,
+        data_pool=data_pool,
+        market_data_manages_workers=True,
+        cadence_policy=cadence_policy,
         long_codes=tuple(item.code for item in watchlist.items),
         long_target_prices={item.code: item.target_price for item in watchlist.items},
     )

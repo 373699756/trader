@@ -175,6 +175,37 @@ def test_long_horizon_snapshot_marks_incomplete_structured_research_as_degraded(
     assert snapshot.metadata["research_data_covered_count"] == 0
 
 
+def test_prepared_snapshot_owns_immutable_cross_thread_mappings(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+    reasons = {"stale_quote": 1}
+    targets = {"600001": 15.0}
+    prepared = RecommendationEngine(recommendation_policy).prepare_snapshot(
+        Strategy.LONG,
+        (application_feature_factory("600001", now),),
+        now=now,
+        phase="afternoon",
+        trade_date="2026-07-16",
+        data_version="prepared-v1",
+        review_deadline=datetime.fromisoformat("2026-07-16T14:48:00+08:00"),
+        max_age_seconds=30.0,
+        filtered_count=1,
+        filter_reasons=reasons,
+        target_prices=targets,
+    )
+    reasons["changed"] = 1
+    targets["600001"] = 20.0
+
+    assert prepared.filter_reasons == {"stale_quote": 1}
+    assert prepared.target_prices == {"600001": 15.0}
+    with pytest.raises(TypeError):
+        prepared.filter_reasons["changed"] = 1  # type: ignore[index]
+    with pytest.raises(TypeError):
+        prepared.target_prices["600001"] = 20.0  # type: ignore[index]
+
+
 class RecordingReviewer:
     def __init__(self) -> None:
         self.reviewed_codes: tuple[str, ...] = ()

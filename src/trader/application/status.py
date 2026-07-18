@@ -73,6 +73,10 @@ class RuntimeState:
         with self._lock:
             return (strategy, trade_date) in self._frozen
 
+    def current_phase(self) -> str:
+        with self._lock:
+            return self._phase
+
     def snapshot(self, dependencies: Mapping[str, object] | None = None) -> dict[str, object]:
         with self._lock:
             return {
