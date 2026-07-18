@@ -7,9 +7,10 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime
 
-from trader.domain.fusion import DIMENSION_NAMES
+from trader.domain.fusion import DIMENSION_NAMES, STRUCTURED_REVIEW_FEATURES
 from trader.domain.models import (
     DeepSeekReview,
     DimensionAssessment,
@@ -17,6 +18,7 @@ from trader.domain.models import (
     FeatureSnapshot,
     ReviewOutcome,
     RiskFact,
+    Strategy,
 )
 
 SCHEMA_VERSION = "deepseek_review_v2"
@@ -87,11 +89,40 @@ def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]
     ]
 
 
+def build_repair_messages(
+    candidates: Sequence[FeatureSnapshot],
+    invalid_content: str,
+    error: str,
+) -> list[dict[str, str]]:
+    messages = build_messages(candidates)
+    messages.append({"role": "assistant", "content": invalid_content[:20_000]})
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "上一个响应未通过本地schema验证。只修复JSON结构和字段，不新增股票、证据或事实；"
+                f"校验错误={error[:500]}。重新输出严格JSON对象。"
+            ),
+        }
+    )
+    return messages
+
+
 def review_cache_key(candidate: FeatureSnapshot, *, model: str, generation: str = "regular") -> str:
     payload = {
         "code": candidate.quote.code,
         "structured_features": _cache_features(candidate),
         "evidence": sorted(_cache_evidence(item) for item in candidate.evidence),
+        "risk_facts": sorted(
+            (
+                fact.risk_fact_id,
+                fact.risk_code,
+                fact.severity,
+                round(float(fact.confidence), 4),
+                tuple(sorted(fact.evidence_ids)),
+            )
+            for fact in candidate.external_risk_facts
+        ),
         "model": model,
         "generation": generation,
         "schema_version": SCHEMA_VERSION,
@@ -101,49 +132,71 @@ def review_cache_key(candidate: FeatureSnapshot, *, model: str, generation: str 
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def strategy_review_cache_key(
+    raw_key: str,
+    *,
+    strategy: Strategy,
+    strategy_version: str,
+    dimension_weights: Mapping[str, float],
+    confidence_coverage_min: float,
+    minimum_known_dimensions: int,
+) -> str:
+    payload = {
+        "raw_key": raw_key,
+        "strategy": strategy.value,
+        "strategy_version": strategy_version,
+        "dimension_weights": sorted((name, round(float(weight), 8)) for name, weight in dimension_weights.items()),
+        "confidence_coverage_min": confidence_coverage_min,
+        "minimum_known_dimensions": minimum_known_dimensions,
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def classify_review(
+    review: DeepSeekReview,
+    *,
+    dimension_weights: Mapping[str, float],
+    confidence_coverage_min: float,
+    minimum_known_dimensions: int,
+) -> DeepSeekReview:
+    if review.outcome is not ReviewOutcome.APPLIED:
+        return review
+    if set(dimension_weights) != set(DIMENSION_NAMES) or abs(sum(dimension_weights.values()) - 1.0) > 1e-9:
+        raise ValueError("DeepSeek dimension weights must contain five dimensions and sum to 1.0")
+    known = 0
+    coverage = 0.0
+    for name in DIMENSION_NAMES:
+        dimension = review.dimensions[name]
+        if dimension.is_unknown:
+            continue
+        known += 1
+        coverage += dimension.confidence * dimension_weights[name]
+    if known >= minimum_known_dimensions and coverage >= confidence_coverage_min:
+        return review
+    return replace(review, outcome=ReviewOutcome.ABSTAIN, error="insufficient_confidence_coverage")
+
+
 def _cache_features(candidate: FeatureSnapshot) -> list[tuple[str, float | None]]:
-    excluded = _QUOTE_SENSITIVE_FEATURES
     features = [
         (name, None if raw is None else round(float(raw), 4))
         for name, raw in sorted(candidate.values.items())
-        if name not in excluded
+        if name in STRUCTURED_REVIEW_FEATURES
     ]
-    features.extend(
-        (
-            ("quote_price_bucket_1pct", _relative_bucket(candidate.quote.price, 0.01)),
-            ("quote_volume_ratio_bucket_0_3", _absolute_bucket(candidate.quote.volume_ratio, 0.3)),
-        )
-    )
     return features
 
 
-_QUOTE_SENSITIVE_FEATURES = frozenset(
-    {
-        "price_executability",
-        "moderate_daily_return",
-        "moderate_amplitude",
-        "limit_distance_safety",
-        "limit_proximity",
-    }
-)
-
-
-def _cache_evidence(item: Evidence) -> tuple[str, str, str, str, str]:
+def _cache_evidence(item: Evidence) -> tuple[str, str, str, str, str, str]:
     if item.evidence_type == "structured_point_in_time":
-        return (item.evidence_id, item.evidence_type, "", item.source, "")
-    return (item.evidence_id, item.evidence_type, item.title, item.source, item.published_at.isoformat())
-
-
-def _relative_bucket(value: float | None, threshold: float) -> float | None:
-    if value is None or value <= 0 or not math.isfinite(value):
-        return None
-    return float(math.floor(math.log(value) / math.log1p(threshold)))
-
-
-def _absolute_bucket(value: float | None, step: float) -> float | None:
-    if value is None or not math.isfinite(value):
-        return None
-    return float(math.floor(value / step))
+        return (item.evidence_id, item.evidence_type, "", item.source, "", "")
+    return (
+        item.evidence_id,
+        item.evidence_type,
+        item.title,
+        item.source,
+        item.published_at.isoformat(),
+        item.data_version,
+    )
 
 
 def _parse_review(
@@ -198,7 +251,7 @@ def _parse_dimension(
         name=name,
         score=score,
         confidence=confidence,
-        assessment=str(raw.get("assessment") or "unknown")[:MAX_ASSESSMENT_CHARACTERS],
+        assessment=_bounded_text(raw.get("assessment"), f"dimension {name}.assessment"),
         flags=_strings(raw.get("flags"), maximum=8, length=80),
         evidence_ids=evidence_ids,
         is_unknown=unknown,
@@ -227,6 +280,7 @@ def _parse_risk_facts(
             raise DeepSeekSchemaError(f"invalid risk severity: {severity}")
         confidence = _bounded_number(item.get("confidence"), 0.0, 1.0, f"risk fact {risk_code}.confidence")
         evidence_ids = _evidence_ids(item.get("evidence_ids"), allowed_evidence)
+        assessment = _bounded_text(item.get("assessment"), f"risk fact {risk_code}.assessment")
         if not evidence_ids:
             continue
         stable_material = f"{code}|{risk_code}|{'|'.join(sorted(evidence_ids))}"
@@ -241,6 +295,7 @@ def _parse_risk_facts(
                 confidence=confidence,
                 evidence_ids=evidence_ids,
                 veto=False,
+                assessment=assessment,
             )
         )
     return tuple(facts)
@@ -326,11 +381,23 @@ def _bounded_number(raw: object, lower: float, upper: float, field: str) -> floa
     return value
 
 
+def _bounded_text(raw: object, field: str) -> str:
+    if not isinstance(raw, str):
+        raise DeepSeekSchemaError(f"{field} must be a string")
+    value = raw.strip()
+    if not value or len(value) > MAX_ASSESSMENT_CHARACTERS:
+        raise DeepSeekSchemaError(f"{field} must contain 1 to {MAX_ASSESSMENT_CHARACTERS} characters")
+    return value
+
+
 __all__ = [
     "DeepSeekSchemaError",
     "PROMPT_VERSION",
     "SCHEMA_VERSION",
     "build_messages",
+    "build_repair_messages",
+    "classify_review",
     "parse_reviews",
     "review_cache_key",
+    "strategy_review_cache_key",
 ]

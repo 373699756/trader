@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户诉求：先统一完成第 14-16 节 DeepSeek 代码，再补测试和 Review。现状是候选会被定性证据门提前清空，批次/候选状态混用，只有六桶总额而没有阶段目标与上限。修改后新增持久化批次和逐股终态、十阶段 133 次目标/188 次上限、受条件约束的 emergency、原始/策略两级缓存、优先复核及重启 `abandoned` 恢复；新闻或公告不再作为调用资格。
 - 新增架构契约测试，固定快照编排模块必须使用职责明确的 `snapshot_workflow.py`，并禁止旧 `snapshot_lifecycle.py` 路径重新出现。
 - 用户诉求：继续闭合 `docs/issues/2026-07-17.md` 中第 4-7 节未完成任务；现状是配置中的 worker 和刷新频率未形成真实消费者，关键单点可能因调度延迟错过，TopK 无独立报价链，数据年龄、乱序、单飞、熔断和发布延迟缺少统一证据。修改后新增生命周期受控的有界执行器和独立 cadence 计划器，真实启动数据、标准化、三策略、DeepSeek、合并、持久化及 long 消费者，并形成全日计划、来源恢复、实时 overlay 和时效状态回归。
 - 新增第 13 节 d25/long 点时研究输入：d25 候选和固定 long 名单按代码获取东方财富财务、精确发布时间公告、累计质押比例与未来 90 天解禁比例；纯领域公式生成价值、成长、质量、行业/政策、风险保护及四类本地风险，来源时间、接收时间、版本、脱敏原始摘要和派生摘要随输入保存。
@@ -31,6 +32,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- DeepSeek 五维原始结果按策略配置中的权重、至少两个已知维度和 0.50 加权置信覆盖在本地分类；全部维度未知或覆盖不足逐股 `abstain` 并回退本地分。每批物理 HTTP 仍最多 8 股、最多两次尝试，429 遵循 `Retry-After`，非法 schema 的修复与网络重试共享两次硬上限，14:48 后不再预留请求。
 - 用户诉求：将含义宽泛的快照“生命周期”命名改为职责导向名称。现状判断：该模块实际负责编排评分、冻结和实时 overlay 流程，不拥有应用或资源生命周期；现重命名为 `snapshot_workflow.py`，同步生产导入和 `docs/need.md` 结构契约，不改变评分、冻结、持久化、API 或线程行为。
 - 生产行情分页、历史、分钟和研究任务改为复用组合根唯一的 6-worker 数据池；策略评分拆为 worker 内的不可变本地准备、DeepSeek worker 复核和单合并线程融合/TopK，long 使用独立低优先级 worker，并在三策略复核完成后优先复用策略无关缓存。应用层按事件生命周期、worker 阶段和快照/冻结生命周期拆分，SQLite/JSON 发布、冻结、overlay 和事件状态统一经单写线程串行提交；Web 查询端只依赖拆分后的只读事件端口。
 - 运行配置升级为 schema v3，以逐任务、逐阶段 `pipeline.cadence_seconds` 驱动全市场、候选、TopK、评分、行业、新闻、风险和参考数据事件；周期错过或同类任务仍在运行时从当前时刻重新计时，不突发补跑。冻结、DeepSeek 截止和收盘单点可在延迟或重启后幂等补提交，14:49:50 最终候选只允许在冻结前补交。
@@ -58,6 +60,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 DeepSeek 缓存因报价 `data_version` 每次变化而失效、跨策略重复请求以及迟到结果可能进入缓存/融合的问题；缓存身份现在绑定结构化特征、证据、风险事实、模型/prompt/schema 和阶段，价格相对变化达到 1% 或量比差达到 0.3 时用十进制精确比较失效。Review 同时修复非重试 4xx 被重复请求、schema 部分返回拖累有效股票、截止后重试预留及崩溃遗留 `running` 状态。
 - 修复事件审计 UPSERT 可无条件覆盖状态且同一幂等键缺少有效执行者门的问题：风险/冻结先以 `pending` 原子预留，执行和终态使用 compare-and-set，崩溃遗留高优先级事件可重放，旧配置事件被失败关闭；普通行情满队列时按主体保留最新版本，容量、深度、合并、拒绝和重放均进入状态。Review 同时修复 DeepSeek 异常阻断本地快照、单策略数据失败阻断其他策略、事件嵌套载荷可跨线程改写或写入非有限 JSON 数值、全部数据 worker 同时借用自身队列会自等待、调度启动中断或关闭超时残留，以及停止时冻结写入未完成便返回的风险。
 - 修复旧版或迟到候选报价可能覆盖更新全市场行情、分钟刷新失败清空有效尾盘信号、草稿 overlay 已持久化但只读查询忽略、并发全市场重复物理请求及来源故障持续冲击上游的问题；全市场使用 single-flight，连续失败熔断并半开单探针，候选/分钟应用版本门和最近有效缓存，TopK 失败保留现有 overlay。状态接口使用运行时已记录阶段，不在 HTTP 读取中刷新交易日历，并报告全市场/候选/TopK 年龄与 2 倍/3 倍时效分级、SSE 和 today 报价到评分发布延迟。
 - 用户问题：d25 市场状态/过热规则仍硬编码，long 五项和财务、公告、质押、减持解禁风险长期缺失，无法区分真实无风险与来源未接入。修改后 d25 评分只消费配置派生乘数；long 使用明确的点时财务与公告公式，成功空源才生成真实 0，任一来源失败、未来、过期、非有限或结构畸形时依赖字段保持 `null`，快照增加 `d25_structured_research_incomplete` 或 `long_research_incomplete` 覆盖降级。
@@ -99,6 +102,7 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除运行配置中重复的 DeepSeek 置信覆盖阈值；该阈值与最少已知维度继续只由版本化策略配置定义，避免运行配置和策略配置产生两个真相源。
 - 移除内部模块路径 `trader.application.snapshot_lifecycle`；该路径不是公共 API，未保留会掩盖半迁移状态的兼容转发文件。
 - 移除生产行情服务按调用临时创建 history/research/intraday/Eastmoney 分页线程池的路径，以及可绕过 CAS 的 `append_event()` 无条件事件写入口；组件脱离运行时独立调用时仍使用同一有界执行器适配层完成局部回收。本批不修改评分公式、冻结边界或 Web 视觉布局。
 - 移除 d25 市场状态与过热乘数的实现内阈值表，以及 long 五项、财务恶化、公告、质押和减持解禁在生产特征链中的固定缺失占位路径；未删除固定 long 名单、人工目标价或只读观察边界。
@@ -110,6 +114,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 第 14-16 节回归覆盖五维 schema/证据子集、未知维度和 0.50 覆盖回退、无新闻候选调用、429/超时/非重试 4xx、schema 修复、部分返回、迟到隔离、两级缓存、价格 1%/量比 0.3 边界、六桶/十阶段/emergency 并发预算及重启恢复；Ruff format/lint、67 个源码文件 mypy、329 个 pytest、sdist/wheel 和 `git diff --check` 通过。最终 wheel 在仓库外 `--target` 强制安装后从隔离路径导入，`pip check`、`trader-cli validate-config`/`--help` 与模板、CSS、两个 JavaScript、SVG 共 5 项资源通过；无头 Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、区块重叠、图片失败或非预期脚本错误，未启动 publisher 时 SSE 503 按预期回退。
 - 快照工作流模块重命名回归覆盖新路径存在、旧路径禁止、生产导入和流水线集成；`make format-check`、Ruff lint、67 个源码文件 mypy、319 个 pytest、`make package` 和 wheel 模块清单检查均通过。最终 wheel 在仓库外 Python 3.11 venv 强制重装后，`pip check`、新模块导入、旧模块缺失、`trader-cli validate-config` 及模板/CSS/两个 JavaScript/SVG 共 5 项资源验收通过；无头 Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、区块重叠、图片失败或非预期脚本异常，未启动 publisher 时 SSE 503 按预期回退。
 - 第 4-7 节统一回归覆盖完整事件/CAS/重放与有界 worker 生命周期，虚拟交易日每类 cadence 精确次数、周期错过不补跑、关键单点延迟及重启恢复、同任务在途跳过，TopK 草稿/冻结 overlay、全市场 single-flight、熔断半开恢复、候选与分钟乱序拒绝、失败保留最近有效数据、时效 2 倍/3 倍边界、SSE 与 today 发布延迟，以及状态读取不触发日历 I/O；`make format-check`、Ruff lint、67 个源码文件 mypy、318 个 pytest、`make package` 和 `git diff --check` 均通过。最终 wheel 在仓库外 Python 3.11 venv 安装全部声明依赖后 `pip check` 无 broken requirements，`trader-cli validate-config`/`--help` 正常，模板、CSS、两个 JavaScript 和 SVG 共 5 项资源可读；无头 Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、区块重叠、图片失败或非预期脚本异常，未启动 publisher 时 SSE 503 按预期回退。
 - 第 13 节回归覆盖 d25 15/30、40/60 精确边界及线性中点，long 3/6/9/12 月年化、估值/成长/质量/行业政策/风险保护公式，质押 10/20/35 与解禁 1/5/10 精确分级，财务公告点时过滤、成功空源、单来源失败、畸形/越界输入、多语义证据、证据上限、双模式缓存、配置缺失/漂移/关键词重叠、输入版本、缺失降级及确定性回放；受控真实请求确认 600036 财务、57 条有效公告、质押和解禁点时源均可解析且无结构化来源错误，未保存完整外部载荷。完整门禁为 63 个源码文件 mypy、Ruff format/lint、265 个 pytest、sdist/wheel 和 `git diff --check`；仓库外 Python 3.11 环境安装全部声明依赖并强制重装最终 wheel 后，`pip check`、site-packages 包及新领域模块导入、`trader-cli validate-config`/`--help`、首页和模板/CSS/两个 JavaScript/SVG 资源均通过。Headless Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、关键区重叠、图片失败或非预期脚本异常；未启动 publisher 时 SSE 503 按预期回退。
@@ -146,13 +151,14 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 第 14-16 节仓库内状态机、预算、缓存和降级行为已有固定响应与故障注入证据，但尚未用受保护的真实 `DEEPSEEK_API_KEY` 重启服务并在 A 股交易时段验证非零物理调用、133 次阶段目标、上游 P95/限流和 schema 分布；这些仍是第 25 节发布阻塞证据，密钥不得写入仓库、日志、快照或进程参数。
 - 本批次是内部模块纯重命名，仓库内引用和 wheel 均受门禁覆盖；若仓库外代码绕过公共入口直接导入旧内部路径，将需要改用 `trader.application.snapshot_workflow`，不提供旧名兼容层。
 - 第 4-7 节已有固定输入、虚拟全日时间线和故障注入证据，但尚未在真实交易日验证 6-worker 数据池的全市场 P95、队列峰值、15 秒停机、TopK 全天 P95、来源熔断恢复和 today 报价到评分延迟目标；Python 不能中断已进入第三方库的运行中调用，停机会记录超时并继续等待各适配器的显式 I/O timeout，以无残留线程优先。固定输入门禁不能替代第 25 节真实交易日证据。
 - 第 13 节使用录制响应覆盖全部边界，并用 600036 完成单股受控真实结构化请求；尚未在真实交易时段验证 120 只 d25 候选与 10 只 long 名单的整体覆盖率、P95 延迟、上游限流和缓存恢复。来源失败会保持 `null`、中性评分和显式降级，但首次生产运行仍需观察研究源成功率与 `research_data_coverage_ratio`。第 12 节分钟输入同样仍需真实交易日覆盖率与延迟证据。
 - 第 11 节 today 评分输入已闭环；配置化关键词是可审计的保守极性规则，不能理解否定、反讽或复杂语境，首次真实交易日仍需抽样核对标题分类分布。AKShare 线上 JSONP 形态尚未用真实脱敏响应闭环，当前证据仅来自录制响应与失败降级测试。
 - 第 18 节后端冻结/overlay/跨日身份已完成；AUDIT-15 的第 19-21 节 API 错误契约、UI“上一交易日快照”表达和浏览器缓存验收仍按后续独立章节交付。
 - 旧 `recommendation_snapshot_v2` 文件若生成时尚未写入 JSON 内 `config_version`，仍以 `legacy-unrecorded` 兼容读取；只有 runtime v3 后的新冻结可提供完整配置版本证据。
-- 第 17 节 AUDIT-20260717-02、03，第 18 节 AUDIT-20260717-01、05、06，以及 AUDIT-20260717-04/11 的第 10-13 节评分部分已完成；AUDIT-07 至 -14、AUDIT-15 的前端部分、AUDIT-16 剩余证据及第 6 节逐阶段数据编排仍须按文档中的整节顺序分别实现、回归、Review、提交和推送。
+- 第 17 节 AUDIT-20260717-02、03，第 18 节 AUDIT-20260717-01、05、06，第 10-16 节对应的评分、DeepSeek 状态与预算代码，以及第 4-7 节数据编排已完成；AUDIT-07 的真实密钥证据、AUDIT-14、AUDIT-15 的前端部分和 AUDIT-16 剩余证据仍须按文档中的整节顺序完成。
 - 回放算法 v9 不会把旧 v8 及更早冻结输入当作当前规则重新解释；旧快照须由对应旧 release 验证，当前阈值预注册只接受 v9 新冻结快照。
 - 2026-07-17 运行目录没有 today 截止前草稿或冻结文件，因此不能合规恢复当日 today 推荐；修复只保证后续冻结和持有截止前 30 秒内有效草稿时的重启补提交。
 - 问题归纳的内容完整性仍依赖交付 Review 判断；契约测试只能防止必备栏目和目标文档被删除，不能自动证明原因分析正确。

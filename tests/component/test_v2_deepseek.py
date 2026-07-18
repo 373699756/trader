@@ -14,7 +14,13 @@ from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
 from trader.infrastructure.deepseek.cache import ReviewCache
 from trader.infrastructure.deepseek.client import DeepSeekHttpClient
 from trader.infrastructure.deepseek.reviewer import DeepSeekReviewer
-from trader.infrastructure.deepseek.schema import DeepSeekSchemaError, build_messages, parse_reviews, review_cache_key
+from trader.infrastructure.deepseek.schema import (
+    DeepSeekSchemaError,
+    build_messages,
+    classify_review,
+    parse_reviews,
+    review_cache_key,
+)
 from trader.infrastructure.settings import DeepSeekSettings
 
 NOW = datetime(2026, 7, 16, 6, 30, tzinfo=timezone.utc)
@@ -32,6 +38,20 @@ def test_schema_accepts_valid_dimensions_and_risk_fact() -> None:
     assert review.risk_facts[0].risk_code == "regulatory_risk"
     assert review.risk_facts[0].penalty == 0.0
     assert review.risk_facts[0].veto is False
+    assert review.risk_facts[0].assessment == "high risk"
+
+
+def test_schema_rejects_empty_or_oversized_assessment() -> None:
+    candidate = _candidate_with_evidence()
+    empty = _valid_payload(candidate.quote.code)
+    empty["results"][0]["dimensions"]["market_flow"]["assessment"] = ""
+    with pytest.raises(DeepSeekSchemaError, match="1 to 240 characters"):
+        parse_reviews(json.dumps(empty), [candidate], NOW)
+
+    oversized = _valid_payload(candidate.quote.code)
+    oversized["results"][0]["risk_facts"][0]["assessment"] = "x" * 241
+    with pytest.raises(DeepSeekSchemaError, match="1 to 240 characters"):
+        parse_reviews(json.dumps(oversized), [candidate], NOW)
 
 
 def test_schema_rejects_pool_escape_and_invalid_evidence() -> None:
@@ -128,6 +148,8 @@ def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
         tmp_path / "deepseek.sqlite3",
         daily_hard_limit=3,
         strategy_limits={"today": 2, "tomorrow": 1, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"today_main": 0, "tomorrow_afternoon": 0},
+        stage_limits={"today_main": 2, "tomorrow_afternoon": 1},
     )
     store.initialize()
     barrier = threading.Barrier(5)
@@ -157,12 +179,20 @@ def test_budget_supports_shared_and_explicit_emergency_buckets(tmp_path) -> None
         tmp_path / "deepseek.sqlite3",
         daily_hard_limit=3,
         strategy_limits={"today": 1, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 1, "emergency": 1},
+        stage_targets={"shared_preheat": 0, "today_main": 0, "emergency": 0},
+        stage_limits={"shared_preheat": 1, "today_main": 1, "emergency": 1},
     )
     store.initialize()
 
     shared = store.reserve(Strategy.TODAY, phase="warmup", requested_at=NOW, bucket="shared_preheat")
     normal = store.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
-    emergency = store.reserve(Strategy.TODAY, phase="final_review", requested_at=NOW, emergency=True)
+    emergency = store.reserve(
+        Strategy.TODAY,
+        phase="final_review",
+        requested_at=NOW,
+        emergency=True,
+        emergency_reason="freeze_boundary_change",
+    )
 
     assert (shared.allowed, shared.bucket) == (True, "shared_preheat")
     assert (normal.allowed, normal.bucket) == (True, "today")
@@ -177,11 +207,17 @@ def test_budget_supports_shared_and_explicit_emergency_buckets(tmp_path) -> None
 def test_shared_review_cache_ignores_quote_only_version_changes() -> None:
     first = _candidate_with_evidence()
     second = replace(first, quote=replace(first.quote, data_version="fixture-v2", price=12.01))
+    review = parse_reviews(json.dumps(_valid_payload(first.quote.code)), [first], NOW)[first.quote.code]
+    cache = ReviewCache()
+    key = review_cache_key(first, model="model")
+    cache.put_raw(key, first, review)
 
-    assert review_cache_key(first, model="model") == review_cache_key(second, model="model")
+    assert key == review_cache_key(second, model="model")
+    assert cache.get_raw(key, second) == review
 
     moved = replace(first, quote=replace(first.quote, data_version="fixture-v3", price=12.2))
-    assert review_cache_key(first, model="model") != review_cache_key(moved, model="model")
+    assert review_cache_key(first, model="model") == review_cache_key(moved, model="model")
+    assert cache.get_raw(key, moved) is None
     assert review_cache_key(first, model="model") != review_cache_key(
         first,
         model="model",
@@ -207,6 +243,8 @@ def test_strategy_independent_review_is_reused_by_long(tmp_path) -> None:
         database_path,
         daily_hard_limit=2,
         strategy_limits={"today": 0, "tomorrow": 0, "d25": 1, "long": 1, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"d25_afternoon": 0, "long_afternoon": 0},
+        stage_limits={"d25_afternoon": 1, "long_afternoon": 1},
     )
     budget.initialize()
     settings = replace(
@@ -218,6 +256,7 @@ def test_strategy_independent_review_is_reused_by_long(tmp_path) -> None:
         budget,
         DeepSeekHttpClient(post=post, sleep=lambda _seconds: None),
         ReviewCache(),
+        **_reviewer_policy(),
         now=lambda: NOW,
     )
 
@@ -249,6 +288,7 @@ def test_reviewer_records_each_retry_attempt_independently(tmp_path) -> None:
         budget,
         DeepSeekHttpClient(post=lambda *_args, **_kwargs: next(responses), sleep=lambda _seconds: None),
         ReviewCache(),
+        **_reviewer_policy(),
         now=lambda: NOW,
     )
 
@@ -281,6 +321,7 @@ def test_reviewer_does_not_reserve_retry_at_or_after_deadline(tmp_path) -> None:
         budget,
         DeepSeekHttpClient(post=timeout, sleep=lambda _seconds: clock.set(deadline)),
         ReviewCache(),
+        **_reviewer_policy(),
         now=clock.now,
     )
 
@@ -293,6 +334,252 @@ def test_reviewer_does_not_reserve_retry_at_or_after_deadline(tmp_path) -> None:
 
     assert result[candidate.quote.code].outcome is ReviewOutcome.LATE
     assert budget.summary(NOW.date().isoformat())["used"] == 1
+    assert reviewer.status()["last_batch_status"] == "failed"
+
+
+def test_confidence_coverage_and_known_dimension_minimum_produce_candidate_abstain() -> None:
+    candidate = _candidate_with_evidence()
+    payload = _valid_payload(candidate.quote.code)
+    dimensions = payload["results"][0]["dimensions"]
+    for name, dimension in dimensions.items():
+        if name != "market_flow":
+            dimension.update({"unknown": True, "score": 50, "confidence": 0, "evidence_ids": []})
+    raw = parse_reviews(json.dumps(payload), [candidate], NOW)[candidate.quote.code]
+
+    classified = classify_review(
+        raw,
+        dimension_weights=_reviewer_policy()["dimension_weights"][Strategy.TODAY],
+        confidence_coverage_min=0.5,
+        minimum_known_dimensions=2,
+    )
+
+    assert raw.outcome is ReviewOutcome.APPLIED
+    assert classified.outcome is ReviewOutcome.ABSTAIN
+    assert classified.error == "insufficient_confidence_coverage"
+
+
+def test_candidate_without_news_or_announcement_remains_callable_and_abstains(tmp_path) -> None:
+    candidate = replace(_candidate_with_evidence(), evidence=())
+    payload = _unknown_payload(candidate.quote.code)
+    calls = 0
+
+    def post(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return FakeHttpResponse(200, {"choices": [{"message": {"content": json.dumps(payload)}}]})
+
+    budget = _budget(tmp_path / "runtime.sqlite3")
+    reviewer = DeepSeekReviewer(
+        _settings(),
+        budget,
+        DeepSeekHttpClient(post=post, sleep=lambda _seconds: None),
+        ReviewCache(),
+        **_reviewer_policy(),
+        now=lambda: NOW,
+    )
+
+    result = reviewer.review(Strategy.TODAY, (candidate,), phase="today_main", deadline=NOW + timedelta(minutes=1))
+
+    assert calls == 1
+    assert result[candidate.quote.code].outcome is ReviewOutcome.ABSTAIN
+    assert reviewer.status()["last_batch_status"] == "success"
+
+
+def test_schema_repair_uses_second_and_final_physical_attempt(tmp_path) -> None:
+    candidate = _candidate_with_evidence()
+    responses = iter(
+        [
+            FakeHttpResponse(200, {"choices": [{"message": {"content": "not-json"}}]}),
+            FakeHttpResponse(
+                200,
+                {"choices": [{"message": {"content": json.dumps(_valid_payload(candidate.quote.code))}}]},
+            ),
+        ]
+    )
+    database_path = tmp_path / "runtime.sqlite3"
+    budget = _budget(database_path)
+    reviewer = DeepSeekReviewer(
+        _settings(),
+        budget,
+        DeepSeekHttpClient(post=lambda *_args, **_kwargs: next(responses), sleep=lambda _seconds: None),
+        ReviewCache(),
+        **_reviewer_policy(),
+        now=lambda: NOW,
+    )
+
+    result = reviewer.review(Strategy.TODAY, (candidate,), phase="today_main", deadline=NOW + timedelta(minutes=1))
+
+    assert result[candidate.quote.code].outcome is ReviewOutcome.APPLIED
+    assert budget.summary(NOW.date().isoformat())["used"] == 2
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT status, physical_attempts FROM deepseek_review_batches").fetchone() == (
+            "success",
+            2,
+        )
+        assert connection.execute("SELECT outcome FROM deepseek_candidate_results").fetchone() == ("applied",)
+
+
+def test_partial_batch_keeps_valid_candidate_and_rejects_missing_result(tmp_path) -> None:
+    first = _candidate_with_evidence()
+    second = _candidate("600002", "e-2")
+    database_path = tmp_path / "runtime.sqlite3"
+    budget = _budget(database_path)
+    reviewer = DeepSeekReviewer(
+        _settings(),
+        budget,
+        DeepSeekHttpClient(
+            post=lambda *_args, **_kwargs: FakeHttpResponse(
+                200,
+                {"choices": [{"message": {"content": json.dumps(_valid_payload(first.quote.code))}}]},
+            ),
+            sleep=lambda _seconds: None,
+        ),
+        ReviewCache(),
+        **_reviewer_policy(),
+        now=lambda: NOW,
+    )
+
+    result = reviewer.review(
+        Strategy.TODAY,
+        (first, second),
+        phase="today_main",
+        deadline=NOW + timedelta(minutes=1),
+    )
+
+    assert result[first.quote.code].outcome is ReviewOutcome.APPLIED
+    assert result[second.quote.code].outcome is ReviewOutcome.REJECTED
+    assert reviewer.status()["last_batch_status"] == "partial"
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT status FROM deepseek_review_batches").fetchone() == ("partial",)
+        assert connection.execute(
+            "SELECT stock_code, outcome FROM deepseek_candidate_results ORDER BY stock_code"
+        ).fetchall() == [("600001", "applied"), ("600002", "rejected")]
+
+
+def test_budget_enforces_stage_limit_independently_from_strategy_limit(tmp_path) -> None:
+    store = DeepSeekBudgetStore(
+        tmp_path / "runtime.sqlite3",
+        daily_hard_limit=2,
+        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"today_observe": 0, "today_main": 0},
+        stage_limits={"today_observe": 1, "today_main": 1},
+    )
+    store.initialize()
+
+    observe = store.reserve(Strategy.TODAY, phase="today_observe", requested_at=NOW)
+    observe_exhausted = store.reserve(Strategy.TODAY, phase="today_observe", requested_at=NOW)
+    main = store.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+
+    assert observe.allowed is True
+    assert (observe_exhausted.allowed, observe_exhausted.reason) == (False, "stage_limit")
+    assert main.allowed is True
+
+
+def test_emergency_requires_exhausted_normal_bucket_and_registered_trigger(tmp_path) -> None:
+    store = DeepSeekBudgetStore(
+        tmp_path / "runtime.sqlite3",
+        daily_hard_limit=2,
+        strategy_limits={"today": 1, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 1},
+        stage_targets={"today_main": 0, "emergency": 0},
+        stage_limits={"today_main": 1, "emergency": 1},
+    )
+    store.initialize()
+
+    too_early = store.reserve(
+        Strategy.TODAY,
+        phase="final_review",
+        requested_at=NOW,
+        emergency=True,
+        emergency_reason="freeze_boundary_change",
+    )
+    normal = store.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+    invalid = store.reserve(
+        Strategy.TODAY,
+        phase="final_review",
+        requested_at=NOW,
+        emergency=True,
+        emergency_reason="manual_override",
+    )
+    emergency = store.reserve(
+        Strategy.TODAY,
+        phase="final_review",
+        requested_at=NOW,
+        emergency=True,
+        emergency_reason="freeze_boundary_change",
+    )
+
+    assert (too_early.allowed, too_early.reason) == (False, "normal_budget_available")
+    assert normal.allowed is True
+    assert (invalid.allowed, invalid.reason) == (False, "invalid_emergency_reason")
+    assert emergency.allowed is True
+    summary = store.summary(NOW.date().isoformat())
+    assert summary["by_bucket"] == {"emergency": 1, "today": 1}
+    assert summary["by_strategy"] == {"today": 2}
+
+
+def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
+    database_path = tmp_path / "runtime.sqlite3"
+    store = _budget(database_path)
+    batch_id = store.begin_batch(
+        Strategy.TODAY,
+        phase="today_main",
+        bucket="today",
+        model="model",
+        requested_at=NOW,
+        deadline=NOW + timedelta(minutes=1),
+        candidate_codes=("600001",),
+    )
+    reservation = store.reserve(
+        Strategy.TODAY,
+        phase="today_main",
+        requested_at=NOW,
+        batch_id=batch_id,
+    )
+
+    assert reservation.allowed is True
+    assert store.recover_incomplete(NOW + timedelta(minutes=2)) == 2
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT status FROM deepseek_call_reservations").fetchone() == ("abandoned",)
+        assert connection.execute("SELECT status FROM deepseek_review_batches").fetchone() == ("abandoned",)
+        assert connection.execute("SELECT outcome FROM deepseek_candidate_results").fetchone() == ("rejected",)
+
+
+def test_non_retryable_http_error_is_attempted_once() -> None:
+    calls = 0
+
+    def bad_request(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return FakeHttpResponse(400, {})
+
+    result = DeepSeekHttpClient(post=bad_request, sleep=lambda _seconds: None).complete(
+        base_url="https://api.deepseek.example/v1",
+        api_key="secret",
+        model="model",
+        messages=[{"role": "user", "content": "test"}],
+        timeout_seconds=1,
+        max_tokens=64,
+        reserve_attempt=lambda: True,
+    )
+
+    assert calls == 1
+    assert result.attempts == 1
+    assert result.content is None
+
+
+def test_cache_invalidates_at_volume_ratio_threshold() -> None:
+    first = _candidate_with_evidence()
+    review = parse_reviews(json.dumps(_valid_payload(first.quote.code)), [first], NOW)[first.quote.code]
+    key = review_cache_key(first, model="model")
+    cache = ReviewCache()
+    cache.put_raw(key, first, review)
+
+    below = replace(first, quote=replace(first.quote, volume_ratio=2.299))
+    assert cache.get_raw(key, below) == review
+
+    cache.put_raw(key, first, review)
+    boundary = replace(first, quote=replace(first.quote, volume_ratio=2.3))
+    assert cache.get_raw(key, boundary) is None
 
 
 def _candidate_with_evidence() -> FeatureSnapshot:
@@ -323,6 +610,15 @@ def _candidate_with_evidence() -> FeatureSnapshot:
         observed_at=NOW,
         history_days=60,
         evidence=(Evidence("e-1", "announcement", "监管公告", "exchange", NOW - timedelta(hours=1)),),
+    )
+
+
+def _candidate(code: str, evidence_id: str) -> FeatureSnapshot:
+    original = _candidate_with_evidence()
+    return replace(
+        original,
+        quote=replace(original.quote, code=code),
+        evidence=(replace(original.evidence[0], evidence_id=evidence_id),),
     )
 
 
@@ -359,6 +655,35 @@ def _valid_payload(code: str) -> dict[str, object]:
     }
 
 
+def _unknown_payload(code: str) -> dict[str, object]:
+    return {
+        "results": [
+            {
+                "code": code,
+                "abstain": True,
+                "dimensions": {
+                    name: {
+                        "score": 50,
+                        "confidence": 0,
+                        "assessment": "unknown",
+                        "flags": [],
+                        "evidence_ids": [],
+                        "unknown": True,
+                    }
+                    for name in (
+                        "value_quality",
+                        "financial_health",
+                        "market_flow",
+                        "industry_policy",
+                        "risk_quality",
+                    )
+                },
+                "risk_facts": [],
+            }
+        ]
+    }
+
+
 class FakeHttpResponse:
     def __init__(self, status_code: int, payload: object, *, headers: dict[str, str] | None = None) -> None:
         self.status_code = status_code
@@ -389,6 +714,8 @@ def _budget(database_path) -> DeepSeekBudgetStore:
         database_path,
         daily_hard_limit=2,
         strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"today_main": 0},
+        stage_limits={"today_main": 2},
     )
     store.initialize()
     return store
@@ -402,8 +729,47 @@ def _settings() -> DeepSeekSettings:
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
-        confidence_coverage_min=0.5,
         daily_hard_limit=2,
         strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"today_main": 0},
+        stage_limits={"today_main": 2},
         api_key="secret",
     )
+
+
+def _reviewer_policy() -> dict[str, object]:
+    return {
+        "dimension_weights": {
+            Strategy.TODAY: {
+                "value_quality": 0.10,
+                "financial_health": 0.10,
+                "market_flow": 0.40,
+                "industry_policy": 0.15,
+                "risk_quality": 0.25,
+            },
+            Strategy.TOMORROW: {
+                "value_quality": 0.15,
+                "financial_health": 0.20,
+                "market_flow": 0.25,
+                "industry_policy": 0.20,
+                "risk_quality": 0.20,
+            },
+            Strategy.D25: {
+                "value_quality": 0.20,
+                "financial_health": 0.25,
+                "market_flow": 0.20,
+                "industry_policy": 0.20,
+                "risk_quality": 0.15,
+            },
+            Strategy.LONG: {
+                "value_quality": 0.30,
+                "financial_health": 0.30,
+                "market_flow": 0.10,
+                "industry_policy": 0.20,
+                "risk_quality": 0.10,
+            },
+        },
+        "strategy_version": "strategy-test-v1",
+        "confidence_coverage_min": 0.5,
+        "minimum_known_dimensions": 2,
+    }

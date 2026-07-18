@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from trader.domain.factors import band_score, clamp, percentile_scores_with_metadata
+from trader.domain.fusion import STRUCTURED_REVIEW_FEATURES
 from trader.domain.models import CrossSectionStats, Evidence, FeatureSnapshot, MarketQuote
 from trader.domain.news import NewsSignalPolicy, derive_news_signals
 from trader.domain.research import (
@@ -461,13 +462,11 @@ def _structured_evidence(
         repr(
             (
                 quote.code,
-                _relative_bucket(quote.price, 0.01),
-                _absolute_bucket(quote.volume_ratio, 0.3),
                 tuple(
                     sorted(
                         (name, None if value is None else round(float(value), 4))
                         for name, value in values.items()
-                        if name not in _QUOTE_SENSITIVE_FEATURES
+                        if name in STRUCTURED_REVIEW_FEATURES
                     )
                 ),
             )
@@ -481,28 +480,6 @@ def _structured_evidence(
         published_at=observed_at,
     )
 
-
-def _relative_bucket(value: float | None, threshold: float) -> int | None:
-    if value is None or value <= 0 or not math.isfinite(value):
-        return None
-    return math.floor(math.log(value) / math.log1p(threshold))
-
-
-def _absolute_bucket(value: float | None, step: float) -> int | None:
-    if value is None or not math.isfinite(value):
-        return None
-    return math.floor(value / step)
-
-
-_QUOTE_SENSITIVE_FEATURES = frozenset(
-    {
-        "price_executability",
-        "moderate_daily_return",
-        "moderate_amplitude",
-        "limit_distance_safety",
-        "limit_proximity",
-    }
-)
 
 _CROSS_SECTION_FIELDS = frozenset(
     {

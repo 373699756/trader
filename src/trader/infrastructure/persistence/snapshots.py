@@ -462,6 +462,7 @@ def _risk_fact_to_dict(fact: RiskFact) -> dict[str, object]:
         "veto": fact.veto,
         "threshold": fact.threshold,
         "actual": fact.actual,
+        "assessment": fact.assessment,
     }
 
 
@@ -482,6 +483,7 @@ def _risk_fact_from_dict(raw: Mapping[str, object]) -> RiskFact:
         veto=bool(raw.get("veto")),
         threshold=str(raw.get("threshold") or ""),
         actual=_risk_actual(raw.get("actual")),
+        assessment=str(raw.get("assessment") or ""),
     )
 
 

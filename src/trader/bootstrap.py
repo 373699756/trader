@@ -132,13 +132,19 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         settings.runtime_dir / "runtime.sqlite3",
         daily_hard_limit=settings.deepseek.daily_hard_limit,
         strategy_limits=settings.deepseek.strategy_limits,
+        stage_targets=settings.deepseek.stage_targets,
+        stage_limits=settings.deepseek.stage_limits,
     )
     reviewer = DeepSeekReviewer(
         settings.deepseek,
         budget,
         DeepSeekHttpClient(),
         ReviewCache(maximum_entries=2000, ttl_seconds=600),
-        now,
+        dimension_weights={Strategy(name): weights for name, weights in strategy.dimension_weights.items()},
+        strategy_version=strategy.strategy_version,
+        confidence_coverage_min=strategy.fusion.confidence_coverage_min,
+        minimum_known_dimensions=strategy.fusion.minimum_known_dimensions,
+        now=now,
     )
     state = RuntimeState()
     publisher = SnapshotPublisher(
@@ -174,7 +180,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     supervisor = RuntimeSupervisor(
         pipeline,
         now=now,
-        initializers=(pipeline.initialize, budget.initialize, budget.abandon_reserved),
+        initializers=(pipeline.initialize, budget.initialize, lambda: budget.recover_incomplete(now())),
         interval_seconds=scheduler_interval_seconds,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
         record_error=state.record_error,

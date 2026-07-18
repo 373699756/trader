@@ -60,15 +60,18 @@ class DeepSeekHttpClient:
         timeout_seconds: float,
         max_tokens: int,
         reserve_attempt: Callable[[], bool],
+        maximum_attempts: int = 2,
     ) -> DeepSeekHttpResult:
         if not api_key:
             return DeepSeekHttpResult(None, None, 0, False, "api_key_missing")
+        if not 1 <= maximum_attempts <= 2:
+            raise ValueError("DeepSeek batch maximum attempts must be between 1 and 2")
         last_error = ""
         last_status: int | None = None
         timed_out = False
         attempts = 0
         attempt_records: list[DeepSeekHttpAttempt] = []
-        for attempt in range(2):
+        for attempt in range(maximum_attempts):
             if not reserve_attempt():
                 return DeepSeekHttpResult(
                     None,
@@ -96,7 +99,7 @@ class DeepSeekHttpClient:
                 )
                 attempt_status = response.status_code
                 last_status = attempt_status
-                if response.status_code in self.RETRYABLE_STATUS_CODES and attempt == 0:
+                if response.status_code in self.RETRYABLE_STATUS_CODES:
                     last_error = f"http_{response.status_code}"
                     attempt_records.append(
                         _attempt_record(
@@ -107,8 +110,10 @@ class DeepSeekHttpClient:
                             started=attempt_started,
                         )
                     )
-                    self._sleep(_retry_delay(response))
-                    continue
+                    if attempt + 1 < maximum_attempts:
+                        self._sleep(_retry_delay(response))
+                        continue
+                    break
                 response.raise_for_status()
                 payload = response.json()
                 content, usage = _extract_content(payload)
@@ -135,9 +140,19 @@ class DeepSeekHttpClient:
                 timed_out = True
                 last_error = str(exc) or "request_timed_out"
                 attempt_timed_out = True
-            except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+                should_retry = True
+            except requests.HTTPError as exc:
                 last_error = str(exc) or exc.__class__.__name__
                 attempt_timed_out = False
+                should_retry = False
+            except requests.RequestException as exc:
+                last_error = str(exc) or exc.__class__.__name__
+                attempt_timed_out = False
+                should_retry = True
+            except (ValueError, TypeError, KeyError) as exc:
+                last_error = str(exc) or exc.__class__.__name__
+                attempt_timed_out = False
+                should_retry = True
             attempt_records.append(
                 _attempt_record(
                     attempt_status,
@@ -147,8 +162,10 @@ class DeepSeekHttpClient:
                     started=attempt_started,
                 )
             )
-            if attempt == 0:
+            if should_retry and attempt + 1 < maximum_attempts:
                 self._sleep(0.2)
+                continue
+            break
         return DeepSeekHttpResult(
             None,
             last_status,

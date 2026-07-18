@@ -121,6 +121,8 @@ def test_configured_deepseek_candidate_makes_physical_call_and_status_reports_qu
         runtime_dir / "runtime.sqlite3",
         daily_hard_limit=2,
         strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"today_main": 0},
+        stage_limits={"today_main": 2},
     )
     budget.initialize()
     calls = 0
@@ -136,6 +138,19 @@ def test_configured_deepseek_candidate_makes_physical_call_and_status_reports_qu
         budget,
         DeepSeekHttpClient(post=post, sleep=lambda _seconds: None),
         ReviewCache(),
+        dimension_weights={
+            strategy: {
+                "value_quality": 0.2,
+                "financial_health": 0.2,
+                "market_flow": 0.2,
+                "industry_policy": 0.2,
+                "risk_quality": 0.2,
+            }
+            for strategy in Strategy
+        },
+        strategy_version="acceptance-v2",
+        confidence_coverage_min=0.5,
+        minimum_known_dimensions=2,
         now=lambda: now,
     )
     pipeline = RecommendationPipeline(
@@ -275,8 +290,9 @@ def _deepseek_settings() -> DeepSeekSettings:
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
-        confidence_coverage_min=0.5,
         daily_hard_limit=2,
         strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"today_main": 0},
+        stage_limits={"today_main": 2},
         api_key="secret",
     )

@@ -140,6 +140,7 @@ class RiskFact:
     veto: bool = False
     threshold: str = ""
     actual: str | float | bool | None = None
+    assessment: str = ""
 
 
 @dataclass(frozen=True)

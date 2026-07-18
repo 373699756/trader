@@ -81,6 +81,7 @@ def map_deepseek_risk_facts(
             veto=locally_mapped_veto,
             threshold=raw.threshold,
             actual=raw.actual,
+            assessment=raw.assessment,
         )
         mapped.append(mapped_fact)
         veto = veto or mapped_fact.veto

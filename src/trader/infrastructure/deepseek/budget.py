@@ -1,15 +1,20 @@
-"""Atomic physical-request reservation for the 188-call daily budget."""
+"""Atomic DeepSeek request budgets and persisted review terminal states."""
 
 from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from trader.domain.models import Strategy
+from trader.domain.models import DeepSeekReview, Strategy
+
+_BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})
+_CALL_TERMINALS = frozenset({"success", "failed", "abandoned"})
+_CANDIDATE_TERMINALS = frozenset({"applied", "abstain", "rejected", "late"})
+_EMERGENCY_REASONS = frozenset({"new_high_risk", "freeze_boundary_change"})
 
 
 @dataclass(frozen=True)
@@ -18,6 +23,7 @@ class BudgetReservation:
     reservation_id: str
     bucket: str
     reason: str
+    stage: str = ""
 
 
 class DeepSeekBudgetStore:
@@ -27,20 +33,31 @@ class DeepSeekBudgetStore:
         *,
         daily_hard_limit: int,
         strategy_limits: Mapping[str, int],
+        stage_targets: Mapping[str, int],
+        stage_limits: Mapping[str, int],
     ) -> None:
         if not 0 <= daily_hard_limit <= 188:
             raise ValueError("daily hard limit must be between 0 and 188")
         if sum(strategy_limits.values()) != daily_hard_limit:
             raise ValueError("strategy limits must sum to daily hard limit")
+        if set(stage_targets) != set(stage_limits):
+            raise ValueError("stage targets and limits must contain the same stages")
+        if any(stage_targets[name] > stage_limits[name] for name in stage_targets):
+            raise ValueError("stage targets cannot exceed stage limits")
+        if sum(stage_targets.values()) > daily_hard_limit or sum(stage_limits.values()) != daily_hard_limit:
+            raise ValueError("stage targets must fit and stage limits must equal the daily hard limit")
         self._path = database_path
         self._daily_hard_limit = daily_hard_limit
         self._limits = dict(strategy_limits)
+        self._stage_targets = dict(stage_targets)
+        self._stage_limits = dict(stage_limits)
+        self._daily_target = sum(stage_targets.values())
         self._initialized = False
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.execute(
+            connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS deepseek_call_reservations(
                     reservation_id TEXT PRIMARY KEY,
@@ -48,19 +65,212 @@ class DeepSeekBudgetStore:
                     strategy TEXT NOT NULL,
                     bucket TEXT NOT NULL,
                     phase TEXT NOT NULL,
+                    stage_key TEXT NOT NULL DEFAULT '',
+                    batch_id TEXT NOT NULL DEFAULT '',
+                    emergency_reason TEXT NOT NULL DEFAULT '',
                     requested_at TEXT NOT NULL,
                     status TEXT NOT NULL,
                     error TEXT NOT NULL DEFAULT '',
                     http_status INTEGER,
                     latency_ms REAL,
                     token_count INTEGER NOT NULL DEFAULT 0
-                )
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_deepseek_budget_day
+                ON deepseek_call_reservations(trade_date, strategy, bucket, stage_key);
+
+                CREATE TABLE IF NOT EXISTS deepseek_review_batches(
+                    batch_id TEXT PRIMARY KEY,
+                    trade_date TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    bucket TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    deadline TEXT NOT NULL,
+                    completed_at TEXT,
+                    status TEXT NOT NULL,
+                    candidate_count INTEGER NOT NULL,
+                    cache_hit_count INTEGER NOT NULL DEFAULT 0,
+                    physical_attempts INTEGER NOT NULL DEFAULT 0,
+                    error TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_deepseek_batches_day
+                ON deepseek_review_batches(trade_date, strategy, phase, status);
+
+                CREATE TABLE IF NOT EXISTS deepseek_candidate_results(
+                    batch_id TEXT NOT NULL REFERENCES deepseek_review_batches(batch_id),
+                    stock_code TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    completed_at TEXT,
+                    error TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(batch_id, stock_code)
+                );
                 """
             )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_deepseek_budget_day ON deepseek_call_reservations(trade_date, strategy, bucket)"
+            _ensure_column(connection, "deepseek_call_reservations", "stage_key", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "deepseek_call_reservations", "batch_id", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(
+                connection,
+                "deepseek_call_reservations",
+                "emergency_reason",
+                "TEXT NOT NULL DEFAULT ''",
             )
         self._initialized = True
+
+    def begin_batch(
+        self,
+        strategy: Strategy,
+        *,
+        phase: str,
+        bucket: str,
+        model: str,
+        requested_at: datetime,
+        deadline: datetime,
+        candidate_codes: Sequence[str],
+        cache_hit_count: int = 0,
+    ) -> str:
+        _require_aware(requested_at, "batch requested_at")
+        _require_aware(deadline, "batch deadline")
+        codes = tuple(candidate_codes)
+        if len(codes) != len(set(codes)):
+            raise ValueError("DeepSeek batch candidate codes must be unique")
+        if cache_hit_count < 0 or cache_hit_count > len(codes):
+            raise ValueError("DeepSeek batch cache hits must be within candidate count")
+        batch_id = uuid.uuid4().hex
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO deepseek_review_batches(
+                    batch_id, trade_date, strategy, phase, bucket, model, requested_at,
+                    deadline, status, candidate_count, cache_hit_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+                """,
+                (
+                    batch_id,
+                    requested_at.date().isoformat(),
+                    strategy.value,
+                    phase,
+                    bucket,
+                    model,
+                    requested_at.isoformat(),
+                    deadline.isoformat(),
+                    len(codes),
+                    cache_hit_count,
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO deepseek_candidate_results(batch_id, stock_code, outcome)
+                VALUES (?, ?, 'pending')
+                """,
+                ((batch_id, code) for code in codes),
+            )
+            connection.commit()
+        return batch_id
+
+    def finish_batch(
+        self,
+        batch_id: str,
+        *,
+        status: str,
+        completed_at: datetime,
+        reviews: Mapping[str, DeepSeekReview],
+        physical_attempts: int,
+        error: str = "",
+    ) -> None:
+        if status not in _BATCH_TERMINALS - {"abandoned"}:
+            raise ValueError(f"invalid review batch terminal status: {status}")
+        _require_aware(completed_at, "batch completed_at")
+        if physical_attempts < 0:
+            raise ValueError("physical attempts cannot be negative")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                """
+                UPDATE deepseek_review_batches
+                SET completed_at = ?, status = ?, physical_attempts = ?, error = ?
+                WHERE batch_id = ? AND status = 'running'
+                """,
+                (completed_at.isoformat(), status, physical_attempts, error[:1000], batch_id),
+            ).rowcount
+            if changed != 1:
+                connection.rollback()
+                raise KeyError(f"unknown or completed DeepSeek batch: {batch_id}")
+            for code, review in reviews.items():
+                outcome = review.outcome.value
+                if code != review.code or outcome not in _CANDIDATE_TERMINALS:
+                    connection.rollback()
+                    raise ValueError("DeepSeek candidate result does not match its batch code")
+                updated = connection.execute(
+                    """
+                    UPDATE deepseek_candidate_results
+                    SET outcome = ?, completed_at = ?, error = ?
+                    WHERE batch_id = ? AND stock_code = ? AND outcome = 'pending'
+                    """,
+                    (outcome, review.completed_at.isoformat(), review.error[:500], batch_id, code),
+                ).rowcount
+                if updated != 1:
+                    connection.rollback()
+                    raise ValueError(f"candidate {code} is not pending in batch {batch_id}")
+            connection.execute(
+                """
+                UPDATE deepseek_candidate_results
+                SET outcome = 'rejected', completed_at = ?, error = ?
+                WHERE batch_id = ? AND outcome = 'pending'
+                """,
+                (completed_at.isoformat(), f"batch_{status}", batch_id),
+            )
+            connection.commit()
+
+    def set_batch_cache_hits(self, batch_id: str, count: int) -> None:
+        if count < 0:
+            raise ValueError("batch cache hits cannot be negative")
+        with self._connect() as connection:
+            changed = connection.execute(
+                """
+                UPDATE deepseek_review_batches
+                SET cache_hit_count = ?
+                WHERE batch_id = ? AND status = 'running' AND candidate_count >= ?
+                """,
+                (count, batch_id, count),
+            ).rowcount
+            if changed != 1:
+                raise KeyError(f"unknown batch or invalid cache hit count: {batch_id}")
+
+    def fail_running_batch(self, batch_id: str, *, completed_at: datetime, error: str) -> bool:
+        _require_aware(completed_at, "batch failure time")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                """
+                UPDATE deepseek_review_batches
+                SET completed_at = ?, status = 'failed', error = ?
+                WHERE batch_id = ? AND status = 'running'
+                """,
+                (completed_at.isoformat(), error[:1000], batch_id),
+            ).rowcount
+            if changed:
+                connection.execute(
+                    """
+                    UPDATE deepseek_candidate_results
+                    SET outcome = 'rejected', completed_at = ?, error = 'batch_failed'
+                    WHERE batch_id = ? AND outcome = 'pending'
+                    """,
+                    (completed_at.isoformat(), batch_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE deepseek_call_reservations
+                    SET status = 'abandoned', error = ?
+                    WHERE batch_id = ? AND status = 'reserved'
+                    """,
+                    (error[:1000], batch_id),
+                )
+            connection.commit()
+        return bool(changed)
 
     def reserve(
         self,
@@ -70,38 +280,59 @@ class DeepSeekBudgetStore:
         requested_at: datetime,
         bucket: str | None = None,
         emergency: bool = False,
+        emergency_reason: str = "",
+        batch_id: str = "",
     ) -> BudgetReservation:
+        _require_aware(requested_at, "budget requested_at")
         trade_date = requested_at.date().isoformat()
         requested_bucket = "emergency" if emergency else (bucket or strategy.value)
         if requested_bucket not in self._limits:
             return BudgetReservation(False, "", requested_bucket, "unknown_bucket")
+        stage = _stage_key(strategy, phase, requested_bucket)
+        if stage not in self._stage_limits:
+            return BudgetReservation(False, "", requested_bucket, "unknown_stage", stage)
+        if requested_bucket == "emergency" and emergency_reason not in _EMERGENCY_REASONS:
+            return BudgetReservation(False, "", requested_bucket, "invalid_emergency_reason", stage)
+
         reservation_id = uuid.uuid4().hex
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            total = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM deepseek_call_reservations WHERE trade_date = ?",
-                    (trade_date,),
-                ).fetchone()[0]
-            )
+            total = _count(connection, "trade_date = ?", (trade_date,))
             if total >= self._daily_hard_limit:
                 connection.rollback()
-                return BudgetReservation(False, "", requested_bucket, "daily_hard_limit")
-            bucket_limit = self._limits[requested_bucket]
-            bucket_used = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM deepseek_call_reservations WHERE trade_date = ? AND bucket = ?",
-                    (trade_date, requested_bucket),
-                ).fetchone()[0]
+                return BudgetReservation(False, "", requested_bucket, "daily_hard_limit", stage)
+            bucket_used = _count(
+                connection,
+                "trade_date = ? AND bucket = ?",
+                (trade_date, requested_bucket),
             )
-            if bucket_used >= bucket_limit:
+            if bucket_used >= self._limits[requested_bucket]:
                 connection.rollback()
-                return BudgetReservation(False, "", requested_bucket, "bucket_limit")
+                return BudgetReservation(False, "", requested_bucket, "bucket_limit", stage)
+            if requested_bucket == "emergency":
+                normal_used = _count(
+                    connection,
+                    "trade_date = ? AND bucket = ?",
+                    (trade_date, strategy.value),
+                )
+                if normal_used < self._limits[strategy.value]:
+                    connection.rollback()
+                    return BudgetReservation(False, "", requested_bucket, "normal_budget_available", stage)
+            else:
+                stage_used = _count(
+                    connection,
+                    "trade_date = ? AND stage_key = ?",
+                    (trade_date, stage),
+                )
+                if stage_used >= self._stage_limits[stage]:
+                    connection.rollback()
+                    return BudgetReservation(False, "", requested_bucket, "stage_limit", stage)
             connection.execute(
                 """
                 INSERT INTO deepseek_call_reservations(
-                    reservation_id, trade_date, strategy, bucket, phase, requested_at, status
-                ) VALUES (?, ?, ?, ?, ?, ?, 'reserved')
+                    reservation_id, trade_date, strategy, bucket, phase, stage_key,
+                    batch_id, emergency_reason, requested_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved')
                 """,
                 (
                     reservation_id,
@@ -109,11 +340,14 @@ class DeepSeekBudgetStore:
                     strategy.value,
                     requested_bucket,
                     phase,
+                    stage,
+                    batch_id,
+                    emergency_reason,
                     requested_at.isoformat(),
                 ),
             )
             connection.commit()
-        return BudgetReservation(True, reservation_id, requested_bucket, "reserved")
+        return BudgetReservation(True, reservation_id, requested_bucket, "reserved", stage)
 
     def finish(
         self,
@@ -125,8 +359,7 @@ class DeepSeekBudgetStore:
         latency_ms: float | None = None,
         token_count: int = 0,
     ) -> None:
-        terminal = {"success", "failed", "abandoned"}
-        if status not in terminal:
+        if status not in _CALL_TERMINALS:
             raise ValueError(f"invalid physical call terminal status: {status}")
         with self._connect() as connection:
             changed = connection.execute(
@@ -140,10 +373,45 @@ class DeepSeekBudgetStore:
             if changed != 1:
                 raise KeyError(f"unknown or completed reservation: {reservation_id}")
 
+    def recover_incomplete(self, recovered_at: datetime) -> int:
+        _require_aware(recovered_at, "recovery time")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            calls = connection.execute(
+                """
+                UPDATE deepseek_call_reservations
+                SET status = 'abandoned', error = 'process_restart'
+                WHERE status = 'reserved'
+                """
+            ).rowcount
+            batches = connection.execute(
+                """
+                UPDATE deepseek_review_batches
+                SET status = 'abandoned', completed_at = ?, error = 'process_restart'
+                WHERE status = 'running'
+                """,
+                (recovered_at.isoformat(),),
+            ).rowcount
+            connection.execute(
+                """
+                UPDATE deepseek_candidate_results
+                SET outcome = 'rejected', completed_at = ?, error = 'batch_abandoned'
+                WHERE outcome = 'pending'
+                  AND batch_id IN (SELECT batch_id FROM deepseek_review_batches WHERE status = 'abandoned')
+                """,
+                (recovered_at.isoformat(),),
+            )
+            connection.commit()
+        return int(calls) + int(batches)
+
     def abandon_reserved(self) -> int:
         with self._connect() as connection:
             changed = connection.execute(
-                "UPDATE deepseek_call_reservations SET status = 'abandoned', error = 'process_restart' WHERE status = 'reserved'"
+                """
+                UPDATE deepseek_call_reservations
+                SET status = 'abandoned', error = 'process_restart'
+                WHERE status = 'reserved'
+                """
             ).rowcount
         return int(changed)
 
@@ -152,37 +420,123 @@ class DeepSeekBudgetStore:
             return {
                 "used": 0,
                 "remaining": self._daily_hard_limit,
+                "target": self._daily_target,
+                "target_met": False,
                 "by_bucket": {},
+                "by_strategy": {},
+                "by_stage": {},
                 "by_status": {},
+                "batch_status": {},
+                "candidate_outcomes": {},
             }
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT bucket, status, COUNT(*)
+                SELECT bucket, strategy, stage_key, status, COUNT(*)
                 FROM deepseek_call_reservations
                 WHERE trade_date = ?
-                GROUP BY bucket, status
+                GROUP BY bucket, strategy, stage_key, status
+                """,
+                (day,),
+            ).fetchall()
+            batch_rows = connection.execute(
+                """
+                SELECT status, COUNT(*) FROM deepseek_review_batches
+                WHERE trade_date = ? GROUP BY status
+                """,
+                (day,),
+            ).fetchall()
+            candidate_rows = connection.execute(
+                """
+                SELECT r.outcome, COUNT(*)
+                FROM deepseek_candidate_results AS r
+                JOIN deepseek_review_batches AS b ON b.batch_id = r.batch_id
+                WHERE b.trade_date = ? GROUP BY r.outcome
                 """,
                 (day,),
             ).fetchall()
         by_bucket: dict[str, int] = {}
+        by_strategy: dict[str, int] = {}
+        by_stage_count: dict[str, int] = {}
         by_status: dict[str, int] = {}
-        for bucket, status, count in rows:
-            by_bucket[str(bucket)] = by_bucket.get(str(bucket), 0) + int(count)
-            by_status[str(status)] = by_status.get(str(status), 0) + int(count)
+        for bucket, strategy, stage, status, count in rows:
+            amount = int(count)
+            by_bucket[str(bucket)] = by_bucket.get(str(bucket), 0) + amount
+            by_stage_count[str(stage)] = by_stage_count.get(str(stage), 0) + amount
+            by_status[str(status)] = by_status.get(str(status), 0) + amount
+            if str(bucket) in {item.value for item in Strategy} or str(bucket) == "emergency":
+                by_strategy[str(strategy)] = by_strategy.get(str(strategy), 0) + amount
         used = sum(by_bucket.values())
+        by_stage = {
+            stage: {
+                "used": by_stage_count.get(stage, 0),
+                "target": self._stage_targets[stage],
+                "limit": self._stage_limits[stage],
+                "remaining": max(0, self._stage_limits[stage] - by_stage_count.get(stage, 0)),
+                "target_met": by_stage_count.get(stage, 0) >= self._stage_targets[stage],
+            }
+            for stage in self._stage_limits
+        }
+        target_met = all(
+            by_stage_count.get(stage, 0) >= target
+            for stage, target in self._stage_targets.items()
+            if stage != "emergency"
+        )
         return {
             "used": used,
             "remaining": max(0, self._daily_hard_limit - used),
+            "target": self._daily_target,
+            "target_met": target_met,
             "by_bucket": by_bucket,
+            "by_strategy": by_strategy,
+            "by_stage": by_stage,
             "by_status": by_status,
+            "batch_status": {str(status): int(count) for status, count in batch_rows},
+            "candidate_outcomes": {str(outcome): int(count) for outcome, count in candidate_rows},
         }
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path, timeout=10.0)
         connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=10000")
         return connection
+
+
+def _stage_key(strategy: Strategy, phase: str, bucket: str) -> str:
+    if bucket == "shared_preheat":
+        return "shared_preheat"
+    if bucket == "emergency":
+        return "emergency"
+    if strategy is Strategy.TODAY and phase in {"today_observe", "today_main", "today_late"}:
+        return phase
+    if strategy is Strategy.TOMORROW and phase in {"afternoon", "final_review"}:
+        return "tomorrow_final" if phase == "final_review" else "tomorrow_afternoon"
+    if strategy is Strategy.D25 and phase in {"afternoon", "final_review"}:
+        return "d25_final" if phase == "final_review" else "d25_afternoon"
+    if strategy is Strategy.LONG and phase in {"afternoon", "final_review"}:
+        return "long_afternoon"
+    return f"{strategy.value}_{phase}"
+
+
+def _count(connection: sqlite3.Connection, where: str, parameters: tuple[object, ...]) -> int:
+    return int(
+        connection.execute(
+            f"SELECT COUNT(*) FROM deepseek_call_reservations WHERE {where}",
+            parameters,
+        ).fetchone()[0]
+    )
+
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+    columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
+def _require_aware(value: datetime, name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware")
 
 
 __all__ = ["BudgetReservation", "DeepSeekBudgetStore"]

@@ -27,6 +27,27 @@ DIMENSION_NAMES = (
     "risk_quality",
 )
 
+STRUCTURED_REVIEW_FEATURES = frozenset(
+    {
+        "amount_median_20d",
+        "volatility_20d",
+        "max_drawdown_20d",
+        "ma_slope",
+        "upward_consistency",
+        "news_sentiment",
+        "evidence_freshness",
+        "financial_deterioration",
+        "reduction_or_unlock",
+        "pledge_risk",
+        "negative_announcement_level",
+        "value_score",
+        "growth_score",
+        "quality_score",
+        "industry_policy_score",
+        "risk_protection_score",
+    }
+)
+
 
 @dataclass(frozen=True)
 class FusionPolicy:
@@ -143,4 +164,4 @@ def _validate_policy(policy: FusionPolicy) -> None:
         raise ValueError("confidence coverage must be between 0 and 1")
 
 
-__all__ = ["DIMENSION_NAMES", "FusionPolicy", "FusionResult", "fuse_score"]
+__all__ = ["DIMENSION_NAMES", "STRUCTURED_REVIEW_FEATURES", "FusionPolicy", "FusionResult", "fuse_score"]

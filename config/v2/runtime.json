@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "config_version": "runtime_v4_cadence_2026_07_18",
+  "config_version": "runtime_v5_deepseek_2026_07_18",
   "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -95,7 +95,6 @@
     "timeout_seconds": 12,
     "batch_size": 8,
     "max_tokens": 1800,
-    "confidence_coverage_min": 0.5,
     "daily_hard_limit": 188,
     "strategy_limits": {
       "today": 70,
@@ -103,6 +102,30 @@
       "d25": 35,
       "long": 18,
       "shared_preheat": 15,
+      "emergency": 5
+    },
+    "stage_targets": {
+      "shared_preheat": 15,
+      "today_observe": 12,
+      "today_main": 36,
+      "today_late": 10,
+      "tomorrow_afternoon": 15,
+      "tomorrow_final": 10,
+      "d25_afternoon": 15,
+      "d25_final": 10,
+      "long_afternoon": 10,
+      "emergency": 0
+    },
+    "stage_limits": {
+      "shared_preheat": 15,
+      "today_observe": 15,
+      "today_main": 42,
+      "today_late": 13,
+      "tomorrow_afternoon": 25,
+      "tomorrow_final": 20,
+      "d25_afternoon": 22,
+      "d25_final": 13,
+      "long_afternoon": 18,
       "emergency": 5
     }
   },

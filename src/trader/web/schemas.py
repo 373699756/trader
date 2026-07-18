@@ -280,6 +280,7 @@ def _risk_fact(fact: RiskFact) -> dict[str, object]:
         "threshold": fact.threshold,
         "actual": fact.actual,
         "veto": fact.veto,
+        "assessment": fact.assessment,
     }
 
 
