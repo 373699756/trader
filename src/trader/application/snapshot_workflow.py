@@ -1,4 +1,4 @@
-"""Snapshot scoring, freezing and live-overlay lifecycle operations."""
+"""Snapshot scoring, freezing and live-overlay workflow operations."""
 
 from __future__ import annotations
 

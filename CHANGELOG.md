@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增架构契约测试，固定快照编排模块必须使用职责明确的 `snapshot_workflow.py`，并禁止旧 `snapshot_lifecycle.py` 路径重新出现。
 - 用户诉求：继续闭合 `docs/issues/2026-07-17.md` 中第 4-7 节未完成任务；现状是配置中的 worker 和刷新频率未形成真实消费者，关键单点可能因调度延迟错过，TopK 无独立报价链，数据年龄、乱序、单飞、熔断和发布延迟缺少统一证据。修改后新增生命周期受控的有界执行器和独立 cadence 计划器，真实启动数据、标准化、三策略、DeepSeek、合并、持久化及 long 消费者，并形成全日计划、来源恢复、实时 overlay 和时效状态回归。
 - 新增第 13 节 d25/long 点时研究输入：d25 候选和固定 long 名单按代码获取东方财富财务、精确发布时间公告、累计质押比例与未来 90 天解禁比例；纯领域公式生成价值、成长、质量、行业/政策、风险保护及四类本地风险，来源时间、接收时间、版本、脱敏原始摘要和派生摘要随输入保存。
 - 新增第 12 节 tomorrow 候选级未复权 1 分钟输入：按连续 30 个交易分钟计算原始收益和尾盘量比，再通过配置化固定公式映射到 0-100；分钟来源、源时间、接收时间、输入版本和公式中间值随证据及冻结回放保存。
@@ -30,6 +31,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户诉求：将含义宽泛的快照“生命周期”命名改为职责导向名称。现状判断：该模块实际负责编排评分、冻结和实时 overlay 流程，不拥有应用或资源生命周期；现重命名为 `snapshot_workflow.py`，同步生产导入和 `docs/need.md` 结构契约，不改变评分、冻结、持久化、API 或线程行为。
 - 生产行情分页、历史、分钟和研究任务改为复用组合根唯一的 6-worker 数据池；策略评分拆为 worker 内的不可变本地准备、DeepSeek worker 复核和单合并线程融合/TopK，long 使用独立低优先级 worker，并在三策略复核完成后优先复用策略无关缓存。应用层按事件生命周期、worker 阶段和快照/冻结生命周期拆分，SQLite/JSON 发布、冻结、overlay 和事件状态统一经单写线程串行提交；Web 查询端只依赖拆分后的只读事件端口。
 - 运行配置升级为 schema v3，以逐任务、逐阶段 `pipeline.cadence_seconds` 驱动全市场、候选、TopK、评分、行业、新闻、风险和参考数据事件；周期错过或同类任务仍在运行时从当前时刻重新计时，不突发补跑。冻结、DeepSeek 截止和收盘单点可在延迟或重启后幂等补提交，14:49:50 最终候选只允许在冻结前补交。
 - 策略配置 schema 升级到 v7，d25 的 15/30 过热边界、0.85/0.75 系数、市场宽度 60/40 分类与 1.03/1/0.92 状态乘数，以及 long 的年化、估值、成长、质量、公告关键词、质押和解禁公式全部进入规范化策略哈希；冻结回放算法升级到 `engine_v9_section13_2026_07`，d25/long 输入版本绑定完整因子值与结构化证据版本。
@@ -97,6 +99,7 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除内部模块路径 `trader.application.snapshot_lifecycle`；该路径不是公共 API，未保留会掩盖半迁移状态的兼容转发文件。
 - 移除生产行情服务按调用临时创建 history/research/intraday/Eastmoney 分页线程池的路径，以及可绕过 CAS 的 `append_event()` 无条件事件写入口；组件脱离运行时独立调用时仍使用同一有界执行器适配层完成局部回收。本批不修改评分公式、冻结边界或 Web 视觉布局。
 - 移除 d25 市场状态与过热乘数的实现内阈值表，以及 long 五项、财务恶化、公告、质押和减持解禁在生产特征链中的固定缺失占位路径；未删除固定 long 名单、人工目标价或只读观察边界。
 - 移除生产特征构建中两个 tomorrow 尾盘因子的固定 `None` 占位路径；DeepSeek 功能未在第 12 或第 13 节中删除或扩展。
@@ -107,6 +110,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 快照工作流模块重命名回归覆盖新路径存在、旧路径禁止、生产导入和流水线集成；`make format-check`、Ruff lint、67 个源码文件 mypy、319 个 pytest、`make package` 和 wheel 模块清单检查均通过。最终 wheel 在仓库外 Python 3.11 venv 强制重装后，`pip check`、新模块导入、旧模块缺失、`trader-cli validate-config` 及模板/CSS/两个 JavaScript/SVG 共 5 项资源验收通过；无头 Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、区块重叠、图片失败或非预期脚本异常，未启动 publisher 时 SSE 503 按预期回退。
 - 第 4-7 节统一回归覆盖完整事件/CAS/重放与有界 worker 生命周期，虚拟交易日每类 cadence 精确次数、周期错过不补跑、关键单点延迟及重启恢复、同任务在途跳过，TopK 草稿/冻结 overlay、全市场 single-flight、熔断半开恢复、候选与分钟乱序拒绝、失败保留最近有效数据、时效 2 倍/3 倍边界、SSE 与 today 发布延迟，以及状态读取不触发日历 I/O；`make format-check`、Ruff lint、67 个源码文件 mypy、318 个 pytest、`make package` 和 `git diff --check` 均通过。最终 wheel 在仓库外 Python 3.11 venv 安装全部声明依赖后 `pip check` 无 broken requirements，`trader-cli validate-config`/`--help` 正常，模板、CSS、两个 JavaScript 和 SVG 共 5 项资源可读；无头 Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、区块重叠、图片失败或非预期脚本异常，未启动 publisher 时 SSE 503 按预期回退。
 - 第 13 节回归覆盖 d25 15/30、40/60 精确边界及线性中点，long 3/6/9/12 月年化、估值/成长/质量/行业政策/风险保护公式，质押 10/20/35 与解禁 1/5/10 精确分级，财务公告点时过滤、成功空源、单来源失败、畸形/越界输入、多语义证据、证据上限、双模式缓存、配置缺失/漂移/关键词重叠、输入版本、缺失降级及确定性回放；受控真实请求确认 600036 财务、57 条有效公告、质押和解禁点时源均可解析且无结构化来源错误，未保存完整外部载荷。完整门禁为 63 个源码文件 mypy、Ruff format/lint、265 个 pytest、sdist/wheel 和 `git diff --check`；仓库外 Python 3.11 环境安装全部声明依赖并强制重装最终 wheel 后，`pip check`、site-packages 包及新领域模块导入、`trader-cli validate-config`/`--help`、首页和模板/CSS/两个 JavaScript/SVG 资源均通过。Headless Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、关键区重叠、图片失败或非预期脚本异常；未启动 publisher 时 SSE 503 按预期回退。
 - 第 12 节 134 项章节回归覆盖 tomorrow 六组件/全部子权重、收益/量比/收盘位置 0/50/100 端点、源时间晚于观察时点/接收时间越界/跨日/非交易时段/重复/缺口/午休/非法与非有限数据、未复权分钟端点和直连超时、候选限定、d25/long 字段隔离、批次截止、缓存容量、四项输入完整性、缺失降级、健康覆盖、配置与登记一致性、输入版本、prompt 证据子集、API/冻结往返和确定性回放。完整门禁为 62 个源码文件 mypy、Ruff format/lint、238 个 pytest、sdist/wheel 和 `git diff --check`；仓库外 Python 3.11 环境安装 wheel 及全部声明依赖后，`pip check`、site-packages 导入、新尾盘领域模块、`trader-cli validate-config`、首页和模板/CSS/两个 JavaScript/SVG 资源通过。Headless Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、关键区重叠、图片失败或脚本异常，并保存三档截图；未启动 publisher 时 SSE 503 按预期回退。
@@ -142,6 +146,7 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批次是内部模块纯重命名，仓库内引用和 wheel 均受门禁覆盖；若仓库外代码绕过公共入口直接导入旧内部路径，将需要改用 `trader.application.snapshot_workflow`，不提供旧名兼容层。
 - 第 4-7 节已有固定输入、虚拟全日时间线和故障注入证据，但尚未在真实交易日验证 6-worker 数据池的全市场 P95、队列峰值、15 秒停机、TopK 全天 P95、来源熔断恢复和 today 报价到评分延迟目标；Python 不能中断已进入第三方库的运行中调用，停机会记录超时并继续等待各适配器的显式 I/O timeout，以无残留线程优先。固定输入门禁不能替代第 25 节真实交易日证据。
 - 第 13 节使用录制响应覆盖全部边界，并用 600036 完成单股受控真实结构化请求；尚未在真实交易时段验证 120 只 d25 候选与 10 只 long 名单的整体覆盖率、P95 延迟、上游限流和缓存恢复。来源失败会保持 `null`、中性评分和显式降级，但首次生产运行仍需观察研究源成功率与 `research_data_coverage_ratio`。第 12 节分钟输入同样仍需真实交易日覆盖率与延迟证据。
 - 第 11 节 today 评分输入已闭环；配置化关键词是可审计的保守极性规则，不能理解否定、反讽或复杂语境，首次真实交易日仍需抽样核对标题分类分布。AKShare 线上 JSONP 形态尚未用真实脱敏响应闭环，当前证据仅来自录制响应与失败降级测试。

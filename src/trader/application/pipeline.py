@@ -44,7 +44,7 @@ from trader.application.schedule import (
     shanghai_now,
     trade_date_at,
 )
-from trader.application.snapshot_lifecycle import (
+from trader.application.snapshot_workflow import (
     freeze_available_snapshots,
     process_schedule,
     refresh_live_overlays,

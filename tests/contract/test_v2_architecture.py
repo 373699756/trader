@@ -55,6 +55,13 @@ def test_cutover_removed_legacy_runtime_tree() -> None:
     assert [path for path in forbidden if (PROJECT_ROOT / path).exists()] == []
 
 
+def test_snapshot_workflow_module_uses_specific_responsibility_name() -> None:
+    application = SOURCE_ROOT / "application"
+
+    assert (application / "snapshot_workflow.py").is_file()
+    assert not (application / "snapshot_lifecycle.py").exists()
+
+
 def _imports_matching(predicate: Callable[[str], bool]) -> list[str]:
     violations: list[str] = []
     for path in SOURCE_ROOT.rglob("*.py"):
