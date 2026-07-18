@@ -430,7 +430,9 @@ class RecommendationPipeline:
         self._state.record_tick(decision.phase.value, at)
         if decision.phase is MarketPhase.CLOSED:
             return ()
-        return process_schedule(self, at, decision.phase, decision.freeze_strategies)
+        snapshots = process_schedule(self, at, decision.phase, decision.freeze_strategies)
+        self._record_health_snapshot()
+        return snapshots
 
     def status(self) -> dict[str, object]:
         measured_at = self._now()
@@ -457,15 +459,47 @@ class RecommendationPipeline:
         )
         with self._cadence_lock:
             cadence_status["inflight_tasks"] = sorted(task.value for task in self._scheduled_inflight)
+        deepseek_status: dict[str, object] = (
+            dict(self._reviews.status()) if self._reviews is not None else {"enabled": False}
+        )
+        deepseek_status["veto_count"] = sum(
+            item.veto
+            for strategy in Strategy
+            if (snapshot := self._state.latest(strategy)) is not None
+            for item in snapshot.recommendations
+        )
         dependencies = {
             "market_data": market_data,
-            "deepseek": dict(self._reviews.status()) if self._reviews is not None else {"enabled": False},
+            "deepseek": deepseek_status,
             "event_queue": self._queue.status(),
             "worker_pools": worker_status(self),
             "cadence": cadence_status,
             "publisher": self._publisher.status(),
+            "persistent_audit": self._observability_status(),
         }
         return self._state.snapshot(dependencies)
+
+    def _observability_status(self) -> Mapping[str, object]:
+        provider = getattr(self._repository, "observability_status", None)
+        if not callable(provider):
+            return {}
+        try:
+            return dict(provider())
+        except (OSError, RuntimeError, ValueError):
+            return {"error": "persistent_observability_unavailable"}
+
+    def _record_health_snapshot(self) -> None:
+        recorder = getattr(self._repository, "record_data_source_health", None)
+        if not callable(recorder):
+            return
+        health = dict(self._market_data.health())
+        updated_at = self._now()
+        if not self._persistence_running:
+            recorder(health, updated_at=updated_at)
+            return
+        future = self._persistence_pool.submit(recorder, health, updated_at=updated_at)
+        if future is None:
+            self._state.increment("observability_write_rejections")
 
     def _freshness_status(
         self,
@@ -563,6 +597,7 @@ class RecommendationPipeline:
                 self._state.increment("events_failed")
                 self._state.record_error(str(exc))
             finally:
+                self._record_health_snapshot()
                 task_raw = event.payload.get("schedule_task")
                 if isinstance(task_raw, str):
                     try:

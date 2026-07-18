@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Generic, TypeVar, cast
 
@@ -26,6 +27,8 @@ class _CircuitState:
     error_count: int = 0
     last_latency_ms: float = 0.0
     last_error: str = ""
+    planned_count: int = 0
+    latencies_ms: deque[float] = field(default_factory=lambda: deque(maxlen=256))
 
 
 class _SingleFlight(Generic[_T]):
@@ -98,6 +101,7 @@ class MarketDataGateway:
         errors: list[str] = []
         last_exception: Exception | None = None
         for name, fetcher in (("eastmoney", self._eastmoney.fetch_market), ("sina", self._sina.fetch_market)):
+            self._record_planned(name)
             if self._is_open(name):
                 errors.append(f"{name}:circuit_open")
                 continue
@@ -132,6 +136,7 @@ class MarketDataGateway:
         if not codes:
             return ()
         with self._candidate_fetch_lock:
+            self._record_planned("tencent")
             if self._is_open("tencent"):
                 with self._state_lock:
                     return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
@@ -175,16 +180,23 @@ class MarketDataGateway:
                 "cached_rows": len(self._latest_by_code),
                 "sources": {
                     name: {
+                        "planned_count": state.planned_count,
                         "success_count": state.success_count,
                         "error_count": state.error_count,
                         "consecutive_failures": state.failures,
                         "circuit_open": state.open_until > now,
                         "last_latency_ms": round(state.last_latency_ms, 2),
+                        "p50_latency_ms": _percentile(state.latencies_ms, 0.50),
+                        "p95_latency_ms": _percentile(state.latencies_ms, 0.95),
                         "last_error": state.last_error,
                     }
                     for name, state in self._states.items()
                 },
             }
+
+    def _record_planned(self, source: str) -> None:
+        with self._state_lock:
+            self._states[source].planned_count += 1
 
     def _is_open(self, source: str) -> bool:
         with self._state_lock:
@@ -195,6 +207,7 @@ class MarketDataGateway:
         with self._state_lock:
             state = self._states[source]
             state.last_latency_ms = elapsed_ms
+            state.latencies_ms.append(elapsed_ms)
             if success:
                 state.failures = 0
                 state.success_count += 1
@@ -206,6 +219,14 @@ class MarketDataGateway:
             state.last_error = error[:240]
             if state.failures >= self._failure_limit:
                 state.open_until = self._monotonic() + self._breaker_seconds
+
+
+def _percentile(values: Sequence[float], quantile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int((len(ordered) - 1) * quantile + 0.5)))
+    return round(float(ordered[index]), 2)
 
 
 def _price_deviation_pct(first: float | None, second: float | None) -> float | None:

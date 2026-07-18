@@ -22,7 +22,8 @@
 
   function init() {
     for (const id of [
-      "marketPhase", "runtimeDot", "runtimeStatus", "quoteAge", "streamStatus", "budgetStatus", "lastError",
+      "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
+      "scoreTime", "budgetStatus", "headerFreeze", "lastError",
       "refreshButton", "dateSelect", "recommendationCount", "executableCount", "filteredCount", "dataSource",
       "strategyVersion", "freezeStatus", "notice", "recommendationTable", "tableColumns", "tableHead", "tableBody",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
@@ -108,8 +109,15 @@
       const payload = await requestRecommendations(strategy, selectedDate);
       if (requestId !== state.requestSequence) return;
       if (state.payload !== payload) {
+        const previous = state.payload;
         state.payload = payload;
-        renderPayload(payload);
+        if (reason === "overlay" && patchLiveRows(previous, payload)) {
+          const first = payload.items && payload.items[0];
+          els.dataSource.textContent = first && first.source ? first.source : "-";
+          updateQuoteAge();
+        } else {
+          renderPayload(payload);
+        }
       }
     } catch (error) {
       if (requestId !== state.requestSequence) return;
@@ -146,7 +154,7 @@
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error && payload.error.message ? payload.error.message : "接口请求失败");
       if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
-      if (selectedDate && payload.trade_date !== selectedDate) throw new Error("推荐快照日期不匹配");
+      if (!cacheIdentityValid(payload, strategy, selectedDate)) throw new Error("推荐快照身份不匹配");
       const etag = response.headers.get("ETag");
       if (etag) state.etags.set(key, etag);
       state.payloads.set(key, payload);
@@ -166,12 +174,26 @@
 
   function displayableCachedPayload(key, strategy, selectedDate) {
     const payload = state.payloads.get(key) || null;
-    if (!payload || payload.strategy !== strategy) return null;
-    if (selectedDate && payload.trade_date !== selectedDate) return null;
+    if (!cacheIdentityValid(payload, strategy, selectedDate)) return null;
     if (payload.frozen) return payload;
     const publishedAt = new Date(payload.published_at).getTime();
     if (!Number.isFinite(publishedAt) || Date.now() - publishedAt > CACHE_MAX_AGE_MS) return null;
     return payload;
+  }
+
+  function cacheIdentityValid(payload, strategy, selectedDate) {
+    if (!payload || payload.strategy !== strategy) return false;
+    if (selectedDate) {
+      return payload.historical === true
+        && payload.requested_date === selectedDate
+        && payload.trade_date === selectedDate;
+    }
+    if (payload.status === "not_ready") return true;
+    if (payload.historical === true || !payload.current_trade_date) return false;
+    if (payload.trade_date === payload.current_trade_date) return true;
+    return payload.stale === true
+      && payload.fallback_date === payload.trade_date
+      && payload.fallback_reason === "previous_trade_date_snapshot";
   }
 
   function prefetchStrategies() {
@@ -187,8 +209,10 @@
     els.filteredCount.textContent = String(payload.filtered_count || 0);
     els.dataSource.textContent = items[0] && items[0].source ? items[0].source : "-";
     els.strategyVersion.textContent = payload.strategy_version || "-";
-    els.freezeStatus.textContent = payload.frozen ? "已冻结" : "实时草稿";
-    const historical = Boolean(state.date);
+    els.freezeStatus.textContent = payload.fallback_date
+      ? `上一交易日 ${payload.fallback_date}`
+      : payload.frozen ? "已冻结" : "实时草稿";
+    const historical = payload.historical === true;
     const definition = historical ? window.TraderRender.historyTable() : window.TraderRender.currentTable();
     els.recommendationTable.classList.toggle("is-history", historical);
     els.tableColumns.innerHTML = definition.columns;
@@ -203,7 +227,9 @@
     } else {
       els.tableBody.innerHTML = window.TraderRender.rows(items, historical);
     }
-    if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
+    if (payload.fallback_date) {
+      setNotice(`当前交易日尚无快照，显示上一交易日快照 ${payload.fallback_date}，仅供观察`, "warn");
+    } else if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
     else if ((payload.degraded_reasons || []).length) setNotice(`降级：${payload.degraded_reasons.join("、")}`, "warn");
     else if (payload.frozen) setNotice(`已冻结于 ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
     else setNotice(`快照 ${window.TraderRender.formatDateTime(payload.published_at)} · ${payload.fusion_mode}`, "ok");
@@ -212,6 +238,35 @@
 
   function renderTableState(message, columns) {
     els.tableBody.innerHTML = `<tr><td class="table-state" colspan="${columns || 9}">${window.TraderRender.escapeHtml(message)}</td></tr>`;
+  }
+
+  function patchLiveRows(previous, payload) {
+    if (!previous || !payload || previous.snapshot_id !== payload.snapshot_id) return false;
+    if (previous.historical === true || payload.historical === true) return false;
+    const before = Array.isArray(previous.items) ? previous.items : [];
+    const after = Array.isArray(payload.items) ? payload.items : [];
+    if (before.length !== after.length) return false;
+    const existingRows = new Map(
+      Array.from(els.tableBody.querySelectorAll("tr[data-code]")).map((row) => [row.dataset.code, row]),
+    );
+    if (existingRows.size !== after.length) return false;
+    const beforeByCode = new Map(before.map((item) => [item.code, item]));
+    for (const item of after) {
+      const prior = beforeByCode.get(item.code);
+      const currentRow = existingRows.get(item.code);
+      if (!prior || !currentRow) return false;
+      if (
+        prior.price === item.price
+        && prior.pct_change === item.pct_change
+        && prior.source_time === item.source_time
+        && prior.quote_data_version === item.quote_data_version
+      ) continue;
+      const holder = document.createElement("tbody");
+      holder.innerHTML = window.TraderRender.row(item, false);
+      if (!holder.firstElementChild) return false;
+      currentRow.replaceWith(holder.firstElementChild);
+    }
+    return true;
   }
 
   function setNotice(message, level) {
@@ -250,7 +305,15 @@
       els.lastError.textContent = payload.last_error || "无";
       const deepseek = payload.dependencies && payload.dependencies.deepseek;
       const budget = deepseek && deepseek.budget;
-      els.budgetStatus.textContent = budget ? `${budget.used} / ${budget.used + budget.remaining}` : "0 / 188";
+      els.budgetStatus.textContent = budget ? `${budget.used} / ${budget.remaining}` : "0 / 188";
+      const market = payload.dependencies && payload.dependencies.market_data;
+      els.quoteSource.textContent = market && market.active_source ? market.active_source : "-";
+      const score = state.payload && state.payload.published_at;
+      els.scoreTime.textContent = score ? window.TraderRender.formatTime(score) : "-";
+      els.headerFreeze.textContent = state.payload
+        ? state.payload.fallback_date ? "上一交易日" : state.payload.frozen ? "已冻结" : "草稿"
+        : "-";
+      updateQuoteAge();
     } catch (_error) {
       els.runtimeStatus.textContent = "状态不可用";
       els.runtimeDot.dataset.state = "error";
@@ -261,15 +324,18 @@
     const item = state.payload && state.payload.items && state.payload.items[0];
     if (!item || !item.source_time) {
       els.quoteAge.textContent = "-";
+      els.quoteTime.textContent = "-";
       return;
     }
     const timestamp = new Date(item.source_time).getTime();
     if (!Number.isFinite(timestamp)) {
       els.quoteAge.textContent = "-";
+      els.quoteTime.textContent = "-";
       return;
     }
     const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
     els.quoteAge.textContent = seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分`;
+    els.quoteTime.textContent = window.TraderRender.formatTime(item.source_time);
   }
 
   function connectStream() {

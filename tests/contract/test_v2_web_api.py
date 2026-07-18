@@ -24,9 +24,13 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
     response = client.get("/api/recommendations/today?top_n=0")
 
     assert response.status_code == 200
-    assert response.get_json()["items"] == []
-    assert response.get_json()["fusion_mode"] == "local_degraded"
-    assert response.get_json()["filter_details"] == []
+    payload = response.get_json()
+    assert payload["items"] == []
+    assert payload["fusion_mode"] == "local_degraded"
+    assert payload["filter_details"] == []
+    assert payload["requested_date"] is None
+    assert payload["current_trade_date"] == "2026-07-16"
+    assert payload["historical"] is False
     etag = response.headers["ETag"]
     assert client.get("/api/recommendations/today", headers={"If-None-Match": etag}).status_code == 304
 
@@ -253,7 +257,159 @@ def test_previous_trade_date_is_explicit_stale_fallback(
     assert payload["stale"] is True
     assert payload["fallback_date"] == "2026-07-15"
     assert payload["fallback_reason"] == "previous_trade_date_snapshot"
+    assert payload["current_trade_date"] == "2026-07-16"
+    assert payload["historical"] is False
     assert "previous_trade_date_fallback" in payload["degraded_reasons"]
+
+
+def test_fallback_etag_changes_with_current_trade_date(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    previous = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY),
+        snapshot_id="previous-freeze",
+        trade_date="2026-07-15",
+        frozen=True,
+    )
+    repository = MemoryReadRepository(latest={Strategy.TODAY: previous})
+
+    first = _app(repository, now=NOW)[0].test_client().get("/api/recommendations/today")
+    second = _app(repository, now=NOW.replace(day=17))[0].test_client().get("/api/recommendations/today")
+
+    assert first.headers["ETag"] != second.headers["ETag"]
+    assert first.get_json()["current_trade_date"] == "2026-07-16"
+    assert second.get_json()["current_trade_date"] == "2026-07-17"
+
+
+def test_historical_snapshot_has_exact_identity_and_current_quote_overlay(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    historical = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        snapshot_id="historical-15",
+        trade_date="2026-07-15",
+        frozen=True,
+    )
+    current = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        snapshot_id="current-16",
+        frozen=True,
+    )
+    live_at = NOW.replace(hour=14, minute=55)
+    overlay = LiveOverlay(
+        snapshot_id=current.snapshot_id,
+        strategy=current.strategy,
+        trade_date=current.trade_date,
+        version="current-overlay",
+        observed_at=live_at,
+        quotes={
+            "600001": LiveQuote(
+                code="600001",
+                price=15.0,
+                pct_change=8.0,
+                source="tencent",
+                source_time=live_at,
+                received_time=live_at,
+                data_version="live-current",
+            )
+        },
+    )
+    repository = MemoryReadRepository(
+        latest={Strategy.TOMORROW: current},
+        frozen={(Strategy.TOMORROW, "2026-07-15"): historical},
+        overlays={(Strategy.TOMORROW, "2026-07-16"): overlay},
+    )
+
+    response = _app(repository, now=live_at)[0].test_client().get("/api/recommendations/tomorrow?date=2026-07-15")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["trade_date"] == "2026-07-15"
+    assert payload["requested_date"] == "2026-07-15"
+    assert payload["current_trade_date"] == "2026-07-16"
+    assert payload["historical"] is True
+    assert payload["live_overlay"] is None
+    assert payload["items"][0]["price"] == 15.0
+    assert payload["items"][0]["pct_change"] == 8.0
+    assert payload["items"][0]["anchor_to_now_pct"] == 25.0
+
+
+def test_historical_snapshot_uses_current_snapshot_quote_without_overlay(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    historical = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        snapshot_id="historical-base-15",
+        trade_date="2026-07-15",
+        frozen=True,
+    )
+    historical_item = historical.recommendations[0]
+    historical_features = replace(
+        historical_item.features,
+        quote=replace(historical_item.features.quote, price=10.0, pct_change=1.0),
+    )
+    historical = replace(
+        historical,
+        recommendations=(replace(historical_item, features=historical_features), *historical.recommendations[1:]),
+    )
+    current = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        snapshot_id="current-base-16",
+    )
+    repository = MemoryReadRepository(
+        latest={Strategy.TOMORROW: current},
+        frozen={(Strategy.TOMORROW, "2026-07-15"): historical},
+    )
+
+    payload = _app(repository, now=NOW)[0].test_client().get("/api/recommendations/tomorrow?date=2026-07-15").get_json()
+
+    assert payload["items"][0]["price"] == 12.0
+    assert payload["items"][0]["pct_change"] == 3.0
+    assert payload["items"][0]["anchor_to_now_pct"] == 20.0
+
+
+def test_historical_snapshot_does_not_reuse_previous_day_overlay_as_current_quote(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    previous = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        snapshot_id="previous-15",
+        trade_date="2026-07-15",
+        frozen=True,
+    )
+    overlay_time = NOW.replace(day=15)
+    overlay = LiveOverlay(
+        snapshot_id=previous.snapshot_id,
+        strategy=previous.strategy,
+        trade_date=previous.trade_date,
+        version="previous-overlay",
+        observed_at=overlay_time,
+        quotes={
+            "600001": LiveQuote(
+                code="600001",
+                price=15.0,
+                pct_change=8.0,
+                source="tencent",
+                source_time=overlay_time,
+                received_time=overlay_time,
+                data_version="previous-live",
+            )
+        },
+    )
+    repository = MemoryReadRepository(
+        latest={Strategy.TOMORROW: previous},
+        frozen={(Strategy.TOMORROW, "2026-07-15"): previous},
+        overlays={(Strategy.TOMORROW, "2026-07-15"): overlay},
+    )
+
+    payload = _app(repository, now=NOW)[0].test_client().get("/api/recommendations/tomorrow?date=2026-07-15").get_json()
+
+    assert payload["items"][0]["price"] == previous.recommendations[0].features.quote.price
+    assert payload["items"][0]["anchor_to_now_pct"] is None
 
 
 def test_history_dates_not_found_and_long_rules(recommendation_policy, application_feature_factory) -> None:
@@ -268,12 +424,37 @@ def test_history_dates_not_found_and_long_rules(recommendation_policy, applicati
     historical = client.get("/api/recommendations/tomorrow?date=2026-07-16")
 
     assert historical.status_code == 200
-    assert historical.get_json()["frozen"] is True
-    assert client.get("/api/recommendations/tomorrow?date=2026-07-15").status_code == 404
+    historical_payload = historical.get_json()
+    assert historical_payload["frozen"] is True
+    assert historical_payload["requested_date"] == "2026-07-16"
+    assert historical_payload["historical"] is True
+    missing = client.get("/api/recommendations/tomorrow?date=2026-07-15")
+    assert missing.status_code == 404
+    assert missing.get_json()["strategy"] == "tomorrow"
+    assert missing.get_json()["trade_date"] == "2026-07-15"
     assert client.get("/api/recommendations/long?date=2026-07-15").status_code == 400
     dates = client.get("/api/recommendation-dates?strategy=tomorrow")
     assert dates.get_json()["items"] == ["2026-07-16"]
     assert client.get("/api/recommendation-dates?strategy=long").status_code == 400
+
+
+def test_validation_errors_keep_request_context() -> None:
+    app, _publisher = _app(MemoryReadRepository())
+    client = app.test_client()
+
+    invalid_top = client.get("/api/recommendations/today?top_n=99&date=2026-07-16")
+    invalid_date = client.get("/api/recommendations/d25?date=not-a-date")
+    invalid_strategy = client.get("/api/recommendations/not-a-strategy?date=2026-07-16")
+
+    assert invalid_top.status_code == 400
+    assert invalid_top.get_json()["strategy"] == "today"
+    assert invalid_top.get_json()["trade_date"] == "2026-07-16"
+    assert invalid_date.status_code == 400
+    assert invalid_date.get_json()["strategy"] == "d25"
+    assert invalid_date.get_json()["trade_date"] == "not-a-date"
+    assert invalid_strategy.status_code == 400
+    assert invalid_strategy.get_json()["strategy"] == "not-a-strategy"
+    assert invalid_strategy.get_json()["trade_date"] == "2026-07-16"
 
 
 def test_event_query_validates_cursor_and_limit() -> None:

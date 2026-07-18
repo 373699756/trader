@@ -6,9 +6,9 @@
     <meta name="color-scheme" content="dark" />
     <title>A股策略看板</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='2') }}" />
-    <script defer src="{{ url_for('static', filename='render.js', v='3') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard.js', v='5') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='3') }}" />
+    <script defer src="{{ url_for('static', filename='render.js', v='4') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard.js', v='6') }}"></script>
   </head>
   <body>
     <header class="app-header">
@@ -21,13 +21,15 @@
       </div>
       <div class="runtime-strip" aria-label="运行状态">
         <span><i id="runtimeDot" class="status-dot" data-state="idle"></i><b id="runtimeStatus">未启动</b></span>
-        <span>行情 <b id="quoteAge">-</b></span>
+        <span>行情 <b id="quoteSource">-</b> <b id="quoteTime">-</b> / <b id="quoteAge">-</b></span>
         <span>推送 <b id="streamStatus">连接中</b></span>
-        <span>DeepSeek <b id="budgetStatus">0 / 188</b></span>
+        <span>评分 <b id="scoreTime">-</b></span>
+        <span>DeepSeek 已用/剩余 <b id="budgetStatus">0 / 188</b></span>
+        <span>冻结 <b id="headerFreeze">-</b></span>
         <span>最近错误 <b id="lastError">无</b></span>
       </div>
       <button id="refreshButton" class="icon-button" type="button" title="刷新当前策略" aria-label="刷新当前策略">
-        <span aria-hidden="true">↻</span>
+        <svg class="lucide-icon" aria-hidden="true"><use href="{{ url_for('static', filename='lucide.svg') }}#refresh-cw"></use></svg>
       </button>
     </header>
 
@@ -79,7 +81,7 @@
           <h2 id="drawerTitle">评分明细</h2>
         </div>
         <button id="drawerClose" class="icon-button" type="button" title="关闭明细" aria-label="关闭明细">
-          <span aria-hidden="true">×</span>
+          <svg class="lucide-icon" aria-hidden="true"><use href="{{ url_for('static', filename='lucide.svg') }}#x"></use></svg>
         </button>
       </header>
       <div id="drawerContent" class="drawer-content"></div>

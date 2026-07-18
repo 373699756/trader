@@ -47,23 +47,59 @@ def register_routes(app: Flask, services: WebServices) -> None:
     def recommendations(strategy_name: str) -> Response | tuple[Response, int]:
         strategy = _strategy(strategy_name)
         if strategy is None:
-            return _error(400, "invalid_strategy", "strategy must be today, tomorrow, d25 or long")
+            return _error(
+                400,
+                "invalid_strategy",
+                "strategy must be today, tomorrow, d25 or long",
+                strategy=strategy_name,
+                trade_date=request.args.get("date"),
+            )
         top_n = _bounded_integer(request.args.get("top_n"), services.config.default_top_n)
         if top_n is None or top_n > services.config.maximum_top_n:
-            return _error(400, "invalid_top_n", f"top_n must be an integer from 0 to {services.config.maximum_top_n}")
+            return _error(
+                400,
+                "invalid_top_n",
+                f"top_n must be an integer from 0 to {services.config.maximum_top_n}",
+                strategy=strategy.value,
+                trade_date=request.args.get("date"),
+            )
         trade_date = request.args.get("date")
         if trade_date is not None and not _valid_date(trade_date):
-            return _error(400, "invalid_date", "date must use YYYY-MM-DD")
+            return _error(
+                400,
+                "invalid_date",
+                "date must use YYYY-MM-DD",
+                strategy=strategy.value,
+                trade_date=trade_date,
+            )
         queries = services.queries
         if queries is None:
             return jsonify(empty_snapshot_envelope(strategy.value, trade_date))
         if strategy is Strategy.LONG and trade_date is not None and trade_date != queries.today():
-            return _error(400, "long_history_unsupported", "long only supports the current trade date")
+            return _error(
+                400,
+                "long_history_unsupported",
+                "long only supports the current trade date",
+                strategy=strategy.value,
+                trade_date=trade_date,
+            )
         lookup = queries.recommendation(strategy, trade_date)
         if lookup.status == "not_found":
-            return _error(404, "snapshot_not_found", "recommendation snapshot does not exist")
+            return _error(
+                404,
+                "snapshot_not_found",
+                "recommendation snapshot does not exist",
+                strategy=strategy.value,
+                trade_date=trade_date,
+            )
         if lookup.snapshot is None:
-            return jsonify(empty_snapshot_envelope(strategy.value, trade_date))
+            return jsonify(
+                empty_snapshot_envelope(
+                    strategy.value,
+                    trade_date,
+                    current_trade_date=lookup.current_trade_date,
+                )
+            )
         snapshot = lookup.snapshot
         etag = lookup.etag or snapshot.snapshot_id
         if trade_date is None and request.if_none_match.contains(etag):
@@ -77,6 +113,10 @@ def register_routes(app: Flask, services: WebServices) -> None:
                 overlay=lookup.overlay,
                 fallback_date=lookup.fallback_date,
                 fallback_reason=lookup.fallback_reason,
+                requested_date=trade_date,
+                current_trade_date=lookup.current_trade_date,
+                historical=lookup.historical,
+                current_quotes=lookup.current_quotes,
             )
         )
         if trade_date is None:
@@ -173,8 +213,15 @@ def _valid_date(raw: str) -> bool:
     return parsed.isoformat() == raw
 
 
-def _error(status: int, code: str, message: str) -> tuple[Response, int]:
-    return jsonify(error_envelope(code, message)), status
+def _error(
+    status: int,
+    code: str,
+    message: str,
+    *,
+    strategy: str | None = None,
+    trade_date: str | None = None,
+) -> tuple[Response, int]:
+    return jsonify(error_envelope(code, message, strategy=strategy, trade_date=trade_date)), status
 
 
 __all__ = ["StatusProvider", "WebApiConfig", "WebServices", "register_routes"]

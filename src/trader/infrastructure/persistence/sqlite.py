@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def connect(database_path: Path) -> sqlite3.Connection:
@@ -94,6 +94,7 @@ def initialize_database(database_path: Path) -> None:
                 p50_latency_ms REAL,
                 p95_latency_ms REAL,
                 data_age_seconds REAL,
+                last_error TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL
             );
 
@@ -132,6 +133,7 @@ def initialize_database(database_path: Path) -> None:
             "TEXT NOT NULL DEFAULT 'recommendation_snapshot_v2'",
         )
         _ensure_column(connection, "frozen_snapshots", "anchor_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(connection, "data_source_health", "last_error", "TEXT NOT NULL DEFAULT ''")
         connection.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),

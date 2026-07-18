@@ -514,9 +514,9 @@ SQLite 与 JSON 只允许单写线程操作。实时草稿写入可替换的 `pu
 - `GET /api/events?cursor=<cursor>&limit=100`
 - `GET /api/events/stream`
 
-`strategy` 只接受 `today`、`tomorrow`、`d25`、`long`；long 只允许当前日期或省略日期，不出现在历史日期接口。`top_n` 必须为 0-18 的整数，日期、游标或策略无效返回结构化 400，快照不存在返回 404，服务已启动但尚无快照返回 200 空结果并带 `not_ready` 状态。所有响应使用版本化 envelope，至少包含 `schema_version`、`snapshot_id`、`published_at`、`data_version`、`strategy_version`、`fusion_version`、`fusion_mode`、`stale`、`degraded_reasons`、`items` 和 `error`。
+`strategy` 只接受 `today`、`tomorrow`、`d25`、`long`；long 只允许当前日期或省略日期，不出现在历史日期接口。`top_n` 必须为 0-18 的整数，日期、游标或策略无效返回结构化 400，快照不存在返回 404，服务已启动但尚无快照返回 200 空结果并带 `not_ready` 状态。所有响应使用版本化 envelope，至少包含 `schema_version`、`snapshot_id`、`published_at`、`data_version`、`strategy_version`、`fusion_version`、`fusion_mode`、`stale`、`degraded_reasons`、`items` 和 `error`。推荐 envelope 还必须返回 `requested_date`、`current_trade_date` 和 `historical`；当前请求降级到上一交易日时同时返回 `fallback_date` 与 `fallback_reason`，400/404 错误保留可解析的策略和请求日期上下文。
 
-Web 处理器只读取已发布快照，不允许直接抓取行情、计算评分或调用 DeepSeek。当前快照支持 ETag；相同版本返回 304，避免轮询重复传输。
+Web 处理器只读取已发布快照，不允许直接抓取行情、计算评分或调用 DeepSeek。当前快照支持 ETag；相同版本返回 304，避免轮询重复传输。ETag 身份必须包含当前交易日、快照、overlay 和 fallback 信息，跨交易日不得继续复用上一日缓存身份。历史响应的 `trade_date` 必须与 `requested_date` 完全一致；历史列表可用独立当前行情展示“今日涨跌”和“锚点至今”，但不得把该行情伪装成历史快照的 `live_overlay` 或改写冻结记录。
 
 `/api/events` 是有界审计查询，`/api/events/stream` 是 SSE。SSE 只推送已发布版本，事件 `id` 使用单调发布序号，支持 `Last-Event-ID`；游标仍在保留窗口内时补发，过旧时发送 `resync_required` 并由前端获取完整快照。心跳 15 秒；断线后前端每 15 秒轮询，恢复 SSE 后停止轮询，避免双重刷新。服务端必须限制单客户端缓冲和总连接数，慢客户端不得阻塞发布线程。
 

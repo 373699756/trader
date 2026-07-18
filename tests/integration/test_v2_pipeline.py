@@ -690,6 +690,15 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert pools["merge"]["rejected_count"] == 0
     assert pools["merge"]["running"] is True
     assert pools["persistence"]["workers"] == 1
+    assert running_status["dependencies"]["persistent_audit"] == {}
+    for strategy in ("tomorrow", "d25", "long"):
+        strategy_status = running_status["strategies"][strategy]
+        assert strategy_status["candidate_count"] >= strategy_status["topk_count"]
+        assert strategy_status["score_latency_ms"] is not None
+        assert strategy_status["data_version"]
+        assert strategy_status["strategy_version"]
+        assert strategy_status["config_version"] == "config-v2"
+        assert strategy_status["veto_count"] >= 0
     assert sum(name.startswith("trader-data") for name in running_thread_names) == 2
     assert sum(name.startswith("trader-normalize") for name in running_thread_names) == 2
     assert sum(name.startswith("trader-strategy") for name in running_thread_names) == 3

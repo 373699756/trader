@@ -226,6 +226,12 @@ def test_gateway_falls_back_and_tracks_health() -> None:
 
     assert health["active_source"] == "sina"
     assert health["sources"]["eastmoney"]["circuit_open"] is True
+    assert health["sources"]["eastmoney"]["planned_count"] == 1
+    assert health["sources"]["eastmoney"]["error_count"] == 1
+    assert health["sources"]["eastmoney"]["p50_latency_ms"] is not None
+    assert health["sources"]["eastmoney"]["p95_latency_ms"] is not None
+    assert health["sources"]["sina"]["planned_count"] == 1
+    assert health["sources"]["sina"]["success_count"] == 1
 
 
 def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_call() -> None:

@@ -87,7 +87,11 @@
 
   function rows(items, historical) {
     if (!Array.isArray(items) || items.length === 0) return "";
-    return items.map((item) => (historical ? historyRow(item) : currentRow(item))).join("");
+    return items.map((item) => row(item, historical)).join("");
+  }
+
+  function row(item, historical) {
+    return historical ? historyRow(item) : currentRow(item);
   }
 
   function stock(item) {
@@ -116,13 +120,15 @@
 
   function historyRow(item) {
     const anchorChange = pct(item.anchor_daily_return_pct);
+    const todayChange = pct(item.pct_change);
+    const anchorToNow = pct(item.anchor_to_now_pct);
     return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${stock(item)}</td>
       <td>${number(item.anchor_price, 2)}</td>
       <td class="${anchorChange.className}">${anchorChange.text}</td>
-      <td>-</td>
-      <td>-</td>
+      <td class="${todayChange.className}">${todayChange.text}</td>
+      <td class="${anchorToNow.className}">${anchorToNow.text}</td>
     </tr>`;
   }
 
@@ -146,6 +152,8 @@
         ["融合模式", snapshot.fusion_mode || scores.fusion_mode || "-"],
       ])),
       section("本地组件", keyValueList(components)),
+      section("权重", nestedValueList(snapshot.weights || {})),
+      section("分位与截尾", normalizationList(item.normalization || {})),
       section("风险事实", riskList(risks)),
       section("DeepSeek 五维", dimensionList(dimensions, review)),
       section("缺失字段", missingFieldList(item.missing_fields || [], item.missing_reasons || {})),
@@ -174,6 +182,21 @@
     return `<ul class="detail-list">${entries.map(([key, value]) => `<li><b>${escapeHtml(key)}</b> · ${escapeHtml(number(value, 2))}</li>`).join("")}</ul>`;
   }
 
+  function nestedValueList(values) {
+    const rows = [];
+    for (const [group, entries] of Object.entries(values || {})) {
+      if (!entries || typeof entries !== "object") continue;
+      for (const [name, value] of Object.entries(entries)) rows.push([`${group}.${name}`, value]);
+    }
+    return keyValueList(Object.fromEntries(rows));
+  }
+
+  function normalizationList(values) {
+    const entries = Object.entries(values || {}).sort(([left], [right]) => left.localeCompare(right));
+    if (entries.length === 0) return '<div class="detail-value"><span>状态</span><strong>无分位数据</strong></div>';
+    return `<ul class="detail-list">${entries.map(([name, value]) => `<li><b>${escapeHtml(name)}</b> · 截尾 ${number(value.lower_bound, 4)} / ${number(value.upper_bound, 4)} · 样本 ${number(value.sample_size, 0)} · 缺失 ${number(value.missing_count, 0)}<br>分位 ${number((value.lower_quantile || 0) * 100, 1)}% / ${number((value.upper_quantile || 0) * 100, 1)}% · 版本 ${escapeHtml(value.population_data_version || "-")}</li>`).join("")}</ul>`;
+  }
+
   function missingFieldList(fields, reasons) {
     if (!Array.isArray(fields) || fields.length === 0) {
       return '<div class="detail-value"><span>状态</span><strong>无缺失字段</strong></div>';
@@ -189,7 +212,7 @@
       seen.add(risk.risk_fact_id);
       const suffix = duplicate ? " · 已跨来源去重" : "";
       const actual = risk.actual == null ? "-" : number(risk.actual, 4);
-      return `<li><b>${escapeHtml(risk.risk_code)}</b> · ${escapeHtml(risk.severity)} · 扣分 ${number(risk.penalty, 2)}${escapeHtml(suffix)}<br>实际 ${escapeHtml(actual)} · 阈值 ${escapeHtml(risk.threshold || "-")} · 来源 ${escapeHtml(risk.source || "-")} · 证据时间 ${escapeHtml(formatDateTime(risk.observed_at))} · 置信 ${number((risk.confidence || 0) * 100, 0)}%</li>`;
+      return `<li><b>${escapeHtml(risk.risk_code)}</b> · ${escapeHtml(risk.severity)} · 扣分 ${number(risk.penalty, 2)}${escapeHtml(suffix)}<br>${escapeHtml(risk.assessment || "-")}<br>实际 ${escapeHtml(actual)} · 阈值 ${escapeHtml(risk.threshold || "-")} · 来源 ${escapeHtml(risk.source || "-")} · 证据时间 ${escapeHtml(formatDateTime(risk.observed_at))} · 置信 ${number((risk.confidence || 0) * 100, 0)}%</li>`;
     }).join("")}</ul>`;
   }
 
@@ -213,14 +236,22 @@
     return parsed.toLocaleString("zh-CN", { hour12: false });
   }
 
+  function formatTime(value) {
+    const parsed = new Date(value);
+    if (!Number.isFinite(parsed.getTime())) return "-";
+    return parsed.toLocaleTimeString("zh-CN", { hour12: false });
+  }
+
   window.TraderRender = {
     currentTable,
     drawer,
     escapeHtml,
     formatDateTime,
+    formatTime,
     historyTable,
     number,
     pct,
+    row,
     rows,
   };
 })();

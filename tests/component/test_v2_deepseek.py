@@ -170,8 +170,11 @@ def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
     summary = store.summary(NOW.date().isoformat())
     assert summary["used"] == 2
     assert summary["by_status"] == {"reserved": 2}
+    assert summary["call_status"] == {"reserved": 2, "abandoned": 0, "failed": 0, "success": 0}
     assert store.abandon_reserved() == 2
-    assert store.summary(NOW.date().isoformat())["by_status"] == {"abandoned": 2}
+    abandoned = store.summary(NOW.date().isoformat())
+    assert abandoned["by_status"] == {"abandoned": 2}
+    assert abandoned["call_status"] == {"reserved": 0, "abandoned": 2, "failed": 0, "success": 0}
 
 
 def test_budget_supports_shared_and_explicit_emergency_buckets(tmp_path) -> None:
@@ -202,6 +205,23 @@ def test_budget_supports_shared_and_explicit_emergency_buckets(tmp_path) -> None
         "shared_preheat": 1,
         "today": 1,
     }
+
+
+def test_call_audit_replaces_raw_failure_text_with_bounded_category(tmp_path) -> None:
+    database_path = tmp_path / "runtime.sqlite3"
+    store = _budget(database_path)
+    reservation = store.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+
+    store.finish(
+        reservation.reservation_id,
+        status="failed",
+        error="sensitive upstream response must not persist",
+        completed_at=NOW + timedelta(seconds=1),
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        audit = connection.execute("SELECT outcome, error_code FROM deepseek_calls").fetchone()
+    assert audit == ("failed", "request_failed")
 
 
 def test_shared_review_cache_ignores_quote_only_version_changes() -> None:
@@ -304,7 +324,14 @@ def test_reviewer_records_each_retry_attempt_independently(tmp_path) -> None:
         attempts = connection.execute(
             "SELECT status, http_status, token_count FROM deepseek_call_reservations ORDER BY rowid"
         ).fetchall()
+        audit = connection.execute(
+            "SELECT outcome, http_status, completion_tokens, error_code FROM deepseek_calls ORDER BY requested_at"
+        ).fetchall()
     assert attempts == [("failed", 429, 0), ("success", 200, 12)]
+    assert audit == [("failed", 429, 0, "http_429"), ("success", 200, 12, "")]
+    summary = budget.summary(NOW.date().isoformat())
+    assert summary["http_429_count"] == 1
+    assert summary["token_count"] == 12
 
 
 def test_reviewer_does_not_reserve_retry_at_or_after_deadline(tmp_path) -> None:
@@ -334,7 +361,11 @@ def test_reviewer_does_not_reserve_retry_at_or_after_deadline(tmp_path) -> None:
 
     assert result[candidate.quote.code].outcome is ReviewOutcome.LATE
     assert budget.summary(NOW.date().isoformat())["used"] == 1
+    assert budget.summary(NOW.date().isoformat())["timeout_count"] == 1
     assert reviewer.status()["last_batch_status"] == "failed"
+    with sqlite3.connect(tmp_path / "runtime.sqlite3") as connection:
+        call = connection.execute("SELECT outcome, error_code FROM deepseek_calls").fetchone()
+    assert call == ("failed", "timeout")
 
 
 def test_confidence_coverage_and_known_dimension_minimum_produce_candidate_abstain() -> None:

@@ -18,6 +18,7 @@ class RuntimeState:
         self._last_tick_at: datetime | None = None
         self._snapshots: dict[Strategy, RecommendationSnapshot] = {}
         self._frozen: set[tuple[Strategy, str]] = set()
+        self._strategy_latency_ms: dict[Strategy, float] = {}
         self._counters: dict[str, int] = {
             "ticks": 0,
             "events_submitted": 0,
@@ -45,6 +46,10 @@ class RuntimeState:
     def record_error(self, error: str) -> None:
         with self._lock:
             self._last_error = error[:500]
+
+    def record_strategy_latency(self, strategy: Strategy, latency_ms: float) -> None:
+        with self._lock:
+            self._strategy_latency_ms[strategy] = max(0.0, float(latency_ms))
 
     def publish(self, snapshot: RecommendationSnapshot) -> None:
         with self._lock:
@@ -94,12 +99,28 @@ class RuntimeState:
                         "recommendation_count": len(snapshot.recommendations),
                         "frozen": snapshot.frozen,
                         "stale": snapshot.stale,
+                        "phase": snapshot.phase,
+                        "data_version": snapshot.data_version,
+                        "strategy_version": snapshot.strategy_version,
+                        "config_version": snapshot.config_version,
+                        "candidate_count": _metadata_integer(snapshot.metadata, "candidate_count"),
+                        "filtered_count": snapshot.filtered_count,
+                        "filter_reasons": dict(snapshot.filter_reasons),
+                        "score_latency_ms": self._strategy_latency_ms.get(strategy),
+                        "topk_count": len(snapshot.recommendations),
+                        "veto_count": sum(item.veto for item in snapshot.recommendations),
+                        "freeze_anchor": snapshot.metadata.get("freeze_anchor", {}),
                     }
                     for strategy, snapshot in self._snapshots.items()
                 },
                 "counters": dict(self._counters),
                 "dependencies": dict(dependencies or {}),
             }
+
+
+def _metadata_integer(metadata: Mapping[str, object], key: str) -> int:
+    value = metadata.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 __all__ = ["RuntimeState"]

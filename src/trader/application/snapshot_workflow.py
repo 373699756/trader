@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
@@ -244,6 +245,7 @@ def score_strategy(
     phase: MarketPhase,
     trade_date: str,
 ) -> RecommendationSnapshot | None:
+    scoring_started = time.perf_counter()
     codes = pipeline._long_codes if strategy is Strategy.LONG else pipeline._candidate_codes
     if not codes:
         return None
@@ -273,6 +275,10 @@ def score_strategy(
         candidate_pool_size=pipeline._candidate_pool_size,
     )
     snapshot = replace(snapshot, config_version=pipeline._config_version)
+    pipeline._state.record_strategy_latency(
+        strategy,
+        round((time.perf_counter() - scoring_started) * 1000.0, 3),
+    )
     persist(pipeline, pipeline._repository.publish, snapshot)
     pipeline._state.publish(snapshot)
     pipeline._publisher.publish(snapshot)

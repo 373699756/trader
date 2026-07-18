@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -325,6 +326,121 @@ class SnapshotRepository:
             }
             for row in rows
         )
+
+    def record_data_source_health(self, health: Mapping[str, object], *, updated_at: datetime) -> None:
+        sources = health.get("sources")
+        if not isinstance(sources, Mapping):
+            return
+        active_source = str(health.get("active_source") or "")
+        market_age_summary = health.get("market_quote_age")
+        market_age = (
+            _optional_number(market_age_summary.get("maximum_seconds"))
+            if isinstance(market_age_summary, Mapping)
+            else None
+        )
+        candidate_age_summary = health.get("candidate_quote_age")
+        candidate_age = (
+            _optional_number(candidate_age_summary.get("maximum_seconds"))
+            if isinstance(candidate_age_summary, Mapping)
+            else None
+        )
+        with self._lock, connect(self._database_path) as connection:
+            for source, raw in sources.items():
+                if not isinstance(raw, Mapping):
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO data_source_health(
+                        source, planned_count, success_count, failure_count, circuit_open,
+                        p50_latency_ms, p95_latency_ms, data_age_seconds, last_error, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source) DO UPDATE SET
+                        planned_count = excluded.planned_count,
+                        success_count = excluded.success_count,
+                        failure_count = excluded.failure_count,
+                        circuit_open = excluded.circuit_open,
+                        p50_latency_ms = excluded.p50_latency_ms,
+                        p95_latency_ms = excluded.p95_latency_ms,
+                        data_age_seconds = excluded.data_age_seconds,
+                        last_error = excluded.last_error,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        str(source)[:80],
+                        _non_negative_integer(raw.get("planned_count")),
+                        _non_negative_integer(raw.get("success_count")),
+                        _non_negative_integer(raw.get("error_count")),
+                        int(bool(raw.get("circuit_open"))),
+                        _optional_number(raw.get("p50_latency_ms")),
+                        _optional_number(raw.get("p95_latency_ms")),
+                        candidate_age
+                        if str(source) == "tencent"
+                        else market_age
+                        if str(source) == active_source
+                        else None,
+                        str(raw.get("last_error") or "")[:240],
+                        updated_at.isoformat(),
+                    ),
+                )
+
+    def observability_status(self) -> Mapping[str, object]:
+        try:
+            with connect(self._database_path) as connection:
+                source_rows = connection.execute("SELECT * FROM data_source_health ORDER BY source").fetchall()
+                call_rows = connection.execute(
+                    """
+                    SELECT outcome, http_status, error_code, latency_ms
+                    FROM deepseek_calls ORDER BY requested_at DESC LIMIT 512
+                    """
+                ).fetchall()
+                freeze_rows = connection.execute(
+                    """
+                    SELECT strategy, recommend_date, frozen_at, data_version, fusion_version,
+                           sha256, anchor_json
+                    FROM (
+                        SELECT strategy, recommend_date, frozen_at, data_version, fusion_version,
+                               sha256, anchor_json,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY strategy
+                                   ORDER BY recommend_date DESC, frozen_at DESC
+                               ) AS position
+                        FROM frozen_snapshots
+                        WHERE status = 'committed'
+                    )
+                    WHERE position = 1
+                    ORDER BY strategy
+                    """
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return {"data_sources": {}, "deepseek_calls": {}, "freezes": {}}
+        latest_freezes = {
+            str(row["strategy"]): {
+                "trade_date": str(row["recommend_date"]),
+                "frozen_at": str(row["frozen_at"]),
+                "data_version": str(row["data_version"]),
+                "fusion_version": str(row["fusion_version"]),
+                "sha256": str(row["sha256"]),
+                "anchors": _safe_json_object(str(row["anchor_json"])),
+            }
+            for row in freeze_rows
+        }
+        latencies = tuple(float(row["latency_ms"]) for row in call_rows if isinstance(row["latency_ms"], (int, float)))
+        outcomes: dict[str, int] = {}
+        for row in call_rows:
+            outcome = str(row["outcome"])
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        return {
+            "data_sources": {str(row["source"]): dict(row) for row in source_rows},
+            "deepseek_calls": {
+                "sample_size": len(call_rows),
+                "outcomes": outcomes,
+                "http_429_count": sum(row["http_status"] == 429 for row in call_rows),
+                "timeout_count": sum(str(row["error_code"]) == "timeout" for row in call_rows),
+                "p50_latency_ms": _percentile(latencies, 0.50),
+                "p95_latency_ms": _percentile(latencies, 0.95),
+            },
+            "freezes": latest_freezes,
+        }
 
     def _stage_manifest(
         self,
@@ -706,6 +822,35 @@ def _read_snapshot(path: Path) -> RecommendationSnapshot:
     if not isinstance(raw, dict):
         raise ValueError("snapshot root must be an object")
     return snapshot_from_dict(raw)
+
+
+def _non_negative_integer(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        return 0
+    return max(0, value)
+
+
+def _optional_number(value: object) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) and parsed >= 0 else None
+
+
+def _percentile(values: Sequence[float], quantile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int((len(ordered) - 1) * quantile + 0.5)))
+    return round(float(ordered[index]), 2)
+
+
+def _safe_json_object(value: str) -> Mapping[str, object]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _event_integer(event: Mapping[str, object], key: str, *, default: int | None = None) -> int:

@@ -77,6 +77,79 @@ def test_publish_and_freeze_create_verified_manifest(tmp_path) -> None:
     assert tuple(published) == ("snapshot-1", "frozen/tomorrow/2026-07-16/snapshot-1.json")
 
 
+def test_persistent_observability_survives_repository_restart(tmp_path) -> None:
+    repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
+    repository.initialize()
+    repository.record_data_source_health(
+        {
+            "active_source": "eastmoney",
+            "market_quote_age": {"maximum_seconds": 7.5},
+            "candidate_quote_age": {"maximum_seconds": 1.5},
+            "sources": {
+                "eastmoney": {
+                    "planned_count": 3,
+                    "success_count": 2,
+                    "error_count": 1,
+                    "circuit_open": False,
+                    "p50_latency_ms": 12.0,
+                    "p95_latency_ms": 25.0,
+                    "last_error": "upstream unavailable",
+                },
+                "tencent": {
+                    "planned_count": 2,
+                    "success_count": 2,
+                    "error_count": 0,
+                    "circuit_open": False,
+                    "p50_latency_ms": 8.0,
+                    "p95_latency_ms": 10.0,
+                    "last_error": "",
+                },
+            },
+        },
+        updated_at=NOW,
+    )
+    repository.freeze(_snapshot())
+    with connect(tmp_path / "runtime.sqlite3") as connection:
+        connection.executemany(
+            """
+            INSERT INTO deepseek_calls(
+                call_id, strategy, phase, model, batch_id, requested_at, completed_at,
+                http_status, prompt_tokens, completion_tokens, latency_ms, outcome, error_code
+            ) VALUES (?, 'tomorrow', 'afternoon', 'model', 'batch', ?, ?, ?, 10, 20, ?, ?, ?)
+            """,
+            (
+                ("call-1", NOW.isoformat(), NOW.isoformat(), 429, 10.0, "failed", "http_429"),
+                ("call-2", NOW.isoformat(), NOW.isoformat(), None, 30.0, "failed", "timeout"),
+                ("call-3", NOW.isoformat(), NOW.isoformat(), 200, 20.0, "success", ""),
+            ),
+        )
+
+    restarted = SnapshotRepository(tmp_path, config_version="runtime-v2")
+    status = restarted.observability_status()
+
+    assert status["data_sources"]["eastmoney"]["planned_count"] == 3
+    assert status["data_sources"]["eastmoney"]["data_age_seconds"] == 7.5
+    assert status["data_sources"]["tencent"]["data_age_seconds"] == 1.5
+    assert status["deepseek_calls"] == {
+        "sample_size": 3,
+        "outcomes": {"failed": 2, "success": 1},
+        "http_429_count": 1,
+        "timeout_count": 1,
+        "p50_latency_ms": 20.0,
+        "p95_latency_ms": 30.0,
+    }
+    freeze = status["freezes"]["tomorrow"]
+    assert freeze["trade_date"] == "2026-07-16"
+    assert freeze["data_version"] == "fixture-v1"
+    assert freeze["fusion_version"] == "fusion-v2"
+    assert len(freeze["sha256"]) == 64
+    assert freeze["anchors"]["600001"] == {
+        "source": "fixture",
+        "source_time": NOW.isoformat(),
+        "age_seconds": 0.0,
+    }
+
+
 def test_live_overlay_is_recoverable_without_changing_frozen_json(tmp_path) -> None:
     repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
     repository.initialize()

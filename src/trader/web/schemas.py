@@ -25,14 +25,22 @@ def snapshot_envelope(
     overlay: LiveOverlay | None = None,
     fallback_date: str | None = None,
     fallback_reason: str | None = None,
+    requested_date: str | None = None,
+    current_trade_date: str | None = None,
+    historical: bool = False,
+    current_quotes: Mapping[str, LiveQuote] | None = None,
 ) -> dict[str, object]:
     live_quotes = overlay.quotes if overlay is not None and overlay.snapshot_id == snapshot.snapshot_id else {}
+    displayed_quotes = current_quotes if historical and current_quotes is not None else live_quotes
     return {
         "schema_version": API_SCHEMA_VERSION,
         "status": "ready",
         "snapshot_id": snapshot.snapshot_id,
         "strategy": snapshot.strategy.value,
         "trade_date": snapshot.trade_date,
+        "requested_date": requested_date,
+        "current_trade_date": current_trade_date,
+        "historical": historical,
         "phase": snapshot.phase,
         "published_at": snapshot.published_at.isoformat(),
         "data_version": snapshot.data_version,
@@ -57,24 +65,33 @@ def snapshot_envelope(
             for item in snapshot.filter_details
         ],
         "metadata": dict(snapshot.metadata),
+        "weights": _snapshot_weights(snapshot),
         "fallback_date": fallback_date,
         "fallback_reason": fallback_reason,
         "live_overlay": _live_overlay(overlay) if overlay is not None else None,
         "items": [
-            _recommendation(item, live_quotes.get(item.features.quote.code))
+            _recommendation(item, displayed_quotes.get(item.features.quote.code))
             for item in snapshot.recommendations[:top_n]
         ],
         "error": None,
     }
 
 
-def empty_snapshot_envelope(strategy: str, trade_date: str | None = None) -> dict[str, object]:
+def empty_snapshot_envelope(
+    strategy: str,
+    trade_date: str | None = None,
+    *,
+    current_trade_date: str | None = None,
+) -> dict[str, object]:
     return {
         "schema_version": API_SCHEMA_VERSION,
         "status": "not_ready",
         "snapshot_id": None,
         "strategy": strategy,
         "trade_date": trade_date,
+        "requested_date": trade_date,
+        "current_trade_date": current_trade_date,
+        "historical": trade_date is not None,
         "phase": None,
         "published_at": None,
         "data_version": None,
@@ -89,6 +106,7 @@ def empty_snapshot_envelope(strategy: str, trade_date: str | None = None) -> dic
         "filter_reasons": {},
         "filter_details": [],
         "metadata": {},
+        "weights": {},
         "fallback_date": None,
         "fallback_reason": None,
         "live_overlay": None,
@@ -97,11 +115,24 @@ def empty_snapshot_envelope(strategy: str, trade_date: str | None = None) -> dic
     }
 
 
-def error_envelope(code: str, message: str, *, details: Mapping[str, object] | None = None) -> dict[str, object]:
+def error_envelope(
+    code: str,
+    message: str,
+    *,
+    details: Mapping[str, object] | None = None,
+    strategy: str | None = None,
+    trade_date: str | None = None,
+) -> dict[str, object]:
     return {
         "schema_version": API_SCHEMA_VERSION,
         "status": "error",
         "snapshot_id": None,
+        "strategy": strategy,
+        "trade_date": trade_date,
+        "requested_date": trade_date,
+        "current_trade_date": None,
+        "historical": trade_date is not None,
+        "phase": None,
         "published_at": None,
         "data_version": None,
         "strategy_version": None,
@@ -109,7 +140,9 @@ def error_envelope(code: str, message: str, *, details: Mapping[str, object] | N
         "fusion_version": None,
         "fusion_mode": None,
         "stale": True,
+        "frozen": False,
         "degraded_reasons": [],
+        "weights": {},
         "items": [],
         "error": {
             "code": code,
@@ -203,6 +236,17 @@ def _live_overlay(overlay: LiveOverlay) -> dict[str, object]:
         "version": overlay.version,
         "observed_at": overlay.observed_at.isoformat(),
         "closing": overlay.closing,
+    }
+
+
+def _snapshot_weights(snapshot: RecommendationSnapshot) -> dict[str, object]:
+    replay = snapshot.replay_input
+    if replay is None:
+        return {}
+    policy = replay.policy
+    return {
+        "fusion": {"local": policy.local_weight, "deepseek": policy.deepseek_weight},
+        "deepseek_dimensions": dict(policy.dimension_weights.get(snapshot.strategy.value, {})),
     }
 
 

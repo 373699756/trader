@@ -366,6 +366,8 @@ class DeepSeekReviewer:
                 http_status=attempt.http_status,
                 latency_ms=attempt.latency_ms,
                 token_count=attempt.token_count,
+                timed_out=attempt.timed_out,
+                completed_at=self._now(),
             )
 
     def _record_attempt_status(self, response: DeepSeekHttpResult) -> None:

@@ -153,12 +153,13 @@ tr:focus-visible {
   background: var(--surface-hover);
 }
 
-.icon-button span {
-  font-size: 21px;
-  line-height: 1;
+.lucide-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
-.icon-button.is-busy span {
+.icon-button.is-busy .lucide-icon {
   animation: spin 0.8s linear infinite;
 }
 

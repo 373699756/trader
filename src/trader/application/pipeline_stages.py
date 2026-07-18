@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import replace
@@ -123,6 +124,7 @@ def _score_strategies_on_workers(
     use_cached_data: bool,
     completion_deadline: datetime | None = None,
 ) -> tuple[RecommendationSnapshot, ...]:
+    scoring_started = time.perf_counter()
     snapshots: list[RecommendationSnapshot] = []
     trade_date = trade_date_at(now).isoformat()
     if phase is MarketPhase.WARMUP and pipeline._reviews is not None and pipeline._candidate_features:
@@ -236,6 +238,10 @@ def _score_strategies_on_workers(
         snapshot = replace(
             pipeline._engine.finalize_snapshot(prepared, reviews),
             config_version=pipeline._config_version,
+        )
+        pipeline._state.record_strategy_latency(
+            prepared.strategy,
+            round((time.perf_counter() - scoring_started) * 1000.0, 3),
         )
         persist(pipeline, pipeline._repository.publish, snapshot)
         pipeline._state.publish(snapshot)
