@@ -20,15 +20,29 @@
 
 ## 2. 开源项目参考
 
-只借鉴经过验证的机制，不直接复制收益参数：
+只借鉴经过验证的机制，不直接复制收益参数。以下汇总当前工程参考和 `strategy_and_prediction.md` 历史中明确作为“策略方法参考”的仓库；历史依据为[首次提交 841355c 的“8.2 可借鉴思路”](https://github.com/373699756/trader/blob/841355cb1dddb88b96ff7cf2b9efb250c7fb94d8/docs/strategy_and_prediction.md#L579-L593)。截至 2026-07-19 可复核的 Star 仅用于说明社区关注度，未固定数字的历史项目以仓库实时页面为准；除 AKShare 外均不是本项目的运行依赖：
 
-- Qlib：因子组织、点时数据、时间切分。
-- RQAlpha：A 股交易日历、停牌和涨跌停规则。
-- vn.py、WonderTrader：事件调度、任务生命周期。
-- QUANTAXIS：行情适配和数据标准化。
-- CZSC：多周期信号表达。
+| 项目 | GitHub（Star 快照） | 本项目采用或借鉴的边界 |
+|---|---|---|
+| TradingAgents | [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents)（约 93,600） | DeepSeek provider、多智能体研究角色与结构化决策流程；示例偏美股，不采用其交易结论 |
+| daily_stock_analysis | [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis)（约 57,800） | DeepSeek API 接入、多源 A 股研究、决策看板与历史验证机制 |
+| Qlib | [microsoft/qlib](https://github.com/microsoft/qlib)（46,392） | 因子组织、点时数据、时间切分 |
+| vn.py | [vnpy/vnpy](https://github.com/vnpy/vnpy)（43,109） | 事件调度、任务生命周期 |
+| TradingAgents-CN | [hsliuping/TradingAgents-CN](https://github.com/hsliuping/TradingAgents-CN)（约 30,300） | DeepSeek 与 A 股多智能体分析；仅参考研究流程，采用前必须复核其混合许可证边界 |
+| AKShare | [akfamily/akshare](https://github.com/akfamily/akshare)（21,394） | 交易日历与候选级研究数据接口；是 `pyproject.toml` 声明的运行依赖 |
+| Backtrader | [mementum/backtrader](https://github.com/mementum/backtrader)（约 21,700） | 统一成本、滑点、持有期和分析器口径；只参考回测边界，不把历史回测接回产品运行链 |
+| FinRL | [AI4Finance-Foundation/FinRL](https://github.com/AI4Finance-Foundation/FinRL)（约 15,300） | `train-test-trade` 分层和 turbulence 风险思想；首版不引入强化学习运行依赖 |
+| myhhub/stock | [myhhub/stock](https://github.com/myhhub/stock)（约 13,400） | A 股数据处理、技术指标选股与历史验证表达；公开参数必须重新做点时和样本外检验 |
+| QUANTAXIS | [yutiansut/QUANTAXIS](https://github.com/yutiansut/QUANTAXIS)（10,894） | 行情适配、数据标准化 |
+| RQAlpha | [ricequant/rqalpha](https://github.com/ricequant/rqalpha)（6,589） | A 股交易日历、停牌和涨跌停规则 |
+| WonderTrader | [wondertrader/wondertrader](https://github.com/wondertrader/wondertrader)（6,211） | 事件调度、任务生命周期 |
+| CZSC | [waditu/czsc](https://github.com/waditu/czsc)（5,562） | 多周期信号表达 |
+| Sequoia（现 Sequoia-X） | [sngyai/Sequoia-X](https://github.com/sngyai/Sequoia-X)（约 4,800） | A 股日线量价、趋势和突破思路；历史 `sngyai/Sequoia` 地址已迁移到当前仓库 |
+| UZI-Skill | [wbh604/UZI-Skill](https://github.com/wbh604/UZI-Skill)（历史引用，动态值见仓库） | 结构化证据、数据覆盖门控和共识极化；只参考审计机制，不允许共识自由文本直接扣分 |
+| QuantsPlaybook | [hugo2046/QuantsPlaybook](https://github.com/hugo2046/QuantsPlaybook)（历史引用，动态值见仓库） | A 股反转、低波和换手等因子研究；仅作离线假设来源，不直接复制收益参数 |
+| Qbot | [UFund-Me/Qbot](https://github.com/UFund-Me/Qbot)（历史引用，动态值见仓库） | 小市值因子、组合暴露和风控讨论；不引入下单、实盘交易或自动调参能力 |
 
-GitHub star 数不代表策略收益。首版不直接依赖上述项目源码；如采用源码，必须固定 commit、核实许可证并记录归属。公开策略参数必须重新通过 A 股点时数据、停牌、涨跌停、滑点和样本外检查。
+GitHub star 数不代表策略收益。除 `pyproject.toml` 已声明的 AKShare 包外，首版不直接依赖上述项目源码；如采用其他项目源码，必须固定 commit、核实许可证并记录归属。公开策略参数必须重新通过 A 股点时数据、停牌、涨跌停、滑点和样本外检查。
 
 ## 3. 技术栈与工程结构
 

@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户诉求：把本库策略所依赖或借鉴的 GitHub 高星项目链接写入 `docs/need.md`，确认使用 DeepSeek API 进行股票推荐的开源库，并恢复 `strategy_and_prediction.md` 历史中的方法来源。现状是第 2 节只有六个无链接名称，末尾另有不可渲染的重复终端表格，未区分实际运行依赖、机制参考和 DeepSeek 荐股类项目。修改后统一列出 17 个 canonical 仓库、可复核的 2026-07-19 Star 快照与借鉴边界；其中 12 个历史策略参考可追溯到首次提交 `841355c`，另补入 DeepSeek/A 股项目和实际依赖 AKShare，并保留 A 股适用性与许可证提醒。
 - 用户诉求：连续完成第 19-25 节代码，最后统一补测试并 Review。现状是当前/历史响应身份不足、跨日冻结缓存表达含混，状态缺少可重启查询的来源/DeepSeek/冻结审计。修改后推荐 envelope 新增请求日期、当前交易日、历史/fallback 身份，历史行可叠加独立当前行情；新增持久化来源健康、逐物理 DeepSeek 调用和冻结证据汇总，以及本地 Lucide 图标资源。第 24 节已有固定输入完整日证据，需求文档没有第 26 节，均未重复或虚构实现。
 - 用户诉求：先统一完成第 14-16 节 DeepSeek 代码，再补测试和 Review。现状是候选会被定性证据门提前清空，批次/候选状态混用，只有六桶总额而没有阶段目标与上限。修改后新增持久化批次和逐股终态、十阶段 133 次目标/188 次上限、受条件约束的 emergency、原始/策略两级缓存、优先复核及重启 `abandoned` 恢复；新闻或公告不再作为调用资格。
 - 新增架构契约测试，固定快照编排模块必须使用职责明确的 `snapshot_workflow.py`，并禁止旧 `snapshot_lifecycle.py` 路径重新出现。
@@ -33,6 +34,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 本批次只更新开源参考契约和链接，不新增 Python 依赖、不复制外部源码，也不修改本地/DeepSeek 评分、风险、预算、冻结、API 或 Web 行为；DeepSeek 荐股项目仅作为 provider 封装、多智能体分工、证据展示和历史验证机制参考。
 - 当前推荐 ETag 绑定当前交易日、快照、overlay 与 fallback；历史响应必须精确匹配请求日期，前端缓存同时校验策略和日期，只接受明确标记的上一交易日 stale fallback。桌面顶部补齐行情来源/时间/年龄、评分时间、DeepSeek 已用/剩余和冻结状态，历史表与明细抽屉补齐今日涨跌、锚点至今、权重、截尾口径和风险评估。SQLite schema 升级到 v3，为来源健康审计补充有界错误摘要。
 - DeepSeek 五维原始结果按策略配置中的权重、至少两个已知维度和 0.50 加权置信覆盖在本地分类；全部维度未知或覆盖不足逐股 `abstain` 并回退本地分。每批物理 HTTP 仍最多 8 股、最多两次尝试，429 遵循 `Retry-After`，非法 schema 的修复与网络重试共享两次硬上限，14:48 后不再预留请求。
 - 用户诉求：将含义宽泛的快照“生命周期”命名改为职责导向名称。现状判断：该模块实际负责编排评分、冻结和实时 overlay 流程，不拥有应用或资源生命周期；现重命名为 `snapshot_workflow.py`，同步生产导入和 `docs/need.md` 结构契约，不改变评分、冻结、持久化、API 或线程行为。
@@ -105,6 +107,7 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批次未删除任何策略、依赖、代码、测试或既有参考项目；只移除 `docs/need.md` 末尾重复且断行损坏的终端表格，其全部 12 个方法引用已去重并入第 2 节。
 - 本批次未删除策略、公式、冻结记录或历史兼容路径；仅用本地固定 Lucide sprite 替换页面中的刷新/关闭字符图标，未引入 CDN、移动端分支或新的运行依赖。
 - 移除运行配置中重复的 DeepSeek 置信覆盖阈值；该阈值与最少已知维度继续只由版本化策略配置定义，避免运行配置和策略配置产生两个真相源。
 - 移除内部模块路径 `trader.application.snapshot_lifecycle`；该路径不是公共 API，未保留会掩盖半迁移状态的兼容转发文件。
@@ -118,6 +121,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 通过 GitHub 官方仓库页面、可用 REST 结果和本地 Git 历史核对 17 个项目的 canonical 链接、DeepSeek/A 股能力及借鉴边界；确认 12 个策略方法引用出自首次提交 `841355c` 且该章节后续被删除。`make format-check`、`make lint`、67 个源码文件 mypy、完整 pytest、sdist/wheel 构建和 `git diff --check` 通过。仓库外虚拟环境安装最终 wheel 后 `pip check`、`trader-cli --help`、包来源和模板/CSS/两个 JavaScript/两个 SVG 共 6 项资源验收通过。
 - 第 19-23 节新增回归覆盖当前/历史/fallback 精确身份、跨日 ETag、历史当前行情叠加、400/404 请求上下文、静态资源与抽屉字段、来源计划/成功/失败/P50/P95、DeepSeek success/failed/abandoned/429/超时/token 审计、持久化健康与冻结哈希重启查询，以及每策略候选/过滤/耗时/TopK/版本/veto 状态。`make format-check`、Ruff、67 个源码文件 mypy、336 个 pytest、sdist/wheel 和 `git diff --check` 通过；仓库外 Python 3.11 环境强制安装最终 wheel 后依赖一致、包从 site-packages 导入、`trader-cli validate-config`/`--help` 正常，模板、CSS、两个 JavaScript 和两个 SVG 共 6 项资源可读。无头 Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、区块重叠、图片失败或非预期脚本异常，未启动 publisher 时 SSE 503 按预期回退。
 - 第 14-16 节回归覆盖五维 schema/证据子集、未知维度和 0.50 覆盖回退、无新闻候选调用、429/超时/非重试 4xx、schema 修复、部分返回、迟到隔离、两级缓存、价格 1%/量比 0.3 边界、六桶/十阶段/emergency 并发预算及重启恢复；Ruff format/lint、67 个源码文件 mypy、329 个 pytest、sdist/wheel 和 `git diff --check` 通过。最终 wheel 在仓库外 `--target` 强制安装后从隔离路径导入，`pip check`、`trader-cli validate-config`/`--help` 与模板、CSS、两个 JavaScript、SVG 共 5 项资源通过；无头 Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、区块重叠、图片失败或非预期脚本错误，未启动 publisher 时 SSE 503 按预期回退。
 - 快照工作流模块重命名回归覆盖新路径存在、旧路径禁止、生产导入和流水线集成；`make format-check`、Ruff lint、67 个源码文件 mypy、319 个 pytest、`make package` 和 wheel 模块清单检查均通过。最终 wheel 在仓库外 Python 3.11 venv 强制重装后，`pip check`、新模块导入、旧模块缺失、`trader-cli validate-config` 及模板/CSS/两个 JavaScript/SVG 共 5 项资源验收通过；无头 Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、区块重叠、图片失败或非预期脚本异常，未启动 publisher 时 SSE 503 按预期回退。
@@ -156,6 +160,7 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- GitHub Star 会持续变化，文档数字只是 2026-07-19 的可复核快照，REST 未认证配额耗尽时没有猜测 UZI-Skill、QuantsPlaybook 和 Qbot 的动态值；外部仓库的安全、许可证、数据点时正确性和策略收益未经本项目验证，后续若引入其源码或机制，仍须固定 commit、独立审查并通过 A 股点时和样本外门禁。本批次未修改 UI，三档桌面验收沿用既有基线；本地回环临时服务授权被中断，未重复生成无行为变化的截图。
 - 第 19-23 节仓库内行为已有固定输入与故障注入证据；第 25 节仍缺真实 A 股完整交易日的 TopK P95/冻结时延、受保护真实密钥产生的非零 DeepSeek 调用与阶段总结。固定输入、仓库外安装和本地桌面检查不能替代这些生产证据，齐全前不得宣告发布完成。
 - 第 14-16 节仓库内状态机、预算、缓存和降级行为已有固定响应与故障注入证据，但尚未用受保护的真实 `DEEPSEEK_API_KEY` 重启服务并在 A 股交易时段验证非零物理调用、133 次阶段目标、上游 P95/限流和 schema 分布；这些仍是第 25 节发布阻塞证据，密钥不得写入仓库、日志、快照或进程参数。
 - 本批次是内部模块纯重命名，仓库内引用和 wheel 均受门禁覆盖；若仓库外代码绕过公共入口直接导入旧内部路径，将需要改用 `trader.application.snapshot_workflow`，不提供旧名兼容层。
