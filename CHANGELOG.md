@@ -6,8 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户诉求：补充当前高关注度的量化和 DeepSeek 荐股开源参考，同时删除低于 20K Star 的链接。修改后新增 OpenBB、NautilusTrader、FinGPT 和 LEAN 四个达到门槛且与金融数据、量化事件模型或金融 LLM 直接相关的 canonical 仓库，并明确只有 TradingAgents、daily_stock_analysis 和 TradingAgents-CN 属于 DeepSeek 接入参考，避免把一般金融 AI 项目误称为 DeepSeek 荐股库。
 - 用户诉求：结合网络上一手资料优化 `docs/need.md` 中 DeepSeek API 荐股方案，但暂不处理“离线验证与晋级”。现状是需求仍以即将停用的 `deepseek-chat` 单模型五维复核为中心，16 条证据只有总上限，没有固定类别、反证和点时路由，模型自报置信度也容易被误解为真实概率。修改后固化 V4-Flash 非思考主审、V4-Pro 思考挑战者、16 条点时证据配额、稳定 prompt 前缀/上下文缓存审计、三态挑战结论和模型身份；校准字段只作可空影子审计，不定义样本量、统计门槛或生产晋级。
-- 用户诉求：把本库策略所依赖或借鉴的 GitHub 高星项目链接写入 `docs/need.md`，确认使用 DeepSeek API 进行股票推荐的开源库，并恢复 `strategy_and_prediction.md` 历史中的方法来源。现状是第 2 节只有六个无链接名称，末尾另有不可渲染的重复终端表格，未区分实际运行依赖、机制参考和 DeepSeek 荐股类项目。修改后统一列出 17 个 canonical 仓库、可复核的 2026-07-19 Star 快照与借鉴边界；其中 12 个历史策略参考可追溯到首次提交 `841355c`，另补入 DeepSeek/A 股项目和实际依赖 AKShare，并保留 A 股适用性与许可证提醒。
+- 用户诉求：把本库策略所依赖或借鉴的 GitHub 高星项目链接写入 `docs/need.md`，确认使用 DeepSeek API 进行股票推荐的开源库，并恢复 `strategy_and_prediction.md` 历史中的方法来源。现状是第 2 节只有六个无链接名称，末尾另有不可渲染的重复终端表格，未区分实际运行依赖、机制参考和 DeepSeek 荐股类项目。修改后统一记录 canonical 仓库、可复核的 2026-07-19 Star 快照与借鉴边界；12 个历史策略参考可追溯到首次提交 `841355c`，并补入 DeepSeek/A 股项目和实际依赖 AKShare，后续按当前 Star 门槛筛选展示。
 - 用户诉求：连续完成第 19-25 节代码，最后统一补测试并 Review。现状是当前/历史响应身份不足、跨日冻结缓存表达含混，状态缺少可重启查询的来源/DeepSeek/冻结审计。修改后推荐 envelope 新增请求日期、当前交易日、历史/fallback 身份，历史行可叠加独立当前行情；新增持久化来源健康、逐物理 DeepSeek 调用和冻结证据汇总，以及本地 Lucide 图标资源。第 24 节已有固定输入完整日证据，需求文档没有第 26 节，均未重复或虚构实现。
 - 用户诉求：先统一完成第 14-16 节 DeepSeek 代码，再补测试和 Review。现状是候选会被定性证据门提前清空，批次/候选状态混用，只有六桶总额而没有阶段目标与上限。修改后新增持久化批次和逐股终态、十阶段 133 次目标/188 次上限、受条件约束的 emergency、原始/策略两级缓存、优先复核及重启 `abandoned` 恢复；新闻或公告不再作为调用资格。
 - 新增架构契约测试，固定快照编排模块必须使用职责明确的 `snapshot_workflow.py`，并禁止旧 `snapshot_lifecycle.py` 路径重新出现。
@@ -35,6 +36,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- DeepSeek 正常交易日目标由 144 调整为 158，阶段目标重新分配为 shared 15、today 68、tomorrow 35、d25 30、long 10；其中主审及预热共 141 次，today/tomorrow/d25 挑战者目标和上限统一为 6/6/5 共 17 次。六个预算桶、emergency 使用条件、冻结截止和 188 次物理 HTTP 请求硬上限均不变，候选不足时仍禁止为凑目标空调用。本批只更新需求契约，不修改配置、活动代码、数据库、API 实现或 Web 行为。
+- 开源参考表改为截至 2026-07-19 只展示当前不少于 20,000 Star 且与量化、金融研究、A 股数据或 DeepSeek 接入直接相关的项目；新增项目分别标明可借鉴边界、非运行依赖及非 DeepSeek 项目身份。
 - DeepSeek 正常日目标由 133 调整为 144，新增 11 次目标全部在既有策略桶中用于 today/tomorrow/d25 挑战者，策略桶上限、emergency 规则和全局 188 次物理请求硬上限不变；today 挑战者 11:18 停止提交，其余请求仍遵守 14:48 截止和 11:20/14:50 冻结。本批只更新需求契约，不修改配置、活动代码、数据库、API 实现或 Web 行为。
 - 本批次只更新开源参考契约和链接，不新增 Python 依赖、不复制外部源码，也不修改本地/DeepSeek 评分、风险、预算、冻结、API 或 Web 行为；DeepSeek 荐股项目仅作为 provider 封装、多智能体分工、证据展示和历史验证机制参考。
 - 当前推荐 ETag 绑定当前交易日、快照、overlay 与 fallback；历史响应必须精确匹配请求日期，前端缓存同时校验策略和日期，只接受明确标记的上一交易日 stale fallback。桌面顶部补齐行情来源/时间/年龄、评分时间、DeepSeek 已用/剩余和冻结状态，历史表与明细抽屉补齐今日涨跌、锚点至今、权重、截尾口径和风险评估。SQLite schema 升级到 v3，为来源健康审计补充有界错误摘要。
@@ -109,6 +112,7 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从 `docs/need.md` 当前开源参考表删除 Star 低于 20K 的 Qbot、FinRL、myhhub/stock、QUANTAXIS、RQAlpha、WonderTrader、CZSC、Sequoia-X、UZI-Skill 和 QuantsPlaybook 链接；未删除归档历史、活动代码、依赖或策略实现。
 - 本批次未删除现有评分、风险、预算、冻结、API、代码或测试；按用户范围不加入离线收益验证、统计晋级或运行时自动调参规则。
 - 本批次未删除任何策略、依赖、代码、测试或既有参考项目；只移除 `docs/need.md` 末尾重复且断行损坏的终端表格，其全部 12 个方法引用已去重并入第 2 节。
 - 本批次未删除策略、公式、冻结记录或历史兼容路径；仅用本地固定 Lucide sprite 替换页面中的刷新/关闭字符图标，未引入 CDN、移动端分支或新的运行依赖。
@@ -124,6 +128,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 通过 GitHub 官方仓库页逐项核对当前 Star 和项目定位：新增 OpenBB 70.7K、NautilusTrader 24.8K、FinGPT 20.9K、LEAN 20.6K，并确认从 Qbot 18.1K 到 QuantsPlaybook 5.6K 的十个被移除项目均低于 20K；复算 15+68+35+30+10=158、挑战者 6+6+5=17、预算桶上限总和仍为 188。`make format-check`、`make lint`、67 个源码文件 mypy、336 个 pytest、sdist/wheel、`git diff --check` 均通过；仓库外目标目录强制安装最终 wheel 后，包从隔离路径导入，`trader-cli --help`/`validate-config` 和模板、CSS、两个 JavaScript、两个 SVG 共 6 项资源验收通过。
 - 对照 DeepSeek 官方 V4 迁移、思考模式、上下文缓存和 JSON Output 文档核对模型名、参数与错误边界；逐项复算阶段目标为 144、预算桶总和为 188，并检查挑战者目标包含在原策略桶上限内。`make format-check`、`make lint`、67 个源码文件 mypy、完整 pytest、sdist/wheel、`git diff --check` 和仓库外 wheel 导入/CLI/6 项包资源验收通过。
 - 通过 GitHub 官方仓库页面、可用 REST 结果和本地 Git 历史核对 17 个项目的 canonical 链接、DeepSeek/A 股能力及借鉴边界；确认 12 个策略方法引用出自首次提交 `841355c` 且该章节后续被删除。`make format-check`、`make lint`、67 个源码文件 mypy、完整 pytest、sdist/wheel 构建和 `git diff --check` 通过。仓库外虚拟环境安装最终 wheel 后 `pip check`、`trader-cli --help`、包来源和模板/CSS/两个 JavaScript/两个 SVG 共 6 项资源验收通过。
 - 第 19-23 节新增回归覆盖当前/历史/fallback 精确身份、跨日 ETag、历史当前行情叠加、400/404 请求上下文、静态资源与抽屉字段、来源计划/成功/失败/P50/P95、DeepSeek success/failed/abandoned/429/超时/token 审计、持久化健康与冻结哈希重启查询，以及每策略候选/过滤/耗时/TopK/版本/veto 状态。`make format-check`、Ruff、67 个源码文件 mypy、336 个 pytest、sdist/wheel 和 `git diff --check` 通过；仓库外 Python 3.11 环境强制安装最终 wheel 后依赖一致、包从 site-packages 导入、`trader-cli validate-config`/`--help` 正常，模板、CSS、两个 JavaScript 和两个 SVG 共 6 项资源可读。无头 Chrome 在 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出、区块重叠、图片失败或非预期脚本异常，未启动 publisher 时 SSE 503 按预期回退。
@@ -164,8 +169,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- GitHub Star 会持续变化，20K 筛选只代表 2026-07-19 快照，不能证明项目安全、许可证兼容、A 股点时正确或策略收益；Star 跌破门槛或候选项目升至门槛后不会自动更新。158 是预算利用目标而非收益承诺，实际调用仍受候选、缓存、熔断、截止和降级约束；本批没有改动运行配置或代码，实施时仍需单独交付并验证原子预算和阶段调度。
 - 本批次只固化下一版契约，当前 `config/v2/runtime.json` 和活动实现仍使用 `deepseek-chat`、单阶段 schema 与 133 次目标，必须在 2026-07-24 旧别名停用前另行完成实现、回归和受控真实 API 冒烟。挑战者与影子校准尚无真实 A 股效果证据，且本批按用户要求不定义离线验证和晋级条件，因此不能据此宣称收益已经提高或允许校准值进入生产融合。
-- GitHub Star 会持续变化，文档数字只是 2026-07-19 的可复核快照，REST 未认证配额耗尽时没有猜测 UZI-Skill、QuantsPlaybook 和 Qbot 的动态值；外部仓库的安全、许可证、数据点时正确性和策略收益未经本项目验证，后续若引入其源码或机制，仍须固定 commit、独立审查并通过 A 股点时和样本外门禁。本批次未修改 UI，三档桌面验收沿用既有基线；本地回环临时服务授权被中断，未重复生成无行为变化的截图。
+- 外部仓库的安全、许可证、数据点时正确性和策略收益未经本项目验证，后续若引入其源码或机制，仍须固定 commit、独立审查并通过 A 股点时和样本外门禁。本批次未修改 UI，三档桌面验收沿用既有基线；本地回环临时服务授权被中断，未重复生成无行为变化的截图。
 - 第 19-23 节仓库内行为已有固定输入与故障注入证据；第 25 节仍缺真实 A 股完整交易日的 TopK P95/冻结时延、受保护真实密钥产生的非零 DeepSeek 调用与阶段总结。固定输入、仓库外安装和本地桌面检查不能替代这些生产证据，齐全前不得宣告发布完成。
 - 第 14-16 节仓库内状态机、预算、缓存和降级行为已有固定响应与故障注入证据，但尚未用受保护的真实 `DEEPSEEK_API_KEY` 重启服务并在 A 股交易时段验证非零物理调用、133 次阶段目标、上游 P95/限流和 schema 分布；这些仍是第 25 节发布阻塞证据，密钥不得写入仓库、日志、快照或进程参数。
 - 本批次是内部模块纯重命名，仓库内引用和 wheel 均受门禁覆盖；若仓库外代码绕过公共入口直接导入旧内部路径，将需要改用 `trader.application.snapshot_workflow`，不提供旧名兼容层。
