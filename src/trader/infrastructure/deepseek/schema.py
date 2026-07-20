@@ -21,10 +21,11 @@ from trader.domain.models import (
     Strategy,
 )
 from trader.domain.risk import parse_rating
+from trader.infrastructure.deepseek.evidence_router import route_prompt_evidence
 from trader.infrastructure.market_data.ground_truth import render_batch_ground_truth
 
-SCHEMA_VERSION = "deepseek_review_v2"
-PROMPT_VERSION = "deepseek_review_prompt_v2"
+SCHEMA_VERSION = "deepseek_review_v3"
+PROMPT_VERSION = "deepseek_review_prompt_v3"
 MAX_RESPONSE_CHARACTERS = 200_000
 MAX_ASSESSMENT_CHARACTERS = 240
 MAX_PROMPT_EVIDENCE_PER_CANDIDATE = 16
@@ -62,11 +63,12 @@ def parse_reviews(
 def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]]:
     if not 1 <= len(candidates) <= 8:
         raise ValueError("DeepSeek batch must contain 1 to 8 candidates")
-    ground_truth = render_batch_ground_truth(candidates)
+    ordered_candidates = tuple(sorted(candidates, key=lambda candidate: candidate.quote.code))
+    ground_truth = render_batch_ground_truth(ordered_candidates)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "prompt_version": PROMPT_VERSION,
-        "candidates": [_candidate_payload(candidate) for candidate in candidates],
+        "candidates": [_candidate_payload(candidate) for candidate in ordered_candidates],
     }
     return [
         {
@@ -80,15 +82,17 @@ def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]
         {
             "role": "user",
             "content": (
-                "以下为权威本地数值快照（由系统计算，不得改写或质疑）：\n\n"
-                + ground_truth
-                + "\n\n---\n\n"
-                + "逐股输出code、abstain、五个dimensions和risk_facts。dimensions必须包含"
+                "逐股输出code、abstain、五个dimensions和risk_facts。dimensions必须包含"
                 "value_quality、financial_health、market_flow、industry_policy、risk_quality；"
-                "每维包含score(0-100)、confidence(0-1)、assessment、flags、evidence_ids、unknown。"
+                "每维包含score(0-100)、raw_confidence(0-1)、confidence(与raw_confidence相同)、"
+                "assessment、flags、evidence_ids、unknown。最小JSON示例="
+                '{"results":[{"code":"600000","abstain":true,"dimensions":{},"risk_facts":[]}]}。'
                 "risk_facts只包含risk_code、severity(low/medium/high)、confidence、evidence_ids和assessment；"
                 "不得输出生产扣分或veto。缺证据维度设unknown=true、score=50、confidence=0。"
-                "全部维度未知时abstain=true。evidence_ids只能引用对应股票输入中的ID。输入="
+                "全部维度未知时abstain=true。evidence_ids只能引用对应股票输入中的ID。"
+                "以下动态候选输入位于公共前缀之后。权威本地数值快照由系统计算，不得改写或质疑：\n\n"
+                + ground_truth
+                + "\n\n动态候选JSON="
                 + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             ),
         },
@@ -114,11 +118,21 @@ def build_repair_messages(
     return messages
 
 
-def review_cache_key(candidate: FeatureSnapshot, *, model: str, generation: str = "regular") -> str:
+def review_cache_key(
+    candidate: FeatureSnapshot,
+    *,
+    model: str,
+    generation: str = "regular",
+    model_role: str = "primary",
+    thinking_mode: str = "standard",
+    reasoning_effort: str | None = None,
+    schema_version: str = SCHEMA_VERSION,
+    prompt_version: str = PROMPT_VERSION,
+) -> str:
     payload = {
         "code": candidate.quote.code,
         "structured_features": _cache_features(candidate),
-        "evidence": sorted(_cache_evidence(item) for item in candidate.evidence),
+        "evidence": sorted(_cache_evidence(item) for item in route_prompt_evidence(candidate).evidence),
         "risk_facts": sorted(
             (
                 fact.risk_fact_id,
@@ -130,9 +144,12 @@ def review_cache_key(candidate: FeatureSnapshot, *, model: str, generation: str 
             for fact in candidate.external_risk_facts
         ),
         "model": model,
+        "model_role": model_role,
+        "thinking_mode": thinking_mode,
+        "reasoning_effort": reasoning_effort,
         "generation": generation,
-        "schema_version": SCHEMA_VERSION,
-        "prompt_version": PROMPT_VERSION,
+        "schema_version": schema_version,
+        "prompt_version": prompt_version,
     }
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -153,6 +170,8 @@ def strategy_review_cache_key(
     dimension_weights: Mapping[str, float],
     confidence_coverage_min: float,
     minimum_known_dimensions: int,
+    challenger_identity: str = "",
+    challenger_status: str = "not_run",
 ) -> str:
     payload = {
         "raw_key": raw_key,
@@ -161,6 +180,8 @@ def strategy_review_cache_key(
         "dimension_weights": sorted((name, round(float(weight), 8)) for name, weight in dimension_weights.items()),
         "confidence_coverage_min": confidence_coverage_min,
         "minimum_known_dimensions": minimum_known_dimensions,
+        "challenger_identity": challenger_identity,
+        "challenger_status": challenger_status,
     }
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -200,8 +221,6 @@ def _cache_features(candidate: FeatureSnapshot) -> list[tuple[str, float | None]
 
 
 def _cache_evidence(item: Evidence) -> tuple[str, str, str, str, str, str]:
-    if item.evidence_type == "structured_point_in_time":
-        return (item.evidence_id, item.evidence_type, "", item.source, "", "")
     return (
         item.evidence_id,
         item.evidence_type,
@@ -217,7 +236,7 @@ def _parse_review(
     candidate: FeatureSnapshot,
     completed_at: datetime,
 ) -> DeepSeekReview:
-    allowed_evidence = {item.evidence_id for item in candidate.evidence[:MAX_PROMPT_EVIDENCE_PER_CANDIDATE]}
+    allowed_evidence = {item.evidence_id for item in route_prompt_evidence(candidate).evidence}
     dimensions_raw = raw.get("dimensions")
     if not isinstance(dimensions_raw, dict):
         raise DeepSeekSchemaError(f"dimensions must be an object for {candidate.quote.code}")
@@ -235,14 +254,6 @@ def _parse_review(
     outcome = ReviewOutcome.ABSTAIN if abstain or all_unknown else ReviewOutcome.APPLIED
     risk_facts = _parse_risk_facts(raw.get("risk_facts"), candidate.quote.code, allowed_evidence, completed_at)
     rating = parse_rating(str(raw.get("rating") or ""))
-    evidence_manifest_hash = _optional_bounded_text(
-        raw.get("evidence_manifest_hash"),
-        "evidence_manifest_hash",
-        minimum=1,
-        maximum=64,
-    )
-    if evidence_manifest_hash is None:
-        evidence_manifest_hash = build_review_manifest_hash(candidate)
     return DeepSeekReview(
         code=candidate.quote.code,
         outcome=outcome,
@@ -250,32 +261,8 @@ def _parse_review(
         risk_facts=risk_facts,
         completed_at=completed_at,
         rating=rating.value,
-        review_stage=_optional_bounded_text(raw.get("review_stage"), "review_stage", minimum=1, maximum=80)
-        or "primary",
-        challenger_status=_optional_bounded_text(
-            raw.get("challenger_status"),
-            "challenger_status",
-            minimum=1,
-            maximum=80,
-        )
-        or "not_run",
-        requested_model=_optional_bounded_text(raw.get("requested_model"), "requested_model", minimum=1, maximum=128),
-        actual_model=_optional_bounded_text(raw.get("actual_model"), "actual_model", minimum=1, maximum=128),
-        thinking_mode=_optional_bounded_text(raw.get("thinking_mode"), "thinking_mode", minimum=1, maximum=64),
         raw_confidence=_optional_bounded_number(raw.get("raw_confidence"), 0.0, 1.0, "raw_confidence"),
-        calibrated_confidence=_optional_bounded_number(
-            raw.get("calibrated_confidence"),
-            0.0,
-            1.0,
-            "calibrated_confidence",
-        ),
-        evidence_manifest_hash=evidence_manifest_hash,
-        calibration_version=_optional_bounded_text(
-            raw.get("calibration_version"),
-            "calibration_version",
-            minimum=1,
-            maximum=64,
-        ),
+        evidence_manifest_hash=build_review_manifest_hash(candidate),
     )
 
 
@@ -289,6 +276,14 @@ def _parse_dimension(
         raise DeepSeekSchemaError(f"dimension {name}.unknown must be boolean")
     score = _bounded_number(raw.get("score"), 0.0, 100.0, f"dimension {name}.score")
     confidence = _bounded_number(raw.get("confidence"), 0.0, 1.0, f"dimension {name}.confidence")
+    raw_confidence = _bounded_number(
+        raw.get("raw_confidence"),
+        0.0,
+        1.0,
+        f"dimension {name}.raw_confidence",
+    )
+    if raw_confidence != confidence:
+        raise DeepSeekSchemaError(f"dimension {name}.raw_confidence must equal confidence")
     evidence_ids = _evidence_ids(raw.get("evidence_ids"), allowed_evidence)
     if unknown:
         score = 50.0
@@ -363,6 +358,7 @@ def _candidate_manifest_payload(candidate: FeatureSnapshot) -> dict[str, object]
         for name, raw in candidate.values.items()
         if raw is not None and math.isfinite(value := float(raw))
     }
+    routed = route_prompt_evidence(candidate)
     evidence = [
         {
             "evidence_id": item.evidence_id[:80],
@@ -370,8 +366,10 @@ def _candidate_manifest_payload(candidate: FeatureSnapshot) -> dict[str, object]
             "title": item.title[:240],
             "source": item.source[:60],
             "published_at": item.published_at.isoformat(),
+            "received_at": item.received_at.isoformat() if item.received_at is not None else None,
+            "data_version": item.data_version,
         }
-        for item in candidate.evidence[:MAX_PROMPT_EVIDENCE_PER_CANDIDATE]
+        for item in routed.evidence
     ]
     return {
         "code": candidate.quote.code,
@@ -388,6 +386,7 @@ def _candidate_manifest_payload(candidate: FeatureSnapshot) -> dict[str, object]
         },
         "features": values,
         "evidence": evidence,
+        "evidence_exclusion_reasons": list(routed.exclusion_reasons),
         "values": values,
     }
 

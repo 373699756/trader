@@ -83,7 +83,7 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
     assert restored.filter_details[0].filter_code == "main_board_too_hot"
     assert restored.filter_details[0].actual == 8.01
     assert restored.replay_input is not None
-    assert restored.replay_input.algorithm_version == "engine_v9_section13_2026_07"
+    assert restored.replay_input.algorithm_version == "engine_v10_section9_hard_filter_2026_07"
     restored_today_input = restored.replay_input.candidate_features[0]
     assert restored_today_input.values["news_sentiment"] == 75.0
     assert restored_today_input.values["evidence_freshness"] == 100.0
@@ -112,7 +112,17 @@ def test_configured_deepseek_candidate_makes_physical_call_and_status_reports_qu
     feature = replace(
         feature,
         quote=replace(feature.quote, source_time=now - timedelta(seconds=11)),
-        evidence=(Evidence("e-1", "structured", "结构化行情", "fixture", now),),
+        evidence=(
+            Evidence(
+                "e-1",
+                "structured_point_in_time",
+                "结构化行情",
+                "fixture",
+                now,
+                received_at=now,
+                data_version="acceptance-v1",
+            ),
+        ),
     )
     runtime_dir = tmp_path / "runtime"
     repository = SnapshotRepository(runtime_dir, config_version="acceptance-v2")
@@ -199,8 +209,9 @@ class RecordedReviewer:
         *,
         phase: str,
         deadline: datetime,
+        contexts=None,
     ) -> Mapping[str, DeepSeekReview]:
-        del phase, deadline
+        del phase, deadline, contexts
         return {candidate.quote.code: self._review for candidate in candidates}
 
     def preheat(
@@ -272,6 +283,7 @@ def _payload(code: str) -> dict[str, object]:
         name: {
             "score": 80,
             "confidence": 1.0,
+            "raw_confidence": 1.0,
             "assessment": "positive",
             "flags": [],
             "evidence_ids": ["e-1"],
@@ -287,6 +299,8 @@ def _deepseek_settings() -> DeepSeekSettings:
         enabled=True,
         base_url="https://api.deepseek.example/v1",
         model="model",
+        challenger_model="deepseek-v4-pro",
+        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0, "long": 0},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,

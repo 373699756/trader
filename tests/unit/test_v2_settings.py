@@ -23,13 +23,24 @@ def test_v2_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert runtime.schema_version == 3
-    assert strategy.schema_version == 7
+    assert runtime.schema_version == 4
+    assert strategy.schema_version == 8
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 2
     assert runtime.pipeline.cadence_seconds["topk_quotes"]["today_main"] == 3
     assert sum(runtime.deepseek.strategy_limits.values()) == 188
+    assert sum(runtime.deepseek.stage_targets.values()) == 158
+    assert runtime.deepseek.model == "deepseek-v4-flash"
+    assert runtime.deepseek.challenger_model == "deepseek-v4-pro"
+    assert runtime.deepseek.challenger_limits == {"today": 6, "tomorrow": 6, "d25": 5, "long": 0}
+    assert strategy.hard_filters.blacklist_codes == ()
+    assert strategy.hard_filters.structured_risk_thresholds == {
+        "negative_announcement_level": 0.0,
+        "reduction_or_unlock": 0.0,
+        "pledge_risk": 0.0,
+        "financial_deterioration": 0.5,
+    }
     assert strategy.fusion.local_weight == pytest.approx(0.68)
     assert strategy.fusion.deepseek_weight == pytest.approx(0.32)
     regulatory_rule = next(rule for rule in strategy.risk_rules if rule.risk_code == "regulatory_risk")
@@ -54,6 +65,17 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
     assert len(watchlist.items) == 10
+
+
+@pytest.mark.parametrize("model", ["deepseek-chat", "deepseek-reasoner", "unknown-model"])
+def test_runtime_settings_rejects_non_v4_primary_model(tmp_path, model: str) -> None:
+    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw["deepseek"]["model"] = model
+    changed_path = tmp_path / "runtime.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="primary model"):
+        load_runtime_settings(changed_path)
 
 
 def test_runtime_settings_loads_deepseek_key_from_protected_file(tmp_path, monkeypatch) -> None:

@@ -21,7 +21,7 @@ def fetch_strategy_features(
             codes,
             observed_at,
             include_intraday_tail=strategy is Strategy.TOMORROW,
-            include_structured_research=strategy in {Strategy.D25, Strategy.LONG},
+            include_structured_research=True,
         )
     )
     return bind_strategy_input_version(strategy, features)
@@ -38,7 +38,7 @@ def read_strategy_features(
             codes,
             observed_at,
             include_intraday_tail=strategy is Strategy.TOMORROW,
-            include_structured_research=strategy in {Strategy.D25, Strategy.LONG},
+            include_structured_research=True,
         )
     )
     return bind_strategy_input_version(strategy, features)

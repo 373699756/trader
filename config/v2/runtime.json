@@ -1,6 +1,6 @@
 {
-  "schema_version": 3,
-  "config_version": "runtime_v5_deepseek_2026_07_18",
+  "schema_version": 4,
+  "config_version": "runtime_v6_v4_review_2026_07_20",
   "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -90,8 +90,15 @@
   },
   "deepseek": {
     "enabled": true,
-    "base_url": "https://api.deepseek.com/v1",
-    "model": "deepseek-chat",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash",
+    "challenger_model": "deepseek-v4-pro",
+    "challenger_limits": {
+      "today": 6,
+      "tomorrow": 6,
+      "d25": 5,
+      "long": 0
+    },
     "timeout_seconds": 12,
     "batch_size": 8,
     "max_tokens": 1800,
@@ -106,13 +113,13 @@
     },
     "stage_targets": {
       "shared_preheat": 15,
-      "today_observe": 12,
-      "today_main": 36,
-      "today_late": 10,
-      "tomorrow_afternoon": 15,
-      "tomorrow_final": 10,
-      "d25_afternoon": 15,
-      "d25_final": 10,
+      "today_observe": 14,
+      "today_main": 42,
+      "today_late": 12,
+      "tomorrow_afternoon": 21,
+      "tomorrow_final": 14,
+      "d25_afternoon": 19,
+      "d25_final": 11,
       "long_afternoon": 10,
       "emergency": 0
     },

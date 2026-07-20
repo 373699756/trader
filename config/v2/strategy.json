@@ -1,6 +1,6 @@
 {
-  "schema_version": 7,
-  "strategy_version": "strategy_v13_d25_long_real_inputs",
+  "schema_version": 8,
+  "strategy_version": "strategy_v14_negative_risk_hard_filter",
   "fusion": {
     "version": "fusion_v2_local68_deepseek32",
     "local_weight": 0.68,
@@ -30,6 +30,15 @@
     "trend": 0.2,
     "industry_strength": 0.1,
     "data_completeness": 0.1
+  },
+  "hard_filters": {
+    "blacklist_codes": [],
+    "structured_risk_thresholds": {
+      "negative_announcement_level": 0,
+      "reduction_or_unlock": 0,
+      "pledge_risk": 0,
+      "financial_deterioration": 0.5
+    }
   },
   "local_strategy_weights": {
     "today": {
@@ -199,6 +208,7 @@
     {
       "risk_code": "reduction_or_unlock_low",
       "strategies": ["today", "tomorrow", "d25", "long"],
+      "local_trigger_enabled": false,
       "trigger": {"factor": "reduction_or_unlock", "operator": "eq", "thresholds": [1]},
       "severity": "low",
       "penalty": 3,
@@ -213,6 +223,7 @@
     {
       "risk_code": "reduction_or_unlock_medium",
       "strategies": ["today", "tomorrow", "d25", "long"],
+      "local_trigger_enabled": false,
       "trigger": {"factor": "reduction_or_unlock", "operator": "eq", "thresholds": [2]},
       "severity": "medium",
       "penalty": 5,
@@ -227,6 +238,7 @@
     {
       "risk_code": "reduction_or_unlock_high",
       "strategies": ["today", "tomorrow", "d25", "long"],
+      "local_trigger_enabled": false,
       "trigger": {"factor": "reduction_or_unlock", "operator": "eq", "thresholds": [3]},
       "severity": "high",
       "penalty": 8,
@@ -241,6 +253,7 @@
     {
       "risk_code": "pledge_risk_low",
       "strategies": ["today", "tomorrow", "d25", "long"],
+      "local_trigger_enabled": false,
       "trigger": {"factor": "pledge_risk", "operator": "eq", "thresholds": [1]},
       "severity": "low",
       "penalty": 3,
@@ -255,6 +268,7 @@
     {
       "risk_code": "pledge_risk_medium",
       "strategies": ["today", "tomorrow", "d25", "long"],
+      "local_trigger_enabled": false,
       "trigger": {"factor": "pledge_risk", "operator": "eq", "thresholds": [2]},
       "severity": "medium",
       "penalty": 5,
@@ -269,6 +283,7 @@
     {
       "risk_code": "pledge_risk_high",
       "strategies": ["today", "tomorrow", "d25", "long"],
+      "local_trigger_enabled": false,
       "trigger": {"factor": "pledge_risk", "operator": "eq", "thresholds": [3]},
       "severity": "high",
       "penalty": 8,
@@ -283,6 +298,7 @@
     {
       "risk_code": "financial_deterioration",
       "strategies": ["today", "tomorrow", "d25", "long"],
+      "local_trigger_enabled": false,
       "trigger": {"factor": "financial_deterioration", "operator": "gte", "thresholds": [0.5]},
       "severity": "high",
       "penalty": 6,
@@ -297,6 +313,7 @@
     {
       "risk_code": "negative_announcement",
       "strategies": ["today", "tomorrow", "d25", "long"],
+      "local_trigger_enabled": false,
       "trigger": {"factor": "negative_announcement_level", "operator": "gte_lt", "thresholds": [1, 3]},
       "severity": "medium",
       "penalty": 5,
@@ -311,6 +328,7 @@
     {
       "risk_code": "regulatory_risk",
       "strategies": ["today", "tomorrow", "d25", "long"],
+      "local_trigger_enabled": false,
       "trigger": {"factor": "negative_announcement_level", "operator": "gte", "thresholds": [3]},
       "severity": "high",
       "penalty": 15,

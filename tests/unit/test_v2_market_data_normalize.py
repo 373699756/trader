@@ -9,6 +9,7 @@ import pytest
 from trader.infrastructure.market_data.normalize import (
     MarketQuoteInput,
     build_market_quote,
+    infer_one_price_limit,
     normalize_quotes,
     to_float,
 )
@@ -207,3 +208,27 @@ def test_market_quote_input_rejects_invalid_code_source_version_and_naive_time()
 
     with pytest.raises(ValueError, match="timezone-aware"):
         build_market_quote(_build_quote_input(datetime(2026, 7, 20), source_time=datetime(2026, 7, 20)))
+
+
+@pytest.mark.parametrize(
+    ("code", "pct_change", "expected"),
+    [
+        ("600001", 9.5, True),
+        ("600001", -9.5, True),
+        ("300001", 19.5, True),
+        ("688001", -19.5, True),
+        ("600001", 9.49, False),
+        ("300001", 19.49, False),
+    ],
+)
+def test_one_price_limit_is_inferred_at_board_specific_boundaries(
+    code: str,
+    pct_change: float,
+    expected: bool,
+) -> None:
+    assert infer_one_price_limit(code, 12.0, 12.0, 12.0, pct_change) is expected
+
+
+def test_one_price_limit_requires_a_finite_flat_price_range() -> None:
+    assert infer_one_price_limit("600001", 12.0, 12.1, 12.0, 10.0) is False
+    assert infer_one_price_limit("600001", 12.0, 12.0, 12.0, float("nan")) is False

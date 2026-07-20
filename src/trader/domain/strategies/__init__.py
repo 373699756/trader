@@ -8,7 +8,6 @@ from trader.domain.strategies.d25 import COMPONENT_WEIGHTS as D25_COMPONENT_WEIG
 from trader.domain.strategies.d25 import score_d25
 from trader.domain.strategies.long import COMPONENT_WEIGHTS as LONG_COMPONENT_WEIGHTS
 from trader.domain.strategies.long import score_long
-from trader.domain.strategies.shadow import build_shadow_report
 from trader.domain.strategies.today import COMPONENT_WEIGHTS as TODAY_COMPONENT_WEIGHTS
 from trader.domain.strategies.today import score_today
 from trader.domain.strategies.tomorrow import (
@@ -45,7 +44,6 @@ def score_strategy(
 __all__ = [
     "D25_COMPONENT_WEIGHTS",
     "DEFAULT_STRATEGY_WEIGHTS",
-    "build_shadow_report",
     "LONG_COMPONENT_WEIGHTS",
     "LocalScoreResult",
     "TOMORROW_COMPONENT_WEIGHTS",

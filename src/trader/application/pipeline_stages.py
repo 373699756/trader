@@ -6,7 +6,6 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
@@ -14,14 +13,29 @@ from typing import TYPE_CHECKING, ParamSpec, TypeVar
 from trader.application.cadence import PipelineTask
 from trader.application.candidate_features import fetch_strategy_features, read_strategy_features
 from trader.application.events import EventDeadlineExpired, PipelineEvent
-from trader.application.ports import MarketDataDeadlineExceeded, MarketDataUnavailable
+from trader.application.ports import MarketDataUnavailable
 from trader.application.recommendations import PreparedSnapshot
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
-from trader.application.workers import BoundedExecutor
-from trader.domain.models import DeepSeekReview, FeatureSnapshot, FilterAudit, RecommendationSnapshot, Strategy
+from trader.domain.models import DeepSeekReview, FeatureSnapshot, RecommendationSnapshot, Strategy
 
 if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline
+
+from trader.application.pipeline_market_tasks import (
+    _refresh_candidate_quotes_on_workers,
+    _refresh_candidates_on_workers,
+    _refresh_market_news_on_workers,
+    _refresh_reference_data_on_workers,
+    _refresh_stock_risk_on_workers,
+    _run_market_data_task,
+)
+from trader.application.pipeline_workers import (
+    data_future,
+    persist,
+    store_candidate_selection,
+    submit_required,
+    worker_status,
+)
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -318,6 +332,7 @@ def _score_strategies_on_workers(
                 prepared.eligible,
                 phase=prepared.phase,
                 deadline=prepared.review_deadline,
+                contexts=pipeline._engine.review_contexts(prepared),
             )
         for strategy, review_future in review_futures.items():
             review_results[strategy] = _resolve_review(pipeline, strategy, review_future)
@@ -334,6 +349,7 @@ def _score_strategies_on_workers(
                 long_prepared.eligible,
                 phase=long_prepared.phase,
                 deadline=long_prepared.review_deadline,
+                contexts=pipeline._engine.review_contexts(long_prepared),
             )
             review_results[Strategy.LONG] = _resolve_review(pipeline, Strategy.LONG, long_review)
 
@@ -356,93 +372,6 @@ def _score_strategies_on_workers(
         snapshots.append(snapshot)
 
     return tuple(snapshots)
-
-
-def store_candidate_selection(
-    pipeline: RecommendationPipeline,
-    market_features: Sequence[FeatureSnapshot],
-    candidates: tuple[FeatureSnapshot, ...],
-    reasons: Mapping[str, int],
-    details: tuple[FilterAudit, ...],
-) -> None:
-    pipeline._market_features = tuple(market_features)
-    pipeline._candidate_codes = tuple(feature.quote.code for feature in candidates)
-    pipeline._candidate_features = candidates
-    pipeline._filter_reasons = reasons
-    pipeline._filter_details = details
-    pipeline._filtered_count = len({item.stock_code for item in details})
-
-
-def submit_required(
-    pipeline: RecommendationPipeline,
-    pool: BoundedExecutor,
-    function: Callable[_P, _T],
-    /,
-    *args: _P.args,
-    **kwargs: _P.kwargs,
-) -> Future[_T]:
-    future = pool.submit(function, *args, **kwargs)
-    if future is None:
-        pipeline._state.increment("worker_queue_rejections")
-        raise RuntimeError("bounded worker queue is full or stopped")
-    return future
-
-
-def data_future(
-    pipeline: RecommendationPipeline,
-    function: Callable[_P, _T],
-    /,
-    *args: _P.args,
-    **kwargs: _P.kwargs,
-) -> Future[_T]:
-    if not pipeline._market_data_manages_workers:
-        return submit_required(pipeline, pipeline._data_pool, function, *args, **kwargs)
-    future: Future[_T] = Future()
-    try:
-        future.set_result(function(*args, **kwargs))
-    except BaseException as exc:
-        future.set_exception(exc)
-    return future
-
-
-def persist(
-    pipeline: RecommendationPipeline,
-    function: Callable[_P, _T],
-    /,
-    *args: _P.args,
-    **kwargs: _P.kwargs,
-) -> _T:
-    if not pipeline._persistence_running:
-        return function(*args, **kwargs)
-    future = pipeline._persistence_pool.submit(function, *args, **kwargs)
-    if future is None:
-        pipeline._state.increment("persistence_queue_rejections")
-        raise RuntimeError("persistence queue is full or stopped")
-    return future.result()
-
-
-def worker_status(pipeline: RecommendationPipeline) -> dict[str, object]:
-    worker = pipeline._worker
-    queue_status = pipeline._queue.status()
-    with pipeline._merge_status_lock:
-        merge_status = {
-            "workers": 1,
-            "queue_capacity": queue_status["capacity"],
-            "inflight": pipeline._merge_inflight,
-            "submitted_count": pipeline._merge_submitted_count,
-            "completed_count": pipeline._merge_completed_count,
-            "rejected_count": queue_status["rejected_count"],
-            "running": bool(worker is not None and worker.is_alive()),
-        }
-    return {
-        "data": pipeline._data_pool.status(),
-        "normalization": pipeline._normalization_pool.status(),
-        "strategy": pipeline._strategy_pool.status(),
-        "deepseek": pipeline._deepseek_pool.status(),
-        "long": pipeline._long_pool.status(),
-        "merge": merge_status,
-        "persistence": pipeline._persistence_pool.status(),
-    }
 
 
 def strategies_for_phase(phase: MarketPhase) -> tuple[Strategy, ...]:
@@ -481,174 +410,6 @@ def _resolve_review(
         pipeline._state.increment("deepseek_review_failures")
         pipeline._state.record_error(f"DeepSeek review degraded for {strategy.value}: {str(exc)[:400]}")
         return {}
-
-
-def _refresh_candidate_quotes_on_workers(
-    pipeline: RecommendationPipeline,
-    now: datetime,
-    phase: MarketPhase,
-    *,
-    deadline: datetime | None = None,
-) -> None:
-    codes = _active_codes(pipeline)
-    if not codes:
-        return
-    features = tuple(
-        _run_market_data_task(
-            pipeline,
-            pipeline._market_data.refresh_candidate_quotes,
-            codes,
-            now,
-            deadline=deadline,
-        )
-    )
-    candidate_set = set(pipeline._candidate_codes)
-    pipeline._candidate_features = tuple(feature for feature in features if feature.quote.code in candidate_set)
-    if phase in {MarketPhase.AFTERNOON, MarketPhase.FINAL_REVIEW, MarketPhase.FINAL_QUOTE}:
-        _run_market_data_task(
-            pipeline,
-            pipeline._market_data.refresh_intraday_tail,
-            pipeline._candidate_codes,
-            now,
-        )
-
-
-def _refresh_market_news_on_workers(
-    pipeline: RecommendationPipeline,
-    now: datetime,
-    deadline: datetime | None,
-) -> None:
-    codes = _active_codes(pipeline)
-    if not codes:
-        return
-    _run_market_data_task(
-        pipeline,
-        pipeline._market_data.refresh_market_news,
-        codes,
-        now,
-        deadline=deadline,
-    )
-    pipeline._candidate_features = tuple(pipeline._market_data.read_candidate_features(pipeline._candidate_codes, now))
-
-
-def _refresh_stock_risk_on_workers(
-    pipeline: RecommendationPipeline,
-    now: datetime,
-    deadline: datetime | None,
-) -> None:
-    codes = _active_codes(pipeline)
-    if codes:
-        _run_market_data_task(
-            pipeline,
-            pipeline._market_data.refresh_stock_risk,
-            codes,
-            now,
-            deadline=deadline,
-        )
-
-
-def _refresh_reference_data_on_workers(
-    pipeline: RecommendationPipeline,
-    now: datetime,
-    phase: MarketPhase,
-) -> None:
-    codes = _active_codes(pipeline)
-    if codes:
-        _run_market_data_task(
-            pipeline,
-            pipeline._market_data.refresh_reference_data,
-            codes,
-            now,
-            force=phase is MarketPhase.AFTER_CLOSE,
-        )
-
-
-def _active_codes(pipeline: RecommendationPipeline) -> tuple[str, ...]:
-    return tuple(dict.fromkeys((*pipeline._candidate_codes, *pipeline._long_codes)))
-
-
-def _run_market_data_task(
-    pipeline: RecommendationPipeline,
-    function: Callable[_P, _T],
-    /,
-    *args: _P.args,
-    **kwargs: _P.kwargs,
-) -> _T:
-    return data_future(pipeline, function, *args, **kwargs).result()
-
-
-def _refresh_candidates_on_workers(
-    pipeline: RecommendationPipeline,
-    now: datetime,
-    phase: MarketPhase,
-    *,
-    force: bool = False,
-    deadline: datetime | None = None,
-) -> None:
-    market_future = data_future(
-        pipeline,
-        pipeline._market_data.fetch_market_features,
-        now,
-        force=force,
-        deadline=deadline,
-    )
-    try:
-        market_result = _event_result(
-            pipeline,
-            market_future,
-            deadline=deadline,
-            event_type=PipelineTask.FULL_MARKET.value,
-        )
-        market_features = tuple(market_result)
-    except MarketDataDeadlineExceeded as exc:
-        raise EventDeadlineExpired(
-            f"event deadline expired during execution: {PipelineTask.FULL_MARKET.value}"
-        ) from exc
-    except MarketDataUnavailable as exc:
-        reason = str(exc)[:500]
-        _LOGGER.warning("candidate refresh degraded during %s: %s", phase.value, reason)
-        pipeline._state.increment("market_refresh_failures")
-        pipeline._state.record_error(f"market data degraded during {phase.value}: {reason}")
-        return
-    selection = submit_required(
-        pipeline,
-        pipeline._normalization_pool,
-        pipeline._engine.preselect,
-        market_features,
-        now=now,
-        max_age_seconds=maximum_age_seconds(phase),
-        limit=pipeline._candidate_pool_size,
-    )
-    candidates, reasons, details = _event_result(
-        pipeline,
-        selection,
-        deadline=deadline,
-        event_type=PipelineTask.FULL_MARKET.value,
-    )
-    store_candidate_selection(pipeline, market_features, candidates, reasons, details)
-
-
-def _event_result(
-    pipeline: RecommendationPipeline,
-    future: Future[_T],
-    *,
-    deadline: datetime | None,
-    event_type: str,
-) -> _T:
-    if deadline is None:
-        return future.result()
-    remaining = (deadline - pipeline._now()).total_seconds()
-    if remaining <= 0.0:
-        future.cancel()
-        raise EventDeadlineExpired(f"event deadline expired during execution: {event_type}")
-    try:
-        result = future.result(timeout=remaining)
-    except FutureTimeoutError as exc:
-        future.cancel()
-        raise EventDeadlineExpired(f"event deadline expired during execution: {event_type}") from exc
-    if pipeline._now() >= deadline:
-        raise EventDeadlineExpired(f"event deadline expired during execution: {event_type}")
-    return result
 
 
 __all__ = [

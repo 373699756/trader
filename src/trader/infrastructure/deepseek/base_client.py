@@ -48,6 +48,12 @@ class DeepSeekHttpResult:
     error: str
     usage: Mapping[str, object] = field(default_factory=dict)
     attempt_records: tuple[DeepSeekHttpAttempt, ...] = ()
+    actual_model: str | None = None
+    system_fingerprint: str | None = None
+    finish_reason: str | None = None
+    prompt_cache_hit_tokens: int = 0
+    prompt_cache_miss_tokens: int = 0
+    reasoning_content: str | None = field(default=None, repr=False)
 
 
 class DeepSeekClientBase(ABC):

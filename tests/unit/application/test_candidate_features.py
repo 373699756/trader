@@ -56,7 +56,7 @@ def test_tomorrow_candidate_input_requests_tail_data_and_versions_it(
     _features, long_version = fetch_strategy_features(market_data, Strategy.LONG, ("600001",), now)
 
     assert market_data.tail_requests == [True, True, False, False, False]
-    assert market_data.structured_requests == [False, False, True, True, True]
+    assert market_data.structured_requests == [True, True, True, True, True]
     assert first_version.startswith("tomorrow-input:")
     assert second_version != first_version
     assert d25_version.startswith("d25-input:")

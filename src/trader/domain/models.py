@@ -159,6 +159,7 @@ class RiskRule:
     trigger_thresholds: tuple[float, ...] = ()
     combination_mode: str = "exclusive"
     risk_fact_id_fields: tuple[str, ...] = ()
+    local_trigger_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -252,9 +253,37 @@ class DeepSeekReview:
     calibrated_confidence: float | None = None
     evidence_manifest_hash: str | None = None
     calibration_version: str | None = None
+    model_role: str | None = None
+    reasoning_effort: str | None = None
+    system_fingerprint: str | None = None
+    prompt_cache_hit_tokens: int | None = None
+    prompt_cache_miss_tokens: int | None = None
+    challenger_requested_model: str | None = None
+    challenger_actual_model: str | None = None
+    challenger_thinking_mode: str | None = None
+    challenger_reasoning_effort: str | None = None
+    challenger_system_fingerprint: str | None = None
+    challenger_prompt_cache_hit_tokens: int | None = None
+    challenger_prompt_cache_miss_tokens: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dimensions", MappingProxyType(dict(self.dimensions)))
+
+
+@dataclass(frozen=True)
+class ReviewCandidateContext:
+    local_score: float
+    local_rank: int
+    action_threshold: float | None
+    in_protection_set: bool
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.local_score):
+            raise ValueError("review context local score must be finite")
+        if self.local_rank < 1:
+            raise ValueError("review context local rank must be positive")
+        if self.action_threshold is not None and not math.isfinite(self.action_threshold):
+            raise ValueError("review context action threshold must be finite")
 
 
 @dataclass(frozen=True)
@@ -308,6 +337,8 @@ class FrozenReplayPolicy:
     dimension_weights: Mapping[str, Mapping[str, float]]
     local_strategy_weights: Mapping[str, Mapping[str, float]]
     risk_rules: Mapping[str, RiskRule]
+    blacklist_codes: tuple[str, ...] = ()
+    structured_risk_thresholds: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "thresholds", MappingProxyType(dict(self.thresholds)))
@@ -327,6 +358,12 @@ class FrozenReplayPolicy:
             ),
         )
         object.__setattr__(self, "risk_rules", MappingProxyType(dict(self.risk_rules)))
+        object.__setattr__(self, "blacklist_codes", tuple(self.blacklist_codes))
+        object.__setattr__(
+            self,
+            "structured_risk_thresholds",
+            MappingProxyType(dict(self.structured_risk_thresholds)),
+        )
 
 
 @dataclass(frozen=True)
@@ -413,6 +450,7 @@ __all__ = [
     "RecommendationAction",
     "RecommendationReplayInput",
     "RecommendationSnapshot",
+    "ReviewCandidateContext",
     "ReviewOutcome",
     "RiskFact",
     "RiskRule",

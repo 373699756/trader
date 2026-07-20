@@ -1508,8 +1508,9 @@ class ThreadRecordingReviewer:
         *,
         phase: str,
         deadline: datetime,
+        contexts=None,
     ) -> Mapping[str, object]:
-        del phase, deadline
+        del phase, deadline, contexts
         self.review_threads.append(threading.current_thread().name)
         return {}
 
@@ -1535,8 +1536,9 @@ class FailingReviewer(ThreadRecordingReviewer):
         *,
         phase: str,
         deadline: datetime,
+        contexts=None,
     ) -> Mapping[str, object]:
-        del phase, deadline
+        del phase, deadline, contexts
         raise RuntimeError("review transport failed")
 
 
@@ -1556,8 +1558,9 @@ class SequencedReviewer(ThreadRecordingReviewer):
         *,
         phase: str,
         deadline: datetime,
+        contexts=None,
     ) -> Mapping[str, object]:
-        del phase, deadline
+        del phase, deadline, contexts
         if strategy is Strategy.D25:
             self.long_started.wait(timeout=0.1)
             self.d25_done.set()

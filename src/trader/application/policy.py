@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from trader.domain.filters import HardFilterPolicy
 from trader.domain.fusion import FusionPolicy
 from trader.domain.models import RiskRule, Strategy
 
@@ -38,6 +39,7 @@ class RecommendationPolicy:
     dimension_weights: Mapping[Strategy, Mapping[str, float]]
     local_strategy_weights: Mapping[Strategy, Mapping[str, float]]
     risk_rules: Mapping[str, RiskRule]
+    hard_filter: HardFilterPolicy = HardFilterPolicy()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate_weights", MappingProxyType(dict(self.candidate_weights)))

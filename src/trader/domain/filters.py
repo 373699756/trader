@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from types import MappingProxyType
 
 from trader.domain.models import Board, FeatureSnapshot, FilterAudit
 
@@ -16,6 +17,25 @@ FilterReason = FilterAudit
 class FilterSeverity(str, Enum):
     REQUIRED = "required"
     OPTIONAL = "optional"
+
+
+@dataclass(frozen=True)
+class HardFilterPolicy:
+    blacklist_codes: frozenset[str] = frozenset()
+    structured_risk_thresholds: Mapping[str, float] = field(
+        default_factory=lambda: MappingProxyType(
+            {
+                "negative_announcement_level": 0.0,
+                "reduction_or_unlock": 0.0,
+                "pledge_risk": 0.0,
+                "financial_deterioration": 0.5,
+            }
+        )
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "blacklist_codes", frozenset(self.blacklist_codes))
+        object.__setattr__(self, "structured_risk_thresholds", MappingProxyType(dict(self.structured_risk_thresholds)))
 
 
 @dataclass(frozen=True)
@@ -52,10 +72,16 @@ def board_for_code(code: str) -> Board:
     return Board.UNSUPPORTED
 
 
-def hard_filter(snapshot: FeatureSnapshot, now: datetime, *, max_age_seconds: float) -> FilterResult:
+def hard_filter(
+    snapshot: FeatureSnapshot,
+    now: datetime,
+    *,
+    max_age_seconds: float,
+    policy: HardFilterPolicy | None = None,
+) -> FilterResult:
     return apply_filters(
         snapshot,
-        default_filter_rules(max_age_seconds=max_age_seconds),
+        default_filter_rules(max_age_seconds=max_age_seconds, policy=policy),
         now=now,
     )
 
@@ -133,7 +159,7 @@ def apply_filters(
     )
 
 
-def default_filter_rules(*, max_age_seconds: float) -> tuple[FilterRule, ...]:
+def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
     """Build default filter rule registry for all strategies.
 
     Required rules are preserved from ``hard_filter`` behavior. Optional rules
@@ -141,6 +167,7 @@ def default_filter_rules(*, max_age_seconds: float) -> tuple[FilterRule, ...]:
     """
     if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
         raise ValueError("max_age_seconds must be finite and non-negative")
+    policy = policy or HardFilterPolicy()
 
     def unsupported_code(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if board_for_code(snapshot.quote.code) is Board.UNSUPPORTED:
@@ -220,7 +247,7 @@ def default_filter_rules(*, max_age_seconds: float) -> tuple[FilterRule, ...]:
         return None
 
     def blacklisted(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
-        if snapshot.quote.is_blacklisted:
+        if snapshot.quote.is_blacklisted or snapshot.quote.code in policy.blacklist_codes:
             return _make_audit(snapshot, "blacklisted", "false", True)
         return None
 
@@ -251,6 +278,35 @@ def default_filter_rules(*, max_age_seconds: float) -> tuple[FilterRule, ...]:
             return _make_audit(snapshot, "growth_board_too_hot", "<= 16.00", pct_change)
         return None
 
+    def structured_negative_risk(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        code_by_field = {
+            "negative_announcement_level": "negative_announcement",
+            "reduction_or_unlock": "reduction_or_unlock",
+            "pledge_risk": "pledge_risk",
+            "financial_deterioration": "financial_deterioration",
+        }
+        for field_name, filter_code in code_by_field.items():
+            value = snapshot.values.get(field_name)
+            threshold = policy.structured_risk_thresholds[field_name]
+            if value is not None and math.isfinite(value) and value > threshold:
+                return _make_audit(snapshot, filter_code, f"<= {threshold:g}", value)
+        return None
+
+    def structured_risk_unavailable(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        missing = tuple(
+            field_name
+            for field_name in policy.structured_risk_thresholds
+            if (value := snapshot.values.get(field_name)) is None or not math.isfinite(value)
+        )
+        if missing:
+            return _make_audit(
+                snapshot,
+                "structured_risk_unavailable",
+                "all structured risks available",
+                ",".join(missing),
+            )
+        return None
+
     return (
         FilterRule("unsupported_code", FilterSeverity.REQUIRED, unsupported_code),
         FilterRule("st_or_delisting", FilterSeverity.REQUIRED, st_or_delisting),
@@ -264,6 +320,8 @@ def default_filter_rules(*, max_age_seconds: float) -> tuple[FilterRule, ...]:
         FilterRule("one_price_limit", FilterSeverity.REQUIRED, one_price_limit),
         FilterRule("blacklisted", FilterSeverity.REQUIRED, blacklisted),
         FilterRule("major_regulatory_risk", FilterSeverity.REQUIRED, major_regulatory_risk),
+        FilterRule("structured_negative_risk", FilterSeverity.REQUIRED, structured_negative_risk),
+        FilterRule("structured_risk_unavailable", FilterSeverity.OPTIONAL, structured_risk_unavailable),
         FilterRule("invalid_quote_structure", FilterSeverity.REQUIRED, invalid_quote_structure),
         FilterRule("invalid_pct_change", FilterSeverity.REQUIRED, invalid_pct_change),
     )
@@ -283,6 +341,7 @@ def _make_audit(snapshot: FeatureSnapshot, code: str, threshold: str, actual: ob
 __all__ = [
     "FilterReason",
     "FilterResult",
+    "HardFilterPolicy",
     "FilterRule",
     "FilterSeverity",
     "apply_filters",

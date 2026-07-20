@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户诉求：检查 `docs/need.md` 最近三次提交后，补齐整个活动工程中尚未实现或与契约不一致的功能，并以职责边界拆分超大文件。新增配置化结构风险硬过滤、V4-Flash 主审/V4-Pro 挑战者、固定点时证据路由、挑战者保守合并与策略级缓存、模型/指纹/cache-token 审计、结构化风险冻结重放，以及活动 Python/CSS/JavaScript/HTML 的 500 行架构门禁；新增失败、迟到、预算、schema 修复、黑名单、结构风险和一字涨跌停回归。
+
 - 用户诉求：把 `docs/hi.md` 从方向性方案改为 Codex 可直接执行的详细计划。文档现已固定统一执行协议、两个独立交付批次、允许修改的文件范围、失败先行测试、类型和接口、五个数据源 lane、三个板块评分 lane、精确候选/评分权重、DeepSeek 全局协调、融合与故障降级、逐项验收矩阵、提交信息和停止条件；本批仍不修改活动契约、配置或实现。
 
 - 用户诉求：将多源并行采集、沪深主板/创业板/科创板独立评分、结构化合并、DeepSeek全局协调、TopK集中度和分批交付门禁形成完整计划文档。新增 `docs/hi.md`，明确 v15 数据合并批次与 v16 三板评分批次、来源职责、板内候选/评分权重、合并 epoch、故障降级、API/冻结兼容、测试验收和未验证收益风险。本次仅新增计划文档，未改变 `docs/need.md`、运行配置或活动代码。
@@ -64,6 +66,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 运行配置升级到 schema 4 和 158/188 阶段目标，策略配置升级到 schema 8；四类结构化负面风险与配置黑名单统一在评分和 DeepSeek 前硬过滤，原本对应的本地风险触发关闭以避免重复扣分。主审/挑战者请求身份包含模型角色、思考模式、reasoning effort、prompt/schema 版本，V4-Pro schema 修复在内存中回传供应商 `reasoning_content` 且不落盘；桌面明细新增两阶段模型、状态、指纹、cache token 和证据 manifest 审计。
+- 将 settings、pipeline、recommendations、DeepSeek reviewer/budget、市场服务/AKShare/特征、快照 codec/writer 和 dashboard CSS 按配置模型与校验、生命周期与任务、请求与状态、缓存与研究、序列化与观测等职责拆为显式模块；原门面、依赖方向、组合根、公共入口和运行资源所有权保持不变。
+
 - DeepSeek 预算与共享快照连接边界改为事务与资源生命周期一体的上下文管理器；仅冻结提交保留显式拥有并关闭的原始连接。状态 API 在 SQLite 打开或读取失败时只降级预算依赖，不改变最近有效推荐、冻结记录、评分、188 次原子预算规则或其他只读状态。
 - 落地 P12 证据落盘统一细化：`MarketFeatureService._load_research_cache()` 与 `_write_research_cache()` 对 news/structured 证据统一按 `ResearchObservation` 序列化/反序列化落盘，过期缓存返回 `None` 并退回网络；`AkshareResearchClient._cache_payload()` 使用 `atomic_write_json` 统一落地原始 payload，便于 restart 重放与故障复盘。补充组件测试：`test_akshare_news_response_is_cached_with_atomic_writer`、`test_research_cache_is_used_after_restart_before_source_request`、`test_research_cache_expired_calls_research_client`。
 - DeepSeek 审计字段闭环完成：`infrastructure/deepseek/schema.py`、`infrastructure/deepseek/reviewer.py`、`infrastructure/persistence/snapshots.py`、`web/schemas.py` 连续透传审计元数据（模型、思考模式、挑战者状态、置信度与 hash）；旧快照在反序列化时回退为 `primary/not_run/neutral`，新增三类测试覆盖解析、持久化和 API 合约。
@@ -116,6 +121,9 @@ All notable changes to this project are documented here.
 - v1 需求、设计、研究登记和配置移入 `docs/archive/v1`，`docs/need.md` 成为唯一活动业务契约。
 
 ### Fixed
+
+- 修复最近需求把负面公告、减持/解禁、质押和财务恶化改为硬过滤后，活动实现仍只在 d25/long 本地风险表扣分且 today/tomorrow 不读取结构化风险的问题；风险字段缺失现在保留本地推荐并记录 `structured_risk_unavailable`，真实正等级在四策略评分和模型调用前剔除。修复行情源未显式标记时一字涨跌停无法识别，以及策略配置黑名单未进入硬过滤的问题。
+- 修复生产仍默认旧 DeepSeek 别名、无挑战者执行、动态候选数据位于 prompt 固定前缀之前、同一批候选因上游顺序变化导致 prompt 尾部不稳定、挑战者结果未进入策略融合缓存，以及 V4-Pro schema 修复丢失上一轮临时推理字段的问题；挑战者失败、超时、预算耗尽、schema 错误和迟到继续保留有效主审，重试与修复仍共享最多两次物理尝试并计入原子 188 上限。
 
 - 修复 DeepSeek 预算查询与共享快照读写持续泄漏 SQLite 连接并最终耗尽进程文件描述符的问题；补充两个连接边界的正常/异常关闭回归，以及预算库不可用时 `/api/status` 仍返回 200 的故障注入回归。
 - 修复合法 DeepSeek 五维响应缺少 `rating` 时默认 `neutral` 导致所有过阈值候选被降为观察、最终无可执行荐股的问题；恢复最终分/本地分/代码固定排序，并保留评级为只读审计。
@@ -171,6 +179,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除与第 26 节“尚未授权生产启用”冲突的活动 `domain/strategies/shadow.py`、策略导出和快照 `shadow_scoring` 元数据；活动代码、API、UI、草稿及冻结 JSON 不再计算或携带候选初值影子排名。未删除历史文档、既有冻结数据、生产评分、预算或只读 API。
+
 - 本批未删除预算审计、历史调用记录、API 字段、策略、冻结数据或运行依赖；数据库不可用只产生显式状态降级，不以清空数据或重建运行库规避错误。
 - v10 目标契约不再允许创业板与科创板共享换手、波动、分位或模糊成长板过滤身份，也不再使用 d25 双乘数缩放总分；本批未删除或改写当前 v9 实现。`back1.md` 中的 long 三板扩池、12 套模型、ECDF、机器学习、FDR、收益标签、离线晋级、影子运行及低于 20K Star 的仓库链接均未合入生产契约。
 - 从 `docs/need.md` 当前开源参考表删除 Star 低于 20K 的 Qbot、FinRL、myhhub/stock、QUANTAXIS、RQAlpha、WonderTrader、CZSC、Sequoia-X、UZI-Skill 和 QuantsPlaybook 链接；未删除归档历史、活动代码、依赖或策略实现。
@@ -189,6 +199,8 @@ All notable changes to this project are documented here.
 - 删除根 `analysis`、`experiments` 活动产物和旧依赖指纹脚本；有保留价值的资料仅归档，不进入 wheel。
 
 ### Verification
+
+- 本批通过 `make format-check`、`make lint`、111 个源码文件 mypy、完整 pytest、`make package` 和 `git diff --check`；架构 AST、`create_app()` 无副作用、固定融合 83.40、预算并发/重试、冻结恢复/哈希、SSE 游标与慢客户端均在完整套件内通过。最终 wheel 从仓库外 `/tmp` 目标目录导入，`trader-cli --help`、`validate-config`、`pip check` 及模板、3 个拆分 CSS、2 个 JavaScript、2 个 SVG 均通过。真实 Chrome 在 1280x720、1440x900、1920x1080 下加载全部 CSS，无白屏、脚本异常、关键同级重叠、文字裁切或页面级横向溢出，三张截图已人工复核。
 
 - 本批 `docs/hi.md` 可执行计划通过 `markdownlint` 和 `git diff --check`；`make format-check`、`make lint`、111 个源码文件 mypy、完整 pytest、sdist/wheel 均通过，pytest 仅保留既有未知测试模型名 RuntimeWarning。最终 wheel 以 `--target` 安装到仓库外 `/tmp` 后从隔离路径导入，`trader-cli --help`、`validate-config`、模板、CSS、两个 JavaScript、两个 SVG 和当前环境 `pip check` 均通过。本批无活动 UI、API 或运行逻辑变化，未重复桌面截图。
 - 本批文档验证：`markdownlint docs/hi.md`、`git diff --check -- docs/hi.md CHANGELOG.md` 和 `make package` 通过。`make format-check`、`make lint`、`make type-check` 受到本批开始前工作树中代码拆分改动的既有格式、导入和类型错误阻断；全量 `make test` 仅有既有 `tests/contract/test_v2_app_factory.py::test_dashboard_uses_packaged_v2_assets` 因拆分后的 CSS 未包含 `.runtime-error` 的失败。本批未修改这些实现或测试文件。
@@ -238,6 +250,8 @@ All notable changes to this project are documented here.
 - `./run.sh validate-config`、架构 AST、无副作用 app factory、冻结恢复、预算并发和 SSE 慢客户端契约均已纳入门禁。
 
 ### Residual Risks
+
+- 本批使用 mock DeepSeek HTTP 覆盖 V4 模型参数、429、超时、截断/非法 JSON、挑战者合并、缓存和预算，没有消耗真实 API 额度；供应商实际模型可用性、响应字段与网络质量仍需受控真实密钥冒烟。结构化风险源、真实交易日全市场负载和冻结时点仍受外部数据覆盖与尾延迟影响，失败时按契约保留最近有效快照并显式降级。工程门禁与策略一致性不构成收益验证，不能据此声称推荐收益提高。
 
 - 详细计划已经消除当前已知的实施决策空缺，但 v15/v16 仍只是待执行契约；五个数据源 lane、三板评分 lane、候选/评分权重和78/76门槛均未进入活动代码。权重来自固定业务选择而非点时收益验证，后续实现通过工程门禁也不能据此宣称实际收益提高。
 - 故障注入已覆盖 SQLite 打开失败，但无法在单元测试中制造宿主级文件描述符耗尽而不影响测试进程；两个生产 SQLite 边界的确定关闭契约直接覆盖已确认根因。若网络套接字或第三方库独立泄漏句柄，仍需依赖运行期进程 FD 监控定位；本批不重构为长连接，也不声称消除所有可能的宿主资源耗尽来源。三档桌面截图仍受宿主 Firefox 无响应阻断；本次 JavaScript 变化仅涉及预算不可用文本且静态契约通过，但发布门禁不能以此替代真实三档渲染。

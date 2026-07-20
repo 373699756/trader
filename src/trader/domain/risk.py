@@ -53,6 +53,8 @@ def derive_local_risk_facts(
 ) -> tuple[RiskFact, ...]:
     facts = list(snapshot.external_risk_facts)
     for rule in rules.values():
+        if not rule.local_trigger_enabled:
+            continue
         if rule.strategies and strategy.value not in rule.strategies:
             continue
         age_seconds = (observed_at - snapshot.observed_at).total_seconds()

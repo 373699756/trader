@@ -6,7 +6,14 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import Protocol
 
-from trader.domain.models import DeepSeekReview, FeatureSnapshot, LiveOverlay, RecommendationSnapshot, Strategy
+from trader.domain.models import (
+    DeepSeekReview,
+    FeatureSnapshot,
+    LiveOverlay,
+    RecommendationSnapshot,
+    ReviewCandidateContext,
+    Strategy,
+)
 
 
 class MarketDataUnavailable(RuntimeError):
@@ -119,6 +126,7 @@ class DeepSeekReviewPort(Protocol):
         *,
         phase: str,
         deadline: datetime,
+        contexts: Mapping[str, ReviewCandidateContext] | None = None,
     ) -> Mapping[str, DeepSeekReview]: ...
 
     def preheat(

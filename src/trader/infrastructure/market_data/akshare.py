@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import html
-import json
 import logging
-import math
-import re
-from collections.abc import Callable, Mapping, Sequence
-from datetime import date, datetime, time, timedelta
+from collections.abc import Callable, Mapping
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Protocol, cast
 from zoneinfo import ZoneInfo
@@ -24,6 +20,21 @@ from trader.domain.research import (
     ResearchObservation,
     announcement_level,
     reduction_level,
+)
+from trader.infrastructure.market_data.akshare_news import fetch_news as _fetch_news
+from trader.infrastructure.market_data.akshare_parsing import (
+    _announcement_rows,
+    _clean_text,
+    _finite_number,
+    _parse_date,
+    _parse_date_end,
+    _parse_precise_datetime,
+    _payload_version,
+    _point_in_time,
+    _result_rows,
+    _source_error,
+    _summary_number,
+    _validate_code,
 )
 from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter, atomic_write_json
 
@@ -61,65 +72,7 @@ class AkshareResearchClient:
         self._json_writer = json_writer
 
     def fetch_news(self, code: str, *, observed_at: datetime, limit: int = 5) -> tuple[Evidence, ...]:
-        _validate_code(code)
-        if limit <= 0:
-            return ()
-        point_in_time = _point_in_time(observed_at)
-        callback = "jQuery35101792940631092459_1764599530165"
-        inner_param = {
-            "uid": "",
-            "keyword": code,
-            "type": ["cmsArticleWebOld"],
-            "client": "web",
-            "clientType": "web",
-            "clientVersion": "curr",
-            "param": {
-                "cmsArticleWebOld": {
-                    "searchScope": "default",
-                    "sort": "default",
-                    "pageIndex": 1,
-                    "pageSize": 10,
-                    "preTag": "<em>",
-                    "postTag": "</em>",
-                }
-            },
-        }
-        response = self._request(
-            "https://search-api-web.eastmoney.com/search/jsonp",
-            params={
-                "cb": callback,
-                "param": json.dumps(inner_param, ensure_ascii=False),
-                "_": "1764599530176",
-            },
-            headers={"Referer": f"https://so.eastmoney.com/news/s?keyword={code}"},
-        )
-        self._cache_payload("news", code, point_in_time, response.text)
-        rows = _news_rows(response.text, callback)
-        response_version = _content_version("eastmoney-news", response.text)
-        evidence: list[Evidence] = []
-        for row in rows:
-            if len(evidence) >= limit:
-                break
-            title = _clean_text(_first_text(row, ("title", "新闻标题", "标题")))
-            if not title:
-                continue
-            published = _parse_datetime(_first_text(row, ("date", "发布时间", "时间", "publish_time")))
-            if published is None or published > point_in_time:
-                continue
-            source = _first_text(row, ("mediaName", "文章来源", "来源", "source")) or "eastmoney_news"
-            identity = hashlib.sha256(f"{code}|{published.isoformat()}|{source}|{title}".encode()).hexdigest()[:32]
-            evidence.append(
-                Evidence(
-                    evidence_id=f"akshare-news:{code}:{identity}",
-                    evidence_type="news",
-                    title=title[:240],
-                    source=source[:60],
-                    published_at=published,
-                    received_at=point_in_time,
-                    data_version=response_version,
-                )
-            )
-        return tuple(evidence)
+        return _fetch_news(self, code, observed_at=observed_at, limit=limit)
 
     def fetch_snapshot(self, code: str, *, observed_at: datetime) -> ResearchObservation:
         _validate_code(code)
@@ -505,157 +458,6 @@ class AkshareResearchClient:
             )
         except (OSError, RuntimeError, TypeError, ValueError):
             _LOGGER.warning("research evidence cache write failed", extra={"source": source, "code": code})
-
-
-def _point_in_time(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("research observation time must be timezone-aware")
-    return value.astimezone(SHANGHAI_TZ)
-
-
-def _validate_code(code: str) -> None:
-    if len(code) != 6 or not code.isdigit():
-        raise ValueError("research stock code must contain exactly six digits")
-
-
-def _first_text(row: Mapping[str, object], keys: Sequence[str]) -> str:
-    for key in keys:
-        value = str(row.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _news_rows(content: str, callback: str) -> list[Mapping[str, object]]:
-    content = content.strip()
-    if content.endswith(";"):
-        content = content[:-1]
-    prefix = f"{callback}("
-    if not content.startswith(prefix) or not content.endswith(")"):
-        raise RuntimeError("AKShare news response is not valid JSONP")
-    try:
-        payload = json.loads(content[len(prefix) : -1])
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("AKShare news response contains invalid JSON") from exc
-    if not isinstance(payload, dict):
-        return []
-    result = payload.get("result")
-    rows = result.get("cmsArticleWebOld") if isinstance(result, dict) else None
-    if not isinstance(rows, list):
-        return []
-    return [row for row in rows if isinstance(row, dict)]
-
-
-def _result_rows(payload: Mapping[str, object]) -> list[Mapping[str, object]]:
-    if payload.get("success") is False and payload.get("code") != 9201:
-        raise RuntimeError("research source reported a failed response")
-    result = payload.get("result")
-    if result is None and payload.get("code") == 9201:
-        return []
-    if not isinstance(result, dict):
-        raise RuntimeError("research source result is missing")
-    rows = result.get("data")
-    if rows is None:
-        return []
-    if not isinstance(rows, list):
-        raise RuntimeError("research source rows are invalid")
-    if any(not isinstance(row, dict) for row in rows):
-        raise RuntimeError("research source contains a malformed row")
-    return rows
-
-
-def _announcement_rows(payload: Mapping[str, object]) -> list[Mapping[str, object]]:
-    if payload.get("success") != 1:
-        raise RuntimeError("announcement source reported a failed response")
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        raise RuntimeError("announcement source data is missing")
-    rows = data.get("list")
-    if not isinstance(rows, list):
-        raise RuntimeError("announcement source rows are invalid")
-    if any(not isinstance(row, dict) for row in rows):
-        raise RuntimeError("announcement source contains a malformed row")
-    return rows
-
-
-def _clean_text(value: str) -> str:
-    return html.unescape(re.sub(r"<[^>]+>", "", value)).strip()
-
-
-def _parse_datetime(raw: str) -> datetime | None:
-    if not raw:
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("/", "-").replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return _as_shanghai_time(parsed)
-
-
-def _parse_precise_datetime(raw: object) -> datetime | None:
-    value = str(raw or "").strip()
-    if not value:
-        return None
-    value = re.sub(r":(\d{3})$", r".\1", value).replace("/", "-")
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return _as_shanghai_time(parsed)
-
-
-def _parse_date(raw: object) -> date | None:
-    value = str(raw or "").strip()
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value[:10].replace("/", "-"))
-    except ValueError:
-        return None
-
-
-def _parse_date_end(raw: object) -> datetime | None:
-    parsed = _parse_date(raw)
-    return datetime.combine(parsed, time(23, 59, 59), SHANGHAI_TZ) if parsed is not None else None
-
-
-def _as_shanghai_time(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=SHANGHAI_TZ)
-    return value.astimezone(SHANGHAI_TZ)
-
-
-def _finite_number(raw: object) -> float | None:
-    if not isinstance(raw, (str, int, float)) or isinstance(raw, bool):
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
-
-
-def _payload_version(prefix: str, payload: Mapping[str, object]) -> str:
-    version = str(payload.get("version") or "").strip()
-    if version:
-        return f"{prefix}:{version[:64]}"
-    try:
-        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("research payload cannot be versioned") from exc
-    return _content_version(prefix, canonical)
-
-
-def _content_version(prefix: str, content: str) -> str:
-    return f"{prefix}:sha256:{hashlib.sha256(content.encode()).hexdigest()[:20]}"
-
-
-def _source_error(source: str, error: BaseException) -> str:
-    return f"{source}:{type(error).__name__}"
-
-
-def _summary_number(value: float | None) -> str:
-    return "null" if value is None else f"{value:.6g}"
 
 
 __all__ = ["AkshareResearchClient"]

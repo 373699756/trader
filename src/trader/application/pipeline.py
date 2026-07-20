@@ -5,28 +5,25 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from trader.application.cadence import (
     CadencePlanner,
     CadencePolicy,
     PipelineTask,
-    ScheduledPipelineTask,
-    freshness_level,
 )
 from trader.application.events import (
     BoundedEventQueue,
     EventDeadlineExpired,
     EventPriority,
-    PipelineEvent,
     event_from_audit_record,
-    new_event,
 )
 from trader.application.pipeline_stages import (
     persist,
     process_event_on_workers,
-    worker_status,
 )
+from trader.application.pipeline_status import PipelineStatusMixin
+from trader.application.pipeline_submission import PipelineSubmissionMixin
 from trader.application.ports import (
     DeepSeekReviewPort,
     EventAuditPort,
@@ -39,10 +36,8 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import (
     MarketPhase,
-    SchedulePoint,
     decision_at,
     freeze_due_at,
-    schedule_point_at,
     shanghai_now,
     trade_date_at,
 )
@@ -50,7 +45,6 @@ from trader.application.snapshot_workflow import (
     freeze_available_snapshots,
     process_schedule,
     refresh_live_overlays,
-    topk_quote_age,
 )
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
@@ -65,7 +59,7 @@ from trader.domain.models import (
 _LOGGER = logging.getLogger(__name__)
 
 
-class RecommendationPipeline:
+class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
     def __init__(
         self,
         market_data: MarketDataPort,
@@ -293,148 +287,6 @@ class RecommendationPipeline:
         self._persistence_running = False
         self._state.mark_started(False)
 
-    def submit_tick(self, at: datetime | None = None) -> bool:
-        with self._lifecycle_lock:
-            if self._stopped or (self._worker is not None and not self._accepting):
-                return False
-        now = at or self._now()
-        trade_day = trade_date_at(now)
-        is_trading_day = self._calendar.is_trading_day(trade_day)
-        decision = decision_at(now, is_trading_day=is_trading_day)
-        self._state.record_tick(decision.phase.value, now)
-        if decision.phase is MarketPhase.CLOSED:
-            return False
-        schedule_point = schedule_point_at(now, is_trading_day=is_trading_day)
-        if decision.phase in {MarketPhase.DEEPSEEK_CUTOFF, MarketPhase.FINAL_QUOTE, MarketPhase.AFTER_CLOSE} and (
-            schedule_point is None
-        ):
-            return False
-        is_freeze = bool(decision.freeze_strategies)
-        event_type = "freeze" if is_freeze else "market_quotes"
-        priority = EventPriority.FREEZE if is_freeze else EventPriority.MARKET_QUOTES
-        if schedule_point is SchedulePoint.DEEPSEEK_CUTOFF:
-            event_type = schedule_point.value
-            priority = EventPriority.DEEPSEEK
-        elif schedule_point in {SchedulePoint.FINAL_CANDIDATE_QUOTES, SchedulePoint.CLOSE_QUOTES}:
-            event_type = schedule_point.value
-            priority = EventPriority.CANDIDATE_QUOTES
-        event = new_event(
-            event_type,
-            subject_key="market",
-            trade_date=trade_day.isoformat(),
-            phase=decision.phase.value,
-            strategy=None,
-            priority=priority,
-            data_version=(
-                f"schedule:{schedule_point.value}"
-                if schedule_point is not None
-                else f"tick:{shanghai_now(now).strftime('%H%M%S')}"
-            ),
-            config_version=self._config_version,
-            created_at=now,
-            payload={
-                "freeze_strategies": list(decision.freeze_strategies),
-                "schedule_point": schedule_point.value if schedule_point is not None else "",
-            },
-        )
-        return self.submit_event(event)
-
-    def submit_due(self, at: datetime | None = None) -> float:
-        now = at or self._now()
-        trade_day = trade_date_at(now)
-        is_trading_day = self._calendar.is_trading_day(trade_day)
-        planner = self._cadence
-        if planner is None:
-            self.submit_tick(now)
-            return 1.0
-        batch = planner.plan(now, is_trading_day=is_trading_day)
-        phase = decision_at(now, is_trading_day=is_trading_day).phase
-        self._state.record_tick(phase.value, now)
-        for task in batch.tasks:
-            self._state.increment(f"cadence_{task.task.value}_planned")
-            if not self._candidate_codes and task.task not in {
-                PipelineTask.FULL_MARKET,
-                PipelineTask.REFERENCE_DATA,
-                PipelineTask.FREEZE,
-                PipelineTask.DEEPSEEK_CUTOFF,
-                PipelineTask.CLOSE_QUOTES,
-            }:
-                self._state.increment(f"cadence_{task.task.value}_skipped_cold")
-                continue
-            self._submit_scheduled_task(task)
-        return batch.next_delay_seconds
-
-    def _submit_scheduled_task(self, scheduled: ScheduledPipelineTask) -> bool:
-        task = scheduled.task
-        with self._cadence_lock:
-            if task in self._scheduled_inflight:
-                self._state.increment("cadence_skipped_inflight")
-                self._state.increment(f"cadence_{task.value}_skipped_inflight")
-                return False
-            self._scheduled_inflight.add(task)
-        is_freeze = task is PipelineTask.FREEZE
-        priority = {
-            PipelineTask.FREEZE: EventPriority.FREEZE,
-            PipelineTask.STOCK_RISK: EventPriority.RISK,
-            PipelineTask.DEEPSEEK_CUTOFF: EventPriority.DEEPSEEK,
-            PipelineTask.SCORE: EventPriority.SCORE,
-            PipelineTask.CANDIDATE_QUOTES: EventPriority.CANDIDATE_QUOTES,
-            PipelineTask.FINAL_CANDIDATE_QUOTES: EventPriority.CANDIDATE_QUOTES,
-            PipelineTask.TOPK_QUOTES: EventPriority.CANDIDATE_QUOTES,
-            PipelineTask.CLOSE_QUOTES: EventPriority.CANDIDATE_QUOTES,
-            PipelineTask.FULL_MARKET: EventPriority.MARKET_QUOTES,
-            PipelineTask.INDUSTRY_HEAT: EventPriority.MARKET_QUOTES,
-            PipelineTask.MARKET_NEWS: EventPriority.MARKET_QUOTES,
-            PipelineTask.REFERENCE_DATA: EventPriority.LONG,
-        }[task]
-        local = shanghai_now(scheduled.scheduled_at)
-        event = new_event(
-            "freeze" if is_freeze else task.value,
-            subject_key="market",
-            trade_date=local.date().isoformat(),
-            phase=scheduled.phase.value,
-            strategy=None,
-            priority=priority,
-            data_version=f"cadence:{task.value}:{local.strftime('%H%M%S')}",
-            config_version=self._config_version,
-            created_at=scheduled.scheduled_at,
-            deadline=_scheduled_task_deadline(scheduled),
-            payload={
-                "freeze_strategies": list(scheduled.freeze_strategies),
-                "schedule_task": task.value,
-            },
-        )
-        accepted = self.submit_event(event)
-        if not accepted:
-            with self._cadence_lock:
-                self._scheduled_inflight.discard(task)
-        else:
-            self._state.increment(f"cadence_{task.value}_submitted")
-        return accepted
-
-    def submit_event(self, event: PipelineEvent) -> bool:
-        with self._lifecycle_lock:
-            if self._stopped or (self._worker is not None and not self._accepting):
-                return False
-        if event.config_version != self._config_version:
-            self._state.record_error("event config version does not match the active runtime")
-            return False
-        is_priority = event.priority <= EventPriority.RISK
-        if is_priority:
-            try:
-                if not persist(self, self._event_audit.reserve_event, event.audit_record(status="pending")):
-                    self._state.increment("event_reservation_conflicts")
-                    return False
-            except Exception as exc:
-                self._state.record_error(f"cannot persist priority event: {str(exc)[:500]}")
-                return False
-        accepted = self._queue.put(event)
-        if accepted:
-            self._state.increment("events_submitted")
-        elif is_priority:
-            self._state.record_error("priority queue full; event retained for restart replay")
-        return accepted
-
     def run_once(self, at: datetime) -> tuple[RecommendationSnapshot, ...]:
         trade_day = trade_date_at(at)
         is_trading_day = self._calendar.is_trading_day(trade_day)
@@ -445,103 +297,6 @@ class RecommendationPipeline:
         snapshots = process_schedule(self, at, decision.phase, decision.freeze_strategies)
         self._record_health_snapshot()
         return snapshots
-
-    def status(self) -> dict[str, object]:
-        measured_at = self._now()
-        market_data = dict(self._market_data.health())
-        try:
-            phase = MarketPhase(self._state.current_phase())
-        except ValueError:
-            phase = MarketPhase.CLOSED
-        is_trading_day = phase is not MarketPhase.CLOSED
-        topk_target = 10.0 if phase in _CRITICAL_TOPK_PHASES else 20.0
-        market_data["topk_quote_age"] = topk_quote_age(
-            self._state,
-            self._live_overlays,
-            measured_at,
-            target_seconds=topk_target,
-        )
-        market_data["freshness"] = self._freshness_status(
-            market_data,
-            measured_at,
-            is_trading_day=is_trading_day,
-        )
-        cadence_status: dict[str, object] = (
-            dict(self._cadence.status()) if self._cadence is not None else {"enabled": False}
-        )
-        with self._cadence_lock:
-            cadence_status["inflight_tasks"] = sorted(task.value for task in self._scheduled_inflight)
-        deepseek_status: dict[str, object] = (
-            dict(self._reviews.status()) if self._reviews is not None else {"enabled": False}
-        )
-        deepseek_status["veto_count"] = sum(
-            item.veto
-            for strategy in Strategy
-            if (snapshot := self._state.latest(strategy)) is not None
-            for item in snapshot.recommendations
-        )
-        dependencies = {
-            "market_data": market_data,
-            "deepseek": deepseek_status,
-            "event_queue": self._queue.status(),
-            "worker_pools": worker_status(self),
-            "cadence": cadence_status,
-            "publisher": self._publisher.status(),
-            "persistent_audit": self._observability_status(),
-        }
-        return self._state.snapshot(dependencies)
-
-    def _observability_status(self) -> Mapping[str, object]:
-        provider = getattr(self._repository, "observability_status", None)
-        if not callable(provider):
-            return {}
-        try:
-            return dict(provider())
-        except (OSError, RuntimeError, ValueError):
-            return {"error": "persistent_observability_unavailable"}
-
-    def _record_health_snapshot(self) -> None:
-        recorder = getattr(self._repository, "record_data_source_health", None)
-        if not callable(recorder):
-            return
-        health = dict(self._market_data.health())
-        updated_at = self._now()
-        if not self._persistence_running:
-            recorder(health, updated_at=updated_at)
-            return
-        future = self._persistence_pool.submit(recorder, health, updated_at=updated_at)
-        if future is None:
-            self._state.increment("observability_write_rejections")
-
-    def _freshness_status(
-        self,
-        market_data: Mapping[str, object],
-        measured_at: datetime,
-        *,
-        is_trading_day: bool,
-    ) -> Mapping[str, object]:
-        planner = self._cadence
-        categories = {
-            "full_market": (PipelineTask.FULL_MARKET, market_data.get("market_quote_age")),
-            "candidate_quotes": (PipelineTask.CANDIDATE_QUOTES, market_data.get("candidate_quote_age")),
-            "topk_quotes": (PipelineTask.TOPK_QUOTES, market_data.get("topk_quote_age")),
-        }
-        result: dict[str, object] = {}
-        for name, (task, raw_summary) in categories.items():
-            summary = raw_summary if isinstance(raw_summary, Mapping) else {}
-            raw_age = summary.get("maximum_seconds")
-            age = float(raw_age) if isinstance(raw_age, (int, float)) and not isinstance(raw_age, bool) else None
-            interval = (
-                planner.interval_for(task, measured_at, is_trading_day=is_trading_day) if planner is not None else None
-            )
-            result[name] = {
-                "level": freshness_level(age, interval),
-                "age_seconds": age,
-                "interval_seconds": interval,
-                "stale_after_seconds": interval * 2.0 if interval is not None else None,
-                "degraded_after_seconds": interval * 3.0 if interval is not None else None,
-            }
-        return result
 
     def _worker_loop(self) -> None:
         while not self._stop_event.is_set() or not self._queue.empty():
@@ -683,33 +438,6 @@ class RecommendationPipeline:
         if age_seconds > cutoff_seconds:
             return False
         return True
-
-
-def _scheduled_task_deadline(scheduled: ScheduledPipelineTask) -> datetime | None:
-    seconds = {
-        PipelineTask.FULL_MARKET: 20.0,
-        PipelineTask.CANDIDATE_QUOTES: 3.0,
-        PipelineTask.TOPK_QUOTES: 3.0,
-        PipelineTask.SCORE: 15.0,
-        PipelineTask.INDUSTRY_HEAT: 20.0,
-        PipelineTask.MARKET_NEWS: 8.0,
-        PipelineTask.STOCK_RISK: 8.0,
-        PipelineTask.REFERENCE_DATA: 20.0,
-        PipelineTask.DEEPSEEK_CUTOFF: 1.0,
-        PipelineTask.FINAL_CANDIDATE_QUOTES: 10.0,
-        PipelineTask.CLOSE_QUOTES: 3.0,
-        PipelineTask.FREEZE: None,
-    }[scheduled.task]
-    return scheduled.scheduled_at + timedelta(seconds=seconds) if seconds is not None else None
-
-
-_CRITICAL_TOPK_PHASES = {
-    MarketPhase.TODAY_OBSERVE,
-    MarketPhase.TODAY_MAIN,
-    MarketPhase.FINAL_REVIEW,
-    MarketPhase.DEEPSEEK_CUTOFF,
-    MarketPhase.FINAL_QUOTE,
-}
 
 
 __all__ = ["RecommendationPipeline"]

@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from trader.domain.filters import board_for_code, hard_filter
+from trader.domain.filters import HardFilterPolicy, board_for_code, hard_filter
 from trader.domain.models import Board
 
 
@@ -96,6 +96,49 @@ def test_quote_age_boundary_and_future_quote_are_auditable(feature_factory, obse
     assert hard_filter(exact, observed_at, max_age_seconds=20).allowed is True
     assert "stale_quote" in {item.filter_code for item in hard_filter(stale, observed_at, max_age_seconds=20).reasons}
     assert "future_quote" in {item.filter_code for item in hard_filter(future, observed_at, max_age_seconds=20).reasons}
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_code"),
+    [
+        ("negative_announcement_level", 1.0, "negative_announcement"),
+        ("reduction_or_unlock", 1.0, "reduction_or_unlock"),
+        ("pledge_risk", 1.0, "pledge_risk"),
+        ("financial_deterioration", 1.0, "financial_deterioration"),
+    ],
+)
+def test_structured_negative_risks_are_hard_filters(
+    feature_factory, observed_at, field: str, value: float, expected_code: str
+) -> None:
+    snapshot = feature_factory(values={field: value})
+
+    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+
+    assert result.allowed is False
+    assert expected_code in {item.filter_code for item in result.reasons}
+
+
+def test_missing_structured_risk_is_audited_without_blocking_local_fallback(feature_factory, observed_at) -> None:
+    snapshot = feature_factory(values={"pledge_risk": None})
+
+    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+
+    assert result.allowed is True
+    assert "structured_risk_unavailable" in {item.filter_code for item in result.optional_flags}
+
+
+def test_configured_blacklist_is_a_hard_filter(feature_factory, observed_at) -> None:
+    snapshot = feature_factory(code="600001")
+
+    result = hard_filter(
+        snapshot,
+        observed_at,
+        max_age_seconds=20,
+        policy=HardFilterPolicy(blacklist_codes=frozenset({"600001"})),
+    )
+
+    assert result.allowed is False
+    assert "blacklisted" in {item.filter_code for item in result.reasons}
 
 
 def test_non_finite_and_structurally_invalid_quotes_are_rejected(feature_factory, observed_at) -> None:

@@ -17,6 +17,7 @@ from trader.application.recommendations import RecommendationEngine
 from trader.application.runtime import RuntimeSupervisor, scheduler_interval_seconds
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
+from trader.domain.filters import HardFilterPolicy
 from trader.domain.fusion import FusionPolicy
 from trader.domain.models import RiskRule, Strategy
 from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
@@ -144,6 +145,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         strategy_limits=settings.deepseek.strategy_limits,
         stage_targets=settings.deepseek.stage_targets,
         stage_limits=settings.deepseek.stage_limits,
+        challenger_limits=settings.deepseek.challenger_limits,
     )
     reviewer = DeepSeekReviewer(
         settings.deepseek,
@@ -248,9 +250,14 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
                 trigger_thresholds=rule.trigger_thresholds,
                 combination_mode=rule.combination_mode,
                 risk_fact_id_fields=rule.risk_fact_id_fields,
+                local_trigger_enabled=rule.local_trigger_enabled,
             )
             for rule in settings.risk_rules
         },
+        hard_filter=HardFilterPolicy(
+            blacklist_codes=frozenset(settings.hard_filters.blacklist_codes),
+            structured_risk_thresholds=settings.hard_filters.structured_risk_thresholds,
+        ),
     )
 
 

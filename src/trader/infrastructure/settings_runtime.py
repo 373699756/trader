@@ -1,0 +1,336 @@
+"""Runtime configuration loading and fixed allocation validation."""
+
+from __future__ import annotations
+
+import math
+import os
+import stat
+from collections.abc import Mapping
+from pathlib import Path
+
+from trader.infrastructure.settings_models import (
+    ApiSettings,
+    DeepSeekSettings,
+    MarketDataSettings,
+    PipelineSettings,
+    RuntimeSettings,
+    ServerSettings,
+)
+from trader.infrastructure.settings_parser import (
+    ConfigurationError,
+)
+from trader.infrastructure.settings_parser import (
+    boolean as _boolean,
+)
+from trader.infrastructure.settings_parser import (
+    environment_integer as _environment_integer,
+)
+from trader.infrastructure.settings_parser import (
+    infer_project_root as _infer_project_root,
+)
+from trader.infrastructure.settings_parser import (
+    integer as _integer,
+)
+from trader.infrastructure.settings_parser import (
+    integer_mapping as _integer_mapping,
+)
+from trader.infrastructure.settings_parser import (
+    mapping as _mapping,
+)
+from trader.infrastructure.settings_parser import (
+    number as _number,
+)
+from trader.infrastructure.settings_parser import (
+    read_json_object as _read_json_object,
+)
+from trader.infrastructure.settings_parser import (
+    resolve_config_path as _resolve_config_path,
+)
+from trader.infrastructure.settings_parser import (
+    resolve_project_path as _resolve_project_path,
+)
+from trader.infrastructure.settings_parser import (
+    text as _text,
+)
+
+
+def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
+    path = Path(config_path).expanduser().resolve()
+    raw = _read_json_object(path)
+    if _integer(raw, "schema_version", minimum=1) != 4:
+        raise ConfigurationError("runtime schema_version must be 4")
+
+    config_dir = path.parent
+    project_root = _infer_project_root(config_dir)
+    server_raw = _mapping(raw, "server")
+    pipeline_raw = _mapping(raw, "pipeline")
+    market_raw = _mapping(raw, "market_data")
+    deepseek_raw = _mapping(raw, "deepseek")
+    api_raw = _mapping(raw, "api")
+
+    host = os.environ.get("TRADER_HOST", _text(server_raw, "host"))
+    port = _environment_integer("TRADER_PORT", _integer(server_raw, "port", minimum=1, maximum=65535))
+    runtime_dir = _resolve_project_path(project_root, _text(raw, "runtime_dir"))
+    strategy_config_path = _resolve_config_path(config_dir, _text(raw, "strategy_config"))
+    long_watchlist_path = _resolve_config_path(config_dir, _text(raw, "long_watchlist"))
+
+    settings = RuntimeSettings(
+        schema_version=4,
+        config_version=_text(raw, "config_version"),
+        config_path=path,
+        project_root=project_root,
+        runtime_dir=runtime_dir,
+        strategy_config_path=strategy_config_path,
+        long_watchlist_path=long_watchlist_path,
+        server=ServerSettings(
+            host=host,
+            port=port,
+            debug=_boolean(server_raw, "debug"),
+            use_reloader=_boolean(server_raw, "use_reloader"),
+            allow_insecure_non_loopback=_boolean(server_raw, "allow_insecure_non_loopback"),
+        ),
+        pipeline=PipelineSettings(
+            event_queue_size=_integer(pipeline_raw, "event_queue_size", minimum=1),
+            priority_queue_size=_integer(pipeline_raw, "priority_queue_size", minimum=1),
+            market_workers=_integer(pipeline_raw, "market_workers", minimum=1),
+            normalization_workers=_integer(pipeline_raw, "normalization_workers", minimum=1),
+            strategy_workers=_integer(pipeline_raw, "strategy_workers", minimum=1),
+            deepseek_workers=_integer(pipeline_raw, "deepseek_workers", minimum=1),
+            shutdown_timeout_seconds=_number(pipeline_raw, "shutdown_timeout_seconds", minimum=0.1),
+            cadence_seconds=_nested_positive_number_mapping(pipeline_raw, "cadence_seconds"),
+            publish_heartbeat_seconds=_integer(pipeline_raw, "publish_heartbeat_seconds", minimum=1),
+        ),
+        market_data=MarketDataSettings(
+            eastmoney_timeout_seconds=_number(market_raw, "eastmoney_timeout_seconds", minimum=0.1),
+            candidate_timeout_seconds=_number(market_raw, "candidate_timeout_seconds", minimum=0.1),
+            history_timeout_seconds=_number(market_raw, "history_timeout_seconds", minimum=0.1),
+            research_timeout_seconds=_number(
+                market_raw,
+                "research_timeout_seconds",
+                minimum=0.1,
+                maximum=8.0,
+            ),
+            minimum_market_rows=_integer(market_raw, "minimum_market_rows", minimum=1),
+            candidate_pool_size=_integer(market_raw, "candidate_pool_size", minimum=1, maximum=1000),
+            single_flight=_boolean(market_raw, "single_flight"),
+            circuit_breaker_failures=_integer(market_raw, "circuit_breaker_failures", minimum=1),
+            circuit_breaker_seconds=_integer(market_raw, "circuit_breaker_seconds", minimum=1),
+        ),
+        deepseek=DeepSeekSettings(
+            enabled=_boolean(deepseek_raw, "enabled"),
+            base_url=_text(deepseek_raw, "base_url").rstrip("/"),
+            model=_text(deepseek_raw, "model"),
+            challenger_model=_text(deepseek_raw, "challenger_model"),
+            challenger_limits=_integer_mapping(deepseek_raw, "challenger_limits", minimum=0),
+            timeout_seconds=_number(deepseek_raw, "timeout_seconds", minimum=0.1),
+            batch_size=_integer(deepseek_raw, "batch_size", minimum=1, maximum=8),
+            max_tokens=_integer(deepseek_raw, "max_tokens", minimum=64),
+            daily_hard_limit=_integer(deepseek_raw, "daily_hard_limit", minimum=0, maximum=188),
+            strategy_limits=_integer_mapping(deepseek_raw, "strategy_limits", minimum=0),
+            stage_targets=_integer_mapping(deepseek_raw, "stage_targets", minimum=0),
+            stage_limits=_integer_mapping(deepseek_raw, "stage_limits", minimum=0),
+            api_key=_load_deepseek_api_key(project_root),
+        ),
+        api=ApiSettings(
+            default_top_n=_integer(api_raw, "default_top_n", minimum=0),
+            maximum_top_n=_integer(api_raw, "maximum_top_n", minimum=0, maximum=18),
+            event_page_limit=_integer(api_raw, "event_page_limit", minimum=1),
+            maximum_event_page_limit=_integer(api_raw, "maximum_event_page_limit", minimum=1),
+            sse_history_size=_integer(api_raw, "sse_history_size", minimum=1),
+            sse_client_queue_size=_integer(api_raw, "sse_client_queue_size", minimum=1),
+            sse_max_clients=_integer(api_raw, "sse_max_clients", minimum=1, maximum=256),
+        ),
+    )
+    _validate_runtime_settings(settings)
+    return settings
+
+
+def _load_deepseek_api_key(project_root: Path) -> str:
+    environment_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if environment_key:
+        return environment_key
+
+    configured_path = os.environ.get("DEEPSEEK_API_KEY_FILE", "").strip()
+    key_path = Path(configured_path).expanduser() if configured_path else project_root / ".deepseek_key"
+    if not key_path.is_absolute():
+        key_path = project_root / key_path
+    key_path = key_path.resolve()
+    if not key_path.exists():
+        if configured_path:
+            raise ConfigurationError("DEEPSEEK_API_KEY_FILE does not exist")
+        return ""
+
+    try:
+        metadata = key_path.stat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ConfigurationError("DeepSeek API key file must be a regular file")
+        if os.name == "posix" and stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise ConfigurationError("DeepSeek API key file must not be accessible by group or other users")
+        if metadata.st_size > 4096:
+            raise ConfigurationError("DeepSeek API key file is too large")
+        content = key_path.read_text(encoding="utf-8")
+    except ConfigurationError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise ConfigurationError("DeepSeek API key file cannot be read") from exc
+
+    lines = [line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    if len(lines) != 1:
+        raise ConfigurationError("DeepSeek API key file must contain exactly one key")
+    value = lines[0]
+    if value.startswith("export "):
+        value = value.removeprefix("export ").strip()
+    if value.startswith("DEEPSEEK_API_KEY="):
+        value = value.removeprefix("DEEPSEEK_API_KEY=").strip()
+    elif "=" in value:
+        raise ConfigurationError("DeepSeek API key file contains an unsupported assignment")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    value = value.strip()
+    if not value or "\x00" in value:
+        raise ConfigurationError("DeepSeek API key file contains an empty or invalid key")
+    return value
+
+
+def _validate_runtime_settings(settings: RuntimeSettings) -> None:
+    if settings.pipeline.priority_queue_size >= settings.pipeline.event_queue_size:
+        raise ConfigurationError("priority_queue_size must be smaller than event_queue_size")
+    if settings.api.default_top_n > settings.api.maximum_top_n:
+        raise ConfigurationError("default_top_n cannot exceed maximum_top_n")
+    if settings.api.event_page_limit > settings.api.maximum_event_page_limit:
+        raise ConfigurationError("event_page_limit cannot exceed maximum_event_page_limit")
+    if sum(settings.deepseek.strategy_limits.values()) != settings.deepseek.daily_hard_limit:
+        raise ConfigurationError("DeepSeek strategy limits must sum to the daily hard limit")
+    required_buckets = {"today", "tomorrow", "d25", "long", "shared_preheat", "emergency"}
+    if set(settings.deepseek.strategy_limits) != required_buckets:
+        raise ConfigurationError("DeepSeek strategy limits must define all six budget buckets")
+    expected_strategy_limits = {
+        "today": 70,
+        "tomorrow": 45,
+        "d25": 35,
+        "long": 18,
+        "shared_preheat": 15,
+        "emergency": 5,
+    }
+    if dict(settings.deepseek.strategy_limits) != expected_strategy_limits:
+        raise ConfigurationError("DeepSeek strategy limits must match the section 16 allocation")
+    if settings.deepseek.base_url != "https://api.deepseek.com":
+        raise ConfigurationError("DeepSeek base_url must use the official https://api.deepseek.com endpoint")
+    if settings.deepseek.model != "deepseek-v4-flash":
+        raise ConfigurationError("DeepSeek primary model must be deepseek-v4-flash")
+    if settings.deepseek.challenger_model != "deepseek-v4-pro":
+        raise ConfigurationError("DeepSeek challenger model must be deepseek-v4-pro")
+    expected_challenger_limits = {"today": 6, "tomorrow": 6, "d25": 5, "long": 0}
+    if dict(settings.deepseek.challenger_limits) != expected_challenger_limits:
+        raise ConfigurationError("DeepSeek challenger limits must match the section 16 allocation")
+    expected_stage_targets = {
+        "shared_preheat": 15,
+        "today_observe": 14,
+        "today_main": 42,
+        "today_late": 12,
+        "tomorrow_afternoon": 21,
+        "tomorrow_final": 14,
+        "d25_afternoon": 19,
+        "d25_final": 11,
+        "long_afternoon": 10,
+        "emergency": 0,
+    }
+    expected_stage_limits = {
+        "shared_preheat": 15,
+        "today_observe": 15,
+        "today_main": 42,
+        "today_late": 13,
+        "tomorrow_afternoon": 25,
+        "tomorrow_final": 20,
+        "d25_afternoon": 22,
+        "d25_final": 13,
+        "long_afternoon": 18,
+        "emergency": 5,
+    }
+    if dict(settings.deepseek.stage_targets) != expected_stage_targets:
+        raise ConfigurationError("DeepSeek stage targets must match the section 16 allocation")
+    if dict(settings.deepseek.stage_limits) != expected_stage_limits:
+        raise ConfigurationError("DeepSeek stage limits must match the section 16 allocation")
+    _validate_cadence_settings(settings.pipeline.cadence_seconds)
+
+
+def _nested_positive_number_mapping(
+    raw: Mapping[str, object],
+    key: str,
+) -> dict[str, Mapping[str, float]]:
+    values = _mapping(raw, key)
+    result: dict[str, Mapping[str, float]] = {}
+    for task, task_raw in values.items():
+        if not isinstance(task, str) or not isinstance(task_raw, dict) or not task_raw:
+            raise ConfigurationError(f"{key} must contain non-empty task objects")
+        intervals: dict[str, float] = {}
+        for band, value in task_raw.items():
+            if not isinstance(band, str) or not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ConfigurationError(f"{key}.{task} must contain numeric intervals")
+            interval = float(value)
+            if not math.isfinite(interval) or interval <= 0.0:
+                raise ConfigurationError(f"{key}.{task}.{band} must be a positive finite interval")
+            intervals[band] = interval
+        result[task] = intervals
+    return result
+
+
+def _validate_cadence_settings(cadence: Mapping[str, Mapping[str, float]]) -> None:
+    expected = {
+        "full_market": {
+            "warmup": 60.0,
+            "today_main": 30.0,
+            "today_late": 60.0,
+            "midday": 60.0,
+            "afternoon": 60.0,
+            "final_review": 30.0,
+        },
+        "candidate_quotes": {
+            "warmup": 10.0,
+            "today_main": 5.0,
+            "today_late": 10.0,
+            "midday": 60.0,
+            "afternoon": 10.0,
+            "final_review": 3.0,
+            "final_window": 2.0,
+        },
+        "topk_quotes": {
+            "warmup": 5.0,
+            "today_main": 3.0,
+            "today_late": 5.0,
+            "midday": 60.0,
+            "afternoon": 5.0,
+            "final_review": 2.0,
+            "final_window": 3.0,
+        },
+        "score": {
+            "warmup": 30.0,
+            "today_main": 10.0,
+            "today_late": 20.0,
+            "afternoon": 30.0,
+            "final_review": 10.0,
+        },
+        "industry_heat": {
+            "warmup": 120.0,
+            "today_main": 60.0,
+            "today_late": 60.0,
+            "afternoon": 60.0,
+            "final_review": 60.0,
+        },
+        "market_news": {
+            "warmup": 120.0,
+            "today_main": 60.0,
+            "today_late": 60.0,
+            "afternoon": 60.0,
+            "final_review": 60.0,
+        },
+        "stock_risk": {
+            "warmup": 300.0,
+            "today_main": 180.0,
+            "today_late": 180.0,
+            "afternoon": 180.0,
+            "final_review": 120.0,
+        },
+    }
+    if cadence != expected:
+        raise ConfigurationError("pipeline cadence_seconds must match the fixed section 6 cadence table")

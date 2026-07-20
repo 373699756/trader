@@ -43,6 +43,36 @@ def test_targeted_quotes_are_hard_filtered_again_before_review_and_scoring(
     assert snapshot.filter_details == (FilterAudit("600002", "main_board_too_hot", "<= 8.00", 8.01, "fixture", now),)
 
 
+def test_structured_risk_is_filtered_before_local_scoring_and_review(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    valid = application_feature_factory("600001", now)
+    risky = application_feature_factory("600002", now)
+    risky = replace(risky, values={**risky.values, "pledge_risk": 1.0})
+    reviewer = RecordingReviewer()
+
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TODAY,
+        (valid, risky),
+        now=now,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="structured-risk-v1",
+        review_port=reviewer,
+        review_deadline=datetime.fromisoformat("2026-07-16T11:20:00+08:00"),
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+
+    assert reviewer.reviewed_codes == ("600001",)
+    assert all(item.features.quote.code != "600002" for item in snapshot.recommendations)
+    assert snapshot.filter_reasons == {"pledge_risk": 1}
+    assert snapshot.filter_details == (FilterAudit("600002", "pledge_risk", "<= 0", 1.0, "fixture", now),)
+
+
 def test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold(
     recommendation_policy,
     application_feature_factory,
@@ -175,6 +205,7 @@ def test_long_horizon_snapshot_marks_incomplete_structured_research_as_degraded(
 
     assert reason in snapshot.degraded_reasons
     assert snapshot.metadata["research_data_covered_count"] == 0
+    assert "shadow_scoring" not in snapshot.metadata
 
 
 def test_prepared_snapshot_owns_immutable_cross_thread_mappings(
@@ -283,7 +314,8 @@ class RecordingReviewer:
         *,
         phase: str,
         deadline: datetime,
+        contexts=None,
     ) -> dict[str, object]:
-        del phase, deadline
+        del phase, deadline, contexts
         self.reviewed_codes = tuple(candidate.quote.code for candidate in candidates)
         return {}

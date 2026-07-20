@@ -166,6 +166,7 @@
       section("权重", nestedValueList(snapshot.weights || {})),
       section("分位与截尾", normalizationList(item.normalization || {})),
       section("风险事实", riskList(risks)),
+      section("DeepSeek 审计", reviewAudit(review)),
       section("DeepSeek 五维", dimensionList(dimensions, review)),
       section("缺失字段", missingFieldList(item.missing_fields || [], item.missing_reasons || {})),
       section("原始指标", keyValueList(features)),
@@ -233,6 +234,40 @@
       return `<div class="detail-value"><span>结果</span><strong>${escapeHtml(reviewResult(review))}</strong></div>`;
     }
     return `<ul class="detail-list">${entries.map(([name, value]) => `<li><b>${escapeHtml(DIMENSION_LABELS[name] || name)}</b> · ${number(value.score, 2)} / 置信 ${number((value.confidence || 0) * 100, 0)}%<br>${escapeHtml(value.assessment || "-")}</li>`).join("")}</ul>`;
+  }
+
+  function reviewAudit(review) {
+    if (!review || !review.outcome) return detailGrid([["结果", "未复核"]]);
+    const primaryMode = [review.thinking_mode, review.reasoning_effort].filter(Boolean).join(" / ") || "-";
+    const challengerMode = [review.challenger_thinking_mode, review.challenger_reasoning_effort].filter(Boolean).join(" / ") || "-";
+    return detailGrid([
+      ["结果", reviewResult(review)],
+      ["复核阶段", review.review_stage || "primary"],
+      ["挑战者状态", review.challenger_status || "not_run"],
+      ["主审请求模型", review.requested_model || "-"],
+      ["主审实际模型", review.actual_model || "-"],
+      ["主审模式", primaryMode],
+      ["主审指纹", review.system_fingerprint || "-"],
+      ["主审缓存命中 / 未命中", tokenPair(review.prompt_cache_hit_tokens, review.prompt_cache_miss_tokens)],
+      ["挑战者请求模型", review.challenger_requested_model || "-"],
+      ["挑战者实际模型", review.challenger_actual_model || "-"],
+      ["挑战者模式", challengerMode],
+      ["挑战者指纹", review.challenger_system_fingerprint || "-"],
+      ["挑战者缓存命中 / 未命中", tokenPair(review.challenger_prompt_cache_hit_tokens, review.challenger_prompt_cache_miss_tokens)],
+      ["原始置信", confidence(review.raw_confidence)],
+      ["校准置信", confidence(review.calibrated_confidence)],
+      ["校准版本", review.calibration_version || "-"],
+      ["证据清单", review.evidence_manifest_hash || "-"],
+    ]);
+  }
+
+  function tokenPair(hit, miss) {
+    if (hit == null && miss == null) return "-";
+    return `${number(hit, 0)} / ${number(miss, 0)}`;
+  }
+
+  function confidence(value) {
+    return value == null ? "-" : `${number(Number(value) * 100, 1)}%`;
   }
 
   function reviewResult(review) {

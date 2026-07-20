@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def connect(database_path: Path) -> sqlite3.Connection:
@@ -131,7 +131,16 @@ def initialize_database(database_path: Path) -> None:
                 completion_tokens INTEGER,
                 latency_ms REAL,
                 outcome TEXT NOT NULL,
-                error_code TEXT NOT NULL DEFAULT ''
+                error_code TEXT NOT NULL DEFAULT '',
+                model_role TEXT NOT NULL DEFAULT 'primary',
+                requested_model TEXT,
+                actual_model TEXT,
+                reasoning_effort TEXT,
+                system_fingerprint TEXT,
+                finish_reason TEXT,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS live_overlays(
@@ -189,6 +198,17 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE data_source_health ADD COLUMN route_status TEXT NOT NULL DEFAULT 'idle'",
         "ALTER TABLE data_source_health ADD COLUMN route_fallback_reason TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE data_source_health ADD COLUMN route_degraded INTEGER NOT NULL DEFAULT 0",
+    ],
+    5: [
+        "ALTER TABLE deepseek_calls ADD COLUMN model_role TEXT NOT NULL DEFAULT 'primary'",
+        "ALTER TABLE deepseek_calls ADD COLUMN requested_model TEXT",
+        "ALTER TABLE deepseek_calls ADD COLUMN actual_model TEXT",
+        "ALTER TABLE deepseek_calls ADD COLUMN reasoning_effort TEXT",
+        "ALTER TABLE deepseek_calls ADD COLUMN system_fingerprint TEXT",
+        "ALTER TABLE deepseek_calls ADD COLUMN finish_reason TEXT",
+        "ALTER TABLE deepseek_calls ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE deepseek_calls ADD COLUMN prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE deepseek_calls ADD COLUMN prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0",
     ],
 }
 

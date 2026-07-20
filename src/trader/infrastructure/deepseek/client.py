@@ -93,7 +93,9 @@ class DeepSeekHttpClient(DeepSeekClientBase):
                     break
                 response.raise_for_status()
                 payload_obj = response.json()
-                content, usage = _extract_content(payload_obj)
+                content, usage, actual_model, system_fingerprint, finish_reason, reasoning_content = _extract_content(
+                    payload_obj
+                )
                 attempt_records.append(
                     _attempt_record(
                         attempt_status,
@@ -112,6 +114,12 @@ class DeepSeekHttpClient(DeepSeekClientBase):
                     "",
                     usage,
                     tuple(attempt_records),
+                    actual_model,
+                    system_fingerprint,
+                    finish_reason,
+                    _usage_integer(usage, "prompt_cache_hit_tokens"),
+                    _usage_integer(usage, "prompt_cache_miss_tokens"),
+                    reasoning_content,
                 )
             except requests.Timeout as exc:
                 timed_out = True
@@ -191,7 +199,9 @@ def _request_payload(
     return payload
 
 
-def _extract_content(payload: object) -> tuple[str, Mapping[str, object]]:
+def _extract_content(
+    payload: object,
+) -> tuple[str, Mapping[str, object], str | None, str | None, str | None, str | None]:
     if not isinstance(payload, dict):
         raise ValueError("DeepSeek response root must be an object")
     choices = payload.get("choices")
@@ -201,7 +211,18 @@ def _extract_content(payload: object) -> tuple[str, Mapping[str, object]]:
     if not isinstance(message, dict) or not isinstance(message.get("content"), str):
         raise ValueError("DeepSeek response is missing message content")
     usage = payload.get("usage")
-    return message["content"], usage if isinstance(usage, dict) else {}
+    actual_model = payload.get("model")
+    system_fingerprint = payload.get("system_fingerprint")
+    finish_reason = choices[0].get("finish_reason")
+    reasoning_content = message.get("reasoning_content")
+    return (
+        message["content"],
+        usage if isinstance(usage, dict) else {},
+        actual_model if isinstance(actual_model, str) and actual_model else None,
+        system_fingerprint if isinstance(system_fingerprint, str) and system_fingerprint else None,
+        finish_reason if isinstance(finish_reason, str) and finish_reason else None,
+        reasoning_content if isinstance(reasoning_content, str) and reasoning_content else None,
+    )
 
 
 def _retry_delay(response: requests.Response) -> float:
@@ -233,6 +254,11 @@ def _attempt_record(
 
 def _token_count(usage: Mapping[str, object]) -> int:
     raw = usage.get("total_tokens")
+    return int(raw) if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
+
+
+def _usage_integer(usage: Mapping[str, object], key: str) -> int:
+    raw = usage.get(key)
     return int(raw) if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
 
 

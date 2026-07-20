@@ -55,10 +55,21 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "budget.available === false" in dashboard
     assert '? "不可用"' in dashboard
     assert 'addEventListener("live_overlay"' in dashboard
-    assert client.get("/static/dashboard.css").status_code == 200
-    stylesheet = client.get("/static/dashboard.css").get_data(as_text=True)
-    assert ".runtime-error" in stylesheet
-    assert "overflow-wrap: anywhere" in stylesheet
+    stylesheet_response = client.get("/static/dashboard.css")
+    stylesheet = stylesheet_response.get_data(as_text=True)
+    assert stylesheet_response.status_code == 200
+    assert '@import url("./dashboard_base.css");' in stylesheet
+    assert '@import url("./dashboard_components.css");' in stylesheet
+    assert '@import url("./dashboard_responsive.css");' in stylesheet
+
+    base_response = client.get("/static/dashboard_base.css")
+    components_response = client.get("/static/dashboard_components.css")
+    responsive_response = client.get("/static/dashboard_responsive.css")
+    assert base_response.status_code == 200
+    assert components_response.status_code == 200
+    assert responsive_response.status_code == 200
+    assert ".runtime-error" in base_response.get_data(as_text=True)
+    assert "overflow-wrap: anywhere" in components_response.get_data(as_text=True)
     assert client.get("/static/lucide.svg").status_code == 200
     renderer_response = client.get("/static/render.js")
     renderer = renderer_response.get_data(as_text=True)
@@ -74,5 +85,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'section("权重"' in renderer
     assert 'section("分位与截尾"' in renderer
     assert "risk.assessment" in renderer
+    assert 'section("DeepSeek 审计"' in renderer
+    assert 'review.challenger_actual_model || "-"' in renderer
+    assert "review.prompt_cache_hit_tokens" in renderer
+    assert 'review.evidence_manifest_hash || "-"' in renderer
     assert "row," in renderer
     assert client.get("/static/dashboard.js").status_code == 200

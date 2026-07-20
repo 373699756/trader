@@ -67,6 +67,18 @@ def test_bootstrap_is_the_only_composition_root() -> None:
     assert not (SOURCE_ROOT / "infrastructure" / "container.py").exists()
 
 
+def test_active_product_source_files_do_not_exceed_500_lines() -> None:
+    oversized: dict[str, int] = {}
+    for path in SOURCE_ROOT.rglob("*"):
+        if not path.is_file() or path.suffix not in {".py", ".css", ".js", ".html"}:
+            continue
+        line_count = len(path.read_text(encoding="utf-8").splitlines())
+        if line_count > 500:
+            oversized[path.relative_to(PROJECT_ROOT).as_posix()] = line_count
+
+    assert oversized == {}
+
+
 def _imports_matching(predicate: Callable[[str], bool]) -> list[str]:
     violations: list[str] = []
     for path in SOURCE_ROOT.rglob("*.py"):

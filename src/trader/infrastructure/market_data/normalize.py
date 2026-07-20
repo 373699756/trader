@@ -132,7 +132,8 @@ def build_market_quote(values: MarketQuoteInput) -> MarketQuote:
         data_version=values.data_version,
         is_st=values.is_st,
         is_suspended=values.is_suspended,
-        is_one_price_limit=values.is_one_price_limit,
+        is_one_price_limit=values.is_one_price_limit
+        or infer_one_price_limit(values.code, values.price, values.high, values.low, values.pct_change),
         is_blacklisted=values.is_blacklisted,
         has_major_regulatory_risk=values.has_major_regulatory_risk,
         cross_source_deviation_pct=values.cross_source_deviation_pct,
@@ -140,4 +141,26 @@ def build_market_quote(values: MarketQuoteInput) -> MarketQuote:
     )
 
 
-__all__ = ["MarketQuoteInput", "QuoteNormalizer", "build_market_quote", "normalize_quotes", "to_float"]
+def infer_one_price_limit(
+    code: str,
+    price: float | None,
+    high: float | None,
+    low: float | None,
+    pct_change: float | None,
+) -> bool:
+    if price is None or high is None or low is None or pct_change is None:
+        return False
+    if not all(math.isfinite(value) for value in (price, high, low, pct_change)):
+        return False
+    limit_threshold = 19.5 if code.startswith(("300", "301", "688", "689")) else 9.5
+    return price > 0 and abs(high - low) < 1e-9 and abs(pct_change) >= limit_threshold
+
+
+__all__ = [
+    "MarketQuoteInput",
+    "QuoteNormalizer",
+    "build_market_quote",
+    "infer_one_price_limit",
+    "normalize_quotes",
+    "to_float",
+]
