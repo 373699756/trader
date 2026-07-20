@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -303,7 +304,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             strategy_limits=_integer_mapping(deepseek_raw, "strategy_limits", minimum=0),
             stage_targets=_integer_mapping(deepseek_raw, "stage_targets", minimum=0),
             stage_limits=_integer_mapping(deepseek_raw, "stage_limits", minimum=0),
-            api_key=os.environ.get("DEEPSEEK_API_KEY", "").strip(),
+            api_key=_load_deepseek_api_key(project_root),
         ),
         api=ApiSettings(
             default_top_n=_integer(api_raw, "default_top_n", minimum=0),
@@ -317,6 +318,53 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     )
     _validate_runtime_settings(settings)
     return settings
+
+
+def _load_deepseek_api_key(project_root: Path) -> str:
+    environment_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if environment_key:
+        return environment_key
+
+    configured_path = os.environ.get("DEEPSEEK_API_KEY_FILE", "").strip()
+    key_path = Path(configured_path).expanduser() if configured_path else project_root / ".deepseek_key"
+    if not key_path.is_absolute():
+        key_path = project_root / key_path
+    key_path = key_path.resolve()
+    if not key_path.exists():
+        if configured_path:
+            raise ConfigurationError("DEEPSEEK_API_KEY_FILE does not exist")
+        return ""
+
+    try:
+        metadata = key_path.stat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ConfigurationError("DeepSeek API key file must be a regular file")
+        if os.name == "posix" and stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise ConfigurationError("DeepSeek API key file must not be accessible by group or other users")
+        if metadata.st_size > 4096:
+            raise ConfigurationError("DeepSeek API key file is too large")
+        content = key_path.read_text(encoding="utf-8")
+    except ConfigurationError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise ConfigurationError("DeepSeek API key file cannot be read") from exc
+
+    lines = [line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    if len(lines) != 1:
+        raise ConfigurationError("DeepSeek API key file must contain exactly one key")
+    value = lines[0]
+    if value.startswith("export "):
+        value = value.removeprefix("export ").strip()
+    if value.startswith("DEEPSEEK_API_KEY="):
+        value = value.removeprefix("DEEPSEEK_API_KEY=").strip()
+    elif "=" in value:
+        raise ConfigurationError("DeepSeek API key file contains an unsupported assignment")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    value = value.strip()
+    if not value or "\x00" in value:
+        raise ConfigurationError("DeepSeek API key file contains an empty or invalid key")
+    return value
 
 
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:

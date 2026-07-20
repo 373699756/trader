@@ -15,6 +15,17 @@
     risk_quality: "风险质量",
   };
 
+  const REVIEW_ERROR_LABELS = {
+    api_key_missing: "不可用：未配置 API 密钥",
+    disabled: "不可用：DeepSeek 已禁用",
+    budget_exhausted: "未复核：调用额度已用尽",
+    bucket_limit: "未复核：策略额度已用尽",
+    stage_limit: "未复核：阶段额度已用尽",
+    daily_hard_limit: "未复核：每日额度已用尽",
+    deadline_reached: "未复核：已到复核截止时间",
+    completed_after_deadline: "迟到：结果未参与评分",
+  };
+
   function escapeHtml(value) {
     return String(value == null ? "" : value)
       .replaceAll("&", "&amp;")
@@ -219,10 +230,26 @@
   function dimensionList(dimensions, review) {
     const entries = Object.entries(dimensions || {});
     if (entries.length === 0) {
-      const outcome = review && review.outcome ? review.outcome : "未复核";
-      return `<div class="detail-value"><span>结果</span><strong>${escapeHtml(outcome)}</strong></div>`;
+      return `<div class="detail-value"><span>结果</span><strong>${escapeHtml(reviewResult(review))}</strong></div>`;
     }
     return `<ul class="detail-list">${entries.map(([name, value]) => `<li><b>${escapeHtml(DIMENSION_LABELS[name] || name)}</b> · ${number(value.score, 2)} / 置信 ${number((value.confidence || 0) * 100, 0)}%<br>${escapeHtml(value.assessment || "-")}</li>`).join("")}</ul>`;
+  }
+
+  function reviewResult(review) {
+    if (!review || !review.outcome) return "未复核";
+    const error = String(review.error || "");
+    if (REVIEW_ERROR_LABELS[error]) return REVIEW_ERROR_LABELS[error];
+    if (review.outcome === "abstain") return "模型弃权：使用本地评分";
+    if (review.outcome === "late") return "迟到：结果未参与评分";
+    if (review.outcome !== "rejected") return String(review.outcome);
+    if (
+      error.startsWith("http_") ||
+      error.startsWith("internal_") ||
+      ["timeout", "request_error", "request_failed", "empty_response", "invalid_response"].includes(error)
+    ) {
+      return "调用失败：已回退本地评分";
+    }
+    return "拒绝：响应未通过结构化校验";
   }
 
   function evidenceList(items) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,40 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
     assert len(watchlist.items) == 10
+
+
+def test_runtime_settings_loads_deepseek_key_from_protected_file(tmp_path, monkeypatch) -> None:
+    key_file = tmp_path / "deepseek.key"
+    key_file.write_text("DEEPSEEK_API_KEY=secret-from-file\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(key_file))
+
+    runtime = load_runtime_settings(RUNTIME_CONFIG)
+
+    assert runtime.deepseek.api_key == "secret-from-file"
+
+
+def test_runtime_settings_prefers_deepseek_environment_key(tmp_path, monkeypatch) -> None:
+    missing_file = tmp_path / "missing.key"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "secret-from-environment")
+    monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(missing_file))
+
+    runtime = load_runtime_settings(RUNTIME_CONFIG)
+
+    assert runtime.deepseek.api_key == "secret-from-environment"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission contract")
+def test_runtime_settings_rejects_insecure_deepseek_key_file(tmp_path, monkeypatch) -> None:
+    key_file = tmp_path / "deepseek.key"
+    key_file.write_text("secret-from-file\n", encoding="utf-8")
+    key_file.chmod(0o644)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(key_file))
+
+    with pytest.raises(ConfigurationError, match="must not be accessible by group or other users"):
+        load_runtime_settings(RUNTIME_CONFIG)
 
 
 def test_feature_schema_contract_can_be_explicitly_reconciled_with_registered_schema(tmp_path) -> None:

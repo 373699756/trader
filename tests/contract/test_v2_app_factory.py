@@ -38,7 +38,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "A股策略看板" in page
     assert "策略验证" not in page
     assert "/static/dashboard.css?v=3" in page
-    assert "/static/render.js?v=4" in page
+    assert "/static/render.js?v=5" in page
     assert "/static/dashboard.js?v=6" in page
     assert "payloads: new Map()" in dashboard
     assert "inflight: new Map()" in dashboard
@@ -58,6 +58,8 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     renderer = renderer_response.get_data(as_text=True)
     assert renderer_response.status_code == 200
     assert 'scores.deepseek_score == null ? "未复核"' in renderer
+    assert 'api_key_missing: "不可用：未配置 API 密钥"' in renderer
+    assert 'return "拒绝：响应未通过结构化校验"' in renderer
     assert 'section("缺失字段"' in renderer
     assert "实际 ${escapeHtml(actual)}" in renderer
     assert "阈值 ${escapeHtml(risk.threshold" in renderer

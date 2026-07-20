@@ -15,6 +15,7 @@ usage() {
     "  TRADER_HOST=127.0.0.1" \
     "  TRADER_PORT=5000" \
     "  DEEPSEEK_API_KEY=..." \
+    "  DEEPSEEK_API_KEY_FILE=/protected/path（默认读取项目根目录 .deepseek_key）" \
     "  FORCE_INSTALL_DEPS=1"
 }
 

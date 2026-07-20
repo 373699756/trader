@@ -424,6 +424,43 @@ def test_reviewer_injects_audit_metadata_when_disabled(tmp_path) -> None:
     assert review.rating == Rating.NEUTRAL.value
 
 
+def test_reviewer_reports_missing_api_key_without_physical_call(tmp_path) -> None:
+    candidate = _candidate_with_evidence()
+    database_path = tmp_path / "runtime.sqlite3"
+    budget = _budget(database_path)
+    calls = 0
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("should not call deepseek without an API key")
+
+    reviewer = DeepSeekReviewer(
+        replace(_settings(), api_key=""),
+        budget,
+        DeepSeekHttpClient(post=fail, sleep=lambda _seconds: None),
+        ReviewCache(),
+        **_reviewer_policy(),
+        now=lambda: NOW,
+    )
+
+    result = reviewer.review(
+        Strategy.TODAY,
+        (candidate,),
+        phase="today_main",
+        deadline=NOW + timedelta(minutes=1),
+    )
+
+    assert calls == 0
+    review = result[candidate.quote.code]
+    assert review.outcome is ReviewOutcome.REJECTED
+    assert review.error == "api_key_missing"
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT status, physical_attempts, error FROM deepseek_review_batches"
+        ).fetchone() == ("skipped", 0, "api_key_missing")
+
+
 def test_reviewer_records_each_retry_attempt_independently(tmp_path) -> None:
     candidate = _candidate_with_evidence()
     content = json.dumps(_valid_payload(candidate.quote.code), ensure_ascii=False)

@@ -4,7 +4,7 @@
 
 1. 使用 Python 3.10-3.14 创建虚拟环境。
 2. 执行 `./run.sh validate-config` 或对应 Windows 命令。
-3. 如启用 DeepSeek，只在进程环境设置 `DEEPSEEK_API_KEY`。
+3. 如启用 DeepSeek，优先在进程环境设置 `DEEPSEEK_API_KEY`；也可把单行密钥或 `DEEPSEEK_API_KEY=...` 写入项目根目录 `.deepseek_key`，POSIX 权限必须为 `600`。自定义文件位置使用 `DEEPSEEK_API_KEY_FILE`，环境密钥始终优先；文件不得提交到仓库。
 4. 确认目标端口只绑定回环地址，且 `.runtime/v2` 所在磁盘可写。
 
 ## 启动与停止
