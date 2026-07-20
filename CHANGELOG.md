@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户诉求：将多源并行采集、沪深主板/创业板/科创板独立评分、结构化合并、DeepSeek全局协调、TopK集中度和分批交付门禁形成完整计划文档。新增 `docs/hi.md`，明确 v15 数据合并批次与 v16 三板评分批次、来源职责、板内候选/评分权重、合并 epoch、故障降级、API/冻结兼容、测试验收和未验证收益风险。本次仅新增计划文档，未改变 `docs/need.md`、运行配置或活动代码。
+
 - 用户问题：`GET /api/status` 先报 `sqlite3.OperationalError: unable to open database file`，随后 Werkzeug 报 `OSError: [Errno 24] Too many open files`。原因已确认：DeepSeek 预算库与共享快照库都把 `sqlite3.Connection` 当作会自动释放资源的上下文管理器使用，但该上下文只提交或回滚事务、不关闭连接；页面轮询状态时会从预算摘要和持久化观测路径遗留数据库文件描述符。修改后两个 SQLite 边界在成功、提前返回、初始化失败和异常退出时都确定关闭；预算运行库暂时不可访问时，DeepSeek 状态返回可解析的 `budget_store_unavailable` 降级结果，`/api/status` 继续只读返回 200，顶部额度显示“不可用”而不是产生 500 或伪造可用余额。
 - 用户问题：`TopK live overlay degraded: data source task exceeded its batch deadline` 等最近错误过长时挤压顶部其他状态。原因是最近错误与行情、推送、评分、DeepSeek 和冻结状态共用 `nowrap` flex 行。修改后最近错误成为 Header 独立第二行，标签与正文分列，正文允许对无空格错误码任意断词换行；第一行状态不再被错误长度占用，900px 以下已有窄屏布局顺延错误行但不增加业务分支。验证：静态页面/CSS 契约、`make format-check/lint/type-check/test/package` 全部通过（417 tests），仓库外 wheel 的 CSS v4、独立错误节点、断行规则、CLI 和 `pip check` 通过。剩余风险：1280x720、1440x900、1920x1080 无头截图被宿主 Firefox 的 SWGL framebuffer 映射故障阻断，机器无 Chromium 备选；未发现代码侧已知问题，但本批不能宣称截图门禁通过。
 - 用户问题：DeepSeek 五维结果显示 `rejected`。运行审计确认三个策略批次均因 `api_key_missing` 跳过，原因是受保护的 `.deepseek_key` 已存在且权限为 `600`，但 v2 只读取进程环境。修改后配置边界按“`DEEPSEEK_API_KEY` > `DEEPSEEK_API_KEY_FILE` > 项目根目录 `.deepseek_key`”加载密钥，安全解析单行原值或赋值格式并拒绝 POSIX group/other 可读文件；页面按错误类别显示“未配置、禁用、额度、截止、调用失败或结构校验拒绝”，数据库 `rejected` 终态及 `local_degraded` 门保持不变。验证覆盖文件加载、环境优先、不安全权限、零物理调用审计和静态资源契约；`make format-check/lint/type-check/test/package` 全部通过（417 tests），仓库外干净虚拟环境 wheel 导入、资源、CLI 和 `pip check` 通过。剩余风险：外部 DeepSeek HTTP 有效性仍取决于用户密钥、网络和供应商服务，本批未发起消耗额度的真实请求。
@@ -186,6 +188,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批文档验证：`markdownlint docs/hi.md`、`git diff --check -- docs/hi.md CHANGELOG.md` 和 `make package` 通过。`make format-check`、`make lint`、`make type-check` 受到本批开始前工作树中代码拆分改动的既有格式、导入和类型错误阻断；全量 `make test` 仅有既有 `tests/contract/test_v2_app_factory.py::test_dashboard_uses_packaged_v2_assets` 因拆分后的 CSS 未包含 `.runtime-error` 的失败。本批未修改这些实现或测试文件。
 - 本批失败先行回归已复现连接离开上下文后仍可用及预算库异常导致 `/api/status` 500；修复后预算与共享快照连接在正常和异常路径均报告已关闭，模拟 `sqlite3.OperationalError` 时状态接口返回 200 与 `budget_store_unavailable`。`make format-check`、`make lint`、77 个源码文件 mypy、420 个 pytest、sdist/wheel 均通过；仓库外隔离目录安装最终 wheel 后，包来源、首页 200、6 项 Web 资源、`trader-cli --help` 和 `pip check` 通过。1280x720 无头 Firefox 默认配置被已有无响应实例拒绝，隔离 profile 超过两分钟仍未生成截图并已安全终止；1440x900、1920x1080 因同一宿主浏览器阻断未重复运行，本批未把三档桌面门禁记录为通过。
 - 项目级 Review 回归覆盖 DeepSeek 审计字段不影响动作/排序、跨日显式 stale fallback、`full_market` 执行前/执行中超时、候选池/特征/history cache 迟到隔离、唯一组合根和 JSON/SQLite 共享单 persistence worker；`make format-check`、`make lint`、77 个源码文件 mypy、413 个 pytest 与 sdist/wheel 构建全部通过。最终 wheel 在全新仓库外虚拟环境安装全部依赖后，`pip check`、site-packages 导入、`trader-cli --help`、`trader-server --help` 及模板、CSS、JavaScript、Lucide 图标和产品图标资源验收通过。本批修复未修改 Web 资源；本地临时页面返回 200，三档截图因宿主 Firefox SWGL 无法映射 framebuffer 未生成，未将环境失败记为视觉通过。
 - 评分链路回归证据：本批在 `tests/unit/domain/test_strategies.py` 与 `tests/unit/application/test_recommendations.py` 增补 `local_strategy_weights` 覆盖注入与推荐快照字段持久化回归；`local_strategy_weights` 变更后的本地评分通道与推荐排序行为已在代码层落地，验收建议在完整门禁前补跑 `make format-check && make lint && make type-check && make test && make package`。
@@ -233,6 +236,7 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- `docs/hi.md` 只是计划归档，尚未改变 `docs/need.md`、运行配置或活动代码；v15/v16 机制在独立实现批次完成前不得启用。当前工作树的既有代码拆分仍有格式、lint、mypy 和 CSS 契约问题，不能把本批文档的通过项解释为全仓库质量门禁通过。
 - 故障注入已覆盖 SQLite 打开失败，但无法在单元测试中制造宿主级文件描述符耗尽而不影响测试进程；两个生产 SQLite 边界的确定关闭契约直接覆盖已确认根因。若网络套接字或第三方库独立泄漏句柄，仍需依赖运行期进程 FD 监控定位；本批不重构为长连接，也不声称消除所有可能的宿主资源耗尽来源。三档桌面截图仍受宿主 Firefox 无响应阻断；本次 JavaScript 变化仅涉及预算不可用文本且静态契约通过，但发布门禁不能以此替代真实三档渲染。
 - 本批生产逻辑没有新增 Web 资源差异，桌面布局沿用此前三档通过基线；本轮 headless Firefox 在宿主图形栈报 `RenderCompositorSWGL failed mapping default framebuffer`，1280x720、1440x900、1920x1080 未重新生成截图，发布前如宿主图形环境变化应补跑三档视觉验收。
 - 固定时钟与故障注入已覆盖 `full_market` 队列等待和执行中越过截止的确定性行为，但真实交易日全市场并发负载、上游尾延迟和事件积压仍需运行观测；截止事件会明确记为 `expired` 并沿用最近有效快照，不再制造全局“最近错误”，但这不等同于消除上游变慢或机器资源不足。
