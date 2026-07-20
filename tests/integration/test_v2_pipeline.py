@@ -360,6 +360,167 @@ def test_initialize_catches_up_pre_cutoff_today_snapshot_after_missed_window(
     assert frozen.published_at.minute == 20
 
 
+def test_initialize_skips_today_freeze_when_no_pre_cutoff_snapshot(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:55:00+08:00")
+    draft_time = datetime.fromisoformat("2026-07-16T14:49:50+08:00")
+    repository = MemoryRepository()
+    engine = RecommendationEngine(recommendation_policy)
+
+    tomorrow = engine.build_snapshot(
+        Strategy.TOMORROW,
+        (application_feature_factory("600001", draft_time),),
+        now=draft_time,
+        phase="final_quote",
+        trade_date="2026-07-16",
+        data_version="init-catchup",
+        review_port=None,
+        review_deadline=now.replace(hour=14, minute=50, second=0),
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    d25 = engine.build_snapshot(
+        Strategy.D25,
+        (application_feature_factory("600002", draft_time),),
+        now=draft_time,
+        phase="final_quote",
+        trade_date="2026-07-16",
+        data_version="init-catchup",
+        review_port=None,
+        review_deadline=now.replace(hour=14, minute=50, second=0),
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    repository.publish(replace(tomorrow, config_version="config-v2"))
+    repository.publish(replace(d25, config_version="config-v2"))
+    pipeline = RecommendationPipeline(
+        StaticMarketData(()),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        engine,
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+
+    recovery = pipeline.initialize()
+
+    assert recovery["catchup_frozen"] == 2
+    assert "today freeze unavailable: no current pre-cutoff snapshot" not in pipeline.status()["last_error"]
+    assert set(repository.frozen) == {
+        (Strategy.TOMORROW, "2026-07-16"),
+        (Strategy.D25, "2026-07-16"),
+    }
+
+
+def test_initialize_skips_today_freeze_when_pre_cutoff_snapshot_is_stale(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:55:00+08:00")
+    draft_time = datetime.fromisoformat("2026-07-16T14:49:00+08:00")
+    repository = MemoryRepository()
+    engine = RecommendationEngine(recommendation_policy)
+
+    stale_today = engine.build_snapshot(
+        Strategy.TODAY,
+        (application_feature_factory("600001", draft_time),),
+        now=draft_time,
+        phase="final_quote",
+        trade_date="2026-07-16",
+        data_version="stale-init-catchup",
+        review_port=None,
+        review_deadline=now.replace(hour=11, minute=20, second=0),
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    repository.publish(replace(stale_today, config_version="config-v2"))
+    pipeline = RecommendationPipeline(
+        StaticMarketData(()),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        engine,
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+
+    recovery = pipeline.initialize()
+
+    assert recovery["catchup_frozen"] == 0
+    assert "today freeze unavailable: no current pre-cutoff snapshot" not in pipeline.status()["last_error"]
+    assert not any(strategy is Strategy.TODAY for strategy, _ in repository.frozen)
+
+
+def test_freeze_reuses_persisted_snapshot_when_state_has_no_live_copy(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    boundary = datetime.fromisoformat("2026-07-16T11:20:00+08:00")
+    draft_time = boundary - timedelta(seconds=10)
+    feature = application_feature_factory("600001", draft_time)
+    engine = RecommendationEngine(recommendation_policy)
+    draft = engine.build_snapshot(
+        Strategy.TODAY,
+        (feature,),
+        now=draft_time,
+        phase="today_late",
+        trade_date="2026-07-16",
+        data_version="state-recovery",
+        review_port=None,
+        review_deadline=boundary,
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    draft = replace(draft, config_version="config-v2")
+
+    repository = MemoryRepository()
+    repository.publish(draft)
+
+    pipeline = RecommendationPipeline(
+        StaticMarketData((feature,)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        engine,
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: boundary,
+    )
+
+    frozen = pipeline._freeze_available_snapshots(boundary, (Strategy.TODAY.value,))
+
+    assert len(frozen) == 1
+    assert frozen[0].strategy is Strategy.TODAY
+    assert frozen[0].frozen is True
+    assert frozen[0].published_at == boundary
+    assert frozen[0].snapshot_id == draft.snapshot_id
+    assert repository.frozen[(Strategy.TODAY, "2026-07-16")] == frozen[0]
+
+
 def test_market_data_unavailability_preserves_candidates_and_records_degradation(
     recommendation_policy,
     application_feature_factory,
@@ -707,6 +868,60 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert sum(name.startswith("trader-persistence") for name in running_thread_names) == 1
     assert running_thread_names.count("trader-merge") == 1
     assert not any(thread.name.startswith("trader-") for thread in threading.enumerate())
+
+
+def test_expired_full_market_event_does_not_commit_candidates_or_set_recent_error(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    started_at = datetime.fromisoformat("2026-07-16T12:31:38+08:00")
+    clock = MutableClock(started_at)
+    feature = application_feature_factory("600001", started_at)
+    repository = MemoryRepository()
+    market_data = DeadlineAdvancingMarketData((feature,), clock)
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=clock.now,
+    )
+    deadline = started_at + timedelta(seconds=20)
+    event = new_event(
+        "full_market",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="midday",
+        strategy=None,
+        priority=EventPriority.MARKET_QUOTES,
+        data_version="deadline-regression",
+        config_version="config-v2",
+        created_at=started_at,
+        deadline=deadline,
+        payload={"schedule_task": "full_market"},
+    )
+
+    pipeline.initialize()
+    assert pipeline.start() is True
+    try:
+        assert pipeline.submit_event(event) is True
+        _wait_until(lambda: bool(repository.events) and repository.events[-1]["status"] == "expired")
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    status = pipeline.status()
+    assert pipeline._candidate_codes == ()
+    assert status["counters"]["events_expired"] == 1
+    assert status["counters"]["events_failed"] == 0
+    assert "deadline" not in status["last_error"]
 
 
 def test_synchronous_and_worker_paths_publish_identical_business_snapshots(
@@ -1092,6 +1307,24 @@ class DegradingMarketData(StaticMarketData):
         if self.market_unavailable:
             raise MarketDataUnavailable("all full-market sources failed")
         return super().fetch_market_features(observed_at, force=force, deadline=deadline)
+
+
+class DeadlineAdvancingMarketData(StaticMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot], clock: MutableClock) -> None:
+        super().__init__(features)
+        self._clock = clock
+
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        assert deadline is not None
+        result = super().fetch_market_features(observed_at, force=force, deadline=deadline)
+        self._clock.set(deadline)
+        return result
 
 
 class DegradingCandidateMarketData(StaticMarketData):

@@ -23,7 +23,7 @@
   function init() {
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
-      "scoreTime", "budgetStatus", "headerFreeze", "lastError",
+      "scoreTime", "budgetStatus", "headerFreeze", "lastError", "routeHealth",
       "refreshButton", "dateSelect", "recommendationCount", "executableCount", "filteredCount", "dataSource",
       "strategyVersion", "freezeStatus", "notice", "recommendationTable", "tableColumns", "tableHead", "tableBody",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
@@ -307,7 +307,17 @@
       const budget = deepseek && deepseek.budget;
       els.budgetStatus.textContent = budget ? `${budget.used} / ${budget.remaining}` : "0 / 188";
       const market = payload.dependencies && payload.dependencies.market_data;
+      const route = market && market.route;
       els.quoteSource.textContent = market && market.active_source ? market.active_source : "-";
+      const routeStatus = route && route.status ? route.status : "idle";
+      const routeState = route && route.degraded ? `${routeStatus}/降级` : `${routeStatus}/稳定`;
+      const routeFallback = route && route.fallback_reason ? ` (${route.fallback_reason})` : "";
+      const routeVendor = route && route.used_vendor ? ` · ${route.used_vendor}` : "";
+      els.routeHealth.textContent = `${routeState}${routeFallback}${routeVendor}`;
+      const attempted = route && Array.isArray(route.attempted_vendors) ? route.attempted_vendors : [];
+      els.routeHealth.title = attempted
+        .map((vendor) => `${vendor.name} ${vendor.status}${vendor.error ? `: ${vendor.error}` : ""}`)
+        .join(" -> ");
       const score = state.payload && state.payload.published_at;
       els.scoreTime.textContent = score ? window.TraderRender.formatTime(score) : "-";
       els.headerFreeze.textContent = state.payload
@@ -317,6 +327,7 @@
     } catch (_error) {
       els.runtimeStatus.textContent = "状态不可用";
       els.runtimeDot.dataset.state = "error";
+      els.routeHealth.textContent = "-";
     }
   }
 

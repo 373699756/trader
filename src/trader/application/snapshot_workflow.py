@@ -81,7 +81,20 @@ def freeze_available_snapshots(
         key = (strategy, trade_date)
         if key in pipeline._frozen_keys or pipeline._state.is_frozen(strategy, trade_date):
             continue
+
+        if trade_date in pipeline._repository.recommendation_dates(strategy):
+            pipeline._state.restore_frozen(strategy, trade_date)
+            continue
+
         current = pipeline._state.latest(strategy)
+        if current is None or current.trade_date != trade_date:
+            fallback = pipeline._repository.latest(strategy)
+            if fallback is None or fallback.trade_date != trade_date:
+                pipeline._state.record_error(f"{strategy.value} freeze unavailable: no current pre-cutoff snapshot")
+                continue
+            current = fallback
+            pipeline._state.restore_snapshot(current)
+
         if current is None or current.trade_date != trade_date:
             pipeline._state.record_error(f"{strategy.value} freeze unavailable: no current pre-cutoff snapshot")
             continue

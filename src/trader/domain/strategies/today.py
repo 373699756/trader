@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from trader.domain.factors import band_score
 from trader.domain.models import FeatureSnapshot
 from trader.domain.strategies.composition import LocalScoreResult, compose, liquidity_score, normalized
@@ -15,7 +17,8 @@ COMPONENT_WEIGHTS = {
 }
 
 
-def score_today(snapshot: FeatureSnapshot) -> LocalScoreResult:
+def score_today(snapshot: FeatureSnapshot, component_weights: Mapping[str, float] | None = None) -> LocalScoreResult:
+    component_weights = COMPONENT_WEIGHTS if component_weights is None else component_weights
     momentum = (
         0.30 * band_score(snapshot.quote.change_5m, 0.0, 0.2, 1.8, 3.5)
         + 0.20 * normalized(snapshot, "speed_percentile")
@@ -42,7 +45,7 @@ def score_today(snapshot: FeatureSnapshot) -> LocalScoreResult:
             "sentiment": sentiment,
             "protection": protection,
         },
-        COMPONENT_WEIGHTS,
+        component_weights,
     )
 
 

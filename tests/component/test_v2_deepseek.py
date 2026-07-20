@@ -10,13 +10,15 @@ import pytest
 import requests
 
 from trader.domain.models import Evidence, FeatureSnapshot, MarketQuote, ReviewOutcome, Strategy
-from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
+from trader.domain.risk import Rating
+from trader.infrastructure.deepseek.budget import SCHEMA_VERSION, DeepSeekBudgetStore
 from trader.infrastructure.deepseek.cache import ReviewCache
 from trader.infrastructure.deepseek.client import DeepSeekHttpClient
 from trader.infrastructure.deepseek.reviewer import DeepSeekReviewer
 from trader.infrastructure.deepseek.schema import (
     DeepSeekSchemaError,
     build_messages,
+    build_review_manifest_hash,
     classify_review,
     parse_reviews,
     review_cache_key,
@@ -34,11 +36,65 @@ def test_schema_accepts_valid_dimensions_and_risk_fact() -> None:
 
     review = reviews[candidate.quote.code]
     assert review.outcome is ReviewOutcome.APPLIED
+    assert review.rating == Rating.NEUTRAL.value
     assert review.dimensions["market_flow"].score == 80
     assert review.risk_facts[0].risk_code == "regulatory_risk"
     assert review.risk_facts[0].penalty == 0.0
     assert review.risk_facts[0].veto is False
     assert review.risk_facts[0].assessment == "high risk"
+
+
+def test_schema_accepts_deepseek_rating_aliases() -> None:
+    candidate = _candidate_with_evidence()
+    payload = _valid_payload(candidate.quote.code)
+    payload["results"][0]["rating"] = "看多"
+
+    reviews = parse_reviews(json.dumps(payload), [candidate], NOW)
+
+    assert reviews[candidate.quote.code].rating == Rating.BULLISH.value
+
+
+def test_schema_fills_default_review_audit_fields_and_manifest_hash() -> None:
+    candidate = _candidate_with_evidence()
+    review = parse_reviews(json.dumps(_valid_payload(candidate.quote.code)), [candidate], NOW)[candidate.quote.code]
+
+    assert review.review_stage == "primary"
+    assert review.challenger_status == "not_run"
+    assert review.requested_model is None
+    assert review.actual_model is None
+    assert review.thinking_mode is None
+    assert review.raw_confidence is None
+    assert review.calibrated_confidence is None
+    assert review.rating == Rating.NEUTRAL.value
+    assert review.evidence_manifest_hash == build_review_manifest_hash(candidate)
+
+
+def test_schema_rehydrates_explicit_review_audit_fields() -> None:
+    candidate = _candidate_with_evidence()
+    payload = _valid_payload(candidate.quote.code)
+    payload["results"][0]["review_stage"] = "secondary"
+    payload["results"][0]["challenger_status"] = "challenged"
+    payload["results"][0]["requested_model"] = "deepseek-v4-flash"
+    payload["results"][0]["actual_model"] = "deepseek-v4-pro"
+    payload["results"][0]["thinking_mode"] = "reasoning"
+    payload["results"][0]["raw_confidence"] = 0.74
+    payload["results"][0]["calibrated_confidence"] = 0.61
+    payload["results"][0]["evidence_manifest_hash"] = "review-hash"
+    payload["results"][0]["calibration_version"] = "v1"
+    payload["results"][0]["rating"] = "bearish"
+
+    review = parse_reviews(json.dumps(payload), [candidate], NOW)[candidate.quote.code]
+
+    assert review.review_stage == "secondary"
+    assert review.challenger_status == "challenged"
+    assert review.requested_model == "deepseek-v4-flash"
+    assert review.actual_model == "deepseek-v4-pro"
+    assert review.thinking_mode == "reasoning"
+    assert review.raw_confidence == 0.74
+    assert review.calibrated_confidence == 0.61
+    assert review.evidence_manifest_hash == "review-hash"
+    assert review.calibration_version == "v1"
+    assert review.rating == Rating.BEARISH.value
 
 
 def test_schema_rejects_empty_or_oversized_assessment() -> None:
@@ -118,6 +174,47 @@ def test_http_retry_reserves_each_physical_attempt() -> None:
     assert result.attempts == 2
     assert reservations == 2
     assert [(item.http_status, item.succeeded) for item in result.attempt_records] == [(429, False), (200, True)]
+
+
+def test_budget_initialize_repair_schema_version_if_missing_or_invalid(tmp_path) -> None:
+    database_path = tmp_path / "runtime.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        connection.execute("INSERT INTO schema_meta(key, value) VALUES ('schema_version', 'N/A')")
+
+    store = DeepSeekBudgetStore(
+        database_path,
+        daily_hard_limit=2,
+        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"today_main": 0},
+        stage_limits={"today_main": 2},
+    )
+    store.initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+
+    assert version is not None
+    assert int(str(version[0])) == SCHEMA_VERSION
+
+
+def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
+    database_path = tmp_path / "fresh.sqlite3"
+
+    store = DeepSeekBudgetStore(
+        database_path,
+        daily_hard_limit=2,
+        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"today_main": 0},
+        stage_limits={"today_main": 2},
+    )
+    store.initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+
+    assert version is not None
+    assert int(str(version[0])) == SCHEMA_VERSION
 
 
 def test_http_timeout_is_bounded_to_one_retry() -> None:
@@ -287,6 +384,44 @@ def test_strategy_independent_review_is_reused_by_long(tmp_path) -> None:
     assert physical_calls == 1
     assert budget.summary(NOW.date().isoformat())["used"] == 1
     assert reviewer.status()["last_cache_hits"] == 1
+
+
+def test_reviewer_injects_audit_metadata_when_disabled(tmp_path) -> None:
+    candidate = _candidate_with_evidence()
+    budget = _budget(tmp_path / "runtime.sqlite3")
+    calls = 0
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("should not call deepseek when disabled")
+
+    reviewer = DeepSeekReviewer(
+        replace(_settings(), enabled=False),
+        budget,
+        DeepSeekHttpClient(post=fail, sleep=lambda _seconds: None),
+        ReviewCache(),
+        **_reviewer_policy(),
+        now=lambda: NOW,
+    )
+
+    result = reviewer.review(
+        Strategy.TODAY,
+        (candidate,),
+        phase="today_main",
+        deadline=NOW + timedelta(minutes=1),
+    )
+
+    assert calls == 0
+    review = result[candidate.quote.code]
+    assert review.outcome is ReviewOutcome.REJECTED
+    assert review.error == "disabled"
+    assert review.review_stage == "primary"
+    assert review.challenger_status == "not_run"
+    assert review.requested_model == _settings().model
+    assert review.actual_model == _settings().model
+    assert review.thinking_mode == "standard"
+    assert review.rating == Rating.NEUTRAL.value
 
 
 def test_reviewer_records_each_retry_attempt_independently(tmp_path) -> None:

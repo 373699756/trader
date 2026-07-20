@@ -36,6 +36,37 @@ def recommendation_policy() -> RecommendationPolicy:
             "data_completeness": 0.10,
         },
         dimension_weights={strategy: {name: 0.2 for name in DIMENSION_NAMES} for strategy in Strategy},
+        local_strategy_weights={
+            Strategy.TODAY: {
+                "momentum": 0.35,
+                "liquidity": 0.25,
+                "industry": 0.10,
+                "sentiment": 0.20,
+                "protection": 0.10,
+            },
+            Strategy.TOMORROW: {
+                "liquidity": 0.25,
+                "momentum": 0.15,
+                "trend": 0.20,
+                "historical_edge": 0.15,
+                "execution": 0.10,
+                "tail_structure": 0.15,
+            },
+            Strategy.D25: {
+                "momentum": 0.30,
+                "trend": 0.25,
+                "liquidity": 0.20,
+                "execution": 0.15,
+                "not_overheated": 0.10,
+            },
+            Strategy.LONG: {
+                "value": 0.30,
+                "growth": 0.25,
+                "quality": 0.20,
+                "industry_policy": 0.15,
+                "protection": 0.10,
+            },
+        },
         risk_rules=risk_rules,
     )
 

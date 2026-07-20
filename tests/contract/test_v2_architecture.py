@@ -17,6 +17,7 @@ def test_v2_dependency_direction() -> None:
     forbidden = {
         "domain": ("trader.application", "trader.infrastructure", "trader.web", "trader.entrypoints"),
         "application": ("trader.infrastructure", "trader.web", "trader.entrypoints"),
+        "infrastructure": ("trader.bootstrap", "trader.entrypoints", "trader.web"),
         "web": ("trader.infrastructure",),
     }
     violations: list[str] = []
@@ -60,6 +61,10 @@ def test_snapshot_workflow_module_uses_specific_responsibility_name() -> None:
 
     assert (application / "snapshot_workflow.py").is_file()
     assert not (application / "snapshot_lifecycle.py").exists()
+
+
+def test_bootstrap_is_the_only_composition_root() -> None:
+    assert not (SOURCE_ROOT / "infrastructure" / "container.py").exists()
 
 
 def _imports_matching(predicate: Callable[[str], bool]) -> list[str]:

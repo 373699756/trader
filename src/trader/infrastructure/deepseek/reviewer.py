@@ -6,18 +6,19 @@ import math
 import threading
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from trader.domain.models import DeepSeekReview, FeatureSnapshot, ReviewOutcome, RiskFact, Strategy
+from trader.infrastructure.deepseek.base_client import DeepSeekClientBase, DeepSeekHttpResult
 from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
 from trader.infrastructure.deepseek.cache import ReviewCache
-from trader.infrastructure.deepseek.client import DeepSeekHttpClient, DeepSeekHttpResult
 from trader.infrastructure.deepseek.schema import (
     DeepSeekSchemaError,
     build_messages,
     build_repair_messages,
+    build_review_manifest_hash,
     classify_review,
     parse_reviews,
     review_cache_key,
@@ -33,7 +34,7 @@ class DeepSeekReviewer:
         self,
         settings: DeepSeekSettings,
         budget: DeepSeekBudgetStore,
-        client: DeepSeekHttpClient,
+        client: DeepSeekClientBase,
         cache: ReviewCache,
         *,
         dimension_weights: Mapping[Strategy, Mapping[str, float]],
@@ -161,6 +162,8 @@ class DeepSeekReviewer:
         emergency_reason: str,
         batch_id: str,
     ) -> Mapping[str, DeepSeekReview]:
+        thinking_mode = _thinking_mode(self._client, self._settings.model)
+        requested_model = self._settings.model
         if not unique_candidates:
             self._finish_batch(batch_id, "skipped", now, {}, 0, "no_eligible_candidates")
             return {}
@@ -168,14 +171,30 @@ class DeepSeekReviewer:
         if not self._settings.enabled or not self._settings.api_key:
             error = "disabled" if not self._settings.enabled else "api_key_missing"
             rejected = {
-                candidate.quote.code: _terminal_review(candidate, ReviewOutcome.REJECTED, now, error)
+                candidate.quote.code: _annotate_review(
+                    _terminal_review(candidate, ReviewOutcome.REJECTED, now, error),
+                    candidate=candidate,
+                    review_stage="primary",
+                    challenger_status="not_run",
+                    requested_model=requested_model,
+                    actual_model=requested_model,
+                    thinking_mode=thinking_mode,
+                )
                 for candidate in unique_candidates
             }
             self._finish_batch(batch_id, "skipped", now, rejected, 0, error)
             return rejected
         if now >= deadline:
             late = {
-                candidate.quote.code: _terminal_review(candidate, ReviewOutcome.LATE, now, "deadline_reached")
+                candidate.quote.code: _annotate_review(
+                    _terminal_review(candidate, ReviewOutcome.LATE, now, "deadline_reached"),
+                    candidate=candidate,
+                    review_stage="primary",
+                    challenger_status="not_run",
+                    requested_model=requested_model,
+                    actual_model=requested_model,
+                    thinking_mode=thinking_mode,
+                )
                 for candidate in unique_candidates
             }
             self._finish_batch(batch_id, "skipped", now, late, 0, "deadline_reached")
@@ -186,11 +205,19 @@ class DeepSeekReviewer:
         generation = phase
         for index, candidate in enumerate(unique_candidates):
             if not _has_callable_features(candidate):
-                results[candidate.quote.code] = _terminal_review(
-                    candidate,
-                    ReviewOutcome.ABSTAIN,
-                    now,
-                    "insufficient_structured_features",
+                results[candidate.quote.code] = _annotate_review(
+                    _terminal_review(
+                        candidate,
+                        ReviewOutcome.ABSTAIN,
+                        now,
+                        "insufficient_structured_features",
+                    ),
+                    candidate=candidate,
+                    review_stage="primary",
+                    challenger_status="not_run",
+                    requested_model=requested_model,
+                    actual_model=requested_model,
+                    thinking_mode=thinking_mode,
                 )
                 continue
             raw_key = review_cache_key(candidate, model=self._settings.model, generation=generation)
@@ -200,12 +227,29 @@ class DeepSeekReviewer:
                 priority = _review_priority(candidate, index=index, was_seen=was_seen)
                 prioritized_missing.append((priority, index, candidate))
                 continue
+            raw_review = _annotate_review(
+                raw_review,
+                candidate=candidate,
+                review_stage="primary",
+                challenger_status="not_run",
+                requested_model=requested_model,
+                actual_model=requested_model,
+                thinking_mode=thinking_mode,
+            )
             fusion_key = self._fusion_cache_key(raw_key, strategy)
             classified = self._cache.get_fusion(fusion_key)
             if classified is None:
                 classified = self._classify(raw_review, strategy)
                 self._cache.put_fusion(fusion_key, classified)
-            results[candidate.quote.code] = classified
+            results[candidate.quote.code] = _annotate_review(
+                classified,
+                candidate=candidate,
+                review_stage="primary",
+                challenger_status="not_run",
+                requested_model=requested_model,
+                actual_model=requested_model,
+                thinking_mode=thinking_mode,
+            )
 
         missing = [item[2] for item in sorted(prioritized_missing, key=lambda item: (item[0], item[1]))]
 
@@ -235,11 +279,19 @@ class DeepSeekReviewer:
             completed_at = _in_deadline_timezone(self._now(), deadline)
             if completed_at >= deadline:
                 for candidate in candidate_batch:
-                    results[candidate.quote.code] = _terminal_review(
-                        candidate,
-                        ReviewOutcome.LATE,
-                        completed_at,
-                        "deadline_reached",
+                    results[candidate.quote.code] = _annotate_review(
+                        _terminal_review(
+                            candidate,
+                            ReviewOutcome.LATE,
+                            completed_at,
+                            "deadline_reached",
+                        ),
+                        candidate=candidate,
+                        review_stage="primary",
+                        challenger_status="not_run",
+                        requested_model=requested_model,
+                        actual_model=requested_model,
+                        thinking_mode=thinking_mode,
                     )
                 slice_statuses.append("skipped")
                 last_error = "deadline_reached"
@@ -258,7 +310,15 @@ class DeepSeekReviewer:
                 outcome = ReviewOutcome.LATE if completed_at >= deadline else ReviewOutcome.REJECTED
                 terminal_error = "completed_after_deadline" if outcome is ReviewOutcome.LATE else error
                 for candidate in candidate_batch:
-                    results[candidate.quote.code] = _terminal_review(candidate, outcome, completed_at, terminal_error)
+                    results[candidate.quote.code] = _annotate_review(
+                        _terminal_review(candidate, outcome, completed_at, terminal_error),
+                        candidate=candidate,
+                        review_stage="primary",
+                        challenger_status="not_run",
+                        requested_model=requested_model,
+                        actual_model=requested_model,
+                        thinking_mode=thinking_mode,
+                    )
                 slice_statuses.append("failed" if response.attempts else "skipped")
                 last_error = error
                 continue
@@ -268,26 +328,54 @@ class DeepSeekReviewer:
                 raw_review = parsed.get(candidate.quote.code)
                 if raw_review is None:
                     missing_result = True
-                    results[candidate.quote.code] = _terminal_review(
-                        candidate,
-                        ReviewOutcome.REJECTED,
-                        completed_at,
-                        "result_missing",
+                    results[candidate.quote.code] = _annotate_review(
+                        _terminal_review(
+                            candidate,
+                            ReviewOutcome.REJECTED,
+                            completed_at,
+                            "result_missing",
+                        ),
+                        candidate=candidate,
+                        review_stage="primary",
+                        challenger_status="not_run",
+                        requested_model=requested_model,
+                        actual_model=requested_model,
+                        thinking_mode=thinking_mode,
                     )
                     continue
                 if completed_at >= deadline:
-                    results[candidate.quote.code] = _terminal_review(
-                        candidate,
-                        ReviewOutcome.LATE,
-                        completed_at,
-                        "completed_after_deadline",
+                    results[candidate.quote.code] = _annotate_review(
+                        _terminal_review(candidate, ReviewOutcome.LATE, completed_at, "completed_after_deadline"),
+                        candidate=candidate,
+                        review_stage="primary",
+                        challenger_status="not_run",
+                        requested_model=requested_model,
+                        actual_model=requested_model,
+                        thinking_mode=thinking_mode,
                     )
                     continue
                 raw_key = review_cache_key(candidate, model=self._settings.model, generation=generation)
+                parsed_review = _annotate_review(
+                    raw_review,
+                    candidate=candidate,
+                    review_stage="primary",
+                    challenger_status="not_run",
+                    requested_model=requested_model,
+                    actual_model=raw_review.actual_model or requested_model,
+                    thinking_mode=thinking_mode,
+                )
                 self._cache.put_raw(raw_key, candidate, raw_review)
-                classified = self._classify(raw_review, strategy)
+                classified = self._classify(parsed_review, strategy)
                 self._cache.put_fusion(self._fusion_cache_key(raw_key, strategy), classified)
-                results[candidate.quote.code] = classified
+                results[candidate.quote.code] = _annotate_review(
+                    classified,
+                    candidate=candidate,
+                    review_stage="primary",
+                    challenger_status="not_run",
+                    requested_model=requested_model,
+                    actual_model=raw_review.actual_model or requested_model,
+                    thinking_mode=thinking_mode,
+                )
             slice_statuses.append("partial" if missing_result else "success")
 
         batch_status = _aggregate_batch_status(slice_statuses, cache_hits=cache_hits)
@@ -536,6 +624,35 @@ def _terminal_review(
         completed_at=completed_at,
         error=error[:500],
     )
+
+
+def _annotate_review(
+    review: DeepSeekReview,
+    *,
+    candidate: FeatureSnapshot,
+    review_stage: str,
+    challenger_status: str,
+    requested_model: str,
+    actual_model: str,
+    thinking_mode: str,
+) -> DeepSeekReview:
+    return replace(
+        review,
+        review_stage=review_stage,
+        challenger_status=challenger_status,
+        requested_model=requested_model or None,
+        actual_model=actual_model or None,
+        thinking_mode=thinking_mode or None,
+        evidence_manifest_hash=review.evidence_manifest_hash or build_review_manifest_hash(candidate),
+    )
+
+
+def _thinking_mode(client: DeepSeekClientBase, model: str) -> str:
+    try:
+        capabilities = client.capabilities(model)
+        return "reasoning" if capabilities.requires_reasoning_roundtrip else "standard"
+    except Exception:
+        return "standard"
 
 
 def _unique_candidates(candidates: Sequence[FeatureSnapshot]) -> tuple[FeatureSnapshot, ...]:

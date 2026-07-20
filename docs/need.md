@@ -175,7 +175,7 @@ long 使用低优先级独立展示分支，复用标准化、风险和 DeepSeek
 
 生产组合根只创建一组数据采集 worker，东方财富分页、历史、分钟和研究任务共享该有界池，不得在运行主链中再叠加同类临时线程池。配置声明的 worker 必须在流水线启动时成为真实消费者；各执行器同时限制运行任务和待处理任务，启动中途失败必须回收已启动线程。同一池内任务同步派生子任务时，仍有空闲 worker 才允许向共享队列展开；全部 worker 已占用时必须在当前 worker 内执行，禁止相互等待自身队列。long 的本地评分使用独立单 worker，并在 today/tomorrow/d25 的共享复核完成后再读取策略无关 DeepSeek 缓存，缓存未命中时才提交 long 补审。
 
-事件落库状态固定按 `pending -> running -> success/failed` compare-and-set；崩溃遗留的高优先级 `running` 事件先原子退回 `pending` 再重放，配置版本不匹配的旧事件必须失败关闭。同一事件只有 CAS 成功的执行者可进入业务链。退出时先关闭事件接收门并关闭内存队列，合并线程按优先级排空已接收事件和冻结写入，再关闭数据、标准化、策略、DeepSeek 与 long 执行器，持久化单写线程最后关闭；关闭完成后不得残留运行时 worker。
+事件落库状态固定按 `pending -> running -> success/failed/expired` compare-and-set；`expired` 只用于非冻结周期事件耗尽 deadline 的可观测降级。崩溃遗留的高优先级 `running` 事件先原子退回 `pending` 再重放，配置版本不匹配的旧事件必须失败关闭。同一事件只有 CAS 成功的执行者可进入业务链。退出时先关闭事件接收门并关闭内存队列，合并线程按优先级排空已接收事件和冻结写入，再关闭数据、标准化、策略、DeepSeek 与 long 执行器，持久化单写线程最后关闭；关闭完成后不得残留运行时 worker。
 
 ## 5. 交易时间线
 
@@ -393,6 +393,8 @@ long 使用受版本控制的固定名单，按价值 30%、成长 25%、质量 
 
 每个维度的原始 `score` 和 `raw_confidence` 必须是有限数并分别位于 0-100、0-1；当前生产维度有效分仍为 `effective_i = 50 + (score_i - 50) * raw_confidence_i`，未知维度固定为 `score=50, raw_confidence=0, effective=50`，已知维度权重不因其他维度未知而重新归一化。预留的 `calibrated_confidence` 与 `calibration_version` 当前只允许为空或进入影子审计，不得参与生产融合；其训练、离线验证与晋级规则留待后续独立契约。
 
+`rating`、`review_stage`、`challenger_status` 及模型自报置信度属于只读审计元数据，不参与动作、排序、扣分或 veto。生产动作只允许由规范化最终分、时间窗口、行情新鲜度、硬过滤和经本地规则验证的 veto 决定；TopK 同分顺序继续严格使用第 17 节固定键。
+
 | 策略 | 价值质量 | 财务健康 | 资金量价 | 行业政策 | 风险质量 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | today | 10% | 10% | 40% | 15% | 25% |
@@ -521,6 +523,8 @@ final_score = round_half_up(clamp(raw_final_score, 0, 100), 2)
 - `pipeline_events`：事件状态、阶段、重试和终态。
 - `deepseek_calls`：模型角色、请求/实际模型、思考模式、`reasoning_effort`、`system_fingerprint`、复核阶段、挑战者状态、证据 manifest 哈希、原始/校准置信度、校准版本、prompt/schema 版本、缓存命中/未命中 token、HTTP 状态、总 token、延迟和错误；校准字段当前可空且只供影子审计。
 - `data_source_health`：来源成功率、延迟、熔断和数据年龄。
+
+非冻结周期事件在执行前或执行中耗尽 deadline 时必须进入独立 `expired` 终态并计数，不得写入全局最近错误；已完成的旧快照继续可读。deadline 后返回的全市场特征不得提交到候选池或特征缓存。真实来源、持久化或业务计算失败仍进入 `failed` 并记录最近错误。冻结事件不使用该过期降级路径，继续以 11:20/14:50 边界和迟到写保护为准。
 
 SQLite 与 JSON 只允许单写线程操作。实时草稿写入可替换的 `published/`；冻结时先在 SQLite 事务中以预计算路径和 SHA-256 创建 `staged` manifest，再写同目录临时文件、刷新并原子改名，最后在第二个 SQLite 事务中写推荐行、已发布指针并把 manifest 改为 `committed`。启动恢复扫描 `staged` manifest、孤儿文件、哈希不符和缺失文件：完整项幂等提交，不完整项隔离并回退最近有效快照，禁止静默覆盖。
 

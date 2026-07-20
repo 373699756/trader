@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import threading
 import time
@@ -9,18 +10,21 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from concurrent.futures import as_completed, wait
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import ParamSpec, TypeVar
 
+from trader.application.ports import MarketDataDeadlineExceeded
 from trader.application.workers import BoundedExecutor, borrow_executor
-from trader.domain.models import FeatureSnapshot, MarketQuote
-from trader.domain.research import ResearchObservation
+from trader.domain.models import Evidence, FeatureSnapshot, MarketQuote
+from trader.domain.research import FinancialReport, ResearchAnnouncement, ResearchObservation
 from trader.domain.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
-from trader.infrastructure.market_data.features import FeatureBuilder
+from trader.infrastructure.market_data.features import StandardizedFeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.history import DailyBar
+from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -49,7 +53,7 @@ class MarketFeatureService:
         self,
         gateway: MarketDataGateway,
         history_client: EastmoneyClient,
-        feature_builder: FeatureBuilder,
+        feature_builder: StandardizedFeatureBuilder,
         *,
         research_client: AkshareResearchClient | None = None,
         intraday_client: EastmoneyClient | None = None,
@@ -63,6 +67,8 @@ class MarketFeatureService:
         intraday_batch_timeout_seconds: float = 3,
         intraday_cache_limit: int = 360,
         market_ttl_seconds: float = 30,
+        research_cache_dir: Path | None = None,
+        json_writer: RuntimeJsonWriter | None = None,
         worker_pool: BoundedExecutor | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -82,6 +88,8 @@ class MarketFeatureService:
         self._intraday_batch_timeout_seconds = max(0.01, intraday_batch_timeout_seconds)
         self._intraday_cache_limit = max(1, intraday_cache_limit)
         self._market_ttl_seconds = max(1.0, market_ttl_seconds)
+        self._research_cache_dir = research_cache_dir
+        self._json_writer = json_writer
         self._worker_pool = worker_pool
         self._monotonic = monotonic
         self._wall_clock = wall_clock
@@ -125,9 +133,12 @@ class MarketFeatureService:
                 return self._market_features
         quotes = tuple(self._run_data_task_until(deadline, self._gateway.fetch_market))
         history_codes = _history_preload_codes(quotes, self._history_preload_limit)
-        histories = self._load_histories(history_codes)
+        histories = self._load_histories(history_codes, deadline=deadline)
+        self._ensure_before_deadline(deadline)
         features = self._feature_builder.build(quotes, histories, observed_at)
+        self._ensure_before_deadline(deadline)
         with self._lock:
+            self._ensure_before_deadline(deadline)
             self._market_features = features
             self._market_expires_at = self._monotonic() + self._market_ttl_seconds
             self._history_universe_rows = len(history_codes)
@@ -381,18 +392,27 @@ class MarketFeatureService:
     ) -> _T:
         if deadline is None:
             return self._run_data_task(function, *args, **kwargs)
+        self._ensure_before_deadline(deadline)
         pool = self._worker_pool
         if pool is None or not pool.is_running() or pool.owns_current_thread():
-            return function(*args, **kwargs)
+            result = function(*args, **kwargs)
+            self._ensure_before_deadline(deadline)
+            return result
         future = pool.submit(function, *args, **kwargs)
         if future is None:
             raise RuntimeError("data worker queue rejected deadline-bound source task")
         remaining = max(0.0, (deadline - self._wall_clock()).total_seconds())
         try:
-            return future.result(timeout=remaining)
+            result = future.result(timeout=remaining)
         except FutureTimeoutError as exc:
             future.cancel()
-            raise RuntimeError("data source task exceeded its batch deadline") from exc
+            raise MarketDataDeadlineExceeded("data source task exceeded its batch deadline") from exc
+        self._ensure_before_deadline(deadline)
+        return result
+
+    def _ensure_before_deadline(self, deadline: datetime | None) -> None:
+        if deadline is not None and self._wall_clock() >= deadline:
+            raise MarketDataDeadlineExceeded("market-data result completed after its batch deadline")
 
     def _candidate_quote_snapshot(self, codes: Sequence[str]) -> tuple[MarketQuote, ...]:
         with self._lock:
@@ -473,6 +493,7 @@ class MarketFeatureService:
         if self._research_client is None:
             return {}
         now = self._monotonic()
+        wall_now = self._wall_clock()
         result: dict[str, ResearchObservation] = {}
         previous: dict[str, _ResearchEntry] = {}
         with self._lock:
@@ -483,6 +504,14 @@ class MarketFeatureService:
                 previous[code] = entry
                 if not force and entry.expires_at > now:
                     result[code] = entry.observation
+            for code in codes:
+                if code in result:
+                    continue
+                cached = self._load_research_cache(code, include_structured, wall_now)
+                if cached is not None:
+                    self._research[(code, include_structured)] = cached
+                    result[code] = cached.observation
+                    previous[code] = cached
         missing = [code for code in codes if force or code not in result]
         if not missing:
             return result
@@ -533,6 +562,7 @@ class MarketFeatureService:
                             self._research_last_error = observation.source_errors[-1][:240]
                             ttl = min(60.0, ttl)
                 result[code] = observation
+                self._write_research_cache(code, include_structured, observation, ttl, wall_now)
                 with self._lock:
                     self._research[(code, include_structured)] = _ResearchEntry(
                         observation,
@@ -543,6 +573,7 @@ class MarketFeatureService:
                 future.cancel()
                 observation = _degraded_research_observation(previous.get(code), "research_batch_deadline")
                 result[code] = observation
+                self._write_research_cache(code, include_structured, observation, ttl, wall_now)
                 with self._lock:
                     self._research_error_count += 1
                     self._research_last_error = "research_batch_deadline"
@@ -551,6 +582,75 @@ class MarketFeatureService:
                         self._monotonic() + min(60.0, self._research_ttl_seconds),
                     )
         return result
+
+    def _load_research_cache(
+        self,
+        code: str,
+        include_structured: bool,
+        wall_now: datetime,
+    ) -> _ResearchEntry | None:
+        if self._research_cache_dir is None:
+            return None
+        path = self._research_cache_path(code, include_structured)
+        try:
+            raw = atomic_read_json(path)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if not isinstance(raw, Mapping):
+            return None
+        observation_raw = raw.get("observation")
+        if not isinstance(observation_raw, Mapping):
+            return None
+        expires_at_raw = raw.get("expires_at")
+        if not isinstance(expires_at_raw, str):
+            return None
+        try:
+            expires_at = datetime.fromisoformat(expires_at_raw)
+        except ValueError:
+            return None
+        if expires_at.tzinfo is None:
+            return None
+        remaining_seconds = (expires_at - wall_now).total_seconds()
+        if remaining_seconds <= 0:
+            return None
+        try:
+            observation = _deserialize_research_observation(observation_raw)
+        except (ValueError, TypeError):
+            return None
+        return _ResearchEntry(observation, self._monotonic() + remaining_seconds)
+
+    def _write_research_cache(
+        self,
+        code: str,
+        include_structured: bool,
+        observation: ResearchObservation,
+        ttl: float,
+        wall_now: datetime,
+    ) -> None:
+        if self._research_cache_dir is None:
+            return
+        target = self._research_cache_path(code, include_structured)
+        expires_at = wall_now + timedelta(seconds=ttl)
+        try:
+            writer = self._json_writer.write if self._json_writer is not None else atomic_write_json
+            writer(
+                target,
+                {
+                    "code": code,
+                    "include_structured": include_structured,
+                    "expires_at": expires_at.isoformat(),
+                    "observation": _serialize_research_observation(observation),
+                },
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            with self._lock:
+                self._research_error_count += 1
+                self._research_last_error = f"research_cache_write_failed:{type(exc).__name__}"
+
+    def _research_cache_path(self, code: str, include_structured: bool) -> Path:
+        assert self._research_cache_dir is not None
+        scope = "structured" if include_structured else "news"
+        return self._research_cache_dir / "observations" / scope / f"{code}.json"
 
     def _fetch_research_observation(
         self,
@@ -699,6 +799,7 @@ class MarketFeatureService:
         codes: Sequence[str],
         *,
         force: bool = False,
+        deadline: datetime | None = None,
     ) -> Mapping[str, tuple[DailyBar, ...]]:
         result = {} if force else self._cached_histories(codes)
         with self._lock:
@@ -711,6 +812,7 @@ class MarketFeatureService:
             worker_count=min(self._history_workers, len(missing)),
             thread_name_prefix="candidate-history",
             queue_capacity=len(missing),
+            wait_on_exit=deadline is None,
         ) as pool:
             futures = {}
             for code in missing:
@@ -718,7 +820,18 @@ class MarketFeatureService:
                 if future is None:
                     raise RuntimeError("data worker queue rejected history task")
                 futures[future] = code
-            for future in as_completed(futures):
+            if deadline is None:
+                completed = as_completed(futures)
+            else:
+                timeout = max(0.0, (deadline - self._wall_clock()).total_seconds())
+                completed_set, pending = wait(futures, timeout=timeout)
+                if pending:
+                    for future in pending:
+                        future.cancel()
+                    raise MarketDataDeadlineExceeded("history preload exceeded its batch deadline")
+                completed = iter(completed_set)
+            pending_entries: dict[str, _HistoryEntry] = {}
+            for future in completed:
                 code = futures[future]
                 old_entry = previous.get(code)
                 used_fallback = False
@@ -737,19 +850,17 @@ class MarketFeatureService:
                     bars = old_entry.bars
                     used_fallback = True
                 result[code] = bars
-                if bars:
-                    with self._lock:
-                        self._history[code] = _HistoryEntry(
-                            bars=bars,
-                            expires_at=self._monotonic()
-                            + (min(60.0, self._history_ttl_seconds) if used_fallback else self._history_ttl_seconds),
-                        )
-                else:
-                    with self._lock:
-                        self._history[code] = _HistoryEntry(
-                            bars=(),
-                            expires_at=self._monotonic() + min(60.0, self._history_ttl_seconds),
-                        )
+                pending_entries[code] = _HistoryEntry(
+                    bars=bars,
+                    expires_at=self._monotonic()
+                    + (
+                        min(60.0, self._history_ttl_seconds) if used_fallback or not bars else self._history_ttl_seconds
+                    ),
+                )
+            self._ensure_before_deadline(deadline)
+            with self._lock:
+                self._ensure_before_deadline(deadline)
+                self._history.update(pending_entries)
         return result
 
     def _cached_histories(self, codes: Iterable[str]) -> dict[str, tuple[DailyBar, ...]]:
@@ -902,6 +1013,144 @@ def _history_priority(quote: MarketQuote) -> tuple[float, float, str]:
         -(abs(quote.pct_change) if quote.pct_change is not None and math.isfinite(quote.pct_change) else -1.0),
         quote.code,
     )
+
+
+def _serialize_research_observation(observation: ResearchObservation) -> dict[str, object]:
+    return {
+        "financial": _serialize_financial_report(observation.financial) if observation.financial is not None else None,
+        "announcements": tuple(_serialize_research_announcement(item) for item in observation.announcements),
+        "announcements_available": observation.announcements_available,
+        "pledge_ratio_pct": observation.pledge_ratio_pct,
+        "unlock_ratio_pct": observation.unlock_ratio_pct,
+        "evidence": tuple(_serialize_evidence(item) for item in observation.evidence),
+        "source_errors": list(observation.source_errors),
+    }
+
+
+def _deserialize_research_observation(raw: Mapping[str, object]) -> ResearchObservation:
+    financial_raw = raw.get("financial")
+    announcements_raw = raw.get("announcements")
+    evidence_raw = raw.get("evidence")
+    source_errors = raw.get("source_errors")
+    if not isinstance(source_errors, list):
+        raise ValueError("source_errors must be a list")
+    return ResearchObservation(
+        financial=_deserialize_financial_report(financial_raw) if isinstance(financial_raw, dict) else None,
+        announcements=tuple(
+            _deserialize_research_announcement(item) for item in announcements_raw if isinstance(item, dict)
+        )
+        if isinstance(announcements_raw, list)
+        else (),
+        announcements_available=bool(raw.get("announcements_available", False)),
+        pledge_ratio_pct=_optional_float(raw.get("pledge_ratio_pct")),
+        unlock_ratio_pct=_optional_float(raw.get("unlock_ratio_pct")),
+        evidence=tuple(_deserialize_evidence(item) for item in evidence_raw if isinstance(item, dict))
+        if isinstance(evidence_raw, list)
+        else (),
+        source_errors=tuple(str(value) for value in source_errors),
+    )
+
+
+def _serialize_financial_report(report: FinancialReport) -> dict[str, object]:
+    return {
+        "report_date": report.report_date.isoformat(),
+        "published_at": report.published_at.isoformat(),
+        "basic_eps": report.basic_eps,
+        "book_value_per_share": report.book_value_per_share,
+        "revenue_growth_pct": report.revenue_growth_pct,
+        "net_profit_growth_pct": report.net_profit_growth_pct,
+        "core_profit_growth_pct": report.core_profit_growth_pct,
+        "roe_pct": report.roe_pct,
+        "parent_net_profit": report.parent_net_profit,
+        "core_net_profit": report.core_net_profit,
+    }
+
+
+def _deserialize_financial_report(raw: Mapping[str, object]) -> FinancialReport:
+    report_date = _as_aware_datetime(raw, "report_date").date()
+    published_at = _as_aware_datetime(raw, "published_at")
+    return FinancialReport(
+        report_date=report_date,
+        published_at=published_at,
+        basic_eps=_optional_float(raw.get("basic_eps")),
+        book_value_per_share=_optional_float(raw.get("book_value_per_share")),
+        revenue_growth_pct=_optional_float(raw.get("revenue_growth_pct")),
+        net_profit_growth_pct=_optional_float(raw.get("net_profit_growth_pct")),
+        core_profit_growth_pct=_optional_float(raw.get("core_profit_growth_pct")),
+        roe_pct=_optional_float(raw.get("roe_pct")),
+        parent_net_profit=_optional_float(raw.get("parent_net_profit")),
+        core_net_profit=_optional_float(raw.get("core_net_profit")),
+    )
+
+
+def _serialize_research_announcement(item: ResearchAnnouncement) -> dict[str, object]:
+    return {
+        "title": item.title,
+        "published_at": item.published_at.isoformat(),
+    }
+
+
+def _deserialize_research_announcement(raw: Mapping[str, object]) -> ResearchAnnouncement:
+    return ResearchAnnouncement(
+        title=str(raw.get("title") or ""),
+        published_at=_as_aware_datetime(raw, "published_at"),
+    )
+
+
+def _serialize_evidence(item: Evidence) -> dict[str, object]:
+    return {
+        "evidence_id": item.evidence_id,
+        "evidence_type": item.evidence_type,
+        "title": item.title,
+        "source": item.source,
+        "published_at": item.published_at.isoformat(),
+        "received_at": item.received_at.isoformat() if item.received_at is not None else None,
+        "data_version": item.data_version,
+    }
+
+
+def _deserialize_evidence(raw: Mapping[str, object]) -> Evidence:
+    return Evidence(
+        evidence_id=str(raw.get("evidence_id") or ""),
+        evidence_type=str(raw.get("evidence_type") or ""),
+        title=str(raw.get("title") or ""),
+        source=str(raw.get("source") or ""),
+        published_at=_as_aware_datetime(raw, "published_at"),
+        received_at=as_datetime(raw.get("received_at")),
+        data_version=str(raw.get("data_version") or ""),
+    )
+
+
+def _as_aware_datetime(raw: Mapping[str, object], key: str) -> datetime:
+    value = raw.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} must be a timezone-aware ISO-8601 datetime")
+    value_datetime = datetime.fromisoformat(value)
+    if value_datetime.tzinfo is None or value_datetime.utcoffset() is None:
+        raise ValueError(f"{key} must be a timezone-aware datetime")
+    return value_datetime
+
+
+def as_datetime(raw: object) -> datetime | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("received_at must be ISO-8601 string or null")
+    value = datetime.fromisoformat(raw)
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("received_at must be timezone-aware")
+    return value
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 __all__ = ["MarketFeatureService"]

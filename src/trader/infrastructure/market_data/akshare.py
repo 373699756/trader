@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from typing import Protocol, cast
 from zoneinfo import ZoneInfo
 
@@ -23,6 +25,9 @@ from trader.domain.research import (
     announcement_level,
     reduction_level,
 )
+from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter, atomic_write_json
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class HttpResponse(Protocol):
@@ -46,10 +51,14 @@ class AkshareResearchClient:
         timeout_seconds: float = 8.0,
         get: GetFunction | None = None,
         long_research_policy: LongResearchPolicy | None = None,
+        evidence_cache_dir: Path | None = None,
+        json_writer: RuntimeJsonWriter | None = None,
     ) -> None:
         self._timeout_seconds = max(0.1, timeout_seconds)
         self._get = get if get is not None else cast(GetFunction, requests.get)
         self._long_research_policy = long_research_policy
+        self._evidence_cache_dir = evidence_cache_dir
+        self._json_writer = json_writer
 
     def fetch_news(self, code: str, *, observed_at: datetime, limit: int = 5) -> tuple[Evidence, ...]:
         _validate_code(code)
@@ -84,6 +93,7 @@ class AkshareResearchClient:
             },
             headers={"Referer": f"https://so.eastmoney.com/news/s?keyword={code}"},
         )
+        self._cache_payload("news", code, point_in_time, response.text)
         rows = _news_rows(response.text, callback)
         response_version = _content_version("eastmoney-news", response.text)
         evidence: list[Evidence] = []
@@ -184,6 +194,7 @@ class AkshareResearchClient:
         policy: LongResearchPolicy,
     ) -> tuple[FinancialReport | None, tuple[Evidence, ...]]:
         payload = self._financial_payload(code)
+        self._cache_payload("financial", code, observed_at, payload)
         candidates: list[FinancialReport] = []
         for row in _result_rows(payload):
             report_date = _parse_date(row.get("REPORT_DATE"))
@@ -271,6 +282,7 @@ class AkshareResearchClient:
                 "end_time": observed_at.date().isoformat(),
             },
         )
+        self._cache_payload("announcement", code, observed_at, payload)
         rows = _announcement_rows(payload)
         cutoff = observed_at - timedelta(days=policy.announcement_lookback_days)
         version = _payload_version("eastmoney-announcement", payload)
@@ -364,6 +376,7 @@ class AkshareResearchClient:
                 "filter": f'(SECURITY_CODE="{code}")',
             },
         )
+        self._cache_payload("pledge", code, observed_at, payload)
         rows = _result_rows(payload)
         eligible: list[tuple[datetime, float]] = []
         invalid_eligible_row = False
@@ -420,6 +433,7 @@ class AkshareResearchClient:
                 "filter": f'(SECURITY_CODE="{code}")',
             },
         )
+        self._cache_payload("unlock", code, observed_at, payload)
         end_date = observed_at.date() + timedelta(days=policy.unlock_forward_days)
         total_ratio = 0.0
         invalid_window_row = False
@@ -473,6 +487,24 @@ class AkshareResearchClient:
         )
         response.raise_for_status()
         return response
+
+    def _cache_payload(self, source: str, code: str, observed_at: datetime, payload: object) -> None:
+        if self._evidence_cache_dir is None:
+            return
+        target = self._evidence_cache_dir / "raw" / source / f"{code}.json"
+        try:
+            writer = self._json_writer.write if self._json_writer is not None else atomic_write_json
+            writer(
+                target,
+                {
+                    "source": source,
+                    "code": code,
+                    "observed_at": observed_at.isoformat(),
+                    "payload": payload,
+                },
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            _LOGGER.warning("research evidence cache write failed", extra={"source": source, "code": code})
 
 
 def _point_in_time(value: datetime) -> datetime:

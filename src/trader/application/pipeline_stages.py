@@ -6,14 +6,15 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from trader.application.cadence import PipelineTask
 from trader.application.candidate_features import fetch_strategy_features, read_strategy_features
-from trader.application.events import PipelineEvent
-from trader.application.ports import MarketDataUnavailable
+from trader.application.events import EventDeadlineExpired, PipelineEvent
+from trader.application.ports import MarketDataDeadlineExceeded, MarketDataUnavailable
 from trader.application.recommendations import PreparedSnapshot
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
 from trader.application.workers import BoundedExecutor
@@ -50,6 +51,157 @@ def process_schedule_on_workers(
     return tuple(snapshots)
 
 
+_TaskHandler = Callable[
+    ["RecommendationPipeline", datetime, MarketPhase, PipelineEvent], tuple[RecommendationSnapshot, ...]
+]
+_TASK_DISPATCH: dict[PipelineTask, _TaskHandler] = {}
+
+
+def _register_task(*tasks: PipelineTask) -> Callable[[_TaskHandler], _TaskHandler]:
+    def decorator(handler: _TaskHandler) -> _TaskHandler:
+        for task in tasks:
+            _TASK_DISPATCH[task] = handler
+        return handler
+
+    return decorator
+
+
+@_register_task(PipelineTask.FULL_MARKET)
+def _handle_full_market(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    _refresh_candidates_on_workers(pipeline, now, phase, deadline=event.deadline)
+    return ()
+
+
+@_register_task(PipelineTask.CANDIDATE_QUOTES)
+def _handle_candidate_quotes(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    _refresh_candidate_quotes_on_workers(pipeline, now, phase, deadline=event.deadline)
+    return ()
+
+
+@_register_task(PipelineTask.TOPK_QUOTES)
+def _handle_topk_quotes(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    pipeline._refresh_live_overlays(now, phase, deadline=event.deadline)
+    return ()
+
+
+@_register_task(PipelineTask.SCORE)
+def _handle_score(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    return _score_strategies_on_workers(
+        pipeline,
+        now,
+        phase,
+        use_cached_data=True,
+        completion_deadline=event.deadline,
+    )
+
+
+@_register_task(PipelineTask.INDUSTRY_HEAT)
+def _handle_industry_heat(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    market_features = tuple(_run_market_data_task(pipeline, pipeline._market_data.refresh_industry_heat, now))
+    if market_features:
+        pipeline._market_features = market_features
+    return ()
+
+
+@_register_task(PipelineTask.MARKET_NEWS)
+def _handle_market_news(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    _refresh_market_news_on_workers(pipeline, now, event.deadline)
+    return ()
+
+
+@_register_task(PipelineTask.STOCK_RISK)
+def _handle_stock_risk(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    _refresh_stock_risk_on_workers(pipeline, now, event.deadline)
+    return ()
+
+
+@_register_task(PipelineTask.REFERENCE_DATA)
+def _handle_reference_data(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    _refresh_reference_data_on_workers(pipeline, now, phase)
+    return ()
+
+
+@_register_task(PipelineTask.DEEPSEEK_CUTOFF)
+def _handle_deepseek_cutoff(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    pipeline._state.increment("deepseek_cutoff_events")
+    return ()
+
+
+@_register_task(PipelineTask.FINAL_CANDIDATE_QUOTES)
+def _handle_final_candidate_quotes(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    _refresh_candidates_on_workers(pipeline, now, phase, force=True, deadline=event.deadline)
+    _refresh_candidate_quotes_on_workers(pipeline, now, phase, deadline=event.deadline)
+    return _score_strategies_on_workers(
+        pipeline,
+        now,
+        phase,
+        use_cached_data=True,
+        completion_deadline=event.deadline,
+    )
+
+
+@_register_task(PipelineTask.FREEZE)
+def _handle_freeze(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    freeze_raw = event.payload.get("freeze_strategies")
+    freezes = tuple(str(value) for value in freeze_raw) if isinstance(freeze_raw, (list, tuple)) else ()
+    return pipeline._freeze_available_snapshots(now, freezes)
+
+
 def process_event_on_workers(
     pipeline: RecommendationPipeline,
     event: PipelineEvent,
@@ -64,54 +216,9 @@ def process_event_on_workers(
 
     now = event.created_at
     phase = MarketPhase(event.phase)
-    if task is PipelineTask.FULL_MARKET:
-        _refresh_candidates_on_workers(pipeline, now, phase, deadline=event.deadline)
-        return ()
-    if task is PipelineTask.CANDIDATE_QUOTES:
-        _refresh_candidate_quotes_on_workers(pipeline, now, phase, deadline=event.deadline)
-        return ()
-    if task is PipelineTask.TOPK_QUOTES:
-        pipeline._refresh_live_overlays(now, phase, deadline=event.deadline)
-        return ()
-    if task is PipelineTask.SCORE:
-        return _score_strategies_on_workers(
-            pipeline,
-            now,
-            phase,
-            use_cached_data=True,
-            completion_deadline=event.deadline,
-        )
-    if task is PipelineTask.INDUSTRY_HEAT:
-        market_features = tuple(_run_market_data_task(pipeline, pipeline._market_data.refresh_industry_heat, now))
-        if market_features:
-            pipeline._market_features = market_features
-        return ()
-    if task is PipelineTask.MARKET_NEWS:
-        _refresh_market_news_on_workers(pipeline, now, event.deadline)
-        return ()
-    if task is PipelineTask.STOCK_RISK:
-        _refresh_stock_risk_on_workers(pipeline, now, event.deadline)
-        return ()
-    if task is PipelineTask.REFERENCE_DATA:
-        _refresh_reference_data_on_workers(pipeline, now, phase)
-        return ()
-    if task is PipelineTask.DEEPSEEK_CUTOFF:
-        pipeline._state.increment("deepseek_cutoff_events")
-        return ()
-    if task is PipelineTask.FINAL_CANDIDATE_QUOTES:
-        _refresh_candidates_on_workers(pipeline, now, phase, force=True, deadline=event.deadline)
-        _refresh_candidate_quotes_on_workers(pipeline, now, phase, deadline=event.deadline)
-        return _score_strategies_on_workers(
-            pipeline,
-            now,
-            phase,
-            use_cached_data=True,
-            completion_deadline=event.deadline,
-        )
-    if task is PipelineTask.FREEZE:
-        freeze_raw = event.payload.get("freeze_strategies")
-        freezes = tuple(str(value) for value in freeze_raw) if isinstance(freeze_raw, (list, tuple)) else ()
-        return pipeline._freeze_available_snapshots(now, freezes)
+    handler = _TASK_DISPATCH.get(task)
+    if handler is not None:
+        return handler(pipeline, now, phase, event)
     pipeline._refresh_live_overlays(now, MarketPhase.AFTER_CLOSE, deadline=event.deadline)
     return ()
 
@@ -233,7 +340,7 @@ def _score_strategies_on_workers(
     for prepared in prepared_snapshots:
         if completion_deadline is not None and pipeline._now() >= completion_deadline:
             pipeline._state.increment("score_results_discarded_late")
-            raise RuntimeError(f"score result completed after deadline: {phase.value}")
+            raise EventDeadlineExpired(f"event deadline expired during execution: {PipelineTask.SCORE.value}")
         reviews = review_results.get(prepared.strategy, {})
         snapshot = replace(
             pipeline._engine.finalize_snapshot(prepared, reviews),
@@ -486,7 +593,17 @@ def _refresh_candidates_on_workers(
         deadline=deadline,
     )
     try:
-        market_features = tuple(market_future.result())
+        market_result = _event_result(
+            pipeline,
+            market_future,
+            deadline=deadline,
+            event_type=PipelineTask.FULL_MARKET.value,
+        )
+        market_features = tuple(market_result)
+    except MarketDataDeadlineExceeded as exc:
+        raise EventDeadlineExpired(
+            f"event deadline expired during execution: {PipelineTask.FULL_MARKET.value}"
+        ) from exc
     except MarketDataUnavailable as exc:
         reason = str(exc)[:500]
         _LOGGER.warning("candidate refresh degraded during %s: %s", phase.value, reason)
@@ -502,8 +619,36 @@ def _refresh_candidates_on_workers(
         max_age_seconds=maximum_age_seconds(phase),
         limit=pipeline._candidate_pool_size,
     )
-    candidates, reasons, details = selection.result()
+    candidates, reasons, details = _event_result(
+        pipeline,
+        selection,
+        deadline=deadline,
+        event_type=PipelineTask.FULL_MARKET.value,
+    )
     store_candidate_selection(pipeline, market_features, candidates, reasons, details)
+
+
+def _event_result(
+    pipeline: RecommendationPipeline,
+    future: Future[_T],
+    *,
+    deadline: datetime | None,
+    event_type: str,
+) -> _T:
+    if deadline is None:
+        return future.result()
+    remaining = (deadline - pipeline._now()).total_seconds()
+    if remaining <= 0.0:
+        future.cancel()
+        raise EventDeadlineExpired(f"event deadline expired during execution: {event_type}")
+    try:
+        result = future.result(timeout=remaining)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise EventDeadlineExpired(f"event deadline expired during execution: {event_type}") from exc
+    if pipeline._now() >= deadline:
+        raise EventDeadlineExpired(f"event deadline expired during execution: {event_type}")
+    return result
 
 
 __all__ = [

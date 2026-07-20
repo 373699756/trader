@@ -332,6 +332,17 @@ class SnapshotRepository:
         if not isinstance(sources, Mapping):
             return
         active_source = str(health.get("active_source") or "")
+        route = health.get("route")
+        if isinstance(route, Mapping):
+            route_json = _safe_json_text(route)
+            route_status = str(route.get("status") or "idle")
+            route_fallback_reason = str(route.get("fallback_reason") or "")
+            route_degraded = int(bool(route.get("degraded")))
+        else:
+            route_json = "{}"
+            route_status = "idle"
+            route_fallback_reason = ""
+            route_degraded = 0
         market_age_summary = health.get("market_quote_age")
         market_age = (
             _optional_number(market_age_summary.get("maximum_seconds"))
@@ -352,8 +363,9 @@ class SnapshotRepository:
                     """
                     INSERT INTO data_source_health(
                         source, planned_count, success_count, failure_count, circuit_open,
-                        p50_latency_ms, p95_latency_ms, data_age_seconds, last_error, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        p50_latency_ms, p95_latency_ms, data_age_seconds, last_error, route_json,
+                        route_status, route_fallback_reason, route_degraded, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(source) DO UPDATE SET
                         planned_count = excluded.planned_count,
                         success_count = excluded.success_count,
@@ -363,6 +375,10 @@ class SnapshotRepository:
                         p95_latency_ms = excluded.p95_latency_ms,
                         data_age_seconds = excluded.data_age_seconds,
                         last_error = excluded.last_error,
+                        route_json = excluded.route_json,
+                        route_status = excluded.route_status,
+                        route_fallback_reason = excluded.route_fallback_reason,
+                        route_degraded = excluded.route_degraded,
                         updated_at = excluded.updated_at
                     """,
                     (
@@ -379,6 +395,10 @@ class SnapshotRepository:
                         if str(source) == active_source
                         else None,
                         str(raw.get("last_error") or "")[:240],
+                        route_json,
+                        route_status,
+                        route_fallback_reason,
+                        route_degraded,
                         updated_at.isoformat(),
                     ),
                 )
@@ -851,6 +871,13 @@ def _safe_json_object(value: str) -> Mapping[str, object]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _safe_json_text(value: Mapping[str, object]) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return "{}"
 
 
 def _event_integer(event: Mapping[str, object], key: str, *, default: int | None = None) -> int:

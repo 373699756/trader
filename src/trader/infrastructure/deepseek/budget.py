@@ -16,6 +16,8 @@ _CALL_TERMINALS = frozenset({"success", "failed", "abandoned"})
 _CANDIDATE_TERMINALS = frozenset({"applied", "abstain", "rejected", "late"})
 _EMERGENCY_REASONS = frozenset({"new_high_risk", "freeze_boundary_change"})
 
+SCHEMA_VERSION = 1
+
 
 @dataclass(frozen=True)
 class BudgetReservation:
@@ -59,6 +61,11 @@ class DeepSeekBudgetStore:
         with self._connect() as connection:
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS schema_meta(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS deepseek_call_reservations(
                     reservation_id TEXT PRIMARY KEY,
                     trade_date TEXT NOT NULL,
@@ -137,7 +144,15 @@ class DeepSeekBudgetStore:
                 "emergency_reason",
                 "TEXT NOT NULL DEFAULT ''",
             )
+            self._ensure_schema_version(connection)
         self._initialized = True
+
+    def _ensure_schema_version(self, connection: sqlite3.Connection) -> None:
+        if _current_schema_version(connection) < SCHEMA_VERSION:
+            connection.execute(
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
 
     def begin_batch(
         self,
@@ -623,6 +638,16 @@ def _ensure_column(connection: sqlite3.Connection, table: str, column: str, decl
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
+def _current_schema_version(connection: sqlite3.Connection) -> int:
+    row = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+    if row is None:
+        return 0
+    try:
+        return int(str(row[0]))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _sync_call_audit(connection: sqlite3.Connection, reservation_id: str) -> None:
     connection.execute(
         """
@@ -671,4 +696,4 @@ def _require_aware(value: datetime, name: str) -> None:
         raise ValueError(f"{name} must be timezone-aware")
 
 
-__all__ = ["BudgetReservation", "DeepSeekBudgetStore"]
+__all__ = ["SCHEMA_VERSION", "BudgetReservation", "DeepSeekBudgetStore"]

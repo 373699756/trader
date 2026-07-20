@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from trader.domain.factors import clamp
 from trader.domain.models import FeatureSnapshot
 from trader.domain.strategies.composition import LocalScoreResult, compose, liquidity_score, normalized
@@ -15,7 +17,8 @@ COMPONENT_WEIGHTS = {
 }
 
 
-def score_d25(snapshot: FeatureSnapshot) -> LocalScoreResult:
+def score_d25(snapshot: FeatureSnapshot, component_weights: Mapping[str, float] | None = None) -> LocalScoreResult:
+    component_weights = COMPONENT_WEIGHTS if component_weights is None else component_weights
     momentum = (
         0.30 * normalized(snapshot, "relative_strength_5d")
         + 0.30 * normalized(snapshot, "relative_strength_10d")
@@ -46,7 +49,7 @@ def score_d25(snapshot: FeatureSnapshot) -> LocalScoreResult:
             "execution": execution,
             "not_overheated": not_overheated,
         },
-        COMPONENT_WEIGHTS,
+        component_weights,
     )
     adjusted = clamp(
         composed.base_score * snapshot.value("d25_overheat_factor", 1.0) * snapshot.value("market_regime_factor", 1.0)

@@ -25,6 +25,10 @@ class EventPriority(IntEnum):
     LONG = 60
 
 
+class EventDeadlineExpired(RuntimeError):
+    """A non-freeze event exhausted its execution deadline."""
+
+
 @dataclass(frozen=True)
 class PipelineEvent:
     event_id: str

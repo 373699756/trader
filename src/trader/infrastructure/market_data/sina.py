@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import requests
 
 from trader.domain.models import MarketQuote
+from trader.infrastructure.market_data.normalize import MarketQuoteInput, build_market_quote, normalize_quotes, to_float
 
 SessionFactory = Callable[[], requests.Session]
 COUNT_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount"
@@ -54,7 +55,7 @@ class SinaClient:
             if not isinstance(payload, list):
                 raise RuntimeError(f"sina page {page} was not a list")
             rows.extend(item for item in payload if isinstance(item, dict))
-        quotes = tuple(quote for row in rows if (quote := _quote_from_row(row, received_at)) is not None)
+        quotes = normalize_quotes(rows, received_at, normalizer=_quote_from_row)
         if len({quote.code for quote in quotes}) < min(1000, total // 2):
             raise RuntimeError(f"sina quote coverage is incomplete: {len(quotes)}/{total}")
         return quotes
@@ -94,33 +95,36 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
         return None
     code = code_match.group(1)
     name = str(row.get("name") or "").strip()
-    price = _number(row.get("trade"))
-    high = _number(row.get("high"))
-    low = _number(row.get("low"))
-    pct_change = _number(row.get("changepercent"))
-    return MarketQuote(
-        code=code,
-        name=name,
-        price=price,
-        previous_close=_number(row.get("settlement")),
-        open_price=_number(row.get("open")),
-        high=high,
-        low=low,
-        pct_change=pct_change,
-        change_5m=None,
-        speed=None,
-        volume_ratio=None,
-        turnover_rate=_number(row.get("turnoverratio")),
-        amount=_number(row.get("amount")),
-        amplitude=_amplitude(high, low, _number(row.get("settlement"))),
-        market_cap=_scaled_market_cap(row.get("mktcap")),
-        industry="",
-        source="sina",
-        source_time=received_at,
-        received_time=received_at,
-        data_version=f"sina:{int(received_at.timestamp())}",
-        is_st="ST" in name.upper() or "退" in name,
-        is_suspended=price is None or price <= 0,
+    high = to_float(row.get("high"))
+    low = to_float(row.get("low"))
+    pct_change = to_float(row.get("changepercent"))
+    price = to_float(row.get("trade"))
+    settlement = to_float(row.get("settlement"))
+    return build_market_quote(
+        MarketQuoteInput(
+            code=code,
+            name=name,
+            price=price,
+            previous_close=settlement,
+            open_price=to_float(row.get("open")),
+            high=high,
+            low=low,
+            pct_change=pct_change,
+            change_5m=None,
+            speed=None,
+            volume_ratio=None,
+            turnover_rate=to_float(row.get("turnoverratio")),
+            amount=to_float(row.get("amount")),
+            amplitude=_amplitude(high, low, settlement),
+            market_cap=_scaled_market_cap(row.get("mktcap")),
+            industry="",
+            source="sina",
+            source_time=received_at,
+            received_time=received_at,
+            data_version=f"sina:{int(received_at.timestamp())}",
+            is_st="ST" in name.upper() or "退" in name,
+            is_suspended=price is None or price <= 0,
+        )
     )
 
 
@@ -131,16 +135,8 @@ def _amplitude(high: float | None, low: float | None, previous_close: float | No
 
 
 def _scaled_market_cap(raw: object) -> float | None:
-    value = _number(raw)
+    value = to_float(raw)
     return value * 10_000 if value is not None else None
-
-
-def _number(raw: object) -> float | None:
-    try:
-        value = float(str(raw).strip())
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
 
 
 __all__ = ["SinaClient"]

@@ -6,7 +6,9 @@ from datetime import datetime
 import pytest
 
 from trader.application.recommendations import RecommendationEngine
+from trader.domain.factors import round_score
 from trader.domain.models import FeatureSnapshot, FilterAudit, Strategy
+from trader.domain.strategies import score_strategy
 
 
 def test_targeted_quotes_are_hard_filtered_again_before_review_and_scoring(
@@ -204,6 +206,70 @@ def test_prepared_snapshot_owns_immutable_cross_thread_mappings(
         prepared.filter_reasons["changed"] = 1  # type: ignore[index]
     with pytest.raises(TypeError):
         prepared.target_prices["600001"] = 20.0  # type: ignore[index]
+
+
+def test_build_snapshot_uses_local_strategy_weights_override(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    higher_sentiment = application_feature_factory("600001", now)
+    lower_sentiment = replace(
+        higher_sentiment,
+        quote=replace(higher_sentiment.quote, code="600002"),
+        values={**higher_sentiment.values, "news_sentiment": 84.0},
+    )
+    higher_sentiment = replace(
+        higher_sentiment,
+        values={**higher_sentiment.values, "news_sentiment": 98.0},
+    )
+
+    custom_today_weights = {
+        "momentum": 0.0,
+        "liquidity": 0.0,
+        "industry": 0.0,
+        "sentiment": 1.0,
+        "protection": 0.0,
+    }
+    policy = replace(
+        recommendation_policy,
+        local_strategy_weights={
+            **recommendation_policy.local_strategy_weights,
+            Strategy.TODAY: custom_today_weights,
+        },
+    )
+    expected_lower = score_strategy(
+        Strategy.TODAY,
+        lower_sentiment,
+        {Strategy.TODAY: custom_today_weights},
+    )
+    expected_higher = score_strategy(
+        Strategy.TODAY,
+        higher_sentiment,
+        {Strategy.TODAY: custom_today_weights},
+    )
+
+    snapshot = RecommendationEngine(policy).build_snapshot(
+        Strategy.TODAY,
+        (lower_sentiment, higher_sentiment),
+        now=now,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="local-weights-v2",
+        review_port=None,
+        review_deadline=datetime.fromisoformat("2026-07-16T11:20:00+08:00"),
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+        filter_details=(),
+    )
+
+    assert snapshot.replay_input is not None
+    assert snapshot.replay_input.policy.local_strategy_weights["today"] == custom_today_weights
+    assert len(snapshot.recommendations) == 2
+    assert [item.features.quote.code for item in snapshot.recommendations] == ["600001", "600002"]
+    assert snapshot.recommendations[0].score.local_score == pytest.approx(round_score(expected_higher.base_score))
+    assert snapshot.recommendations[1].score.local_score == pytest.approx(round_score(expected_lower.base_score))
 
 
 class RecordingReviewer:

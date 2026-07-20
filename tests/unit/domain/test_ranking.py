@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
 from trader.domain.models import (
+    DeepSeekReview,
     FusionMode,
     Recommendation,
     RecommendationAction,
+    ReviewOutcome,
     ScoreBreakdown,
     Strategy,
 )
 from trader.domain.ranking import action_for, candidate_score, select_top_k
+from trader.domain.risk import Rating
 
 CANDIDATE_WEIGHTS = {
     "liquidity": 0.35,
@@ -41,6 +45,48 @@ def test_top_k_enforces_industry_cap_and_stable_tie_break(feature_factory) -> No
     assert select_top_k(rows, top_k=0, maximum_per_industry=2) == ()
     with pytest.raises(ValueError, match="between 0 and 18"):
         select_top_k(rows, top_k=19, maximum_per_industry=2)
+
+
+def test_top_k_ignores_review_audit_fields_when_scores_tie(feature_factory) -> None:
+    rows = [
+        _recommendation(
+            feature_factory(code="600001", industry="A"),
+            final_score=90.0,
+            review=_review(
+                code="600001",
+                challenger_status="failed",
+                review_stage="secondary",
+                rating=Rating.BULLISH.value,
+                confidence=0.30,
+            ),
+        ),
+        _recommendation(
+            feature_factory(code="600002", industry="A"),
+            final_score=90.0,
+            review=_review(
+                code="600002",
+                challenger_status="passed",
+                review_stage="secondary",
+                rating=Rating.BULLISH.value,
+                confidence=0.10,
+            ),
+        ),
+        _recommendation(
+            feature_factory(code="600003", industry="A"),
+            final_score=90.0,
+            review=_review(
+                code="600003",
+                challenger_status="not_run",
+                review_stage="primary",
+                rating=Rating.BULLISH.value,
+                confidence=0.50,
+            ),
+        ),
+    ]
+
+    selected = select_top_k(rows, top_k=2, maximum_per_industry=3)
+
+    assert [row.features.quote.code for row in selected] == ["600001", "600002"]
 
 
 def test_top_k_does_not_lower_minimum_score_to_fill(feature_factory) -> None:
@@ -117,7 +163,59 @@ def test_action_policy_observes_missing_core_features(feature_factory) -> None:
     assert reason == "insufficient_core_features"
 
 
-def _recommendation(features, final_score: float) -> Recommendation:
+def test_action_policy_does_not_apply_bearish_audit_rating(feature_factory) -> None:
+    recommendation = replace(_recommendation(feature_factory(), 90.0), strategy=Strategy.TODAY)
+    recommendation = replace(
+        recommendation,
+        review=DeepSeekReview(
+            code="600001",
+            outcome=ReviewOutcome.APPLIED,
+            dimensions={},
+            risk_facts=(),
+            completed_at=datetime(2026, 7, 16, 10, tzinfo=timezone.utc),
+            rating=Rating.BEARISH.value,
+        ),
+    )
+
+    action, reason = action_for(
+        recommendation,
+        {"today_main": 70.0},
+        phase="today_main",
+        is_stale=False,
+        observation_margin=5.0,
+    )
+
+    assert action is RecommendationAction.EXECUTABLE
+    assert reason == "score_threshold_met"
+
+
+def test_action_policy_does_not_apply_neutral_audit_rating(feature_factory) -> None:
+    recommendation = replace(_recommendation(feature_factory(), 90.0), strategy=Strategy.TODAY)
+    recommendation = replace(
+        recommendation,
+        review=DeepSeekReview(
+            code="600001",
+            outcome=ReviewOutcome.APPLIED,
+            dimensions={},
+            risk_facts=(),
+            completed_at=datetime(2026, 7, 16, 10, tzinfo=timezone.utc),
+            rating=Rating.NEUTRAL.value,
+        ),
+    )
+
+    action, reason = action_for(
+        recommendation,
+        {"today_main": 70.0},
+        phase="today_main",
+        is_stale=False,
+        observation_margin=5.0,
+    )
+
+    assert action is RecommendationAction.EXECUTABLE
+    assert reason == "score_threshold_met"
+
+
+def _recommendation(features, final_score: float, review: DeepSeekReview | None = None) -> Recommendation:
     score = ScoreBreakdown(
         components={"test": final_score},
         base_score=final_score,
@@ -136,8 +234,30 @@ def _recommendation(features, final_score: float) -> Recommendation:
         score=score,
         local_risk_facts=(),
         deepseek_risk_facts=(),
-        review=None,
+        review=review,
         action=RecommendationAction.OBSERVE,
         action_reason="fixture",
         veto=False,
+    )
+
+
+def _review(
+    code: str,
+    *,
+    challenger_status: str = "not_run",
+    review_stage: str = "primary",
+    rating: str = Rating.NEUTRAL.value,
+    confidence: float | None = None,
+) -> DeepSeekReview:
+    return DeepSeekReview(
+        code=code,
+        outcome=ReviewOutcome.APPLIED,
+        dimensions={},
+        risk_facts=(),
+        completed_at=datetime(2026, 7, 16, 10, tzinfo=timezone.utc),
+        challenger_status=challenger_status,
+        review_stage=review_stage,
+        rating=rating,
+        raw_confidence=confidence,
+        calibrated_confidence=confidence,
     )

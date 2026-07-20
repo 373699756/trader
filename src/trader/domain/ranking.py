@@ -7,12 +7,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
 from trader.domain.factors import band_score, clamp, weighted_score
-from trader.domain.models import (
-    FeatureSnapshot,
-    Recommendation,
-    RecommendationAction,
-    Strategy,
-)
+from trader.domain.models import FeatureSnapshot, Recommendation, RecommendationAction, Strategy
 
 CORE_FIELDS = (
     "amount_percentile_20d",
@@ -80,7 +75,7 @@ def action_for(
         return RecommendationAction.UNAVAILABLE, "outside_execution_window"
     if recommendation.score.final_score >= threshold:
         return RecommendationAction.EXECUTABLE, "score_threshold_met"
-    if recommendation.score.final_score >= threshold - observation_margin:
+    elif recommendation.score.final_score >= threshold - observation_margin:
         return RecommendationAction.OBSERVE, "near_score_threshold"
     return RecommendationAction.UNAVAILABLE, "below_score_threshold"
 

@@ -28,7 +28,7 @@ from trader.domain.models import (
 )
 from trader.domain.ranking import CORE_FIELDS, action_for, candidate_score, minimum_selection_score, select_top_k
 from trader.domain.risk import derive_local_risk_facts
-from trader.domain.strategies import score_strategy
+from trader.domain.strategies import build_shadow_report, score_strategy
 from trader.domain.tail import TAIL_SIGNAL_VALUE_FIELDS
 
 REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
@@ -192,6 +192,7 @@ class RecommendationEngine:
         for feature in features:
             filter_result = hard_filter(feature, now, max_age_seconds=max_age_seconds)
             if filter_result.allowed:
+                refreshed_filter_details.extend(filter_result.optional_flags)
                 eligible.append(feature)
                 continue
             refreshed_filter_reasons.update(reason.code for reason in filter_result.reasons)
@@ -255,6 +256,12 @@ class RecommendationEngine:
             if minimum_score is not None
             else ()
         )
+        shadow_scoring = build_shadow_report(
+            merged,
+            strategy,
+            tuple(item.features.quote.code for item in selected),
+            top_n=len(selected),
+        )
         snapshot_id = _snapshot_id(strategy, prepared.trade_date, phase, prepared.data_version, now)
         degraded_reasons: list[str] = []
         if fusion_mode is FusionMode.LOCAL_DEGRADED:
@@ -299,6 +306,7 @@ class RecommendationEngine:
                 "reviewed_count": sum(
                     review.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN} for review in reviews.values()
                 ),
+                "shadow_scoring": shadow_scoring,
                 **(
                     {
                         "tail_data_covered_count": tail_covered_count,
@@ -378,7 +386,7 @@ class RecommendationEngine:
         for local in local_candidates:
             review = reviews.get(local.features.quote.code)
             fusion_result = fuse_score(
-                score_strategy(strategy, local.features),
+                score_strategy(strategy, local.features, self._policy.local_strategy_weights),
                 local.local_risk_facts,
                 review,
                 self._policy.dimension_weights[strategy],
@@ -519,7 +527,7 @@ class RecommendationEngine:
         now: datetime,
     ) -> Recommendation:
         local_facts = derive_local_risk_facts(features, now, self._policy.risk_rules, strategy=strategy)
-        local = score_strategy(strategy, features)
+        local = score_strategy(strategy, features, self._policy.local_strategy_weights)
         local_result = fuse_score(
             local,
             local_facts,
@@ -644,6 +652,7 @@ def _freeze_policy(policy: RecommendationPolicy) -> FrozenReplayPolicy:
         thresholds=policy.selection.thresholds,
         candidate_weights=policy.candidate_weights,
         dimension_weights={strategy.value: weights for strategy, weights in policy.dimension_weights.items()},
+        local_strategy_weights={strategy.value: weights for strategy, weights in policy.local_strategy_weights.items()},
         risk_rules=policy.risk_rules,
     )
 
@@ -669,6 +678,7 @@ def _restore_policy(policy: FrozenReplayPolicy) -> RecommendationPolicy:
         ),
         candidate_weights=policy.candidate_weights,
         dimension_weights={Strategy(name): weights for name, weights in policy.dimension_weights.items()},
+        local_strategy_weights={Strategy(name): weights for name, weights in policy.local_strategy_weights.items()},
         risk_rules=policy.risk_rules,
     )
 

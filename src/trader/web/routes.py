@@ -11,7 +11,13 @@ from flask import Flask, Response, jsonify, render_template, request
 from trader.application.publisher import SnapshotPublisher, SubscriberLimitError
 from trader.application.queries import RecommendationQueries
 from trader.domain.models import Strategy
-from trader.web.schemas import empty_snapshot_envelope, error_envelope, snapshot_envelope
+from trader.web.serializers import (
+    empty_snapshot_envelope,
+    serialize_error,
+    serialize_events,
+    serialize_recommendation_dates,
+    snapshot_envelope,
+)
 from trader.web.sse import event_stream_response
 
 StatusProvider = Callable[[], dict[str, object]]
@@ -47,51 +53,56 @@ def register_routes(app: Flask, services: WebServices) -> None:
     def recommendations(strategy_name: str) -> Response | tuple[Response, int]:
         strategy = _strategy(strategy_name)
         if strategy is None:
-            return _error(
-                400,
-                "invalid_strategy",
-                "strategy must be today, tomorrow, d25 or long",
-                strategy=strategy_name,
-                trade_date=request.args.get("date"),
-            )
+            return jsonify(
+                serialize_error(
+                    "invalid_strategy",
+                    "strategy must be today, tomorrow, d25 or long",
+                    strategy=strategy_name,
+                    trade_date=request.args.get("date"),
+                )
+            ), 400
         top_n = _bounded_integer(request.args.get("top_n"), services.config.default_top_n)
         if top_n is None or top_n > services.config.maximum_top_n:
-            return _error(
-                400,
-                "invalid_top_n",
-                f"top_n must be an integer from 0 to {services.config.maximum_top_n}",
-                strategy=strategy.value,
-                trade_date=request.args.get("date"),
-            )
+            return jsonify(
+                serialize_error(
+                    "invalid_top_n",
+                    f"top_n must be an integer from 0 to {services.config.maximum_top_n}",
+                    strategy=strategy.value,
+                    trade_date=request.args.get("date"),
+                )
+            ), 400
         trade_date = request.args.get("date")
         if trade_date is not None and not _valid_date(trade_date):
-            return _error(
-                400,
-                "invalid_date",
-                "date must use YYYY-MM-DD",
-                strategy=strategy.value,
-                trade_date=trade_date,
-            )
+            return jsonify(
+                serialize_error(
+                    "invalid_date",
+                    "date must use YYYY-MM-DD",
+                    strategy=strategy.value,
+                    trade_date=trade_date,
+                )
+            ), 400
         queries = services.queries
         if queries is None:
             return jsonify(empty_snapshot_envelope(strategy.value, trade_date))
         if strategy is Strategy.LONG and trade_date is not None and trade_date != queries.today():
-            return _error(
-                400,
-                "long_history_unsupported",
-                "long only supports the current trade date",
-                strategy=strategy.value,
-                trade_date=trade_date,
-            )
+            return jsonify(
+                serialize_error(
+                    "long_history_unsupported",
+                    "long only supports the current trade date",
+                    strategy=strategy.value,
+                    trade_date=trade_date,
+                )
+            ), 400
         lookup = queries.recommendation(strategy, trade_date)
         if lookup.status == "not_found":
-            return _error(
-                404,
-                "snapshot_not_found",
-                "recommendation snapshot does not exist",
-                strategy=strategy.value,
-                trade_date=trade_date,
-            )
+            return jsonify(
+                serialize_error(
+                    "snapshot_not_found",
+                    "recommendation snapshot does not exist",
+                    strategy=strategy.value,
+                    trade_date=trade_date,
+                )
+            ), 404
         if lookup.snapshot is None:
             return jsonify(
                 empty_snapshot_envelope(
@@ -128,56 +139,51 @@ def register_routes(app: Flask, services: WebServices) -> None:
     def recommendation_dates() -> Response | tuple[Response, int]:
         strategy = _strategy(request.args.get("strategy", ""))
         if strategy is None:
-            return _error(400, "invalid_strategy", "strategy must be today, tomorrow or d25")
+            return jsonify(
+                serialize_error(
+                    "invalid_strategy",
+                    "strategy must be today, tomorrow or d25",
+                )
+            ), 400
         if strategy is Strategy.LONG:
-            return _error(400, "long_history_unsupported", "long has no recommendation history")
+            return jsonify(
+                serialize_error(
+                    "long_history_unsupported",
+                    "long has no recommendation history",
+                )
+            ), 400
         dates = services.queries.recommendation_dates(strategy) if services.queries is not None else ()
-        return jsonify(
-            {
-                "schema_version": "v2",
-                "status": "ready",
-                "strategy": strategy.value,
-                "items": list(dates),
-                "error": None,
-            }
-        )
+        return jsonify(serialize_recommendation_dates(strategy, dates))
 
     @app.get("/api/events")
     def events() -> Response | tuple[Response, int]:
         cursor = _bounded_integer(request.args.get("cursor"), 0)
         limit = _bounded_integer(request.args.get("limit"), services.config.default_event_limit)
         if cursor is None:
-            return _error(400, "invalid_cursor", "cursor must be a non-negative integer")
+            return jsonify(serialize_error("invalid_cursor", "cursor must be a non-negative integer")), 400
         if limit is None or limit < 1 or limit > services.config.maximum_event_limit:
-            return _error(
-                400,
-                "invalid_limit",
-                f"limit must be an integer from 1 to {services.config.maximum_event_limit}",
-            )
+            return jsonify(
+                serialize_error(
+                    "invalid_limit",
+                    f"limit must be an integer from 1 to {services.config.maximum_event_limit}",
+                )
+            ), 400
         items = services.queries.pipeline_events(cursor=cursor, limit=limit) if services.queries is not None else ()
-        sequences = [
-            value for item in items if isinstance(value := item.get("sequence"), int) and not isinstance(value, bool)
-        ]
-        next_cursor = max(sequences, default=cursor)
-        return jsonify(
-            {
-                "schema_version": "v2",
-                "status": "ready",
-                "cursor": cursor,
-                "next_cursor": next_cursor,
-                "items": list(items),
-                "error": None,
-            }
-        )
+        return jsonify(serialize_events(cursor, list(items)))
 
     @app.get("/api/events/stream")
     def event_stream() -> Response | tuple[Response, int]:
         raw_cursor = request.headers.get("Last-Event-ID", request.args.get("cursor"))
         cursor = _bounded_integer(raw_cursor, 0)
         if cursor is None:
-            return _error(400, "invalid_cursor", "Last-Event-ID must be a non-negative integer")
+            return jsonify(
+                serialize_error(
+                    "invalid_cursor",
+                    "Last-Event-ID must be a non-negative integer",
+                )
+            ), 400
         if services.publisher is None:
-            return _error(503, "stream_not_ready", "event stream is not ready")
+            return jsonify(serialize_error("stream_not_ready", "event stream is not ready")), 503
         try:
             return event_stream_response(
                 services.publisher,
@@ -185,7 +191,7 @@ def register_routes(app: Flask, services: WebServices) -> None:
                 heartbeat_seconds=services.config.heartbeat_seconds,
             )
         except SubscriberLimitError:
-            return _error(503, "stream_capacity", "event stream connection limit reached")
+            return jsonify(serialize_error("stream_capacity", "event stream connection limit reached")), 503
 
 
 def _strategy(raw: str) -> Strategy | None:
@@ -211,17 +217,6 @@ def _valid_date(raw: str) -> bool:
     except ValueError:
         return False
     return parsed.isoformat() == raw
-
-
-def _error(
-    status: int,
-    code: str,
-    message: str,
-    *,
-    strategy: str | None = None,
-    trade_date: str | None = None,
-) -> tuple[Response, int]:
-    return jsonify(error_envelope(code, message, strategy=strategy, trade_date=trade_date)), status
 
 
 __all__ = ["StatusProvider", "WebApiConfig", "WebServices", "register_routes"]

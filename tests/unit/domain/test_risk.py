@@ -4,7 +4,13 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 from trader.domain.models import RiskFact, RiskRule, Strategy
-from trader.domain.risk import aggregate_risk_penalty, deduplicate_risk_facts, derive_local_risk_facts
+from trader.domain.risk import (
+    Rating,
+    aggregate_risk_penalty,
+    deduplicate_risk_facts,
+    derive_local_risk_facts,
+    parse_rating,
+)
 
 
 def _rule(
@@ -97,3 +103,12 @@ def test_exclusive_groups_keep_highest_while_additive_rules_stack() -> None:
     assert {fact.risk_fact_id for fact in facts} == {"high", "extra"}
     assert sum(fact.penalty for fact in facts) == 28.0
     assert aggregate_risk_penalty(facts, cap=25.0) == 25.0
+
+
+def test_parse_rating_supports_aliases_and_fallback() -> None:
+    assert parse_rating("bullish") is Rating.BULLISH
+    assert parse_rating("看多") is Rating.BULLISH
+    assert parse_rating("NEUTRAL") is Rating.NEUTRAL
+    assert parse_rating("中性") is Rating.NEUTRAL
+    assert parse_rating("") is Rating.NEUTRAL
+    assert parse_rating("unknown", fallback=Rating.BEARISH) is Rating.BEARISH

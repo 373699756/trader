@@ -58,6 +58,46 @@ def test_today_score_matches_all_documented_component_and_subcomponent_weights(f
     assert result.base_score == pytest.approx(76.1375)
 
 
+def test_score_strategy_uses_override_component_weights(feature_factory) -> None:
+    feature = feature_factory()
+    custom = {
+        Strategy.TODAY: {
+            "momentum": 0.0,
+            "liquidity": 0.0,
+            "industry": 0.0,
+            "sentiment": 1.0,
+            "protection": 0.0,
+        },
+        Strategy.TOMORROW: {
+            "liquidity": 1.0,
+            "momentum": 0.0,
+            "trend": 0.0,
+            "historical_edge": 0.0,
+            "execution": 0.0,
+            "tail_structure": 0.0,
+        },
+        Strategy.D25: {
+            "momentum": 1.0,
+            "trend": 0.0,
+            "liquidity": 0.0,
+            "execution": 0.0,
+            "not_overheated": 0.0,
+        },
+        Strategy.LONG: {
+            "value": 1.0,
+            "growth": 0.0,
+            "quality": 0.0,
+            "industry_policy": 0.0,
+            "protection": 0.0,
+        },
+    }
+    overridden = score_strategy(Strategy.TODAY, feature, custom)
+    today_default = score_strategy(Strategy.TODAY, feature)
+
+    assert overridden.base_score == pytest.approx(today_default.components["sentiment"])
+    assert overridden.base_score != pytest.approx(today_default.base_score)
+
+
 def test_tomorrow_score_matches_all_documented_component_and_subcomponent_weights(feature_factory) -> None:
     result = score_strategy(
         Strategy.TOMORROW,

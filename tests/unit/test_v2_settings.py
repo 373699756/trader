@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from trader.infrastructure.market_data.features import FEATURE_SCHEMA_NAMES, FEATURE_SCHEMA_VERSION
 from trader.infrastructure.settings import (
     ConfigurationError,
     load_long_watchlist,
@@ -52,6 +53,31 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
     assert len(watchlist.items) == 10
+
+
+def test_feature_schema_contract_can_be_explicitly_reconciled_with_registered_schema(tmp_path) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw["factor_contract"]["feature_names"] = list(FEATURE_SCHEMA_NAMES)
+    raw["factor_contract"]["feature_schema_expected"] = len(FEATURE_SCHEMA_NAMES)
+    strategy_path = tmp_path / "strategy.json"
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    strategy = load_strategy_settings(strategy_path)
+
+    assert strategy.factor_contract["feature_schema_version"] == FEATURE_SCHEMA_VERSION
+    assert strategy.factor_contract["feature_schema_expected"] == len(FEATURE_SCHEMA_NAMES)
+
+
+def test_feature_schema_contract_rejects_schema_contract_version_mismatch(tmp_path) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw["factor_contract"]["feature_schema_version"] = "feature_schema_v0"
+    strategy_path = tmp_path / "strategy.json"
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="feature_schema_version mismatch"):
+        load_strategy_settings(strategy_path)
 
 
 def test_research_timeout_cannot_exceed_point_in_time_source_limit(tmp_path) -> None:

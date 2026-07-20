@@ -9,6 +9,7 @@ import pytest
 
 from trader.domain.models import (
     CrossSectionStats,
+    DeepSeekReview,
     Evidence,
     FeatureSnapshot,
     FilterAudit,
@@ -19,10 +20,16 @@ from trader.domain.models import (
     Recommendation,
     RecommendationAction,
     RecommendationSnapshot,
+    ReviewOutcome,
     ScoreBreakdown,
     Strategy,
 )
-from trader.infrastructure.persistence.snapshots import snapshot_bytes, snapshot_from_dict, snapshot_sha256
+from trader.infrastructure.persistence.snapshots import (
+    snapshot_bytes,
+    snapshot_from_dict,
+    snapshot_sha256,
+    snapshot_to_dict,
+)
 from trader.infrastructure.persistence.sqlite import connect
 from trader.infrastructure.persistence.writer import SnapshotConflictError, SnapshotRepository
 
@@ -48,6 +55,102 @@ def test_snapshot_round_trip_preserves_frozen_input() -> None:
     assert restored.recommendations[0].features.values["tail_volume_ratio_raw"] == 1.5
     payload.pop("filter_details")
     assert snapshot_from_dict(payload).filter_details == ()
+
+
+def test_snapshot_round_trip_preserves_deepseek_review_audit_fields() -> None:
+    base = _snapshot()
+    reviewed = replace(
+        base.recommendations[0],
+        review=DeepSeekReview(
+            code=base.recommendations[0].features.quote.code,
+            outcome=ReviewOutcome.APPLIED,
+            dimensions={},
+            risk_facts=(),
+            completed_at=NOW,
+            rating="bearish",
+            review_stage="primary",
+            challenger_status="challenged",
+            requested_model="deepseek-v4-flash",
+            actual_model="deepseek-v4-pro",
+            thinking_mode="standard",
+            raw_confidence=0.91,
+            calibrated_confidence=0.87,
+            evidence_manifest_hash="sha-abc",
+            calibration_version="v1",
+        ),
+    )
+    snapshot = replace(base, recommendations=(reviewed, *base.recommendations[1:]))
+
+    payload = snapshot_to_dict(snapshot)
+    restored = snapshot_from_dict(payload)
+
+    restored_review = restored.recommendations[0].review
+    assert restored_review is not None
+    assert restored_review.review_stage == "primary"
+    assert restored_review.challenger_status == "challenged"
+    assert restored_review.requested_model == "deepseek-v4-flash"
+    assert restored_review.actual_model == "deepseek-v4-pro"
+    assert restored_review.thinking_mode == "standard"
+    assert restored_review.raw_confidence == 0.91
+    assert restored_review.calibrated_confidence == 0.87
+    assert restored_review.evidence_manifest_hash == "sha-abc"
+    assert restored_review.calibration_version == "v1"
+    assert restored_review.rating == "bearish"
+
+
+def test_snapshot_from_dict_uses_default_review_audit_values_when_fields_missing() -> None:
+    base = _snapshot()
+    reviewed = replace(
+        base.recommendations[0],
+        review=DeepSeekReview(
+            code=base.recommendations[0].features.quote.code,
+            outcome=ReviewOutcome.APPLIED,
+            dimensions={},
+            risk_facts=(),
+            completed_at=NOW,
+            rating="neutral",
+            review_stage="secondary",
+            challenger_status="passed",
+            requested_model="deepseek-v4-flash",
+            actual_model="deepseek-v4-flash",
+            thinking_mode="reasoning",
+            raw_confidence=0.45,
+            calibrated_confidence=0.33,
+            evidence_manifest_hash="sha-default",
+            calibration_version="v2",
+        ),
+    )
+    snapshot = replace(base, recommendations=(reviewed, *base.recommendations[1:]))
+    payload = snapshot_to_dict(snapshot)
+
+    review_payload = payload["recommendations"][0]["review"]
+    assert isinstance(review_payload, dict)
+    for key in (
+        "review_stage",
+        "challenger_status",
+        "requested_model",
+        "actual_model",
+        "thinking_mode",
+        "raw_confidence",
+        "calibrated_confidence",
+        "evidence_manifest_hash",
+        "calibration_version",
+    ):
+        review_payload.pop(key, None)
+
+    restored = snapshot_from_dict(payload)
+    restored_review = restored.recommendations[0].review
+    assert restored_review is not None
+    assert restored_review.review_stage == "primary"
+    assert restored_review.challenger_status == "not_run"
+    assert restored_review.requested_model is None
+    assert restored_review.actual_model is None
+    assert restored_review.thinking_mode is None
+    assert restored_review.raw_confidence is None
+    assert restored_review.calibrated_confidence is None
+    assert restored_review.evidence_manifest_hash is None
+    assert restored_review.calibration_version is None
+    assert restored_review.rating == "neutral"
 
 
 def test_publish_and_freeze_create_verified_manifest(tmp_path) -> None:

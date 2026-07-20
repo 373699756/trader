@@ -6,7 +6,9 @@ import hashlib
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
 from trader.domain.factors import band_score, clamp, percentile_scores_with_metadata
 from trader.domain.fusion import STRUCTURED_REVIEW_FEATURES
@@ -27,13 +29,114 @@ from trader.domain.tail import (
 )
 from trader.infrastructure.market_data.history import (
     DailyBar,
-    maximum_drawdown_pct,
-    median_amount,
-    moving_average,
     return_pct,
-    upward_consistency,
-    volatility_pct,
+    summarize_history_metrics,
 )
+
+
+@dataclass(frozen=True)
+class FeatureSchema:
+    """Contract for a single computed feature column.
+
+    Each registered feature declares its name, dtype, missing strategy and
+    metadata so that FeatureBuilder can produce consistent output without
+    per-field branching.
+    """
+
+    name: str
+    dtype: str  # "float" | "int" | "bool"
+    missing_strategy: str = "null"  # "null" | "neutral_50" | "zero"
+    description: str = ""
+
+
+class StandardizedFeatureBuilder(Protocol):
+    def build(
+        self,
+        quotes: Sequence[MarketQuote],
+        histories: Mapping[str, tuple[DailyBar, ...]],
+        observed_at: datetime,
+        *,
+        cross_section_reference: Mapping[str, Mapping[str, float | None]] | None = ...,
+        cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None = ...,
+        research_observations: Mapping[str, ResearchObservation] | None = ...,
+        intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None = ...,
+    ) -> tuple[FeatureSnapshot, ...]: ...
+
+
+# Feature columns produced by FeatureBuilder._raw_features().
+# All are optional float; missing is left as None and later resolved per
+# the factor registry in config/v2/strategy.json.
+FEATURE_SCHEMA_VERSION = "feature_schema_v1"
+
+RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
+    FeatureSchema("amount_median_20d", "float", description="20日成交额中位数"),
+    FeatureSchema("return_3d", "float", description="3日收益率"),
+    FeatureSchema("return_5d", "float", description="5日收益率"),
+    FeatureSchema("return_10d", "float", description="10日收益率"),
+    FeatureSchema("return_20d", "float", description="20日收益率"),
+    FeatureSchema("return_60d", "float", description="60日收益率"),
+    FeatureSchema("volatility_20d", "float", description="20日波动率"),
+    FeatureSchema("max_drawdown_20d", "float", description="20日最大回撤"),
+    FeatureSchema("price_volume_confirmation", "float", description="量价确认"),
+    FeatureSchema("moderate_daily_return", "float", description="当日涨幅适中"),
+    FeatureSchema("ma20_60_position", "float", description="MA20/60位置"),
+    FeatureSchema("ma20_60_structure", "float", description="MA20/60结构"),
+    FeatureSchema("ma_slope", "float", description="均线斜率"),
+    FeatureSchema("breakout_20d", "float", description="20日突破"),
+    FeatureSchema("risk_adjusted_return_20d", "float", description="20日风险调整收益"),
+    FeatureSchema("upward_consistency", "float", description="上涨一致性"),
+    FeatureSchema("capacity_score", "float", description="成交容量"),
+    FeatureSchema("moderate_amplitude", "float", description="振幅适中"),
+    FeatureSchema("limit_distance_safety", "float", description="距涨停安全度"),
+    FeatureSchema("close_location", "float", description="收盘位置"),
+    FeatureSchema("price_executability", "float", description="价格可执行性"),
+    FeatureSchema("ma20_deviation_inverse", "float", description="MA20偏离反向"),
+    FeatureSchema("low_crowding_score", "float", description="低拥挤度"),
+    FeatureSchema("limit_proximity", "float", description="涨停接近度"),
+    FeatureSchema("trend_score", "float", description="趋势综合分"),
+)
+
+# Feature columns that are populated by cross-section or derived signals
+# (not from raw history).
+DERIVED_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
+    FeatureSchema("amount_percentile_20d", "float", description="20日成交额分位"),
+    FeatureSchema("speed_percentile", "float", description="涨速分位"),
+    FeatureSchema("relative_strength_3d", "float", description="3日相对强度"),
+    FeatureSchema("relative_strength_5d", "float", description="5日相对强度"),
+    FeatureSchema("relative_strength_10d", "float", description="10日相对强度"),
+    FeatureSchema("relative_strength_20d", "float", description="20日相对强度"),
+    FeatureSchema("industry_strength", "float", description="行业强度"),
+    FeatureSchema("industry_breadth", "float", description="行业上涨宽度"),
+    FeatureSchema("industry_trend", "float", description="行业趋势"),
+    FeatureSchema("market_breadth", "float", description="市场宽度"),
+    FeatureSchema("low_volatility_score", "float", description="低波动分"),
+    FeatureSchema("low_drawdown_score", "float", description="低回撤分"),
+    FeatureSchema("news_sentiment", "float", description="新闻情绪"),
+    FeatureSchema("evidence_freshness", "float", description="证据新鲜度"),
+    FeatureSchema("return_20d_not_overheated", "float", description="20日涨幅不过热"),
+    FeatureSchema("d25_overheat_factor", "float", description="D25过热系数"),
+    FeatureSchema("market_regime_factor", "float", description="市场状态系数"),
+    FeatureSchema("value_score", "float", description="价值分"),
+    FeatureSchema("growth_score", "float", description="成长分"),
+    FeatureSchema("quality_score", "float", description="质量分"),
+    FeatureSchema("industry_policy_score", "float", description="行业政策分"),
+    FeatureSchema("risk_protection_score", "float", description="风险保护分"),
+    FeatureSchema("financial_deterioration", "float", description="财务恶化"),
+    FeatureSchema("reduction_or_unlock", "float", description="减持/解禁"),
+    FeatureSchema("pledge_risk", "float", description="质押风险"),
+    FeatureSchema("negative_announcement_level", "float", description="负面公告等级"),
+    FeatureSchema("price_volume_divergence", "float", description="量价背离"),
+    FeatureSchema("tail_return_30m_pct", "float", description="尾盘30分钟原始收益"),
+    FeatureSchema("tail_return_30m", "float", description="尾盘30分钟收益分"),
+    FeatureSchema("tail_volume_ratio_raw", "float", description="尾盘原始量比"),
+    FeatureSchema("tail_volume_ratio", "float", description="尾盘量比分"),
+)
+
+FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (*RAW_FEATURE_SCHEMA, *DERIVED_FEATURE_SCHEMA)
+FEATURE_SCHEMA_NAMES: tuple[str, ...] = tuple(item.name for item in FEATURE_SCHEMA)
+
+if len(FEATURE_SCHEMA_NAMES) != len(set(FEATURE_SCHEMA_NAMES)):
+    raise ValueError("feature schema contains duplicate feature names")
 
 
 class FeatureBuilder:
@@ -251,13 +354,14 @@ class FeatureBuilder:
         return tuple(snapshots)
 
     def _raw_features(self, quote: MarketQuote, bars: tuple[DailyBar, ...]) -> dict[str, float | None]:
+        history = summarize_history_metrics(bars)
         returns = {days: return_pct(bars, days, quote.price) for days in (3, 5, 10, 20, 60)}
-        ma5 = moving_average(bars, 5)
-        ma20 = moving_average(bars, 20)
-        ma60 = moving_average(bars, 60)
-        volatility = volatility_pct(bars)
-        drawdown = maximum_drawdown_pct(bars)
-        amount_median = median_amount(bars)
+        ma5 = history.moving_average_5d
+        ma20 = history.moving_average_20d
+        ma60 = history.moving_average_60d
+        volatility = history.volatility_20d
+        drawdown = history.max_drawdown_20d
+        amount_median = history.median_amount_20d
         ma_position = _ma_position(quote.price, ma20, ma60)
         breakout = _breakout_score(quote.price, bars)
         slope = _slope_score(ma5, ma20)
@@ -297,7 +401,7 @@ class FeatureBuilder:
             "ma_slope": slope,
             "breakout_20d": breakout,
             "risk_adjusted_return_20d": risk_adjusted,
-            "upward_consistency": upward_consistency(bars),
+            "upward_consistency": history.upward_consistency_20d,
             "capacity_score": capacity,
             "moderate_amplitude": _optional_band_score(quote.amplitude, 0.0, 1.0, 5.0, 12.0),
             "limit_distance_safety": None if limit_proximity is None else 100.0 * (1.0 - limit_proximity),
@@ -499,4 +603,13 @@ _CROSS_SECTION_FIELDS = frozenset(
 )
 
 
-__all__ = ["FeatureBuilder"]
+__all__ = [
+    "DERIVED_FEATURE_SCHEMA",
+    "FEATURE_SCHEMA",
+    "FEATURE_SCHEMA_NAMES",
+    "FEATURE_SCHEMA_VERSION",
+    "FeatureBuilder",
+    "FeatureSchema",
+    "RAW_FEATURE_SCHEMA",
+    "StandardizedFeatureBuilder",
+]

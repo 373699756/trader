@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from trader.domain.models import FeatureSnapshot
 from trader.domain.strategies.composition import LocalScoreResult, compose, normalized
 
@@ -14,7 +16,8 @@ COMPONENT_WEIGHTS = {
 }
 
 
-def score_long(snapshot: FeatureSnapshot) -> LocalScoreResult:
+def score_long(snapshot: FeatureSnapshot, component_weights: Mapping[str, float] | None = None) -> LocalScoreResult:
+    component_weights = COMPONENT_WEIGHTS if component_weights is None else component_weights
     return compose(
         {
             "value": normalized(snapshot, "value_score"),
@@ -23,7 +26,7 @@ def score_long(snapshot: FeatureSnapshot) -> LocalScoreResult:
             "industry_policy": normalized(snapshot, "industry_policy_score"),
             "protection": normalized(snapshot, "risk_protection_score"),
         },
-        COMPONENT_WEIGHTS,
+        component_weights,
     )
 
 

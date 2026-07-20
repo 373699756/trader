@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def connect(database_path: Path) -> sqlite3.Connection:
@@ -95,6 +95,10 @@ def initialize_database(database_path: Path) -> None:
                 p95_latency_ms REAL,
                 data_age_seconds REAL,
                 last_error TEXT NOT NULL DEFAULT '',
+                route_json TEXT NOT NULL DEFAULT '{}',
+                route_status TEXT NOT NULL DEFAULT 'idle',
+                route_fallback_reason TEXT NOT NULL DEFAULT '',
+                route_degraded INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             );
 
@@ -134,10 +138,16 @@ def initialize_database(database_path: Path) -> None:
         )
         _ensure_column(connection, "frozen_snapshots", "anchor_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(connection, "data_source_health", "last_error", "TEXT NOT NULL DEFAULT ''")
-        connection.execute(
-            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
+        _ensure_column(connection, "data_source_health", "route_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(connection, "data_source_health", "route_status", "TEXT NOT NULL DEFAULT 'idle'")
+        _ensure_column(connection, "data_source_health", "route_fallback_reason", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "data_source_health", "route_degraded", "INTEGER NOT NULL DEFAULT 0")
+        apply_migrations(connection)
+        if _current_schema_version(connection) < SCHEMA_VERSION:
+            connection.execute(
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
 
 
 def _ensure_column(connection: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
@@ -146,4 +156,61 @@ def _ensure_column(connection: sqlite3.Connection, table: str, column: str, decl
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
-__all__ = ["SCHEMA_VERSION", "connect", "initialize_database"]
+# Registered migrations keyed by target schema version.
+# Each migration is a list of SQL statements that bring the database from the
+# previous version to the keyed version.  Migrations are applied in ascending
+# version order.
+MIGRATIONS: dict[int, list[str]] = {
+    2: [
+        "ALTER TABLE frozen_snapshots ADD COLUMN schema_version TEXT NOT NULL DEFAULT 'recommendation_snapshot_v2'",
+        "ALTER TABLE frozen_snapshots ADD COLUMN anchor_json TEXT NOT NULL DEFAULT '{}'",
+    ],
+    3: [
+        "ALTER TABLE data_source_health ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+    ],
+    4: [
+        "ALTER TABLE data_source_health ADD COLUMN route_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE data_source_health ADD COLUMN route_status TEXT NOT NULL DEFAULT 'idle'",
+        "ALTER TABLE data_source_health ADD COLUMN route_fallback_reason TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE data_source_health ADD COLUMN route_degraded INTEGER NOT NULL DEFAULT 0",
+    ],
+}
+
+
+def apply_migrations(connection: sqlite3.Connection) -> None:
+    """Apply any pending migrations in version order."""
+    current = _current_schema_version(connection)
+    for version in sorted(MIGRATIONS):
+        if version <= current:
+            continue
+        for statement in MIGRATIONS[version]:
+            try:
+                connection.execute(statement)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+        connection.execute(
+            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', ?)",
+            (str(version),),
+        )
+        current = version
+
+
+def _current_schema_version(connection: sqlite3.Connection) -> int:
+    row = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+    if row is None:
+        return 0
+    return _parse_schema_version(row[0])
+
+
+def _parse_schema_version(raw: object) -> int:
+    text = str(raw).strip() if raw is not None else ""
+    if not text:
+        return 0
+    try:
+        return int(text)
+    except (ValueError, TypeError):
+        return 0
+
+
+__all__ = ["MIGRATIONS", "SCHEMA_VERSION", "apply_migrations", "connect", "initialize_database"]

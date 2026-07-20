@@ -16,6 +16,7 @@ from trader.application.cadence import (
 )
 from trader.application.events import (
     BoundedEventQueue,
+    EventDeadlineExpired,
     EventPriority,
     PipelineEvent,
     event_from_audit_record,
@@ -29,6 +30,7 @@ from trader.application.pipeline_stages import (
 from trader.application.ports import (
     DeepSeekReviewPort,
     EventAuditPort,
+    MarketDataDeadlineExceeded,
     MarketDataPort,
     SnapshotRepositoryPort,
     TradingCalendarPort,
@@ -85,6 +87,7 @@ class RecommendationPipeline:
         strategy_workers: int = 3,
         deepseek_workers: int = 4,
         data_pool: BoundedExecutor | None = None,
+        persistence_pool: BoundedExecutor | None = None,
         market_data_manages_workers: bool = False,
         cadence_policy: CadencePolicy | None = None,
         long_codes: Sequence[str] = (),
@@ -135,7 +138,7 @@ class RecommendationPipeline:
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-long",
         )
-        self._persistence_pool = BoundedExecutor(
+        self._persistence_pool = persistence_pool or BoundedExecutor(
             worker_count=1,
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-persistence",
@@ -185,10 +188,19 @@ class RecommendationPipeline:
                     self._live_overlays[(strategy, latest.trade_date)] = overlay
         now = self._now()
         trade_day = trade_date_at(now)
-        catchup = self._freeze_available_snapshots(
-            now,
-            freeze_due_at(now, is_trading_day=self._calendar.is_trading_day(trade_day)),
-        )
+        trade_day_iso = trade_day.isoformat()
+        freeze_targets = freeze_due_at(now, is_trading_day=self._calendar.is_trading_day(trade_day))
+        if freeze_targets:
+            freeze_targets = tuple(
+                target
+                for target in freeze_targets
+                if self._has_pre_cutoff_snapshot_for_catchup(
+                    Strategy(target),
+                    now=now,
+                    trade_date=trade_day_iso,
+                )
+            )
+        catchup = self._freeze_available_snapshots(now, freeze_targets)
         for record in self._event_audit.pending_priority_events():
             try:
                 event = event_from_audit_record(record)
@@ -562,14 +574,14 @@ class RecommendationPipeline:
                     and event.priority is not EventPriority.FREEZE
                     and self._now() >= event.deadline
                 ):
-                    raise RuntimeError(f"event deadline expired before execution: {event.event_type}")
+                    raise EventDeadlineExpired(f"event deadline expired before execution: {event.event_type}")
                 process_event_on_workers(self, event)
                 if (
                     event.deadline is not None
                     and event.priority is not EventPriority.FREEZE
                     and self._now() >= event.deadline
                 ):
-                    raise RuntimeError(f"event deadline expired during execution: {event.event_type}")
+                    raise EventDeadlineExpired(f"event deadline expired during execution: {event.event_type}")
                 if not persist(
                     self,
                     self._event_audit.compare_and_set_event,
@@ -580,6 +592,21 @@ class RecommendationPipeline:
                 ):
                     raise RuntimeError(f"event terminal compare-and-set failed: {event.event_id}")
                 self._state.increment("events_completed")
+            except (EventDeadlineExpired, MarketDataDeadlineExceeded) as exc:
+                _LOGGER.info("pipeline event expired", extra={"event_id": event.event_id})
+                try:
+                    persist(
+                        self,
+                        self._event_audit.compare_and_set_event,
+                        event.event_id,
+                        expected_status="running",
+                        status="expired",
+                        retry_count=event.retry_count,
+                        error=str(exc),
+                    )
+                except Exception:
+                    _LOGGER.exception("pipeline event expiration state could not be persisted")
+                self._state.increment("events_expired")
             except Exception as exc:
                 _LOGGER.exception("pipeline event failed", extra={"event_id": event.event_id})
                 try:
@@ -626,6 +653,36 @@ class RecommendationPipeline:
         deadline: datetime | None = None,
     ) -> None:
         refresh_live_overlays(self, now, phase, deadline=deadline)
+
+    def _has_pre_cutoff_snapshot_for_catchup(
+        self,
+        strategy: Strategy,
+        now: datetime,
+        trade_date: str,
+    ) -> bool:
+        local = shanghai_now(now)
+        boundary = (
+            local.replace(hour=11, minute=20, second=0, microsecond=0)
+            if strategy is Strategy.TODAY
+            else local.replace(hour=14, minute=50, second=0, microsecond=0)
+        )
+        cutoff_seconds = 20.0 if strategy is Strategy.TODAY else 30.0
+
+        latest = self._state.latest(strategy)
+        if latest is not None and latest.trade_date == trade_date:
+            snapshot = latest
+        else:
+            fallback = self._repository.latest(strategy)
+            if fallback is None or fallback.trade_date != trade_date:
+                return False
+            snapshot = fallback
+
+        if snapshot.published_at > boundary:
+            return False
+        age_seconds = (boundary - snapshot.published_at).total_seconds()
+        if age_seconds > cutoff_seconds:
+            return False
+        return True
 
 
 def _scheduled_task_deadline(scheduled: ScheduledPipelineTask) -> datetime | None:

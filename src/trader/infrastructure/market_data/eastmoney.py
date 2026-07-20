@@ -15,6 +15,7 @@ from trader.application.workers import BoundedExecutor, borrow_executor
 from trader.domain.models import MarketQuote
 from trader.domain.tail import MinuteBar
 from trader.infrastructure.market_data.history import DailyBar
+from trader.infrastructure.market_data.normalize import MarketQuoteInput, build_market_quote, normalize_quotes, to_float
 
 
 class JsonResponse(Protocol):
@@ -55,7 +56,7 @@ class EastmoneyClient:
         first_rows = _object_rows(data.get("diff"))
         if not first_rows:
             raise RuntimeError("eastmoney returned an empty first page")
-        total = int(_to_float(data.get("total")) or len(first_rows))
+        total = int(to_float(data.get("total")) or len(first_rows))
         page_count = max(1, math.ceil(total / self._page_size))
         pages: dict[int, list[Mapping[str, object]]] = {1: first_rows}
         if page_count > 1:
@@ -83,7 +84,7 @@ class EastmoneyClient:
                     raise RuntimeError(f"eastmoney page {page} was empty")
                 pages[page] = rows
         raw_rows = [row for page in sorted(pages) for row in pages[page]]
-        quotes = tuple(quote for row in raw_rows if (quote := _quote_from_row(row, received_at)) is not None)
+        quotes = normalize_quotes(raw_rows, received_at, normalizer=_quote_from_row)
         if len({quote.code for quote in quotes}) < min(1000, total // 2):
             raise RuntimeError(f"eastmoney quote coverage is incomplete: {len(quotes)}/{total}")
         return quotes
@@ -113,7 +114,7 @@ class EastmoneyClient:
             parts = str(raw).split(",")
             if len(parts) < 9:
                 continue
-            values = [_to_float(value) for value in parts[1:9]]
+            values = [to_float(value) for value in parts[1:9]]
             if any(value is None for value in values):
                 continue
             open_price, close, high, low, volume, amount, _amplitude, pct_change = cast(list[float], values)
@@ -150,8 +151,8 @@ class EastmoneyClient:
                 source_time = datetime.strptime(parts[0], "%Y-%m-%d %H:%M").replace(tzinfo=_SHANGHAI)
             except ValueError:
                 continue
-            close = _to_float(parts[2])
-            volume = _to_float(parts[5])
+            close = to_float(parts[2])
+            volume = to_float(parts[5])
             if (
                 source_time.date() != observed_local.date()
                 or source_time > observed_local
@@ -227,10 +228,10 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
         return None
     name = str(row.get("f14") or "").strip()
     source_time = _source_time(row.get("f124"), received_at)
-    price = _to_float(row.get("f2"))
-    high = _to_float(row.get("f15"))
-    low = _to_float(row.get("f16"))
-    pct_change = _to_float(row.get("f3"))
+    price = to_float(row.get("f2"))
+    high = to_float(row.get("f15"))
+    low = to_float(row.get("f16"))
+    pct_change = to_float(row.get("f3"))
     is_one_price_limit = bool(
         price
         and high
@@ -239,35 +240,37 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
         and pct_change is not None
         and abs(pct_change) >= (19.5 if code.startswith(("300", "301", "688", "689")) else 9.5)
     )
-    return MarketQuote(
-        code=code,
-        name=name,
-        price=price,
-        previous_close=_to_float(row.get("f18")),
-        open_price=_to_float(row.get("f17")),
-        high=high,
-        low=low,
-        pct_change=pct_change,
-        change_5m=_to_float(row.get("f11")),
-        speed=_to_float(row.get("f22")),
-        volume_ratio=_to_float(row.get("f10")),
-        turnover_rate=_to_float(row.get("f8")),
-        amount=_to_float(row.get("f6")),
-        amplitude=_to_float(row.get("f7")),
-        market_cap=_to_float(row.get("f20")),
-        industry=str(row.get("f100") or "").strip(),
-        source="eastmoney",
-        source_time=source_time,
-        received_time=received_at,
-        data_version=f"eastmoney:{int(received_at.timestamp())}",
-        is_st="ST" in name.upper() or "退" in name,
-        is_suspended=price is None or price <= 0,
-        is_one_price_limit=is_one_price_limit,
+    return build_market_quote(
+        MarketQuoteInput(
+            code=code,
+            name=name,
+            price=price,
+            previous_close=to_float(row.get("f18")),
+            open_price=to_float(row.get("f17")),
+            high=high,
+            low=low,
+            pct_change=pct_change,
+            change_5m=to_float(row.get("f11")),
+            speed=to_float(row.get("f22")),
+            volume_ratio=to_float(row.get("f10")),
+            turnover_rate=to_float(row.get("f8")),
+            amount=to_float(row.get("f6")),
+            amplitude=to_float(row.get("f7")),
+            market_cap=to_float(row.get("f20")),
+            industry=str(row.get("f100") or "").strip(),
+            source="eastmoney",
+            source_time=source_time,
+            received_time=received_at,
+            data_version=f"eastmoney:{int(received_at.timestamp())}",
+            is_st="ST" in name.upper() or "退" in name,
+            is_suspended=price is None or price <= 0,
+            is_one_price_limit=is_one_price_limit,
+        )
     )
 
 
 def _source_time(raw: object, fallback: datetime) -> datetime:
-    value = _to_float(raw)
+    value = to_float(raw)
     if value is None or value <= 0:
         return fallback
     try:
@@ -278,14 +281,6 @@ def _source_time(raw: object, fallback: datetime) -> datetime:
 
 def _secid(code: str) -> str:
     return f"1.{code}" if code.startswith(("5", "6", "9")) else f"0.{code}"
-
-
-def _to_float(value: object) -> float | None:
-    try:
-        result = float(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-    return result if math.isfinite(result) else None
 
 
 def _object_mapping(value: object) -> Mapping[str, object]:

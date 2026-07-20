@@ -13,6 +13,30 @@ class MarketDataUnavailable(RuntimeError):
     """All full-market sources failed and no usable cached quote set exists."""
 
 
+class MarketDataDeadlineExceeded(MarketDataUnavailable):
+    """A deadline-bound market-data operation exhausted its time budget."""
+
+
+class MarketDataNoData(RuntimeError):
+    """Data source returned a valid response but contained no usable data.
+
+    This is semantically different from a transport failure — the source is
+    reachable but the requested data does not exist or is empty.
+    """
+
+
+class MarketDataFailed(RuntimeError):
+    """Data source transport or protocol failure (timeout, TLS, HTTP 5xx).
+
+    Carries the vendor name and original error for observability.
+    """
+
+    def __init__(self, vendor: str, error: str) -> None:
+        super().__init__(f"{vendor}: {error}")
+        self.vendor = vendor
+        self.error = error
+
+
 class Clock(Protocol):
     def now(self) -> datetime: ...
 
@@ -157,6 +181,8 @@ __all__ = [
     "DeepSeekReviewPort",
     "EventAuditPort",
     "EventReaderPort",
+    "MarketDataFailed",
+    "MarketDataNoData",
     "MarketDataPort",
     "MarketDataUnavailable",
     "SnapshotRepositoryPort",

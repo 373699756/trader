@@ -4,51 +4,31 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
-from typing import Protocol, cast
+from typing import Any, cast
 
 import requests
 
+from trader.infrastructure.deepseek.base_client import (
+    DeepSeekClientBase,
+    DeepSeekHttpAttempt,
+    DeepSeekHttpResult,
+    ModelCapabilities,
+)
+from trader.infrastructure.deepseek.model_capabilities import capabilities as _lookup_capabilities
+from trader.infrastructure.deepseek.model_catalog import validate_model
 
-class HttpResponse(Protocol):
-    status_code: int
-    headers: Mapping[str, str]
-
-    def raise_for_status(self) -> None: ...
-
-    def json(self) -> object: ...
-
-
-PostFunction = Callable[..., HttpResponse]
-
-
-@dataclass(frozen=True)
-class DeepSeekHttpAttempt:
-    http_status: int | None
-    succeeded: bool
-    timed_out: bool
-    error: str
-    latency_ms: float
-    token_count: int
+_POST_TYPE = Callable[..., "requests.Response"]
 
 
-@dataclass(frozen=True)
-class DeepSeekHttpResult:
-    content: str | None
-    status_code: int | None
-    attempts: int
-    timed_out: bool
-    error: str
-    usage: Mapping[str, object] = field(default_factory=dict)
-    attempt_records: tuple[DeepSeekHttpAttempt, ...] = ()
-
-
-class DeepSeekHttpClient:
+class DeepSeekHttpClient(DeepSeekClientBase):
     RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
-    def __init__(self, post: PostFunction | None = None, sleep: Callable[[float], None] = time.sleep) -> None:
-        self._post = post if post is not None else cast(PostFunction, requests.post)
+    def __init__(self, post: _POST_TYPE | None = None, sleep: Callable[[float], None] = time.sleep) -> None:
+        self._post = post if post is not None else cast(_POST_TYPE, requests.post)
         self._sleep = sleep
+
+    def capabilities(self, model: str) -> ModelCapabilities:
+        return _lookup_capabilities(model)
 
     def complete(
         self,
@@ -56,7 +36,7 @@ class DeepSeekHttpClient:
         base_url: str,
         api_key: str,
         model: str,
-        messages: Sequence[Mapping[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         timeout_seconds: float,
         max_tokens: int,
         reserve_attempt: Callable[[], bool],
@@ -66,6 +46,8 @@ class DeepSeekHttpClient:
             return DeepSeekHttpResult(None, None, 0, False, "api_key_missing")
         if not 1 <= maximum_attempts <= 2:
             raise ValueError("DeepSeek batch maximum attempts must be between 1 and 2")
+        validate_model(model)
+        caps = _lookup_capabilities(model)
         last_error = ""
         last_status: int | None = None
         timed_out = False
@@ -85,16 +67,11 @@ class DeepSeekHttpClient:
             attempt_status: int | None = None
             attempt_started = time.perf_counter()
             try:
+                payload = _request_payload(model, messages, max_tokens, caps)
                 response = self._post(
                     f"{base_url.rstrip('/')}/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": model,
-                        "messages": list(messages),
-                        "temperature": 0,
-                        "max_tokens": max_tokens,
-                        "response_format": {"type": "json_object"},
-                    },
+                    json=payload,
                     timeout=timeout_seconds,
                 )
                 attempt_status = response.status_code
@@ -115,8 +92,8 @@ class DeepSeekHttpClient:
                         continue
                     break
                 response.raise_for_status()
-                payload = response.json()
-                content, usage = _extract_content(payload)
+                payload_obj = response.json()
+                content, usage = _extract_content(payload_obj)
                 attempt_records.append(
                     _attempt_record(
                         attempt_status,
@@ -176,6 +153,44 @@ class DeepSeekHttpClient:
         )
 
 
+def _request_payload(
+    model: str,
+    messages: Sequence[Mapping[str, Any]],
+    max_tokens: int,
+    caps: ModelCapabilities,
+) -> dict[str, object]:
+    normalized_messages: list[dict[str, Any]] = []
+    for msg in messages:
+        entry: dict[str, Any] = {"role": msg["role"]}
+        content = msg.get("content")
+        if content is not None:
+            entry["content"] = content
+        if caps.requires_reasoning_roundtrip:
+            reasoning = msg.get("reasoning_content")
+            if reasoning is not None:
+                entry["reasoning_content"] = reasoning
+        normalized_messages.append(entry)
+
+    payload: dict[str, object] = {
+        "model": model,
+        "messages": normalized_messages,
+        "max_tokens": max_tokens,
+    }
+
+    if caps.preferred_structured_method == "json_object":
+        payload["response_format"] = {"type": "json_object"}
+    elif caps.preferred_structured_method == "function_calling":
+        pass
+
+    if not caps.requires_reasoning_roundtrip:
+        payload["temperature"] = 0
+
+    if caps.reasoning_effort is not None:
+        payload["reasoning_effort"] = caps.reasoning_effort
+
+    return payload
+
+
 def _extract_content(payload: object) -> tuple[str, Mapping[str, object]]:
     if not isinstance(payload, dict):
         raise ValueError("DeepSeek response root must be an object")
@@ -189,7 +204,7 @@ def _extract_content(payload: object) -> tuple[str, Mapping[str, object]]:
     return message["content"], usage if isinstance(usage, dict) else {}
 
 
-def _retry_delay(response: HttpResponse) -> float:
+def _retry_delay(response: requests.Response) -> float:
     raw = response.headers.get("Retry-After", "")
     try:
         return min(5.0, max(0.0, float(raw)))

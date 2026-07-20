@@ -8,7 +8,15 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import SHANGHAI
-from trader.domain.models import Evidence, LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
+from trader.domain.models import (
+    DeepSeekReview,
+    Evidence,
+    LiveOverlay,
+    LiveQuote,
+    RecommendationSnapshot,
+    ReviewOutcome,
+    Strategy,
+)
 from trader.web import create_app
 from trader.web.routes import WebApiConfig
 
@@ -89,6 +97,101 @@ def test_recommendation_validation_and_empty_current(recommendation_policy, appl
     assert client.get("/api/recommendations/today?top_n=19").status_code == 400
     assert client.get("/api/recommendations/today?top_n=01").status_code == 400
     assert client.get("/api/recommendations/today?date=2026-02-30").status_code == 400
+
+
+def test_recommendation_response_exposes_deepseek_review_audit_fields(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    snapshot = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
+    first = snapshot.recommendations[0]
+    reviewed = replace(
+        first,
+        review=DeepSeekReview(
+            code=first.features.quote.code,
+            outcome=ReviewOutcome.APPLIED,
+            dimensions={},
+            risk_facts=(),
+            completed_at=NOW,
+            rating="neutral",
+            review_stage="primary",
+            challenger_status="not_run",
+            requested_model="deepseek-v4-flash",
+            actual_model="deepseek-v4-pro",
+            thinking_mode="reasoning",
+            raw_confidence=0.9,
+            calibrated_confidence=0.8,
+            evidence_manifest_hash="api-manifest",
+            calibration_version="v1",
+        ),
+    )
+    snapshot = replace(snapshot, recommendations=(reviewed, *snapshot.recommendations[1:]))
+    repository = MemoryReadRepository(latest={Strategy.TODAY: snapshot})
+    app, _publisher = _app(repository)
+
+    payload = app.test_client().get("/api/recommendations/today").get_json()
+    item = next(item for item in payload["items"] if item["code"] == first.features.quote.code)
+    assert item["review"]["review_stage"] == "primary"
+    assert item["review"]["challenger_status"] == "not_run"
+    assert item["review"]["requested_model"] == "deepseek-v4-flash"
+    assert item["review"]["actual_model"] == "deepseek-v4-pro"
+    assert item["review"]["thinking_mode"] == "reasoning"
+    assert item["review"]["raw_confidence"] == 0.9
+    assert item["review"]["calibrated_confidence"] == 0.8
+    assert item["review"]["evidence_manifest_hash"] == "api-manifest"
+    assert item["review"]["calibration_version"] == "v1"
+
+
+def test_status_includes_route_health_details() -> None:
+    app = create_app(
+        lambda: {
+            "schema_version": "v2",
+            "status": "running",
+            "runtime_started": True,
+            "dependencies": {
+                "market_data": {
+                    "route": {
+                        "status": "success",
+                        "used_vendor": "sina",
+                        "degraded": True,
+                        "fallback_reason": None,
+                        "attempted_count": 2,
+                        "success_count": 1,
+                        "failure_count": 0,
+                        "no_data_count": 0,
+                        "skipped_count": 1,
+                        "attempted_vendors": (
+                            {
+                                "name": "eastmoney",
+                                "status": "skipped",
+                                "severity": "required",
+                                "error": "circuit_open",
+                                "skipped": True,
+                                "duration_ms": 1.2,
+                            },
+                            {
+                                "name": "sina",
+                                "status": "success",
+                                "severity": "required",
+                                "error": "",
+                                "skipped": False,
+                                "duration_ms": 12.1,
+                            },
+                        ),
+                    }
+                }
+            },
+        },
+    )
+
+    payload = app.test_client().get("/api/status").get_json()
+
+    route = payload["dependencies"]["market_data"]["route"]
+    assert route["status"] == "success"
+    assert route["attempted_count"] == 2
+    assert route["skipped_count"] == 1
+    assert route["attempted_vendors"][0]["name"] == "eastmoney"
+    assert route["attempted_vendors"][0]["status"] == "skipped"
 
 
 def test_current_query_requires_and_prefers_today_freeze_after_cutoff(
@@ -260,6 +363,27 @@ def test_previous_trade_date_is_explicit_stale_fallback(
     assert payload["current_trade_date"] == "2026-07-16"
     assert payload["historical"] is False
     assert "previous_trade_date_fallback" in payload["degraded_reasons"]
+
+
+def test_explicit_historical_query_returns_previous_trade_date_snapshot(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    previous = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY),
+        snapshot_id="previous-freeze",
+        trade_date="2026-07-15",
+        frozen=True,
+    )
+    repository = MemoryReadRepository(frozen={(Strategy.TODAY, "2026-07-15"): previous})
+
+    payload = _app(repository, now=NOW)[0].test_client().get("/api/recommendations/today?date=2026-07-15").get_json()
+
+    assert payload["snapshot_id"] == "previous-freeze"
+    assert payload["trade_date"] == "2026-07-15"
+    assert payload["requested_date"] == "2026-07-15"
+    assert payload["historical"] is True
+    assert payload["frozen"] is True
 
 
 def test_fallback_etag_changes_with_current_trade_date(

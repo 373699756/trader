@@ -242,6 +242,16 @@ class DeepSeekReview:
     risk_facts: tuple[RiskFact, ...]
     completed_at: datetime
     error: str = ""
+    rating: str = "neutral"
+    review_stage: str = "primary"
+    challenger_status: str = "not_run"
+    requested_model: str | None = None
+    actual_model: str | None = None
+    thinking_mode: str | None = None
+    raw_confidence: float | None = None
+    calibrated_confidence: float | None = None
+    evidence_manifest_hash: str | None = None
+    calibration_version: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dimensions", MappingProxyType(dict(self.dimensions)))
@@ -296,6 +306,7 @@ class FrozenReplayPolicy:
     thresholds: Mapping[str, float]
     candidate_weights: Mapping[str, float]
     dimension_weights: Mapping[str, Mapping[str, float]]
+    local_strategy_weights: Mapping[str, Mapping[str, float]]
     risk_rules: Mapping[str, RiskRule]
 
     def __post_init__(self) -> None:
@@ -306,6 +317,13 @@ class FrozenReplayPolicy:
             "dimension_weights",
             MappingProxyType(
                 {name: MappingProxyType(dict(weights)) for name, weights in self.dimension_weights.items()}
+            ),
+        )
+        object.__setattr__(
+            self,
+            "local_strategy_weights",
+            MappingProxyType(
+                {name: MappingProxyType(dict(weights)) for name, weights in self.local_strategy_weights.items()}
             ),
         )
         object.__setattr__(self, "risk_rules", MappingProxyType(dict(self.risk_rules)))

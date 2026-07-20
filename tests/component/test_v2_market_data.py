@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 import requests
 
-from trader.application.ports import MarketDataUnavailable
+from trader.application.ports import (
+    MarketDataDeadlineExceeded,
+    MarketDataFailed,
+    MarketDataNoData,
+    MarketDataUnavailable,
+)
 from trader.application.workers import BoundedExecutor
 from trader.domain.models import Evidence, MarketQuote, Strategy
 from trader.domain.news import NewsSignalPolicy
@@ -23,6 +28,7 @@ from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.history import DailyBar
+from trader.infrastructure.market_data.router import VendorRoute, VendorSeverity, route
 from trader.infrastructure.market_data.service import MarketFeatureService
 from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
@@ -232,6 +238,43 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert health["sources"]["eastmoney"]["p95_latency_ms"] is not None
     assert health["sources"]["sina"]["planned_count"] == 1
     assert health["sources"]["sina"]["success_count"] == 1
+    assert health["route"]["status"] == "success"
+    assert health["route"]["degraded"] is True
+    assert health["route"]["used_vendor"] == "sina"
+    assert health["route"]["fallback_reason"] is None
+    assert [item["name"] for item in health["route"]["attempted_vendors"]] == ["eastmoney", "sina"]
+    assert health["route"]["attempted_vendors"][0]["status"] == "failed"
+    assert health["route"]["attempted_vendors"][1]["status"] == "success"
+
+
+def test_gateway_marks_circuit_open_vendor_as_skipped_in_route_health() -> None:
+    quote = _quote()
+    gateway = MarketDataGateway(
+        StaticMarketClient((quote,)),
+        StaticMarketClient((quote,)),
+        StaticTencentClient((quote,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=1,
+        circuit_breaker_seconds=60,
+    )
+    gateway._states["eastmoney"].open_until = gateway._monotonic() + 60.0
+
+    assert gateway.fetch_market() == (quote,)
+    health = gateway.health()
+
+    assert health["active_source"] == "sina"
+    assert health["route"]["status"] == "success"
+    assert health["route"]["degraded"] is True
+    assert health["route"]["used_vendor"] == "sina"
+    assert health["route"]["attempted_count"] == 2
+    assert health["route"]["failure_count"] == 0
+    assert health["route"]["skipped_count"] == 1
+    assert health["route"]["attempted_vendors"][0]["name"] == "eastmoney"
+    assert health["route"]["attempted_vendors"][0]["status"] == "skipped"
+    assert health["route"]["attempted_vendors"][0]["skipped"] is True
+    assert health["route"]["attempted_vendors"][0]["error"] == "circuit_open"
+    assert health["route"]["attempted_vendors"][1]["name"] == "sina"
+    assert health["route"]["attempted_vendors"][1]["status"] == "success"
 
 
 def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_call() -> None:
@@ -295,13 +338,74 @@ def test_gateway_reports_recoverable_unavailability_when_all_sources_fail() -> N
         circuit_breaker_seconds=60,
     )
 
-    with pytest.raises(MarketDataUnavailable, match="eastmoney:offline; sina:offline"):
+    with pytest.raises(MarketDataUnavailable, match=r"eastmoney: offline; sina: offline"):
         gateway.fetch_market()
 
     health = gateway.health()
     assert health["active_source"] == "unavailable"
     assert health["sources"]["eastmoney"]["circuit_open"] is True
     assert health["sources"]["sina"]["circuit_open"] is True
+    assert health["route"]["status"] == "failed"
+    assert health["route"]["fallback_reason"] == "failed"
+    assert health["route"]["used_vendor"] == "sina"
+    assert [item["name"] for item in health["route"]["attempted_vendors"]] == ["eastmoney", "sina"]
+    assert [item["status"] for item in health["route"]["attempted_vendors"]] == ["failed", "failed"]
+
+
+def test_gateway_health_records_no_data_route_fallback() -> None:
+    gateway = MarketDataGateway(
+        FailingMarketClient(),
+        StaticMarketClient(()),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=1,
+        circuit_breaker_seconds=60,
+    )
+
+    with pytest.raises(MarketDataUnavailable, match=r"sina: only 0 market rows;.*eastmoney: offline"):
+        gateway.fetch_market()
+
+    health = gateway.health()
+    assert health["route"]["status"] == "no_data"
+    assert health["route"]["fallback_reason"] == "no_data"
+    assert health["route"]["used_vendor"] is None
+    assert health["route"]["attempted_vendors"][0]["status"] == "failed"
+    assert health["route"]["attempted_vendors"][1]["status"] == "no_data"
+
+
+def test_market_data_router_prefers_no_data_over_failures() -> None:
+    def empty_payload() -> tuple[MarketQuote, ...]:
+        return ()
+
+    with pytest.raises(MarketDataNoData, match="insufficient rows") as exc_info:
+        route(
+            (
+                VendorRoute(
+                    "eastmoney",
+                    lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+                    VendorSeverity.REQUIRED,
+                ),
+                VendorRoute("sina", empty_payload, VendorSeverity.REQUIRED),
+            ),
+            on_no_data="insufficient rows",
+        )
+    message = str(exc_info.value)
+    assert "eastmoney: offline" in message
+    assert "sina: insufficient rows" in message
+
+
+def test_market_data_router_aggregates_required_failures() -> None:
+    def failing() -> tuple[MarketQuote, ...]:
+        raise RuntimeError("offline")
+
+    with pytest.raises(MarketDataFailed, match=r"eastmoney: offline; sina: offline") as exc_info:
+        route(
+            (
+                VendorRoute("eastmoney", failing, VendorSeverity.REQUIRED),
+                VendorRoute("sina", failing, VendorSeverity.REQUIRED),
+            )
+        )
+    assert str(exc_info.value).startswith("sina: ")
 
 
 def test_feature_service_rejects_targeted_quote_older_than_full_market_snapshot() -> None:
@@ -336,6 +440,39 @@ def test_feature_service_rejects_targeted_quote_older_than_full_market_snapshot(
     assert refreshed[0].quote.price == 12.5
     assert refreshed[0].quote.data_version == "market-v2"
     assert service.health()["quote_out_of_order_count"] == 1
+
+
+def test_feature_service_does_not_commit_full_market_result_after_deadline() -> None:
+    deadline = NOW + timedelta(seconds=1)
+    wall_times = iter((NOW, deadline))
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        wall_clock=lambda: next(wall_times),
+    )
+
+    with pytest.raises(MarketDataDeadlineExceeded, match="completed after"):
+        service.fetch_market_features(NOW, deadline=deadline)
+
+    assert service._market_features == ()
+
+
+def test_feature_service_does_not_commit_history_cache_after_deadline() -> None:
+    deadline = NOW + timedelta(seconds=1)
+    wall_times = iter((NOW, NOW, NOW, deadline))
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        wall_clock=lambda: next(wall_times, deadline),
+    )
+
+    with pytest.raises(MarketDataDeadlineExceeded, match="completed after"):
+        service.fetch_market_features(NOW, deadline=deadline)
+
+    assert service._history == {}
+    assert service._market_features == ()
 
 
 def test_feature_service_health_reports_bounded_quote_age_summaries() -> None:
@@ -818,6 +955,136 @@ def test_akshare_news_is_bounded_and_normalized() -> None:
     assert evidence[0].published_at.isoformat() == "2026-07-16T09:00:00+08:00"
     assert calls[0][1]["timeout"] == 8
     assert calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
+
+
+def test_akshare_news_response_is_cached_with_atomic_writer(tmp_path) -> None:
+    callback = "jQuery35101792940631092459_1764599530165"
+    payload = {
+        "result": {
+            "cmsArticleWebOld": [
+                {
+                    "title": "<em>测试股份</em>发布公告",
+                    "date": "2026-07-16 09:00:00",
+                    "mediaName": "交易所",
+                },
+            ]
+        }
+    }
+
+    def get(*args, **kwargs):
+        return FakeResponse(f"{callback}({json.dumps(payload, ensure_ascii=False)});")
+
+    AkshareResearchClient(
+        timeout_seconds=8,
+        get=get,
+        evidence_cache_dir=tmp_path,
+    ).fetch_news("600001", observed_at=NOW)
+
+    cached = json.loads((tmp_path / "raw" / "news" / "600001.json").read_text(encoding="utf-8"))
+
+    assert cached["source"] == "news"
+    assert cached["code"] == "600001"
+    assert "payload" in cached
+
+
+def test_research_cache_is_used_after_restart_before_source_request(tmp_path) -> None:
+    cache_dir = tmp_path / "evidence_cache"
+    cache_file = cache_dir / "observations" / "news" / "600001.json"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(
+        json.dumps(
+            {
+                "include_structured": False,
+                "expires_at": (NOW + timedelta(minutes=10)).isoformat(),
+                "observation": {
+                    "financial": None,
+                    "announcements": (),
+                    "announcements_available": False,
+                    "pledge_ratio_pct": None,
+                    "unlock_ratio_pct": None,
+                    "evidence": [
+                        {
+                            "evidence_id": "cached-news:1",
+                            "evidence_type": "news",
+                            "title": "缓存新闻",
+                            "source": "eastmoney_news",
+                            "published_at": "2026-07-16T09:00:00+08:00",
+                            "received_at": "2026-07-16T09:05:00+08:00",
+                            "data_version": "cached-v1",
+                        }
+                    ],
+                    "source_errors": [],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=FailingResearchClient(),
+        research_cache_dir=cache_dir,
+        research_workers=1,
+        wall_clock=lambda: NOW,
+    )
+    result = service.fetch_candidate_features(("600001",), NOW)
+
+    assert any(item.evidence_id == "cached-news:1" for item in result[0].evidence)
+
+
+def test_research_cache_expired_calls_research_client(tmp_path) -> None:
+    cache_dir = tmp_path / "evidence_cache"
+    cache_file = cache_dir / "observations" / "news" / "600001.json"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(
+        json.dumps(
+            {
+                "include_structured": False,
+                "expires_at": (NOW - timedelta(minutes=1)).isoformat(),
+                "observation": {
+                    "financial": None,
+                    "announcements": (),
+                    "announcements_available": False,
+                    "pledge_ratio_pct": None,
+                    "unlock_ratio_pct": None,
+                    "evidence": [
+                        {
+                            "evidence_id": "stale-news:1",
+                            "evidence_type": "news",
+                            "title": "过期缓存",
+                            "source": "eastmoney_news",
+                            "published_at": "2026-07-16T09:00:00+08:00",
+                            "received_at": "2026-07-16T09:05:00+08:00",
+                            "data_version": "cached-v1",
+                        }
+                    ],
+                    "source_errors": [],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    research = StaticResearchClient(
+        (Evidence("fresh-news", "news", "实时抓取", "eastmoney_news", NOW - timedelta(hours=1)),)
+    )
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=research,
+        research_cache_dir=cache_dir,
+        research_workers=1,
+        wall_clock=lambda: NOW,
+    )
+    result = service.fetch_candidate_features(("600001",), NOW)
+
+    assert research.calls == 1
+    assert any(item.evidence_id == "fresh-news" for item in result[0].evidence)
 
 
 def test_akshare_structured_research_is_point_in_time_and_builds_real_long_inputs() -> None:

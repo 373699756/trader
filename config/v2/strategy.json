@@ -31,6 +31,37 @@
     "industry_strength": 0.1,
     "data_completeness": 0.1
   },
+  "local_strategy_weights": {
+    "today": {
+      "momentum": 0.35,
+      "liquidity": 0.25,
+      "industry": 0.10,
+      "sentiment": 0.20,
+      "protection": 0.10
+    },
+    "tomorrow": {
+      "liquidity": 0.25,
+      "momentum": 0.15,
+      "trend": 0.20,
+      "historical_edge": 0.15,
+      "execution": 0.10,
+      "tail_structure": 0.15
+    },
+    "d25": {
+      "momentum": 0.30,
+      "trend": 0.25,
+      "liquidity": 0.20,
+      "execution": 0.15,
+      "not_overheated": 0.10
+    },
+    "long": {
+      "value": 0.30,
+      "growth": 0.25,
+      "quality": 0.20,
+      "industry_policy": 0.15,
+      "protection": 0.10
+    }
+  },
   "today_news_signal": {
     "lookback_hours": 72,
     "freshness_full_score_hours": 1,
@@ -351,6 +382,7 @@
     "volatility_20d": {"factor_id":"volatility_20d","strategies":["today","tomorrow","d25","long"],"raw_inputs":["forward_adjusted_close"],"formula":"population standard deviation of 20 daily returns in percentage points","unit":"percentage_points","direction":"lower_better","observation_time":"point_in_time","adjustment":"forward","lookback_window":20,"minimum_samples":21,"winsorization":{"enabled":false,"lower_quantile":0.025,"upper_quantile":0.975},"normalization":"none","missing_policy":"missing_and_record","output_range":[0,1000],"version":"1"}
   },
   "factor_contract": {
+    "feature_schema_version": "feature_schema_v1",
     "percentage_unit": "percentage_points",
     "realtime_price_adjustment": "none",
     "history_price_adjustment": "forward",

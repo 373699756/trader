@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from trader.domain.models import FeatureSnapshot
 from trader.domain.strategies.composition import LocalScoreResult, compose, liquidity_score, normalized
 
@@ -15,7 +17,8 @@ COMPONENT_WEIGHTS = {
 }
 
 
-def score_tomorrow(snapshot: FeatureSnapshot) -> LocalScoreResult:
+def score_tomorrow(snapshot: FeatureSnapshot, component_weights: Mapping[str, float] | None = None) -> LocalScoreResult:
+    component_weights = COMPONENT_WEIGHTS if component_weights is None else component_weights
     momentum = (
         0.35 * normalized(snapshot, "relative_strength_5d")
         + 0.25 * normalized(snapshot, "relative_strength_20d")
@@ -52,7 +55,7 @@ def score_tomorrow(snapshot: FeatureSnapshot) -> LocalScoreResult:
             "execution": execution,
             "tail_structure": tail_structure,
         },
-        COMPONENT_WEIGHTS,
+        component_weights,
     )
 
 

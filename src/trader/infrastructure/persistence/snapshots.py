@@ -28,6 +28,7 @@ from trader.domain.models import (
     ScoreBreakdown,
     Strategy,
 )
+from trader.domain.strategies import DEFAULT_STRATEGY_WEIGHTS
 
 SNAPSHOT_SCHEMA_VERSION = "recommendation_snapshot_v2"
 
@@ -172,6 +173,7 @@ def _replay_policy_to_dict(policy: FrozenReplayPolicy) -> dict[str, object]:
         },
         "candidate_weights": dict(policy.candidate_weights),
         "dimension_weights": {name: dict(weights) for name, weights in policy.dimension_weights.items()},
+        "local_strategy_weights": {name: dict(weights) for name, weights in policy.local_strategy_weights.items()},
         "risk_rules": {
             code: {
                 "risk_code": rule.risk_code,
@@ -200,6 +202,11 @@ def _replay_policy_from_dict(raw: Mapping[str, object]) -> FrozenReplayPolicy:
     thresholds = _object(selection, "thresholds")
     candidate_weights = _object(raw, "candidate_weights")
     dimension_weights = _object(raw, "dimension_weights")
+    local_strategy_weights = (
+        _object(raw, "local_strategy_weights")
+        if "local_strategy_weights" in raw
+        else {strategy.value: dict(weights) for strategy, weights in DEFAULT_STRATEGY_WEIGHTS.items()}
+    )
     risk_rules = _object(raw, "risk_rules")
     return FrozenReplayPolicy(
         strategy_version=_text(raw, "strategy_version"),
@@ -217,6 +224,7 @@ def _replay_policy_from_dict(raw: Mapping[str, object]) -> FrozenReplayPolicy:
         thresholds=_number_mapping(thresholds),
         candidate_weights=_number_mapping(candidate_weights),
         dimension_weights=_nested_number_mapping(dimension_weights),
+        local_strategy_weights=_nested_number_mapping(local_strategy_weights),
         risk_rules=_risk_rule_mapping(risk_rules),
     )
 
@@ -499,6 +507,7 @@ def _review_to_dict(review: DeepSeekReview) -> dict[str, object]:
     return {
         "code": review.code,
         "outcome": review.outcome.value,
+        "rating": review.rating,
         "dimensions": {
             name: {
                 "name": dimension.name,
@@ -512,6 +521,15 @@ def _review_to_dict(review: DeepSeekReview) -> dict[str, object]:
             for name, dimension in review.dimensions.items()
         },
         "risk_facts": [_risk_fact_to_dict(fact) for fact in review.risk_facts],
+        "review_stage": review.review_stage,
+        "challenger_status": review.challenger_status,
+        "requested_model": review.requested_model,
+        "actual_model": review.actual_model,
+        "thinking_mode": review.thinking_mode,
+        "raw_confidence": review.raw_confidence,
+        "calibrated_confidence": review.calibrated_confidence,
+        "evidence_manifest_hash": review.evidence_manifest_hash,
+        "calibration_version": review.calibration_version,
         "completed_at": review.completed_at.isoformat(),
         "error": review.error,
     }
@@ -547,6 +565,16 @@ def _review_from_dict(raw: Mapping[str, object]) -> DeepSeekReview:
         else (),
         completed_at=datetime.fromisoformat(_text(raw, "completed_at")),
         error=str(raw.get("error") or ""),
+        review_stage=_optional_text(raw, "review_stage") or "primary",
+        challenger_status=_optional_text(raw, "challenger_status") or "not_run",
+        requested_model=_optional_text(raw, "requested_model"),
+        actual_model=_optional_text(raw, "actual_model"),
+        thinking_mode=_optional_text(raw, "thinking_mode"),
+        raw_confidence=_optional_number(raw.get("raw_confidence")),
+        calibrated_confidence=_optional_number(raw.get("calibrated_confidence")),
+        evidence_manifest_hash=_optional_text(raw, "evidence_manifest_hash"),
+        calibration_version=_optional_text(raw, "calibration_version"),
+        rating=_optional_text(raw, "rating") or "neutral",
     )
 
 
@@ -684,6 +712,16 @@ def _text(raw: Mapping[str, object], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{key} must be a non-empty string")
     return value
+
+
+def _optional_text(raw: Mapping[str, object], key: str) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string when present")
+    stripped = value.strip()
+    return stripped if stripped else None
 
 
 def _integer(raw: Mapping[str, object], key: str) -> int:

@@ -7,9 +7,41 @@ import json
 import math
 from collections.abc import Iterable, Mapping
 from datetime import datetime
+from enum import Enum
 
 from trader.domain.factors import clamp
 from trader.domain.models import Evidence, FeatureSnapshot, RiskFact, RiskRule, Strategy
+
+
+class Rating(str, Enum):
+    """Explicit mapping from DeepSeek free-text assessment to local action labels.
+
+    Used to bridge unstructured model output with deterministic local decisions.
+    The fallback is always ``NEUTRAL`` — missing or unparseable text must not
+    be silently promoted.
+    """
+
+    BULLISH = "bullish"
+    BEARISH = "bearish"
+    NEUTRAL = "neutral"
+
+
+def parse_rating(text: str, *, fallback: Rating = Rating.NEUTRAL) -> Rating:
+    """Parse a free-text rating string into a ``Rating`` enum.
+
+    Only exact known labels are accepted; unknown or empty strings return
+    *fallback*.
+    """
+    if not text or not text.strip():
+        return fallback
+    normalized = text.strip().lower()
+    if normalized in {"bullish", "看多", "积极"}:
+        return Rating.BULLISH
+    if normalized in {"bearish", "看空", "消极"}:
+        return Rating.BEARISH
+    if normalized in {"neutral", "中性"}:
+        return Rating.NEUTRAL
+    return fallback
 
 
 def derive_local_risk_facts(
@@ -194,8 +226,10 @@ def _fact_from_rule(
 
 
 __all__ = [
+    "Rating",
     "aggregate_risk_penalty",
     "deduplicate_risk_facts",
     "derive_local_risk_facts",
     "map_deepseek_risk_facts",
+    "parse_rating",
 ]

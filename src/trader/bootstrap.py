@@ -1,4 +1,4 @@
-"""Composition root for the v2 application."""
+"""Unique composition root for the v2 application."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from trader.domain.fusion import FusionPolicy
 from trader.domain.models import RiskRule, Strategy
 from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
 from trader.infrastructure.deepseek.cache import ReviewCache
-from trader.infrastructure.deepseek.client import DeepSeekHttpClient
+from trader.infrastructure.deepseek.factory import create_deepseek_client
 from trader.infrastructure.deepseek.reviewer import DeepSeekReviewer
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.calendar import ChinaTradingCalendar
@@ -31,6 +31,7 @@ from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.service import MarketFeatureService
 from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
+from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter
 from trader.infrastructure.persistence.writer import SnapshotRepository
 from trader.infrastructure.settings import (
     LongWatchlist,
@@ -69,14 +70,18 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     watchlist = load_long_watchlist(settings.long_watchlist_path)
     now = _utc_now
     cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
+    queue_capacity = max(settings.pipeline.event_queue_size, settings.market_data.candidate_pool_size * 3)
     data_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers,
-        queue_capacity=max(
-            settings.pipeline.event_queue_size,
-            settings.market_data.candidate_pool_size * 3,
-        ),
+        queue_capacity=queue_capacity,
         thread_name_prefix="trader-data",
     )
+    persistence_pool = BoundedExecutor(
+        worker_count=1,
+        queue_capacity=max(1, settings.pipeline.event_queue_size),
+        thread_name_prefix="trader-persistence",
+    )
+    json_writer = RuntimeJsonWriter(persistence_pool)
 
     eastmoney = EastmoneyClient(
         timeout_seconds=settings.market_data.eastmoney_timeout_seconds,
@@ -93,7 +98,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         workers=settings.pipeline.market_workers,
         worker_pool=data_pool,
     )
-    market_gateway = MarketDataGateway(
+    gateway = MarketDataGateway(
         eastmoney,
         SinaClient(timeout_seconds=settings.market_data.eastmoney_timeout_seconds),
         TencentClient(timeout_seconds=settings.market_data.candidate_timeout_seconds),
@@ -101,8 +106,9 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
         circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
     )
+    evidence_cache_dir = settings.runtime_dir / "evidence_cache"
     market_data = MarketFeatureService(
-        market_gateway,
+        gateway,
         history,
         FeatureBuilder(
             strategy.today_news_signal,
@@ -113,6 +119,8 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         research_client=AkshareResearchClient(
             timeout_seconds=settings.market_data.research_timeout_seconds,
             long_research_policy=strategy.long_research,
+            evidence_cache_dir=evidence_cache_dir,
+            json_writer=json_writer,
         ),
         intraday_client=intraday,
         history_workers=settings.pipeline.market_workers,
@@ -121,6 +129,8 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         intraday_batch_timeout_seconds=settings.market_data.candidate_timeout_seconds,
         intraday_cache_limit=settings.market_data.candidate_pool_size * 3,
         history_preload_limit=settings.market_data.candidate_pool_size * 3,
+        research_cache_dir=evidence_cache_dir,
+        json_writer=json_writer,
         market_ttl_seconds=min(cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
         worker_pool=data_pool,
         wall_clock=now,
@@ -138,7 +148,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     reviewer = DeepSeekReviewer(
         settings.deepseek,
         budget,
-        DeepSeekHttpClient(),
+        create_deepseek_client(),
         ReviewCache(maximum_entries=2000, ttl_seconds=600),
         dimension_weights={Strategy(name): weights for name, weights in strategy.dimension_weights.items()},
         strategy_version=strategy.strategy_version,
@@ -152,7 +162,6 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         client_queue_size=settings.api.sse_client_queue_size,
         maximum_subscribers=settings.api.sse_max_clients,
     )
-    policy = _recommendation_policy(strategy)
     pipeline = RecommendationPipeline(
         market_data,
         calendar,
@@ -160,7 +169,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         repository,
         repository,
         publisher,
-        RecommendationEngine(policy),
+        RecommendationEngine(_recommendation_policy(strategy)),
         state,
         config_version=effective_config_version,
         candidate_pool_size=settings.market_data.candidate_pool_size,
@@ -172,6 +181,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         strategy_workers=settings.pipeline.strategy_workers,
         deepseek_workers=settings.pipeline.deepseek_workers,
         data_pool=data_pool,
+        persistence_pool=persistence_pool,
         market_data_manages_workers=True,
         cadence_policy=cadence_policy,
         long_codes=tuple(item.code for item in watchlist.items),
@@ -197,17 +207,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
         ),
     )
-    return ApplicationSystem(
-        settings=settings,
-        strategy=strategy,
-        watchlist=watchlist,
-        app=app,
-        supervisor=supervisor,
-        pipeline=pipeline,
-        repository=repository,
-        publisher=publisher,
-        state=state,
-    )
+    return ApplicationSystem(settings, strategy, watchlist, app, supervisor, pipeline, repository, publisher, state)
 
 
 def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
@@ -231,6 +231,7 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
         ),
         candidate_weights=settings.candidate_weights,
         dimension_weights={Strategy(name): weights for name, weights in settings.dimension_weights.items()},
+        local_strategy_weights={Strategy(name): weights for name, weights in settings.local_strategy_weights.items()},
         risk_rules={
             rule.risk_code: RiskRule(
                 risk_code=rule.risk_code,

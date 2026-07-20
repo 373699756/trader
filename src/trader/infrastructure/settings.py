@@ -14,6 +14,7 @@ from trader.domain.factors import PRODUCTION_FACTOR_IDS
 from trader.domain.news import NewsSignalPolicy
 from trader.domain.research import D25SignalPolicy, LongResearchPolicy
 from trader.domain.tail import TailSignalPolicy
+from trader.infrastructure.market_data.features import FEATURE_SCHEMA_NAMES, FEATURE_SCHEMA_VERSION
 from trader.infrastructure.settings_parser import (
     ConfigurationError,
 )
@@ -208,6 +209,7 @@ class StrategySettings:
     d25_signal: D25SignalPolicy
     long_research: LongResearchPolicy
     dimension_weights: Mapping[str, Mapping[str, float]]
+    local_strategy_weights: Mapping[str, Mapping[str, float]]
     risk_rules: tuple[RiskRuleSettings, ...]
     factor_contract: Mapping[str, object]
     factor_registry: Mapping[str, FactorDefinition]
@@ -329,6 +331,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         raise ConfigurationError("risk_rules must be a list")
     risk_rules = tuple(_parse_risk_rule(item, index) for index, item in enumerate(rules_raw))
     dimension_weights = _nested_number_mapping(raw, "dimension_weights")
+    local_strategy_weights = _nested_number_mapping(raw, "local_strategy_weights")
     today_news_signal = _parse_news_signal_policy(_mapping(raw, "today_news_signal"))
     tomorrow_tail_signal = _parse_tail_signal_policy(_mapping(raw, "tomorrow_tail_signal"))
     d25_signal = _parse_d25_signal_policy(_mapping(raw, "d25_signal"))
@@ -370,6 +373,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         d25_signal=d25_signal,
         long_research=long_research,
         dimension_weights=dimension_weights,
+        local_strategy_weights=local_strategy_weights,
         risk_rules=risk_rules,
         factor_contract=dict(_mapping(raw, "factor_contract")),
         factor_registry=factor_registry,
@@ -837,6 +841,18 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
             "risk_quality",
         }:
             raise ConfigurationError(f"dimension_weights.{strategy} must define the five review dimensions")
+    if set(settings.local_strategy_weights) != required_strategies:
+        raise ConfigurationError("local_strategy_weights must define today, tomorrow, d25 and long")
+    required_local_components: dict[str, set[str]] = {
+        "today": {"momentum", "liquidity", "industry", "sentiment", "protection"},
+        "tomorrow": {"liquidity", "momentum", "trend", "historical_edge", "execution", "tail_structure"},
+        "d25": {"momentum", "trend", "liquidity", "execution", "not_overheated"},
+        "long": {"value", "growth", "quality", "industry_policy", "protection"},
+    }
+    for strategy, weights in settings.local_strategy_weights.items():
+        _validate_weight_sum(f"local_strategy_weights.{strategy}", weights)
+        if set(weights) != required_local_components[strategy]:
+            raise ConfigurationError(f"local_strategy_weights.{strategy} components are invalid")
     risk_codes = [rule.risk_code for rule in settings.risk_rules]
     if len(risk_codes) != len(set(risk_codes)):
         raise ConfigurationError("risk rule codes must be unique")
@@ -850,6 +866,7 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
     _validate_tomorrow_tail_factor_contract(settings)
     _validate_d25_factor_contract(settings)
     _validate_long_research_factor_contract(settings)
+    _validate_feature_schema_contract(settings)
     required_risk_codes = {
         "near_limit_crowding",
         "price_volume_divergence",
@@ -877,6 +894,35 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         existing = group_modes.setdefault(rule.group, rule.combination_mode)
         if existing != rule.combination_mode:
             raise ConfigurationError(f"risk group {rule.group} mixes combination modes")
+
+
+def _validate_feature_schema_contract(settings: StrategySettings) -> None:
+    version = settings.factor_contract.get("feature_schema_version")
+    if not isinstance(version, str):
+        raise ConfigurationError("factor_contract.feature_schema_version is required")
+    if version != FEATURE_SCHEMA_VERSION:
+        raise ConfigurationError(
+            f"factor_contract.feature_schema_version mismatch: expected={FEATURE_SCHEMA_VERSION}, got={version}"
+        )
+    configured_names = settings.factor_contract.get("feature_names")
+    if configured_names is not None:
+        if not isinstance(configured_names, list):
+            raise ConfigurationError("factor_contract.feature_names must be a list")
+        configured = set(configured_names)
+        required = set(FEATURE_SCHEMA_NAMES)
+        missing = sorted(required - configured)
+        extra = sorted(configured - required)
+        if missing or extra:
+            raise ConfigurationError(
+                f"factor_contract.feature_names mismatch configured feature schema: missing={missing}, extra={extra}"
+            )
+    if (registered_names := settings.factor_contract.get("feature_schema_expected")) is not None:
+        if not isinstance(registered_names, int):
+            raise ConfigurationError("factor_contract.feature_schema_expected must be int")
+        if registered_names != len(FEATURE_SCHEMA_NAMES):
+            raise ConfigurationError(
+                f"factor_contract.feature_schema_expected mismatch: expected={len(FEATURE_SCHEMA_NAMES)}, got={registered_names}"
+            )
 
 
 def _validate_tomorrow_tail_factor_contract(settings: StrategySettings) -> None:

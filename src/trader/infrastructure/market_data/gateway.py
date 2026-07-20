@@ -10,9 +10,10 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Generic, TypeVar, cast
 
-from trader.application.ports import MarketDataUnavailable
+from trader.application.ports import MarketDataFailed, MarketDataNoData, MarketDataUnavailable
 from trader.domain.models import MarketQuote
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
+from trader.infrastructure.market_data.router import RouteOutcome, VendorRoute, VendorSeverity, route
 from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
 
@@ -93,44 +94,42 @@ class MarketDataGateway:
         self._states = {"eastmoney": _CircuitState(), "sina": _CircuitState(), "tencent": _CircuitState()}
         self._latest_by_code: dict[str, MarketQuote] = {}
         self._latest_source = "unavailable"
+        self._last_route_outcome: RouteOutcome | None = None
 
     def fetch_market(self) -> Sequence[MarketQuote]:
         return self._market_flight.run(self._fetch_market_once)
 
     def _fetch_market_once(self) -> Sequence[MarketQuote]:
-        errors: list[str] = []
-        last_exception: Exception | None = None
-        for name, fetcher in (("eastmoney", self._eastmoney.fetch_market), ("sina", self._sina.fetch_market)):
-            self._record_planned(name)
-            if self._is_open(name):
-                errors.append(f"{name}:circuit_open")
-                continue
-            started = self._monotonic()
-            try:
-                quotes = tuple(fetcher())
-                if len(quotes) < self._minimum_market_rows:
-                    raise RuntimeError(f"only {len(quotes)} market rows")
-            except Exception as exc:
-                last_exception = exc
-                self._record(name, False, started, str(exc))
-                errors.append(f"{name}:{exc}")
-                continue
-            self._record(name, True, started, "")
+        vendor_routes = (
+            VendorRoute(
+                "eastmoney",
+                lambda: self._fetch_from_vendor("eastmoney", self._eastmoney.fetch_market),
+                VendorSeverity.REQUIRED,
+            ),
+            VendorRoute(
+                "sina", lambda: self._fetch_from_vendor("sina", self._sina.fetch_market), VendorSeverity.REQUIRED
+            ),
+        )
+        try:
+            outcome = route(vendor_routes, on_no_data="insufficient rows")
+        except (MarketDataFailed, MarketDataNoData) as exc:
+            outcome = _route_outcome_from_exception(exc)
             with self._state_lock:
-                for quote in quotes:
-                    current = self._latest_by_code.get(quote.code)
-                    if current is None or _quote_version(quote) > _quote_version(current):
-                        self._latest_by_code[quote.code] = quote
-                self._latest_source = name
-                return tuple(self._latest_by_code.values())
+                self._last_route_outcome = outcome
+            with self._state_lock:
+                cached = tuple(self._latest_by_code.values())
+            if cached:
+                return cached
+            raise MarketDataUnavailable("market data unavailable: " + str(exc)) from exc
+        quotes = tuple(cast(Sequence[MarketQuote], outcome.result))
         with self._state_lock:
-            cached = tuple(self._latest_by_code.values())
-        if cached:
-            return cached
-        unavailable = MarketDataUnavailable("market data unavailable: " + "; ".join(errors))
-        if last_exception is not None:
-            raise unavailable from last_exception
-        raise unavailable
+            for quote in quotes:
+                current = self._latest_by_code.get(quote.code)
+                if current is None or _quote_version(quote) > _quote_version(current):
+                    self._latest_by_code[quote.code] = quote
+            self._latest_source = outcome.vendor
+            self._last_route_outcome = outcome
+            return tuple(self._latest_by_code.values())
 
     def fetch_candidates(self, codes: Sequence[str]) -> Sequence[MarketQuote]:
         if not codes:
@@ -138,6 +137,7 @@ class MarketDataGateway:
         with self._candidate_fetch_lock:
             self._record_planned("tencent")
             if self._is_open("tencent"):
+                self._record_skipped_open("tencent")
                 with self._state_lock:
                     return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
             started = self._monotonic()
@@ -178,6 +178,7 @@ class MarketDataGateway:
             return {
                 "active_source": self._latest_source,
                 "cached_rows": len(self._latest_by_code),
+                "route": _route_health(self._last_route_outcome),
                 "sources": {
                     name: {
                         "planned_count": state.planned_count,
@@ -202,6 +203,27 @@ class MarketDataGateway:
         with self._state_lock:
             return self._states[source].open_until > self._monotonic()
 
+    def _fetch_from_vendor(self, source: str, fetcher: Callable[[], Sequence[MarketQuote]]) -> Sequence[MarketQuote]:
+        self._record_planned(source)
+        if self._is_open(source):
+            self._record_skipped_open(source)
+            raise MarketDataFailed(source, "circuit_open")
+        started = self._monotonic()
+        try:
+            quotes = tuple(fetcher())
+        except MarketDataNoData as exc:
+            self._record(source, False, started, str(exc))
+            raise
+        except Exception as exc:
+            self._record(source, False, started, str(exc))
+            raise MarketDataFailed(source, str(exc)) from exc
+        if len(quotes) < self._minimum_market_rows:
+            error = MarketDataNoData(f"{source}: only {len(quotes)} market rows")
+            self._record(source, False, started, str(error))
+            raise error
+        self._record(source, True, started, "")
+        return quotes
+
     def _record(self, source: str, success: bool, started: float, error: str) -> None:
         elapsed_ms = (self._monotonic() - started) * 1000.0
         with self._state_lock:
@@ -219,6 +241,77 @@ class MarketDataGateway:
             state.last_error = error[:240]
             if state.failures >= self._failure_limit:
                 state.open_until = self._monotonic() + self._breaker_seconds
+
+    def _record_skipped_open(self, source: str) -> None:
+        with self._state_lock:
+            state = self._states[source]
+            state.error_count += 1
+            state.last_error = "circuit_open"
+
+
+def _route_health(last_route: RouteOutcome | None) -> Mapping[str, object]:
+    if not isinstance(last_route, RouteOutcome):
+        return {
+            "status": "idle",
+            "used_vendor": None,
+            "degraded": False,
+            "fallback_reason": None,
+            "attempted_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "no_data_count": 0,
+            "skipped_count": 0,
+            "attempted_vendors": (),
+        }
+    attempted_vendors = [
+        {
+            "name": vendor.name,
+            "status": vendor.status,
+            "severity": vendor.severity.value,
+            "error": vendor.error,
+            "skipped": vendor.skipped,
+            "duration_ms": round(vendor.duration_ms, 2) if vendor.duration_ms is not None else None,
+        }
+        for vendor in last_route.results
+    ]
+    return {
+        "status": last_route.status,
+        "used_vendor": last_route.vendor or None,
+        "degraded": last_route.degraded,
+        "fallback_reason": last_route.fallback_reason,
+        "attempted_count": len(last_route.results),
+        "success_count": sum(1 for vendor in last_route.results if vendor.status == "success"),
+        "failure_count": sum(1 for vendor in last_route.results if vendor.status == "failed"),
+        "no_data_count": sum(1 for vendor in last_route.results if vendor.status == "no_data"),
+        "skipped_count": sum(1 for vendor in last_route.results if vendor.skipped),
+        "attempted_vendors": attempted_vendors,
+    }
+
+
+def _route_outcome_from_exception(exc: Exception) -> RouteOutcome:
+    route_outcome = getattr(exc, "route_outcome", None)
+    if isinstance(route_outcome, RouteOutcome):
+        return route_outcome
+    if isinstance(exc, MarketDataNoData):
+        return RouteOutcome(
+            result=None,
+            vendor="",
+            results=(),
+            degraded=True,
+            status="no_data",
+            fallback_reason="no_data",
+        )
+    if isinstance(exc, MarketDataFailed):
+        vendor = str(getattr(exc, "vendor", "all_vendors"))
+        return RouteOutcome(
+            result=None,
+            vendor=vendor,
+            results=(),
+            degraded=True,
+            status="failed",
+            fallback_reason="failed",
+        )
+    return RouteOutcome(result=None, vendor="", results=(), degraded=True, status="failed", fallback_reason="failed")
 
 
 def _percentile(values: Sequence[float], quantile: float) -> float | None:
