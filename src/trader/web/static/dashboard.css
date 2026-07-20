@@ -60,7 +60,8 @@ tr:focus-visible {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) 36px;
   align-items: center;
-  gap: 18px;
+  column-gap: 18px;
+  row-gap: 6px;
   padding: 10px 18px;
   border-bottom: 1px solid var(--line);
   background: #141719;
@@ -112,6 +113,44 @@ tr:focus-visible {
 .runtime-strip b {
   color: var(--text);
   font-weight: 600;
+}
+
+.app-header > .brand {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.app-header > .runtime-strip {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.app-header > .icon-button {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.runtime-error {
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  column-gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgb(255 255 255 / 6%);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.runtime-error b {
+  min-width: 0;
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .status-dot {
@@ -596,12 +635,20 @@ noscript {
     grid-template-columns: minmax(0, 1fr) 36px;
   }
 
+  .app-header > .icon-button {
+    grid-column: 2;
+  }
+
   .runtime-strip {
     grid-column: 1 / -1;
     grid-row: 2;
     justify-content: flex-start;
     overflow-x: auto;
     padding-bottom: 2px;
+  }
+
+  .runtime-error {
+    grid-row: 3;
   }
 
   .summary-band {

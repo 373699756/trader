@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <title>A股策略看板</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='3') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='4') }}" />
     <script defer src="{{ url_for('static', filename='render.js', v='5') }}"></script>
     <script defer src="{{ url_for('static', filename='dashboard.js', v='6') }}"></script>
   </head>
@@ -26,11 +26,14 @@
         <span>评分 <b id="scoreTime">-</b></span>
         <span>DeepSeek 已用/剩余 <b id="budgetStatus">0 / 188</b></span>
         <span>冻结 <b id="headerFreeze">-</b></span>
-        <span>最近错误 <b id="lastError">无</b></span>
       </div>
       <button id="refreshButton" class="icon-button" type="button" title="刷新当前策略" aria-label="刷新当前策略">
         <svg class="lucide-icon" aria-hidden="true"><use href="{{ url_for('static', filename='lucide.svg') }}#refresh-cw"></use></svg>
       </button>
+      <div class="runtime-error" role="status" aria-live="polite">
+        <span>最近错误</span>
+        <b id="lastError">无</b>
+      </div>
     </header>
 
     <main class="workspace">
