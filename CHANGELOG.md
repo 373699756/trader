@@ -63,6 +63,9 @@ All notable changes to this project are documented here.
 - 新增 SQLite/不可变 JSON staged-committed 冻结协议、哈希校验、隔离恢复、优先事件重放和跨平台单进程锁。
 - 新增只读推荐 API、ETag、有界审计查询、SSE 游标恢复/慢客户端隔离及包内桌面工作台资源。
 - 新增分层单元、组件、契约和集成测试，以及根级 `AGENTS.md`、迁移清单和 v2 运行手册。
+- 用户诉求：为 `docs/hi.md` 增加性能、缓存和实时性优化计划。计划新增独立 v17
+  等价硬化批次，并把 v15 行情缓存、v16 评分缓存、固定录制负载、延迟/数据年龄/
+  内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
 
@@ -119,6 +122,10 @@ All notable changes to this project are documented here.
 - 最终分固定为 `clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)`，并以 `ROUND_HALF_UP` 保留两位。
 - Web 产品范围固定为个人 PC 桌面浏览器；发布验收分辨率为 1280x720、1440x900 和 1920x1080，手机和平板不在范围内。
 - v1 需求、设计、研究登记和配置移入 `docs/archive/v1`，`docs/need.md` 成为唯一活动业务契约。
+- `docs/hi.md` 的后续交付由两个功能批次扩展为三个独立批次：v15/v16分别建立缓存
+  正确性，v17只在固定业务投影和冻结哈希不变的前提下测量并优化。缓存策略只从
+  `runtime.json.market_data.cache_policy` 注入，性能预算只从
+  `runtime.json.performance_budgets` 读取，禁止适配器、评分lane或性能脚本自带默认值。
 
 ### Fixed
 
@@ -176,6 +183,9 @@ All notable changes to this project are documented here.
 - 配置拒绝 NaN/Infinity，启动时锁定五维键、预算桶、阈值键和 0.68/0.32 融合契约。
 - SSE 对超前或过期游标统一要求 resync；慢客户端不会阻塞发布线程。
 - 修正桌面表头覆盖首行以及 Tab/SSE 在途请求竞态，迟到响应不再覆盖用户当前策略。
+- 补齐原计划只有功能验收、缺少统一性能基线和缓存容量契约的问题：现固定5500只
+  全市场行情、三板各120只候选、冷/热轮次、nearest-rank P95、256 MiB项目缓存
+  上限、规范JSON字节估算、100 tick增长公式和绝对/相对退化失败条件。
 
 ### Removed
 
@@ -197,6 +207,8 @@ All notable changes to this project are documented here.
 - 删除活动 `stock_analyzer` 包、根 `app.py`、旧 static/templates、旧配置和重复 requirements。
 - 删除验证、回测、自动调参、预测、paper trading、OOS/实验功能及其 Web 路由、资源和旧测试。
 - 删除根 `analysis`、`experiments` 活动产物和旧依赖指纹脚本；有保留价值的资料仅归档，不进入 wheel。
+- 本批未删除或修改活动策略、风险、融合、冻结、API、UI、配置和代码；计划明确不引入
+  第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
 
@@ -248,6 +260,13 @@ All notable changes to this project are documented here.
 - 无界面 Chrome 在 1280x720、1440x900、1920x1080 下均渲染 3 行 fixture，页面无横向溢出，抽屉在视口内且无脚本异常。
 - 浏览器竞态测试通过：延迟 today 响应后立即切换 tomorrow，迟到响应未覆盖当前 Tab。
 - `./run.sh validate-config`、架构 AST、无副作用 app factory、冻结恢复、预算并发和 SSE 慢客户端契约均已纳入门禁。
+- 本批性能/缓存/实时性计划通过 `markdownlint docs/hi.md` 和
+  `git diff --check -- docs/hi.md CHANGELOG.md`；当前工作树的 `make format-check`、
+  `make lint`、111个源码文件mypy和 `make package` 通过。完整pytest收集452项，451项
+  通过，唯一失败是本批开始前未提交DeepSeek改动新增的候选排序稳定性测试；导出的
+  已推送基线420项完整通过。最终wheel安装到仓库外 `/tmp` 后可隔离导入，两个CLI、
+  配置校验、`pip check` 和模板/4个CSS/2个JavaScript/2个SVG共9项资源通过。本批未改
+  活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
 
@@ -290,3 +309,10 @@ All notable changes to this project are documented here.
 - 用户已确认现有 `DEEPSEEK_API_KEY` 有效，但当前运行服务状态为 `configured=false`，说明密钥未注入该进程；密钥有效性不再列为阻塞原因，使用该密钥重启后产生非零真实调用与阶段总结仍是待留存的发布证据。
 - 当前 Linux 环境没有 PowerShell，`run.ps1`/`run.bat` 已静态审查，仍需在 Windows PC 实机验证创建虚拟环境、单进程锁和 Ctrl+C 停止。
 - 外部行情提供方可能发生字段或限流变化；组件测试使用脱敏固定响应，首次真实运行应观察来源覆盖、熔断和降级状态。
+- 本批只完善待执行计划，v15-v17缓存、性能CLI和实时性硬化尚未进入活动实现；256 MiB、
+  各路径P95及5%相对退化值是后续验收预算，不是已测得的性能提升。真实交易日上游
+  尾延迟、数据覆盖和前瞻收益仍需另行留证，工程性能通过也不得表述为收益提高。
+- 当前未提交DeepSeek工作树仍有
+  `test_prompt_sorts_candidates_by_code_for_stable_batch_content` 失败，导致当前代码树完整
+  pytest门禁未全绿；该实现与测试不属于本批，必须由其所有批次修复并独立提交。本批
+  无界面变化，三档桌面验收沿用此前已通过证据，不能替代后续活动UI变化后的重测。
