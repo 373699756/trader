@@ -262,11 +262,10 @@ All notable changes to this project are documented here.
 - `./run.sh validate-config`、架构 AST、无副作用 app factory、冻结恢复、预算并发和 SSE 慢客户端契约均已纳入门禁。
 - 本批性能/缓存/实时性计划通过 `markdownlint docs/hi.md` 和
   `git diff --check -- docs/hi.md CHANGELOG.md`；当前工作树的 `make format-check`、
-  `make lint`、111个源码文件mypy和 `make package` 通过。完整pytest收集452项，451项
-  通过，唯一失败是本批开始前未提交DeepSeek改动新增的候选排序稳定性测试；导出的
-  已推送基线420项完整通过。最终wheel安装到仓库外 `/tmp` 后可隔离导入，两个CLI、
-  配置校验、`pip check` 和模板/4个CSS/2个JavaScript/2个SVG共9项资源通过。本批未改
-  活动UI、API或运行逻辑，未重复三档桌面截图。
+  `make lint`、111个源码文件mypy、完整452项pytest和 `make package` 均通过；pytest
+  仅保留既有未知测试模型名RuntimeWarning。最终wheel安装到仓库外 `/tmp` 后可隔离
+  导入，两个CLI、配置校验、`pip check` 和模板/4个CSS/2个JavaScript/2个SVG共9项
+  资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
 
@@ -312,7 +311,5 @@ All notable changes to this project are documented here.
 - 本批只完善待执行计划，v15-v17缓存、性能CLI和实时性硬化尚未进入活动实现；256 MiB、
   各路径P95及5%相对退化值是后续验收预算，不是已测得的性能提升。真实交易日上游
   尾延迟、数据覆盖和前瞻收益仍需另行留证，工程性能通过也不得表述为收益提高。
-- 当前未提交DeepSeek工作树仍有
-  `test_prompt_sorts_candidates_by_code_for_stable_batch_content` 失败，导致当前代码树完整
-  pytest门禁未全绿；该实现与测试不属于本批，必须由其所有批次修复并独立提交。本批
-  无界面变化，三档桌面验收沿用此前已通过证据，不能替代后续活动UI变化后的重测。
+- 本批无界面变化，三档桌面验收沿用此前已通过证据；后续活动UI变化后必须重新实测，
+  不能用本批文档验收替代。
