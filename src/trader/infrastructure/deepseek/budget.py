@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -599,12 +600,17 @@ class DeepSeekBudgetStore:
             "token_count": int(acceptance_row[2] or 0),
         }
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self._path, timeout=10.0)
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=10000")
-        return connection
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA busy_timeout=10000")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
 
 def _stage_key(strategy: Strategy, phase: str, bucket: str) -> str:

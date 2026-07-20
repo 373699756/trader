@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：`GET /api/status` 先报 `sqlite3.OperationalError: unable to open database file`，随后 Werkzeug 报 `OSError: [Errno 24] Too many open files`。原因已确认：DeepSeek 预算库与共享快照库都把 `sqlite3.Connection` 当作会自动释放资源的上下文管理器使用，但该上下文只提交或回滚事务、不关闭连接；页面轮询状态时会从预算摘要和持久化观测路径遗留数据库文件描述符。修改后两个 SQLite 边界在成功、提前返回、初始化失败和异常退出时都确定关闭；预算运行库暂时不可访问时，DeepSeek 状态返回可解析的 `budget_store_unavailable` 降级结果，`/api/status` 继续只读返回 200，顶部额度显示“不可用”而不是产生 500 或伪造可用余额。
 - 用户问题：`TopK live overlay degraded: data source task exceeded its batch deadline` 等最近错误过长时挤压顶部其他状态。原因是最近错误与行情、推送、评分、DeepSeek 和冻结状态共用 `nowrap` flex 行。修改后最近错误成为 Header 独立第二行，标签与正文分列，正文允许对无空格错误码任意断词换行；第一行状态不再被错误长度占用，900px 以下已有窄屏布局顺延错误行但不增加业务分支。验证：静态页面/CSS 契约、`make format-check/lint/type-check/test/package` 全部通过（417 tests），仓库外 wheel 的 CSS v4、独立错误节点、断行规则、CLI 和 `pip check` 通过。剩余风险：1280x720、1440x900、1920x1080 无头截图被宿主 Firefox 的 SWGL framebuffer 映射故障阻断，机器无 Chromium 备选；未发现代码侧已知问题，但本批不能宣称截图门禁通过。
 - 用户问题：DeepSeek 五维结果显示 `rejected`。运行审计确认三个策略批次均因 `api_key_missing` 跳过，原因是受保护的 `.deepseek_key` 已存在且权限为 `600`，但 v2 只读取进程环境。修改后配置边界按“`DEEPSEEK_API_KEY` > `DEEPSEEK_API_KEY_FILE` > 项目根目录 `.deepseek_key`”加载密钥，安全解析单行原值或赋值格式并拒绝 POSIX group/other 可读文件；页面按错误类别显示“未配置、禁用、额度、截止、调用失败或结构校验拒绝”，数据库 `rejected` 终态及 `local_degraded` 门保持不变。验证覆盖文件加载、环境优先、不安全权限、零物理调用审计和静态资源契约；`make format-check/lint/type-check/test/package` 全部通过（417 tests），仓库外干净虚拟环境 wheel 导入、资源、CLI 和 `pip check` 通过。剩余风险：外部 DeepSeek HTTP 有效性仍取决于用户密钥、网络和供应商服务，本批未发起消耗额度的真实请求。
 - 本批优化（2026-07-20）聚焦评分与荐股策略参数化链路：在 `StrategySettings` 增加 `local_strategy_weights` 配置并下发到 `RecommendationPolicy`，`application/recommendations.py` 的本地评分与评分融合改为透传该权重；`FrozenReplayPolicy` 与快照序列化/反序列化（`infrastructure/persistence/snapshots.py`）支持 `local_strategy_weights`，旧快照缺失字段回退默认组件权重，未改变 68/32 融合公式与风险扣分上限。
@@ -59,6 +60,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- DeepSeek 预算与共享快照连接边界改为事务与资源生命周期一体的上下文管理器；仅冻结提交保留显式拥有并关闭的原始连接。状态 API 在 SQLite 打开或读取失败时只降级预算依赖，不改变最近有效推荐、冻结记录、评分、188 次原子预算规则或其他只读状态。
 - 落地 P12 证据落盘统一细化：`MarketFeatureService._load_research_cache()` 与 `_write_research_cache()` 对 news/structured 证据统一按 `ResearchObservation` 序列化/反序列化落盘，过期缓存返回 `None` 并退回网络；`AkshareResearchClient._cache_payload()` 使用 `atomic_write_json` 统一落地原始 payload，便于 restart 重放与故障复盘。补充组件测试：`test_akshare_news_response_is_cached_with_atomic_writer`、`test_research_cache_is_used_after_restart_before_source_request`、`test_research_cache_expired_calls_research_client`。
 - DeepSeek 审计字段闭环完成：`infrastructure/deepseek/schema.py`、`infrastructure/deepseek/reviewer.py`、`infrastructure/persistence/snapshots.py`、`web/schemas.py` 连续透传审计元数据（模型、思考模式、挑战者状态、置信度与 hash）；旧快照在反序列化时回退为 `primary/not_run/neutral`，新增三类测试覆盖解析、持久化和 API 合约。
 - `domain/ranking.py` 的 `select_top_k()` 新增可解释性排序维度：在同 `final_score` 下优先保留审计信号较优（挑战者通过、二级阶段、rating 较好、置信度更高）的候选；为保证可复盘与透明，新增 `tests/unit/domain/test_ranking.py` 覆盖同分 tie-break。
@@ -111,6 +113,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 DeepSeek 预算查询与共享快照读写持续泄漏 SQLite 连接并最终耗尽进程文件描述符的问题；补充两个连接边界的正常/异常关闭回归，以及预算库不可用时 `/api/status` 仍返回 200 的故障注入回归。
 - 修复合法 DeepSeek 五维响应缺少 `rating` 时默认 `neutral` 导致所有过阈值候选被降为观察、最终无可执行荐股的问题；恢复最终分/本地分/代码固定排序，并保留评级为只读审计。
 - 恢复跨交易日最近有效冻结的显式 stale fallback，不再冒充当日快照，同时保留原推荐日期和降级原因。
 - 所有非冻结周期任务越过 deadline 时统一进入 `expired`，不污染全局最近错误；全市场特征与历史缓存均在提交前复核 deadline。
@@ -164,6 +167,7 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除预算审计、历史调用记录、API 字段、策略、冻结数据或运行依赖；数据库不可用只产生显式状态降级，不以清空数据或重建运行库规避错误。
 - v10 目标契约不再允许创业板与科创板共享换手、波动、分位或模糊成长板过滤身份，也不再使用 d25 双乘数缩放总分；本批未删除或改写当前 v9 实现。`back1.md` 中的 long 三板扩池、12 套模型、ECDF、机器学习、FDR、收益标签、离线晋级、影子运行及低于 20K Star 的仓库链接均未合入生产契约。
 - 从 `docs/need.md` 当前开源参考表删除 Star 低于 20K 的 Qbot、FinRL、myhhub/stock、QUANTAXIS、RQAlpha、WonderTrader、CZSC、Sequoia-X、UZI-Skill 和 QuantsPlaybook 链接；未删除归档历史、活动代码、依赖或策略实现。
 - 本批次未删除现有评分、风险、预算、冻结、API、代码或测试；按用户范围不加入离线收益验证、统计晋级或运行时自动调参规则。
@@ -182,6 +186,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批失败先行回归已复现连接离开上下文后仍可用及预算库异常导致 `/api/status` 500；修复后预算与共享快照连接在正常和异常路径均报告已关闭，模拟 `sqlite3.OperationalError` 时状态接口返回 200 与 `budget_store_unavailable`。`make format-check`、`make lint`、77 个源码文件 mypy、420 个 pytest、sdist/wheel 均通过；仓库外隔离目录安装最终 wheel 后，包来源、首页 200、6 项 Web 资源、`trader-cli --help` 和 `pip check` 通过。1280x720 无头 Firefox 默认配置被已有无响应实例拒绝，隔离 profile 超过两分钟仍未生成截图并已安全终止；1440x900、1920x1080 因同一宿主浏览器阻断未重复运行，本批未把三档桌面门禁记录为通过。
 - 项目级 Review 回归覆盖 DeepSeek 审计字段不影响动作/排序、跨日显式 stale fallback、`full_market` 执行前/执行中超时、候选池/特征/history cache 迟到隔离、唯一组合根和 JSON/SQLite 共享单 persistence worker；`make format-check`、`make lint`、77 个源码文件 mypy、413 个 pytest 与 sdist/wheel 构建全部通过。最终 wheel 在全新仓库外虚拟环境安装全部依赖后，`pip check`、site-packages 导入、`trader-cli --help`、`trader-server --help` 及模板、CSS、JavaScript、Lucide 图标和产品图标资源验收通过。本批修复未修改 Web 资源；本地临时页面返回 200，三档截图因宿主 Firefox SWGL 无法映射 framebuffer 未生成，未将环境失败记为视觉通过。
 - 评分链路回归证据：本批在 `tests/unit/domain/test_strategies.py` 与 `tests/unit/application/test_recommendations.py` 增补 `local_strategy_weights` 覆盖注入与推荐快照字段持久化回归；`local_strategy_weights` 变更后的本地评分通道与推荐排序行为已在代码层落地，验收建议在完整门禁前补跑 `make format-check && make lint && make type-check && make test && make package`。
 - 本次 P12 落盘统一提交新增/更新了 3 个组件回归测试，覆盖 `news` raw payload 落盘、缓存命中回放与过期降级。标准化收敛新增 `tests/unit/test_v2_market_data_normalize.py`，覆盖 `to_float` 的空值/非有限值分支、`normalize_quotes` 的生成器输入兼容、`None` 过滤与字段转换边界。当前未执行全局 `make quality` 门禁；如需验收请补充 `make format-check`、`make lint`、mypy、pytest 及 `make package` 验证（包含仓库外 wheel 安装与资源读取）。
@@ -228,6 +233,7 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 故障注入已覆盖 SQLite 打开失败，但无法在单元测试中制造宿主级文件描述符耗尽而不影响测试进程；两个生产 SQLite 边界的确定关闭契约直接覆盖已确认根因。若网络套接字或第三方库独立泄漏句柄，仍需依赖运行期进程 FD 监控定位；本批不重构为长连接，也不声称消除所有可能的宿主资源耗尽来源。三档桌面截图仍受宿主 Firefox 无响应阻断；本次 JavaScript 变化仅涉及预算不可用文本且静态契约通过，但发布门禁不能以此替代真实三档渲染。
 - 本批生产逻辑没有新增 Web 资源差异，桌面布局沿用此前三档通过基线；本轮 headless Firefox 在宿主图形栈报 `RenderCompositorSWGL failed mapping default framebuffer`，1280x720、1440x900、1920x1080 未重新生成截图，发布前如宿主图形环境变化应补跑三档视觉验收。
 - 固定时钟与故障注入已覆盖 `full_market` 队列等待和执行中越过截止的确定性行为，但真实交易日全市场并发负载、上游尾延迟和事件积压仍需运行观测；截止事件会明确记为 `expired` 并沿用最近有效快照，不再制造全局“最近错误”，但这不等同于消除上游变慢或机器资源不足。
 - P12 缓存回放依赖服务时钟与 `wall_clock` 一致性：若时钟异常偏移导致 TTL 解析偏差，可能误判新鲜度；运行期应监控 `research_cache` 命中率与 `research_data_coverage_ratio`，并配套异常告警。

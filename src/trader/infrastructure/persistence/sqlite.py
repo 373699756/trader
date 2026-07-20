@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 SCHEMA_VERSION = 4
@@ -10,16 +12,30 @@ SCHEMA_VERSION = 4
 
 def connect(database_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(database_path, timeout=10.0)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("PRAGMA busy_timeout=10000")
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=10000")
+    except BaseException:
+        connection.close()
+        raise
     return connection
+
+
+@contextmanager
+def connection_scope(database_path: Path) -> Iterator[sqlite3.Connection]:
+    connection = connect(database_path)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def initialize_database(database_path: Path) -> None:
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    with connect(database_path) as connection:
+    with connection_scope(database_path) as connection:
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS schema_meta(

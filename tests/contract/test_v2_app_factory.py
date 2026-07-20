@@ -39,7 +39,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "策略验证" not in page
     assert "/static/dashboard.css?v=4" in page
     assert "/static/render.js?v=5" in page
-    assert "/static/dashboard.js?v=6" in page
+    assert "/static/dashboard.js?v=7" in page
     assert 'class="runtime-error"' in page
     assert "payloads: new Map()" in dashboard
     assert "inflight: new Map()" in dashboard
@@ -52,6 +52,8 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "currentRow.replaceWith" in dashboard
     assert "payload.strategy !== strategy" in dashboard
     assert "CACHE_MAX_AGE_MS = 30000" in dashboard
+    assert "budget.available === false" in dashboard
+    assert '? "不可用"' in dashboard
     assert 'addEventListener("live_overlay"' in dashboard
     assert client.get("/static/dashboard.css").status_code == 200
     stylesheet = client.get("/static/dashboard.css").get_data(as_text=True)

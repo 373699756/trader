@@ -24,6 +24,7 @@ from trader.infrastructure.deepseek.schema import (
     review_cache_key,
 )
 from trader.infrastructure.settings import DeepSeekSettings
+from trader.web import create_app
 
 NOW = datetime(2026, 7, 16, 6, 30, tzinfo=timezone.utc)
 
@@ -215,6 +216,55 @@ def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
 
     assert version is not None
     assert int(str(version[0])) == SCHEMA_VERSION
+
+
+def test_budget_connection_context_closes_after_success_and_failure(tmp_path) -> None:
+    store = _budget(tmp_path / "runtime.sqlite3")
+
+    with store._connect() as successful_connection:
+        assert successful_connection.execute("SELECT 1").fetchone() == (1,)
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        successful_connection.execute("SELECT 1")
+
+    with pytest.raises(RuntimeError, match="forced failure"):
+        with store._connect() as failed_connection:
+            raise RuntimeError("forced failure")
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        failed_connection.execute("SELECT 1")
+
+
+def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, monkeypatch) -> None:
+    budget = _budget(tmp_path / "runtime.sqlite3")
+    reviewer = DeepSeekReviewer(
+        _settings(),
+        budget,
+        DeepSeekHttpClient(post=lambda *_args, **_kwargs: None, sleep=lambda _seconds: None),
+        ReviewCache(),
+        **_reviewer_policy(),
+        now=lambda: NOW,
+    )
+
+    def fail_summary(_day: str) -> dict[str, object]:
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(budget, "summary", fail_summary)
+    app = create_app(
+        status_provider=lambda: {
+            "runtime_started": True,
+            "dependencies": {"deepseek": dict(reviewer.status())},
+        }
+    )
+
+    response = app.test_client().get("/api/status")
+
+    assert response.status_code == 200
+    budget_status = response.get_json()["dependencies"]["deepseek"]["budget"]
+    assert budget_status == {
+        "available": False,
+        "error": "budget_store_unavailable",
+    }
 
 
 def test_http_timeout_is_bounded_to_one_retry() -> None:

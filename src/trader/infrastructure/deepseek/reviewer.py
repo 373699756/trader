@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sqlite3
 import threading
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -524,7 +525,13 @@ class DeepSeekReviewer:
 
     def status(self) -> Mapping[str, object]:
         local_day = self._now().astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
-        budget = self._budget.summary(local_day)
+        try:
+            budget = self._budget.summary(local_day)
+        except (OSError, sqlite3.Error):
+            budget = {
+                "available": False,
+                "error": "budget_store_unavailable",
+            }
         with self._status_lock:
             batch_status = self._last_batch_status
             candidate_count = self._last_candidate_count

@@ -305,7 +305,9 @@
       els.lastError.textContent = payload.last_error || "无";
       const deepseek = payload.dependencies && payload.dependencies.deepseek;
       const budget = deepseek && deepseek.budget;
-      els.budgetStatus.textContent = budget ? `${budget.used} / ${budget.remaining}` : "0 / 188";
+      els.budgetStatus.textContent = budget && budget.available === false
+        ? "不可用"
+        : budget ? `${budget.used} / ${budget.remaining}` : "0 / 188";
       const market = payload.dependencies && payload.dependencies.market_data;
       const route = market && market.route;
       els.quoteSource.textContent = market && market.active_source ? market.active_source : "-";

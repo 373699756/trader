@@ -21,7 +21,7 @@ from trader.infrastructure.persistence.snapshots import (
     snapshot_from_dict,
     snapshot_sha256,
 )
-from trader.infrastructure.persistence.sqlite import connect, initialize_database
+from trader.infrastructure.persistence.sqlite import connect, connection_scope, initialize_database
 
 FaultInjector = Callable[[str], None]
 
@@ -61,7 +61,7 @@ class SnapshotRepository:
         with self._lock:
             _atomic_replace(target, payload)
             self._fault_injector("published_file_replaced")
-            with connect(self._database_path) as connection:
+            with connection_scope(self._database_path) as connection:
                 connection.execute(
                     """
                     INSERT INTO published_snapshots(strategy, snapshot_id, published_at, relative_path, sha256)
@@ -100,7 +100,7 @@ class SnapshotRepository:
             self._fault_injector("manifest_committed")
 
     def latest(self, strategy: Strategy) -> RecommendationSnapshot | None:
-        with connect(self._database_path) as connection:
+        with connection_scope(self._database_path) as connection:
             row = connection.execute(
                 "SELECT relative_path, sha256 FROM published_snapshots WHERE strategy = ?",
                 (strategy.value,),
@@ -110,7 +110,7 @@ class SnapshotRepository:
         return self._load_verified_snapshot(str(row["relative_path"]), str(row["sha256"]))
 
     def load_frozen(self, strategy: Strategy, trade_date: str) -> RecommendationSnapshot | None:
-        with connect(self._database_path) as connection:
+        with connection_scope(self._database_path) as connection:
             row = connection.execute(
                 """
                 SELECT relative_path, sha256
@@ -126,7 +126,7 @@ class SnapshotRepository:
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
         if strategy is Strategy.LONG:
             return ()
-        with connect(self._database_path) as connection:
+        with connection_scope(self._database_path) as connection:
             rows = connection.execute(
                 """
                 SELECT recommend_date
@@ -146,7 +146,7 @@ class SnapshotRepository:
             separators=(",", ":"),
             allow_nan=False,
         )
-        with self._lock, connect(self._database_path) as connection:
+        with self._lock, connection_scope(self._database_path) as connection:
             manifest = connection.execute(
                 "SELECT snapshot_id FROM frozen_snapshots WHERE strategy = ? AND recommend_date = ? AND status = 'committed'",
                 (overlay.strategy.value, overlay.trade_date),
@@ -195,7 +195,7 @@ class SnapshotRepository:
         return True
 
     def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
-        with connect(self._database_path) as connection:
+        with connection_scope(self._database_path) as connection:
             row = connection.execute(
                 "SELECT * FROM live_overlays WHERE strategy = ? AND recommend_date = ?",
                 (strategy.value, trade_date),
@@ -210,7 +210,7 @@ class SnapshotRepository:
     def recover(self) -> Mapping[str, int]:
         recovered = 0
         quarantined = 0
-        with self._lock, connect(self._database_path) as connection:
+        with self._lock, connection_scope(self._database_path) as connection:
             staged = connection.execute(
                 "SELECT * FROM frozen_snapshots WHERE status = 'staged' ORDER BY frozen_at"
             ).fetchall()
@@ -241,7 +241,7 @@ class SnapshotRepository:
         return {"recovered": recovered, "quarantined": quarantined, "orphaned": orphaned}
 
     def reserve_event(self, event: Mapping[str, object]) -> bool:
-        with self._lock, connect(self._database_path) as connection:
+        with self._lock, connection_scope(self._database_path) as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO pipeline_events(
@@ -280,7 +280,7 @@ class SnapshotRepository:
         retry_count: int,
         error: str = "",
     ) -> bool:
-        with self._lock, connect(self._database_path) as connection:
+        with self._lock, connection_scope(self._database_path) as connection:
             cursor = connection.execute(
                 """
                 UPDATE pipeline_events
@@ -292,7 +292,7 @@ class SnapshotRepository:
             return cursor.rowcount == 1
 
     def list_events(self, *, cursor: int, limit: int) -> Sequence[Mapping[str, object]]:
-        with connect(self._database_path) as connection:
+        with connection_scope(self._database_path) as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM pipeline_events
@@ -311,7 +311,7 @@ class SnapshotRepository:
         )
 
     def pending_priority_events(self) -> Sequence[Mapping[str, object]]:
-        with connect(self._database_path) as connection:
+        with connection_scope(self._database_path) as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM pipeline_events
@@ -355,7 +355,7 @@ class SnapshotRepository:
             if isinstance(candidate_age_summary, Mapping)
             else None
         )
-        with self._lock, connect(self._database_path) as connection:
+        with self._lock, connection_scope(self._database_path) as connection:
             for source, raw in sources.items():
                 if not isinstance(raw, Mapping):
                     continue
@@ -405,7 +405,7 @@ class SnapshotRepository:
 
     def observability_status(self) -> Mapping[str, object]:
         try:
-            with connect(self._database_path) as connection:
+            with connection_scope(self._database_path) as connection:
                 source_rows = connection.execute("SELECT * FROM data_source_health ORDER BY source").fetchall()
                 call_rows = connection.execute(
                     """
@@ -468,7 +468,7 @@ class SnapshotRepository:
         relative_path: Path,
         digest: str,
     ) -> None:
-        with connect(self._database_path) as connection:
+        with connection_scope(self._database_path) as connection:
             existing = connection.execute(
                 "SELECT snapshot_id, sha256, status FROM frozen_snapshots WHERE strategy = ? AND recommend_date = ?",
                 (snapshot.strategy.value, snapshot.trade_date),
