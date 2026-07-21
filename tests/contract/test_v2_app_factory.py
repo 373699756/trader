@@ -38,7 +38,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "A股策略看板" in page
     assert "策略验证" not in page
     assert "/static/dashboard.css?v=4" in page
-    assert "/static/render.js?v=5" in page
+    assert "/static/render.js?v=6" in page
     assert "/static/dashboard.js?v=8" in page
     assert 'class="runtime-error"' in page
     assert "payloads: new Map()" in dashboard
@@ -85,6 +85,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "证据时间 ${escapeHtml(formatDateTime(risk.observed_at))}" in renderer
     assert "anchor_to_now_pct" in renderer
     assert 'section("权重"' in renderer
+    assert "板块与交易规则" in renderer
+    assert "多源合并" in renderer
+    assert "strategy_hot_cap_pct" in renderer
     assert 'section("分位与截尾"' in renderer
     assert "risk.assessment" in renderer
     assert 'section("DeepSeek 审计"' in renderer

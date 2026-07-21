@@ -26,6 +26,13 @@
     completed_after_deadline: "迟到：结果未参与评分",
   };
 
+  const BOARD_LABELS = {
+    main: "沪深主板",
+    chinext: "创业板",
+    star: "科创板",
+    unsupported: "未支持板块",
+  };
+
   function escapeHtml(value) {
     return String(value == null ? "" : value)
       .replaceAll("&", "&amp;")
@@ -151,6 +158,16 @@
     const risks = [...(item.local_risk_facts || []), ...(item.deepseek_risk_facts || [])];
     const components = scores.components || {};
     const features = item.features || {};
+    const metadata = snapshot.metadata || {};
+    const code = String(item.code || "");
+    const fieldSources = objectValue(metadata.field_sources, code);
+    const sourceVersions = plainObject(metadata.source_versions);
+    const marketMissing = matchingEntries(metadata.market_missing_reasons, `${code}.`);
+    const marketConflicts = matchingValues(metadata.market_conflicts, code);
+    const degradedReasons = [
+      ...(Array.isArray(snapshot.degraded_reasons) ? snapshot.degraded_reasons : []),
+      ...(Array.isArray(metadata.market_degraded_reasons) ? metadata.market_degraded_reasons : []),
+    ];
     return [
       section("评分", detailGrid([
         ["基础分", number(scores.base_score, 2)],
@@ -171,6 +188,33 @@
       section("缺失字段", missingFieldList(item.missing_fields || [], item.missing_reasons || {})),
       section("原始指标", keyValueList(features)),
       section("证据", evidenceList(item.evidence || [])),
+      section("板块与交易规则", detailGrid([
+        ["板块", BOARD_LABELS[item.board] || item.board || "-"],
+        ["板块来源", item.board_source || "-"],
+        ["身份可靠度", item.board_reliability || "-"],
+        ["交易所", item.exchange || "-"],
+        ["上市日期", item.listing_date || "-"],
+        ["上市交易日龄", number(item.listing_age_sessions, 0)],
+        ["是否有价格限制", booleanText(item.has_price_limit)],
+        ["交易所涨跌幅限制", percentText(item.exchange_limit_pct)],
+        ["策略过热上限", percentText(item.strategy_hot_cap_pct)],
+        ["规则版本", item.rule_version || "-"],
+        ["规则生效日", item.rule_effective_date || "-"],
+        ["执行限制", listText(item.execution_restrictions, "无")],
+      ])),
+      section("多源合并", [
+        detailGrid([
+          ["合并版本", metadata.merge_epoch || "-"],
+          ["行情观察时间", formatDateTime(metadata.market_observed_at)],
+          ["价格偏差", percentText(item.cross_source_deviation_pct)],
+          ["定向复核", booleanText(item.cross_source_verified)],
+          ["冲突", listText(marketConflicts, "无")],
+          ["降级原因", listText([...new Set(degradedReasons)], "无")],
+        ]),
+        textValueList(sourceVersions, "暂无来源版本"),
+        textValueList(fieldSources, "暂无逐字段来源"),
+        textValueList(marketMissing, "暂无合并缺失"),
+      ].join("")),
       section("快照", detailGrid([
         ["策略版本", snapshot.strategy_version || "-"],
         ["融合版本", snapshot.fusion_version || "-"],
@@ -201,6 +245,50 @@
       for (const [name, value] of Object.entries(entries)) rows.push([`${group}.${name}`, value]);
     }
     return keyValueList(Object.fromEntries(rows));
+  }
+
+  function textValueList(values, emptyText) {
+    const entries = Object.entries(plainObject(values)).sort(([left], [right]) => left.localeCompare(right));
+    if (entries.length === 0) {
+      return `<div class="detail-value"><span>状态</span><strong>${escapeHtml(emptyText)}</strong></div>`;
+    }
+    return `<ul class="detail-list">${entries.map(([key, value]) => `<li><b>${escapeHtml(key)}</b> · ${escapeHtml(displayText(value))}</li>`).join("")}</ul>`;
+  }
+
+  function plainObject(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  }
+
+  function objectValue(value, key) {
+    return plainObject(plainObject(value)[key]);
+  }
+
+  function matchingEntries(value, prefix) {
+    return Object.fromEntries(Object.entries(plainObject(value)).filter(([key]) => key.startsWith(prefix)));
+  }
+
+  function matchingValues(value, code) {
+    if (!Array.isArray(value)) return [];
+    return value.filter((entry) => String(entry).includes(code));
+  }
+
+  function displayText(value) {
+    if (value == null || value === "") return "-";
+    if (typeof value === "object") return JSON.stringify(value);
+    return String(value);
+  }
+
+  function booleanText(value) {
+    if (value == null) return "-";
+    return value === true ? "是" : "否";
+  }
+
+  function percentText(value) {
+    return value == null || value === "" ? "-" : `${number(value, 2)}%`;
+  }
+
+  function listText(values, emptyText) {
+    return Array.isArray(values) && values.length > 0 ? values.map(displayText).join("、") : emptyText;
   }
 
   function normalizationList(values) {

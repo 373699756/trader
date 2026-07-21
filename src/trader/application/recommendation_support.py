@@ -24,6 +24,19 @@ from trader.domain.models import (
 from trader.domain.ranking import CORE_FIELDS
 
 _PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
+_NON_ALGORITHM_METADATA_KEYS = frozenset(
+    {
+        "field_sources",
+        "freeze_anchor",
+        "market_conflicts",
+        "market_degraded_reasons",
+        "market_missing_reasons",
+        "market_observed_at",
+        "merge_epoch",
+        "source_versions",
+        "tushare_reference_versions",
+    }
+)
 
 
 def _fusion_mode(
@@ -116,6 +129,12 @@ class _RecordedReviewPort:
 
 
 def _business_projection(snapshot: RecommendationSnapshot) -> tuple[object, ...]:
+    market_degraded_raw = snapshot.metadata.get("market_degraded_reasons")
+    market_degraded = (
+        {reason for reason in market_degraded_raw if isinstance(reason, str)}
+        if isinstance(market_degraded_raw, (list, tuple))
+        else set()
+    )
     return (
         snapshot.snapshot_id,
         snapshot.strategy,
@@ -130,8 +149,8 @@ def _business_projection(snapshot: RecommendationSnapshot) -> tuple[object, ...]
         dict(snapshot.filter_reasons),
         snapshot.filter_details,
         snapshot.stale,
-        snapshot.degraded_reasons,
-        dict(snapshot.metadata),
+        tuple(reason for reason in snapshot.degraded_reasons if reason not in market_degraded),
+        {key: value for key, value in snapshot.metadata.items() if key not in _NON_ALGORITHM_METADATA_KEYS},
     )
 
 

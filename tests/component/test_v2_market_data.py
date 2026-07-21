@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -16,23 +17,32 @@ from trader.application.ports import (
     MarketDataNoData,
     MarketDataUnavailable,
 )
+from trader.application.source_lanes import (
+    LatestRequestLane,
+    SourceLaneRegistry,
+    SourceRequestSuperseded,
+)
 from trader.application.workers import BoundedExecutor
 from trader.domain.models import Evidence, MarketQuote, Strategy
 from trader.domain.news import NewsSignalPolicy
 from trader.domain.research import ResearchObservation
 from trader.domain.strategies import score_strategy
 from trader.domain.tail import MinuteBar, TailSignalPolicy
+from trader.infrastructure.cache import BoundedLruCache
+from trader.infrastructure.market_data import gateway as gateway_module
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailable
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.history import DailyBar
+from trader.infrastructure.market_data.observations import SourceObservation
 from trader.infrastructure.market_data.router import VendorRoute, VendorSeverity, route
 from trader.infrastructure.market_data.service import MarketFeatureService
 from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
-from trader.infrastructure.settings import ConfigurationError, load_strategy_settings
+from trader.infrastructure.market_data.tushare import TushareClient
+from trader.infrastructure.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
 AFTERNOON = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
@@ -227,7 +237,8 @@ def test_gateway_falls_back_and_tracks_health() -> None:
         circuit_breaker_seconds=60,
     )
 
-    assert gateway.fetch_market() == (quote,)
+    fetched = tuple(gateway.fetch_market())
+    assert [(item.code, item.price, item.source) for item in fetched] == [(quote.code, quote.price, "sina")]
     health = gateway.health()
 
     assert health["active_source"] == "sina"
@@ -245,6 +256,1949 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert [item["name"] for item in health["route"]["attempted_vendors"]] == ["eastmoney", "sina"]
     assert health["route"]["attempted_vendors"][0]["status"] == "failed"
     assert health["route"]["attempted_vendors"][1]["status"] == "success"
+    assert "eastmoney:source_failed" in gateway.canonical_snapshot().degraded_reasons
+
+
+def test_source_lane_coalesces_running_identity_and_keeps_only_latest_pending_request() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    pool.start()
+    lane = LatestRequestLane("eastmoney", pool)
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def load(value: str) -> str:
+        calls.append(value)
+        if value == "running":
+            started.set()
+            assert release.wait(1.0)
+        return value
+
+    running = lane.submit("market", NOW, load, "running")
+    coalesced = lane.submit("market", NOW, load, "duplicate")
+    assert running is coalesced
+    assert started.wait(1.0)
+    superseded = lane.submit("history", NOW + timedelta(seconds=1), load, "superseded")
+    latest = lane.submit("intraday", NOW + timedelta(seconds=2), load, "latest")
+
+    try:
+        with pytest.raises(SourceRequestSuperseded):
+            superseded.result(timeout=1.0)
+        release.set()
+        assert running.result(timeout=1.0) == "running"
+        assert latest.result(timeout=1.0) == "latest"
+        assert calls == ["running", "latest"]
+    finally:
+        release.set()
+        lane.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert lane.status()["running"] is False
+    assert lane.status()["pending"] is False
+
+
+def test_source_lane_stop_cancels_pending_request_and_waits_for_running_cleanup() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    pool.start()
+    lane = LatestRequestLane("tushare", pool)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked() -> str:
+        started.set()
+        assert release.wait(1.0)
+        return "finished"
+
+    running = lane.submit("master", NOW, blocked)
+    assert started.wait(1.0)
+    pending = lane.submit("calendar", NOW + timedelta(seconds=1), lambda: "must-not-run")
+
+    lane.stop(wait=False)
+    with pytest.raises(RuntimeError, match="source lane stopped"):
+        pending.result(timeout=1.0)
+    release.set()
+    assert running.result(timeout=1.0) == "finished"
+    lane.stop(wait=True, timeout_seconds=1.0)
+    pool.stop(wait=True, cancel_futures=True)
+
+    assert lane.status()["running"] is False
+    assert lane.status()["pending"] is False
+
+
+def test_source_lane_stop_cancels_runner_that_has_not_started() -> None:
+    pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="source-data")
+    pool.start()
+    occupied = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def occupy_worker() -> None:
+        occupied.set()
+        assert release.wait(5.0)
+
+    blocker = pool.submit(occupy_worker)
+    assert blocker is not None
+    assert occupied.wait(1.0)
+    lane = LatestRequestLane("tushare", pool)
+    queued = lane.submit("master", NOW, lambda: calls.append("unexpected"))
+
+    try:
+        lane.stop(wait=True, timeout_seconds=0.1)
+        with pytest.raises(RuntimeError, match="runner stopped before execution"):
+            queued.result(timeout=1.0)
+    finally:
+        release.set()
+        blocker.result(timeout=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert calls == []
+    assert lane.status()["running"] is False
+    assert lane.status()["pending"] is False
+
+
+def test_source_lane_marks_running_future_and_skips_cancelled_pending_io() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    pool.start()
+    lane = LatestRequestLane("akshare", pool)
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def load(value: str) -> str:
+        calls.append(value)
+        if value == "running":
+            started.set()
+            assert release.wait(1.0)
+        return value
+
+    running = lane.submit("research-running", NOW, load, "running")
+    assert started.wait(1.0)
+    pending = lane.submit("research-pending", NOW + timedelta(seconds=1), load, "cancelled-pending")
+
+    try:
+        assert running.cancel() is False
+        assert pending.cancel() is True
+        release.set()
+        assert running.result(timeout=1.0) == "running"
+        lane.stop(wait=True, timeout_seconds=1.0)
+    finally:
+        release.set()
+        lane.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert calls == ["running"]
+    assert lane.status()["running"] is False
+    assert lane.status()["pending"] is False
+
+
+def test_source_lane_replaces_cancelled_pending_identity_with_newest_request() -> None:
+    pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="source-data")
+    lane = LatestRequestLane("eastmoney", pool)
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def load(value: str) -> str:
+        calls.append(value)
+        if value == "running":
+            started.set()
+            assert release.wait(1.0)
+        return value
+
+    pool.start()
+    running = lane.submit("running", NOW, load, "running")
+    assert started.wait(1.0)
+    cancelled = lane.submit("same-request", NOW + timedelta(seconds=1), load, "cancelled")
+    assert cancelled.cancel() is True
+    newest = lane.submit("same-request", NOW + timedelta(seconds=2), load, "newest")
+
+    try:
+        release.set()
+        assert running.result(timeout=1.0) == "running"
+        assert newest.result(timeout=1.0) == "newest"
+    finally:
+        release.set()
+        lane.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert calls == ["running", "newest"]
+
+
+def test_scheduled_tushare_reference_refresh_does_not_block_fast_source_lane() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+
+    class ReferenceGateway(StaticGateway):
+        @staticmethod
+        def update_reference_observations(_observations):
+            return None
+
+    class BlockingTushareClient:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def fetch_security_master(self, _observed_at):
+            self.started.set()
+            assert self.release.wait(1.0)
+            return ()
+
+    tushare = BlockingTushareClient()
+    service = MarketFeatureService(
+        ReferenceGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        tushare_client=tushare,
+        worker_pool=pool,
+        source_lanes=lanes,
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+
+    try:
+        started_at = time.perf_counter()
+        service.schedule_reference_data((), NOW)
+        scheduling_seconds = time.perf_counter() - started_at
+        assert tushare.started.wait(1.0)
+        fast = lanes.submit("eastmoney", "fast-market", NOW, lambda: "fast")
+        assert fast.result(timeout=1.0) == "fast"
+        assert scheduling_seconds < 0.1
+    finally:
+        tushare.release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+
+def test_scheduled_reference_refresh_starts_tushare_and_eastmoney_history_independently() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+
+    class ReferenceGateway(StaticGateway):
+        @staticmethod
+        def update_reference_observations(_observations):
+            return None
+
+    class BlockingTushareClient:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def fetch_security_master(self, _observed_at):
+            self.started.set()
+            assert self.release.wait(1.0)
+            return ()
+
+        @staticmethod
+        def fetch_forward_adjusted_daily(*_args):
+            return ()
+
+        @staticmethod
+        def fetch_daily_valuations(*_args):
+            return ()
+
+        @staticmethod
+        def fetch_financial_indicators(*_args):
+            return ()
+
+    class RecordingHistoryClient:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.thread_name = ""
+
+        def fetch_history(self, _code, *, days):
+            assert days == 90
+            self.thread_name = threading.current_thread().name
+            self.started.set()
+            return ()
+
+    tushare = BlockingTushareClient()
+    history = RecordingHistoryClient()
+    service = MarketFeatureService(
+        ReferenceGateway((_quote(),)),
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        tushare_client=tushare,
+        worker_pool=pool,
+        source_lanes=lanes,
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+
+    try:
+        service.schedule_reference_data(("600001",), NOW)
+        assert tushare.started.wait(1.0)
+        assert history.started.wait(0.2)
+        assert history.thread_name.startswith("source-data")
+    finally:
+        tushare.release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+
+def test_gateway_starts_eastmoney_and_sina_together_on_shared_source_pool() -> None:
+    both_started = threading.Barrier(3)
+    release = threading.Event()
+    eastmoney = CoordinatedMarketClient((replace(_quote(), source="eastmoney"),), both_started, release)
+    sina = CoordinatedMarketClient((replace(_quote(), source="sina", price=12.01),), both_started, release)
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    pool.start()
+    lanes = SourceLaneRegistry(pool)
+    gateway = MarketDataGateway(
+        eastmoney,
+        sina,
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        worker_pool=pool,
+        source_lanes=lanes,
+        wall_clock=lambda: NOW,
+    )
+    result: list[tuple[MarketQuote, ...]] = []
+    caller = threading.Thread(target=lambda: result.append(tuple(gateway.fetch_market(observed_at=NOW))))
+
+    try:
+        caller.start()
+        both_started.wait(1.0)
+        assert eastmoney.thread_name.startswith("source-data")
+        assert sina.thread_name.startswith("source-data")
+    finally:
+        release.set()
+        caller.join(1.0)
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert result[0][0].price == 12.0
+    assert eastmoney.calls == 1
+    assert sina.calls == 1
+    assert gateway.health()["merge_count"] == 1
+
+
+def test_full_market_source_lane_deadline_returns_before_blocked_source_io() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    eastmoney = BlockingMarketClient((replace(_quote(), source="eastmoney"),))
+    gateway = MarketDataGateway(
+        eastmoney,
+        StaticMarketClient((replace(_quote(), source="sina"),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        worker_pool=pool,
+        source_lanes=lanes,
+    )
+    pool.start()
+    observed_at = datetime.now(timezone.utc)
+    deadline = observed_at + timedelta(seconds=0.01)
+    release_timer = threading.Timer(0.6, eastmoney.release.set)
+    release_timer.start()
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(MarketDataDeadlineExceeded, match="deadline"):
+            gateway.fetch_market(observed_at=observed_at, deadline=deadline)
+        elapsed = time.monotonic() - started
+    finally:
+        eastmoney.release.set()
+        release_timer.cancel()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert elapsed < 0.5
+    assert gateway.canonical_snapshot() is None
+    source_health = gateway.health()["sources"]["eastmoney"]
+    assert source_health["success_count"] == 0
+    assert source_health["error_count"] == 1
+    assert source_health["timeout_count"] == 1
+
+
+def test_candidate_source_lane_deadline_returns_baseline_and_discards_late_quote() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    tencent = BlockingTencentClient((replace(_quote(), source="tencent", price=12.5),))
+    gateway = MarketDataGateway(
+        StaticMarketClient((replace(_quote(), source="eastmoney"),)),
+        StaticMarketClient((replace(_quote(), source="sina"),)),
+        tencent,
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        worker_pool=pool,
+        source_lanes=lanes,
+    )
+    pool.start()
+    observed_at = datetime.now(timezone.utc)
+    gateway.fetch_market(observed_at=observed_at)
+    baseline_observed_at = gateway.canonical_snapshot().observed_at
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=0.01)
+    release_timer = threading.Timer(0.6, tencent.release.set)
+    release_timer.start()
+
+    started = time.monotonic()
+    try:
+        result = gateway.fetch_candidates(("600001",), observed_at=observed_at, deadline=deadline)
+        elapsed = time.monotonic() - started
+    finally:
+        tencent.release.set()
+        release_timer.cancel()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert elapsed < 0.5
+    assert result[0].price == 12.0
+    assert gateway.canonical_snapshot().quotes[0].price == 12.0
+    assert gateway.canonical_snapshot().observed_at == baseline_observed_at
+
+
+def test_gateway_full_market_cache_avoids_duplicate_physical_requests_and_reports_hits() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        wall_clock=lambda: NOW,
+    )
+    eastmoney = CountingMarketClient((replace(_quote(), source="eastmoney"),))
+    sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
+    gateway = MarketDataGateway(
+        eastmoney,
+        sina,
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: NOW,
+    )
+
+    first = tuple(gateway.fetch_market(observed_at=NOW))
+    second = tuple(gateway.fetch_market(observed_at=NOW))
+
+    assert first == second
+    assert eastmoney.calls == 1
+    assert sina.calls == 1
+    status = cache.status()["full_market_quotes"]
+    assert status["eastmoney"]["hit"] == 1
+    assert status["sina"]["hit"] == 1
+    assert status["eastmoney"]["entries"] == 1
+
+
+def test_source_lane_returns_due_market_cache_before_background_refresh_completes() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    monotonic = MutableMonotonic()
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+
+    class BlockingRefreshClient:
+        def __init__(self, source: str) -> None:
+            self.source = source
+            self.calls = 0
+            self.refresh_started = threading.Event()
+            self.release_refresh = threading.Event()
+
+        def fetch_market(self):
+            self.calls += 1
+            if self.calls > 1:
+                self.refresh_started.set()
+                assert self.release_refresh.wait(1.0)
+            return (replace(_quote(), source=self.source),)
+
+    eastmoney = BlockingRefreshClient("eastmoney")
+    sina = BlockingRefreshClient("sina")
+    gateway = MarketDataGateway(
+        eastmoney,
+        sina,
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        worker_pool=pool,
+        source_lanes=lanes,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+    completed = threading.Event()
+    results: list[tuple[MarketQuote, ...]] = []
+    errors: list[BaseException] = []
+
+    def fetch_again() -> None:
+        try:
+            results.append(tuple(gateway.fetch_market(observed_at=NOW)))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    try:
+        gateway.fetch_market(observed_at=NOW)
+        monotonic.value = 30.001
+        caller = threading.Thread(target=fetch_again)
+        caller.start()
+        assert eastmoney.refresh_started.wait(1.0)
+        assert sina.refresh_started.wait(1.0)
+        assert completed.wait(0.2)
+    finally:
+        eastmoney.release_refresh.set()
+        sina.release_refresh.set()
+        if "caller" in locals():
+            caller.join(1.0)
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+        cache.stop()
+
+    assert errors == []
+    assert results[0][0].price == 12.0
+    assert eastmoney.calls == 2
+    assert sina.calls == 2
+    assert lanes.status()["eastmoney"]["superseded_count"] == 0
+    assert lanes.status()["sina"]["superseded_count"] == 0
+
+
+def test_equal_quote_version_can_gain_new_tushare_board_metadata_from_cache_hit() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        wall_clock=lambda: NOW,
+    )
+    quote = replace(_quote(), source="eastmoney")
+    gateway = MarketDataGateway(
+        StaticMarketClient((quote,)),
+        StaticMarketClient((replace(quote, source="sina"),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: NOW,
+    )
+    first = gateway.fetch_market(observed_at=NOW)
+    master = SourceObservation(
+        source="tushare",
+        subject_key="600001",
+        observed_at=NOW,
+        source_time=NOW,
+        received_at=NOW,
+        effective_at=NOW - timedelta(days=1),
+        data_version="master-v1",
+        fields={
+            "board": "main",
+            "exchange": "SSE",
+            "listing_date": "2020-01-02",
+            "listing_age_sessions": 1000.0,
+            "has_price_limit": True,
+            "exchange_limit_pct": 10.0,
+        },
+        missing_reasons={},
+        payload_hash="master-v1",
+        status="success",
+        error_code=None,
+    )
+    gateway.update_reference_observations((master,))
+
+    second = gateway.fetch_market(observed_at=NOW)
+
+    assert first[0].board_source == "code_prefix_fallback"
+    assert second[0].board_source == "tushare"
+    assert second[0].board_reliability == "verified"
+    assert second[0].execution_restrictions == ()
+
+
+def test_degraded_candidate_cache_is_observe_only_without_rewriting_source_time() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    monotonic = MutableMonotonic()
+
+    def wall_clock() -> datetime:
+        return NOW + timedelta(seconds=monotonic.value)
+
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        monotonic=monotonic,
+        wall_clock=wall_clock,
+    )
+    quote = replace(_quote(), source="eastmoney")
+    gateway = MarketDataGateway(
+        StaticMarketClient((quote,)),
+        StaticMarketClient((replace(quote, source="sina"),)),
+        StaticTencentClient((replace(quote, source="tencent"),)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        monotonic=monotonic,
+        wall_clock=wall_clock,
+    )
+    gateway.fetch_market(observed_at=NOW)
+    gateway.fetch_candidates(("600001",), observed_at=NOW)
+    monotonic.value = 15.001
+
+    result = gateway.fetch_candidates(("600001",), observed_at=wall_clock())
+
+    snapshot = gateway.canonical_snapshot()
+    assert result[0].source_time == NOW
+    assert "market_data_degraded" in result[0].execution_restrictions
+    assert snapshot is not None
+    assert "tencent:cache_degraded" in snapshot.degraded_reasons
+
+
+def test_gateway_negative_refresh_keeps_failure_degradation_with_last_valid_value() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        wall_clock=lambda: NOW,
+    )
+
+    class ToggleMarketClient:
+        fail = False
+
+        def fetch_market(self):
+            if self.fail:
+                raise RuntimeError("offline")
+            return (replace(_quote(), source="eastmoney"),)
+
+    eastmoney = ToggleMarketClient()
+    gateway = MarketDataGateway(
+        eastmoney,
+        StaticMarketClient((replace(_quote(), source="sina"),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: NOW,
+    )
+
+    gateway.fetch_market(observed_at=NOW)
+    eastmoney.fail = True
+    gateway.fetch_market(observed_at=NOW, force=True)
+    gateway.fetch_market(observed_at=NOW)
+
+    snapshot = gateway.canonical_snapshot()
+    assert snapshot is not None
+    assert "eastmoney:source_failed" in snapshot.degraded_reasons
+
+
+def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retries() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    monotonic = MutableMonotonic()
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+
+    class ToggleMarketClient:
+        fail = False
+
+        def __init__(self, source: str) -> None:
+            self.source = source
+            self.calls = 0
+            self.failed = threading.Event()
+
+        def fetch_market(self):
+            self.calls += 1
+            if self.fail:
+                self.failed.set()
+                raise RuntimeError("offline")
+            return (replace(_quote(), source=self.source),)
+
+    eastmoney = ToggleMarketClient("eastmoney")
+    sina = ToggleMarketClient("sina")
+    gateway = MarketDataGateway(
+        eastmoney,
+        sina,
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        worker_pool=pool,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+
+    try:
+        gateway.fetch_market(observed_at=NOW)
+        monotonic.value = 30.001
+        eastmoney.fail = True
+        gateway.fetch_market(observed_at=NOW)
+        assert eastmoney.failed.wait(1.0)
+        time.sleep(0.02)
+
+        gateway.fetch_market(observed_at=NOW)
+        time.sleep(0.02)
+    finally:
+        pool.stop(wait=True, cancel_futures=True)
+        cache.stop()
+
+    assert eastmoney.calls == 2
+    snapshot = gateway.canonical_snapshot()
+    assert snapshot is not None
+    assert "eastmoney:source_failed" in snapshot.degraded_reasons
+
+
+def test_targeted_quote_overlay_updates_canonical_value_and_field_attribution() -> None:
+    eastmoney = replace(_quote(), source="eastmoney", price=12.0, speed=None, data_version="z-east-v1")
+    sina = replace(_quote(), source="sina", price=12.01, speed=0.7, data_version="sina-v1")
+    tencent = replace(_quote(), source="tencent", price=12.02, speed=None, data_version="a-tencent-v1")
+    gateway = MarketDataGateway(
+        StaticMarketClient((eastmoney,)),
+        StaticMarketClient((sina,)),
+        StaticTencentClient((tencent,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+
+    gateway.fetch_market(observed_at=NOW)
+    gateway.fetch_candidates(("600001",), observed_at=NOW)
+
+    snapshot = gateway.canonical_snapshot()
+    assert snapshot is not None
+    assert snapshot.quotes[0].price == 12.02
+    assert snapshot.quotes[0].speed == 0.7
+    assert snapshot.field_sources["600001"]["price"] == "tencent"
+    assert snapshot.field_sources["600001"]["speed"] == "sina"
+    assert snapshot.source_versions["tencent"] == "a-tencent-v1"
+
+
+def test_candidate_feature_service_keeps_tencent_priority_before_cross_vendor_version_text() -> None:
+    eastmoney = replace(_quote(), source="eastmoney", price=12.0, data_version="z-east-v1")
+    sina = replace(_quote(), source="sina", price=12.01, data_version="z-sina-v1")
+    tencent = replace(_quote(), source="tencent", price=12.02, data_version="a-tencent-v1")
+    gateway = MarketDataGateway(
+        StaticMarketClient((eastmoney,)),
+        StaticMarketClient((sina,)),
+        StaticTencentClient((tencent,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+    service = MarketFeatureService(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        wall_clock=lambda: NOW,
+    )
+    service.fetch_market_features(NOW)
+
+    refreshed = tuple(service.refresh_candidate_quotes(("600001",), NOW))
+
+    assert refreshed[0].quote.source == "tencent"
+    assert refreshed[0].quote.price == 12.02
+    assert refreshed[0].quote.data_version == "a-tencent-v1"
+
+
+def test_full_market_commit_preserves_candidate_overlay_published_during_merge(monkeypatch) -> None:
+    seed = replace(_quote(), price=12.0, data_version="seed-v1")
+    full_refresh = replace(
+        _quote(),
+        price=12.1,
+        source_time=NOW + timedelta(seconds=1),
+        received_time=NOW + timedelta(seconds=1),
+        data_version="full-v2",
+    )
+    candidate = replace(
+        _quote(),
+        price=12.2,
+        source_time=NOW + timedelta(seconds=2),
+        received_time=NOW + timedelta(seconds=2),
+        data_version="candidate-v2",
+    )
+    gateway = MarketDataGateway(
+        SequenceMarketClient(((seed,), (full_refresh,))),
+        SequenceMarketClient(((seed,), (full_refresh,))),
+        StaticTencentClient((candidate,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW + timedelta(seconds=3),
+    )
+    gateway.fetch_market(observed_at=NOW)
+
+    original_merge = gateway_module.merge_market_observations
+    merge_started = threading.Event()
+    release_merge = threading.Event()
+
+    def coordinated_merge(*args, **kwargs):
+        if threading.current_thread().name == "full-market-refresh":
+            merge_started.set()
+            assert release_merge.wait(1.0)
+        return original_merge(*args, **kwargs)
+
+    monkeypatch.setattr(gateway_module, "merge_market_observations", coordinated_merge)
+    errors: list[BaseException] = []
+
+    def refresh_market() -> None:
+        try:
+            gateway.fetch_market(observed_at=NOW + timedelta(seconds=1))
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=refresh_market, name="full-market-refresh")
+    thread.start()
+    try:
+        assert merge_started.wait(1.0)
+        refreshed = tuple(gateway.fetch_candidates(("600001",), observed_at=NOW + timedelta(seconds=2)))
+        assert refreshed[0].price == 12.2
+    finally:
+        release_merge.set()
+        thread.join(1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    snapshot = gateway.canonical_snapshot()
+    assert snapshot is not None
+    assert snapshot.quotes[0].price == 12.2
+    assert snapshot.quotes[0].source == "tencent"
+    assert snapshot.source_versions["eastmoney"] == "full-v2"
+    assert snapshot.source_versions["sina"] == "full-v2"
+    assert snapshot.source_versions["tencent"] == "candidate-v2"
+
+
+def test_newer_reference_refresh_can_correct_an_older_effective_listing_date() -> None:
+    gateway = MarketDataGateway(
+        StaticMarketClient((replace(_quote(), source="eastmoney"),)),
+        StaticMarketClient((replace(_quote(), source="sina"),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+
+    def master(listing_date: str, source_time: datetime, version: str) -> SourceObservation:
+        return SourceObservation(
+            source="tushare",
+            subject_key="600001",
+            observed_at=source_time,
+            source_time=source_time,
+            received_at=source_time,
+            effective_at=datetime.fromisoformat(f"{listing_date}T00:00:00+08:00"),
+            data_version=version,
+            fields={"board": "main", "listing_date": listing_date},
+            missing_reasons={},
+            payload_hash=version,
+            status="success",
+            error_code=None,
+        )
+
+    gateway.update_reference_observations((master("2020-01-02", NOW - timedelta(seconds=1), "master-v1"),))
+    gateway.update_reference_observations((master("2019-01-02", NOW, "master-v2"),))
+    gateway.fetch_market(observed_at=NOW)
+
+    snapshot = gateway.canonical_snapshot()
+    assert snapshot is not None
+    assert snapshot.quotes[0].listing_date == date(2019, 1, 2)
+
+
+def test_listing_session_projection_reuses_a_sorted_calendar_index() -> None:
+    gateway = MarketDataGateway(
+        StaticMarketClient((replace(_quote(), source="eastmoney"),)),
+        StaticMarketClient((replace(_quote(), source="sina"),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+
+    def calendar(day: date) -> SourceObservation:
+        effective_at = datetime.combine(day, datetime.min.time(), tzinfo=NOW.tzinfo)
+        return SourceObservation(
+            source="tushare",
+            subject_key=day.isoformat(),
+            observed_at=NOW,
+            source_time=NOW,
+            received_at=NOW,
+            effective_at=effective_at,
+            data_version="calendar-v1",
+            fields={"calendar_date": day.isoformat(), "is_open": True},
+            missing_reasons={},
+            payload_hash=day.isoformat(),
+            status="success",
+            error_code=None,
+        )
+
+    gateway.update_reference_observations((calendar(date(2020, 1, 2)), calendar(date(2026, 7, 16))))
+
+    class NoIterationOpenDates(set[date]):
+        def __iter__(self):
+            raise AssertionError("listing-age projection must not rescan every calendar date per security")
+
+    gateway._calendar_open_dates = NoIterationOpenDates((date(2020, 1, 2), date(2026, 7, 16)))
+    master = SourceObservation(
+        source="tushare",
+        subject_key="600001",
+        observed_at=NOW,
+        source_time=NOW,
+        received_at=NOW,
+        effective_at=datetime.fromisoformat("2020-01-02T00:00:00+08:00"),
+        data_version="master-v1",
+        fields={"board": "main", "listing_date": "2020-01-02"},
+        missing_reasons={},
+        payload_hash="master-v1",
+        status="success",
+        error_code=None,
+    )
+
+    gateway.update_reference_observations((master,))
+    quote = gateway.fetch_market(observed_at=NOW)[0]
+
+    assert quote.listing_age_sessions == 2
+
+
+def test_tushare_reference_version_uses_response_time_before_hash_order() -> None:
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+    )
+    newer = SourceObservation(
+        source="tushare",
+        subject_key="600001",
+        observed_at=NOW,
+        source_time=NOW,
+        received_at=NOW,
+        effective_at=NOW,
+        data_version="a-newer",
+        fields={"pe": 12.0},
+        missing_reasons={},
+        payload_hash="newer",
+        status="success",
+        error_code=None,
+    )
+    older = replace(
+        newer,
+        observed_at=NOW - timedelta(seconds=1),
+        source_time=NOW - timedelta(seconds=1),
+        received_at=NOW - timedelta(seconds=1),
+        effective_at=NOW - timedelta(seconds=1),
+        data_version="z-older",
+        payload_hash="older",
+    )
+
+    service._apply_tushare_fields("valuation", (newer,))
+    service._apply_tushare_fields("valuation", (older,))
+
+    assert service._tushare_reference_versions["valuation"] == "a-newer"
+
+
+def test_snapshot_metadata_copies_tushare_versions_under_service_lock() -> None:
+    quote = _quote()
+    gateway = MarketDataGateway(
+        StaticMarketClient((quote,)),
+        StaticMarketClient((replace(quote, source="sina"),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+    gateway.fetch_market(observed_at=NOW)
+    service = MarketFeatureService(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        wall_clock=lambda: NOW,
+    )
+
+    class TrackingLock:
+        held = False
+
+        def __enter__(self):
+            self.held = True
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            self.held = False
+
+    class LockCheckedVersions(Mapping[str, str]):
+        def __init__(self, lock: TrackingLock) -> None:
+            self._lock = lock
+            self._values = {"valuation": "valuation-v1"}
+
+        def __getitem__(self, key: str) -> str:
+            return self._values[key]
+
+        def __iter__(self) -> Iterator[str]:
+            assert self._lock.held
+            return iter(self._values)
+
+        def __len__(self) -> int:
+            return len(self._values)
+
+    tracking_lock = TrackingLock()
+    service._lock = tracking_lock
+    service._tushare_reference_versions = LockCheckedVersions(tracking_lock)
+
+    metadata = service.snapshot_metadata()
+
+    assert metadata["tushare_reference_versions"] == {"valuation": "valuation-v1"}
+
+
+def test_final_refresh_bypasses_fresh_cache_but_remains_single_flight() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    final_at = AFTERNOON - timedelta(milliseconds=100)
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        wall_clock=lambda: final_at,
+    )
+    eastmoney = BlockingMarketClient(
+        (replace(_quote(), source="eastmoney", source_time=final_at, received_time=final_at),)
+    )
+    sina = CountingMarketClient((replace(_quote(), source="sina", source_time=final_at, received_time=final_at),))
+    gateway = MarketDataGateway(
+        eastmoney,
+        sina,
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: final_at,
+    )
+    eastmoney.release.set()
+    assert gateway.fetch_market(observed_at=final_at)
+    eastmoney.release.clear()
+    eastmoney.started.clear()
+    results: list[tuple[MarketQuote, ...]] = []
+    threads = [
+        threading.Thread(
+            target=lambda: results.append(
+                tuple(
+                    gateway.fetch_market(
+                        observed_at=final_at,
+                        force=True,
+                        deadline=AFTERNOON,
+                    )
+                )
+            )
+        )
+        for _ in range(2)
+    ]
+
+    try:
+        for thread in threads:
+            thread.start()
+        assert eastmoney.started.wait(1.0)
+        time.sleep(0.02)
+    finally:
+        eastmoney.release.set()
+        for thread in threads:
+            thread.join(1.0)
+
+    assert len(results) == 2
+    assert eastmoney.calls == 2
+    assert sina.calls == 2
+
+
+def test_tushare_missing_token_is_explicit_degradation_without_sdk_import() -> None:
+    imported = False
+
+    def sdk_factory(_token: str, _timeout: float):
+        nonlocal imported
+        imported = True
+        raise AssertionError("SDK must not be created without a token")
+
+    client = TushareClient(token="", timeout_seconds=8, sdk_factory=sdk_factory)
+
+    observations = client.fetch_security_master(NOW)
+
+    assert imported is False
+    assert len(observations) == 1
+    assert observations[0].status == "failed"
+    assert observations[0].error_code == "missing_token"
+    assert client.health()["degraded_reason"] == "missing_token"
+    assert client.health()["consecutive_failures"] == 1
+
+
+def test_tushare_security_master_is_structured_and_uses_eight_second_transport_timeout() -> None:
+    factory_args: list[tuple[str, float]] = []
+    pro = FakeTusharePro(
+        [
+            {
+                "ts_code": "600001.SH",
+                "symbol": "600001",
+                "name": "测试股份",
+                "area": "上海",
+                "industry": "工业",
+                "market": "主板",
+                "exchange": "SSE",
+                "list_status": "L",
+                "list_date": "20200102",
+            }
+        ]
+    )
+
+    def sdk_factory(token: str, timeout: float):
+        factory_args.append((token, timeout))
+        return pro
+
+    client = TushareClient(token="secret-token", timeout_seconds=8, sdk_factory=sdk_factory)
+
+    observations = client.fetch_security_master(NOW)
+
+    assert factory_args == [("secret-token", 8.0)]
+    assert pro.calls[0][0] == "stock_basic"
+    assert observations[0].status == "success"
+    assert observations[0].subject_key == "600001"
+    assert observations[0].fields["board"] == "main"
+    assert observations[0].fields["exchange"] == "SSE"
+    assert observations[0].fields["listing_date"] == "2020-01-02"
+    assert observations[0].fields.get("is_relisted_first_session") is None
+    assert observations[0].missing_reasons["is_relisted_first_session"] == "source_field_unavailable"
+    assert "secret-token" not in repr(observations)
+
+
+def test_tushare_security_master_keeps_out_of_scope_exchange_unsupported() -> None:
+    pro = FakeTusharePro(
+        [
+            {
+                "ts_code": "830001.BJ",
+                "symbol": "830001",
+                "name": "范围外证券",
+                "market": "北交所",
+                "exchange": "BSE",
+                "list_status": "L",
+                "list_date": "20200102",
+            }
+        ]
+    )
+    client = TushareClient(
+        token="secret-token",
+        timeout_seconds=8,
+        sdk_factory=lambda _token, _timeout: pro,
+    )
+
+    observations = client.fetch_security_master(NOW)
+
+    assert observations[0].fields["board"] == "unsupported"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (ModuleNotFoundError("No module named 'tushare'"), "sdk_not_installed"),
+        (RuntimeError("429 quota exceeded"), "quota_or_rate_limit"),
+        (TimeoutError("transport timed out"), "timeout"),
+        (RuntimeError("SDK protocol failed"), "sdk_error"),
+    ],
+)
+def test_tushare_sdk_failures_are_structured_degradations(error, expected_code) -> None:
+    def sdk_factory(_token: str, _timeout: float):
+        raise error
+
+    client = TushareClient(token="secret-token", timeout_seconds=8, sdk_factory=sdk_factory)
+
+    observations = client.fetch_security_master(NOW)
+
+    assert observations[0].status == "failed"
+    assert observations[0].error_code == expected_code
+    assert client.health()["degraded_reason"] == expected_code
+    assert client.health()["consecutive_failures"] == 1
+
+
+def test_tushare_circuit_opens_after_three_failures_and_recovers_with_one_probe() -> None:
+    monotonic = MutableMonotonic()
+    factory_calls = 0
+    should_fail = True
+
+    def sdk_factory(_token: str, _timeout: float):
+        nonlocal factory_calls
+        factory_calls += 1
+        if should_fail:
+            raise TimeoutError("transport timed out")
+        return FakeTusharePro(
+            [
+                {
+                    "ts_code": "600001.SH",
+                    "symbol": "600001",
+                    "name": "测试股份",
+                    "market": "主板",
+                    "exchange": "SSE",
+                    "list_status": "L",
+                    "list_date": "20200102",
+                }
+            ]
+        )
+
+    client = TushareClient(
+        token="secret-token",
+        timeout_seconds=8,
+        sdk_factory=sdk_factory,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+
+    for _index in range(3):
+        assert client.fetch_security_master(NOW)[0].error_code == "timeout"
+    assert client.health()["circuit_open"] is True
+    assert client.fetch_security_master(NOW)[0].error_code == "circuit_open"
+    assert factory_calls == 3
+
+    monotonic.value = 60.001
+    should_fail = False
+    recovered = client.fetch_security_master(NOW)
+
+    assert recovered[0].status == "success"
+    assert factory_calls == 4
+    assert client.health()["circuit_open"] is False
+    assert client.health()["consecutive_failures"] == 0
+
+
+def test_tushare_per_code_batch_stops_before_next_sdk_call_during_lane_shutdown() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+
+    class BlockingValuationPro:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def daily_basic(self, **kwargs):
+            self.calls.append(str(kwargs["ts_code"]))
+            self.started.set()
+            assert self.release.wait(1.0)
+            return FakeTushareFrame([{"ts_code": kwargs["ts_code"], "trade_date": "20260715", "pe": 12.0}])
+
+    pro = BlockingValuationPro()
+    client = TushareClient(
+        token="secret-token",
+        timeout_seconds=8,
+        sdk_factory=lambda _token, _timeout: pro,
+        cancel_requested=lambda: lanes.is_stopped("tushare"),
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+    future = lanes.submit(
+        "tushare",
+        "valuation-batch",
+        NOW,
+        client.fetch_daily_valuations,
+        ("600001", "600002"),
+        date(2026, 7, 15),
+        NOW,
+    )
+
+    try:
+        assert pro.started.wait(1.0)
+        lanes.stop(wait=False)
+        pro.release.set()
+        observations = future.result(timeout=1.0)
+    finally:
+        pro.release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert pro.calls == ["600001.SH"]
+    assert observations[0].status == "failed"
+    assert observations[0].error_code == "stopped"
+    assert lanes.status()["tushare"]["running"] is False
+
+
+def test_tushare_date_only_financial_records_become_effective_at_shanghai_day_end() -> None:
+    class FinancialPro:
+        def fina_indicator(self, **_kwargs):
+            return FakeTushareFrame(
+                [
+                    {
+                        "ts_code": "600001.SH",
+                        "ann_date": "20260716",
+                        "end_date": "20260630",
+                        "eps": 1.0,
+                    }
+                ]
+            )
+
+    client = TushareClient(
+        token="secret-token",
+        timeout_seconds=8,
+        sdk_factory=lambda _token, _timeout: FinancialPro(),
+        wall_clock=lambda: NOW,
+    )
+
+    observations = client.fetch_financial_indicators(("600001",), NOW)
+
+    assert len(observations) == 1
+    assert observations[0].effective_at.isoformat() == "2026-07-16T23:59:59+08:00"
+
+
+def test_reference_refresh_reuses_cache_and_refreshes_due_entries_inside_tushare_lane() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    monotonic = MutableMonotonic()
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+
+    class ReferencePro(FakeTusharePro):
+        def trade_cal(self, **kwargs):
+            self.calls.append(("trade_cal", kwargs))
+            return FakeTushareFrame(
+                [{"exchange": "SSE", "cal_date": "20260716", "is_open": 1, "pretrade_date": "20260715"}]
+            )
+
+    pro = ReferencePro(
+        [
+            {
+                "ts_code": "600001.SH",
+                "symbol": "600001",
+                "name": "测试股份",
+                "industry": "工业",
+                "market": "主板",
+                "exchange": "SSE",
+                "list_status": "L",
+                "list_date": "20200102",
+            }
+        ]
+    )
+    quote = _quote()
+    gateway = MarketDataGateway(
+        StaticMarketClient((quote,)),
+        StaticMarketClient((quote,)),
+        StaticTencentClient((quote,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        worker_pool=pool,
+        source_lanes=lanes,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+    service = MarketFeatureService(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        tushare_client=TushareClient(
+            token="secret-token",
+            timeout_seconds=8,
+            sdk_factory=lambda _token, _timeout: pro,
+            wall_clock=lambda: NOW,
+        ),
+        worker_pool=pool,
+        source_lanes=lanes,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+
+    try:
+        lanes.submit("tushare", "reference-cycle-1", NOW, service.refresh_reference_data, (), NOW).result()
+        lanes.submit("tushare", "reference-cycle-2", NOW, service.refresh_reference_data, (), NOW).result()
+        monotonic.value = 86400.001
+        lanes.submit("tushare", "reference-cycle-3", NOW, service.refresh_reference_data, (), NOW).result()
+    finally:
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+        cache.stop()
+
+    assert [name for name, _arguments in pro.calls] == ["stock_basic", "trade_cal", "stock_basic", "trade_cal"]
+    status = cache.status()["security_master_calendar"]["tushare"]
+    assert status["entries"] == 2
+    assert status["hit"] == 4
+    assert lanes.status()["tushare"]["superseded_count"] == 0
+
+
+def test_akshare_circuit_skips_excess_requests_and_recovers_with_one_probe() -> None:
+    monotonic = MutableMonotonic()
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+
+    class ToggleResearchClient:
+        calls = 0
+        should_fail = True
+
+        def fetch_news(self, code: str, *, observed_at: datetime):
+            self.calls += 1
+            if self.should_fail:
+                raise RuntimeError("offline")
+            return (Evidence(f"news:{code}", "news", "恢复", "fixture", observed_at),)
+
+    research = ToggleResearchClient()
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=research,
+        research_workers=1,
+        worker_pool=pool,
+        source_lanes=lanes,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+
+    try:
+        lanes.submit(
+            "akshare",
+            "research-cycle-1",
+            NOW,
+            service._load_research,
+            ("600001", "600002", "600003", "600004"),
+            NOW,
+            include_structured=False,
+            force=True,
+        ).result()
+        lanes.submit(
+            "akshare",
+            "research-cycle-2",
+            NOW,
+            service._load_research,
+            ("600005",),
+            NOW,
+            include_structured=False,
+            force=True,
+        ).result()
+        assert research.calls == 3
+        assert service.health()["sources"]["akshare"]["circuit_open"] is True
+
+        monotonic.value = 60.001
+        research.should_fail = False
+        lanes.submit(
+            "akshare",
+            "research-cycle-3",
+            NOW,
+            service._load_research,
+            ("600006",),
+            NOW,
+            include_structured=False,
+            force=True,
+        ).result()
+    finally:
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert research.calls == 4
+    assert service.health()["sources"]["akshare"]["circuit_open"] is False
+    assert service.health()["sources"]["akshare"]["consecutive_failures"] == 0
+
+
+def test_tushare_negative_refresh_marks_preserved_reference_data_degraded() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        wall_clock=lambda: NOW,
+    )
+
+    class ToggleReferencePro(FakeTusharePro):
+        fail = False
+
+        def stock_basic(self, **kwargs):
+            if self.fail:
+                raise TimeoutError("timed out")
+            return super().stock_basic(**kwargs)
+
+    pro = ToggleReferencePro(
+        [
+            {
+                "ts_code": "600001.SH",
+                "symbol": "600001",
+                "name": "测试股份",
+                "industry": "工业",
+                "market": "主板",
+                "exchange": "SSE",
+                "list_status": "L",
+                "list_date": "20200102",
+            }
+        ]
+    )
+    client = TushareClient(
+        token="secret-token",
+        timeout_seconds=8,
+        sdk_factory=lambda _token, _timeout: pro,
+        wall_clock=lambda: NOW,
+    )
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        tushare_client=client,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: NOW,
+    )
+    request = {"dataset": "security_master", "market": "ashare"}
+
+    first = service._load_tushare_reference(
+        "security_master_calendar",
+        "security_master",
+        request,
+        NOW,
+        client.fetch_security_master,
+        NOW,
+        force=False,
+    )
+    pro.fail = True
+    service._load_tushare_reference(
+        "security_master_calendar",
+        "security_master",
+        request,
+        NOW,
+        client.fetch_security_master,
+        NOW,
+        force=True,
+    )
+    preserved = service._load_tushare_reference(
+        "security_master_calendar",
+        "security_master",
+        request,
+        NOW,
+        client.fetch_security_master,
+        NOW,
+        force=False,
+    )
+
+    assert "reference_data_degraded" not in first[0].fields
+    assert preserved[0].fields["board_reliability"] == "degraded"
+    assert preserved[0].fields["reference_data_degraded"] is True
+
+
+def test_reference_degradation_replaces_same_version_verified_identity_conservatively() -> None:
+    quote = replace(_quote(), source="eastmoney")
+    gateway = MarketDataGateway(
+        StaticMarketClient((quote,)),
+        StaticMarketClient((replace(quote, source="sina"),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+    fields = {
+        "board": "main",
+        "exchange": "SSE",
+        "listing_date": "2020-01-02",
+        "listing_age_sessions": 1000.0,
+        "has_price_limit": True,
+        "exchange_limit_pct": 10.0,
+    }
+    verified = SourceObservation(
+        source="tushare",
+        subject_key="600001",
+        observed_at=NOW,
+        source_time=NOW,
+        received_at=NOW,
+        effective_at=NOW,
+        data_version="master-v1",
+        fields=fields,
+        missing_reasons={},
+        payload_hash="z-verified",
+        status="success",
+        error_code=None,
+    )
+    degraded = replace(
+        verified,
+        fields={**fields, "board_reliability": "degraded", "reference_data_degraded": True},
+        missing_reasons={"cache_refresh": "timeout"},
+        payload_hash="a-degraded",
+    )
+
+    gateway.update_reference_observations((verified,))
+    gateway.fetch_market(observed_at=NOW)
+    gateway.update_reference_observations((degraded,))
+    refreshed = gateway.fetch_market(observed_at=NOW)
+
+    assert refreshed[0].board_reliability == "degraded"
+    assert "board_identity_degraded" in refreshed[0].execution_restrictions
+
+
+def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    measured_at = AFTERNOON + timedelta(seconds=91)
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        wall_clock=lambda: measured_at,
+    )
+    quote = replace(_quote(), source_time=measured_at, received_time=measured_at)
+    service = MarketFeatureService(
+        StaticGateway((quote,)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: measured_at,
+    )
+    service._candidate_quotes[quote.code] = quote
+    history = _history_bars()
+    intraday = tuple(
+        replace(
+            bar,
+            source_time=bar.source_time - timedelta(seconds=91),
+            received_time=bar.received_time - timedelta(seconds=91),
+        )
+        for bar in _tail_minute_bars()
+    )
+    research = ResearchObservation(
+        evidence=(
+            Evidence(
+                "news-old",
+                "news",
+                "中标",
+                "fixture",
+                measured_at - timedelta(seconds=1201),
+                received_at=measured_at - timedelta(seconds=1201),
+                data_version="news-old-v1",
+            ),
+        )
+    )
+    cache.put(
+        service._data_cache_identity(
+            "daily_history",
+            "eastmoney",
+            quote.code,
+            {"code": quote.code, "days": 90, "adjust": "qfq"},
+            measured_at,
+        ),
+        history,
+        data_version="history-old-v1",
+        source_time=measured_at - timedelta(seconds=86401),
+    )
+    cache.put(
+        service._data_cache_identity(
+            "intraday_minutes",
+            "eastmoney",
+            quote.code,
+            {"code": quote.code, "scale_minutes": 1, "adjust": "none"},
+            measured_at,
+        ),
+        intraday,
+        data_version="intraday-old-v1",
+        source_time=measured_at - timedelta(seconds=91),
+    )
+    cache.put(
+        service._data_cache_identity(
+            "research_success",
+            "akshare",
+            quote.code,
+            {"code": quote.code, "include_structured": False},
+            measured_at,
+        ),
+        research,
+        data_version="research-old-v1",
+        source_time=measured_at - timedelta(seconds=1201),
+    )
+
+    features = service.read_candidate_features(
+        (quote.code,),
+        measured_at,
+        include_intraday_tail=True,
+        include_structured_research=False,
+    )
+
+    assert features[0].quote.execution_restrictions == (
+        "history_data_degraded",
+        "intraday_data_degraded",
+        "research_data_degraded",
+    )
+    assert features[0].history_days == 60
+    assert features[0].evidence[-1].evidence_id == "news-old"
+
+
+def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        wall_clock=lambda: NOW,
+    )
+    history = CountingHistoryClient(_history_bars())
+    intraday = StaticIntradayClient(_tail_minute_bars())
+    evidence = Evidence(
+        evidence_id="news-1",
+        evidence_type="news",
+        title="中标",
+        source="fixture",
+        published_at=NOW - timedelta(hours=1),
+        received_at=NOW - timedelta(minutes=59),
+        data_version="news-v1",
+    )
+    research = StaticResearchClient((evidence,))
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        intraday_client=intraday,
+        research_client=research,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: NOW,
+    )
+
+    service._load_histories(("600001",))
+    service._load_intraday(("600001",), NOW)
+    service._load_research(("600001",), NOW, include_structured=False)
+    service._load_histories(("600001",))
+    service._load_intraday(("600001",), NOW)
+    service._load_research(("600001",), NOW, include_structured=False)
+
+    status = cache.status()
+    assert status["daily_history"]["eastmoney"]["entries"] == 1
+    assert status["daily_history"]["eastmoney"]["hit"] == 1
+    assert status["intraday_minutes"]["eastmoney"]["entries"] == 1
+    assert status["intraday_minutes"]["eastmoney"]["hit"] == 1
+    assert status["research_success"]["akshare"]["entries"] == 1
+    assert status["research_success"]["akshare"]["hit"] == 1
+    assert history.calls == ["600001"]
+    assert intraday.calls == ["600001"]
+    assert research.calls == 1
+
+
+def test_expired_unified_intraday_cache_triggers_a_new_physical_load() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    monotonic = MutableMonotonic()
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+    intraday = StaticIntradayClient(_tail_minute_bars())
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        intraday_client=intraday,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        intraday_ttl_seconds=45,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+
+    service._load_intraday(("600001",), NOW)
+    monotonic.value = 45.001
+    service._load_intraday(("600001",), NOW)
+
+    assert intraday.calls == ["600001", "600001"]
+
+
+def test_reference_refresh_structures_tushare_history_valuation_and_financial_data() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        wall_clock=lambda: AFTERNOON,
+    )
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+
+    class SlowDataPro(FakeTusharePro):
+        def trade_cal(self, **kwargs):
+            self.calls.append(("trade_cal", kwargs))
+            return FakeTushareFrame(
+                [{"exchange": "SSE", "cal_date": "20260715", "is_open": 1, "pretrade_date": "20260714"}]
+            )
+
+        def pro_bar(self, **kwargs):
+            self.calls.append(("pro_bar", kwargs))
+            return FakeTushareFrame(
+                [
+                    {
+                        "ts_code": "600001.SH",
+                        "trade_date": "20260715",
+                        "open": 10.0,
+                        "close": 10.2,
+                        "high": 10.3,
+                        "low": 9.9,
+                        "vol": 1000.0,
+                        "amount": 1020000.0,
+                        "pct_chg": 2.0,
+                    }
+                ]
+            )
+
+        def daily_basic(self, **kwargs):
+            self.calls.append(("daily_basic", kwargs))
+            return FakeTushareFrame([{"ts_code": "600001.SH", "trade_date": "20260715", "pe": 12.0, "pb": 1.5}])
+
+        def fina_indicator(self, **kwargs):
+            self.calls.append(("fina_indicator", kwargs))
+            return FakeTushareFrame(
+                [{"ts_code": "600001.SH", "ann_date": "20260715", "end_date": "20260630", "eps": 1.0}]
+            )
+
+    pro = SlowDataPro(
+        [
+            {
+                "ts_code": "600001.SH",
+                "symbol": "600001",
+                "name": "测试股份",
+                "industry": "工业",
+                "market": "主板",
+                "exchange": "SSE",
+                "list_status": "L",
+                "list_date": "20200102",
+            }
+        ]
+    )
+    gateway = MarketDataGateway(
+        StaticMarketClient((_quote(),)),
+        StaticMarketClient((_quote(),)),
+        StaticTencentClient((_quote(),)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        worker_pool=pool,
+        source_lanes=lanes,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: AFTERNOON,
+    )
+    service = MarketFeatureService(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        tushare_client=TushareClient(
+            token="secret-token",
+            timeout_seconds=8,
+            sdk_factory=lambda _token, _timeout: pro,
+            wall_clock=lambda: AFTERNOON,
+        ),
+        worker_pool=pool,
+        source_lanes=lanes,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: AFTERNOON,
+    )
+    pool.start()
+
+    try:
+        service.refresh_reference_data(("600001",), AFTERNOON)
+        service.refresh_reference_data(("600001",), AFTERNOON)
+    finally:
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+        cache.stop()
+
+    assert [name for name, _arguments in pro.calls] == [
+        "stock_basic",
+        "trade_cal",
+        "pro_bar",
+        "daily_basic",
+        "fina_indicator",
+    ]
+    daily_basic_arguments = next(arguments for name, arguments in pro.calls if name == "daily_basic")
+    assert daily_basic_arguments["trade_date"] == "20260715"
+    assert service._history["600001"].bars[-1].trade_date == "2026-07-15"
+    assert service._history["600001"].bars[-1].volume == 100_000.0
+    assert service._history["600001"].bars[-1].amount == 1_020_000_000.0
+    assert service._tushare_reference_fields["600001"]["tushare_valuation_pe"] == 12.0
+    assert service._tushare_reference_fields["600001"]["tushare_financial_eps"] == 1.0
+
+
+def test_eastmoney_history_completion_cannot_overwrite_newer_tushare_history() -> None:
+    eastmoney_bar = DailyBar("2026-07-14", 10.0, 10.1, 10.2, 9.9, 1000.0, 10000.0, 1.0)
+
+    class BlockingHistory:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def fetch_history(self, _code, *, days):
+            assert days == 90
+            self.started.set()
+            assert self.release.wait(1.0)
+            return (eastmoney_bar,)
+
+    history = BlockingHistory()
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        wall_clock=lambda: NOW,
+    )
+    result: dict[str, tuple[DailyBar, ...]] = {}
+    errors: list[BaseException] = []
+
+    def load_eastmoney() -> None:
+        try:
+            result.update(service._load_histories(("600001",)))
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=load_eastmoney)
+    thread.start()
+    assert history.started.wait(1.0)
+    tushare = SourceObservation(
+        source="tushare",
+        subject_key="600001",
+        observed_at=NOW,
+        source_time=NOW,
+        received_at=NOW,
+        effective_at=NOW,
+        data_version="tushare-history-v2",
+        fields={
+            "trade_date": "2026-07-15",
+            "open": 10.1,
+            "close": 10.2,
+            "high": 10.3,
+            "low": 10.0,
+            "vol": 11.0,
+            "amount": 12.0,
+            "pct_chg": 1.0,
+        },
+        missing_reasons={},
+        payload_hash="tushare-history-v2",
+        status="success",
+        error_code=None,
+    )
+    service._apply_tushare_history((tushare,))
+    history.release.set()
+    thread.join(1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert result["600001"][-1].trade_date == "2026-07-15"
+    assert service._history["600001"].bars[-1].trade_date == "2026-07-15"
 
 
 def test_gateway_marks_circuit_open_vendor_as_skipped_in_route_health() -> None:
@@ -259,7 +2213,8 @@ def test_gateway_marks_circuit_open_vendor_as_skipped_in_route_health() -> None:
     )
     gateway._states["eastmoney"].open_until = gateway._monotonic() + 60.0
 
-    assert gateway.fetch_market() == (quote,)
+    fetched = tuple(gateway.fetch_market())
+    assert [(item.code, item.price, item.source) for item in fetched] == [(quote.code, quote.price, "sina")]
     health = gateway.health()
 
     assert health["active_source"] == "sina"
@@ -301,7 +2256,10 @@ def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_cal
             thread.join(1.0)
 
     assert source.calls == 1
-    assert results == [(_quote(),), (_quote(),)]
+    assert [[(item.code, item.price, item.source) for item in result] for result in results] == [
+        [("600001", 12.0, "eastmoney")],
+        [("600001", 12.0, "eastmoney")],
+    ]
 
 
 def test_gateway_allows_one_recovery_probe_after_circuit_timeout() -> None:
@@ -323,7 +2281,8 @@ def test_gateway_allows_one_recovery_probe_after_circuit_timeout() -> None:
 
     monotonic.value = 61.0
 
-    assert gateway.fetch_market() == (_quote(),)
+    fetched = tuple(gateway.fetch_market())
+    assert [(item.code, item.price, item.source) for item in fetched] == [("600001", 12.0, "eastmoney")]
     assert source.calls == 2
     assert gateway.health()["sources"]["eastmoney"]["circuit_open"] is False
 
@@ -475,6 +2434,92 @@ def test_feature_service_does_not_commit_history_cache_after_deadline() -> None:
     assert service._market_features == ()
 
 
+def test_source_lane_history_deadline_returns_before_blocked_io_and_discards_late_cache() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+    )
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    history = BlockingHistoryClient(_history_bars())
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        worker_pool=pool,
+        source_lanes=lanes,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+    )
+    pool.start()
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=0.01)
+    release_timer = threading.Timer(0.6, history.release.set)
+    release_timer.start()
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(MarketDataDeadlineExceeded):
+            service.fetch_market_features(NOW, deadline=deadline)
+        elapsed = time.monotonic() - started
+    finally:
+        history.release.set()
+        release_timer.cancel()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+        cache.stop()
+
+    assert elapsed < 0.5
+    assert service._history == {}
+    assert cache.status()["daily_history"]["eastmoney"]["entries"] == 0
+
+
+def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_path) -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+    )
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    research = BlockingResearchClient((Evidence("news-late", "news", "迟到新闻", "fixture", NOW - timedelta(hours=1)),))
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=research,
+        research_cache_dir=tmp_path,
+        worker_pool=pool,
+        source_lanes=lanes,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+    )
+    pool.start()
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=0.01)
+    release_timer = threading.Timer(0.6, research.release.set)
+    release_timer.start()
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(MarketDataDeadlineExceeded):
+            service.refresh_market_news(("600001",), NOW, deadline=deadline)
+        elapsed = time.monotonic() - started
+    finally:
+        research.release.set()
+        release_timer.cancel()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+        cache.stop()
+
+    assert elapsed < 0.5
+    assert service._research == {}
+    research_cache_status = cache.status().get("research_success", {}).get("akshare", {})
+    assert research_cache_status.get("entries", 0) == 0
+    assert not (tmp_path / "observations").exists()
+
+
 def test_feature_service_health_reports_bounded_quote_age_summaries() -> None:
     measured_at = NOW + timedelta(seconds=31)
     service = MarketFeatureService(
@@ -496,6 +2541,20 @@ def test_feature_service_health_reports_bounded_quote_age_summaries() -> None:
         "latest_source_time": NOW.isoformat(),
     }
     assert health["candidate_quote_age"]["maximum_seconds"] == 31.0
+
+
+def test_feature_builder_does_not_compute_limit_proximity_when_limit_is_inapplicable() -> None:
+    quote = replace(
+        _quote(),
+        has_price_limit=False,
+        exchange_limit_pct=None,
+        listing_age_sessions=1,
+    )
+
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build((quote,), {}, NOW)[0]
+
+    assert feature.values["limit_proximity"] is None
+    assert feature.values["limit_distance_safety"] is None
 
 
 def test_out_of_order_intraday_refresh_keeps_last_valid_tail_input() -> None:
@@ -645,6 +2704,7 @@ def test_candidate_quote_refresh_uses_reserved_urgent_worker() -> None:
         queue_capacity=8,
         thread_name_prefix="shared-priority-data",
     )
+    lanes = SourceLaneRegistry(pool)
     entered = threading.Event()
     release = threading.Event()
 
@@ -652,11 +2712,23 @@ def test_candidate_quote_refresh_uses_reserved_urgent_worker() -> None:
         entered.set()
         release.wait(timeout=2.0)
 
+    gateway = MarketDataGateway(
+        StaticMarketClient((_quote(),)),
+        StaticMarketClient((replace(_quote(), source="sina"),)),
+        StaticTencentClient((replace(_quote(), source="tencent"),)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        worker_pool=pool,
+        source_lanes=lanes,
+        wall_clock=lambda: NOW,
+    )
     service = MarketFeatureService(
-        StaticGateway((_quote(),)),
+        gateway,
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         worker_pool=pool,
+        source_lanes=lanes,
         wall_clock=lambda: NOW,
     )
     pool.start()
@@ -671,6 +2743,7 @@ def test_candidate_quote_refresh_uses_reserved_urgent_worker() -> None:
         )
     finally:
         release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
         pool.stop()
 
     assert [feature.quote.code for feature in refreshed] == ["600001"]
@@ -963,6 +3036,143 @@ def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request() -> 
     assert time.monotonic() - started < 0.5
     assert result[0].values["tail_return_30m"] is None
     assert service.health()["intraday_tail_last_error"] == "intraday_batch_deadline"
+
+
+def test_source_lane_intraday_batch_timeout_returns_without_waiting_for_blocked_io() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    intraday = BlockingIntradayClient()
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        intraday_client=intraday,
+        intraday_workers=1,
+        intraday_batch_timeout_seconds=0.01,
+        worker_pool=pool,
+        source_lanes=lanes,
+    )
+    pool.start()
+
+    started = time.monotonic()
+    try:
+        result = service.fetch_candidate_features(
+            ("600001",),
+            AFTERNOON,
+            include_intraday_tail=True,
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        intraday.release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert elapsed < 0.5
+    assert result[0].values["tail_return_30m"] is None
+    assert service.health()["intraday_tail_last_error"] == "intraday_batch_deadline"
+
+
+def test_timed_out_intraday_lane_cannot_mutate_caller_restrictions_after_return() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    measured_at = AFTERNOON + timedelta(seconds=91)
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        wall_clock=lambda: measured_at,
+    )
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        intraday_client=StaticIntradayClient(_tail_minute_bars()),
+        intraday_workers=1,
+        intraday_batch_timeout_seconds=0.01,
+        worker_pool=pool,
+        source_lanes=lanes,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: measured_at,
+    )
+    pool.start()
+    service._load_intraday(("600001",), AFTERNOON)
+    service._intraday["600001"] = replace(service._intraday["600001"], expires_at=-1.0)
+    blocking = BlockingIntradayClient()
+    service._intraday_client = blocking
+
+    class TrackingRestrictions(dict[str, set[str]]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mutation_threads: list[str] = []
+
+        def setdefault(self, key: str, default: set[str] | None = None) -> set[str]:
+            self.mutation_threads.append(threading.current_thread().name)
+            return super().setdefault(key, default or set())
+
+    restrictions = TrackingRestrictions()
+    try:
+        result = service._load_intraday(
+            ("600001",),
+            AFTERNOON,
+            action_restrictions=restrictions,
+        )
+        blocking.release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+    finally:
+        blocking.release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+        cache.stop()
+
+    assert result == {}
+    assert restrictions == {}
+    assert restrictions.mutation_threads == []
+
+
+def test_source_lane_cancels_queued_intraday_io_after_batch_timeout() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    intraday = StaticIntradayClient(())
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        intraday_client=intraday,
+        intraday_workers=1,
+        intraday_batch_timeout_seconds=0.01,
+        worker_pool=pool,
+        source_lanes=lanes,
+    )
+    occupied = threading.Event()
+    release = threading.Event()
+
+    def occupy_eastmoney_lane() -> None:
+        occupied.set()
+        assert release.wait(1.0)
+
+    pool.start()
+    running = lanes.submit(
+        "eastmoney",
+        "occupied",
+        AFTERNOON - timedelta(seconds=1),
+        occupy_eastmoney_lane,
+    )
+    assert occupied.wait(1.0)
+
+    try:
+        result = service._load_intraday(("600001",), AFTERNOON)
+        release.set()
+        running.result(timeout=1.0)
+    finally:
+        release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert result == {}
+    assert intraday.calls == []
+    assert lanes.status()["eastmoney"]["pending"] is False
 
 
 def test_akshare_news_is_bounded_and_normalized() -> None:
@@ -1422,23 +3632,33 @@ def test_stock_risk_refresh_reuses_successful_ten_minute_cache() -> None:
     assert research.snapshot_calls == 1
 
 
-def test_stock_risk_batch_deadline_records_short_degradation() -> None:
+def test_stock_risk_batch_deadline_is_controlled_and_discards_late_result() -> None:
     research = BlockingStructuredResearchClient()
+    observed_at = datetime.now(timezone.utc)
     service = MarketFeatureService(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         research_client=research,
         research_workers=1,
-        wall_clock=lambda: AFTERNOON,
+        wall_clock=lambda: datetime.now(timezone.utc),
     )
+    release_timer = threading.Timer(0.6, research.release.set)
+    release_timer.start()
 
     try:
-        service.refresh_stock_risk(("600001",), AFTERNOON, deadline=AFTERNOON)
+        with pytest.raises(MarketDataDeadlineExceeded, match="deadline"):
+            service.refresh_stock_risk(
+                ("600001",),
+                observed_at,
+                deadline=observed_at + timedelta(seconds=0.01),
+            )
     finally:
         research.release.set()
+        release_timer.cancel()
 
     assert service.health()["research_last_error"] == "research_batch_deadline"
+    assert service._research == {}
 
 
 def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
@@ -1522,6 +3742,16 @@ class StaticMarketClient:
         return self._quotes
 
 
+class CountingMarketClient(StaticMarketClient):
+    def __init__(self, quotes) -> None:
+        super().__init__(quotes)
+        self.calls = 0
+
+    def fetch_market(self):
+        self.calls += 1
+        return super().fetch_market()
+
+
 class SequenceMarketClient:
     def __init__(self, results) -> None:
         self._results = iter(results)
@@ -1549,6 +3779,41 @@ class BlockingMarketClient(StaticMarketClient):
         return super().fetch_market()
 
 
+class CoordinatedMarketClient(StaticMarketClient):
+    def __init__(self, quotes, started: threading.Barrier, release: threading.Event) -> None:
+        super().__init__(quotes)
+        self._started = started
+        self._release = release
+        self.calls = 0
+        self.thread_name = ""
+
+    def fetch_market(self):
+        self.calls += 1
+        self.thread_name = threading.current_thread().name
+        self._started.wait(1.0)
+        assert self._release.wait(1.0)
+        return super().fetch_market()
+
+
+class FakeTushareFrame:
+    def __init__(self, rows) -> None:
+        self._rows = rows
+
+    def to_dict(self, orient: str):
+        assert orient == "records"
+        return list(self._rows)
+
+
+class FakeTusharePro:
+    def __init__(self, rows) -> None:
+        self._rows = rows
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def stock_basic(self, **kwargs):
+        self.calls.append(("stock_basic", kwargs))
+        return FakeTushareFrame(self._rows)
+
+
 class StaticTencentClient:
     def __init__(self, quotes) -> None:
         self._quotes = quotes
@@ -1557,14 +3822,24 @@ class StaticTencentClient:
         return self._quotes
 
 
+class BlockingTencentClient(StaticTencentClient):
+    def __init__(self, quotes) -> None:
+        super().__init__(quotes)
+        self.release = threading.Event()
+
+    def fetch_quotes(self, codes):
+        self.release.wait(1.0)
+        return super().fetch_quotes(codes)
+
+
 class StaticGateway:
     def __init__(self, quotes) -> None:
         self._quotes = quotes
 
-    def fetch_candidates(self, _codes):
+    def fetch_candidates(self, _codes, **_kwargs):
         return self._quotes
 
-    def fetch_market(self):
+    def fetch_market(self, **_kwargs):
         return self._quotes
 
     @staticmethod
@@ -1577,7 +3852,7 @@ class StaticGatewayWithSeparateQuotes(StaticGateway):
         super().__init__(market_quotes)
         self._candidate_quotes = candidate_quotes
 
-    def fetch_candidates(self, _codes):
+    def fetch_candidates(self, _codes, **_kwargs):
         return self._candidate_quotes
 
 
@@ -1586,13 +3861,13 @@ class ThreadRecordingGateway(StaticGateway):
         super().__init__(quotes)
         self.thread_names = []
 
-    def fetch_market(self):
+    def fetch_market(self, **kwargs):
         self.thread_names.append(threading.current_thread().name)
-        return super().fetch_market()
+        return super().fetch_market(**kwargs)
 
-    def fetch_candidates(self, codes):
+    def fetch_candidates(self, codes, **kwargs):
         self.thread_names.append(threading.current_thread().name)
-        return super().fetch_candidates(codes)
+        return super().fetch_candidates(codes, **kwargs)
 
 
 class StaticHistoryClient:
@@ -1609,6 +3884,16 @@ class CountingHistoryClient:
     def fetch_history(self, code, *, days):
         self.calls.append(code)
         return self._bars
+
+
+class BlockingHistoryClient(CountingHistoryClient):
+    def __init__(self, bars) -> None:
+        super().__init__(bars)
+        self.release = threading.Event()
+
+    def fetch_history(self, code, *, days):
+        self.release.wait(1.0)
+        return super().fetch_history(code, days=days)
 
 
 class ThreadRecordingHistoryClient(CountingHistoryClient):
@@ -1648,6 +3933,16 @@ class StaticResearchClient:
     def fetch_news(self, _code, *, observed_at):
         self.calls += 1
         return self._evidence
+
+
+class BlockingResearchClient(StaticResearchClient):
+    def __init__(self, evidence) -> None:
+        super().__init__(evidence)
+        self.release = threading.Event()
+
+    def fetch_news(self, code, *, observed_at):
+        self.release.wait(1.0)
+        return super().fetch_news(code, observed_at=observed_at)
 
 
 class FailingResearchClient:

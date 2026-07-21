@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
@@ -72,6 +72,12 @@ def board_for_code(code: str) -> Board:
     return Board.UNSUPPORTED
 
 
+def board_for_snapshot(snapshot: FeatureSnapshot) -> Board:
+    return (
+        snapshot.quote.board if snapshot.quote.board is not Board.UNSUPPORTED else board_for_code(snapshot.quote.code)
+    )
+
+
 def hard_filter(
     snapshot: FeatureSnapshot,
     now: datetime,
@@ -83,6 +89,48 @@ def hard_filter(
         snapshot,
         default_filter_rules(max_age_seconds=max_age_seconds, policy=policy),
         now=now,
+    )
+
+
+def legacy_v14_hard_filter(
+    snapshot: FeatureSnapshot,
+    now: datetime,
+    *,
+    max_age_seconds: float,
+    policy: HardFilterPolicy | None = None,
+) -> FilterResult:
+    """Reproduce the pre-v15 filter projection for old frozen replays."""
+
+    current = hard_filter(snapshot, now, max_age_seconds=max_age_seconds, policy=policy)
+    v15_required = {
+        "new_listing_session",
+        "relisted_first_session",
+        "delisting_period_first_session",
+    }
+    v15_optional = {
+        "board_classification_conflict",
+        "board_identity_degraded",
+        "missing_listing_date",
+        "missing_listing_age_sessions",
+    }
+    reasons = [reason for reason in current.reasons if reason.filter_code not in v15_required]
+    optional_flags: list[FilterAudit] = []
+    for audit in current.optional_flags:
+        if audit.filter_code == "cross_source_deviation":
+            reasons.append(audit)
+        elif audit.filter_code not in v15_optional:
+            optional_flags.append(audit)
+    reasons = [
+        replace(reason, filter_code="growth_board_too_hot")
+        if reason.filter_code in {"chinext_board_too_hot", "star_board_too_hot"}
+        else reason
+        for reason in reasons
+    ]
+    return FilterResult(
+        allowed=not reasons,
+        board=board_for_code(snapshot.quote.code),
+        reasons=tuple(reasons),
+        optional_flags=tuple(optional_flags),
     )
 
 
@@ -140,7 +188,7 @@ def apply_filters(
     ``OPTIONAL`` rules that return an audit are collected into
     ``optional_flags`` but do not block the candidate.
     """
-    board = board_for_code(snapshot.quote.code)
+    board = board_for_snapshot(snapshot)
     reasons: list[FilterAudit] = []
     optional_flags: list[FilterAudit] = []
     for rule in rules:
@@ -231,6 +279,62 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
             return _make_audit(snapshot, "cross_source_deviation", "<= 0.5% or verified", deviation)
         return None
 
+    def new_listing_session(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        age = snapshot.quote.listing_age_sessions
+        if age is not None and age < 6:
+            return _make_audit(snapshot, "new_listing_session", ">= 6 trading sessions", age)
+        return None
+
+    def relisted_first_session(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        if snapshot.quote.is_relisted_first_session:
+            return _make_audit(snapshot, "relisted_first_session", "false", True)
+        return None
+
+    def delisting_period_first_session(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        if snapshot.quote.is_delisting_period_first_session:
+            return _make_audit(snapshot, "delisting_period_first_session", "false", True)
+        return None
+
+    def board_classification_conflict(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        if (
+            "board_classification_conflict" in snapshot.quote.execution_restrictions
+            or snapshot.quote.board_reliability == "conflict"
+        ):
+            return _make_audit(snapshot, "board_classification_conflict", "verified board identity", "conflict")
+        return None
+
+    def board_identity_degraded(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        if (
+            "board_identity_degraded" in snapshot.quote.execution_restrictions
+            or snapshot.quote.board_source == "code_prefix_fallback"
+        ):
+            return _make_audit(
+                snapshot,
+                "board_identity_degraded",
+                "security master, security list, or market field",
+                snapshot.quote.board_source,
+            )
+        return None
+
+    def missing_listing_date(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        if "missing_listing_date" in snapshot.quote.execution_restrictions or (
+            snapshot.quote.rule_version and snapshot.quote.listing_date is None
+        ):
+            return _make_audit(snapshot, "missing_listing_date", "effective listing date", None)
+        return None
+
+    def missing_listing_age_sessions(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        if "missing_listing_age_sessions" in snapshot.quote.execution_restrictions or (
+            snapshot.quote.listing_date is not None and snapshot.quote.listing_age_sessions is None
+        ):
+            return _make_audit(
+                snapshot,
+                "missing_listing_age_sessions",
+                "verified trading-calendar listing age",
+                None,
+            )
+        return None
+
     def missing_liquidity(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         median_amount = snapshot.values.get("amount_median_20d")
         if median_amount is None:
@@ -268,14 +372,16 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
         return audit
 
     def invalid_pct_change(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
-        board = board_for_code(snapshot.quote.code)
+        board = board_for_snapshot(snapshot)
         pct_change = snapshot.quote.pct_change
         if pct_change is None or not math.isfinite(pct_change):
             return _make_audit(snapshot, "invalid_pct_change", "finite percentage points", pct_change)
         if board is Board.MAIN and pct_change > 8.0:
             return _make_audit(snapshot, "main_board_too_hot", "<= 8.00", pct_change)
-        if board in {Board.CHINEXT, Board.STAR} and pct_change > 16.0:
-            return _make_audit(snapshot, "growth_board_too_hot", "<= 16.00", pct_change)
+        if board is Board.CHINEXT and pct_change > 16.0:
+            return _make_audit(snapshot, "chinext_board_too_hot", "<= 16.00", pct_change)
+        if board is Board.STAR and pct_change > 16.0:
+            return _make_audit(snapshot, "star_board_too_hot", "<= 16.00", pct_change)
         return None
 
     def structured_negative_risk(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
@@ -315,7 +421,14 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
         FilterRule("invalid_amount", FilterSeverity.REQUIRED, invalid_amount),
         FilterRule("invalid_quote_time", FilterSeverity.REQUIRED, invalid_quote_time),
         FilterRule("invalid_cross_source_deviation", FilterSeverity.REQUIRED, cross_source_deviation),
-        FilterRule("cross_source_deviation", FilterSeverity.REQUIRED, cross_source_deviation_optional),
+        FilterRule("cross_source_deviation", FilterSeverity.OPTIONAL, cross_source_deviation_optional),
+        FilterRule("new_listing_session", FilterSeverity.REQUIRED, new_listing_session),
+        FilterRule("relisted_first_session", FilterSeverity.REQUIRED, relisted_first_session),
+        FilterRule("delisting_period_first_session", FilterSeverity.REQUIRED, delisting_period_first_session),
+        FilterRule("board_classification_conflict", FilterSeverity.OPTIONAL, board_classification_conflict),
+        FilterRule("board_identity_degraded", FilterSeverity.OPTIONAL, board_identity_degraded),
+        FilterRule("missing_listing_date", FilterSeverity.OPTIONAL, missing_listing_date),
+        FilterRule("missing_listing_age_sessions", FilterSeverity.OPTIONAL, missing_listing_age_sessions),
         FilterRule("missing_liquidity_history", FilterSeverity.REQUIRED, missing_liquidity),
         FilterRule("one_price_limit", FilterSeverity.REQUIRED, one_price_limit),
         FilterRule("blacklisted", FilterSeverity.REQUIRED, blacklisted),
@@ -346,5 +459,7 @@ __all__ = [
     "FilterSeverity",
     "apply_filters",
     "board_for_code",
+    "board_for_snapshot",
     "hard_filter",
+    "legacy_v14_hard_filter",
 ]

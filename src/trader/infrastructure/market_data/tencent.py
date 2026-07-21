@@ -17,15 +17,24 @@ _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 
 
 class TencentClient:
-    def __init__(self, *, timeout_seconds: float, session_factory: SessionFactory = requests.Session) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float,
+        session_factory: SessionFactory = requests.Session,
+        cancel_requested: Callable[[], bool] = lambda: False,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    ) -> None:
         self._timeout_seconds = timeout_seconds
         self._session_factory = session_factory
+        self._cancel_requested = cancel_requested
+        self._wall_clock = wall_clock
 
     def fetch_quotes(self, codes: Sequence[str], now: datetime | None = None) -> tuple[MarketQuote, ...]:
         normalized = tuple(sorted({code for code in codes if len(code) == 6 and code.isdigit()}))
         if not normalized:
             return ()
-        received_at = now or datetime.now(timezone.utc)
+        self._ensure_running()
         with self._session_factory() as session:
             response = session.get(
                 "https://qt.gtimg.cn/q=" + ",".join(_symbol(code) for code in normalized),
@@ -35,6 +44,8 @@ class TencentClient:
             )
             response.raise_for_status()
             text = response.content.decode("gb18030", errors="replace")
+        self._ensure_running()
+        received_at = now or self._wall_clock()
         quotes = normalize_quotes(
             (
                 {str(index): value for index, value in enumerate(payload.split("~"))}
@@ -46,6 +57,10 @@ class TencentClient:
         if not quotes:
             raise RuntimeError("tencent returned no usable candidate quotes")
         return quotes
+
+    def _ensure_running(self) -> None:
+        if self._cancel_requested():
+            raise RuntimeError("tencent source lane stopped")
 
 
 def _parse_payload(fields: Mapping[str, object], received_at: datetime, requested: set[str]) -> MarketQuote | None:

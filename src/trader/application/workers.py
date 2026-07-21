@@ -235,11 +235,12 @@ def borrow_executor(
     thread_name_prefix: str,
     queue_capacity: int | None = None,
     wait_on_exit: bool = True,
+    nested_inline: bool = False,
 ) -> Iterator[WorkerExecutor]:
     if shared is not None and shared.is_running():
         # When every worker enters a nested path together, queued work cannot
         # start. Keep normal nested fan-out when at least one worker is spare.
-        if shared.owns_current_thread() and not shared.has_spare_worker():
+        if shared.owns_current_thread() and (nested_inline or not shared.has_spare_worker()):
             yield _InlineExecutor()
         else:
             yield shared
@@ -255,6 +256,24 @@ def borrow_executor(
         yield local
     finally:
         local.stop(wait=wait_on_exit, cancel_futures=not wait_on_exit)
+
+
+def submit_or_run_inline(
+    executor: WorkerExecutor,
+    function: Callable[_P, _T],
+    /,
+    *args: _P.args,
+    **kwargs: _P.kwargs,
+) -> Future[_T]:
+    future = executor.submit(function, *args, **kwargs)
+    if future is not None:
+        return future
+    completed: Future[_T] = Future()
+    try:
+        completed.set_result(function(*args, **kwargs))
+    except BaseException as exc:
+        completed.set_exception(exc)
+    return completed
 
 
 class _InlineExecutor:
@@ -273,4 +292,9 @@ class _InlineExecutor:
         return future
 
 
-__all__ = ["BoundedExecutor", "WorkerExecutor", "borrow_executor"]
+__all__ = [
+    "BoundedExecutor",
+    "WorkerExecutor",
+    "borrow_executor",
+    "submit_or_run_inline",
+]

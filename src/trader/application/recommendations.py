@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
@@ -22,7 +22,7 @@ from trader.application.recommendation_support import (
     _review_contexts_for_candidates,
     _snapshot_id,
 )
-from trader.domain.filters import hard_filter
+from trader.domain.filters import FilterResult, hard_filter
 from trader.domain.fusion import fuse_score
 from trader.domain.models import (
     DeepSeekReview,
@@ -86,8 +86,14 @@ class PreparedSnapshot:
 
 
 class RecommendationEngine(RecommendationReplayMixin):
-    def __init__(self, policy: RecommendationPolicy) -> None:
+    def __init__(
+        self,
+        policy: RecommendationPolicy,
+        *,
+        hard_filter_function: Callable[..., FilterResult] = hard_filter,
+    ) -> None:
         self._policy = policy
+        self._hard_filter = hard_filter_function
 
     def preselect(
         self,
@@ -101,7 +107,12 @@ class RecommendationEngine(RecommendationReplayMixin):
         reasons: Counter[str] = Counter()
         details: list[FilterAudit] = []
         for snapshot in features:
-            result = hard_filter(snapshot, now, max_age_seconds=max_age_seconds, policy=self._policy.hard_filter)
+            result = self._hard_filter(
+                snapshot,
+                now,
+                max_age_seconds=max_age_seconds,
+                policy=self._policy.hard_filter,
+            )
             if not result.allowed:
                 reasons.update(reason.code for reason in result.reasons)
                 details.extend(result.reasons)
@@ -200,7 +211,7 @@ class RecommendationEngine(RecommendationReplayMixin):
         refreshed_filter_details = list(filter_details)
         refreshed_filtered_count = filtered_count
         for feature in features:
-            filter_result = hard_filter(
+            filter_result = self._hard_filter(
                 feature,
                 now,
                 max_age_seconds=max_age_seconds,
@@ -438,6 +449,10 @@ class RecommendationEngine(RecommendationReplayMixin):
                 is_stale=local.features.quote.age_seconds(now) > max_age_seconds,
                 observation_margin=self._policy.selection.observation_margin,
             )
+            restrictions = local.features.quote.execution_restrictions
+            if restrictions and action is RecommendationAction.EXECUTABLE:
+                action = RecommendationAction.OBSERVE
+                reason = "market_data_observe_only:" + ",".join(sorted(restrictions))
             merged.append(replace(provisional, action=action, action_reason=reason))
         return tuple(merged), fusion_mode
 

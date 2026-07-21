@@ -1,75 +1,56 @@
-"""Market-data source fallback, single-flight and circuit-breaker owner."""
+"""Parallel market-source collection, deterministic merge and source health."""
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
-from collections import deque
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
-from datetime import datetime
-from typing import Generic, TypeVar, cast
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import replace
+from datetime import date, datetime, timezone
 
-from trader.application.ports import MarketDataFailed, MarketDataNoData, MarketDataUnavailable
-from trader.domain.models import MarketQuote
+from trader.application.cache import BoundedCache, canonical_json_bytes
+from trader.application.ports import (
+    MarketDataDeadlineExceeded,
+    MarketDataFailed,
+    MarketDataNoData,
+    MarketDataUnavailable,
+)
+from trader.application.schedule import shanghai_now
+from trader.application.source_lanes import SourceLaneRegistry, SourceRequestSuperseded
+from trader.application.workers import BoundedExecutor
+from trader.domain.models import CanonicalMarketSnapshot, MarketQuote
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
-from trader.infrastructure.market_data.router import RouteOutcome, VendorRoute, VendorSeverity, route
+from trader.infrastructure.market_data.gateway_sources import MarketGatewaySourcesMixin
+from trader.infrastructure.market_data.gateway_support import (
+    _cache_error_code,
+    _canonical_health,
+    _CircuitState,
+    _observation_version,
+    _parallel_error_message,
+    _parallel_route_outcome,
+    _percentile,
+    _preserve_newer_quotes,
+    _reference_replaces,
+    _route_health,
+    _SingleFlight,
+    _source_degraded_reasons,
+)
+from trader.infrastructure.market_data.merge import (
+    merge_market_observations,
+    observation_from_quote,
+    overlay_canonical_snapshot,
+)
+from trader.infrastructure.market_data.merge_quote import rejection_reason, source_name
+from trader.infrastructure.market_data.observations import SourceObservation
+from trader.infrastructure.market_data.router import RouteOutcome
 from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
 
-_T = TypeVar("_T")
 
-
-@dataclass
-class _CircuitState:
-    failures: int = 0
-    open_until: float = 0.0
-    success_count: int = 0
-    error_count: int = 0
-    last_latency_ms: float = 0.0
-    last_error: str = ""
-    planned_count: int = 0
-    latencies_ms: deque[float] = field(default_factory=lambda: deque(maxlen=256))
-
-
-class _SingleFlight(Generic[_T]):
-    def __init__(self) -> None:
-        self._condition = threading.Condition()
-        self._running = False
-        self._generation = 0
-        self._result: _T | None = None
-        self._error: BaseException | None = None
-
-    def run(self, function: Callable[[], _T]) -> _T:
-        with self._condition:
-            generation = self._generation
-            if self._running:
-                while self._running and self._generation == generation:
-                    self._condition.wait()
-                if self._error is not None:
-                    raise self._error
-                return cast(_T, self._result)
-            self._running = True
-        try:
-            result = function()
-        except BaseException as exc:
-            with self._condition:
-                self._error = exc
-                self._result = None
-                self._running = False
-                self._generation += 1
-                self._condition.notify_all()
-            raise
-        with self._condition:
-            self._result = result
-            self._error = None
-            self._running = False
-            self._generation += 1
-            self._condition.notify_all()
-        return result
-
-
-class MarketDataGateway:
+class MarketDataGateway(MarketGatewaySourcesMixin):
     def __init__(
         self,
         eastmoney: EastmoneyClient,
@@ -79,7 +60,14 @@ class MarketDataGateway:
         minimum_market_rows: int,
         circuit_breaker_failures: int,
         circuit_breaker_seconds: int,
+        worker_pool: BoundedExecutor | None = None,
+        source_lanes: SourceLaneRegistry | None = None,
+        cache: BoundedCache[object] | None = None,
+        source_contract_versions: Mapping[str, str] | None = None,
+        config_version: str = "component-default",
+        schema_version: str = "market-v15",
         monotonic: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._eastmoney = eastmoney
         self._sina = sina
@@ -87,112 +75,334 @@ class MarketDataGateway:
         self._minimum_market_rows = minimum_market_rows
         self._failure_limit = circuit_breaker_failures
         self._breaker_seconds = circuit_breaker_seconds
+        self._worker_pool = worker_pool
+        self._source_lanes = source_lanes
+        self._cache = cache
+        self._source_contract_versions = dict(
+            source_contract_versions
+            or {
+                "eastmoney": "eastmoney-component-v1",
+                "sina": "sina-component-v1",
+                "tencent": "tencent-component-v1",
+            }
+        )
+        self._config_version = config_version
+        self._schema_version = schema_version
         self._monotonic = monotonic
+        self._wall_clock = wall_clock
         self._market_flight: _SingleFlight[Sequence[MarketQuote]] = _SingleFlight()
         self._candidate_fetch_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._states = {"eastmoney": _CircuitState(), "sina": _CircuitState(), "tencent": _CircuitState()}
         self._latest_by_code: dict[str, MarketQuote] = {}
+        self._latest_observations: dict[str, dict[str, SourceObservation]] = {}
+        self._reference_observations: dict[str, SourceObservation] = {}
+        self._calendar_open_dates: set[date] = set()
+        self._calendar_open_dates_sorted: tuple[date, ...] = ()
+        self._latest_snapshot: CanonicalMarketSnapshot | None = None
         self._latest_source = "unavailable"
         self._last_route_outcome: RouteOutcome | None = None
+        self._merge_count = 0
+        self._conflict_count = 0
 
-    def fetch_market(self) -> Sequence[MarketQuote]:
-        return self._market_flight.run(self._fetch_market_once)
+    def fetch_market(
+        self,
+        *,
+        observed_at: datetime | None = None,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[MarketQuote]:
+        requested_at = observed_at or self._wall_clock()
+        if self._source_lanes is not None:
+            return self._fetch_market_once(requested_at, force=force, deadline=deadline)
+        return self._market_flight.run(lambda: self._fetch_market_once(requested_at, force=force, deadline=deadline))
 
-    def _fetch_market_once(self) -> Sequence[MarketQuote]:
-        vendor_routes = (
-            VendorRoute(
-                "eastmoney",
-                lambda: self._fetch_from_vendor("eastmoney", self._eastmoney.fetch_market),
-                VendorSeverity.REQUIRED,
-            ),
-            VendorRoute(
-                "sina", lambda: self._fetch_from_vendor("sina", self._sina.fetch_market), VendorSeverity.REQUIRED
-            ),
-        )
-        try:
-            outcome = route(vendor_routes, on_no_data="insufficient rows")
-        except (MarketDataFailed, MarketDataNoData) as exc:
-            outcome = _route_outcome_from_exception(exc)
+    def _fetch_market_once(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool,
+        deadline: datetime | None,
+    ) -> Sequence[MarketQuote]:
+        results = self._fetch_market_sources(observed_at, force=force, deadline=deadline)
+        successes = tuple(result for result in results if result.status == "success")
+        outcome = _parallel_route_outcome(results)
+        completed_at = max(observed_at, self._wall_clock())
+        if deadline is not None and completed_at >= deadline:
             with self._state_lock:
                 self._last_route_outcome = outcome
+            raise MarketDataDeadlineExceeded("market data deadline exceeded before canonical merge")
+        if not successes:
             with self._state_lock:
+                self._last_route_outcome = outcome
                 cached = tuple(self._latest_by_code.values())
+                if self._latest_snapshot is not None:
+                    self._latest_snapshot = replace(
+                        self._latest_snapshot,
+                        degraded_reasons=tuple(
+                            sorted(
+                                {
+                                    *self._latest_snapshot.degraded_reasons,
+                                    *_source_degraded_reasons(results),
+                                    "all_sources_failed:last_valid_snapshot",
+                                }
+                            )
+                        ),
+                    )
             if cached:
                 return cached
-            raise MarketDataUnavailable("market data unavailable: " + str(exc)) from exc
-        quotes = tuple(cast(Sequence[MarketQuote], outcome.result))
+            raise MarketDataUnavailable("market data unavailable: " + _parallel_error_message(results))
+        observations = tuple(observation for result in successes for observation in result.observations)
         with self._state_lock:
-            for quote in quotes:
-                current = self._latest_by_code.get(quote.code)
-                if current is None or _quote_version(quote) > _quote_version(current):
-                    self._latest_by_code[quote.code] = quote
-            self._latest_source = outcome.vendor
-            self._last_route_outcome = outcome
-            return tuple(self._latest_by_code.values())
+            previous = self._latest_snapshot
+            references = tuple(self._reference_observations.values())
+            self._remember_observations_locked(observations, completed_at)
+        snapshot = merge_market_observations(
+            (*observations, *references),
+            observed_at=completed_at,
+            previous=previous,
+        )
+        snapshot = replace(
+            snapshot,
+            degraded_reasons=tuple(sorted({*snapshot.degraded_reasons, *_source_degraded_reasons(results)})),
+        )
+        while True:
+            with self._state_lock:
+                latest = self._latest_snapshot
+            commit_snapshot = _preserve_newer_quotes(snapshot, latest)
+            with self._state_lock:
+                if self._latest_snapshot is not latest:
+                    continue
+                self._latest_snapshot = commit_snapshot
+                self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
+                self._latest_source = "eastmoney+sina" if len(successes) == 2 else outcome.vendor
+                self._last_route_outcome = outcome
+                self._merge_count += 1
+                self._conflict_count += len(commit_snapshot.conflicts)
+                return tuple(self._latest_by_code.values())
 
-    def fetch_candidates(self, codes: Sequence[str]) -> Sequence[MarketQuote]:
+    def fetch_candidates(
+        self,
+        codes: Sequence[str],
+        *,
+        observed_at: datetime | None = None,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[MarketQuote]:
         if not codes:
             return ()
+        requested_at = observed_at or self._wall_clock()
+        if self._source_lanes is not None:
+            return self._fetch_candidates_once(codes, requested_at, force=force, deadline=deadline)
         with self._candidate_fetch_lock:
-            self._record_planned("tencent")
-            if self._is_open("tencent"):
-                self._record_skipped_open("tencent")
-                with self._state_lock:
-                    return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
-            started = self._monotonic()
-            try:
-                targeted = tuple(self._tencent.fetch_quotes(codes))
-            except Exception as exc:
-                self._record("tencent", False, started, str(exc))
-                with self._state_lock:
-                    return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
-            self._record("tencent", True, started, "")
-            with self._state_lock:
-                baseline = dict(self._latest_by_code)
-            verified: list[MarketQuote] = []
-            for quote in targeted:
-                previous = baseline.get(quote.code)
-                deviation = _price_deviation_pct(previous.price if previous else None, quote.price)
-                verified.append(
-                    replace(
-                        quote,
-                        industry=previous.industry if previous and not quote.industry else quote.industry,
-                        market_cap=previous.market_cap if previous and quote.market_cap is None else quote.market_cap,
-                        change_5m=previous.change_5m if previous and quote.change_5m is None else quote.change_5m,
-                        speed=previous.speed if previous and quote.speed is None else quote.speed,
-                        cross_source_deviation_pct=deviation,
-                        cross_source_verified=deviation is None or deviation <= 0.5,
-                    )
+            return self._fetch_candidates_once(codes, requested_at, force=force, deadline=deadline)
+
+    def _fetch_candidates_once(
+        self,
+        codes: Sequence[str],
+        requested_at: datetime,
+        *,
+        force: bool,
+        deadline: datetime | None,
+    ) -> Sequence[MarketQuote]:
+        normalized_codes = tuple(sorted(set(codes)))
+        try:
+            if self._source_lanes is None:
+                observations = self._fetch_source_observations(
+                    "tencent",
+                    "candidate_quotes",
+                    ",".join(normalized_codes),
+                    {"codes": normalized_codes, "fields": ["realtime_quote"]},
+                    lambda: self._tencent.fetch_quotes(normalized_codes),
+                    requested_at,
+                    force=force,
+                    deadline=deadline,
+                    minimum_rows=1,
                 )
+            else:
+                request = {"codes": normalized_codes, "fields": ["realtime_quote"]}
+                identity = self._lane_identity(
+                    "candidate_quotes",
+                    "tencent",
+                    ",".join(normalized_codes),
+                    request,
+                    requested_at,
+                    force=force,
+                    deadline=deadline,
+                )
+                lane_future = self._source_lanes.submit_urgent(
+                    "tencent",
+                    identity,
+                    requested_at,
+                    self._fetch_source_observations,
+                    "tencent",
+                    "candidate_quotes",
+                    ",".join(normalized_codes),
+                    request,
+                    lambda: self._tencent.fetch_quotes(normalized_codes),
+                    requested_at,
+                    force=force,
+                    deadline=deadline,
+                    minimum_rows=1,
+                )
+                if deadline is None:
+                    observations = lane_future.result()
+                else:
+                    remaining = max(0.0, (deadline - self._wall_clock()).total_seconds())
+                    try:
+                        observations = lane_future.result(timeout=remaining)
+                    except FutureTimeoutError:
+                        lane_future.cancel()
+                        raise
+        except FutureTimeoutError:
+            self._mark_snapshot_degraded("tencent:late", max(requested_at, self._wall_clock()))
             with self._state_lock:
-                for quote in verified:
-                    current = self._latest_by_code.get(quote.code)
-                    if current is None or _quote_version(quote) > _quote_version(current):
-                        self._latest_by_code[quote.code] = quote
                 return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+        except SourceRequestSuperseded:
+            self._mark_snapshot_degraded("tencent:superseded", requested_at)
+            with self._state_lock:
+                return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+        except Exception as exc:
+            self._mark_snapshot_degraded(f"tencent:{_cache_error_code(exc)}", requested_at)
+            with self._state_lock:
+                return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+        completed_at = max(requested_at, self._wall_clock())
+        if deadline is not None and completed_at >= deadline:
+            self._mark_snapshot_degraded("tencent:late", completed_at)
+            with self._state_lock:
+                return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+        with self._state_lock:
+            baseline = tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+            refreshed_sources = {
+                (observation.subject_key, source_name(observation.source)) for observation in observations
+            }
+            raw_baseline = tuple(
+                observation
+                for code in normalized_codes
+                for observation in self._latest_observations.get(code, {}).values()
+                if (observation.subject_key, source_name(observation.source)) not in refreshed_sources
+            )
+            references = tuple(
+                observation
+                for code, observation in self._reference_observations.items()
+                if code in set(normalized_codes)
+            )
+        raw_codes = {observation.subject_key for observation in raw_baseline}
+        baseline_observations = tuple(
+            observation_from_quote(quote, source=quote.source, observed_at=completed_at)
+            for quote in baseline
+            if quote.code not in raw_codes
+        )
+        snapshot = merge_market_observations(
+            (*raw_baseline, *baseline_observations, *observations, *references),
+            observed_at=completed_at,
+            targeted_codes=codes,
+        )
+        with self._state_lock:
+            self._remember_observations_locked(observations, completed_at)
+            self._latest_snapshot = overlay_canonical_snapshot(self._latest_snapshot, snapshot)
+            self._latest_by_code = {quote.code: quote for quote in self._latest_snapshot.quotes}
+            self._merge_count += 1
+            self._conflict_count += len(snapshot.conflicts)
+            return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+
+    def update_reference_observations(self, observations: Sequence[SourceObservation]) -> None:
+        with self._state_lock:
+            calendar_changed = False
+            for observation in observations:
+                if observation.status != "success" or observation.fields.get("is_open") is not True:
+                    continue
+                try:
+                    open_date = date.fromisoformat(observation.subject_key)
+                except ValueError:
+                    continue
+                if open_date not in self._calendar_open_dates:
+                    self._calendar_open_dates.add(open_date)
+                    calendar_changed = True
+            if calendar_changed:
+                self._calendar_open_dates_sorted = tuple(sorted(self._calendar_open_dates))
+            for observation in observations:
+                if observation.status != "success" or len(observation.subject_key) != 6:
+                    continue
+                observation = self._with_listing_sessions(observation)
+                current = self._reference_observations.get(observation.subject_key)
+                if current is None or _reference_replaces(current, observation):
+                    self._reference_observations[observation.subject_key] = observation
+
+    def _with_listing_sessions(self, observation: SourceObservation) -> SourceObservation:
+        listing_raw = observation.fields.get("listing_date")
+        open_dates = self._calendar_open_dates_sorted
+        if not isinstance(listing_raw, str) or not open_dates:
+            return observation
+        try:
+            listing_date = date.fromisoformat(listing_raw)
+        except ValueError:
+            return observation
+        observed_date = shanghai_now(observation.observed_at).date()
+        sessions = bisect_right(open_dates, observed_date) - bisect_left(open_dates, listing_date)
+        if sessions <= 0:
+            return observation
+        fields = dict(observation.fields)
+        fields["listing_age_sessions"] = float(sessions)
+        fields["has_price_limit"] = sessions >= 6
+        board = str(fields.get("board") or "")
+        fields["exchange_limit_pct"] = (20.0 if board in {"chinext", "star"} else 10.0) if sessions >= 6 else None
+        return replace(
+            observation,
+            fields=fields,
+            payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+        )
+
+    def _remember_observations_locked(
+        self,
+        observations: Sequence[SourceObservation],
+        observed_at: datetime,
+    ) -> None:
+        for observation in observations:
+            if rejection_reason(observation, observed_at) is not None:
+                continue
+            by_source = self._latest_observations.setdefault(observation.subject_key, {})
+            source = observation.source.strip().lower()
+            current = by_source.get(source)
+            if current is None or _observation_version(observation) >= _observation_version(current):
+                by_source[source] = observation
+
+    def canonical_snapshot(self) -> CanonicalMarketSnapshot | None:
+        with self._state_lock:
+            return self._latest_snapshot
 
     def health(self) -> Mapping[str, object]:
         now = self._monotonic()
+        measured_at = self._wall_clock()
         with self._state_lock:
             return {
                 "active_source": self._latest_source,
                 "cached_rows": len(self._latest_by_code),
+                "merge_count": self._merge_count,
+                "conflict_count": self._conflict_count,
+                "merge_epoch": self._latest_snapshot.merge_epoch if self._latest_snapshot is not None else None,
+                "canonical_snapshot": _canonical_health(self._latest_snapshot),
                 "route": _route_health(self._last_route_outcome),
+                "source_lanes": self._source_lanes.status() if self._source_lanes is not None else {},
                 "sources": {
                     name: {
                         "planned_count": state.planned_count,
                         "success_count": state.success_count,
                         "error_count": state.error_count,
+                        "timeout_count": state.timeout_count,
                         "consecutive_failures": state.failures,
                         "circuit_open": state.open_until > now,
                         "last_latency_ms": round(state.last_latency_ms, 2),
                         "p50_latency_ms": _percentile(state.latencies_ms, 0.50),
                         "p95_latency_ms": _percentile(state.latencies_ms, 0.95),
                         "last_error": state.last_error,
+                        "data_age_seconds": max(0.0, (measured_at - state.last_source_time).total_seconds())
+                        if state.last_source_time is not None
+                        else None,
                     }
                     for name, state in self._states.items()
                 },
+                "cache": self._cache.status() if self._cache is not None else {},
             }
 
     def _record_planned(self, source: str) -> None:
@@ -203,8 +413,12 @@ class MarketDataGateway:
         with self._state_lock:
             return self._states[source].open_until > self._monotonic()
 
-    def _fetch_from_vendor(self, source: str, fetcher: Callable[[], Sequence[MarketQuote]]) -> Sequence[MarketQuote]:
-        self._record_planned(source)
+    def _fetch_physical(
+        self,
+        source: str,
+        fetcher: Callable[[], Sequence[MarketQuote]],
+        minimum_rows: int,
+    ) -> tuple[Sequence[MarketQuote], float]:
         if self._is_open(source):
             self._record_skipped_open(source)
             raise MarketDataFailed(source, "circuit_open")
@@ -217,12 +431,17 @@ class MarketDataGateway:
         except Exception as exc:
             self._record(source, False, started, str(exc))
             raise MarketDataFailed(source, str(exc)) from exc
-        if len(quotes) < self._minimum_market_rows:
+        if len(quotes) < minimum_rows:
             error = MarketDataNoData(f"{source}: only {len(quotes)} market rows")
             self._record(source, False, started, str(error))
             raise error
-        self._record(source, True, started, "")
-        return quotes
+        return quotes, started
+
+    def _record_fetch_result(self, source: str, success: bool, started: float, error: str) -> None:
+        self._record(source, success, started, error)
+
+    def _record_deadline(self, source: str) -> None:
+        self._record(source, False, self._monotonic(), "deadline")
 
     def _record(self, source: str, success: bool, started: float, error: str) -> None:
         elapsed_ms = (self._monotonic() - started) * 1000.0
@@ -238,98 +457,23 @@ class MarketDataGateway:
                 return
             state.failures += 1
             state.error_count += 1
+            if any(marker in error.lower() for marker in ("timeout", "timed out", "deadline", "late")):
+                state.timeout_count += 1
             state.last_error = error[:240]
             if state.failures >= self._failure_limit:
                 state.open_until = self._monotonic() + self._breaker_seconds
+
+    def _record_source_time(self, source: str, source_time: datetime) -> None:
+        with self._state_lock:
+            state = self._states[source]
+            if state.last_source_time is None or source_time > state.last_source_time:
+                state.last_source_time = source_time
 
     def _record_skipped_open(self, source: str) -> None:
         with self._state_lock:
             state = self._states[source]
             state.error_count += 1
             state.last_error = "circuit_open"
-
-
-def _route_health(last_route: RouteOutcome | None) -> Mapping[str, object]:
-    if not isinstance(last_route, RouteOutcome):
-        return {
-            "status": "idle",
-            "used_vendor": None,
-            "degraded": False,
-            "fallback_reason": None,
-            "attempted_count": 0,
-            "success_count": 0,
-            "failure_count": 0,
-            "no_data_count": 0,
-            "skipped_count": 0,
-            "attempted_vendors": (),
-        }
-    attempted_vendors = [
-        {
-            "name": vendor.name,
-            "status": vendor.status,
-            "severity": vendor.severity.value,
-            "error": vendor.error,
-            "skipped": vendor.skipped,
-            "duration_ms": round(vendor.duration_ms, 2) if vendor.duration_ms is not None else None,
-        }
-        for vendor in last_route.results
-    ]
-    return {
-        "status": last_route.status,
-        "used_vendor": last_route.vendor or None,
-        "degraded": last_route.degraded,
-        "fallback_reason": last_route.fallback_reason,
-        "attempted_count": len(last_route.results),
-        "success_count": sum(1 for vendor in last_route.results if vendor.status == "success"),
-        "failure_count": sum(1 for vendor in last_route.results if vendor.status == "failed"),
-        "no_data_count": sum(1 for vendor in last_route.results if vendor.status == "no_data"),
-        "skipped_count": sum(1 for vendor in last_route.results if vendor.skipped),
-        "attempted_vendors": attempted_vendors,
-    }
-
-
-def _route_outcome_from_exception(exc: Exception) -> RouteOutcome:
-    route_outcome = getattr(exc, "route_outcome", None)
-    if isinstance(route_outcome, RouteOutcome):
-        return route_outcome
-    if isinstance(exc, MarketDataNoData):
-        return RouteOutcome(
-            result=None,
-            vendor="",
-            results=(),
-            degraded=True,
-            status="no_data",
-            fallback_reason="no_data",
-        )
-    if isinstance(exc, MarketDataFailed):
-        vendor = str(getattr(exc, "vendor", "all_vendors"))
-        return RouteOutcome(
-            result=None,
-            vendor=vendor,
-            results=(),
-            degraded=True,
-            status="failed",
-            fallback_reason="failed",
-        )
-    return RouteOutcome(result=None, vendor="", results=(), degraded=True, status="failed", fallback_reason="failed")
-
-
-def _percentile(values: Sequence[float], quantile: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    index = min(len(ordered) - 1, max(0, int((len(ordered) - 1) * quantile + 0.5)))
-    return round(float(ordered[index]), 2)
-
-
-def _price_deviation_pct(first: float | None, second: float | None) -> float | None:
-    if first is None or second is None or first <= 0 or second <= 0:
-        return None
-    return abs(first - second) / first * 100.0
-
-
-def _quote_version(quote: MarketQuote) -> tuple[datetime, datetime, str]:
-    return (quote.source_time, quote.received_time, quote.data_version)
 
 
 __all__ = ["MarketDataGateway"]

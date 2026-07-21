@@ -34,9 +34,9 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert system.pipeline._market_data._json_writer._executor is system.pipeline._persistence_pool
     assert system.pipeline._market_data._research_client._json_writer._executor is system.pipeline._persistence_pool
     assert system.pipeline._market_data_manages_workers is True
-    assert system.pipeline._data_pool.status()["queue_capacity"] == max(
-        runtime["pipeline"]["event_queue_size"],
-        runtime["market_data"]["candidate_pool_size"] * 3,
-    )
+    assert system.pipeline._data_pool.status()["workers"] == 6
+    assert system.pipeline._data_pool.status()["queue_capacity"] == 5
     assert system.pipeline._data_pool.status()["urgent_workers"] == 1
     assert system.pipeline._data_pool.status()["urgent_queue_capacity"] == 1
+    assert system.pipeline._data_pool._thread_name_prefix == "source-data"
+    assert system.market_cache.status() == {}

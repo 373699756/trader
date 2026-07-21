@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 from trader.domain.models import (
+    Board,
     CrossSectionStats,
     DeepSeekReview,
     Evidence,
@@ -55,6 +56,46 @@ def test_snapshot_round_trip_preserves_frozen_input() -> None:
     assert restored.recommendations[0].features.values["tail_volume_ratio_raw"] == 1.5
     payload.pop("filter_details")
     assert snapshot_from_dict(payload).filter_details == ()
+
+
+def test_snapshot_round_trip_preserves_v15_board_and_merge_metadata() -> None:
+    snapshot = _snapshot()
+    recommendation = snapshot.recommendations[0]
+    quote = replace(
+        recommendation.features.quote,
+        board=Board.MAIN,
+        board_source="tushare",
+        board_reliability="verified",
+        exchange="SSE",
+        listing_date=date(2020, 1, 2),
+        listing_age_sessions=1000,
+        has_price_limit=True,
+        exchange_limit_pct=10.0,
+        strategy_hot_cap_pct=8.0,
+        rule_version="cn-board-rules-v1",
+        rule_effective_date=date(2023, 8, 28),
+    )
+    updated = replace(
+        snapshot,
+        recommendations=(replace(recommendation, features=replace(recommendation.features, quote=quote)),),
+        metadata={
+            **snapshot.metadata,
+            "merge_epoch": "merge-v15",
+            "source_versions": {"eastmoney": "east-v1", "tushare": "master-v1"},
+            "field_sources": {"600001": {"price": "eastmoney", "board": "tushare"}},
+            "market_conflicts": [],
+            "market_missing_reasons": {},
+        },
+    )
+
+    restored = snapshot_from_dict(json.loads(snapshot_bytes(updated)))
+
+    restored_quote = restored.recommendations[0].features.quote
+    assert restored_quote.board is Board.MAIN
+    assert restored_quote.board_source == "tushare"
+    assert restored_quote.listing_date == date(2020, 1, 2)
+    assert restored_quote.strategy_hot_cap_pct == 8.0
+    assert restored.metadata["merge_epoch"] == "merge-v15"
 
 
 def test_snapshot_round_trip_preserves_deepseek_review_audit_fields() -> None:

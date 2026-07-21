@@ -109,6 +109,37 @@ def test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold(
     assert snapshot.recommendations == ()
 
 
+def test_market_data_execution_restriction_downgrades_action_without_changing_score(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    unrestricted = application_feature_factory("600001", now)
+    restricted = replace(
+        unrestricted,
+        quote=replace(unrestricted.quote, execution_restrictions=("market_data_degraded",)),
+    )
+    engine = RecommendationEngine(recommendation_policy)
+    common = {
+        "now": now,
+        "phase": "today_main",
+        "trade_date": "2026-07-16",
+        "data_version": "market-restriction-v1",
+        "review_port": None,
+        "review_deadline": datetime.fromisoformat("2026-07-16T11:20:00+08:00"),
+        "max_age_seconds": 20.0,
+        "filtered_count": 0,
+        "filter_reasons": {},
+    }
+
+    baseline = engine.build_snapshot(Strategy.TODAY, (unrestricted,), **common)
+    degraded = engine.build_snapshot(Strategy.TODAY, (restricted,), **common)
+
+    assert baseline.recommendations[0].score == degraded.recommendations[0].score
+    assert degraded.recommendations[0].action.value == "observe"
+    assert degraded.recommendations[0].action_reason == "market_data_observe_only:market_data_degraded"
+
+
 def test_candidate_pool_limit_is_not_reported_as_hard_filtering(
     recommendation_policy,
     application_feature_factory,

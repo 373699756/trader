@@ -66,7 +66,30 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
         candidate_pool_size=120,
     )
     assert snapshot.replay_input is not None
-    frozen = replace(snapshot, frozen=True, config_version="runtime-v2+strategy-v11")
+    frozen = replace(
+        snapshot,
+        frozen=True,
+        config_version="runtime-v2+strategy-v11",
+        degraded_reasons=(*snapshot.degraded_reasons, "sina:timeout"),
+        metadata={
+            **snapshot.metadata,
+            "merge_epoch": "merge-v15",
+            "source_versions": {"eastmoney": "east-v1", "sina": "sina-v1"},
+            "field_sources": {"600001": {"price": "eastmoney"}},
+            "market_conflicts": [],
+            "market_missing_reasons": {},
+            "market_degraded_reasons": ["sina:timeout"],
+            "market_observed_at": now.isoformat(),
+            "tushare_reference_versions": {},
+            "freeze_anchor": {
+                "600001": {
+                    "source": accepted.quote.source,
+                    "source_time": accepted.quote.source_time.isoformat(),
+                    "age_seconds": 0.0,
+                }
+            },
+        },
+    )
 
     restored = snapshot_from_dict(json.loads(snapshot_bytes(frozen)))
     result = RecommendationEngine.verify_frozen(restored)
@@ -83,12 +106,14 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
     assert restored.filter_details[0].filter_code == "main_board_too_hot"
     assert restored.filter_details[0].actual == 8.01
     assert restored.replay_input is not None
-    assert restored.replay_input.algorithm_version == "engine_v10_section9_hard_filter_2026_07"
+    assert restored.replay_input.algorithm_version == "engine_v15_parallel_market_data_2026_07"
     restored_today_input = restored.replay_input.candidate_features[0]
     assert restored_today_input.values["news_sentiment"] == 75.0
     assert restored_today_input.values["evidence_freshness"] == 100.0
     assert restored_today_input.evidence[0].evidence_id == "news-1"
     assert restored.config_version == "runtime-v2+strategy-v11"
+    assert restored.metadata["merge_epoch"] == "merge-v15"
+    assert restored.metadata["freeze_anchor"]["600001"]["age_seconds"] == 0.0
     assert restored.recommendations == engine.replay(restored).recommendations
     snapshot_path = (tmp_path / "frozen.json").resolve()
     snapshot_path.write_bytes(snapshot_bytes(frozen))
@@ -100,6 +125,56 @@ def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_rankin
     assert threshold_report["schema_version"] == "threshold_report_v1"
     assert threshold_report["strategies"]["today"]["score_distribution"]["count"] == 1
     assert tuple(tmp_path.iterdir()) == (snapshot_path,)
+
+
+def test_legacy_v14_growth_board_filter_replays_with_original_algorithm(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    growth = application_feature_factory("300001", now)
+    growth = replace(growth, quote=replace(growth.quote, pct_change=16.01))
+    engine = RecommendationEngine(recommendation_policy)
+    candidates, _current_reasons, current_details = engine.preselect(
+        (growth,),
+        now=now,
+        max_age_seconds=20.0,
+        limit=120,
+    )
+    assert candidates == ()
+    legacy_details = tuple(
+        replace(item, filter_code="growth_board_too_hot") if item.filter_code == "chinext_board_too_hot" else item
+        for item in current_details
+    )
+    snapshot = engine.build_snapshot(
+        Strategy.TODAY,
+        (),
+        now=now,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="legacy-v14",
+        review_port=None,
+        review_deadline=now,
+        max_age_seconds=20.0,
+        filtered_count=1,
+        filter_reasons={"growth_board_too_hot": 1},
+        filter_details=legacy_details,
+        market_features=(growth,),
+        requested_codes=(),
+        preselect_max_age_seconds=20.0,
+        candidate_pool_size=120,
+    )
+    assert snapshot.replay_input is not None
+    legacy_input = replace(
+        snapshot.replay_input,
+        algorithm_version="engine_v10_section9_hard_filter_2026_07",
+    )
+    frozen = replace(snapshot, frozen=True, replay_input=legacy_input)
+
+    result = RecommendationEngine.verify_frozen(frozen)
+
+    assert result["status"] == "verified"
+    assert frozen.filter_reasons == {"growth_board_too_hot": 1}
 
 
 def test_configured_deepseek_candidate_makes_physical_call_and_status_reports_quote_p95(

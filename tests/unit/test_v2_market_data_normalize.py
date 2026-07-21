@@ -13,6 +13,7 @@ from trader.infrastructure.market_data.normalize import (
     normalize_quotes,
     to_float,
 )
+from trader.infrastructure.market_data.observations import SourceObservation
 
 
 def test_to_float_handles_empty_and_invalid_numbers() -> None:
@@ -232,3 +233,46 @@ def test_one_price_limit_is_inferred_at_board_specific_boundaries(
 def test_one_price_limit_requires_a_finite_flat_price_range() -> None:
     assert infer_one_price_limit("600001", 12.0, 12.1, 12.0, 10.0) is False
     assert infer_one_price_limit("600001", 12.0, 12.0, 12.0, float("nan")) is False
+
+
+def test_source_observation_copies_mappings_and_rejects_naive_time() -> None:
+    now = datetime(2026, 7, 20, tzinfo=timezone.utc)
+    fields = {"price": 12.0}
+    missing = {"industry": "source_missing"}
+    observation = SourceObservation(
+        source="eastmoney",
+        subject_key="600001",
+        observed_at=now,
+        source_time=now,
+        received_at=now,
+        effective_at=now,
+        data_version="east-v1",
+        fields=fields,
+        missing_reasons=missing,
+        payload_hash="payload-v1",
+        status="success",
+        error_code=None,
+    )
+    fields["price"] = 99.0
+    missing["industry"] = "changed"
+
+    assert observation.fields == {"price": 12.0}
+    assert observation.missing_reasons == {"industry": "source_missing"}
+    with pytest.raises(TypeError):
+        observation.fields["price"] = 11.0
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        SourceObservation(
+            source="eastmoney",
+            subject_key="600001",
+            observed_at=datetime(2026, 7, 20),
+            source_time=now,
+            received_at=now,
+            effective_at=now,
+            data_version="east-v1",
+            fields={},
+            missing_reasons={},
+            payload_hash="payload-v1",
+            status="success",
+            error_code=None,
+        )

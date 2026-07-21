@@ -42,15 +42,18 @@ class EastmoneyClient:
         page_size: int = 500,
         worker_pool: BoundedExecutor | None = None,
         session_factory: SessionFactory = requests.Session,
+        cancel_requested: Callable[[], bool] = lambda: False,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._workers = max(1, workers)
         self._page_size = max(100, page_size)
         self._worker_pool = worker_pool
         self._session_factory = session_factory
+        self._cancel_requested = cancel_requested
+        self._wall_clock = wall_clock
 
     def fetch_market(self, now: datetime | None = None) -> tuple[MarketQuote, ...]:
-        received_at = now or datetime.now(timezone.utc)
         first = self._fetch_page(1)
         data = _object_mapping(first.get("data"))
         first_rows = _object_rows(data.get("diff"))
@@ -62,7 +65,7 @@ class EastmoneyClient:
         if page_count > 1:
             remaining: list[tuple[int, Mapping[str, object]]] = []
             worker_pool = self._worker_pool
-            if worker_pool is not None and worker_pool.owns_current_thread() and worker_pool.worker_count == 1:
+            if worker_pool is not None and worker_pool.owns_current_thread():
                 remaining.extend((page, self._fetch_page(page)) for page in range(2, page_count + 1))
             else:
                 with borrow_executor(
@@ -84,13 +87,14 @@ class EastmoneyClient:
                     raise RuntimeError(f"eastmoney page {page} was empty")
                 pages[page] = rows
         raw_rows = [row for page in sorted(pages) for row in pages[page]]
+        received_at = now or self._wall_clock()
         quotes = normalize_quotes(raw_rows, received_at, normalizer=_quote_from_row)
         if len({quote.code for quote in quotes}) < min(1000, total // 2):
             raise RuntimeError(f"eastmoney quote coverage is incomplete: {len(quotes)}/{total}")
         return quotes
 
     def fetch_history(self, code: str, *, days: int = 90, now: datetime | None = None) -> tuple[DailyBar, ...]:
-        end = (now or datetime.now(timezone.utc)).date()
+        end = (now or self._wall_clock()).date()
         start = end - timedelta(days=max(days * 2, 180))
         payload = self._get(
             ("push2his.eastmoney.com", "82.push2his.eastmoney.com", "7.push2his.eastmoney.com"),
@@ -122,7 +126,7 @@ class EastmoneyClient:
         return tuple(bars[-days:])
 
     def fetch_intraday_minutes(self, code: str, *, now: datetime | None = None) -> tuple[MinuteBar, ...]:
-        observed_at = now or datetime.now(timezone.utc)
+        observed_at = now or self._wall_clock()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("intraday observation time must be timezone-aware")
         observed_local = observed_at.astimezone(_SHANGHAI)
@@ -202,6 +206,7 @@ class EastmoneyClient:
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
         for _round in range(max(1, request_rounds)):
             for host in hosts:
+                self._ensure_running()
                 try:
                     with self._session_factory() as session:
                         response = session.get(
@@ -216,10 +221,15 @@ class EastmoneyClient:
                 except (requests.RequestException, ValueError, OSError) as exc:
                     last_error = exc
                     continue
+                self._ensure_running()
                 if isinstance(payload, dict) and payload.get("data"):
                     return payload
                 last_error = RuntimeError("eastmoney returned empty data")
         raise RuntimeError(f"eastmoney request failed: {last_error}") from last_error
+
+    def _ensure_running(self) -> None:
+        if self._cancel_requested():
+            raise RuntimeError("eastmoney source lane stopped")
 
 
 def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQuote | None:

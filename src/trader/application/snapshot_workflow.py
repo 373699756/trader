@@ -288,6 +288,24 @@ def score_strategy(
         candidate_pool_size=pipeline._candidate_pool_size,
     )
     snapshot = replace(snapshot, config_version=pipeline._config_version)
+    metadata_provider = getattr(pipeline._market_data, "snapshot_metadata", None)
+    market_metadata = (
+        metadata_provider(tuple(item.features.quote.code for item in snapshot.recommendations))
+        if callable(metadata_provider)
+        else {}
+    )
+    if isinstance(market_metadata, Mapping):
+        market_degraded = market_metadata.get("market_degraded_reasons")
+        extra_degraded = (
+            tuple(str(reason) for reason in market_degraded if isinstance(reason, str))
+            if isinstance(market_degraded, (list, tuple))
+            else ()
+        )
+        snapshot = replace(
+            snapshot,
+            metadata={**snapshot.metadata, **dict(market_metadata)},
+            degraded_reasons=tuple(dict.fromkeys((*snapshot.degraded_reasons, *extra_degraded))),
+        )
     pipeline._state.record_strategy_latency(
         strategy,
         round((time.perf_counter() - scoring_started) * 1000.0, 3),

@@ -8,6 +8,12 @@ import stat
 from collections.abc import Mapping
 from pathlib import Path
 
+from trader.infrastructure.settings_market_policy import (
+    parse_cache_policy as _parse_cache_policy,
+)
+from trader.infrastructure.settings_market_policy import (
+    parse_performance_budgets as _parse_performance_budgets,
+)
 from trader.infrastructure.settings_models import (
     ApiSettings,
     DeepSeekSettings,
@@ -15,6 +21,7 @@ from trader.infrastructure.settings_models import (
     PipelineSettings,
     RuntimeSettings,
     ServerSettings,
+    TushareSettings,
 )
 from trader.infrastructure.settings_parser import (
     ConfigurationError,
@@ -44,6 +51,9 @@ from trader.infrastructure.settings_parser import (
     read_json_object as _read_json_object,
 )
 from trader.infrastructure.settings_parser import (
+    require_exact_keys as _require_exact_keys,
+)
+from trader.infrastructure.settings_parser import (
     resolve_config_path as _resolve_config_path,
 )
 from trader.infrastructure.settings_parser import (
@@ -57,16 +67,103 @@ from trader.infrastructure.settings_parser import (
 def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 4:
-        raise ConfigurationError("runtime schema_version must be 4")
+    _require_exact_keys(
+        raw,
+        {
+            "schema_version",
+            "config_version",
+            "runtime_dir",
+            "strategy_config",
+            "long_watchlist",
+            "server",
+            "pipeline",
+            "market_data",
+            "performance_budgets",
+            "deepseek",
+            "api",
+        },
+        "runtime",
+    )
+    if _integer(raw, "schema_version", minimum=1) != 5:
+        raise ConfigurationError("runtime schema_version must be 5")
 
     config_dir = path.parent
     project_root = _infer_project_root(config_dir)
     server_raw = _mapping(raw, "server")
     pipeline_raw = _mapping(raw, "pipeline")
     market_raw = _mapping(raw, "market_data")
+    performance_raw = _mapping(raw, "performance_budgets")
     deepseek_raw = _mapping(raw, "deepseek")
     api_raw = _mapping(raw, "api")
+    _require_exact_keys(
+        server_raw,
+        {"host", "port", "debug", "use_reloader", "allow_insecure_non_loopback"},
+        "server",
+    )
+    _require_exact_keys(
+        pipeline_raw,
+        {
+            "event_queue_size",
+            "priority_queue_size",
+            "market_workers",
+            "normalization_workers",
+            "strategy_workers",
+            "deepseek_workers",
+            "shutdown_timeout_seconds",
+            "cadence_seconds",
+            "publish_heartbeat_seconds",
+        },
+        "pipeline",
+    )
+    _require_exact_keys(
+        market_raw,
+        {
+            "eastmoney_timeout_seconds",
+            "candidate_timeout_seconds",
+            "history_timeout_seconds",
+            "research_timeout_seconds",
+            "minimum_market_rows",
+            "candidate_pool_size",
+            "single_flight",
+            "circuit_breaker_failures",
+            "circuit_breaker_seconds",
+            "source_contract_versions",
+            "tushare",
+            "cache_policy",
+        },
+        "market_data",
+    )
+    _require_exact_keys(
+        deepseek_raw,
+        {
+            "enabled",
+            "base_url",
+            "model",
+            "challenger_model",
+            "challenger_limits",
+            "timeout_seconds",
+            "batch_size",
+            "max_tokens",
+            "daily_hard_limit",
+            "strategy_limits",
+            "stage_targets",
+            "stage_limits",
+        },
+        "deepseek",
+    )
+    _require_exact_keys(
+        api_raw,
+        {
+            "default_top_n",
+            "maximum_top_n",
+            "event_page_limit",
+            "maximum_event_page_limit",
+            "sse_history_size",
+            "sse_client_queue_size",
+            "sse_max_clients",
+        },
+        "api",
+    )
 
     host = os.environ.get("TRADER_HOST", _text(server_raw, "host"))
     port = _environment_integer("TRADER_PORT", _integer(server_raw, "port", minimum=1, maximum=65535))
@@ -75,7 +172,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     long_watchlist_path = _resolve_config_path(config_dir, _text(raw, "long_watchlist"))
 
     settings = RuntimeSettings(
-        schema_version=4,
+        schema_version=5,
         config_version=_text(raw, "config_version"),
         config_path=path,
         project_root=project_root,
@@ -115,7 +212,11 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             single_flight=_boolean(market_raw, "single_flight"),
             circuit_breaker_failures=_integer(market_raw, "circuit_breaker_failures", minimum=1),
             circuit_breaker_seconds=_integer(market_raw, "circuit_breaker_seconds", minimum=1),
+            source_contract_versions=_text_mapping(market_raw, "source_contract_versions"),
+            tushare=_parse_tushare_settings(_mapping(market_raw, "tushare"), project_root),
+            cache_policy=_parse_cache_policy(_mapping(market_raw, "cache_policy")),
         ),
+        performance_budgets=_parse_performance_budgets(performance_raw),
         deepseek=DeepSeekSettings(
             enabled=_boolean(deepseek_raw, "enabled"),
             base_url=_text(deepseek_raw, "base_url").rstrip("/"),
@@ -192,6 +293,59 @@ def _load_deepseek_api_key(project_root: Path) -> str:
     return value
 
 
+def _load_tushare_token(project_root: Path) -> str:
+    environment_token = os.environ.get("TUSHARE_TOKEN", "").strip()
+    if environment_token:
+        return environment_token
+    configured_path = os.environ.get("TUSHARE_TOKEN_FILE", "").strip()
+    if not configured_path:
+        return ""
+    token_path = Path(configured_path).expanduser()
+    if not token_path.is_absolute():
+        token_path = project_root / token_path
+    token_path = token_path.resolve()
+    if not token_path.exists():
+        raise ConfigurationError("TUSHARE_TOKEN_FILE does not exist")
+    try:
+        metadata = token_path.stat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ConfigurationError("Tushare token file must be a regular file")
+        if os.name == "posix" and stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise ConfigurationError("Tushare token file must not be accessible by group or other users")
+        if metadata.st_size > 4096:
+            raise ConfigurationError("Tushare token file is too large")
+        content = token_path.read_text(encoding="utf-8")
+    except ConfigurationError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise ConfigurationError("Tushare token file cannot be read") from exc
+    lines = content.splitlines()
+    if len(lines) != 1 or not lines[0].strip() or "\x00" in lines[0]:
+        raise ConfigurationError("Tushare token file must contain exactly one token")
+    return lines[0].strip()
+
+
+def _parse_tushare_settings(raw: Mapping[str, object], project_root: Path) -> TushareSettings:
+    _require_exact_keys(raw, {"enabled", "timeout_seconds"}, "market_data.tushare")
+    timeout = _number(raw, "timeout_seconds", minimum=0.1, maximum=8.0)
+    if timeout != 8.0:
+        raise ConfigurationError("market_data.tushare.timeout_seconds must be fixed at 8")
+    return TushareSettings(
+        enabled=_boolean(raw, "enabled"),
+        timeout_seconds=timeout,
+        token=_load_tushare_token(project_root),
+    )
+
+
+def _text_mapping(raw: Mapping[str, object], key: str) -> dict[str, str]:
+    values = _mapping(raw, key)
+    result = {str(name): _text(values, str(name)) for name in values}
+    expected = {"eastmoney", "sina", "tencent", "tushare", "akshare"}
+    if set(result) != expected:
+        raise ConfigurationError("market_data.source_contract_versions must define all five sources")
+    return result
+
+
 def _validate_runtime_settings(settings: RuntimeSettings) -> None:
     if settings.pipeline.priority_queue_size >= settings.pipeline.event_queue_size:
         raise ConfigurationError("priority_queue_size must be smaller than event_queue_size")
@@ -199,6 +353,12 @@ def _validate_runtime_settings(settings: RuntimeSettings) -> None:
         raise ConfigurationError("default_top_n cannot exceed maximum_top_n")
     if settings.api.event_page_limit > settings.api.maximum_event_page_limit:
         raise ConfigurationError("event_page_limit cannot exceed maximum_event_page_limit")
+    if settings.pipeline.market_workers != 5:
+        raise ConfigurationError("pipeline.market_workers must be fixed at 5 for the five source lanes")
+    if not settings.market_data.single_flight:
+        raise ConfigurationError("market_data.single_flight must remain enabled")
+    if settings.market_data.cache_policy.total_bytes != settings.performance_budgets.memory.cache_total_bytes:
+        raise ConfigurationError("cache and performance total byte budgets must match")
     if sum(settings.deepseek.strategy_limits.values()) != settings.deepseek.daily_hard_limit:
         raise ConfigurationError("DeepSeek strategy limits must sum to the daily hard limit")
     required_buckets = {"today", "tomorrow", "d25", "long", "shared_preheat", "emergency"}

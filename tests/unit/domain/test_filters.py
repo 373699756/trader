@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 
@@ -24,15 +24,25 @@ def test_board_for_code(code, expected) -> None:
     assert board_for_code(code) is expected
 
 
+def test_explicit_board_metadata_cannot_make_an_illegal_code_supported(feature_factory, observed_at) -> None:
+    snapshot = feature_factory(code="999999")
+    snapshot = replace(snapshot, quote=replace(snapshot.quote, board=Board.MAIN))
+
+    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+
+    assert result.allowed is False
+    assert result.reasons[0].filter_code == "unsupported_code"
+
+
 @pytest.mark.parametrize(
     ("code", "pct_change", "allowed", "reason"),
     [
         ("600001", 8.00, True, ""),
         ("600001", 8.01, False, "main_board_too_hot"),
         ("300001", 16.00, True, ""),
-        ("300001", 16.01, False, "growth_board_too_hot"),
+        ("300001", 16.01, False, "chinext_board_too_hot"),
         ("688001", 16.00, True, ""),
-        ("688001", 16.01, False, "growth_board_too_hot"),
+        ("688001", 16.01, False, "star_board_too_hot"),
     ],
 )
 def test_hot_price_boundaries(feature_factory, observed_at, code, pct_change, allowed, reason) -> None:
@@ -164,7 +174,7 @@ def test_non_finite_and_structurally_invalid_quotes_are_rejected(feature_factory
 
 @pytest.mark.parametrize(
     ("deviation", "verified", "allowed"),
-    [(0.5, False, True), (0.5001, False, False), (0.5001, True, True)],
+    [(0.5, False, True), (0.5001, False, True), (0.5001, True, True)],
 )
 def test_cross_source_deviation_boundary(feature_factory, observed_at, deviation, verified, allowed) -> None:
     snapshot = feature_factory()
@@ -178,3 +188,74 @@ def test_cross_source_deviation_boundary(feature_factory, observed_at, deviation
     )
 
     assert hard_filter(snapshot, observed_at, max_age_seconds=20).allowed is allowed
+
+
+@pytest.mark.parametrize(("sessions", "allowed"), [(0, False), (1, False), (5, False), (6, True)])
+def test_listing_session_boundary_is_enforced(feature_factory, observed_at, sessions, allowed) -> None:
+    snapshot = feature_factory(
+        board=Board.MAIN,
+        board_source="tushare",
+        board_reliability="verified",
+        listing_date=date(2026, 7, 10),
+        listing_age_sessions=sessions,
+        has_price_limit=sessions >= 6,
+        exchange_limit_pct=10.0 if sessions >= 6 else None,
+        rule_version="cn-board-rules-v1",
+        rule_effective_date=date(2023, 8, 28),
+    )
+
+    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+
+    assert result.allowed is allowed
+    if not allowed:
+        assert "new_listing_session" in {reason.filter_code for reason in result.reasons}
+
+
+def test_board_identity_conflict_and_prefix_fallback_are_observe_only(feature_factory, observed_at) -> None:
+    conflict = feature_factory(
+        board=Board.MAIN,
+        board_source="conflict",
+        board_reliability="conflict",
+        execution_restrictions=("board_classification_conflict",),
+    )
+    fallback = feature_factory(
+        board=Board.MAIN,
+        board_source="code_prefix_fallback",
+        board_reliability="degraded",
+        execution_restrictions=("board_identity_degraded",),
+    )
+    missing_age = feature_factory(
+        board=Board.MAIN,
+        board_source="tushare",
+        board_reliability="verified",
+        listing_date=date(2020, 1, 2),
+        listing_age_sessions=None,
+        execution_restrictions=("missing_listing_age_sessions",),
+    )
+
+    conflict_result = hard_filter(conflict, observed_at, max_age_seconds=20)
+    fallback_result = hard_filter(fallback, observed_at, max_age_seconds=20)
+    missing_age_result = hard_filter(missing_age, observed_at, max_age_seconds=20)
+
+    assert conflict_result.allowed is True
+    assert fallback_result.allowed is True
+    assert missing_age_result.allowed is True
+    assert "board_classification_conflict" in {item.filter_code for item in conflict_result.optional_flags}
+    assert "board_identity_degraded" in {item.filter_code for item in fallback_result.optional_flags}
+    assert "missing_listing_age_sessions" in {item.filter_code for item in missing_age_result.optional_flags}
+
+
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        ("is_relisted_first_session", "relisted_first_session"),
+        ("is_delisting_period_first_session", "delisting_period_first_session"),
+    ],
+)
+def test_special_first_session_states_are_rejected(feature_factory, observed_at, field, reason) -> None:
+    snapshot = feature_factory(**{field: True})
+
+    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+
+    assert result.allowed is False
+    assert reason in {item.filter_code for item in result.reasons}

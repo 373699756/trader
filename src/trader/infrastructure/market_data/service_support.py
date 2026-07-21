@@ -2,20 +2,38 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 from typing import ParamSpec, TypeVar
 
+from trader.application.cache import canonical_json_bytes
 from trader.domain.models import Evidence, MarketQuote
 from trader.domain.research import FinancialReport, ResearchAnnouncement, ResearchObservation
 from trader.domain.tail import MinuteBar
 from trader.infrastructure.market_data.history import DailyBar
+from trader.infrastructure.market_data.merge_quote import source_name, source_priority
 from trader.infrastructure.market_data.service_models import _ResearchEntry
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
+
+
+def _source_batch_identity(
+    dataset: str,
+    subjects: Sequence[str],
+    observed_at: datetime,
+    **options: object,
+) -> str:
+    payload = {
+        "dataset": dataset,
+        "subjects": sorted(set(subjects)),
+        "observed_at": observed_at,
+        "options": options,
+    }
+    return f"{dataset}:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
 
 
 def _history_preload_codes(quotes: Sequence[MarketQuote], limit: int) -> tuple[str, ...]:
@@ -41,8 +59,24 @@ def _normalize_codes(codes: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(code for code in codes if len(code) == 6 and code.isdigit()))
 
 
-def _quote_version(quote: MarketQuote) -> tuple[datetime, datetime, str]:
-    return (quote.source_time, quote.received_time, quote.data_version)
+def _add_action_restriction(
+    restrictions: dict[str, set[str]] | None,
+    code: str,
+    reason: str,
+) -> None:
+    if restrictions is not None:
+        restrictions.setdefault(code, set()).add(reason)
+
+
+def _quote_version(quote: MarketQuote) -> tuple[datetime, datetime, int, str, str]:
+    source = source_name(quote.source)
+    return (
+        quote.source_time,
+        quote.received_time,
+        source_priority(source),
+        source,
+        quote.data_version,
+    )
 
 
 def _quote_age_summary(quotes: Sequence[MarketQuote], measured_at: datetime) -> Mapping[str, object]:
@@ -84,6 +118,19 @@ def _research_version(observation: ResearchObservation) -> tuple[float, float] |
     if not published:
         return None
     return (max(published), max(received, default=float("-inf")))
+
+
+def _research_source_time(observation: ResearchObservation) -> datetime | None:
+    times = [item.published_at for item in observation.evidence]
+    times.extend(item.published_at for item in observation.announcements)
+    if observation.financial is not None:
+        times.append(observation.financial.published_at)
+    return max(times, default=None)
+
+
+def _research_data_version(observation: ResearchObservation) -> str:
+    digest = hashlib.sha256(canonical_json_bytes(observation)).hexdigest()[:20]
+    return f"akshare-research:{digest}"
 
 
 def _research_is_older(observation: ResearchObservation, old_entry: _ResearchEntry | None) -> bool:

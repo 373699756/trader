@@ -23,10 +23,39 @@ def test_v2_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert runtime.schema_version == 4
+    assert runtime.schema_version == 5
     assert strategy.schema_version == 8
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
     assert runtime.market_data.research_timeout_seconds == 8
+    assert runtime.pipeline.market_workers == 5
+    assert runtime.market_data.tushare.timeout_seconds == 8
+    assert runtime.market_data.tushare.token == ""
+    assert set(runtime.market_data.cache_policy.datasets) == {
+        "full_market_quotes",
+        "candidate_quotes",
+        "intraday_minutes",
+        "research_success",
+        "research_failure",
+        "daily_history",
+        "security_master_calendar",
+        "daily_valuation_financials",
+    }
+    assert runtime.market_data.cache_policy.total_bytes == 256 * 1024 * 1024
+    assert {name: policy.persisted for name, policy in runtime.market_data.cache_policy.datasets.items()} == {
+        "full_market_quotes": False,
+        "candidate_quotes": False,
+        "intraday_minutes": False,
+        "research_success": True,
+        "research_failure": False,
+        "daily_history": False,
+        "security_master_calendar": False,
+        "daily_valuation_financials": False,
+    }
+    assert runtime.performance_budgets.workload.market_rows == 5500
+    assert runtime.performance_budgets.workload.candidate_rows == 360
+    assert runtime.performance_budgets.rounds.warmup == 1
+    assert runtime.performance_budgets.rounds.measurement == 5
+    assert runtime.performance_budgets.latency_p95_ms["market_normalization"] == 800
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 2
     assert runtime.pipeline.cadence_seconds["topk_quotes"]["today_main"] == 3
     assert sum(runtime.deepseek.strategy_limits.values()) == 188
@@ -110,6 +139,66 @@ def test_runtime_settings_rejects_insecure_deepseek_key_file(tmp_path, monkeypat
 
     with pytest.raises(ConfigurationError, match="must not be accessible by group or other users"):
         load_runtime_settings(RUNTIME_CONFIG)
+
+
+def test_runtime_settings_loads_tushare_token_with_environment_priority(tmp_path, monkeypatch) -> None:
+    token_file = tmp_path / "tushare.token"
+    token_file.write_text("file-token\n", encoding="utf-8")
+    token_file.chmod(0o600)
+    monkeypatch.setenv("TUSHARE_TOKEN", "environment-token")
+    monkeypatch.setenv("TUSHARE_TOKEN_FILE", str(token_file))
+
+    runtime = load_runtime_settings(RUNTIME_CONFIG)
+
+    assert runtime.market_data.tushare.token == "environment-token"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission contract")
+def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypatch) -> None:
+    token_file = tmp_path / "tushare.token"
+    token_file.write_text("file-token\n", encoding="utf-8")
+    token_file.chmod(0o644)
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+    monkeypatch.setenv("TUSHARE_TOKEN_FILE", str(token_file))
+
+    with pytest.raises(ConfigurationError, match="Tushare token file must not be accessible"):
+        load_runtime_settings(RUNTIME_CONFIG)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda raw: raw["market_data"]["cache_policy"].pop("groups"), "cache_policy.groups"),
+        (
+            lambda raw: raw["market_data"]["cache_policy"].update({"unknown": True}),
+            "cache_policy contains unknown keys",
+        ),
+        (
+            lambda raw: raw["market_data"]["cache_policy"].update({"policy_version": "unknown"}),
+            "policy_version must be market_cache_v15",
+        ),
+        (
+            lambda raw: raw["market_data"]["cache_policy"].update({"estimator_version": "unknown"}),
+            "estimator_version must be canonical_json_utf8_v1",
+        ),
+        (
+            lambda raw: raw["performance_budgets"]["workload"].update({"market_rows": 5499}),
+            "performance workload",
+        ),
+        (
+            lambda raw: raw["market_data"].update({"single_flight": False}),
+            "single_flight must remain enabled",
+        ),
+    ],
+)
+def test_v15_cache_and_performance_configuration_rejects_missing_unknown_or_drift(tmp_path, mutate, message) -> None:
+    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    mutate(raw)
+    changed_path = tmp_path / "runtime.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match=message):
+        load_runtime_settings(changed_path)
 
 
 def test_feature_schema_contract_can_be_explicitly_reconciled_with_registered_schema(tmp_path) -> None:

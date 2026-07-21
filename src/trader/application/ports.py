@@ -71,6 +71,7 @@ class MarketDataPort(Protocol):
         codes: Sequence[str],
         observed_at: datetime,
         *,
+        force: bool = False,
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]: ...
 
@@ -100,6 +101,14 @@ class MarketDataPort(Protocol):
         force: bool = False,
     ) -> None: ...
 
+    def schedule_reference_data(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+    ) -> None: ...
+
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None: ...
 
     def read_candidate_features(
@@ -112,6 +121,8 @@ class MarketDataPort(Protocol):
     ) -> Sequence[FeatureSnapshot]: ...
 
     def health(self) -> Mapping[str, object]: ...
+
+    def snapshot_metadata(self, codes: Sequence[str] | None = None) -> Mapping[str, object]: ...
 
 
 class TradingCalendarPort(Protocol):

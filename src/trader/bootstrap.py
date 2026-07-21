@@ -15,11 +15,13 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.runtime import RuntimeSupervisor, scheduler_interval_seconds
+from trader.application.source_lanes import SourceLaneRegistry
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
 from trader.domain.filters import HardFilterPolicy
 from trader.domain.fusion import FusionPolicy
 from trader.domain.models import RiskRule, Strategy
+from trader.infrastructure.cache import BoundedLruCache
 from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
 from trader.infrastructure.deepseek.cache import ReviewCache
 from trader.infrastructure.deepseek.factory import create_deepseek_client
@@ -32,6 +34,7 @@ from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.service import MarketFeatureService
 from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
+from trader.infrastructure.market_data.tushare import TushareClient
 from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter
 from trader.infrastructure.persistence.writer import SnapshotRepository
 from trader.infrastructure.settings import (
@@ -57,12 +60,17 @@ class ApplicationSystem:
     repository: SnapshotRepository
     publisher: SnapshotPublisher
     state: RuntimeState
+    market_cache: BoundedLruCache[object]
+    source_lanes: SourceLaneRegistry
 
     def start(self) -> bool:
         return self.supervisor.start()
 
     def stop(self) -> None:
+        self.source_lanes.stop(wait=False)
         self.supervisor.stop()
+        self.source_lanes.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
+        self.market_cache.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
 
 
 def build_system(config_path: str | Path) -> ApplicationSystem:
@@ -71,42 +79,69 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     watchlist = load_long_watchlist(settings.long_watchlist_path)
     now = _utc_now
     cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
-    queue_capacity = max(settings.pipeline.event_queue_size, settings.market_data.candidate_pool_size * 3)
+    urgent_worker_count = 1 if settings.pipeline.market_workers > 1 else 0
     data_pool = BoundedExecutor(
-        worker_count=settings.pipeline.market_workers,
-        urgent_worker_count=1 if settings.pipeline.market_workers > 1 else 0,
-        queue_capacity=queue_capacity,
-        thread_name_prefix="trader-data",
+        worker_count=settings.pipeline.market_workers + urgent_worker_count,
+        urgent_worker_count=urgent_worker_count,
+        queue_capacity=5,
+        thread_name_prefix="source-data",
     )
+    source_lanes = SourceLaneRegistry(data_pool)
     persistence_pool = BoundedExecutor(
         worker_count=1,
         queue_capacity=max(1, settings.pipeline.event_queue_size),
         thread_name_prefix="trader-persistence",
     )
     json_writer = RuntimeJsonWriter(persistence_pool)
+    market_cache: BoundedLruCache[object] = BoundedLruCache(
+        settings.market_data.cache_policy,
+        cadence_seconds=settings.pipeline.cadence_seconds,
+        wall_clock=_utc_now,
+    )
 
     eastmoney = EastmoneyClient(
         timeout_seconds=settings.market_data.eastmoney_timeout_seconds,
         workers=settings.pipeline.market_workers,
         worker_pool=data_pool,
+        cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
+        wall_clock=now,
     )
     history = EastmoneyClient(
         timeout_seconds=settings.market_data.history_timeout_seconds,
         workers=settings.pipeline.market_workers,
         worker_pool=data_pool,
+        cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
+        wall_clock=now,
     )
     intraday = EastmoneyClient(
         timeout_seconds=settings.market_data.candidate_timeout_seconds,
         workers=settings.pipeline.market_workers,
         worker_pool=data_pool,
+        cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
+        wall_clock=now,
     )
     gateway = MarketDataGateway(
         eastmoney,
-        SinaClient(timeout_seconds=settings.market_data.eastmoney_timeout_seconds),
-        TencentClient(timeout_seconds=settings.market_data.candidate_timeout_seconds),
+        SinaClient(
+            timeout_seconds=settings.market_data.eastmoney_timeout_seconds,
+            cancel_requested=lambda: source_lanes.is_stopped("sina"),
+            wall_clock=now,
+        ),
+        TencentClient(
+            timeout_seconds=settings.market_data.candidate_timeout_seconds,
+            cancel_requested=lambda: source_lanes.is_stopped("tencent"),
+            wall_clock=now,
+        ),
         minimum_market_rows=settings.market_data.minimum_market_rows,
         circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
         circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
+        worker_pool=data_pool,
+        source_lanes=source_lanes,
+        cache=market_cache,
+        source_contract_versions=settings.market_data.source_contract_versions,
+        config_version=settings.config_version,
+        schema_version="market_snapshot_v15",
+        wall_clock=now,
     )
     evidence_cache_dir = settings.runtime_dir / "evidence_cache"
     market_data = MarketFeatureService(
@@ -123,18 +158,39 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             long_research_policy=strategy.long_research,
             evidence_cache_dir=evidence_cache_dir,
             json_writer=json_writer,
+            cancel_requested=lambda: source_lanes.is_stopped("akshare"),
         ),
         intraday_client=intraday,
+        tushare_client=TushareClient(
+            token=settings.market_data.tushare.token if settings.market_data.tushare.enabled else "",
+            timeout_seconds=settings.market_data.tushare.timeout_seconds,
+            circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
+            circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
+            cancel_requested=lambda: source_lanes.is_stopped("tushare"),
+            wall_clock=now,
+        ),
         history_workers=settings.pipeline.market_workers,
         research_workers=settings.pipeline.market_workers,
         intraday_workers=settings.pipeline.market_workers,
         intraday_batch_timeout_seconds=settings.market_data.candidate_timeout_seconds,
-        intraday_cache_limit=settings.market_data.candidate_pool_size * 3,
+        intraday_cache_limit=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
+        history_cache_limit=settings.market_data.cache_policy.datasets["daily_history"].capacity,
+        research_cache_limit=settings.market_data.cache_policy.datasets["research_success"].capacity,
         history_preload_limit=settings.market_data.candidate_pool_size * 3,
+        history_ttl_seconds=_fixed_cache_ttl(settings, "daily_history"),
+        research_ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
+        research_circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
+        research_circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
+        intraday_ttl_seconds=_fixed_cache_ttl(settings, "intraday_minutes"),
         research_cache_dir=evidence_cache_dir,
         json_writer=json_writer,
         market_ttl_seconds=min(cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
         worker_pool=data_pool,
+        source_lanes=source_lanes,
+        cache=market_cache,
+        source_contract_versions=settings.market_data.source_contract_versions,
+        config_version=settings.config_version,
+        schema_version="market_snapshot_v15",
         wall_clock=now,
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
@@ -210,7 +266,26 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
         ),
     )
-    return ApplicationSystem(settings, strategy, watchlist, app, supervisor, pipeline, repository, publisher, state)
+    return ApplicationSystem(
+        settings,
+        strategy,
+        watchlist,
+        app,
+        supervisor,
+        pipeline,
+        repository,
+        publisher,
+        state,
+        market_cache,
+        source_lanes,
+    )
+
+
+def _fixed_cache_ttl(settings: RuntimeSettings, dataset: str) -> float:
+    value = settings.market_data.cache_policy.datasets[dataset].refresh_ttl_seconds
+    if value is None:
+        raise ValueError(f"cache dataset {dataset} does not define a fixed TTL")
+    return value
 
 
 def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:

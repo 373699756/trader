@@ -26,13 +26,16 @@ class SinaClient:
         timeout_seconds: float,
         page_size: int = 80,
         session_factory: SessionFactory = requests.Session,
+        cancel_requested: Callable[[], bool] = lambda: False,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._page_size = max(20, min(100, page_size))
         self._session_factory = session_factory
+        self._cancel_requested = cancel_requested
+        self._wall_clock = wall_clock
 
     def fetch_market(self, now: datetime | None = None) -> tuple[MarketQuote, ...]:
-        received_at = now or datetime.now(timezone.utc)
         total_text = self._get_text(COUNT_URL, {"node": "hs_a"})
         total_match = re.search(r"\d+", total_text)
         if total_match is None:
@@ -55,6 +58,7 @@ class SinaClient:
             if not isinstance(payload, list):
                 raise RuntimeError(f"sina page {page} was not a list")
             rows.extend(item for item in payload if isinstance(item, dict))
+        received_at = now or self._wall_clock()
         quotes = normalize_quotes(rows, received_at, normalizer=_quote_from_row)
         if len({quote.code for quote in quotes}) < min(1000, total // 2):
             raise RuntimeError(f"sina quote coverage is incomplete: {len(quotes)}/{total}")
@@ -72,6 +76,7 @@ class SinaClient:
     def _request(self, url: str, params: Mapping[str, str], *, as_json: bool) -> object:
         last_error: Exception | None = None
         for _attempt in range(_REQUEST_ATTEMPTS):
+            self._ensure_running()
             try:
                 with self._session_factory() as session:
                     response = session.get(
@@ -82,10 +87,17 @@ class SinaClient:
                         proxies=_DIRECT_PROXIES,
                     )
                     response.raise_for_status()
-                    return response.json() if as_json else response.text
+                    result = response.json() if as_json else response.text
             except (requests.RequestException, ValueError, OSError) as exc:
                 last_error = exc
+                continue
+            self._ensure_running()
+            return result
         raise RuntimeError(f"sina request failed after {_REQUEST_ATTEMPTS} attempts: {last_error}") from last_error
+
+    def _ensure_running(self) -> None:
+        if self._cancel_requested():
+            raise RuntimeError("sina source lane stopped")
 
 
 def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQuote | None:

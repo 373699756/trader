@@ -1231,9 +1231,10 @@ class StaticMarketData:
         codes: Sequence[str],
         observed_at: datetime,
         *,
+        force: bool = False,
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]:
-        del deadline
+        del force, deadline
         self.fetch_threads.append(threading.current_thread().name)
         requested = set(codes)
         return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
@@ -1246,6 +1247,7 @@ class StaticMarketData:
         codes: Sequence[str],
         observed_at: datetime,
         *,
+        force: bool = False,
         deadline: datetime | None = None,
     ) -> None:
         del codes, observed_at, deadline
@@ -1354,11 +1356,12 @@ class DegradingCandidateMarketData(StaticMarketData):
         codes: Sequence[str],
         observed_at: datetime,
         *,
+        force: bool = False,
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]:
         if self.candidate_unavailable:
             raise MarketDataUnavailable("candidate quote source failed")
-        return super().refresh_candidate_quotes(codes, observed_at, deadline=deadline)
+        return super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline)
 
 
 class TomorrowFailingMarketData(StaticMarketData):

@@ -10,11 +10,13 @@ from trader.application.recommendation_support import (
     _RecordedReviewPort,
     _restore_policy,
 )
-from trader.domain.filters import hard_filter
+from trader.domain.filters import hard_filter, legacy_v14_hard_filter
 from trader.domain.models import Recommendation, RecommendationSnapshot
 
 REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
-REPLAY_ALGORITHM_VERSION = "engine_v10_section9_hard_filter_2026_07"
+LEGACY_REPLAY_ALGORITHM_VERSION = "engine_v10_section9_hard_filter_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_v15_parallel_market_data_2026_07"
+_SUPPORTED_REPLAY_ALGORITHMS = frozenset({LEGACY_REPLAY_ALGORITHM_VERSION, REPLAY_ALGORITHM_VERSION})
 
 
 class RecommendationReplayMixin:
@@ -24,13 +26,20 @@ class RecommendationReplayMixin:
             raise ValueError("snapshot does not contain replay input")
         if replay_input.schema_version != REPLAY_SCHEMA_VERSION:
             raise ValueError("snapshot replay schema is unsupported")
-        if replay_input.algorithm_version != REPLAY_ALGORITHM_VERSION:
+        if replay_input.algorithm_version not in _SUPPORTED_REPLAY_ALGORITHMS:
             raise ValueError("snapshot replay algorithm is unsupported")
         if not replay_input.market_features:
             raise ValueError("snapshot replay input does not contain the frozen market universe")
         if replay_input.candidate_pool_size < 1:
             raise ValueError("snapshot replay input has an invalid candidate pool size")
-        replay_engine = cast(Any, type(self))(_restore_policy(replay_input.policy))
+        replay_engine = cast(Any, type(self))(
+            _restore_policy(replay_input.policy),
+            hard_filter_function=(
+                legacy_v14_hard_filter
+                if replay_input.algorithm_version == LEGACY_REPLAY_ALGORITHM_VERSION
+                else hard_filter
+            ),
+        )
         if snapshot.strategy_version != replay_input.policy.strategy_version:
             raise ValueError("snapshot strategy version does not match its frozen replay policy")
         if snapshot.fusion_version != replay_input.policy.fusion_version:
@@ -75,7 +84,14 @@ class RecommendationReplayMixin:
         replay_input = snapshot.replay_input
         if replay_input is None:
             raise ValueError("snapshot does not contain replay input")
-        engine = cast(Callable[[object], Any], cls)(_restore_policy(replay_input.policy))
+        engine = cast(Callable[..., Any], cls)(
+            _restore_policy(replay_input.policy),
+            hard_filter_function=(
+                legacy_v14_hard_filter
+                if replay_input.algorithm_version == LEGACY_REPLAY_ALGORITHM_VERSION
+                else hard_filter
+            ),
+        )
         return cast(Mapping[str, object], engine.verify_replay(snapshot))
 
     @classmethod
@@ -86,11 +102,18 @@ class RecommendationReplayMixin:
         replay_input = snapshot.replay_input
         if replay_input is None:
             raise ValueError("snapshot does not contain replay input")
-        engine = cast(Callable[[object], Any], cls)(_restore_policy(replay_input.policy))
+        engine = cast(Callable[..., Any], cls)(
+            _restore_policy(replay_input.policy),
+            hard_filter_function=(
+                legacy_v14_hard_filter
+                if replay_input.algorithm_version == LEGACY_REPLAY_ALGORITHM_VERSION
+                else hard_filter
+            ),
+        )
         eligible = tuple(
             feature
             for feature in replay_input.candidate_features
-            if hard_filter(
+            if engine._hard_filter(
                 feature,
                 replay_input.evaluated_at,
                 max_age_seconds=replay_input.score_max_age_seconds,

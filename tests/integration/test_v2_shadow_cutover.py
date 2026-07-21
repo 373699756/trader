@@ -137,9 +137,10 @@ class StaticMarketData:
         codes: Sequence[str],
         observed_at: datetime,
         *,
+        force: bool = False,
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]:
-        del deadline
+        del force, deadline
         requested = set(codes)
         return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
 

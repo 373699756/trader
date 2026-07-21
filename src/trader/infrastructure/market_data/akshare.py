@@ -64,12 +64,14 @@ class AkshareResearchClient:
         long_research_policy: LongResearchPolicy | None = None,
         evidence_cache_dir: Path | None = None,
         json_writer: RuntimeJsonWriter | None = None,
+        cancel_requested: Callable[[], bool] = lambda: False,
     ) -> None:
         self._timeout_seconds = max(0.1, timeout_seconds)
         self._get = get if get is not None else cast(GetFunction, requests.get)
         self._long_research_policy = long_research_policy
         self._evidence_cache_dir = evidence_cache_dir
         self._json_writer = json_writer
+        self._cancel_requested = cancel_requested
 
     def fetch_news(self, code: str, *, observed_at: datetime, limit: int = 5) -> tuple[Evidence, ...]:
         return _fetch_news(self, code, observed_at=observed_at, limit=limit)
@@ -431,6 +433,7 @@ class AkshareResearchClient:
         params: Mapping[str, object],
         headers: Mapping[str, str] | None = None,
     ) -> HttpResponse:
+        self._ensure_running()
         response = self._get(
             url,
             params=params,
@@ -439,7 +442,12 @@ class AkshareResearchClient:
             proxies=_DIRECT_PROXIES,
         )
         response.raise_for_status()
+        self._ensure_running()
         return response
+
+    def _ensure_running(self) -> None:
+        if self._cancel_requested():
+            raise RuntimeError("akshare source lane stopped")
 
     def _cache_payload(self, source: str, code: str, observed_at: datetime, payload: object) -> None:
         if self._evidence_cache_dir is None:

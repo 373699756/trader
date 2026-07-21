@@ -386,10 +386,13 @@ class FeatureBuilder:
             or amount_median <= 0
             else clamp(50.0 + 25.0 * quote.amount / amount_median)
         )
-        limit = 20.0 if quote.code.startswith(("300", "301", "688", "689")) else 10.0
+        limit = quote.exchange_limit_pct or (20.0 if quote.code.startswith(("300", "301", "688", "689")) else 10.0)
         limit_proximity = (
             min(1.0, abs(quote.pct_change) / limit)
-            if quote.pct_change is not None and math.isfinite(quote.pct_change)
+            if quote.has_price_limit is not False
+            and quote.pct_change is not None
+            and math.isfinite(quote.pct_change)
+            and limit > 0
             else None
         )
         risk_adjusted = None

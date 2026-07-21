@@ -55,7 +55,30 @@ python3 -m venv .venv
 .venv/bin/trader-server --config "$PWD/config/v2/runtime.json"
 ```
 
-配置路径必须为绝对路径。`TRADER_CONFIG` 可代替 `--config`。DeepSeek 密钥只从 `DEEPSEEK_API_KEY` 读取，不写入配置、快照或日志。
+配置路径必须为绝对路径。`TRADER_CONFIG` 可代替 `--config`。DeepSeek 密钥优先从
+`DEEPSEEK_API_KEY` 读取，也可使用 `DEEPSEEK_API_KEY_FILE` 或项目根目录
+`.deepseek_key`；密钥不写入配置、快照或日志。
+
+## 可选 Tushare 慢数据
+
+Tushare 只补充证券主数据、交易日历、前复权日线、日度估值和财务指标，不承担
+高频实时报价。启用 SDK extra：
+
+```bash
+.venv/bin/python -m pip install ".[tushare]"
+```
+
+Token 优先从 `TUSHARE_TOKEN` 读取，也可让 `TUSHARE_TOKEN_FILE` 指向只含一行 Token
+的普通文件。POSIX 系统必须限制该文件仅属主可读写，例如：
+
+```bash
+chmod 600 /absolute/path/to/tushare-token
+TUSHARE_TOKEN_FILE=/absolute/path/to/tushare-token ./run.sh
+```
+
+Token、SDK、额度或网络不可用时，Tushare lane 会显式降级；东方财富/新浪全市场实时
+行情、腾讯候选定向报价、AKShare 研究数据、本地推荐和只读 Web 继续运行。Token 不会
+写入配置、日志、SQLite、快照或 API。
 
 ## Web API
 

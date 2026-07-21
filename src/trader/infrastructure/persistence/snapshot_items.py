@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import date, datetime
 
 from trader.domain.models import (
+    Board,
     CrossSectionStats,
     DeepSeekReview,
     DimensionAssessment,
@@ -192,10 +193,25 @@ def _quote_to_dict(quote: MarketQuote) -> dict[str, object]:
         "has_major_regulatory_risk": quote.has_major_regulatory_risk,
         "cross_source_deviation_pct": quote.cross_source_deviation_pct,
         "cross_source_verified": quote.cross_source_verified,
+        "board": quote.board.value,
+        "board_source": quote.board_source,
+        "board_reliability": quote.board_reliability,
+        "exchange": quote.exchange,
+        "listing_date": quote.listing_date.isoformat() if quote.listing_date is not None else None,
+        "listing_age_sessions": quote.listing_age_sessions,
+        "is_relisted_first_session": quote.is_relisted_first_session,
+        "is_delisting_period_first_session": quote.is_delisting_period_first_session,
+        "has_price_limit": quote.has_price_limit,
+        "exchange_limit_pct": quote.exchange_limit_pct,
+        "strategy_hot_cap_pct": quote.strategy_hot_cap_pct,
+        "rule_version": quote.rule_version,
+        "rule_effective_date": quote.rule_effective_date.isoformat() if quote.rule_effective_date is not None else None,
+        "execution_restrictions": list(quote.execution_restrictions),
     }
 
 
 def _quote_from_dict(raw: Mapping[str, object]) -> MarketQuote:
+    restrictions = raw.get("execution_restrictions")
     return MarketQuote(
         code=_text(raw, "code"),
         name=_text(raw, "name"),
@@ -224,7 +240,35 @@ def _quote_from_dict(raw: Mapping[str, object]) -> MarketQuote:
         has_major_regulatory_risk=bool(raw.get("has_major_regulatory_risk")),
         cross_source_deviation_pct=_optional_number(raw.get("cross_source_deviation_pct")),
         cross_source_verified=bool(raw.get("cross_source_verified", True)),
+        board=Board(str(raw.get("board") or Board.UNSUPPORTED.value)),
+        board_source=str(raw.get("board_source") or ""),
+        board_reliability=str(raw.get("board_reliability") or "unknown"),
+        exchange=str(raw.get("exchange") or ""),
+        listing_date=_optional_date(raw.get("listing_date")),
+        listing_age_sessions=_optional_integer(raw.get("listing_age_sessions")),
+        is_relisted_first_session=_optional_boolean(raw.get("is_relisted_first_session")),
+        is_delisting_period_first_session=_optional_boolean(raw.get("is_delisting_period_first_session")),
+        has_price_limit=_optional_boolean(raw.get("has_price_limit")),
+        exchange_limit_pct=_optional_number(raw.get("exchange_limit_pct")),
+        strategy_hot_cap_pct=_optional_number(raw.get("strategy_hot_cap_pct")),
+        rule_version=str(raw.get("rule_version") or ""),
+        rule_effective_date=_optional_date(raw.get("rule_effective_date")),
+        execution_restrictions=tuple(str(value) for value in restrictions if isinstance(value, str))
+        if isinstance(restrictions, list)
+        else (),
     )
+
+
+def _optional_date(value: object) -> date | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError("expected an ISO date or null")
+    return date.fromisoformat(value)
+
+
+def _optional_boolean(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _score_to_dict(score: ScoreBreakdown) -> dict[str, object]:

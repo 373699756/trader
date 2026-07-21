@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import SHANGHAI
 from trader.domain.models import (
+    Board,
     DeepSeekReview,
     Evidence,
     LiveOverlay,
@@ -81,6 +82,49 @@ def test_recommendations_explain_missing_fields(recommendation_policy, applicati
     assert item["evidence"][0]["received_at"] == NOW.isoformat()
     assert item["evidence"][0]["data_version"] == "intraday-v1"
     assert item["anchor_to_now_pct"] is None
+
+
+def test_recommendation_response_adds_v15_board_identity_fields(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    snapshot = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
+    recommendation = snapshot.recommendations[0]
+    quote = replace(
+        recommendation.features.quote,
+        board=Board.CHINEXT,
+        board_source="tushare",
+        board_reliability="verified",
+        exchange="SZSE",
+        listing_date=date(2020, 1, 2),
+        listing_age_sessions=1000,
+        has_price_limit=True,
+        exchange_limit_pct=20.0,
+        rule_version="cn-board-rules-v1",
+        rule_effective_date=date(2023, 8, 28),
+    )
+    snapshot = replace(
+        snapshot,
+        recommendations=(replace(recommendation, features=replace(recommendation.features, quote=quote)),),
+        metadata={**snapshot.metadata, "merge_epoch": "merge-v15", "source_versions": {"tushare": "master-v1"}},
+    )
+    repository = MemoryReadRepository(latest={Strategy.TODAY: snapshot})
+    app, _publisher = _app(repository)
+
+    payload = app.test_client().get("/api/recommendations/today").get_json()
+    item = payload["items"][0]
+
+    assert payload["metadata"]["merge_epoch"] == "merge-v15"
+    assert item["board"] == "chinext"
+    assert item["board_source"] == "tushare"
+    assert item["board_reliability"] == "verified"
+    assert item["strategy_hot_cap_pct"] is None
+    assert item["cross_source_verified"] is True
+    assert item["exchange"] == "SZSE"
+    assert item["listing_date"] == "2020-01-02"
+    assert item["listing_age_sessions"] == 1000
+    assert item["has_price_limit"] is True
+    assert item["exchange_limit_pct"] == 20.0
 
 
 def test_recommendation_validation_and_empty_current(recommendation_policy, application_feature_factory) -> None:

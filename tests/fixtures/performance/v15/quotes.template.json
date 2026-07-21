@@ -1,0 +1,23 @@
+{
+  "schema_version": "v15-sanitized-quotes-v1",
+  "observed_at": "2026-07-16T10:00:00+08:00",
+  "base": {
+    "name_prefix": "性能样本",
+    "price": 12.0,
+    "previous_close": 11.8,
+    "open_price": 11.9,
+    "high": 12.2,
+    "low": 11.7,
+    "pct_change": 1.6949,
+    "change_5m": 0.3,
+    "speed": 0.4,
+    "volume_ratio": 2.1,
+    "turnover_rate": 3.1,
+    "amount": 450000000.0,
+    "amplitude": 4.2,
+    "market_cap": 30000000000.0,
+    "industry_count": 32
+  },
+  "sina_price_multiplier": 1.004,
+  "tencent_price_multiplier": 1.001
+}

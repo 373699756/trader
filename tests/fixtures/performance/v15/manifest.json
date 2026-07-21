@@ -1,0 +1,9 @@
+{
+  "schema_version": "v15-performance-fixture-v1",
+  "generator_version": "deterministic-code-expansion-v1",
+  "market_rows": 5500,
+  "candidate_rows": 360,
+  "files": {
+    "quotes.template.json": "7aba4eb48c95e0ed900484a6a44fc1f0b09725f6629e5d795f5e95a40a855b58"
+  }
+}

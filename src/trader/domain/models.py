@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from types import MappingProxyType
 
@@ -71,9 +71,47 @@ class MarketQuote:
     has_major_regulatory_risk: bool = False
     cross_source_deviation_pct: float | None = None
     cross_source_verified: bool = True
+    board: Board = Board.UNSUPPORTED
+    board_source: str = ""
+    board_reliability: str = "unknown"
+    exchange: str = ""
+    listing_date: date | None = None
+    listing_age_sessions: int | None = None
+    is_relisted_first_session: bool | None = None
+    is_delisting_period_first_session: bool | None = None
+    has_price_limit: bool | None = None
+    exchange_limit_pct: float | None = None
+    strategy_hot_cap_pct: float | None = None
+    rule_version: str = ""
+    rule_effective_date: date | None = None
+    execution_restrictions: tuple[str, ...] = ()
 
     def age_seconds(self, now: datetime) -> float:
         return max(0.0, (now - self.source_time).total_seconds())
+
+
+@dataclass(frozen=True)
+class CanonicalMarketSnapshot:
+    observed_at: datetime
+    merge_epoch: str
+    quotes: tuple[MarketQuote, ...]
+    field_sources: Mapping[str, Mapping[str, str]]
+    source_versions: Mapping[str, str]
+    conflicts: tuple[str, ...]
+    missing_reasons: Mapping[str, str]
+    degraded_reasons: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("canonical snapshot observed_at must be timezone-aware")
+        if not self.merge_epoch:
+            raise ValueError("canonical snapshot merge_epoch must not be empty")
+        if tuple(sorted(quote.code for quote in self.quotes)) != tuple(quote.code for quote in self.quotes):
+            raise ValueError("canonical snapshot quotes must be sorted by code")
+        nested = {str(code): MappingProxyType(dict(sources)) for code, sources in self.field_sources.items()}
+        object.__setattr__(self, "field_sources", MappingProxyType(nested))
+        object.__setattr__(self, "source_versions", MappingProxyType(dict(self.source_versions)))
+        object.__setattr__(self, "missing_reasons", MappingProxyType(dict(self.missing_reasons)))
 
 
 @dataclass(frozen=True)
@@ -435,6 +473,7 @@ class RecommendationSnapshot:
 
 __all__ = [
     "Board",
+    "CanonicalMarketSnapshot",
     "CrossSectionStats",
     "DeepSeekReview",
     "DimensionAssessment",

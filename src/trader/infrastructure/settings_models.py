@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from trader.application.cache import CachePolicy
 from trader.domain.news import NewsSignalPolicy
 from trader.domain.research import D25SignalPolicy, LongResearchPolicy
 from trader.domain.tail import TailSignalPolicy
@@ -44,6 +45,45 @@ class MarketDataSettings:
     single_flight: bool
     circuit_breaker_failures: int
     circuit_breaker_seconds: int
+    source_contract_versions: Mapping[str, str]
+    tushare: TushareSettings
+    cache_policy: CachePolicy
+
+
+@dataclass(frozen=True)
+class TushareSettings:
+    enabled: bool
+    timeout_seconds: float
+    token: str = field(default="", repr=False)
+
+
+@dataclass(frozen=True)
+class PerformanceWorkloadSettings:
+    market_rows: int
+    candidate_rows: int
+
+
+@dataclass(frozen=True)
+class PerformanceRoundSettings:
+    warmup: int
+    measurement: int
+
+
+@dataclass(frozen=True)
+class PerformanceMemorySettings:
+    cache_total_bytes: int
+    growth_percent: float
+
+
+@dataclass(frozen=True)
+class PerformanceBudgetSettings:
+    schema_version: int
+    workload: PerformanceWorkloadSettings
+    rounds: PerformanceRoundSettings
+    latency_p95_ms: Mapping[str, float]
+    data_age_p95_seconds: Mapping[str, float]
+    memory: PerformanceMemorySettings
+    relative_regression_percent: float
 
 
 @dataclass(frozen=True)
@@ -86,6 +126,7 @@ class RuntimeSettings:
     server: ServerSettings
     pipeline: PipelineSettings
     market_data: MarketDataSettings
+    performance_budgets: PerformanceBudgetSettings
     deepseek: DeepSeekSettings
     api: ApiSettings
 

@@ -55,6 +55,7 @@ def _refresh_candidate_quotes_on_workers(
             pipeline._market_data.refresh_candidate_quotes,
             codes,
             now,
+            force=phase is MarketPhase.FINAL_QUOTE,
             deadline=deadline,
         )
     )
@@ -109,14 +110,17 @@ def _refresh_reference_data_on_workers(
     phase: MarketPhase,
 ) -> None:
     codes = _active_codes(pipeline)
-    if codes:
-        _run_market_data_task(
-            pipeline,
-            pipeline._market_data.refresh_reference_data,
-            codes,
-            now,
-            force=phase is MarketPhase.AFTER_CLOSE,
-        )
+    scheduler = getattr(pipeline._market_data, "schedule_reference_data", None)
+    if callable(scheduler):
+        scheduler(codes, now, force=phase is MarketPhase.AFTER_CLOSE)
+        return
+    _run_market_data_task(
+        pipeline,
+        pipeline._market_data.refresh_reference_data,
+        codes,
+        now,
+        force=phase is MarketPhase.AFTER_CLOSE,
+    )
 
 
 def _active_codes(pipeline: RecommendationPipeline) -> tuple[str, ...]:

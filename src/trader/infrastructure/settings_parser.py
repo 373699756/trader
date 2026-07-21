@@ -48,6 +48,17 @@ def mapping(raw: Mapping[str, object], key: str) -> Mapping[str, object]:
     return value
 
 
+def require_exact_keys(raw: Mapping[str, object], expected: set[str], label: str) -> None:
+    missing = sorted(expected - set(raw))
+    unknown = sorted(set(raw) - expected)
+    if missing:
+        if len(missing) == 1:
+            raise ConfigurationError(f"{label}.{missing[0]} is required")
+        raise ConfigurationError(f"{label} missing keys: {', '.join(missing)}")
+    if unknown:
+        raise ConfigurationError(f"{label} contains unknown keys: {', '.join(unknown)}")
+
+
 def text(raw: Mapping[str, object], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value.strip():
