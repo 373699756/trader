@@ -325,12 +325,20 @@
       els.headerFreeze.textContent = state.payload
         ? state.payload.fallback_date ? "上一交易日" : state.payload.frozen ? "已冻结" : "草稿"
         : "-";
+      reconcileRecommendationIdentity(payload);
       updateQuoteAge();
     } catch (_error) {
       els.runtimeStatus.textContent = "状态不可用";
       els.runtimeDot.dataset.state = "error";
       els.routeHealth.textContent = "-";
     }
+  }
+
+  function reconcileRecommendationIdentity(statusPayload) {
+    if (state.date || !state.payload || !statusPayload || !statusPayload.strategies) return;
+    const current = statusPayload.strategies[state.strategy];
+    if (!current || !current.snapshot_id || current.snapshot_id === state.payload.snapshot_id) return;
+    loadRecommendations("status_identity");
   }
 
   function updateQuoteAge() {

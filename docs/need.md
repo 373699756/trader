@@ -544,7 +544,7 @@ SQLite 与 JSON 只允许单写线程操作。实时草稿写入可替换的 `pu
 
 候选项的 DeepSeek 审计字段增加 `review_stage`、`challenger_status`、`evidence_manifest_hash`、`requested_model`、`actual_model`、`thinking_mode`、`raw_confidence`、可空的 `calibrated_confidence` 与 `calibration_version`。旧冻结缺少这些字段时按 `null/not_run` 兼容读取；API 不返回思维链正文、完整外部载荷或密钥。挑战者失败只显示候选级状态和原因，不得把有效主审伪装为“未复核”。
 
-Web 处理器只读取已发布快照，不允许直接抓取行情、计算评分或调用 DeepSeek。当前快照支持 ETag；相同版本返回 304，避免轮询重复传输。ETag 身份必须包含当前交易日、快照、overlay 和 fallback 信息，跨交易日不得继续复用上一日缓存身份。历史响应的 `trade_date` 必须与 `requested_date` 完全一致；历史列表可用独立当前行情展示“今日涨跌”和“锚点至今”，但不得把该行情伪装成历史快照的 `live_overlay` 或改写冻结记录。
+Web 处理器只读取已发布快照，不允许直接抓取行情、计算评分或调用 DeepSeek。当前快照支持 ETag；相同版本返回 304，避免轮询重复传输。ETag 身份必须包含当前交易日、快照、overlay 和 fallback 信息，跨交易日不得继续复用上一日缓存身份。前端在 SSE 正常时不得重复轮询完整推荐响应，但必须使用既有状态心跳中的策略快照身份对账；发现当前页面仍是旧快照或上一交易日 fallback 且服务端已发布新身份时，立即补拉一次当前推荐。历史响应的 `trade_date` 必须与 `requested_date` 完全一致；历史列表可用独立当前行情展示“今日涨跌”和“锚点至今”，但不得把该行情伪装成历史快照的 `live_overlay` 或改写冻结记录。
 
 `/api/events` 是有界审计查询，`/api/events/stream` 是 SSE。SSE 只推送已发布版本，事件 `id` 使用单调发布序号，支持 `Last-Event-ID`；游标仍在保留窗口内时补发，过旧时发送 `resync_required` 并由前端获取完整快照。心跳 15 秒；断线后前端每 15 秒轮询，恢复 SSE 后停止轮询，避免双重刷新。服务端必须限制单客户端缓冲和总连接数，慢客户端不得阻塞发布线程。
 

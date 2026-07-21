@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：今早、明日和 2-5 日页面在服务端已经生成今日实时快照后仍可能停留在昨日数据。现场运行库与只读 API 确认 `2026-07-21` 草稿、冻结和秒级候选报价均正常发布；新增前端状态心跳快照身份对账，仅当服务端当前策略 `snapshot_id` 与页面身份不一致时补拉一次推荐，作为 SSE 推送之外的低流量恢复路径。
+
 - 用户诉求：检查 `docs/need.md` 最近三次提交后，补齐整个活动工程中尚未实现或与契约不一致的功能，并以职责边界拆分超大文件。新增配置化结构风险硬过滤、V4-Flash 主审/V4-Pro 挑战者、固定点时证据路由、挑战者保守合并与策略级缓存、模型/指纹/cache-token 审计、结构化风险冻结重放，以及活动 Python/CSS/JavaScript/HTML 的 500 行架构门禁；新增失败、迟到、预算、schema 修复、黑名单、结构风险和一字涨跌停回归。
 
 - 用户诉求：把 `docs/hi.md` 从方向性方案改为 Codex 可直接执行的详细计划。文档现已固定统一执行协议、两个独立交付批次、允许修改的文件范围、失败先行测试、类型和接口、五个数据源 lane、三个板块评分 lane、精确候选/评分权重、DeepSeek 全局协调、融合与故障降级、逐项验收矩阵、提交信息和停止条件；本批仍不修改活动契约、配置或实现。
@@ -69,6 +71,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 看板脚本资源版本由 `v=7` 提升到 `v=8`，确保浏览器获取包含快照身份对账的脚本；SSE 正常时仍不周期轮询完整推荐响应，历史日期查询也不参与当前身份对账。
+
 - 运行配置升级到 schema 4 和 158/188 阶段目标，策略配置升级到 schema 8；四类结构化负面风险与配置黑名单统一在评分和 DeepSeek 前硬过滤，原本对应的本地风险触发关闭以避免重复扣分。主审/挑战者请求身份包含模型角色、思考模式、reasoning effort、prompt/schema 版本，V4-Pro schema 修复在内存中回传供应商 `reasoning_content` 且不落盘；桌面明细新增两阶段模型、状态、指纹、cache token 和证据 manifest 审计。
 - 将 settings、pipeline、recommendations、DeepSeek reviewer/budget、市场服务/AKShare/特征、快照 codec/writer 和 dashboard CSS 按配置模型与校验、生命周期与任务、请求与状态、缓存与研究、序列化与观测等职责拆为显式模块；原门面、依赖方向、组合根、公共入口和运行资源所有权保持不变。
 
@@ -128,6 +132,8 @@ All notable changes to this project are documented here.
   `runtime.json.performance_budgets` 读取，禁止适配器、评分lane或性能脚本自带默认值。
 
 ### Fixed
+
+- 修复页面已缓存上一交易日 fallback 后，若推荐发布事件未触发当前页重读，状态心跳虽已看到服务端新快照但表格仍继续显示昨日数据的问题；现在最迟在下一次 15 秒状态心跳发现身份变化并切回当日快照，手工历史选择、冻结规则、ETag、评分和行情采集链路保持不变。
 
 - 修复最近需求把负面公告、减持/解禁、质押和财务恶化改为硬过滤后，活动实现仍只在 d25/long 本地风险表扣分且 today/tomorrow 不读取结构化风险的问题；风险字段缺失现在保留本地推荐并记录 `structured_risk_unavailable`，真实正等级在四策略评分和模型调用前剔除。修复行情源未显式标记时一字涨跌停无法识别，以及策略配置黑名单未进入硬过滤的问题。
 - 修复生产仍默认旧 DeepSeek 别名、无挑战者执行、动态候选数据位于 prompt 固定前缀之前、同一批候选因上游顺序变化导致 prompt 尾部不稳定、挑战者结果未进入策略融合缓存，以及 V4-Pro schema 修复丢失上一轮临时推理字段的问题；挑战者失败、超时、预算耗尽、schema 错误和迟到继续保留有效主审，重试与修复仍共享最多两次物理尝试并计入原子 188 上限。
@@ -189,6 +195,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除昨日冻结、跨日 stale fallback、SSE、ETag、历史日期或任何策略数据；昨日快照仍只在当日快照尚未就绪时按契约显式降级展示。
+
 - 删除与第 26 节“尚未授权生产启用”冲突的活动 `domain/strategies/shadow.py`、策略导出和快照 `shadow_scoring` 元数据；活动代码、API、UI、草稿及冻结 JSON 不再计算或携带候选初值影子排名。未删除历史文档、既有冻结数据、生产评分、预算或只读 API。
 
 - 本批未删除预算审计、历史调用记录、API 字段、策略、冻结数据或运行依赖；数据库不可用只产生显式状态降级，不以清空数据或重建运行库规避错误。
@@ -211,6 +219,8 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 失败先行契约已复现看板缺少状态快照身份对账；修复后 `make format-check`、`make lint`、111 个源码文件 mypy、完整 452 项 pytest、`make package` 和 `git diff --check` 通过，pytest 仅保留既有未知测试模型名 RuntimeWarning。最终 wheel 在仓库外干净虚拟环境安装全部依赖后通过 site-packages 导入、两个 CLI、9 项模板/静态资源和 `pip check`；Firefox 152 在 1280x720、1440x900、1920x1080 三档截图中无白屏、重叠或页面级横向溢出，`dashboard.js?v=8` 契约通过。
 
 - 本批通过 `make format-check`、`make lint`、111 个源码文件 mypy、完整 pytest、`make package` 和 `git diff --check`；架构 AST、`create_app()` 无副作用、固定融合 83.40、预算并发/重试、冻结恢复/哈希、SSE 游标与慢客户端均在完整套件内通过。最终 wheel 从仓库外 `/tmp` 目标目录导入，`trader-cli --help`、`validate-config`、`pip check` 及模板、3 个拆分 CSS、2 个 JavaScript、2 个 SVG 均通过。真实 Chrome 在 1280x720、1440x900、1920x1080 下加载全部 CSS，无白屏、脚本异常、关键同级重叠、文字裁切或页面级横向溢出，三张截图已人工复核。
 
@@ -268,6 +278,8 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 现场已确认服务端当日快照持续更新，但真实 SSE 丢事件时的恢复时延受固定 15 秒状态心跳约束；身份对账只解决页面停留旧快照，不改变行情源覆盖、候选过滤、DeepSeek 失败或当日快照确实尚未生成时的显式昨日 fallback。三档截图覆盖布局与资源加载，但其中后两档拍摄时运行进程已停止，动态实时数据切换仍由失败先行契约、API 契约和当日运行库证据覆盖。
 
 - 本批使用 mock DeepSeek HTTP 覆盖 V4 模型参数、429、超时、截断/非法 JSON、挑战者合并、缓存和预算，没有消耗真实 API 额度；供应商实际模型可用性、响应字段与网络质量仍需受控真实密钥冒烟。结构化风险源、真实交易日全市场负载和冻结时点仍受外部数据覆盖与尾延迟影响，失败时按契约保留最近有效快照并显式降级。工程门禁与策略一致性不构成收益验证，不能据此声称推荐收益提高。
 
