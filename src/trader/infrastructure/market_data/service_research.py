@@ -150,6 +150,7 @@ class MarketResearchMixin(MarketServiceState):
                 code = futures[future]
                 future.cancel()
                 observation = _degraded_research_observation(previous.get(code), "research_batch_deadline")
+                ttl = min(60.0, self._research_ttl_seconds)
                 result[code] = observation
                 self._write_research_cache(code, include_structured, observation, ttl, wall_now)
                 with self._lock:
@@ -157,7 +158,7 @@ class MarketResearchMixin(MarketServiceState):
                     self._research_last_error = "research_batch_deadline"
                     self._research[(code, include_structured)] = _ResearchEntry(
                         observation,
-                        self._monotonic() + min(60.0, self._research_ttl_seconds),
+                        self._monotonic() + ttl,
                     )
         return result
 

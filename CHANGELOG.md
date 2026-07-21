@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：页面反复提示 `deepseek_incomplete`、`tomorrow_tail_data_incomplete` 和 `d25_structured_research_incomplete`。运行审计确认 DeepSeek 当日存在 73 次无 HTTP 状态的读取超时且相关阶段额度已消耗，tomorrow 尾盘分钟覆盖随后已恢复为 7/7，D25 结构化研究则因每 3 分钟强制重抓全部候选而在 8 秒批次截止下反复处理固定排序前部代码；新增三类提示的可操作排查与恢复说明。
+
 - 用户问题：今早、明日和 2-5 日页面在服务端已经生成今日实时快照后仍可能停留在昨日数据。现场运行库与只读 API 确认 `2026-07-21` 草稿、冻结和秒级候选报价均正常发布；新增前端状态心跳快照身份对账，仅当服务端当前策略 `snapshot_id` 与页面身份不一致时补拉一次推荐，作为 SSE 推送之外的低流量恢复路径。
 
 - 用户诉求：检查 `docs/need.md` 最近三次提交后，补齐整个活动工程中尚未实现或与契约不一致的功能，并以职责边界拆分超大文件。新增配置化结构风险硬过滤、V4-Flash 主审/V4-Pro 挑战者、固定点时证据路由、挑战者保守合并与策略级缓存、模型/指纹/cache-token 审计、结构化风险冻结重放，以及活动 Python/CSS/JavaScript/HTML 的 500 行架构门禁；新增失败、迟到、预算、schema 修复、黑名单、结构风险和一字涨跌停回归。
@@ -71,6 +73,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- D25 周期风险刷新改为复用仍在 10 分钟 TTL 内的成功结构化研究，只提交缺失或已过期代码；失败或截止结果继续使用不超过 60 秒的负缓存后重试，不改变空值降级、风险硬过滤、14:50 冻结或来源超时上限。
+
 - 看板脚本资源版本由 `v=7` 提升到 `v=8`，确保浏览器获取包含快照身份对账的脚本；SSE 正常时仍不周期轮询完整推荐响应，历史日期查询也不参与当前身份对账。
 
 - 运行配置升级到 schema 4 和 158/188 阶段目标，策略配置升级到 schema 8；四类结构化负面风险与配置黑名单统一在评分和 DeepSeek 前硬过滤，原本对应的本地风险触发关闭以避免重复扣分。主审/挑战者请求身份包含模型角色、思考模式、reasoning effort、prompt/schema 版本，V4-Pro schema 修复在内存中回传供应商 `reasoning_content` 且不落盘；桌面明细新增两阶段模型、状态、指纹、cache token 和证据 manifest 审计。
@@ -132,6 +136,8 @@ All notable changes to this project are documented here.
   `runtime.json.performance_budgets` 读取，禁止适配器、评分lane或性能脚本自带默认值。
 
 ### Fixed
+
+- 修复 D25 结构化研究在固定候选顺序和短批次截止下长期停留于低覆盖的问题：成功代码不再每轮被强制重抓并占满 worker，后续候选可在连续刷新中逐步获得财务、公告、质押和解禁证据；同时修复整批任务全部超过截止时负缓存 TTL 未初始化而抛出 `UnboundLocalError` 的边界。
 
 - 修复页面已缓存上一交易日 fallback 后，若推荐发布事件未触发当前页重读，状态心跳虽已看到服务端新快照但表格仍继续显示昨日数据的问题；现在最迟在下一次 15 秒状态心跳发现身份变化并切回当日快照，手工历史选择、冻结规则、ETag、评分和行情采集链路保持不变。
 
@@ -195,6 +201,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未隐藏任何降级提示，也未清除或返还 DeepSeek 已计数的失败预算；未用昨日数据或伪造零值替代缺失的分钟、财务、公告、质押或解禁证据。
+
 - 本批未删除昨日冻结、跨日 stale fallback、SSE、ETag、历史日期或任何策略数据；昨日快照仍只在当日快照尚未就绪时按契约显式降级展示。
 
 - 删除与第 26 节“尚未授权生产启用”冲突的活动 `domain/strategies/shadow.py`、策略导出和快照 `shadow_scoring` 元数据；活动代码、API、UI、草稿及冻结 JSON 不再计算或携带候选初值影子排名。未删除历史文档、既有冻结数据、生产评分、预算或只读 API。
@@ -219,6 +227,8 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 失败先行组件回归已复现同一代码在相隔 3 分钟的周期风险刷新中被请求两次，以及整批截止时未初始化 TTL 的异常；修复后成功结构化研究仅请求一次，整批截止写入短期降级并正常返回。`make format-check`、`make lint`、111 个源码文件 mypy、完整 454 项 pytest、`make package` 和 `git diff --check` 通过，pytest 仅保留 10 条既有未知测试模型名 RuntimeWarning；最终 wheel 在仓库外隔离目标目录安装全部依赖后通过包导入、两个 CLI、9 项 Web 资源与 `pip check`。本批未修改 Web 资源，复核上批同资源 1280x720、1440x900、1920x1080 三档截图无白屏、重叠或页面级横向溢出。
 
 - 失败先行契约已复现看板缺少状态快照身份对账；修复后 `make format-check`、`make lint`、111 个源码文件 mypy、完整 452 项 pytest、`make package` 和 `git diff --check` 通过，pytest 仅保留既有未知测试模型名 RuntimeWarning。最终 wheel 在仓库外干净虚拟环境安装全部依赖后通过 site-packages 导入、两个 CLI、9 项模板/静态资源和 `pip check`；Firefox 152 在 1280x720、1440x900、1920x1080 三档截图中无白屏、重叠或页面级横向溢出，`dashboard.js?v=8` 契约通过。
 
@@ -278,6 +288,8 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 本次代码修复只解决已确认的 D25 固定顺序饥饿；DeepSeek 读取超时属于外部网络或供应商响应问题，已失败物理请求按契约继续占用当日 188 次上限，当前阶段耗尽后只能等待合法后续阶段或下一交易日。tomorrow 尾盘分钟虽已现场恢复满覆盖，上游仍可能再次短暂失败；三类场景都会保留最近有效快照和显式降级，不承诺外部来源始终可用。新一轮 Firefox 截图受宿主 `RenderCompositorSWGL failed mapping default framebuffer` 阻断，桌面结论沿用本批未改动 Web 资源的上一批三档通过基线，不把本次环境失败记为新截图通过。
 
 - 现场已确认服务端当日快照持续更新，但真实 SSE 丢事件时的恢复时延受固定 15 秒状态心跳约束；身份对账只解决页面停留旧快照，不改变行情源覆盖、候选过滤、DeepSeek 失败或当日快照确实尚未生成时的显式昨日 fallback。三档截图覆盖布局与资源加载，但其中后两档拍摄时运行进程已停止，动态实时数据切换仍由失败先行契约、API 契约和当日运行库证据覆盖。
 

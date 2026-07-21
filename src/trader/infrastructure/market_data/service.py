@@ -247,7 +247,6 @@ class MarketFeatureService(MarketResearchMixin, MarketIntradayMixin, MarketHisto
             normalized,
             observed_at,
             include_structured=True,
-            force=True,
             deadline=deadline,
         )
 

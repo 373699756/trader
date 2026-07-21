@@ -1363,6 +1363,46 @@ def test_structured_research_upgrades_news_only_cache_and_is_reused() -> None:
     assert second_full[0].values["pledge_risk"] == 1.0
 
 
+def test_stock_risk_refresh_reuses_successful_ten_minute_cache() -> None:
+    observation = ResearchObservation(
+        announcements_available=True,
+        pledge_ratio_pct=0.0,
+        unlock_ratio_pct=0.0,
+    )
+    research = StaticStructuredResearchClient((), observation)
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=research,
+        research_workers=1,
+    )
+
+    service.refresh_stock_risk(("600001",), AFTERNOON)
+    service.refresh_stock_risk(("600001",), AFTERNOON + timedelta(minutes=3))
+
+    assert research.snapshot_calls == 1
+
+
+def test_stock_risk_batch_deadline_records_short_degradation() -> None:
+    research = BlockingStructuredResearchClient()
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=research,
+        research_workers=1,
+        wall_clock=lambda: AFTERNOON,
+    )
+
+    try:
+        service.refresh_stock_risk(("600001",), AFTERNOON, deadline=AFTERNOON)
+    finally:
+        research.release.set()
+
+    assert service.health()["research_last_error"] == "research_batch_deadline"
+
+
 def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
     cache = tmp_path / "calendar.json"
     cache.write_text(
@@ -1592,6 +1632,15 @@ class StaticStructuredResearchClient:
     def fetch_snapshot(self, _code, *, observed_at):
         self.snapshot_calls += 1
         return self._observation
+
+
+class BlockingStructuredResearchClient:
+    def __init__(self) -> None:
+        self.release = threading.Event()
+
+    def fetch_snapshot(self, _code, *, observed_at):
+        self.release.wait(2.0)
+        return ResearchObservation(announcements_available=True)
 
 
 class StaticIntradayClient:
