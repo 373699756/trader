@@ -182,6 +182,25 @@
       section("本地组件", keyValueList(components)),
       section("权重", nestedValueList(snapshot.weights || {})),
       section("分位与截尾", normalizationList(item.normalization || {})),
+      section("板块评分", detailGrid([
+        ["板块策略", item.board_policy_id || "-"],
+        ["策略版本", item.board_policy_version || "-"],
+        ["板块可靠度", item.board_data_reliability == null ? "-" : `${number(item.board_data_reliability * 100, 1)}%`],
+        ["有效权重", item.board_supported_weight == null ? "-" : `${number(item.board_supported_weight * 100, 1)}%`],
+        ["板内排名", number(item.board_rank, 0)],
+        ["全局排名", number(item.rank, 0)],
+        ["竞争组", item.competition_group_id || "-"],
+        ["竞争组来源", item.competition_group_source || "-"],
+        ["竞争组限制", item.competition_group_limit == null ? "-" : number(item.competition_group_limit, 0)],
+        ["跳过原因", item.selection_skip_reason || "-"],
+        ["同行差", number((item.board_metrics || {}).peer_gap, 2)],
+        ["领先差", number((item.board_metrics || {}).leader_gap, 2)],
+        ["换手冲击", number((item.board_metrics || {}).turnover_shock_20, 2)],
+        ["成交额冲击", number((item.board_metrics || {}).amount_shock_20, 2)],
+        ["流动性层级", item.liquidity_bucket || "-"],
+        ["参数状态", item.parameter_status || "-"],
+      ])),
+      section("板内总体", populationDetail(item.board_population)),
       section("风险事实", riskList(risks)),
       section("DeepSeek 审计", reviewAudit(review)),
       section("DeepSeek 五维", dimensionList(dimensions, review)),
@@ -226,6 +245,20 @@
 
   function section(title, body) {
     return `<section class="detail-section"><h3>${escapeHtml(title)}</h3>${body}</section>`;
+  }
+
+  function populationDetail(population) {
+    if (!population) return detailGrid([["状态", "无板内总体"]]);
+    return detailGrid([
+      ["总体版本", population.population_version || "-"],
+      ["样本数", number(population.sample_size, 0)],
+      ["缺失数", number(population.missing_count, 0)],
+      ["P50", number(population.liquidity_p50, 2)],
+      ["P80", number(population.liquidity_p80, 2)],
+      ["状态", population.status || "-"],
+      ["回退日期", population.fallback_trade_date || "-"],
+      ["回退交易日龄", number(population.fallback_age_sessions, 0)],
+    ]);
   }
 
   function detailGrid(values) {

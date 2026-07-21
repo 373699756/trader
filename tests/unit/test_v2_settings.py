@@ -29,7 +29,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.pipeline.market_workers == 5
     assert runtime.market_data.tushare.timeout_seconds == 8
-    assert runtime.market_data.tushare.token == ""
+    assert runtime.market_data.tushare.token_file == PROJECT_ROOT / ".runtime" / "secrets" / "tushare.token"
     assert set(runtime.market_data.cache_policy.datasets) == {
         "full_market_quotes",
         "candidate_quotes",
@@ -151,6 +151,23 @@ def test_runtime_settings_loads_tushare_token_with_environment_priority(tmp_path
     runtime = load_runtime_settings(RUNTIME_CONFIG)
 
     assert runtime.market_data.tushare.token == "environment-token"
+
+
+def test_runtime_settings_loads_tushare_token_from_configured_protected_file(tmp_path, monkeypatch) -> None:
+    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    token_file = tmp_path / "tushare.token"
+    token_file.write_text("configured-file-token\n", encoding="utf-8")
+    token_file.chmod(0o600)
+    raw["market_data"]["tushare"]["token_file"] = str(token_file)
+    changed_path = tmp_path / "runtime.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+    monkeypatch.delenv("TUSHARE_TOKEN_FILE", raising=False)
+
+    runtime = load_runtime_settings(changed_path)
+
+    assert runtime.market_data.tushare.token == "configured-file-token"
+    assert runtime.market_data.tushare.token_file == token_file
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission contract")

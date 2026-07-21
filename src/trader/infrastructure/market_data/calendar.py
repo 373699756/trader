@@ -38,6 +38,23 @@ class ChinaTradingCalendar:
             raise TradingCalendarUnavailable("trading calendar is unavailable")
         return day in self._dates
 
+    def session_distance(self, start: str, end: str) -> int | None:
+        """Return trading sessions strictly after ``start`` through ``end``.
+
+        Calendar failure is fail-closed for fallback selection: callers receive
+        ``None`` and must treat the population age as unverifiable.
+        """
+
+        try:
+            start_date = date.fromisoformat(start)
+            end_date = date.fromisoformat(end)
+            if end_date < start_date:
+                return None
+            self._ensure_loaded()
+        except (OSError, TradingCalendarUnavailable, ValueError):
+            return None
+        return sum(day > start_date and day <= end_date for day in self._dates)
+
     def _ensure_loaded(self) -> None:
         if not self._dates:
             self._load_cache()

@@ -8,6 +8,7 @@ from datetime import date, datetime
 
 from trader.domain.models import (
     Board,
+    BoardPopulation,
     CrossSectionStats,
     DeepSeekReview,
     DimensionAssessment,
@@ -46,7 +47,10 @@ def _recommendation_to_dict(item: Recommendation) -> dict[str, object]:
         "action_reason": item.action_reason,
         "veto": item.veto,
         "rank": item.rank,
+        "board_rank": item.board_rank,
         "target_price": item.target_price,
+        "selection_skip_reason": item.selection_skip_reason,
+        "competition_group_limit": item.competition_group_limit,
     }
 
 
@@ -69,7 +73,10 @@ def _recommendation_from_dict(raw: Mapping[str, object]) -> Recommendation:
         action_reason=_text(raw, "action_reason"),
         veto=bool(raw.get("veto")),
         rank=_integer(raw, "rank"),
+        board_rank=_optional_integer(raw.get("board_rank")) or 0,
         target_price=_optional_number(raw.get("target_price")),
+        selection_skip_reason=str(raw.get("selection_skip_reason") or ""),
+        competition_group_limit=_optional_integer(raw.get("competition_group_limit")),
     )
 
 
@@ -122,6 +129,21 @@ def _features_to_dict(features: FeatureSnapshot) -> dict[str, object]:
             }
             for factor_id, item in features.normalization.items()
         },
+        "missing_reasons": dict(features.missing_reasons),
+        "board_data_reliability": features.board_data_reliability,
+        "board_supported_weight": features.board_supported_weight,
+        "board_policy_id": features.board_policy_id,
+        "board_policy_version": features.board_policy_version,
+        "board_population": _board_population_to_dict(features.board_population)
+        if features.board_population is not None
+        else None,
+        "merge_epoch": features.merge_epoch,
+        "competition_group_id": features.competition_group_id,
+        "competition_group_source": features.competition_group_source,
+        "competition_group_version": features.competition_group_version,
+        "liquidity_bucket": features.liquidity_bucket,
+        "parameter_status": features.parameter_status,
+        "selection_skip_reason": features.selection_skip_reason,
     }
 
 
@@ -131,6 +153,8 @@ def _features_from_dict(raw: Mapping[str, object]) -> FeatureSnapshot:
     risks = raw.get("external_risk_facts")
     missing = raw.get("missing_fields")
     normalization = raw.get("normalization")
+    missing_reasons = raw.get("missing_reasons")
+    board_population = raw.get("board_population")
     return FeatureSnapshot(
         quote=_quote_from_dict(_object(raw, "quote")),
         values={str(key): _optional_number(value) for key, value in values.items()} if isinstance(values, dict) else {},
@@ -161,6 +185,61 @@ def _features_from_dict(raw: Mapping[str, object]) -> FeatureSnapshot:
         }
         if isinstance(normalization, dict)
         else {},
+        missing_reasons={str(name): str(reason) for name, reason in missing_reasons.items()}
+        if isinstance(missing_reasons, dict)
+        else {},
+        board_data_reliability=_optional_number(raw.get("board_data_reliability"))
+        if raw.get("board_data_reliability") is not None
+        else 1.0,
+        board_supported_weight=_optional_number(raw.get("board_supported_weight"))
+        if raw.get("board_supported_weight") is not None
+        else 1.0,
+        board_policy_id=str(raw.get("board_policy_id") or ""),
+        board_policy_version=str(raw.get("board_policy_version") or ""),
+        board_population=_board_population_from_dict(board_population) if isinstance(board_population, dict) else None,
+        merge_epoch=str(raw.get("merge_epoch") or ""),
+        competition_group_id=str(raw.get("competition_group_id") or ""),
+        competition_group_source=str(raw.get("competition_group_source") or ""),
+        competition_group_version=str(raw.get("competition_group_version") or ""),
+        liquidity_bucket=str(raw.get("liquidity_bucket") or ""),
+        parameter_status=str(raw.get("parameter_status") or "current"),
+        selection_skip_reason=str(raw.get("selection_skip_reason") or ""),
+    )
+
+
+def _board_population_to_dict(population: BoardPopulation) -> dict[str, object]:
+    return {
+        "trade_date": population.trade_date,
+        "phase": population.phase,
+        "board": population.board.value,
+        "data_version": population.data_version,
+        "schema_version": population.schema_version,
+        "population_version": population.population_version,
+        "sample_size": population.sample_size,
+        "missing_count": population.missing_count,
+        "liquidity_p50": population.liquidity_p50,
+        "liquidity_p80": population.liquidity_p80,
+        "fallback_trade_date": population.fallback_trade_date,
+        "fallback_age_sessions": population.fallback_age_sessions,
+        "status": population.status,
+    }
+
+
+def _board_population_from_dict(raw: Mapping[str, object]) -> BoardPopulation:
+    return BoardPopulation(
+        trade_date=_text(raw, "trade_date"),
+        phase=_text(raw, "phase"),
+        board=Board(_text(raw, "board")),
+        data_version=_text(raw, "data_version"),
+        schema_version=_text(raw, "schema_version"),
+        population_version=_text(raw, "population_version"),
+        sample_size=_integer(raw, "sample_size"),
+        missing_count=_integer(raw, "missing_count"),
+        liquidity_p50=_optional_number(raw.get("liquidity_p50")),
+        liquidity_p80=_optional_number(raw.get("liquidity_p80")),
+        fallback_trade_date=_optional_text(raw, "fallback_trade_date"),
+        fallback_age_sessions=_optional_integer(raw.get("fallback_age_sessions")),
+        status=str(raw.get("status") or "current"),  # type: ignore[arg-type]
     )
 
 

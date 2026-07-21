@@ -143,6 +143,16 @@ def nested_number_mapping(raw: Mapping[str, object], key: str) -> dict[str, dict
     return result
 
 
+def triple_nested_number_mapping(raw: Mapping[str, object], key: str) -> dict[str, dict[str, dict[str, float]]]:
+    values = mapping(raw, key)
+    result: dict[str, dict[str, dict[str, float]]] = {}
+    for name, nested in values.items():
+        if not isinstance(name, str) or not isinstance(nested, dict):
+            raise ConfigurationError(f"{key} must contain objects")
+        result[name] = nested_number_mapping({"values": nested}, "values")
+    return result
+
+
 def environment_integer(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None:

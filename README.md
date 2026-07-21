@@ -68,8 +68,9 @@ Tushare 只补充证券主数据、交易日历、前复权日线、日度估值
 .venv/bin/python -m pip install ".[tushare]"
 ```
 
-Token 优先从 `TUSHARE_TOKEN` 读取，也可让 `TUSHARE_TOKEN_FILE` 指向只含一行 Token
-的普通文件。POSIX 系统必须限制该文件仅属主可读写，例如：
+Token 优先从 `TUSHARE_TOKEN` 读取，其次读取 `TUSHARE_TOKEN_FILE`，最后读取
+`config/v2/runtime.json` 中 `market_data.tushare.token_file` 指向的单行普通文件。
+默认路径为 `.runtime/secrets/tushare.token`。POSIX 系统必须限制该文件仅属主可读写，例如：
 
 ```bash
 chmod 600 /absolute/path/to/tushare-token

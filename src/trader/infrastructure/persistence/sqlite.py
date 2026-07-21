@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def connect(database_path: Path) -> sqlite3.Connection:
@@ -69,6 +69,13 @@ def initialize_database(database_path: Path) -> None:
                 rank INTEGER NOT NULL,
                 anchor_price REAL NOT NULL,
                 anchor_daily_return_pct REAL,
+                board TEXT NOT NULL DEFAULT 'unsupported',
+                board_policy_id TEXT NOT NULL DEFAULT '',
+                board_rank INTEGER NOT NULL DEFAULT 0,
+                board_data_reliability REAL NOT NULL DEFAULT 1.0,
+                competition_group_id TEXT NOT NULL DEFAULT '',
+                selection_skip_reason TEXT NOT NULL DEFAULT '',
+                merge_epoch TEXT NOT NULL DEFAULT '',
                 snapshot_id TEXT NOT NULL REFERENCES frozen_snapshots(snapshot_id),
                 PRIMARY KEY(strategy, recommend_date, stock_code)
             );
@@ -162,6 +169,13 @@ def initialize_database(database_path: Path) -> None:
             "TEXT NOT NULL DEFAULT 'recommendation_snapshot_v2'",
         )
         _ensure_column(connection, "frozen_snapshots", "anchor_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(connection, "recommendations", "board", "TEXT NOT NULL DEFAULT 'unsupported'")
+        _ensure_column(connection, "recommendations", "board_policy_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "recommendations", "board_rank", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "recommendations", "board_data_reliability", "REAL NOT NULL DEFAULT 1.0")
+        _ensure_column(connection, "recommendations", "competition_group_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "recommendations", "selection_skip_reason", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "recommendations", "merge_epoch", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "data_source_health", "last_error", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "data_source_health", "route_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(connection, "data_source_health", "route_status", "TEXT NOT NULL DEFAULT 'idle'")
@@ -209,6 +223,15 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE deepseek_calls ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE deepseek_calls ADD COLUMN prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE deepseek_calls ADD COLUMN prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0",
+    ],
+    6: [
+        "ALTER TABLE recommendations ADD COLUMN board TEXT NOT NULL DEFAULT 'unsupported'",
+        "ALTER TABLE recommendations ADD COLUMN board_policy_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE recommendations ADD COLUMN board_rank INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE recommendations ADD COLUMN board_data_reliability REAL NOT NULL DEFAULT 1.0",
+        "ALTER TABLE recommendations ADD COLUMN competition_group_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE recommendations ADD COLUMN selection_skip_reason TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE recommendations ADD COLUMN merge_epoch TEXT NOT NULL DEFAULT ''",
     ],
 }
 

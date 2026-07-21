@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 
-from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity
+from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity, request_fingerprint
 from trader.application.ports import MarketDataDeadlineExceeded
 from trader.application.schedule import phase_at, shanghai_now
 from trader.application.source_lanes import SourceLaneRegistry
@@ -20,6 +21,7 @@ from trader.domain.models import FeatureSnapshot, MarketQuote
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import StandardizedFeatureBuilder
+from trader.infrastructure.market_data.history import DailyBar, HistoryProfile, summarize_history_metrics
 from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.service_candidates import (
     MarketCandidateMixin,
@@ -182,7 +184,12 @@ class MarketFeatureService(
         )
         self._ensure_before_deadline(deadline)
         features = _apply_action_restrictions(
-            self._feature_builder.build(quotes, histories, observed_at),
+            self._feature_builder.build(
+                quotes,
+                histories,
+                observed_at,
+                history_summaries=self._history_summaries(histories, observed_at),
+            ),
             action_restrictions,
         )
         self._ensure_before_deadline(deadline)
@@ -308,7 +315,12 @@ class MarketFeatureService(
             action_restrictions=action_restrictions,
         )
         features = _apply_action_restrictions(
-            self._feature_builder.build(quotes, histories, observed_at),
+            self._feature_builder.build(
+                quotes,
+                histories,
+                observed_at,
+                history_summaries=self._history_summaries(histories, observed_at),
+            ),
             action_restrictions,
         )
         with self._lock:
@@ -330,6 +342,65 @@ class MarketFeatureService(
             force=True,
             deadline=deadline,
         )
+
+    def _history_summaries(
+        self,
+        histories: Mapping[str, tuple[DailyBar, ...]],
+        observed_at: datetime,
+    ) -> Mapping[str, HistoryProfile]:
+        summaries: dict[str, HistoryProfile] = {}
+        for code, bars in histories.items():
+            material = tuple(
+                (
+                    bar.trade_date,
+                    _finite_or_none(bar.open_price),
+                    _finite_or_none(bar.close),
+                    _finite_or_none(bar.high),
+                    _finite_or_none(bar.low),
+                    _finite_or_none(bar.volume),
+                    _finite_or_none(bar.amount),
+                    _finite_or_none(bar.pct_change),
+                    _finite_or_none(bar.turnover_rate),
+                )
+                for bar in bars
+            )
+            history_version = request_fingerprint({"bars": material})[:24]
+            identity = build_cache_identity(
+                dataset="history_summary",
+                source="history-summary",
+                subject_key=code,
+                request={"history_version": history_version},
+                trade_date="versioned",
+                phase="all_day",
+                source_contract_version="history-summary-v16",
+                config_version=self._config_version,
+                schema_version=self._schema_version,
+            )
+            cached = self._cache.get(identity) if self._cache is not None else None
+            if cached is not None and isinstance(cached.value, HistoryProfile) and cached.state not in {
+                "negative",
+                "degraded",
+            }:
+                summaries[code] = cached.value
+                continue
+
+            def load(bars: tuple[DailyBar, ...] = bars) -> HistoryProfile:
+                return summarize_history_metrics(bars)
+
+            if self._cache is None:
+                summaries[code] = load()
+                continue
+            summary = self._cache.coalesce(identity, load)
+            if not isinstance(summary, HistoryProfile):
+                raise TypeError("history summary cache returned an invalid value")
+            self._cache.put(
+                identity,
+                summary,
+                data_version=f"history:{history_version}",
+                source_time=observed_at,
+            )
+            summaries[code] = summary
+        return summaries
 
     def refresh_stock_risk(
         self,
@@ -488,6 +559,16 @@ class MarketFeatureService(
     def _ensure_before_deadline(self, deadline: datetime | None) -> None:
         if deadline is not None and self._wall_clock() >= deadline:
             raise MarketDataDeadlineExceeded("market-data result completed after its batch deadline")
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 __all__ = ["MarketFeatureService"]

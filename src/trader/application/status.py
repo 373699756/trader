@@ -17,6 +17,7 @@ class RuntimeState:
         self._last_error = ""
         self._last_tick_at: datetime | None = None
         self._snapshots: dict[Strategy, RecommendationSnapshot] = {}
+        self._strategy_degraded_reasons: dict[Strategy, tuple[str, ...]] = {}
         self._frozen: set[tuple[Strategy, str]] = set()
         self._strategy_latency_ms: dict[Strategy, float] = {}
         self._counters: dict[str, int] = {
@@ -51,9 +52,14 @@ class RuntimeState:
         with self._lock:
             self._strategy_latency_ms[strategy] = max(0.0, float(latency_ms))
 
+    def record_strategy_degraded(self, strategy: Strategy, reasons: tuple[str, ...]) -> None:
+        with self._lock:
+            self._strategy_degraded_reasons[strategy] = tuple(dict.fromkeys(reasons))
+
     def publish(self, snapshot: RecommendationSnapshot) -> None:
         with self._lock:
             self._snapshots[snapshot.strategy] = snapshot
+            self._strategy_degraded_reasons.pop(snapshot.strategy, None)
             self._counters["snapshots_published"] += 1
 
     def restore_snapshot(self, snapshot: RecommendationSnapshot) -> None:
@@ -110,8 +116,12 @@ class RuntimeState:
                         "topk_count": len(snapshot.recommendations),
                         "veto_count": sum(item.veto for item in snapshot.recommendations),
                         "freeze_anchor": snapshot.metadata.get("freeze_anchor", {}),
+                        "runtime_degraded_reasons": self._strategy_degraded_reasons.get(strategy, ()),
                     }
                     for strategy, snapshot in self._snapshots.items()
+                },
+                "strategy_degraded_reasons": {
+                    strategy.value: reasons for strategy, reasons in self._strategy_degraded_reasons.items()
                 },
                 "counters": dict(self._counters),
                 "dependencies": dict(dependencies or {}),

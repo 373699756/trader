@@ -54,6 +54,7 @@ from trader.infrastructure.settings_parser import (
 from trader.infrastructure.settings_parser import (
     text as _text,
 )
+from trader.infrastructure.settings_parser import triple_nested_number_mapping as _triple_nested_number_mapping
 from trader.infrastructure.settings_runtime import load_runtime_settings
 from trader.infrastructure.settings_strategy_validation import _validate_strategy_settings
 
@@ -61,8 +62,8 @@ from trader.infrastructure.settings_strategy_validation import _validate_strateg
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 8:
-        raise ConfigurationError("strategy schema_version must be 8")
+    if _integer(raw, "schema_version", minimum=1) != 9:
+        raise ConfigurationError("strategy schema_version must be 9")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     hard_filters_raw = _mapping(raw, "hard_filters")
@@ -79,6 +80,8 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
     risk_rules = tuple(_parse_risk_rule(item, index) for index, item in enumerate(rules_raw))
     dimension_weights = _nested_number_mapping(raw, "dimension_weights")
     local_strategy_weights = _nested_number_mapping(raw, "local_strategy_weights")
+    board_candidate_weights = _triple_nested_number_mapping(raw, "board_candidate_weights")
+    board_local_strategy_weights = _triple_nested_number_mapping(raw, "board_local_strategy_weights")
     today_news_signal = _parse_news_signal_policy(_mapping(raw, "today_news_signal"))
     tomorrow_tail_signal = _parse_tail_signal_policy(_mapping(raw, "tomorrow_tail_signal"))
     d25_signal = _parse_d25_signal_policy(_mapping(raw, "d25_signal"))
@@ -89,7 +92,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         for factor_id, definition in factor_registry_raw.items()
     }
     settings = StrategySettings(
-        schema_version=8,
+        schema_version=9,
         strategy_version=_strategy_contract_version(raw),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),
@@ -113,6 +116,15 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
             maximum_per_industry=_integer(selection_raw, "maximum_per_industry", minimum=1),
             observation_margin=_number(selection_raw, "observation_margin", minimum=0.0),
             thresholds=_number_mapping(selection_raw, "thresholds"),
+            maximum_board_fraction=_number(selection_raw, "maximum_board_fraction", minimum=0.01, maximum=1.0),
+            competition_group_limits={
+                name: int(value)
+                for name, value in _number_mapping(selection_raw, "competition_group_limits").items()
+            },
+            candidate_min_score=_number(selection_raw, "candidate_min_score", minimum=0.0, maximum=100.0),
+            minimum_board_reliability=_number(
+                selection_raw, "minimum_board_reliability", minimum=0.0, maximum=1.0
+            ),
         ),
         candidate_weights=_number_mapping(raw, "candidate_weights"),
         hard_filters=HardFilterSettings(
@@ -125,6 +137,9 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         long_research=long_research,
         dimension_weights=dimension_weights,
         local_strategy_weights=local_strategy_weights,
+        board_policy_version=_text(raw, "board_policy_version"),
+        board_candidate_weights=board_candidate_weights,
+        board_local_strategy_weights=board_local_strategy_weights,
         risk_rules=risk_rules,
         factor_contract=dict(_mapping(raw, "factor_contract")),
         factor_registry=factor_registry,

@@ -18,7 +18,7 @@ from trader.application.pipeline_workers import (
     urgent_data_future,
 )
 from trader.application.ports import MarketDataDeadlineExceeded, MarketDataUnavailable
-from trader.application.schedule import MarketPhase
+from trader.application.schedule import MarketPhase, trade_date_at
 from trader.domain.models import Strategy
 
 if TYPE_CHECKING:
@@ -188,6 +188,9 @@ def _refresh_candidates_on_workers(
         now=now,
         max_age_seconds=maximum_age_seconds(phase),
         limit=pipeline._candidate_pool_size,
+        strategies=_short_strategies_for_phase(phase),
+        trade_date=trade_date_at(now).isoformat(),
+        phase=phase.value,
     )
     candidates, reasons, details = _event_result(
         pipeline,
@@ -196,6 +199,19 @@ def _refresh_candidates_on_workers(
         event_type=PipelineTask.FULL_MARKET.value,
     )
     store_candidate_selection(pipeline, market_features, candidates, reasons, details)
+
+
+def _short_strategies_for_phase(phase: MarketPhase) -> tuple[Strategy, ...]:
+    if phase in {
+        MarketPhase.WARMUP,
+        MarketPhase.TODAY_OBSERVE,
+        MarketPhase.TODAY_MAIN,
+        MarketPhase.TODAY_LATE,
+    }:
+        return (Strategy.TODAY,)
+    if phase in {MarketPhase.AFTERNOON, MarketPhase.FINAL_REVIEW, MarketPhase.FINAL_QUOTE}:
+        return (Strategy.TOMORROW, Strategy.D25)
+    return (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
 
 
 def _event_result(

@@ -144,6 +144,7 @@ def worker_status(pipeline: RecommendationPipeline) -> dict[str, object]:
         "data": pipeline._data_pool.status(),
         "normalization": pipeline._normalization_pool.status(),
         "strategy": pipeline._strategy_pool.status(),
+        "board_scoring": dict(pipeline._engine.board_scoring_status()),
         "deepseek": pipeline._deepseek_pool.status(),
         "long": pipeline._long_pool.status(),
         "merge": merge_status,

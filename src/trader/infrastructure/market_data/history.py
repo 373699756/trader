@@ -17,6 +17,7 @@ class DailyBar:
     volume: float
     amount: float
     pct_change: float
+    turnover_rate: float | None = None
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class HistoryProfile:
     volatility_20d: float | None
     max_drawdown_20d: float | None
     median_amount_20d: float | None
+    median_turnover_20d: float | None
     upward_consistency_20d: float | None
 
 
@@ -45,11 +47,13 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
         volatility = None
         max_drawdown = None
         median_amount = None
+        median_turnover = None
         upward_consistency = None
     else:
         returns: list[float] = []
         close_peaks = []
         valid_amounts: list[float] = []
+        valid_turnover: list[float] = []
         values = list(window_20)
         for previous, current in zip(return_window_20[:-1], return_window_20[1:], strict=True):
             if previous.close > 0 and current.close > 0:
@@ -59,6 +63,8 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
                 close_peaks.append(bar.close)
             if bar.amount > 0:
                 valid_amounts.append(bar.amount)
+            if bar.turnover_rate is not None and math.isfinite(bar.turnover_rate) and bar.turnover_rate > 0:
+                valid_turnover.append(bar.turnover_rate)
         volatility = statistics.pstdev(returns) if len(returns) == 20 else None
         finite_changes = [bar.pct_change for bar in values if math.isfinite(bar.pct_change)]
         upward_consistency = (
@@ -75,6 +81,7 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
         else:
             max_drawdown = None
         median_amount = statistics.median(valid_amounts) if len(valid_amounts) == 20 else None
+        median_turnover = statistics.median(valid_turnover) if len(valid_turnover) == 20 else None
 
     return HistoryProfile(
         moving_average_5d=ma5,
@@ -83,6 +90,7 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
         volatility_20d=volatility,
         max_drawdown_20d=max_drawdown,
         median_amount_20d=median_amount,
+        median_turnover_20d=median_turnover,
         upward_consistency_20d=upward_consistency,
     )
 

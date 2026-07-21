@@ -46,6 +46,7 @@ class MarketCandidateMixin(MarketServiceState):
             cross_section_normalization_reference = {
                 feature.quote.code: feature.normalization for feature in self._market_features
             }
+        history_summaries = self._history_summaries(histories, observed_at)
         features = self._feature_builder.build(
             quotes,
             histories,
@@ -54,6 +55,7 @@ class MarketCandidateMixin(MarketServiceState):
             cross_section_normalization_reference=cross_section_normalization_reference,
             research_observations=research_observations,
             intraday_minutes=intraday_minutes,
+            history_summaries=history_summaries,
         )
         feature_codes = {feature.quote.code for feature in features}
         with self._lock:

@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 from trader.domain.factors import clamp, percentile_scores_with_metadata
 from trader.domain.models import CrossSectionStats, FeatureSnapshot, MarketQuote
@@ -41,6 +42,7 @@ from trader.infrastructure.market_data.feature_math import (
 )
 from trader.infrastructure.market_data.history import (
     DailyBar,
+    HistoryProfile,
     return_pct,
     summarize_history_metrics,
 )
@@ -72,16 +74,18 @@ class StandardizedFeatureBuilder(Protocol):
         cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None = ...,
         research_observations: Mapping[str, ResearchObservation] | None = ...,
         intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None = ...,
+        history_summaries: Mapping[str, HistoryProfile] | None = ...,
     ) -> tuple[FeatureSnapshot, ...]: ...
 
 
 # Feature columns produced by FeatureBuilder._raw_features().
 # All are optional float; missing is left as None and later resolved per
 # the factor registry in config/v2/strategy.json.
-FEATURE_SCHEMA_VERSION = "feature_schema_v1"
+FEATURE_SCHEMA_VERSION = "feature_schema_v2_board_scoring"
 
 RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("amount_median_20d", "float", description="20日成交额中位数"),
+    FeatureSchema("turnover_median_20d", "float", description="20日换手率中位数"),
     FeatureSchema("return_3d", "float", description="3日收益率"),
     FeatureSchema("return_5d", "float", description="5日收益率"),
     FeatureSchema("return_10d", "float", description="10日收益率"),
@@ -106,6 +110,7 @@ RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("low_crowding_score", "float", description="低拥挤度"),
     FeatureSchema("limit_proximity", "float", description="涨停接近度"),
     FeatureSchema("trend_score", "float", description="趋势综合分"),
+    FeatureSchema("ma20_deviation_pct", "float", description="相对MA20偏离百分点"),
 )
 
 # Feature columns that are populated by cross-section or derived signals
@@ -135,9 +140,15 @@ DERIVED_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("risk_protection_score", "float", description="风险保护分"),
     FeatureSchema("financial_deterioration", "float", description="财务恶化"),
     FeatureSchema("reduction_or_unlock", "float", description="减持/解禁"),
+    FeatureSchema("shareholder_reduction_level", "float", description="股东减持等级"),
+    FeatureSchema("unlock_risk", "float", description="未来90日解禁等级"),
     FeatureSchema("pledge_risk", "float", description="质押风险"),
     FeatureSchema("negative_announcement_level", "float", description="负面公告等级"),
     FeatureSchema("price_volume_divergence", "float", description="量价背离"),
+    FeatureSchema("short_term_overheat", "float", description="短期过热极端结构"),
+    FeatureSchema("intraday_reversal", "float", description="冲高回落极端结构"),
+    FeatureSchema("liquidity_contraction", "float", description="流动性骤降极端结构"),
+    FeatureSchema("trend_breakdown", "float", description="趋势破位极端结构"),
     FeatureSchema("tail_return_30m_pct", "float", description="尾盘30分钟原始收益"),
     FeatureSchema("tail_return_30m", "float", description="尾盘30分钟收益分"),
     FeatureSchema("tail_volume_ratio_raw", "float", description="尾盘原始量比"),
@@ -174,6 +185,7 @@ class FeatureBuilder:
         cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None = None,
         research_observations: Mapping[str, ResearchObservation] | None = None,
         intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None = None,
+        history_summaries: Mapping[str, HistoryProfile] | None = None,
     ) -> tuple[FeatureSnapshot, ...]:
         grouped: dict[str, list[MarketQuote]] = defaultdict(list)
         for quote in quotes:
@@ -189,6 +201,7 @@ class FeatureBuilder:
                 cross_section_normalization_reference=cross_section_normalization_reference,
                 research_observations=research_observations,
                 intraday_minutes=intraday_minutes,
+                history_summaries=history_summaries,
             ):
                 built[snapshot.quote.code] = snapshot
         return tuple(built[quote.code] for quote in quotes)
@@ -204,6 +217,7 @@ class FeatureBuilder:
         cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None,
         research_observations: Mapping[str, ResearchObservation] | None,
         intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None,
+        history_summaries: Mapping[str, HistoryProfile] | None,
     ) -> tuple[FeatureSnapshot, ...]:
         tail_signals = (
             {
@@ -217,7 +231,14 @@ class FeatureBuilder:
             if intraday_minutes is not None
             else None
         )
-        raw = {quote.code: self._raw_features(quote, histories.get(quote.code, ())) for quote in quotes}
+        raw = {
+            quote.code: self._raw_features(
+                quote,
+                histories.get(quote.code, ()),
+                (history_summaries or {}).get(quote.code),
+            )
+            for quote in quotes
+        }
         amount_percentiles, amount_stats = percentile_scores_with_metadata(
             {code: values.get("amount_median_20d") for code, values in raw.items()},
             population_data_version=data_version,
@@ -337,6 +358,14 @@ class FeatureBuilder:
                     policy=self._long_research_policy,
                 )
             )
+            values.update(
+                _extreme_structure_risks(
+                    quote,
+                    values,
+                    observed_at,
+                    valid_minute_count=tail_signal.valid_bar_count if tail_signal is not None else None,
+                )
+            )
             normalization = dict(shared_normalization)
             normalization.update((cross_section_normalization_reference or {}).get(quote.code, {}))
             missing = tuple(
@@ -365,8 +394,13 @@ class FeatureBuilder:
             )
         return tuple(snapshots)
 
-    def _raw_features(self, quote: MarketQuote, bars: tuple[DailyBar, ...]) -> dict[str, float | None]:
-        history = summarize_history_metrics(bars)
+    def _raw_features(
+        self,
+        quote: MarketQuote,
+        bars: tuple[DailyBar, ...],
+        history_summary: HistoryProfile | None = None,
+    ) -> dict[str, float | None]:
+        history = history_summary or summarize_history_metrics(bars)
         returns = {days: return_pct(bars, days, quote.price) for days in (3, 5, 10, 20, 60)}
         ma5 = history.moving_average_5d
         ma20 = history.moving_average_20d
@@ -400,8 +434,14 @@ class FeatureBuilder:
             risk_adjusted = clamp(50.0 + returns[20] / volatility * 5.0)
         close_location = _close_location(quote)
         trend_score = None if ma_position is None else clamp(0.6 * ma_position + 0.4 * (slope or 50.0))
+        ma20_deviation = (
+            (quote.price / ma20 - 1.0) * 100.0
+            if quote.price is not None and math.isfinite(quote.price) and ma20 is not None and ma20 > 0.0
+            else None
+        )
         return {
             "amount_median_20d": amount_median,
+            "turnover_median_20d": history.median_turnover_20d,
             "return_3d": returns[3],
             "return_5d": returns[5],
             "return_10d": returns[10],
@@ -427,11 +467,14 @@ class FeatureBuilder:
             "d25_overheat_factor": None,
             "market_regime_factor": None,
             "trend_score": trend_score,
+            "ma20_deviation_pct": ma20_deviation,
             "low_crowding_score": None if limit_proximity is None else 100.0 * (1.0 - limit_proximity),
             "limit_proximity": limit_proximity,
             "price_volume_divergence": None,
             "financial_deterioration": None,
             "reduction_or_unlock": None,
+            "shareholder_reduction_level": None,
+            "unlock_risk": None,
             "pledge_risk": None,
             "negative_announcement_level": None,
             "news_sentiment": None,
@@ -441,7 +484,112 @@ class FeatureBuilder:
             "quality_score": None,
             "industry_policy_score": None,
             "risk_protection_score": None,
+            "short_term_overheat": None,
+            "intraday_reversal": None,
+            "liquidity_contraction": None,
+            "trend_breakdown": None,
         }
+
+
+def _extreme_structure_risks(
+    quote: MarketQuote,
+    values: Mapping[str, float | None],
+    observed_at: datetime,
+    *,
+    valid_minute_count: int | None = None,
+) -> dict[str, float | None]:
+    return_5d = _finite(values.get("return_5d"))
+    return_10d = _finite(values.get("return_10d"))
+    ma20_deviation = _finite(values.get("ma20_deviation_pct"))
+    overheat_inputs = (return_5d, return_10d, ma20_deviation)
+    short_term_overheat = (
+        None
+        if all(value is None for value in overheat_inputs)
+        else float(
+            (return_5d is not None and return_5d >= 12.0)
+            or (return_10d is not None and return_10d >= 20.0)
+            or (ma20_deviation is not None and ma20_deviation >= 15.0)
+        )
+    )
+
+    close_location = _finite(values.get("close_location"))
+    high_drawdown = None
+    if (
+        quote.high is not None
+        and quote.price is not None
+        and math.isfinite(quote.high)
+        and math.isfinite(quote.price)
+        and quote.high > 0.0
+        and quote.price > 0.0
+    ):
+        high_drawdown = (quote.high - quote.price) / quote.high * 100.0
+    minutes = valid_minute_count if valid_minute_count is not None else _completed_trading_minutes(observed_at)
+    intraday_reversal = (
+        float(high_drawdown >= 3.0 and close_location <= 35.0)
+        if minutes >= 30 and high_drawdown is not None and close_location is not None
+        else None
+    )
+
+    volume_ratio = _nonnegative_finite(quote.volume_ratio)
+    amount_median = _finite(values.get("amount_median_20d"))
+    amount_ratio = (
+        quote.amount / amount_median
+        if (
+            quote.amount is not None
+            and math.isfinite(quote.amount)
+            and quote.amount >= 0.0
+            and amount_median is not None
+            and amount_median > 0.0
+        )
+        else None
+    )
+    liquidity_contraction = (
+        None
+        if volume_ratio is None and amount_ratio is None
+        else float(
+            (volume_ratio is not None and volume_ratio <= 0.6)
+            or (amount_ratio is not None and amount_ratio <= 0.6)
+        )
+    )
+
+    slope = _finite(values.get("ma_slope"))
+    trend_breakdown = (
+        float(ma20_deviation < 0.0 and slope < 50.0 and return_5d < 0.0)
+        if ma20_deviation is not None and slope is not None and return_5d is not None
+        else None
+    )
+    price_volume_divergence = (
+        float(
+            (return_5d > 0.0 and amount_ratio < 0.8)
+            or (return_5d < 0.0 and amount_ratio > 1.2)
+        )
+        if return_5d is not None and amount_ratio is not None
+        else None
+    )
+    return {
+        "price_volume_divergence": price_volume_divergence,
+        "short_term_overheat": short_term_overheat,
+        "intraday_reversal": intraday_reversal,
+        "liquidity_contraction": liquidity_contraction,
+        "trend_breakdown": trend_breakdown,
+    }
+
+
+def _completed_trading_minutes(observed_at: datetime) -> int:
+    local = observed_at.astimezone(ZoneInfo("Asia/Shanghai"))
+    minute = local.hour * 60 + local.minute
+    morning = max(0, min(minute, 11 * 60 + 30) - (9 * 60 + 30))
+    afternoon = max(0, min(minute, 15 * 60) - (13 * 60))
+    return morning + afternoon
+
+
+def _finite(value: float | None) -> float | None:
+    return float(value) if value is not None and math.isfinite(value) else None
+
+
+def _nonnegative_finite(value: float | None) -> float | None:
+    parsed = _finite(value)
+    return parsed if parsed is not None and parsed >= 0.0 else None
 
 
 __all__ = [

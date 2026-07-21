@@ -164,14 +164,29 @@ def _automatic_emergency_reason(candidates: Sequence[FeatureSnapshot], phase: st
     return ""
 
 
-def _review_priority(candidate: FeatureSnapshot, *, index: int, was_seen: bool) -> int:
-    if not was_seen:
-        return 0
-    if any(_is_new_high_risk(fact) for fact in candidate.external_risk_facts):
-        return 1
-    if index < 18:
-        return 2
-    return 3
+def _review_priority(
+    candidate: FeatureSnapshot,
+    *,
+    was_seen: bool,
+    context: ReviewCandidateContext | None,
+) -> int:
+    high_risk = bool(
+        (context is not None and context.has_new_high_risk)
+        or any(_is_new_high_risk(fact) for fact in candidate.external_risk_facts)
+    )
+    action_boundary = bool(context is not None and context.near_action_threshold)
+    topk_boundary = bool(context is not None and context.near_global_boundary)
+    direction_conflict = bool(context is not None and context.direction_conflict)
+    evidence_conflict = bool(context is not None and context.evidence_conflict)
+    ordered = (
+        high_risk,
+        action_boundary,
+        topk_boundary,
+        direction_conflict,
+        evidence_conflict,
+        not was_seen,
+    )
+    return next((priority for priority, matched in enumerate(ordered) if matched), len(ordered))
 
 
 def _is_new_high_risk(fact: RiskFact) -> bool:

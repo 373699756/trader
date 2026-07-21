@@ -131,6 +131,16 @@ def review_cache_key(
 ) -> str:
     payload = {
         "code": candidate.quote.code,
+        "board": candidate.quote.board.value,
+        "board_policy_id": candidate.board_policy_id,
+        "board_policy_version": candidate.board_policy_version,
+        "board_population_version": (
+            candidate.board_population.population_version if candidate.board_population is not None else None
+        ),
+        "merge_epoch": candidate.merge_epoch,
+        "feature_version": candidate.quote.data_version,
+        "parameter_status": candidate.parameter_status,
+        "board_data_reliability": round(candidate.board_data_reliability, 6),
         "structured_features": _cache_features(candidate),
         "evidence": sorted(_cache_evidence(item) for item in route_prompt_evidence(candidate).evidence),
         "risk_facts": sorted(

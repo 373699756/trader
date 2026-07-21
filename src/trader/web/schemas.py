@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import datetime
 
 from trader.domain.models import (
+    BoardPopulation,
     DeepSeekReview,
     DimensionAssessment,
     LiveOverlay,
@@ -65,6 +66,8 @@ def snapshot_envelope(
             for item in snapshot.filter_details
         ],
         "metadata": dict(snapshot.metadata),
+        "board_batches": list(snapshot.metadata.get("board_batches", ())),
+        "selection_skips": list(snapshot.metadata.get("selection_skips", ())),
         "weights": _snapshot_weights(snapshot),
         "fallback_date": fallback_date,
         "fallback_reason": fallback_reason,
@@ -178,6 +181,20 @@ def _recommendation(item: Recommendation, live_quote: LiveQuote | None = None) -
         "cross_source_deviation_pct": quote.cross_source_deviation_pct,
         "cross_source_verified": quote.cross_source_verified,
         "board": quote.board.value,
+        "board_policy_id": item.features.board_policy_id or None,
+        "board_policy_version": item.features.board_policy_version or None,
+        "board_data_reliability": item.features.board_data_reliability,
+        "board_supported_weight": item.features.board_supported_weight,
+        "board_population": _board_population(item.features.board_population),
+        "merge_epoch": item.features.merge_epoch or None,
+        "board_rank": item.board_rank,
+        "competition_group_id": item.features.competition_group_id or None,
+        "competition_group_source": item.features.competition_group_source or None,
+        "competition_group_version": item.features.competition_group_version or None,
+        "liquidity_bucket": item.features.liquidity_bucket or None,
+        "parameter_status": item.features.parameter_status,
+        "selection_skip_reason": item.selection_skip_reason or item.features.selection_skip_reason or None,
+        "competition_group_limit": item.competition_group_limit,
         "board_source": quote.board_source or None,
         "board_reliability": quote.board_reliability,
         "exchange": quote.exchange or None,
@@ -213,6 +230,15 @@ def _recommendation(item: Recommendation, live_quote: LiveQuote | None = None) -
             "fusion_applied": score.fusion_applied,
         },
         "features": dict(item.features.values),
+        "board_metrics": {
+            "peer_gap": _mean_known_values(
+                item.features.values,
+                ("peer_gap_1d_score", "peer_gap_3d_score", "peer_gap_5d_score", "peer_gap_20d_score", "peer_gap_60d_score"),
+            ),
+            "leader_gap": item.features.optional_value("leader_gap_score"),
+            "turnover_shock_20": item.features.optional_value("turnover_shock_score"),
+            "amount_shock_20": item.features.optional_value("amount_shock_score"),
+        },
         "normalization": {
             factor_id: {
                 "lower_bound": stats.lower_bound,
@@ -226,7 +252,9 @@ def _recommendation(item: Recommendation, live_quote: LiveQuote | None = None) -
             for factor_id, stats in item.features.normalization.items()
         },
         "missing_fields": missing_fields,
-        "missing_reasons": {field: _missing_reason(field) for field in missing_fields},
+        "missing_reasons": {
+            field: item.features.missing_reasons.get(field, _missing_reason(field)) for field in missing_fields
+        },
         "market_regime": item.features.market_regime,
         "history_days": item.features.history_days,
         "evidence": [
@@ -253,6 +281,31 @@ def _live_overlay(overlay: LiveOverlay) -> dict[str, object]:
         "observed_at": overlay.observed_at.isoformat(),
         "closing": overlay.closing,
     }
+
+
+def _board_population(population: BoardPopulation | None) -> dict[str, object] | None:
+    if population is None:
+        return None
+    return {
+        "trade_date": population.trade_date,
+        "phase": population.phase,
+        "board": population.board.value,
+        "data_version": population.data_version,
+        "schema_version": population.schema_version,
+        "population_version": population.population_version,
+        "sample_size": population.sample_size,
+        "missing_count": population.missing_count,
+        "liquidity_p50": population.liquidity_p50,
+        "liquidity_p80": population.liquidity_p80,
+        "fallback_trade_date": population.fallback_trade_date,
+        "fallback_age_sessions": population.fallback_age_sessions,
+        "status": population.status,
+    }
+
+
+def _mean_known_values(values: Mapping[str, float | None], names: tuple[str, ...]) -> float | None:
+    known = [float(values[name]) for name in names if values.get(name) is not None]
+    return sum(known) / len(known) if known else None
 
 
 def _snapshot_weights(snapshot: RecommendationSnapshot) -> dict[str, object]:

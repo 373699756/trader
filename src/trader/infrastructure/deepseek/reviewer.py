@@ -241,10 +241,17 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
                 thinking_mode=thinking_mode,
                 reasoning_effort=None,
             )
-            was_seen = self._cache.has_seen(candidate.quote.code)
+            was_seen = self._cache.has_seen(
+                candidate.quote.code,
+                candidate.quote.source_time.date().isoformat(),
+            )
             raw_review = self._cache.get_raw(raw_key, candidate)
             if raw_review is None:
-                priority = _review_priority(candidate, index=index, was_seen=was_seen)
+                priority = _review_priority(
+                    candidate,
+                    was_seen=was_seen,
+                    context=contexts.get(candidate.quote.code),
+                )
                 prioritized_missing.append((priority, index, candidate))
                 continue
             raw_review = _annotate_review(

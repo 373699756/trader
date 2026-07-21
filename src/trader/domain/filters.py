@@ -26,7 +26,8 @@ class HardFilterPolicy:
         default_factory=lambda: MappingProxyType(
             {
                 "negative_announcement_level": 0.0,
-                "reduction_or_unlock": 0.0,
+                "shareholder_reduction_level": 0.0,
+                "unlock_risk": 0.0,
                 "pledge_risk": 0.0,
                 "financial_deterioration": 0.5,
             }
@@ -387,15 +388,16 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
     def structured_negative_risk(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         code_by_field = {
             "negative_announcement_level": "negative_announcement",
+            "shareholder_reduction_level": "shareholder_reduction",
+            "unlock_risk": "unlock_risk",
             "reduction_or_unlock": "reduction_or_unlock",
             "pledge_risk": "pledge_risk",
             "financial_deterioration": "financial_deterioration",
         }
-        for field_name, filter_code in code_by_field.items():
+        for field_name, threshold in policy.structured_risk_thresholds.items():
             value = snapshot.values.get(field_name)
-            threshold = policy.structured_risk_thresholds[field_name]
             if value is not None and math.isfinite(value) and value > threshold:
-                return _make_audit(snapshot, filter_code, f"<= {threshold:g}", value)
+                return _make_audit(snapshot, code_by_field.get(field_name, field_name), f"<= {threshold:g}", value)
         return None
 
     def structured_risk_unavailable(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:

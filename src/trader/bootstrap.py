@@ -8,6 +8,8 @@ from pathlib import Path
 
 from flask import Flask
 
+from trader.application.board_scoring import BoardScoringCoordinator
+from trader.application.board_scoring_cache import BoardScoringCache
 from trader.application.cadence import CadencePolicy, PipelineTask
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
@@ -20,7 +22,7 @@ from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
 from trader.domain.filters import HardFilterPolicy
 from trader.domain.fusion import FusionPolicy
-from trader.domain.models import RiskRule, Strategy
+from trader.domain.models import Board, RiskRule, Strategy
 from trader.infrastructure.cache import BoundedLruCache
 from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
 from trader.infrastructure.deepseek.cache import ReviewCache
@@ -77,6 +79,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     settings = load_runtime_settings(config_path)
     strategy = load_strategy_settings(settings.strategy_config_path)
     watchlist = load_long_watchlist(settings.long_watchlist_path)
+    effective_config_version = f"{settings.config_version}+{strategy.strategy_version}"
     now = _utc_now
     cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
     urgent_worker_count = 1 if settings.pipeline.market_workers > 1 else 0
@@ -194,7 +197,6 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         wall_clock=now,
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
-    effective_config_version = f"{settings.config_version}+{strategy.strategy_version}"
     repository = SnapshotRepository(settings.runtime_dir, config_version=effective_config_version)
     budget = DeepSeekBudgetStore(
         settings.runtime_dir / "runtime.sqlite3",
@@ -208,7 +210,13 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         settings.deepseek,
         budget,
         create_deepseek_client(),
-        ReviewCache(maximum_entries=2000, ttl_seconds=600),
+        ReviewCache(
+            maximum_entries=2000,
+            ttl_seconds=600,
+            shared_cache=market_cache,
+            config_version=effective_config_version,
+            seen_capacity=6000,
+        ),
         dimension_weights={Strategy(name): weights for name, weights in strategy.dimension_weights.items()},
         strategy_version=strategy.strategy_version,
         confidence_coverage_min=strategy.fusion.confidence_coverage_min,
@@ -228,7 +236,16 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         repository,
         repository,
         publisher,
-        RecommendationEngine(_recommendation_policy(strategy)),
+        RecommendationEngine(
+            _recommendation_policy(strategy),
+            board_scoring=BoardScoringCoordinator(
+                BoardScoringCache(
+                    market_cache,
+                    config_version=effective_config_version,
+                    session_distance=calendar.session_distance,
+                )
+            ),
+        ),
         state,
         config_version=effective_config_version,
         candidate_pool_size=settings.market_data.candidate_pool_size,
@@ -306,10 +323,25 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
             maximum_per_industry=settings.selection.maximum_per_industry,
             observation_margin=settings.selection.observation_margin,
             thresholds=settings.selection.thresholds,
+            maximum_board_fraction=settings.selection.maximum_board_fraction,
+            competition_group_limits={
+                Board(name): limit for name, limit in settings.selection.competition_group_limits.items()
+            },
+            candidate_min_score=settings.selection.candidate_min_score,
+            minimum_board_reliability=settings.selection.minimum_board_reliability,
         ),
         candidate_weights=settings.candidate_weights,
         dimension_weights={Strategy(name): weights for name, weights in settings.dimension_weights.items()},
         local_strategy_weights={Strategy(name): weights for name, weights in settings.local_strategy_weights.items()},
+        board_policy_version=settings.board_policy_version,
+        board_candidate_weights={
+            Strategy(strategy): {Board(board): weights for board, weights in boards.items()}
+            for strategy, boards in settings.board_candidate_weights.items()
+        },
+        board_local_strategy_weights={
+            Strategy(strategy): {Board(board): weights for board, weights in boards.items()}
+            for strategy, boards in settings.board_local_strategy_weights.items()
+        },
         risk_rules={
             rule.risk_code: RiskRule(
                 risk_code=rule.risk_code,

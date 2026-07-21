@@ -1,4 +1,4 @@
-"""Strict v15 cache and performance policy parsing."""
+"""Strict v16 cache and performance policy parsing."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
         "cache_policy",
     )
     policy_version = text(raw, "policy_version")
-    if policy_version != "market_cache_v15":
-        raise ConfigurationError("cache_policy.policy_version must be market_cache_v15")
+    if policy_version != "market_cache_v16":
+        raise ConfigurationError("cache_policy.policy_version must be market_cache_v16")
     estimator_version = text(raw, "estimator_version")
     if estimator_version != "canonical_json_utf8_v1":
         raise ConfigurationError("cache_policy.estimator_version must be canonical_json_utf8_v1")
@@ -44,9 +44,16 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
         "daily_history",
         "security_master_calendar",
         "daily_valuation_financials",
+        "history_summary",
+        "board_cross_section",
+        "candidate_preselection",
+        "local_score",
+        "competition_group_mapping",
+        "raw_deepseek_review",
+        "strategy_deepseek_review",
     }
     if set(datasets_raw) != expected_datasets:
-        raise ConfigurationError("cache_policy.datasets must match the fixed v15 dataset set")
+        raise ConfigurationError("cache_policy.datasets must match the fixed v16 dataset set")
     datasets: dict[str, CacheDatasetPolicy] = {}
     for name, item in datasets_raw.items():
         if not isinstance(item, dict):
@@ -104,6 +111,31 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
             300.0,
             360,
             "history_minutes_research",
+            False,
+        ),
+        "history_summary": (21600.0, 86400.0, None, None, 60.0, 360, "history_minutes_research", False),
+        "board_cross_section": (86400.0, 86400.0, None, None, 60.0, 24, "board_candidate_scoring", False),
+        "candidate_preselection": (86400.0, 86400.0, None, None, 60.0, 4, "board_candidate_scoring", False),
+        "local_score": (86400.0, 86400.0, None, None, 60.0, 1080, "board_candidate_scoring", False),
+        "competition_group_mapping": (
+            86400.0,
+            86400.0,
+            None,
+            None,
+            60.0,
+            2,
+            "board_candidate_scoring",
+            False,
+        ),
+        "raw_deepseek_review": (600.0, 600.0, None, None, 60.0, 2000, "board_candidate_scoring", False),
+        "strategy_deepseek_review": (
+            600.0,
+            600.0,
+            None,
+            None,
+            60.0,
+            2000,
+            "board_candidate_scoring",
             False,
         ),
     }
@@ -182,8 +214,9 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         "market_merge": 1000.0,
         "canonical_snapshot": 1500.0,
         "board_preselection": 250.0,
-        "board_local_scoring": 500.0,
-        "three_board_wall_clock": 800.0,
+        "board_local_scoring": 250.0,
+        "three_strategy_board_scoring": 750.0,
+        "three_board_wall_clock": 1000.0,
         "global_selection": 100.0,
         "board_ready_to_draft": 500.0,
         "quote_to_draft": 5000.0,

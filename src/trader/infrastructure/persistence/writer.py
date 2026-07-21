@@ -321,8 +321,10 @@ class SnapshotRepository(RepositoryObservabilityMixin):
                     """
                     INSERT INTO recommendations(
                         strategy, recommend_date, stock_code, rank, anchor_price,
-                        anchor_daily_return_pct, snapshot_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        anchor_daily_return_pct, board, board_policy_id, board_rank,
+                        board_data_reliability, competition_group_id, selection_skip_reason,
+                        merge_epoch, snapshot_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         snapshot.strategy.value,
@@ -331,6 +333,13 @@ class SnapshotRepository(RepositoryObservabilityMixin):
                         recommendation.rank,
                         price,
                         recommendation.features.quote.pct_change,
+                        recommendation.features.quote.board.value,
+                        recommendation.features.board_policy_id,
+                        recommendation.board_rank,
+                        recommendation.features.board_data_reliability,
+                        recommendation.features.competition_group_id,
+                        recommendation.selection_skip_reason,
+                        recommendation.features.merge_epoch,
                         snapshot.snapshot_id,
                     ),
                 )

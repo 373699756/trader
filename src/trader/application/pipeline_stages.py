@@ -277,7 +277,7 @@ def _score_strategies_on_workers(
         )
         strategy_inputs.append((strategy, codes, future))
 
-    prepared_futures: list[Future[PreparedSnapshot]] = []
+    prepared_futures: list[tuple[Strategy, Future[PreparedSnapshot]]] = []
     for strategy, requested_codes, strategy_data_future in strategy_inputs:
         try:
             features, data_version = strategy_data_future.result()
@@ -290,7 +290,9 @@ def _score_strategies_on_workers(
         is_long = strategy is Strategy.LONG
         pool = pipeline._long_pool if is_long else pipeline._strategy_pool
         prepared_futures.append(
-            submit_required(
+            (
+                strategy,
+                submit_required(
                 pipeline,
                 pool,
                 pipeline._engine.prepare_snapshot,
@@ -310,10 +312,22 @@ def _score_strategies_on_workers(
                 requested_codes=requested_codes,
                 preselect_max_age_seconds=maximum_age_seconds(phase),
                 candidate_pool_size=pipeline._candidate_pool_size,
+                ),
             )
         )
 
-    prepared_snapshots = tuple(future.result() for future in prepared_futures)
+    prepared_snapshots: list[PreparedSnapshot] = []
+    for strategy, future in prepared_futures:
+        try:
+            prepared = future.result()
+        except Exception as exc:
+            pipeline._state.increment("strategy_scoring_failures")
+            pipeline._state.record_error(f"{strategy.value} scoring degraded: {str(exc)[:400]}")
+            continue
+        if not prepared.board_scoring_complete:
+            _record_incomplete_board_score(pipeline, prepared)
+            continue
+        prepared_snapshots.append(prepared)
     review_results: dict[Strategy, Mapping[str, DeepSeekReview]] = {}
     review_enabled = pipeline._reviews is not None and phase not in {
         MarketPhase.DEEPSEEK_CUTOFF,
@@ -322,14 +336,14 @@ def _score_strategies_on_workers(
     if review_enabled and pipeline._reviews is not None:
         review_futures: dict[Strategy, Future[Mapping[str, DeepSeekReview]]] = {}
         for prepared in prepared_snapshots:
-            if prepared.strategy is Strategy.LONG or not prepared.eligible:
+            if prepared.strategy is Strategy.LONG or not prepared.review_eligible:
                 continue
             review_futures[prepared.strategy] = submit_required(
                 pipeline,
                 pipeline._deepseek_pool,
                 pipeline._reviews.review,
                 prepared.strategy,
-                prepared.eligible,
+                prepared.review_eligible,
                 phase=prepared.phase,
                 deadline=prepared.review_deadline,
                 contexts=pipeline._engine.review_contexts(prepared),
@@ -372,6 +386,19 @@ def _score_strategies_on_workers(
         snapshots.append(snapshot)
 
     return tuple(snapshots)
+
+
+def _record_incomplete_board_score(
+    pipeline: RecommendationPipeline,
+    prepared: PreparedSnapshot,
+) -> None:
+    reasons = prepared.board_degraded_reasons or ("board_scoring_incomplete",)
+    pipeline._state.increment("board_scoring_incomplete")
+    pipeline._state.record_strategy_degraded(prepared.strategy, reasons)
+    pipeline._state.record_error(
+        f"{prepared.strategy.value} board scoring degraded; retained latest complete snapshot: "
+        + ",".join(reasons)[:350]
+    )
 
 
 def strategies_for_phase(phase: MarketPhase) -> tuple[Strategy, ...]:

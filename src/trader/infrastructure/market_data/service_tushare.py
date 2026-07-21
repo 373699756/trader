@@ -463,6 +463,7 @@ def _tushare_daily_bar(observation: SourceObservation) -> DailyBar | None:
         volume=cast(float, numbers["volume"]) * 100.0,
         amount=cast(float, numbers["amount"]) * 1000.0,
         pct_change=cast(float, numbers["pct_change"]),
+        turnover_rate=_finite_number(fields.get("turnover_rate")),
     )
 
 

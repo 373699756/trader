@@ -15,6 +15,7 @@ from trader.domain.models import FeatureSnapshot, MarketQuote
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import StandardizedFeatureBuilder
+from trader.infrastructure.market_data.history import DailyBar, HistoryProfile
 from trader.infrastructure.market_data.service_models import _HistoryEntry, _IntradayEntry, _ResearchEntry
 from trader.infrastructure.market_data.tushare import TushareClient
 from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter
@@ -99,6 +100,13 @@ class MarketServiceState:
         raise NotImplementedError
 
     def _trim_history_fallback_locked(self, requested: set[str]) -> None:
+        raise NotImplementedError
+
+    def _history_summaries(
+        self,
+        histories: Mapping[str, tuple[DailyBar, ...]],
+        observed_at: datetime,
+    ) -> Mapping[str, HistoryProfile]:
         raise NotImplementedError
 
     def _run_source_task(

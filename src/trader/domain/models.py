@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 from types import MappingProxyType
+from typing import Literal
 
 
 class Strategy(str, Enum):
@@ -226,6 +227,40 @@ class CrossSectionStats:
 
 
 @dataclass(frozen=True)
+class BoardPopulation:
+    trade_date: str
+    phase: str
+    board: Board
+    data_version: str
+    schema_version: str
+    population_version: str
+    sample_size: int
+    missing_count: int
+    liquidity_p50: float | None
+    liquidity_p80: float | None
+    fallback_trade_date: str | None = None
+    fallback_age_sessions: int | None = None
+    status: Literal["current", "fallback", "stale", "insufficient"] = "current"
+
+    def __post_init__(self) -> None:
+        if not all((self.trade_date, self.phase, self.data_version, self.schema_version, self.population_version)):
+            raise ValueError("board population identity must not be empty")
+        if self.board is Board.UNSUPPORTED:
+            raise ValueError("board population requires a supported board")
+        if self.sample_size < 0 or self.missing_count < 0:
+            raise ValueError("board population counts cannot be negative")
+        for value in (self.liquidity_p50, self.liquidity_p80):
+            if value is not None and not math.isfinite(value):
+                raise ValueError("board liquidity quantiles must be finite when present")
+        if self.fallback_age_sessions is not None and self.fallback_age_sessions < 0:
+            raise ValueError("board population fallback age cannot be negative")
+        if (self.fallback_trade_date is None) != (self.fallback_age_sessions is None):
+            raise ValueError("board population fallback date and age must be recorded together")
+        if self.status == "current" and self.fallback_trade_date is not None:
+            raise ValueError("current board population cannot declare a fallback")
+
+
+@dataclass(frozen=True)
 class FeatureSnapshot:
     quote: MarketQuote
     values: Mapping[str, float | None]
@@ -236,29 +271,53 @@ class FeatureSnapshot:
     evidence: tuple[Evidence, ...] = ()
     external_risk_facts: tuple[RiskFact, ...] = ()
     normalization: Mapping[str, CrossSectionStats] = field(default_factory=dict)
+    missing_reasons: Mapping[str, str] = field(default_factory=dict)
+    board_data_reliability: float = 1.0
+    board_supported_weight: float = 1.0
+    board_policy_id: str = ""
+    board_policy_version: str = ""
+    board_population: BoardPopulation | None = None
+    merge_epoch: str = ""
+    competition_group_id: str = ""
+    competition_group_source: str = ""
+    competition_group_version: str = ""
+    liquidity_bucket: str = ""
+    parameter_status: str = "current"
+    selection_skip_reason: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
         object.__setattr__(self, "normalization", MappingProxyType(dict(self.normalization)))
+        object.__setattr__(self, "missing_reasons", MappingProxyType(dict(self.missing_reasons)))
+        if not math.isfinite(self.board_data_reliability) or not 0.0 <= self.board_data_reliability <= 1.0:
+            raise ValueError("board data reliability must be in [0, 1]")
+        if not math.isfinite(self.board_supported_weight) or not 0.0 <= self.board_supported_weight <= 1.0:
+            raise ValueError("board supported weight must be in [0, 1]")
 
     def value(self, name: str, default: float = 50.0) -> float:
         raw = self.values.get(name)
         if raw is None:
             return default
-        value = float(raw)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError):
+            return default
         return value if math.isfinite(value) else default
 
     def optional_value(self, name: str) -> float | None:
         raw = self.values.get(name)
         if raw is None:
             return None
-        value = float(raw)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
         return value if math.isfinite(value) else None
 
     def missing_ratio(self, field_names: tuple[str, ...]) -> float:
         if not field_names:
             return 0.0
-        missing = sum(1 for name in field_names if self.values.get(name) is None)
+        missing = sum(1 for name in field_names if self.optional_value(name) is None)
         return missing / len(field_names)
 
 
@@ -314,6 +373,12 @@ class ReviewCandidateContext:
     local_rank: int
     action_threshold: float | None
     in_protection_set: bool
+    has_new_high_risk: bool = False
+    near_action_threshold: bool = False
+    near_global_boundary: bool = False
+    direction_conflict: bool = False
+    evidence_conflict: bool = False
+    was_reviewed: bool = False
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.local_score):
@@ -353,7 +418,80 @@ class Recommendation:
     action_reason: str
     veto: bool
     rank: int = 0
+    board_rank: int = 0
     target_price: float | None = None
+    selection_skip_reason: str = ""
+    competition_group_limit: int | None = None
+
+
+@dataclass(frozen=True)
+class SelectionSkip:
+    stock_code: str
+    board: Board
+    competition_group_id: str
+    board_rank: int
+    global_rank: int
+    reason: str
+    limit: int | None
+    policy_version: str
+    observed_at: datetime
+
+
+@dataclass(frozen=True)
+class BoardStrategyPolicy:
+    policy_id: str
+    version: str
+    board: Board
+    strategy: Strategy
+    candidate_weights: Mapping[str, float]
+    local_weights: Mapping[str, float]
+    candidate_min_score: float = 50.0
+    minimum_reliability: float = 0.85
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "candidate_weights", MappingProxyType(dict(self.candidate_weights)))
+        object.__setattr__(self, "local_weights", MappingProxyType(dict(self.local_weights)))
+        if not self.policy_id or not self.version:
+            raise ValueError("board strategy policy identity must not be empty")
+        if self.board is Board.UNSUPPORTED or self.strategy is Strategy.LONG:
+            raise ValueError("board strategy policies only support the three active short strategies")
+        for name, weights in (("candidate", self.candidate_weights), ("local", self.local_weights)):
+            if not weights or any(not math.isfinite(value) or value < 0.0 for value in weights.values()):
+                raise ValueError(f"{name} weights must contain finite non-negative values")
+            if abs(sum(weights.values()) - 1.0) > 1e-9:
+                raise ValueError(f"{name} weights must sum to 1.0")
+        if not math.isfinite(self.candidate_min_score) or not 0.0 <= self.candidate_min_score <= 100.0:
+            raise ValueError("candidate minimum score must be in [0, 100]")
+        if not math.isfinite(self.minimum_reliability) or not 0.0 <= self.minimum_reliability <= 1.0:
+            raise ValueError("minimum reliability must be in [0, 1]")
+
+
+@dataclass(frozen=True)
+class BoardScoreBatch:
+    board: Board
+    strategy: Strategy
+    merge_epoch: str
+    policy_id: str
+    status: Literal["success", "empty", "degraded", "failed"]
+    recommendations: tuple[Recommendation, ...]
+    degraded_reasons: tuple[str, ...] = ()
+    policy_version: str = ""
+    population_version: str = ""
+
+    def __post_init__(self) -> None:
+        if self.status not in {"success", "empty", "degraded", "failed"}:
+            raise ValueError("unsupported board score batch status")
+        if self.board is Board.UNSUPPORTED or self.strategy is Strategy.LONG:
+            raise ValueError("board score batches only support active short strategies")
+        if not self.merge_epoch or not self.policy_id:
+            raise ValueError("board score batch identity must not be empty")
+        if any(
+            item.strategy is not self.strategy
+            or item.features.quote.board is not self.board
+            or item.features.board_policy_id != self.policy_id
+            for item in self.recommendations
+        ):
+            raise ValueError("board score batch recommendations must match its board policy")
 
 
 @dataclass(frozen=True)
@@ -377,6 +515,13 @@ class FrozenReplayPolicy:
     risk_rules: Mapping[str, RiskRule]
     blacklist_codes: tuple[str, ...] = ()
     structured_risk_thresholds: Mapping[str, float] = field(default_factory=dict)
+    maximum_board_fraction: float = 1.0
+    competition_group_limits: Mapping[str, int] = field(default_factory=dict)
+    candidate_min_score: float = 0.0
+    minimum_board_reliability: float = 0.0
+    board_policy_version: str = ""
+    board_candidate_weights: Mapping[str, Mapping[str, Mapping[str, float]]] = field(default_factory=dict)
+    board_local_strategy_weights: Mapping[str, Mapping[str, Mapping[str, float]]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "thresholds", MappingProxyType(dict(self.thresholds)))
@@ -402,6 +547,13 @@ class FrozenReplayPolicy:
             "structured_risk_thresholds",
             MappingProxyType(dict(self.structured_risk_thresholds)),
         )
+        object.__setattr__(self, "competition_group_limits", MappingProxyType(dict(self.competition_group_limits)))
+        object.__setattr__(self, "board_candidate_weights", _freeze_nested_board_weights(self.board_candidate_weights))
+        object.__setattr__(
+            self,
+            "board_local_strategy_weights",
+            _freeze_nested_board_weights(self.board_local_strategy_weights),
+        )
 
 
 @dataclass(frozen=True)
@@ -418,6 +570,7 @@ class RecommendationReplayInput:
     score_max_age_seconds: float
     candidate_pool_size: int
     target_prices: Mapping[str, float | None] = field(default_factory=dict)
+    board_batches: tuple[BoardScoreBatch, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "market_features", tuple(self.market_features))
@@ -425,6 +578,7 @@ class RecommendationReplayInput:
         object.__setattr__(self, "candidate_features", tuple(self.candidate_features))
         object.__setattr__(self, "reviews", MappingProxyType(dict(self.reviews)))
         object.__setattr__(self, "target_prices", MappingProxyType(dict(self.target_prices)))
+        object.__setattr__(self, "board_batches", tuple(self.board_batches))
         if self.evaluated_at.tzinfo is None or self.evaluated_at.utcoffset() is None:
             raise ValueError("replay evaluation time must be timezone-aware")
         if self.candidate_pool_size < 0:
@@ -442,6 +596,19 @@ class RecommendationReplayInput:
         for code, review in self.reviews.items():
             if code != review.code or code not in candidate_codes:
                 raise ValueError("replay reviews must match candidate feature codes")
+
+
+def _freeze_nested_board_weights(
+    values: Mapping[str, Mapping[str, Mapping[str, float]]],
+) -> Mapping[str, Mapping[str, Mapping[str, float]]]:
+    return MappingProxyType(
+        {
+            strategy: MappingProxyType(
+                {board: MappingProxyType(dict(weights)) for board, weights in boards.items()}
+            )
+            for strategy, boards in values.items()
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -473,6 +640,9 @@ class RecommendationSnapshot:
 
 __all__ = [
     "Board",
+    "BoardPopulation",
+    "BoardScoreBatch",
+    "BoardStrategyPolicy",
     "CanonicalMarketSnapshot",
     "CrossSectionStats",
     "DeepSeekReview",
@@ -489,6 +659,7 @@ __all__ = [
     "RecommendationAction",
     "RecommendationReplayInput",
     "RecommendationSnapshot",
+    "SelectionSkip",
     "ReviewCandidateContext",
     "ReviewOutcome",
     "RiskFact",

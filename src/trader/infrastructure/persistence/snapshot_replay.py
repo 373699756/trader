@@ -5,13 +5,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from trader.domain.models import (
+    Board,
+    BoardScoreBatch,
     FrozenReplayPolicy,
     RecommendationReplayInput,
+    Strategy,
 )
 from trader.domain.strategies import DEFAULT_STRATEGY_WEIGHTS
 from trader.infrastructure.persistence.snapshot_items import (
     _features_from_dict,
     _features_to_dict,
+    _recommendation_from_dict,
+    _recommendation_to_dict,
     _review_to_dict,
 )
 from trader.infrastructure.persistence.snapshot_primitives import (
@@ -45,6 +50,7 @@ def _replay_input_to_dict(replay_input: RecommendationReplayInput) -> dict[str, 
         "score_max_age_seconds": replay_input.score_max_age_seconds,
         "candidate_pool_size": replay_input.candidate_pool_size,
         "target_prices": dict(replay_input.target_prices),
+        "board_batches": [_board_batch_to_dict(batch) for batch in replay_input.board_batches],
     }
 
 
@@ -54,6 +60,7 @@ def _replay_input_from_dict(raw: Mapping[str, object]) -> RecommendationReplayIn
     candidates_raw = _object_list(raw, "candidate_features")
     reviews_raw = _object(raw, "reviews")
     target_prices_raw = _object(raw, "target_prices")
+    board_batches_raw = raw.get("board_batches", [])
     return RecommendationReplayInput(
         schema_version=_text(raw, "schema_version"),
         algorithm_version=_text(raw, "algorithm_version"),
@@ -67,6 +74,47 @@ def _replay_input_from_dict(raw: Mapping[str, object]) -> RecommendationReplayIn
         score_max_age_seconds=_number(raw, "score_max_age_seconds"),
         candidate_pool_size=_integer(raw, "candidate_pool_size"),
         target_prices={_mapping_key(code): _optional_number(value) for code, value in target_prices_raw.items()},
+        board_batches=tuple(
+            _board_batch_from_dict(item) for item in board_batches_raw if isinstance(item, dict)
+        )
+        if isinstance(board_batches_raw, list)
+        else (),
+    )
+
+
+def _board_batch_to_dict(batch: BoardScoreBatch) -> dict[str, object]:
+    return {
+        "board": batch.board.value,
+        "strategy": batch.strategy.value,
+        "merge_epoch": batch.merge_epoch,
+        "policy_id": batch.policy_id,
+        "status": batch.status,
+        "recommendations": [_recommendation_to_dict(item) for item in batch.recommendations],
+        "degraded_reasons": list(batch.degraded_reasons),
+        "policy_version": batch.policy_version,
+        "population_version": batch.population_version,
+    }
+
+
+def _board_batch_from_dict(raw: Mapping[str, object]) -> BoardScoreBatch:
+    recommendations = raw.get("recommendations")
+    reasons = raw.get("degraded_reasons")
+    return BoardScoreBatch(
+        board=Board(_text(raw, "board")),
+        strategy=Strategy(_text(raw, "strategy")),
+        merge_epoch=_text(raw, "merge_epoch"),
+        policy_id=_text(raw, "policy_id"),
+        status=str(raw.get("status") or "success"),  # type: ignore[arg-type]
+        recommendations=tuple(
+            _recommendation_from_dict(item) for item in recommendations if isinstance(item, dict)
+        )
+        if isinstance(recommendations, list)
+        else (),
+        degraded_reasons=tuple(str(item) for item in reasons if isinstance(item, str))
+        if isinstance(reasons, list)
+        else (),
+        policy_version=str(raw.get("policy_version") or ""),
+        population_version=str(raw.get("population_version") or ""),
     )
 
 
@@ -88,6 +136,19 @@ def _replay_policy_to_dict(policy: FrozenReplayPolicy) -> dict[str, object]:
             "maximum_per_industry": policy.maximum_per_industry,
             "observation_margin": policy.observation_margin,
             "thresholds": dict(policy.thresholds),
+            "maximum_board_fraction": policy.maximum_board_fraction,
+            "competition_group_limits": dict(policy.competition_group_limits),
+            "candidate_min_score": policy.candidate_min_score,
+            "minimum_board_reliability": policy.minimum_board_reliability,
+        },
+        "board_policy_version": policy.board_policy_version,
+        "board_candidate_weights": {
+            strategy: {board: dict(weights) for board, weights in boards.items()}
+            for strategy, boards in policy.board_candidate_weights.items()
+        },
+        "board_local_strategy_weights": {
+            strategy: {board: dict(weights) for board, weights in boards.items()}
+            for strategy, boards in policy.board_local_strategy_weights.items()
         },
         "candidate_weights": dict(policy.candidate_weights),
         "dimension_weights": {name: dict(weights) for name, weights in policy.dimension_weights.items()},
@@ -139,6 +200,16 @@ def _replay_policy_from_dict(raw: Mapping[str, object]) -> FrozenReplayPolicy:
         raise ValueError("replay blacklist_codes must be a list of strings")
     if not isinstance(structured_risk_thresholds, dict):
         raise ValueError("replay structured_risk_thresholds must be an object")
+    competition_raw = selection.get("competition_group_limits", {})
+    if not isinstance(competition_raw, dict) or any(
+        not isinstance(name, str) or not isinstance(value, int) or isinstance(value, bool)
+        for name, value in competition_raw.items()
+    ):
+        raise ValueError("replay competition_group_limits must be an object of integers")
+    board_candidate_raw = raw.get("board_candidate_weights", {})
+    board_local_raw = raw.get("board_local_strategy_weights", {})
+    if not isinstance(board_candidate_raw, dict) or not isinstance(board_local_raw, dict):
+        raise ValueError("replay board policy weights must be objects")
     return FrozenReplayPolicy(
         strategy_version=_text(raw, "strategy_version"),
         fusion_version=_text(raw, "fusion_version"),
@@ -159,4 +230,24 @@ def _replay_policy_from_dict(raw: Mapping[str, object]) -> FrozenReplayPolicy:
         risk_rules=_risk_rule_mapping(risk_rules),
         blacklist_codes=tuple(blacklist_codes),
         structured_risk_thresholds=_number_mapping(structured_risk_thresholds),
+        maximum_board_fraction=_optional_number(selection.get("maximum_board_fraction")) or 1.0,
+        competition_group_limits={str(name): int(value) for name, value in competition_raw.items()},
+        candidate_min_score=_optional_number(selection.get("candidate_min_score")) or 0.0,
+        minimum_board_reliability=_optional_number(selection.get("minimum_board_reliability")) or 0.0,
+        board_policy_version=str(raw.get("board_policy_version") or ""),
+        board_candidate_weights=_triple_number_mapping(board_candidate_raw),
+        board_local_strategy_weights=_triple_number_mapping(board_local_raw),
     )
+
+
+def _triple_number_mapping(raw: Mapping[str, object]) -> dict[str, dict[str, dict[str, float]]]:
+    result: dict[str, dict[str, dict[str, float]]] = {}
+    for strategy, boards in raw.items():
+        if not isinstance(boards, dict):
+            raise ValueError("replay board policy mappings must contain board objects")
+        result[str(strategy)] = {}
+        for board, weights in boards.items():
+            if not isinstance(weights, dict):
+                raise ValueError("replay board policy mappings must contain weight objects")
+            result[str(strategy)][str(board)] = _number_mapping(weights)
+    return result

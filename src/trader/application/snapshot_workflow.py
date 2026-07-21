@@ -247,6 +247,9 @@ def refresh_candidates(
         now=now,
         max_age_seconds=maximum_age_seconds(phase),
         limit=pipeline._candidate_pool_size,
+        strategies=tuple(strategy for strategy in strategies_for_phase(phase) if strategy is not Strategy.LONG),
+        trade_date=trade_date_at(now).isoformat(),
+        phase=phase.value,
     )
     store_candidate_selection(pipeline, market_features, candidates, reasons, details)
 
@@ -268,7 +271,7 @@ def score_strategy(
     deadline = review_deadline(now, phase)
     review_port = pipeline._reviews if phase not in {MarketPhase.DEEPSEEK_CUTOFF, MarketPhase.FINAL_QUOTE} else None
     is_long = strategy is Strategy.LONG
-    snapshot = pipeline._engine.build_snapshot(
+    prepared = pipeline._engine.prepare_snapshot(
         strategy,
         features,
         now=now,
@@ -287,6 +290,27 @@ def score_strategy(
         preselect_max_age_seconds=maximum_age_seconds(phase),
         candidate_pool_size=pipeline._candidate_pool_size,
     )
+    if not prepared.board_scoring_complete:
+        reasons = prepared.board_degraded_reasons or ("board_scoring_incomplete",)
+        pipeline._state.increment("board_scoring_incomplete")
+        pipeline._state.record_strategy_degraded(strategy, reasons)
+        pipeline._state.record_error(
+            f"{strategy.value} board scoring degraded; retained latest complete snapshot: "
+            + ",".join(reasons)[:350]
+        )
+        return None
+    reviews = (
+        review_port.review(
+            strategy,
+            prepared.review_eligible,
+            phase=phase.value,
+            deadline=deadline,
+            contexts=pipeline._engine.review_contexts(prepared),
+        )
+        if review_port is not None and prepared.review_eligible
+        else {}
+    )
+    snapshot = pipeline._engine.finalize_snapshot(prepared, reviews)
     snapshot = replace(snapshot, config_version=pipeline._config_version)
     metadata_provider = getattr(pipeline._market_data, "snapshot_metadata", None)
     market_metadata = (

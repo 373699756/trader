@@ -122,7 +122,8 @@ class EastmoneyClient:
             if any(value is None for value in values):
                 continue
             open_price, close, high, low, volume, amount, _amplitude, pct_change = cast(list[float], values)
-            bars.append(DailyBar(parts[0], open_price, close, high, low, volume, amount, pct_change))
+            turnover_rate = to_float(parts[10]) if len(parts) > 10 else None
+            bars.append(DailyBar(parts[0], open_price, close, high, low, volume, amount, pct_change, turnover_rate))
         return tuple(bars[-days:])
 
     def fetch_intraday_minutes(self, code: str, *, now: datetime | None = None) -> tuple[MinuteBar, ...]:

@@ -54,6 +54,7 @@ class MarketDataSettings:
 class TushareSettings:
     enabled: bool
     timeout_seconds: float
+    token_file: Path | None = None
     token: str = field(default="", repr=False)
 
 
@@ -151,6 +152,10 @@ class SelectionSettings:
     maximum_per_industry: int
     observation_margin: float
     thresholds: Mapping[str, float]
+    maximum_board_fraction: float
+    competition_group_limits: Mapping[str, int]
+    candidate_min_score: float
+    minimum_board_reliability: float
 
 
 @dataclass(frozen=True)
@@ -213,6 +218,9 @@ class StrategySettings:
     long_research: LongResearchPolicy
     dimension_weights: Mapping[str, Mapping[str, float]]
     local_strategy_weights: Mapping[str, Mapping[str, float]]
+    board_policy_version: str
+    board_candidate_weights: Mapping[str, Mapping[str, Mapping[str, float]]]
+    board_local_strategy_weights: Mapping[str, Mapping[str, Mapping[str, float]]]
     risk_rules: tuple[RiskRuleSettings, ...]
     factor_contract: Mapping[str, object]
     factor_registry: Mapping[str, FactorDefinition]

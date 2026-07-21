@@ -1,6 +1,6 @@
 {
   "schema_version": 5,
-  "config_version": "runtime_v15_parallel_market_data_2026_07_20",
+  "config_version": "runtime_v16_board_scoring_2026_07_22",
   "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -96,10 +96,11 @@
     },
     "tushare": {
       "enabled": true,
-      "timeout_seconds": 8
+      "timeout_seconds": 8,
+      "token_file": ".runtime/secrets/tushare.token"
     },
     "cache_policy": {
-      "policy_version": "market_cache_v15",
+      "policy_version": "market_cache_v16",
       "datasets": {
         "full_market_quotes": {
           "refresh_ttl_seconds": null,
@@ -180,6 +181,76 @@
           "capacity": 360,
           "group": "history_minutes_research",
           "persisted": false
+        },
+        "history_summary": {
+          "refresh_ttl_seconds": 21600,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 360,
+          "group": "history_minutes_research",
+          "persisted": false
+        },
+        "board_cross_section": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 24,
+          "group": "board_candidate_scoring",
+          "persisted": false
+        },
+        "candidate_preselection": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 4,
+          "group": "board_candidate_scoring",
+          "persisted": false
+        },
+        "local_score": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 1080,
+          "group": "board_candidate_scoring",
+          "persisted": false
+        },
+        "competition_group_mapping": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 2,
+          "group": "board_candidate_scoring",
+          "persisted": false
+        },
+        "raw_deepseek_review": {
+          "refresh_ttl_seconds": 600,
+          "action_max_age_seconds": 600,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 2000,
+          "group": "board_candidate_scoring",
+          "persisted": false
+        },
+        "strategy_deepseek_review": {
+          "refresh_ttl_seconds": 600,
+          "action_max_age_seconds": 600,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 2000,
+          "group": "board_candidate_scoring",
+          "persisted": false
         }
       },
       "groups": {
@@ -206,8 +277,9 @@
       "market_merge": 1000,
       "canonical_snapshot": 1500,
       "board_preselection": 250,
-      "board_local_scoring": 500,
-      "three_board_wall_clock": 800,
+      "board_local_scoring": 250,
+      "three_strategy_board_scoring": 750,
+      "three_board_wall_clock": 1000,
       "global_selection": 100,
       "board_ready_to_draft": 500,
       "quote_to_draft": 5000,

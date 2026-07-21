@@ -348,6 +348,8 @@ def derive_long_research_features(
         "financial_deterioration": deterioration,
         "negative_announcement_level": negative_announcement_level,
         "pledge_risk": pledge_risk,
+        "shareholder_reduction_level": float(reduction_level) if reduction_level is not None else None,
+        "unlock_risk": unlock_level,
         "reduction_or_unlock": reduction_or_unlock,
     }
 
@@ -370,6 +372,9 @@ def _announcement_level(title: str, policy: LongResearchPolicy) -> int:
 
 
 def _reduction_level(title: str, policy: LongResearchPolicy) -> int:
+    normalized = "".join(title.split())
+    if "终止" in normalized and any(marker in normalized for marker in ("未实施", "未减持", "尚未实施")):
+        return 0
     return _keyword_level(
         title,
         high=policy.reduction_high_keywords,

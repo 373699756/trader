@@ -293,19 +293,22 @@ def _load_deepseek_api_key(project_root: Path) -> str:
     return value
 
 
-def _load_tushare_token(project_root: Path) -> str:
+def _load_tushare_token(project_root: Path, configured_file: str) -> tuple[str, Path | None]:
     environment_token = os.environ.get("TUSHARE_TOKEN", "").strip()
     if environment_token:
-        return environment_token
-    configured_path = os.environ.get("TUSHARE_TOKEN_FILE", "").strip()
-    if not configured_path:
-        return ""
-    token_path = Path(configured_path).expanduser()
+        return environment_token, None
+    environment_path = os.environ.get("TUSHARE_TOKEN_FILE", "").strip()
+    selected_path = environment_path or configured_file.strip()
+    if not selected_path:
+        return "", None
+    token_path = Path(selected_path).expanduser()
     if not token_path.is_absolute():
         token_path = project_root / token_path
     token_path = token_path.resolve()
     if not token_path.exists():
-        raise ConfigurationError("TUSHARE_TOKEN_FILE does not exist")
+        if environment_path:
+            raise ConfigurationError("TUSHARE_TOKEN_FILE does not exist")
+        return "", token_path
     try:
         metadata = token_path.stat()
         if not stat.S_ISREG(metadata.st_mode):
@@ -322,18 +325,21 @@ def _load_tushare_token(project_root: Path) -> str:
     lines = content.splitlines()
     if len(lines) != 1 or not lines[0].strip() or "\x00" in lines[0]:
         raise ConfigurationError("Tushare token file must contain exactly one token")
-    return lines[0].strip()
+    return lines[0].strip(), token_path
 
 
 def _parse_tushare_settings(raw: Mapping[str, object], project_root: Path) -> TushareSettings:
-    _require_exact_keys(raw, {"enabled", "timeout_seconds"}, "market_data.tushare")
+    _require_exact_keys(raw, {"enabled", "timeout_seconds", "token_file"}, "market_data.tushare")
     timeout = _number(raw, "timeout_seconds", minimum=0.1, maximum=8.0)
     if timeout != 8.0:
         raise ConfigurationError("market_data.tushare.timeout_seconds must be fixed at 8")
+    token_file = _text(raw, "token_file")
+    token, resolved_token_file = _load_tushare_token(project_root, token_file)
     return TushareSettings(
         enabled=_boolean(raw, "enabled"),
         timeout_seconds=timeout,
-        token=_load_tushare_token(project_root),
+        token_file=resolved_token_file,
+        token=token,
     )
 
 
@@ -359,6 +365,8 @@ def _validate_runtime_settings(settings: RuntimeSettings) -> None:
         raise ConfigurationError("market_data.single_flight must remain enabled")
     if settings.market_data.cache_policy.total_bytes != settings.performance_budgets.memory.cache_total_bytes:
         raise ConfigurationError("cache and performance total byte budgets must match")
+    if settings.market_data.candidate_pool_size != 120:
+        raise ConfigurationError("market_data.candidate_pool_size must remain fixed at 120")
     if sum(settings.deepseek.strategy_limits.values()) != settings.deepseek.daily_hard_limit:
         raise ConfigurationError("DeepSeek strategy limits must sum to the daily hard limit")
     required_buckets = {"today", "tomorrow", "d25", "long", "shared_preheat", "emergency"}

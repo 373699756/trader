@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
 from trader.domain.factors import band_score, clamp, weighted_score
-from trader.domain.models import FeatureSnapshot, Recommendation, RecommendationAction, Strategy
+from trader.domain.models import (
+    Board,
+    FeatureSnapshot,
+    Recommendation,
+    RecommendationAction,
+    SelectionSkip,
+    Strategy,
+)
 
 CORE_FIELDS = (
     "amount_percentile_20d",
@@ -56,6 +64,7 @@ def action_for(
     phase: str,
     is_stale: bool,
     observation_margin: float,
+    minimum_board_reliability: float = 0.0,
 ) -> tuple[RecommendationAction, str]:
     if recommendation.strategy is Strategy.LONG:
         return RecommendationAction.OBSERVE, "long_watch_only"
@@ -63,8 +72,10 @@ def action_for(
         return RecommendationAction.UNAVAILABLE, "risk_veto"
     if is_stale:
         return RecommendationAction.OBSERVE, "stale_quote"
-    if recommendation.features.missing_ratio(CORE_FIELDS) > 0.30:
+    if not recommendation.features.board_policy_id and recommendation.features.missing_ratio(CORE_FIELDS) > 0.30:
         return RecommendationAction.OBSERVE, "insufficient_core_features"
+    if recommendation.features.board_data_reliability < minimum_board_reliability:
+        return RecommendationAction.OBSERVE, "board_data_reliability_below_threshold"
     if recommendation.strategy is Strategy.TODAY and phase == "today_observe":
         return RecommendationAction.OBSERVE, "observation_window"
     threshold_key = _threshold_key(recommendation.strategy, phase)
@@ -86,13 +97,37 @@ def select_top_k(
     top_k: int,
     maximum_per_industry: int,
     minimum_final_score: float = 0.0,
+    maximum_board_fraction: float = 1.0,
+    competition_group_limits: Mapping[Board, int] | None = None,
 ) -> tuple[Recommendation, ...]:
+    selected, _skips = select_top_k_with_audit(
+        recommendations,
+        top_k=top_k,
+        maximum_per_industry=maximum_per_industry,
+        minimum_final_score=minimum_final_score,
+        maximum_board_fraction=maximum_board_fraction,
+        competition_group_limits=competition_group_limits,
+    )
+    return selected
+
+
+def select_top_k_with_audit(
+    recommendations: Iterable[Recommendation],
+    *,
+    top_k: int,
+    maximum_per_industry: int,
+    minimum_final_score: float = 0.0,
+    maximum_board_fraction: float = 1.0,
+    competition_group_limits: Mapping[Board, int] | None = None,
+) -> tuple[tuple[Recommendation, ...], tuple[SelectionSkip, ...]]:
     if not 0 <= top_k <= 18:
         raise ValueError("top_k must be between 0 and 18")
     if maximum_per_industry < 1:
         raise ValueError("maximum_per_industry must be positive")
     if not 0.0 <= minimum_final_score <= 100.0:
         raise ValueError("minimum_final_score must be between 0 and 100")
+    if not 0.0 < maximum_board_fraction <= 1.0:
+        raise ValueError("maximum_board_fraction must be in (0, 1]")
     ordered = sorted(
         (item for item in recommendations if item.score.final_score >= minimum_final_score),
         key=lambda item: (
@@ -102,16 +137,55 @@ def select_top_k(
         ),
     )
     selected: list[Recommendation] = []
+    skips: list[SelectionSkip] = []
     industry_counts: Counter[str] = Counter()
-    for item in ordered:
+    board_counts: Counter[Board] = Counter()
+    competition_counts: Counter[tuple[Board, str]] = Counter()
+    maximum_per_board = math.ceil(top_k * maximum_board_fraction)
+    for global_index, item in enumerate(ordered, start=1):
         if len(selected) >= top_k:
-            break
-        industry = item.features.quote.industry or "unknown"
-        if industry_counts[industry] >= maximum_per_industry:
+            skips.append(_selection_skip(item, global_index, "top_k_limit", top_k))
             continue
-        industry_counts[industry] += 1
-        selected.append(replace(item, rank=len(selected) + 1))
-    return tuple(selected)
+        board = item.features.quote.board
+        if board_counts[board] >= maximum_per_board:
+            skips.append(_selection_skip(item, global_index, "board_fraction_limit", maximum_per_board))
+            continue
+        group = item.features.competition_group_id or item.features.quote.industry or "unknown"
+        group_limit = (competition_group_limits or {}).get(board)
+        if group_limit is not None:
+            if competition_counts[(board, group)] >= group_limit:
+                skips.append(_selection_skip(item, global_index, "competition_group_limit", group_limit))
+                continue
+            competition_counts[(board, group)] += 1
+        else:
+            industry = item.features.quote.industry or "unknown"
+            if industry_counts[industry] >= maximum_per_industry:
+                skips.append(_selection_skip(item, global_index, "industry_limit", maximum_per_industry))
+                continue
+            industry_counts[industry] += 1
+        board_counts[board] += 1
+        selected.append(
+            replace(
+                item,
+                rank=len(selected) + 1,
+                competition_group_limit=group_limit,
+            )
+        )
+    return tuple(selected), tuple(skips)
+
+
+def _selection_skip(item: Recommendation, global_rank: int, reason: str, limit: int) -> SelectionSkip:
+    return SelectionSkip(
+        stock_code=item.features.quote.code,
+        board=item.features.quote.board,
+        competition_group_id=item.features.competition_group_id or item.features.quote.industry or "unknown",
+        board_rank=item.board_rank,
+        global_rank=global_rank,
+        reason=reason,
+        limit=limit,
+        policy_version=item.features.board_policy_version,
+        observed_at=item.features.observed_at,
+    )
 
 
 def minimum_selection_score(
@@ -146,4 +220,11 @@ def _threshold_key(strategy: Strategy, phase: str) -> str | None:
     return None
 
 
-__all__ = ["CORE_FIELDS", "action_for", "candidate_score", "minimum_selection_score", "select_top_k"]
+__all__ = [
+    "CORE_FIELDS",
+    "action_for",
+    "candidate_score",
+    "minimum_selection_score",
+    "select_top_k",
+    "select_top_k_with_audit",
+]

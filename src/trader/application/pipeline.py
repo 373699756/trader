@@ -244,7 +244,10 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             if self._stopped:
                 raise RuntimeError("recommendation pipeline cannot restart after stop")
             started_pools: list[BoundedExecutor] = []
+            engine_started = False
             try:
+                self._engine.start()
+                engine_started = True
                 self._persistence_pool.start()
                 started_pools.append(self._persistence_pool)
                 self._persistence_running = True
@@ -262,6 +265,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 self._queue.close()
                 for pool in reversed(started_pools):
                     pool.stop()
+                if engine_started:
+                    self._engine.stop()
                 self._persistence_running = False
                 self._stopped = True
                 raise
@@ -284,6 +289,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 worker.join()
         for pool in self._compute_pools:
             pool.stop()
+        self._engine.stop()
         self._persistence_pool.stop()
         self._persistence_running = False
         self._state.mark_started(False)
