@@ -18,8 +18,8 @@ from trader.application.pipeline_stages import (
     review_deadline,
     store_candidate_selection,
     strategies_for_phase,
-    submit_required,
 )
+from trader.application.pipeline_workers import submit_required_urgent
 from trader.application.ports import MarketDataUnavailable
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
 from trader.application.status import RuntimeState
@@ -173,7 +173,7 @@ def refresh_live_overlays(
     requested = tuple(dict.fromkeys(all_codes))
     try:
         if pipeline._persistence_running and not pipeline._market_data_manages_workers:
-            fetched = submit_required(
+            fetched = submit_required_urgent(
                 pipeline,
                 pipeline._data_pool,
                 pipeline._market_data.refresh_candidate_quotes,

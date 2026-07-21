@@ -119,7 +119,7 @@ class MarketFeatureService(MarketResearchMixin, MarketIntradayMixin, MarketHisto
         with self._lock:
             if not force and self._market_features and self._market_expires_at > now:
                 return self._market_features
-        quotes = tuple(self._run_data_task_until(deadline, self._gateway.fetch_market))
+        quotes = tuple(self._run_data_task_until(deadline, False, self._gateway.fetch_market))
         history_codes = _history_preload_codes(quotes, self._history_preload_limit)
         histories = self._load_histories(history_codes, deadline=deadline)
         self._ensure_before_deadline(deadline)
@@ -178,7 +178,14 @@ class MarketFeatureService(MarketResearchMixin, MarketIntradayMixin, MarketHisto
         normalized = _normalize_codes(codes)
         if not normalized:
             return ()
-        quotes = tuple(self._run_data_task_until(deadline, self._gateway.fetch_candidates, normalized))
+        quotes = tuple(
+            self._run_data_task_until(
+                deadline,
+                True,
+                self._gateway.fetch_candidates,
+                normalized,
+            )
+        )
         with self._lock:
             market_quotes = {feature.quote.code: feature.quote for feature in self._market_features}
             for quote in quotes:
@@ -356,6 +363,7 @@ class MarketFeatureService(MarketResearchMixin, MarketIntradayMixin, MarketHisto
 
     def _run_data_task(
         self,
+        urgent: bool,
         function: Callable[_P, _T],
         /,
         *args: _P.args,
@@ -364,7 +372,8 @@ class MarketFeatureService(MarketResearchMixin, MarketIntradayMixin, MarketHisto
         pool = self._worker_pool
         if pool is None or not pool.is_running() or pool.owns_current_thread():
             return function(*args, **kwargs)
-        future = pool.submit(function, *args, **kwargs)
+        submit = pool.submit_urgent if urgent else pool.submit
+        future = submit(function, *args, **kwargs)
         if future is None:
             raise RuntimeError("data worker queue rejected source task")
         return future.result()
@@ -372,20 +381,22 @@ class MarketFeatureService(MarketResearchMixin, MarketIntradayMixin, MarketHisto
     def _run_data_task_until(
         self,
         deadline: datetime | None,
+        urgent: bool,
         function: Callable[_P, _T],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> _T:
         if deadline is None:
-            return self._run_data_task(function, *args, **kwargs)
+            return self._run_data_task(urgent, function, *args, **kwargs)
         self._ensure_before_deadline(deadline)
         pool = self._worker_pool
         if pool is None or not pool.is_running() or pool.owns_current_thread():
             result = function(*args, **kwargs)
             self._ensure_before_deadline(deadline)
             return result
-        future = pool.submit(function, *args, **kwargs)
+        submit = pool.submit_urgent if urgent else pool.submit
+        future = submit(function, *args, **kwargs)
         if future is None:
             raise RuntimeError("data worker queue rejected deadline-bound source task")
         remaining = max(0.0, (deadline - self._wall_clock()).total_seconds())

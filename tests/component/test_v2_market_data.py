@@ -638,6 +638,44 @@ def test_market_service_uses_injected_lifecycle_data_pool() -> None:
     assert not any(thread.name.startswith("shared-data") for thread in threading.enumerate())
 
 
+def test_candidate_quote_refresh_uses_reserved_urgent_worker() -> None:
+    pool = BoundedExecutor(
+        worker_count=2,
+        urgent_worker_count=1,
+        queue_capacity=8,
+        thread_name_prefix="shared-priority-data",
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_task() -> None:
+        entered.set()
+        release.wait(timeout=2.0)
+
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        worker_pool=pool,
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+    try:
+        normal = pool.submit(blocking_task)
+        assert normal is not None
+        assert entered.wait(timeout=1.0)
+        refreshed = service.refresh_candidate_quotes(
+            ("600001",),
+            NOW,
+            deadline=NOW + timedelta(seconds=1),
+        )
+    finally:
+        release.set()
+        pool.stop()
+
+    assert [feature.quote.code for feature in refreshed] == ["600001"]
+
+
 def test_market_service_loads_history_before_cold_start_candidate_cross_section() -> None:
     history = CountingHistoryClient(_history_bars())
     service = MarketFeatureService(

@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from trader.application.cadence import PipelineTask
 from trader.application.events import EventDeadlineExpired
-from trader.application.pipeline_workers import data_future, store_candidate_selection, submit_required
+from trader.application.pipeline_workers import (
+    data_future,
+    store_candidate_selection,
+    submit_required,
+    urgent_data_future,
+)
 from trader.application.ports import MarketDataDeadlineExceeded, MarketDataUnavailable
 from trader.application.schedule import MarketPhase
 from trader.domain.models import Strategy
@@ -45,7 +50,7 @@ def _refresh_candidate_quotes_on_workers(
     if not codes:
         return
     features = tuple(
-        _run_market_data_task(
+        _run_urgent_market_data_task(
             pipeline,
             pipeline._market_data.refresh_candidate_quotes,
             codes,
@@ -126,6 +131,16 @@ def _run_market_data_task(
     **kwargs: _P.kwargs,
 ) -> _T:
     return data_future(pipeline, function, *args, **kwargs).result()
+
+
+def _run_urgent_market_data_task(
+    pipeline: RecommendationPipeline,
+    function: Callable[_P, _T],
+    /,
+    *args: _P.args,
+    **kwargs: _P.kwargs,
+) -> _T:
+    return urgent_data_future(pipeline, function, *args, **kwargs).result()
 
 
 def _refresh_candidates_on_workers(

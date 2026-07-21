@@ -38,6 +38,7 @@ curl -sS http://127.0.0.1:5000/api/status
 
 - 交易日历不可用：系统 fail-closed，不猜测交易日；恢复日历缓存或网络后重启。
 - 东方财富失败：自动回退新浪；全市场同源并发请求由 single-flight 合并，连续失败 3 次熔断 60 秒，超时后只放行一个恢复探针。腾讯候选报价串行限流，失败、超时、返回空值或乱序旧版本时保留最近有效行情和 overlay，不清空推荐。
+- `TopK live overlay degraded: data source task exceeded its batch deadline`：同时检查 `dependencies.market_data.sources.tencent` 与 `dependencies.worker_pools.data`。腾讯成功率正常且 P95 明显低于 3 秒时，若 `urgent_workers` 不为 1，说明运行进程尚未加载紧急 lane 修复，应正常停止后重启；`urgent_workers=1` 时仍超时则按真实腾讯网络超时处理，保留最近 overlay 并观察熔断恢复，不得放宽 3 秒总截止掩盖慢源。
 - DeepSeek 未配置、超时或预算耗尽：整版使用 `local_degraded`，本地推荐和 Web 继续工作。
 - `deepseek_incomplete`：先在 `/api/status` 核对配置、最近错误和阶段预算。网络或供应商恢复后，尚有阶段额度的后续复核会继续执行；失败物理请求已计入 188 次上限，不得删除预算库或返还额度，当前阶段额度耗尽时保留本地结果并等待下一合法阶段或下一交易日。
 - `tomorrow_tail_data_incomplete`：核对分钟来源覆盖和候选数；该输入按后续刷新自动重试，覆盖恢复后警告自动消失，不得用昨日分钟数据伪装完整。

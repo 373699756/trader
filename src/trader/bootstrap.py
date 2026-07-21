@@ -74,6 +74,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     queue_capacity = max(settings.pipeline.event_queue_size, settings.market_data.candidate_pool_size * 3)
     data_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers,
+        urgent_worker_count=1 if settings.pipeline.market_workers > 1 else 0,
         queue_capacity=queue_capacity,
         thread_name_prefix="trader-data",
     )

@@ -38,3 +38,5 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
         runtime["pipeline"]["event_queue_size"],
         runtime["market_data"]["candidate_pool_size"] * 3,
     )
+    assert system.pipeline._data_pool.status()["urgent_workers"] == 1
+    assert system.pipeline._data_pool.status()["urgent_queue_capacity"] == 1

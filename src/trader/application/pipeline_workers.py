@@ -41,7 +41,31 @@ def submit_required(
     *args: _P.args,
     **kwargs: _P.kwargs,
 ) -> Future[_T]:
-    future = pool.submit(function, *args, **kwargs)
+    return _submit_required(pipeline, pool, False, function, *args, **kwargs)
+
+
+def submit_required_urgent(
+    pipeline: RecommendationPipeline,
+    pool: BoundedExecutor,
+    function: Callable[_P, _T],
+    /,
+    *args: _P.args,
+    **kwargs: _P.kwargs,
+) -> Future[_T]:
+    return _submit_required(pipeline, pool, True, function, *args, **kwargs)
+
+
+def _submit_required(
+    pipeline: RecommendationPipeline,
+    pool: BoundedExecutor,
+    urgent: bool,
+    function: Callable[_P, _T],
+    /,
+    *args: _P.args,
+    **kwargs: _P.kwargs,
+) -> Future[_T]:
+    submit = pool.submit_urgent if urgent else pool.submit
+    future = submit(function, *args, **kwargs)
     if future is None:
         pipeline._state.increment("worker_queue_rejections")
         raise RuntimeError("bounded worker queue is full or stopped")
@@ -55,8 +79,30 @@ def data_future(
     *args: _P.args,
     **kwargs: _P.kwargs,
 ) -> Future[_T]:
+    return _data_future(pipeline, False, function, *args, **kwargs)
+
+
+def urgent_data_future(
+    pipeline: RecommendationPipeline,
+    function: Callable[_P, _T],
+    /,
+    *args: _P.args,
+    **kwargs: _P.kwargs,
+) -> Future[_T]:
+    return _data_future(pipeline, True, function, *args, **kwargs)
+
+
+def _data_future(
+    pipeline: RecommendationPipeline,
+    urgent: bool,
+    function: Callable[_P, _T],
+    /,
+    *args: _P.args,
+    **kwargs: _P.kwargs,
+) -> Future[_T]:
     if not pipeline._market_data_manages_workers:
-        return submit_required(pipeline, pipeline._data_pool, function, *args, **kwargs)
+        submit = submit_required_urgent if urgent else submit_required
+        return submit(pipeline, pipeline._data_pool, function, *args, **kwargs)
     future: Future[_T] = Future()
     try:
         future.set_result(function(*args, **kwargs))

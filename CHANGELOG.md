@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：顶部持续显示 `TopK live overlay degraded: data source task exceeded its batch deadline`。现场 `/api/status` 显示腾讯定向报价 917/917 成功、P95 约 700ms、无熔断，而共享数据池 6 个 worker 已全部被全市场、历史或研究任务占用且有排队任务；新增数据池紧急 lane 指标与对应排查说明，用来源延迟和 lane 状态区分真实腾讯超时与内部 FIFO 饥饿。
+
 - 用户问题：页面反复提示 `deepseek_incomplete`、`tomorrow_tail_data_incomplete` 和 `d25_structured_research_incomplete`。运行审计确认 DeepSeek 当日存在 73 次无 HTTP 状态的读取超时且相关阶段额度已消耗，tomorrow 尾盘分钟覆盖随后已恢复为 7/7，D25 结构化研究则因每 3 分钟强制重抓全部候选而在 8 秒批次截止下反复处理固定排序前部代码；新增三类提示的可操作排查与恢复说明。
 
 - 用户问题：今早、明日和 2-5 日页面在服务端已经生成今日实时快照后仍可能停留在昨日数据。现场运行库与只读 API 确认 `2026-07-21` 草稿、冻结和秒级候选报价均正常发布；新增前端状态心跳快照身份对账，仅当服务端当前策略 `snapshot_id` 与页面身份不一致时补拉一次推荐，作为 SSE 推送之外的低流量恢复路径。
@@ -73,6 +75,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 共享数据池仍严格使用运行配置定义的总 worker 数；总数大于 1 时改为其中 1 个 worker 和 1 个等待槽组成紧急 lane，候选及 TopK 腾讯定向报价走紧急 lane，全市场、历史、分钟和研究任务继续走普通 lane。状态 API 新增紧急 worker、容量、在途、提交、完成与拒绝计数，不改变 3 秒候选报价截止、刷新 cadence、来源 single-flight 或冻结规则。
+
 - D25 周期风险刷新改为复用仍在 10 分钟 TTL 内的成功结构化研究，只提交缺失或已过期代码；失败或截止结果继续使用不超过 60 秒的负缓存后重试，不改变空值降级、风险硬过滤、14:50 冻结或来源超时上限。
 
 - 看板脚本资源版本由 `v=7` 提升到 `v=8`，确保浏览器获取包含快照身份对账的脚本；SSE 正常时仍不周期轮询完整推荐响应，历史日期查询也不参与当前身份对账。
@@ -136,6 +140,8 @@ All notable changes to this project are documented here.
   `runtime.json.performance_budgets` 读取，禁止适配器、评分lane或性能脚本自带默认值。
 
 ### Fixed
+
+- 修复 TopK 定向报价虽由腾讯在亚秒级成功返回，却因共享数据池前方排有大量历史或研究任务而在开始执行前耗尽 3 秒批次截止的问题；紧急报价不再被普通 FIFO 队列饥饿，真实网络超过截止时仍显式保留原降级错误和最近有效 overlay。
 
 - 修复 D25 结构化研究在固定候选顺序和短批次截止下长期停留于低覆盖的问题：成功代码不再每轮被强制重抓并占满 worker，后续候选可在连续刷新中逐步获得财务、公告、质押和解禁证据；同时修复整批任务全部超过截止时负缓存 TTL 未初始化而抛出 `UnboundLocalError` 的边界。
 
@@ -201,6 +207,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未增加第七个数据 worker，未放宽候选报价 3 秒总截止，也未隐藏真实腾讯超时、清空推荐、改写冻结快照或让普通历史/研究任务占用紧急 lane。
+
 - 本批未隐藏任何降级提示，也未清除或返还 DeepSeek 已计数的失败预算；未用昨日数据或伪造零值替代缺失的分钟、财务、公告、质押或解禁证据。
 
 - 本批未删除昨日冻结、跨日 stale fallback、SSE、ETag、历史日期或任何策略数据；昨日快照仍只在当日快照尚未就绪时按契约显式降级展示。
@@ -227,6 +235,8 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 两层失败先行回归已复现普通数据 lane 饱和时紧急任务无法启动，以及候选报价因此超过批次截止；实现后紧急任务和 `MarketFeatureService.refresh_candidate_quotes()` 均在普通 lane 被阻塞时按时完成，组合根契约确认生产 6-worker 池内恰有 1 个紧急 worker，背压回归确认只允许 1 个紧急等待任务且更多提交被显式拒绝。`make format-check`、`make lint`、111 个源码文件 mypy、完整 457 项 pytest、`make package` 和 `git diff --check` 通过，pytest 仅保留 10 条既有未知测试模型名 RuntimeWarning；最终 wheel 在仓库外隔离目标目录安装全部依赖后通过包导入、两个 CLI、9 项 Web 资源与 `pip check`。本批未修改 Web 资源，桌面门禁沿用同资源 1280x720、1440x900、1920x1080 三档已通过基线。
 
 - 失败先行组件回归已复现同一代码在相隔 3 分钟的周期风险刷新中被请求两次，以及整批截止时未初始化 TTL 的异常；修复后成功结构化研究仅请求一次，整批截止写入短期降级并正常返回。`make format-check`、`make lint`、111 个源码文件 mypy、完整 454 项 pytest、`make package` 和 `git diff --check` 通过，pytest 仅保留 10 条既有未知测试模型名 RuntimeWarning；最终 wheel 在仓库外隔离目标目录安装全部依赖后通过包导入、两个 CLI、9 项 Web 资源与 `pip check`。本批未修改 Web 资源，复核上批同资源 1280x720、1440x900、1920x1080 三档截图无白屏、重叠或页面级横向溢出。
 
@@ -288,6 +298,8 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 紧急 lane 消除的是已确认的内部 FIFO 饥饿，不保证腾讯或本机网络始终在 3 秒内响应；紧急 worker 正在执行一个慢请求时只允许再等待一个紧急任务，更多并发请求会显式拒绝而不是无限堆积。普通 lane 从 6 个并发执行位调整为 5 个，可能增加全市场、历史或研究尾延迟，完整门禁不能替代真实交易日对 `urgent_*`、TopK 年龄和普通 lane P95 的持续观察。
 
 - 本次代码修复只解决已确认的 D25 固定顺序饥饿；DeepSeek 读取超时属于外部网络或供应商响应问题，已失败物理请求按契约继续占用当日 188 次上限，当前阶段耗尽后只能等待合法后续阶段或下一交易日。tomorrow 尾盘分钟虽已现场恢复满覆盖，上游仍可能再次短暂失败；三类场景都会保留最近有效快照和显式降级，不承诺外部来源始终可用。新一轮 Firefox 截图受宿主 `RenderCompositorSWGL failed mapping default framebuffer` 阻断，桌面结论沿用本批未改动 Web 资源的上一批三档通过基线，不把本次环境失败记为新截图通过。
 

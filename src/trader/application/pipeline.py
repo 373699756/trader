@@ -109,6 +109,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         worker_queue_capacity = max(1, event_queue_size)
         self._data_pool = data_pool or BoundedExecutor(
             worker_count=market_workers,
+            urgent_worker_count=1 if market_workers > 1 else 0,
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-data",
         )
