@@ -1,5 +1,3 @@
-"""Runtime configuration loading and fixed allocation validation."""
-
 from __future__ import annotations
 
 import math
@@ -250,7 +248,6 @@ def _load_deepseek_api_key(project_root: Path) -> str:
     environment_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if environment_key:
         return environment_key
-
     configured_path = os.environ.get("DEEPSEEK_API_KEY_FILE", "").strip()
     key_path = Path(configured_path).expanduser() if configured_path else project_root / ".deepseek_key"
     if not key_path.is_absolute():
@@ -260,7 +257,6 @@ def _load_deepseek_api_key(project_root: Path) -> str:
         if configured_path:
             raise ConfigurationError("DEEPSEEK_API_KEY_FILE does not exist")
         return ""
-
     try:
         metadata = key_path.stat()
         if not stat.S_ISREG(metadata.st_mode):
@@ -274,7 +270,6 @@ def _load_deepseek_api_key(project_root: Path) -> str:
         raise
     except (OSError, UnicodeError) as exc:
         raise ConfigurationError("DeepSeek API key file cannot be read") from exc
-
     lines = [line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")]
     if len(lines) != 1:
         raise ConfigurationError("DeepSeek API key file must contain exactly one key")

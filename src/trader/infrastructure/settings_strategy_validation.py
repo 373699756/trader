@@ -185,6 +185,12 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
     }
     if set(risk_codes) != required_risk_codes:
         raise ConfigurationError("risk_rules must define the complete local risk table")
+    for rule in settings.risk_rules:
+        definition = settings.factor_registry.get(rule.trigger_factor)
+        if definition is None:
+            raise ConfigurationError(f"risk rule {rule.risk_code} trigger factor is not registered")
+        if not set(rule.strategies).issubset(definition.strategies):
+            raise ConfigurationError(f"risk rule {rule.risk_code} uses a factor outside its registered strategies")
     short_risk_penalties = {
         "near_limit_crowding": 5.0,
         "price_volume_divergence": 4.0,
@@ -205,12 +211,6 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         raise ConfigurationError("v16 short risk rules must use fixed strategies, additive groups and 5/4/3/3/4/3/3")
     _validate_short_risk_rules(short_rules)
     _validate_short_risk_factors(settings.factor_registry)
-    for rule in settings.risk_rules:
-        definition = settings.factor_registry.get(rule.trigger_factor)
-        if definition is None:
-            raise ConfigurationError(f"risk rule {rule.risk_code} trigger factor is not registered")
-        if not set(rule.strategies).issubset(definition.strategies):
-            raise ConfigurationError(f"risk rule {rule.risk_code} uses a factor outside its registered strategies")
     group_modes: dict[str, str] = {}
     for rule in settings.risk_rules:
         existing = group_modes.setdefault(rule.group, rule.combination_mode)

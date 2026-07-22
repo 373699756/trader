@@ -1,0 +1,8 @@
+{
+  "schema_version": "v16_board_scoring_fixture_v1",
+  "candidate_rows": 360,
+  "boards": ["main", "chinext", "star"],
+  "rows_per_board": 120,
+  "strategies": ["today", "tomorrow", "d25"],
+  "recording": "deterministic_synthetic_no_external_payload"
+}

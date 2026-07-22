@@ -24,7 +24,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
     assert runtime.schema_version == 5
-    assert strategy.schema_version == 8
+    assert strategy.schema_version == 9
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.pipeline.market_workers == 5
@@ -39,6 +39,13 @@ def test_v2_configuration_contract_is_valid() -> None:
         "daily_history",
         "security_master_calendar",
         "daily_valuation_financials",
+        "history_summary",
+        "board_cross_section",
+        "candidate_preselection",
+        "local_score",
+        "competition_group_mapping",
+        "raw_deepseek_review",
+        "strategy_deepseek_review",
     }
     assert runtime.market_data.cache_policy.total_bytes == 256 * 1024 * 1024
     assert {name: policy.persisted for name, policy in runtime.market_data.cache_policy.datasets.items()} == {
@@ -50,6 +57,13 @@ def test_v2_configuration_contract_is_valid() -> None:
         "daily_history": False,
         "security_master_calendar": False,
         "daily_valuation_financials": False,
+        "history_summary": False,
+        "board_cross_section": False,
+        "candidate_preselection": False,
+        "local_score": False,
+        "competition_group_mapping": False,
+        "raw_deepseek_review": False,
+        "strategy_deepseek_review": False,
     }
     assert runtime.performance_budgets.workload.market_rows == 5500
     assert runtime.performance_budgets.workload.candidate_rows == 360
@@ -66,7 +80,8 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.hard_filters.blacklist_codes == ()
     assert strategy.hard_filters.structured_risk_thresholds == {
         "negative_announcement_level": 0.0,
-        "reduction_or_unlock": 0.0,
+        "shareholder_reduction_level": 0.0,
+        "unlock_risk": 0.0,
         "pledge_risk": 0.0,
         "financial_deterioration": 0.5,
     }
@@ -192,7 +207,7 @@ def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypa
         ),
         (
             lambda raw: raw["market_data"]["cache_policy"].update({"policy_version": "unknown"}),
-            "policy_version must be market_cache_v15",
+            "policy_version must be market_cache_v16",
         ),
         (
             lambda raw: raw["market_data"]["cache_policy"].update({"estimator_version": "unknown"}),

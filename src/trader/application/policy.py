@@ -103,9 +103,7 @@ def _freeze_board_weights(
 ) -> Mapping[Strategy, Mapping[Board, Mapping[str, float]]]:
     return MappingProxyType(
         {
-            strategy: MappingProxyType(
-                {board: MappingProxyType(dict(weights)) for board, weights in boards.items()}
-            )
+            strategy: MappingProxyType({board: MappingProxyType(dict(weights)) for board, weights in boards.items()})
             for strategy, boards in values.items()
         }
     )

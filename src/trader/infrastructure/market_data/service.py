@@ -7,26 +7,23 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import ParamSpec, TypeVar
 
-from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity, request_fingerprint
-from trader.application.ports import MarketDataDeadlineExceeded
-from trader.application.schedule import phase_at, shanghai_now
+from trader.application.cache import BoundedCache, build_cache_identity, request_fingerprint
 from trader.application.source_lanes import SourceLaneRegistry
 from trader.application.workers import BoundedExecutor
 from trader.domain.models import FeatureSnapshot, MarketQuote
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import StandardizedFeatureBuilder
-from trader.infrastructure.market_data.history import DailyBar, HistoryProfile, summarize_history_metrics
 from trader.infrastructure.market_data.gateway import MarketDataGateway
+from trader.infrastructure.market_data.history import DailyBar, HistoryProfile, summarize_history_metrics
 from trader.infrastructure.market_data.service_candidates import (
     MarketCandidateMixin,
     _apply_action_restrictions,
 )
+from trader.infrastructure.market_data.service_execution import MarketExecutionMixin
 from trader.infrastructure.market_data.service_health import MarketHealthMixin
 from trader.infrastructure.market_data.service_history import MarketHistoryMixin
 from trader.infrastructure.market_data.service_intraday import MarketIntradayMixin
@@ -41,11 +38,9 @@ from trader.infrastructure.market_data.service_tushare import MarketTushareMixin
 from trader.infrastructure.market_data.tushare import TushareClient
 from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter
 
-_P = ParamSpec("_P")
-_T = TypeVar("_T")
-
 
 class MarketFeatureService(
+    MarketExecutionMixin,
     MarketHealthMixin,
     MarketTushareMixin,
     MarketResearchMixin,
@@ -377,10 +372,15 @@ class MarketFeatureService(
                 schema_version=self._schema_version,
             )
             cached = self._cache.get(identity) if self._cache is not None else None
-            if cached is not None and isinstance(cached.value, HistoryProfile) and cached.state not in {
-                "negative",
-                "degraded",
-            }:
+            if (
+                cached is not None
+                and isinstance(cached.value, HistoryProfile)
+                and cached.state
+                not in {
+                    "negative",
+                    "degraded",
+                }
+            ):
                 summaries[code] = cached.value
                 continue
 
@@ -455,110 +455,6 @@ class MarketFeatureService(
         if include_intraday_tail:
             self._record_intraday_feature_coverage(normalized, features)
         return features
-
-    def _run_data_task(
-        self,
-        urgent: bool,
-        function: Callable[_P, _T],
-        /,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
-    ) -> _T:
-        pool = self._worker_pool
-        if pool is None or not pool.is_running() or pool.owns_current_thread():
-            return function(*args, **kwargs)
-        submit = pool.submit_urgent if urgent else pool.submit
-        future = submit(function, *args, **kwargs)
-        if future is None:
-            raise RuntimeError("data worker queue rejected source task")
-        return future.result()
-
-    def _run_source_task(
-        self,
-        source: str,
-        identity: str,
-        observed_at: datetime,
-        function: Callable[_P, _T],
-        /,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
-    ) -> _T:
-        lanes = self._source_lanes
-        if lanes is None or lanes.owns_current_thread(source):
-            return function(*args, **kwargs)
-        return lanes.submit(source, identity, observed_at, function, *args, **kwargs).result()
-
-    def _data_cache_identity(
-        self,
-        dataset: str,
-        source: str,
-        subject_key: str,
-        request: Mapping[str, object],
-        observed_at: datetime,
-    ) -> CacheIdentity:
-        local = shanghai_now(observed_at)
-        return build_cache_identity(
-            dataset=dataset,
-            source=source,
-            subject_key=subject_key,
-            request=request,
-            trade_date=local.date().isoformat(),
-            phase=phase_at(local, is_trading_day=True).value,
-            source_contract_version=self._source_contract_versions.get(source, f"{source}-component-v1"),
-            config_version=self._config_version,
-            schema_version=self._schema_version,
-        )
-
-    def _trim_history_fallback_locked(self, requested: set[str]) -> None:
-        excess = len(self._history) - self._history_cache_limit
-        if excess <= 0:
-            return
-        victims = sorted(
-            self._history,
-            key=lambda code: (code in requested, self._history[code].expires_at, code),
-        )[:excess]
-        for code in victims:
-            self._history.pop(code, None)
-
-    def _run_data_task_until(
-        self,
-        deadline: datetime | None,
-        urgent: bool,
-        function: Callable[_P, _T],
-        /,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
-    ) -> _T:
-        if deadline is None:
-            if self._source_lanes is not None:
-                return function(*args, **kwargs)
-            return self._run_data_task(urgent, function, *args, **kwargs)
-        self._ensure_before_deadline(deadline)
-        if self._source_lanes is not None:
-            result = function(*args, **kwargs)
-            self._ensure_before_deadline(deadline)
-            return result
-        pool = self._worker_pool
-        if pool is None or not pool.is_running() or pool.owns_current_thread():
-            result = function(*args, **kwargs)
-            self._ensure_before_deadline(deadline)
-            return result
-        submit = pool.submit_urgent if urgent else pool.submit
-        future = submit(function, *args, **kwargs)
-        if future is None:
-            raise RuntimeError("data worker queue rejected deadline-bound source task")
-        remaining = max(0.0, (deadline - self._wall_clock()).total_seconds())
-        try:
-            result = future.result(timeout=remaining)
-        except FutureTimeoutError as exc:
-            future.cancel()
-            raise MarketDataDeadlineExceeded("data source task exceeded its batch deadline") from exc
-        self._ensure_before_deadline(deadline)
-        return result
-
-    def _ensure_before_deadline(self, deadline: datetime | None) -> None:
-        if deadline is not None and self._wall_clock() >= deadline:
-            raise MarketDataDeadlineExceeded("market-data result completed after its batch deadline")
 
 
 def _finite_or_none(value: float | None) -> float | None:

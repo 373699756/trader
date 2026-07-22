@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from trader.domain.models import (
+    Board,
     DeepSeekReview,
     FusionMode,
     Recommendation,
@@ -14,7 +15,7 @@ from trader.domain.models import (
     ScoreBreakdown,
     Strategy,
 )
-from trader.domain.ranking import action_for, candidate_score, select_top_k
+from trader.domain.ranking import action_for, candidate_score, select_top_k, select_top_k_with_audit
 from trader.domain.risk import Rating
 
 CANDIDATE_WEIGHTS = {
@@ -213,6 +214,49 @@ def test_action_policy_does_not_apply_neutral_audit_rating(feature_factory) -> N
 
     assert action is RecommendationAction.EXECUTABLE
     assert reason == "score_threshold_met"
+
+
+@pytest.mark.parametrize(("top_k", "expected_main"), [(0, 0), (1, 1), (10, 6), (18, 11)])
+def test_board_fraction_uses_ceil_at_all_topk_boundaries(feature_factory, top_k: int, expected_main: int) -> None:
+    rows = []
+    for index in range(18):
+        board = Board.MAIN if index < 12 else Board.CHINEXT
+        code = f"600{index:03d}" if board is Board.MAIN else f"300{index:03d}"
+        feature = feature_factory(code=code, board=board, industry=f"I{index}")
+        feature = replace(feature, competition_group_id=f"G{index}")
+        rows.append(_recommendation(feature, 100.0 - index / 100.0))
+
+    selected, _ = select_top_k_with_audit(
+        rows,
+        top_k=top_k,
+        maximum_per_industry=18,
+        maximum_board_fraction=0.6,
+        competition_group_limits={Board.MAIN: 3, Board.CHINEXT: 2, Board.STAR: 2},
+    )
+
+    assert sum(item.features.quote.board is Board.MAIN for item in selected) == expected_main
+
+
+@pytest.mark.parametrize(("board", "limit"), [(Board.MAIN, 3), (Board.CHINEXT, 2), (Board.STAR, 2)])
+def test_competition_group_limit_records_first_skipped_boundary(feature_factory, board: Board, limit: int) -> None:
+    prefix = {Board.MAIN: "600", Board.CHINEXT: "300", Board.STAR: "688"}[board]
+    rows = []
+    for index in range(limit + 1):
+        feature = feature_factory(code=f"{prefix}{index:03d}", board=board, industry="同业")
+        feature = replace(feature, competition_group_id="same", board_policy_version="v16")
+        rows.append(replace(_recommendation(feature, 90.0 - index), board_rank=index + 1))
+
+    selected, skips = select_top_k_with_audit(
+        rows,
+        top_k=10,
+        maximum_per_industry=10,
+        maximum_board_fraction=1.0,
+        competition_group_limits={board: limit},
+    )
+
+    assert len(selected) == limit
+    assert skips[0].global_rank == limit + 1
+    assert skips[0].reason == "competition_group_limit"
 
 
 def _recommendation(features, final_score: float, review: DeepSeekReview | None = None) -> Recommendation:

@@ -267,7 +267,7 @@ def _score_strategies_on_workers(
         if not codes:
             continue
         feature_reader = read_strategy_features if use_cached_data else fetch_strategy_features
-        future = data_future(
+        strategy_future = data_future(
             pipeline,
             feature_reader,
             pipeline._market_data,
@@ -275,7 +275,7 @@ def _score_strategies_on_workers(
             codes,
             now,
         )
-        strategy_inputs.append((strategy, codes, future))
+        strategy_inputs.append((strategy, codes, strategy_future))
 
     prepared_futures: list[tuple[Strategy, Future[PreparedSnapshot]]] = []
     for strategy, requested_codes, strategy_data_future in strategy_inputs:
@@ -293,33 +293,33 @@ def _score_strategies_on_workers(
             (
                 strategy,
                 submit_required(
-                pipeline,
-                pool,
-                pipeline._engine.prepare_snapshot,
-                strategy,
-                features,
-                now=now,
-                phase=phase.value,
-                trade_date=trade_date,
-                data_version=data_version,
-                review_deadline=review_deadline(now, phase),
-                max_age_seconds=maximum_age_seconds(phase, strategy),
-                filtered_count=0 if is_long else pipeline._filtered_count,
-                filter_reasons={} if is_long else pipeline._filter_reasons,
-                filter_details=() if is_long else pipeline._filter_details,
-                target_prices=pipeline._long_target_prices if is_long else None,
-                market_features=pipeline._market_features,
-                requested_codes=requested_codes,
-                preselect_max_age_seconds=maximum_age_seconds(phase),
-                candidate_pool_size=pipeline._candidate_pool_size,
+                    pipeline,
+                    pool,
+                    pipeline._engine.prepare_snapshot,
+                    strategy,
+                    features,
+                    now=now,
+                    phase=phase.value,
+                    trade_date=trade_date,
+                    data_version=data_version,
+                    review_deadline=review_deadline(now, phase),
+                    max_age_seconds=maximum_age_seconds(phase, strategy),
+                    filtered_count=0 if is_long else pipeline._filtered_count,
+                    filter_reasons={} if is_long else pipeline._filter_reasons,
+                    filter_details=() if is_long else pipeline._filter_details,
+                    target_prices=pipeline._long_target_prices if is_long else None,
+                    market_features=pipeline._market_features,
+                    requested_codes=requested_codes,
+                    preselect_max_age_seconds=maximum_age_seconds(phase),
+                    candidate_pool_size=pipeline._candidate_pool_size,
                 ),
             )
         )
 
     prepared_snapshots: list[PreparedSnapshot] = []
-    for strategy, future in prepared_futures:
+    for strategy, prepared_future in prepared_futures:
         try:
-            prepared = future.result()
+            prepared = prepared_future.result()
         except Exception as exc:
             pipeline._state.increment("strategy_scoring_failures")
             pipeline._state.record_error(f"{strategy.value} scoring degraded: {str(exc)[:400]}")

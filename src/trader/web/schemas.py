@@ -66,8 +66,8 @@ def snapshot_envelope(
             for item in snapshot.filter_details
         ],
         "metadata": dict(snapshot.metadata),
-        "board_batches": list(snapshot.metadata.get("board_batches", ())),
-        "selection_skips": list(snapshot.metadata.get("selection_skips", ())),
+        "board_batches": _metadata_list(snapshot.metadata.get("board_batches")),
+        "selection_skips": _metadata_list(snapshot.metadata.get("selection_skips")),
         "weights": _snapshot_weights(snapshot),
         "fallback_date": fallback_date,
         "fallback_reason": fallback_reason,
@@ -233,7 +233,13 @@ def _recommendation(item: Recommendation, live_quote: LiveQuote | None = None) -
         "board_metrics": {
             "peer_gap": _mean_known_values(
                 item.features.values,
-                ("peer_gap_1d_score", "peer_gap_3d_score", "peer_gap_5d_score", "peer_gap_20d_score", "peer_gap_60d_score"),
+                (
+                    "peer_gap_1d_score",
+                    "peer_gap_3d_score",
+                    "peer_gap_5d_score",
+                    "peer_gap_20d_score",
+                    "peer_gap_60d_score",
+                ),
             ),
             "leader_gap": item.features.optional_value("leader_gap_score"),
             "turnover_shock_20": item.features.optional_value("turnover_shock_score"),
@@ -304,8 +310,12 @@ def _board_population(population: BoardPopulation | None) -> dict[str, object] |
 
 
 def _mean_known_values(values: Mapping[str, float | None], names: tuple[str, ...]) -> float | None:
-    known = [float(values[name]) for name in names if values.get(name) is not None]
+    known = [float(value) for name in names if (value := values.get(name)) is not None]
     return sum(known) / len(known) if known else None
+
+
+def _metadata_list(value: object) -> list[object]:
+    return list(value) if isinstance(value, (list, tuple)) else []
 
 
 def _snapshot_weights(snapshot: RecommendationSnapshot) -> dict[str, object]:

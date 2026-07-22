@@ -278,7 +278,6 @@ def score_strategy(
         phase=phase.value,
         trade_date=trade_date,
         data_version=data_version,
-        review_port=review_port,
         review_deadline=deadline,
         max_age_seconds=maximum_age_seconds(phase, strategy),
         filtered_count=0 if is_long else pipeline._filtered_count,
@@ -295,8 +294,7 @@ def score_strategy(
         pipeline._state.increment("board_scoring_incomplete")
         pipeline._state.record_strategy_degraded(strategy, reasons)
         pipeline._state.record_error(
-            f"{strategy.value} board scoring degraded; retained latest complete snapshot: "
-            + ",".join(reasons)[:350]
+            f"{strategy.value} board scoring degraded; retained latest complete snapshot: " + ",".join(reasons)[:350]
         )
         return None
     reviews = (

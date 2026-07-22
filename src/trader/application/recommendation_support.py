@@ -87,8 +87,7 @@ def _review_contexts_for_candidates(
                 for fact in (*item.local_risk_facts, *item.features.external_risk_facts)
             ),
             near_action_threshold=bool(
-                threshold is not None
-                and abs(item.score.local_score - threshold) <= selection.observation_margin
+                threshold is not None and abs(item.score.local_score - threshold) <= selection.observation_margin
             ),
             near_global_boundary=abs(index + 1 - selection.default_top_k) <= 2,
             evidence_conflict=any(
@@ -190,20 +189,18 @@ def _freeze_policy(policy: RecommendationPolicy) -> FrozenReplayPolicy:
         blacklist_codes=tuple(sorted(policy.hard_filter.blacklist_codes)),
         structured_risk_thresholds=policy.hard_filter.structured_risk_thresholds,
         maximum_board_fraction=policy.selection.maximum_board_fraction,
-        competition_group_limits={board.value: limit for board, limit in policy.selection.competition_group_limits.items()},
+        competition_group_limits={
+            board.value: limit for board, limit in policy.selection.competition_group_limits.items()
+        },
         candidate_min_score=policy.selection.candidate_min_score,
         minimum_board_reliability=policy.selection.minimum_board_reliability,
         board_policy_version=policy.board_policy_version,
         board_candidate_weights={
-            strategy.value: {
-                board.value: weights for board, weights in boards.items()
-            }
+            strategy.value: {board.value: weights for board, weights in boards.items()}
             for strategy, boards in policy.board_candidate_weights.items()
         },
         board_local_strategy_weights={
-            strategy.value: {
-                board.value: weights for board, weights in boards.items()
-            }
+            strategy.value: {board.value: weights for board, weights in boards.items()}
             for strategy, boards in policy.board_local_strategy_weights.items()
         },
     )
@@ -228,9 +225,7 @@ def _restore_policy(policy: FrozenReplayPolicy) -> RecommendationPolicy:
             observation_margin=policy.observation_margin,
             thresholds=policy.thresholds,
             maximum_board_fraction=policy.maximum_board_fraction,
-            competition_group_limits={
-                Board(name): limit for name, limit in policy.competition_group_limits.items()
-            },
+            competition_group_limits={Board(name): limit for name, limit in policy.competition_group_limits.items()},
             candidate_min_score=policy.candidate_min_score,
             minimum_board_reliability=policy.minimum_board_reliability,
         ),
@@ -240,15 +235,11 @@ def _restore_policy(policy: FrozenReplayPolicy) -> RecommendationPolicy:
         risk_rules=policy.risk_rules,
         board_policy_version=policy.board_policy_version,
         board_candidate_weights={
-            Strategy(strategy): {
-                Board(board): weights for board, weights in boards.items()
-            }
+            Strategy(strategy): {Board(board): weights for board, weights in boards.items()}
             for strategy, boards in policy.board_candidate_weights.items()
         },
         board_local_strategy_weights={
-            Strategy(strategy): {
-                Board(board): weights for board, weights in boards.items()
-            }
+            Strategy(strategy): {Board(board): weights for board, weights in boards.items()}
             for strategy, boards in policy.board_local_strategy_weights.items()
         },
         hard_filter=HardFilterPolicy(

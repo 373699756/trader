@@ -138,7 +138,6 @@ def review_cache_key(
             candidate.board_population.population_version if candidate.board_population is not None else None
         ),
         "merge_epoch": candidate.merge_epoch,
-        "feature_version": candidate.quote.data_version,
         "parameter_status": candidate.parameter_status,
         "board_data_reliability": round(candidate.board_data_reliability, 6),
         "structured_features": _cache_features(candidate),

@@ -74,9 +74,7 @@ def _replay_input_from_dict(raw: Mapping[str, object]) -> RecommendationReplayIn
         score_max_age_seconds=_number(raw, "score_max_age_seconds"),
         candidate_pool_size=_integer(raw, "candidate_pool_size"),
         target_prices={_mapping_key(code): _optional_number(value) for code, value in target_prices_raw.items()},
-        board_batches=tuple(
-            _board_batch_from_dict(item) for item in board_batches_raw if isinstance(item, dict)
-        )
+        board_batches=tuple(_board_batch_from_dict(item) for item in board_batches_raw if isinstance(item, dict))
         if isinstance(board_batches_raw, list)
         else (),
     )
@@ -105,9 +103,7 @@ def _board_batch_from_dict(raw: Mapping[str, object]) -> BoardScoreBatch:
         merge_epoch=_text(raw, "merge_epoch"),
         policy_id=_text(raw, "policy_id"),
         status=str(raw.get("status") or "success"),  # type: ignore[arg-type]
-        recommendations=tuple(
-            _recommendation_from_dict(item) for item in recommendations if isinstance(item, dict)
-        )
+        recommendations=tuple(_recommendation_from_dict(item) for item in recommendations if isinstance(item, dict))
         if isinstance(recommendations, list)
         else (),
         degraded_reasons=tuple(str(item) for item in reasons if isinstance(item, str))

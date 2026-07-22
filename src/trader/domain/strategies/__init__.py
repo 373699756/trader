@@ -2,7 +2,6 @@
 
 from collections.abc import Mapping
 
-from trader.domain.board_scoring import score_board_strategy
 from trader.domain.models import BoardStrategyPolicy, FeatureSnapshot, Strategy
 from trader.domain.strategies.composition import LocalScoreResult, compose
 from trader.domain.strategies.d25 import COMPONENT_WEIGHTS as D25_COMPONENT_WEIGHTS
@@ -35,6 +34,8 @@ def score_strategy(
     board_policy: BoardStrategyPolicy | None = None,
 ) -> LocalScoreResult:
     if board_policy is not None:
+        from trader.domain.board_scoring import score_board_strategy
+
         if board_policy.strategy is not strategy or board_policy.board is not snapshot.quote.board:
             raise ValueError("board policy does not match strategy feature")
         return score_board_strategy(snapshot, board_policy)

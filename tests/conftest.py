@@ -145,6 +145,8 @@ def application_feature_factory():
             "price_volume_divergence": 0.0,
             "financial_deterioration": 0.0,
             "reduction_or_unlock": 0.0,
+            "shareholder_reduction_level": 0.0,
+            "unlock_risk": 0.0,
             "pledge_risk": 0.0,
             "negative_announcement_level": 0.0,
         }

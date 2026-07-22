@@ -112,7 +112,7 @@ def test_quote_age_boundary_and_future_quote_are_auditable(feature_factory, obse
     ("field", "value", "expected_code"),
     [
         ("negative_announcement_level", 1.0, "negative_announcement"),
-        ("reduction_or_unlock", 1.0, "reduction_or_unlock"),
+        ("shareholder_reduction_level", 1.0, "shareholder_reduction"),
         ("pledge_risk", 1.0, "pledge_risk"),
         ("financial_deterioration", 1.0, "financial_deterioration"),
     ],

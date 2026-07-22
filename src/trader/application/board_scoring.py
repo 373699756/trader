@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import threading
+import time
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import replace
@@ -39,6 +42,7 @@ class _LatestBoardLane:
         self._accepting = False
         self._pending: tuple[Callable[[], BoardScoreBatch], Future[BoardScoreBatch]] | None = None
         self._superseded_count = 0
+        self._queue_wait_ms: deque[float] = deque(maxlen=256)
 
     def start(self) -> None:
         self._executor.start()
@@ -46,17 +50,25 @@ class _LatestBoardLane:
             self._accepting = True
 
     def submit(self, operation: Callable[[], BoardScoreBatch]) -> Future[BoardScoreBatch]:
+        submitted_at = time.perf_counter()
+
+        def run_timed() -> BoardScoreBatch:
+            wait_ms = max(0.0, (time.perf_counter() - submitted_at) * 1000.0)
+            with self._lock:
+                self._queue_wait_ms.append(wait_ms)
+            return operation()
+
         submitted: Future[BoardScoreBatch] | None = None
         with self._lock:
             if not self._accepting:
                 rejected: Future[BoardScoreBatch] = Future()
                 rejected.set_exception(RuntimeError("board scoring lane is stopped"))
                 return rejected
-            submitted = self._executor.submit(operation)
+            submitted = self._executor.submit(run_timed)
             if submitted is None:
                 proxy: Future[BoardScoreBatch] = Future()
                 previous = self._pending
-                self._pending = (operation, proxy)
+                self._pending = (run_timed, proxy)
                 if previous is not None and not previous[1].done():
                     self._superseded_count += 1
                     previous[1].set_exception(RuntimeError("board scoring request superseded by a newer epoch"))
@@ -73,14 +85,20 @@ class _LatestBoardLane:
             pending[1].set_exception(RuntimeError("board scoring lane stopped before pending task started"))
         self._executor.stop(wait=True, cancel_futures=True)
 
-    def status(self) -> Mapping[str, int | bool]:
+    def status(self) -> Mapping[str, int | float | bool]:
         status = self._executor.status()
         with self._lock:
+            waits = sorted(self._queue_wait_ms)
             return {
                 **{name: value for name, value in status.items() if isinstance(value, (int, bool))},
+                "workers": 1,
                 "queue_capacity": 1,
                 "pending": self._pending is not None,
                 "superseded_count": self._superseded_count,
+                "queue_wait_samples": len(waits),
+                "queue_wait_p50_ms": _nearest_rank(waits, 0.50),
+                "queue_wait_p95_ms": _nearest_rank(waits, 0.95),
+                "queue_wait_max_ms": max(waits, default=0.0),
             }
 
     def _drain_pending(self, _completed: Future[BoardScoreBatch]) -> None:
@@ -157,7 +175,10 @@ class BoardScoringCoordinator:
             raise ValueError("board candidate limit must be between 0 and 120")
         cross_section = self._cross_section(policy.board, features, context)
         enriched = apply_board_policy(cross_section, strategy, policy)
-        loader = lambda: _select_candidates(enriched, strategy, policy, limit=120)
+
+        def loader() -> tuple[FeatureSnapshot, ...]:
+            return _select_candidates(enriched, strategy, policy, limit=120)
+
         if self._cache is None:
             return loader()[:limit]
         return self._cache.candidate_batch(policy, context, enriched, loader)[:limit]
@@ -183,6 +204,7 @@ class BoardScoringCoordinator:
 
         futures: dict[Board, Future[BoardScoreBatch]] = {}
         for board, lane in self._lanes.items():
+
             def score_lane(board: Board = board) -> BoardScoreBatch:
                 return self._score_board(
                     strategy,
@@ -214,7 +236,7 @@ class BoardScoringCoordinator:
                 )
         return tuple(batches)
 
-    def status(self) -> Mapping[str, Mapping[str, int | bool]]:
+    def status(self) -> Mapping[str, Mapping[str, int | float | bool]]:
         return {board.value: lane.status() for board, lane in self._lanes.items()}
 
     def _score_board(
@@ -264,6 +286,7 @@ class BoardScoringCoordinator:
                 )
             recommendations: list[Recommendation] = []
             for item in selected:
+
                 def load_local_score(
                     item: FeatureSnapshot = item,
                     policy: BoardStrategyPolicy = policy,
@@ -364,6 +387,13 @@ def _copy_future(source: Future[BoardScoreBatch], target: Future[BoardScoreBatch
         target.set_exception(error)
     else:
         target.set_result(source.result())
+
+
+def _nearest_rank(values: Sequence[float], probability: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    return ordered[max(0, min(len(ordered) - 1, math.ceil(len(ordered) * probability) - 1))]
 
 
 __all__ = ["BoardScoringCoordinator", "ScoreOne"]

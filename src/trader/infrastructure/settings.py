@@ -118,13 +118,10 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
             thresholds=_number_mapping(selection_raw, "thresholds"),
             maximum_board_fraction=_number(selection_raw, "maximum_board_fraction", minimum=0.01, maximum=1.0),
             competition_group_limits={
-                name: int(value)
-                for name, value in _number_mapping(selection_raw, "competition_group_limits").items()
+                name: int(value) for name, value in _number_mapping(selection_raw, "competition_group_limits").items()
             },
             candidate_min_score=_number(selection_raw, "candidate_min_score", minimum=0.0, maximum=100.0),
-            minimum_board_reliability=_number(
-                selection_raw, "minimum_board_reliability", minimum=0.0, maximum=1.0
-            ),
+            minimum_board_reliability=_number(selection_raw, "minimum_board_reliability", minimum=0.0, maximum=1.0),
         ),
         candidate_weights=_number_mapping(raw, "candidate_weights"),
         hard_filters=HardFilterSettings(

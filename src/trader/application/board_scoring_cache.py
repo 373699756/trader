@@ -342,10 +342,7 @@ def _feature_version(features: Sequence[FeatureSnapshot]) -> str:
                 )
             ),
             item.quote.execution_restrictions,
-            tuple(
-                (name, _cache_number(value))
-                for name, value in sorted(item.values.items())
-            ),
+            tuple((name, _cache_number(value)) for name, value in sorted(item.values.items())),
         )
         for item in sorted(features, key=lambda feature: feature.quote.code)
     )

@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户诉求：继续完成 `docs/hi.md` 中尚未闭合的批次二。现状审计确认上一提交虽已推送 v16 半成品，但计划仍为执行中，核心板块评分/缓存专门测试与性能文件缺失，质量门禁存在 18 个 pytest 失败、23 个 mypy 错误、格式/静态检查失败及 7 个超长活动模块。新增三板评分、缓存、风险、集中度边界测试和固定 360 候选性能 runner/fixture；补齐三 lane 单 worker及队列等待观测、板内同行/领先组边界、缓存 epoch 隔离、七项风险去重与 25 分截断、TopK 60% 和竞争组限制证据。
+
 - 用户诉求：将基于 `58e6d39` 的本地 v15 修改恢复到已前进的远端分支；给出的 460KB tar 只包含 13 个重叠文件，不能代表完整工作树。审计确认旧工作目录仍保留同基点的完整安全 stash（66 个文件），因此以完整 stash 恢复源码、配置、测试、性能 fixture 和文档，并把后续三批远端修复按语义合并：页面快照身份对账继续使用 `dashboard.js?v=8`，结构化研究成功缓存继续复用，腾讯候选/TopK 报价在五来源普通 worker 之外保留独立紧急执行位。为保持活动源码 500 行门禁，来源 latest-wins 生命周期独立到应用层 `source_lanes.py`；未把仅含重叠文件的 tar 当作完整实现覆盖当前树。
 
 - 用户问题：顶部持续显示 `TopK live overlay degraded: data source task exceeded its batch deadline`。现场 `/api/status` 显示腾讯定向报价 917/917 成功、P95 约 700ms、无熔断，而共享数据池 6 个 worker 已全部被全市场、历史或研究任务占用且有排队任务；新增数据池紧急 lane 指标与对应排查说明，用来源延迟和 lane 状态区分真实腾讯超时与内部 FIFO 饥饿。
@@ -79,6 +81,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- v16 today/tomorrow/d25 现按三板策略完整启用并保留 long 当前观察语义；将板块评分辅助计算、推荐最终合并、推荐/回放模型、极端结构风险、市场任务执行和快照 review codec 按职责拆分，所有活动源码重新低于 500 行。`docs/need.md` 第 13 节明确旧 d25 双乘数只用于 v14/v15 回放，活动 v16 以第 26.7 节显式不过热组件为准。
+
 - 运行配置继续固定 5 个普通来源 worker；组合根在同一有界数据池中额外创建 1 个 worker 和 1 个等待槽作为紧急 lane，候选及 TopK 腾讯定向报价走紧急 lane，全市场、历史、分钟和研究任务继续走普通 lane。状态 API 新增紧急 worker、容量、在途、提交、完成与拒绝计数，不改变 3 秒候选报价截止、刷新 cadence、来源 single-flight 或冻结规则。
 
 - D25 周期风险刷新改为复用仍在 10 分钟 TTL 内的成功结构化研究，只提交缺失或已过期代码；失败或截止结果继续使用不超过 60 秒的负缓存后重试，不改变空值降级、风险硬过滤、14:50 冻结或来源超时上限。
@@ -147,6 +151,8 @@ All notable changes to this project are documented here.
   `runtime.json.performance_budgets` 读取，禁止适配器、评分lane或性能脚本自带默认值。
 
 ### Fixed
+
+- 修复 v16 半成品导致同步评分仍向 `prepare_snapshot()` 传入已删除参数、异步 future 类型串线、旧冻结被误标 v16 回放、序列化后 tuple/list 元数据哈希不一致、DeepSeek 缓存被纯报价版本抖动无条件击穿、Web/持久化可空数值类型错误、结构化减持字段仍沿用旧合并名，以及目标股票进入领先组后把有效 3 只领导样本误降为 2 只的问题。任一板块失败继续保留最近完整三板快照，不发布偏置 TopK。
 
 - 修复 TopK 定向报价虽由腾讯在亚秒级成功返回，却因共享数据池前方排有大量历史或研究任务而在开始执行前耗尽 3 秒批次截止的问题；紧急报价不再被普通 FIFO 队列饥饿，真实网络超过截止时仍显式保留原降级错误和最近有效 overlay。
 
@@ -249,6 +255,8 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 批次二 195 项局部矩阵和完整 580 项 pytest 通过，保留 10 条既有未知测试模型名 RuntimeWarning；`make format-check`、`make lint`、134 个源码模块 mypy、`make package` 和 `git diff --check` 通过。v16 性能报告使用预热 1 轮、测量 5 轮和 nearest-rank，并真实启动三条 lane、对每策略 360 只候选执行全局选择：板内预选 P95 28.446ms、单板评分 3.583ms、三板三策略墙钟 295.877ms、全局选择 2.434ms，均通过 250/250/1000/100ms 配置预算；报告同时保存三板各 18 个队列等待样本、串行参考、墙钟比、3.344947 秒进程 CPU 和 1080 峰值条目。最终 wheel 在仓库外安装全部声明依赖后从独立 site-packages 导入，两个 CLI、配置、9 项资源和 `pip check` 通过；Firefox 152 在实际 1280x720、1440x900、1920x1080 视口均生成有效 PNG，DOM 检查及人工复核确认无白屏、关键同级重叠、裁切或页面级横向溢出。
+
 - 两层失败先行回归已复现普通数据 lane 饱和时紧急任务无法启动，以及候选报价因此超过批次截止；实现后紧急任务和 `MarketFeatureService.refresh_candidate_quotes()` 均在普通 lane 被阻塞时按时完成，组合根契约确认生产 6-worker 池内恰有 1 个紧急 worker，背压回归确认只允许 1 个紧急等待任务且更多提交被显式拒绝。`make format-check`、`make lint`、111 个源码文件 mypy、完整 457 项 pytest、`make package` 和 `git diff --check` 通过，pytest 仅保留 10 条既有未知测试模型名 RuntimeWarning；最终 wheel 在仓库外隔离目标目录安装全部依赖后通过包导入、两个 CLI、9 项 Web 资源与 `pip check`。本批未修改 Web 资源，桌面门禁沿用同资源 1280x720、1440x900、1920x1080 三档已通过基线。
 
 - 失败先行组件回归已复现同一代码在相隔 3 分钟的周期风险刷新中被请求两次，以及整批截止时未初始化 TTL 的异常；修复后成功结构化研究仅请求一次，整批截止写入短期降级并正常返回。`make format-check`、`make lint`、111 个源码文件 mypy、完整 454 项 pytest、`make package` 和 `git diff --check` 通过，pytest 仅保留 10 条既有未知测试模型名 RuntimeWarning；最终 wheel 在仓库外隔离目标目录安装全部依赖后通过包导入、两个 CLI、9 项 Web 资源与 `pip check`。本批未修改 Web 资源，复核上批同资源 1280x720、1440x900、1920x1080 三档截图无白屏、重叠或页面级横向溢出。
@@ -313,6 +321,8 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- v16 固定 fixture 与本地门禁已覆盖确定性和绝对性能预算，但本机串行墙钟/lane 墙钟 P95 为 0.843，未显示纯 Python 计算加速，因此三 lane 只宣告失败域隔离、有界并发和 1000ms 绝对预算通过。外部行情/DeepSeek 的真实交易日延迟仍取决于网络与供应商；本批不消耗真实 DeepSeek 额度、不宣称收益改善，也不提前实施 `docs/hi.md` 批次三的 v17 P1-P6 发布池与 Web 性能硬化。宿主 Firefox 仍记录 SWGL framebuffer 警告且高分辨率截图完成较慢，但本次三档 PNG 和 DOM 证据均有效；图形栈变化后仍应复跑发布截图。
 
 - 紧急 lane 消除的是已确认的内部 FIFO 饥饿，不保证腾讯或本机网络始终在 3 秒内响应；紧急 worker 正在执行一个慢请求时只允许再等待一个紧急任务，更多并发请求会显式拒绝而不是无限堆积。普通 lane 从 6 个并发执行位调整为 5 个，可能增加全市场、历史或研究尾延迟，完整门禁不能替代真实交易日对 `urgent_*`、TopK 年龄和普通 lane P95 的持续观察。
 
