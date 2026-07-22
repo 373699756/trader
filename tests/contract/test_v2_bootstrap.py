@@ -31,9 +31,9 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert system.app is not None
     assert started == []
     assert not (tmp_path / "runtime").exists()
-    assert system.pipeline._market_data._worker_pool is system.pipeline._data_pool
-    assert system.pipeline._market_data._json_writer._executor is system.pipeline._persistence_pool
-    assert system.pipeline._market_data._research_client._json_writer._executor is system.pipeline._persistence_pool
+    assert system.pipeline._market_data.runner.worker_pool is system.pipeline._data_pool
+    assert system.pipeline._market_data.research._json_writer._executor is system.pipeline._persistence_pool
+    assert system.pipeline._market_data.research.client._json_writer._executor is system.pipeline._persistence_pool
     assert system.pipeline._market_data_manages_workers is True
     assert system.pipeline._data_pool.status()["workers"] == 6
     assert system.pipeline._data_pool.status()["queue_capacity"] == 5

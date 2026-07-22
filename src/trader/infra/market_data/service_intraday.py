@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from concurrent.futures import wait
+from dataclasses import dataclass
 from datetime import datetime
 from typing import ParamSpec, TypeVar, cast
 
 from trader.application.workers import borrow_executor, submit_or_run_inline
 from trader.domain.models import FeatureSnapshot
 from trader.domain.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
+from trader.infra.market_data.eastmoney import EastmoneyClient
+from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_models import _IntradayEntry
-from trader.infra.market_data.service_state import MarketServiceState
 from trader.infra.market_data.service_support import (
     _add_action_restriction,
     _minute_version,
@@ -23,15 +26,59 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 
-class MarketIntradayMixin(MarketServiceState):
-    def _load_intraday(
+@dataclass(frozen=True)
+class IntradayLoaderStatus:
+    entries: int
+    success_count: int
+    error_count: int
+    last_error: str
+    out_of_order_count: int
+    requested_rows: int
+    covered_rows: int
+    latest_source_time: str
+    sources: tuple[str, ...]
+    data_versions: tuple[str, ...]
+
+
+class IntradayLoader:
+    def __init__(
+        self,
+        client: EastmoneyClient | None,
+        runner: MarketTaskRunner,
+        *,
+        workers: int,
+        ttl_seconds: float,
+        batch_timeout_seconds: float,
+        capacity: int,
+        monotonic: Callable[[], float],
+    ) -> None:
+        self._client = client
+        self._runner = runner
+        self._workers = max(1, workers)
+        self._ttl_seconds = max(1.0, ttl_seconds)
+        self._batch_timeout_seconds = max(0.01, batch_timeout_seconds)
+        self._capacity = max(1, capacity)
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._entries: dict[str, _IntradayEntry] = {}
+        self._success_count = 0
+        self._error_count = 0
+        self._last_error = ""
+        self._out_of_order_count = 0
+        self._requested_rows = 0
+        self._covered_rows = 0
+        self._latest_source_time = ""
+        self._sources: tuple[str, ...] = ()
+        self._data_versions: tuple[str, ...] = ()
+
+    def load(
         self,
         codes: Sequence[str],
         observed_at: datetime,
         *,
         action_restrictions: dict[str, set[str]] | None = None,
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
-        source_lanes = self._source_lanes
+        source_lanes = self._runner.source_lanes
         if source_lanes is not None and not source_lanes.owns_current_thread("eastmoney"):
             identity = _source_batch_identity("intraday_minutes", codes, observed_at)
             lane_action_restrictions: dict[str, set[str]] = {}
@@ -39,13 +86,13 @@ class MarketIntradayMixin(MarketServiceState):
                 "eastmoney",
                 identity,
                 observed_at,
-                self._load_intraday,
+                self.load,
                 codes,
                 observed_at,
                 action_restrictions=lane_action_restrictions,
             )
             try:
-                lane_result = lane_future.result(timeout=self._intraday_batch_timeout_seconds)
+                lane_result = lane_future.result(timeout=self._batch_timeout_seconds)
             except FutureTimeoutError:
                 lane_future.cancel()
                 with self._lock:
@@ -53,18 +100,18 @@ class MarketIntradayMixin(MarketServiceState):
                     fallback = {
                         code: entry.bars
                         for code in codes
-                        if (entry := self._intraday.get(code)) is not None and entry.expires_at > now
+                        if (entry := self._entries.get(code)) is not None and entry.expires_at > now
                     }
-                    self._intraday_requested_rows = len(codes)
-                    self._intraday_covered_rows = sum(bool(fallback.get(code)) for code in codes)
-                    self._intraday_error_count += 1
-                    self._intraday_last_error = "intraday_batch_deadline"
-                cache = self._cache
+                    self._requested_rows = len(codes)
+                    self._covered_rows = sum(bool(fallback.get(code)) for code in codes)
+                    self._error_count += 1
+                    self._last_error = "intraday_batch_deadline"
+                cache = self._runner.cache
                 if cache is not None:
                     for code, bars in fallback.items():
                         if not bars:
                             continue
-                        cache_identity = self._data_cache_identity(
+                        cache_identity = self._runner.cache_identity(
                             "intraday_minutes",
                             "eastmoney",
                             code,
@@ -81,10 +128,10 @@ class MarketIntradayMixin(MarketServiceState):
         now = self._monotonic()
         result: dict[str, tuple[MinuteBar, ...]] = {}
         previous: dict[str, _IntradayEntry] = {}
-        cache = self._cache
+        cache = self._runner.cache
         if cache is not None:
             for code in codes:
-                cache_identity = self._data_cache_identity(
+                cache_identity = self._runner.cache_identity(
                     "intraday_minutes",
                     "eastmoney",
                     code,
@@ -101,15 +148,15 @@ class MarketIntradayMixin(MarketServiceState):
                     if lookup.state == "degraded":
                         _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
         with self._lock:
-            self._intraday_requested_rows = len(codes)
+            self._requested_rows = len(codes)
             for code in codes:
-                entry = self._intraday.get(code)
+                entry = self._entries.get(code)
                 if entry is not None:
                     previous[code] = entry
                 if code not in result and entry is not None and entry.expires_at > now:
                     result[code] = entry.bars
                     if cache is not None and entry.bars:
-                        cache_identity = self._data_cache_identity(
+                        cache_identity = self._runner.cache_identity(
                             "intraday_minutes",
                             "eastmoney",
                             code,
@@ -122,17 +169,17 @@ class MarketIntradayMixin(MarketServiceState):
                         ):
                             _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
         missing = [code for code in codes if code not in result]
-        if self._intraday_client is None:
+        if self._client is None:
             with self._lock:
-                self._intraday_covered_rows = sum(bool(result.get(code)) for code in codes)
-                self._intraday_last_error = "intraday_client_unavailable"
+                self._covered_rows = sum(bool(result.get(code)) for code in codes)
+                self._last_error = "intraday_client_unavailable"
             return result
         if missing:
-            batch_deadline = self._monotonic() + self._intraday_batch_timeout_seconds
+            batch_deadline = self._monotonic() + self._batch_timeout_seconds
             nested_inline = source_lanes is not None and source_lanes.owns_current_thread("eastmoney")
             with borrow_executor(
-                self._worker_pool,
-                worker_count=min(self._intraday_workers, len(missing)),
+                self._runner.worker_pool,
+                worker_count=min(self._workers, len(missing)),
                 thread_name_prefix="candidate-intraday",
                 queue_capacity=len(missing),
                 wait_on_exit=False,
@@ -146,7 +193,7 @@ class MarketIntradayMixin(MarketServiceState):
                         break
                     future = submit_or_run_inline(
                         pool,
-                        self._intraday_client.fetch_intraday_minutes,
+                        self._client.fetch_intraday_minutes,
                         code,
                         now=observed_at,
                     )
@@ -161,7 +208,7 @@ class MarketIntradayMixin(MarketServiceState):
                 for future in completed:
                     code = futures[future]
                     old_entry = previous.get(code)
-                    ttl = self._intraday_ttl_seconds
+                    ttl = self._ttl_seconds
                     used_fallback = False
                     try:
                         bars = tuple(future.result())
@@ -170,15 +217,15 @@ class MarketIntradayMixin(MarketServiceState):
                         used_fallback = old_entry is not None and bool(old_entry.bars)
                         ttl = min(15.0, ttl)
                         with self._lock:
-                            self._intraday_error_count += 1
-                            self._intraday_last_error = str(exc)[:240]
+                            self._error_count += 1
+                            self._last_error = str(exc)[:240]
                     else:
                         with self._lock:
                             if bars:
-                                self._intraday_success_count += 1
+                                self._success_count += 1
                             else:
-                                self._intraday_error_count += 1
-                                self._intraday_last_error = "empty_intraday_series"
+                                self._error_count += 1
+                                self._last_error = "empty_intraday_series"
                                 if old_entry is not None and old_entry.bars:
                                     bars = old_entry.bars
                                     used_fallback = True
@@ -187,11 +234,11 @@ class MarketIntradayMixin(MarketServiceState):
                         used_fallback = True
                         ttl = min(15.0, ttl)
                         with self._lock:
-                            self._intraday_out_of_order_count += 1
-                            self._intraday_last_error = "out_of_order_intraday_result"
+                            self._out_of_order_count += 1
+                            self._last_error = "out_of_order_intraday_result"
                     result[code] = bars
                     if cache is not None:
-                        cache_identity = self._data_cache_identity(
+                        cache_identity = self._runner.cache_identity(
                             "intraday_minutes",
                             "eastmoney",
                             code,
@@ -213,7 +260,7 @@ class MarketIntradayMixin(MarketServiceState):
                             cache.put_negative(cache_identity, error_code="intraday_no_data")
                     if bars or old_entry is None:
                         with self._lock:
-                            self._intraday[code] = _IntradayEntry(
+                            self._entries[code] = _IntradayEntry(
                                 bars,
                                 self._monotonic() + (min(15.0, ttl) if used_fallback else ttl),
                             )
@@ -224,7 +271,7 @@ class MarketIntradayMixin(MarketServiceState):
                     old_entry = previous.get(code)
                     result[code] = old_entry.bars if old_entry is not None else ()
                     if cache is not None:
-                        cache_identity = self._data_cache_identity(
+                        cache_identity = self._runner.cache_identity(
                             "intraday_minutes",
                             "eastmoney",
                             code,
@@ -249,36 +296,36 @@ class MarketIntradayMixin(MarketServiceState):
                         ):
                             _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
                     with self._lock:
-                        self._intraday_error_count += 1
-                        self._intraday_last_error = "intraday_batch_deadline"
+                        self._error_count += 1
+                        self._last_error = "intraday_batch_deadline"
                         if code not in previous:
-                            self._intraday[code] = _IntradayEntry(
+                            self._entries[code] = _IntradayEntry(
                                 (),
-                                self._monotonic() + min(15.0, self._intraday_ttl_seconds),
+                                self._monotonic() + min(15.0, self._ttl_seconds),
                             )
         with self._lock:
-            self._intraday_covered_rows = sum(bool(result.get(code)) for code in codes)
+            self._covered_rows = sum(bool(result.get(code)) for code in codes)
             bars = tuple(bar for code in codes for bar in result.get(code, ()))
-            self._intraday_latest_source_time = max(
+            self._latest_source_time = max(
                 (bar.source_time.isoformat() for bar in bars),
                 default="",
             )
-            self._intraday_sources = tuple(sorted({bar.source for bar in bars if bar.source}))
-            self._intraday_data_versions = tuple(sorted({bar.data_version for bar in bars if bar.data_version}))
-            excess = len(self._intraday) - self._intraday_cache_limit
+            self._sources = tuple(sorted({bar.source for bar in bars if bar.source}))
+            self._data_versions = tuple(sorted({bar.data_version for bar in bars if bar.data_version}))
+            excess = len(self._entries) - self._capacity
             if excess > 0:
                 requested = set(codes)
                 oldest = sorted(
-                    self._intraday,
-                    key=lambda code: (code in requested, self._intraday[code].expires_at, code),
+                    self._entries,
+                    key=lambda code: (code in requested, self._entries[code].expires_at, code),
                 )[:excess]
                 for code in oldest:
-                    self._intraday.pop(code, None)
-            if self._intraday_covered_rows == self._intraday_requested_rows:
-                self._intraday_last_error = ""
+                    self._entries.pop(code, None)
+            if self._covered_rows == self._requested_rows:
+                self._last_error = ""
         return result
 
-    def _record_intraday_feature_coverage(
+    def record_feature_coverage(
         self,
         codes: Sequence[str],
         features: Sequence[FeatureSnapshot],
@@ -290,9 +337,75 @@ class MarketIntradayMixin(MarketServiceState):
         }
         covered_rows = sum(code in covered_codes for code in codes)
         with self._lock:
-            self._intraday_requested_rows = len(codes)
-            self._intraday_covered_rows = covered_rows
+            self._requested_rows = len(codes)
+            self._covered_rows = covered_rows
             if covered_rows == len(codes):
-                self._intraday_last_error = ""
-            elif not self._intraday_last_error:
-                self._intraday_last_error = "intraday_series_incomplete"
+                self._last_error = ""
+            elif not self._last_error:
+                self._last_error = "intraday_series_incomplete"
+
+    def cached(
+        self,
+        codes: Sequence[str],
+        *,
+        action_restrictions: dict[str, set[str]] | None = None,
+    ) -> Mapping[str, tuple[MinuteBar, ...]]:
+        now = self._monotonic()
+        result: dict[str, tuple[MinuteBar, ...]] = {}
+        cache = self._runner.cache
+        if cache is not None:
+            observed_at = self._runner.wall_clock()
+            for code in codes:
+                identity = self._runner.cache_identity(
+                    "intraday_minutes",
+                    "eastmoney",
+                    code,
+                    {"code": code, "scale_minutes": 1, "adjust": "none"},
+                    observed_at,
+                )
+                lookup = cache.get(identity)
+                if lookup is not None and lookup.value is not None:
+                    result[code] = cast(tuple[MinuteBar, ...], lookup.value)
+                    if lookup.state == "degraded":
+                        _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
+        with self._lock:
+            for code in codes:
+                if code in result:
+                    continue
+                entry = self._entries.get(code)
+                if entry is None or entry.expires_at <= now:
+                    continue
+                result[code] = entry.bars
+                if cache is not None and entry.bars:
+                    identity = self._runner.cache_identity(
+                        "intraday_minutes",
+                        "eastmoney",
+                        code,
+                        {"code": code, "scale_minutes": 1, "adjust": "none"},
+                        observed_at,
+                    )
+                    if not cache.is_actionable(identity, max(bar.source_time for bar in entry.bars)):
+                        _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
+        return result
+
+    def status(self) -> IntradayLoaderStatus:
+        with self._lock:
+            return IntradayLoaderStatus(
+                entries=len(self._entries),
+                success_count=self._success_count,
+                error_count=self._error_count,
+                last_error=self._last_error,
+                out_of_order_count=self._out_of_order_count,
+                requested_rows=self._requested_rows,
+                covered_rows=self._covered_rows,
+                latest_source_time=self._latest_source_time,
+                sources=self._sources,
+                data_versions=self._data_versions,
+            )
+
+    def entries(self) -> Mapping[str, _IntradayEntry]:
+        with self._lock:
+            return dict(self._entries)
+
+
+__all__ = ["IntradayLoader", "IntradayLoaderStatus"]

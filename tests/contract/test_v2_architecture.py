@@ -77,6 +77,32 @@ def test_bootstrap_is_the_only_composition_root() -> None:
     assert not (SOURCE_ROOT / "infra" / "container.py").exists()
 
 
+def test_market_data_service_uses_typed_composition_without_mixins() -> None:
+    market_data = SOURCE_ROOT / "infra" / "market_data"
+    service_tree = ast.parse((market_data / "service.py").read_text(encoding="utf-8"))
+    service_class = next(
+        node for node in service_tree.body if isinstance(node, ast.ClassDef) and node.name == "MarketFeatureService"
+    )
+    component_classes = {
+        node.name
+        for path in market_data.glob("service*.py")
+        for node in ast.parse(path.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.ClassDef)
+    }
+
+    assert service_class.bases == []
+    assert not (market_data / "service_state.py").exists()
+    assert not {name for name in component_classes if name.endswith("Mixin")}
+    assert {
+        "QuoteStore",
+        "HistoryStore",
+        "HistoryWarmup",
+        "ResearchLoader",
+        "IntradayLoader",
+        "ReferenceLoader",
+    } <= component_classes
+
+
 def test_active_product_source_files_do_not_exceed_configured_line_limit() -> None:
     oversized: dict[str, int] = {}
     for path in SOURCE_ROOT.rglob("*"):

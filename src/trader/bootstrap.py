@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,14 @@ from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
 from trader.infra.market_data.service import MarketFeatureService
+from trader.infra.market_data.service_candidates import QuoteStore
+from trader.infra.market_data.service_execution import MarketTaskRunner
+from trader.infra.market_data.service_health import MarketDataHealth
+from trader.infra.market_data.service_history import HistoryStore
+from trader.infra.market_data.service_history_warmup import HistoryWarmup
+from trader.infra.market_data.service_intraday import IntradayLoader
+from trader.infra.market_data.service_research import ResearchLoader
+from trader.infra.market_data.service_tushare import ReferenceLoader
 from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
@@ -133,7 +142,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         cancel_requested=lambda: source_lanes.is_stopped("history"),
         wall_clock=now,
     )
-    history = LocalHistorySeedClient(
+    history_client = LocalHistorySeedClient(
         settings.runtime_dir.parent / "market_data.sqlite3",
         FallbackHistoryClient(
             TencentClient(
@@ -144,7 +153,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             remote_history,
         ),
     )
-    intraday = EastmoneyClient(
+    intraday_client = EastmoneyClient(
         timeout_seconds=settings.market_data.candidate_timeout_seconds,
         workers=settings.pipeline.market_workers,
         worker_pool=data_pool,
@@ -175,56 +184,103 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         wall_clock=now,
     )
     evidence_cache_dir = settings.runtime_dir / "evidence_cache"
-    market_data = MarketFeatureService(
-        gateway,
-        history,
-        FeatureBuilder(
-            strategy.today_news_signal,
-            strategy.tomorrow_tail_signal,
-            strategy.d25_signal,
-            strategy.long_research,
-        ),
-        research_client=AkshareResearchClient(
-            timeout_seconds=settings.market_data.research_timeout_seconds,
-            long_research_policy=strategy.long_research,
-            evidence_cache_dir=evidence_cache_dir,
-            json_writer=json_writer,
-            cancel_requested=lambda: source_lanes.is_stopped("akshare"),
-        ),
-        intraday_client=intraday,
-        tushare_client=TushareClient(
-            token=settings.market_data.tushare.token if settings.market_data.tushare.enabled else "",
-            points=settings.market_data.tushare.points,
-            timeout_seconds=settings.market_data.tushare.timeout_seconds,
-            circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
-            circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
-            cancel_requested=lambda: source_lanes.is_stopped("tushare"),
-            wall_clock=now,
-        ),
-        history_workers=settings.pipeline.market_workers,
-        research_workers=settings.pipeline.market_workers,
-        intraday_workers=settings.pipeline.market_workers,
-        intraday_batch_timeout_seconds=settings.market_data.candidate_timeout_seconds,
-        intraday_cache_limit=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
-        history_cache_limit=settings.market_data.cache_policy.datasets["daily_history"].capacity,
-        research_cache_limit=settings.market_data.cache_policy.datasets["research_success"].capacity,
-        history_preload_limit=settings.market_data.candidate_pool_size * 3,
-        history_ttl_seconds=_fixed_cache_ttl(settings, "daily_history"),
-        research_ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
-        research_circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
-        research_circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
-        intraday_ttl_seconds=_fixed_cache_ttl(settings, "intraday_minutes"),
-        research_cache_dir=evidence_cache_dir,
+    feature_builder = FeatureBuilder(
+        strategy.today_news_signal,
+        strategy.tomorrow_tail_signal,
+        strategy.d25_signal,
+        strategy.long_research,
+    )
+    research_client = AkshareResearchClient(
+        timeout_seconds=settings.market_data.research_timeout_seconds,
+        long_research_policy=strategy.long_research,
+        evidence_cache_dir=evidence_cache_dir,
         json_writer=json_writer,
-        market_ttl_seconds=min(cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
+        cancel_requested=lambda: source_lanes.is_stopped("akshare"),
+    )
+    tushare_client = TushareClient(
+        token=settings.market_data.tushare.token if settings.market_data.tushare.enabled else "",
+        points=settings.market_data.tushare.points,
+        timeout_seconds=settings.market_data.tushare.timeout_seconds,
+        circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
+        circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
+        cancel_requested=lambda: source_lanes.is_stopped("tushare"),
+        wall_clock=now,
+    )
+    runner = MarketTaskRunner(
         worker_pool=data_pool,
-        history_worker_pool=history_pool,
         source_lanes=source_lanes,
         cache=market_cache,
         source_contract_versions=settings.market_data.source_contract_versions,
         config_version=settings.config_version,
         schema_version="market_snapshot_v15",
         wall_clock=now,
+    )
+    history_store = HistoryStore(
+        history_client,
+        runner,
+        history_worker_pool=history_pool,
+        workers=settings.pipeline.market_workers,
+        ttl_seconds=_fixed_cache_ttl(settings, "daily_history"),
+        capacity=settings.market_data.cache_policy.datasets["daily_history"].capacity,
+        monotonic=time.monotonic,
+    )
+    references = ReferenceLoader(gateway, history_store, runner, tushare_client, monotonic=time.monotonic)
+    warmup = HistoryWarmup(
+        history_store,
+        references,
+        runner,
+        batch_size=30,
+        monotonic=time.monotonic,
+    )
+    research = ResearchLoader(
+        research_client,
+        runner,
+        workers=settings.pipeline.market_workers,
+        ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
+        circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
+        circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
+        capacity=settings.market_data.cache_policy.datasets["research_success"].capacity,
+        cache_dir=evidence_cache_dir,
+        json_writer=json_writer,
+        monotonic=time.monotonic,
+    )
+    intraday_loader = IntradayLoader(
+        intraday_client,
+        runner,
+        workers=settings.pipeline.market_workers,
+        ttl_seconds=_fixed_cache_ttl(settings, "intraday_minutes"),
+        batch_timeout_seconds=settings.market_data.candidate_timeout_seconds,
+        capacity=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
+        monotonic=time.monotonic,
+    )
+    quote_store = QuoteStore(
+        gateway,
+        feature_builder,
+        history_store,
+        references,
+        market_ttl_seconds=min(cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
+        candidate_capacity=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
+        monotonic=time.monotonic,
+    )
+    market_health = MarketDataHealth(
+        quote_store,
+        history_store,
+        warmup,
+        research,
+        intraday_loader,
+        references,
+        wall_clock=now,
+    )
+    market_data = MarketFeatureService(
+        quote_store,
+        history_store,
+        warmup,
+        research,
+        intraday_loader,
+        references,
+        runner,
+        market_health,
+        history_preload_limit=settings.market_data.candidate_pool_size * 3,
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     repository = SnapshotRepository(settings.runtime_dir, config_version=effective_config_version)

@@ -5,21 +5,24 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import replace
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import TypeVar, cast
 from zoneinfo import ZoneInfo
 
 from trader.application.cache import CacheIdentity, build_cache_identity, canonical_json_bytes
 from trader.application.schedule import shanghai_now
 from trader.application.source_lanes import SourceRequestSuperseded
+from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.service_models import _HistoryEntry
-from trader.infra.market_data.service_state import MarketServiceState
+from trader.infra.market_data.service_execution import MarketTaskRunner
+from trader.infra.market_data.service_history import HistoryStore
 from trader.infra.market_data.service_support import _normalize_codes, _source_batch_identity
+from trader.infra.market_data.tushare import TushareClient
 
 _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -27,7 +30,26 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DAY_END = time(23, 59, 59)
 
 
-class MarketTushareMixin(MarketServiceState):
+class ReferenceLoader:
+    def __init__(
+        self,
+        gateway: MarketDataGateway,
+        history: HistoryStore,
+        runner: MarketTaskRunner,
+        client: TushareClient | None,
+        *,
+        monotonic: Callable[[], float],
+    ) -> None:
+        self._gateway = gateway
+        self._history_store = history
+        self._runner = runner
+        self._client = client
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._reference_fields: dict[str, dict[str, float]] = {}
+        self._reference_versions: dict[str, str] = {}
+        self._reference_version_order: dict[str, tuple[datetime, datetime, str]] = {}
+
     def schedule_reference_data(
         self,
         codes: Sequence[str],
@@ -36,7 +58,7 @@ class MarketTushareMixin(MarketServiceState):
         force: bool = False,
     ) -> None:
         normalized = _normalize_codes(codes)
-        lanes = self._source_lanes
+        lanes = self._runner.source_lanes
         if lanes is None:
             self.refresh_reference_data(normalized, observed_at, force=force)
             return
@@ -57,14 +79,14 @@ class MarketTushareMixin(MarketServiceState):
         if not normalized:
             return
         if lanes.owns_current_thread("history"):
-            self._load_histories(normalized, force=force)
+            self._history_store.load(normalized, force=force)
         else:
             history_identity = _source_batch_identity("daily_history", normalized, observed_at, force=force)
             history_future = lanes.submit(
                 "history",
                 history_identity,
                 observed_at,
-                self._load_histories,
+                self._history_store.load,
                 normalized,
                 force=force,
             )
@@ -79,7 +101,7 @@ class MarketTushareMixin(MarketServiceState):
     ) -> None:
         normalized = _normalize_codes(codes)
         self._refresh_tushare_reference_data(normalized, observed_at, force=force)
-        self._load_histories(normalized, force=force)
+        self._history_store.load(normalized, force=force)
 
     def _refresh_tushare_reference_data(
         self,
@@ -89,18 +111,18 @@ class MarketTushareMixin(MarketServiceState):
         force: bool,
     ) -> None:
         tushare_history: tuple[SourceObservation, ...] = ()
-        if self._tushare_client is not None:
-            if not self._tushare_client.supports("security_master"):
+        if self._client is not None:
+            if not self._client.supports("security_master"):
                 if normalized:
-                    tushare_history = self._load_tushare_history_batch(normalized, observed_at, force=force)
-                self._apply_tushare_history(tushare_history)
+                    tushare_history = self.load_history_batch(normalized, observed_at, force=force)
+                self.apply_history(tushare_history)
                 return
-            masters = self._load_tushare_reference(
+            masters = self.load(
                 "security_master_calendar",
                 "security_master",
                 {"dataset": "security_master", "market": "ashare"},
                 observed_at,
-                self._tushare_client.fetch_security_master,
+                self._client.fetch_security_master,
                 observed_at,
                 force=force,
             )
@@ -112,7 +134,7 @@ class MarketTushareMixin(MarketServiceState):
                 and (parsed := _parse_date(raw)) is not None
             )
             calendars = (
-                self._load_tushare_reference(
+                self.load(
                     "security_master_calendar",
                     "trading_calendar",
                     {
@@ -121,7 +143,7 @@ class MarketTushareMixin(MarketServiceState):
                         "end_date": shanghai_now(observed_at).date().isoformat(),
                     },
                     observed_at,
-                    self._tushare_client.fetch_trading_calendar,
+                    self._client.fetch_trading_calendar,
                     min(listing_dates),
                     shanghai_now(observed_at).date(),
                     observed_at,
@@ -133,9 +155,9 @@ class MarketTushareMixin(MarketServiceState):
             self._gateway.update_reference_observations((*calendars, *masters))
             if normalized:
                 valuation_trade_date = _latest_effective_trade_date(calendars, observed_at)
-                tushare_history = self._load_tushare_history_batch(normalized, observed_at, force=force)
+                tushare_history = self.load_history_batch(normalized, observed_at, force=force)
                 valuation_observations = (
-                    self._load_tushare_reference(
+                    self.load(
                         "daily_valuation_financials",
                         "daily_valuation:" + ",".join(normalized),
                         {
@@ -144,7 +166,7 @@ class MarketTushareMixin(MarketServiceState):
                             "trade_date": valuation_trade_date.isoformat(),
                         },
                         observed_at,
-                        self._tushare_client.fetch_daily_valuations,
+                        self._client.fetch_daily_valuations,
                         normalized,
                         valuation_trade_date,
                         observed_at,
@@ -153,21 +175,21 @@ class MarketTushareMixin(MarketServiceState):
                     if valuation_trade_date is not None
                     else ()
                 )
-                financial_observations = self._load_tushare_reference(
+                financial_observations = self.load(
                     "daily_valuation_financials",
                     "financial_indicators:" + ",".join(normalized),
                     {"dataset": "financial_indicators", "codes": normalized},
                     observed_at,
-                    self._tushare_client.fetch_financial_indicators,
+                    self._client.fetch_financial_indicators,
                     normalized,
                     observed_at,
                     force=force,
                 )
-                self._apply_tushare_fields("valuation", valuation_observations)
-                self._apply_tushare_fields("financial", financial_observations)
-        self._apply_tushare_history(tushare_history)
+                self.apply_fields("valuation", valuation_observations)
+                self.apply_fields("financial", financial_observations)
+        self.apply_history(tushare_history)
 
-    def _load_tushare_reference(
+    def load(
         self,
         dataset: str,
         subject_key: str,
@@ -179,7 +201,7 @@ class MarketTushareMixin(MarketServiceState):
         force: bool,
         **kwargs: object,
     ) -> tuple[SourceObservation, ...]:
-        if self._tushare_client is None:
+        if self._client is None:
             return ()
         identity = build_cache_identity(
             dataset=dataset,
@@ -188,18 +210,18 @@ class MarketTushareMixin(MarketServiceState):
             request=request,
             trade_date=shanghai_now(observed_at).date().isoformat(),
             phase="all_day",
-            source_contract_version=self._source_contract_versions.get("tushare", "tushare-component-v1"),
-            config_version=self._config_version,
-            schema_version=self._schema_version,
+            source_contract_version=self._runner.source_contract_versions.get("tushare", "tushare-component-v1"),
+            config_version=self._runner.config_version,
+            schema_version=self._runner.schema_version,
         )
-        cache = self._cache
+        cache = self._runner.cache
 
         def load() -> tuple[SourceObservation, ...]:
             lane_identity = _source_batch_identity(dataset, (subject_key,), observed_at, request=request, force=force)
             observations = tuple(
-                self._run_source_task("tushare", lane_identity, observed_at, function, *args, **kwargs)
+                self._runner.run_source_task("tushare", lane_identity, observed_at, function, *args, **kwargs)
             )
-            completed_at = max(observed_at, self._wall_clock())
+            completed_at = max(observed_at, self._runner.wall_clock())
             cacheable = tuple(
                 item
                 for item in observations
@@ -232,7 +254,9 @@ class MarketTushareMixin(MarketServiceState):
             if lookup is not None and lookup.value is not None:
                 observations = cast(tuple[SourceObservation, ...], lookup.value)
                 if lookup.state != "fresh" and not lookup.retry_suppressed:
-                    if self._source_lanes is not None and self._source_lanes.owns_current_thread("tushare"):
+                    if self._runner.source_lanes is not None and self._runner.source_lanes.owns_current_thread(
+                        "tushare"
+                    ):
                         refreshed = cast(tuple[SourceObservation, ...], cache.coalesce(identity, load))
                         if refreshed:
                             return refreshed
@@ -285,13 +309,13 @@ class MarketTushareMixin(MarketServiceState):
         args: tuple[object, ...],
         kwargs: Mapping[str, object],
     ) -> None:
-        lanes = self._source_lanes
+        lanes = self._runner.source_lanes
         if lanes is None:
             return
         refresh_identity = "tushare-refresh:" + hashlib.sha256(canonical_json_bytes(identity.as_dict())).hexdigest()
 
         def refresh() -> tuple[SourceObservation, ...]:
-            return self._load_tushare_reference(
+            return self.load(
                 dataset,
                 subject_key,
                 request,
@@ -304,7 +328,7 @@ class MarketTushareMixin(MarketServiceState):
 
         lanes.submit("tushare", refresh_identity, observed_at, refresh)
 
-    def _apply_tushare_history(self, observations: Sequence[SourceObservation]) -> None:
+    def apply_history(self, observations: Sequence[SourceObservation]) -> None:
         grouped: dict[str, list[DailyBar]] = {}
         applied_observations: list[SourceObservation] = []
         for observation in observations:
@@ -317,17 +341,11 @@ class MarketTushareMixin(MarketServiceState):
             applied_observations.append(observation)
         if not grouped:
             return
-        expires_at = self._monotonic() + self._history_ttl_seconds
+        self._history_store.apply_source_bars(grouped, source="tushare")
         with self._lock:
-            for code, bars in grouped.items():
-                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-90:]
-                current = self._history.get(code)
-                if current is None or not current.bars or ordered[-1].trade_date > current.bars[-1].trade_date:
-                    self._history[code] = _HistoryEntry(ordered, expires_at, source="tushare")
-            self._trim_history_fallback_locked(set(grouped))
             self._record_tushare_version_locked("daily_history", applied_observations)
 
-    def _apply_tushare_fields(
+    def apply_fields(
         self,
         namespace: str,
         observations: Sequence[SourceObservation],
@@ -353,7 +371,7 @@ class MarketTushareMixin(MarketServiceState):
             for code, observation in latest.items():
                 if len(code) != 6 or not code.isdigit():
                     continue
-                fields = self._tushare_reference_fields.setdefault(code, {})
+                fields = self._reference_fields.setdefault(code, {})
                 for name, value in observation.fields.items():
                     if isinstance(value, (int, float)) and not isinstance(value, bool):
                         fields[f"tushare_{namespace}_{name}"] = float(value)
@@ -368,10 +386,58 @@ class MarketTushareMixin(MarketServiceState):
             return
         latest = max(observations, key=lambda item: (item.source_time, item.received_at, item.data_version))
         order = (latest.source_time, latest.received_at, latest.data_version)
-        current = self._tushare_reference_version_order.get(namespace)
+        current = self._reference_version_order.get(namespace)
         if current is None or order > current:
-            self._tushare_reference_version_order[namespace] = order
-            self._tushare_reference_versions[namespace] = latest.data_version
+            self._reference_version_order[namespace] = order
+            self._reference_versions[namespace] = latest.data_version
+
+    def load_history_batch(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool,
+    ) -> tuple[SourceObservation, ...]:
+        client = self._client
+        normalized = _normalize_codes(codes)
+        if client is None or not normalized:
+            return ()
+        trade_date = shanghai_now(observed_at).date()
+        start_date = trade_date - timedelta(days=120)
+        forward_adjusted = client.supports("forward_adjusted_daily")
+        dataset = "forward_adjusted_daily" if forward_adjusted else "daily_history"
+        adjust = "qfq" if forward_adjusted else "none"
+        loader = client.fetch_forward_adjusted_daily if forward_adjusted else client.fetch_daily_history
+        return self.load(
+            "daily_history",
+            ",".join(normalized),
+            {
+                "dataset": dataset,
+                "codes": normalized,
+                "start_date": start_date.isoformat(),
+                "end_date": trade_date.isoformat(),
+                "adjust": adjust,
+            },
+            observed_at,
+            loader,
+            normalized,
+            start_date,
+            trade_date,
+            observed_at,
+            force=force,
+        )
+
+    def fields(self, codes: Sequence[str]) -> Mapping[str, Mapping[str, float]]:
+        selected = set(codes)
+        with self._lock:
+            return {code: dict(values) for code, values in self._reference_fields.items() if code in selected}
+
+    def versions(self) -> Mapping[str, str]:
+        with self._lock:
+            return dict(self._reference_versions)
+
+    def health(self) -> Mapping[str, object]:
+        return dict(self._client.health()) if self._client is not None else {}
 
     @staticmethod
     def _mark_reference_degraded(observation: SourceObservation, reason: str) -> SourceObservation:
@@ -470,4 +536,4 @@ def _observe_reference_refresh(future: Future[_T]) -> None:
         _LOGGER.warning("reference data refresh failed: %s", type(exc).__name__)
 
 
-__all__ = ["MarketTushareMixin"]
+__all__ = ["ReferenceLoader"]

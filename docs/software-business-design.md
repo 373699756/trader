@@ -76,6 +76,12 @@ entrypoints / web / infra -> application -> domain
 - `entrypoints`：参数、进程生命周期和退出码。
 - `bootstrap.py`：唯一组合根，显式创建客户端并注入依赖；禁止全局服务定位器。
 
+行情适配器固定采用组合：`QuoteStore`、`HistoryStore`/`HistoryWarmup`、
+`ResearchLoader`、`IntradayLoader` 和 `ReferenceLoader` 分别拥有自己的有类型状态、锁和
+资源依赖；类之间不得通过 mixin、共享状态基类、`Any` 属性或隐式模板方法取得能力。
+`bootstrap.py` 显式装配这些组件，最外层 `MarketFeatureService` 只实现
+`MarketDataPort`/`CurrentQuoteReaderPort` 的协调与转发，不保存组件业务状态。
+
 `create_app()` 必须无线程、无网络、无数据库和无文件写入副作用。HTTP 请求不得抓取
 行情、评分、调用 DeepSeek 或写盘。新代码不得导入 `stock_analyzer`。活动源码单文件
 原则上不超过 800 行，超出必须按职责拆分并说明；禁止新增含义模糊的聚合模块。

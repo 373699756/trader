@@ -3,57 +3,54 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 
-from trader.application.schedule import shanghai_now
 from trader.application.source_lanes import SourceRequestSuperseded
-from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.service_state import MarketServiceState
+from trader.infra.market_data.service_execution import MarketTaskRunner
+from trader.infra.market_data.service_history import HistoryStore
 from trader.infra.market_data.service_support import _normalize_codes, _source_batch_identity
+from trader.infra.market_data.service_tushare import ReferenceLoader
 
 _LOGGER = logging.getLogger(__name__)
 _HISTORY_SOURCE_LANE = "history"
 _PERMANENT_TUSHARE_DEGRADATIONS = frozenset({"missing_token", "insufficient_points", "permission_denied"})
 
 
-class MarketHistoryWarmupMixin(MarketServiceState):
-    def _load_tushare_history_batch(
+@dataclass(frozen=True)
+class HistoryWarmupStatus:
+    planned_count: int
+    completed_count: int
+    failure_count: int
+    inflight_count: int
+    last_source: str
+
+
+class HistoryWarmup:
+    def __init__(
         self,
-        codes: Sequence[str],
-        observed_at: datetime,
+        history: HistoryStore,
+        references: ReferenceLoader,
+        runner: MarketTaskRunner,
         *,
-        force: bool,
-    ) -> tuple[SourceObservation, ...]:
-        client = self._tushare_client
-        normalized = _normalize_codes(codes)
-        if client is None or not normalized:
-            return ()
-        trade_date = shanghai_now(observed_at).date()
-        start_date = trade_date - timedelta(days=120)
-        forward_adjusted = client.supports("forward_adjusted_daily")
-        dataset = "forward_adjusted_daily" if forward_adjusted else "daily_history"
-        adjust = "qfq" if forward_adjusted else "none"
-        loader = client.fetch_forward_adjusted_daily if forward_adjusted else client.fetch_daily_history
-        return self._load_tushare_reference(
-            "daily_history",
-            ",".join(normalized),
-            {
-                "dataset": dataset,
-                "codes": normalized,
-                "start_date": start_date.isoformat(),
-                "end_date": trade_date.isoformat(),
-                "adjust": adjust,
-            },
-            observed_at,
-            loader,
-            normalized,
-            start_date,
-            trade_date,
-            observed_at,
-            force=force,
-        )
+        batch_size: int,
+        monotonic: Callable[[], float],
+    ) -> None:
+        self._history = history
+        self._references = references
+        self._runner = runner
+        self._batch_size = max(1, batch_size)
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._universe: tuple[str, ...] = ()
+        self._inflight: set[str] = set()
+        self._planned_count = 0
+        self._completed_count = 0
+        self._failure_count = 0
+        self._last_source = ""
 
     def schedule_history_warmup(
         self,
@@ -61,31 +58,29 @@ class MarketHistoryWarmupMixin(MarketServiceState):
         observed_at: datetime,
     ) -> None:
         normalized = _normalize_codes(codes)
-        lanes = self._source_lanes
+        lanes = self._runner.source_lanes
         if not normalized or lanes is None:
             return
         now = self._monotonic()
         with self._lock:
-            self._history_warmup_universe = normalized
-            if self._history_warmup_inflight:
+            self._universe = normalized
+            if self._inflight:
                 return
+            entries = self._history.entries()
             missing = tuple(
                 code
                 for code in normalized
-                if code not in self._history_warmup_inflight
-                and ((entry := self._history.get(code)) is None or entry.expires_at <= now)
+                if code not in self._inflight and ((entry := entries.get(code)) is None or entry.expires_at <= now)
             )
         if not missing:
             return
 
-        local_seed_codes: tuple[str, ...] = ()
-        available_codes = getattr(self._history_client, "available_codes", None)
-        if callable(available_codes):
-            try:
-                local_seed_codes = tuple(available_codes(missing))
-            except Exception as exc:
-                _LOGGER.warning("local history seed discovery degraded: %s", type(exc).__name__)
-        tushare_health = dict(self._tushare_client.health()) if self._tushare_client is not None else {}
+        try:
+            local_seed_codes = self._history.available_seed_codes(missing)
+        except Exception as exc:
+            local_seed_codes = ()
+            _LOGGER.warning("local history seed discovery degraded: %s", type(exc).__name__)
+        tushare_health = dict(self._references.health())
         use_tushare = (
             not local_seed_codes
             and bool(tushare_health.get("enabled"))
@@ -93,12 +88,11 @@ class MarketHistoryWarmupMixin(MarketServiceState):
             and tushare_health.get("degraded_reason") not in _PERMANENT_TUSHARE_DEGRADATIONS
         )
         source = "local_seed" if local_seed_codes else ("tushare" if use_tushare else "tencent")
-        batch_size = self._history_warmup_batch_size
-        batch = (local_seed_codes or missing)[:batch_size]
+        batch = (local_seed_codes or missing)[: self._batch_size]
         with self._lock:
-            self._history_warmup_inflight.update(batch)
-            self._history_warmup_planned_count += len(batch)
-            self._history_warmup_last_source = source
+            self._inflight.update(batch)
+            self._planned_count += len(batch)
+            self._last_source = source
 
         identity = _source_batch_identity("history_warmup", batch, observed_at, source=source)
         future: Future[object]
@@ -116,7 +110,7 @@ class MarketHistoryWarmupMixin(MarketServiceState):
                 _HISTORY_SOURCE_LANE,
                 identity,
                 observed_at,
-                self._load_histories,
+                self._history.load,
                 batch,
             )
         future.add_done_callback(lambda completed: self._finish_history_warmup(batch, completed))
@@ -126,10 +120,8 @@ class MarketHistoryWarmupMixin(MarketServiceState):
         codes: Sequence[str],
         observed_at: datetime,
     ) -> None:
-        if self._tushare_client is None:
-            return
-        observations = self._load_tushare_history_batch(codes, observed_at, force=False)
-        self._apply_tushare_history(observations)
+        observations = self._references.load_history_batch(codes, observed_at, force=False)
+        self._references.apply_history(observations)
 
     def _finish_history_warmup(
         self,
@@ -144,21 +136,31 @@ class MarketHistoryWarmupMixin(MarketServiceState):
         except Exception as exc:
             _LOGGER.warning("history warmup batch degraded: %s", type(exc).__name__)
         now = self._monotonic()
+        entries = self._history.entries()
         with self._lock:
-            self._history_warmup_inflight.difference_update(codes)
+            self._inflight.difference_update(codes)
             covered = sum(
-                (entry := self._history.get(code)) is not None and entry.expires_at > now and len(entry.bars) >= 20
+                (entry := entries.get(code)) is not None and entry.expires_at > now and len(entry.bars) >= 20
                 for code in codes
             )
-            self._history_warmup_completed_count += covered
+            self._completed_count += covered
             if not superseded:
-                self._history_warmup_failure_count += max(0, len(codes) - covered)
-            universe = self._history_warmup_universe
-            self._history_universe_rows = len(universe)
-            self._history_covered_rows = sum(
-                (entry := self._history.get(code)) is not None and entry.expires_at > now and len(entry.bars) >= 20
-                for code in universe
-            )
-        lanes = self._source_lanes
+                self._failure_count += max(0, len(codes) - covered)
+            universe = self._universe
+        self._history.update_coverage(universe)
+        lanes = self._runner.source_lanes
         if universe and lanes is not None and not lanes.is_stopped("history") and not lanes.is_stopped("tushare"):
-            self.schedule_history_warmup(universe, self._wall_clock())
+            self.schedule_history_warmup(universe, self._runner.wall_clock())
+
+    def status(self) -> HistoryWarmupStatus:
+        with self._lock:
+            return HistoryWarmupStatus(
+                planned_count=self._planned_count,
+                completed_count=self._completed_count,
+                failure_count=self._failure_count,
+                inflight_count=len(self._inflight),
+                last_source=self._last_source,
+            )
+
+
+__all__ = ["HistoryWarmup", "HistoryWarmupStatus"]

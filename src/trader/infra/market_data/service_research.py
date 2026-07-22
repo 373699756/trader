@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import threading
+from collections import deque
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from concurrent.futures import wait
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import ParamSpec, TypeVar, cast
@@ -13,9 +16,9 @@ from typing import ParamSpec, TypeVar, cast
 from trader.application.ports import MarketDataDeadlineExceeded
 from trader.application.workers import borrow_executor, submit_or_run_inline
 from trader.domain.research import ResearchObservation
-from trader.domain.tail import MinuteBar
+from trader.infra.market_data.akshare import AkshareResearchClient
+from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_models import _ResearchEntry
-from trader.infra.market_data.service_state import MarketServiceState
 from trader.infra.market_data.service_support import (
     _add_action_restriction,
     _degraded_research_observation,
@@ -27,14 +30,67 @@ from trader.infra.market_data.service_support import (
     _serialize_research_observation,
     _source_batch_identity,
 )
-from trader.infra.persistence.runtime_json import atomic_read_json, atomic_write_json
+from trader.infra.persistence.runtime_json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 
-class MarketResearchMixin(MarketServiceState):
-    def _cached_research(
+@dataclass(frozen=True)
+class ResearchLoaderStatus:
+    entries: int
+    success_count: int
+    error_count: int
+    planned_count: int
+    timeout_count: int
+    consecutive_failures: int
+    circuit_open: bool
+    latencies_ms: tuple[float, ...]
+    latest_source_time: datetime | None
+    last_error: str
+    out_of_order_count: int
+
+
+class ResearchLoader:
+    def __init__(
+        self,
+        client: AkshareResearchClient | None,
+        runner: MarketTaskRunner,
+        *,
+        workers: int,
+        ttl_seconds: float,
+        circuit_breaker_failures: int,
+        circuit_breaker_seconds: float,
+        capacity: int,
+        cache_dir: Path | None,
+        json_writer: RuntimeJsonWriter | None,
+        monotonic: Callable[[], float],
+    ) -> None:
+        self._client = client
+        self._runner = runner
+        self._workers = max(1, workers)
+        self._ttl_seconds = max(60.0, ttl_seconds)
+        self._failure_limit = max(1, circuit_breaker_failures)
+        self._breaker_seconds = max(0.1, circuit_breaker_seconds)
+        self._capacity = max(1, capacity)
+        self._cache_dir = cache_dir
+        self._json_writer = json_writer
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._entries: dict[tuple[str, bool], _ResearchEntry] = {}
+        self._success_count = 0
+        self._error_count = 0
+        self._planned_count = 0
+        self._timeout_count = 0
+        self._consecutive_failures = 0
+        self._latencies_ms: deque[float] = deque(maxlen=256)
+        self._latest_source_time: datetime | None = None
+        self._last_error = ""
+        self._open_until = 0.0
+        self._half_open_probe = False
+        self._out_of_order_count = 0
+
+    def cached(
         self,
         codes: Sequence[str],
         *,
@@ -44,11 +100,11 @@ class MarketResearchMixin(MarketServiceState):
     ) -> Mapping[str, ResearchObservation]:
         now = self._monotonic()
         result: dict[str, ResearchObservation] = {}
-        cache = self._cache
+        cache = self._runner.cache
         if cache is not None:
-            observed_at = self._wall_clock()
+            observed_at = self._runner.wall_clock()
             for code in codes:
-                identity = self._data_cache_identity(
+                identity = self._runner.cache_identity(
                     "research_success",
                     "akshare",
                     code,
@@ -68,7 +124,7 @@ class MarketResearchMixin(MarketServiceState):
             for code in codes:
                 if code in result:
                     continue
-                entry = self._research.get((code, include_structured))
+                entry = self._entries.get((code, include_structured))
                 if entry is None:
                     continue
                 if entry.expires_at <= now:
@@ -77,7 +133,7 @@ class MarketResearchMixin(MarketServiceState):
                 if cache is not None:
                     source_time = _research_source_time(entry.observation)
                     if source_time is not None:
-                        identity = self._data_cache_identity(
+                        identity = self._runner.cache_identity(
                             "research_success",
                             "akshare",
                             code,
@@ -88,53 +144,7 @@ class MarketResearchMixin(MarketServiceState):
                             _add_action_restriction(action_restrictions, code, "research_data_degraded")
             return result
 
-    def _cached_intraday(
-        self,
-        codes: Sequence[str],
-        *,
-        action_restrictions: dict[str, set[str]] | None = None,
-    ) -> Mapping[str, tuple[MinuteBar, ...]]:
-        now = self._monotonic()
-        result: dict[str, tuple[MinuteBar, ...]] = {}
-        cache = self._cache
-        if cache is not None:
-            observed_at = self._wall_clock()
-            for code in codes:
-                identity = self._data_cache_identity(
-                    "intraday_minutes",
-                    "eastmoney",
-                    code,
-                    {"code": code, "scale_minutes": 1, "adjust": "none"},
-                    observed_at,
-                )
-                lookup = cache.get(identity)
-                if lookup is not None and lookup.value is not None:
-                    result[code] = cast(tuple[MinuteBar, ...], lookup.value)
-                    if lookup.state == "degraded":
-                        _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
-        with self._lock:
-            for code in codes:
-                if code in result:
-                    continue
-                entry = self._intraday.get(code)
-                if entry is None:
-                    continue
-                if entry.expires_at <= now:
-                    continue
-                result[code] = entry.bars
-                if cache is not None and entry.bars:
-                    identity = self._data_cache_identity(
-                        "intraday_minutes",
-                        "eastmoney",
-                        code,
-                        {"code": code, "scale_minutes": 1, "adjust": "none"},
-                        observed_at,
-                    )
-                    if not cache.is_actionable(identity, max(bar.source_time for bar in entry.bars)):
-                        _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
-            return result
-
-    def _load_research(
+    def load(
         self,
         codes: Sequence[str],
         observed_at: datetime,
@@ -144,10 +154,10 @@ class MarketResearchMixin(MarketServiceState):
         deadline: datetime | None = None,
         action_restrictions: dict[str, set[str]] | None = None,
     ) -> Mapping[str, ResearchObservation]:
-        if self._research_client is None:
+        if self._client is None:
             return {}
-        self._ensure_before_deadline(deadline)
-        source_lanes = self._source_lanes
+        self._runner.ensure_before_deadline(deadline)
+        source_lanes = self._runner.source_lanes
         if source_lanes is not None and not source_lanes.owns_current_thread("akshare"):
             identity = _source_batch_identity(
                 "research_success",
@@ -161,7 +171,7 @@ class MarketResearchMixin(MarketServiceState):
                 "akshare",
                 identity,
                 observed_at,
-                self._load_research,
+                self.load,
                 codes,
                 observed_at,
                 include_structured=include_structured,
@@ -171,25 +181,25 @@ class MarketResearchMixin(MarketServiceState):
             )
             if deadline is None:
                 return lane_future.result()
-            remaining = max(0.0, (deadline - self._wall_clock()).total_seconds())
+            remaining = max(0.0, (deadline - self._runner.wall_clock()).total_seconds())
             try:
                 lane_result = lane_future.result(timeout=remaining)
             except FutureTimeoutError as exc:
                 lane_future.cancel()
                 with self._lock:
-                    self._research_error_count += 1
-                    self._research_timeout_count += 1
-                    self._research_last_error = "research_batch_deadline"
+                    self._error_count += 1
+                    self._timeout_count += 1
+                    self._last_error = "research_batch_deadline"
                 raise MarketDataDeadlineExceeded("research source lane exceeded its batch deadline") from exc
-            self._ensure_before_deadline(deadline)
+            self._runner.ensure_before_deadline(deadline)
             return lane_result
         now = self._monotonic()
-        wall_now = self._wall_clock()
+        wall_now = self._runner.wall_clock()
         result = (
             {}
             if force
             else dict(
-                self._cached_research(
+                self.cached(
                     codes,
                     include_structured=include_structured,
                     fresh_only=True,
@@ -200,7 +210,7 @@ class MarketResearchMixin(MarketServiceState):
         previous: dict[str, _ResearchEntry] = {}
         with self._lock:
             for code in codes:
-                entry = self._research.get((code, include_structured))
+                entry = self._entries.get((code, include_structured))
                 if entry is None:
                     continue
                 previous[code] = entry
@@ -209,20 +219,20 @@ class MarketResearchMixin(MarketServiceState):
             for code in codes:
                 if code in result:
                     continue
-                self._ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(deadline)
                 cached = self._load_research_cache(code, include_structured, wall_now)
-                self._ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(deadline)
                 if cached is not None:
-                    self._research[(code, include_structured)] = cached
+                    self._entries[(code, include_structured)] = cached
                     result[code] = cached.observation
                     previous[code] = cached
-        cache = self._cache
+        cache = self._runner.cache
         if cache is not None:
             for code, observation in result.items():
                 source_time = _research_source_time(observation)
                 if source_time is None:
                     continue
-                cache_identity = self._data_cache_identity(
+                cache_identity = self._runner.cache_identity(
                     "research_success",
                     "akshare",
                     code,
@@ -233,13 +243,13 @@ class MarketResearchMixin(MarketServiceState):
                     _add_action_restriction(action_restrictions, code, "research_data_degraded")
         missing = [code for code in codes if force or code not in result]
         if not missing:
-            self._ensure_before_deadline(deadline)
+            self._runner.ensure_before_deadline(deadline)
             return result
         with self._lock:
-            self._research_planned_count += len(missing)
+            self._planned_count += len(missing)
         with borrow_executor(
-            self._worker_pool,
-            worker_count=min(self._research_workers, len(missing)),
+            self._runner.worker_pool,
+            worker_count=min(self._workers, len(missing)),
             thread_name_prefix="candidate-research",
             queue_capacity=len(missing),
             wait_on_exit=deadline is None,
@@ -248,7 +258,7 @@ class MarketResearchMixin(MarketServiceState):
             futures = {}
             started_at: dict[object, float] = {}
             for code in missing:
-                self._ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(deadline)
                 started = self._monotonic()
                 future = submit_or_run_inline(
                     pool,
@@ -257,24 +267,24 @@ class MarketResearchMixin(MarketServiceState):
                     observed_at,
                     include_structured=include_structured,
                 )
-                self._ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(deadline)
                 futures[future] = code
                 started_at[future] = started
-            timeout = None if deadline is None else max(0.0, (deadline - self._wall_clock()).total_seconds())
+            timeout = None if deadline is None else max(0.0, (deadline - self._runner.wall_clock()).total_seconds())
             completed, pending = wait(futures, timeout=timeout)
             if pending:
                 for future in pending:
                     future.cancel()
                 with self._lock:
-                    self._research_error_count += len(pending)
-                    self._research_timeout_count += len(pending)
-                    self._research_last_error = "research_batch_deadline"
+                    self._error_count += len(pending)
+                    self._timeout_count += len(pending)
+                    self._last_error = "research_batch_deadline"
                 raise MarketDataDeadlineExceeded("research preload exceeded its batch deadline")
-            self._ensure_before_deadline(deadline)
+            self._runner.ensure_before_deadline(deadline)
             for future in completed:
-                self._ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(deadline)
                 code = futures[future]
-                ttl = self._research_ttl_seconds
+                ttl = self._ttl_seconds
                 old_entry = previous.get(code)
                 latency_ms = max(0.0, (self._monotonic() - started_at[future]) * 1000.0)
                 try:
@@ -283,35 +293,35 @@ class MarketResearchMixin(MarketServiceState):
                     observation = _degraded_research_observation(old_entry, str(exc))
                     ttl = min(60.0, ttl)
                     with self._lock:
-                        self._research_error_count += 1
-                        self._research_latencies_ms.append(latency_ms)
-                        self._research_last_error = str(exc)[:240]
+                        self._error_count += 1
+                        self._latencies_ms.append(latency_ms)
+                        self._last_error = str(exc)[:240]
                 else:
                     if _research_is_older(observation, old_entry):
                         observation = _degraded_research_observation(old_entry, "out_of_order_research_result")
                         ttl = min(60.0, ttl)
                         with self._lock:
-                            self._research_out_of_order_count += 1
+                            self._out_of_order_count += 1
                     else:
                         observation = _merge_research_observation(old_entry, observation)
                     with self._lock:
-                        self._research_success_count += 1
-                        self._research_latencies_ms.append(latency_ms)
+                        self._success_count += 1
+                        self._latencies_ms.append(latency_ms)
                         source_time = _research_source_time(observation)
                         if source_time is not None and (
-                            self._research_latest_source_time is None or source_time > self._research_latest_source_time
+                            self._latest_source_time is None or source_time > self._latest_source_time
                         ):
-                            self._research_latest_source_time = source_time
+                            self._latest_source_time = source_time
                         if observation.source_errors:
-                            self._research_error_count += len(observation.source_errors)
-                            self._research_last_error = observation.source_errors[-1][:240]
+                            self._error_count += len(observation.source_errors)
+                            self._last_error = observation.source_errors[-1][:240]
                             ttl = min(60.0, ttl)
-                self._ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(deadline)
                 result[code] = observation
                 source_time = _research_source_time(observation)
-                cache = self._cache
+                cache = self._runner.cache
                 if cache is not None and source_time is not None:
-                    cache_identity = self._data_cache_identity(
+                    cache_identity = self._runner.cache_identity(
                         "research_success",
                         "akshare",
                         code,
@@ -320,32 +330,32 @@ class MarketResearchMixin(MarketServiceState):
                     )
                     if not cache.is_actionable(cache_identity, source_time):
                         _add_action_restriction(action_restrictions, code, "research_data_degraded")
-                self._ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(deadline)
                 self._update_research_memory_cache(
                     code,
                     include_structured,
                     observation,
                     observed_at,
                 )
-                self._ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(deadline)
                 self._write_research_cache(code, include_structured, observation, ttl, wall_now)
-                self._ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(deadline)
                 with self._lock:
-                    self._ensure_before_deadline(deadline)
-                    self._research[(code, include_structured)] = _ResearchEntry(
+                    self._runner.ensure_before_deadline(deadline)
+                    self._entries[(code, include_structured)] = _ResearchEntry(
                         observation,
                         self._monotonic() + ttl,
                     )
             with self._lock:
-                excess = len(self._research) - self._research_cache_limit
+                excess = len(self._entries) - self._capacity
                 if excess > 0:
                     requested = {(code, include_structured) for code in codes}
                     victims = sorted(
-                        self._research,
-                        key=lambda key: (key in requested, self._research[key].expires_at, key),
+                        self._entries,
+                        key=lambda key: (key in requested, self._entries[key].expires_at, key),
                     )[:excess]
                     for key in victims:
-                        self._research.pop(key, None)
+                        self._entries.pop(key, None)
         return result
 
     def _load_research_cache(
@@ -354,7 +364,7 @@ class MarketResearchMixin(MarketServiceState):
         include_structured: bool,
         wall_now: datetime,
     ) -> _ResearchEntry | None:
-        if self._research_cache_dir is None:
+        if self._cache_dir is None:
             return None
         path = self._research_cache_path(code, include_structured)
         try:
@@ -391,10 +401,10 @@ class MarketResearchMixin(MarketServiceState):
         observation: ResearchObservation,
         observed_at: datetime,
     ) -> None:
-        cache = self._cache
+        cache = self._runner.cache
         if cache is None:
             return
-        success_identity = self._data_cache_identity(
+        success_identity = self._runner.cache_identity(
             "research_success",
             "akshare",
             code,
@@ -411,7 +421,7 @@ class MarketResearchMixin(MarketServiceState):
         if not observation.source_errors:
             return
         cache.put_negative(success_identity, error_code="research_refresh_failed")
-        failure_identity = self._data_cache_identity(
+        failure_identity = self._runner.cache_identity(
             "research_failure",
             "akshare",
             code,
@@ -428,7 +438,7 @@ class MarketResearchMixin(MarketServiceState):
         ttl: float,
         wall_now: datetime,
     ) -> None:
-        if self._research_cache_dir is None:
+        if self._cache_dir is None:
             return
         target = self._research_cache_path(code, include_structured)
         expires_at = wall_now + timedelta(seconds=ttl)
@@ -445,13 +455,13 @@ class MarketResearchMixin(MarketServiceState):
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             with self._lock:
-                self._research_error_count += 1
-                self._research_last_error = f"research_cache_write_failed:{type(exc).__name__}"
+                self._error_count += 1
+                self._last_error = f"research_cache_write_failed:{type(exc).__name__}"
 
     def _research_cache_path(self, code: str, include_structured: bool) -> Path:
-        assert self._research_cache_dir is not None
+        assert self._cache_dir is not None
         scope = "structured" if include_structured else "news"
-        return self._research_cache_dir / "observations" / scope / f"{code}.json"
+        return self._cache_dir / "observations" / scope / f"{code}.json"
 
     def _fetch_research_observation(
         self,
@@ -460,16 +470,16 @@ class MarketResearchMixin(MarketServiceState):
         *,
         include_structured: bool,
     ) -> ResearchObservation:
-        if self._research_client is None:
+        if self._client is None:
             return ResearchObservation()
         if not self._begin_research_request():
             raise RuntimeError("akshare_circuit_open")
         try:
             if include_structured:
-                observation = self._research_client.fetch_snapshot(code, observed_at=observed_at)
+                observation = self._client.fetch_snapshot(code, observed_at=observed_at)
             else:
                 observation = ResearchObservation(
-                    evidence=tuple(self._research_client.fetch_news(code, observed_at=observed_at))
+                    evidence=tuple(self._client.fetch_news(code, observed_at=observed_at))
                 )
         except Exception:
             self._finish_research_request(success=False)
@@ -480,20 +490,47 @@ class MarketResearchMixin(MarketServiceState):
     def _begin_research_request(self) -> bool:
         with self._lock:
             now = self._monotonic()
-            if self._research_open_until > now or self._research_half_open_probe:
-                self._research_last_error = "akshare_circuit_open"
+            if self._open_until > now or self._half_open_probe:
+                self._last_error = "akshare_circuit_open"
                 return False
-            if self._research_open_until > 0.0:
-                self._research_half_open_probe = True
+            if self._open_until > 0.0:
+                self._half_open_probe = True
             return True
 
     def _finish_research_request(self, *, success: bool) -> None:
         with self._lock:
-            self._research_half_open_probe = False
+            self._half_open_probe = False
             if success:
-                self._research_consecutive_failures = 0
-                self._research_open_until = 0.0
+                self._consecutive_failures = 0
+                self._open_until = 0.0
                 return
-            self._research_consecutive_failures += 1
-            if self._research_consecutive_failures >= self._research_failure_limit:
-                self._research_open_until = self._monotonic() + self._research_breaker_seconds
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._failure_limit:
+                self._open_until = self._monotonic() + self._breaker_seconds
+
+    def status(self) -> ResearchLoaderStatus:
+        with self._lock:
+            return ResearchLoaderStatus(
+                entries=len(self._entries),
+                success_count=self._success_count,
+                error_count=self._error_count,
+                planned_count=self._planned_count,
+                timeout_count=self._timeout_count,
+                consecutive_failures=self._consecutive_failures,
+                circuit_open=self._open_until > self._monotonic(),
+                latencies_ms=tuple(self._latencies_ms),
+                latest_source_time=self._latest_source_time,
+                last_error=self._last_error,
+                out_of_order_count=self._out_of_order_count,
+            )
+
+    def entries(self) -> Mapping[tuple[str, bool], _ResearchEntry]:
+        with self._lock:
+            return dict(self._entries)
+
+    @property
+    def client(self) -> AkshareResearchClient | None:
+        return self._client
+
+
+__all__ = ["ResearchLoader", "ResearchLoaderStatus"]
