@@ -6,9 +6,9 @@
     <meta name="color-scheme" content="dark" />
     <title>A股策略看板</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='4') }}" />
-    <script defer src="{{ url_for('static', filename='render.js', v='6') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard.js', v='10') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='5') }}" />
+    <script defer src="{{ url_for('static', filename='render.js', v='7') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard.js', v='11') }}"></script>
   </head>
   <body>
     <header class="app-header">
@@ -86,9 +86,9 @@
       <header class="drawer-header">
         <div>
           <span id="drawerCode" class="drawer-code">-</span>
-          <h2 id="drawerTitle">评分明细</h2>
+          <h2 id="drawerTitle">股票详情</h2>
         </div>
-        <button id="drawerClose" class="icon-button" type="button" title="关闭明细" aria-label="关闭明细">
+        <button id="drawerClose" class="icon-button" type="button" title="关闭详情" aria-label="关闭详情">
           <svg class="lucide-icon" aria-hidden="true"><use href="{{ url_for('static', filename='lucide.svg') }}#x"></use></svg>
         </button>
       </header>

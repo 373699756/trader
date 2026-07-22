@@ -2,27 +2,76 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import datetime
 
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import SHANGHAI
 from trader.domain.models import (
-    Board,
     DeepSeekReview,
-    Evidence,
     FilterAudit,
     LiveOverlay,
     LiveQuote,
     RecommendationSnapshot,
     ReviewOutcome,
+    RiskFact,
     Strategy,
 )
 from trader.web import create_app
 from trader.web.routes import WebApiConfig
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)
+
+RECOMMENDATION_ENVELOPE_KEYS = {
+    "schema_version",
+    "status",
+    "snapshot_id",
+    "strategy",
+    "trade_date",
+    "requested_date",
+    "current_trade_date",
+    "historical",
+    "view",
+    "phase",
+    "published_at",
+    "strategy_version",
+    "fusion_mode",
+    "stale",
+    "frozen",
+    "degraded_reasons",
+    "filtered_count",
+    "items",
+    "error",
+}
+RECOMMENDATION_ITEM_KEYS = {
+    "rank",
+    "code",
+    "name",
+    "industry",
+    "price",
+    "pct_change",
+    "turnover_rate",
+    "amount",
+    "market_cap",
+    "source",
+    "source_time",
+    "quote_data_version",
+    "anchor_price",
+    "anchor_daily_return_pct",
+    "anchor_to_now_pct",
+    "action",
+    "action_reason",
+    "scores",
+    "risks",
+    "review",
+}
+RECOMMENDATION_SCORE_KEYS = {
+    "local_score",
+    "deepseek_score",
+    "deepseek_risk_penalty",
+    "final_score",
+}
 
 
 def test_current_recommendations_support_top_zero_and_etag(recommendation_policy, application_feature_factory) -> None:
@@ -35,9 +84,10 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
 
     assert response.status_code == 200
     payload = response.get_json()
+    assert payload["schema_version"] == "v3"
+    assert set(payload) == RECOMMENDATION_ENVELOPE_KEYS
     assert payload["items"] == []
     assert payload["fusion_mode"] == "local_degraded"
-    assert payload["filter_details"] == []
     assert payload["requested_date"] is None
     assert payload["current_trade_date"] == "2026-07-16"
     assert payload["historical"] is False
@@ -45,27 +95,20 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
     assert client.get("/api/recommendations/today", headers={"If-None-Match": etag}).status_code == 304
 
 
-def test_recommendations_explain_missing_fields(recommendation_policy, application_feature_factory) -> None:
+def test_recommendations_exclude_internal_missing_features_and_evidence(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
     snapshot = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
     recommendation = snapshot.recommendations[0]
     values = dict(recommendation.features.values)
     missing_fields = ("news_sentiment", "tail_return_30m", "value_score")
     for field in missing_fields:
         values[field] = None
-    tail_evidence = Evidence(
-        "tail-1",
-        "intraday_tail",
-        "tail input",
-        "eastmoney_intraday",
-        NOW,
-        NOW,
-        "intraday-v1",
-    )
     features = replace(
         recommendation.features,
         values=values,
         missing_fields=missing_fields,
-        evidence=(tail_evidence,),
     )
     snapshot = replace(snapshot, recommendations=(replace(recommendation, features=features),))
     repository = MemoryReadRepository(latest={Strategy.TODAY: snapshot})
@@ -73,59 +116,32 @@ def test_recommendations_explain_missing_fields(recommendation_policy, applicati
 
     item = app.test_client().get("/api/recommendations/today").get_json()["items"][0]
 
-    assert item["missing_fields"] == list(missing_fields)
-    assert item["missing_reasons"] == {
-        "news_sentiment": "新闻或公告证据不可用",
-        "tail_return_30m": "尾盘分钟数据不可用或样本不足",
-        "value_score": "财务或公司事件数据不可用或不满足点时规则",
-    }
-    assert all(item["features"][field] is None for field in missing_fields)
-    assert item["evidence"][0]["received_at"] == NOW.isoformat()
-    assert item["evidence"][0]["data_version"] == "intraday-v1"
+    assert set(item) == RECOMMENDATION_ITEM_KEYS
+    assert set(item["scores"]) == RECOMMENDATION_SCORE_KEYS
+    assert "features" not in item
+    assert "missing_fields" not in item
+    assert "missing_reasons" not in item
+    assert "evidence" not in item
     assert item["anchor_to_now_pct"] is None
 
 
-def test_recommendation_response_adds_v15_board_identity_fields(
+def test_recommendation_response_excludes_internal_board_and_merge_fields(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
     snapshot = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
-    recommendation = snapshot.recommendations[0]
-    quote = replace(
-        recommendation.features.quote,
-        board=Board.CHINEXT,
-        board_source="tushare",
-        board_reliability="verified",
-        exchange="SZSE",
-        listing_date=date(2020, 1, 2),
-        listing_age_sessions=1000,
-        has_price_limit=True,
-        exchange_limit_pct=20.0,
-        rule_version="cn-board-rules-v1",
-        rule_effective_date=date(2023, 8, 28),
-    )
-    snapshot = replace(
-        snapshot,
-        recommendations=(replace(recommendation, features=replace(recommendation.features, quote=quote)),),
-        metadata={**snapshot.metadata, "merge_epoch": "merge-v15", "source_versions": {"tushare": "master-v1"}},
-    )
     repository = MemoryReadRepository(latest={Strategy.TODAY: snapshot})
     app, _publisher = _app(repository)
 
     payload = app.test_client().get("/api/recommendations/today").get_json()
     item = payload["items"][0]
 
-    assert payload["metadata"]["merge_epoch"] == "merge-v15"
-    assert item["board"] == "chinext"
-    assert item["board_source"] == "tushare"
-    assert item["board_reliability"] == "verified"
-    assert item["strategy_hot_cap_pct"] is None
-    assert item["cross_source_verified"] is True
-    assert item["exchange"] == "SZSE"
-    assert item["listing_date"] == "2020-01-02"
-    assert item["listing_age_sessions"] == 1000
-    assert item["has_price_limit"] is True
-    assert item["exchange_limit_pct"] == 20.0
+    assert set(payload) == RECOMMENDATION_ENVELOPE_KEYS
+    assert set(item) == RECOMMENDATION_ITEM_KEYS
+    assert "metadata" not in payload
+    assert "weights" not in payload
+    assert "board" not in item
+    assert "normalization" not in item
 
 
 def test_recommendation_validation_and_empty_current(recommendation_policy, application_feature_factory) -> None:
@@ -136,15 +152,20 @@ def test_recommendation_validation_and_empty_current(recommendation_policy, appl
     empty = client.get("/api/recommendations/tomorrow")
 
     assert empty.status_code == 200
-    assert empty.get_json()["status"] == "not_ready"
-    assert empty.get_json()["filter_details"] == []
-    assert client.get("/api/recommendations/unknown").status_code == 400
+    empty_payload = empty.get_json()
+    assert empty_payload["status"] == "not_ready"
+    assert empty_payload["schema_version"] == "v3"
+    assert set(empty_payload) == RECOMMENDATION_ENVELOPE_KEYS
+    invalid_strategy = client.get("/api/recommendations/unknown")
+    assert invalid_strategy.status_code == 400
+    assert invalid_strategy.get_json()["schema_version"] == "v3"
+    assert set(invalid_strategy.get_json()) == RECOMMENDATION_ENVELOPE_KEYS
     assert client.get("/api/recommendations/today?top_n=19").status_code == 400
     assert client.get("/api/recommendations/today?top_n=01").status_code == 400
     assert client.get("/api/recommendations/today?date=2026-02-30").status_code == 400
 
 
-def test_recommendation_response_exposes_deepseek_review_audit_fields(
+def test_recommendation_response_only_exposes_deepseek_review_outcome_and_error(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -176,15 +197,61 @@ def test_recommendation_response_exposes_deepseek_review_audit_fields(
 
     payload = app.test_client().get("/api/recommendations/today").get_json()
     item = next(item for item in payload["items"] if item["code"] == first.features.quote.code)
-    assert item["review"]["review_stage"] == "primary"
-    assert item["review"]["challenger_status"] == "not_run"
-    assert item["review"]["requested_model"] == "deepseek-v4-flash"
-    assert item["review"]["actual_model"] == "deepseek-v4-pro"
-    assert item["review"]["thinking_mode"] == "reasoning"
-    assert item["review"]["raw_confidence"] == 0.9
-    assert item["review"]["calibrated_confidence"] == 0.8
-    assert item["review"]["evidence_manifest_hash"] == "api-manifest"
-    assert item["review"]["calibration_version"] == "v1"
+    assert item["review"] == {"outcome": "applied", "error": ""}
+
+
+def test_recommendation_response_compacts_and_deduplicates_risks(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    snapshot = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
+    recommendation = snapshot.recommendations[0]
+    local = RiskFact(
+        "crowding:600001",
+        "near_limit_crowding",
+        "high",
+        5.0,
+        "local_rule",
+        NOW,
+        assessment="接近涨跌幅限制",
+    )
+    duplicate = replace(local, source="deepseek", assessment="模型重复事实")
+    model_only = RiskFact(
+        "volatility:600001",
+        "high_volatility",
+        "medium",
+        3.0,
+        "deepseek",
+        NOW,
+        assessment="波动率偏高",
+    )
+    compacted = replace(
+        recommendation,
+        local_risk_facts=(local,),
+        deepseek_risk_facts=(duplicate, model_only),
+    )
+    snapshot = replace(snapshot, recommendations=(compacted, *snapshot.recommendations[1:]))
+    payload = (
+        _app(MemoryReadRepository(latest={Strategy.TODAY: snapshot}))[0]
+        .test_client()
+        .get("/api/recommendations/today")
+        .get_json()
+    )
+
+    assert payload["items"][0]["risks"] == [
+        {
+            "risk_code": "near_limit_crowding",
+            "severity": "high",
+            "penalty": 5.0,
+            "assessment": "接近涨跌幅限制",
+        },
+        {
+            "risk_code": "high_volatility",
+            "severity": "medium",
+            "penalty": 3.0,
+            "assessment": "波动率偏高",
+        },
+    ]
 
 
 def test_status_includes_route_health_details() -> None:
@@ -301,8 +368,8 @@ def test_frozen_current_queries_keep_tomorrow_and_d25_isolated(
     assert d25_payload["snapshot_id"] == "frozen-d25"
     assert tomorrow_payload["strategy"] == "tomorrow"
     assert d25_payload["strategy"] == "d25"
-    assert "tail_structure" in tomorrow_payload["items"][0]["scores"]["components"]
-    assert "not_overheated" in d25_payload["items"][0]["scores"]["components"]
+    assert set(tomorrow_payload["items"][0]["scores"]) == RECOMMENDATION_SCORE_KEYS
+    assert set(d25_payload["items"][0]["scores"]) == RECOMMENDATION_SCORE_KEYS
 
 
 def test_frozen_current_response_applies_overlay_without_changing_anchor_or_snapshot_id(
@@ -343,7 +410,7 @@ def test_frozen_current_response_applies_overlay_without_changing_anchor_or_snap
     payload = response.get_json()
 
     assert payload["snapshot_id"] == "frozen-overlay"
-    assert payload["live_overlay"]["version"] == "overlay-v2"
+    assert "live_overlay" not in payload
     assert payload["items"][0]["price"] == 15.0
     assert payload["items"][0]["anchor_price"] != 15.0
     assert response.headers["ETag"] != '"frozen-overlay"'
@@ -383,7 +450,7 @@ def test_live_draft_response_uses_matching_topk_overlay_and_overlay_etag(
     response = _app(repository)[0].test_client().get("/api/recommendations/today")
     payload = response.get_json()
 
-    assert payload["live_overlay"]["version"] == "draft-overlay-v2"
+    assert "live_overlay" not in payload
     assert payload["items"][0]["price"] == 13.0
     assert response.headers["ETag"] != f'"{draft.snapshot_id}"'
 
@@ -406,8 +473,8 @@ def test_previous_trade_date_is_not_reused_for_current_recommendations(
     assert payload["trade_date"] is None
     assert payload["items"] == []
     assert payload["stale"] is True
-    assert payload["fallback_date"] is None
-    assert payload["fallback_reason"] is None
+    assert "fallback_date" not in payload
+    assert "fallback_reason" not in payload
     assert payload["current_trade_date"] == "2026-07-16"
     assert payload["historical"] is False
     assert payload["degraded_reasons"] == ["snapshot_not_ready"]
@@ -633,7 +700,7 @@ def test_historical_snapshot_has_exact_identity_and_current_quote_overlay(
     assert payload["requested_date"] == "2026-07-15"
     assert payload["current_trade_date"] == "2026-07-16"
     assert payload["historical"] is True
-    assert payload["live_overlay"] is None
+    assert "live_overlay" not in payload
     assert payload["items"][0]["price"] == 15.0
     assert payload["items"][0]["pct_change"] == 8.0
     assert payload["items"][0]["anchor_to_now_pct"] == 25.0
@@ -806,6 +873,7 @@ def test_history_dates_not_found_and_long_rules(recommendation_policy, applicati
     assert missing.get_json()["trade_date"] == "2026-07-15"
     assert client.get("/api/recommendations/long?date=2026-07-15").status_code == 400
     dates = client.get("/api/recommendation-dates?strategy=tomorrow")
+    assert dates.get_json()["schema_version"] == "v3"
     assert dates.get_json()["items"] == ["2026-07-16"]
     assert client.get("/api/recommendation-dates?strategy=long").status_code == 400
 
@@ -837,6 +905,7 @@ def test_event_query_validates_cursor_and_limit() -> None:
     response = client.get("/api/events?cursor=2&limit=1")
 
     assert response.status_code == 200
+    assert response.get_json()["schema_version"] == "v3"
     assert response.get_json()["next_cursor"] == 3
     assert client.get("/api/events?cursor=-1").status_code == 400
     assert client.get("/api/events?limit=501").status_code == 400

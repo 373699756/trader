@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：点击推荐股票后的详情抽屉平铺大量空值、计算中间量和技术审计字段，核心结论
+  难以识别；同时推荐接口仍为每只股票传输这些页面不再消费的数据。新增 Web envelope
+  schema v3 精确字段白名单、精简风险去重投影，以及“推荐结论 / 核心行情 / 评分与风险”
+  三组详情契约；核心行情缺失、快照降级和模型未复核仅在实际发生时显示一条可读状态。
+
 - 用户问题：历史推荐中的“今日涨跌”和“锚点至今”再次全部为空，同时同日已经生成的
   临时推荐没有可见页面。新增显式 `view=live` 同交易日临时草稿只读接口与桌面“临时实时”
   视图；新增 14:50 后冷启动的一次性 P2 当日报价索引恢复任务，不经过候选、评分、
@@ -105,6 +110,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 推荐接口保留原路由并直接升级为 v3，不提供 v2 兼容 shim；逐股响应只保留身份、核心/
+  锚点行情、报价身份、动作、四项关键评分、精简风险和复核终态。完整特征、证据、板块
+  计算、缺失原因和 DeepSeek 技术审计继续参与领域计算、冻结持久化和离线观察，不因页面
+  精简而删除数据采集或改动评分、动作、排序、SSE、ETag 与冻结哈希。
+
 - 历史日期页在可见时每 3 秒重新读取 P2 实时字段，并在同策略报价 overlay 推送时立即
   重读；行级更新继续校验策略、日期、视图和快照身份。正式当前与临时实时使用独立缓存
   和 ETag，临时草稿明确显示“不替代正式冻结”。
@@ -202,6 +212,10 @@ All notable changes to this project are documented here.
   `runtime.json.performance_budgets` 读取，禁止适配器、评分lane或性能脚本自带默认值。
 
 ### Fixed
+
+- 股票详情不再为“无风险、无缺失、无证据、未复核”等正常空状态生成独立区块，也不再
+  直接展示机器动作原因；已登记动作原因和风险代码改为可读中文，空核心行情隐藏对应指标
+  并统一提示“部分核心行情暂缺”。
 
 - 根因确认：冻结窗口或收盘后启动时 cadence 不再运行全市场任务，P2 当前报价索引保持
   空；历史序列化因此按契约把当前价、今日涨跌和锚点至今返回 `null`。同时查询层在冻结
@@ -312,6 +326,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从推荐 Web 响应和普通详情中移除原始特征、权重、分位与截尾、板块策略/总体/竞争组、
+  完整证据与缺失清单、逐字段来源、交易规则、快照内部版本及 DeepSeek 模型指纹、缓存
+  Token、挑战者和证据 hash；这些信息未从领域模型或冻结存储删除。
+
 - 移除历史页面仅首读一次、SSE 正常时永不刷新实时收益列的前端限制；没有删除或改写
   任何冻结记录、历史锚点、评分、动作或推荐日期。
 
@@ -362,6 +380,11 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- v3 ready/not_ready/error、当前/历史、正式/临时实时、overlay、精简复核和风险去重契约
+  通过；JavaScript 语法检查、Ruff format/lint、138 个源码文件 mypy、完整 pytest 与冻结
+  持久化关联回归通过。sdist/wheel 构建成功；wheel 在仓库外独立前缀完成导入、v3 schema、
+  `trader-cli`/`trader-server`、模板、CSS、JavaScript、图标和 `pip check` 验收。
 
 - 本批定向验证已通过 cadence 冻结后冷启动单次恢复、恢复任务不评分/不发布、正式接口
   继续 `not_ready`、`view=live` 返回同日草稿、非法视图拒绝、历史实时行刷新和包内静态
@@ -470,6 +493,15 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 推荐 Web schema v3 是有意的破坏性收缩；仓库外仍读取 v2 原始特征、板块、证据、缺失
+  或完整 DeepSeek 审计字段的私有脚本需一次性迁移。领域快照与冻结格式保持不变，可继续
+  用于离线审计和问题追溯。
+
+- 1280x720、1440x900、1920x1080 实际截图仍被宿主 Firefox Snap/AppArmor 拒绝启动，
+  且机器无 Chromium 备选；静态资源、CSS/JS 契约和语法检查通过，但本批不把三档截图
+  记为已通过。全新虚拟环境安装全部大型数据依赖还受到宿主磁盘配额限制，仓库外独立
+  wheel 前缀改用当前已验收依赖底座完成资源、入口与 `pip check` 验收。
 
 - P2 恢复仍依赖东方财富/新浪全市场接口至少一个返回当日有效行情；若全源失败，历史
   实时列按契约继续显示 `-` 并在状态中记录 `current quote index recovery degraded`，不会

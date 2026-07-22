@@ -7,12 +7,39 @@
     unavailable: "不可执行",
   };
 
-  const DIMENSION_LABELS = {
-    value_quality: "价值质量",
-    financial_health: "财务健康",
-    market_flow: "资金量价",
-    industry_policy: "行业政策",
-    risk_quality: "风险质量",
+  const ACTION_REASON_LABELS = {
+    long_watch_only: "长期观察池",
+    risk_veto: "风险事实触发限制",
+    stale_quote: "行情已过期，仅供观察",
+    insufficient_core_features: "核心数据不足，仅供观察",
+    board_data_reliability_below_threshold: "板块数据可靠度不足",
+    observation_window: "当前处于观察时段",
+    outside_execution_window: "当前不在执行时段",
+    score_threshold_met: "评分达到执行门槛",
+    near_score_threshold: "接近执行门槛，继续观察",
+    below_score_threshold: "评分未达到执行门槛",
+    pending_merge: "等待评分合并",
+  };
+
+  const RISK_LABELS = {
+    near_limit_crowding: "接近涨跌幅限制",
+    price_volume_divergence: "价格与量能背离",
+    high_volatility: "波动率偏高",
+    short_term_overheat: "短期过热",
+    intraday_reversal: "日内冲高回落",
+    liquidity_contraction: "流动性收缩",
+    trend_breakdown: "趋势破位",
+    financial_deterioration: "财务恶化",
+    pledge_risk: "质押风险",
+    reduction_or_unlock: "减持或解禁风险",
+    negative_announcement_level: "负面公告风险",
+  };
+
+  const RISK_SEVERITY_LABELS = {
+    low: "低",
+    medium: "中",
+    high: "高",
+    critical: "严重",
   };
 
   const REVIEW_ERROR_LABELS = {
@@ -26,13 +53,6 @@
     completed_after_deadline: "迟到：结果未参与评分",
   };
 
-  const BOARD_LABELS = {
-    main: "沪深主板",
-    chinext: "创业板",
-    star: "科创板",
-    unsupported: "未支持板块",
-  };
-
   function escapeHtml(value) {
     return String(value == null ? "" : value)
       .replaceAll("&", "&amp;")
@@ -43,7 +63,7 @@
   }
 
   function number(value, digits) {
-    if (value == null || value === "") return "-";
+    if (!hasValue(value)) return "-";
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return "-";
     return parsed.toLocaleString("zh-CN", {
@@ -53,7 +73,7 @@
   }
 
   function compact(value) {
-    if (value == null || value === "") return "-";
+    if (!hasValue(value)) return "-";
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return "-";
     const absolute = Math.abs(parsed);
@@ -63,7 +83,7 @@
   }
 
   function pct(value) {
-    if (value == null || value === "") return { text: "-", className: "" };
+    if (!hasValue(value)) return { text: "-", className: "" };
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return { text: "-", className: "" };
     return {
@@ -132,7 +152,7 @@
       <td>${compact(item.market_cap)}</td>
       <td><div class="score-stack"><span><b>${number(scores.local_score, 2)}</b>本地</span><span><b>${deepseek}</b>模型</span><span><b>${deepseekPenalty}</b>扣分</span><span><b>${number(scores.final_score, 2)}</b>最终</span></div></td>
       <td><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || action)}</span></td>
-      <td class="reason-cell"><span class="reason-tag">${escapeHtml(item.action_reason || "-")}</span></td>
+      <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
   }
 
@@ -152,265 +172,128 @@
 
   function drawer(item, snapshot) {
     const scores = item.scores || {};
-    const review = item.review || {};
-    const reviewed = item.review != null && scores.deepseek_score != null;
-    const dimensions = review.dimensions || {};
-    const risks = [...(item.local_risk_facts || []), ...(item.deepseek_risk_facts || [])];
-    const components = scores.components || {};
-    const features = item.features || {};
-    const metadata = snapshot.metadata || {};
-    const code = String(item.code || "");
-    const fieldSources = objectValue(metadata.field_sources, code);
-    const sourceVersions = plainObject(metadata.source_versions);
-    const marketMissing = matchingEntries(metadata.market_missing_reasons, `${code}.`);
-    const marketConflicts = matchingValues(metadata.market_conflicts, code);
-    const degradedReasons = [
-      ...(Array.isArray(snapshot.degraded_reasons) ? snapshot.degraded_reasons : []),
-      ...(Array.isArray(metadata.market_degraded_reasons) ? metadata.market_degraded_reasons : []),
+    const historical = snapshot.historical === true;
+    const action = String(item.action || "unavailable");
+    const conclusion = [
+      detailGrid([
+        ["推荐动作", ACTION_LABELS[action] || action],
+        ["最终评分", valueNumber(scores.final_score, 2)],
+        ["当前排名", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 名` : null],
+      ]),
+      `<div class="detail-reason"><span>推荐原因</span><strong>${escapeHtml(actionReason(item.action_reason))}</strong></div>`,
+    ].join("");
+
+    const marketValues = historical
+      ? [
+        ["锚点价", valueNumber(item.anchor_price, 2)],
+        ["锚点当日涨跌", valuePct(item.anchor_daily_return_pct)],
+        ["当前价", valueNumber(item.price, 2)],
+        ["今日涨跌", valuePct(item.pct_change)],
+        ["锚点至今", valuePct(item.anchor_to_now_pct)],
+      ]
+      : [
+        ["最新价", valueNumber(item.price, 2)],
+        ["今日涨跌", valuePct(item.pct_change)],
+        ["换手率", valuePercent(item.turnover_rate)],
+        ["成交额", valueCompact(item.amount)],
+        ["总市值", valueCompact(item.market_cap)],
+      ];
+    marketValues.push(
+      ["报价来源", hasValue(item.source) ? item.source : null],
+      ["行情时间", hasValue(item.source_time) ? formatDateTime(item.source_time) : null],
+    );
+    const requiredMarket = historical
+      ? [item.anchor_price, item.anchor_daily_return_pct, item.price, item.pct_change, item.anchor_to_now_pct]
+      : [item.price, item.pct_change, item.turnover_rate, item.amount, item.market_cap];
+    const marketNotes = [];
+    if (requiredMarket.some((value) => !hasValue(value))) marketNotes.push(note("部分核心行情暂缺", "warn"));
+    if (Array.isArray(snapshot.degraded_reasons) && snapshot.degraded_reasons.length > 0) {
+      marketNotes.push(note(`数据降级：${snapshot.degraded_reasons.join("、")}`, "warn"));
+    }
+
+    const scoreValues = [
+      ["本地评分", valueNumber(scores.local_score, 2)],
+      ["模型评分", valueNumber(scores.deepseek_score, 2)],
+      ["模型风险扣分", Number(scores.deepseek_risk_penalty) > 0 ? number(scores.deepseek_risk_penalty, 2) : null],
     ];
+    const scoreParts = [detailGrid(scoreValues)];
+    if (!hasValue(scores.deepseek_score)) scoreParts.push(note(reviewResult(item.review), "muted"));
+    else if (snapshot.fusion_mode !== "hybrid") scoreParts.push(note("模型评分未参与最终分，当前使用本地模式", "muted"));
+    if (Array.isArray(item.risks) && item.risks.length > 0) {
+      scoreParts.push('<h4 class="detail-subtitle">实际风险</h4>', riskList(item.risks));
+    }
+
     return [
-      section("评分", detailGrid([
-        ["基础分", number(scores.base_score, 2)],
-        ["本地风险扣分", number(scores.local_risk_penalty, 2)],
-        ["本地分", number(scores.local_score, 2)],
-        ["DeepSeek 分", reviewed ? number(scores.deepseek_score, 2) : "未复核"],
-        ["DeepSeek 风险扣分", reviewed ? number(scores.deepseek_risk_penalty, 2) : "未复核"],
-        ["最终分", number(scores.final_score, 2)],
-        ["置信覆盖", reviewed ? `${number(scores.confidence_coverage * 100, 1)}%` : "未复核"],
-        ["融合模式", snapshot.fusion_mode || scores.fusion_mode || "-"],
-      ])),
-      section("本地组件", keyValueList(components)),
-      section("权重", nestedValueList(snapshot.weights || {})),
-      section("分位与截尾", normalizationList(item.normalization || {})),
-      section("板块评分", detailGrid([
-        ["板块策略", item.board_policy_id || "-"],
-        ["策略版本", item.board_policy_version || "-"],
-        ["板块可靠度", item.board_data_reliability == null ? "-" : `${number(item.board_data_reliability * 100, 1)}%`],
-        ["有效权重", item.board_supported_weight == null ? "-" : `${number(item.board_supported_weight * 100, 1)}%`],
-        ["板内排名", number(item.board_rank, 0)],
-        ["全局排名", number(item.rank, 0)],
-        ["竞争组", item.competition_group_id || "-"],
-        ["竞争组来源", item.competition_group_source || "-"],
-        ["竞争组限制", item.competition_group_limit == null ? "-" : number(item.competition_group_limit, 0)],
-        ["跳过原因", item.selection_skip_reason || "-"],
-        ["同行差", number((item.board_metrics || {}).peer_gap, 2)],
-        ["领先差", number((item.board_metrics || {}).leader_gap, 2)],
-        ["换手冲击", number((item.board_metrics || {}).turnover_shock_20, 2)],
-        ["成交额冲击", number((item.board_metrics || {}).amount_shock_20, 2)],
-        ["流动性层级", item.liquidity_bucket || "-"],
-        ["参数状态", item.parameter_status || "-"],
-      ])),
-      section("板内总体", populationDetail(item.board_population)),
-      section("风险事实", riskList(risks)),
-      section("DeepSeek 审计", reviewAudit(review)),
-      section("DeepSeek 五维", dimensionList(dimensions, review)),
-      section("缺失字段", missingFieldList(item.missing_fields || [], item.missing_reasons || {})),
-      section("原始指标", keyValueList(features)),
-      section("证据", evidenceList(item.evidence || [])),
-      section("板块与交易规则", detailGrid([
-        ["板块", BOARD_LABELS[item.board] || item.board || "-"],
-        ["板块来源", item.board_source || "-"],
-        ["身份可靠度", item.board_reliability || "-"],
-        ["交易所", item.exchange || "-"],
-        ["上市日期", item.listing_date || "-"],
-        ["上市交易日龄", number(item.listing_age_sessions, 0)],
-        ["是否有价格限制", booleanText(item.has_price_limit)],
-        ["交易所涨跌幅限制", percentText(item.exchange_limit_pct)],
-        ["策略过热上限", percentText(item.strategy_hot_cap_pct)],
-        ["规则版本", item.rule_version || "-"],
-        ["规则生效日", item.rule_effective_date || "-"],
-        ["执行限制", listText(item.execution_restrictions, "无")],
-      ])),
-      section("多源合并", [
-        detailGrid([
-          ["合并版本", metadata.merge_epoch || "-"],
-          ["行情观察时间", formatDateTime(metadata.market_observed_at)],
-          ["价格偏差", percentText(item.cross_source_deviation_pct)],
-          ["定向复核", booleanText(item.cross_source_verified)],
-          ["冲突", listText(marketConflicts, "无")],
-          ["降级原因", listText([...new Set(degradedReasons)], "无")],
-        ]),
-        textValueList(sourceVersions, "暂无来源版本"),
-        textValueList(fieldSources, "暂无逐字段来源"),
-        textValueList(marketMissing, "暂无合并缺失"),
-      ].join("")),
-      section("快照", detailGrid([
-        ["策略版本", snapshot.strategy_version || "-"],
-        ["融合版本", snapshot.fusion_version || "-"],
-        ["数据版本", snapshot.data_version || "-"],
-        ["发布时间", formatDateTime(snapshot.published_at)],
-      ])),
+      section("推荐结论", conclusion),
+      section("核心行情", detailGrid(marketValues) + marketNotes.join("")),
+      section("评分与风险", scoreParts.join("")),
     ].join("");
   }
 
   function section(title, body) {
+    if (!body) return "";
     return `<section class="detail-section"><h3>${escapeHtml(title)}</h3>${body}</section>`;
   }
 
-  function populationDetail(population) {
-    if (!population) return detailGrid([["状态", "无板内总体"]]);
-    return detailGrid([
-      ["总体版本", population.population_version || "-"],
-      ["样本数", number(population.sample_size, 0)],
-      ["缺失数", number(population.missing_count, 0)],
-      ["P50", number(population.liquidity_p50, 2)],
-      ["P80", number(population.liquidity_p80, 2)],
-      ["状态", population.status || "-"],
-      ["回退日期", population.fallback_trade_date || "-"],
-      ["回退交易日龄", number(population.fallback_age_sessions, 0)],
-    ]);
-  }
-
   function detailGrid(values) {
-    return `<div class="detail-grid">${values.map(([label, value]) => `<div class="detail-value"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</div>`;
+    const present = values.filter((entry) => hasValue(entry[1]));
+    if (present.length === 0) return "";
+    return `<div class="detail-grid">${present.map(([label, value]) => `<div class="detail-value"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</div>`;
   }
 
-  function keyValueList(values) {
-    const entries = Object.entries(values || {}).sort(([left], [right]) => left.localeCompare(right));
-    if (entries.length === 0) return '<div class="detail-value"><span>状态</span><strong>无数据</strong></div>';
-    return `<ul class="detail-list">${entries.map(([key, value]) => `<li><b>${escapeHtml(key)}</b> · ${escapeHtml(number(value, 2))}</li>`).join("")}</ul>`;
-  }
-
-  function nestedValueList(values) {
-    const rows = [];
-    for (const [group, entries] of Object.entries(values || {})) {
-      if (!entries || typeof entries !== "object") continue;
-      for (const [name, value] of Object.entries(entries)) rows.push([`${group}.${name}`, value]);
-    }
-    return keyValueList(Object.fromEntries(rows));
-  }
-
-  function textValueList(values, emptyText) {
-    const entries = Object.entries(plainObject(values)).sort(([left], [right]) => left.localeCompare(right));
-    if (entries.length === 0) {
-      return `<div class="detail-value"><span>状态</span><strong>${escapeHtml(emptyText)}</strong></div>`;
-    }
-    return `<ul class="detail-list">${entries.map(([key, value]) => `<li><b>${escapeHtml(key)}</b> · ${escapeHtml(displayText(value))}</li>`).join("")}</ul>`;
-  }
-
-  function plainObject(value) {
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  }
-
-  function objectValue(value, key) {
-    return plainObject(plainObject(value)[key]);
-  }
-
-  function matchingEntries(value, prefix) {
-    return Object.fromEntries(Object.entries(plainObject(value)).filter(([key]) => key.startsWith(prefix)));
-  }
-
-  function matchingValues(value, code) {
-    if (!Array.isArray(value)) return [];
-    return value.filter((entry) => String(entry).includes(code));
-  }
-
-  function displayText(value) {
-    if (value == null || value === "") return "-";
-    if (typeof value === "object") return JSON.stringify(value);
-    return String(value);
-  }
-
-  function booleanText(value) {
-    if (value == null) return "-";
-    return value === true ? "是" : "否";
-  }
-
-  function percentText(value) {
-    return value == null || value === "" ? "-" : `${number(value, 2)}%`;
-  }
-
-  function listText(values, emptyText) {
-    return Array.isArray(values) && values.length > 0 ? values.map(displayText).join("、") : emptyText;
-  }
-
-  function normalizationList(values) {
-    const entries = Object.entries(values || {}).sort(([left], [right]) => left.localeCompare(right));
-    if (entries.length === 0) return '<div class="detail-value"><span>状态</span><strong>无分位数据</strong></div>';
-    return `<ul class="detail-list">${entries.map(([name, value]) => `<li><b>${escapeHtml(name)}</b> · 截尾 ${number(value.lower_bound, 4)} / ${number(value.upper_bound, 4)} · 样本 ${number(value.sample_size, 0)} · 缺失 ${number(value.missing_count, 0)}<br>分位 ${number((value.lower_quantile || 0) * 100, 1)}% / ${number((value.upper_quantile || 0) * 100, 1)}% · 版本 ${escapeHtml(value.population_data_version || "-")}</li>`).join("")}</ul>`;
-  }
-
-  function missingFieldList(fields, reasons) {
-    if (!Array.isArray(fields) || fields.length === 0) {
-      return '<div class="detail-value"><span>状态</span><strong>无缺失字段</strong></div>';
-    }
-    return `<ul class="detail-list">${fields.map((field) => `<li><b>${escapeHtml(field)}</b> · 未获取：${escapeHtml(reasons[field] || "当前快照缺少上游输入")}</li>`).join("")}</ul>`;
+  function note(message, level) {
+    return `<div class="detail-note" data-level="${escapeHtml(level)}">${escapeHtml(message)}</div>`;
   }
 
   function riskList(risks) {
-    if (!Array.isArray(risks) || risks.length === 0) return '<div class="detail-value"><span>状态</span><strong>未识别风险事实</strong></div>';
-    const seen = new Set();
-    return `<ul class="detail-list">${risks.map((risk) => {
-      const duplicate = seen.has(risk.risk_fact_id);
-      seen.add(risk.risk_fact_id);
-      const suffix = duplicate ? " · 已跨来源去重" : "";
-      const actual = risk.actual == null ? "-" : number(risk.actual, 4);
-      return `<li><b>${escapeHtml(risk.risk_code)}</b> · ${escapeHtml(risk.severity)} · 扣分 ${number(risk.penalty, 2)}${escapeHtml(suffix)}<br>${escapeHtml(risk.assessment || "-")}<br>实际 ${escapeHtml(actual)} · 阈值 ${escapeHtml(risk.threshold || "-")} · 来源 ${escapeHtml(risk.source || "-")} · 证据时间 ${escapeHtml(formatDateTime(risk.observed_at))} · 置信 ${number((risk.confidence || 0) * 100, 0)}%</li>`;
+    return `<ul class="detail-list detail-risk-list">${risks.map((risk) => {
+      const label = RISK_LABELS[risk.risk_code] || risk.risk_code || "风险提示";
+      const severity = RISK_SEVERITY_LABELS[risk.severity] || risk.severity || "-";
+      const assessment = risk.assessment ? `<p>${escapeHtml(risk.assessment)}</p>` : "";
+      return `<li><b>${escapeHtml(label)}</b><span class="risk-meta">${escapeHtml(severity)}风险 · 扣分 ${number(risk.penalty, 2)}</span>${assessment}</li>`;
     }).join("")}</ul>`;
   }
 
-  function dimensionList(dimensions, review) {
-    const entries = Object.entries(dimensions || {});
-    if (entries.length === 0) {
-      return `<div class="detail-value"><span>结果</span><strong>${escapeHtml(reviewResult(review))}</strong></div>`;
-    }
-    return `<ul class="detail-list">${entries.map(([name, value]) => `<li><b>${escapeHtml(DIMENSION_LABELS[name] || name)}</b> · ${number(value.score, 2)} / 置信 ${number((value.confidence || 0) * 100, 0)}%<br>${escapeHtml(value.assessment || "-")}</li>`).join("")}</ul>`;
-  }
-
-  function reviewAudit(review) {
-    if (!review || !review.outcome) return detailGrid([["结果", "未复核"]]);
-    const primaryMode = [review.thinking_mode, review.reasoning_effort].filter(Boolean).join(" / ") || "-";
-    const challengerMode = [review.challenger_thinking_mode, review.challenger_reasoning_effort].filter(Boolean).join(" / ") || "-";
-    return detailGrid([
-      ["结果", reviewResult(review)],
-      ["复核阶段", review.review_stage || "primary"],
-      ["挑战者状态", review.challenger_status || "not_run"],
-      ["主审请求模型", review.requested_model || "-"],
-      ["主审实际模型", review.actual_model || "-"],
-      ["主审模式", primaryMode],
-      ["主审指纹", review.system_fingerprint || "-"],
-      ["主审缓存命中 / 未命中", tokenPair(review.prompt_cache_hit_tokens, review.prompt_cache_miss_tokens)],
-      ["挑战者请求模型", review.challenger_requested_model || "-"],
-      ["挑战者实际模型", review.challenger_actual_model || "-"],
-      ["挑战者模式", challengerMode],
-      ["挑战者指纹", review.challenger_system_fingerprint || "-"],
-      ["挑战者缓存命中 / 未命中", tokenPair(review.challenger_prompt_cache_hit_tokens, review.challenger_prompt_cache_miss_tokens)],
-      ["原始置信", confidence(review.raw_confidence)],
-      ["校准置信", confidence(review.calibrated_confidence)],
-      ["校准版本", review.calibration_version || "-"],
-      ["证据清单", review.evidence_manifest_hash || "-"],
-    ]);
-  }
-
-  function tokenPair(hit, miss) {
-    if (hit == null && miss == null) return "-";
-    return `${number(hit, 0)} / ${number(miss, 0)}`;
-  }
-
-  function confidence(value) {
-    return value == null ? "-" : `${number(Number(value) * 100, 1)}%`;
+  function actionReason(value) {
+    const reason = String(value || "");
+    if (ACTION_REASON_LABELS[reason]) return ACTION_REASON_LABELS[reason];
+    if (reason.startsWith("market_data_observe_only:")) return "行情或交易规则受限，仅供观察";
+    return reason || "暂无补充说明";
   }
 
   function reviewResult(review) {
-    if (!review || !review.outcome) return "未复核";
+    if (!review || !review.outcome) return "未复核，最终评分使用本地结果";
     const error = String(review.error || "");
     if (REVIEW_ERROR_LABELS[error]) return REVIEW_ERROR_LABELS[error];
     if (review.outcome === "abstain") return "模型弃权：使用本地评分";
     if (review.outcome === "late") return "迟到：结果未参与评分";
     if (review.outcome !== "rejected") return String(review.outcome);
     if (
-      error.startsWith("http_") ||
-      error.startsWith("internal_") ||
-      ["timeout", "request_error", "request_failed", "empty_response", "invalid_response"].includes(error)
-    ) {
-      return "调用失败：已回退本地评分";
-    }
+      error.startsWith("http_")
+      || error.startsWith("internal_")
+      || ["timeout", "request_error", "request_failed", "empty_response", "invalid_response"].includes(error)
+    ) return "调用失败：已回退本地评分";
     return "拒绝：响应未通过结构化校验";
   }
 
-  function evidenceList(items) {
-    if (!Array.isArray(items) || items.length === 0) return '<div class="detail-value"><span>状态</span><strong>无结构化证据</strong></div>';
-    return `<ul class="detail-list">${items.map((item) => `<li><b>${escapeHtml(item.type || "evidence")}</b> · ${escapeHtml(item.title || "-")}<br>${escapeHtml(item.source || "-")} · ${escapeHtml(formatDateTime(item.published_at))}</li>`).join("")}</ul>`;
+  function hasValue(value) {
+    return value !== null && value !== undefined && value !== "";
+  }
+
+  function valueNumber(value, digits) {
+    return hasValue(value) ? number(value, digits) : null;
+  }
+
+  function valuePct(value) {
+    return hasValue(value) ? pct(value).text : null;
+  }
+
+  function valuePercent(value) {
+    return hasValue(value) ? `${number(value, 2)}%` : null;
+  }
+
+  function valueCompact(value) {
+    return hasValue(value) ? compact(value) : null;
   }
 
   function formatDateTime(value) {

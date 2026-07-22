@@ -304,7 +304,7 @@
     const item = (state.payload.items || []).find((candidate) => candidate.code === row.dataset.code);
     if (!item) return;
     els.drawerCode.textContent = `${item.code || "-"} · ${item.industry || "未分类"}`;
-    els.drawerTitle.textContent = `${item.name || "股票"} 评分明细`;
+    els.drawerTitle.textContent = `${item.name || "股票"} 股票详情`;
     els.drawerContent.innerHTML = window.TraderRender.drawer(item, state.payload);
     els.detailDrawer.classList.add("is-open");
     els.detailDrawer.setAttribute("aria-hidden", "false");

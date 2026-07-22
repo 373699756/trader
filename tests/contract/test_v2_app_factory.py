@@ -36,10 +36,11 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
 
     assert response.status_code == 200
     assert "A股策略看板" in page
+    assert "股票详情" in page
     assert "策略验证" not in page
-    assert "/static/dashboard.css?v=4" in page
-    assert "/static/render.js?v=6" in page
-    assert "/static/dashboard.js?v=10" in page
+    assert "/static/dashboard.css?v=5" in page
+    assert "/static/render.js?v=7" in page
+    assert "/static/dashboard.js?v=11" in page
     assert 'data-view="live"' in page
     assert "临时实时" in page
     assert 'class="runtime-error"' in page
@@ -81,23 +82,22 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     renderer_response = client.get("/static/render.js")
     renderer = renderer_response.get_data(as_text=True)
     assert renderer_response.status_code == 200
-    assert 'scores.deepseek_score == null ? "未复核"' in renderer
+    assert 'section("推荐结论"' in renderer
+    assert 'section("核心行情"' in renderer
+    assert 'section("评分与风险"' in renderer
     assert 'api_key_missing: "不可用：未配置 API 密钥"' in renderer
     assert 'return "拒绝：响应未通过结构化校验"' in renderer
-    assert 'section("缺失字段"' in renderer
-    assert "实际 ${escapeHtml(actual)}" in renderer
-    assert "阈值 ${escapeHtml(risk.threshold" in renderer
-    assert "证据时间 ${escapeHtml(formatDateTime(risk.observed_at))}" in renderer
+    assert "部分核心行情暂缺" in renderer
+    assert "模型评分未参与最终分，当前使用本地模式" in renderer
     assert "anchor_to_now_pct" in renderer
-    assert 'section("权重"' in renderer
-    assert "板块与交易规则" in renderer
-    assert "多源合并" in renderer
-    assert "strategy_hot_cap_pct" in renderer
-    assert 'section("分位与截尾"' in renderer
     assert "risk.assessment" in renderer
-    assert 'section("DeepSeek 审计"' in renderer
-    assert 'review.challenger_actual_model || "-"' in renderer
-    assert "review.prompt_cache_hit_tokens" in renderer
-    assert 'review.evidence_manifest_hash || "-"' in renderer
+    assert "RISK_SEVERITY_LABELS" in renderer
+    assert 'section("缺失字段"' not in renderer
+    assert 'section("权重"' not in renderer
+    assert "板块与交易规则" not in renderer
+    assert "多源合并" not in renderer
+    assert 'section("DeepSeek 审计"' not in renderer
+    assert "review.challenger_actual_model" not in renderer
+    assert "review.prompt_cache_hit_tokens" not in renderer
     assert "row," in renderer
     assert client.get("/static/dashboard.js").status_code == 200

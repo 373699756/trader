@@ -298,10 +298,10 @@ confidence_coverage = sum(raw_confidence_i * w_i)
 和受控评级。缺失、越界、代码错配、证据错配或未知字段按规则拒绝或修复；修复重试也
 计入物理请求。
 
-审计字段 `review_stage`、`challenger_status`、`rating` 和置信度只用于展示、持久化和
-离线观察，不参与生产分数、动作或排序。挑战者不能放宽硬过滤；冲突时只可维持或更
-保守。模型提出的风险必须经 schema、证据引用和本地规则映射后才形成
-`deepseek_risk_penalty`。
+审计字段 `review_stage`、`challenger_status`、`rating` 和置信度只用于持久化和离线
+观察，不参与生产分数、动作或排序；普通 Web 推荐响应只投影复核 `outcome/error`。
+挑战者不能放宽硬过滤；冲突时只可维持或更保守。模型提出的风险必须经 schema、证据
+引用和本地规则映射后才形成 `deepseek_risk_penalty`。
 
 ## 11. DeepSeek 全局预算与缓存
 
