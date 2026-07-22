@@ -73,7 +73,11 @@ def snapshot_envelope(
         "fallback_reason": fallback_reason,
         "live_overlay": _live_overlay(overlay) if overlay is not None else None,
         "items": [
-            _recommendation(item, displayed_quotes.get(item.features.quote.code))
+            _recommendation(
+                item,
+                displayed_quotes.get(item.features.quote.code),
+                historical=historical,
+            )
             for item in snapshot.recommendations[:top_n]
         ],
         "error": None,
@@ -155,18 +159,35 @@ def error_envelope(
     }
 
 
-def _recommendation(item: Recommendation, live_quote: LiveQuote | None = None) -> dict[str, object]:
+def _recommendation(
+    item: Recommendation,
+    live_quote: LiveQuote | None = None,
+    *,
+    historical: bool = False,
+) -> dict[str, object]:
     quote = item.features.quote
     score = item.score
     missing_fields = list(item.features.missing_fields)
+    displayed_price = live_quote.price if live_quote is not None else (None if historical else quote.price)
+    displayed_change = live_quote.pct_change if live_quote is not None else (None if historical else quote.pct_change)
+    displayed_source = live_quote.source if live_quote is not None else (None if historical else quote.source)
+    displayed_source_time = (
+        live_quote.source_time if live_quote is not None else (None if historical else quote.source_time)
+    )
+    displayed_received_time = (
+        live_quote.received_time if live_quote is not None else (None if historical else quote.received_time)
+    )
+    displayed_data_version = (
+        live_quote.data_version if live_quote is not None else (None if historical else quote.data_version)
+    )
     return {
         "rank": item.rank,
         "code": quote.code,
         "name": quote.name,
         "industry": quote.industry,
-        "price": live_quote.price if live_quote is not None else quote.price,
+        "price": displayed_price,
         "previous_close": quote.previous_close,
-        "pct_change": live_quote.pct_change if live_quote is not None else quote.pct_change,
+        "pct_change": displayed_change,
         "change_5m": quote.change_5m,
         "speed": quote.speed,
         "volume_ratio": quote.volume_ratio,
@@ -174,10 +195,10 @@ def _recommendation(item: Recommendation, live_quote: LiveQuote | None = None) -
         "amount": quote.amount,
         "amplitude": quote.amplitude,
         "market_cap": quote.market_cap,
-        "source": live_quote.source if live_quote is not None else quote.source,
-        "source_time": (live_quote.source_time if live_quote is not None else quote.source_time).isoformat(),
-        "received_time": (live_quote.received_time if live_quote is not None else quote.received_time).isoformat(),
-        "quote_data_version": live_quote.data_version if live_quote is not None else quote.data_version,
+        "source": displayed_source,
+        "source_time": displayed_source_time.isoformat() if displayed_source_time is not None else None,
+        "received_time": displayed_received_time.isoformat() if displayed_received_time is not None else None,
+        "quote_data_version": displayed_data_version,
         "cross_source_deviation_pct": quote.cross_source_deviation_pct,
         "cross_source_verified": quote.cross_source_verified,
         "board": quote.board.value,

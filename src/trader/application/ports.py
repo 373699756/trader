@@ -10,6 +10,7 @@ from trader.domain.models import (
     DeepSeekReview,
     FeatureSnapshot,
     LiveOverlay,
+    LiveQuote,
     RecommendationSnapshot,
     ReviewCandidateContext,
     Strategy,
@@ -129,6 +130,10 @@ class TradingCalendarPort(Protocol):
     def is_trading_day(self, day: date) -> bool: ...
 
 
+class CurrentQuoteReaderPort(Protocol):
+    def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]: ...
+
+
 class DeepSeekReviewPort(Protocol):
     def review(
         self,
@@ -197,6 +202,7 @@ class EventAuditPort(EventReaderPort, Protocol):
 
 __all__ = [
     "Clock",
+    "CurrentQuoteReaderPort",
     "DeepSeekReviewPort",
     "EventAuditPort",
     "EventReaderPort",

@@ -273,7 +273,12 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     )
     app = create_app(
         status_provider=pipeline.status,
-        queries=RecommendationQueries(repository, repository, now=now),
+        queries=RecommendationQueries(
+            repository,
+            repository,
+            now=now,
+            current_quote_reader=market_data,
+        ),
         publisher=publisher,
         api_config=WebApiConfig(
             default_top_n=settings.api.default_top_n,

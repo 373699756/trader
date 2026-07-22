@@ -13,7 +13,7 @@ from pathlib import Path
 from trader.application.cache import BoundedCache, build_cache_identity, request_fingerprint
 from trader.application.source_lanes import SourceLaneRegistry
 from trader.application.workers import BoundedExecutor
-from trader.domain.models import FeatureSnapshot, MarketQuote
+from trader.domain.models import FeatureSnapshot, LiveQuote, MarketQuote
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import StandardizedFeatureBuilder
@@ -148,6 +148,21 @@ class MarketFeatureService(
         self._tushare_reference_fields: dict[str, dict[str, float]] = {}
         self._tushare_reference_versions: dict[str, str] = {}
         self._tushare_reference_version_order: dict[str, tuple[datetime, datetime, str]] = {}
+
+    def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]:
+        quotes = self._candidate_quote_snapshot(_normalize_codes(codes))
+        return {
+            quote.code: LiveQuote(
+                code=quote.code,
+                price=quote.price,
+                pct_change=quote.pct_change,
+                source=quote.source,
+                source_time=quote.source_time,
+                received_time=quote.received_time,
+                data_version=quote.data_version,
+            )
+            for quote in quotes
+        }
 
     def fetch_market_features(
         self,

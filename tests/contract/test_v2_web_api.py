@@ -539,6 +539,73 @@ def test_historical_snapshot_uses_current_snapshot_quote_without_overlay(
     assert payload["items"][0]["anchor_to_now_pct"] == 20.0
 
 
+def test_historical_snapshot_uses_current_quote_index_when_stock_is_not_recommended_today(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    historical = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        snapshot_id="historical-index-15",
+        trade_date="2026-07-15",
+        frozen=True,
+    )
+    live_at = NOW.replace(hour=10, minute=1)
+    current_quote = LiveQuote(
+        code="600001",
+        price=15.0,
+        pct_change=8.0,
+        source="tencent",
+        source_time=live_at,
+        received_time=live_at,
+        data_version="p2-current-v1",
+    )
+    repository = MemoryReadRepository(frozen={(Strategy.TOMORROW, "2026-07-15"): historical})
+
+    payload = (
+        _app(
+            repository,
+            now=live_at,
+            current_quotes={"600001": current_quote},
+        )[0]
+        .test_client()
+        .get("/api/recommendations/tomorrow?date=2026-07-15")
+        .get_json()
+    )
+
+    assert payload["items"][0]["price"] == 15.0
+    assert payload["items"][0]["pct_change"] == 8.0
+    assert payload["items"][0]["anchor_to_now_pct"] == 25.0
+
+
+def test_historical_snapshot_does_not_present_anchor_change_as_today_change_when_current_quote_is_missing(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    historical = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY),
+        snapshot_id="historical-missing-current-15",
+        trade_date="2026-07-15",
+        frozen=True,
+    )
+    repository = MemoryReadRepository(frozen={(Strategy.TODAY, "2026-07-15"): historical})
+
+    payload = (
+        _app(
+            repository,
+            current_quotes={},
+        )[0]
+        .test_client()
+        .get("/api/recommendations/today?date=2026-07-15")
+        .get_json()
+    )
+    item = payload["items"][0]
+
+    assert item["anchor_daily_return_pct"] == 3.0
+    assert item["price"] is None
+    assert item["pct_change"] is None
+    assert item["anchor_to_now_pct"] is None
+
+
 def test_historical_snapshot_does_not_reuse_previous_day_overlay_as_current_quote(
     recommendation_policy,
     application_feature_factory,
@@ -576,7 +643,9 @@ def test_historical_snapshot_does_not_reuse_previous_day_overlay_as_current_quot
 
     payload = _app(repository, now=NOW)[0].test_client().get("/api/recommendations/tomorrow?date=2026-07-15").get_json()
 
-    assert payload["items"][0]["price"] == previous.recommendations[0].features.quote.price
+    assert payload["items"][0]["anchor_price"] == previous.recommendations[0].features.quote.price
+    assert payload["items"][0]["price"] is None
+    assert payload["items"][0]["pct_change"] is None
     assert payload["items"][0]["anchor_to_now_pct"] is None
 
 
@@ -665,13 +734,15 @@ def _app(
     history_size: int = 8,
     maximum_subscribers: int = 4,
     now: datetime = NOW,
+    current_quotes: Mapping[str, LiveQuote] | None = None,
 ):
     publisher = SnapshotPublisher(
         history_size=history_size,
         client_queue_size=2,
         maximum_subscribers=maximum_subscribers,
     )
-    queries = RecommendationQueries(repository, repository, now=lambda: now)
+    quote_reader = MemoryCurrentQuoteReader(current_quotes) if current_quotes is not None else None
+    queries = RecommendationQueries(repository, repository, now=lambda: now, current_quote_reader=quote_reader)
     app = create_app(
         lambda: {"schema_version": "v2", "status": "running", "runtime_started": True},
         queries=queries,
@@ -679,6 +750,14 @@ def _app(
         api_config=WebApiConfig(heartbeat_seconds=1),
     )
     return app, publisher
+
+
+class MemoryCurrentQuoteReader:
+    def __init__(self, quotes: Mapping[str, LiveQuote]) -> None:
+        self._quotes = dict(quotes)
+
+    def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]:
+        return {code: self._quotes[code] for code in codes if code in self._quotes}
 
 
 def _snapshot(recommendation_policy, application_feature_factory, strategy: Strategy) -> RecommendationSnapshot:

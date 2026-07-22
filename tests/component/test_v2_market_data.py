@@ -2543,6 +2543,34 @@ def test_feature_service_health_reports_bounded_quote_age_summaries() -> None:
     assert health["candidate_quote_age"]["maximum_seconds"] == 31.0
 
 
+def test_feature_service_current_quote_index_prefers_latest_targeted_quote() -> None:
+    market_quote = _quote()
+    targeted_quote = replace(
+        market_quote,
+        price=15.0,
+        pct_change=8.0,
+        source="tencent",
+        source_time=NOW + timedelta(seconds=5),
+        received_time=NOW + timedelta(seconds=5),
+        data_version="targeted-v2",
+    )
+    service = MarketFeatureService(
+        StaticGatewayWithSeparateQuotes((market_quote,), (targeted_quote,)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+    )
+    service.fetch_market_features(NOW)
+    service.refresh_candidate_quotes(("600001",), NOW + timedelta(seconds=5))
+
+    quotes = service.current_quotes(("600001", "600999"))
+
+    assert tuple(quotes) == ("600001",)
+    assert quotes["600001"].price == 15.0
+    assert quotes["600001"].pct_change == 8.0
+    assert quotes["600001"].source == "tencent"
+    assert quotes["600001"].data_version == "targeted-v2"
+
+
 def test_feature_builder_does_not_compute_limit_proximity_when_limit_is_inapplicable() -> None:
     quote = replace(
         _quote(),

@@ -6,8 +6,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.application.ports import EventReaderPort, SnapshotRepositoryPort
-from trader.application.schedule import freeze_due_at, trade_date_at
+from trader.application.ports import CurrentQuoteReaderPort, EventReaderPort, SnapshotRepositoryPort
+from trader.application.schedule import freeze_due_at, shanghai_now, trade_date_at
 from trader.domain.models import LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
 
 
@@ -41,10 +41,12 @@ class RecommendationQueries:
         events: EventReaderPort,
         *,
         now: Callable[[], datetime],
+        current_quote_reader: CurrentQuoteReaderPort | None = None,
     ) -> None:
         self._repository = repository
         self._events = events
         self._now = now
+        self._current_quote_reader = current_quote_reader
 
     def recommendation(self, strategy: Strategy, trade_date: str | None = None) -> SnapshotLookup:
         if trade_date is None:
@@ -70,23 +72,7 @@ class RecommendationQueries:
         else:
             snapshot = self._repository.load_frozen(strategy, trade_date)
         current_trade_date = self.today()
-        current_snapshot = self._repository.latest(strategy)
-        current_overlay = (
-            self._repository.load_live_overlay(strategy, current_snapshot.trade_date)
-            if current_snapshot is not None and current_snapshot.trade_date == current_trade_date
-            else None
-        )
-        current_quotes = (
-            _snapshot_quotes(current_snapshot)
-            if current_snapshot is not None and current_snapshot.trade_date == current_trade_date
-            else {}
-        )
-        if (
-            current_snapshot is not None
-            and current_overlay is not None
-            and current_overlay.snapshot_id == current_snapshot.snapshot_id
-        ):
-            current_quotes.update(current_overlay.quotes)
+        current_quotes = self._historical_current_quotes(strategy, snapshot, current_trade_date)
         return SnapshotLookup(
             "ready" if snapshot is not None else "not_found",
             snapshot,
@@ -94,6 +80,31 @@ class RecommendationQueries:
             current_trade_date=current_trade_date,
             current_quotes=current_quotes,
         )
+
+    def _historical_current_quotes(
+        self,
+        strategy: Strategy,
+        snapshot: RecommendationSnapshot | None,
+        current_trade_date: str,
+    ) -> Mapping[str, LiveQuote]:
+        if snapshot is None:
+            return {}
+        if self._current_quote_reader is not None:
+            codes = tuple(item.features.quote.code for item in snapshot.recommendations)
+            quotes = self._current_quote_reader.current_quotes(codes)
+            return {
+                code: quote
+                for code, quote in quotes.items()
+                if code in codes and shanghai_now(quote.source_time).date().isoformat() == current_trade_date
+            }
+        current_snapshot = self._repository.latest(strategy)
+        if current_snapshot is None or current_snapshot.trade_date != current_trade_date:
+            return {}
+        current_quotes = _snapshot_quotes(current_snapshot)
+        current_overlay = self._repository.load_live_overlay(strategy, current_snapshot.trade_date)
+        if current_overlay is not None and current_overlay.snapshot_id == current_snapshot.snapshot_id:
+            current_quotes.update(current_overlay.quotes)
+        return current_quotes
 
     def _current_lookup(
         self,

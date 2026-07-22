@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户诉求：把 `docs/` 下分散的需求、实施计划、问题单、架构清单和运维资料合并为两份文档。现状审计确认目录内共有 8 份文件、3623 行，活动契约、历史执行记录和未完成 v17 路线相互交叉；新增 `software-business-design.md` 作为产品、架构、运行、API/UI、运维、验收和工程路线的唯一权威，新增 `recommendation-strategy.md` 作为候选、过滤、因子、评分、DeepSeek、融合、动作与 TopK 的唯一权威。
+
+- 用户问题回归：历史推荐表“锚点至今”持续为空，且“今日涨跌”显示冻结锚点涨跌。新增历史 API 对 P2 当前报价索引、未再次入选股票、当日行情缺失和旧日 overlay 隔离的契约测试，并新增行情服务当前报价索引优先采用更新腾讯定向报价的组件测试。
+
 - 用户诉求：继续完成 `docs/hi.md` 中尚未闭合的批次二。现状审计确认上一提交虽已推送 v16 半成品，但计划仍为执行中，核心板块评分/缓存专门测试与性能文件缺失，质量门禁存在 18 个 pytest 失败、23 个 mypy 错误、格式/静态检查失败及 7 个超长活动模块。新增三板评分、缓存、风险、集中度边界测试和固定 360 候选性能 runner/fixture；补齐三 lane 单 worker及队列等待观测、板内同行/领先组边界、缓存 epoch 隔离、七项风险去重与 25 分截断、TopK 60% 和竞争组限制证据。
 
 - 用户诉求：将基于 `58e6d39` 的本地 v15 修改恢复到已前进的远端分支；给出的 460KB tar 只包含 13 个重叠文件，不能代表完整工作树。审计确认旧工作目录仍保留同基点的完整安全 stash（66 个文件），因此以完整 stash 恢复源码、配置、测试、性能 fixture 和文档，并把后续三批远端修复按语义合并：页面快照身份对账继续使用 `dashboard.js?v=8`，结构化研究成功缓存继续复用，腾讯候选/TopK 报价在五来源普通 worker 之外保留独立紧急执行位。为保持活动源码 500 行门禁，来源 latest-wins 生命周期独立到应用层 `source_lanes.py`；未把仅含重叠文件的 tar 当作完整实现覆盖当前树。
@@ -81,6 +85,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 文档治理从单一综合需求文件调整为职责互斥的双文档模型；`AGENTS.md`、README 和交付契约测试同步使用新路径与更新边界。合并保留五来源、双冻结、六阶段 256 MiB 目标、v16 三板九组权重、七项本地风险、DeepSeek 188 次预算、68/32 融合、动作阈值、集中度和 long 观察公式，并把尚未完成的 v17 P1-P6 发布池/Web 热路径/冻结检查点/性能 CLI 明确登记为下一完整工程章节；本批不改变任何运行配置、代码、公式或产品行为。
+
+- 历史推荐查询现按历史股票代码只读访问 P2 已缓存的全市场/候选报价索引，不再要求该股票当天仍位于同策略 TopK；HTTP 路径不刷新行情、不评分、不访问网络，也不修改冻结快照、JSON 或 overlay。历史响应继续使用原字段名，当前价、今日涨跌和锚点至今只由同一上海自然日的实时行情派生。
+
 - v16 today/tomorrow/d25 现按三板策略完整启用并保留 long 当前观察语义；将板块评分辅助计算、推荐最终合并、推荐/回放模型、极端结构风险、市场任务执行和快照 review codec 按职责拆分，所有活动源码重新低于 500 行。`docs/need.md` 第 13 节明确旧 d25 双乘数只用于 v14/v15 回放，活动 v16 以第 26.7 节显式不过热组件为准。
 
 - 运行配置继续固定 5 个普通来源 worker；组合根在同一有界数据池中额外创建 1 个 worker 和 1 个等待槽作为紧急 lane，候选及 TopK 腾讯定向报价走紧急 lane，全市场、历史、分钟和研究任务继续走普通 lane。状态 API 新增紧急 worker、容量、在途、提交、完成与拒绝计数，不改变 3 秒候选报价截止、刷新 cadence、来源 single-flight 或冻结规则。
@@ -151,6 +159,8 @@ All notable changes to this project are documented here.
   `runtime.json.performance_budgets` 读取，禁止适配器、评分lane或性能脚本自带默认值。
 
 ### Fixed
+
+- 修复历史响应在当日行情缺失时把冻结 `pct_change` 回填到“今日涨跌”的字段混用：锚点价格和锚点涨跌继续保持冻结值；当日行情存在时返回真实今日涨跌并计算锚点至今，不存在或不是当前上海日期时返回 `null`，页面显示 `-`，不再伪造锚点值。根因是查询层只扫描当前同策略推荐快照且序列化层对缺失实时行情回退到冻结报价。
 
 - 修复 v16 半成品导致同步评分仍向 `prepare_snapshot()` 传入已删除参数、异步 future 类型串线、旧冻结被误标 v16 回放、序列化后 tuple/list 元数据哈希不一致、DeepSeek 缓存被纯报价版本抖动无条件击穿、Web/持久化可空数值类型错误、结构化减持字段仍沿用旧合并名，以及目标股票进入领先组后把有效 3 只领导样本误降为 2 只的问题。任一板块失败继续保留最近完整三板快照，不发布偏置 TopK。
 
@@ -224,6 +234,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除已被两份权威文档吸收的 8 个旧文档文件及空的 `architecture/`、`issues/`、`operations/` 层级。逐批实现历史继续由本 Changelog 和 Git 历史保存，2026-07-17 审计、2026-07-20 外部项目比较、迁移清单和最终验收记录的仍有效结论已归入软件业务设计文档，不再保留会与活动契约竞争的并行副本。
+
+- 本批未删除历史快照、锚点字段、日期接口、SSE、ETag 或任何策略数据；未以主动 HTTP 抓行情填补历史展示，也未修改冻结身份、评分、动作和哈希。
+
 - 本批未增加第七个数据 worker，未放宽候选报价 3 秒总截止，也未隐藏真实腾讯超时、清空推荐、改写冻结快照或让普通历史/研究任务占用紧急 lane。
 
 - 本批未隐藏任何降级提示，也未清除或返还 DeepSeek 已计数的失败预算；未用昨日数据或伪造零值替代缺失的分钟、财务、公告、质押或解禁证据。
@@ -254,6 +268,10 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 本批双文档结构契约、旧路径残留扫描、相对链接、`git diff --check` 和本批 Python 文件 Ruff format/lint 通过；全量 Ruff lint、134 个源码文件 mypy、583 个 pytest、sdist/wheel 构建通过。wheel 在仓库外临时虚拟环境安装后可从隔离路径导入，模板、CSS、两个 JavaScript 和两个 SVG 资源齐全，`trader-cli --help`、`validate-config` 与 `pip check` 通过。
+
+- 历史行情修复的 Web API 契约测试和行情索引组件测试通过；`make format-check`、`make lint`、134 个源码模块 mypy、完整 583 项 pytest 与 `make package` 全部通过，pytest 仅保留 10 条既有未知测试模型名 RuntimeWarning。仓库外隔离安装 wheel 后通过包导入、配置校验、CLI、`pip check` 及模板、4 个 CSS、2 个 JavaScript、2 个 SVG 共 9 项资源读取；本批未修改 HTML/CSS/JavaScript，桌面布局沿用同资源三档已通过基线。
 
 - 批次二 195 项局部矩阵和完整 580 项 pytest 通过，保留 10 条既有未知测试模型名 RuntimeWarning；`make format-check`、`make lint`、134 个源码模块 mypy、`make package` 和 `git diff --check` 通过。v16 性能报告使用预热 1 轮、测量 5 轮和 nearest-rank，并真实启动三条 lane、对每策略 360 只候选执行全局选择：板内预选 P95 28.446ms、单板评分 3.583ms、三板三策略墙钟 295.877ms、全局选择 2.434ms，均通过 250/250/1000/100ms 配置预算；报告同时保存三板各 18 个队列等待样本、串行参考、墙钟比、3.344947 秒进程 CPU 和 1080 峰值条目。最终 wheel 在仓库外安装全部声明依赖后从独立 site-packages 导入，两个 CLI、配置、9 项资源和 `pip check` 通过；Firefox 152 在实际 1280x720、1440x900、1920x1080 视口均生成有效 PNG，DOM 检查及人工复核确认无白屏、关键同级重叠、裁切或页面级横向溢出。
 
@@ -321,6 +339,10 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 本批是文档信息架构重整，没有运行 UI 或业务行为变化，因此不重复桌面截图和真实外部行情/DeepSeek 验收。旧文档的逐日过程日志已压缩为决策结论，完整原文仍可从本批基线 Git 历史追溯；v17 P1-P6 工程章节仍未实施，不得因文档合并视为完成。全量 `make format-check` 仍被本批过程中出现且未纳入提交的并行用户改动 `src/trader/web/schemas.py` 和 `tests/contract/test_v2_web_api.py` 阻断；两文件保持原样，本批自身格式检查通过。
+
+- “锚点至今”和“今日涨跌”依赖 P2 当日内存行情已成功覆盖对应股票；服务冷启动尚未取得当日行情或行情源降级时，这两列会按契约显示 `-`，不会回退为旧锚点值。外部行情时效仍取决于来源可用性；本批没有修改 Web 资源，三档桌面结论沿用当前资源基线。
 
 - v16 固定 fixture 与本地门禁已覆盖确定性和绝对性能预算，但本机串行墙钟/lane 墙钟 P95 为 0.843，未显示纯 Python 计算加速，因此三 lane 只宣告失败域隔离、有界并发和 1000ms 绝对预算通过。外部行情/DeepSeek 的真实交易日延迟仍取决于网络与供应商；本批不消耗真实 DeepSeek 额度、不宣称收益改善，也不提前实施 `docs/hi.md` 批次三的 v17 P1-P6 发布池与 Web 性能硬化。宿主 Firefox 仍记录 SWGL framebuffer 警告且高分辨率截图完成较慢，但本次三档 PNG 和 DOM 证据均有效；图形栈变化后仍应复跑发布截图。
 
