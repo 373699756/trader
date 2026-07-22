@@ -15,6 +15,7 @@ from trader.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )
+from trader.infra.failures import classify_adapter_failure
 from trader.infra.market_data.merge import overlay_canonical_snapshot, subset_canonical_snapshot
 from trader.infra.market_data.merge_quote import source_name, source_priority
 from trader.infra.market_data.observations import SourceObservation
@@ -232,16 +233,10 @@ def _before_deadline(now: datetime, deadline: datetime | None) -> bool:
 
 
 def _cache_error_code(exc: Exception) -> str:
-    message = str(exc).lower()
-    if "late" in message or "deadline" in message:
-        return "late"
-    if "timeout" in message:
-        return "timeout"
-    if "circuit_open" in message:
-        return "circuit_open"
     if isinstance(exc, MarketDataNoDataError):
         return "no_data"
-    return "source_failed"
+    failure = classify_adapter_failure(exc, provider="market", operation="source_fetch")
+    return "late" if failure.code.value == "deadline" else failure.code.value
 
 
 def _observation_version(observation: SourceObservation) -> tuple[datetime, datetime, str, str]:

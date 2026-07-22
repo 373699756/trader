@@ -17,7 +17,7 @@ from trader.application.cache import CacheIdentity, build_cache_identity, canoni
 from trader.application.schedule import shanghai_now
 from trader.application.source_lanes import SourceRequestSuperseded
 from trader.infra.market_data.gateway import MarketDataGateway
-from trader.infra.market_data.history import DailyBar
+from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_history import HistoryStore
@@ -113,7 +113,7 @@ class ReferenceLoader:
         tushare_history: tuple[SourceObservation, ...] = ()
         if self._client is not None:
             if not self._client.supports("security_master"):
-                if normalized:
+                if normalized and self._client.supports("forward_adjusted_daily"):
                     tushare_history = self.load_history_batch(normalized, observed_at, force=force)
                 self.apply_history(tushare_history)
                 return
@@ -155,7 +155,8 @@ class ReferenceLoader:
             self._gateway.update_reference_observations((*calendars, *masters))
             if normalized:
                 valuation_trade_date = _latest_effective_trade_date(calendars, observed_at)
-                tushare_history = self.load_history_batch(normalized, observed_at, force=force)
+                if self._client.supports("forward_adjusted_daily"):
+                    tushare_history = self.load_history_batch(normalized, observed_at, force=force)
                 valuation_observations = (
                     self.load(
                         "daily_valuation_financials",
@@ -335,7 +336,7 @@ class ReferenceLoader:
             if observation.fields.get("reference_data_degraded") is True:
                 continue
             bar = _tushare_daily_bar(observation)
-            if bar is None:
+            if bar is None or bar.adjustment is not PriceAdjustment.QFQ:
                 continue
             grouped.setdefault(observation.subject_key, []).append(bar)
             applied_observations.append(observation)
@@ -517,6 +518,10 @@ def _tushare_daily_bar(observation: SourceObservation) -> DailyBar | None:
         amount=cast(float, numbers["amount"]) * 1000.0,
         pct_change=cast(float, numbers["pct_change"]),
         turnover_rate=_finite_number(fields.get("turnover_rate")),
+        adjustment=(
+            PriceAdjustment.QFQ if fields.get("price_adjustment") == PriceAdjustment.QFQ.value else PriceAdjustment.RAW
+        ),
+        source="tushare",
     )
 
 

@@ -86,6 +86,7 @@ class HistoryWarmup:
             and bool(tushare_health.get("enabled"))
             and not bool(tushare_health.get("circuit_open"))
             and tushare_health.get("degraded_reason") not in _PERMANENT_TUSHARE_DEGRADATIONS
+            and tushare_health.get("history_mode") == "forward_adjusted"
         )
         source = "local_seed" if local_seed_codes else ("tushare" if use_tushare else "tencent")
         batch = (local_seed_codes or missing)[: self._batch_size]

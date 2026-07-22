@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from trader.domain.market.models import MarketQuote
 from trader.infra.market_data.features import FeatureBuilder
-from trader.infra.market_data.history import DailyBar, summarize_history_metrics
+from trader.infra.market_data.history import DailyBar, PriceAdjustment, summarize_history_metrics
 from trader.infra.settings import load_strategy_settings
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,10 +32,24 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
             amount=10_000.0,
             pct_change=1.0,
             turnover_rate=2.0,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
         )
         for index in range(1, 26)
     )
-    same_day = DailyBar("2026-07-16", 12.0, 12.0, 99.0, 1.0, 50_000.0, 600_000.0, 0.0, 2.0)
+    same_day = DailyBar(
+        "2026-07-16",
+        12.0,
+        12.0,
+        99.0,
+        1.0,
+        50_000.0,
+        600_000.0,
+        0.0,
+        2.0,
+        adjustment=PriceAdjustment.QFQ,
+        source="fixture",
+    )
     bars = (*prior, same_day)
     quote = MarketQuote(
         code="600001",

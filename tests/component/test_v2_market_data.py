@@ -42,7 +42,7 @@ from trader.infra.market_data.calendar import ChinaTradingCalendar, TradingCalen
 from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
-from trader.infra.market_data.history import DailyBar
+from trader.infra.market_data.history import DailyBar, HistoryAdjustmentError, PriceAdjustment
 from trader.infra.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
@@ -1911,6 +1911,7 @@ def test_tushare_per_code_batch_keeps_successes_when_one_code_fails() -> None:
     )
 
     assert {item.subject_key for item in observations if item.status == "success"} == {"600001", "600003"}
+    assert all(item.fields.get("price_adjustment") == "qfq" for item in observations if item.status == "success")
     assert any(
         item.status == "failed" and item.subject_key == "600002" and item.error_code == "timeout"
         for item in observations
@@ -1958,6 +1959,7 @@ def test_tushare_120_point_profile_batches_free_daily_and_disables_paid_referenc
     )
 
     assert {item.subject_key for item in observations} == {"600001", "300001", "688001"}
+    assert all(item.fields.get("price_adjustment") == "raw" for item in observations)
     assert len(pro.calls) == 1
     assert pro.calls[0]["ts_code"] == "600001.SH,300001.SZ,688001.SH"
     assert client.supports("daily_history") is True
@@ -2624,7 +2626,18 @@ def test_reference_refresh_structures_tushare_history_valuation_and_financial_da
 
 
 def test_eastmoney_history_completion_cannot_overwrite_newer_tushare_history() -> None:
-    eastmoney_bar = DailyBar("2026-07-14", 10.0, 10.1, 10.2, 9.9, 1000.0, 10000.0, 1.0)
+    eastmoney_bar = DailyBar(
+        "2026-07-14",
+        10.0,
+        10.1,
+        10.2,
+        9.9,
+        1000.0,
+        10000.0,
+        1.0,
+        adjustment=PriceAdjustment.QFQ,
+        source="eastmoney",
+    )
 
     class BlockingHistory:
         def __init__(self) -> None:
@@ -2673,6 +2686,7 @@ def test_eastmoney_history_completion_cannot_overwrite_newer_tushare_history() -
             "vol": 11.0,
             "amount": 12.0,
             "pct_chg": 1.0,
+            "price_adjustment": "qfq",
         },
         missing_reasons={},
         payload_hash="tushare-history-v2",
@@ -3135,6 +3149,8 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
             volume=1_000_000,
             amount=100_000_000 + index,
             pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
         )
         for index in range(1, 61)
     )
@@ -3302,9 +3318,8 @@ def test_market_service_loads_history_before_cold_start_candidate_cross_section(
     assert service.health()["history_universe_rows"] == 2
 
 
-def test_production_source_lanes_warm_tushare_history_after_realtime_commit() -> None:
+def test_unadjusted_tushare_history_is_not_consumed_and_warmup_uses_qfq_fallback() -> None:
     quotes = (_quote(), _quote(code="300001"), _quote(code="688001"))
-    completed = threading.Event()
 
     class HistoryPro:
         def __init__(self) -> None:
@@ -3327,15 +3342,15 @@ def test_production_source_lanes_warm_tushare_history_after_realtime_commit() ->
                 for code in str(kwargs["ts_code"]).split(",")
                 for index in range(60)
             ]
-            completed.set()
             return FakeTushareFrame(rows)
 
     pro = HistoryPro()
+    history = CountingHistoryClient(_history_bars())
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     lanes = SourceLaneRegistry(pool)
     service = _service(
         StaticGateway(quotes),
-        StaticHistoryClient(),
+        history,
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         tushare_client=TushareClient(
             token="secret-token",
@@ -3355,8 +3370,9 @@ def test_production_source_lanes_warm_tushare_history_after_realtime_commit() ->
     try:
         first = service.fetch_market_features(NOW, deadline=NOW + timedelta(seconds=1))
         assert all(feature.history_days == 0 for feature in first)
-        assert completed.wait(1.0)
-        lanes.submit("tushare", "history-warmup-barrier", NOW + timedelta(seconds=1), lambda: None).result(timeout=1.0)
+        timeout_at = time.monotonic() + 1.0
+        while service.health()["history_warmup_completed_count"] < len(quotes) and time.monotonic() < timeout_at:
+            time.sleep(0.01)
         second = service.fetch_market_features(NOW + timedelta(seconds=2), force=True)
     finally:
         lanes.stop(wait=True, timeout_seconds=1.0)
@@ -3365,7 +3381,20 @@ def test_production_source_lanes_warm_tushare_history_after_realtime_commit() ->
     assert all(feature.history_days == 60 for feature in second)
     assert service.health()["history_coverage_ratio"] == 1.0
     assert service.health()["history_warmup_completed_count"] == 3
-    assert pro.calls == 1
+    assert service.health()["history_warmup_last_source"] == "tencent"
+    assert sorted(history.calls) == sorted(quote.code for quote in quotes)
+    assert pro.calls == 0
+
+
+def test_feature_builder_rejects_unadjusted_history_for_qfq_features() -> None:
+    raw_bars = tuple(replace(bar, adjustment=PriceAdjustment.RAW, source="tushare") for bar in _history_bars())
+
+    with pytest.raises(HistoryAdjustmentError, match="requires qfq"):
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
+            (_quote(),),
+            {"600001": raw_bars},
+            NOW,
+        )
 
 
 def test_permission_denied_tushare_falls_back_to_batched_history_lane() -> None:
@@ -3591,6 +3620,8 @@ def test_zero_historical_return_has_neutral_price_volume_confirmation() -> None:
             volume=1_000_000.0,
             amount=100_000_000.0,
             pct_change=0.0,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
         )
         for index in range(21)
     )
@@ -4734,6 +4765,8 @@ def _history_bars() -> tuple[DailyBar, ...]:
             volume=1_000_000,
             amount=100_000_000 + index,
             pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
         )
         for index in range(60)
     )

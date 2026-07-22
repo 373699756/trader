@@ -7,6 +7,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from typing import Protocol
 
@@ -132,19 +133,22 @@ class TushareClient:
     ) -> tuple[SourceObservation, ...]:
         if not self.supports("forward_adjusted_daily"):
             return self._insufficient_points("forward_adjusted_daily", observed_at)
-        return self._fetch_per_code(
-            "forward_adjusted_daily",
-            codes,
-            observed_at,
-            lambda client, code: _invoke(
-                client,
-                "pro_bar",
-                ts_code=_ts_code(code),
-                start_date=start_date.strftime("%Y%m%d"),
-                end_date=end_date.strftime("%Y%m%d"),
-                adj="qfq",
-                freq="D",
+        return _with_price_adjustment(
+            self._fetch_per_code(
+                "forward_adjusted_daily",
+                codes,
+                observed_at,
+                lambda client, code: _invoke(
+                    client,
+                    "pro_bar",
+                    ts_code=_ts_code(code),
+                    start_date=start_date.strftime("%Y%m%d"),
+                    end_date=end_date.strftime("%Y%m%d"),
+                    adj="qfq",
+                    freq="D",
+                ),
             ),
+            "qfq",
         )
 
     def fetch_daily_history(
@@ -157,24 +161,27 @@ class TushareClient:
         normalized = tuple(dict.fromkeys(code for code in codes if len(code) == 6 and code.isdigit()))
         if not normalized:
             return ()
-        return self._fetch_records(
-            "daily_history",
-            observed_at,
-            "daily",
-            {
-                "ts_code": ",".join(_ts_code(code) for code in normalized),
-                "start_date": start_date.strftime("%Y%m%d"),
-                "end_date": end_date.strftime("%Y%m%d"),
-                "fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
-            },
-            lambda row, observed, received, version: _generic_observation(
+        return _with_price_adjustment(
+            self._fetch_records(
                 "daily_history",
-                row,
-                observed,
-                received,
-                version,
+                observed_at,
+                "daily",
+                {
+                    "ts_code": ",".join(_ts_code(code) for code in normalized),
+                    "start_date": start_date.strftime("%Y%m%d"),
+                    "end_date": end_date.strftime("%Y%m%d"),
+                    "fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
+                },
+                lambda row, observed, received, version: _generic_observation(
+                    "daily_history",
+                    row,
+                    observed,
+                    received,
+                    version,
+                ),
+                empty_is_error=True,
             ),
-            empty_is_error=True,
+            "raw",
         )
 
     def fetch_daily_valuations(
@@ -460,6 +467,26 @@ class TushareClient:
             self._last_latency_ms = (self._monotonic() - started) * 1000.0
             self._latencies_ms.append(self._last_latency_ms)
             self._degraded_reason = "stopped"
+
+
+def _with_price_adjustment(
+    observations: Sequence[SourceObservation],
+    adjustment: str,
+) -> tuple[SourceObservation, ...]:
+    tagged: list[SourceObservation] = []
+    for observation in observations:
+        if observation.status != "success":
+            tagged.append(observation)
+            continue
+        fields = {**dict(observation.fields), "price_adjustment": adjustment}
+        tagged.append(
+            replace(
+                observation,
+                fields=fields,
+                payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+            )
+        )
+    return tuple(tagged)
 
 
 __all__ = ["TushareClient"]

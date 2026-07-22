@@ -2,17 +2,42 @@
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
+from dataclasses import dataclass
+
 from trader.domain.recommendation.models import Strategy
-from trader.infra.deepseek.budget_state import BudgetStoreState
 
 _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})
 _CALL_TERMINALS = frozenset({"success", "failed", "abandoned"})
 _CANDIDATE_TERMINALS = frozenset({"applied", "abstain", "rejected", "late"})
 
 
-class BudgetSummaryMixin(BudgetStoreState):
+@dataclass(frozen=True)
+class BudgetReportingConfig:
+    daily_hard_limit: int
+    daily_target: int
+    stage_targets: Mapping[str, int]
+    stage_limits: Mapping[str, int]
+
+
+class BudgetSummaryReader:
+    def __init__(
+        self,
+        connect: Callable[[], AbstractContextManager[sqlite3.Connection]],
+        initialized: Callable[[], bool],
+        config: BudgetReportingConfig,
+    ) -> None:
+        self._connect = connect
+        self._initialized = initialized
+        self._daily_hard_limit = config.daily_hard_limit
+        self._daily_target = config.daily_target
+        self._stage_targets = dict(config.stage_targets)
+        self._stage_limits = dict(config.stage_limits)
+
     def summary(self, day: str) -> dict[str, object]:
-        if not self._initialized:
+        if not self._initialized():
             return {
                 "used": 0,
                 "remaining": self._daily_hard_limit,

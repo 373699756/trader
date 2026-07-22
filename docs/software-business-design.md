@@ -80,16 +80,21 @@ entrypoints / web / infra -> application -> domain
   记录、状态枚举与深层不可变 JSON 载荷，状态转换、deadline、latest-wins、冻结 CAS 和
   停止顺序由应用层显式拥有；不得导入 Flask、`infra` 或旧包，也不得让
   `Mapping[str, object]` 或共享可变字典穿越新的应用公共边界。
-- `infra`：配置、行情、交易日历、DeepSeek、缓存、SQLite、文件和外部适配器。
+- `infra`：配置、行情、交易日历、DeepSeek、缓存、SQLite、文件和外部适配器；编排门面只
+  持有显式有类型组件，不通过 mixin、多继承、共享状态基类或 `Any` 属性取得能力。
 - `web`：请求校验、序列化、SSE 和静态资源；只能调用应用层只读用例。
 - `entrypoints`：参数、进程生命周期和退出码。
 - `bootstrap.py`：唯一组合根，显式创建客户端并注入依赖；禁止全局服务定位器。
 
-行情适配器固定采用组合：`QuoteStore`、`HistoryStore`/`HistoryWarmup`、
+行情适配器固定采用组合：`MarketSourceCoordinator`、`QuoteStore`、
+`HistoryStore`/`HistoryWarmup`、
 `ResearchLoader`、`IntradayLoader` 和 `ReferenceLoader` 分别拥有自己的有类型状态、锁和
 资源依赖；类之间不得通过 mixin、共享状态基类、`Any` 属性或隐式模板方法取得能力。
-`bootstrap.py` 显式装配这些组件，最外层 `MarketFeatureService` 只实现
-`MarketDataPort`/`CurrentQuoteReaderPort` 的协调与转发，不保存组件业务状态。
+`bootstrap.py` 显式装配这些组件，最外层 `MarketFeatureService` 只协调与转发行情、
+候选、报价、研究、参考、元数据和结果端口，不保存组件业务状态。DeepSeek 固定按 HTTP、
+schema、预算批次、预算汇总、缓存、请求执行、状态和复核编排拆分；
+`DeepSeekReviewer`、`DeepSeekBudgetStore` 只组合这些组件。快照仓库同样组合独立观测
+持久化组件，不通过继承注入事件或健康状态能力。
 
 `create_app()` 必须无线程、无网络、无数据库和无文件写入副作用。HTTP 请求不得抓取
 行情、评分、调用 DeepSeek 或写盘。新代码不得导入 `stock_analyzer`。活动源码单文件
@@ -165,8 +170,8 @@ TopK 展示报价高于普通周期任务；全市场、候选和评分使用同
 | --- | --- |
 | 东方财富 | 全市场、分钟和历史基础行情，实时字段主优先级 |
 | 新浪 | 同周期全市场校验和字段回退 |
-| 腾讯 | 候选和 TopK 定向实时报价；Tushare 永久降级时提供完整前复权日线历史主回退 |
-| Tushare | 120 积分档优先尝试 SDK `daily` 批量未复权日线；更高积分能力必须按配置显式启用 |
+| 腾讯 | 候选和 TopK 定向实时报价；默认提供完整前复权日线历史主来源 |
+| Tushare | 120 积分档只暴露 SDK `daily` 批量未复权能力和来源健康；更高积分 qfq 能力必须按配置显式启用 |
 | AKShare | 行业、新闻、公告和候选级研究数据 |
 
 Tushare SDK 是默认运行依赖，HTTP 协议固定向官方 API 根地址提交 `api_name=daily`，
@@ -201,10 +206,11 @@ DeepSeek 和 Tushare 各自仍以同名环境变量优先，其次读取对应 `
 服务在交易日任意活动阶段首次启动都必须补一次证券主数据和交易日历初始化，不得只在
 09:15-09:30 启动时执行。全市场任务只抓取、统一并原子发布实时行情及已缓存历史特征，
 不得在 20 秒 deadline 内同步抓取整批历史。缺失历史按主板、创业板、科创板均衡的稳定
-顺序交给独立历史池分批预热；120 积分档优先以 Tushare 批量未复权日线提供 OHLC、成交量、
-成交额和涨跌幅，明确标记 `unadjusted_daily`，不得伪称前复权。单只缺失不能回滚同批成功结果，下一周期只续跑
-未覆盖代码。Tushare 缺失、权限拒绝或持续不可用时，以腾讯完整日 K 原始响应作为前复权
-历史主回退，成交量从手换算为股、成交额从万元换算为元，东方财富作为第二回退；每批完成
+顺序交给独立历史池分批预热。120 积分 Tushare `daily` 明确标记为 `raw`/
+`unadjusted_daily`，只可用于来源能力审计，不得进入收益、均线、波动、回撤、ATR 或其他
+需要复权的历史特征；历史预热直接使用腾讯完整日 K qfq 主来源，东方财富 qfq 为第二
+回退。只有 Tushare 明确支持 `pro_bar(qfq)` 时才可进入历史特征缓存。单只缺失不能回滚
+同批成功结果，下一周期只续跑未覆盖代码；成交量和成交额分别按供应商原单位显式换算。每批完成
 后立即链式提交下一批，失败代码进入负缓存冷却，均不得再次阻塞实时行情任务。
 冷启动允许只读复用 `.runtime/market_data.sqlite3` 中每只不少于 20 条的最近有效前复权
 日线作为历史种子；种子不写回、不伪装成当日刷新，远端恢复后以更长的有效结果替换。
@@ -235,6 +241,13 @@ today 行情超过 20 秒或尾盘冻结行情超过 30 秒只能观察。
 3 次熔断 60 秒，半开只允许一个探测。缓存支持 fresh、stale-while-revalidate、
 degraded、负缓存和 single-flight；刷新失败保留最近有效值及原始时间，不得用失败条目
 覆盖。全源失败也返回最近有效统一快照，并增加降级原因。
+
+所有外部适配器共用结构化失败分类：`timeout`、`deadline`、`circuit_open`、
+`negative_cache`、`cancelled`、`superseded`、`no_data`、`rate_limited`、
+`schema_invalid` 和 `source_failed`；分类只保存供应商、操作、是否可重试和有界类别，禁止
+持久化密钥或完整异常文本。行情以 deadline、熔断、负缓存和 latest-wins 取消共同控制；
+DeepSeek 以单次 timeout、物理预算预留、提交 deadline 和 schema 终态控制，失败不阻塞
+本地推荐。不同适配器不为追求表面一致而增加无配置依据的隐藏重试或后台线程。
 
 候选实时报价事件只刷新腾讯报价并立即交还事件线程，不得同步等待整批尾盘分钟线；
 tomorrow 评分的数据准备阶段按需加载/读取分钟线并受评分预算约束。这样 1 秒 TopK 与

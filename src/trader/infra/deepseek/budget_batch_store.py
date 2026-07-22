@@ -2,38 +2,54 @@
 
 from __future__ import annotations
 
+import sqlite3
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from datetime import datetime
 
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import DeepSeekReview
-from trader.infra.deepseek.budget_state import BudgetStoreState
 from trader.infra.deepseek.budget_support import _require_aware, _sync_call_audit
 
 _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})
 _CANDIDATE_TERMINALS = frozenset({"applied", "abstain", "rejected", "late"})
 
 
-class BudgetBatchMixin(BudgetStoreState):
-    def begin_batch(
-        self,
-        strategy: Strategy,
-        *,
-        phase: str,
-        bucket: str,
-        model: str,
-        requested_at: datetime,
-        deadline: datetime,
-        candidate_codes: Sequence[str],
-        cache_hit_count: int = 0,
-    ) -> str:
-        _require_aware(requested_at, "batch requested_at")
-        _require_aware(deadline, "batch deadline")
-        codes = tuple(candidate_codes)
+@dataclass(frozen=True)
+class BudgetBatchRequest:
+    strategy: Strategy
+    phase: str
+    bucket: str
+    model: str
+    requested_at: datetime
+    deadline: datetime
+    candidate_codes: Sequence[str]
+    cache_hit_count: int = 0
+
+
+@dataclass(frozen=True)
+class BudgetBatchCompletion:
+    batch_id: str
+    status: str
+    completed_at: datetime
+    reviews: Mapping[str, DeepSeekReview]
+    physical_attempts: int
+    error: str = ""
+
+
+class BudgetBatchStore:
+    def __init__(self, connect: Callable[[], AbstractContextManager[sqlite3.Connection]]) -> None:
+        self._connect = connect
+
+    def begin_batch(self, request: BudgetBatchRequest) -> str:
+        _require_aware(request.requested_at, "batch requested_at")
+        _require_aware(request.deadline, "batch deadline")
+        codes = tuple(request.candidate_codes)
         if len(codes) != len(set(codes)):
             raise ValueError("DeepSeek batch candidate codes must be unique")
-        if cache_hit_count < 0 or cache_hit_count > len(codes):
+        if request.cache_hit_count < 0 or request.cache_hit_count > len(codes):
             raise ValueError("DeepSeek batch cache hits must be within candidate count")
         batch_id = uuid.uuid4().hex
         with self._connect() as connection:
@@ -47,15 +63,15 @@ class BudgetBatchMixin(BudgetStoreState):
                 """,
                 (
                     batch_id,
-                    requested_at.date().isoformat(),
-                    strategy.value,
-                    phase,
-                    bucket,
-                    model,
-                    requested_at.isoformat(),
-                    deadline.isoformat(),
+                    request.requested_at.date().isoformat(),
+                    request.strategy.value,
+                    request.phase,
+                    request.bucket,
+                    request.model,
+                    request.requested_at.isoformat(),
+                    request.deadline.isoformat(),
                     len(codes),
-                    cache_hit_count,
+                    request.cache_hit_count,
                 ),
             )
             connection.executemany(
@@ -68,20 +84,11 @@ class BudgetBatchMixin(BudgetStoreState):
             connection.commit()
         return batch_id
 
-    def finish_batch(
-        self,
-        batch_id: str,
-        *,
-        status: str,
-        completed_at: datetime,
-        reviews: Mapping[str, DeepSeekReview],
-        physical_attempts: int,
-        error: str = "",
-    ) -> None:
-        if status not in _BATCH_TERMINALS - {"abandoned"}:
-            raise ValueError(f"invalid review batch terminal status: {status}")
-        _require_aware(completed_at, "batch completed_at")
-        if physical_attempts < 0:
+    def finish_batch(self, completion: BudgetBatchCompletion) -> None:
+        if completion.status not in _BATCH_TERMINALS - {"abandoned"}:
+            raise ValueError(f"invalid review batch terminal status: {completion.status}")
+        _require_aware(completion.completed_at, "batch completed_at")
+        if completion.physical_attempts < 0:
             raise ValueError("physical attempts cannot be negative")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -91,12 +98,18 @@ class BudgetBatchMixin(BudgetStoreState):
                 SET completed_at = ?, status = ?, physical_attempts = ?, error = ?
                 WHERE batch_id = ? AND status = 'running'
                 """,
-                (completed_at.isoformat(), status, physical_attempts, error[:1000], batch_id),
+                (
+                    completion.completed_at.isoformat(),
+                    completion.status,
+                    completion.physical_attempts,
+                    completion.error[:1000],
+                    completion.batch_id,
+                ),
             ).rowcount
             if changed != 1:
                 connection.rollback()
-                raise KeyError(f"unknown or completed DeepSeek batch: {batch_id}")
-            for code, review in reviews.items():
+                raise KeyError(f"unknown or completed DeepSeek batch: {completion.batch_id}")
+            for code, review in completion.reviews.items():
                 outcome = review.outcome.value
                 if code != review.code or outcome not in _CANDIDATE_TERMINALS:
                     connection.rollback()
@@ -107,18 +120,22 @@ class BudgetBatchMixin(BudgetStoreState):
                     SET outcome = ?, completed_at = ?, error = ?
                     WHERE batch_id = ? AND stock_code = ? AND outcome = 'pending'
                     """,
-                    (outcome, review.completed_at.isoformat(), review.error[:500], batch_id, code),
+                    (outcome, review.completed_at.isoformat(), review.error[:500], completion.batch_id, code),
                 ).rowcount
                 if updated != 1:
                     connection.rollback()
-                    raise ValueError(f"candidate {code} is not pending in batch {batch_id}")
+                    raise ValueError(f"candidate {code} is not pending in batch {completion.batch_id}")
             connection.execute(
                 """
                 UPDATE deepseek_candidate_results
                 SET outcome = 'rejected', completed_at = ?, error = ?
                 WHERE batch_id = ? AND outcome = 'pending'
                 """,
-                (completed_at.isoformat(), f"batch_{status}", batch_id),
+                (
+                    completion.completed_at.isoformat(),
+                    f"batch_{completion.status}",
+                    completion.batch_id,
+                ),
             )
             connection.commit()
 

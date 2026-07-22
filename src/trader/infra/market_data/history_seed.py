@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from trader.infra.market_data.history import DailyBar
+from trader.infra.market_data.history import DailyBar, PriceAdjustment
 
 
 class DailyHistoryClient(Protocol):
@@ -115,6 +115,8 @@ class LocalHistorySeedClient:
                         float(volume) * 100.0,
                         float(amount),
                         float(pct_change),
+                        adjustment=PriceAdjustment.QFQ,
+                        source="local_seed",
                     )
                 )
             except (TypeError, ValueError):

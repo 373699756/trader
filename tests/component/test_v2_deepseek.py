@@ -18,6 +18,7 @@ from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import ReviewOutcome
 from trader.domain.review.rules import Rating
 from trader.infra.deepseek.budget import SCHEMA_VERSION, DeepSeekBudgetStore
+from trader.infra.deepseek.budget_batch_store import BudgetBatchRequest
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.challenger import (
     ChallengerDimensionVerdict,
@@ -35,6 +36,7 @@ from trader.infra.deepseek.schema import (
     parse_reviews,
     review_cache_key,
 )
+from trader.infra.failures import AdapterFailureCode
 from trader.infra.settings import DeepSeekSettings
 from trader.web import create_app
 
@@ -465,6 +467,12 @@ def test_http_timeout_is_bounded_to_one_retry() -> None:
 
     assert result.content is None
     assert result.timed_out is True
+    assert result.failure is not None
+    assert result.failure.code is AdapterFailureCode.TIMEOUT
+    assert all(
+        attempt.failure is not None and attempt.failure.code is AdapterFailureCode.TIMEOUT
+        for attempt in result.attempt_records
+    )
     assert calls == 2
 
 
@@ -959,13 +967,15 @@ def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
     database_path = tmp_path / "runtime.sqlite3"
     store = _budget(database_path)
     batch_id = store.begin_batch(
-        Strategy.TODAY,
-        phase="today_main",
-        bucket="today",
-        model="model",
-        requested_at=NOW,
-        deadline=NOW + timedelta(minutes=1),
-        candidate_codes=("600001",),
+        BudgetBatchRequest(
+            strategy=Strategy.TODAY,
+            phase="today_main",
+            bucket="today",
+            model="model",
+            requested_at=NOW,
+            deadline=NOW + timedelta(minutes=1),
+            candidate_codes=("600001",),
+        )
     )
     reservation = store.reserve(
         Strategy.TODAY,

@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续执行全工程重构计划 2.4。新增行情源协调器、DeepSeek 复核上下文/请求执行器/
+  状态跟踪器、原子预算批次仓库和预算报告器等有类型组合组件；新增统一的适配器失败码，
+  覆盖超时、截止、熔断、负缓存、取消、被更新任务取代、无数据、限流、schema 和源失败。
+
 - 用户要求把 SDK/API 采集、结构化和 Web 实时展示的优化方案写入独立文档。新增非权威
   `docs/plan_sudu.md`，将已选定的 Polars 列式方案落实为 provider 三段式适配、P1-P3
   列式批次、dirty code/board/industry 增量重算、P6 热投影、SSE v2 差量补丁、浏览器
@@ -158,6 +162,11 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 行情、DeepSeek、预算与快照观测从多继承 mixin 改为构造时显式注入的类型化组合；复杂预算
+  批次入口改用不可变请求/完成对象。历史 K 线现在强制生产者声明 `raw/qfq` 和来源，120 点
+  预热主路径只消费腾讯或供应商明确返回的 qfq 数据；融合公式、排名、冻结、API 和 Web
+  行为未改变。
 
 - 现状判断是外部 SDK 延迟之外的主要浪费来自 Python 行对象重复物化、变化范围过度重算和
   SSE 通知后的完整 HTTP 回读；计划固定 Polars 只进入 `infra` 的 P1-P3，最多 360 候选
@@ -319,6 +328,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 Tushare 原始价历史此前缺少复权元数据、可能进入收益率、均线和波动率特征的问题；
+  历史存储与特征入口现在双重拒绝 raw，未知数据也不能再通过默认值伪装为 qfq，并在 raw
+  审计数据出现时回退到腾讯 qfq 历史。修复带来源前缀的 `late` 失败可能被误归类为普通源
+  失败的问题，失败元数据保持有界且不含外部载荷。
+
 - 修复万能行情端口、隐式依赖、裸字符串事件状态和共享可变边界造成的耦合风险；异常、恢复
   摘要和行情快照元数据均改为真实类型，停止顺序和冻结 compare-and-set 保持显式。
 
@@ -464,6 +478,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除行情源、DeepSeek 复核、预算批次/状态/汇总的 5 组旧 mixin 实现文件和继承装配路径，
+  不保留兼容别名；本批未删除任何策略、行情能力、DeepSeek 配额、冻结记录、API 或 Web
+  资源。
+
 - 删除旧 `application/ports.py` 聚合端口和旧行情异常名，不提供兼容导入别名。
 
 - 从当前 DeepSeek 优化计划中移除 long 的模型评分与请求额度，以及本批历史行情下载、
@@ -543,6 +561,14 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 2.4 的 659 项完整 pytest（验收时暂时隔离并随后原样恢复与本批无关的未跟踪
+  `docs/plan_youhua.md`）、213 文件 Ruff format、Ruff lint/严格债务、154 个源码文件
+  mypy、源码/架构 AST、`create_app()` 无副作用、固定融合向量 83.40、预算并发、冻结恢复、
+  SSE 游标/慢客户端、哈希一致性和 `make package` 均通过；PLR0913 从 58 降至 55，活动
+  Python 单文件均小于 800 行。固定性能负载通过：v15 为 5500 行行情/360 候选且三个 P95
+  均低于预算，v16 为三板各 120 候选且四个 P95 均低于预算。仓库外 wheel 安装、CLI、
+  包内模板/CSS/JavaScript/图标以及 1280x720、1440x900、1920x1080 桌面渲染亦纳入验收。
 
 - 本批逐项核对 P1-P6、256 MiB 初始目标、性能 P95、只读 Web、SSE、冻结不可变、固定融合
   和 DeepSeek 预算/截止契约；验证计划明确要求 scalar/columnar 逐字段等价、最终分/动作/
@@ -733,6 +759,13 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 本批未调用真实外部行情或 DeepSeek 服务，供应商权限、实时限流和网络退化仍由现有超时、
+  熔断、负缓存及降级契约承担；Tushare 是否支持明确 qfq 输出取决于运行时 SDK 能力，不支持
+  时生产链固定使用腾讯 qfq，raw 只保留审计用途。2.5 应用编排重构仍是下一独立章节；本批
+  性能门禁只能证明确定性固定负载不退化，不能证明实际荐股收益提升。并发新增且未跟踪的
+  `docs/plan_youhua.md` 不属于本批提交，并会在本地触发现有“仅 5 份活动文档”契约；其归档或
+  纳入文档治理须由所属独立批次处理。
 
 - `plan_sudu.md` 仅为待实施计划；活动代码尚未引入 Polars、`MarketChangeSet`、P6 热索引
   或 SSE 差量协议，不能把目标延迟和节省描述为当前能力。Polars 对约 5500 行热路径的

@@ -197,6 +197,70 @@ def test_market_data_service_uses_typed_composition_without_mixins() -> None:
     } <= component_classes
 
 
+def test_infrastructure_orchestrators_use_typed_composition_without_mixins() -> None:
+    market_data = SOURCE_ROOT / "infra" / "market_data"
+    deepseek = SOURCE_ROOT / "infra" / "deepseek"
+    adapter_paths = tuple((SOURCE_ROOT / "infra").rglob("*.py"))
+    class_names = {
+        node.name
+        for path in adapter_paths
+        for node in ast.parse(path.read_text(encoding="utf-8"), filename=str(path)).body
+        if isinstance(node, ast.ClassDef)
+    }
+
+    assert not {name for name in class_names if name.endswith("Mixin")}
+    assert not {
+        path.name
+        for path in (
+            market_data / "gateway_sources.py",
+            deepseek / "reviewer_state.py",
+            deepseek / "budget_state.py",
+            deepseek / "budget_batches.py",
+            deepseek / "budget_summary.py",
+        )
+        if path.exists()
+    }
+    assert {
+        "MarketSourceCoordinator",
+        "ReviewerRequestExecutor",
+        "ReviewerStatusTracker",
+    } <= class_names
+    for path, class_name in (
+        (market_data / "gateway.py", "MarketDataGateway"),
+        (deepseek / "reviewer.py", "DeepSeekReviewer"),
+        (deepseek / "budget.py", "DeepSeekBudgetStore"),
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        class_node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
+        assert class_node.bases == []
+
+
+def test_market_and_deepseek_adapters_are_split_by_capability() -> None:
+    market_data = SOURCE_ROOT / "infra" / "market_data"
+    deepseek = SOURCE_ROOT / "infra" / "deepseek"
+
+    assert {
+        "eastmoney.py",
+        "sina.py",
+        "tencent.py",
+        "tushare.py",
+        "normalize.py",
+        "merge.py",
+        "history.py",
+        "features.py",
+        "service_research.py",
+    } <= {path.name for path in market_data.glob("*.py")}
+    assert {
+        "client.py",
+        "schema.py",
+        "budget.py",
+        "cache.py",
+        "reviewer.py",
+        "reviewer_requests.py",
+        "reviewer_status.py",
+    } <= {path.name for path in deepseek.glob("*.py")}
+
+
 def test_active_product_source_files_do_not_exceed_configured_line_limit() -> None:
     oversized: dict[str, int] = {}
     for path in SOURCE_ROOT.rglob("*"):

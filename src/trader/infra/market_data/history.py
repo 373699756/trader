@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import math
 import statistics
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import KW_ONLY, dataclass
+from enum import Enum
+
+
+class PriceAdjustment(str, Enum):
+    RAW = "raw"
+    QFQ = "qfq"
+
+
+class HistoryAdjustmentError(ValueError):
+    """A qfq-only feature boundary received raw historical prices."""
 
 
 @dataclass(frozen=True)
@@ -18,6 +29,26 @@ class DailyBar:
     amount: float
     pct_change: float
     turnover_rate: float | None = None
+    _: KW_ONLY
+    adjustment: PriceAdjustment
+    source: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.adjustment, PriceAdjustment):
+            raise TypeError("daily bar adjustment must be a PriceAdjustment")
+        if not self.trade_date:
+            raise ValueError("daily bar trade_date is required")
+        if not self.source.strip():
+            raise ValueError("daily bar source is required")
+
+
+def require_qfq_history(histories: Mapping[str, tuple[DailyBar, ...]]) -> None:
+    for code, bars in histories.items():
+        raw_sources = sorted({bar.source for bar in bars if bar.adjustment is not PriceAdjustment.QFQ})
+        if raw_sources:
+            raise HistoryAdjustmentError(
+                f"historical feature input requires qfq prices: {code} received raw data from {','.join(raw_sources)}"
+            )
 
 
 @dataclass(frozen=True)
@@ -203,6 +234,8 @@ def upward_consistency(bars: tuple[DailyBar, ...], days: int = 20) -> float | No
 
 __all__ = [
     "DailyBar",
+    "HistoryAdjustmentError",
+    "PriceAdjustment",
     "average_true_range_pct",
     "maximum_drawdown_pct",
     "HistoryProfile",
@@ -210,6 +243,7 @@ __all__ = [
     "moving_average",
     "summarize_history_metrics",
     "return_pct",
+    "require_qfq_history",
     "upward_consistency",
     "volatility_pct",
 ]

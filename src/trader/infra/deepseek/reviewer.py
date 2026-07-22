@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 
+from trader.application.ports.types import JsonObject
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import (
@@ -15,9 +15,11 @@ from trader.domain.review.models import (
 )
 from trader.infra.deepseek.base_client import DeepSeekClientBase
 from trader.infra.deepseek.budget import DeepSeekBudgetStore
+from trader.infra.deepseek.budget_batch_store import BudgetBatchCompletion, BudgetBatchRequest
 from trader.infra.deepseek.cache import ReviewCache
-from trader.infra.deepseek.reviewer_requests import ReviewerRequestsMixin
-from trader.infra.deepseek.reviewer_status import ReviewerStatusMixin
+from trader.infra.deepseek.reviewer_context import ReviewerContext
+from trader.infra.deepseek.reviewer_requests import ReviewerRequestExecutor
+from trader.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.infra.deepseek.reviewer_support import (
     _aggregate_batch_status,
     _annotate_review,
@@ -38,7 +40,7 @@ from trader.infra.settings import DeepSeekSettings
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
 
 
-class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
+class DeepSeekReviewer:
     def __init__(
         self,
         settings: DeepSeekSettings,
@@ -61,17 +63,19 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
         self._confidence_coverage_min = confidence_coverage_min
         self._minimum_known_dimensions = minimum_known_dimensions
         self._now = now
-        self._last_error = ""
-        self._last_batch_status = "idle"
-        self._last_candidate_count = 0
-        self._last_candidate_outcomes: dict[str, int] = {}
-        self._last_phase = ""
-        self._last_strategy = ""
-        self._last_cache_hits = 0
-        self._last_physical_attempts = 0
-        self._last_successful_attempts = 0
-        self._last_failed_attempts = 0
-        self._status_lock = threading.Lock()
+        context = ReviewerContext(
+            settings=settings,
+            budget=budget,
+            client=client,
+            cache=cache,
+            dimension_weights=self._dimension_weights,
+            strategy_version=strategy_version,
+            confidence_coverage_min=confidence_coverage_min,
+            minimum_known_dimensions=minimum_known_dimensions,
+            now=now,
+        )
+        self._status = ReviewerStatusTracker(context)
+        self._requests = ReviewerRequestExecutor(context, self._status)
 
     def review(
         self,
@@ -131,15 +135,17 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
         now = _in_deadline_timezone(self._now(), deadline)
         unique_candidates = _unique_candidates(candidates)
         planned_bucket = budget_bucket or strategy.value
-        self._start_status(strategy, phase, len(unique_candidates))
+        self._status.start(strategy, phase, len(unique_candidates))
         batch_id = self._budget.begin_batch(
-            strategy,
-            phase=phase,
-            bucket=planned_bucket,
-            model=self._settings.model,
-            requested_at=now,
-            deadline=deadline,
-            candidate_codes=tuple(candidate.quote.code for candidate in unique_candidates),
+            BudgetBatchRequest(
+                strategy=strategy,
+                phase=phase,
+                bucket=planned_bucket,
+                model=self._settings.model,
+                requested_at=now,
+                deadline=deadline,
+                candidate_codes=tuple(candidate.quote.code for candidate in unique_candidates),
+            )
         )
         try:
             return self._execute_review(
@@ -157,9 +163,7 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
             error = f"internal_{exc.__class__.__name__}"
             completed_at = _in_deadline_timezone(self._now(), deadline)
             self._budget.fail_running_batch(batch_id, completed_at=completed_at, error=error)
-            with self._status_lock:
-                self._last_batch_status = "failed"
-                self._last_error = error
+            self._status.record_internal_failure(error)
             raise
 
     def _execute_review(
@@ -178,7 +182,7 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
         thinking_mode = _thinking_mode(self._client, self._settings.model)
         requested_model = self._settings.model
         if not unique_candidates:
-            self._finish_batch(batch_id, "skipped", now, {}, 0, "no_eligible_candidates")
+            self._status.finish_batch(BudgetBatchCompletion(batch_id, "skipped", now, {}, 0, "no_eligible_candidates"))
             return {}
 
         if not self._settings.enabled or not self._settings.api_key:
@@ -195,7 +199,7 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
                 )
                 for candidate in unique_candidates
             }
-            self._finish_batch(batch_id, "skipped", now, rejected, 0, error)
+            self._status.finish_batch(BudgetBatchCompletion(batch_id, "skipped", now, rejected, 0, error))
             return rejected
         if now >= deadline:
             late = {
@@ -210,7 +214,7 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
                 )
                 for candidate in unique_candidates
             }
-            self._finish_batch(batch_id, "skipped", now, late, 0, "deadline_reached")
+            self._status.finish_batch(BudgetBatchCompletion(batch_id, "skipped", now, late, 0, "deadline_reached"))
             return late
 
         results: dict[str, DeepSeekReview] = {}
@@ -263,10 +267,10 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
                 actual_model=None,
                 thinking_mode=thinking_mode,
             )
-            fusion_key = self._fusion_cache_key(raw_key, strategy)
+            fusion_key = self._requests.fusion_cache_key(raw_key, strategy)
             classified = self._cache.get_fusion(fusion_key)
             if classified is None:
-                classified = self._classify(raw_review, strategy)
+                classified = self._requests.classify(raw_review, strategy)
                 self._cache.put_fusion(fusion_key, classified)
             results[candidate.quote.code] = _annotate_review(
                 classified,
@@ -285,7 +289,7 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
             for review in results.values()
         )
         self._budget.set_batch_cache_hits(batch_id, cache_hits)
-        self._set_cache_hits(cache_hits)
+        self._status.set_cache_hits(cache_hits)
         slice_statuses: list[str] = []
         physical_attempts = 0
         last_error = ""
@@ -327,9 +331,9 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
                 last_error = "deadline_reached"
                 continue
 
-            parsed, response, parse_error = self._request_and_parse(candidate_batch, tracker)
+            parsed, response, parse_error = self._requests.request_and_parse(candidate_batch, tracker)
             physical_attempts += response.attempts
-            self._record_attempt_status(response)
+            self._status.record_attempt_status(response)
             completed_at = _in_deadline_timezone(self._now(), deadline)
             if parsed is None:
                 error = (
@@ -406,8 +410,8 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
                     prompt_cache_miss_tokens=response.prompt_cache_miss_tokens,
                 )
                 self._cache.put_raw(raw_key, candidate, parsed_review)
-                classified = self._classify(parsed_review, strategy)
-                self._cache.put_fusion(self._fusion_cache_key(raw_key, strategy), classified)
+                classified = self._requests.classify(parsed_review, strategy)
+                self._cache.put_fusion(self._requests.fusion_cache_key(raw_key, strategy), classified)
                 results[candidate.quote.code] = _annotate_review(
                     classified,
                     candidate=candidate,
@@ -423,7 +427,7 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
                 )
             slice_statuses.append("partial" if missing_result else "success")
 
-        challenger_attempts = self._run_challenger(
+        challenger_attempts = self._requests.run_challenger(
             strategy,
             unique_candidates,
             results,
@@ -436,15 +440,20 @@ class DeepSeekReviewer(ReviewerRequestsMixin, ReviewerStatusMixin):
         )
         physical_attempts += challenger_attempts
         batch_status = _aggregate_batch_status(slice_statuses, cache_hits=cache_hits)
-        self._finish_batch(
-            batch_id,
-            batch_status,
-            _in_deadline_timezone(self._now(), deadline),
-            results,
-            physical_attempts,
-            last_error,
+        self._status.finish_batch(
+            BudgetBatchCompletion(
+                batch_id,
+                batch_status,
+                _in_deadline_timezone(self._now(), deadline),
+                results,
+                physical_attempts,
+                last_error,
+            )
         )
         return results
+
+    def status(self) -> JsonObject:
+        return self._status.status()
 
 
 __all__ = ["DeepSeekReviewer"]

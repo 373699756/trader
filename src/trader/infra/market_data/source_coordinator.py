@@ -6,9 +6,9 @@ import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, cast
+from typing import Protocol, cast
 
 from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity, canonical_json_bytes
 from trader.application.ports.market import MarketDataFailedError, MarketDataNoDataError
@@ -19,7 +19,6 @@ from trader.application.source_lanes import (
 )
 from trader.application.workers import BoundedExecutor, borrow_executor
 from trader.domain.market.models import (
-    CanonicalMarketSnapshot,
     MarketQuote,
 )
 from trader.infra.market_data.eastmoney import EastmoneyClient
@@ -35,22 +34,54 @@ from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.sina import SinaClient
 
 
-class MarketGatewaySourcesMixin:
-    _eastmoney: EastmoneyClient
-    _sina: SinaClient
-    _minimum_market_rows: int
-    _worker_pool: BoundedExecutor | None
-    _source_lanes: SourceLaneRegistry | None
-    _cache: BoundedCache[object] | None
-    _source_contract_versions: dict[str, str]
-    _config_version: str
-    _schema_version: str
-    _monotonic: Callable[[], float]
-    _wall_clock: Callable[[], datetime]
-    _state_lock: Any
-    _latest_snapshot: CanonicalMarketSnapshot | None
+@dataclass(frozen=True)
+class MarketSourceDependencies:
+    eastmoney: EastmoneyClient
+    sina: SinaClient
+    minimum_market_rows: int
+    worker_pool: BoundedExecutor | None
+    source_lanes: SourceLaneRegistry | None
+    cache: BoundedCache[object] | None
+    source_contract_versions: Mapping[str, str]
+    config_version: str
+    schema_version: str
+    monotonic: Callable[[], float]
+    wall_clock: Callable[[], datetime]
 
-    def _fetch_market_sources(
+
+class MarketSourceTelemetry(Protocol):
+    def record_planned(self, source: str) -> None: ...
+
+    def fetch_physical(
+        self,
+        source: str,
+        fetcher: Callable[[], Sequence[MarketQuote]],
+        minimum_rows: int,
+    ) -> tuple[Sequence[MarketQuote], float]: ...
+
+    def record_fetch_result(self, source: str, success: bool, started: float, error: str) -> None: ...
+
+    def record_deadline(self, source: str) -> None: ...
+
+    def record_source_time(self, source: str, source_time: datetime) -> None: ...
+
+
+class MarketSourceCoordinator:
+    def __init__(self, dependencies: MarketSourceDependencies, telemetry: MarketSourceTelemetry) -> None:
+        self._eastmoney = dependencies.eastmoney
+        self._sina = dependencies.sina
+        self._minimum_market_rows = dependencies.minimum_market_rows
+        self._worker_pool = dependencies.worker_pool
+        self._source_lanes = dependencies.source_lanes
+        self._cache = dependencies.cache
+        self._source_contract_versions = dict(dependencies.source_contract_versions)
+        self._config_version = dependencies.config_version
+        self._schema_version = dependencies.schema_version
+        self._monotonic = dependencies.monotonic
+        self._wall_clock = dependencies.wall_clock
+        self._telemetry = telemetry
+
+    def fetch_market_sources(
         self,
         observed_at: datetime,
         *,
@@ -65,7 +96,7 @@ class MarketGatewaySourcesMixin:
             futures: dict[str, Future[_SourceFetch]] = {}
             for source, fetcher in fetchers.items():
                 request = {"universe": "ashare", "fields": ["realtime_quote"]}
-                identity = self._lane_identity(
+                identity = self.lane_identity(
                     "full_market_quotes",
                     source,
                     "market",
@@ -146,7 +177,7 @@ class MarketGatewaySourcesMixin:
     ) -> _SourceFetch:
         started = self._monotonic()
         try:
-            observations = self._fetch_source_observations(
+            observations = self.fetch_source_observations(
                 source,
                 "full_market_quotes",
                 "market",
@@ -175,7 +206,7 @@ class MarketGatewaySourcesMixin:
             )
         return _SourceFetch(source, "success", observations, duration_ms=_elapsed(started, self._monotonic()))
 
-    def _fetch_source_observations(
+    def fetch_source_observations(
         self,
         source: str,
         dataset: str,
@@ -188,17 +219,17 @@ class MarketGatewaySourcesMixin:
         deadline: datetime | None,
         minimum_rows: int,
     ) -> tuple[SourceObservation, ...]:
-        self._record_planned(source)
+        self._telemetry.record_planned(source)
         if not _before_deadline(self._wall_clock(), deadline):
-            self._record_deadline(source)
+            self._telemetry.record_deadline(source)
             raise MarketDataFailedError(source, "late")
         identity = self._cache_identity(dataset, source, subject_key, request, observed_at)
 
         def load() -> tuple[SourceObservation, ...]:
-            quotes, started = self._fetch_physical(source, fetcher, minimum_rows)
+            quotes, started = self._telemetry.fetch_physical(source, fetcher, minimum_rows)
             completed_at = max(observed_at, self._wall_clock())
             if deadline is not None and completed_at >= deadline:
-                self._record_fetch_result(source, False, started, "deadline")
+                self._telemetry.record_fetch_result(source, False, started, "deadline")
                 raise MarketDataFailedError(source, "late")
             observations = tuple(
                 observation_from_quote(quote, source=source, observed_at=completed_at) for quote in quotes
@@ -207,8 +238,8 @@ class MarketGatewaySourcesMixin:
                 source_time = max(observation.source_time for observation in observations)
                 data_version = max(observation.data_version for observation in observations)
                 self._cache.put(identity, observations, data_version=data_version, source_time=source_time)
-            self._record_fetch_result(source, True, started, "")
-            self._record_source_time(source, max(observation.source_time for observation in observations))
+            self._telemetry.record_fetch_result(source, True, started, "")
+            self._telemetry.record_source_time(source, max(observation.source_time for observation in observations))
             return observations
 
         if self._cache is not None and not force:
@@ -260,10 +291,10 @@ class MarketGatewaySourcesMixin:
 
         def refresh() -> None:
             def load() -> tuple[SourceObservation, ...]:
-                quotes, started = self._fetch_physical(source, fetcher, minimum_rows)
+                quotes, started = self._telemetry.fetch_physical(source, fetcher, minimum_rows)
                 completed_at = max(observed_at, self._wall_clock())
                 if deadline is not None and completed_at >= deadline:
-                    self._record_fetch_result(source, False, started, "deadline")
+                    self._telemetry.record_fetch_result(source, False, started, "deadline")
                     raise MarketDataFailedError(source, "late")
                 observations = tuple(
                     observation_from_quote(quote, source=source, observed_at=completed_at) for quote in quotes
@@ -274,8 +305,8 @@ class MarketGatewaySourcesMixin:
                     data_version=max(item.data_version for item in observations),
                     source_time=max(item.source_time for item in observations),
                 )
-                self._record_fetch_result(source, True, started, "")
-                self._record_source_time(source, max(item.source_time for item in observations))
+                self._telemetry.record_fetch_result(source, True, started, "")
+                self._telemetry.record_source_time(source, max(item.source_time for item in observations))
                 return observations
 
             try:
@@ -291,7 +322,7 @@ class MarketGatewaySourcesMixin:
             return
         worker_pool.submit(refresh)
 
-    def _lane_identity(
+    def lane_identity(
         self,
         dataset: str,
         source: str,
@@ -313,15 +344,6 @@ class MarketGatewaySourcesMixin:
             )
         ).hexdigest()
         return f"{dataset}:{digest}"
-
-    def _mark_snapshot_degraded(self, reason: str, _observed_at: datetime) -> None:
-        with self._state_lock:
-            if self._latest_snapshot is None:
-                return
-            self._latest_snapshot = replace(
-                self._latest_snapshot,
-                degraded_reasons=tuple(sorted({*self._latest_snapshot.degraded_reasons, reason})),
-            )
 
     def _cache_identity(
         self,
@@ -345,26 +367,6 @@ class MarketGatewaySourcesMixin:
             schema_version=self._schema_version,
         )
 
-    def _record_planned(self, source: str) -> None:
-        raise NotImplementedError
-
-    def _fetch_physical(
-        self,
-        source: str,
-        fetcher: Callable[[], Sequence[MarketQuote]],
-        minimum_rows: int,
-    ) -> tuple[Sequence[MarketQuote], float]:
-        raise NotImplementedError
-
-    def _record_fetch_result(self, source: str, success: bool, started: float, error: str) -> None:
-        raise NotImplementedError
-
-    def _record_deadline(self, source: str) -> None:
-        raise NotImplementedError
-
-    def _record_source_time(self, source: str, source_time: datetime) -> None:
-        raise NotImplementedError
-
 
 def _mark_observations_degraded(
     observations: tuple[SourceObservation, ...],
@@ -380,4 +382,4 @@ def _mark_observations_degraded(
     )
 
 
-__all__ = ["MarketGatewaySourcesMixin"]
+__all__ = ["MarketSourceCoordinator", "MarketSourceDependencies", "MarketSourceTelemetry"]

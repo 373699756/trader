@@ -14,7 +14,7 @@ import requests
 from trader.application.workers import BoundedExecutor, borrow_executor
 from trader.domain.market.models import MarketQuote
 from trader.domain.market.tail import MinuteBar
-from trader.infra.market_data.history import DailyBar
+from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote, normalize_quotes, to_float
 
 
@@ -123,7 +123,21 @@ class EastmoneyClient:
                 continue
             open_price, close, high, low, volume, amount, _amplitude, pct_change = cast(list[float], values)
             turnover_rate = to_float(parts[10]) if len(parts) > 10 else None
-            bars.append(DailyBar(parts[0], open_price, close, high, low, volume, amount, pct_change, turnover_rate))
+            bars.append(
+                DailyBar(
+                    trade_date=parts[0],
+                    open_price=open_price,
+                    close=close,
+                    high=high,
+                    low=low,
+                    volume=volume,
+                    amount=amount,
+                    pct_change=pct_change,
+                    turnover_rate=turnover_rate,
+                    adjustment=PriceAdjustment.QFQ,
+                    source="eastmoney",
+                )
+            )
         return tuple(bars[-days:])
 
     def fetch_intraday_minutes(self, code: str, *, now: datetime | None = None) -> tuple[MinuteBar, ...]:

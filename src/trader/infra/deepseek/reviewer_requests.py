@@ -23,7 +23,8 @@ from trader.infra.deepseek.challenger import (
     merge_challenger_review,
     parse_challenger_reviews,
 )
-from trader.infra.deepseek.reviewer_state import ReviewerState
+from trader.infra.deepseek.reviewer_context import ReviewerContext
+from trader.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.infra.deepseek.reviewer_support import (
     _challenger_deadline,
     _challenger_failure_status,
@@ -48,8 +49,20 @@ from trader.infra.deepseek.schema import (
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
 
 
-class ReviewerRequestsMixin(ReviewerState):
-    def _run_challenger(
+class ReviewerRequestExecutor:
+    def __init__(self, context: ReviewerContext, status: ReviewerStatusTracker) -> None:
+        self._settings = context.settings
+        self._budget = context.budget
+        self._client = context.client
+        self._cache = context.cache
+        self._dimension_weights = context.dimension_weights
+        self._strategy_version = context.strategy_version
+        self._confidence_coverage_min = context.confidence_coverage_min
+        self._minimum_known_dimensions = context.minimum_known_dimensions
+        self._now = context.now
+        self._status = status
+
+    def run_challenger(
         self,
         strategy: Strategy,
         candidates: Sequence[FeatureSnapshot],
@@ -94,7 +107,7 @@ class ReviewerRequestsMixin(ReviewerState):
             primary = {candidate.quote.code: results[candidate.quote.code] for candidate in candidate_batch}
             parsed, response, error = self._request_challenger(candidate_batch, primary, tracker)
             attempts += response.attempts
-            self._record_attempt_status(response)
+            self._status.record_attempt_status(response)
             completed_at = _in_deadline_timezone(self._now(), challenger_deadline)
             if parsed is None:
                 status = _challenger_failure_status(error, tracker.failure_reason, completed_at, challenger_deadline)
@@ -109,7 +122,7 @@ class ReviewerRequestsMixin(ReviewerState):
                     )
                     continue
                 merged = merge_challenger_review(results[candidate.quote.code], challenge, candidate)
-                classified = self._classify(
+                classified = self.classify(
                     replace(
                         merged,
                         challenger_requested_model=self._settings.challenger_model,
@@ -170,7 +183,7 @@ class ReviewerRequestsMixin(ReviewerState):
             schema_version=CHALLENGER_SCHEMA_VERSION,
             prompt_version=CHALLENGER_PROMPT_VERSION,
         )
-        return self._fusion_cache_key(
+        return self.fusion_cache_key(
             primary_key,
             strategy,
             challenger_identity=challenger_identity,
@@ -242,7 +255,7 @@ class ReviewerRequestsMixin(ReviewerState):
         except ValueError as exc:
             return None, combined, str(exc)
 
-    def _request_and_parse(
+    def request_and_parse(
         self,
         candidates: Sequence[FeatureSnapshot],
         tracker: _ReservationTracker,
@@ -325,13 +338,7 @@ class ReviewerRequestsMixin(ReviewerState):
                 prompt_cache_miss_tokens=response.prompt_cache_miss_tokens if has_response_metadata else 0,
             )
 
-    def _record_attempt_status(self, response: DeepSeekHttpResult) -> None:
-        with self._status_lock:
-            self._last_physical_attempts += response.attempts
-            self._last_successful_attempts += sum(item.succeeded for item in response.attempt_records)
-            self._last_failed_attempts += sum(not item.succeeded for item in response.attempt_records)
-
-    def _classify(self, review: DeepSeekReview, strategy: Strategy) -> DeepSeekReview:
+    def classify(self, review: DeepSeekReview, strategy: Strategy) -> DeepSeekReview:
         return classify_review(
             review,
             dimension_weights=self._dimension_weights[strategy],
@@ -339,7 +346,7 @@ class ReviewerRequestsMixin(ReviewerState):
             minimum_known_dimensions=self._minimum_known_dimensions,
         )
 
-    def _fusion_cache_key(
+    def fusion_cache_key(
         self,
         raw_key: str,
         strategy: Strategy,

@@ -11,8 +11,12 @@ from datetime import datetime
 from pathlib import Path
 
 from trader.domain.recommendation.models import Strategy
-from trader.infra.deepseek.budget_batches import BudgetBatchMixin
-from trader.infra.deepseek.budget_summary import BudgetSummaryMixin
+from trader.infra.deepseek.budget_batch_store import (
+    BudgetBatchCompletion,
+    BudgetBatchRequest,
+    BudgetBatchStore,
+)
+from trader.infra.deepseek.budget_reporting import BudgetReportingConfig, BudgetSummaryReader
 from trader.infra.deepseek.budget_support import (
     _count,
     _current_schema_version,
@@ -39,7 +43,7 @@ class BudgetReservation:
     stage: str = ""
 
 
-class DeepSeekBudgetStore(BudgetBatchMixin, BudgetSummaryMixin):
+class DeepSeekBudgetStore:
     def __init__(
         self,
         database_path: Path,
@@ -72,6 +76,32 @@ class DeepSeekBudgetStore(BudgetBatchMixin, BudgetSummaryMixin):
             raise ValueError("challenger limits cannot be negative")
         self._daily_target = sum(stage_targets.values())
         self._initialized = False
+        self._batches = BudgetBatchStore(self._connect)
+        self._reporting = BudgetSummaryReader(
+            self._connect,
+            lambda: self._initialized,
+            BudgetReportingConfig(
+                daily_hard_limit=self._daily_hard_limit,
+                daily_target=self._daily_target,
+                stage_targets=self._stage_targets,
+                stage_limits=self._stage_limits,
+            ),
+        )
+
+    def begin_batch(self, request: BudgetBatchRequest) -> str:
+        return self._batches.begin_batch(request)
+
+    def finish_batch(self, completion: BudgetBatchCompletion) -> None:
+        self._batches.finish_batch(completion)
+
+    def set_batch_cache_hits(self, batch_id: str, count: int) -> None:
+        self._batches.set_batch_cache_hits(batch_id, count)
+
+    def fail_running_batch(self, batch_id: str, *, completed_at: datetime, error: str) -> bool:
+        return self._batches.fail_running_batch(batch_id, completed_at=completed_at, error=error)
+
+    def summary(self, day: str) -> dict[str, object]:
+        return self._reporting.summary(day)
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

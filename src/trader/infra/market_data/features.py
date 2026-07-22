@@ -50,6 +50,7 @@ from trader.infra.market_data.feature_risks import extreme_structure_risks
 from trader.infra.market_data.history import (
     DailyBar,
     HistoryProfile,
+    require_qfq_history,
     return_pct,
     summarize_history_metrics,
 )
@@ -200,6 +201,7 @@ class FeatureBuilder:
         intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None = None,
         history_summaries: Mapping[str, HistoryProfile] | None = None,
     ) -> tuple[FeatureSnapshot, ...]:
+        require_qfq_history(histories)
         grouped: dict[str, list[MarketQuote]] = defaultdict(list)
         for quote in quotes:
             grouped[quote.data_version].append(quote)

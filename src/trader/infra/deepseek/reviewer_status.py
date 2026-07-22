@@ -1,28 +1,44 @@
-"""Thread-safe DeepSeek reviewer status and batch finalization mixin."""
+"""Thread-safe DeepSeek reviewer status and batch finalization component."""
 
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections import Counter
 from collections.abc import Mapping
-from datetime import datetime
 from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
 from trader.domain.recommendation.models import Strategy
-from trader.domain.review.models import (
-    DeepSeekReview,
-    ReviewOutcome,
-)
-from trader.infra.deepseek.reviewer_state import ReviewerState
+from trader.domain.review.models import ReviewOutcome
+from trader.infra.deepseek.base_client import DeepSeekHttpResult
+from trader.infra.deepseek.budget_batch_store import BudgetBatchCompletion
+from trader.infra.deepseek.reviewer_context import ReviewerContext
 from trader.infra.deepseek.reviewer_support import _physical_call_acceptance
 
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
 
 
-class ReviewerStatusMixin(ReviewerState):
-    def _start_status(self, strategy: Strategy, phase: str, candidate_count: int) -> None:
+class ReviewerStatusTracker:
+    def __init__(self, context: ReviewerContext) -> None:
+        self._settings = context.settings
+        self._budget = context.budget
+        self._cache = context.cache
+        self._now = context.now
+        self._last_error = ""
+        self._last_batch_status = "idle"
+        self._last_candidate_count = 0
+        self._last_candidate_outcomes: dict[str, int] = {}
+        self._last_phase = ""
+        self._last_strategy = ""
+        self._last_cache_hits = 0
+        self._last_physical_attempts = 0
+        self._last_successful_attempts = 0
+        self._last_failed_attempts = 0
+        self._status_lock = threading.Lock()
+
+    def start(self, strategy: Strategy, phase: str, candidate_count: int) -> None:
         with self._status_lock:
             self._last_candidate_count = candidate_count
             self._last_candidate_outcomes = {}
@@ -35,31 +51,27 @@ class ReviewerStatusMixin(ReviewerState):
             self._last_error = ""
             self._last_batch_status = "running"
 
-    def _set_cache_hits(self, count: int) -> None:
+    def set_cache_hits(self, count: int) -> None:
         with self._status_lock:
             self._last_cache_hits = count
 
-    def _finish_batch(
-        self,
-        batch_id: str,
-        status: str,
-        completed_at: datetime,
-        reviews: Mapping[str, DeepSeekReview],
-        physical_attempts: int,
-        error: str,
-    ) -> None:
-        self._budget.finish_batch(
-            batch_id,
-            status=status,
-            completed_at=completed_at,
-            reviews=reviews,
-            physical_attempts=physical_attempts,
-            error=error,
-        )
-        outcomes = Counter(review.outcome.value for review in reviews.values())
+    def finish_batch(self, completion: BudgetBatchCompletion) -> None:
+        self._budget.finish_batch(completion)
+        outcomes = Counter(review.outcome.value for review in completion.reviews.values())
         with self._status_lock:
-            self._last_batch_status = status
+            self._last_batch_status = completion.status
             self._last_candidate_outcomes = dict(outcomes)
+            self._last_error = completion.error[:500]
+
+    def record_attempt_status(self, response: DeepSeekHttpResult) -> None:
+        with self._status_lock:
+            self._last_physical_attempts += response.attempts
+            self._last_successful_attempts += sum(item.succeeded for item in response.attempt_records)
+            self._last_failed_attempts += sum(not item.succeeded for item in response.attempt_records)
+
+    def record_internal_failure(self, error: str) -> None:
+        with self._status_lock:
+            self._last_batch_status = "failed"
             self._last_error = error[:500]
 
     def status(self) -> JsonObject:
@@ -112,3 +124,6 @@ class ReviewerStatusMixin(ReviewerState):
                 },
             )
         )
+
+
+__all__ = ["ReviewerStatusTracker"]

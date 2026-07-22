@@ -26,7 +26,6 @@ from trader.domain.market.models import (
     MarketQuote,
 )
 from trader.infra.market_data.eastmoney import EastmoneyClient
-from trader.infra.market_data.gateway_sources import MarketGatewaySourcesMixin
 from trader.infra.market_data.gateway_support import (
     _cache_error_code,
     _canonical_health,
@@ -50,10 +49,11 @@ from trader.infra.market_data.merge_quote import rejection_reason, source_name
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.router import RouteOutcome
 from trader.infra.market_data.sina import SinaClient
+from trader.infra.market_data.source_coordinator import MarketSourceCoordinator, MarketSourceDependencies
 from trader.infra.market_data.tencent import TencentClient
 
 
-class MarketDataGateway(MarketGatewaySourcesMixin):
+class MarketDataGateway:
     def __init__(
         self,
         eastmoney: EastmoneyClient,
@@ -107,6 +107,22 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
         self._last_route_outcome: RouteOutcome | None = None
         self._merge_count = 0
         self._conflict_count = 0
+        self._sources = MarketSourceCoordinator(
+            MarketSourceDependencies(
+                eastmoney=eastmoney,
+                sina=sina,
+                minimum_market_rows=minimum_market_rows,
+                worker_pool=worker_pool,
+                source_lanes=source_lanes,
+                cache=cache,
+                source_contract_versions=self._source_contract_versions,
+                config_version=config_version,
+                schema_version=schema_version,
+                monotonic=monotonic,
+                wall_clock=wall_clock,
+            ),
+            self,
+        )
 
     def fetch_market(
         self,
@@ -127,7 +143,7 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
         force: bool,
         deadline: datetime | None,
     ) -> Sequence[MarketQuote]:
-        results = self._fetch_market_sources(observed_at, force=force, deadline=deadline)
+        results = self._sources.fetch_market_sources(observed_at, force=force, deadline=deadline)
         successes = tuple(result for result in results if result.status == "success")
         outcome = _parallel_route_outcome(results)
         completed_at = max(observed_at, self._wall_clock())
@@ -211,7 +227,7 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
         normalized_codes = tuple(sorted(set(codes)))
         try:
             if self._source_lanes is None:
-                observations = self._fetch_source_observations(
+                observations = self._sources.fetch_source_observations(
                     "tencent",
                     "candidate_quotes",
                     ",".join(normalized_codes),
@@ -224,7 +240,7 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
                 )
             else:
                 request = {"codes": normalized_codes, "fields": ["realtime_quote"]}
-                identity = self._lane_identity(
+                identity = self._sources.lane_identity(
                     "candidate_quotes",
                     "tencent",
                     ",".join(normalized_codes),
@@ -237,7 +253,7 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
                     "tencent",
                     identity,
                     requested_at,
-                    self._fetch_source_observations,
+                    self._sources.fetch_source_observations,
                     "tencent",
                     "candidate_quotes",
                     ",".join(normalized_codes),
@@ -374,6 +390,15 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
         with self._state_lock:
             return self._latest_snapshot
 
+    def _mark_snapshot_degraded(self, reason: str, _observed_at: datetime) -> None:
+        with self._state_lock:
+            if self._latest_snapshot is None:
+                return
+            self._latest_snapshot = replace(
+                self._latest_snapshot,
+                degraded_reasons=tuple(sorted({*self._latest_snapshot.degraded_reasons, reason})),
+            )
+
     def current_quotes(self, codes: Sequence[str]) -> Sequence[MarketQuote]:
         with self._state_lock:
             return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
@@ -412,7 +437,7 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
                 "cache": self._cache.status() if self._cache is not None else {},
             }
 
-    def _record_planned(self, source: str) -> None:
+    def record_planned(self, source: str) -> None:
         with self._state_lock:
             self._states[source].planned_count += 1
 
@@ -420,7 +445,7 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
         with self._state_lock:
             return self._states[source].open_until > self._monotonic()
 
-    def _fetch_physical(
+    def fetch_physical(
         self,
         source: str,
         fetcher: Callable[[], Sequence[MarketQuote]],
@@ -444,10 +469,10 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
             raise error
         return quotes, started
 
-    def _record_fetch_result(self, source: str, success: bool, started: float, error: str) -> None:
+    def record_fetch_result(self, source: str, success: bool, started: float, error: str) -> None:
         self._record(source, success, started, error)
 
-    def _record_deadline(self, source: str) -> None:
+    def record_deadline(self, source: str) -> None:
         self._record(source, False, self._monotonic(), "deadline")
 
     def _record(self, source: str, success: bool, started: float, error: str) -> None:
@@ -470,7 +495,7 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
             if state.failures >= self._failure_limit:
                 state.open_until = self._monotonic() + self._breaker_seconds
 
-    def _record_source_time(self, source: str, source_time: datetime) -> None:
+    def record_source_time(self, source: str, source_time: datetime) -> None:
         with self._state_lock:
             state = self._states[source]
             if state.last_source_time is None or source_time > state.last_source_time:

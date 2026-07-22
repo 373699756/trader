@@ -16,6 +16,7 @@ from trader.infra.deepseek.base_client import (
 )
 from trader.infra.deepseek.model_capabilities import capabilities as _lookup_capabilities
 from trader.infra.deepseek.model_catalog import validate_model
+from trader.infra.failures import classify_adapter_failure
 
 _POST_TYPE = Callable[..., "requests.Response"]
 
@@ -158,6 +159,11 @@ class DeepSeekHttpClient(DeepSeekClientBase):
             timed_out,
             last_error or "request_failed",
             attempt_records=tuple(attempt_records),
+            failure=classify_adapter_failure(
+                RuntimeError("timeout" if timed_out else (last_error or "request_failed")),
+                provider="deepseek",
+                operation="chat_completion",
+            ),
         )
 
 
@@ -249,6 +255,15 @@ def _attempt_record(
         error=error,
         latency_ms=(time.perf_counter() - started) * 1000.0,
         token_count=token_count,
+        failure=(
+            None
+            if succeeded
+            else classify_adapter_failure(
+                RuntimeError("timeout" if timed_out else (error or "request_failed")),
+                provider="deepseek",
+                operation="chat_completion",
+            )
+        ),
     )
 
 

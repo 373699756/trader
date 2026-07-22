@@ -11,7 +11,9 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
+from trader.application.events import EventAuditRecord, EventStatus
 from trader.application.ports.snapshots import RecoverySummary
+from trader.application.ports.types import JsonObject
 from trader.domain.outcome.models import (
     BenchmarkReturn,
     OutcomeTarget,
@@ -28,7 +30,7 @@ from trader.infra.persistence.snapshots import (
     snapshot_sha256,
 )
 from trader.infra.persistence.sqlite import connect, connection_scope, initialize_database
-from trader.infra.persistence.writer_observability import RepositoryObservabilityMixin
+from trader.infra.persistence.writer_observability import RepositoryObservability
 from trader.infra.persistence.writer_utils import (
     SnapshotConflictError,
     _anchor_json,
@@ -45,7 +47,7 @@ from trader.infra.persistence.writer_utils import (
 FaultInjector = Callable[[str], None]
 
 
-class SnapshotRepository(RepositoryObservabilityMixin):
+class SnapshotRepository:
     def __init__(
         self,
         runtime_dir: Path,
@@ -61,6 +63,39 @@ class SnapshotRepository(RepositoryObservabilityMixin):
         self._config_version = config_version
         self._fault_injector = fault_injector or (lambda _stage: None)
         self._lock = threading.Lock()
+        self._observability = RepositoryObservability(self._database_path, self._lock)
+
+    def reserve_event(self, event: EventAuditRecord) -> bool:
+        return self._observability.reserve_event(event)
+
+    def compare_and_set_event(
+        self,
+        event_id: str,
+        *,
+        expected_status: EventStatus,
+        status: EventStatus,
+        retry_count: int,
+        error: str = "",
+    ) -> bool:
+        return self._observability.compare_and_set_event(
+            event_id,
+            expected_status=expected_status,
+            status=status,
+            retry_count=retry_count,
+            error=error,
+        )
+
+    def list_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
+        return self._observability.list_events(cursor=cursor, limit=limit)
+
+    def pending_priority_events(self) -> Sequence[EventAuditRecord]:
+        return self._observability.pending_priority_events()
+
+    def record_data_source_health(self, health: JsonObject, *, updated_at: datetime) -> None:
+        self._observability.record_data_source_health(health, updated_at=updated_at)
+
+    def observability_status(self) -> JsonObject:
+        return self._observability.observability_status()
 
     def initialize(self) -> None:
         self._published_dir.mkdir(parents=True, exist_ok=True)

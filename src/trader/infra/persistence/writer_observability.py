@@ -1,13 +1,13 @@
-"""Pipeline event and dependency observability persistence mixin."""
+"""Pipeline event and dependency observability persistence component."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from trader.application.events import EventAuditRecord, EventStatus
 from trader.application.ports.types import JsonObject, thaw_json_value
@@ -23,9 +23,10 @@ from trader.infra.persistence.writer_utils import (
 FaultInjector = Callable[[str], None]
 
 
-class RepositoryObservabilityMixin:
-    _lock: Any
-    _database_path: Path
+class RepositoryObservability:
+    def __init__(self, database_path: Path, lock: threading.Lock) -> None:
+        self._database_path = database_path
+        self._lock = lock
 
     def reserve_event(self, event: EventAuditRecord) -> bool:
         with self._lock, connection_scope(self._database_path) as connection:
@@ -261,3 +262,6 @@ def _event_record(row: sqlite3.Row) -> EventAuditRecord:
         payload=payload,
         error=str(row["error"] or ""),
     )
+
+
+__all__ = ["RepositoryObservability"]

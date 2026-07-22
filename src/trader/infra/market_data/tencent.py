@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from trader.domain.market.models import MarketQuote
-from trader.infra.market_data.history import DailyBar
+from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote, normalize_quotes, to_float
 
 SessionFactory = Callable[[], requests.Session]
@@ -195,6 +195,8 @@ def _history_bars(rows: Sequence[object], *, days: int) -> tuple[DailyBar, ...]:
                 amount=amount * 10_000.0,
                 pct_change=pct_change,
                 turnover_rate=turnover_rate,
+                adjustment=PriceAdjustment.QFQ,
+                source="tencent",
             )
         )
         previous_close = close

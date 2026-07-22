@@ -7,6 +7,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from trader.infra.failures import AdapterFailure
+
 
 @dataclass(frozen=True)
 class ModelCapabilities:
@@ -37,6 +39,7 @@ class DeepSeekHttpAttempt:
     error: str
     latency_ms: float
     token_count: int
+    failure: AdapterFailure | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,7 @@ class DeepSeekHttpResult:
     prompt_cache_hit_tokens: int = 0
     prompt_cache_miss_tokens: int = 0
     reasoning_content: str | None = field(default=None, repr=False)
+    failure: AdapterFailure | None = None
 
 
 class DeepSeekClientBase(ABC):

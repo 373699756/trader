@@ -16,7 +16,13 @@ from trader.application.cache import build_cache_identity, request_fingerprint
 from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.workers import BoundedExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.outcome.models import OutcomeBar
-from trader.infra.market_data.history import DailyBar, HistoryProfile, summarize_history_metrics
+from trader.infra.market_data.history import (
+    DailyBar,
+    HistoryProfile,
+    PriceAdjustment,
+    require_qfq_history,
+    summarize_history_metrics,
+)
 from trader.infra.market_data.history_seed import DailyHistoryClient
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_models import _HistoryEntry
@@ -168,6 +174,10 @@ class HistoryStore:
                 try:
                     bars = tuple(future.result())
                 except Exception:
+                    bars = ()
+                    with self._lock:
+                        self._history_error_count += 1
+                if any(bar.adjustment is not PriceAdjustment.QFQ for bar in bars):
                     bars = ()
                     with self._lock:
                         self._history_error_count += 1
@@ -338,7 +348,9 @@ class HistoryStore:
         with self._lock:
             for code, bars in bars_by_code.items():
                 ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-90:]
-                if not ordered:
+                if not ordered or any(bar.adjustment is not PriceAdjustment.QFQ for bar in ordered):
+                    if ordered:
+                        self._history_error_count += 1
                     continue
                 current = self._history.get(code)
                 if current is None or not current.bars or ordered[-1].trade_date > current.bars[-1].trade_date:
@@ -350,6 +362,7 @@ class HistoryStore:
         histories: Mapping[str, tuple[DailyBar, ...]],
         observed_at: datetime,
     ) -> Mapping[str, HistoryProfile]:
+        require_qfq_history(histories)
         summaries: dict[str, HistoryProfile] = {}
         for code, bars in histories.items():
             material = tuple(
