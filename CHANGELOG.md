@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求把 SDK/API 采集、结构化和 Web 实时展示的优化方案写入独立文档。新增非权威
+  `docs/plan_sudu.md`，将已选定的 Polars 列式方案落实为 provider 三段式适配、P1-P3
+  列式批次、dirty code/board/industry 增量重算、P6 热投影、SSE v2 差量补丁、浏览器
+  局部 DOM 更新、完整阶段观测、scalar 等价回退和量化激活门禁，并记录 NautilusTrader、
+  vn.py、OpenBB、Qlib、Arrow/Polars 及本地开源库的吸收边界。
+
 - 用户继续执行全工程重构计划 2.3。新增按行情、报价、研究、参考数据、快照、事件、复核与
   结果拆分的应用端口，以及不可变的流水线依赖、选项和资源集合。
 
@@ -152,6 +158,11 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 现状判断是外部 SDK 延迟之外的主要浪费来自 Python 行对象重复物化、变化范围过度重算和
+  SSE 通知后的完整 HTTP 回读；计划固定 Polars 只进入 `infra` 的 P1-P3，最多 360 候选
+  在 P4 前物化为现有领域对象，不复制评分实现，也不增加 DeepSeek 请求。权威文档治理
+  同步登记 `plan_sudu.md` 仅可细化既有第 7.2 节 P1-P6 原子章节，禁止形成第二套契约。
 
 - 流水线事件审计改为有类型记录和状态枚举，持久化边界负责转换，跨线程 JSON 深层冻结；
   24 参数构造函数收敛为三个显式对象，业务时间线、Web v3 和冻结投影保持不变。
@@ -533,6 +544,11 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批逐项核对 P1-P6、256 MiB 初始目标、性能 P95、只读 Web、SSE、冻结不可变、固定融合
+  和 DeepSeek 预算/截止契约；验证计划明确要求 scalar/columnar 逐字段等价、最终分/动作/
+  TopK/哈希完全一致、Python 3.10-3.14 wheel 可安装，以及三档桌面实际渲染。本文档批次
+  通过 Markdown 链接、禁词/边界检索、`git diff --check` 和适用仓库文档契约检查。
+
 - 2.3 通过架构 AST、154 个源码文件 mypy 和完整 pytest 回归；严格债务从 145 降至 142
   （N818 7→5、PLR0913 59→58）。
 
@@ -717,6 +733,11 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- `plan_sudu.md` 仅为待实施计划；活动代码尚未引入 Polars、`MarketChangeSet`、P6 热索引
+  或 SSE 差量协议，不能把目标延迟和节省描述为当前能力。Polars 对约 5500 行热路径的
+  实际收益、Python 3.10-3.14 wheel 兼容和 256 MiB 内存适配仍须由固定 fixture 证明；
+  若失败，生产继续使用现有 scalar 路径。性能优化本身也不是荐股收益提高的样本外证据。
 
 - 2.4 基础设施适配器尚未开始；活动树仍登记 142 项既有严格复杂度/命名债务，后续章节须
   继续单调下降并在 2.6 归零。真实供应商交易日证据不属于本批离线门禁。
