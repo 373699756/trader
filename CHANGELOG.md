@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户再次发送“继续”后，A 按阶段 3 共同门禁复核当前 B3/C3/D3 交接状态。新增
+  `docs/reports/youhua-g3-gate-review.md`，记录 A3 handoff 已发布且 B3/C3/D3 标准
+  `ready_for_gate=yes` 报告均已到达；A 因此发布 G3，但不启动 A4、不创建 PR/tag/release。
+  同批纳入 B3 fixture、C3 raw facts cache identity 修复与测试、D3 P6/Web 差量 patch 修复与报告。
+
 - 用户再次发送“继续”后，A 按 `docs/plan_youhua.md` 执行 A3.1-A3.7。新增
   `docs/reports/youhua-a3-integration.md`，记录 B2 列式 P1-P3/change set、C2 DeepSeek V4
   facts/预算/long 隔离、D2 P6/SSE/Web 增量补丁已按 B -> C -> D 纳入 A 集成工作树；同时
@@ -669,6 +674,14 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- G3 门禁复核批次验证：读取阶段 3 计划、A3/B3/C3/D3 报告，确认四方均已提交
+  `ready_for_gate=yes` 交接证据并发布 G3；定向契约测试
+  `tests/contract/test_delivery_contract.py tests/contract/test_youhua_contract_base.py tests/component/test_youhua_deepseek_c3.py`
+  覆盖 G3 发布状态、docs 报告白名单和 C3 raw facts 缓存复验。`make format-check`、`make lint`、
+  `make type-check`、`make test` 和 `make package` 通过，生成物已清理。
+  仓库外 wheel 安装到 `/tmp/trader-wheel-g3` 后可导入 `trader`、读取 Web 模板/静态资源，
+  并可执行 `trader.entrypoints.cli --help`。
+
 - A3 集成批次验证：定向集成测试
   `tests/unit/test_v17_columnar_changes.py tests/unit/test_v17_columnar_provider_adapter.py tests/unit/test_v2_market_data_normalize.py tests/unit/test_v2_market_data_merge.py tests/unit/test_v2_market_data_router.py tests/unit/application/test_candidate_features.py tests/unit/test_v2_deepseek_base.py tests/component/test_v2_deepseek.py tests/component/test_v2_deepseek_v4.py tests/component/test_youhua_deepseek_c2.py tests/unit/application/test_published_snapshots.py tests/unit/application/test_publisher.py tests/contract/test_v2_web_api.py tests/contract/test_v2_app_factory.py tests/contract/test_youhua_a2_public_skeleton.py tests/contract/test_youhua_contract_base.py`
   通过 183 项；`make format-check`、`make lint`、`make type-check`、`make test`、
@@ -917,9 +930,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- A3 已提供集成 handoff，但 G3 仍未发布；B3/C3/D3 必须在本 A3 提交之后分别完成集成态等价/
-  性能、DeepSeek 请求/降级和 P6/Web 专业复验。C3 preflight 当前明确 `ready_for_gate=no`，
-  原因是它需要 A3 集成提交作为测试目标。
+- G3 已发布；A4.x 尚未开始，必须等待下一次用户“继续”后再执行跨域正确性、故障注入、完整质量、
+  兼容、性能总门禁和问题闭环。
+
+- D3 桌面检查仍基于 not_ready 页面；真实推荐行、详情抽屉和长错误文本仍需 G4/A4 集成验收。
 
 - G2 已发布但 A3 未开始；下一批才能按计划进入 A3 集成。当前工作树仍有 B/C/D 未暂存实现
   改动，本批只归档门禁发布判断，不解决其内部实现或全局质量失败。

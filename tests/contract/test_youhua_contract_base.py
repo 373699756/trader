@@ -90,13 +90,28 @@ def test_youhua_g2_is_published_after_all_phase2_reports_are_ready() -> None:
 def test_youhua_a3_integration_handoff_waits_for_bcd_phase3_reports() -> None:
     plan = (PROJECT_ROOT / "docs/plan_youhua.md").read_text(encoding="utf-8")
     report = (PROJECT_ROOT / "docs/reports/youhua-a3-integration.md").read_text(encoding="utf-8")
-    c3 = (PROJECT_ROOT / "tests/fixtures/deepseek/youhua_c3/report_to_a.md").read_text(encoding="utf-8")
 
     assert "A3.1-A3.7 已完成 A owner 集成接线" in report
     assert "G3 未发布" in report
     assert "B3/C3/D3" in report
     assert "ready_for_gate: `yes; A3 integration handoff is available; G3 is pending B3/C3/D3 ready reports`" in report
-    assert "C3 preflight" in c3
-    assert "ready_for_gate: no" in c3
     assert "A3.1 合并 B" in plan
     assert "G3：阶段 3 完成条件" in plan
+
+
+def test_youhua_g3_publishes_after_all_phase3_reports_are_ready() -> None:
+    g3 = (PROJECT_ROOT / "docs/reports/youhua-g3-gate-review.md").read_text(encoding="utf-8")
+    b3 = (PROJECT_ROOT / "tests/fixtures/market_data/youhua_b3/report_to_a.md").read_text(encoding="utf-8")
+    c3 = (PROJECT_ROOT / "tests/fixtures/deepseek/youhua_c3/report_to_a.md").read_text(encoding="utf-8")
+    d3 = (PROJECT_ROOT / "docs/reports/youhua-d1-p6-web.md").read_text(encoding="utf-8")
+
+    assert "G3 已发布" in g3
+    assert "tests/fixtures/market_data/youhua_b3/report_to_a.md" in g3
+    assert "ready_for_gate: `yes`" in b3
+    assert "C3 集成态请求/降级报告" in g3
+    assert "ready_for_gate: yes" in c3
+    assert "docs/reports/youhua-d1-p6-web.md" in g3
+    assert "Codex D / D3.x" in d3
+    assert "ready_for_gate\nyes" in d3
+    assert "ready_for_gate: `yes; G3 is published and A4 has not started`" in g3
+    assert "A4.x 必须等待下一次用户继续指令" in g3

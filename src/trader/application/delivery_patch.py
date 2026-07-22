@@ -5,13 +5,20 @@ from __future__ import annotations
 from trader.domain.recommendation.models import LiveOverlay, Recommendation, RecommendationSnapshot
 
 
-def snapshot_patch(snapshot: RecommendationSnapshot, *, base_snapshot_id: str | None) -> dict[str, object]:
+def snapshot_patch(
+    snapshot: RecommendationSnapshot,
+    *,
+    base_snapshot: RecommendationSnapshot | None = None,
+    base_snapshot_id: str | None = None,
+) -> dict[str, object]:
     projection_version = snapshot.snapshot_id
+    base_projection_version = base_snapshot.snapshot_id if base_snapshot is not None else base_snapshot_id
+    upserts, removed_codes, replace_all = _projection_changes(snapshot, base_snapshot)
     return {
         "patch_schema_version": 2,
         "schema_version": 2,
-        "base_projection_version": base_snapshot_id,
-        "base_snapshot_id": base_snapshot_id,
+        "base_projection_version": base_projection_version,
+        "base_snapshot_id": base_projection_version,
         "projection_version": projection_version,
         "etag": f"{projection_version}:{snapshot.trade_date}",
         "snapshot_id": snapshot.snapshot_id,
@@ -26,9 +33,9 @@ def snapshot_patch(snapshot: RecommendationSnapshot, *, base_snapshot_id: str | 
         "frozen": snapshot.frozen,
         "degraded_reasons": list(snapshot.degraded_reasons),
         "filtered_count": snapshot.filtered_count,
-        "replace": True,
-        "upserts": [_recommendation(item) for item in snapshot.recommendations],
-        "removed_codes": [],
+        "replace": replace_all,
+        "upserts": upserts,
+        "removed_codes": removed_codes,
         "removals": [],
     }
 
@@ -101,6 +108,27 @@ def _recommendation(item: Recommendation) -> dict[str, object]:
         "risks": _risks(item),
         "review": None if item.review is None else {"outcome": item.review.outcome.value, "error": item.review.error},
     }
+
+
+def _projection_changes(
+    snapshot: RecommendationSnapshot,
+    base_snapshot: RecommendationSnapshot | None,
+) -> tuple[list[dict[str, object]], list[str], bool]:
+    current = [_recommendation(item) for item in snapshot.recommendations]
+    if (
+        base_snapshot is None
+        or base_snapshot.strategy is not snapshot.strategy
+        or base_snapshot.trade_date != snapshot.trade_date
+    ):
+        return current, [], True
+    before = {
+        recommendation.features.quote.code: _recommendation(recommendation)
+        for recommendation in base_snapshot.recommendations
+    }
+    current_codes = {str(item["code"]) for item in current}
+    changed = [item for item in current if before.get(str(item["code"])) != item]
+    removed = sorted(code for code in before if code not in current_codes)
+    return changed, removed, False
 
 
 def _risks(item: Recommendation) -> list[dict[str, object]]:

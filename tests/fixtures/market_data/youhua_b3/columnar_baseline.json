@@ -1,0 +1,87 @@
+{
+  "a3_integration_commit": "812de4390d42213c684b4e2096453c4775903443",
+  "base_commit": "812de4390d42213c684b4e2096453c4775903443",
+  "contract_base": "45bd2fab992d36eb873b7c448fbd9739f0cad43c",
+  "fixture_sha256": "2d8c93f18c8e83f2f8f8eb628d4c4d04bef9eb95bb58db18c6d05f0165a36801",
+  "latency_ms": {
+    "avg": 961.897,
+    "max": 1002.717,
+    "min": 944.563
+  },
+  "memory": {
+    "polars_estimated_bytes_last": 640688,
+    "polars_estimated_bytes_max": 642128,
+    "process_peak_rss_bytes": 204206080,
+    "process_rss_bytes_end": 201375744,
+    "process_rss_bytes_start": 157380608,
+    "process_uss_bytes_end": 165568512,
+    "process_uss_bytes_start": 154906624,
+    "python_traced_bytes_end": 675769,
+    "python_traced_bytes_peak": 48150094
+  },
+  "payload_sha256": "a14cb6709ec9a415b9323966f8e2378a04cb772de6cbd494340c10904f7b61a1",
+  "performance_runner": {
+    "canonical_snapshot": {
+      "budget_p95_ms": 1500.0,
+      "max_ms": 790.416,
+      "p50_ms": 760.648,
+      "p95_ms": 790.416,
+      "passed": true,
+      "samples": 5
+    },
+    "canonical_snapshot_sha256": "234b923cb17d1979365892791f38545598ae2d25f0cbe14817980a3080c3329b",
+    "logical_cache_estimated_bytes": 28378512,
+    "market_merge": {
+      "budget_p95_ms": 1000.0,
+      "max_ms": 533.872,
+      "p50_ms": 522.802,
+      "p95_ms": 533.872,
+      "passed": true,
+      "samples": 5
+    },
+    "market_normalization": {
+      "budget_p95_ms": 800.0,
+      "max_ms": 97.376,
+      "p50_ms": 96.166,
+      "p95_ms": 97.376,
+      "passed": true,
+      "samples": 5
+    },
+    "passed": true,
+    "rounds": {
+      "measurement": 5,
+      "warmup": 1
+    }
+  },
+  "scalar_outputs": {
+    "last_columnar_identity_digest": "6e80abc881a19a917320ab41a7cda4b6ef75ddc9474aebcccf27e0d1adae84a5",
+    "last_full_invalidation_reason": null,
+    "last_market_change_counts": {
+      "dirty": 360,
+      "dirty_boards": 1,
+      "dirty_field_families": 2,
+      "dirty_industries": 32,
+      "inserted": 0,
+      "removed": 0,
+      "updated": 360
+    },
+    "last_merge_epoch": "a21ebe4b943cfef8a5b933d1",
+    "last_overlay_only": true,
+    "quote_count": 5500,
+    "snapshot_hashes": [
+      "234b923cb17d1979365892791f38545598ae2d25f0cbe14817980a3080c3329b",
+      "af791c795eb6447976b0542986c60bf85f229d771146d2b046a4abbcac9436e3"
+    ]
+  },
+  "schema_version": "youhua-b3-columnar-fixture-v1",
+  "workload": {
+    "candidate_rows": 360,
+    "merge_sources": [
+      "eastmoney",
+      "sina"
+    ],
+    "normalized_rows": 5500,
+    "tick_scope": "ColumnarQuoteBatch.from_snapshot + market_changes over two premerged scalar snapshots",
+    "ticks": 100
+  }
+}

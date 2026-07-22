@@ -333,3 +333,138 @@ requested_interface_changes
 ready_for_gate
 yes
 ```
+
+## 10. D3 集成态 P6/Web 复验报告
+
+状态：D3.1-D3.4 已在 A3 集成提交后完成；等待 A 汇总 G3。D 本轮未提交、未推送。
+
+### 10.1 工作树封存
+
+| 项 | 值 |
+| --- | --- |
+| codex_and_phase | Codex D / D3.x |
+| branch | `branch` |
+| upstream | `origin/branch` |
+| base_commit | `812de4390d42213c684b4e2096453c4775903443` |
+| upstream_commit_at_start | `812de4390d42213c684b4e2096453c4775903443` |
+| start_worktree | A3 交接后读取到 `HEAD == @{upstream}`；D3 执行期间出现并发非 D 变更，未修改其文件。 |
+| D 本次修改 | `src/trader/application/delivery_patch.py`、`src/trader/application/publisher.py`、`tests/unit/application/test_publisher.py`、本报告 |
+| P1-P3 / DeepSeek / 公共接线 | 未执行、未修改；`publisher.py` 仅为 SSE 差量 patch 保存同策略基线快照，无公共端口变更。 |
+
+并发非 D 变更观测：`CHANGELOG.md`、`src/trader/infra/deepseek/reviewer.py`、
+`src/trader/infra/deepseek/reviewer_requests.py`、`src/trader/infra/deepseek/schema.py`、
+`tests/contract/test_delivery_contract.py`、`tests/contract/test_youhua_contract_base.py`、
+`docs/reports/youhua-g3-gate-review.md`、`tests/component/test_youhua_deepseek_c3.py`、
+`tests/fixtures/market_data/youhua_b3/`。
+
+### 10.2 D3.1 P4/P5 重发布与 patch
+
+复验发现 A3 集成态 `recommendation_patch` 仍使用 `replace=True` 并发送完整 `upserts`，不满足
+“P4/P5 重发布只更新相应股票、全局选择和 patch”。D 在 D 租约内补齐内部差量投影：
+
+- 首次发布或策略/交易日切换：`replace=True`，发送完整当前 projection。
+- 同策略同交易日后续发布：`replace=False`，`base_projection_version` 指向上一 projection。
+- 个股内容、排名或全局选择变化进入 `upserts`；退出当前选择的股票进入 `removed_codes`。
+- 浏览器现有 CAS 继续使用 `base_projection_version`；匹配时合并 patch，不匹配时走 ETag GET resync。
+
+新增回归 `test_publisher_emits_incremental_snapshot_patch_after_base_snapshot` 覆盖：base
+`600001/600002` 到 next `600001(rank changed)/600003` 时，第二个 patch 只包含
+`upserts=["600001","600003"]`、`removed_codes=["600002"]`、`replace=False`。
+
+### 10.3 D3.2 P6 热读与 single-flight
+
+无外部网络、Flask test client、100 次测量：
+
+| 项 | 观测结果 |
+| --- | --- |
+| current GET | p50 `0.409ms`，p95 `0.527ms`，max `2.667ms` |
+| ETag 304 | p50 `0.286ms`，p95 `0.348ms`，max `0.427ms` |
+| recommendation dates GET | p50 `0.242ms`，p95 `0.289ms`，max `0.374ms` |
+| SSE enqueue | p50 `0.023ms`，p95 `0.037ms`，max `0.185ms` |
+| 当前 GET 持久化访问 | `frozen_loads=0`，`overlay_loads=0` |
+| P6 状态 | `current_views=1`，`maximum_views=72`，`maximum_view_bytes=163840` |
+| publisher 状态 | `last_sequence=100`，`dropped_subscribers=0`，SSE/today score p95 目标均满足 |
+
+`tests/unit/application/test_published_snapshots.py` 覆盖 resident 热读不访问持久化，以及 cold
+date 两线程并发读同一日期时 `cold_loads=1`、`cold_coalesced=1`、一次预取三策略。
+
+P6 原子替换内存峰值采样：连续发布 200 个 18 行 today 快照，`rss_before=31812KiB`、
+`rss_after=32836KiB`、`rss_peak=32836KiB`、`delta_peak=1024KiB`、`published=200`。
+
+### 10.4 D3.3 SSE/Web/冻结/overlay/ETag
+
+已复验：
+
+- patch：`recommendation_patch` v2 保留 projection/base 字段；新增同日差量 patch 回归。
+- 游标：过期 cursor 与超前 cursor 均返回 resync；超前场景不伪造 replay。
+- 慢客户端：订阅队列满时移除 subscriber 并累加 `dropped_subscribers`。
+- 冻结：冻结后迟到草稿不覆盖当前正式视图；14:50/15:00 后补算路径由 integration subset 覆盖。
+- overlay：overlay 不重发快照；只应用到匹配 projection；错配通过 Web CAS/ETag 完整 resync。
+- ETag：当前 GET 支持 304；overlay 后 ETag 变化由 Web API contract 覆盖。
+- 正常更新零完整 GET：浏览器在 base projection 匹配时本地合并 `upserts/removed_codes`；仅 mismatch、
+  cursor resync 或 overlay projection mismatch 触发完整 GET。
+
+桌面 CDP 精确视口检查：
+
+| 视口 | 截图 | 结果 |
+| --- | --- | --- |
+| 1280x720 | `/tmp/trader-d3-cdp-1280x720.png` | `horizontalOverflow=false`，`overlaps=[]`，`browserErrors=[]` |
+| 1440x900 | `/tmp/trader-d3-cdp-1440x900.png` | `horizontalOverflow=false`，`overlaps=[]`，`browserErrors=[]` |
+| 1920x1080 | `/tmp/trader-d3-cdp-1920x1080.png` | `horizontalOverflow=false`，`overlaps=[]`，`browserErrors=[]` |
+
+### 10.5 D3 验证记录
+
+| 命令 | 结果 |
+| --- | --- |
+| `.venv/bin/python -m pytest tests/unit/application/test_publisher.py tests/unit/application/test_published_snapshots.py tests/contract/test_v2_web_api.py tests/contract/test_v2_app_factory.py -q` | 通过，42 passed |
+| `.venv/bin/python -m pytest tests/integration/test_v2_pipeline.py -q -k 'virtual_trading_day or frozen_topk or freeze_accepts_exact_quote_age_boundary or after_close_persists_current_run_p6 or current_quote_recovery'` | 通过，7 passed |
+| `node --check src/trader/web/static/dashboard.js` | 通过 |
+| `.venv/bin/python -m ruff check src/trader/application/delivery_patch.py src/trader/application/publisher.py tests/unit/application/test_publisher.py` | 通过 |
+| `.venv/bin/python -m mypy src/trader/application/delivery_patch.py src/trader/application/publisher.py tests/unit/application/test_publisher.py` | 通过 |
+| `make type-check` | 通过，162 source files |
+| `git diff --check` | 通过 |
+| `make format-check` | 失败，非 D 并发文件 `tests/component/test_youhua_deepseek_c3.py` 需格式化 |
+| `make lint` | 失败，非 D 并发文件 `src/trader/infra/deepseek/reviewer_requests.py` import 顺序 |
+| `make test` | 失败，非 D 并发用例 `tests/component/test_youhua_deepseek_c3.py::test_c3_same_stock_three_strategies_share_one_raw_facts_request` 把 `mappingproxy` 当作 `dict` 断言 |
+
+### 10.6 D3 标准交接包
+
+```text
+codex_and_phase
+Codex D / D3.x
+
+base_commit
+812de4390d42213c684b4e2096453c4775903443
+
+head_commit_or_patch
+未提交；公共工作树内 D 修改见 10.1。
+
+owned_paths_changed
+src/trader/application/delivery_patch.py
+src/trader/application/publisher.py
+tests/unit/application/test_publisher.py
+docs/reports/youhua-d1-p6-web.md
+
+contract_assumptions
+沿用 A3 集成后的 SSE patch v2、projection/base、overlay、resync 和 P6 热索引契约；
+未新增公共 port/schema。
+
+schema_or_migration_changes
+无持久化 schema/migration。
+
+tests_run_and_results
+见 10.5。
+
+performance_before_after
+见 10.3；D3 增量 patch 后，热读和 SSE enqueue 仍保持毫秒内。
+
+known_failures_and_risks
+全局 format/lint/test 失败均归属并发非 D 变更；D3 桌面检查仍基于 not_ready 页面，真实推荐行、
+详情抽屉和长错误文本仍需 G3/G4 集成验收。
+
+requested_interface_changes
+无。
+
+ready_for_gate
+yes
+```

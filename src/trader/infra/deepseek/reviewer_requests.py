@@ -37,6 +37,7 @@ from trader.infra.deepseek.reviewer_support import (
     _usage_integer,
 )
 from trader.infra.deepseek.schema import (
+    RAW_FACTS_CACHE_GENERATION,
     DeepSeekSchemaError,
     build_messages,
     build_repair_messages,
@@ -169,7 +170,7 @@ class ReviewerRequestExecutor:
         primary_key = review_cache_key(
             candidate,
             model=self._settings.model,
-            generation=phase,
+            generation=RAW_FACTS_CACHE_GENERATION,
             model_role="primary",
             thinking_mode=_thinking_mode(self._client, self._settings.model),
             reasoning_effort=None,

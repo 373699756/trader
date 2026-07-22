@@ -33,6 +33,7 @@ from trader.infra.deepseek.reviewer_support import (
     _unique_candidates,
 )
 from trader.infra.deepseek.schema import (
+    RAW_FACTS_CACHE_GENERATION,
     review_cache_key,
 )
 from trader.infra.settings import DeepSeekSettings
@@ -222,7 +223,7 @@ class DeepSeekReviewer:
 
         results: dict[str, DeepSeekReview] = {}
         prioritized_missing: list[tuple[int, int, FeatureSnapshot]] = []
-        generation = phase
+        generation = RAW_FACTS_CACHE_GENERATION
         for index, candidate in enumerate(unique_candidates):
             if not _has_callable_features(candidate):
                 results[candidate.quote.code] = _annotate_review(

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from collections.abc import Callable, Mapping
+from dataclasses import replace
+from datetime import datetime, timedelta
+from typing import cast
 
 import pytest
 
 from trader.application.publisher import SnapshotPublisher, SubscriberLimitError, encode_sse
+from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
     FusionMode,
     LiveOverlay,
@@ -14,6 +18,47 @@ from trader.domain.recommendation.models import (
     ScoreBreakdown,
     Strategy,
 )
+
+ApplicationFeatureFactory = Callable[[str, datetime], FeatureSnapshot]
+
+
+def _recommendation(
+    code: str,
+    observed_at: datetime,
+    application_feature_factory: ApplicationFeatureFactory,
+) -> Recommendation:
+    return Recommendation(
+        strategy=Strategy.TODAY,
+        features=application_feature_factory(code, observed_at),
+        score=ScoreBreakdown({}, 80.0, 0.0, 80.0, None, 0.0, 0.0, 80.0, FusionMode.LOCAL_DEGRADED, False),
+        local_risk_facts=(),
+        deepseek_risk_facts=(),
+        review=None,
+        action=RecommendationAction.OBSERVE,
+        action_reason="test",
+        veto=False,
+    )
+
+
+def _snapshot(
+    snapshot_id: str,
+    utc_now: datetime,
+    recommendations: tuple[Recommendation, ...],
+) -> RecommendationSnapshot:
+    return RecommendationSnapshot(
+        snapshot_id=snapshot_id,
+        strategy=Strategy.TODAY,
+        trade_date="2026-07-16",
+        phase="today_main",
+        data_version="v1",
+        strategy_version="s1",
+        fusion_version="f1",
+        fusion_mode=FusionMode.LOCAL_DEGRADED,
+        published_at=utc_now,
+        recommendations=recommendations,
+        filtered_count=0,
+        filter_reasons={},
+    )
 
 
 def test_publisher_replays_cursor_and_drops_slow_subscriber() -> None:
@@ -59,7 +104,7 @@ def test_publisher_opens_replay_atomically_and_limits_subscribers() -> None:
     publisher.unsubscribe(subscription.queue)
 
 
-def test_publisher_emits_overlay_without_republishing_snapshot(utc_now) -> None:
+def test_publisher_emits_overlay_without_republishing_snapshot(utc_now: datetime) -> None:
     publisher = SnapshotPublisher(history_size=2, client_queue_size=2)
     overlay = LiveOverlay(
         snapshot_id="frozen-1",
@@ -80,39 +125,18 @@ def test_publisher_emits_overlay_without_republishing_snapshot(utc_now) -> None:
     assert event.data["overlay_version"] == "overlay-1"
 
 
-def test_publisher_reports_bounded_sse_and_today_score_latency(utc_now, application_feature_factory) -> None:
+def test_publisher_reports_bounded_sse_and_today_score_latency(
+    utc_now: datetime,
+    application_feature_factory: ApplicationFeatureFactory,
+) -> None:
     measured_at = utc_now
     publisher = SnapshotPublisher(
         history_size=2,
         client_queue_size=2,
         now=lambda: measured_at,
     )
-    feature = application_feature_factory("600001", utc_now - timedelta(seconds=10))
-    recommendation = Recommendation(
-        strategy=Strategy.TODAY,
-        features=feature,
-        score=ScoreBreakdown({}, 80.0, 0.0, 80.0, None, 0.0, 0.0, 80.0, FusionMode.LOCAL_DEGRADED, False),
-        local_risk_facts=(),
-        deepseek_risk_facts=(),
-        review=None,
-        action=RecommendationAction.OBSERVE,
-        action_reason="test",
-        veto=False,
-    )
-    snapshot = RecommendationSnapshot(
-        snapshot_id="today-1",
-        strategy=Strategy.TODAY,
-        trade_date="2026-07-16",
-        phase="today_main",
-        data_version="v1",
-        strategy_version="s1",
-        fusion_version="f1",
-        fusion_mode=FusionMode.LOCAL_DEGRADED,
-        published_at=utc_now - timedelta(seconds=2),
-        recommendations=(recommendation,),
-        filtered_count=0,
-        filter_reasons={},
-    )
+    recommendation = _recommendation("600001", utc_now - timedelta(seconds=10), application_feature_factory)
+    snapshot = _snapshot("today-1", utc_now - timedelta(seconds=2), (recommendation,))
 
     publisher.publish(snapshot)
 
@@ -124,7 +148,8 @@ def test_publisher_reports_bounded_sse_and_today_score_latency(utc_now, applicat
     assert event[0].data["projection_version"] == "today-1"
     assert event[0].data["base_projection_version"] is None
     assert event[0].data["removed_codes"] == []
-    assert event[0].data["upserts"][0]["code"] == "600001"
+    upserts = cast(list[Mapping[str, object]], event[0].data["upserts"])
+    assert upserts[0]["code"] == "600001"
 
     status = publisher.status()
     assert status["sse_publish_latency"] == {
@@ -141,3 +166,33 @@ def test_publisher_reports_bounded_sse_and_today_score_latency(utc_now, applicat
         "maximum_seconds": 10.0,
         "meets_target": True,
     }
+
+
+def test_publisher_emits_incremental_snapshot_patch_after_base_snapshot(
+    utc_now: datetime,
+    application_feature_factory: ApplicationFeatureFactory,
+) -> None:
+    publisher = SnapshotPublisher(history_size=4, client_queue_size=2, now=lambda: utc_now)
+    unchanged = _recommendation("600001", utc_now, application_feature_factory)
+    removed = _recommendation("600002", utc_now, application_feature_factory)
+    base = _snapshot("today-base", utc_now, (unchanged, removed))
+    changed = replace(unchanged, rank=2)
+    inserted = _recommendation("600003", utc_now, application_feature_factory)
+    next_snapshot = _snapshot("today-next", utc_now, (changed, inserted))
+
+    publisher.publish(base)
+    publisher.publish(next_snapshot)
+
+    events = publisher.events_after(0)
+    assert events is not None
+    initial_patch = events[0].data
+    incremental_patch = events[1].data
+    initial_upserts = cast(list[Mapping[str, object]], initial_patch["upserts"])
+    incremental_upserts = cast(list[Mapping[str, object]], incremental_patch["upserts"])
+    assert initial_patch["replace"] is True
+    assert [item["code"] for item in initial_upserts] == ["600001", "600002"]
+    assert incremental_patch["replace"] is False
+    assert incremental_patch["base_projection_version"] == "today-base"
+    assert incremental_patch["projection_version"] == "today-next"
+    assert [item["code"] for item in incremental_upserts] == ["600001", "600003"]
+    assert incremental_patch["removed_codes"] == ["600002"]

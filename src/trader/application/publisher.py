@@ -55,15 +55,18 @@ class SnapshotPublisher:
         self._publish_latencies: deque[float] = deque(maxlen=512)
         self._today_score_latencies: deque[float] = deque(maxlen=4096)
         self._snapshot_ids: dict[str, str] = {}
+        self._snapshots: dict[str, RecommendationSnapshot] = {}
 
     def publish(self, snapshot: RecommendationSnapshot) -> PublishedEvent:
         emitted_at = self._now()
         with self._lock:
             base_snapshot_id = self._snapshot_ids.get(snapshot.strategy.value)
+            base_snapshot = self._snapshots.get(snapshot.strategy.value)
             self._snapshot_ids[snapshot.strategy.value] = snapshot.snapshot_id
+            self._snapshots[snapshot.strategy.value] = snapshot
             event = self._new_event_locked(
                 "recommendation_patch",
-                snapshot_patch(snapshot, base_snapshot_id=base_snapshot_id),
+                snapshot_patch(snapshot, base_snapshot=base_snapshot, base_snapshot_id=base_snapshot_id),
             )
             self._publish_latencies.append(max(0.0, (emitted_at - snapshot.published_at).total_seconds()))
             if snapshot.strategy.value == "today":

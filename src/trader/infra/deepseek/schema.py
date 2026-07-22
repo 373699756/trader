@@ -36,6 +36,7 @@ LEGACY_PROMPT_VERSION = "deepseek_review_prompt_v3"
 MAX_RESPONSE_CHARACTERS = 200_000
 MAX_ASSESSMENT_CHARACTERS = 240
 MAX_PROMPT_EVIDENCE_PER_CANDIDATE = 12
+RAW_FACTS_CACHE_GENERATION = "raw_facts_v1"
 _FORBIDDEN_MODEL_DECISION_FIELDS = frozenset(
     {
         "action",
@@ -762,6 +763,7 @@ def _optional_bounded_number(raw: object, lower: float, upper: float, field: str
 __all__ = [
     "DeepSeekSchemaError",
     "PROMPT_VERSION",
+    "RAW_FACTS_CACHE_GENERATION",
     "SCHEMA_VERSION",
     "build_messages",
     "build_repair_messages",
