@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户发送“继续”后，A 复核当前工作树中新到达的 B1/C1/D1 阶段 1 报告，并发布 G1。新增
+  `docs/reports/youhua-g1-contract-base.md`，固定
+  `CONTRACT_BASE=45bd2fab992d36eb873b7c448fbd9739f0cad43c`、三方 `ready_for_gate=yes`
+  状态、唯一 owner/schema 清单、接口申请归并结果和 A2/B2/C2/D2/G2 合并顺序；同时纳入
+  B1/C1/D1 交接报告文件，便于阶段 2 从同一公共契约基线开始。
+
 - 用户指定本任务为 Codex A，并要求严格按 `docs/plan_youhua.md` 先完成 A1.x，等待 B1/C1/D1
   报告后再发布 `CONTRACT_BASE` 和 G1。新增 A1 基线报告
   `docs/reports/youhua-a1-baseline.md`，记录当前 `HEAD/upstream`、owner 范围、质量/
@@ -173,6 +179,10 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- A1 基线报告从“等待 C1/D1，G1 未发布”更新为“B1/C1/D1 均已收到，G1 已发布”，并把
+  `ready_for_gate` 更新为 `yes`。本批仍不进入 A2.1-A2.5，不实现公共 port/event/config
+  骨架，也不执行 B/C/D 内部算法。
 
 - 权威文档将 P1-P6 内存验收从旧 `248/8/256 MiB` 单进程口径调整为
   `248 MiB` 逻辑缓存和 `384 MiB` 迁移期进程峰值 RSS 双层契约，并冻结
@@ -595,6 +605,12 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- G1 发布批次验证：复核 B1、C1、D1 三份标准报告均包含 `ready_for_gate=yes`；确认
+  `HEAD == @{upstream}` 后发布 `CONTRACT_BASE`。`make format-check`、定向契约测试
+  `tests/contract/test_delivery_contract.py tests/contract/test_youhua_contract_base.py`、
+  `git diff --check` 和 `make package` 通过；`make type-check` 通过。全局 `make lint`
+  仍失败于既有严格债务计数漂移，全局 `make test` 仍失败 5 项，失败面与 A1 记录一致。
+
 - A1 基线：`make format-check` 通过；`make lint` 在既有严格债务计数漂移处失败；
   `make type-check` 通过；`make test` 在 A1 修正文档白名单后仍有 5 个既有失败；`make package` 沙箱内因
   构建依赖联网失败，提升权限后通过。离线 `perf-check --suite all`、v15 market-data
@@ -805,10 +821,13 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- G1 尚未发布：B1 已收到，C1/D1 标准报告未收到，`CONTRACT_BASE` 仍为空，B/C/D 必须继续等待且
-  不进入生产实现。A1 未实现 A2 公共类型、配置状态字段或测试替身；当前运行配置仍保留旧
-  `256 MiB` performance memory 字段，需在 A2 按双层内存契约实现并复验。完整 RSS/USS/
-  Polars 原生估算、真实 pipeline 100 tick 和 P6 发布峰值仍需阶段 2-4 集成门禁补齐。
+- G1 已发布但 G2 未满足；阶段 2 只能按 A/B/C/D owner 范围分别施工。全局 `make lint`
+  的严格债务计数漂移和全局 `make test` 的 5 个既有失败仍未在本批修复，不能宣称完整质量
+  门禁绿色。
+
+- A1/G1 未实现 A2 公共类型、配置状态字段或测试替身；当前运行配置仍保留旧 `256 MiB`
+  performance memory 字段，需在 A2 按双层内存契约实现并复验。完整 RSS/USS/Polars 原生
+  估算、真实 pipeline 100 tick 和 P6 发布峰值仍需阶段 2-4 集成门禁补齐。
 
 - Polars 只改变基础设施层批次与变更集合，不改变领域评分、68/32 融合、风险、动作、排名
   或冻结哈希；性能通过也不代表荐股收益提高。真实供应商、真实 DeepSeek 和真实交易日仍受

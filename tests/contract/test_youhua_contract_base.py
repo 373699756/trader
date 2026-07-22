@@ -21,6 +21,7 @@ def test_youhua_public_seams_have_single_versions_and_owners() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     report = (PROJECT_ROOT / "docs/reports/youhua-a1-baseline.md").read_text(encoding="utf-8")
+    g1 = (PROJECT_ROOT / "docs/reports/youhua-g1-contract-base.md").read_text(encoding="utf-8")
 
     for token in (
         "youhua_contract_base_v1",
@@ -31,9 +32,11 @@ def test_youhua_public_seams_have_single_versions_and_owners() -> None:
     ):
         assert token in design
         assert token in report
+        assert token in g1
 
     assert "deepseek_v4_review_facts_v1" in strategy
     assert "deepseek_v4_review_facts_v1" in report
+    assert "deepseek_v4_review_facts_v1" in g1
     assert "Codex A 是 schema、版本、公共 port/event" in design
     assert "publisher、bootstrap 和集成测试 owner" in design
     assert "B/C/D 内部算法 | 未执行、未修改" in report
@@ -42,10 +45,13 @@ def test_youhua_public_seams_have_single_versions_and_owners() -> None:
 def test_youhua_g1_waits_for_bcd_phase_reports() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     report = (PROJECT_ROOT / "docs/reports/youhua-a1-baseline.md").read_text(encoding="utf-8")
+    g1 = (PROJECT_ROOT / "docs/reports/youhua-g1-contract-base.md").read_text(encoding="utf-8")
 
     assert "B1/C1/D1 标准报告均 `ready_for_gate=yes`" in design
     assert "B1 P1-P3 盘点报告 | 已收到" in report
-    assert "C1 DeepSeek 盘点报告 | 未收到" in report
-    assert "D1 P6/Web 盘点报告 | 未收到" in report
-    assert "CONTRACT_BASE | 未发布" in report
-    assert "ready_for_gate | no" in report
+    assert "C1 DeepSeek 盘点报告 | 已收到" in report
+    assert "D1 P6/Web 盘点报告 | 已收到" in report
+    assert "CONTRACT_BASE | `45bd2fab992d36eb873b7c448fbd9739f0cad43c`" in report
+    assert "ready_for_gate | yes" in report
+    assert "CONTRACT_BASE | `45bd2fab992d36eb873b7c448fbd9739f0cad43c`" in g1
+    assert "G1 已发布" in g1

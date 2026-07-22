@@ -1,6 +1,6 @@
 # youhua A1 基线与契约冻结报告
 
-状态：A1.x 已完成本地基线采集与契约冻结；已收到 B1 报告，G1 未发布，等待 C1/D1 标准报告。
+状态：A1.x 已完成本地基线采集与契约冻结，并完成 G1 发布；B1/C1/D1 标准报告均已收到。
 
 ## 1. 工作树封存
 
@@ -67,10 +67,10 @@ B/C/D 的独占生产范围仍按 `docs/plan_youhua.md` 第 2.1 节执行。B/C/
 | 报告 | 状态 |
 | --- | --- |
 | B1 P1-P3 盘点报告 | 已收到，路径 `tests/fixtures/market_data/youhua_b1/report_to_a.md`，`ready_for_gate=yes` |
-| C1 DeepSeek 盘点报告 | 未收到 |
-| D1 P6/Web 盘点报告 | 未收到 |
-| CONTRACT_BASE | 未发布 |
-| ready_for_gate | no |
+| C1 DeepSeek 盘点报告 | 已收到，路径 `tests/fixtures/deepseek/youhua_c1/report_to_a.md`，`ready_for_gate=yes` |
+| D1 P6/Web 盘点报告 | 已收到，路径 `docs/reports/youhua-d1-p6-web.md`，`ready_for_gate=yes` |
+| CONTRACT_BASE | `45bd2fab992d36eb873b7c448fbd9739f0cad43c` |
+| ready_for_gate | yes |
 
-收到 C1/D1 后，A 将汇总 B1/C1/D1 接口申请、唯一 owner 清单、schema/version 清单和合并顺序，
-再发布 `CONTRACT_BASE=<commit>` 与 G1。
+G1 发布记录见 `docs/reports/youhua-g1-contract-base.md`。B/C/D 阶段 2 均必须从同一
+`CONTRACT_BASE` 开始；A 在收到阶段 2 交接包前不执行 B/C/D 内部算法。

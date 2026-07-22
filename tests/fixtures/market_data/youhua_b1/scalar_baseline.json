@@ -1,0 +1,79 @@
+{
+  "base_commit": "777e73d445f88c165126d1a09d02b833453b9d3e",
+  "fixture_sha256": "2d8c93f18c8e83f2f8f8eb628d4c4d04bef9eb95bb58db18c6d05f0165a36801",
+  "logical_cache_bytes_from_v15_report": 28378512,
+  "memory": {
+    "polars_estimated_bytes_last": 362280,
+    "polars_estimated_bytes_max": 363000,
+    "process_peak_rss_bytes": 188854272,
+    "process_rss_bytes_end": 188854272,
+    "process_rss_bytes_start": 157687808,
+    "process_uss_bytes_end": 176435200,
+    "process_uss_bytes_start": 155291648,
+    "python_traced_bytes_end": 291713,
+    "python_traced_bytes_peak": 48149920
+  },
+  "notes": [
+    "Full 100 tick scalar merge with tracemalloc was interrupted after 180s; v15 scalar merge baseline is recorded separately from the existing fixed performance runner."
+  ],
+  "payload_sha256": "b232e3525ee9f7a6227593dbd696e6e5d935451a816e111ee0a06d3f872db79d",
+  "performance_runner": {
+    "canonical_snapshot": {
+      "budget_p95_ms": 1500.0,
+      "max_ms": 781.349,
+      "p50_ms": 756.258,
+      "p95_ms": 781.349,
+      "passed": true,
+      "samples": 5
+    },
+    "canonical_snapshot_sha256": "234b923cb17d1979365892791f38545598ae2d25f0cbe14817980a3080c3329b",
+    "logical_cache_estimated_bytes": 28378512,
+    "market_merge": {
+      "budget_p95_ms": 1000.0,
+      "max_ms": 528.327,
+      "p50_ms": 524.506,
+      "p95_ms": 528.327,
+      "passed": true,
+      "samples": 5
+    },
+    "market_normalization": {
+      "budget_p95_ms": 800.0,
+      "max_ms": 96.322,
+      "p50_ms": 96.071,
+      "p95_ms": 96.322,
+      "passed": true,
+      "samples": 5
+    },
+    "passed": true,
+    "rounds": {
+      "measurement": 5,
+      "warmup": 1
+    }
+  },
+  "scalar_outputs": {
+    "last_columnar_identity_digest": "38256abc43be9cc0cb0646403cefcc0f3f0853c21038aff2ad65533e8c33fdb4",
+    "last_market_change_counts": {
+      "dirty": 360,
+      "inserted": 0,
+      "removed": 0,
+      "updated": 360
+    },
+    "last_merge_epoch": "a21ebe4b943cfef8a5b933d1",
+    "quote_count": 5500,
+    "snapshot_hashes": [
+      "234b923cb17d1979365892791f38545598ae2d25f0cbe14817980a3080c3329b",
+      "af791c795eb6447976b0542986c60bf85f229d771146d2b046a4abbcac9436e3"
+    ]
+  },
+  "schema_version": "youhua-b1-scalar-fixture-v1",
+  "workload": {
+    "candidate_rows": 360,
+    "merge_sources": [
+      "eastmoney",
+      "sina"
+    ],
+    "normalized_rows": 5500,
+    "tick_scope": "ColumnarQuoteBatch.from_snapshot + market_changes over two premerged scalar snapshots",
+    "ticks": 100
+  }
+}
