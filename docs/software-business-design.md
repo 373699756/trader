@@ -78,7 +78,7 @@ entrypoints / web / infra -> application -> domain
 
 `create_app()` 必须无线程、无网络、无数据库和无文件写入副作用。HTTP 请求不得抓取
 行情、评分、调用 DeepSeek 或写盘。新代码不得导入 `stock_analyzer`。活动源码单文件
-原则上不超过 500 行，超出必须按职责拆分并说明；禁止新增含义模糊的聚合模块。
+原则上不超过 800 行，超出必须按职责拆分并说明；禁止新增含义模糊的聚合模块。
 
 公开入口固定为 `trader-server` 和 `trader-cli`。配置通过 `--config` 或
 `TRADER_CONFIG` 传入绝对路径，不得按当前工作目录猜测。HTML、CSS、JavaScript 和

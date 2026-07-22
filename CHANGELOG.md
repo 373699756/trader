@@ -110,6 +110,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户诉求：将活动源码单文件行数门禁从 500 行调整为 800 行。现状是权威设计与架构
+  契约测试同时固定 500 行，单改文档会造成契约与门禁不一致；修改后
+  `software-business-design.md` 与架构测试统一以 800 行为上限，超过上限仍必须按职责
+  拆分并说明，且继续禁止含义模糊的聚合模块。本批不改变运行逻辑、策略、API、冻结格式
+  或打包内容。
+
 - 推荐接口保留原路由并直接升级为 v3，不提供 v2 兼容 shim；逐股响应只保留身份、核心/
   锚点行情、报价身份、动作、四项关键评分、精简风险和复核终态。完整特征、证据、板块
   计算、缺失原因和 DeepSeek 技术审计继续参与领域计算、冻结持久化和离线观察，不因页面
@@ -381,6 +387,11 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 行数门禁架构契约定向回归通过；为避免把并行中的用户业务修改混入本批，使用已推送
+  `08c4d43` 基线叠加本批 3 个文件的隔离副本完成 Ruff format/lint、138 个源码文件
+  mypy、完整 618 项 pytest、sdist/wheel 构建。仓库外 wheel 的包导入、`trader-cli`、
+  9 项 Web 资源与 `pip check` 通过；当前仓库 editable 安装已恢复并指向活动源码。
+
 - v3 ready/not_ready/error、当前/历史、正式/临时实时、overlay、精简复核和风险去重契约
   通过；JavaScript 语法检查、Ruff format/lint、138 个源码文件 mypy、完整 pytest 与冻结
   持久化关联回归通过。sdist/wheel 构建成功；wheel 在仓库外独立前缀完成导入、v3 schema、
@@ -493,6 +504,10 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 800 行是宽松后的工程上限，不代表 501-800 行模块天然合理；职责、耦合和可测试性仍须在
+  Review 中独立判断，超过 800 行仍由架构契约拒绝。本批只调整工程门禁，不产生运行、数据
+  或兼容迁移风险。当前工作树另有用户并行业务修改，未纳入本批验证副本、暂存或提交。
 
 - 推荐 Web schema v3 是有意的破坏性收缩；仓库外仍读取 v2 原始特征、板块、证据、缺失
   或完整 DeepSeek 审计字段的私有脚本需一次性迁移。领域快照与冻结格式保持不变，可继续

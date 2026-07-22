@@ -6,6 +6,7 @@ from pathlib import Path
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
+ACTIVE_SOURCE_MAX_LINES = 800
 
 
 def test_v2_does_not_import_legacy_package() -> None:
@@ -76,13 +77,13 @@ def test_bootstrap_is_the_only_composition_root() -> None:
     assert not (SOURCE_ROOT / "infra" / "container.py").exists()
 
 
-def test_active_product_source_files_do_not_exceed_500_lines() -> None:
+def test_active_product_source_files_do_not_exceed_configured_line_limit() -> None:
     oversized: dict[str, int] = {}
     for path in SOURCE_ROOT.rglob("*"):
         if not path.is_file() or path.suffix not in {".py", ".css", ".js", ".html"}:
             continue
         line_count = len(path.read_text(encoding="utf-8").splitlines())
-        if line_count > 500:
+        if line_count > ACTIVE_SOURCE_MAX_LINES:
             oversized[path.relative_to(PROJECT_ROOT).as_posix()] = line_count
 
     assert oversized == {}
