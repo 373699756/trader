@@ -28,24 +28,29 @@ def test_each_delivery_documents_user_problem_and_change_summary() -> None:
         assert "CHANGELOG.md" in contract
 
 
-def test_docs_keep_two_authorities_and_one_non_authoritative_plan() -> None:
+def test_docs_keep_two_authorities_and_two_non_authoritative_plans() -> None:
     docs_root = PROJECT_ROOT / "docs"
     documents = sorted(path.relative_to(docs_root).as_posix() for path in docs_root.rglob("*") if path.is_file())
 
     assert documents == [
         "plan.md",
+        "plan_c.md",
         "recommendation-strategy.md",
         "software-business-design.md",
     ]
 
     design = (docs_root / "software-business-design.md").read_text(encoding="utf-8")
     plan = (docs_root / "plan.md").read_text(encoding="utf-8")
+    plan_c = (docs_root / "plan_c.md").read_text(encoding="utf-8")
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
     assert "非权威执行计划" in plan
     assert "software-business-design.md" in plan
     assert "recommendation-strategy.md" in plan
+    assert "非权威执行计划" in plan_c
+    assert "software-business-design.md" in plan_c
+    assert "recommendation-strategy.md" in plan_c
     assert "docs/need.md" not in design
     assert "docs/hi.md" not in design
 
