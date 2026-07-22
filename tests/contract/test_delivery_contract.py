@@ -42,6 +42,7 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
         "reports/youhua-a2-public-skeleton.md",
         "reports/youhua-d1-p6-web.md",
         "reports/youhua-g1-contract-base.md",
+        "reports/youhua-g2-gate-review.md",
         "software-business-design.md",
     ]
 
@@ -71,6 +72,7 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
     assert "A2 public skeleton is available" in (docs_root / "reports/youhua-a2-public-skeleton.md").read_text(
         encoding="utf-8"
     )
+    assert "G2 未发布" in (docs_root / "reports/youhua-g2-gate-review.md").read_text(encoding="utf-8")
     assert "docs/need.md" not in design
     assert "docs/hi.md" not in design
 

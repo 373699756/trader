@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户发送“继续”后，A 按阶段 2 共同门禁复核当前 B2/C2/D2 交接材料，但因 B2 自报
+  `ready_for_gate=no` 且 C2 未使用标准 `ready_for_gate` 字段，未发布 G2、不进入 A3。新增
+  `docs/reports/youhua-g2-gate-review.md`，记录三方报告路径、base、gate 状态、阻塞原因和
+  后续等待条件；同时纳入 B2/C2 报告与 B2 性能 fixture，保留 D2 追加报告。
+
 - 用户发送“继续”后，A 按 `docs/plan_youhua.md` 执行 A2.1-A2.5。新增
   `src/trader/application/ports/youhua.py`，集中提供
   `youhua_contract_base_v1` 下的 P3/P4 `MarketChangeSet`、P4/P5 高价值复核 manifest、
@@ -187,6 +192,10 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- G2 状态明确为未发布：A 只接收并登记阶段 2 报告，不合并 B/C/D 实现、不连接真实实现、
+  不修改生产默认，也不开始 A3；等待 B2 补 `ready_for_gate=yes`，并等待 C2 补齐标准字段或
+  在下次门禁复核中人工确认。
 
 - A2 将运行配置 `performance_budgets.memory` 从旧 `cache_total_bytes` 单字段改为
   `cache_logical_bytes=260046848` 与 `process_peak_rss_bytes=402653184` 双字段，并更新解析
@@ -619,6 +628,11 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- G2 门禁复核批次验证：仅读取 B2、C2、D2 交接报告和 fixture 路径，未执行 B/C/D 内部算法；
+  定向文档契约测试 `tests/contract/test_delivery_contract.py tests/contract/test_youhua_contract_base.py`
+  通过 8 项，`git diff --check` 通过。当前判定证据是 B2 报告明确 `ready_for_gate=no`、
+  C2 报告缺少标准字段、D2 报告 `ready_for_gate yes`，因此共同门禁不满足。
+
 - A2 公共骨架批次验证：定向契约与配置测试
   `tests/contract/test_youhua_a2_public_skeleton.py tests/contract/test_v2_architecture.py tests/unit/test_v2_settings.py`
   通过；扩展文档契约后 5 个定向文件共 71 项通过，覆盖公共 schema/version、long 零复核、
@@ -845,6 +859,10 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- G2 当前被 B2 gate 阻断；C2 报告措辞需标准化为 `ready_for_gate=yes/no` 才能作为自动门禁
+  证据。当前工作树仍有 B/C/D 未暂存实现改动，本批只归档报告和门禁判断，不解决其内部实现
+  或全局质量失败。
 
 - A2 公共骨架已可用，但 G2 未满足；B2/C2/D2 的标准交接包尚未收齐，生产默认仍不得接入
   真实 B/C/D 实现。当前工作树还存在其他未暂存生产改动和 C2/B2 测试文件，本批保留且不纳入
