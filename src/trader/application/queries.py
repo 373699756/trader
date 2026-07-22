@@ -68,10 +68,19 @@ class RecommendationQueries:
                     loaded += 1
         return {"historical_views_preloaded": loaded}
 
-    def recommendation(self, strategy: Strategy, trade_date: str | None = None) -> SnapshotLookup:
+    def recommendation(
+        self,
+        strategy: Strategy,
+        trade_date: str | None = None,
+        *,
+        live: bool = False,
+    ) -> SnapshotLookup:
         if trade_date is None:
             now = self._now()
             current_date = trade_date_at(now)
+            if live:
+                snapshot = self._current_snapshot_reader.latest(strategy)
+                return self._current_lookup(strategy, current_date.isoformat(), snapshot)
             if strategy is not Strategy.LONG and strategy.value in freeze_due_at(now, is_trading_day=True):
                 frozen = self._current_snapshot_reader.latest(strategy)
                 if frozen is not None and (frozen.trade_date != current_date.isoformat() or not frozen.frozen):

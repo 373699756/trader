@@ -54,12 +54,14 @@
     padding: 10px 12px;
   }
 
-  .strategy-tabs {
+  .strategy-tabs,
+  .view-tabs {
     width: 100%;
     overflow-x: auto;
   }
 
-  .strategy-tab {
+  .strategy-tab,
+  .view-tab {
     min-width: 72px;
     flex: 1 0 auto;
   }

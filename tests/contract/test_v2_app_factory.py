@@ -39,7 +39,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "策略验证" not in page
     assert "/static/dashboard.css?v=4" in page
     assert "/static/render.js?v=6" in page
-    assert "/static/dashboard.js?v=9" in page
+    assert "/static/dashboard.js?v=10" in page
+    assert 'data-view="live"' in page
+    assert "临时实时" in page
     assert 'class="runtime-error"' in page
     assert "payloads: new Map()" in dashboard
     assert "inflight: new Map()" in dashboard
@@ -58,6 +60,8 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'addEventListener("live_overlay"' in dashboard
     assert "reconcileRecommendationIdentity(payload)" in dashboard
     assert 'loadRecommendations("status_identity")' in dashboard
+    assert 'query.set("view", "live")' in dashboard
+    assert "HISTORY_REFRESH_MS = 3000" in dashboard
     stylesheet_response = client.get("/static/dashboard.css")
     stylesheet = stylesheet_response.get_data(as_text=True)
     assert stylesheet_response.status_code == 200

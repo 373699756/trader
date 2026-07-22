@@ -28,6 +28,7 @@ def snapshot_envelope(
     current_trade_date: str | None = None,
     historical: bool = False,
     current_quotes: Mapping[str, LiveQuote] | None = None,
+    view: str = "official",
 ) -> dict[str, object]:
     live_quotes = overlay.quotes if overlay is not None and overlay.snapshot_id == snapshot.snapshot_id else {}
     displayed_quotes = current_quotes if historical and current_quotes is not None else live_quotes
@@ -40,6 +41,7 @@ def snapshot_envelope(
         "requested_date": requested_date,
         "current_trade_date": current_trade_date,
         "historical": historical,
+        "view": "history" if historical else view,
         "phase": snapshot.phase,
         "published_at": snapshot.published_at.isoformat(),
         "data_version": snapshot.data_version,
@@ -87,6 +89,7 @@ def empty_snapshot_envelope(
     trade_date: str | None = None,
     *,
     current_trade_date: str | None = None,
+    view: str = "official",
 ) -> dict[str, object]:
     return {
         "schema_version": API_SCHEMA_VERSION,
@@ -97,6 +100,7 @@ def empty_snapshot_envelope(
         "requested_date": trade_date,
         "current_trade_date": current_trade_date,
         "historical": trade_date is not None,
+        "view": "history" if trade_date is not None else view,
         "phase": None,
         "published_at": None,
         "data_version": None,

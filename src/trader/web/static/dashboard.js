@@ -3,6 +3,7 @@
 
   const state = {
     strategy: "today",
+    view: "live",
     date: "",
     payload: null,
     payloads: new Map(),
@@ -15,6 +16,7 @@
     requestSequence: 0,
   };
   const CACHE_MAX_AGE_MS = 30000;
+  const HISTORY_REFRESH_MS = 3000;
 
   const els = {};
 
@@ -32,8 +34,12 @@
     document.querySelectorAll(".strategy-tab").forEach((button) => {
       button.addEventListener("click", () => selectStrategy(button.dataset.strategy));
     });
+    document.querySelectorAll(".view-tab").forEach((button) => {
+      button.addEventListener("click", () => selectView(button.dataset.view));
+    });
     els.dateSelect.addEventListener("change", () => {
       state.date = els.dateSelect.value;
+      if (state.date) setView("official");
       loadRecommendations("date");
     });
     els.refreshButton.addEventListener("click", () => loadRecommendations("manual"));
@@ -53,6 +59,9 @@
     connectStream();
     window.setInterval(loadStatus, 15000);
     window.setInterval(updateQuoteAge, 1000);
+    window.setInterval(() => {
+      if (state.date && document.visibilityState !== "hidden") loadRecommendations("history_overlay");
+    }, HISTORY_REFRESH_MS);
   }
 
   async function selectStrategy(strategy) {
@@ -64,10 +73,28 @@
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-selected", active ? "true" : "false");
     });
-    const key = recommendationKey(state.strategy, state.date);
-    state.payload = displayableCachedPayload(key, state.strategy, state.date);
+    const key = recommendationKey(state.strategy, state.date, state.view);
+    state.payload = displayableCachedPayload(key, state.strategy, state.date, state.view);
     if (state.payload) renderPayload(state.payload);
     await Promise.all([loadDates(), loadRecommendations("strategy")]);
+  }
+
+  function selectView(view) {
+    if (!view || view === state.view && !state.date) return;
+    setView(view);
+    state.date = "";
+    els.dateSelect.value = "";
+    state.payload = null;
+    loadRecommendations("view");
+  }
+
+  function setView(view) {
+    state.view = view === "official" ? "official" : "live";
+    document.querySelectorAll(".view-tab").forEach((button) => {
+      const active = button.dataset.view === state.view;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
   }
 
   async function loadDates() {
@@ -94,8 +121,9 @@
     const requestId = ++state.requestSequence;
     const strategy = state.strategy;
     const selectedDate = state.date;
-    const key = recommendationKey(strategy, selectedDate);
-    const cached = displayableCachedPayload(key, strategy, selectedDate);
+    const view = state.view;
+    const key = recommendationKey(strategy, selectedDate, view);
+    const cached = displayableCachedPayload(key, strategy, selectedDate, view);
     els.refreshButton.classList.add("is-busy");
     if (cached) {
       if (state.payload !== cached) {
@@ -106,12 +134,12 @@
       renderTableState("正在读取推荐快照");
     }
     try {
-      const payload = await requestRecommendations(strategy, selectedDate);
+      const payload = await requestRecommendations(strategy, selectedDate, view);
       if (requestId !== state.requestSequence) return;
       if (state.payload !== payload) {
         const previous = state.payload;
         state.payload = payload;
-        if (reason === "overlay" && patchLiveRows(previous, payload)) {
+        if (["overlay", "history_overlay"].includes(reason) && patchLiveRows(previous, payload)) {
           const first = payload.items && payload.items[0];
           els.dataSource.textContent = first && first.source ? first.source : "-";
           updateQuoteAge();
@@ -133,13 +161,14 @@
     }
   }
 
-  async function requestRecommendations(strategy, selectedDate) {
-    const key = recommendationKey(strategy, selectedDate);
+  async function requestRecommendations(strategy, selectedDate, view) {
+    const key = recommendationKey(strategy, selectedDate, view);
     const pending = state.inflight.get(key);
     if (pending) return pending;
     const request = (async () => {
       const query = new URLSearchParams({ top_n: "18" });
       if (selectedDate) query.set("date", selectedDate);
+      else if (view === "live") query.set("view", "live");
       const headers = {};
       if (!selectedDate && state.etags.has(key)) headers["If-None-Match"] = state.etags.get(key);
       const response = await fetch(`/api/recommendations/${encodeURIComponent(strategy)}?${query}`, {
@@ -154,7 +183,7 @@
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error && payload.error.message ? payload.error.message : "接口请求失败");
       if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
-      if (!cacheIdentityValid(payload, strategy, selectedDate)) throw new Error("推荐快照身份不匹配");
+      if (!cacheIdentityValid(payload, strategy, selectedDate, view)) throw new Error("推荐快照身份不匹配");
       const etag = response.headers.get("ETag");
       if (etag) state.etags.set(key, etag);
       state.payloads.set(key, payload);
@@ -168,34 +197,35 @@
     }
   }
 
-  function recommendationKey(strategy, selectedDate) {
-    return `${strategy}:${selectedDate || "current"}`;
+  function recommendationKey(strategy, selectedDate, view) {
+    return `${strategy}:${selectedDate || view}`;
   }
 
-  function displayableCachedPayload(key, strategy, selectedDate) {
+  function displayableCachedPayload(key, strategy, selectedDate, view) {
     const payload = state.payloads.get(key) || null;
-    if (!cacheIdentityValid(payload, strategy, selectedDate)) return null;
+    if (!cacheIdentityValid(payload, strategy, selectedDate, view)) return null;
     if (payload.frozen) return payload;
     const publishedAt = new Date(payload.published_at).getTime();
     if (!Number.isFinite(publishedAt) || Date.now() - publishedAt > CACHE_MAX_AGE_MS) return null;
     return payload;
   }
 
-  function cacheIdentityValid(payload, strategy, selectedDate) {
+  function cacheIdentityValid(payload, strategy, selectedDate, view) {
     if (!payload || payload.strategy !== strategy) return false;
     if (selectedDate) {
       return payload.historical === true
+        && payload.view === "history"
         && payload.requested_date === selectedDate
         && payload.trade_date === selectedDate;
     }
     if (payload.status === "not_ready") return true;
     if (payload.historical === true || !payload.current_trade_date) return false;
-    return payload.trade_date === payload.current_trade_date;
+    return payload.trade_date === payload.current_trade_date && payload.view === view;
   }
 
   function prefetchStrategies() {
     for (const strategy of ["today", "tomorrow", "d25"]) {
-      requestRecommendations(strategy, "").catch(() => {});
+      requestRecommendations(strategy, "", state.view).catch(() => {});
     }
   }
 
@@ -225,6 +255,7 @@
     if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
     else if ((payload.degraded_reasons || []).length) setNotice(`降级：${payload.degraded_reasons.join("、")}`, "warn");
     else if (payload.frozen) setNotice(`已冻结于 ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
+    else if (payload.view === "live") setNotice(`临时实时 · ${window.TraderRender.formatDateTime(payload.published_at)} · 不替代正式冻结`, "warn");
     else setNotice(`快照 ${window.TraderRender.formatDateTime(payload.published_at)} · ${payload.fusion_mode}`, "ok");
     updateQuoteAge();
   }
@@ -235,7 +266,7 @@
 
   function patchLiveRows(previous, payload) {
     if (!previous || !payload || previous.snapshot_id !== payload.snapshot_id) return false;
-    if (previous.historical === true || payload.historical === true) return false;
+    if (previous.historical !== payload.historical) return false;
     const before = Array.isArray(previous.items) ? previous.items : [];
     const after = Array.isArray(payload.items) ? payload.items : [];
     if (before.length !== after.length) return false;
@@ -255,7 +286,7 @@
         && prior.quote_data_version === item.quote_data_version
       ) continue;
       const holder = document.createElement("tbody");
-      holder.innerHTML = window.TraderRender.row(item, false);
+      holder.innerHTML = window.TraderRender.row(item, payload.historical === true);
       if (!holder.firstElementChild) return false;
       currentRow.replaceWith(holder.firstElementChild);
     }
@@ -373,7 +404,9 @@
       rememberEvent(event);
       let overlay = null;
       try { overlay = JSON.parse(event.data); } catch (_error) { overlay = null; }
-      if (!state.date && overlay && overlay.strategy === state.strategy) loadRecommendations("overlay");
+      if (overlay && overlay.strategy === state.strategy) {
+        loadRecommendations(state.date ? "history_overlay" : "overlay");
+      }
     });
     stream.addEventListener("resync_required", (event) => {
       rememberEvent(event);

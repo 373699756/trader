@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：历史推荐中的“今日涨跌”和“锚点至今”再次全部为空，同时同日已经生成的
+  临时推荐没有可见页面。新增显式 `view=live` 同交易日临时草稿只读接口与桌面“临时实时”
+  视图；新增 14:50 后冷启动的一次性 P2 当日报价索引恢复任务，不经过候选、评分、
+  DeepSeek 或冻结写入。
+
 - 用户诉求：适配器层名称过长，希望统一缩短为 `infra`。新增架构契约，要求
   `src/trader/infra` 必须存在、旧目录必须消失，且活动源码必须统一导入
   `trader.infra` 命名空间。
@@ -100,6 +105,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 历史日期页在可见时每 3 秒重新读取 P2 实时字段，并在同策略报价 overlay 推送时立即
+  重读；行级更新继续校验策略、日期、视图和快照身份。正式当前与临时实时使用独立缓存
+  和 ETag，临时草稿明确显示“不替代正式冻结”。
+
 - 活动适配器层目录与包名原子统一为 `src/trader/infra`；组合根、
   entrypoints、层内导入、全部测试与性能 runner 同步使用 `trader.infra`，依赖方向和
   业务行为保持不变。`AGENTS.md` 与软件业务设计的架构边界同步采用新名称。
@@ -193,6 +202,12 @@ All notable changes to this project are documented here.
   `runtime.json.performance_budgets` 读取，禁止适配器、评分lane或性能脚本自带默认值。
 
 ### Fixed
+
+- 根因确认：冻结窗口或收盘后启动时 cadence 不再运行全市场任务，P2 当前报价索引保持
+  空；历史序列化因此按契约把当前价、今日涨跌和锚点至今返回 `null`。同时查询层在冻结
+  时点后只接受同日正式冻结，虽运行态已有 tomorrow/d25 草稿，页面仍只能看到
+  `not_ready`。现在冷启动后台单次恢复当日报价索引，显式临时视图读取同日 P6 草稿；
+  默认正式接口、历史冻结身份及 11:20/14:50 不可变规则均未放宽。
 
 - 修复适配器层目录名及 Python 导入路径冗长且与团队期望不一致的问题；安装后的公开
   CLI 仍为 `trader-cli`/`trader-server`，只改变内部包路径，不改变 API、配置、冻结、
@@ -297,6 +312,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除历史页面仅首读一次、SSE 正常时永不刷新实时收益列的前端限制；没有删除或改写
+  任何冻结记录、历史锚点、评分、动作或推荐日期。
+
 - 移除适配器层旧长名称目录及包导入，不保留双命名兼容层，避免同一实现出现两个导入
   真相源；仓库内历史路径记录也统一改用当前 `infra` 名称。
 
@@ -344,6 +362,14 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 本批定向验证已通过 cadence 冻结后冷启动单次恢复、恢复任务不评分/不发布、正式接口
+  继续 `not_ready`、`view=live` 返回同日草稿、非法视图拒绝、历史实时行刷新和包内静态
+  资源契约；`make format-check/lint/type-check/test/package` 通过（mypy 138 个源码文件、
+  pytest 617 项，wheel/sdist 构建成功）。仓库外 wheel 的 `trader` 导入、`trader-cli`、
+  `validate-config`、模板/CSS/JavaScript/图标资源和 `pip check` 通过。Firefox 152 在
+  1280x720、1440x900、1920x1080 完成截图与 DOM 尺寸检查，均无白屏、重叠或页面级横向
+  溢出，“临时实时”入口可见。
 
 - 失败先行回归覆盖实时核心任务 FIFO、TopK 快通道、候选事件不等待分钟历史、依赖排队
   窗口与实际执行预算分离、历史预热单批在途、上海日期边界和重复系统启动生命周期；
@@ -444,6 +470,12 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- P2 恢复仍依赖东方财富/新浪全市场接口至少一个返回当日有效行情；若全源失败，历史
+  实时列按契约继续显示 `-` 并在状态中记录 `current quote index recovery degraded`，不会
+  用冻结日涨幅伪造今日数据。已运行的旧进程需重启后才会加载新后台任务和前端资源。
+  宿主临时盘配额不足以在第二个干净环境重复下载全部第三方依赖；wheel 本体在仓库外安装，
+  并复用当前已验依赖完成上述导入、资源、CLI 与 `pip check` 验收。
 
 - 2026-07-22 的 today 在 11:20 后才启动，tomorrow/d25 的旧进程又未在 14:50 前形成
   30 秒内合格检查点，因此三个冻结查询在当日保持 `not_ready`；这是禁止迟到结果改写

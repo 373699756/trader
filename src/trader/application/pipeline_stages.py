@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline
 
 from trader.application.pipeline_market_tasks import (
+    _event_result,
     _refresh_candidate_quotes_on_workers,
     _refresh_candidates_on_workers,
     _refresh_market_news_on_workers,
@@ -110,6 +111,37 @@ def _handle_topk_quotes(
     event: PipelineEvent,
 ) -> tuple[RecommendationSnapshot, ...]:
     pipeline._refresh_live_overlays(now, phase, deadline=event.deadline)
+    return ()
+
+
+@_register_task(PipelineTask.CURRENT_QUOTES)
+def _handle_current_quotes(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    try:
+        future = data_future(
+            pipeline,
+            pipeline._market_data.fetch_market_features,
+            now,
+            force=True,
+            deadline=event.deadline,
+        )
+        market_result = _event_result(
+            pipeline,
+            future,
+            deadline=event.deadline,
+            event_type=PipelineTask.CURRENT_QUOTES.value,
+        )
+        features = tuple(market_result)
+    except (MarketDataUnavailable, OSError, RuntimeError, TypeError, ValueError) as exc:
+        pipeline._state.increment("current_quote_recovery_failures")
+        pipeline._state.record_error(f"current quote index recovery degraded: {str(exc)[:400]}")
+        return ()
+    pipeline._market_features = features
+    pipeline._state.increment("current_quote_recoveries")
     return ()
 
 

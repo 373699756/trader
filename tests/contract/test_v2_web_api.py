@@ -413,6 +413,43 @@ def test_previous_trade_date_is_not_reused_for_current_recommendations(
     assert payload["degraded_reasons"] == ["snapshot_not_ready"]
 
 
+def test_explicit_live_view_keeps_same_day_draft_visible_after_freeze_cutoff(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    after_cutoff = NOW.replace(hour=14, minute=55)
+    draft = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        published_at=after_cutoff.replace(minute=41),
+        phase="final_review",
+        frozen=False,
+    )
+    repository = MemoryReadRepository(latest={Strategy.TOMORROW: draft})
+    client = _app(repository, now=after_cutoff)[0].test_client()
+
+    official = client.get("/api/recommendations/tomorrow")
+    live = client.get("/api/recommendations/tomorrow?view=live")
+
+    assert official.get_json()["status"] == "not_ready"
+    assert live.status_code == 200
+    payload = live.get_json()
+    assert payload["status"] == "ready"
+    assert payload["view"] == "live"
+    assert payload["snapshot_id"] == draft.snapshot_id
+    assert payload["trade_date"] == "2026-07-16"
+    assert payload["historical"] is False
+    assert payload["frozen"] is False
+
+
+def test_recommendations_reject_unknown_view() -> None:
+    client = _app(MemoryReadRepository())[0].test_client()
+
+    response = client.get("/api/recommendations/today?view=draft")
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_view"
+
+
 def test_explicit_historical_query_returns_previous_trade_date_snapshot(
     recommendation_policy,
     application_feature_factory,

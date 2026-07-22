@@ -5,6 +5,8 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from trader.application.cadence import CadencePlanner, CadencePolicy, PipelineTask, freshness_level
 from trader.application.schedule import SHANGHAI
 
@@ -33,6 +35,23 @@ def test_restart_after_afternoon_cutoff_combines_due_freezes_without_losing_stra
     assert freezes[0].freeze_strategies == ("today", "tomorrow", "d25")
     assert PipelineTask.DEEPSEEK_CUTOFF in {task.task for task in batch.tasks}
     assert PipelineTask.FINAL_CANDIDATE_QUOTES not in {task.task for task in batch.tasks}
+
+
+@pytest.mark.parametrize(
+    "restarted",
+    (
+        datetime(2026, 7, 16, 14, 55, tzinfo=SHANGHAI),
+        datetime(2026, 7, 16, 15, 5, tzinfo=SHANGHAI),
+    ),
+)
+def test_restart_after_freeze_recovers_current_quote_index_once(restarted) -> None:
+    planner = CadencePlanner(_policy())
+
+    first = planner.plan(restarted, is_trading_day=True)
+    second = planner.plan(restarted + timedelta(seconds=1), is_trading_day=True)
+
+    assert [task.task for task in first.tasks].count(PipelineTask.CURRENT_QUOTES) == 1
+    assert PipelineTask.CURRENT_QUOTES not in {task.task for task in second.tasks}
 
 
 def test_missed_final_candidate_refresh_is_not_replayed_after_freeze_boundary() -> None:

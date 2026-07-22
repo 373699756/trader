@@ -81,9 +81,28 @@ def register_routes(app: Flask, services: WebServices) -> None:
                     trade_date=trade_date,
                 )
             ), 400
+        view = request.args.get("view", "official")
+        if view not in {"official", "live"}:
+            return jsonify(
+                serialize_error(
+                    "invalid_view",
+                    "view must be official or live",
+                    strategy=strategy.value,
+                    trade_date=trade_date,
+                )
+            ), 400
+        if trade_date is not None and view == "live":
+            return jsonify(
+                serialize_error(
+                    "invalid_view",
+                    "live view cannot be combined with a historical date",
+                    strategy=strategy.value,
+                    trade_date=trade_date,
+                )
+            ), 400
         queries = services.queries
         if queries is None:
-            return jsonify(empty_snapshot_envelope(strategy.value, trade_date))
+            return jsonify(empty_snapshot_envelope(strategy.value, trade_date, view=view))
         if strategy is Strategy.LONG and trade_date is not None and trade_date != queries.today():
             return jsonify(
                 serialize_error(
@@ -93,7 +112,7 @@ def register_routes(app: Flask, services: WebServices) -> None:
                     trade_date=trade_date,
                 )
             ), 400
-        lookup = queries.recommendation(strategy, trade_date)
+        lookup = queries.recommendation(strategy, trade_date, live=view == "live")
         if lookup.status == "not_found":
             return jsonify(
                 serialize_error(
@@ -109,10 +128,11 @@ def register_routes(app: Flask, services: WebServices) -> None:
                     strategy.value,
                     trade_date,
                     current_trade_date=lookup.current_trade_date,
+                    view=view,
                 )
             )
         snapshot = lookup.snapshot
-        etag = lookup.etag or snapshot.snapshot_id
+        etag = f"{lookup.etag or snapshot.snapshot_id}:{view}"
         if trade_date is None and request.if_none_match.contains(etag):
             response = Response(status=304)
             response.set_etag(etag)
@@ -126,6 +146,7 @@ def register_routes(app: Flask, services: WebServices) -> None:
                 current_trade_date=lookup.current_trade_date,
                 historical=lookup.historical,
                 current_quotes=lookup.current_quotes,
+                view=view,
             )
         )
         if trade_date is None:

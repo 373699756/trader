@@ -43,6 +43,7 @@ class PipelineTask(str, Enum):
     FINAL_CANDIDATE_QUOTES = "final_candidate_quotes"
     FREEZE = "freeze"
     CLOSE_QUOTES = "close_quotes"
+    CURRENT_QUOTES = "current_quotes"
 
 
 def task_execution_budget_seconds(task: PipelineTask) -> float | None:
@@ -58,6 +59,7 @@ def task_execution_budget_seconds(task: PipelineTask) -> float | None:
         PipelineTask.DEEPSEEK_CUTOFF: 1.0,
         PipelineTask.FINAL_CANDIDATE_QUOTES: 10.0,
         PipelineTask.CLOSE_QUOTES: 3.0,
+        PipelineTask.CURRENT_QUOTES: 20.0,
         PipelineTask.FREEZE: None,
     }[task]
 
@@ -162,6 +164,8 @@ class CadencePlanner:
         if trade_date not in self._reference_dates:
             self._reference_dates.add(trade_date)
             tasks.append(ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, local, phase))
+            if band in {CadenceBand.FINAL_WINDOW, CadenceBand.AFTER_CLOSE}:
+                tasks.append(ScheduledPipelineTask(PipelineTask.CURRENT_QUOTES, local, phase))
         due_points = _due_schedule_points(local)
         for point in due_points:
             if (trade_date, point) in self._fired_points:

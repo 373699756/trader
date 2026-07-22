@@ -225,7 +225,8 @@ tr:focus-visible {
   background: var(--surface);
 }
 
-.strategy-tabs {
+.strategy-tabs,
+.view-tabs {
   display: flex;
   align-items: center;
   gap: 2px;
@@ -236,7 +237,8 @@ tr:focus-visible {
   background: var(--bg);
 }
 
-.strategy-tab {
+.strategy-tab,
+.view-tab {
   height: 32px;
   min-width: 68px;
   padding: 0 14px;
@@ -247,12 +249,14 @@ tr:focus-visible {
   cursor: pointer;
 }
 
-.strategy-tab:hover {
+.strategy-tab:hover,
+.view-tab:hover {
   color: var(--text);
   background: var(--surface-hover);
 }
 
-.strategy-tab.is-active {
+.strategy-tab.is-active,
+.view-tab.is-active {
   color: #fff;
   background: #2c5fae;
 }

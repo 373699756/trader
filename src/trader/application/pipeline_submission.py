@@ -88,6 +88,7 @@ class PipelineSubmissionMixin(PipelineState):
                 PipelineTask.FREEZE,
                 PipelineTask.DEEPSEEK_CUTOFF,
                 PipelineTask.CLOSE_QUOTES,
+                PipelineTask.CURRENT_QUOTES,
             }:
                 self._state.increment(f"cadence_{task.task.value}_skipped_cold")
                 continue
@@ -165,7 +166,7 @@ def _scheduled_task_priority(task: PipelineTask) -> EventPriority:
         PipelineTask.FINAL_CANDIDATE_QUOTES,
     }:
         return EventPriority.MARKET_QUOTES
-    if task in {PipelineTask.TOPK_QUOTES, PipelineTask.CLOSE_QUOTES}:
+    if task in {PipelineTask.TOPK_QUOTES, PipelineTask.CLOSE_QUOTES, PipelineTask.CURRENT_QUOTES}:
         return EventPriority.LIVE_QUOTES
     return {
         PipelineTask.FREEZE: EventPriority.FREEZE,

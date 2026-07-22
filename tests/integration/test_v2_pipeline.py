@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from trader.application.cadence import CadencePolicy
 from trader.application.events import EventPriority, PipelineEvent, new_event
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.ports import MarketDataUnavailable
@@ -1014,6 +1015,55 @@ def test_periodic_full_market_event_requires_a_fresh_physical_refresh(
         pipeline.stop(timeout_seconds=2.0)
 
     assert market_data.market_force_requests == [True]
+
+
+def test_current_quote_recovery_populates_market_view_without_scoring(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T15:05:00+08:00")
+    market_data = StaticMarketData((application_feature_factory("600001", now),))
+    repository = MemoryRepository()
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+        cadence_policy=CadencePolicy.from_seconds(
+            {
+                "full_market": {"today_main": 5},
+                "candidate_quotes": {"today_main": 1},
+                "topk_quotes": {"today_main": 1},
+                "score": {"today_main": 3},
+                "industry_heat": {"today_main": 60},
+                "market_news": {"today_main": 60},
+                "stock_risk": {"today_main": 180},
+            }
+        ),
+    )
+
+    pipeline.initialize()
+    assert pipeline.start() is True
+    try:
+        pipeline.submit_due(now)
+        _wait_until(lambda: pipeline.status()["counters"].get("current_quote_recoveries") == 1)
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert market_data.market_force_requests == [True]
+    assert [feature.quote.code for feature in pipeline._market_features] == ["600001"]
+    assert pipeline._candidate_codes == ()
+    assert repository.published == {}
+    assert pipeline.status()["counters"]["current_quote_recoveries"] == 1
 
 
 def test_periodic_event_evaluates_new_quotes_at_execution_time(
