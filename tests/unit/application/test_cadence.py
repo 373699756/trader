@@ -90,10 +90,10 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
 
     assert counts == Counter(
         {
-            PipelineTask.FULL_MARKET: 421,
-            PipelineTask.CANDIDATE_QUOTES: 2605,
-            PipelineTask.TOPK_QUOTES: 4120,
-            PipelineTask.SCORE: 868,
+            PipelineTask.FULL_MARKET: 3530,
+            PipelineTask.CANDIDATE_QUOTES: 10940,
+            PipelineTask.TOPK_QUOTES: 15300,
+            PipelineTask.SCORE: 3410,
             PipelineTask.INDUSTRY_HEAT: 226,
             PipelineTask.MARKET_NEWS: 226,
             PipelineTask.STOCK_RISK: 81,

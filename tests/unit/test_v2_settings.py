@@ -71,8 +71,11 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.performance_budgets.rounds.warmup == 1
     assert runtime.performance_budgets.rounds.measurement == 5
     assert runtime.performance_budgets.latency_p95_ms["market_normalization"] == 800
-    assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 2
-    assert runtime.pipeline.cadence_seconds["topk_quotes"]["today_main"] == 3
+    assert runtime.pipeline.cadence_seconds["full_market"]["today_main"] == 5
+    assert runtime.pipeline.cadence_seconds["candidate_quotes"]["today_main"] == 1
+    assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 1
+    assert runtime.pipeline.cadence_seconds["topk_quotes"]["today_main"] == 1
+    assert runtime.performance_budgets.data_age_p95_seconds["full_market_main"] == 10
     assert sum(runtime.deepseek.strategy_limits.values()) == 188
     assert sum(runtime.deepseek.stage_targets.values()) == 158
     assert runtime.deepseek.model == "deepseek-v4-flash"

@@ -14,6 +14,8 @@ from trader.infrastructure.market_data.service_state import MarketServiceState
 from trader.infrastructure.market_data.service_support import _normalize_codes, _source_batch_identity
 
 _LOGGER = logging.getLogger(__name__)
+_HISTORY_SOURCE_LANE = "history"
+_PERMANENT_TUSHARE_DEGRADATIONS = frozenset({"missing_token", "insufficient_points", "permission_denied"})
 
 
 class MarketHistoryWarmupMixin(MarketServiceState):
@@ -65,11 +67,13 @@ class MarketHistoryWarmupMixin(MarketServiceState):
         now = self._monotonic()
         with self._lock:
             self._history_warmup_universe = normalized
+            if self._history_warmup_inflight:
+                return
             missing = tuple(
                 code
                 for code in normalized
                 if code not in self._history_warmup_inflight
-                and ((entry := self._history.get(code)) is None or entry.expires_at <= now or len(entry.bars) < 20)
+                and ((entry := self._history.get(code)) is None or entry.expires_at <= now)
             )
         if not missing:
             return
@@ -86,9 +90,10 @@ class MarketHistoryWarmupMixin(MarketServiceState):
             not local_seed_codes
             and bool(tushare_health.get("enabled"))
             and not bool(tushare_health.get("circuit_open"))
+            and tushare_health.get("degraded_reason") not in _PERMANENT_TUSHARE_DEGRADATIONS
         )
-        source = "local_seed" if local_seed_codes else ("tushare" if use_tushare else "eastmoney")
-        batch_size = self._history_warmup_batch_size if (local_seed_codes or use_tushare) else 1
+        source = "local_seed" if local_seed_codes else ("tushare" if use_tushare else "tencent")
+        batch_size = self._history_warmup_batch_size
         batch = (local_seed_codes or missing)[:batch_size]
         with self._lock:
             self._history_warmup_inflight.update(batch)
@@ -108,7 +113,7 @@ class MarketHistoryWarmupMixin(MarketServiceState):
             )
         else:
             future = lanes.submit(
-                "eastmoney",
+                _HISTORY_SOURCE_LANE,
                 identity,
                 observed_at,
                 self._load_histories,
@@ -154,3 +159,6 @@ class MarketHistoryWarmupMixin(MarketServiceState):
                 (entry := self._history.get(code)) is not None and entry.expires_at > now and len(entry.bars) >= 20
                 for code in universe
             )
+        lanes = self._source_lanes
+        if universe and lanes is not None and not lanes.is_stopped("history") and not lanes.is_stopped("tushare"):
+            self.schedule_history_warmup(universe, self._wall_clock())

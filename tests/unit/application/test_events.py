@@ -7,6 +7,10 @@ import pytest
 from trader.application.events import BoundedEventQueue, EventPriority, new_event
 
 
+def test_realtime_pipeline_priority_follows_refresh_filter_score_order() -> None:
+    assert EventPriority.MARKET_QUOTES < EventPriority.CANDIDATE_QUOTES < EventPriority.SCORE
+
+
 def test_queue_reserves_capacity_for_risk_and_freeze(utc_now) -> None:
     event_queue = BoundedEventQueue(maximum_size=3, reserved_priority_size=1)
     for index in range(2):

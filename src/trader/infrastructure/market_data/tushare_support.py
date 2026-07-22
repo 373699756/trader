@@ -42,7 +42,7 @@ class _SdkFacade:
         params = dict(arguments)
         fields = str(params.pop("fields", ""))
         response = self._session.post(
-            "https://api.tushare.pro/daily",
+            "https://api.tushare.pro",
             json=cast(
                 Any,
                 {
@@ -242,16 +242,12 @@ def _data_version(dataset: str, rows: Sequence[Mapping[str, object]]) -> str:
 def _error_code(exc: Exception) -> str:
     if isinstance(exc, ModuleNotFoundError):
         return "sdk_not_installed"
+    if isinstance(exc, PermissionError):
+        return "permission_denied"
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return "timeout"
     message = str(exc).lower()
-    if (
-        isinstance(exc, PermissionError)
-        or "429" in message
-        or "quota" in message
-        or "频次" in message
-        or "权限" in message
-    ):
+    if "429" in message or "quota" in message or "频次" in message or "权限" in message:
         return "quota_or_rate_limit"
     if "timeout" in message or "timed out" in message:
         return "timeout"

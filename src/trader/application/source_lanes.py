@@ -14,7 +14,7 @@ from trader.application.workers import BoundedExecutor
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
-_SOURCE_NAMES = ("eastmoney", "sina", "tencent", "tushare", "akshare")
+_SOURCE_NAMES = ("eastmoney", "history", "sina", "tencent", "tushare", "akshare")
 
 
 class SourceRequestSuperseded(RuntimeError):
@@ -256,7 +256,7 @@ class LatestRequestLane:
 
 
 class SourceLaneRegistry:
-    """Fixed five-source lane registry sharing one lifecycle-owned executor."""
+    """Fixed five-source registry with an isolated daily-history activity lane."""
 
     def __init__(self, executor: BoundedExecutor) -> None:
         self._lanes = {source: LatestRequestLane(source, executor) for source in _SOURCE_NAMES}

@@ -87,7 +87,7 @@ def _handle_full_market(
     phase: MarketPhase,
     event: PipelineEvent,
 ) -> tuple[RecommendationSnapshot, ...]:
-    _refresh_candidates_on_workers(pipeline, now, phase, deadline=event.deadline)
+    _refresh_candidates_on_workers(pipeline, now, phase, force=True, deadline=event.deadline)
     return ()
 
 
@@ -228,7 +228,7 @@ def process_event_on_workers(
         freezes = tuple(str(value) for value in freeze_raw) if isinstance(freeze_raw, (list, tuple)) else ()
         return process_schedule_on_workers(pipeline, event.created_at, MarketPhase(event.phase), freezes)
 
-    now = event.created_at
+    now = event.created_at if task is PipelineTask.FREEZE else max(event.created_at, pipeline._now())
     phase = MarketPhase(event.phase)
     handler = _TASK_DISPATCH.get(task)
     if handler is not None:

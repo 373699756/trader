@@ -13,6 +13,8 @@ from trader.application.pipeline import RecommendationPipeline
 from trader.application.ports import MarketDataUnavailable
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
+from trader.application.schedule import MarketPhase
+from trader.application.snapshot_workflow import refresh_candidates
 from trader.application.status import RuntimeState
 from trader.domain.models import FeatureSnapshot, LiveOverlay, RecommendationSnapshot, Strategy
 
@@ -561,6 +563,47 @@ def test_market_data_unavailability_preserves_candidates_and_records_degradation
     assert "Traceback" not in caplog.text
 
 
+def test_history_warming_empty_selection_preserves_last_valid_candidate_pool(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    feature = application_feature_factory("600001", now)
+    market_data = StaticMarketData((feature,))
+    repository = MemoryRepository()
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+
+    refresh_candidates(pipeline, now, MarketPhase.TODAY_MAIN)
+    assert pipeline._candidate_codes == ("600001",)
+    market_data._features = (
+        replace(
+            feature,
+            values={**feature.values, "amount_median_20d": None},
+            history_days=0,
+        ),
+    )
+
+    refresh_candidates(pipeline, now + timedelta(seconds=1), MarketPhase.TODAY_MAIN)
+
+    assert pipeline._candidate_codes == ("600001",)
+    assert pipeline.status()["counters"]["candidate_selection_preserved_degraded"] == 1
+    assert pipeline._filter_reasons["history_warming"] == 1
+
+
 def test_status_uses_recorded_phase_without_calling_calendar(recommendation_policy) -> None:
     now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
     state = RuntimeState()
@@ -926,6 +969,101 @@ def test_expired_full_market_event_does_not_commit_candidates_or_set_recent_erro
     assert "deadline" not in status["last_error"]
 
 
+def test_periodic_full_market_event_requires_a_fresh_physical_refresh(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    market_data = StaticMarketData((application_feature_factory("600001", now),))
+    repository = MemoryRepository()
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+    event = new_event(
+        "full_market",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="today_main",
+        strategy=None,
+        priority=EventPriority.MARKET_QUOTES,
+        data_version="fresh-refresh-regression",
+        config_version="config-v2",
+        created_at=now,
+        deadline=now + timedelta(seconds=20),
+        payload={"schedule_task": "full_market"},
+    )
+
+    pipeline.initialize()
+    assert pipeline.start() is True
+    try:
+        assert pipeline.submit_event(event) is True
+        _wait_until(lambda: bool(repository.events) and repository.events[-1]["status"] == "success")
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert market_data.market_force_requests == [True]
+
+
+def test_periodic_event_evaluates_new_quotes_at_execution_time(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    scheduled_at = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    execution_time = scheduled_at + timedelta(seconds=2)
+    market_data = StaticMarketData((application_feature_factory("600001", scheduled_at),))
+    repository = MemoryRepository()
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: execution_time,
+    )
+    event = new_event(
+        "full_market",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="today_main",
+        strategy=None,
+        priority=EventPriority.MARKET_QUOTES,
+        data_version="execution-clock-regression",
+        config_version="config-v2",
+        created_at=scheduled_at,
+        deadline=scheduled_at + timedelta(seconds=20),
+        payload={"schedule_task": "full_market"},
+    )
+
+    pipeline.initialize()
+    assert pipeline.start() is True
+    try:
+        assert pipeline.submit_event(event) is True
+        _wait_until(lambda: bool(repository.events) and repository.events[-1]["status"] == "success")
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert pipeline._market_features[0].quote.source_time == execution_time
+
+
 def test_synchronous_and_worker_paths_publish_identical_business_snapshots(
     recommendation_policy,
     application_feature_factory,
@@ -1202,6 +1340,7 @@ class StaticMarketData:
         self._features = tuple(features)
         self.candidate_tail_requests: list[bool] = []
         self.fetch_threads: list[str] = []
+        self.market_force_requests: list[bool] = []
 
     def fetch_market_features(
         self,
@@ -1210,8 +1349,9 @@ class StaticMarketData:
         force: bool = False,
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]:
-        del force, deadline
+        del deadline
         self.fetch_threads.append(threading.current_thread().name)
+        self.market_force_requests.append(force)
         return tuple(_at_time(feature, observed_at) for feature in self._features)
 
     def fetch_candidate_features(

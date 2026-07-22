@@ -56,12 +56,12 @@ class MarketTushareMixin(MarketServiceState):
             tushare_future.add_done_callback(_observe_reference_refresh)
         if not normalized:
             return
-        if lanes.owns_current_thread("eastmoney"):
+        if lanes.owns_current_thread("history"):
             self._load_histories(normalized, force=force)
         else:
             history_identity = _source_batch_identity("daily_history", normalized, observed_at, force=force)
             history_future = lanes.submit(
-                "eastmoney",
+                "history",
                 history_identity,
                 observed_at,
                 self._load_histories,

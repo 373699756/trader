@@ -38,7 +38,7 @@ from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.history import DailyBar
-from trader.infrastructure.market_data.history_seed import LocalHistorySeedClient
+from trader.infrastructure.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
 from trader.infrastructure.market_data.observations import SourceObservation
 from trader.infrastructure.market_data.router import VendorRoute, VendorSeverity, route
 from trader.infrastructure.market_data.service import MarketFeatureService
@@ -212,6 +212,54 @@ def test_tencent_normalizes_targeted_quote() -> None:
     assert quotes[0].amount == 300000000.0
     assert quotes[0].source_time.isoformat() == "2026-07-16T10:00:00+08:00"
     assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
+
+
+def test_tencent_history_preserves_volume_amount_and_turnover_fields() -> None:
+    rows = [
+        [
+            (date(2026, 6, 1) + timedelta(days=index)).isoformat(),
+            "10.00",
+            f"{10.0 + index / 10:.2f}",
+            "13.00",
+            "9.90",
+            "1000.00",
+            {},
+            "0.33",
+            "6000.00",
+            "",
+        ]
+        for index in range(21)
+    ]
+    body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"qfqday": rows}}})
+    session = FakeSession([body])
+    client = TencentClient(
+        timeout_seconds=8,
+        session_factory=lambda: session,
+        wall_clock=lambda: datetime(2026, 7, 15, 16, 30, tzinfo=timezone.utc),
+    )
+
+    bars = client.fetch_history("600001", days=20)
+
+    assert len(bars) == 20
+    assert bars[-1].volume == 100_000.0
+    assert bars[-1].amount == 60_000_000.0
+    assert bars[-1].turnover_rate == 0.33
+    assert bars[-1].pct_change == pytest.approx((12.0 / 11.9 - 1.0) * 100.0)
+    assert session.calls[0][0][0].startswith("https://proxy.finance.qq.com/")
+    assert ",2026-07-16,640,qfq" in session.calls[0][1]["params"]["param"]
+    assert session.calls[0][1]["params"]["param"].endswith(",640,qfq")
+    assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
+
+
+def test_history_fallback_uses_eastmoney_only_when_tencent_is_insufficient() -> None:
+    primary = CountingHistoryClient(())
+    fallback = CountingHistoryClient(_history_bars())
+
+    bars = FallbackHistoryClient(primary, fallback).fetch_history("600001", days=90)
+
+    assert len(bars) == 60
+    assert primary.calls == ["600001"]
+    assert fallback.calls == ["600001"]
 
 
 def test_sina_market_request_bypasses_environment_proxy() -> None:
@@ -636,6 +684,69 @@ def test_scheduled_reference_refresh_starts_tushare_and_eastmoney_history_indepe
         tushare.release.set()
         lanes.stop(wait=True, timeout_seconds=1.0)
         pool.stop(wait=True, cancel_futures=True)
+
+
+def test_history_activity_does_not_block_realtime_eastmoney_lane() -> None:
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    history_started = threading.Event()
+    release_history = threading.Event()
+
+    def block_history() -> None:
+        history_started.set()
+        assert release_history.wait(1.0)
+
+    pool.start()
+    try:
+        history = lanes.submit("history", "history", NOW, block_history)
+        assert history_started.wait(1.0)
+        realtime = lanes.submit("eastmoney", "realtime", NOW, lambda: "fresh")
+        assert realtime.result(timeout=1.0) == "fresh"
+        release_history.set()
+        history.result(timeout=1.0)
+    finally:
+        release_history.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+
+def test_dedicated_history_workers_do_not_consume_realtime_source_workers() -> None:
+    source_pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="source-data")
+    history_pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="history-data")
+    lanes = SourceLaneRegistry(source_pool)
+    history_started = threading.Event()
+    release_history = threading.Event()
+
+    class BlockingRemoteHistory:
+        @staticmethod
+        def fetch_history(_code, *, days):
+            assert days == 90
+            history_started.set()
+            assert release_history.wait(1.0)
+            return _history_bars()
+
+    service = MarketFeatureService(
+        StaticGateway((_quote(),)),
+        BlockingRemoteHistory(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        worker_pool=source_pool,
+        history_worker_pool=history_pool,
+        source_lanes=lanes,
+        history_warmup_batch_size=1,
+        wall_clock=lambda: NOW,
+    )
+    source_pool.start()
+    history_pool.start()
+    try:
+        service.fetch_market_features(NOW, deadline=NOW + timedelta(seconds=1))
+        assert history_started.wait(1.0)
+        realtime = lanes.submit("eastmoney", "realtime-during-history", NOW, lambda: "fresh")
+        assert realtime.result(timeout=0.2) == "fresh"
+    finally:
+        release_history.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        source_pool.stop(wait=True, cancel_futures=True)
+        history_pool.stop(wait=True, cancel_futures=True)
 
 
 def test_gateway_starts_eastmoney_and_sina_together_on_shared_source_pool() -> None:
@@ -1513,6 +1624,7 @@ def test_tushare_security_master_keeps_out_of_scope_exchange_unsupported() -> No
     ("error", "expected_code"),
     [
         (ModuleNotFoundError("No module named 'tushare'"), "sdk_not_installed"),
+        (PermissionError("permission denied"), "permission_denied"),
         (RuntimeError("429 quota exceeded"), "quota_or_rate_limit"),
         (TimeoutError("transport timed out"), "timeout"),
         (RuntimeError("SDK protocol failed"), "sdk_error"),
@@ -1766,7 +1878,8 @@ def test_tushare_default_daily_transport_uses_direct_https_without_environment_p
 
     assert [item.subject_key for item in observations] == ["600001"]
     assert session.trust_env is False
-    assert session.calls[0][0] == "https://api.tushare.pro/daily"
+    assert session.calls[0][0] == "https://api.tushare.pro"
+    assert session.calls[0][1]["json"]["api_name"] == "daily"
     assert session.calls[0][1]["timeout"] == 8
 
 
@@ -3120,6 +3233,89 @@ def test_production_source_lanes_warm_tushare_history_after_realtime_commit() ->
     assert service.health()["history_coverage_ratio"] == 1.0
     assert service.health()["history_warmup_completed_count"] == 3
     assert pro.calls == 1
+
+
+def test_permission_denied_tushare_falls_back_to_batched_history_lane() -> None:
+    codes = ("600001", "600002", "300001", "300002", "688001", "688002")
+    quotes = tuple(_quote(code=code) for code in codes)
+
+    class PermissionDeniedTushare:
+        @staticmethod
+        def health():
+            return {
+                "enabled": True,
+                "circuit_open": False,
+                "degraded_reason": "permission_denied",
+            }
+
+    history = CountingHistoryClient(_history_bars())
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    service = MarketFeatureService(
+        StaticGateway(quotes),
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        tushare_client=PermissionDeniedTushare(),
+        worker_pool=pool,
+        source_lanes=lanes,
+        history_warmup_batch_size=3,
+        market_ttl_seconds=1,
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+
+    try:
+        service.fetch_market_features(NOW, deadline=NOW + timedelta(seconds=1))
+        timeout_at = time.monotonic() + 1.0
+        while service.health()["history_warmup_completed_count"] < len(codes) and time.monotonic() < timeout_at:
+            time.sleep(0.01)
+    finally:
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert sorted(history.calls) == sorted(codes)
+    assert service.health()["history_warmup_completed_count"] == len(codes)
+    assert service.health()["history_warmup_last_source"] == "tencent"
+
+
+def test_repeated_refresh_does_not_queue_multiple_history_warmup_batches() -> None:
+    codes = ("600001", "600002", "300001", "300002", "688001", "688002")
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingHistory:
+        @staticmethod
+        def fetch_history(_code, *, days):
+            assert days == 90
+            started.set()
+            assert release.wait(1.0)
+            return _history_bars()
+
+    pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    service = MarketFeatureService(
+        StaticGateway(tuple(_quote(code=code) for code in codes)),
+        BlockingHistory(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        worker_pool=pool,
+        source_lanes=lanes,
+        history_warmup_batch_size=3,
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+
+    try:
+        service.schedule_history_warmup(codes, NOW)
+        assert started.wait(1.0)
+        service.schedule_history_warmup(codes, NOW + timedelta(seconds=1))
+        service.schedule_history_warmup(codes, NOW + timedelta(seconds=2))
+        health = service.health()
+        assert health["history_warmup_planned_count"] == 3
+        assert health["history_warmup_inflight_count"] == 3
+    finally:
+        release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
 
 
 def test_market_service_reloads_expired_history_and_reports_failed_coverage() -> None:

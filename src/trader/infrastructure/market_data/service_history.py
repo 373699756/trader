@@ -23,6 +23,7 @@ from trader.infrastructure.market_data.service_support import (
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+_HISTORY_SOURCE_LANE = "history"
 
 
 class MarketHistoryMixin(MarketServiceState):
@@ -36,7 +37,7 @@ class MarketHistoryMixin(MarketServiceState):
     ) -> Mapping[str, tuple[DailyBar, ...]]:
         self._ensure_before_deadline(deadline)
         source_lanes = self._source_lanes
-        if source_lanes is not None and not source_lanes.owns_current_thread("eastmoney"):
+        if source_lanes is not None and not source_lanes.owns_current_thread(_HISTORY_SOURCE_LANE):
             observed_at = self._wall_clock()
             identity = _source_batch_identity(
                 "daily_history",
@@ -46,7 +47,7 @@ class MarketHistoryMixin(MarketServiceState):
                 deadline=deadline,
             )
             lane_future = source_lanes.submit(
-                "eastmoney",
+                _HISTORY_SOURCE_LANE,
                 identity,
                 observed_at,
                 self._load_histories,
@@ -83,13 +84,18 @@ class MarketHistoryMixin(MarketServiceState):
         if not missing:
             self._ensure_before_deadline(deadline)
             return result
+        history_pool = self._history_worker_pool or self._worker_pool
         with borrow_executor(
-            self._worker_pool,
+            history_pool,
             worker_count=min(self._history_workers, len(missing)),
             thread_name_prefix="candidate-history",
             queue_capacity=len(missing),
             wait_on_exit=deadline is None,
-            nested_inline=source_lanes is not None and source_lanes.owns_current_thread("eastmoney"),
+            nested_inline=(
+                history_pool is self._worker_pool
+                and source_lanes is not None
+                and source_lanes.owns_current_thread(_HISTORY_SOURCE_LANE)
+            ),
         ) as pool:
             futures = {}
             for code in missing:

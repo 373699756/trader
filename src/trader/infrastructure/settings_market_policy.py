@@ -228,12 +228,12 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
     }
     latency = _fixed_positive_number_mapping(raw, "latency_p95_ms", expected_latency)
     expected_age = {
-        "topk_critical": 10.0,
-        "topk_other": 20.0,
-        "candidate_main": 15.0,
-        "candidate_other": 30.0,
-        "full_market_main": 60.0,
-        "full_market_other": 120.0,
+        "topk_critical": 2.0,
+        "topk_other": 5.0,
+        "candidate_main": 5.0,
+        "candidate_other": 10.0,
+        "full_market_main": 10.0,
+        "full_market_other": 15.0,
     }
     data_age = _fixed_positive_number_mapping(raw, "data_age_p95_seconds", expected_age)
 

@@ -80,6 +80,7 @@ class MarketFeatureService(
         research_cache_dir: Path | None = None,
         json_writer: RuntimeJsonWriter | None = None,
         worker_pool: BoundedExecutor | None = None,
+        history_worker_pool: BoundedExecutor | None = None,
         source_lanes: SourceLaneRegistry | None = None,
         cache: BoundedCache[object] | None = None,
         source_contract_versions: Mapping[str, str] | None = None,
@@ -112,6 +113,7 @@ class MarketFeatureService(
         self._research_cache_dir = research_cache_dir
         self._json_writer = json_writer
         self._worker_pool = worker_pool
+        self._history_worker_pool = history_worker_pool
         self._source_lanes = source_lanes
         self._cache = cache
         self._source_contract_versions = dict(source_contract_versions or {"tushare": "tushare-component-v1"})
@@ -184,6 +186,8 @@ class MarketFeatureService(
             )
         )
         history_codes = _history_preload_codes(quotes, self._history_preload_limit)
+        if self._source_lanes is not None:
+            self.schedule_history_warmup(history_codes, observed_at)
         action_restrictions: dict[str, set[str]] = {}
         histories = (
             self._load_histories(
@@ -216,8 +220,6 @@ class MarketFeatureService(
             self._history_universe_rows = len(history_codes)
             self._history_covered_rows = sum(len(histories.get(code, ())) >= 20 for code in history_codes)
             self._history_data_versions = tuple(sorted({quote.data_version for quote in quotes}))
-        if self._source_lanes is not None:
-            self.schedule_history_warmup(history_codes, observed_at)
         return features
 
     def fetch_candidate_features(

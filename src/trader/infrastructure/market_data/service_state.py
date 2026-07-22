@@ -31,6 +31,7 @@ class MarketServiceState:
     _intraday_client: EastmoneyClient | None
     _tushare_client: TushareClient | None
     _worker_pool: BoundedExecutor | None
+    _history_worker_pool: BoundedExecutor | None
     _source_lanes: SourceLaneRegistry | None
     _cache: BoundedCache[object] | None
     _source_contract_versions: dict[str, str]

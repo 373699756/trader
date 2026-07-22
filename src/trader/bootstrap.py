@@ -33,7 +33,7 @@ from trader.infrastructure.market_data.calendar import ChinaTradingCalendar
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
-from trader.infrastructure.market_data.history_seed import LocalHistorySeedClient
+from trader.infrastructure.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
 from trader.infrastructure.market_data.service import MarketFeatureService
 from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
@@ -64,15 +64,26 @@ class ApplicationSystem:
     publisher: SnapshotPublisher
     state: RuntimeState
     market_cache: BoundedLruCache[object]
+    history_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry
 
     def start(self) -> bool:
-        return self.supervisor.start()
+        history_started = self.history_pool.start()
+        try:
+            started = self.supervisor.start()
+        except BaseException:
+            if history_started:
+                self.history_pool.stop(wait=True, cancel_futures=True)
+            raise
+        if not started and history_started:
+            self.history_pool.stop(wait=True, cancel_futures=True)
+        return started
 
     def stop(self) -> None:
         self.source_lanes.stop(wait=False)
         self.supervisor.stop()
         self.source_lanes.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
+        self.history_pool.stop(wait=True, cancel_futures=True)
         self.market_cache.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
 
 
@@ -91,6 +102,11 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         thread_name_prefix="source-data",
     )
     source_lanes = SourceLaneRegistry(data_pool)
+    history_pool = BoundedExecutor(
+        worker_count=settings.pipeline.market_workers,
+        queue_capacity=settings.market_data.candidate_pool_size,
+        thread_name_prefix="history-data",
+    )
     persistence_pool = BoundedExecutor(
         worker_count=1,
         queue_capacity=max(1, settings.pipeline.event_queue_size),
@@ -114,10 +130,20 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         timeout_seconds=settings.market_data.history_timeout_seconds,
         workers=settings.pipeline.market_workers,
         worker_pool=data_pool,
-        cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
+        cancel_requested=lambda: source_lanes.is_stopped("history"),
         wall_clock=now,
     )
-    history = LocalHistorySeedClient(settings.runtime_dir.parent / "market_data.sqlite3", remote_history)
+    history = LocalHistorySeedClient(
+        settings.runtime_dir.parent / "market_data.sqlite3",
+        FallbackHistoryClient(
+            TencentClient(
+                timeout_seconds=settings.market_data.history_timeout_seconds,
+                cancel_requested=lambda: source_lanes.is_stopped("history"),
+                wall_clock=now,
+            ),
+            remote_history,
+        ),
+    )
     intraday = EastmoneyClient(
         timeout_seconds=settings.market_data.candidate_timeout_seconds,
         workers=settings.pipeline.market_workers,
@@ -192,6 +218,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         json_writer=json_writer,
         market_ttl_seconds=min(cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
         worker_pool=data_pool,
+        history_worker_pool=history_pool,
         source_lanes=source_lanes,
         cache=market_cache,
         source_contract_versions=settings.market_data.source_contract_versions,
@@ -309,6 +336,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         publisher,
         state,
         market_cache,
+        history_pool,
         source_lanes,
     )
 

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from unittest.mock import Mock
 
-from trader.bootstrap import build_system
+from trader.bootstrap import ApplicationSystem, build_system
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -40,3 +41,28 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert system.pipeline._data_pool.status()["urgent_queue_capacity"] == 1
     assert system.pipeline._data_pool._thread_name_prefix == "source-data"
     assert system.market_cache.status() == {}
+
+
+def test_duplicate_system_start_does_not_stop_running_history_pool() -> None:
+    history_pool = Mock()
+    history_pool.start.side_effect = (True, False)
+    supervisor = Mock()
+    supervisor.start.side_effect = (True, False)
+    system = ApplicationSystem(
+        settings=Mock(),
+        strategy=Mock(),
+        watchlist=Mock(),
+        app=Mock(),
+        supervisor=supervisor,
+        pipeline=Mock(),
+        repository=Mock(),
+        publisher=Mock(),
+        state=Mock(),
+        market_cache=Mock(),
+        history_pool=history_pool,
+        source_lanes=Mock(),
+    )
+
+    assert system.start() is True
+    assert system.start() is False
+    history_pool.stop.assert_not_called()

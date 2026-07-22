@@ -16,6 +16,13 @@ if TYPE_CHECKING:
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _LOGGER = logging.getLogger(__name__)
+_TRANSIENT_EMPTY_SELECTION_FILTERS = frozenset(
+    {
+        "stale_quote",
+        "missing_liquidity_history",
+        "invalid_liquidity_history",
+    }
+)
 
 
 def store_candidate_selection(
@@ -26,11 +33,29 @@ def store_candidate_selection(
     details: tuple[FilterAudit, ...],
 ) -> None:
     pipeline._market_features = tuple(market_features)
-    pipeline._candidate_codes = tuple(feature.quote.code for feature in candidates)
-    pipeline._candidate_features = candidates
     pipeline._filter_reasons = reasons
     pipeline._filter_details = details
     pipeline._filtered_count = len({item.stock_code for item in details})
+    if _preserve_candidate_selection(pipeline, market_features, candidates, details):
+        pipeline._state.increment("candidate_selection_preserved_degraded")
+        return
+    pipeline._candidate_codes = tuple(feature.quote.code for feature in candidates)
+    pipeline._candidate_features = candidates
+
+
+def _preserve_candidate_selection(
+    pipeline: RecommendationPipeline,
+    market_features: Sequence[FeatureSnapshot],
+    candidates: tuple[FeatureSnapshot, ...],
+    details: tuple[FilterAudit, ...],
+) -> bool:
+    if candidates or not pipeline._candidate_codes or not market_features:
+        return False
+    temporarily_unavailable = {
+        item.stock_code for item in details if item.filter_code in _TRANSIENT_EMPTY_SELECTION_FILTERS
+    }
+    observed_codes = {feature.quote.code for feature in market_features}
+    return observed_codes <= temporarily_unavailable
 
 
 def submit_required(

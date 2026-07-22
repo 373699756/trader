@@ -15,6 +15,28 @@ class DailyHistoryClient(Protocol):
     def fetch_history(self, code: str, *, days: int = 90) -> Sequence[DailyBar]: ...
 
 
+class FallbackHistoryClient:
+    """Prefer the complete Tencent daily feed and retain Eastmoney as fallback."""
+
+    def __init__(
+        self,
+        primary: DailyHistoryClient,
+        fallback: DailyHistoryClient,
+        *,
+        minimum_rows: int = 20,
+    ) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._minimum_rows = max(1, minimum_rows)
+
+    def fetch_history(self, code: str, *, days: int = 90) -> tuple[DailyBar, ...]:
+        primary = _safe_history(self._primary, code, days)
+        if len(primary) >= self._minimum_rows:
+            return primary
+        fallback = _safe_history(self._fallback, code, days)
+        return fallback if len(fallback) >= len(primary) else primary
+
+
 class LocalHistorySeedClient:
     """Serve sufficient qfq bars from the legacy runtime DB without mutating it."""
 
@@ -98,3 +120,10 @@ class LocalHistorySeedClient:
             except (TypeError, ValueError):
                 continue
         return tuple(bars)
+
+
+def _safe_history(client: DailyHistoryClient, code: str, days: int) -> tuple[DailyBar, ...]:
+    try:
+        return tuple(client.fetch_history(code, days=days))
+    except Exception:
+        return ()
