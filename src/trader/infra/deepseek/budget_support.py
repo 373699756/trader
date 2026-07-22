@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 
-from trader.domain.models import Strategy
+from trader.domain.recommendation.models import Strategy
 
 
 def _stage_key(strategy: Strategy, phase: str, bucket: str) -> str:

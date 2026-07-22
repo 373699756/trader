@@ -16,16 +16,18 @@ from trader.application.recommendation_finalization import PreparedSnapshot, Rec
 from trader.application.recommendation_replay import (
     RecommendationReplayMixin,
 )
-from trader.domain.filters import FilterResult, board_for_snapshot, hard_filter
-from trader.domain.models import (
+from trader.domain.market.models import (
     Board,
-    BoardScoreBatch,
     FeatureSnapshot,
+)
+from trader.domain.recommendation.filters import FilterResult, board_for_snapshot, hard_filter
+from trader.domain.recommendation.models import (
+    BoardScoreBatch,
     FilterAudit,
     RecommendationSnapshot,
     Strategy,
 )
-from trader.domain.ranking import (
+from trader.domain.recommendation.ranking import (
     CORE_FIELDS,
     candidate_score,
 )

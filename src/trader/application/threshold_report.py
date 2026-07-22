@@ -7,7 +7,11 @@ from collections import defaultdict
 from collections.abc import Sequence
 
 from trader.application.recommendations import RecommendationEngine
-from trader.domain.models import FusionMode, RecommendationSnapshot, Strategy
+from trader.domain.recommendation.models import (
+    FusionMode,
+    RecommendationSnapshot,
+    Strategy,
+)
 
 
 def build_threshold_report(snapshots: Sequence[RecommendationSnapshot]) -> dict[str, object]:

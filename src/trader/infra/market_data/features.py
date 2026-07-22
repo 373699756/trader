@@ -10,23 +10,28 @@ from datetime import datetime
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from trader.domain.downside import derive_entry_setup_values
-from trader.domain.factors import clamp, percentile_scores_with_metadata
-from trader.domain.models import CrossSectionStats, FeatureSnapshot, MarketQuote
-from trader.domain.news import NewsSignalPolicy, derive_news_signals
-from trader.domain.research import (
+from trader.domain.market.factors import clamp, percentile_scores_with_metadata
+from trader.domain.market.models import (
+    CrossSectionStats,
+    FeatureSnapshot,
+    MarketQuote,
+)
+from trader.domain.market.news import NewsSignalPolicy, derive_news_signals
+from trader.domain.market.research import (
     D25SignalPolicy,
+    LongResearchInputs,
     LongResearchPolicy,
     ResearchObservation,
     derive_d25_signals,
     derive_long_research_features,
 )
-from trader.domain.tail import (
+from trader.domain.market.tail import (
     MinuteBar,
     TailSignalPolicy,
     derive_tail_signals,
     tail_signal_evidence,
 )
+from trader.domain.recommendation.downside import derive_entry_setup_values
 from trader.infra.market_data.feature_math import (
     _CROSS_SECTION_FIELDS,
     _breakout_score,
@@ -360,11 +365,13 @@ class FeatureBuilder:
             values.update(
                 derive_long_research_features(
                     research_observation or ResearchObservation(),
-                    price=quote.price,
-                    industry_strength=values.get("industry_strength"),
-                    low_volatility_score=values.get("low_volatility_score"),
-                    low_drawdown_score=values.get("low_drawdown_score"),
-                    policy=self._long_research_policy,
+                    LongResearchInputs(
+                        price=quote.price,
+                        industry_strength=values.get("industry_strength"),
+                        low_volatility_score=values.get("low_volatility_score"),
+                        low_drawdown_score=values.get("low_drawdown_score"),
+                    ),
+                    self._long_research_policy,
                 )
             )
             values.update(

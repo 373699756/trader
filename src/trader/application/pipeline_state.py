@@ -13,7 +13,11 @@ from trader.application.ports import EventAuditPort, MarketDataPort, TradingCale
 from trader.application.publisher import SnapshotPublisher
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
-from trader.domain.models import FeatureSnapshot, LiveOverlay, Strategy
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import (
+    LiveOverlay,
+    Strategy,
+)
 
 
 class PipelineState:

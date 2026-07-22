@@ -9,7 +9,11 @@ from dataclasses import replace
 from datetime import datetime
 
 from trader.application.cache import canonical_json_bytes
-from trader.domain.models import Board, CanonicalMarketSnapshot, MarketQuote
+from trader.domain.market.models import (
+    Board,
+    CanonicalMarketSnapshot,
+    MarketQuote,
+)
 from trader.infra.market_data.merge_quote import (
     merge_code,
     observation_order,

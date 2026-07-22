@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from trader.domain.models import Evidence
+from trader.domain.market.models import Evidence
 from trader.infra.market_data.akshare_parsing import (
     _clean_text,
     _content_version,

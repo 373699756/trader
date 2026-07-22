@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trader.domain.models import Strategy
+from trader.domain.recommendation.models import Strategy
 from trader.infra.deepseek.budget_state import BudgetStoreState
 
 _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})

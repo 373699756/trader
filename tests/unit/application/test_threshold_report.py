@@ -7,7 +7,7 @@ import pytest
 
 from trader.application.recommendations import RecommendationEngine
 from trader.application.threshold_report import build_threshold_report
-from trader.domain.models import Strategy
+from trader.domain.recommendation.models import Strategy
 
 
 def test_threshold_report_uses_all_replayed_candidates_and_required_metrics(

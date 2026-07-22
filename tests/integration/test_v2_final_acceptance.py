@@ -9,13 +9,15 @@ from trader.application.pipeline import RecommendationPipeline
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
-from trader.domain.models import (
-    DeepSeekReview,
-    DimensionAssessment,
+from trader.domain.market.models import (
     Evidence,
     FeatureSnapshot,
+)
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import (
+    DeepSeekReview,
+    DimensionAssessment,
     ReviewOutcome,
-    Strategy,
 )
 from trader.entrypoints.cli import main as cli_main
 from trader.infra.deepseek.budget import DeepSeekBudgetStore

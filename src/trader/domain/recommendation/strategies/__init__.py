@@ -1,19 +1,23 @@
-"""Strategy-specific score composition."""
+"""Recommendation strategy-specific score composition."""
 
 from collections.abc import Mapping
 
-from trader.domain.models import BoardStrategyPolicy, FeatureSnapshot, Strategy
-from trader.domain.strategies.composition import LocalScoreResult, compose
-from trader.domain.strategies.d25 import COMPONENT_WEIGHTS as D25_COMPONENT_WEIGHTS
-from trader.domain.strategies.d25 import score_d25
-from trader.domain.strategies.long import COMPONENT_WEIGHTS as LONG_COMPONENT_WEIGHTS
-from trader.domain.strategies.long import score_long
-from trader.domain.strategies.today import COMPONENT_WEIGHTS as TODAY_COMPONENT_WEIGHTS
-from trader.domain.strategies.today import score_today
-from trader.domain.strategies.tomorrow import (
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import (
+    BoardStrategyPolicy,
+    Strategy,
+)
+from trader.domain.recommendation.strategies.composition import LocalScoreResult, compose
+from trader.domain.recommendation.strategies.d25 import COMPONENT_WEIGHTS as D25_COMPONENT_WEIGHTS
+from trader.domain.recommendation.strategies.d25 import score_d25
+from trader.domain.recommendation.strategies.long import COMPONENT_WEIGHTS as LONG_COMPONENT_WEIGHTS
+from trader.domain.recommendation.strategies.long import score_long
+from trader.domain.recommendation.strategies.today import COMPONENT_WEIGHTS as TODAY_COMPONENT_WEIGHTS
+from trader.domain.recommendation.strategies.today import score_today
+from trader.domain.recommendation.strategies.tomorrow import (
     COMPONENT_WEIGHTS as TOMORROW_COMPONENT_WEIGHTS,
 )
-from trader.domain.strategies.tomorrow import (
+from trader.domain.recommendation.strategies.tomorrow import (
     score_tomorrow,
 )
 
@@ -34,7 +38,7 @@ def score_strategy(
     board_policy: BoardStrategyPolicy | None = None,
 ) -> LocalScoreResult:
     if board_policy is not None:
-        from trader.domain.board_scoring import score_board_strategy
+        from trader.domain.recommendation.scoring import score_board_strategy
 
         if board_policy.strategy is not strategy or board_policy.board is not snapshot.quote.board:
             raise ValueError("board policy does not match strategy feature")

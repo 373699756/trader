@@ -7,7 +7,8 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from trader.application.ports import MarketDataPort
-from trader.domain.models import FeatureSnapshot, Strategy
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import Strategy
 
 
 def fetch_strategy_features(

@@ -21,31 +21,41 @@ from trader.application.recommendation_support import (
     _review_contexts_for_candidates,
     _snapshot_id,
 )
-from trader.domain.downside import assess_downside
-from trader.domain.filters import FilterResult
-from trader.domain.fusion import fuse_score
-from trader.domain.models import (
+from trader.domain.market.models import (
     Board,
+    FeatureSnapshot,
+)
+from trader.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS
+from trader.domain.recommendation.downside import assess_downside
+from trader.domain.recommendation.filters import FilterResult
+from trader.domain.recommendation.fusion import FusionRequest, fuse_score
+from trader.domain.recommendation.models import (
     BoardScoreBatch,
     BoardStrategyPolicy,
-    DeepSeekReview,
-    FeatureSnapshot,
     FilterAudit,
     FusionMode,
     Recommendation,
     RecommendationAction,
     RecommendationReplayInput,
     RecommendationSnapshot,
-    ReviewCandidateContext,
-    ReviewOutcome,
     SelectionSkip,
     Strategy,
 )
-from trader.domain.ranking import action_for, minimum_selection_score, select_top_k_with_audit
-from trader.domain.risk import derive_local_risk_facts
-from trader.domain.strategies import score_strategy
-from trader.domain.strategies.composition import LocalScoreResult, compose
-from trader.domain.tail import TAIL_SIGNAL_VALUE_FIELDS
+from trader.domain.recommendation.ranking import (
+    ActionPolicy,
+    SelectionPolicy,
+    action_for,
+    minimum_selection_score,
+    select_top_k_with_audit,
+)
+from trader.domain.recommendation.strategies import score_strategy
+from trader.domain.recommendation.strategies.composition import LocalScoreResult, compose
+from trader.domain.review.models import (
+    DeepSeekReview,
+    ReviewCandidateContext,
+    ReviewOutcome,
+)
+from trader.domain.review.rules import derive_local_risk_facts
 
 _STRUCTURED_RISK_FIELDS = (
     "financial_deterioration",
@@ -144,28 +154,34 @@ class RecommendationFinalizationMixin:
         elif strategy is Strategy.LONG or legacy_v16:
             selected, selection_skips = select_top_k_with_audit(
                 merged,
-                top_k=self._policy.selection.default_top_k,
-                maximum_per_industry=self._policy.selection.maximum_per_industry,
-                minimum_final_score=minimum_score,
-                maximum_board_fraction=self._policy.selection.maximum_board_fraction,
-                competition_group_limits=self._policy.selection.competition_group_limits,
+                SelectionPolicy(
+                    top_k=self._policy.selection.default_top_k,
+                    maximum_per_industry=self._policy.selection.maximum_per_industry,
+                    minimum_final_score=minimum_score,
+                    maximum_board_fraction=self._policy.selection.maximum_board_fraction,
+                    competition_group_limits=self._policy.selection.competition_group_limits,
+                ),
             )
         else:
             executable, executable_skips = select_top_k_with_audit(
                 (item for item in merged if item.action is RecommendationAction.EXECUTABLE),
-                top_k=self._policy.selection.default_top_k,
-                maximum_per_industry=self._policy.selection.maximum_per_industry,
-                minimum_final_score=minimum_score,
-                maximum_board_fraction=self._policy.selection.maximum_board_fraction,
-                competition_group_limits=self._policy.selection.competition_group_limits,
+                SelectionPolicy(
+                    top_k=self._policy.selection.default_top_k,
+                    maximum_per_industry=self._policy.selection.maximum_per_industry,
+                    minimum_final_score=minimum_score,
+                    maximum_board_fraction=self._policy.selection.maximum_board_fraction,
+                    competition_group_limits=self._policy.selection.competition_group_limits,
+                ),
             )
             watch, watch_skips = select_top_k_with_audit(
                 (item for item in merged if item.action is RecommendationAction.OBSERVE),
-                top_k=8,
-                maximum_per_industry=self._policy.selection.maximum_per_industry,
-                minimum_final_score=minimum_score,
-                maximum_board_fraction=self._policy.selection.maximum_board_fraction,
-                competition_group_limits=self._policy.selection.competition_group_limits,
+                SelectionPolicy(
+                    top_k=8,
+                    maximum_per_industry=self._policy.selection.maximum_per_industry,
+                    minimum_final_score=minimum_score,
+                    maximum_board_fraction=self._policy.selection.maximum_board_fraction,
+                    competition_group_limits=self._policy.selection.competition_group_limits,
+                ),
             )
             selected = (*executable, *watch)
             selection_skips = (*executable_skips, *watch_skips)
@@ -407,15 +423,17 @@ class RecommendationFinalizationMixin:
                 else score_strategy(strategy, local.features, self._policy.local_strategy_weights)
             )
             fusion_result = fuse_score(
-                local_score,
-                local.local_risk_facts,
-                review,
-                self._policy.dimension_weights[strategy],
-                self._policy.risk_rules,
-                fusion_mode,
-                self._policy.fusion,
-                evidence=local.features.evidence,
-                evaluated_at=now,
+                FusionRequest(
+                    local=local_score,
+                    local_risk_facts=local.local_risk_facts,
+                    review=review,
+                    dimension_weights=self._policy.dimension_weights[strategy],
+                    risk_rules=self._policy.risk_rules,
+                    fusion_mode=fusion_mode,
+                    policy=self._policy.fusion,
+                    evidence=local.features.evidence,
+                    evaluated_at=now,
+                )
             )
             provisional = replace(
                 local,
@@ -428,11 +446,13 @@ class RecommendationFinalizationMixin:
             )
             action, reason = action_for(
                 provisional,
-                self._policy.selection.thresholds,
-                phase=phase,
-                is_stale=local.features.quote.age_seconds(now) > max_age_seconds,
-                observation_margin=self._policy.selection.observation_margin,
-                minimum_board_reliability=self._policy.selection.minimum_board_reliability,
+                ActionPolicy(
+                    thresholds=self._policy.selection.thresholds,
+                    phase=phase,
+                    is_stale=local.features.quote.age_seconds(now) > max_age_seconds,
+                    observation_margin=self._policy.selection.observation_margin,
+                    minimum_board_reliability=self._policy.selection.minimum_board_reliability,
+                ),
             )
             restrictions = local.features.quote.execution_restrictions
             if restrictions and action is RecommendationAction.EXECUTABLE:
@@ -450,13 +470,15 @@ class RecommendationFinalizationMixin:
         local_facts = derive_local_risk_facts(features, now, self._policy.risk_rules, strategy=strategy)
         local = score_strategy(strategy, features, self._policy.local_strategy_weights)
         local_result = fuse_score(
-            local,
-            local_facts,
-            None,
-            self._policy.dimension_weights[strategy],
-            self._policy.risk_rules,
-            FusionMode.LOCAL_DEGRADED,
-            self._policy.fusion,
+            FusionRequest(
+                local=local,
+                local_risk_facts=local_facts,
+                review=None,
+                dimension_weights=self._policy.dimension_weights[strategy],
+                risk_rules=self._policy.risk_rules,
+                fusion_mode=FusionMode.LOCAL_DEGRADED,
+                policy=self._policy.fusion,
+            )
         )
         return Recommendation(
             strategy=strategy,
@@ -480,13 +502,15 @@ class RecommendationFinalizationMixin:
     ) -> Recommendation:
         local_facts = derive_local_risk_facts(features, now, self._policy.risk_rules, strategy=strategy)
         local_result = fuse_score(
-            local,
-            local_facts,
-            None,
-            self._policy.dimension_weights[strategy],
-            self._policy.risk_rules,
-            FusionMode.LOCAL_DEGRADED,
-            self._policy.fusion,
+            FusionRequest(
+                local=local,
+                local_risk_facts=local_facts,
+                review=None,
+                dimension_weights=self._policy.dimension_weights[strategy],
+                risk_rules=self._policy.risk_rules,
+                fusion_mode=FusionMode.LOCAL_DEGRADED,
+                policy=self._policy.fusion,
+            )
         )
         return Recommendation(
             strategy=strategy,

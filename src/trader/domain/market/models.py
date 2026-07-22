@@ -1,4 +1,4 @@
-"""Immutable values shared by the recommendation domain."""
+"""Immutable point-in-time market values."""
 
 from __future__ import annotations
 
@@ -7,26 +7,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
-from importlib import import_module
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from trader.domain.downside import DownsideAssessment
-    from trader.domain.recommendation_models import (
-        BoardScoreBatch,
-        BoardStrategyPolicy,
-        FrozenReplayPolicy,
-        RecommendationReplayInput,
-        RecommendationSnapshot,
-    )
-
-
-class Strategy(str, Enum):
-    TODAY = "today"
-    TOMORROW = "tomorrow"
-    D25 = "d25"
-    LONG = "long"
+    from trader.domain.review.models import RiskFact
 
 
 class Board(str, Enum):
@@ -34,24 +19,6 @@ class Board(str, Enum):
     CHINEXT = "chinext"
     STAR = "star"
     UNSUPPORTED = "unsupported"
-
-
-class RecommendationAction(str, Enum):
-    EXECUTABLE = "executable"
-    OBSERVE = "observe"
-    UNAVAILABLE = "unavailable"
-
-
-class FusionMode(str, Enum):
-    HYBRID = "hybrid"
-    LOCAL_DEGRADED = "local_degraded"
-
-
-class ReviewOutcome(str, Enum):
-    APPLIED = "applied"
-    ABSTAIN = "abstain"
-    REJECTED = "rejected"
-    LATE = "late"
 
 
 @dataclass(frozen=True)
@@ -146,26 +113,6 @@ class LiveQuote:
 
 
 @dataclass(frozen=True)
-class LiveOverlay:
-    snapshot_id: str
-    strategy: Strategy
-    trade_date: str
-    version: str
-    observed_at: datetime
-    quotes: Mapping[str, LiveQuote]
-    closing: bool = False
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "quotes", MappingProxyType(dict(self.quotes)))
-        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
-            raise ValueError("live overlay time must be timezone-aware")
-        if any(code != quote.code for code, quote in self.quotes.items()):
-            raise ValueError("live overlay quote keys must match quote codes")
-        if any(quote.source_time > self.observed_at for quote in self.quotes.values()):
-            raise ValueError("live overlay cannot contain future quotes")
-
-
-@dataclass(frozen=True)
 class Evidence:
     evidence_id: str
     evidence_type: str
@@ -174,56 +121,6 @@ class Evidence:
     published_at: datetime
     received_at: datetime | None = None
     data_version: str = ""
-
-
-@dataclass(frozen=True)
-class RiskFact:
-    risk_fact_id: str
-    risk_code: str
-    severity: str
-    penalty: float
-    source: str
-    observed_at: datetime
-    confidence: float = 1.0
-    evidence_ids: tuple[str, ...] = ()
-    group: str = ""
-    veto: bool = False
-    threshold: str = ""
-    actual: str | float | bool | None = None
-    assessment: str = ""
-
-
-@dataclass(frozen=True)
-class RiskRule:
-    risk_code: str
-    severity: str
-    penalty: float
-    minimum_confidence: float
-    group: str
-    evidence_ttl_hours: int = 876_000
-    veto: bool = False
-    allowed_evidence_types: tuple[str, ...] = ()
-    strategies: tuple[str, ...] = ()
-    trigger_factor: str = ""
-    trigger_operator: str = ""
-    trigger_thresholds: tuple[float, ...] = ()
-    combination_mode: str = "exclusive"
-    risk_fact_id_fields: tuple[str, ...] = ()
-    local_trigger_enabled: bool = True
-
-
-@dataclass(frozen=True)
-class FilterAudit:
-    stock_code: str
-    filter_code: str
-    threshold: str
-    actual: str | float | bool | None
-    source: str
-    observed_at: datetime
-
-    @property
-    def code(self) -> str:
-        return self.filter_code
 
 
 @dataclass(frozen=True)
@@ -332,166 +229,13 @@ class FeatureSnapshot:
         return missing / len(field_names)
 
 
-@dataclass(frozen=True)
-class DimensionAssessment:
-    name: str
-    score: float
-    confidence: float
-    assessment: str
-    flags: tuple[str, ...] = ()
-    evidence_ids: tuple[str, ...] = ()
-    is_unknown: bool = False
-
-
-@dataclass(frozen=True)
-class DeepSeekReview:
-    code: str
-    outcome: ReviewOutcome
-    dimensions: Mapping[str, DimensionAssessment]
-    risk_facts: tuple[RiskFact, ...]
-    completed_at: datetime
-    error: str = ""
-    rating: str = "neutral"
-    review_stage: str = "primary"
-    challenger_status: str = "not_run"
-    requested_model: str | None = None
-    actual_model: str | None = None
-    thinking_mode: str | None = None
-    raw_confidence: float | None = None
-    calibrated_confidence: float | None = None
-    evidence_manifest_hash: str | None = None
-    calibration_version: str | None = None
-    model_role: str | None = None
-    reasoning_effort: str | None = None
-    system_fingerprint: str | None = None
-    prompt_cache_hit_tokens: int | None = None
-    prompt_cache_miss_tokens: int | None = None
-    challenger_requested_model: str | None = None
-    challenger_actual_model: str | None = None
-    challenger_thinking_mode: str | None = None
-    challenger_reasoning_effort: str | None = None
-    challenger_system_fingerprint: str | None = None
-    challenger_prompt_cache_hit_tokens: int | None = None
-    challenger_prompt_cache_miss_tokens: int | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "dimensions", MappingProxyType(dict(self.dimensions)))
-
-
-@dataclass(frozen=True)
-class ReviewCandidateContext:
-    local_score: float
-    local_rank: int
-    action_threshold: float | None
-    in_protection_set: bool
-    has_new_high_risk: bool = False
-    near_action_threshold: bool = False
-    near_global_boundary: bool = False
-    direction_conflict: bool = False
-    evidence_conflict: bool = False
-    was_reviewed: bool = False
-
-    def __post_init__(self) -> None:
-        if not math.isfinite(self.local_score):
-            raise ValueError("review context local score must be finite")
-        if self.local_rank < 1:
-            raise ValueError("review context local rank must be positive")
-        if self.action_threshold is not None and not math.isfinite(self.action_threshold):
-            raise ValueError("review context action threshold must be finite")
-
-
-@dataclass(frozen=True)
-class ScoreBreakdown:
-    components: Mapping[str, float]
-    base_score: float
-    local_risk_penalty: float
-    local_score: float
-    deepseek_score: float | None
-    confidence_coverage: float
-    deepseek_risk_penalty: float
-    final_score: float
-    fusion_mode: FusionMode
-    fusion_applied: bool
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "components", MappingProxyType(dict(self.components)))
-
-
-@dataclass(frozen=True)
-class Recommendation:
-    strategy: Strategy
-    features: FeatureSnapshot
-    score: ScoreBreakdown
-    local_risk_facts: tuple[RiskFact, ...]
-    deepseek_risk_facts: tuple[RiskFact, ...]
-    review: DeepSeekReview | None
-    action: RecommendationAction
-    action_reason: str
-    veto: bool
-    rank: int = 0
-    board_rank: int = 0
-    target_price: float | None = None
-    selection_skip_reason: str = ""
-    competition_group_limit: int | None = None
-    downside: DownsideAssessment | None = None
-
-
-@dataclass(frozen=True)
-class SelectionSkip:
-    stock_code: str
-    board: Board
-    competition_group_id: str
-    board_rank: int
-    global_rank: int
-    reason: str
-    limit: int | None
-    policy_version: str
-    observed_at: datetime
-
-
-_RECOMMENDATION_MODEL_NAMES = frozenset(
-    {
-        "BoardScoreBatch",
-        "BoardStrategyPolicy",
-        "FrozenReplayPolicy",
-        "RecommendationReplayInput",
-        "RecommendationSnapshot",
-    }
-)
-
-
-def __getattr__(name: str) -> object:
-    if name in _RECOMMENDATION_MODEL_NAMES:
-        return getattr(import_module("trader.domain.recommendation_models"), name)
-    raise AttributeError(name)
-
-
 __all__ = [
     "Board",
     "BoardPopulation",
-    "BoardScoreBatch",
-    "BoardStrategyPolicy",
     "CanonicalMarketSnapshot",
     "CrossSectionStats",
-    "DeepSeekReview",
-    "DimensionAssessment",
     "Evidence",
-    "FilterAudit",
     "FeatureSnapshot",
-    "FrozenReplayPolicy",
-    "FusionMode",
-    "LiveOverlay",
     "LiveQuote",
     "MarketQuote",
-    "Recommendation",
-    "RecommendationAction",
-    "RecommendationReplayInput",
-    "RecommendationSnapshot",
-    "SelectionSkip",
-    "ReviewCandidateContext",
-    "ReviewOutcome",
-    "RiskFact",
-    "RiskRule",
-    "ScoreBreakdown",
-    "Strategy",
 ]

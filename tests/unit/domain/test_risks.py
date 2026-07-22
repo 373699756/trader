@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
-from trader.domain.models import RiskRule, Strategy
-from trader.domain.risk import aggregate_risk_penalty, derive_local_risk_facts
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import RiskRule
+from trader.domain.review.rules import aggregate_risk_penalty, derive_local_risk_facts
 
 PENALTIES = {
     "near_limit_crowding": 5.0,

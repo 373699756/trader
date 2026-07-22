@@ -1,4 +1,4 @@
-"""Deterministic factor math and score normalization."""
+"""Deterministic market-factor math and score normalization."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 from collections.abc import Iterable, Mapping
 from decimal import ROUND_HALF_UP, Decimal
 
-from trader.domain.models import CrossSectionStats
+from trader.domain.market.models import CrossSectionStats
 
 PRODUCTION_FACTOR_IDS = frozenset(
     {

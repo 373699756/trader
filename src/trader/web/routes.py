@@ -10,7 +10,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 from trader.application.publisher import SnapshotPublisher, SubscriberLimitError
 from trader.application.queries import RecommendationQueries
-from trader.domain.models import Strategy
+from trader.domain.recommendation.models import Strategy
 from trader.web.serializers import (
     empty_snapshot_envelope,
     serialize_error,

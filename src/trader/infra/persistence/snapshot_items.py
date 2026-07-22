@@ -6,15 +6,17 @@ import math
 from collections.abc import Mapping
 from datetime import date, datetime
 
-from trader.domain.downside import DownsideAssessment
-from trader.domain.models import (
+from trader.domain.market.models import (
     Board,
     BoardPopulation,
     CrossSectionStats,
     FeatureSnapshot,
+    MarketQuote,
+)
+from trader.domain.recommendation.downside import DownsideAssessment
+from trader.domain.recommendation.models import (
     FilterAudit,
     FusionMode,
-    MarketQuote,
     Recommendation,
     RecommendationAction,
     ScoreBreakdown,

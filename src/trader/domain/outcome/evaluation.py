@@ -1,75 +1,41 @@
-"""Pure frozen-recommendation outcome calculations."""
+"""Pure frozen-recommendation outcome evaluation."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
 
-from trader.domain.models import Strategy
-
-
-@dataclass(frozen=True)
-class OutcomeBar:
-    trade_date: str
-    open_price: float
-    high: float
-    low: float
-    close: float
-    pct_change: float
+from trader.domain.outcome.models import OutcomeBar, OutcomeTarget, RecommendationOutcome
+from trader.domain.recommendation.models import Strategy
 
 
 @dataclass(frozen=True)
-class BenchmarkReturn:
-    trade_date: str
-    return_pct: float
-
-
-@dataclass(frozen=True)
-class OutcomeTarget:
-    snapshot_id: str
-    strategy: Strategy
-    recommend_date: str
-    stock_code: str
-    anchor_price: float
-    atr20_pct: float
-
-
-@dataclass(frozen=True)
-class RecommendationOutcome:
-    snapshot_id: str
-    strategy: Strategy
-    recommend_date: str
-    stock_code: str
+class OutcomeEvaluationRequest:
+    target: OutcomeTarget
+    bars: tuple[OutcomeBar, ...]
     horizon: int
-    status: Literal["complete", "benchmark_missing", "insufficient_data"]
+    benchmark_returns: tuple[float, ...]
     settled_at: datetime
-    anchor_price: float
-    atr20_pct: float
-    minimum_low: float | None = None
-    end_close: float | None = None
-    gross_return_pct: float | None = None
-    benchmark_return_pct: float | None = None
-    net_excess_return_pct: float | None = None
-    mae_pct: float | None = None
-    mae_atr: float | None = None
-    severe_drawdown: bool | None = None
-    quality_reason: str = ""
-    version: str = "outcome_v1_mae_atr_cost20bp"
+    expected_sessions: int | None = None
+    expected_trade_dates: tuple[str, ...] = ()
+    round_trip_cost_pct: float = 0.20
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "bars", tuple(self.bars))
+        object.__setattr__(self, "benchmark_returns", tuple(self.benchmark_returns))
+        object.__setattr__(self, "expected_trade_dates", tuple(self.expected_trade_dates))
 
 
-def evaluate_outcome(
-    target: OutcomeTarget,
-    bars: tuple[OutcomeBar, ...],
-    *,
-    horizon: int,
-    benchmark_returns: tuple[float, ...],
-    settled_at: datetime,
-    expected_sessions: int | None = None,
-    expected_trade_dates: tuple[str, ...] = (),
-    round_trip_cost_pct: float = 0.20,
-) -> RecommendationOutcome:
+def evaluate_outcome(request: OutcomeEvaluationRequest) -> RecommendationOutcome:
+    target = request.target
+    bars = request.bars
+    horizon = request.horizon
+    benchmark_returns = request.benchmark_returns
+    settled_at = request.settled_at
+    expected_sessions = request.expected_sessions
+    expected_trade_dates = request.expected_trade_dates
+    round_trip_cost_pct = request.round_trip_cost_pct
     if horizon not in ({1} if target.strategy in {Strategy.TODAY, Strategy.TOMORROW} else {2, 3, 5}):
         raise ValueError("outcome horizon is incompatible with strategy")
     ordered_bars = tuple(sorted(bars, key=lambda bar: bar.trade_date))
@@ -170,10 +136,4 @@ def _compound_returns(values: tuple[float, ...]) -> float | None:
     return (total - 1.0) * 100.0
 
 
-__all__ = [
-    "BenchmarkReturn",
-    "OutcomeBar",
-    "OutcomeTarget",
-    "RecommendationOutcome",
-    "evaluate_outcome",
-]
+__all__ = ["OutcomeEvaluationRequest", "evaluate_outcome"]

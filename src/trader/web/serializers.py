@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from trader.domain.models import Strategy
+from trader.domain.recommendation.models import Strategy
 from trader.web.schemas import (
     API_SCHEMA_VERSION,
     empty_snapshot_envelope,

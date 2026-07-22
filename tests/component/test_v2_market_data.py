@@ -25,11 +25,15 @@ from trader.application.source_lanes import (
     SourceRequestSuperseded,
 )
 from trader.application.workers import BoundedExecutor
-from trader.domain.models import Evidence, MarketQuote, Strategy
-from trader.domain.news import NewsSignalPolicy
-from trader.domain.research import ResearchObservation
-from trader.domain.strategies import score_strategy
-from trader.domain.tail import MinuteBar, TailSignalPolicy
+from trader.domain.market.models import (
+    Evidence,
+    MarketQuote,
+)
+from trader.domain.market.news import NewsSignalPolicy
+from trader.domain.market.research import ResearchObservation
+from trader.domain.market.tail import MinuteBar, TailSignalPolicy
+from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.strategies import score_strategy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data import gateway as gateway_module
 from trader.infra.market_data import tushare_support as tushare_support_module

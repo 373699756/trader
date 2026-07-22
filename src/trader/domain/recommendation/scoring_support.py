@@ -1,4 +1,4 @@
-"""Pure helper calculations for board-relative scoring."""
+"""Pure helper calculations for recommendation scoring."""
 
 from __future__ import annotations
 
@@ -6,10 +6,15 @@ import hashlib
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
-from trader.domain.factors import band_score, clamp, percentile_scores_with_metadata
-from trader.domain.models import Board, CrossSectionStats, FeatureSnapshot, Strategy
+from trader.domain.market.factors import band_score, clamp, percentile_scores_with_metadata
+from trader.domain.market.models import (
+    Board,
+    CrossSectionStats,
+    FeatureSnapshot,
+)
+from trader.domain.recommendation.models import Strategy
 
 MIN_BOARD_SAMPLE = 100
 MAX_FALLBACK_SESSIONS = 5
@@ -354,27 +359,32 @@ def _base_reliability(values: Mapping[str, float | None]) -> float:
     return 1.0 if not unique else known / len(unique)
 
 
+@dataclass(frozen=True)
+class _PopulationVersionIdentity:
+    board: Board
+    trade_date: str
+    phase: str
+    data_version: str
+    schema_version: str
+    status: str
+    fallback_date: str | None
+    fallback_age: int | None
+
+
 def _population_version(
-    board: Board,
-    trade_date: str,
-    phase: str,
-    data_version: str,
-    schema_version: str,
-    status: str,
-    fallback_date: str | None,
-    fallback_age: int | None,
+    identity: _PopulationVersionIdentity,
     distributions: Mapping[str, Sequence[float]],
 ) -> str:
     material = repr(
         (
-            board.value,
-            trade_date,
-            phase,
-            data_version,
-            schema_version,
-            status,
-            fallback_date,
-            fallback_age,
+            identity.board.value,
+            identity.trade_date,
+            identity.phase,
+            identity.data_version,
+            identity.schema_version,
+            identity.status,
+            identity.fallback_date,
+            identity.fallback_age,
             tuple((name, tuple(values)) for name, values in sorted(distributions.items())),
         )
     )

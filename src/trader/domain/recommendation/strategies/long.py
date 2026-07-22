@@ -1,11 +1,11 @@
-"""Fixed long-watch score composition."""
+"""Fixed long-watch recommendation score composition."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-from trader.domain.models import FeatureSnapshot
-from trader.domain.strategies.composition import LocalScoreResult, compose, normalized
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.strategies.composition import LocalScoreResult, compose, normalized
 
 COMPONENT_WEIGHTS = {
     "value": 0.30,

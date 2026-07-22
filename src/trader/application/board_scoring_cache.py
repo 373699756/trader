@@ -9,14 +9,19 @@ from datetime import date, datetime, timedelta
 from typing import TypeVar, cast
 
 from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity, request_fingerprint
-from trader.domain.board_scoring import (
+from trader.domain.market.models import (
+    Board,
+    FeatureSnapshot,
+)
+from trader.domain.recommendation.models import BoardStrategyPolicy
+from trader.domain.recommendation.scoring import (
     BOARD_SCHEMA_VERSION,
     MIN_BOARD_SAMPLE,
     BoardCrossSection,
+    BoardCrossSectionRequest,
     build_board_cross_section,
 )
-from trader.domain.models import Board, BoardStrategyPolicy, FeatureSnapshot
-from trader.domain.strategies.composition import LocalScoreResult
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 _T = TypeVar("_T")
 SessionDistance = Callable[[str, str], int | None]
@@ -90,16 +95,18 @@ class BoardScoringCache:
 
         def load() -> BoardCrossSection:
             return build_board_cross_section(
-                features,
-                board=board,
-                merge_epoch=context.merge_epoch,
-                trade_date=context.trade_date,
-                phase=context.phase,
-                data_version=context.data_version,
-                schema_version=self._schema_version,
-                fallback=fallback,
-                fallback_age_sessions=fallback_age,
-                competition_groups=competition_groups,
+                BoardCrossSectionRequest(
+                    features=features,
+                    board=board,
+                    merge_epoch=context.merge_epoch,
+                    trade_date=context.trade_date,
+                    phase=context.phase,
+                    data_version=context.data_version,
+                    schema_version=self._schema_version,
+                    fallback=fallback,
+                    fallback_age_sessions=fallback_age,
+                    competition_groups=competition_groups,
+                )
             )
 
         cross_section = cast(BoardCrossSection, self._cache.coalesce(identity, load))

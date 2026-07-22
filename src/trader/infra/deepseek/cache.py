@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity
-from trader.domain.models import DeepSeekReview, FeatureSnapshot
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.review.models import DeepSeekReview
 
 
 @dataclass(frozen=True)

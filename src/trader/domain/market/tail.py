@@ -1,4 +1,4 @@
-"""Pure point-in-time calculations for tomorrow tail-session signals."""
+"""Pure point-in-time market tail-session signals."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-from trader.domain.factors import clamp
-from trader.domain.models import Evidence
+from trader.domain.market.factors import clamp
+from trader.domain.market.models import Evidence
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 TAIL_SIGNAL_VALUE_FIELDS = (

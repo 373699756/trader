@@ -10,17 +10,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
-from trader.domain.fusion import DIMENSION_NAMES, STRUCTURED_REVIEW_FEATURES
-from trader.domain.models import (
-    DeepSeekReview,
-    DimensionAssessment,
+from trader.domain.market.models import (
     Evidence,
     FeatureSnapshot,
+)
+from trader.domain.recommendation.fusion import DIMENSION_NAMES, STRUCTURED_REVIEW_FEATURES
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import (
+    DeepSeekReview,
+    DimensionAssessment,
     ReviewOutcome,
     RiskFact,
-    Strategy,
 )
-from trader.domain.risk import parse_rating
+from trader.domain.review.rules import parse_rating
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
 from trader.infra.market_data.ground_truth import render_batch_ground_truth
 

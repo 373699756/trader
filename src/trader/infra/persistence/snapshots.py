@@ -7,7 +7,11 @@ import json
 from collections.abc import Mapping
 from datetime import datetime
 
-from trader.domain.models import FusionMode, RecommendationSnapshot, Strategy
+from trader.domain.recommendation.models import (
+    FusionMode,
+    RecommendationSnapshot,
+    Strategy,
+)
 from trader.infra.persistence.snapshot_items import (
     _filter_audit_from_dict,
     _filter_audit_to_dict,

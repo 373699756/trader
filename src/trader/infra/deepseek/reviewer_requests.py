@@ -6,12 +6,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
-from trader.domain.models import (
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import (
     DeepSeekReview,
-    FeatureSnapshot,
     ReviewCandidateContext,
     ReviewOutcome,
-    Strategy,
 )
 from trader.infra.deepseek.base_client import DeepSeekHttpResult
 from trader.infra.deepseek.challenger import (

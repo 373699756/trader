@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from trader.domain.models import MarketQuote
+from trader.domain.market.models import MarketQuote
 
 
 class QuoteNormalizer(Protocol):

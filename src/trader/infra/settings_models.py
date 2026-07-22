@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from trader.application.cache import CachePolicy
-from trader.domain.news import NewsSignalPolicy
-from trader.domain.research import D25SignalPolicy, LongResearchPolicy
-from trader.domain.tail import TailSignalPolicy
+from trader.domain.market.news import NewsSignalPolicy
+from trader.domain.market.research import D25SignalPolicy, LongResearchPolicy
+from trader.domain.market.tail import TailSignalPolicy
 
 
 @dataclass(frozen=True)

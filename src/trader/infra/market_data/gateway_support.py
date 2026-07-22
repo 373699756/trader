@@ -11,7 +11,10 @@ from datetime import datetime
 from typing import Generic, TypeVar, cast
 
 from trader.application.ports import MarketDataNoData
-from trader.domain.models import CanonicalMarketSnapshot, MarketQuote
+from trader.domain.market.models import (
+    CanonicalMarketSnapshot,
+    MarketQuote,
+)
 from trader.infra.market_data.merge import overlay_canonical_snapshot, subset_canonical_snapshot
 from trader.infra.market_data.merge_quote import source_name, source_priority
 from trader.infra.market_data.observations import SourceObservation

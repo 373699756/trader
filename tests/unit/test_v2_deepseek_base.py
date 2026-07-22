@@ -290,7 +290,7 @@ _DT = datetime(2026, 7, 16, 2, 30, tzinfo=_TZ)
 
 class TestGroundTruthRenderer:
     def test_single_candidate_contains_key_fields(self) -> None:
-        from trader.domain.models import FeatureSnapshot, MarketQuote
+        from trader.domain.market.models import FeatureSnapshot, MarketQuote
 
         quote = MarketQuote(
             code="600519",
@@ -332,7 +332,7 @@ class TestGroundTruthRenderer:
         assert "missing_fields=news_sentiment" in output
 
     def test_null_values_rendered_as_null(self) -> None:
-        from trader.domain.models import FeatureSnapshot, MarketQuote
+        from trader.domain.market.models import FeatureSnapshot, MarketQuote
 
         quote = MarketQuote(
             code="000001",
@@ -366,7 +366,7 @@ class TestGroundTruthRenderer:
         assert "000001" in output
 
     def test_batch_rendering(self) -> None:
-        from trader.domain.models import FeatureSnapshot, MarketQuote
+        from trader.domain.market.models import FeatureSnapshot, MarketQuote
 
         q1 = MarketQuote(
             code="600519",
@@ -420,7 +420,7 @@ class TestGroundTruthRenderer:
         assert "---" in output
 
     def test_deterministic_output(self) -> None:
-        from trader.domain.models import FeatureSnapshot, MarketQuote
+        from trader.domain.market.models import FeatureSnapshot, MarketQuote
 
         quote = MarketQuote(
             code="600519",

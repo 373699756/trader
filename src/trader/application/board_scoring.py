@@ -12,23 +12,26 @@ from dataclasses import replace
 
 from trader.application.board_scoring_cache import BoardScoringCache, ScoringCacheContext
 from trader.application.workers import BoundedExecutor
-from trader.domain.board_scoring import (
+from trader.domain.market.models import (
+    Board,
+    FeatureSnapshot,
+)
+from trader.domain.recommendation.models import (
+    BoardScoreBatch,
+    BoardStrategyPolicy,
+    Recommendation,
+    Strategy,
+)
+from trader.domain.recommendation.scoring import (
     BoardCrossSection,
+    BoardCrossSectionRequest,
     apply_board_policy,
     board_candidate_score,
     build_board_cross_section,
     candidate_fields,
     score_board_strategy,
 )
-from trader.domain.models import (
-    Board,
-    BoardScoreBatch,
-    BoardStrategyPolicy,
-    FeatureSnapshot,
-    Recommendation,
-    Strategy,
-)
-from trader.domain.strategies.composition import LocalScoreResult
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 ScoreOne = Callable[[Strategy, FeatureSnapshot, BoardStrategyPolicy, LocalScoreResult], Recommendation]
 
@@ -341,12 +344,14 @@ class BoardScoringCoordinator:
         if self._cache is not None:
             return self._cache.cross_section(board, features, context)
         return build_board_cross_section(
-            features,
-            board=board,
-            merge_epoch=context.merge_epoch,
-            trade_date=context.trade_date,
-            phase=context.phase,
-            data_version=context.data_version,
+            BoardCrossSectionRequest(
+                features=features,
+                board=board,
+                merge_epoch=context.merge_epoch,
+                trade_date=context.trade_date,
+                phase=context.phase,
+                data_version=context.data_version,
+            )
         )
 
 

@@ -1,4 +1,4 @@
-"""Shared score composition primitives for strategy modules."""
+"""Shared recommendation score composition primitives."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from trader.domain.factors import band_score, clamp, weighted_score
-from trader.domain.models import FeatureSnapshot
+from trader.domain.market.factors import band_score, clamp, weighted_score
+from trader.domain.market.models import FeatureSnapshot
 
 
 @dataclass(frozen=True)

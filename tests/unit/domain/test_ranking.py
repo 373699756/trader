@@ -5,19 +5,28 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.domain.downside import DownsideAssessment
-from trader.domain.models import (
-    Board,
-    DeepSeekReview,
+from trader.domain.market.models import Board
+from trader.domain.recommendation.downside import DownsideAssessment
+from trader.domain.recommendation.models import (
     FusionMode,
     Recommendation,
     RecommendationAction,
-    ReviewOutcome,
     ScoreBreakdown,
     Strategy,
 )
-from trader.domain.ranking import action_for, candidate_score, select_top_k, select_top_k_with_audit
-from trader.domain.risk import Rating
+from trader.domain.recommendation.ranking import (
+    ActionPolicy,
+    SelectionPolicy,
+    action_for,
+    candidate_score,
+    select_top_k,
+    select_top_k_with_audit,
+)
+from trader.domain.review.models import (
+    DeepSeekReview,
+    ReviewOutcome,
+)
+from trader.domain.review.rules import Rating
 
 CANDIDATE_WEIGHTS = {
     "liquidity": 0.35,
@@ -40,13 +49,13 @@ def test_top_k_enforces_industry_cap_and_stable_tie_break(feature_factory) -> No
         _recommendation(feature_factory(code="600004", industry="B"), 87.0),
     ]
 
-    selected = select_top_k(rows, top_k=3, maximum_per_industry=2)
+    selected = _select_top_k(rows, top_k=3, maximum_per_industry=2)
 
     assert [row.features.quote.code for row in selected] == ["600001", "600002", "600004"]
     assert [row.rank for row in selected] == [1, 2, 3]
-    assert select_top_k(rows, top_k=0, maximum_per_industry=2) == ()
+    assert _select_top_k(rows, top_k=0, maximum_per_industry=2) == ()
     with pytest.raises(ValueError, match="between 0 and 18"):
-        select_top_k(rows, top_k=19, maximum_per_industry=2)
+        _select_top_k(rows, top_k=19, maximum_per_industry=2)
 
 
 def test_top_k_ignores_review_audit_fields_when_scores_tie(feature_factory) -> None:
@@ -86,7 +95,7 @@ def test_top_k_ignores_review_audit_fields_when_scores_tie(feature_factory) -> N
         ),
     ]
 
-    selected = select_top_k(rows, top_k=2, maximum_per_industry=3)
+    selected = _select_top_k(rows, top_k=2, maximum_per_industry=3)
 
     assert [row.features.quote.code for row in selected] == ["600001", "600002"]
 
@@ -98,10 +107,10 @@ def test_top_k_does_not_lower_minimum_score_to_fill(feature_factory) -> None:
         _recommendation(feature_factory(code="600003", industry="C"), 40.0),
     ]
 
-    selected = select_top_k(rows, top_k=10, maximum_per_industry=3, minimum_final_score=65.0)
+    selected = _select_top_k(rows, top_k=10, maximum_per_industry=3, minimum_final_score=65.0)
 
     assert [row.features.quote.code for row in selected] == ["600001"]
-    assert select_top_k(rows, top_k=10, maximum_per_industry=3, minimum_final_score=90.0) == ()
+    assert _select_top_k(rows, top_k=10, maximum_per_industry=3, minimum_final_score=90.0) == ()
 
 
 @pytest.mark.parametrize(
@@ -127,7 +136,7 @@ def test_action_policy_enforces_phase_and_threshold_boundaries(
 ) -> None:
     recommendation = replace(_recommendation(feature_factory(), score), strategy=strategy)
 
-    action, actual_reason = action_for(
+    action, actual_reason = _action_for(
         recommendation,
         {"today_main": 70.0, "today_late": 76.0, "tomorrow": 72.0, "d25": 70.0},
         phase=phase,
@@ -153,7 +162,7 @@ def test_action_policy_observes_missing_core_features(feature_factory) -> None:
     )
     recommendation = _recommendation(missing, 90.0)
 
-    action, reason = action_for(
+    action, reason = _action_for(
         recommendation,
         {"tomorrow": 72.0},
         phase="afternoon",
@@ -179,7 +188,7 @@ def test_action_policy_does_not_apply_bearish_audit_rating(feature_factory) -> N
         ),
     )
 
-    action, reason = action_for(
+    action, reason = _action_for(
         recommendation,
         {"today_main": 70.0},
         phase="today_main",
@@ -205,7 +214,7 @@ def test_action_policy_does_not_apply_neutral_audit_rating(feature_factory) -> N
         ),
     )
 
-    action, reason = action_for(
+    action, reason = _action_for(
         recommendation,
         {"today_main": 70.0},
         phase="today_main",
@@ -230,7 +239,7 @@ def test_action_policy_downgrades_only_executable_downside_failure(feature_facto
         ),
     )
 
-    action, reason = action_for(
+    action, reason = _action_for(
         recommendation,
         {"tomorrow": 72.0},
         phase="afternoon",
@@ -252,7 +261,7 @@ def test_board_fraction_uses_ceil_at_all_topk_boundaries(feature_factory, top_k:
         feature = replace(feature, competition_group_id=f"G{index}")
         rows.append(_recommendation(feature, 100.0 - index / 100.0))
 
-    selected, _ = select_top_k_with_audit(
+    selected, _ = _select_top_k_with_audit(
         rows,
         top_k=top_k,
         maximum_per_industry=18,
@@ -272,7 +281,7 @@ def test_competition_group_limit_records_first_skipped_boundary(feature_factory,
         feature = replace(feature, competition_group_id="same", board_policy_version="v16")
         rows.append(replace(_recommendation(feature, 90.0 - index), board_rank=index + 1))
 
-    selected, skips = select_top_k_with_audit(
+    selected, skips = _select_top_k_with_audit(
         rows,
         top_k=10,
         maximum_per_industry=10,
@@ -283,6 +292,69 @@ def test_competition_group_limit_records_first_skipped_boundary(feature_factory,
     assert len(selected) == limit
     assert skips[0].global_rank == limit + 1
     assert skips[0].reason == "competition_group_limit"
+
+
+def _action_for(
+    recommendation: Recommendation,
+    thresholds: dict[str, float],
+    *,
+    phase: str,
+    is_stale: bool,
+    observation_margin: float,
+    minimum_board_reliability: float = 0.0,
+) -> tuple[RecommendationAction, str]:
+    return action_for(
+        recommendation,
+        ActionPolicy(
+            thresholds=thresholds,
+            phase=phase,
+            is_stale=is_stale,
+            observation_margin=observation_margin,
+            minimum_board_reliability=minimum_board_reliability,
+        ),
+    )
+
+
+def _select_top_k(
+    recommendations,
+    *,
+    top_k: int,
+    maximum_per_industry: int,
+    minimum_final_score: float = 0.0,
+    maximum_board_fraction: float = 1.0,
+    competition_group_limits: dict[Board, int] | None = None,
+):
+    return select_top_k(
+        recommendations,
+        SelectionPolicy(
+            top_k=top_k,
+            maximum_per_industry=maximum_per_industry,
+            minimum_final_score=minimum_final_score,
+            maximum_board_fraction=maximum_board_fraction,
+            competition_group_limits=competition_group_limits or {},
+        ),
+    )
+
+
+def _select_top_k_with_audit(
+    recommendations,
+    *,
+    top_k: int,
+    maximum_per_industry: int,
+    minimum_final_score: float = 0.0,
+    maximum_board_fraction: float = 1.0,
+    competition_group_limits: dict[Board, int] | None = None,
+):
+    return select_top_k_with_audit(
+        recommendations,
+        SelectionPolicy(
+            top_k=top_k,
+            maximum_per_industry=maximum_per_industry,
+            minimum_final_score=minimum_final_score,
+            maximum_board_fraction=maximum_board_fraction,
+            competition_group_limits=competition_group_limits or {},
+        ),
+    )
 
 
 def _recommendation(features, final_score: float, review: DeepSeekReview | None = None) -> Recommendation:

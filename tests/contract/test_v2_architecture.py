@@ -49,6 +49,47 @@ def test_domain_has_no_io_framework_imports() -> None:
     assert violations == []
 
 
+def test_domain_is_partitioned_by_business_capability_without_legacy_paths() -> None:
+    domain = SOURCE_ROOT / "domain"
+    capability_packages = {"market", "recommendation", "review", "outcome"}
+    retired_modules = {
+        "board_scoring.py",
+        "board_scoring_support.py",
+        "downside.py",
+        "factors.py",
+        "filters.py",
+        "fusion.py",
+        "models.py",
+        "news.py",
+        "outcomes.py",
+        "ranking.py",
+        "recommendation_models.py",
+        "research.py",
+        "risk.py",
+        "strategies",
+        "tail.py",
+    }
+
+    assert {path.name for path in domain.iterdir() if path.is_dir() and not path.name.startswith("__")} == (
+        capability_packages
+    )
+    assert [name for name in sorted(retired_modules) if (domain / name).exists()] == []
+    assert all((domain / package / "__init__.py").is_file() for package in capability_packages)
+
+
+def test_domain_does_not_expose_dynamic_compatibility_aliases() -> None:
+    violations: list[str] = []
+    for path in (SOURCE_ROOT / "domain").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__getattr__"
+            for node in tree.body
+        ):
+            violations.append(path.relative_to(SOURCE_ROOT).as_posix())
+
+    assert violations == []
+
+
 def test_cutover_removed_legacy_runtime_tree() -> None:
     forbidden = (
         "app.py",

@@ -7,9 +7,9 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from trader.domain.news import NewsSignalPolicy
-from trader.domain.research import D25SignalPolicy, LongResearchPolicy
-from trader.domain.tail import TailSignalPolicy
+from trader.domain.market.news import NewsSignalPolicy
+from trader.domain.market.research import D25SignalPolicy, LongResearchPolicy
+from trader.domain.market.tail import TailSignalPolicy
 from trader.infra.settings_factor_validation import _parse_factor_definition, _strategy_contract_version
 from trader.infra.settings_models import (
     ApiSettings,

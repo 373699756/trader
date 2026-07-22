@@ -8,7 +8,8 @@ from concurrent.futures import Future
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from trader.application.workers import BoundedExecutor
-from trader.domain.models import FeatureSnapshot, FilterAudit
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import FilterAudit
 
 if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline

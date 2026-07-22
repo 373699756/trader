@@ -49,8 +49,8 @@ from trader.application.snapshot_workflow import (
 )
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
-from trader.domain.models import (
-    FeatureSnapshot,
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import (
     FilterAudit,
     LiveOverlay,
     RecommendationSnapshot,

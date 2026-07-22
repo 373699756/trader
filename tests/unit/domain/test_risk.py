@@ -3,8 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timedelta
 
-from trader.domain.models import RiskFact, RiskRule, Strategy
-from trader.domain.risk import (
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import (
+    RiskFact,
+    RiskRule,
+)
+from trader.domain.review.rules import (
     Rating,
     aggregate_risk_penalty,
     deduplicate_risk_facts,

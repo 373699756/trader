@@ -4,8 +4,16 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.domain.models import Strategy
-from trader.domain.outcomes import OutcomeBar, OutcomeTarget, evaluate_outcome
+from trader.domain.outcome.evaluation import OutcomeEvaluationRequest, evaluate_outcome
+from trader.domain.outcome.models import (
+    OutcomeBar,
+    OutcomeTarget,
+)
+from trader.domain.recommendation.models import Strategy
+
+
+def _evaluate_outcome(target: OutcomeTarget, bars: tuple[OutcomeBar, ...], **kwargs):
+    return evaluate_outcome(OutcomeEvaluationRequest(target=target, bars=bars, **kwargs))
 
 
 def test_t1_outcome_uses_future_low_and_cost_adjusted_excess_return() -> None:
@@ -15,7 +23,7 @@ def test_t1_outcome_uses_future_low_and_cost_adjusted_excess_return() -> None:
         OutcomeBar("2026-07-21", 10.1, 10.5, 9.6, 10.3, 3.0),
     )
 
-    outcome = evaluate_outcome(
+    outcome = _evaluate_outcome(
         target,
         bars,
         horizon=1,
@@ -40,7 +48,7 @@ def test_d25_outcome_uses_all_lows_through_horizon() -> None:
         OutcomeBar("2026-07-23", 10.2, 10.5, 9.7, 10.4, 1.96),
     )
 
-    outcome = evaluate_outcome(
+    outcome = _evaluate_outcome(
         target,
         bars,
         horizon=3,
@@ -61,7 +69,7 @@ def test_outcome_rejects_future_window_gaps_and_price_discontinuity() -> None:
         OutcomeBar("2026-07-22", 5.0, 5.1, 4.9, 5.0, 0.0),
     )
 
-    outcome = evaluate_outcome(
+    outcome = _evaluate_outcome(
         target,
         bars,
         horizon=1,
@@ -81,7 +89,7 @@ def test_outcome_requires_stock_bars_to_match_benchmark_sessions() -> None:
         OutcomeBar("2026-07-22", 10.0, 10.2, 9.8, 10.1, 1.0),
     )
 
-    outcome = evaluate_outcome(
+    outcome = _evaluate_outcome(
         target,
         bars,
         horizon=1,
@@ -101,7 +109,7 @@ def test_discontinuity_uses_recommendation_close_instead_of_intraday_anchor() ->
         OutcomeBar("2026-07-21", 11.0, 11.2, 10.8, 11.11, 1.0),
     )
 
-    outcome = evaluate_outcome(
+    outcome = _evaluate_outcome(
         target,
         bars,
         horizon=1,

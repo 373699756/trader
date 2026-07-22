@@ -17,7 +17,12 @@ from trader.application.events import EventDeadlineExpired, PipelineEvent
 from trader.application.ports import MarketDataUnavailable
 from trader.application.recommendations import PreparedSnapshot
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
-from trader.domain.models import DeepSeekReview, FeatureSnapshot, RecommendationSnapshot, Strategy
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import (
+    RecommendationSnapshot,
+    Strategy,
+)
+from trader.domain.review.models import DeepSeekReview
 
 if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline

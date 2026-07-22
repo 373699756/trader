@@ -4,7 +4,11 @@ from dataclasses import replace
 from datetime import datetime
 
 from trader.application.candidate_features import fetch_strategy_features
-from trader.domain.models import Evidence, FeatureSnapshot, Strategy
+from trader.domain.market.models import (
+    Evidence,
+    FeatureSnapshot,
+)
+from trader.domain.recommendation.models import Strategy
 
 
 def test_tomorrow_candidate_input_requests_tail_data_and_versions_it(

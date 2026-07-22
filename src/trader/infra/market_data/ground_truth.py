@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from trader.domain.models import FeatureSnapshot
+from trader.domain.market.models import FeatureSnapshot
 
 
 def render_ground_truth(snapshot: FeatureSnapshot, *, stock_index: int = 0) -> str:

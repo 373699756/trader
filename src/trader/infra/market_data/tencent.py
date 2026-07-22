@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from trader.domain.models import MarketQuote
+from trader.domain.market.models import MarketQuote
 from trader.infra.market_data.history import DailyBar
 from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote, normalize_quotes, to_float
 

@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-from trader.domain.models import FeatureSnapshot, LiveQuote
-from trader.domain.outcomes import OutcomeBar
+from trader.domain.market.models import (
+    FeatureSnapshot,
+    LiveQuote,
+)
+from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.service_candidates import QuoteStore
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_health import MarketDataHealth

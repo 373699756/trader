@@ -11,7 +11,10 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from trader.domain.models import LiveOverlay, RecommendationSnapshot
+from trader.domain.recommendation.models import (
+    LiveOverlay,
+    RecommendationSnapshot,
+)
 
 
 @dataclass(frozen=True)

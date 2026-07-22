@@ -8,10 +8,10 @@ from collections.abc import Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from trader.domain.models import (
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import (
     DeepSeekReview,
     ReviewOutcome,
-    Strategy,
 )
 from trader.infra.deepseek.reviewer_state import ReviewerState
 from trader.infra.deepseek.reviewer_support import _physical_call_acceptance

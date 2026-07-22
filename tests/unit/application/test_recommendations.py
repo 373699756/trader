@@ -6,9 +6,14 @@ from datetime import datetime, timedelta
 import pytest
 
 from trader.application.recommendations import RecommendationEngine
-from trader.domain.factors import round_score
-from trader.domain.models import FeatureSnapshot, FilterAudit, RecommendationAction, Strategy
-from trader.domain.strategies import score_strategy
+from trader.domain.market.factors import round_score
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import (
+    FilterAudit,
+    RecommendationAction,
+    Strategy,
+)
+from trader.domain.recommendation.strategies import score_strategy
 
 
 def test_targeted_quotes_are_hard_filtered_again_before_review_and_scoring(

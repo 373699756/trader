@@ -1,4 +1,4 @@
-"""Immutable board-policy, replay, and published recommendation models."""
+"""Immutable recommendation policies, scores, selections, and snapshots."""
 
 from __future__ import annotations
 
@@ -6,19 +6,120 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from types import MappingProxyType
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from trader.domain.models import (
+from trader.domain.market.models import (
     Board,
-    DeepSeekReview,
     FeatureSnapshot,
-    FilterAudit,
-    FusionMode,
-    Recommendation,
-    RiskRule,
-    Strategy,
+    LiveQuote,
 )
+from trader.domain.review.models import DeepSeekReview, RiskFact, RiskRule
+
+if TYPE_CHECKING:
+    from trader.domain.recommendation.downside import DownsideAssessment
+
+
+class Strategy(str, Enum):
+    TODAY = "today"
+    TOMORROW = "tomorrow"
+    D25 = "d25"
+    LONG = "long"
+
+
+class RecommendationAction(str, Enum):
+    EXECUTABLE = "executable"
+    OBSERVE = "observe"
+    UNAVAILABLE = "unavailable"
+
+
+class FusionMode(str, Enum):
+    HYBRID = "hybrid"
+    LOCAL_DEGRADED = "local_degraded"
+
+
+@dataclass(frozen=True)
+class LiveOverlay:
+    snapshot_id: str
+    strategy: Strategy
+    trade_date: str
+    version: str
+    observed_at: datetime
+    quotes: Mapping[str, LiveQuote]
+    closing: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "quotes", MappingProxyType(dict(self.quotes)))
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("live overlay time must be timezone-aware")
+        if any(code != quote.code for code, quote in self.quotes.items()):
+            raise ValueError("live overlay quote keys must match quote codes")
+        if any(quote.source_time > self.observed_at for quote in self.quotes.values()):
+            raise ValueError("live overlay cannot contain future quotes")
+
+
+@dataclass(frozen=True)
+class FilterAudit:
+    stock_code: str
+    filter_code: str
+    threshold: str
+    actual: str | float | bool | None
+    source: str
+    observed_at: datetime
+
+    @property
+    def code(self) -> str:
+        return self.filter_code
+
+
+@dataclass(frozen=True)
+class ScoreBreakdown:
+    components: Mapping[str, float]
+    base_score: float
+    local_risk_penalty: float
+    local_score: float
+    deepseek_score: float | None
+    confidence_coverage: float
+    deepseek_risk_penalty: float
+    final_score: float
+    fusion_mode: FusionMode
+    fusion_applied: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "components", MappingProxyType(dict(self.components)))
+
+
+@dataclass(frozen=True)
+class Recommendation:
+    strategy: Strategy
+    features: FeatureSnapshot
+    score: ScoreBreakdown
+    local_risk_facts: tuple[RiskFact, ...]
+    deepseek_risk_facts: tuple[RiskFact, ...]
+    review: DeepSeekReview | None
+    action: RecommendationAction
+    action_reason: str
+    veto: bool
+    rank: int = 0
+    board_rank: int = 0
+    target_price: float | None = None
+    selection_skip_reason: str = ""
+    competition_group_limit: int | None = None
+    downside: DownsideAssessment | None = None
+
+
+@dataclass(frozen=True)
+class SelectionSkip:
+    stock_code: str
+    board: Board
+    competition_group_id: str
+    board_rank: int
+    global_rank: int
+    reason: str
+    limit: int | None
+    policy_version: str
+    observed_at: datetime
 
 
 @dataclass(frozen=True)
@@ -219,7 +320,15 @@ class RecommendationSnapshot:
 __all__ = [
     "BoardScoreBatch",
     "BoardStrategyPolicy",
+    "FilterAudit",
     "FrozenReplayPolicy",
+    "FusionMode",
+    "LiveOverlay",
+    "Recommendation",
+    "RecommendationAction",
     "RecommendationReplayInput",
     "RecommendationSnapshot",
+    "ScoreBreakdown",
+    "SelectionSkip",
+    "Strategy",
 ]

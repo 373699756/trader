@@ -22,9 +22,11 @@ from trader.application.runtime import RuntimeSupervisor, scheduler_interval_sec
 from trader.application.source_lanes import SourceLaneRegistry
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
-from trader.domain.filters import HardFilterPolicy
-from trader.domain.fusion import FusionPolicy
-from trader.domain.models import Board, RiskRule, Strategy
+from trader.domain.market.models import Board
+from trader.domain.recommendation.filters import HardFilterPolicy
+from trader.domain.recommendation.fusion import FusionPolicy
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import RiskRule
 from trader.infra.cache import BoundedLruCache
 from trader.infra.deepseek.budget import DeepSeekBudgetStore
 from trader.infra.deepseek.cache import ReviewCache

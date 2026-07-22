@@ -6,7 +6,11 @@ import threading
 from collections.abc import Mapping
 from datetime import datetime
 
-from trader.domain.models import LiveOverlay, RecommendationSnapshot, Strategy
+from trader.domain.recommendation.models import (
+    LiveOverlay,
+    RecommendationSnapshot,
+    Strategy,
+)
 
 
 class RuntimeState:

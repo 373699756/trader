@@ -12,8 +12,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from trader.domain.models import Evidence
-from trader.domain.research import (
+from trader.domain.market.models import Evidence
+from trader.domain.market.research import (
     FinancialReport,
     LongResearchPolicy,
     ResearchAnnouncement,

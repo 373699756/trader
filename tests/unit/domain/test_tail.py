@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.tail import MinuteBar, TailSignalPolicy, derive_tail_signals
+from trader.domain.market.tail import MinuteBar, TailSignalPolicy, derive_tail_signals
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 POLICY = TailSignalPolicy(

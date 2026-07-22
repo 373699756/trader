@@ -6,14 +6,40 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.board_scoring import (
+from trader.domain.market.models import Board
+from trader.domain.recommendation.models import (
+    BoardStrategyPolicy,
+    Strategy,
+)
+from trader.domain.recommendation.scoring import (
+    BoardCrossSectionRequest,
     apply_board_policy,
     build_board_cross_section,
     score_board_strategy,
 )
-from trader.domain.models import Board, BoardStrategyPolicy, Strategy
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+def _build_board_cross_section(
+    features,
+    *,
+    board: Board,
+    merge_epoch: str,
+    trade_date: str,
+    phase: str,
+    data_version: str,
+):
+    return build_board_cross_section(
+        BoardCrossSectionRequest(
+            features=features,
+            board=board,
+            merge_epoch=merge_epoch,
+            trade_date=trade_date,
+            phase=phase,
+            data_version=data_version,
+        )
+    )
 
 
 def _policy(strategy: Strategy, board: Board, weights: dict[str, float]) -> BoardStrategyPolicy:
@@ -79,7 +105,7 @@ def test_peer_population_excludes_target_at_nine_ten_peer_boundary(
     count: int,
     expected: float | None,
 ) -> None:
-    cross_section = build_board_cross_section(
+    cross_section = _build_board_cross_section(
         _features(application_feature_factory, count, Board.MAIN),
         board=Board.MAIN,
         merge_epoch="epoch-1",
@@ -97,7 +123,7 @@ def test_leader_group_excludes_target_at_two_three_leader_boundary(
     count: int,
     present: bool,
 ) -> None:
-    cross_section = build_board_cross_section(
+    cross_section = _build_board_cross_section(
         _features(application_feature_factory, count, Board.MAIN),
         board=Board.MAIN,
         merge_epoch="epoch-1",
@@ -120,7 +146,7 @@ def test_non_positive_or_non_finite_shock_denominators_remain_missing(
         features[0],
         values={**features[0].values, "turnover_median_20d": bad, "amount_median_20d": bad},
     )
-    cross_section = build_board_cross_section(
+    cross_section = _build_board_cross_section(
         (first, *features[1:]),
         board=Board.MAIN,
         merge_epoch="epoch-1",
@@ -190,7 +216,7 @@ def test_d25_score_has_no_market_regime_or_overheat_multiplier(application_featu
         },
     )
     feature = replace(_features(application_feature_factory, 1, Board.MAIN)[0], market_regime="risk_on")
-    cross_section = build_board_cross_section(
+    cross_section = _build_board_cross_section(
         (feature,),
         board=Board.MAIN,
         merge_epoch="epoch",

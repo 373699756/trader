@@ -21,7 +21,10 @@ from trader.application.ports import (
 from trader.application.schedule import shanghai_now
 from trader.application.source_lanes import SourceLaneRegistry, SourceRequestSuperseded
 from trader.application.workers import BoundedExecutor
-from trader.domain.models import CanonicalMarketSnapshot, MarketQuote
+from trader.domain.market.models import (
+    CanonicalMarketSnapshot,
+    MarketQuote,
+)
 from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.gateway_sources import MarketGatewaySourcesMixin
 from trader.infra.market_data.gateway_support import (

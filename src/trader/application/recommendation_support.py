@@ -8,21 +8,25 @@ from dataclasses import replace
 from datetime import datetime
 
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
-from trader.domain.filters import HardFilterPolicy
-from trader.domain.fusion import FusionPolicy
-from trader.domain.models import (
+from trader.domain.market.models import (
     Board,
-    DeepSeekReview,
     FeatureSnapshot,
+)
+from trader.domain.recommendation.filters import HardFilterPolicy
+from trader.domain.recommendation.fusion import FusionPolicy
+from trader.domain.recommendation.models import (
     FrozenReplayPolicy,
     FusionMode,
     Recommendation,
     RecommendationSnapshot,
-    ReviewCandidateContext,
-    ReviewOutcome,
     Strategy,
 )
-from trader.domain.ranking import CORE_FIELDS
+from trader.domain.recommendation.ranking import CORE_FIELDS
+from trader.domain.review.models import (
+    DeepSeekReview,
+    ReviewCandidateContext,
+    ReviewOutcome,
+)
 
 _PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 _NON_ALGORITHM_METADATA_KEYS = frozenset(

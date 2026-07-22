@@ -12,7 +12,7 @@ from enum import IntEnum
 from types import MappingProxyType
 from uuid import uuid4
 
-from trader.domain.models import Strategy
+from trader.domain.recommendation.models import Strategy
 
 
 class EventPriority(IntEnum):

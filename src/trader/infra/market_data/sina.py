@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import requests
 
 from trader.application.workers import borrow_executor, submit_or_run_inline
-from trader.domain.models import MarketQuote
+from trader.domain.market.models import MarketQuote
 from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote, normalize_quotes, to_float
 
 SessionFactory = Callable[[], requests.Session]

@@ -1,4 +1,4 @@
-"""Pure d25 regime and long-horizon research signal derivation."""
+"""Pure point-in-time market research signal derivation."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import math
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from trader.domain.factors import clamp
-from trader.domain.models import Evidence
+from trader.domain.market.factors import clamp
+from trader.domain.market.models import Evidence
 
 
 @dataclass(frozen=True)
@@ -91,73 +91,91 @@ class LongResearchPolicy:
     policy_negative_keywords: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if (
-            min(
-                self.financial_max_age_days,
-                self.announcement_lookback_days,
-                self.announcement_limit,
-                self.unlock_forward_days,
-            )
-            <= 0
-        ):
-            raise ValueError("long research windows and limits must be positive")
-        numeric = (
-            self.pe_full_score_max,
-            self.pe_zero_score_min,
-            self.pb_full_score_max,
-            self.pb_zero_score_min,
-            self.growth_points_per_pct,
-            self.quality_roe_neutral_pct,
-            self.quality_roe_points_per_pct,
-            self.financial_revenue_deterioration_pct,
-            self.financial_profit_deterioration_pct,
-            self.financial_core_profit_deterioration_pct,
-            *self.pledge_thresholds,
-            *self.unlock_thresholds,
-            self.policy_keyword_score_step,
+        _validate_long_numeric_policy(self)
+        _validate_long_keyword_policy(self)
+
+
+def _validate_long_numeric_policy(policy: LongResearchPolicy) -> None:
+    if (
+        min(
+            policy.financial_max_age_days,
+            policy.announcement_lookback_days,
+            policy.announcement_limit,
+            policy.unlock_forward_days,
         )
-        if not all(math.isfinite(value) for value in numeric):
-            raise ValueError("long research numeric policy values must be finite")
-        if not 0.0 < self.pe_full_score_max < self.pe_zero_score_min:
-            raise ValueError("long PE score boundaries must increase")
-        if not 0.0 < self.pb_full_score_max < self.pb_zero_score_min:
-            raise ValueError("long PB score boundaries must increase")
-        if self.growth_points_per_pct <= 0.0 or self.quality_roe_points_per_pct <= 0.0:
-            raise ValueError("long score slopes must be positive")
-        if not _strictly_increasing_nonnegative(self.pledge_thresholds):
-            raise ValueError("long pledge thresholds must strictly increase")
-        if not _strictly_increasing_nonnegative(self.unlock_thresholds):
-            raise ValueError("long unlock thresholds must strictly increase")
-        if not 0.0 < self.policy_keyword_score_step <= 100.0:
-            raise ValueError("long policy keyword score step must be in (0, 100]")
-        keyword_groups = (
-            self.negative_high_keywords,
-            self.negative_medium_keywords,
-            self.negative_low_keywords,
-            self.reduction_high_keywords,
-            self.reduction_medium_keywords,
-            self.reduction_low_keywords,
-            self.policy_positive_keywords,
-            self.policy_negative_keywords,
-        )
-        if any(not group or any(not keyword.strip() for keyword in group) for group in keyword_groups):
-            raise ValueError("long research keyword groups must contain non-empty values")
-        if any(len(group) != len(set(group)) for group in keyword_groups):
-            raise ValueError("long research keyword groups must contain unique values")
-        negative_levels = (
-            set(self.negative_high_keywords),
-            set(self.negative_medium_keywords),
-            set(self.negative_low_keywords),
-        )
-        reduction_levels = (
-            set(self.reduction_high_keywords),
-            set(self.reduction_medium_keywords),
-            set(self.reduction_low_keywords),
-        )
-        if _groups_overlap(negative_levels) or _groups_overlap(reduction_levels):
-            raise ValueError("long research severity keyword levels must not overlap")
-        if set(self.policy_positive_keywords) & set(self.policy_negative_keywords):
-            raise ValueError("long policy positive and negative keywords must not overlap")
+        <= 0
+    ):
+        raise ValueError("long research windows and limits must be positive")
+    numeric = (
+        policy.pe_full_score_max,
+        policy.pe_zero_score_min,
+        policy.pb_full_score_max,
+        policy.pb_zero_score_min,
+        policy.growth_points_per_pct,
+        policy.quality_roe_neutral_pct,
+        policy.quality_roe_points_per_pct,
+        policy.financial_revenue_deterioration_pct,
+        policy.financial_profit_deterioration_pct,
+        policy.financial_core_profit_deterioration_pct,
+        *policy.pledge_thresholds,
+        *policy.unlock_thresholds,
+        policy.policy_keyword_score_step,
+    )
+    if not all(math.isfinite(value) for value in numeric):
+        raise ValueError("long research numeric policy values must be finite")
+    boundaries_are_valid = (
+        0.0 < policy.pe_full_score_max < policy.pe_zero_score_min
+        and 0.0 < policy.pb_full_score_max < policy.pb_zero_score_min
+    )
+    if not boundaries_are_valid:
+        raise ValueError("long PE and PB score boundaries must increase")
+    if policy.growth_points_per_pct <= 0.0 or policy.quality_roe_points_per_pct <= 0.0:
+        raise ValueError("long score slopes must be positive")
+    if not _strictly_increasing_nonnegative(policy.pledge_thresholds):
+        raise ValueError("long pledge thresholds must strictly increase")
+    if not _strictly_increasing_nonnegative(policy.unlock_thresholds):
+        raise ValueError("long unlock thresholds must strictly increase")
+    if not 0.0 < policy.policy_keyword_score_step <= 100.0:
+        raise ValueError("long policy keyword score step must be in (0, 100]")
+
+
+def _validate_long_keyword_policy(policy: LongResearchPolicy) -> None:
+    keyword_groups = (
+        policy.negative_high_keywords,
+        policy.negative_medium_keywords,
+        policy.negative_low_keywords,
+        policy.reduction_high_keywords,
+        policy.reduction_medium_keywords,
+        policy.reduction_low_keywords,
+        policy.policy_positive_keywords,
+        policy.policy_negative_keywords,
+    )
+    if any(not group or any(not keyword.strip() for keyword in group) for group in keyword_groups):
+        raise ValueError("long research keyword groups must contain non-empty values")
+    if any(len(group) != len(set(group)) for group in keyword_groups):
+        raise ValueError("long research keyword groups must contain unique values")
+    negative_levels = (
+        set(policy.negative_high_keywords),
+        set(policy.negative_medium_keywords),
+        set(policy.negative_low_keywords),
+    )
+    reduction_levels = (
+        set(policy.reduction_high_keywords),
+        set(policy.reduction_medium_keywords),
+        set(policy.reduction_low_keywords),
+    )
+    if _groups_overlap(negative_levels) or _groups_overlap(reduction_levels):
+        raise ValueError("long research severity keyword levels must not overlap")
+    if set(policy.policy_positive_keywords) & set(policy.policy_negative_keywords):
+        raise ValueError("long policy positive and negative keywords must not overlap")
+
+
+@dataclass(frozen=True)
+class LongResearchInputs:
+    price: float | None
+    industry_strength: float | None
+    low_volatility_score: float | None
+    low_drawdown_score: float | None
 
 
 @dataclass(frozen=True)
@@ -244,114 +262,135 @@ def derive_d25_signals(
 
 def derive_long_research_features(
     observation: ResearchObservation,
-    *,
-    price: float | None,
-    industry_strength: float | None,
-    low_volatility_score: float | None,
-    low_drawdown_score: float | None,
+    inputs: LongResearchInputs,
     policy: LongResearchPolicy,
 ) -> dict[str, float | None]:
-    financial = observation.financial
-    annualizer = _annualizer(financial.report_date.month) if financial is not None else None
-    price_value = _finite_or_none(price)
-
-    valuation_scores: list[float] = []
-    if financial is not None and annualizer is not None and price_value is not None and price_value > 0.0:
-        basic_eps = _finite_or_none(financial.basic_eps)
-        book_value = _finite_or_none(financial.book_value_per_share)
-        if basic_eps is not None and basic_eps > 0.0:
-            annualized_eps = basic_eps * annualizer
-            valuation_scores.append(
-                _inverse_linear_score(
-                    price_value / annualized_eps,
-                    policy.pe_full_score_max,
-                    policy.pe_zero_score_min,
-                )
-            )
-        if book_value is not None and book_value > 0.0:
-            valuation_scores.append(
-                _inverse_linear_score(
-                    price_value / book_value,
-                    policy.pb_full_score_max,
-                    policy.pb_zero_score_min,
-                )
-            )
-
-    growth_values = (
-        _finite_or_none(financial.revenue_growth_pct) if financial is not None else None,
-        _finite_or_none(financial.net_profit_growth_pct) if financial is not None else None,
-        _finite_or_none(financial.core_profit_growth_pct) if financial is not None else None,
-    )
-    known_growth = [value for value in growth_values if value is not None]
-    growth_score = (
-        clamp(50.0 + policy.growth_points_per_pct * sum(known_growth) / len(known_growth)) if known_growth else None
-    )
-
-    quality_scores: list[float] = []
-    if financial is not None and annualizer is not None:
-        roe = _finite_or_none(financial.roe_pct)
-        if roe is not None:
-            quality_scores.append(
-                clamp(50.0 + (roe * annualizer - policy.quality_roe_neutral_pct) * policy.quality_roe_points_per_pct)
-            )
-        parent_profit = _finite_or_none(financial.parent_net_profit)
-        core_profit = _finite_or_none(financial.core_net_profit)
-        if parent_profit is not None and parent_profit > 0.0 and core_profit is not None:
-            quality_scores.append(clamp(core_profit / parent_profit * 100.0))
-
-    deterioration = None
-    if known_growth:
-        deterioration = float(
-            (growth_values[0] is not None and growth_values[0] <= policy.financial_revenue_deterioration_pct)
-            or (growth_values[1] is not None and growth_values[1] <= policy.financial_profit_deterioration_pct)
-            or (growth_values[2] is not None and growth_values[2] <= policy.financial_core_profit_deterioration_pct)
-        )
-
-    negative_announcement_level = (
-        float(max((_announcement_level(item.title, policy) for item in observation.announcements), default=0))
-        if observation.announcements_available
-        else None
-    )
-    reduction_level = (
-        max((_reduction_level(item.title, policy) for item in observation.announcements), default=0)
-        if observation.announcements_available
-        else None
-    )
-    pledge_risk = _severity(observation.pledge_ratio_pct, policy.pledge_thresholds)
-    unlock_level = _severity(observation.unlock_ratio_pct, policy.unlock_thresholds)
-    reduction_or_unlock = _combined_event_level(reduction_level, unlock_level)
-
-    policy_evidence_score = None
-    if observation.announcements_available:
-        titles = tuple(item.title for item in observation.announcements)
-        positive_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_positive_keywords)
-        negative_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_negative_keywords)
-        policy_evidence_score = clamp(50.0 + policy.policy_keyword_score_step * (positive_hits - negative_hits))
-
-    industry_policy_score = None
-    industry_strength_value = _finite_or_none(industry_strength)
-    if industry_strength_value is not None and policy_evidence_score is not None:
-        industry_policy_score = clamp(0.6 * industry_strength_value + 0.4 * policy_evidence_score)
-
-    protection = None
-    volatility_value = _finite_or_none(low_volatility_score)
-    drawdown_value = _finite_or_none(low_drawdown_score)
-    if volatility_value is not None and drawdown_value is not None:
-        protection = clamp(0.5 * volatility_value + 0.5 * drawdown_value)
-
+    event_features = _event_features(observation, policy)
     return {
-        "value_score": sum(valuation_scores) / len(valuation_scores) if valuation_scores else None,
-        "growth_score": growth_score,
-        "quality_score": sum(quality_scores) / len(quality_scores) if quality_scores else None,
-        "industry_policy_score": industry_policy_score,
-        "risk_protection_score": protection,
-        "financial_deterioration": deterioration,
-        "negative_announcement_level": negative_announcement_level,
-        "pledge_risk": pledge_risk,
+        "value_score": _valuation_score(observation.financial, inputs.price, policy),
+        "growth_score": _growth_score(observation.financial, policy),
+        "quality_score": _quality_score(observation.financial, policy),
+        "industry_policy_score": _industry_policy_score(observation, inputs.industry_strength, policy),
+        "risk_protection_score": _protection_score(inputs),
+        "financial_deterioration": _financial_deterioration(observation.financial, policy),
+        **event_features,
+    }
+
+
+def _valuation_score(
+    financial: FinancialReport | None,
+    price: float | None,
+    policy: LongResearchPolicy,
+) -> float | None:
+    if financial is None or (annualizer := _annualizer(financial.report_date.month)) is None:
+        return None
+    price_value = _finite_or_none(price)
+    if price_value is None or price_value <= 0.0:
+        return None
+    scores: list[float] = []
+    basic_eps = _finite_or_none(financial.basic_eps)
+    if basic_eps is not None and basic_eps > 0.0:
+        scores.append(
+            _inverse_linear_score(
+                price_value / (basic_eps * annualizer),
+                policy.pe_full_score_max,
+                policy.pe_zero_score_min,
+            )
+        )
+    book_value = _finite_or_none(financial.book_value_per_share)
+    if book_value is not None and book_value > 0.0:
+        scores.append(
+            _inverse_linear_score(price_value / book_value, policy.pb_full_score_max, policy.pb_zero_score_min)
+        )
+    return sum(scores) / len(scores) if scores else None
+
+
+def _growth_values(financial: FinancialReport | None) -> tuple[float | None, float | None, float | None]:
+    if financial is None:
+        return None, None, None
+    return (
+        _finite_or_none(financial.revenue_growth_pct),
+        _finite_or_none(financial.net_profit_growth_pct),
+        _finite_or_none(financial.core_profit_growth_pct),
+    )
+
+
+def _growth_score(financial: FinancialReport | None, policy: LongResearchPolicy) -> float | None:
+    known = [value for value in _growth_values(financial) if value is not None]
+    return clamp(50.0 + policy.growth_points_per_pct * sum(known) / len(known)) if known else None
+
+
+def _financial_deterioration(financial: FinancialReport | None, policy: LongResearchPolicy) -> float | None:
+    values = _growth_values(financial)
+    if not any(value is not None for value in values):
+        return None
+    thresholds = (
+        policy.financial_revenue_deterioration_pct,
+        policy.financial_profit_deterioration_pct,
+        policy.financial_core_profit_deterioration_pct,
+    )
+    return float(
+        any(value is not None and value <= threshold for value, threshold in zip(values, thresholds, strict=True))
+    )
+
+
+def _quality_score(financial: FinancialReport | None, policy: LongResearchPolicy) -> float | None:
+    if financial is None or (annualizer := _annualizer(financial.report_date.month)) is None:
+        return None
+    scores: list[float] = []
+    roe = _finite_or_none(financial.roe_pct)
+    if roe is not None:
+        scores.append(
+            clamp(50.0 + (roe * annualizer - policy.quality_roe_neutral_pct) * policy.quality_roe_points_per_pct)
+        )
+    parent_profit = _finite_or_none(financial.parent_net_profit)
+    core_profit = _finite_or_none(financial.core_net_profit)
+    if parent_profit is not None and parent_profit > 0.0 and core_profit is not None:
+        scores.append(clamp(core_profit / parent_profit * 100.0))
+    return sum(scores) / len(scores) if scores else None
+
+
+def _event_features(
+    observation: ResearchObservation,
+    policy: LongResearchPolicy,
+) -> dict[str, float | None]:
+    if not observation.announcements_available:
+        reduction_level = None
+        negative_level = None
+    else:
+        negative_level = float(
+            max((_announcement_level(item.title, policy) for item in observation.announcements), default=0)
+        )
+        reduction_level = max((_reduction_level(item.title, policy) for item in observation.announcements), default=0)
+    unlock_level = _severity(observation.unlock_ratio_pct, policy.unlock_thresholds)
+    return {
+        "negative_announcement_level": negative_level,
+        "pledge_risk": _severity(observation.pledge_ratio_pct, policy.pledge_thresholds),
         "shareholder_reduction_level": float(reduction_level) if reduction_level is not None else None,
         "unlock_risk": unlock_level,
-        "reduction_or_unlock": reduction_or_unlock,
+        "reduction_or_unlock": _combined_event_level(reduction_level, unlock_level),
     }
+
+
+def _industry_policy_score(
+    observation: ResearchObservation,
+    industry_strength: float | None,
+    policy: LongResearchPolicy,
+) -> float | None:
+    if not observation.announcements_available:
+        return None
+    titles = tuple(item.title for item in observation.announcements)
+    positive_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_positive_keywords)
+    negative_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_negative_keywords)
+    evidence_score = clamp(50.0 + policy.policy_keyword_score_step * (positive_hits - negative_hits))
+    industry_value = _finite_or_none(industry_strength)
+    return None if industry_value is None else clamp(0.6 * industry_value + 0.4 * evidence_score)
+
+
+def _protection_score(inputs: LongResearchInputs) -> float | None:
+    volatility = _finite_or_none(inputs.low_volatility_score)
+    drawdown = _finite_or_none(inputs.low_drawdown_score)
+    return None if volatility is None or drawdown is None else clamp(0.5 * volatility + 0.5 * drawdown)
 
 
 def announcement_level(title: str, policy: LongResearchPolicy) -> int:
@@ -449,6 +488,7 @@ __all__ = [
     "D25Signals",
     "FinancialReport",
     "LongResearchPolicy",
+    "LongResearchInputs",
     "ResearchAnnouncement",
     "ResearchObservation",
     "announcement_level",

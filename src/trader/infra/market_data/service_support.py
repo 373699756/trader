@@ -10,9 +10,12 @@ from datetime import datetime
 from typing import ParamSpec, TypeVar
 
 from trader.application.cache import canonical_json_bytes
-from trader.domain.models import Evidence, MarketQuote
-from trader.domain.research import FinancialReport, ResearchAnnouncement, ResearchObservation
-from trader.domain.tail import MinuteBar
+from trader.domain.market.models import (
+    Evidence,
+    MarketQuote,
+)
+from trader.domain.market.research import FinancialReport, ResearchAnnouncement, ResearchObservation
+from trader.domain.market.tail import MinuteBar
 from trader.infra.market_data.history import DailyBar
 from trader.infra.market_data.merge_quote import source_name, source_priority
 from trader.infra.market_data.service_models import _ResearchEntry

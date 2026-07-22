@@ -16,19 +16,26 @@ from zoneinfo import ZoneInfo
 from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import ScoringCacheContext
 from trader.bootstrap import _recommendation_policy
-from trader.domain.board_scoring import board_candidate_score, enrich_board_features, score_board_strategy
-from trader.domain.models import (
+from trader.domain.market.models import (
     Board,
     FeatureSnapshot,
-    FusionMode,
     MarketQuote,
+)
+from trader.domain.recommendation.models import (
+    FusionMode,
     Recommendation,
     RecommendationAction,
     ScoreBreakdown,
     Strategy,
 )
-from trader.domain.ranking import select_top_k
-from trader.domain.strategies.composition import LocalScoreResult
+from trader.domain.recommendation.ranking import SelectionPolicy, select_top_k
+from trader.domain.recommendation.scoring import (
+    BoardCrossSectionRequest,
+    board_candidate_score,
+    enrich_board_features,
+    score_board_strategy,
+)
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 14, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -189,12 +196,15 @@ def _measure(runtime_path: Path, fixture_path: Path) -> dict[str, Any]:
                     started = time.perf_counter()
                     enriched = enrich_board_features(
                         active_strategy,
-                        features,
                         board_policy,
-                        merge_epoch="fixture-epoch",
-                        trade_date="2026-07-16",
-                        phase="afternoon",
-                        data_version="fixture-v16",
+                        BoardCrossSectionRequest(
+                            features=features,
+                            board=board,
+                            merge_epoch="fixture-epoch",
+                            trade_date="2026-07-16",
+                            phase="afternoon",
+                            data_version="fixture-v16",
+                        ),
                     )
                     selected = tuple(
                         item
@@ -252,7 +262,10 @@ def _measure(runtime_path: Path, fixture_path: Path) -> dict[str, Any]:
             selection_ms = 0.0
             for candidates in lane_candidates.values():
                 select_started = time.perf_counter()
-                select_top_k(candidates, top_k=10, maximum_per_industry=3, maximum_board_fraction=0.6)
+                select_top_k(
+                    candidates,
+                    SelectionPolicy(top_k=10, maximum_per_industry=3, maximum_board_fraction=0.6),
+                )
                 selection_ms = max(selection_ms, (time.perf_counter() - select_started) * 1000.0)
             if round_index >= rounds.warmup:
                 samples["board_preselection"].append(preselection_ms)

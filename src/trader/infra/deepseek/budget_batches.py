@@ -6,7 +6,8 @@ import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-from trader.domain.models import DeepSeekReview, Strategy
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import DeepSeekReview
 from trader.infra.deepseek.budget_state import BudgetStoreState
 from trader.infra.deepseek.budget_support import _require_aware, _sync_call_audit
 

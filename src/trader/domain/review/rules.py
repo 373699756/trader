@@ -1,4 +1,4 @@
-"""Risk fact derivation, de-duplication and deterministic penalty mapping."""
+"""Structured review risk derivation and deterministic mapping."""
 
 from __future__ import annotations
 
@@ -6,11 +6,21 @@ import hashlib
 import json
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from types import MappingProxyType
 
-from trader.domain.factors import clamp
-from trader.domain.models import Evidence, FeatureSnapshot, RiskFact, RiskRule, Strategy
+from trader.domain.market.factors import clamp
+from trader.domain.market.models import (
+    Evidence,
+    FeatureSnapshot,
+)
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import (
+    RiskFact,
+    RiskRule,
+)
 
 
 class Rating(str, Enum):
@@ -75,31 +85,39 @@ def derive_local_risk_facts(
     return deduplicate_risk_facts(facts, rules=rules)
 
 
-def map_deepseek_risk_facts(
-    raw_facts: Iterable[RiskFact],
-    rules: Mapping[str, RiskRule],
-    local_fact_ids: set[str],
-    *,
-    cap: float,
-    evidence: Iterable[Evidence],
-    evaluated_at: datetime,
-) -> tuple[tuple[RiskFact, ...], float, bool]:
+@dataclass(frozen=True)
+class RiskMappingRequest:
+    raw_facts: Iterable[RiskFact]
+    rules: Mapping[str, RiskRule]
+    local_fact_ids: frozenset[str]
+    cap: float
+    evidence: Iterable[Evidence]
+    evaluated_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "raw_facts", tuple(self.raw_facts))
+        object.__setattr__(self, "rules", MappingProxyType(dict(self.rules)))
+        object.__setattr__(self, "local_fact_ids", frozenset(self.local_fact_ids))
+        object.__setattr__(self, "evidence", tuple(self.evidence))
+
+
+def map_deepseek_risk_facts(request: RiskMappingRequest) -> tuple[tuple[RiskFact, ...], float, bool]:
     mapped: list[RiskFact] = []
     veto = False
-    evidence_by_id = {item.evidence_id: item for item in evidence}
-    for raw in raw_facts:
-        rule = rules.get(raw.risk_code)
+    evidence_by_id = {item.evidence_id: item for item in request.evidence}
+    for raw in request.raw_facts:
+        rule = request.rules.get(raw.risk_code)
         if (
             rule is None
             or raw.confidence < rule.minimum_confidence
             or not raw.evidence_ids
-            or not _evidence_is_valid(raw.evidence_ids, rule, evidence_by_id, evaluated_at)
+            or not _evidence_is_valid(raw.evidence_ids, rule, evidence_by_id, request.evaluated_at)
         ):
             continue
         locally_mapped_veto = (
             rule.veto and rule.severity == "high" and raw.confidence >= max(0.7, rule.minimum_confidence)
         )
-        if raw.risk_fact_id in local_fact_ids:
+        if raw.risk_fact_id in request.local_fact_ids:
             veto = veto or locally_mapped_veto
             continue
         mapped_fact = RiskFact(
@@ -119,8 +137,8 @@ def map_deepseek_risk_facts(
         )
         mapped.append(mapped_fact)
         veto = veto or mapped_fact.veto
-    deduplicated = deduplicate_risk_facts(mapped, rules=rules)
-    return deduplicated, aggregate_risk_penalty(deduplicated, cap=cap), veto
+    deduplicated = deduplicate_risk_facts(mapped, rules=request.rules)
+    return deduplicated, aggregate_risk_penalty(deduplicated, cap=request.cap), veto
 
 
 def _evidence_is_valid(
@@ -229,6 +247,7 @@ def _fact_from_rule(
 
 __all__ = [
     "Rating",
+    "RiskMappingRequest",
     "aggregate_risk_penalty",
     "deduplicate_risk_facts",
     "derive_local_risk_facts",

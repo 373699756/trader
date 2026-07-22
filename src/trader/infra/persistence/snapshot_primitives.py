@@ -6,7 +6,7 @@ import math
 from collections.abc import Mapping
 from datetime import datetime
 
-from trader.domain.models import (
+from trader.domain.review.models import (
     DeepSeekReview,
     RiskRule,
 )

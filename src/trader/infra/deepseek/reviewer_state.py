@@ -6,7 +6,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from trader.domain.models import Strategy
+from trader.domain.recommendation.models import Strategy
 from trader.infra.deepseek.base_client import DeepSeekClientBase
 from trader.infra.deepseek.budget import DeepSeekBudgetStore
 from trader.infra.deepseek.cache import ReviewCache

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.domain.research import ResearchObservation
-from trader.domain.tail import MinuteBar
+from trader.domain.market.research import ResearchObservation
+from trader.domain.market.tail import MinuteBar
 from trader.infra.market_data.history import DailyBar
 
 

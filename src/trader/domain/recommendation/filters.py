@@ -1,4 +1,4 @@
-"""Candidate filters with explicit required/optional severity rules."""
+"""Recommendation candidate filters with explicit severity rules."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
 
-from trader.domain.models import Board, FeatureSnapshot, FilterAudit
-
-FilterReason = FilterAudit
+from trader.domain.market.models import (
+    Board,
+    FeatureSnapshot,
+)
+from trader.domain.recommendation.models import FilterAudit
 
 
 class FilterSeverity(str, Enum):
@@ -208,68 +210,63 @@ def apply_filters(
     )
 
 
-def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
-    """Build default filter rule registry for all strategies.
+class _DefaultFilterRules:
+    def __init__(self, max_age_seconds: float, policy: HardFilterPolicy) -> None:
+        self.max_age_seconds = max_age_seconds
+        self.policy = policy
 
-    Required rules are preserved from ``hard_filter`` behavior. Optional rules
-    are used to record soft warnings without rejecting candidates.
-    """
-    if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
-        raise ValueError("max_age_seconds must be finite and non-negative")
-    policy = policy or HardFilterPolicy()
-
-    def unsupported_code(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def unsupported_code(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if board_for_code(snapshot.quote.code) is Board.UNSUPPORTED:
             return _make_audit(
                 snapshot, "unsupported_code", "supported Shanghai/Shenzhen board code", snapshot.quote.code
             )
         return None
 
-    def st_or_delisting(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def st_or_delisting(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         quote = snapshot.quote
         if quote.is_st or "ST" in quote.name.upper() or "退" in quote.name:
             return _make_audit(snapshot, "st_or_delisting", "false", quote.name)
         return None
 
-    def suspended(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def suspended(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if snapshot.quote.is_suspended:
             return _make_audit(snapshot, "suspended", "false", True)
         return None
 
-    def invalid_price(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def invalid_price(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         quote = snapshot.quote
         if quote.price is None or not math.isfinite(quote.price) or quote.price <= 0:
             return _make_audit(snapshot, "invalid_price", "> 0", quote.price)
         return None
 
-    def invalid_amount(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def invalid_amount(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         quote = snapshot.quote
         if quote.amount is None or not math.isfinite(quote.amount) or quote.amount <= 0:
             return _make_audit(snapshot, "invalid_amount", "> 0", quote.amount)
         return None
 
-    def invalid_quote_time(snapshot: FeatureSnapshot, now: datetime) -> FilterAudit | None:
+    def invalid_quote_time(self, snapshot: FeatureSnapshot, now: datetime) -> FilterAudit | None:
         quote = snapshot.quote
         if quote.source_time.tzinfo is None or quote.source_time.utcoffset() is None:
             return _make_audit(snapshot, "invalid_quote_time", "timezone-aware", quote.source_time.isoformat())
         if quote.source_time > now:
             return _make_audit(snapshot, "future_quote", "<= evaluation time", quote.source_time.isoformat())
-        if quote.age_seconds(now) > max_age_seconds:
+        if quote.age_seconds(now) > self.max_age_seconds:
             return _make_audit(
                 snapshot,
                 "stale_quote",
-                f"<= {max_age_seconds}s",
+                f"<= {self.max_age_seconds}s",
                 round(quote.age_seconds(now), 3),
             )
         return None
 
-    def cross_source_deviation(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def cross_source_deviation(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         deviation = snapshot.quote.cross_source_deviation_pct
         if deviation is not None and (not math.isfinite(deviation) or deviation < 0):
             return _make_audit(snapshot, "invalid_cross_source_deviation", "finite and >= 0", deviation)
         return None
 
-    def cross_source_deviation_optional(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def cross_source_deviation_optional(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         deviation = snapshot.quote.cross_source_deviation_pct
         if (
             deviation is not None
@@ -280,23 +277,23 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
             return _make_audit(snapshot, "cross_source_deviation", "<= 0.5% or verified", deviation)
         return None
 
-    def new_listing_session(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def new_listing_session(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         age = snapshot.quote.listing_age_sessions
         if age is not None and age < 6:
             return _make_audit(snapshot, "new_listing_session", ">= 6 trading sessions", age)
         return None
 
-    def relisted_first_session(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def relisted_first_session(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if snapshot.quote.is_relisted_first_session:
             return _make_audit(snapshot, "relisted_first_session", "false", True)
         return None
 
-    def delisting_period_first_session(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def delisting_period_first_session(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if snapshot.quote.is_delisting_period_first_session:
             return _make_audit(snapshot, "delisting_period_first_session", "false", True)
         return None
 
-    def board_classification_conflict(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def board_classification_conflict(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if (
             "board_classification_conflict" in snapshot.quote.execution_restrictions
             or snapshot.quote.board_reliability == "conflict"
@@ -304,7 +301,7 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
             return _make_audit(snapshot, "board_classification_conflict", "verified board identity", "conflict")
         return None
 
-    def board_identity_degraded(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def board_identity_degraded(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if (
             "board_identity_degraded" in snapshot.quote.execution_restrictions
             or snapshot.quote.board_source == "code_prefix_fallback"
@@ -317,14 +314,14 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
             )
         return None
 
-    def missing_listing_date(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def missing_listing_date(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if "missing_listing_date" in snapshot.quote.execution_restrictions or (
             snapshot.quote.rule_version and snapshot.quote.listing_date is None
         ):
             return _make_audit(snapshot, "missing_listing_date", "effective listing date", None)
         return None
 
-    def missing_listing_age_sessions(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def missing_listing_age_sessions(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if "missing_listing_age_sessions" in snapshot.quote.execution_restrictions or (
             snapshot.quote.listing_date is not None and snapshot.quote.listing_age_sessions is None
         ):
@@ -336,7 +333,7 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
             )
         return None
 
-    def missing_liquidity(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def missing_liquidity(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         median_amount = snapshot.values.get("amount_median_20d")
         if median_amount is None:
             return _make_audit(snapshot, "missing_liquidity_history", ">= 50000000", None)
@@ -346,22 +343,22 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
             return _make_audit(snapshot, "insufficient_liquidity", ">= 50000000", median_amount)
         return None
 
-    def one_price_limit(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def one_price_limit(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if snapshot.quote.is_one_price_limit:
             return _make_audit(snapshot, "one_price_limit", "false", True)
         return None
 
-    def blacklisted(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
-        if snapshot.quote.is_blacklisted or snapshot.quote.code in policy.blacklist_codes:
+    def blacklisted(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        if snapshot.quote.is_blacklisted or snapshot.quote.code in self.policy.blacklist_codes:
             return _make_audit(snapshot, "blacklisted", "false", True)
         return None
 
-    def major_regulatory_risk(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def major_regulatory_risk(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if snapshot.quote.has_major_regulatory_risk:
             return _make_audit(snapshot, "major_regulatory_risk", "false", True)
         return None
 
-    def invalid_quote_structure(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def invalid_quote_structure(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         audit: FilterAudit | None = None
 
         def set_audit(code: str, threshold: str, actual: object) -> None:
@@ -372,7 +369,7 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
         _reject_invalid_quote_structure(snapshot, set_audit)
         return audit
 
-    def invalid_pct_change(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def invalid_pct_change(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         board = board_for_snapshot(snapshot)
         pct_change = snapshot.quote.pct_change
         if pct_change is None or not math.isfinite(pct_change):
@@ -385,7 +382,7 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
             return _make_audit(snapshot, "star_board_too_hot", "<= 16.00", pct_change)
         return None
 
-    def structured_negative_risk(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def structured_negative_risk(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         code_by_field = {
             "negative_announcement_level": "negative_announcement",
             "shareholder_reduction_level": "shareholder_reduction",
@@ -394,16 +391,16 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
             "pledge_risk": "pledge_risk",
             "financial_deterioration": "financial_deterioration",
         }
-        for field_name, threshold in policy.structured_risk_thresholds.items():
+        for field_name, threshold in self.policy.structured_risk_thresholds.items():
             value = snapshot.values.get(field_name)
             if value is not None and math.isfinite(value) and value > threshold:
                 return _make_audit(snapshot, code_by_field.get(field_name, field_name), f"<= {threshold:g}", value)
         return None
 
-    def structured_risk_unavailable(snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def structured_risk_unavailable(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         missing = tuple(
             field_name
-            for field_name in policy.structured_risk_thresholds
+            for field_name in self.policy.structured_risk_thresholds
             if (value := snapshot.values.get(field_name)) is None or not math.isfinite(value)
         )
         if missing:
@@ -415,30 +412,42 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
             )
         return None
 
+
+def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
+    """Build default filter rule registry for all strategies.
+
+    Required rules are preserved from ``hard_filter`` behavior. Optional rules
+    are used to record soft warnings without rejecting candidates.
+    """
+    if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
+        raise ValueError("max_age_seconds must be finite and non-negative")
+    policy = policy or HardFilterPolicy()
+    registry = _DefaultFilterRules(max_age_seconds, policy)
+
     return (
-        FilterRule("unsupported_code", FilterSeverity.REQUIRED, unsupported_code),
-        FilterRule("st_or_delisting", FilterSeverity.REQUIRED, st_or_delisting),
-        FilterRule("suspended", FilterSeverity.REQUIRED, suspended),
-        FilterRule("invalid_price", FilterSeverity.REQUIRED, invalid_price),
-        FilterRule("invalid_amount", FilterSeverity.REQUIRED, invalid_amount),
-        FilterRule("invalid_quote_time", FilterSeverity.REQUIRED, invalid_quote_time),
-        FilterRule("invalid_cross_source_deviation", FilterSeverity.REQUIRED, cross_source_deviation),
-        FilterRule("cross_source_deviation", FilterSeverity.OPTIONAL, cross_source_deviation_optional),
-        FilterRule("new_listing_session", FilterSeverity.REQUIRED, new_listing_session),
-        FilterRule("relisted_first_session", FilterSeverity.REQUIRED, relisted_first_session),
-        FilterRule("delisting_period_first_session", FilterSeverity.REQUIRED, delisting_period_first_session),
-        FilterRule("board_classification_conflict", FilterSeverity.OPTIONAL, board_classification_conflict),
-        FilterRule("board_identity_degraded", FilterSeverity.OPTIONAL, board_identity_degraded),
-        FilterRule("missing_listing_date", FilterSeverity.OPTIONAL, missing_listing_date),
-        FilterRule("missing_listing_age_sessions", FilterSeverity.OPTIONAL, missing_listing_age_sessions),
-        FilterRule("missing_liquidity_history", FilterSeverity.REQUIRED, missing_liquidity),
-        FilterRule("one_price_limit", FilterSeverity.REQUIRED, one_price_limit),
-        FilterRule("blacklisted", FilterSeverity.REQUIRED, blacklisted),
-        FilterRule("major_regulatory_risk", FilterSeverity.REQUIRED, major_regulatory_risk),
-        FilterRule("structured_negative_risk", FilterSeverity.REQUIRED, structured_negative_risk),
-        FilterRule("structured_risk_unavailable", FilterSeverity.OPTIONAL, structured_risk_unavailable),
-        FilterRule("invalid_quote_structure", FilterSeverity.REQUIRED, invalid_quote_structure),
-        FilterRule("invalid_pct_change", FilterSeverity.REQUIRED, invalid_pct_change),
+        FilterRule("unsupported_code", FilterSeverity.REQUIRED, registry.unsupported_code),
+        FilterRule("st_or_delisting", FilterSeverity.REQUIRED, registry.st_or_delisting),
+        FilterRule("suspended", FilterSeverity.REQUIRED, registry.suspended),
+        FilterRule("invalid_price", FilterSeverity.REQUIRED, registry.invalid_price),
+        FilterRule("invalid_amount", FilterSeverity.REQUIRED, registry.invalid_amount),
+        FilterRule("invalid_quote_time", FilterSeverity.REQUIRED, registry.invalid_quote_time),
+        FilterRule("invalid_cross_source_deviation", FilterSeverity.REQUIRED, registry.cross_source_deviation),
+        FilterRule("cross_source_deviation", FilterSeverity.OPTIONAL, registry.cross_source_deviation_optional),
+        FilterRule("new_listing_session", FilterSeverity.REQUIRED, registry.new_listing_session),
+        FilterRule("relisted_first_session", FilterSeverity.REQUIRED, registry.relisted_first_session),
+        FilterRule("delisting_period_first_session", FilterSeverity.REQUIRED, registry.delisting_period_first_session),
+        FilterRule("board_classification_conflict", FilterSeverity.OPTIONAL, registry.board_classification_conflict),
+        FilterRule("board_identity_degraded", FilterSeverity.OPTIONAL, registry.board_identity_degraded),
+        FilterRule("missing_listing_date", FilterSeverity.OPTIONAL, registry.missing_listing_date),
+        FilterRule("missing_listing_age_sessions", FilterSeverity.OPTIONAL, registry.missing_listing_age_sessions),
+        FilterRule("missing_liquidity_history", FilterSeverity.REQUIRED, registry.missing_liquidity),
+        FilterRule("one_price_limit", FilterSeverity.REQUIRED, registry.one_price_limit),
+        FilterRule("blacklisted", FilterSeverity.REQUIRED, registry.blacklisted),
+        FilterRule("major_regulatory_risk", FilterSeverity.REQUIRED, registry.major_regulatory_risk),
+        FilterRule("structured_negative_risk", FilterSeverity.REQUIRED, registry.structured_negative_risk),
+        FilterRule("structured_risk_unavailable", FilterSeverity.OPTIONAL, registry.structured_risk_unavailable),
+        FilterRule("invalid_quote_structure", FilterSeverity.REQUIRED, registry.invalid_quote_structure),
+        FilterRule("invalid_pct_change", FilterSeverity.REQUIRED, registry.invalid_pct_change),
     )
 
 
@@ -454,7 +463,6 @@ def _make_audit(snapshot: FeatureSnapshot, code: str, threshold: str, actual: ob
 
 
 __all__ = [
-    "FilterReason",
     "FilterResult",
     "HardFilterPolicy",
     "FilterRule",

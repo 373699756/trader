@@ -4,9 +4,10 @@ from datetime import date, datetime
 
 import pytest
 
-from trader.domain.research import (
+from trader.domain.market.research import (
     D25SignalPolicy,
     FinancialReport,
+    LongResearchInputs,
     LongResearchPolicy,
     ResearchAnnouncement,
     ResearchObservation,
@@ -74,7 +75,7 @@ def test_long_research_features_use_point_in_time_financial_and_event_inputs() -
         unlock_ratio_pct=6.0,
     )
 
-    features = derive_long_research_features(
+    features = _derive_long_research_features(
         observation,
         price=20.0,
         industry_strength=80.0,
@@ -95,7 +96,7 @@ def test_long_research_features_use_point_in_time_financial_and_event_inputs() -
 
 
 def test_long_research_missing_sources_stay_missing_instead_of_becoming_zero() -> None:
-    features = derive_long_research_features(
+    features = _derive_long_research_features(
         ResearchObservation(),
         price=20.0,
         industry_strength=80.0,
@@ -116,7 +117,7 @@ def test_long_research_missing_sources_stay_missing_instead_of_becoming_zero() -
 
 
 def test_successful_empty_event_sources_are_auditable_real_zeroes() -> None:
-    features = derive_long_research_features(
+    features = _derive_long_research_features(
         ResearchObservation(
             announcements_available=True,
             pledge_ratio_pct=0.0,
@@ -143,7 +144,7 @@ def test_long_value_score_uses_configured_quarter_annualizers(
     report_month: int,
     expected_value_score: float,
 ) -> None:
-    features = derive_long_research_features(
+    features = _derive_long_research_features(
         ResearchObservation(
             financial=FinancialReport(
                 report_date=date(2026, report_month, 1),
@@ -176,7 +177,7 @@ def test_long_event_risk_levels_use_exact_configured_boundaries(
     expected_pledge: float,
     expected_unlock: float,
 ) -> None:
-    features = derive_long_research_features(
+    features = _derive_long_research_features(
         ResearchObservation(
             announcements_available=True,
             pledge_ratio_pct=pledge_ratio,
@@ -191,6 +192,27 @@ def test_long_event_risk_levels_use_exact_configured_boundaries(
 
     assert features["pledge_risk"] == expected_pledge
     assert features["reduction_or_unlock"] == expected_unlock
+
+
+def _derive_long_research_features(
+    observation: ResearchObservation,
+    *,
+    price: float | None,
+    industry_strength: float | None,
+    low_volatility_score: float | None,
+    low_drawdown_score: float | None,
+    policy: LongResearchPolicy,
+) -> dict[str, float | None]:
+    return derive_long_research_features(
+        observation,
+        LongResearchInputs(
+            price=price,
+            industry_strength=industry_strength,
+            low_volatility_score=low_volatility_score,
+            low_drawdown_score=low_drawdown_score,
+        ),
+        policy,
+    )
 
 
 def _d25_policy() -> D25SignalPolicy:

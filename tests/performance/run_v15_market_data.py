@@ -16,7 +16,7 @@ from typing import Any
 
 from trader.application.cache import build_cache_identity, canonical_json_bytes
 from trader.application.workers import BoundedExecutor
-from trader.domain.models import MarketQuote
+from trader.domain.market.models import MarketQuote
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.merge import (
     merge_market_observations,

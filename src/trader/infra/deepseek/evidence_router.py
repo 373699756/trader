@@ -7,7 +7,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
 
-from trader.domain.models import Evidence, FeatureSnapshot
+from trader.domain.market.models import (
+    Evidence,
+    FeatureSnapshot,
+)
 
 _INITIAL_LIMITS = {"market": 1, "tail": 1, "research": 3, "risk": 4, "news": 7}
 _MAXIMUM_LIMITS = {"market": 1, "tail": 1, "research": 5, "risk": 6, "news": 8}

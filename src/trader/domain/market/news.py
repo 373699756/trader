@@ -1,4 +1,4 @@
-"""Pure, deterministic derivation of point-in-time news signals."""
+"""Pure derivation of point-in-time market news signals."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.domain.models import Evidence
+from trader.domain.market.models import Evidence
 
 
 @dataclass(frozen=True)

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from trader.domain.factors import PRODUCTION_FACTOR_IDS
-from trader.domain.research import D25SignalPolicy
+from trader.domain.market.factors import PRODUCTION_FACTOR_IDS
+from trader.domain.market.research import D25SignalPolicy
 from trader.infra.settings_factor_validation import (
     _validate_d25_factor_contract,
     _validate_feature_schema_contract,

@@ -9,8 +9,10 @@ from datetime import datetime
 
 from trader.application.ports import MarketDataPort, OutcomeRepositoryPort
 from trader.application.schedule import shanghai_now
-from trader.domain.models import FeatureSnapshot, Strategy
-from trader.domain.outcomes import BenchmarkReturn, evaluate_outcome
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.outcome.evaluation import OutcomeEvaluationRequest, evaluate_outcome
+from trader.domain.outcome.models import BenchmarkReturn
+from trader.domain.recommendation.models import Strategy
 
 
 @dataclass(frozen=True)
@@ -72,13 +74,15 @@ class OutcomeSettlementService:
                 expected_dates = tuple(item.trade_date for item in benchmarks)
                 outcomes.append(
                     evaluate_outcome(
-                        target,
-                        bars,
-                        horizon=horizon,
-                        benchmark_returns=tuple(item.return_pct for item in benchmarks),
-                        expected_sessions=horizon,
-                        expected_trade_dates=expected_dates,
-                        settled_at=now,
+                        OutcomeEvaluationRequest(
+                            target=target,
+                            bars=bars,
+                            horizon=horizon,
+                            benchmark_returns=tuple(item.return_pct for item in benchmarks),
+                            expected_sessions=horizon,
+                            expected_trade_dates=expected_dates,
+                            settled_at=now,
+                        )
                     )
                 )
         if outcomes:

@@ -14,13 +14,15 @@ from trader.application.pipeline_workers import data_future, persist, store_cand
 from trader.application.ports import MarketDataUnavailable
 from trader.application.recommendation_support import _snapshot_id
 from trader.application.schedule import shanghai_now, trade_date_at
-from trader.domain.filters import board_for_snapshot
-from trader.domain.models import (
+from trader.domain.market.models import (
     Board,
     FeatureSnapshot,
+    LiveQuote,
+)
+from trader.domain.recommendation.filters import board_for_snapshot
+from trader.domain.recommendation.models import (
     FilterAudit,
     LiveOverlay,
-    LiveQuote,
     Recommendation,
     RecommendationSnapshot,
     Strategy,

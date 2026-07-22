@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from trader.domain.models import (
-    Board,
+from trader.domain.market.models import Board
+from trader.domain.recommendation.models import (
     BoardScoreBatch,
     FrozenReplayPolicy,
     RecommendationReplayInput,
     Strategy,
 )
-from trader.domain.strategies import DEFAULT_STRATEGY_WEIGHTS
+from trader.domain.recommendation.strategies import DEFAULT_STRATEGY_WEIGHTS
 from trader.infra.persistence.snapshot_items import (
     _features_from_dict,
     _features_to_dict,

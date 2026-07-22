@@ -9,7 +9,7 @@ from pathlib import Path
 
 from trader.application.recommendations import RecommendationEngine
 from trader.application.threshold_report import build_threshold_report
-from trader.domain.models import RecommendationSnapshot
+from trader.domain.recommendation.models import RecommendationSnapshot
 from trader.infra.persistence.snapshots import snapshot_from_dict
 from trader.infra.settings import load_long_watchlist, load_runtime_settings, load_strategy_settings
 

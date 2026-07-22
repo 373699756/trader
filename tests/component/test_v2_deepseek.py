@@ -9,14 +9,14 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import requests
 
-from trader.domain.models import (
+from trader.domain.market.models import (
     Evidence,
     FeatureSnapshot,
     MarketQuote,
-    ReviewOutcome,
-    Strategy,
 )
-from trader.domain.risk import Rating
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import ReviewOutcome
+from trader.domain.review.rules import Rating
 from trader.infra.deepseek.budget import SCHEMA_VERSION, DeepSeekBudgetStore
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.challenger import (

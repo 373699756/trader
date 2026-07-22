@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from trader.domain.models import FeatureSnapshot, Strategy
-from trader.domain.strategies import score_strategy
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.strategies import score_strategy
 
 
 @pytest.mark.parametrize("strategy", list(Strategy))

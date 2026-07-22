@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from trader.domain.models import MarketQuote
+from trader.domain.market.models import MarketQuote
 
 
 def extreme_structure_risks(

@@ -5,8 +5,9 @@ from types import MappingProxyType
 import pytest
 
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
-from trader.domain.fusion import FusionPolicy
-from trader.domain.models import Board, Strategy
+from trader.domain.market.models import Board
+from trader.domain.recommendation.fusion import FusionPolicy
+from trader.domain.recommendation.models import Strategy
 
 
 def test_selection_policy_default_competition_limits_are_isolated_and_immutable() -> None:

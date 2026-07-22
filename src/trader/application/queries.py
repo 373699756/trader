@@ -15,7 +15,12 @@ from trader.application.ports import (
     SnapshotRepositoryPort,
 )
 from trader.application.schedule import freeze_due_at, shanghai_now, trade_date_at
-from trader.domain.models import LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
+from trader.domain.market.models import LiveQuote
+from trader.domain.recommendation.models import (
+    LiveOverlay,
+    RecommendationSnapshot,
+    Strategy,
+)
 
 
 @dataclass(frozen=True)

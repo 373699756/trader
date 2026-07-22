@@ -1,4 +1,4 @@
-"""Pure entry-shape classification and downside action protection."""
+"""Pure recommendation entry-shape and downside protection."""
 
 from __future__ import annotations
 
@@ -7,7 +7,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from trader.domain.models import FeatureSnapshot, MarketQuote, Strategy
+from trader.domain.market.models import (
+    FeatureSnapshot,
+    MarketQuote,
+)
+from trader.domain.recommendation.models import Strategy
 
 
 @dataclass(frozen=True)

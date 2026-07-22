@@ -11,7 +11,8 @@ from trader.application.pipeline import RecommendationPipeline
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
-from trader.domain.models import FeatureSnapshot, Strategy
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import Strategy
 from trader.infra.persistence.writer import SnapshotRepository
 
 TRADE_DATE = "2026-07-16"

@@ -6,12 +6,12 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 
-from trader.domain.models import (
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import (
     DeepSeekReview,
-    FeatureSnapshot,
     ReviewCandidateContext,
     ReviewOutcome,
-    Strategy,
 )
 from trader.infra.deepseek.base_client import DeepSeekClientBase
 from trader.infra.deepseek.budget import DeepSeekBudgetStore

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from trader.domain.models import Strategy
+from trader.domain.recommendation.models import Strategy
 from trader.infra.deepseek.budget_batches import BudgetBatchMixin
 from trader.infra.deepseek.budget_summary import BudgetSummaryMixin
 from trader.infra.deepseek.budget_support import (

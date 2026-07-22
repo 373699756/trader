@@ -6,16 +6,25 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import Protocol
 
-from trader.domain.models import (
-    DeepSeekReview,
+from trader.domain.market.models import (
     FeatureSnapshot,
-    LiveOverlay,
     LiveQuote,
+)
+from trader.domain.outcome.models import (
+    BenchmarkReturn,
+    OutcomeBar,
+    OutcomeTarget,
+    RecommendationOutcome,
+)
+from trader.domain.recommendation.models import (
+    LiveOverlay,
     RecommendationSnapshot,
-    ReviewCandidateContext,
     Strategy,
 )
-from trader.domain.outcomes import BenchmarkReturn, OutcomeBar, OutcomeTarget, RecommendationOutcome
+from trader.domain.review.models import (
+    DeepSeekReview,
+    ReviewCandidateContext,
+)
 
 
 class MarketDataUnavailable(RuntimeError):

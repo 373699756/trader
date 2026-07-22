@@ -4,7 +4,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.domain.models import FeatureSnapshot, MarketQuote
+from trader.domain.market.models import (
+    FeatureSnapshot,
+    MarketQuote,
+)
 
 
 @pytest.fixture

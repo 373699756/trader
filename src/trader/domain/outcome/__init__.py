@@ -1,0 +1,1 @@
+"""Immutable recommendation outcome settlement."""

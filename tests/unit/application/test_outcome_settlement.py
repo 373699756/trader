@@ -7,8 +7,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.application.outcome_settlement import OutcomeSettlementService
-from trader.domain.models import Strategy
-from trader.domain.outcomes import BenchmarkReturn, OutcomeBar, OutcomeTarget
+from trader.domain.outcome.models import (
+    BenchmarkReturn,
+    OutcomeBar,
+    OutcomeTarget,
+)
+from trader.domain.recommendation.models import Strategy
 
 NOW = datetime(2026, 7, 21, 15, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
 

@@ -6,7 +6,11 @@ from zoneinfo import ZoneInfo
 
 from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import ScoringCacheContext
-from trader.domain.models import Board, BoardStrategyPolicy, Strategy
+from trader.domain.market.models import Board
+from trader.domain.recommendation.models import (
+    BoardStrategyPolicy,
+    Strategy,
+)
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 

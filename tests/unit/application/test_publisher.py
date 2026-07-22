@@ -5,7 +5,7 @@ from datetime import timedelta
 import pytest
 
 from trader.application.publisher import SnapshotPublisher, SubscriberLimitError, encode_sse
-from trader.domain.models import (
+from trader.domain.recommendation.models import (
     FusionMode,
     LiveOverlay,
     Recommendation,

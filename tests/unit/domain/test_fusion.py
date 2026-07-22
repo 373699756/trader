@@ -4,26 +4,53 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trader.domain.fusion import DIMENSION_NAMES, FusionPolicy, fuse_score
-from trader.domain.models import (
+from trader.domain.market.models import Evidence
+from trader.domain.recommendation.fusion import DIMENSION_NAMES, FusionPolicy, FusionRequest, fuse_score
+from trader.domain.recommendation.models import FusionMode
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
+from trader.domain.review.models import (
     DeepSeekReview,
     DimensionAssessment,
-    Evidence,
-    FusionMode,
     ReviewOutcome,
     RiskFact,
     RiskRule,
 )
-from trader.domain.strategies.composition import LocalScoreResult
 
 DIMENSION_WEIGHTS = {name: 0.2 for name in DIMENSION_NAMES}
 NOW = datetime(2026, 7, 16, 14, 30, tzinfo=timezone.utc)
 
 
+def _fuse_score(
+    local: LocalScoreResult,
+    local_risk_facts: tuple[RiskFact, ...],
+    review: DeepSeekReview | None,
+    dimension_weights,
+    risk_rules,
+    fusion_mode: FusionMode,
+    policy: FusionPolicy | None = None,
+    *,
+    evidence=(),
+    evaluated_at=None,
+):
+    return fuse_score(
+        FusionRequest(
+            local=local,
+            local_risk_facts=local_risk_facts,
+            review=review,
+            dimension_weights=dimension_weights,
+            risk_rules=risk_rules,
+            fusion_mode=fusion_mode,
+            policy=policy or FusionPolicy(),
+            evidence=evidence,
+            evaluated_at=evaluated_at,
+        )
+    )
+
+
 def test_final_score_uses_68_32_and_does_not_repeat_local_risk() -> None:
     local_fact = _risk_fact("local-risk", "local_rule", 2.0)
     deepseek_fact = _risk_fact("deepseek-risk", "deepseek_rule", 0.0, evidence_ids=("e-1",))
-    result = fuse_score(
+    result = _fuse_score(
         LocalScoreResult(components={"test": 82.0}, base_score=82.0),
         (local_fact,),
         _review(100.0, risk_facts=(deepseek_fact,)),
@@ -42,7 +69,7 @@ def test_final_score_uses_68_32_and_does_not_repeat_local_risk() -> None:
 
 def test_same_risk_fact_is_not_deducted_twice() -> None:
     shared = _risk_fact("shared", "shared_rule", 2.0, evidence_ids=("e-1",))
-    result = fuse_score(
+    result = _fuse_score(
         LocalScoreResult(components={"test": 82.0}, base_score=82.0),
         (shared,),
         _review(100.0, risk_facts=(shared,)),
@@ -60,7 +87,7 @@ def test_same_risk_fact_is_not_deducted_twice() -> None:
 def test_local_rule_veto_is_preserved_without_model_review() -> None:
     local_fact = _risk_fact("local-veto", "regulatory_risk", 15.0, veto=True)
 
-    result = fuse_score(
+    result = _fuse_score(
         LocalScoreResult(components={"test": 80.0}, base_score=80.0),
         (local_fact,),
         None,
@@ -75,7 +102,7 @@ def test_local_rule_veto_is_preserved_without_model_review() -> None:
 @pytest.mark.parametrize("mode", [FusionMode.LOCAL_DEGRADED, FusionMode.HYBRID])
 def test_missing_or_degraded_review_falls_back_to_local(mode) -> None:
     review = None if mode is FusionMode.HYBRID else _review(100.0)
-    result = fuse_score(
+    result = _fuse_score(
         LocalScoreResult(components={"test": 77.0}, base_score=77.0),
         (),
         review,
@@ -93,7 +120,7 @@ def test_low_confidence_review_is_not_applied() -> None:
     dimensions = {name: DimensionAssessment(name, 100.0, 0.2, "positive") for name in DIMENSION_NAMES}
     review = DeepSeekReview("600001", ReviewOutcome.APPLIED, dimensions, (), NOW)
 
-    result = fuse_score(
+    result = _fuse_score(
         LocalScoreResult(components={"test": 72.0}, base_score=72.0),
         (),
         review,
@@ -109,7 +136,7 @@ def test_low_confidence_review_is_not_applied() -> None:
 
 def test_fusion_policy_rejects_weights_other_than_fixed_68_32() -> None:
     with pytest.raises(ValueError, match="fixed at 0.68/0.32"):
-        fuse_score(
+        _fuse_score(
             LocalScoreResult(components={"test": 72.0}, base_score=72.0),
             (),
             _review(80.0),
@@ -121,7 +148,7 @@ def test_fusion_policy_rejects_weights_other_than_fixed_68_32() -> None:
 
 
 def test_fusion_keeps_unrounded_local_precision_until_final_rounding() -> None:
-    result = fuse_score(
+    result = _fuse_score(
         LocalScoreResult(components={"test": 80.005}, base_score=80.005),
         (),
         _review(100.0),
@@ -147,7 +174,7 @@ def test_veto_is_mapped_only_by_local_rule_with_valid_fresh_evidence(
     expected_veto: bool,
 ) -> None:
     model_fact = _risk_fact("deepseek-risk", "regulatory_risk", 0.0, evidence_ids=("e-1",), veto=True)
-    result = fuse_score(
+    result = _fuse_score(
         LocalScoreResult(components={"test": 80.0}, base_score=80.0),
         (),
         _review(80.0, risk_facts=(model_fact,)),

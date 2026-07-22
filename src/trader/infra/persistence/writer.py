@@ -11,8 +11,16 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from trader.domain.models import LiveOverlay, RecommendationSnapshot, Strategy
-from trader.domain.outcomes import BenchmarkReturn, OutcomeTarget, RecommendationOutcome
+from trader.domain.outcome.models import (
+    BenchmarkReturn,
+    OutcomeTarget,
+    RecommendationOutcome,
+)
+from trader.domain.recommendation.models import (
+    LiveOverlay,
+    RecommendationSnapshot,
+    Strategy,
+)
 from trader.infra.persistence.snapshots import (
     SNAPSHOT_SCHEMA_VERSION,
     snapshot_bytes,

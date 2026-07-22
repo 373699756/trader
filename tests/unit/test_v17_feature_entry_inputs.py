@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trader.domain.models import MarketQuote
+from trader.domain.market.models import MarketQuote
 from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.history import DailyBar, summarize_history_metrics
 from trader.infra.settings import load_strategy_settings

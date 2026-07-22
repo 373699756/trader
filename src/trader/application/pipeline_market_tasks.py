@@ -19,7 +19,7 @@ from trader.application.pipeline_workers import (
 )
 from trader.application.ports import MarketDataDeadlineExceeded, MarketDataUnavailable
 from trader.application.schedule import MarketPhase, trade_date_at
-from trader.domain.models import Strategy
+from trader.domain.recommendation.models import Strategy
 
 if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline

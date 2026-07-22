@@ -5,8 +5,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.domain.filters import HardFilterPolicy, board_for_code, hard_filter
-from trader.domain.models import Board
+from trader.domain.market.models import Board
+from trader.domain.recommendation.filters import HardFilterPolicy, board_for_code, hard_filter
 
 
 @pytest.mark.parametrize(

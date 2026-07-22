@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from trader.domain.models import Evidence
-from trader.domain.news import NewsSignalPolicy, derive_news_signals
+from trader.domain.market.models import Evidence
+from trader.domain.market.news import NewsSignalPolicy, derive_news_signals
 
 NOW = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
 POLICY = NewsSignalPolicy(

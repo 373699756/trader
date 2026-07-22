@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.domain.factors import (
+from trader.domain.market.factors import (
     band_score,
     percentile_scores,
     percentile_scores_with_metadata,

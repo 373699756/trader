@@ -1,12 +1,12 @@
-"""Two-to-five-day strategy score composition."""
+"""Two-to-five-day recommendation score composition."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-from trader.domain.factors import clamp
-from trader.domain.models import FeatureSnapshot
-from trader.domain.strategies.composition import LocalScoreResult, compose, liquidity_score, normalized
+from trader.domain.market.factors import clamp
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.strategies.composition import LocalScoreResult, compose, liquidity_score, normalized
 
 COMPONENT_WEIGHTS = {
     "momentum": 0.30,

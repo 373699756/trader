@@ -11,8 +11,11 @@ from trader.application.recommendation_support import (
     _RecordedReviewPort,
     _restore_policy,
 )
-from trader.domain.filters import hard_filter, legacy_v14_hard_filter
-from trader.domain.models import Recommendation, RecommendationSnapshot
+from trader.domain.recommendation.filters import hard_filter, legacy_v14_hard_filter
+from trader.domain.recommendation.models import (
+    Recommendation,
+    RecommendationSnapshot,
+)
 
 REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
 LEGACY_REPLAY_ALGORITHM_VERSION = "engine_v10_section9_hard_filter_2026_07"

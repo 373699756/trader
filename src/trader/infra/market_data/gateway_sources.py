@@ -18,7 +18,10 @@ from trader.application.source_lanes import (
     SourceRequestSuperseded,
 )
 from trader.application.workers import BoundedExecutor, borrow_executor
-from trader.domain.models import CanonicalMarketSnapshot, MarketQuote
+from trader.domain.market.models import (
+    CanonicalMarketSnapshot,
+    MarketQuote,
+)
 from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.gateway_support import (
     _before_deadline,

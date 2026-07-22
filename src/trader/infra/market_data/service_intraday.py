@@ -11,8 +11,8 @@ from datetime import datetime
 from typing import ParamSpec, TypeVar, cast
 
 from trader.application.workers import borrow_executor, submit_or_run_inline
-from trader.domain.models import FeatureSnapshot
-from trader.domain.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
 from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_models import _IntradayEntry

@@ -1,23 +1,26 @@
-"""Confidence-aware DeepSeek score fusion with deterministic risk handling."""
+"""Confidence-aware recommendation score fusion."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from types import MappingProxyType
 
-from trader.domain.factors import clamp, round_score
-from trader.domain.models import (
-    DeepSeekReview,
-    Evidence,
+from trader.domain.market.factors import clamp, round_score
+from trader.domain.market.models import Evidence
+from trader.domain.recommendation.models import (
     FusionMode,
+    ScoreBreakdown,
+)
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
+from trader.domain.review.models import (
+    DeepSeekReview,
     ReviewOutcome,
     RiskFact,
     RiskRule,
-    ScoreBreakdown,
 )
-from trader.domain.risk import aggregate_risk_penalty, map_deepseek_risk_facts
-from trader.domain.strategies.composition import LocalScoreResult
+from trader.domain.review.rules import RiskMappingRequest, aggregate_risk_penalty, map_deepseek_risk_facts
 
 DIMENSION_NAMES = (
     "value_quality",
@@ -66,23 +69,34 @@ class FusionResult:
     veto: bool
 
 
-def fuse_score(
-    local: LocalScoreResult,
-    local_risk_facts: tuple[RiskFact, ...],
-    review: DeepSeekReview | None,
-    dimension_weights: Mapping[str, float],
-    risk_rules: Mapping[str, RiskRule],
-    fusion_mode: FusionMode,
-    policy: FusionPolicy | None = None,
-    *,
-    evidence: Sequence[Evidence] = (),
-    evaluated_at: datetime | None = None,
-) -> FusionResult:
-    policy = policy or FusionPolicy()
+@dataclass(frozen=True)
+class FusionRequest:
+    local: LocalScoreResult
+    local_risk_facts: tuple[RiskFact, ...]
+    review: DeepSeekReview | None
+    dimension_weights: Mapping[str, float]
+    risk_rules: Mapping[str, RiskRule]
+    fusion_mode: FusionMode
+    policy: FusionPolicy = field(default_factory=FusionPolicy)
+    evidence: Sequence[Evidence] = ()
+    evaluated_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "local_risk_facts", tuple(self.local_risk_facts))
+        object.__setattr__(self, "dimension_weights", MappingProxyType(dict(self.dimension_weights)))
+        object.__setattr__(self, "risk_rules", MappingProxyType(dict(self.risk_rules)))
+        object.__setattr__(self, "evidence", tuple(self.evidence))
+
+
+def fuse_score(request: FusionRequest) -> FusionResult:
+    policy = request.policy
     _validate_policy(policy)
-    local_risk_penalty = aggregate_risk_penalty(local_risk_facts, cap=policy.local_risk_cap)
-    local_score = clamp(local.base_score - local_risk_penalty)
-    deepseek_score, coverage, known_dimensions, review_applies = _review_score(review, dimension_weights)
+    local_risk_penalty = aggregate_risk_penalty(request.local_risk_facts, cap=policy.local_risk_cap)
+    local_score = clamp(request.local.base_score - local_risk_penalty)
+    deepseek_score, coverage, known_dimensions, review_applies = _review_score(
+        request.review,
+        request.dimension_weights,
+    )
     review_applies = (
         review_applies
         and coverage >= policy.confidence_coverage_min
@@ -91,18 +105,20 @@ def fuse_score(
 
     mapped_risk_facts: tuple[RiskFact, ...] = ()
     mapped_penalty = 0.0
-    veto = any(fact.veto for fact in local_risk_facts)
-    if review is not None:
+    veto = any(fact.veto for fact in request.local_risk_facts)
+    if request.review is not None:
         mapped_risk_facts, mapped_penalty, veto = map_deepseek_risk_facts(
-            review.risk_facts,
-            risk_rules,
-            {fact.risk_fact_id for fact in local_risk_facts},
-            cap=policy.deepseek_risk_cap,
-            evidence=evidence,
-            evaluated_at=evaluated_at or review.completed_at,
+            RiskMappingRequest(
+                raw_facts=request.review.risk_facts,
+                rules=request.risk_rules,
+                local_fact_ids=frozenset(fact.risk_fact_id for fact in request.local_risk_facts),
+                cap=policy.deepseek_risk_cap,
+                evidence=request.evidence,
+                evaluated_at=request.evaluated_at or request.review.completed_at,
+            )
         )
 
-    fusion_applied = review_applies and fusion_mode is FusionMode.HYBRID and deepseek_score is not None
+    fusion_applied = review_applies and request.fusion_mode is FusionMode.HYBRID and deepseek_score is not None
     if fusion_applied:
         assert deepseek_score is not None
         raw_final = local_score * policy.local_weight + deepseek_score * policy.deepseek_weight - mapped_penalty
@@ -114,15 +130,15 @@ def fuse_score(
 
     return FusionResult(
         score=ScoreBreakdown(
-            components=local.components,
-            base_score=round_score(local.base_score),
+            components=request.local.components,
+            base_score=round_score(request.local.base_score),
             local_risk_penalty=round_score(local_risk_penalty),
             local_score=round_score(local_score),
             deepseek_score=round_score(deepseek_score) if deepseek_score is not None else None,
             confidence_coverage=round(coverage, 4),
             deepseek_risk_penalty=round_score(applied_penalty),
             final_score=final_score,
-            fusion_mode=fusion_mode,
+            fusion_mode=request.fusion_mode,
             fusion_applied=fusion_applied,
         ),
         deepseek_risk_facts=mapped_risk_facts,
@@ -164,4 +180,11 @@ def _validate_policy(policy: FusionPolicy) -> None:
         raise ValueError("confidence coverage must be between 0 and 1")
 
 
-__all__ = ["DIMENSION_NAMES", "STRUCTURED_REVIEW_FEATURES", "FusionPolicy", "FusionResult", "fuse_score"]
+__all__ = [
+    "DIMENSION_NAMES",
+    "STRUCTURED_REVIEW_FEATURES",
+    "FusionPolicy",
+    "FusionRequest",
+    "FusionResult",
+    "fuse_score",
+]

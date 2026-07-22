@@ -7,25 +7,32 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from trader.domain.models import (
+from trader.domain.market.models import (
     Board,
     CrossSectionStats,
-    DeepSeekReview,
     Evidence,
     FeatureSnapshot,
+    LiveQuote,
+    MarketQuote,
+)
+from trader.domain.outcome.models import (
+    BenchmarkReturn,
+    RecommendationOutcome,
+)
+from trader.domain.recommendation.models import (
     FilterAudit,
     FusionMode,
     LiveOverlay,
-    LiveQuote,
-    MarketQuote,
     Recommendation,
     RecommendationAction,
     RecommendationSnapshot,
-    ReviewOutcome,
     ScoreBreakdown,
     Strategy,
 )
-from trader.domain.outcomes import BenchmarkReturn, RecommendationOutcome
+from trader.domain.review.models import (
+    DeepSeekReview,
+    ReviewOutcome,
+)
 from trader.infra.persistence.snapshots import (
     snapshot_bytes,
     snapshot_from_dict,

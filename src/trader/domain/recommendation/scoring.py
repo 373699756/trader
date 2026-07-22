@@ -1,4 +1,4 @@
-"""Pure board-relative candidate and local-score calculations for v16."""
+"""Pure board-relative recommendation scoring."""
 
 from __future__ import annotations
 
@@ -7,7 +7,18 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal
 
-from trader.domain.board_scoring_support import (
+from trader.domain.market.factors import band_score, clamp
+from trader.domain.market.models import (
+    Board,
+    BoardPopulation,
+    CrossSectionStats,
+    FeatureSnapshot,
+)
+from trader.domain.recommendation.models import (
+    BoardStrategyPolicy,
+    Strategy,
+)
+from trader.domain.recommendation.scoring_support import (
     MAX_FALLBACK_SESSIONS,
     MIN_BOARD_SAMPLE,
     _base_reliability,
@@ -20,22 +31,14 @@ from trader.domain.board_scoring_support import (
     _normalize_features,
     _peer_gaps,
     _population_version,
+    _PopulationVersionIdentity,
     _quantile,
     _supported_weight,
     _value_or_missing,
     candidate_fields,
     supported_weight,
 )
-from trader.domain.factors import band_score, clamp
-from trader.domain.models import (
-    Board,
-    BoardPopulation,
-    BoardStrategyPolicy,
-    CrossSectionStats,
-    FeatureSnapshot,
-    Strategy,
-)
-from trader.domain.strategies.composition import LocalScoreResult, compose
+from trader.domain.recommendation.strategies.composition import LocalScoreResult, compose
 
 BOARD_SCHEMA_VERSION = "board_cross_section_v16"
 
@@ -69,117 +72,170 @@ class BoardCrossSection:
         object.__setattr__(self, "normalization", MappingProxyType(dict(self.normalization)))
 
 
-def build_board_cross_section(
-    features: Sequence[FeatureSnapshot],
-    *,
-    board: Board,
-    merge_epoch: str,
-    trade_date: str,
-    phase: str,
-    data_version: str,
-    schema_version: str = BOARD_SCHEMA_VERSION,
-    fallback: BoardCrossSection | None = None,
-    fallback_age_sessions: int | None = None,
-    competition_groups: Mapping[str, tuple[str, str, str]] | None = None,
-) -> BoardCrossSection:
+@dataclass(frozen=True)
+class BoardCrossSectionRequest:
+    features: Sequence[FeatureSnapshot]
+    board: Board
+    merge_epoch: str
+    trade_date: str
+    phase: str
+    data_version: str
+    schema_version: str = BOARD_SCHEMA_VERSION
+    fallback: BoardCrossSection | None = None
+    fallback_age_sessions: int | None = None
+    competition_groups: Mapping[str, tuple[str, str, str]] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "features", tuple(self.features))
+        groups = None if self.competition_groups is None else MappingProxyType(dict(self.competition_groups))
+        object.__setattr__(self, "competition_groups", groups)
+
+
+@dataclass(frozen=True)
+class _PopulationBasis:
+    status: Literal["current", "fallback", "stale", "insufficient"]
+    reference_values: Mapping[str, Sequence[float]]
+    population_source: Mapping[str, Sequence[float]]
+    fallback_date: str | None
+    fallback_age: int | None
+
+
+def build_board_cross_section(request: BoardCrossSectionRequest) -> BoardCrossSection:
     """Build one isolated board cross-section without reading configuration or I/O."""
 
-    if board is Board.UNSUPPORTED:
-        raise ValueError("unsupported board cannot be scored")
-    if not all((merge_epoch, trade_date, phase, data_version, schema_version)):
-        raise ValueError("board cross-section identity must not be empty")
-    ordered = tuple(sorted((item for item in features if item.quote.board is board), key=lambda item: item.quote.code))
-    if any(item.quote.board is not board for item in ordered):
-        raise ValueError("board cross-section contains another board")
-
+    _validate_request(request)
+    ordered = tuple(
+        sorted(
+            (item for item in request.features if item.quote.board is request.board),
+            key=lambda item: item.quote.code,
+        )
+    )
     peer_raw = _peer_gaps(ordered)
     leader_raw = _leader_gaps(ordered)
     current_distributions = _distributions(ordered, peer_raw, leader_raw)
-    valid_liquidity = [
-        amount for item in ordered if (amount := item.optional_value("amount_median_20d")) is not None and amount > 0.0
-    ]
-    current_sample = len(valid_liquidity)
-    fallback_ok = (
-        fallback is not None
-        and fallback.population.status == "current"
-        and fallback.population.sample_size >= MIN_BOARD_SAMPLE
-        and fallback_age_sessions is not None
-        and 0 <= fallback_age_sessions <= MAX_FALLBACK_SESSIONS
-        and fallback.population.trade_date != trade_date
+    current_sample = sum(
+        item.optional_value("amount_median_20d") is not None and item.value("amount_median_20d") > 0.0
+        for item in ordered
     )
-    use_reference = current_sample < MIN_BOARD_SAMPLE and fallback_ok
-    reference_values = fallback.reference_values if use_reference and fallback is not None else current_distributions
-
-    status: Literal["current", "fallback", "stale", "insufficient"]
-    population_source: Mapping[str, Sequence[float]]
-    if current_sample >= MIN_BOARD_SAMPLE:
-        status = "current"
-        population_source = current_distributions
-        fallback_date = None
-        fallback_age = None
-    elif use_reference and fallback is not None:
-        status = "fallback"
-        population_source = reference_values
-        fallback_date = fallback.population.trade_date
-        fallback_age = fallback_age_sessions
-    elif fallback is not None and fallback_age_sessions is not None and fallback_age_sessions > MAX_FALLBACK_SESSIONS:
-        status = "stale"
-        population_source = current_distributions
-        fallback_date = fallback.population.trade_date
-        fallback_age = fallback_age_sessions
-    else:
-        status = "insufficient"
-        population_source = current_distributions
-        fallback_date = None
-        fallback_age = None
-
-    normalization_data_version = (
-        fallback.population.population_version if status == "fallback" and fallback is not None else data_version
+    basis = _population_basis(request, current_distributions, current_sample)
+    normalization_version = (
+        request.fallback.population.population_version
+        if basis.status == "fallback" and request.fallback is not None
+        else request.data_version
     )
     normalized, normalization = _normalize_features(
         ordered,
         peer_raw,
         leader_raw,
-        reference_values,
-        normalization_data_version,
+        basis.reference_values,
+        normalization_version,
+    )
+    population = _build_population(request, basis, current_sample, len(ordered))
+    enriched = _enrich_features(normalized, population, request)
+    return BoardCrossSection(
+        board=request.board,
+        merge_epoch=request.merge_epoch,
+        trade_date=request.trade_date,
+        phase=request.phase,
+        data_version=request.data_version,
+        schema_version=request.schema_version,
+        population=population,
+        features=enriched,
+        reference_values={name: tuple(values) for name, values in basis.reference_values.items()},
+        normalization=normalization,
     )
 
-    population_version = _population_version(
-        board,
-        trade_date,
-        phase,
-        data_version,
-        schema_version,
-        status,
-        fallback_date,
-        fallback_age,
-        population_source,
+
+def _validate_request(request: BoardCrossSectionRequest) -> None:
+    if request.board is Board.UNSUPPORTED:
+        raise ValueError("unsupported board cannot be scored")
+    identity = (request.merge_epoch, request.trade_date, request.phase, request.data_version, request.schema_version)
+    if not all(identity):
+        raise ValueError("board cross-section identity must not be empty")
+
+
+def _population_basis(
+    request: BoardCrossSectionRequest,
+    current_distributions: Mapping[str, Sequence[float]],
+    current_sample: int,
+) -> _PopulationBasis:
+    fallback = request.fallback
+    fallback_age = request.fallback_age_sessions
+    fallback_ok = (
+        fallback is not None
+        and fallback.population.status == "current"
+        and fallback.population.sample_size >= MIN_BOARD_SAMPLE
+        and fallback_age is not None
+        and 0 <= fallback_age <= MAX_FALLBACK_SESSIONS
+        and fallback.population.trade_date != request.trade_date
     )
-    p50 = _quantile(population_source.get("amount_median_20d", ()), 0.50)
-    p80 = _quantile(population_source.get("amount_median_20d", ()), 0.80)
-    population = BoardPopulation(
-        trade_date=trade_date,
-        phase=phase,
-        board=board,
-        data_version=data_version,
-        schema_version=schema_version,
+    if current_sample >= MIN_BOARD_SAMPLE:
+        return _PopulationBasis("current", current_distributions, current_distributions, None, None)
+    if fallback_ok and fallback is not None:
+        return _PopulationBasis(
+            "fallback",
+            fallback.reference_values,
+            fallback.reference_values,
+            fallback.population.trade_date,
+            fallback_age,
+        )
+    if fallback is not None and fallback_age is not None and fallback_age > MAX_FALLBACK_SESSIONS:
+        return _PopulationBasis(
+            "stale",
+            current_distributions,
+            current_distributions,
+            fallback.population.trade_date,
+            fallback_age,
+        )
+    return _PopulationBasis("insufficient", current_distributions, current_distributions, None, None)
+
+
+def _build_population(
+    request: BoardCrossSectionRequest,
+    basis: _PopulationBasis,
+    current_sample: int,
+    total_count: int,
+) -> BoardPopulation:
+    identity = _PopulationVersionIdentity(
+        board=request.board,
+        trade_date=request.trade_date,
+        phase=request.phase,
+        data_version=request.data_version,
+        schema_version=request.schema_version,
+        status=basis.status,
+        fallback_date=basis.fallback_date,
+        fallback_age=basis.fallback_age,
+    )
+    population_version = _population_version(identity, basis.population_source)
+    return BoardPopulation(
+        trade_date=request.trade_date,
+        phase=request.phase,
+        board=request.board,
+        data_version=request.data_version,
+        schema_version=request.schema_version,
         population_version=population_version,
         sample_size=current_sample,
-        missing_count=max(0, len(ordered) - current_sample),
-        liquidity_p50=p50,
-        liquidity_p80=p80,
-        fallback_trade_date=fallback_date,
-        fallback_age_sessions=fallback_age,
-        status=status,
+        missing_count=max(0, total_count - current_sample),
+        liquidity_p50=_quantile(basis.population_source.get("amount_median_20d", ()), 0.50),
+        liquidity_p80=_quantile(basis.population_source.get("amount_median_20d", ()), 0.80),
+        fallback_trade_date=basis.fallback_date,
+        fallback_age_sessions=basis.fallback_age,
+        status=basis.status,
     )
+
+
+def _enrich_features(
+    normalized: Sequence[FeatureSnapshot],
+    population: BoardPopulation,
+    request: BoardCrossSectionRequest,
+) -> tuple[FeatureSnapshot, ...]:
     enriched: list[FeatureSnapshot] = []
     for item in normalized:
         values = dict(item.values)
         reliability = _base_reliability(values)
-        if status in {"stale", "insufficient"}:
+        if population.status in {"stale", "insufficient"}:
             reliability = min(reliability, 0.84)
-        bucket = _liquidity_bucket(item.optional_value("amount_median_20d"), p50, p80)
-        group_id, group_source, group_version = (competition_groups or {}).get(
+        group_id, group_source, group_version = (request.competition_groups or {}).get(
             item.quote.code,
             _default_competition_group(item),
         )
@@ -187,7 +243,7 @@ def build_board_cross_section(
         missing_reasons = {
             name: (
                 "board cross-section sample is insufficient"
-                if status in {"stale", "insufficient"} and name.endswith("_score")
+                if population.status in {"stale", "insufficient"} and name.endswith("_score")
                 else "upstream value missing"
             )
             for name in missing_fields
@@ -200,26 +256,19 @@ def build_board_cross_section(
                 missing_reasons={**dict(item.missing_reasons), **missing_reasons},
                 board_data_reliability=reliability,
                 board_population=population,
-                merge_epoch=merge_epoch,
+                merge_epoch=request.merge_epoch,
                 competition_group_id=group_id,
                 competition_group_source=group_source,
                 competition_group_version=group_version,
-                liquidity_bucket=bucket,
-                parameter_status=status,
+                liquidity_bucket=_liquidity_bucket(
+                    item.optional_value("amount_median_20d"),
+                    population.liquidity_p50,
+                    population.liquidity_p80,
+                ),
+                parameter_status=population.status,
             )
         )
-    return BoardCrossSection(
-        board=board,
-        merge_epoch=merge_epoch,
-        trade_date=trade_date,
-        phase=phase,
-        data_version=data_version,
-        schema_version=schema_version,
-        population=population,
-        features=tuple(enriched),
-        reference_values=reference_values,
-        normalization=normalization,
-    )
+    return tuple(enriched)
 
 
 def apply_board_policy(
@@ -249,30 +298,14 @@ def apply_board_policy(
 
 def enrich_board_features(
     strategy: Strategy,
-    features: Sequence[FeatureSnapshot],
     policy: BoardStrategyPolicy,
-    *,
-    merge_epoch: str,
-    trade_date: str = "unknown-date",
-    phase: str = "score",
-    data_version: str | None = None,
-    schema_version: str = BOARD_SCHEMA_VERSION,
-    fallback: BoardCrossSection | None = None,
-    fallback_age_sessions: int | None = None,
+    request: BoardCrossSectionRequest,
 ) -> tuple[FeatureSnapshot, ...]:
-    """Compatibility wrapper used by callers that do not own the cache."""
+    """Build and apply one board policy for callers without a cross-section cache."""
 
-    cross_section = build_board_cross_section(
-        features,
-        board=policy.board,
-        merge_epoch=merge_epoch,
-        trade_date=trade_date,
-        phase=phase,
-        data_version=data_version or merge_epoch,
-        schema_version=schema_version,
-        fallback=fallback,
-        fallback_age_sessions=fallback_age_sessions,
-    )
+    if request.board is not policy.board:
+        raise ValueError("board cross-section request does not match policy")
+    cross_section = build_board_cross_section(request)
     return apply_board_policy(cross_section, strategy, policy)
 
 
@@ -395,6 +428,7 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
 __all__ = [
     "BOARD_SCHEMA_VERSION",
     "BoardCrossSection",
+    "BoardCrossSectionRequest",
     "MAX_FALLBACK_SESSIONS",
     "MIN_BOARD_SAMPLE",
     "apply_board_policy",

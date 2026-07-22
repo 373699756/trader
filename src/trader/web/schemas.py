@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from trader.domain.models import (
-    DeepSeekReview,
+from trader.domain.market.models import LiveQuote
+from trader.domain.recommendation.models import (
     LiveOverlay,
-    LiveQuote,
     Recommendation,
     RecommendationSnapshot,
+)
+from trader.domain.review.models import (
+    DeepSeekReview,
     RiskFact,
 )
 

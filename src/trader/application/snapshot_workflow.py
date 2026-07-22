@@ -24,7 +24,12 @@ from trader.application.pipeline_workers import submit_required_urgent
 from trader.application.ports import MarketDataUnavailable
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
 from trader.application.status import RuntimeState
-from trader.domain.models import LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
+from trader.domain.market.models import LiveQuote
+from trader.domain.recommendation.models import (
+    LiveOverlay,
+    RecommendationSnapshot,
+    Strategy,
+)
 
 if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline

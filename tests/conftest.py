@@ -5,8 +5,13 @@ from datetime import datetime, timezone
 import pytest
 
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
-from trader.domain.fusion import DIMENSION_NAMES, FusionPolicy
-from trader.domain.models import FeatureSnapshot, MarketQuote, RiskRule, Strategy
+from trader.domain.market.models import (
+    FeatureSnapshot,
+    MarketQuote,
+)
+from trader.domain.recommendation.fusion import DIMENSION_NAMES, FusionPolicy
+from trader.domain.recommendation.models import Strategy
+from trader.domain.review.models import RiskRule
 
 
 @pytest.fixture

@@ -18,7 +18,12 @@ from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import MarketPhase
 from trader.application.snapshot_workflow import refresh_candidates
 from trader.application.status import RuntimeState
-from trader.domain.models import FeatureSnapshot, LiveOverlay, RecommendationSnapshot, Strategy
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.models import (
+    LiveOverlay,
+    RecommendationSnapshot,
+    Strategy,
+)
 from trader.infra.persistence.snapshots import snapshot_from_dict, snapshot_to_dict
 from trader.web.schemas import snapshot_envelope
 

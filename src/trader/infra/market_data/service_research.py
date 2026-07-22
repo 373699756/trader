@@ -15,7 +15,7 @@ from typing import ParamSpec, TypeVar, cast
 
 from trader.application.ports import MarketDataDeadlineExceeded
 from trader.application.workers import borrow_executor, submit_or_run_inline
-from trader.domain.research import ResearchObservation
+from trader.domain.market.research import ResearchObservation
 from trader.infra.market_data.akshare import AkshareResearchClient
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_models import _ResearchEntry

@@ -7,9 +7,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.domain.models import FeatureSnapshot, LiveQuote, MarketQuote
-from trader.domain.research import ResearchObservation
-from trader.domain.tail import MinuteBar
+from trader.domain.market.models import (
+    FeatureSnapshot,
+    LiveQuote,
+    MarketQuote,
+)
+from trader.domain.market.research import ResearchObservation
+from trader.domain.market.tail import MinuteBar
 from trader.infra.market_data.features import StandardizedFeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar

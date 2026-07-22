@@ -10,7 +10,12 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
-from trader.domain.models import LiveOverlay, LiveQuote, RecommendationSnapshot, Strategy
+from trader.domain.market.models import LiveQuote
+from trader.domain.recommendation.models import (
+    LiveOverlay,
+    RecommendationSnapshot,
+    Strategy,
+)
 from trader.infra.persistence.snapshots import (
     SNAPSHOT_SCHEMA_VERSION,
     snapshot_from_dict,

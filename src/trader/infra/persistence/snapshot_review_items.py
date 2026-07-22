@@ -6,7 +6,13 @@ import math
 from collections.abc import Mapping
 from datetime import datetime
 
-from trader.domain.models import DeepSeekReview, DimensionAssessment, Evidence, ReviewOutcome, RiskFact
+from trader.domain.market.models import Evidence
+from trader.domain.review.models import (
+    DeepSeekReview,
+    DimensionAssessment,
+    ReviewOutcome,
+    RiskFact,
+)
 from trader.infra.persistence.snapshot_primitives import (
     _number,
     _optional_integer,

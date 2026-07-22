@@ -8,8 +8,11 @@ from datetime import date, datetime
 from decimal import Decimal
 from functools import lru_cache
 
-from trader.domain.filters import board_for_code
-from trader.domain.models import Board, MarketQuote
+from trader.domain.market.models import (
+    Board,
+    MarketQuote,
+)
+from trader.domain.recommendation.filters import board_for_code
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 
 _REALTIME_SOURCES = frozenset({"eastmoney", "sina", "tencent"})
