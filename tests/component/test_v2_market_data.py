@@ -29,23 +29,23 @@ from trader.domain.news import NewsSignalPolicy
 from trader.domain.research import ResearchObservation
 from trader.domain.strategies import score_strategy
 from trader.domain.tail import MinuteBar, TailSignalPolicy
-from trader.infrastructure.cache import BoundedLruCache
-from trader.infrastructure.market_data import gateway as gateway_module
-from trader.infrastructure.market_data import tushare_support as tushare_support_module
-from trader.infrastructure.market_data.akshare import AkshareResearchClient
-from trader.infrastructure.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailable
-from trader.infrastructure.market_data.eastmoney import EastmoneyClient
-from trader.infrastructure.market_data.features import FeatureBuilder
-from trader.infrastructure.market_data.gateway import MarketDataGateway
-from trader.infrastructure.market_data.history import DailyBar
-from trader.infrastructure.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
-from trader.infrastructure.market_data.observations import SourceObservation
-from trader.infrastructure.market_data.router import VendorRoute, VendorSeverity, route
-from trader.infrastructure.market_data.service import MarketFeatureService
-from trader.infrastructure.market_data.sina import SinaClient
-from trader.infrastructure.market_data.tencent import TencentClient
-from trader.infrastructure.market_data.tushare import TushareClient
-from trader.infrastructure.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
+from trader.infra.cache import BoundedLruCache
+from trader.infra.market_data import gateway as gateway_module
+from trader.infra.market_data import tushare_support as tushare_support_module
+from trader.infra.market_data.akshare import AkshareResearchClient
+from trader.infra.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailable
+from trader.infra.market_data.eastmoney import EastmoneyClient
+from trader.infra.market_data.features import FeatureBuilder
+from trader.infra.market_data.gateway import MarketDataGateway
+from trader.infra.market_data.history import DailyBar
+from trader.infra.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
+from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
+from trader.infra.market_data.service import MarketFeatureService
+from trader.infra.market_data.sina import SinaClient
+from trader.infra.market_data.tencent import TencentClient
+from trader.infra.market_data.tushare import TushareClient
+from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
 AFTERNOON = datetime.fromisoformat("2026-07-16T14:50:00+08:00")

@@ -17,15 +17,15 @@ from typing import Any
 from trader.application.cache import build_cache_identity, canonical_json_bytes
 from trader.application.workers import BoundedExecutor
 from trader.domain.models import MarketQuote
-from trader.infrastructure.cache import BoundedLruCache
-from trader.infrastructure.market_data.merge import (
+from trader.infra.cache import BoundedLruCache
+from trader.infra.market_data.merge import (
     merge_market_observations,
     observation_from_quote,
     snapshot_payload_hash,
 )
-from trader.infrastructure.market_data.normalize import MarketQuoteInput, build_market_quote
-from trader.infrastructure.market_data.observations import SourceObservation
-from trader.infrastructure.settings import load_runtime_settings
+from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote
+from trader.infra.market_data.observations import SourceObservation
+from trader.infra.settings import load_runtime_settings
 
 
 def main(argv: Sequence[str] | None = None) -> int:

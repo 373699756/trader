@@ -6,14 +6,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.infrastructure.market_data.normalize import (
+from trader.infra.market_data.normalize import (
     MarketQuoteInput,
     build_market_quote,
     infer_one_price_limit,
     normalize_quotes,
     to_float,
 )
-from trader.infrastructure.market_data.observations import SourceObservation
+from trader.infra.market_data.observations import SourceObservation
 
 
 def test_to_float_handles_empty_and_invalid_numbers() -> None:

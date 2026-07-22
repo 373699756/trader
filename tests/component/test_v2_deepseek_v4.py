@@ -13,11 +13,11 @@ from trader.domain.models import (
     ReviewOutcome,
     Strategy,
 )
-from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
-from trader.infrastructure.deepseek.cache import ReviewCache
-from trader.infrastructure.deepseek.client import DeepSeekHttpClient
-from trader.infrastructure.deepseek.reviewer import DeepSeekReviewer
-from trader.infrastructure.settings import DeepSeekSettings
+from trader.infra.deepseek.budget import DeepSeekBudgetStore
+from trader.infra.deepseek.cache import ReviewCache
+from trader.infra.deepseek.client import DeepSeekHttpClient
+from trader.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.infra.settings import DeepSeekSettings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
 

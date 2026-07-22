@@ -29,7 +29,7 @@ from trader.domain.models import (
 )
 from trader.domain.ranking import select_top_k
 from trader.domain.strategies.composition import LocalScoreResult
-from trader.infrastructure.settings import load_runtime_settings, load_strategy_settings
+from trader.infra.settings import load_runtime_settings, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 14, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 

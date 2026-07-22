@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from trader.application.board_scoring_cache import BoardScoringCache, ScoringCacheContext
 from trader.application.cache import CacheDatasetPolicy, CacheGroupPolicy, CachePolicy
 from trader.domain.models import Board
-from trader.infrastructure.cache import BoundedLruCache
+from trader.infra.cache import BoundedLruCache
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 

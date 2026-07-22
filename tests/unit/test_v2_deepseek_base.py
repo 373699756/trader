@@ -12,20 +12,20 @@ from typing import Any
 
 import pytest
 
-from trader.infrastructure.deepseek.base_client import (
+from trader.infra.deepseek.base_client import (
     DeepSeekClientBase,
     DeepSeekHttpResult,
     ModelCapabilities,
 )
-from trader.infrastructure.deepseek.client import DeepSeekHttpClient
-from trader.infrastructure.deepseek.factory import create_deepseek_client
-from trader.infrastructure.deepseek.model_capabilities import (
+from trader.infra.deepseek.client import DeepSeekHttpClient
+from trader.infra.deepseek.factory import create_deepseek_client
+from trader.infra.deepseek.model_capabilities import (
     MODELS,
     capabilities,
     is_decommissioned,
 )
-from trader.infrastructure.deepseek.model_catalog import validate_model
-from trader.infrastructure.market_data.ground_truth import (
+from trader.infra.deepseek.model_catalog import validate_model
+from trader.infra.market_data.ground_truth import (
     render_batch_ground_truth,
     render_ground_truth,
 )

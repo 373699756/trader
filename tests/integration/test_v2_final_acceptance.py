@@ -18,13 +18,13 @@ from trader.domain.models import (
     Strategy,
 )
 from trader.entrypoints.cli import main as cli_main
-from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
-from trader.infrastructure.deepseek.cache import ReviewCache
-from trader.infrastructure.deepseek.client import DeepSeekHttpClient
-from trader.infrastructure.deepseek.reviewer import DeepSeekReviewer
-from trader.infrastructure.persistence.snapshots import snapshot_bytes, snapshot_from_dict
-from trader.infrastructure.persistence.writer import SnapshotRepository
-from trader.infrastructure.settings import DeepSeekSettings
+from trader.infra.deepseek.budget import DeepSeekBudgetStore
+from trader.infra.deepseek.cache import ReviewCache
+from trader.infra.deepseek.client import DeepSeekHttpClient
+from trader.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.infra.persistence.snapshots import snapshot_bytes, snapshot_from_dict
+from trader.infra.persistence.writer import SnapshotRepository
+from trader.infra.settings import DeepSeekSettings
 
 
 def test_frozen_input_round_trip_recomputes_filters_scores_risks_veto_and_ranking(

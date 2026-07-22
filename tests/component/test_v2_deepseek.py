@@ -17,17 +17,17 @@ from trader.domain.models import (
     Strategy,
 )
 from trader.domain.risk import Rating
-from trader.infrastructure.deepseek.budget import SCHEMA_VERSION, DeepSeekBudgetStore
-from trader.infrastructure.deepseek.cache import ReviewCache
-from trader.infrastructure.deepseek.challenger import (
+from trader.infra.deepseek.budget import SCHEMA_VERSION, DeepSeekBudgetStore
+from trader.infra.deepseek.cache import ReviewCache
+from trader.infra.deepseek.challenger import (
     ChallengerDimensionVerdict,
     ChallengerReview,
     merge_challenger_review,
 )
-from trader.infrastructure.deepseek.client import DeepSeekHttpClient
-from trader.infrastructure.deepseek.evidence_router import route_prompt_evidence
-from trader.infrastructure.deepseek.reviewer import DeepSeekReviewer
-from trader.infrastructure.deepseek.schema import (
+from trader.infra.deepseek.client import DeepSeekHttpClient
+from trader.infra.deepseek.evidence_router import route_prompt_evidence
+from trader.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.infra.deepseek.schema import (
     DeepSeekSchemaError,
     build_messages,
     build_review_manifest_hash,
@@ -35,7 +35,7 @@ from trader.infrastructure.deepseek.schema import (
     parse_reviews,
     review_cache_key,
 )
-from trader.infrastructure.settings import DeepSeekSettings
+from trader.infra.settings import DeepSeekSettings
 from trader.web import create_app
 
 NOW = datetime(2026, 7, 16, 6, 30, tzinfo=timezone.utc)

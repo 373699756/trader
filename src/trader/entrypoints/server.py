@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 
 from trader.bootstrap import build_system
-from trader.infrastructure.process_lock import ProcessLock, ProcessLockError
-from trader.infrastructure.settings import RuntimeSettings
+from trader.infra.process_lock import ProcessLock, ProcessLockError
+from trader.infra.settings import RuntimeSettings
 
 
 def build_parser() -> argparse.ArgumentParser:

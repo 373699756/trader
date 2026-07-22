@@ -64,14 +64,14 @@
 活动产品代码只能位于 `src/trader`，固定依赖方向为：
 
 ```text
-entrypoints / web / infrastructure -> application -> domain
+entrypoints / web / infra -> application -> domain
 ```
 
 - `domain`：领域模型、纯计算、过滤、因子、风险和排名；不得读取配置、时钟、网络、
   文件或数据库。
 - `application`：端口、事件、调度、用例、发布和冻结编排；不得导入 Flask、
-  `infrastructure` 或旧包。
-- `infrastructure`：配置、行情、交易日历、DeepSeek、缓存、SQLite、文件和外部适配器。
+  `infra` 或旧包。
+- `infra`：配置、行情、交易日历、DeepSeek、缓存、SQLite、文件和外部适配器。
 - `web`：请求校验、序列化、SSE 和静态资源；只能调用应用层只读用例。
 - `entrypoints`：参数、进程生命周期和退出码。
 - `bootstrap.py`：唯一组合根，显式创建客户端并注入依赖；禁止全局服务定位器。

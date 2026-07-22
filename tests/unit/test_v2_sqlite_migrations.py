@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.infrastructure.persistence.sqlite import SCHEMA_VERSION, connection_scope, initialize_database
+from trader.infra.persistence.sqlite import SCHEMA_VERSION, connection_scope, initialize_database
 
 
 def test_connection_scope_closes_after_success_and_failure(tmp_path: Path) -> None:

@@ -23,24 +23,24 @@ from trader.application.workers import BoundedExecutor
 from trader.domain.filters import HardFilterPolicy
 from trader.domain.fusion import FusionPolicy
 from trader.domain.models import Board, RiskRule, Strategy
-from trader.infrastructure.cache import BoundedLruCache
-from trader.infrastructure.deepseek.budget import DeepSeekBudgetStore
-from trader.infrastructure.deepseek.cache import ReviewCache
-from trader.infrastructure.deepseek.factory import create_deepseek_client
-from trader.infrastructure.deepseek.reviewer import DeepSeekReviewer
-from trader.infrastructure.market_data.akshare import AkshareResearchClient
-from trader.infrastructure.market_data.calendar import ChinaTradingCalendar
-from trader.infrastructure.market_data.eastmoney import EastmoneyClient
-from trader.infrastructure.market_data.features import FeatureBuilder
-from trader.infrastructure.market_data.gateway import MarketDataGateway
-from trader.infrastructure.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
-from trader.infrastructure.market_data.service import MarketFeatureService
-from trader.infrastructure.market_data.sina import SinaClient
-from trader.infrastructure.market_data.tencent import TencentClient
-from trader.infrastructure.market_data.tushare import TushareClient
-from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter
-from trader.infrastructure.persistence.writer import SnapshotRepository
-from trader.infrastructure.settings import (
+from trader.infra.cache import BoundedLruCache
+from trader.infra.deepseek.budget import DeepSeekBudgetStore
+from trader.infra.deepseek.cache import ReviewCache
+from trader.infra.deepseek.factory import create_deepseek_client
+from trader.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.infra.market_data.akshare import AkshareResearchClient
+from trader.infra.market_data.calendar import ChinaTradingCalendar
+from trader.infra.market_data.eastmoney import EastmoneyClient
+from trader.infra.market_data.features import FeatureBuilder
+from trader.infra.market_data.gateway import MarketDataGateway
+from trader.infra.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
+from trader.infra.market_data.service import MarketFeatureService
+from trader.infra.market_data.sina import SinaClient
+from trader.infra.market_data.tencent import TencentClient
+from trader.infra.market_data.tushare import TushareClient
+from trader.infra.persistence.runtime_json import RuntimeJsonWriter
+from trader.infra.persistence.writer import SnapshotRepository
+from trader.infra.settings import (
     LongWatchlist,
     RuntimeSettings,
     StrategySettings,

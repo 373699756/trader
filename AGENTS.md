@@ -12,9 +12,9 @@
 ## 2. 固定架构边界
 
 - 活动产品代码只能位于 `src/trader`。
-- 依赖方向固定为 `entrypoints/web/infrastructure -> application -> domain`。
+- 依赖方向固定为 `entrypoints/web/infra -> application -> domain`。
 - `domain` 不得读取配置、时钟、网络、文件或数据库。
-- `application` 不得导入 `infrastructure`、Flask 或旧包。
+- `application` 不得导入 `infra`、Flask 或旧包。
 - `web` 只能调用应用层只读用例；HTTP 请求不得抓行情、评分或调用 DeepSeek。
 - `bootstrap.py` 是唯一组合根。禁止全局服务定位器和隐藏构造外部客户端。
 - `create_app()` 必须保持无线程、无网络、无数据库和无文件写入副作用。

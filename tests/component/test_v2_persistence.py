@@ -25,14 +25,14 @@ from trader.domain.models import (
     ScoreBreakdown,
     Strategy,
 )
-from trader.infrastructure.persistence.snapshots import (
+from trader.infra.persistence.snapshots import (
     snapshot_bytes,
     snapshot_from_dict,
     snapshot_sha256,
     snapshot_to_dict,
 )
-from trader.infrastructure.persistence.sqlite import connect
-from trader.infrastructure.persistence.writer import SnapshotConflictError, SnapshotRepository
+from trader.infra.persistence.sqlite import connect
+from trader.infra.persistence.writer import SnapshotConflictError, SnapshotRepository
 
 NOW = datetime(2026, 7, 16, 6, 50, tzinfo=timezone.utc)
 

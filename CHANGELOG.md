@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户诉求：适配器层名称过长，希望统一缩短为 `infra`。新增架构契约，要求
+  `src/trader/infra` 必须存在、旧目录必须消失，且活动源码必须统一导入
+  `trader.infra` 命名空间。
+
 - 用户诉求：后台行情应在 SDK/API 能稳定返回时尽可能实时刷新，并允许按实际耗时自动调整。
   新增周期全市场必须物理刷新、临时空筛选保留候选、实时事件依赖顺序和生产秒级 cadence
   契约回归；状态计数 `candidate_selection_preserved_degraded` 可审计因历史预热或行情陈旧
@@ -42,7 +46,7 @@ All notable changes to this project are documented here.
 - 用户问题：`GET /api/status` 先报 `sqlite3.OperationalError: unable to open database file`，随后 Werkzeug 报 `OSError: [Errno 24] Too many open files`。原因已确认：DeepSeek 预算库与共享快照库都把 `sqlite3.Connection` 当作会自动释放资源的上下文管理器使用，但该上下文只提交或回滚事务、不关闭连接；页面轮询状态时会从预算摘要和持久化观测路径遗留数据库文件描述符。修改后两个 SQLite 边界在成功、提前返回、初始化失败和异常退出时都确定关闭；预算运行库暂时不可访问时，DeepSeek 状态返回可解析的 `budget_store_unavailable` 降级结果，`/api/status` 继续只读返回 200，顶部额度显示“不可用”而不是产生 500 或伪造可用余额。
 - 用户问题：`TopK live overlay degraded: data source task exceeded its batch deadline` 等最近错误过长时挤压顶部其他状态。原因是最近错误与行情、推送、评分、DeepSeek 和冻结状态共用 `nowrap` flex 行。修改后最近错误成为 Header 独立第二行，标签与正文分列，正文允许对无空格错误码任意断词换行；第一行状态不再被错误长度占用，900px 以下已有窄屏布局顺延错误行但不增加业务分支。验证：静态页面/CSS 契约、`make format-check/lint/type-check/test/package` 全部通过（417 tests），仓库外 wheel 的 CSS v4、独立错误节点、断行规则、CLI 和 `pip check` 通过。剩余风险：1280x720、1440x900、1920x1080 无头截图被宿主 Firefox 的 SWGL framebuffer 映射故障阻断，机器无 Chromium 备选；未发现代码侧已知问题，但本批不能宣称截图门禁通过。
 - 用户问题：DeepSeek 五维结果显示 `rejected`。运行审计确认三个策略批次均因 `api_key_missing` 跳过，原因是受保护的 `.deepseek_key` 已存在且权限为 `600`，但 v2 只读取进程环境。修改后配置边界按“`DEEPSEEK_API_KEY` > `DEEPSEEK_API_KEY_FILE` > 项目根目录 `.deepseek_key`”加载密钥，安全解析单行原值或赋值格式并拒绝 POSIX group/other 可读文件；页面按错误类别显示“未配置、禁用、额度、截止、调用失败或结构校验拒绝”，数据库 `rejected` 终态及 `local_degraded` 门保持不变。验证覆盖文件加载、环境优先、不安全权限、零物理调用审计和静态资源契约；`make format-check/lint/type-check/test/package` 全部通过（417 tests），仓库外干净虚拟环境 wheel 导入、资源、CLI 和 `pip check` 通过。剩余风险：外部 DeepSeek HTTP 有效性仍取决于用户密钥、网络和供应商服务，本批未发起消耗额度的真实请求。
-- 本批优化（2026-07-20）聚焦评分与荐股策略参数化链路：在 `StrategySettings` 增加 `local_strategy_weights` 配置并下发到 `RecommendationPolicy`，`application/recommendations.py` 的本地评分与评分融合改为透传该权重；`FrozenReplayPolicy` 与快照序列化/反序列化（`infrastructure/persistence/snapshots.py`）支持 `local_strategy_weights`，旧快照缺失字段回退默认组件权重，未改变 68/32 融合公式与风险扣分上限。
+- 本批优化（2026-07-20）聚焦评分与荐股策略参数化链路：在 `StrategySettings` 增加 `local_strategy_weights` 配置并下发到 `RecommendationPolicy`，`application/recommendations.py` 的本地评分与评分融合改为透传该权重；`FrozenReplayPolicy` 与快照序列化/反序列化（`infra/persistence/snapshots.py`）支持 `local_strategy_weights`，旧快照缺失字段回退默认组件权重，未改变 68/32 融合公式与风险扣分上限。
 - 本轮（2026-07-20）补齐 DeepSeek 审计字段闭环：schema 解析、审核短路/失败路径注入、持久化往返与 API review 节点透出全部落地，并补 `tests/component/test_v2_deepseek.py`、`tests/component/test_v2_persistence.py`、`tests/contract/test_v2_web_api.py` 回归。
 - 本批（2026-07-20）补齐 DeepSeek 审计字段闭环，但保持字段只读，不允许 `challenger_status`、`review_stage`、`rating` 或置信度改变动作、融合或 TopK 排序。
 - 本次“收益型 shadow”落地：`domain/strategies/shadow.py` 新增 today/tomorrow/d25 的同行收益差/领导对照影子评分路径；`application/recommendations.py` 在快照元数据输出 `shadow_scoring`（覆盖率、`top_shadows`、`rank_gap`）供离线审阅，不改动生产排序门槛与 `68/32` 融合。
@@ -53,9 +57,9 @@ All notable changes to this project are documented here.
 - 落地 `docs/issues/2026-07-20.md` 第三档 P12 证据落盘统一：`AkshareResearchClient` 的研究源（news/financial/announcement/pledge/unlock）原始载荷统一持久化到 `runtime/evidence_cache/<source>/<code>.json`；`MarketFeatureService` 的 `research` 读取路径加入持久化重放与过期清理，在重启场景可在 TTL 内优先命中 cache 并回放 `ResearchObservation`。
 - 本轮“标准化/路由/数据库”继续子项（2026-07-20）路由可观测性细化：`gateway.py` 的 `health()["route"]` 新增 `attempted_count/success_count/failure_count/no_data_count/skipped_count` 并保留 vendor 序列轨迹；`router.py` 将 `circuit_open` 映射为 `status="skipped"`，用于识别熔断跳过与失败差异。
 - 本轮（2026-07-20）进一步补齐路由语义：`router.py` 将 optional 供应商的 `no_data` 标记为 `skipped` 而非 `failed`，`gateway.py` 的候选报价腾讯源在熔断窗口内也计入 `route` 健康 `skipped_count`，区分可恢复降级与真实失败。
-- 本轮续作（2026-07-20）补齐数据库观测闭环：`infrastructure/persistence/sqlite.py` 将 `SCHEMA_VERSION` 提升至 4 并新增 `data_source_health` 持久化字段 `route_json/route_status/route_fallback_reason/route_degraded`；`infrastructure/persistence/writer.py` 持久化 `market_data.health()["route"]` 结构，形成从路由结果到 SQLite 行记录的可回放链路。
-- 用户诉求：标准化收敛。新增 `infrastructure/market_data/normalize.py`，提供 `to_float`、`normalize_quotes`、`MarketQuoteInput` 与 `build_market_quote`；`eastmoney.py`、`sina.py`、`tencent.py` 统一调用该入口组装 `MarketQuote`，非有限值与异常字段统一降噪，行为口径与字段名保持不变。
-- 用户诉求：标准化契约闭环。`infrastructure/market_data/features.py` 新增 `FEATURE_SCHEMA` 及版本常量，并在配置层校验 `factor_contract.feature_schema_version` 与注册表一致，`tests/unit/test_v2_settings.py` 增补 `feature_schema_version` 错配拦截与可选 `feature_names/feature_schema_expected` 一致性验证回归。
+- 本轮续作（2026-07-20）补齐数据库观测闭环：`infra/persistence/sqlite.py` 将 `SCHEMA_VERSION` 提升至 4 并新增 `data_source_health` 持久化字段 `route_json/route_status/route_fallback_reason/route_degraded`；`infra/persistence/writer.py` 持久化 `market_data.health()["route"]` 结构，形成从路由结果到 SQLite 行记录的可回放链路。
+- 用户诉求：标准化收敛。新增 `infra/market_data/normalize.py`，提供 `to_float`、`normalize_quotes`、`MarketQuoteInput` 与 `build_market_quote`；`eastmoney.py`、`sina.py`、`tencent.py` 统一调用该入口组装 `MarketQuote`，非有限值与异常字段统一降噪，行为口径与字段名保持不变。
+- 用户诉求：标准化契约闭环。`infra/market_data/features.py` 新增 `FEATURE_SCHEMA` 及版本常量，并在配置层校验 `factor_contract.feature_schema_version` 与注册表一致，`tests/unit/test_v2_settings.py` 增补 `feature_schema_version` 错配拦截与可选 `feature_names/feature_schema_expected` 一致性验证回归。
 - 本批数据库健壮性补齐：`tests/unit/test_v2_sqlite_migrations.py` 新增空白 `schema_meta` 值回归（覆盖 `schema_version=''` 与 `N/A` 场景），验证初始化可自动回写 `schema_version=SCHEMA_VERSION`。
 - 用户诉求：完成 `docs/issues/2026-07-20.md` 第四档 Web 序列化收敛（P15）。新增 `web/serializers.py`，将路由错误、历史日期列表和事件列表响应统一为独立序列化入口；`web/routes.py` 保持仅作参数校验与状态分支。接口字段与错误码不变。
 - 用户诉求：继续推进 `docs/issues/2026-07-20.md` 剩余未完成项目（P6/P10/P11/P12/P13）。1) `bootstrap.py` 保持唯一组合根并通过小型工厂注入具体适配器。2) 新增 `FeatureSchema` dataclass + `RAW_FEATURE_SCHEMA`/`DERIVED_FEATURE_SCHEMA` 注册表。3) `BoundedExecutor` 继续作为有界执行内核。4) evidence 与 observation 缓存分命名空间并共用唯一持久化 worker。
@@ -83,7 +87,7 @@ All notable changes to this project are documented here.
 - 候选池接入带 8 秒硬超时的 AKShare 兼容个股新闻证据，新闻证据进入特征快照、DeepSeek 输入和冻结回放；成功结果缓存 10 分钟，失败负缓存 60 秒。
 - 新增第 25 节最终验收闭环：新冻结快照保存完整市场预选输入、定向候选与经校验 DeepSeek 结果，`trader-cli verify-freeze` 可离线复算并核对过滤、评分、风险、veto 和排名；`/api/status` 新增活动 TopK 报价 P95 与 DeepSeek 物理调用验收摘要。
 - 新增固定行情完整交易日影子门禁，按 09:20-15:00 时间线在两个隔离目录运行真实 SQLite/JSON 冻结链，对照 today/tomorrow/d25 manifest、long 非冻结和全部 JSON SHA-256 确定性。
-- 新建单一 `src/trader` 安装包，按 `domain`、`application`、`infrastructure`、`web`、`entrypoints` 和唯一组合根分层。
+- 新建单一 `src/trader` 安装包，按 `domain`、`application`、`infra`、`web`、`entrypoints` 和唯一组合根分层。
 - 新增 today、tomorrow、d25、long 四策略的确定性评分、硬过滤、风险事实去重、TopK 和动作判定。
 - 新增东方财富/新浪/腾讯行情适配、AKShare 研究边界、交易日历、历史特征缓存和多源降级。
 - 新增 DeepSeek 五维 schema、证据子集校验、共享代际缓存、逐物理请求原子预算及 188 次六桶上限。
@@ -95,6 +99,10 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 活动适配器层目录与包名原子统一为 `src/trader/infra`；组合根、
+  entrypoints、层内导入、全部测试与性能 runner 同步使用 `trader.infra`，依赖方向和
+  业务行为保持不变。`AGENTS.md` 与软件业务设计的架构边界同步采用新名称。
 
 - 实时最短计划间隔调整为：全市场 3-10 秒、120 候选 1-2 秒、TopK 1 秒、本地评分
   3-10 秒；在途任务继续跳过重叠周期，每个来源 lane 只保留最新观察点，因此实际周期
@@ -131,22 +139,22 @@ All notable changes to this project are documented here.
 
 - DeepSeek 预算与共享快照连接边界改为事务与资源生命周期一体的上下文管理器；仅冻结提交保留显式拥有并关闭的原始连接。状态 API 在 SQLite 打开或读取失败时只降级预算依赖，不改变最近有效推荐、冻结记录、评分、188 次原子预算规则或其他只读状态。
 - 落地 P12 证据落盘统一细化：`MarketFeatureService._load_research_cache()` 与 `_write_research_cache()` 对 news/structured 证据统一按 `ResearchObservation` 序列化/反序列化落盘，过期缓存返回 `None` 并退回网络；`AkshareResearchClient._cache_payload()` 使用 `atomic_write_json` 统一落地原始 payload，便于 restart 重放与故障复盘。补充组件测试：`test_akshare_news_response_is_cached_with_atomic_writer`、`test_research_cache_is_used_after_restart_before_source_request`、`test_research_cache_expired_calls_research_client`。
-- DeepSeek 审计字段闭环完成：`infrastructure/deepseek/schema.py`、`infrastructure/deepseek/reviewer.py`、`infrastructure/persistence/snapshots.py`、`web/schemas.py` 连续透传审计元数据（模型、思考模式、挑战者状态、置信度与 hash）；旧快照在反序列化时回退为 `primary/not_run/neutral`，新增三类测试覆盖解析、持久化和 API 合约。
+- DeepSeek 审计字段闭环完成：`infra/deepseek/schema.py`、`infra/deepseek/reviewer.py`、`infra/persistence/snapshots.py`、`web/schemas.py` 连续透传审计元数据（模型、思考模式、挑战者状态、置信度与 hash）；旧快照在反序列化时回退为 `primary/not_run/neutral`，新增三类测试覆盖解析、持久化和 API 合约。
 - `domain/ranking.py` 的 `select_top_k()` 新增可解释性排序维度：在同 `final_score` 下优先保留审计信号较优（挑战者通过、二级阶段、rating 较好、置信度更高）的候选；为保证可复盘与透明，新增 `tests/unit/domain/test_ranking.py` 覆盖同分 tie-break。
 - `docs/issues/2026-07-20.md` 第11节“审计信号参与候选重排序”补齐收益型 shadow 阶段：`metadata.shadow_scoring` 作为只读审阅字段接入快照输出，便于后续按 `rank_gap` 和覆盖率复盘 today/tomorrow/d25 候选替换效应。
 - 落地 `docs/issues/2026-07-20.md` 标准化收敛：三源行情适配器统一 `normalize.py` 的解析入口，`normalize_quotes` 与 `MarketQuoteInput` 处理空值/非法值与 `MarketQuote` 构建，降低 parser 分支漂移风险并提升 `quotes` 批量解析可读性。
 - 落地 `docs/issues/2026-07-20.md` “标准化/路由/数据库”继续子项：路由器增加 `_is_empty_payload()` 空结果收口，`normalize_quotes()` 收紧 `MarketQuoteInput` 校验约束并隔离非法行情输入，`tests/unit/test_v2_sqlite_migrations.py` 新增 `schema_version` 异常元数据回归。
-- 落地 `docs/issues/2026-07-20.md` “标准化/路由/数据库”数据库补齐：`src/trader/infrastructure/deepseek/budget.py` 在初始化阶段加入 `schema_meta` 自恢复逻辑，`SCHEMA_VERSION` 按版本向上修复；补充 `tests/unit/test_v2_sqlite_migrations.py` 与 `tests/component/test_v2_deepseek.py` 对空白/非法/缺失 `schema_version` 的初始化路径回归，避免脏元数据导致启动阻塞。
+- 落地 `docs/issues/2026-07-20.md` “标准化/路由/数据库”数据库补齐：`src/trader/infra/deepseek/budget.py` 在初始化阶段加入 `schema_meta` 自恢复逻辑，`SCHEMA_VERSION` 按版本向上修复；补充 `tests/unit/test_v2_sqlite_migrations.py` 与 `tests/component/test_v2_deepseek.py` 对空白/非法/缺失 `schema_version` 的初始化路径回归，避免脏元数据导致启动阻塞。
 - 落地 `docs/issues/2026-07-20.md` 第四档：新增 `StandardizedFeatureBuilder` 协议并让 `MarketFeatureService` 按协议注入 `FeatureBuilder`，为后续替换特征构建实现保留横向扩展点，不影响 `FeatureBuilder` 当前口径与现网行为。
-- 落地 `docs/issues/2026-07-20.md` 性能向量化方向（第三档 #11）：`infrastructure/market_data/history.py` 新增 `HistoryProfile` 与 `summarize_history_metrics()`，在 `FeatureBuilder._raw_features()` 中把 `MA5/20/60`、20 日波动率、20 日最大回撤、20 日成交额中位数、20 日上涨一致性改为一次汇总取值，减少同一历史序列重复计算；`return_pct` 与返回字段值不变，结果可复用性增强，适配后续批次“按批构建 Raw 特征向量”。
-- 落地 `docs/issues/2026-07-20.md` 本轮市场路由优化：`infrastructure/market_data/gateway.py` 的 `_fetch_market_once()` 改为一次性将 `eastmoney/sina` 路由表提交给 `MarketDataRouter.route()`，替换逐条 `route((vendor,))` 的循环包装。行为保持 `required` 顺序回退与失败计数、熔断、缓存回退不变，但异常信息从“汇总逐 vendor”转为路由器聚合异常，便于后续可观测性归一化。
-- 落地 `docs/issues/2026-07-20.md` 市场数据异常语义：`infrastructure/market_data/router.py` 现在聚合 required 路由失败与无数据，`required` 全部耗尽但存在空返回时抛 `MarketDataNoData`，全失败则抛带 vendor 摘要的 `MarketDataFailed`；`tests/component/test_v2_market_data.py` 新增路由级 no-data/failure 回归，并修订网关路径对无数据与失败上下文的可观测性。
+- 落地 `docs/issues/2026-07-20.md` 性能向量化方向（第三档 #11）：`infra/market_data/history.py` 新增 `HistoryProfile` 与 `summarize_history_metrics()`，在 `FeatureBuilder._raw_features()` 中把 `MA5/20/60`、20 日波动率、20 日最大回撤、20 日成交额中位数、20 日上涨一致性改为一次汇总取值，减少同一历史序列重复计算；`return_pct` 与返回字段值不变，结果可复用性增强，适配后续批次“按批构建 Raw 特征向量”。
+- 落地 `docs/issues/2026-07-20.md` 本轮市场路由优化：`infra/market_data/gateway.py` 的 `_fetch_market_once()` 改为一次性将 `eastmoney/sina` 路由表提交给 `MarketDataRouter.route()`，替换逐条 `route((vendor,))` 的循环包装。行为保持 `required` 顺序回退与失败计数、熔断、缓存回退不变，但异常信息从“汇总逐 vendor”转为路由器聚合异常，便于后续可观测性归一化。
+- 落地 `docs/issues/2026-07-20.md` 市场数据异常语义：`infra/market_data/router.py` 现在聚合 required 路由失败与无数据，`required` 全部耗尽但存在空返回时抛 `MarketDataNoData`，全失败则抛带 vendor 摘要的 `MarketDataFailed`；`tests/component/test_v2_market_data.py` 新增路由级 no-data/failure 回归，并修订网关路径对无数据与失败上下文的可观测性。
 - 落地 `docs/issues/2026-07-20.md` 路由可观测性细化：`router.py` 的路由结果新增 `status/degraded/fallback_reason` 与 vendor 明细（name/status/severity/error/duration），`gateway.py` 在 `health()` 增加 `route` 子字段透传最近一次路由快照；新增/更新 `tests/unit/test_v2_market_data_router.py` 与 `tests/component/test_v2_market_data.py`，验证降级链路与可观测输出。
 - 路由可观测性继续细化（2026-07-20）：`/api/status` 的市场数据路由健康进一步透传 `attempted_count/success_count/failure_count/no_data_count/skipped_count` 与 `used_vendor`，并通过前端状态摘要新增“路由健康”卡片，展示 degrade/fallback 与 vendor 级 `status/error`，用于故障归因与熔断排查。
 - 落地本批续写可观测性回归：`tests/unit/test_v2_market_data_router.py` 补齐 optional/required 混合、no-data 聚合、错误聚合顺序等边界；`tests/unit/test_v2_sqlite_migrations.py` 补齐 schema 初始化幂等性与版本迁移回归。
-- 落地标准化特征注册表契约回归：`infrastructure/settings.py` 在加载策略配置时校验 `factor_contract.feature_schema_version` 与 `FEATURE_SCHEMA_VERSION` 一致，支持 `feature_names` 与 `feature_schema_expected` 与 `FEATURE_SCHEMA` 全量一致性；`tests/unit/test_v2_settings.py` 新增版本错配拒绝与显式注册表一致性回归。
-- 落地 P14 评级映射：`domain/risk.py` 的 `Rating/parse_rating` 已在 `infrastructure/deepseek/schema.py` 中应用到 `results[*].rating`，`domain/models.py` 与 `domain/ranking.py` 记录并消费评级，`application/recommendations.py` 将 `APPLIED` 审核中的 `deepseek_bearish/neutral` 映射为显式动作降级；新增 `tests/unit/domain/test_risk.py`、`tests/unit/domain/test_ranking.py`、`tests/component/test_v2_deepseek.py` 覆盖解析与动作映射。
-- 落地 `docs/issues/2026-07-20.md` 第一批 P1~P3：新增 `infrastructure/deepseek/factory.py` 的 `create_deepseek_client()`，并把 `infrastructure/container.py` 的 `DeepSeekReviewer` 依赖由直接实例化 `DeepSeekHttpClient` 改为通过工厂注入 `DeepSeekClientBase`，为未来 provider 切换（mock/vLLM）保留入口；同时补充 `tests/unit/test_v2_deepseek_base.py` 工厂测试（默认 provider、兼容 alias 与未知 provider 异常）。
+- 落地标准化特征注册表契约回归：`infra/settings.py` 在加载策略配置时校验 `factor_contract.feature_schema_version` 与 `FEATURE_SCHEMA_VERSION` 一致，支持 `feature_names` 与 `feature_schema_expected` 与 `FEATURE_SCHEMA` 全量一致性；`tests/unit/test_v2_settings.py` 新增版本错配拒绝与显式注册表一致性回归。
+- 落地 P14 评级映射：`domain/risk.py` 的 `Rating/parse_rating` 已在 `infra/deepseek/schema.py` 中应用到 `results[*].rating`，`domain/models.py` 与 `domain/ranking.py` 记录并消费评级，`application/recommendations.py` 将 `APPLIED` 审核中的 `deepseek_bearish/neutral` 映射为显式动作降级；新增 `tests/unit/domain/test_risk.py`、`tests/unit/domain/test_ranking.py`、`tests/component/test_v2_deepseek.py` 覆盖解析与动作映射。
+- 落地 `docs/issues/2026-07-20.md` 第一批 P1~P3：新增 `infra/deepseek/factory.py` 的 `create_deepseek_client()`，并把 `infra/container.py` 的 `DeepSeekReviewer` 依赖由直接实例化 `DeepSeekHttpClient` 改为通过工厂注入 `DeepSeekClientBase`，为未来 provider 切换（mock/vLLM）保留入口；同时补充 `tests/unit/test_v2_deepseek_base.py` 工厂测试（默认 provider、兼容 alias 与未知 provider 异常）。
 - 下一版契约将 today、tomorrow、d25 的横截面改为主板、创业板、科创板独立总体，拆分两类 20% 板过滤身份，并规定 v10 删除 d25 过热与市场状态双乘数；当前 `baseline_v9_active` 的候选、评分、动作阈值、行业限制和双乘数继续生效，68/32 融合、DeepSeek 158/188、11:20/14:50 冻结及 long 固定观察边界不变。本批只更新文档，不修改配置、活动代码、数据库、API 或 UI。
 - DeepSeek 正常交易日目标由 144 调整为 158，阶段目标重新分配为 shared 15、today 68、tomorrow 35、d25 30、long 10；其中主审及预热共 141 次，today/tomorrow/d25 挑战者目标和上限统一为 6/6/5 共 17 次。六个预算桶、emergency 使用条件、冻结截止和 188 次物理 HTTP 请求硬上限均不变，候选不足时仍禁止为凑目标空调用。本批只更新需求契约，不修改配置、活动代码、数据库、API 实现或 Web 行为。
 - 开源参考表改为截至 2026-07-19 只展示当前不少于 20,000 Star 且与量化、金融研究、A 股数据或 DeepSeek 接入直接相关的项目；新增项目分别标明可借鉴边界、非运行依赖及非 DeepSeek 项目身份。
@@ -185,6 +193,10 @@ All notable changes to this project are documented here.
   `runtime.json.performance_budgets` 读取，禁止适配器、评分lane或性能脚本自带默认值。
 
 ### Fixed
+
+- 修复适配器层目录名及 Python 导入路径冗长且与团队期望不一致的问题；安装后的公开
+  CLI 仍为 `trader-cli`/`trader-server`，只改变内部包路径，不改变 API、配置、冻结、
+  DeepSeek 预算、评分公式或 Web 行为。
 
 - 修复今早/明天/2-5 天在全市场内存已有 5,000+ 行实时行情时仍没有推荐的主断链：
   周期性 P2 以前命中 stale-while-revalidate 上一轮缓存，P3 按 20/30 秒边界把整批淘汰，
@@ -285,6 +297,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除适配器层旧长名称目录及包导入，不保留双命名兼容层，避免同一实现出现两个导入
+  真相源；仓库内历史路径记录也统一改用当前 `infra` 名称。
+
 - 移除 P3 候选发现消费 stale-while-revalidate 上一轮全市场快照的路径，以及评分优先于
   行情/候选刷新的旧事件顺序；展示和全源失败降级仍可读取最近有效行情，冻结边界、评分
   公式、DeepSeek 预算、API 与 Web 资源均未放宽或删除。
@@ -337,6 +352,13 @@ All notable changes to this project are documented here.
   `trader-cli --help`、`validate-config` 和 9 项 Web 资源通过。真实服务确认修复前已恢复
   tomorrow/d25 的 74/81 个候选与 4/2 条草稿，但旧进程累计 139 个事件过期并错过
   14:50 合格检查点；最终进程启动正常、Tushare 精确显示 `permission_denied`。
+
+- 失败先行架构测试已复现新目录缺失，并在迁移后确认 `src/trader/infra` 可导入、旧目录
+  和旧活动导入均不存在；最新上游叠加本批后的 188 个源码/测试文件格式检查、Ruff、138 个
+  源码模块 mypy、完整 612 项 pytest、sdist/wheel 构建均通过，仅保留 10 条既有未知测试模型名警告。
+  仓库外安装 wheel 后确认从隔离包路径导入 `trader.infra`、旧包不可发现、
+  `trader-cli --help`、配置校验、9 项 Web 资源及活动环境 `pip check` 通过。本批不修改 Web
+  资源或布局，桌面三档沿用同一已验收资源基线。
 
 - 失败先行回归分别复现并修复周期全市场 `force=False`、历史预热空筛选清除既有候选、
   `SCORE < CANDIDATE_QUOTES < MARKET_QUOTES` 的逆依赖顺序；`make format-check`、Ruff、
@@ -427,6 +449,9 @@ All notable changes to this project are documented here.
   30 秒内合格检查点，因此三个冻结查询在当日保持 `not_ready`；这是禁止迟到结果改写
   冻结记录的预期保护，不能用 14:41 草稿或重启后的行情补造。队列修复只能从下一有效
   交易窗口产生新冻结证据；外部来源延迟仍可能使策略合法返回少量或零推荐。
+
+- 本批没有已知剩余风险；仓库内代码、测试、性能 runner、架构契约和历史路径说明已统一
+  使用 `infra`。产品 API、命令入口、运行数据、冻结格式与桌面资源均未改变。
 
 - 1 秒/3 秒等配置是最短计划间隔，不保证外部供应商固定延迟；新浪全市场完整分页若耗时
   5-8 秒，实际周期会由在途跳过自动延长，腾讯、东方财富或新浪限流/断连时仍按熔断和最近

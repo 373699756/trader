@@ -13,12 +13,21 @@ def test_v2_does_not_import_legacy_package() -> None:
     assert violations == []
 
 
+def test_adapter_package_has_short_name() -> None:
+    retired_boundary = "infra" + "structure"
+    retired_package = "trader." + retired_boundary
+
+    assert (SOURCE_ROOT / "infra").is_dir()
+    assert not (SOURCE_ROOT / retired_boundary).exists()
+    assert _imports_matching(lambda name: name == retired_package or name.startswith(retired_package + ".")) == []
+
+
 def test_v2_dependency_direction() -> None:
     forbidden = {
-        "domain": ("trader.application", "trader.infrastructure", "trader.web", "trader.entrypoints"),
-        "application": ("trader.infrastructure", "trader.web", "trader.entrypoints"),
-        "infrastructure": ("trader.bootstrap", "trader.entrypoints", "trader.web"),
-        "web": ("trader.infrastructure",),
+        "domain": ("trader.application", "trader.infra", "trader.web", "trader.entrypoints"),
+        "application": ("trader.infra", "trader.web", "trader.entrypoints"),
+        "infra": ("trader.bootstrap", "trader.entrypoints", "trader.web"),
+        "web": ("trader.infra",),
     }
     violations: list[str] = []
     for boundary, prefixes in forbidden.items():
@@ -64,7 +73,7 @@ def test_snapshot_workflow_module_uses_specific_responsibility_name() -> None:
 
 
 def test_bootstrap_is_the_only_composition_root() -> None:
-    assert not (SOURCE_ROOT / "infrastructure" / "container.py").exists()
+    assert not (SOURCE_ROOT / "infra" / "container.py").exists()
 
 
 def test_active_product_source_files_do_not_exceed_500_lines() -> None:

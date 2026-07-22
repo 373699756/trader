@@ -15,7 +15,7 @@ from trader.application.cache import (
     build_cache_identity,
     canonical_json_bytes,
 )
-from trader.infrastructure.cache import BoundedLruCache
+from trader.infra.cache import BoundedLruCache
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)

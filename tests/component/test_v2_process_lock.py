@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.infrastructure.process_lock import ProcessLock, ProcessLockError
+from trader.infra.process_lock import ProcessLock, ProcessLockError
 
 
 def test_process_lock_rejects_a_second_owner(tmp_path) -> None:

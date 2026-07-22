@@ -5,12 +5,12 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from trader.domain.models import CanonicalMarketSnapshot
-from trader.infrastructure.market_data.merge import (
+from trader.infra.market_data.merge import (
     merge_market_observations,
     overlay_canonical_snapshot,
     snapshot_payload_hash,
 )
-from trader.infrastructure.market_data.observations import SourceObservation
+from trader.infra.market_data.observations import SourceObservation
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)

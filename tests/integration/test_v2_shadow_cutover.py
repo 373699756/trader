@@ -12,7 +12,7 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
 from trader.domain.models import FeatureSnapshot, Strategy
-from trader.infrastructure.persistence.writer import SnapshotRepository
+from trader.infra.persistence.writer import SnapshotRepository
 
 TRADE_DATE = "2026-07-16"
 TIMELINE = (
