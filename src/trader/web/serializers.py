@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 
+from trader.application.events import EventAuditRecord
 from trader.domain.recommendation.models import Strategy
 from trader.web.schemas import (
     API_SCHEMA_VERSION,
@@ -40,20 +41,16 @@ def serialize_recommendation_dates(strategy: Strategy, dates: Sequence[str]) -> 
 
 def serialize_events(
     cursor: int,
-    items: Sequence[Mapping[str, object]],
+    items: Sequence[EventAuditRecord],
 ) -> dict[str, object]:
-    sequences: list[int] = []
-    for item in items:
-        sequence = item.get("sequence")
-        if isinstance(sequence, int) and not isinstance(sequence, bool):
-            sequences.append(sequence)
+    sequences = [item.sequence for item in items]
     next_cursor = max(sequences, default=cursor)
     return {
         "schema_version": API_SCHEMA_VERSION,
         "status": "ready",
         "cursor": cursor,
         "next_cursor": next_cursor,
-        "items": list(items),
+        "items": [item.to_json() for item in items],
         "error": None,
     }
 

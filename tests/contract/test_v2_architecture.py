@@ -90,6 +90,59 @@ def test_domain_does_not_expose_dynamic_compatibility_aliases() -> None:
     assert violations == []
 
 
+def test_application_ports_are_partitioned_by_capability() -> None:
+    application = SOURCE_ROOT / "application"
+    ports = application / "ports"
+
+    assert ports.is_dir()
+    assert not (application / "ports.py").exists()
+    assert {
+        "clock.py",
+        "events.py",
+        "market.py",
+        "outcomes.py",
+        "reviews.py",
+        "snapshots.py",
+        "types.py",
+    } <= {path.name for path in ports.glob("*.py")}
+
+
+def test_application_public_boundaries_do_not_use_untyped_object_mappings() -> None:
+    violations: list[str] = []
+    boundary_paths = [*(SOURCE_ROOT / "application" / "ports").rglob("*.py")]
+    boundary_paths.extend(
+        path
+        for path in (
+            SOURCE_ROOT / "application" / "events.py",
+            SOURCE_ROOT / "application" / "pipeline_dependencies.py",
+        )
+        if path.exists()
+    )
+    for path in boundary_paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name):
+                continue
+            if node.value.id not in {"Mapping", "dict"} or not isinstance(node.slice, ast.Tuple):
+                continue
+            key, value = node.slice.elts
+            if isinstance(key, ast.Name) and key.id == "str" and isinstance(value, ast.Name) and value.id == "object":
+                violations.append(f"{path.relative_to(SOURCE_ROOT)}:{node.lineno}")
+
+    assert violations == []
+
+
+def test_pipeline_constructor_uses_explicit_dependency_collections() -> None:
+    path = SOURCE_ROOT / "application" / "pipeline.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    pipeline = next(
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "RecommendationPipeline"
+    )
+    constructor = next(node for node in pipeline.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
+
+    assert [argument.arg for argument in constructor.args.args] == ["self", "dependencies", "options", "resources"]
+
+
 def test_cutover_removed_legacy_runtime_tree() -> None:
     forbidden = (
         "app.py",

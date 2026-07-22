@@ -9,7 +9,7 @@ def test_realtime_candidate_quote_event_does_not_wait_for_intraday_history(monke
         _candidate_codes=("600001",),
         _long_codes=(),
         _candidate_features=(),
-        _market_data=SimpleNamespace(refresh_candidate_quotes=object(), refresh_intraday_tail=object()),
+        _quotes=SimpleNamespace(refresh_candidate_quotes=object()),
     )
     slow_calls: list[object] = []
     monkeypatch.setattr(pipeline_market_tasks, "_run_urgent_market_data_task", lambda *_args, **_kwargs: ())

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import heapq
-import math
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import IntEnum
+from enum import Enum, IntEnum
 from types import MappingProxyType
 from uuid import uuid4
 
+from trader.application.ports.types import JsonInput, JsonObject, JsonValue, freeze_json_object, thaw_json_value
 from trader.domain.recommendation.models import Strategy
 
 
@@ -26,8 +26,59 @@ class EventPriority(IntEnum):
     LONG = 60
 
 
-class EventDeadlineExpired(RuntimeError):
+class EventDeadlineExpiredError(RuntimeError):
     """A non-freeze event exhausted its execution deadline."""
+
+
+class EventStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    EXPIRED = "expired"
+
+
+@dataclass(frozen=True)
+class EventAuditRecord:
+    event_id: str
+    event_type: str
+    subject_key: str
+    trade_date: str
+    phase: str
+    strategy: str
+    priority: int
+    data_version: str
+    config_version: str
+    status: EventStatus
+    created_at: datetime
+    deadline: datetime | None
+    retry_count: int
+    payload: JsonObject = field(default_factory=lambda: MappingProxyType({}))
+    error: str = ""
+    sequence: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", freeze_json_object(self.payload))
+
+    def to_json(self) -> dict[str, JsonInput]:
+        return {
+            "sequence": self.sequence,
+            "event_id": self.event_id,
+            "event_type": self.event_type,
+            "subject_key": self.subject_key,
+            "trade_date": self.trade_date,
+            "phase": self.phase,
+            "strategy": self.strategy,
+            "priority": self.priority,
+            "data_version": self.data_version,
+            "config_version": self.config_version,
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat(),
+            "deadline": self.deadline.isoformat() if self.deadline is not None else "",
+            "retry_count": self.retry_count,
+            "payload": thaw_json_value(self.payload),
+            "error": self.error,
+        }
 
 
 @dataclass(frozen=True)
@@ -44,7 +95,7 @@ class PipelineEvent:
     created_at: datetime
     deadline: datetime | None = None
     retry_count: int = 0
-    payload: Mapping[str, object] = field(default_factory=dict)
+    payload: JsonObject = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
         if self.subject_key != "market" and (len(self.subject_key) != 6 or not self.subject_key.isdigit()):
@@ -53,7 +104,7 @@ class PipelineEvent:
             raise ValueError("event created_at must be timezone-aware")
         if self.deadline is not None and (self.deadline.tzinfo is None or self.deadline.utcoffset() is None):
             raise ValueError("event deadline must be timezone-aware")
-        frozen_payload = MappingProxyType({key: _freeze_payload_value(value) for key, value in self.payload.items()})
+        frozen_payload = freeze_json_object(self.payload)
         if self.event_type == "freeze":
             _validate_freeze_event(self, frozen_payload)
         object.__setattr__(self, "payload", frozen_payload)
@@ -72,24 +123,24 @@ class PipelineEvent:
             )
         )
 
-    def audit_record(self, *, status: str, error: str = "") -> dict[str, object]:
-        return {
-            "event_id": self.event_id,
-            "event_type": self.event_type,
-            "subject_key": self.subject_key,
-            "trade_date": self.trade_date,
-            "phase": self.phase,
-            "strategy": self.strategy.value if self.strategy is not None else "shared",
-            "priority": int(self.priority),
-            "data_version": self.data_version,
-            "config_version": self.config_version,
-            "status": status,
-            "created_at": self.created_at.isoformat(),
-            "deadline": self.deadline.isoformat() if self.deadline is not None else "",
-            "retry_count": self.retry_count,
-            "payload": _thaw_payload_value(self.payload),
-            "error": error,
-        }
+    def audit_record(self, *, status: EventStatus, error: str = "") -> EventAuditRecord:
+        return EventAuditRecord(
+            event_id=self.event_id,
+            event_type=self.event_type,
+            subject_key=self.subject_key,
+            trade_date=self.trade_date,
+            phase=self.phase,
+            strategy=self.strategy.value if self.strategy is not None else "shared",
+            priority=int(self.priority),
+            data_version=self.data_version,
+            config_version=self.config_version,
+            status=status,
+            created_at=self.created_at,
+            deadline=self.deadline,
+            retry_count=self.retry_count,
+            payload=self.payload,
+            error=error,
+        )
 
 
 def new_event(
@@ -104,7 +155,7 @@ def new_event(
     config_version: str,
     created_at: datetime,
     deadline: datetime | None = None,
-    payload: Mapping[str, object] | None = None,
+    payload: Mapping[str, JsonInput] | None = None,
 ) -> PipelineEvent:
     return PipelineEvent(
         event_id=uuid4().hex,
@@ -118,36 +169,28 @@ def new_event(
         config_version=config_version,
         created_at=created_at,
         deadline=deadline,
-        payload=payload or {},
+        payload=freeze_json_object(payload or {}),
     )
 
 
-def event_from_audit_record(record: Mapping[str, object]) -> PipelineEvent:
-    strategy_raw = str(record.get("strategy") or "shared")
-    payload = record.get("payload")
-    deadline_raw = str(record.get("deadline") or "")
-    retry_raw = record.get("retry_count", 0)
-    priority_raw = record.get("priority")
-    if not isinstance(retry_raw, int) or isinstance(retry_raw, bool):
-        raise ValueError("persisted event retry_count must be an integer")
-    if not isinstance(priority_raw, int) or isinstance(priority_raw, bool):
-        raise ValueError("persisted event priority must be an integer")
-    if not isinstance(payload, Mapping):
+def event_from_audit_record(record: EventAuditRecord) -> PipelineEvent:
+    if not isinstance(record.payload, Mapping):
         raise ValueError("persisted event payload must be a mapping")
+    strategy_raw = record.strategy
     return PipelineEvent(
-        event_id=str(record["event_id"]),
-        event_type=str(record["event_type"]),
-        subject_key=str(record["subject_key"]),
-        trade_date=str(record["trade_date"]),
-        phase=str(record["phase"]),
+        event_id=record.event_id,
+        event_type=record.event_type,
+        subject_key=record.subject_key,
+        trade_date=record.trade_date,
+        phase=record.phase,
         strategy=None if strategy_raw == "shared" else Strategy(strategy_raw),
-        priority=EventPriority(priority_raw),
-        data_version=str(record["data_version"]),
-        config_version=str(record["config_version"]),
-        created_at=datetime.fromisoformat(str(record["created_at"])),
-        deadline=datetime.fromisoformat(deadline_raw) if deadline_raw else None,
-        retry_count=retry_raw + 1,
-        payload=dict(payload),
+        priority=EventPriority(record.priority),
+        data_version=record.data_version,
+        config_version=record.config_version,
+        created_at=record.created_at,
+        deadline=record.deadline,
+        retry_count=record.retry_count + 1,
+        payload=record.payload,
     )
 
 
@@ -221,7 +264,7 @@ class BoundedEventQueue:
         with self._condition:
             self._replayed_count += max(0, count)
 
-    def status(self) -> dict[str, object]:
+    def status(self) -> dict[str, JsonValue]:
         with self._condition:
             return {
                 "capacity": self._maximum_size,
@@ -272,7 +315,7 @@ class BoundedEventQueue:
         return False
 
 
-def _coalescing_key(event: PipelineEvent) -> tuple[object, ...]:
+def _coalescing_key(event: PipelineEvent) -> tuple[str, str, Strategy | None, str, str]:
     return (
         event.trade_date,
         event.phase,
@@ -282,23 +325,7 @@ def _coalescing_key(event: PipelineEvent) -> tuple[object, ...]:
     )
 
 
-def _freeze_payload_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        if not all(isinstance(key, str) for key in value):
-            raise ValueError("event payload mapping keys must be strings")
-        return MappingProxyType({str(key): _freeze_payload_value(item) for key, item in value.items()})
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze_payload_value(item) for item in value)
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("event payload floats must be finite")
-        return value
-    if value is None or isinstance(value, (str, int, bool)):
-        return value
-    raise TypeError("event payload values must be JSON-compatible")
-
-
-def _validate_freeze_event(event: PipelineEvent, payload: Mapping[str, object]) -> None:
+def _validate_freeze_event(event: PipelineEvent, payload: JsonObject) -> None:
     freeze_raw = payload.get("freeze_strategies")
     if (
         event.subject_key != "market"
@@ -316,12 +343,13 @@ def _validate_freeze_event(event: PipelineEvent, payload: Mapping[str, object]) 
         raise ValueError("freeze_strategies cannot contain long")
 
 
-def _thaw_payload_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {str(key): _thaw_payload_value(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw_payload_value(item) for item in value]
-    return value
-
-
-__all__ = ["BoundedEventQueue", "EventPriority", "PipelineEvent", "event_from_audit_record", "new_event"]
+__all__ = [
+    "BoundedEventQueue",
+    "EventAuditRecord",
+    "EventDeadlineExpiredError",
+    "EventPriority",
+    "EventStatus",
+    "PipelineEvent",
+    "event_from_audit_record",
+    "new_event",
+]

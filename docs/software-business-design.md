@@ -75,8 +75,11 @@ entrypoints / web / infra -> application -> domain
   `recommendation` 负责过滤、板内评分、策略组合、融合、下行保护和稳定排名；`review`
   负责结构化复核值与本地风险映射；`outcome` 负责冻结推荐结果结算。领域包不得读取配置、
   时钟、网络、文件或数据库，不保留旧根级模块或动态兼容导出。
-- `application`：端口、事件、调度、用例、发布和冻结编排；不得导入 Flask、
-  `infra` 或旧包。
+- `application`：端口按行情、候选特征、报价、研究、参考/历史、快照、事件、复核和结果
+  读写能力拆分；流水线只接收不可变的依赖、选项和资源集合。跨线程事件使用有类型审计
+  记录、状态枚举与深层不可变 JSON 载荷，状态转换、deadline、latest-wins、冻结 CAS 和
+  停止顺序由应用层显式拥有；不得导入 Flask、`infra` 或旧包，也不得让
+  `Mapping[str, object]` 或共享可变字典穿越新的应用公共边界。
 - `infra`：配置、行情、交易日历、DeepSeek、缓存、SQLite、文件和外部适配器。
 - `web`：请求校验、序列化、SSE 和静态资源；只能调用应用层只读用例。
 - `entrypoints`：参数、进程生命周期和退出码。

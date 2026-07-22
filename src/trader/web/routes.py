@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from typing import cast
 
 from flask import Flask, Response, jsonify, render_template, request
 
+from trader.application.ports.types import JsonValue, thaw_json_value
 from trader.application.publisher import SnapshotPublisher, SubscriberLimitError
 from trader.application.queries import RecommendationQueries
 from trader.domain.recommendation.models import Strategy
@@ -47,7 +49,7 @@ def register_routes(app: Flask, services: WebServices) -> None:
 
     @app.get("/api/status")
     def status() -> Response:
-        return jsonify(services.status_provider())
+        return jsonify(thaw_json_value(cast(JsonValue, services.status_provider())))
 
     @app.get("/api/recommendations/<strategy_name>")
     def recommendations(strategy_name: str) -> Response | tuple[Response, int]:

@@ -12,11 +12,11 @@ from dataclasses import replace
 from datetime import date, datetime, timezone
 
 from trader.application.cache import BoundedCache, canonical_json_bytes
-from trader.application.ports import (
-    MarketDataDeadlineExceeded,
-    MarketDataFailed,
-    MarketDataNoData,
-    MarketDataUnavailable,
+from trader.application.ports.market import (
+    MarketDataDeadlineExceededError,
+    MarketDataFailedError,
+    MarketDataNoDataError,
+    MarketDataUnavailableError,
 )
 from trader.application.schedule import shanghai_now
 from trader.application.source_lanes import SourceLaneRegistry, SourceRequestSuperseded
@@ -134,7 +134,7 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
         if deadline is not None and completed_at >= deadline:
             with self._state_lock:
                 self._last_route_outcome = outcome
-            raise MarketDataDeadlineExceeded("market data deadline exceeded before canonical merge")
+            raise MarketDataDeadlineExceededError("market data deadline exceeded before canonical merge")
         if not successes:
             with self._state_lock:
                 self._last_route_outcome = outcome
@@ -154,7 +154,7 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
                     )
             if cached:
                 return cached
-            raise MarketDataUnavailable("market data unavailable: " + _parallel_error_message(results))
+            raise MarketDataUnavailableError("market data unavailable: " + _parallel_error_message(results))
         observations = tuple(observation for result in successes for observation in result.observations)
         with self._state_lock:
             previous = self._latest_snapshot
@@ -428,18 +428,18 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
     ) -> tuple[Sequence[MarketQuote], float]:
         if self._is_open(source):
             self._record_skipped_open(source)
-            raise MarketDataFailed(source, "circuit_open")
+            raise MarketDataFailedError(source, "circuit_open")
         started = self._monotonic()
         try:
             quotes = tuple(fetcher())
-        except MarketDataNoData as exc:
+        except MarketDataNoDataError as exc:
             self._record(source, False, started, str(exc))
             raise
         except Exception as exc:
             self._record(source, False, started, str(exc))
-            raise MarketDataFailed(source, str(exc)) from exc
+            raise MarketDataFailedError(source, str(exc)) from exc
         if len(quotes) < minimum_rows:
-            error = MarketDataNoData(f"{source}: only {len(quotes)} market rows")
+            error = MarketDataNoDataError(f"{source}: only {len(quotes)} market rows")
             self._record(source, False, started, str(error))
             raise error
         return quotes, started

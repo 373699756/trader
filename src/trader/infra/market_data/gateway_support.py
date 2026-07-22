@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Generic, TypeVar, cast
 
-from trader.application.ports import MarketDataNoData
+from trader.application.ports.market import MarketDataNoDataError
 from trader.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
@@ -239,7 +239,7 @@ def _cache_error_code(exc: Exception) -> str:
         return "timeout"
     if "circuit_open" in message:
         return "circuit_open"
-    if isinstance(exc, MarketDataNoData):
+    if isinstance(exc, MarketDataNoDataError):
         return "no_data"
     return "source_failed"
 

@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from trader.application.events import EventAuditRecord, EventStatus
+from trader.application.ports.snapshots import RecoverySummary
 from trader.domain.market.models import (
     Board,
     CrossSectionStats,
@@ -410,7 +412,7 @@ def test_recovery_commits_file_left_after_process_crash(tmp_path) -> None:
     recovered = SnapshotRepository(tmp_path, config_version="runtime-v2")
     result = recovered.recover()
 
-    assert result == {"recovered": 1, "quarantined": 0, "orphaned": 0}
+    assert result == RecoverySummary(recovered=1, quarantined=0, orphaned=0)
     assert recovered.load_frozen(Strategy.TOMORROW, "2026-07-16") is not None
 
 
@@ -445,7 +447,7 @@ def test_recovery_quarantines_hash_mismatch(tmp_path) -> None:
 
     result = SnapshotRepository(tmp_path, config_version="runtime-v2").recover()
 
-    assert result["quarantined"] == 1
+    assert result.quarantined == 1
     with connect(tmp_path / "runtime.sqlite3") as connection:
         status = connection.execute("SELECT status FROM frozen_snapshots").fetchone()[0]
     assert status == "quarantined"
@@ -464,7 +466,7 @@ def test_recovery_quarantines_committed_hash_mismatch_and_restores_previous_free
 
     result = SnapshotRepository(tmp_path, config_version="runtime-v2").recover()
 
-    assert result["quarantined"] == 1
+    assert result.quarantined == 1
     assert repository.load_frozen(Strategy.TOMORROW, "2026-07-17") is None
     assert repository.latest(Strategy.TOMORROW).snapshot_id == "snapshot-1"
 
@@ -483,7 +485,7 @@ def test_recovery_rejects_staged_manifest_version_mismatch(tmp_path) -> None:
 
     result = SnapshotRepository(tmp_path, config_version="runtime-v2").recover()
 
-    assert result["quarantined"] == 1
+    assert result.quarantined == 1
     assert repository.load_frozen(Strategy.TOMORROW, "2026-07-16") is None
 
 
@@ -522,24 +524,23 @@ def test_long_snapshot_cannot_be_frozen(tmp_path) -> None:
 def test_event_claim_is_compare_and_set_for_one_idempotency_key(tmp_path) -> None:
     repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
     repository.initialize()
-    event = {
-        "event_id": "event-1",
-        "event_type": "freeze",
-        "subject_key": "market",
-        "trade_date": "2026-07-16",
-        "phase": "midday",
-        "strategy": "shared",
-        "priority": 0,
-        "data_version": "tick:112000",
-        "config_version": "runtime-v2",
-        "status": "pending",
-        "created_at": NOW.isoformat(),
-        "deadline": "",
-        "retry_count": 0,
-        "payload": {"freeze_strategies": ["today"]},
-        "error": "",
-    }
-    duplicate = {**event, "event_id": "event-2"}
+    event = EventAuditRecord(
+        event_id="event-1",
+        event_type="freeze",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="midday",
+        strategy="shared",
+        priority=0,
+        data_version="tick:112000",
+        config_version="runtime-v2",
+        status=EventStatus.PENDING,
+        created_at=NOW,
+        deadline=None,
+        retry_count=0,
+        payload={"freeze_strategies": ["today"]},
+    )
+    duplicate = replace(event, event_id="event-2")
 
     assert repository.reserve_event(event) is True
     assert repository.reserve_event(duplicate) is False
@@ -552,8 +553,8 @@ def test_event_claim_is_compare_and_set_for_one_idempotency_key(tmp_path) -> Non
         barrier.wait(timeout=2.0)
         claimed = candidate_repository.compare_and_set_event(
             "event-1",
-            expected_status="pending",
-            status="running",
+            expected_status=EventStatus.PENDING,
+            status=EventStatus.RUNNING,
             retry_count=1,
         )
         with result_lock:
@@ -571,17 +572,17 @@ def test_event_claim_is_compare_and_set_for_one_idempotency_key(tmp_path) -> Non
     assert (
         repository.compare_and_set_event(
             "event-1",
-            expected_status="pending",
-            status="success",
+            expected_status=EventStatus.PENDING,
+            status=EventStatus.SUCCESS,
             retry_count=1,
         )
         is False
     )
     stored = repository.list_events(cursor=0, limit=10)
     assert len(stored) == 1
-    assert stored[0]["event_id"] == "event-1"
-    assert stored[0]["status"] == "running"
-    assert stored[0]["retry_count"] == 1
+    assert stored[0].event_id == "event-1"
+    assert stored[0].status is EventStatus.RUNNING
+    assert stored[0].retry_count == 1
 
 
 class SimulatedCrash(RuntimeError):

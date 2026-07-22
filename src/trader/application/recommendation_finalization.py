@@ -8,7 +8,7 @@ from datetime import datetime
 from types import MappingProxyType
 
 from trader.application.policy import RecommendationPolicy
-from trader.application.ports import DeepSeekReviewPort
+from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.recommendation_replay import (
     REPLAY_ALGORITHM_VERSION,
     REPLAY_SCHEMA_VERSION,

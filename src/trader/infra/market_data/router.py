@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 from time import perf_counter
 
-from trader.application.ports import MarketDataFailed, MarketDataNoData
+from trader.application.ports.market import MarketDataFailedError, MarketDataNoDataError
 
 
 class VendorSeverity(str, Enum):
@@ -49,16 +49,16 @@ class RouteOutcome:
     fallback_reason: str | None = None
 
 
-class RouteNoData(MarketDataNoData):
-    """`MarketDataNoData` carrying diagnostic routing outcome."""
+class RouteNoData(MarketDataNoDataError):
+    """`MarketDataNoDataError` carrying diagnostic routing outcome."""
 
     def __init__(self, message: str, outcome: RouteOutcome) -> None:
         super().__init__(message)
         self.route_outcome = outcome
 
 
-class RouteFailed(MarketDataFailed):
-    """`MarketDataFailed` carrying diagnostic routing outcome."""
+class RouteFailed(MarketDataFailedError):
+    """`MarketDataFailedError` carrying diagnostic routing outcome."""
 
     def __init__(self, vendor: str, error: str, outcome: RouteOutcome) -> None:
         super().__init__(vendor, error)
@@ -76,8 +76,8 @@ def route(
     fallback to the next vendor.  Optional vendors record degradations and do
     not break the chain.
 
-    Failures are represented as ``MarketDataFailed``.  Empty/no-data results
-    are represented as ``MarketDataNoData`` when all required routes are
+    Failures are represented as ``MarketDataFailedError``.  Empty/no-data results
+    are represented as ``MarketDataNoDataError`` when all required routes are
     exhausted.
     """
     outcomes: list[VendorResult] = []
@@ -88,7 +88,7 @@ def route(
         start = perf_counter()
         try:
             value: object = route_item.fetch()
-        except MarketDataNoData as exc:
+        except MarketDataNoDataError as exc:
             message = _strip_vendor_prefix(route_item.name, str(exc)[:500] or on_no_data)
             skipped = route_item.severity is VendorSeverity.OPTIONAL
             status = "skipped" if skipped else "no_data"

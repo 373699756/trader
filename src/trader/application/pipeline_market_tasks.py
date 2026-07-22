@@ -10,14 +10,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from trader.application.cadence import PipelineTask
-from trader.application.events import EventDeadlineExpired
+from trader.application.events import EventDeadlineExpiredError
 from trader.application.pipeline_workers import (
     data_future,
     store_candidate_selection,
     submit_required,
     urgent_data_future,
 )
-from trader.application.ports import MarketDataDeadlineExceeded, MarketDataUnavailable
+from trader.application.ports.market import MarketDataDeadlineExceededError, MarketDataUnavailableError
 from trader.application.schedule import MarketPhase, trade_date_at
 from trader.domain.recommendation.models import Strategy
 
@@ -52,7 +52,7 @@ def _refresh_candidate_quotes_on_workers(
     features = tuple(
         _run_urgent_market_data_task(
             pipeline,
-            pipeline._market_data.refresh_candidate_quotes,
+            pipeline._quotes.refresh_candidate_quotes,
             codes,
             now,
             force=phase is MarketPhase.FINAL_QUOTE,
@@ -73,12 +73,14 @@ def _refresh_market_news_on_workers(
         return
     _run_market_data_task(
         pipeline,
-        pipeline._market_data.refresh_market_news,
+        pipeline._research.refresh_market_news,
         codes,
         now,
         deadline=deadline,
     )
-    pipeline._candidate_features = tuple(pipeline._market_data.read_candidate_features(pipeline._candidate_codes, now))
+    pipeline._candidate_features = tuple(
+        pipeline._candidate_data.read_candidate_features(pipeline._candidate_codes, now)
+    )
 
 
 def _refresh_stock_risk_on_workers(
@@ -90,7 +92,7 @@ def _refresh_stock_risk_on_workers(
     if codes:
         _run_market_data_task(
             pipeline,
-            pipeline._market_data.refresh_stock_risk,
+            pipeline._research.refresh_stock_risk,
             codes,
             now,
             deadline=deadline,
@@ -103,13 +105,13 @@ def _refresh_reference_data_on_workers(
     phase: MarketPhase,
 ) -> None:
     codes = _active_codes(pipeline)
-    scheduler = getattr(pipeline._market_data, "schedule_reference_data", None)
+    scheduler = pipeline._references.schedule_reference_data
     if callable(scheduler):
         scheduler(codes, now, force=phase is MarketPhase.AFTER_CLOSE)
         return
     _run_market_data_task(
         pipeline,
-        pipeline._market_data.refresh_reference_data,
+        pipeline._references.refresh_reference_data,
         codes,
         now,
         force=phase is MarketPhase.AFTER_CLOSE,
@@ -150,7 +152,7 @@ def _refresh_candidates_on_workers(
 ) -> None:
     market_future = data_future(
         pipeline,
-        pipeline._market_data.fetch_market_features,
+        pipeline._market_full.fetch_market_features,
         now,
         force=force,
         deadline=deadline,
@@ -163,11 +165,11 @@ def _refresh_candidates_on_workers(
             event_type=PipelineTask.FULL_MARKET.value,
         )
         market_features = tuple(market_result)
-    except MarketDataDeadlineExceeded as exc:
-        raise EventDeadlineExpired(
+    except MarketDataDeadlineExceededError as exc:
+        raise EventDeadlineExpiredError(
             f"event deadline expired during execution: {PipelineTask.FULL_MARKET.value}"
         ) from exc
-    except MarketDataUnavailable as exc:
+    except MarketDataUnavailableError as exc:
         reason = str(exc)[:500]
         _LOGGER.warning("candidate refresh degraded during %s: %s", phase.value, reason)
         pipeline._state.increment("market_refresh_failures")
@@ -219,12 +221,12 @@ def _event_result(
     remaining = (deadline - pipeline._now()).total_seconds()
     if remaining <= 0.0:
         future.cancel()
-        raise EventDeadlineExpired(f"event deadline expired during execution: {event_type}")
+        raise EventDeadlineExpiredError(f"event deadline expired during execution: {event_type}")
     try:
         result = future.result(timeout=remaining)
     except FutureTimeoutError as exc:
         future.cancel()
-        raise EventDeadlineExpired(f"event deadline expired during execution: {event_type}") from exc
+        raise EventDeadlineExpiredError(f"event deadline expired during execution: {event_type}") from exc
     if pipeline._now() >= deadline:
-        raise EventDeadlineExpired(f"event deadline expired during execution: {event_type}")
+        raise EventDeadlineExpiredError(f"event deadline expired during execution: {event_type}")
     return result

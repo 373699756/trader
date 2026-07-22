@@ -5,11 +5,21 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Mapping
 from datetime import datetime
-from typing import Any
 
 from trader.application.cadence import CadencePlanner, PipelineTask
 from trader.application.events import BoundedEventQueue
-from trader.application.ports import EventAuditPort, MarketDataPort, TradingCalendarPort
+from trader.application.ports.clock import TradingCalendarPort
+from trader.application.ports.events import EventAuditPort
+from trader.application.ports.market import (
+    CandidateFeatureReaderPort,
+    FullMarketReaderPort,
+    MarketMetadataPort,
+    QuoteReaderPort,
+    ReferenceDataPort,
+    ResearchReaderPort,
+)
+from trader.application.ports.reviews import DeepSeekReviewPort
+from trader.application.ports.snapshots import SnapshotObservabilityPort, SnapshotReaderPort, SnapshotWriterPort
 from trader.application.publisher import SnapshotPublisher
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
@@ -21,7 +31,12 @@ from trader.domain.recommendation.models import (
 
 
 class PipelineState:
-    _market_data: MarketDataPort
+    _market_full: FullMarketReaderPort
+    _candidate_data: CandidateFeatureReaderPort
+    _quotes: QuoteReaderPort
+    _research: ResearchReaderPort
+    _references: ReferenceDataPort
+    _market_metadata: MarketMetadataPort
     _calendar: TradingCalendarPort
     _event_audit: EventAuditPort
     _publisher: SnapshotPublisher
@@ -31,8 +46,10 @@ class PipelineState:
     _candidate_codes: tuple[str, ...]
     _now: Callable[[], datetime]
     _config_version: str
-    _repository: Any
-    _reviews: Any
+    _repository: SnapshotReaderPort
+    _snapshot_writer: SnapshotWriterPort
+    _snapshot_observability: SnapshotObservabilityPort
+    _reviews: DeepSeekReviewPort | None
     _live_overlays: dict[tuple[Strategy, str], LiveOverlay]
     _scheduled_inflight: set[PipelineTask]
     _session_snapshot_ids: set[str]
@@ -40,8 +57,8 @@ class PipelineState:
     _after_close_retry_at: datetime | None
     _after_close_retry_attempt: int
     _market_features: tuple[FeatureSnapshot, ...]
-    _lifecycle_lock: Any
-    _cadence_lock: Any
+    _lifecycle_lock: threading.Lock
+    _cadence_lock: threading.Lock
     _worker: threading.Thread | None
     _stopped: bool
     _accepting: bool

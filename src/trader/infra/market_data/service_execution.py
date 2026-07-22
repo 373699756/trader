@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import ParamSpec, TypeVar
 
 from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity
-from trader.application.ports import MarketDataDeadlineExceeded
+from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.schedule import phase_at, shanghai_now
 from trader.application.source_lanes import SourceLaneRegistry
 from trader.application.workers import BoundedExecutor
@@ -122,13 +122,13 @@ class MarketTaskRunner:
             result = future.result(timeout=remaining)
         except FutureTimeoutError as exc:
             future.cancel()
-            raise MarketDataDeadlineExceeded("data source task exceeded its batch deadline") from exc
+            raise MarketDataDeadlineExceededError("data source task exceeded its batch deadline") from exc
         self.ensure_before_deadline(deadline)
         return result
 
     def ensure_before_deadline(self, deadline: datetime | None) -> None:
         if deadline is not None and self.wall_clock() >= deadline:
-            raise MarketDataDeadlineExceeded("market-data result completed after its batch deadline")
+            raise MarketDataDeadlineExceededError("market-data result completed after its batch deadline")
 
 
 __all__ = ["MarketTaskRunner"]

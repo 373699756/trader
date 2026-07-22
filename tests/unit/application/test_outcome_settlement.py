@@ -57,6 +57,7 @@ def test_after_close_settlement_records_benchmark_and_due_outcome(application_fe
     service = OutcomeSettlementService(
         _History(),
         repository,
+        repository,
         session_distance=lambda start, end: (date.fromisoformat(end) - date.fromisoformat(start)).days,
     )
 
@@ -76,6 +77,7 @@ def test_settlement_skips_horizons_that_are_not_due(application_feature_factory)
     repository = _Repository()
     service = OutcomeSettlementService(
         _History(),
+        repository,
         repository,
         session_distance=lambda _start, _end: 0,
     )

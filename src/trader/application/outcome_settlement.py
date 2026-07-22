@@ -7,7 +7,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.application.ports import MarketDataPort, OutcomeRepositoryPort
+from trader.application.ports.market import OutcomePriceReaderPort
+from trader.application.ports.outcomes import OutcomeTargetReaderPort, OutcomeWriterPort
 from trader.application.schedule import shanghai_now
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.outcome.evaluation import OutcomeEvaluationRequest, evaluate_outcome
@@ -26,14 +27,16 @@ class SettlementResult:
 class OutcomeSettlementService:
     def __init__(
         self,
-        market_data: MarketDataPort,
-        repository: OutcomeRepositoryPort,
+        market_data: OutcomePriceReaderPort,
+        targets: OutcomeTargetReaderPort,
+        writer: OutcomeWriterPort,
         *,
         session_distance: Callable[[str, str], int | None],
         target_limit: int = 500,
     ) -> None:
         self._market_data = market_data
-        self._repository = repository
+        self._targets = targets
+        self._writer = writer
         self._session_distance = session_distance
         self._target_limit = target_limit
 
@@ -45,10 +48,10 @@ class OutcomeSettlementService:
         local = shanghai_now(now)
         benchmark = _equal_weight_benchmark(local.date().isoformat(), market_features)
         if benchmark is not None:
-            self._repository.record_benchmark_return(benchmark, observed_at=now)
+            self._writer.record_benchmark_return(benchmark, observed_at=now)
         else:
             return SettlementResult(0, 0, 0, False)
-        targets = tuple(self._repository.pending_outcome_targets(limit=self._target_limit))
+        targets = tuple(self._targets.pending_outcome_targets(limit=self._target_limit))
         if not targets:
             return SettlementResult(0, 0, 0, benchmark is not None)
         codes = tuple(dict.fromkeys(target.stock_code for target in targets))
@@ -67,9 +70,7 @@ class OutcomeSettlementService:
             for horizon in _horizons(target.strategy):
                 if elapsed < horizon:
                     continue
-                loaded_benchmarks = tuple(
-                    self._repository.benchmark_returns_after(target.recommend_date, limit=horizon)
-                )
+                loaded_benchmarks = tuple(self._targets.benchmark_returns_after(target.recommend_date, limit=horizon))
                 benchmarks = self._aligned_benchmarks(target.recommend_date, loaded_benchmarks, horizon)
                 expected_dates = tuple(item.trade_date for item in benchmarks)
                 outcomes.append(
@@ -86,7 +87,7 @@ class OutcomeSettlementService:
                     )
                 )
         if outcomes:
-            self._repository.save_recommendation_outcomes(outcomes)
+            self._writer.save_recommendation_outcomes(outcomes)
         return SettlementResult(
             target_count=len(targets),
             outcome_count=len(outcomes),

@@ -6,13 +6,13 @@ import hashlib
 from collections.abc import Sequence
 from datetime import datetime
 
-from trader.application.ports import MarketDataPort
+from trader.application.ports.market import CandidateFeatureReaderPort
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import Strategy
 
 
 def fetch_strategy_features(
-    market_data: MarketDataPort,
+    market_data: CandidateFeatureReaderPort,
     strategy: Strategy,
     codes: Sequence[str],
     observed_at: datetime,
@@ -29,7 +29,7 @@ def fetch_strategy_features(
 
 
 def read_strategy_features(
-    market_data: MarketDataPort,
+    market_data: CandidateFeatureReaderPort,
     strategy: Strategy,
     codes: Sequence[str],
     observed_at: datetime,

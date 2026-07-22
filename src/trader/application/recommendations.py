@@ -11,7 +11,7 @@ from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import ScoringCacheContext
 from trader.application.cache import request_fingerprint
 from trader.application.policy import RecommendationPolicy
-from trader.application.ports import DeepSeekReviewPort
+from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.recommendation_finalization import PreparedSnapshot, RecommendationFinalizationMixin
 from trader.application.recommendation_replay import (
     RecommendationReplayMixin,

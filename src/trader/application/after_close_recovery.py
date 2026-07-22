@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from trader.application.candidate_features import bind_strategy_input_version, fetch_strategy_features
 from trader.application.pipeline_workers import data_future, persist, store_candidate_selection, submit_required
-from trader.application.ports import MarketDataUnavailable
+from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.recommendation_support import _snapshot_id
 from trader.application.schedule import shanghai_now, trade_date_at
 from trader.domain.market.models import (
@@ -173,7 +173,7 @@ def _rebuild_from_close(
 ) -> tuple[RecommendationSnapshot, ...]:
     try:
         market_features = _fetch_close_market(pipeline, now, deadline=deadline)
-    except (MarketDataUnavailable, OSError, RuntimeError, TypeError, ValueError) as exc:
+    except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
         pipeline._state.increment("after_close_rebuild_failures")
         pipeline._state.record_error(f"after-close market recovery degraded: {str(exc)[:400]}")
         return ()
@@ -198,7 +198,7 @@ def _rebuild_from_close(
         try:
             candidate_features, data_version = _strategy_close_features(pipeline, strategy, codes, now)
             if codes and not _complete_requested_close_features(candidate_features, codes, now):
-                raise MarketDataUnavailable(f"{strategy.value} closing candidate quotes are incomplete")
+                raise MarketDataUnavailableError(f"{strategy.value} closing candidate quotes are incomplete")
             snapshot = _build_local_close_snapshot(
                 pipeline,
                 strategy,
@@ -211,7 +211,7 @@ def _rebuild_from_close(
                 now,
                 max_age,
             )
-        except (MarketDataUnavailable, OSError, RuntimeError, TypeError, ValueError) as exc:
+        except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             pipeline._state.increment("after_close_strategy_failures")
             pipeline._state.record_error(f"{strategy.value} close rebuild degraded: {str(exc)[:400]}")
             return ()
@@ -310,13 +310,13 @@ def _fetch_close_market(
         return tuple(
             data_future(
                 pipeline,
-                pipeline._market_data.fetch_market_features,
+                pipeline._market_full.fetch_market_features,
                 now,
                 force=True,
                 deadline=deadline,
             ).result()
         )
-    return tuple(pipeline._market_data.fetch_market_features(now, force=True, deadline=deadline))
+    return tuple(pipeline._market_full.fetch_market_features(now, force=True, deadline=deadline))
 
 
 def _fetch_close_candidates(
@@ -329,14 +329,14 @@ def _fetch_close_candidates(
     if pipeline._persistence_running:
         features = data_future(
             pipeline,
-            pipeline._market_data.refresh_candidate_quotes,
+            pipeline._quotes.refresh_candidate_quotes,
             tuple(codes),
             now,
             force=True,
             deadline=deadline,
         ).result()
     else:
-        features = pipeline._market_data.refresh_candidate_quotes(
+        features = pipeline._quotes.refresh_candidate_quotes(
             tuple(codes),
             now,
             force=True,
@@ -357,12 +357,12 @@ def _strategy_close_features(
         return data_future(
             pipeline,
             fetch_strategy_features,
-            pipeline._market_data,
+            pipeline._candidate_data,
             strategy,
             tuple(codes),
             now,
         ).result()
-    return fetch_strategy_features(pipeline._market_data, strategy, tuple(codes), now)
+    return fetch_strategy_features(pipeline._candidate_data, strategy, tuple(codes), now)
 
 
 def _preselect_close(
@@ -399,7 +399,7 @@ def _preselect_close(
 def _commit_fallback(pipeline: RecommendationPipeline, snapshot: RecommendationSnapshot) -> None:
     if pipeline._repository.load_frozen(snapshot.strategy, snapshot.trade_date) is not None:
         return
-    persist(pipeline, pipeline._repository.freeze, snapshot)
+    persist(pipeline, pipeline._snapshot_writer.freeze, snapshot)
     pipeline._frozen_keys.add((snapshot.strategy, snapshot.trade_date))
     pipeline._state.mark_frozen(snapshot)
     pipeline._publisher.publish(snapshot)
@@ -437,7 +437,7 @@ def _save_closing_overlay(
         quotes=quotes,
         closing=len(quotes) == len(snapshot.recommendations),
     )
-    if persist(pipeline, pipeline._repository.save_live_overlay, overlay):
+    if persist(pipeline, pipeline._snapshot_writer.save_live_overlay, overlay):
         pipeline._live_overlays[(snapshot.strategy, snapshot.trade_date)] = overlay
         pipeline._state.publish_overlay(overlay)
         pipeline._publisher.publish_overlay(overlay)

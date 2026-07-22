@@ -14,10 +14,10 @@ SOURCE_ROOT = PROJECT_ROOT / "src" / "trader"
 SELECTED_RULES = ("C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "N")
 EXPECTED_COUNTS = {
     "C901": 37,
-    "N818": 7,
+    "N818": 5,
     "PLR0911": 15,
     "PLR0912": 15,
-    "PLR0913": 59,
+    "PLR0913": 58,
     "PLR0915": 12,
 }
 

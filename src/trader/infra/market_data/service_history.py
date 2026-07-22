@@ -13,7 +13,7 @@ from typing import ParamSpec, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 from trader.application.cache import build_cache_identity, request_fingerprint
-from trader.application.ports import MarketDataDeadlineExceeded
+from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.workers import BoundedExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.history import DailyBar, HistoryProfile, summarize_history_metrics
@@ -107,7 +107,7 @@ class HistoryStore:
                 lane_future.cancel()
                 with self._lock:
                     self._history_error_count += 1
-                raise MarketDataDeadlineExceeded("history source lane exceeded its batch deadline") from exc
+                raise MarketDataDeadlineExceededError("history source lane exceeded its batch deadline") from exc
             self._runner.ensure_before_deadline(deadline)
             return lane_result
         result = (
@@ -155,7 +155,7 @@ class HistoryStore:
                         future.cancel()
                     with self._lock:
                         self._history_error_count += len(pending)
-                    raise MarketDataDeadlineExceeded("history preload exceeded its batch deadline")
+                    raise MarketDataDeadlineExceededError("history preload exceeded its batch deadline")
                 completed = iter(completed_set)
             self._runner.ensure_before_deadline(deadline)
             pending_entries: dict[str, _HistoryEntry] = {}

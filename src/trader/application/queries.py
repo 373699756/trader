@@ -8,12 +8,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.application.ports import (
-    CurrentQuoteReaderPort,
-    CurrentSnapshotReaderPort,
-    EventReaderPort,
-    SnapshotRepositoryPort,
-)
+from trader.application.events import EventAuditRecord
+from trader.application.ports.events import EventReaderPort
+from trader.application.ports.market import QuoteReaderPort
+from trader.application.ports.snapshots import CurrentSnapshotReaderPort, SnapshotReaderPort
 from trader.application.schedule import freeze_due_at, shanghai_now, trade_date_at
 from trader.domain.market.models import LiveQuote
 from trader.domain.recommendation.models import (
@@ -48,11 +46,11 @@ class RecommendationQueries:
 
     def __init__(
         self,
-        repository: SnapshotRepositoryPort,
+        repository: SnapshotReaderPort,
         events: EventReaderPort,
         *,
         now: Callable[[], datetime],
-        current_quote_reader: CurrentQuoteReaderPort | None = None,
+        current_quote_reader: QuoteReaderPort | None = None,
         current_snapshot_reader: CurrentSnapshotReaderPort | None = None,
     ) -> None:
         self._repository = repository
@@ -166,7 +164,7 @@ class RecommendationQueries:
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
         return self._repository.recommendation_dates(strategy)
 
-    def pipeline_events(self, *, cursor: int, limit: int) -> Sequence[Mapping[str, object]]:
+    def pipeline_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
         return self._events.list_events(cursor=cursor, limit=limit)
 
     def today(self) -> str:

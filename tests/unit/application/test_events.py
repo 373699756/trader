@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from trader.application.cadence import PERIODIC_TASKS, PipelineTask, ScheduledPipelineTask
-from trader.application.events import BoundedEventQueue, EventPriority, new_event
+from trader.application.events import BoundedEventQueue, EventPriority, EventStatus, new_event
 from trader.application.pipeline_submission import (
     _after_close_retry_delay,
     _scheduled_task_deadline,
@@ -206,7 +206,8 @@ def test_event_audit_fields_and_idempotency_key_are_complete(utc_now) -> None:
     event = _event(utc_now, EventPriority.MARKET_QUOTES, "market", data_version="quote-v3")
 
     assert event.idempotency_key == "2026-07-16:today_main:shared:quote:market:quote-v3"
-    assert set(event.audit_record(status="pending")) == {
+    assert set(event.audit_record(status=EventStatus.PENDING).to_json()) == {
+        "sequence",
         "event_id",
         "event_type",
         "subject_key",
@@ -246,9 +247,9 @@ def test_event_payload_is_deeply_owned_and_audit_record_is_json_shaped(utc_now) 
 
     assert event.payload["freeze_strategies"] == ("today",)
     assert event.payload["nested"] == {"codes": ("600001",)}
-    assert event.audit_record(status="pending")["payload"] == {
-        "freeze_strategies": ["today"],
-        "nested": {"codes": ["600001"]},
+    assert event.audit_record(status=EventStatus.PENDING).payload == {
+        "freeze_strategies": ("today",),
+        "nested": {"codes": ("600001",)},
     }
 
 

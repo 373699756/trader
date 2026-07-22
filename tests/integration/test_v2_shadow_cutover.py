@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from trader.application.pipeline import RecommendationPipeline
+from tests.pipeline_factory import build_pipeline
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
@@ -53,7 +53,7 @@ def _run_shadow(runtime_dir: Path, recommendation_policy, application_feature_fa
         for index in range(1, 7)
     )
     repository = SnapshotRepository(runtime_dir, config_version="shadow-config-v2")
-    pipeline = RecommendationPipeline(
+    pipeline = build_pipeline(
         StaticMarketData(features),
         TradingDayCalendar(),
         None,

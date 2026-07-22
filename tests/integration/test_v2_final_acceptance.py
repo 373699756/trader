@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 
-from trader.application.pipeline import RecommendationPipeline
+from tests.pipeline_factory import build_pipeline
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
@@ -240,7 +240,7 @@ def test_configured_deepseek_candidate_makes_physical_call_and_status_reports_qu
         minimum_known_dimensions=2,
         now=lambda: now,
     )
-    pipeline = RecommendationPipeline(
+    pipeline = build_pipeline(
         StaticMarketData((feature,)),
         TradingDayCalendar(),
         reviewer,

@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, ParamSpec, TypeVar
 from trader.application.after_close_recovery import recover_after_close_snapshots
 from trader.application.cadence import PipelineTask, task_execution_budget_seconds
 from trader.application.candidate_features import fetch_strategy_features, read_strategy_features
-from trader.application.events import EventDeadlineExpired, PipelineEvent
-from trader.application.ports import MarketDataUnavailable
+from trader.application.events import EventDeadlineExpiredError, PipelineEvent
+from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.recommendations import PreparedSnapshot
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
 from trader.domain.market.models import FeatureSnapshot
@@ -147,7 +147,7 @@ def _handle_current_quotes(
     try:
         future = data_future(
             pipeline,
-            pipeline._market_data.fetch_market_features,
+            pipeline._market_full.fetch_market_features,
             now,
             force=True,
             deadline=event.deadline,
@@ -159,7 +159,7 @@ def _handle_current_quotes(
             event_type=PipelineTask.CURRENT_QUOTES.value,
         )
         features = tuple(market_result)
-    except (MarketDataUnavailable, OSError, RuntimeError, TypeError, ValueError) as exc:
+    except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
         pipeline._state.increment("current_quote_recovery_failures")
         pipeline._state.record_error(f"current quote index recovery degraded: {str(exc)[:400]}")
         return ()
@@ -191,7 +191,7 @@ def _handle_industry_heat(
     phase: MarketPhase,
     event: PipelineEvent,
 ) -> tuple[RecommendationSnapshot, ...]:
-    market_features = tuple(_run_market_data_task(pipeline, pipeline._market_data.refresh_industry_heat, now))
+    market_features = tuple(_run_market_data_task(pipeline, pipeline._research.refresh_industry_heat, now))
     if market_features:
         pipeline._market_features = market_features
     return ()
@@ -332,7 +332,7 @@ def _score_strategies_on_workers(
         strategy_future = data_future(
             pipeline,
             feature_reader,
-            pipeline._market_data,
+            pipeline._candidate_data,
             strategy,
             codes,
             now,
@@ -343,7 +343,7 @@ def _score_strategies_on_workers(
     for strategy, requested_codes, strategy_data_future in strategy_inputs:
         try:
             features, data_version = strategy_data_future.result()
-        except (MarketDataUnavailable, OSError, RuntimeError, TypeError, ValueError) as exc:
+        except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             pipeline._state.increment("strategy_data_failures")
             pipeline._state.record_error(f"{strategy.value} data degraded: {str(exc)[:400]}")
             continue
@@ -432,7 +432,7 @@ def _score_strategies_on_workers(
     for prepared in prepared_snapshots:
         if completion_deadline is not None and pipeline._now() >= completion_deadline:
             pipeline._state.increment("score_results_discarded_late")
-            raise EventDeadlineExpired(f"event deadline expired during execution: {PipelineTask.SCORE.value}")
+            raise EventDeadlineExpiredError(f"event deadline expired during execution: {PipelineTask.SCORE.value}")
         reviews = review_results.get(prepared.strategy, {})
         snapshot = replace(
             pipeline._engine.finalize_snapshot(prepared, reviews),
@@ -442,7 +442,7 @@ def _score_strategies_on_workers(
             prepared.strategy,
             round((time.perf_counter() - scoring_started) * 1000.0, 3),
         )
-        persist(pipeline, pipeline._repository.publish, snapshot)
+        persist(pipeline, pipeline._snapshot_writer.publish, snapshot)
         pipeline._state.publish(snapshot)
         pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
         pipeline._publisher.publish(snapshot)

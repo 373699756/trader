@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.application.ports import MarketDataFailed, MarketDataNoData
+from trader.application.ports.market import MarketDataFailedError, MarketDataNoDataError
 from trader.infra.market_data.router import RouteOutcome, VendorRoute, VendorSeverity, route
 
 
@@ -48,7 +48,7 @@ def test_market_data_router_prefers_no_data_over_failures() -> None:
     def required_fail() -> tuple[tuple[str], ...]:
         raise RuntimeError("offline")
 
-    with pytest.raises(MarketDataNoData, match="insufficient rows") as exc_info:
+    with pytest.raises(MarketDataNoDataError, match="insufficient rows") as exc_info:
         route(
             (
                 VendorRoute("eastmoney", required_fail, VendorSeverity.REQUIRED),
@@ -71,7 +71,7 @@ def test_market_data_router_raises_market_data_failed_with_vendor_summary() -> N
     def failing() -> tuple[tuple[str], ...]:
         raise RuntimeError("timeout")
 
-    with pytest.raises(MarketDataFailed, match=r"sina: .*timeout") as exc_info:
+    with pytest.raises(MarketDataFailedError, match=r"sina: .*timeout") as exc_info:
         route(
             (
                 VendorRoute("eastmoney", failing, VendorSeverity.REQUIRED),
@@ -91,7 +91,7 @@ def test_market_data_router_raises_market_data_failed_with_vendor_summary() -> N
 
 def test_market_data_router_marks_circuit_open_as_skipped() -> None:
     def circuit_open() -> tuple[tuple[str], ...]:
-        raise MarketDataFailed("eastmoney", "circuit_open")
+        raise MarketDataFailedError("eastmoney", "circuit_open")
 
     outcome: RouteOutcome = route(
         (

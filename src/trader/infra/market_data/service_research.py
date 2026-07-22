@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import ParamSpec, TypeVar, cast
 
-from trader.application.ports import MarketDataDeadlineExceeded
+from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.workers import borrow_executor, submit_or_run_inline
 from trader.domain.market.research import ResearchObservation
 from trader.infra.market_data.akshare import AkshareResearchClient
@@ -190,7 +190,7 @@ class ResearchLoader:
                     self._error_count += 1
                     self._timeout_count += 1
                     self._last_error = "research_batch_deadline"
-                raise MarketDataDeadlineExceeded("research source lane exceeded its batch deadline") from exc
+                raise MarketDataDeadlineExceededError("research source lane exceeded its batch deadline") from exc
             self._runner.ensure_before_deadline(deadline)
             return lane_result
         now = self._monotonic()
@@ -279,7 +279,7 @@ class ResearchLoader:
                     self._error_count += len(pending)
                     self._timeout_count += len(pending)
                     self._last_error = "research_batch_deadline"
-                raise MarketDataDeadlineExceeded("research preload exceeded its batch deadline")
+                raise MarketDataDeadlineExceededError("research preload exceeded its batch deadline")
             self._runner.ensure_before_deadline(deadline)
             for future in completed:
                 self._runner.ensure_before_deadline(deadline)

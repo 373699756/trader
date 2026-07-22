@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, cast
 
 from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity, canonical_json_bytes
-from trader.application.ports import MarketDataFailed, MarketDataNoData
+from trader.application.ports.market import MarketDataFailedError, MarketDataNoDataError
 from trader.application.schedule import phase_at, shanghai_now
 from trader.application.source_lanes import (
     SourceLaneRegistry,
@@ -157,7 +157,7 @@ class MarketGatewaySourcesMixin:
                 deadline=deadline,
                 minimum_rows=self._minimum_market_rows,
             )
-        except MarketDataNoData as exc:
+        except MarketDataNoDataError as exc:
             return _SourceFetch(
                 source,
                 "no_data",
@@ -191,7 +191,7 @@ class MarketGatewaySourcesMixin:
         self._record_planned(source)
         if not _before_deadline(self._wall_clock(), deadline):
             self._record_deadline(source)
-            raise MarketDataFailed(source, "late")
+            raise MarketDataFailedError(source, "late")
         identity = self._cache_identity(dataset, source, subject_key, request, observed_at)
 
         def load() -> tuple[SourceObservation, ...]:
@@ -199,7 +199,7 @@ class MarketGatewaySourcesMixin:
             completed_at = max(observed_at, self._wall_clock())
             if deadline is not None and completed_at >= deadline:
                 self._record_fetch_result(source, False, started, "deadline")
-                raise MarketDataFailed(source, "late")
+                raise MarketDataFailedError(source, "late")
             observations = tuple(
                 observation_from_quote(quote, source=source, observed_at=completed_at) for quote in quotes
             )
@@ -214,7 +214,7 @@ class MarketGatewaySourcesMixin:
         if self._cache is not None and not force:
             lookup = self._cache.get(identity)
             if lookup is not None and lookup.state == "negative":
-                raise MarketDataFailed(source, lookup.error_code or "negative_cache")
+                raise MarketDataFailedError(source, lookup.error_code or "negative_cache")
             if lookup is not None and lookup.value is not None:
                 observations = cast(tuple[SourceObservation, ...], lookup.value)
                 if lookup.state != "fresh":
@@ -264,7 +264,7 @@ class MarketGatewaySourcesMixin:
                 completed_at = max(observed_at, self._wall_clock())
                 if deadline is not None and completed_at >= deadline:
                     self._record_fetch_result(source, False, started, "deadline")
-                    raise MarketDataFailed(source, "late")
+                    raise MarketDataFailedError(source, "late")
                 observations = tuple(
                     observation_from_quote(quote, source=source, observed_at=completed_at) for quote in quotes
                 )

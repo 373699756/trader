@@ -4,6 +4,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
+from trader.application.events import EventAuditRecord, EventStatus
+from trader.application.ports.snapshots import RecoverySummary
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
@@ -911,7 +913,26 @@ def test_validation_errors_keep_request_context() -> None:
 
 
 def test_event_query_validates_cursor_and_limit() -> None:
-    repository = MemoryReadRepository(events=({"sequence": 3, "status": "success"},))
+    repository = MemoryReadRepository(
+        events=(
+            EventAuditRecord(
+                event_id="event-3",
+                event_type="score",
+                subject_key="market",
+                trade_date="2026-07-16",
+                phase="afternoon",
+                strategy="today",
+                priority=50,
+                data_version="tick:100000",
+                config_version="runtime-v2",
+                status=EventStatus.SUCCESS,
+                created_at=NOW,
+                deadline=None,
+                retry_count=0,
+                sequence=3,
+            ),
+        )
+    )
     app, _publisher = _app(repository)
     client = app.test_client()
 
@@ -1000,7 +1021,7 @@ class MemoryReadRepository:
         *,
         latest: Mapping[Strategy, RecommendationSnapshot] | None = None,
         frozen: Mapping[tuple[Strategy, str], RecommendationSnapshot] | None = None,
-        events: Sequence[Mapping[str, object]] = (),
+        events: Sequence[EventAuditRecord] = (),
         overlays: Mapping[tuple[Strategy, str], LiveOverlay] | None = None,
     ) -> None:
         self._latest = dict(latest or {})
@@ -1024,8 +1045,8 @@ class MemoryReadRepository:
     def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
         return self._overlays.get((strategy, trade_date))
 
-    def list_events(self, *, cursor: int, limit: int) -> Sequence[Mapping[str, object]]:
-        return tuple(item for item in self._events if int(item["sequence"]) > cursor)[:limit]
+    def list_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
+        return tuple(item for item in self._events if item.sequence > cursor)[:limit]
 
     def initialize(self) -> None:
         return None
@@ -1036,8 +1057,8 @@ class MemoryReadRepository:
     def freeze(self, snapshot: RecommendationSnapshot) -> None:
         self._frozen[(snapshot.strategy, snapshot.trade_date)] = snapshot
 
-    def recover(self) -> Mapping[str, int]:
-        return {}
+    def recover(self) -> RecoverySummary:
+        return RecoverySummary()
 
 
 class CountingReadRepository(MemoryReadRepository):

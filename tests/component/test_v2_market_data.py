@@ -13,11 +13,11 @@ from typing import Any
 import pytest
 import requests
 
-from trader.application.ports import (
-    MarketDataDeadlineExceeded,
-    MarketDataFailed,
-    MarketDataNoData,
-    MarketDataUnavailable,
+from trader.application.ports.market import (
+    MarketDataDeadlineExceededError,
+    MarketDataFailedError,
+    MarketDataNoDataError,
+    MarketDataUnavailableError,
 )
 from trader.application.source_lanes import (
     LatestRequestLane,
@@ -941,7 +941,7 @@ def test_full_market_source_lane_deadline_returns_before_blocked_source_io() -> 
 
     started = time.monotonic()
     try:
-        with pytest.raises(MarketDataDeadlineExceeded, match="deadline"):
+        with pytest.raises(MarketDataDeadlineExceededError, match="deadline"):
             gateway.fetch_market(observed_at=observed_at, deadline=deadline)
         elapsed = time.monotonic() - started
     finally:
@@ -1606,7 +1606,7 @@ def test_snapshot_metadata_copies_tushare_versions_under_service_lock() -> None:
 
     metadata = service.snapshot_metadata()
 
-    assert metadata["tushare_reference_versions"] == {"valuation": "valuation-v1"}
+    assert dict(metadata.reference_versions) == {"valuation": "valuation-v1"}
 
 
 def test_final_refresh_bypasses_fresh_cache_but_remains_single_flight() -> None:
@@ -2763,7 +2763,7 @@ def test_gateway_allows_one_recovery_probe_after_circuit_timeout() -> None:
         monotonic=monotonic,
     )
 
-    with pytest.raises(MarketDataUnavailable):
+    with pytest.raises(MarketDataUnavailableError):
         gateway.fetch_market()
     assert gateway.health()["sources"]["eastmoney"]["circuit_open"] is True
 
@@ -2785,7 +2785,7 @@ def test_gateway_reports_recoverable_unavailability_when_all_sources_fail() -> N
         circuit_breaker_seconds=60,
     )
 
-    with pytest.raises(MarketDataUnavailable, match=r"eastmoney: offline; sina: offline"):
+    with pytest.raises(MarketDataUnavailableError, match=r"eastmoney: offline; sina: offline"):
         gateway.fetch_market()
 
     health = gateway.health()
@@ -2809,7 +2809,7 @@ def test_gateway_health_records_no_data_route_fallback() -> None:
         circuit_breaker_seconds=60,
     )
 
-    with pytest.raises(MarketDataUnavailable, match=r"sina: only 0 market rows;.*eastmoney: offline"):
+    with pytest.raises(MarketDataUnavailableError, match=r"sina: only 0 market rows;.*eastmoney: offline"):
         gateway.fetch_market()
 
     health = gateway.health()
@@ -2824,7 +2824,7 @@ def test_market_data_router_prefers_no_data_over_failures() -> None:
     def empty_payload() -> tuple[MarketQuote, ...]:
         return ()
 
-    with pytest.raises(MarketDataNoData, match="insufficient rows") as exc_info:
+    with pytest.raises(MarketDataNoDataError, match="insufficient rows") as exc_info:
         route(
             (
                 VendorRoute(
@@ -2845,7 +2845,7 @@ def test_market_data_router_aggregates_required_failures() -> None:
     def failing() -> tuple[MarketQuote, ...]:
         raise RuntimeError("offline")
 
-    with pytest.raises(MarketDataFailed, match=r"eastmoney: offline; sina: offline") as exc_info:
+    with pytest.raises(MarketDataFailedError, match=r"eastmoney: offline; sina: offline") as exc_info:
         route(
             (
                 VendorRoute("eastmoney", failing, VendorSeverity.REQUIRED),
@@ -2899,7 +2899,7 @@ def test_feature_service_does_not_commit_full_market_result_after_deadline() -> 
         wall_clock=lambda: next(wall_times),
     )
 
-    with pytest.raises(MarketDataDeadlineExceeded, match="completed after"):
+    with pytest.raises(MarketDataDeadlineExceededError, match="completed after"):
         service.fetch_market_features(NOW, deadline=deadline)
 
     assert service.quotes.status().market_features == ()
@@ -2915,7 +2915,7 @@ def test_feature_service_does_not_commit_history_cache_after_deadline() -> None:
         wall_clock=lambda: next(wall_times, deadline),
     )
 
-    with pytest.raises(MarketDataDeadlineExceeded, match="completed after"):
+    with pytest.raises(MarketDataDeadlineExceededError, match="completed after"):
         service.fetch_market_features(NOW, deadline=deadline)
 
     assert service.history.entries() == {}
@@ -2991,7 +2991,7 @@ def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_p
 
     started = time.monotonic()
     try:
-        with pytest.raises(MarketDataDeadlineExceeded):
+        with pytest.raises(MarketDataDeadlineExceededError):
             service.refresh_market_news(("600001",), NOW, deadline=deadline)
         elapsed = time.monotonic() - started
     finally:
@@ -4332,7 +4332,7 @@ def test_stock_risk_batch_deadline_is_controlled_and_discards_late_result() -> N
     release_timer.start()
 
     try:
-        with pytest.raises(MarketDataDeadlineExceeded, match="deadline"):
+        with pytest.raises(MarketDataDeadlineExceededError, match="deadline"):
             service.refresh_stock_risk(
                 ("600001",),
                 observed_at,

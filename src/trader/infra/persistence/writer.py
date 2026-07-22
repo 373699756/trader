@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
+from trader.application.ports.snapshots import RecoverySummary
 from trader.domain.outcome.models import (
     BenchmarkReturn,
     OutcomeTarget,
@@ -345,7 +346,7 @@ class SnapshotRepository(RepositoryObservabilityMixin):
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
 
-    def recover(self) -> Mapping[str, int]:
+    def recover(self) -> RecoverySummary:
         recovered = 0
         quarantined = 0
         with self._lock, connection_scope(self._database_path) as connection:
@@ -376,7 +377,7 @@ class SnapshotRepository(RepositoryObservabilityMixin):
                 for row in connection.execute("SELECT relative_path FROM frozen_snapshots").fetchall()
             }
             orphaned = self._quarantine_orphans(known_paths)
-        return {"recovered": recovered, "quarantined": quarantined, "orphaned": orphaned}
+        return RecoverySummary(recovered=recovered, quarantined=quarantined, orphaned=orphaned)
 
     def _stage_manifest(
         self,

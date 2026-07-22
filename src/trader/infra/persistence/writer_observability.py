@@ -9,9 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from trader.application.events import EventAuditRecord, EventStatus
+from trader.application.ports.types import JsonObject, thaw_json_value
 from trader.infra.persistence.sqlite import connection_scope
 from trader.infra.persistence.writer_utils import (
-    _event_integer,
     _non_negative_integer,
     _optional_number,
     _percentile,
@@ -26,7 +27,7 @@ class RepositoryObservabilityMixin:
     _lock: Any
     _database_path: Path
 
-    def reserve_event(self, event: Mapping[str, object]) -> bool:
+    def reserve_event(self, event: EventAuditRecord) -> bool:
         with self._lock, connection_scope(self._database_path) as connection:
             cursor = connection.execute(
                 """
@@ -38,21 +39,21 @@ class RepositoryObservabilityMixin:
                 ON CONFLICT DO NOTHING
                 """,
                 (
-                    str(event["event_id"]),
-                    str(event["event_type"]),
-                    str(event["subject_key"]),
-                    str(event["trade_date"]),
-                    str(event["phase"]),
-                    str(event["strategy"]),
-                    _event_integer(event, "priority"),
-                    str(event["data_version"]),
-                    str(event["config_version"]),
-                    str(event["status"]),
-                    str(event["created_at"]),
-                    str(event.get("deadline") or ""),
-                    _event_integer(event, "retry_count", default=0),
-                    json.dumps(event.get("payload") or {}, ensure_ascii=False, separators=(",", ":")),
-                    str(event.get("error") or "")[:1000],
+                    event.event_id,
+                    event.event_type,
+                    event.subject_key,
+                    event.trade_date,
+                    event.phase,
+                    event.strategy,
+                    event.priority,
+                    event.data_version,
+                    event.config_version,
+                    event.status.value,
+                    event.created_at.isoformat(),
+                    event.deadline.isoformat() if event.deadline is not None else "",
+                    event.retry_count,
+                    json.dumps(thaw_json_value(event.payload), ensure_ascii=False, separators=(",", ":")),
+                    event.error[:1000],
                 ),
             )
             return cursor.rowcount == 1
@@ -61,8 +62,8 @@ class RepositoryObservabilityMixin:
         self,
         event_id: str,
         *,
-        expected_status: str,
-        status: str,
+        expected_status: EventStatus,
+        status: EventStatus,
         retry_count: int,
         error: str = "",
     ) -> bool:
@@ -73,11 +74,11 @@ class RepositoryObservabilityMixin:
                 SET status = ?, retry_count = ?, error = ?
                 WHERE event_id = ? AND status = ?
                 """,
-                (status, retry_count, error[:1000], event_id, expected_status),
+                (status.value, retry_count, error[:1000], event_id, expected_status.value),
             )
             return cursor.rowcount == 1
 
-    def list_events(self, *, cursor: int, limit: int) -> Sequence[Mapping[str, object]]:
+    def list_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
         with connection_scope(self._database_path) as connection:
             rows = connection.execute(
                 """
@@ -88,15 +89,9 @@ class RepositoryObservabilityMixin:
                 """,
                 (max(0, cursor), max(1, limit)),
             ).fetchall()
-        return tuple(
-            {
-                **dict(row),
-                "payload": json.loads(str(row["payload_json"])),
-            }
-            for row in rows
-        )
+        return tuple(_event_record(row) for row in rows)
 
-    def pending_priority_events(self) -> Sequence[Mapping[str, object]]:
+    def pending_priority_events(self) -> Sequence[EventAuditRecord]:
         with connection_scope(self._database_path) as connection:
             rows = connection.execute(
                 """
@@ -105,15 +100,9 @@ class RepositoryObservabilityMixin:
                 ORDER BY sequence
                 """
             ).fetchall()
-        return tuple(
-            {
-                **dict(row),
-                "payload": json.loads(str(row["payload_json"])),
-            }
-            for row in rows
-        )
+        return tuple(_event_record(row) for row in rows)
 
-    def record_data_source_health(self, health: Mapping[str, object], *, updated_at: datetime) -> None:
+    def record_data_source_health(self, health: JsonObject, *, updated_at: datetime) -> None:
         sources = health.get("sources")
         if not isinstance(sources, Mapping):
             return
@@ -189,7 +178,7 @@ class RepositoryObservabilityMixin:
                     ),
                 )
 
-    def observability_status(self) -> Mapping[str, object]:
+    def observability_status(self) -> JsonObject:
         try:
             with connection_scope(self._database_path) as connection:
                 source_rows = connection.execute("SELECT * FROM data_source_health ORDER BY source").fetchall()
@@ -247,3 +236,28 @@ class RepositoryObservabilityMixin:
             },
             "freezes": latest_freezes,
         }
+
+
+def _event_record(row: sqlite3.Row) -> EventAuditRecord:
+    payload = json.loads(str(row["payload_json"]))
+    if not isinstance(payload, Mapping):
+        raise ValueError("persisted event payload must be a JSON object")
+    deadline = str(row["deadline"] or "")
+    return EventAuditRecord(
+        sequence=int(row["sequence"]),
+        event_id=str(row["event_id"]),
+        event_type=str(row["event_type"]),
+        subject_key=str(row["subject_key"]),
+        trade_date=str(row["trade_date"]),
+        phase=str(row["phase"]),
+        strategy=str(row["strategy"]),
+        priority=int(row["priority"]),
+        data_version=str(row["data_version"]),
+        config_version=str(row["config_version"]),
+        status=EventStatus(str(row["status"])),
+        created_at=datetime.fromisoformat(str(row["created_at"])),
+        deadline=datetime.fromisoformat(deadline) if deadline else None,
+        retry_count=int(row["retry_count"]),
+        payload=payload,
+        error=str(row["error"] or ""),
+    )

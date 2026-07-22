@@ -14,7 +14,10 @@ from trader.application.board_scoring_cache import BoardScoringCache
 from trader.application.cadence import CadencePolicy, PipelineTask
 from trader.application.outcome_settlement import OutcomeSettlementService
 from trader.application.pipeline import RecommendationPipeline
+from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
+from trader.application.ports.market import MarketDataPorts
+from trader.application.ports.snapshots import SnapshotPorts
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
@@ -319,43 +322,55 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         maximum_subscribers=settings.api.sse_max_clients,
     )
     pipeline = RecommendationPipeline(
-        market_data,
-        calendar,
-        reviewer,
-        repository,
-        repository,
-        publisher,
-        RecommendationEngine(
-            _recommendation_policy(strategy),
-            board_scoring=BoardScoringCoordinator(
-                BoardScoringCache(
-                    market_cache,
-                    config_version=effective_config_version,
-                    session_distance=calendar.session_distance,
-                )
+        PipelineDependencies(
+            market=MarketDataPorts(
+                full_market=market_data,
+                candidates=market_data,
+                quotes=market_data,
+                research=market_data,
+                references=market_data,
+                metadata=market_data,
+                outcomes=market_data,
+            ),
+            calendar=calendar,
+            reviews=reviewer,
+            snapshots=SnapshotPorts(reader=repository, writer=repository, observability=repository),
+            events=repository,
+            publisher=publisher,
+            engine=RecommendationEngine(
+                _recommendation_policy(strategy),
+                board_scoring=BoardScoringCoordinator(
+                    BoardScoringCache(
+                        market_cache,
+                        config_version=effective_config_version,
+                        session_distance=calendar.session_distance,
+                    )
+                ),
+            ),
+            state=state,
+            now=now,
+            outcome_settlement=OutcomeSettlementService(
+                market_data,
+                repository,
+                repository,
+                session_distance=calendar.session_distance,
             ),
         ),
-        state,
-        config_version=effective_config_version,
-        candidate_pool_size=settings.market_data.candidate_pool_size,
-        event_queue_size=settings.pipeline.event_queue_size,
-        priority_queue_size=settings.pipeline.priority_queue_size,
-        now=now,
-        market_workers=settings.pipeline.market_workers,
-        normalization_workers=settings.pipeline.normalization_workers,
-        strategy_workers=settings.pipeline.strategy_workers,
-        deepseek_workers=settings.pipeline.deepseek_workers,
-        data_pool=data_pool,
-        persistence_pool=persistence_pool,
-        market_data_manages_workers=True,
-        cadence_policy=cadence_policy,
-        long_codes=tuple(item.code for item in watchlist.items),
-        long_target_prices={item.code: item.target_price for item in watchlist.items},
-        outcome_settlement=OutcomeSettlementService(
-            market_data,
-            repository,
-            session_distance=calendar.session_distance,
+        PipelineOptions(
+            config_version=effective_config_version,
+            candidate_pool_size=settings.market_data.candidate_pool_size,
+            event_queue_size=settings.pipeline.event_queue_size,
+            priority_queue_size=settings.pipeline.priority_queue_size,
+            market_workers=settings.pipeline.market_workers,
+            normalization_workers=settings.pipeline.normalization_workers,
+            strategy_workers=settings.pipeline.strategy_workers,
+            deepseek_workers=settings.pipeline.deepseek_workers,
+            market_data_manages_workers=True,
+            cadence_policy=cadence_policy,
+            long_codes=tuple(item.code for item in watchlist.items),
+            long_target_prices={item.code: item.target_price for item in watchlist.items},
         ),
+        PipelineResources(data_pool=data_pool, persistence_pool=persistence_pool),
     )
     queries = RecommendationQueries(
         repository,

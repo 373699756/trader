@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续执行全工程重构计划 2.3。新增按行情、报价、研究、参考数据、快照、事件、复核与
+  结果拆分的应用端口，以及不可变的流水线依赖、选项和资源集合。
+
 - 用户要求把 DeepSeek 各类物理请求“什么时候使用”写清楚。`docs/plan_c.md` 新增共享预热、
   today、tomorrow、d25、Pro 和 emergency 的使用时段、准入条件、停止提交时间、跨策略
   归属和物理请求计数规则，并给出主审 58 次、含 Pro 66 次、含 emergency 71 次的正常日
@@ -149,6 +152,9 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 流水线事件审计改为有类型记录和状态枚举，持久化边界负责转换，跨线程 JSON 深层冻结；
+  24 参数构造函数收敛为三个显式对象，业务时间线、Web v3 和冻结投影保持不变。
 
 - 用户决定暂缓历史 60 日数据与 300 条配对建设，先完整设计实时荐股和 DeepSeek 低成本
   协同方案。重写 `docs/plan_c.md`，固定本地主链、新闻/公告证据门槛、V4 结构化事实、
@@ -302,6 +308,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复万能行情端口、隐式依赖、裸字符串事件状态和共享可变边界造成的耦合风险；异常、恢复
+  摘要和行情快照元数据均改为真实类型，停止顺序和冻结 compare-and-set 保持显式。
+
 - 修正文档中 long 仍配置 DeepSeek 维度和正常预算、软目标只有数字而没有消费规则的计划
   缺陷。新计划明确 long 的主审、Pro、预热和 emergency 均为 0，并规定未使用软额度不
   跨策略转移、缓存命中不计数、失败/超时/重试/schema 修复均计入物理请求。
@@ -444,6 +453,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除旧 `application/ports.py` 聚合端口和旧行情异常名，不提供兼容导入别名。
+
 - 从当前 DeepSeek 优化计划中移除 long 的模型评分与请求额度，以及本批历史行情下载、
   60 日/300 配对验证实现；后者保留为需要用户另行确认的延期晋级批次，未删除权威策略
   已有的验证门禁。
@@ -521,6 +532,9 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 2.3 通过架构 AST、154 个源码文件 mypy 和完整 pytest 回归；严格债务从 145 降至 142
+  （N818 7→5、PLR0913 59→58）。
 
 - 本批逐节核对 `AGENTS.md`、`docs/software-business-design.md` 和
   `docs/recommendation-strategy.md` 的固定融合、188 次全局上限、冻结时间、纯本地收盘
@@ -703,6 +717,9 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 2.4 基础设施适配器尚未开始；活动树仍登记 142 项既有严格复杂度/命名债务，后续章节须
+  继续单调下降并在 2.6 归零。真实供应商交易日证据不属于本批离线门禁。
 
 - `docs/plan_c.md` 描述的是待实施方案，活动代码仍会为 long 执行主审，权威策略仍保留
   long 预算与旧五维模型；必须按计划先更新权威契约和测试，再分批实现。历史 60 日、

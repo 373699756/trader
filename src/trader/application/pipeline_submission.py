@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from trader.application.cadence import PipelineTask, ScheduledPipelineTask, task_execution_budget_seconds
-from trader.application.events import EventPriority, PipelineEvent, new_event
+from trader.application.events import EventPriority, EventStatus, PipelineEvent, new_event
 from trader.application.pipeline_state import PipelineState
 from trader.application.pipeline_workers import persist
 from trader.application.schedule import (
@@ -162,7 +162,7 @@ class PipelineSubmissionMixin(PipelineState):
                 if not persist(
                     cast("RecommendationPipeline", self),
                     self._event_audit.reserve_event,
-                    event.audit_record(status="pending"),
+                    event.audit_record(status=EventStatus.PENDING),
                 ):
                     self._state.increment("event_reservation_conflicts")
                     return False

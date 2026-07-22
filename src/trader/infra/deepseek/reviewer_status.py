@@ -6,8 +6,10 @@ import sqlite3
 from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime
+from typing import cast
 from zoneinfo import ZoneInfo
 
+from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import (
     DeepSeekReview,
@@ -60,7 +62,7 @@ class ReviewerStatusMixin(ReviewerState):
             self._last_candidate_outcomes = dict(outcomes)
             self._last_error = error[:500]
 
-    def status(self) -> Mapping[str, object]:
+    def status(self) -> JsonObject:
         local_day = self._now().astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
         try:
             budget = self._budget.summary(local_day)
@@ -80,28 +82,33 @@ class ReviewerStatusMixin(ReviewerState):
             physical_attempts = self._last_physical_attempts
             successful_attempts = self._last_successful_attempts
             failed_attempts = self._last_failed_attempts
-        return {
-            "enabled": self._settings.enabled,
-            "configured": bool(self._settings.api_key),
-            "last_batch_status": batch_status,
-            "last_candidate_count": candidate_count,
-            "last_candidate_outcomes": candidate_outcomes,
-            "last_phase": phase,
-            "last_strategy": strategy,
-            "last_cache_hits": cache_hits,
-            "last_physical_attempts": physical_attempts,
-            "last_successful_attempts": successful_attempts,
-            "last_failed_attempts": failed_attempts,
-            "last_error": last_error,
-            "cache": self._cache.status(),
-            "budget": budget,
-            "physical_call_acceptance": _physical_call_acceptance(
-                enabled=self._settings.enabled,
-                configured=bool(self._settings.api_key),
-                candidate_count=candidate_count,
-                cache_hits=cache_hits,
-                batch_status=batch_status,
-                last_error=last_error,
-                physical_attempts=physical_attempts,
-            ),
-        }
+        return freeze_json_object(
+            cast(
+                Mapping[str, JsonInput],
+                {
+                    "enabled": self._settings.enabled,
+                    "configured": bool(self._settings.api_key),
+                    "last_batch_status": batch_status,
+                    "last_candidate_count": candidate_count,
+                    "last_candidate_outcomes": candidate_outcomes,
+                    "last_phase": phase,
+                    "last_strategy": strategy,
+                    "last_cache_hits": cache_hits,
+                    "last_physical_attempts": physical_attempts,
+                    "last_successful_attempts": successful_attempts,
+                    "last_failed_attempts": failed_attempts,
+                    "last_error": last_error,
+                    "cache": self._cache.status(),
+                    "budget": budget,
+                    "physical_call_acceptance": _physical_call_acceptance(
+                        enabled=self._settings.enabled,
+                        configured=bool(self._settings.api_key),
+                        candidate_count=candidate_count,
+                        cache_hits=cache_hits,
+                        batch_status=batch_status,
+                        last_error=last_error,
+                        physical_attempts=physical_attempts,
+                    ),
+                },
+            )
+        )

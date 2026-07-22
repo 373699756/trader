@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 from trader.application.cadence import PipelineTask, freshness_level
 from trader.application.pipeline_state import PipelineState
 from trader.application.pipeline_workers import worker_status
+from trader.application.ports.types import JsonObject
 from trader.application.schedule import MarketPhase
 from trader.application.snapshot_workflow import topk_quote_age
 from trader.domain.recommendation.models import Strategy
@@ -28,7 +29,7 @@ _CRITICAL_TOPK_PHASES = {
 class PipelineStatusMixin(PipelineState):
     def status(self) -> dict[str, object]:
         measured_at = self._now()
-        market_data = dict(self._market_data.health())
+        market_data: dict[str, object] = dict(self._market_metadata.health())
         try:
             phase = MarketPhase(self._state.current_phase())
         except ValueError:
@@ -71,25 +72,23 @@ class PipelineStatusMixin(PipelineState):
         }
         return self._state.snapshot(dependencies)
 
-    def _observability_status(self) -> Mapping[str, object]:
-        provider = getattr(self._repository, "observability_status", None)
-        if not callable(provider):
-            return {}
+    def _observability_status(self) -> JsonObject:
         try:
-            return dict(provider())
+            return self._snapshot_observability.observability_status()
         except (OSError, RuntimeError, ValueError):
             return {"error": "persistent_observability_unavailable"}
 
     def _record_health_snapshot(self) -> None:
-        recorder = getattr(self._repository, "record_data_source_health", None)
-        if not callable(recorder):
-            return
-        health = dict(self._market_data.health())
+        health = dict(self._market_metadata.health())
         updated_at = self._now()
         if not self._persistence_running:
-            recorder(health, updated_at=updated_at)
+            self._snapshot_observability.record_data_source_health(health, updated_at=updated_at)
             return
-        future = self._persistence_pool.submit(recorder, health, updated_at=updated_at)
+        future = self._persistence_pool.submit(
+            self._snapshot_observability.record_data_source_health,
+            health,
+            updated_at=updated_at,
+        )
         if future is None:
             self._state.increment("observability_write_rejections")
 

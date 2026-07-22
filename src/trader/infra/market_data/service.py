@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
+from trader.application.ports.market import MarketSnapshotMetadata
+from trader.application.ports.types import JsonObject
 from trader.domain.market.models import (
     FeatureSnapshot,
     LiveQuote,
@@ -284,10 +286,10 @@ class MarketFeatureService:
     ) -> Mapping[str, tuple[OutcomeBar, ...]]:
         return self.history.read_outcome_bars(_normalize_codes(codes), observed_at)
 
-    def health(self) -> Mapping[str, object]:
+    def health(self) -> JsonObject:
         return self.health_reporter.health()
 
-    def snapshot_metadata(self, codes: Sequence[str] | None = None) -> Mapping[str, object]:
+    def snapshot_metadata(self, codes: Sequence[str] | None = None) -> MarketSnapshotMetadata:
         return self.health_reporter.snapshot_metadata(codes)
 
 

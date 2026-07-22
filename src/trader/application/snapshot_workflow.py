@@ -21,7 +21,7 @@ from trader.application.pipeline_stages import (
     strategies_for_phase,
 )
 from trader.application.pipeline_workers import submit_required_urgent
-from trader.application.ports import MarketDataUnavailable
+from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
 from trader.application.status import RuntimeState
 from trader.domain.market.models import LiveQuote
@@ -141,7 +141,7 @@ def freeze_available_snapshots(
             config_version=pipeline._config_version,
             metadata={**current.metadata, "freeze_anchor": anchors},
         )
-        persist(pipeline, pipeline._repository.freeze, frozen)
+        persist(pipeline, pipeline._snapshot_writer.freeze, frozen)
         pipeline._state.mark_frozen(frozen)
         pipeline._publisher.publish(frozen)
         pipeline._frozen_keys.add(key)
@@ -186,15 +186,15 @@ def refresh_live_overlays(
             fetched = submit_required_urgent(
                 pipeline,
                 pipeline._data_pool,
-                pipeline._market_data.refresh_candidate_quotes,
+                pipeline._quotes.refresh_candidate_quotes,
                 requested,
                 now,
                 deadline=deadline,
             ).result()
         else:
-            fetched = pipeline._market_data.refresh_candidate_quotes(requested, now, deadline=deadline)
+            fetched = pipeline._quotes.refresh_candidate_quotes(requested, now, deadline=deadline)
         features = tuple(fetched)
-    except (MarketDataUnavailable, OSError, RuntimeError, ValueError) as exc:
+    except (MarketDataUnavailableError, OSError, RuntimeError, ValueError) as exc:
         pipeline._state.record_error(f"TopK live overlay degraded: {str(exc)[:500]}")
         return
     fetched_quotes = {feature.quote.code: feature.quote for feature in features}
@@ -229,7 +229,7 @@ def refresh_live_overlays(
             quotes=quotes,
             closing=phase is MarketPhase.AFTER_CLOSE and updated_codes == allowed,
         )
-        if not persist(pipeline, pipeline._repository.save_live_overlay, overlay):
+        if not persist(pipeline, pipeline._snapshot_writer.save_live_overlay, overlay):
             persisted = pipeline._repository.load_live_overlay(strategy, trade_date)
             if persisted is not None and persisted.snapshot_id == snapshot.snapshot_id:
                 pipeline._live_overlays[key] = persisted
@@ -246,8 +246,8 @@ def refresh_candidates(
     phase: MarketPhase,
 ) -> None:
     try:
-        market_features = tuple(pipeline._market_data.fetch_market_features(now))
-    except MarketDataUnavailable as exc:
+        market_features = tuple(pipeline._market_full.fetch_market_features(now))
+    except MarketDataUnavailableError as exc:
         reason = str(exc)[:500]
         _LOGGER.warning("candidate refresh degraded during %s: %s", phase.value, reason)
         pipeline._state.increment("market_refresh_failures")
@@ -277,7 +277,7 @@ def score_strategy(
     codes = pipeline._long_codes if strategy is Strategy.LONG else pipeline._candidate_codes
     if not codes:
         return None
-    features, data_version = fetch_strategy_features(pipeline._market_data, strategy, codes, now)
+    features, data_version = fetch_strategy_features(pipeline._candidate_data, strategy, codes, now)
     if not features:
         return None
     deadline = review_deadline(now, phase)
@@ -322,29 +322,20 @@ def score_strategy(
     )
     snapshot = pipeline._engine.finalize_snapshot(prepared, reviews)
     snapshot = replace(snapshot, config_version=pipeline._config_version)
-    metadata_provider = getattr(pipeline._market_data, "snapshot_metadata", None)
-    market_metadata = (
-        metadata_provider(tuple(item.features.quote.code for item in snapshot.recommendations))
-        if callable(metadata_provider)
-        else {}
+    market_metadata = pipeline._market_metadata.snapshot_metadata(
+        tuple(item.features.quote.code for item in snapshot.recommendations)
     )
-    if isinstance(market_metadata, Mapping):
-        market_degraded = market_metadata.get("market_degraded_reasons")
-        extra_degraded = (
-            tuple(str(reason) for reason in market_degraded if isinstance(reason, str))
-            if isinstance(market_degraded, (list, tuple))
-            else ()
-        )
+    if market_metadata.merge_epoch:
         snapshot = replace(
             snapshot,
-            metadata={**snapshot.metadata, **dict(market_metadata)},
-            degraded_reasons=tuple(dict.fromkeys((*snapshot.degraded_reasons, *extra_degraded))),
+            metadata={**snapshot.metadata, **market_metadata.to_json()},
+            degraded_reasons=tuple(dict.fromkeys((*snapshot.degraded_reasons, *market_metadata.degraded_reasons))),
         )
     pipeline._state.record_strategy_latency(
         strategy,
         round((time.perf_counter() - scoring_started) * 1000.0, 3),
     )
-    persist(pipeline, pipeline._repository.publish, snapshot)
+    persist(pipeline, pipeline._snapshot_writer.publish, snapshot)
     pipeline._state.publish(snapshot)
     pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
     pipeline._publisher.publish(snapshot)

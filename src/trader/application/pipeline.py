@@ -4,37 +4,28 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 
 from trader.application.cadence import (
     CadencePlanner,
-    CadencePolicy,
     PipelineTask,
 )
 from trader.application.events import (
     BoundedEventQueue,
-    EventDeadlineExpired,
+    EventDeadlineExpiredError,
     EventPriority,
+    EventStatus,
     event_from_audit_record,
 )
+from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
 from trader.application.pipeline_stages import (
     persist,
     process_event_on_workers,
 )
 from trader.application.pipeline_status import PipelineStatusMixin
 from trader.application.pipeline_submission import PipelineSubmissionMixin
-from trader.application.ports import (
-    DeepSeekReviewPort,
-    EventAuditPort,
-    MarketDataDeadlineExceeded,
-    MarketDataPort,
-    OutcomeSettlementPort,
-    SnapshotRepositoryPort,
-    TradingCalendarPort,
-)
-from trader.application.publisher import SnapshotPublisher
-from trader.application.recommendations import RecommendationEngine
+from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.schedule import (
     MarketPhase,
     decision_at,
@@ -47,7 +38,6 @@ from trader.application.snapshot_workflow import (
     process_schedule,
     refresh_live_overlays,
 )
-from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
@@ -63,71 +53,56 @@ _LOGGER = logging.getLogger(__name__)
 class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
     def __init__(
         self,
-        market_data: MarketDataPort,
-        calendar: TradingCalendarPort,
-        reviews: DeepSeekReviewPort | None,
-        repository: SnapshotRepositoryPort,
-        event_audit: EventAuditPort,
-        publisher: SnapshotPublisher,
-        engine: RecommendationEngine,
-        state: RuntimeState,
-        *,
-        config_version: str,
-        candidate_pool_size: int,
-        event_queue_size: int,
-        priority_queue_size: int,
-        now: Callable[[], datetime],
-        market_workers: int = 6,
-        normalization_workers: int = 2,
-        strategy_workers: int = 3,
-        deepseek_workers: int = 4,
-        data_pool: BoundedExecutor | None = None,
-        persistence_pool: BoundedExecutor | None = None,
-        market_data_manages_workers: bool = False,
-        cadence_policy: CadencePolicy | None = None,
-        long_codes: Sequence[str] = (),
-        long_target_prices: Mapping[str, float | None] | None = None,
-        outcome_settlement: OutcomeSettlementPort | None = None,
+        dependencies: PipelineDependencies,
+        options: PipelineOptions,
+        resources: PipelineResources,
     ) -> None:
-        self._market_data = market_data
-        self._calendar = calendar
-        self._reviews = reviews
-        self._repository = repository
-        self._event_audit = event_audit
-        self._publisher = publisher
-        self._engine = engine
-        self._state = state
-        self._config_version = config_version
-        self._candidate_pool_size = candidate_pool_size
-        self._now = now
-        self._long_codes = tuple(long_codes)
-        self._long_target_prices = dict(long_target_prices or {})
-        self._outcome_settlement = outcome_settlement
-        self._market_data_manages_workers = market_data_manages_workers
-        self._cadence = CadencePlanner(cadence_policy) if cadence_policy is not None else None
+        self._market_full = dependencies.market.full_market
+        self._candidate_data = dependencies.market.candidates
+        self._quotes = dependencies.market.quotes
+        self._research = dependencies.market.research
+        self._references = dependencies.market.references
+        self._market_metadata = dependencies.market.metadata
+        self._calendar = dependencies.calendar
+        self._reviews = dependencies.reviews
+        self._repository = dependencies.snapshots.reader
+        self._snapshot_writer = dependencies.snapshots.writer
+        self._snapshot_observability = dependencies.snapshots.observability
+        self._event_audit = dependencies.events
+        self._publisher = dependencies.publisher
+        self._engine = dependencies.engine
+        self._state = dependencies.state
+        self._config_version = options.config_version
+        self._candidate_pool_size = options.candidate_pool_size
+        self._now = dependencies.now
+        self._long_codes = options.long_codes
+        self._long_target_prices = options.long_target_prices
+        self._outcome_settlement = dependencies.outcome_settlement
+        self._market_data_manages_workers = options.market_data_manages_workers
+        self._cadence = CadencePlanner(options.cadence_policy) if options.cadence_policy is not None else None
         self._queue = BoundedEventQueue(
-            maximum_size=event_queue_size,
-            reserved_priority_size=priority_queue_size,
+            maximum_size=options.event_queue_size,
+            reserved_priority_size=options.priority_queue_size,
         )
-        worker_queue_capacity = max(1, event_queue_size)
-        self._data_pool = data_pool or BoundedExecutor(
-            worker_count=market_workers,
-            urgent_worker_count=1 if market_workers > 1 else 0,
+        worker_queue_capacity = max(1, options.event_queue_size)
+        self._data_pool = resources.data_pool or BoundedExecutor(
+            worker_count=options.market_workers,
+            urgent_worker_count=1 if options.market_workers > 1 else 0,
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-data",
         )
         self._normalization_pool = BoundedExecutor(
-            worker_count=normalization_workers,
+            worker_count=options.normalization_workers,
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-normalize",
         )
         self._strategy_pool = BoundedExecutor(
-            worker_count=strategy_workers,
+            worker_count=options.strategy_workers,
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-strategy",
         )
         self._deepseek_pool = BoundedExecutor(
-            worker_count=deepseek_workers,
+            worker_count=options.deepseek_workers,
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-deepseek",
         )
@@ -136,7 +111,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-long",
         )
-        self._persistence_pool = persistence_pool or BoundedExecutor(
+        self._persistence_pool = resources.persistence_pool or BoundedExecutor(
             worker_count=1,
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-persistence",
@@ -195,8 +170,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             self._state.increment("outcome_settlement_completed", result.completed_count)
 
     def initialize(self) -> Mapping[str, int]:
-        self._repository.initialize()
-        recovery = self._repository.recover()
+        self._snapshot_writer.initialize()
+        recovery = self._snapshot_writer.recover()
         for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
             for trade_date in self._repository.recommendation_dates(strategy):
                 key = (strategy, trade_date)
@@ -228,43 +203,42 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         for record in self._event_audit.pending_priority_events():
             try:
                 event = event_from_audit_record(record)
-            except (KeyError, TypeError, ValueError) as exc:
-                event_id = str(record.get("event_id") or "")
-                status = str(record.get("status") or "")
-                retry_raw = record.get("retry_count", 0)
-                retry_count = retry_raw if isinstance(retry_raw, int) and not isinstance(retry_raw, bool) else 0
-                if event_id and status:
-                    self._event_audit.compare_and_set_event(
-                        event_id,
-                        expected_status=status,
-                        status="failed",
-                        retry_count=retry_count + 1,
-                        error="invalid_persisted_event",
-                    )
+            except (TypeError, ValueError) as exc:
+                self._event_audit.compare_and_set_event(
+                    record.event_id,
+                    expected_status=record.status,
+                    status=EventStatus.FAILED,
+                    retry_count=record.retry_count + 1,
+                    error="invalid_persisted_event",
+                )
                 self._state.record_error(f"cannot replay persisted priority event: {exc}")
                 continue
-            status = str(record.get("status") or "")
             if event.config_version != self._config_version:
                 self._event_audit.compare_and_set_event(
                     event.event_id,
-                    expected_status=status,
-                    status="failed",
+                    expected_status=record.status,
+                    status=EventStatus.FAILED,
                     retry_count=event.retry_count,
                     error="config_version_mismatch",
                 )
                 self._state.record_error("cannot replay priority event from another config version")
                 continue
-            if status == "running" and not self._event_audit.compare_and_set_event(
+            if record.status is EventStatus.RUNNING and not self._event_audit.compare_and_set_event(
                 event.event_id,
-                expected_status="running",
-                status="pending",
+                expected_status=EventStatus.RUNNING,
+                status=EventStatus.PENDING,
                 retry_count=event.retry_count,
             ):
                 continue
             if self._queue.put(event):
                 self._state.increment("events_replayed")
                 self._queue.record_replayed()
-        return {**recovery, "catchup_frozen": len(catchup)}
+        return {
+            "recovered": recovery.recovered,
+            "quarantined": recovery.quarantined,
+            "orphaned": recovery.orphaned,
+            "catchup_frozen": len(catchup),
+        }
 
     def start(self) -> bool:
         with self._lifecycle_lock:
@@ -346,7 +320,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 if event.priority > EventPriority.RISK and not persist(
                     self,
                     self._event_audit.reserve_event,
-                    event.audit_record(status="pending"),
+                    event.audit_record(status=EventStatus.PENDING),
                 ):
                     self._state.increment("event_reservation_conflicts")
                     continue
@@ -354,8 +328,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                     self,
                     self._event_audit.compare_and_set_event,
                     event.event_id,
-                    expected_status="pending",
-                    status="running",
+                    expected_status=EventStatus.PENDING,
+                    status=EventStatus.RUNNING,
                     retry_count=event.retry_count,
                 ):
                     self._state.increment("event_claim_conflicts")
@@ -365,33 +339,33 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                     and event.priority is not EventPriority.FREEZE
                     and self._now() >= event.deadline
                 ):
-                    raise EventDeadlineExpired(f"event deadline expired before execution: {event.event_type}")
+                    raise EventDeadlineExpiredError(f"event deadline expired before execution: {event.event_type}")
                 process_event_on_workers(self, event)
                 if (
                     event.deadline is not None
                     and event.priority is not EventPriority.FREEZE
                     and self._now() >= event.deadline
                 ):
-                    raise EventDeadlineExpired(f"event deadline expired during execution: {event.event_type}")
+                    raise EventDeadlineExpiredError(f"event deadline expired during execution: {event.event_type}")
                 if not persist(
                     self,
                     self._event_audit.compare_and_set_event,
                     event.event_id,
-                    expected_status="running",
-                    status="success",
+                    expected_status=EventStatus.RUNNING,
+                    status=EventStatus.SUCCESS,
                     retry_count=event.retry_count,
                 ):
                     raise RuntimeError(f"event terminal compare-and-set failed: {event.event_id}")
                 self._state.increment("events_completed")
-            except (EventDeadlineExpired, MarketDataDeadlineExceeded) as exc:
+            except (EventDeadlineExpiredError, MarketDataDeadlineExceededError) as exc:
                 _LOGGER.info("pipeline event expired", extra={"event_id": event.event_id})
                 try:
                     persist(
                         self,
                         self._event_audit.compare_and_set_event,
                         event.event_id,
-                        expected_status="running",
-                        status="expired",
+                        expected_status=EventStatus.RUNNING,
+                        status=EventStatus.EXPIRED,
                         retry_count=event.retry_count,
                         error=str(exc),
                     )
@@ -405,8 +379,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                         self,
                         self._event_audit.compare_and_set_event,
                         event.event_id,
-                        expected_status="running",
-                        status="failed",
+                        expected_status=EventStatus.RUNNING,
+                        status=EventStatus.FAILED,
                         retry_count=event.retry_count,
                         error=str(exc),
                     )
