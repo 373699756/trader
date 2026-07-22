@@ -471,7 +471,7 @@ All notable changes to this project are documented here.
 - 以本批起始提交 `d0614bc` 加且仅加类级组合重构 diff 的隔离副本执行：Ruff format/lint、
   137 个源码文件 mypy、完整 627 项 pytest、sdist/wheel 构建全部通过，pytest 仅保留 10 条
   既有未知测试模型名警告；仓库外安装后可从独立前缀导入，两个 CLI、配置校验、模板、
-  4 个 CSS、2 个 JavaScript、2 个 SVG 和 `pip check` 均通过。架构契约同时校验 facade
+  4 个 CSS、2 个 JavaScript、2 个 SVG 和 `pip check` 均通过。架构契约同时校验协调类
   零继承、旧状态文件消失、六个核心组件存在且各自锁身份不同；行情组件定向回归全部通过。
   v15 固定快照哈希保持
   `234b923cb17d1979365892791f38545598ae2d25f0cbe14817980a3080c3329b`，最终隔离复测的
@@ -628,7 +628,7 @@ All notable changes to this project are documented here.
   固定负载覆盖，但真实交易日仍需继续观察来源尾延迟与健康计数。v15 性能脚本在宿主并行
   高负载时出现过一次合并/快照 P95 抖动越线，固定哈希未变化，空闲复测通过；这属于仍需
   持续运行门禁的环境敏感风险。本批保持 `MarketDataPort` 行为只是端口兼容，不代表内部
-  保留旧 facade 实现；旧 mixin 和共享状态类已完全删除。三板 CPU 评分改为单线程是下一
+  保留旧聚合实现；旧 mixin 和共享状态类已完全删除。三板 CPU 评分改为单线程是下一
   个独立交付批次，尚未混入本提交。
 
 - P95 数值受宿主负载和解释器版本影响，后续仍须以固定录制负载和现有预算作为回归门禁；

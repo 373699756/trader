@@ -1,4 +1,4 @@
-"""Market-data port facade composed from typed, state-owning components."""
+"""Market-data port coordinator composed from typed, state-owning components."""
 
 from __future__ import annotations
 
