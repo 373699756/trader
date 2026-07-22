@@ -91,8 +91,16 @@ class ReviewCache:
 
     def put_raw(self, key: str, candidate: FeatureSnapshot, review: DeepSeekReview) -> None:
         trade_date = _candidate_trade_date(candidate)
-        with self._lock:
-            self._mark_seen(candidate.quote.code, trade_date)
+        if self._shared_cache is not None:
+            self._shared_cache.put(
+                self._seen_identity(candidate.quote.code, trade_date),
+                True,
+                data_version=key,
+                source_time=review.completed_at,
+            )
+        else:
+            with self._lock:
+                self._mark_seen(candidate.quote.code, trade_date)
         if self._shared_cache is not None:
             self._shared_cache.put(
                 self._raw_identity(key, candidate),
@@ -171,6 +179,9 @@ class ReviewCache:
             }
 
     def has_seen(self, code: str, trade_date: str | None = None) -> bool:
+        if self._shared_cache is not None and trade_date is not None:
+            lookup = self._shared_cache.get(self._seen_identity(code, trade_date))
+            return lookup is not None and lookup.value is True and lookup.state != "degraded"
         with self._lock:
             if trade_date is not None and trade_date != self._seen_trade_date:
                 return False
@@ -202,9 +213,9 @@ class ReviewCache:
             },
             trade_date=_candidate_trade_date(candidate),
             phase="review",
-            source_contract_version="deepseek_review_v16",
+            source_contract_version="deepseek_review_v17",
             config_version=self._config_version,
-            schema_version="deepseek_cache_v16",
+            schema_version="deepseek_cache_v17",
         )
 
     def _fusion_identity(self, key: str) -> CacheIdentity:
@@ -215,9 +226,22 @@ class ReviewCache:
             request={"strategy_key": key},
             trade_date="embedded",
             phase="review",
-            source_contract_version="deepseek_review_v16",
+            source_contract_version="deepseek_review_v17",
             config_version=self._config_version,
-            schema_version="deepseek_cache_v16",
+            schema_version="deepseek_cache_v17",
+        )
+
+    def _seen_identity(self, code: str, trade_date: str) -> CacheIdentity:
+        return build_cache_identity(
+            dataset="deepseek_seen_codes",
+            source="deepseek:seen",
+            subject_key=code,
+            request={"code": code},
+            trade_date=trade_date,
+            phase="review",
+            source_contract_version="deepseek_review_v17",
+            config_version=self._config_version,
+            schema_version="deepseek_cache_v17",
         )
 
     def _shared_entry_counts(self) -> tuple[int, int]:

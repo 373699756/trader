@@ -70,6 +70,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._snapshot_observability = dependencies.snapshots.observability
         self._event_audit = dependencies.events
         self._publisher = dependencies.publisher
+        self._published_snapshots = dependencies.published_snapshots or dependencies.state
         self._engine = dependencies.engine
         self._state = dependencies.state
         self._config_version = options.config_version
@@ -177,8 +178,9 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 key = (strategy, trade_date)
                 self._frozen_keys.add(key)
                 self._state.restore_frozen(strategy, trade_date)
-        for strategy in Strategy:
-            latest = self._repository.latest(strategy)
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+            dates = self._repository.recommendation_dates(strategy)
+            latest = self._repository.load_frozen(strategy, dates[0]) if dates else None
             if latest is not None:
                 self._state.restore_snapshot(latest)
                 overlay = self._repository.load_live_overlay(strategy, latest.trade_date)
@@ -433,14 +435,11 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         )
         cutoff_seconds = 20.0 if strategy is Strategy.TODAY else 30.0
 
-        latest = self._state.latest(strategy)
-        if latest is not None and latest.trade_date == trade_date:
-            snapshot = latest
-        else:
-            fallback = self._repository.latest(strategy)
-            if fallback is None or fallback.trade_date != trade_date:
+        snapshot = self._state.latest(strategy)
+        if snapshot is None or snapshot.trade_date != trade_date:
+            snapshot = self._snapshot_writer.load_checkpoint(strategy, trade_date, boundary_at=boundary)
+            if snapshot is None:
                 return False
-            snapshot = fallback
 
         if snapshot.published_at > boundary:
             return False

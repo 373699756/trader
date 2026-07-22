@@ -97,9 +97,14 @@ def freeze_available_snapshots(
             continue
 
         current = pipeline._state.latest(strategy)
+        boundary = _freeze_boundary(now, strategy)
         if current is None or current.trade_date != trade_date:
-            fallback = pipeline._repository.latest(strategy)
-            if fallback is None or fallback.trade_date != trade_date:
+            fallback = pipeline._snapshot_writer.load_checkpoint(
+                strategy,
+                trade_date,
+                boundary_at=boundary,
+            )
+            if fallback is None:
                 pipeline._state.record_error(f"{strategy.value} freeze unavailable: no current pre-cutoff snapshot")
                 continue
             current = fallback
@@ -108,7 +113,6 @@ def freeze_available_snapshots(
         if current is None or current.trade_date != trade_date:
             pipeline._state.record_error(f"{strategy.value} freeze unavailable: no current pre-cutoff snapshot")
             continue
-        boundary = _freeze_boundary(now, strategy)
         if current.published_at > boundary:
             pipeline._state.record_error(f"{strategy.value} freeze unavailable: latest snapshot is after cutoff")
             continue
@@ -142,10 +146,22 @@ def freeze_available_snapshots(
             metadata={**current.metadata, "freeze_anchor": anchors},
         )
         persist(pipeline, pipeline._snapshot_writer.freeze, frozen)
+        pipeline._published_snapshots.publish(frozen)
         pipeline._state.mark_frozen(frozen)
         pipeline._publisher.publish(frozen)
         pipeline._frozen_keys.add(key)
         snapshots.append(frozen)
+        try:
+            persist(
+                pipeline,
+                pipeline._snapshot_writer.consume_checkpoint,
+                strategy,
+                trade_date,
+                boundary_at=boundary,
+            )
+        except Exception as exc:
+            pipeline._state.increment("checkpoint_consume_failures")
+            pipeline._state.record_error(f"{strategy.value} checkpoint cleanup degraded: {type(exc).__name__}")
     return tuple(snapshots)
 
 
@@ -229,14 +245,16 @@ def refresh_live_overlays(
             quotes=quotes,
             closing=phase is MarketPhase.AFTER_CLOSE and updated_codes == allowed,
         )
-        if not persist(pipeline, pipeline._snapshot_writer.save_live_overlay, overlay):
-            persisted = pipeline._repository.load_live_overlay(strategy, trade_date)
-            if persisted is not None and persisted.snapshot_id == snapshot.snapshot_id:
-                pipeline._live_overlays[key] = persisted
-                pipeline._state.restore_overlay(persisted)
+        if (
+            overlay.closing
+            and snapshot.frozen
+            and not persist(pipeline, pipeline._snapshot_writer.save_live_overlay, overlay)
+        ):
+            pipeline._state.record_error(f"{strategy.value} closing overlay persistence failed")
             continue
         pipeline._live_overlays[key] = overlay
         pipeline._state.publish_overlay(overlay)
+        pipeline._published_snapshots.publish_overlay(overlay)
         pipeline._publisher.publish_overlay(overlay)
 
 
@@ -335,8 +353,9 @@ def score_strategy(
         strategy,
         round((time.perf_counter() - scoring_started) * 1000.0, 3),
     )
-    persist(pipeline, pipeline._snapshot_writer.publish, snapshot)
     pipeline._state.publish(snapshot)
+    pipeline._published_snapshots.publish(snapshot)
+    save_checkpoint_if_due(pipeline, snapshot, now)
     pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
     pipeline._publisher.publish(snapshot)
     return snapshot
@@ -382,6 +401,30 @@ def _freeze_boundary(now: datetime, strategy: Strategy) -> datetime:
     return local.replace(hour=14, minute=50, second=0, microsecond=0)
 
 
+def save_checkpoint_if_due(
+    pipeline: RecommendationPipeline,
+    snapshot: RecommendationSnapshot,
+    now: datetime,
+) -> None:
+    if snapshot.strategy is Strategy.LONG:
+        return
+    boundary = _freeze_boundary(now, snapshot.strategy)
+    seconds_to_boundary = (boundary - shanghai_now(now)).total_seconds()
+    if 0 <= seconds_to_boundary <= 10:
+        try:
+            persist(
+                pipeline,
+                pipeline._snapshot_writer.save_checkpoint,
+                snapshot,
+                boundary_at=boundary,
+            )
+        except Exception as exc:
+            pipeline._state.increment("checkpoint_save_failures")
+            pipeline._state.record_error(
+                f"{snapshot.strategy.value} checkpoint persistence degraded: {type(exc).__name__}"
+            )
+
+
 def _overlay_version(snapshot_id: str, observed_at: datetime, quotes: Mapping[str, LiveQuote]) -> str:
     values = [snapshot_id, observed_at.isoformat()]
     for code, quote in sorted(quotes.items()):
@@ -418,5 +461,6 @@ __all__ = [
     "freeze_available_snapshots",
     "process_schedule",
     "refresh_live_overlays",
+    "save_checkpoint_if_due",
     "topk_quote_age",
 ]

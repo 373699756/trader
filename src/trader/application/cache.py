@@ -75,13 +75,18 @@ class CacheGroupPolicy:
 
 @dataclass(frozen=True)
 class CachePolicy:
+    schema_version: int
     policy_version: str
     datasets: Mapping[str, CacheDatasetPolicy]
     groups: Mapping[str, CacheGroupPolicy]
     total_bytes: int
+    runtime_reserve_bytes: int
+    pool_total_bytes: int
     estimator_version: str
 
     def __post_init__(self) -> None:
+        if self.schema_version != 6:
+            raise ValueError("cache schema version must be 6")
         if not self.policy_version or not self.estimator_version:
             raise ValueError("cache policy and estimator versions must not be empty")
         dataset_copy = dict(self.datasets)
@@ -92,6 +97,8 @@ class CachePolicy:
             raise ValueError("cache dataset references an unknown group")
         if self.total_bytes <= 0 or sum(group.max_bytes for group in group_copy.values()) != self.total_bytes:
             raise ValueError("cache group byte limits must sum to total_bytes")
+        if self.runtime_reserve_bytes <= 0 or self.pool_total_bytes != self.total_bytes + self.runtime_reserve_bytes:
+            raise ValueError("cache pools and runtime reserve must sum to pool_total_bytes")
         object.__setattr__(self, "datasets", MappingProxyType(dataset_copy))
         object.__setattr__(self, "groups", MappingProxyType(group_copy))
 

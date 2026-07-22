@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from trader.application.delivery_patch import overlay_patch, snapshot_patch
 from trader.domain.recommendation.models import (
     LiveOverlay,
     RecommendationSnapshot,
@@ -53,21 +54,17 @@ class SnapshotPublisher:
         self._dropped_subscribers = 0
         self._publish_latencies: deque[float] = deque(maxlen=512)
         self._today_score_latencies: deque[float] = deque(maxlen=4096)
+        self._snapshot_ids: dict[str, str] = {}
 
     def publish(self, snapshot: RecommendationSnapshot) -> PublishedEvent:
         emitted_at = self._now()
-        event = self._new_event(
-            "recommendations",
-            {
-                "snapshot_id": snapshot.snapshot_id,
-                "strategy": snapshot.strategy.value,
-                "published_at": snapshot.published_at.isoformat(),
-                "data_version": snapshot.data_version,
-                "fusion_mode": snapshot.fusion_mode.value,
-                "frozen": snapshot.frozen,
-            },
-        )
         with self._lock:
+            base_snapshot_id = self._snapshot_ids.get(snapshot.strategy.value)
+            self._snapshot_ids[snapshot.strategy.value] = snapshot.snapshot_id
+            event = self._new_event_locked(
+                "recommendation_patch",
+                snapshot_patch(snapshot, base_snapshot_id=base_snapshot_id),
+            )
             self._publish_latencies.append(max(0.0, (emitted_at - snapshot.published_at).total_seconds()))
             if snapshot.strategy.value == "today":
                 self._today_score_latencies.extend(
@@ -81,17 +78,7 @@ class SnapshotPublisher:
 
     def publish_overlay(self, overlay: LiveOverlay) -> PublishedEvent:
         emitted_at = self._now()
-        event = self._new_event(
-            "live_overlay",
-            {
-                "snapshot_id": overlay.snapshot_id,
-                "strategy": overlay.strategy.value,
-                "trade_date": overlay.trade_date,
-                "overlay_version": overlay.version,
-                "observed_at": overlay.observed_at.isoformat(),
-                "closing": overlay.closing,
-            },
-        )
+        event = self._new_event("overlay_patch", overlay_patch(overlay))
         with self._lock:
             self._publish_latencies.append(max(0.0, (emitted_at - overlay.observed_at).total_seconds()))
         return event
@@ -150,19 +137,22 @@ class SnapshotPublisher:
 
     def _new_event(self, event_type: str, data: Mapping[str, object]) -> PublishedEvent:
         with self._lock:
-            self._sequence += 1
-            event = PublishedEvent(self._sequence, event_type, dict(data))
-            self._history.append(event)
-            stale_subscribers: list[queue.Queue[PublishedEvent]] = []
-            for subscriber in self._subscribers:
-                try:
-                    subscriber.put_nowait(event)
-                except queue.Full:
-                    stale_subscribers.append(subscriber)
-            for subscriber in stale_subscribers:
-                self._subscribers.discard(subscriber)
-                self._dropped_subscribers += 1
-            return event
+            return self._new_event_locked(event_type, data)
+
+    def _new_event_locked(self, event_type: str, data: Mapping[str, object]) -> PublishedEvent:
+        self._sequence += 1
+        event = PublishedEvent(self._sequence, event_type, dict(data))
+        self._history.append(event)
+        stale_subscribers: list[queue.Queue[PublishedEvent]] = []
+        for subscriber in self._subscribers:
+            try:
+                subscriber.put_nowait(event)
+            except queue.Full:
+                stale_subscribers.append(subscriber)
+        for subscriber in stale_subscribers:
+            self._subscribers.discard(subscriber)
+            self._dropped_subscribers += 1
+        return event
 
     def _events_after_locked(self, sequence: int) -> tuple[PublishedEvent, ...] | None:
         if sequence > self._sequence:

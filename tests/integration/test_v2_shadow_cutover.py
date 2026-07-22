@@ -42,7 +42,7 @@ def test_recorded_full_day_shadow_is_deterministic_and_freezes_real_repository(
         ("today", TRADE_DATE, "committed"),
         ("tomorrow", TRADE_DATE, "committed"),
     )
-    assert first["published_strategies"] == ("d25", "long", "today", "tomorrow")
+    assert first["published_strategies"] == ()
     assert all(record_count > 0 for record_count in first["record_counts"])
 
 
@@ -74,8 +74,8 @@ def _run_shadow(runtime_dir: Path, recommendation_policy, application_feature_fa
     for raw_time in TIMELINE:
         pipeline.run_once(datetime.fromisoformat(raw_time))
 
-    assert repository.latest(Strategy.LONG) is not None
-    assert repository.latest(Strategy.LONG).frozen is False
+    assert pipeline._published_snapshots.latest(Strategy.LONG) is not None
+    assert pipeline._published_snapshots.latest(Strategy.LONG).frozen is False
     with sqlite3.connect(runtime_dir / "runtime.sqlite3") as connection:
         manifest_rows = tuple(
             connection.execute(

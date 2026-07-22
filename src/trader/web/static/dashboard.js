@@ -415,19 +415,17 @@
       stopPolling();
       if (state.streamRetry) window.clearTimeout(state.streamRetry);
     };
-    stream.addEventListener("recommendations", (event) => {
+    stream.addEventListener("recommendation_patch", (event) => {
       rememberEvent(event);
-      let published = null;
-      try { published = JSON.parse(event.data); } catch (_error) { published = null; }
-      if (!state.date && published && published.strategy === state.strategy) loadRecommendations("stream");
+      let patch = null;
+      try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
+      if (!state.date && patch && patch.strategy === state.strategy) applyRecommendationPatch(patch);
     });
-    stream.addEventListener("live_overlay", (event) => {
+    stream.addEventListener("overlay_patch", (event) => {
       rememberEvent(event);
-      let overlay = null;
-      try { overlay = JSON.parse(event.data); } catch (_error) { overlay = null; }
-      if (overlay && overlay.strategy === state.strategy) {
-        loadRecommendations(state.date ? "history_overlay" : "overlay");
-      }
+      let patch = null;
+      try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
+      if (patch && patch.strategy === state.strategy) applyOverlayPatch(patch);
     });
     stream.addEventListener("resync_required", (event) => {
       rememberEvent(event);
@@ -441,6 +439,51 @@
       if (state.streamRetry) window.clearTimeout(state.streamRetry);
       state.streamRetry = window.setTimeout(connectStream, 15000);
     };
+  }
+
+  function applyRecommendationPatch(patch) {
+    if (!patch || patch.schema_version !== 2 || !Array.isArray(patch.upserts)) return;
+    if (patch.base_snapshot_id && (!state.payload || state.payload.snapshot_id !== patch.base_snapshot_id)) {
+      loadRecommendations("patch_base_mismatch");
+      return;
+    }
+    const current = state.payload || {};
+    state.payload = {
+      ...current,
+      status: "ready",
+      snapshot_id: patch.snapshot_id,
+      strategy: patch.strategy,
+      trade_date: patch.trade_date,
+      phase: patch.phase,
+      published_at: patch.published_at,
+      strategy_version: patch.strategy_version,
+      fusion_mode: patch.fusion_mode,
+      stale: patch.stale,
+      frozen: patch.frozen,
+      degraded_reasons: patch.degraded_reasons || [],
+      filtered_count: patch.filtered_count,
+      items: patch.upserts,
+      error: null,
+    };
+    state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);
+    renderPayload(state.payload);
+  }
+
+  function applyOverlayPatch(patch) {
+    if (!state.payload || patch.schema_version !== 2) return;
+    if (!state.date && patch.snapshot_id !== state.payload.snapshot_id) return;
+    const quotes = new Map((patch.quotes || []).map((quote) => [quote.code, quote]));
+    state.payload.items = (state.payload.items || []).map((item) => {
+      const quote = quotes.get(item.code);
+      if (!quote) return item;
+      const anchor = Number(item.anchor_price);
+      const current = Number(quote.price);
+      const anchorToNow = Number.isFinite(anchor) && anchor > 0 && Number.isFinite(current)
+        ? ((current / anchor) - 1) * 100 : null;
+      return { ...item, ...quote, anchor_to_now_pct: anchorToNow };
+    });
+    state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);
+    renderPayload(state.payload);
   }
 
   function rememberEvent(event) {

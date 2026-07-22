@@ -1,4 +1,4 @@
-"""Strict v16 cache and performance policy parsing."""
+"""Strict v17 six-pool cache and performance policy parsing."""
 
 from __future__ import annotations
 
@@ -25,12 +25,23 @@ from trader.infra.settings_parser import (
 def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
     require_exact_keys(
         raw,
-        {"policy_version", "datasets", "groups", "total_bytes", "estimator_version"},
+        {
+            "schema_version",
+            "policy_version",
+            "datasets",
+            "groups",
+            "total_bytes",
+            "runtime_reserve_bytes",
+            "pool_total_bytes",
+            "estimator_version",
+        },
         "cache_policy",
     )
+    if integer(raw, "schema_version", minimum=1) != 6:
+        raise ConfigurationError("cache_policy.schema_version must be 6")
     policy_version = text(raw, "policy_version")
-    if policy_version != "market_cache_v16":
-        raise ConfigurationError("cache_policy.policy_version must be market_cache_v16")
+    if policy_version != "market_cache_v17_p1_p6":
+        raise ConfigurationError("cache_policy.policy_version must be market_cache_v17_p1_p6")
     estimator_version = text(raw, "estimator_version")
     if estimator_version != "canonical_json_utf8_v1":
         raise ConfigurationError("cache_policy.estimator_version must be canonical_json_utf8_v1")
@@ -45,15 +56,25 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
         "security_master_calendar",
         "daily_valuation_financials",
         "history_summary",
+        "canonical_market_snapshot",
+        "canonical_candidate_snapshot",
+        "current_quote_index",
+        "candidate_feature_batch",
+        "hard_filter_batch",
         "board_cross_section",
         "candidate_preselection",
         "local_score",
+        "board_score_batch",
+        "global_local_draft",
         "competition_group_mapping",
         "raw_deepseek_review",
         "strategy_deepseek_review",
+        "deepseek_seen_codes",
+        "published_recommendation_view",
+        "published_date_index",
     }
     if set(datasets_raw) != expected_datasets:
-        raise ConfigurationError("cache_policy.datasets must match the fixed v16 dataset set")
+        raise ConfigurationError("cache_policy.datasets must match the fixed v17 P1-P6 dataset set")
     datasets: dict[str, CacheDatasetPolicy] = {}
     for name, item in datasets_raw.items():
         if not isinstance(item, dict):
@@ -87,12 +108,12 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
             raise ConfigurationError(f"cache_policy.datasets.{name}: {exc}") from exc
 
     expected_policies = {
-        "full_market_quotes": (None, None, "full_market", 3.0, 10.0, 6000, "realtime_observations", False),
-        "candidate_quotes": (None, None, "candidate_quotes", 3.0, 3.0, 360, "realtime_observations", False),
-        "intraday_minutes": (45.0, 90.0, None, None, 45.0, 360, "history_minutes_research", False),
-        "research_success": (600.0, 1200.0, None, None, 60.0, 360, "history_minutes_research", True),
-        "research_failure": (60.0, 60.0, None, None, 60.0, 360, "history_minutes_research", False),
-        "daily_history": (21600.0, 86400.0, None, None, 60.0, 360, "history_minutes_research", False),
+        "full_market_quotes": (None, None, "full_market", 3.0, 10.0, 6000, "p1_observation", False),
+        "candidate_quotes": (None, None, "candidate_quotes", 3.0, 3.0, 360, "p1_observation", False),
+        "intraday_minutes": (45.0, 90.0, None, None, 45.0, 360, "p1_observation", False),
+        "research_success": (600.0, 1200.0, None, None, 60.0, 360, "p1_observation", True),
+        "research_failure": (60.0, 60.0, None, None, 60.0, 360, "p1_observation", False),
+        "daily_history": (21600.0, 86400.0, None, None, 60.0, 360, "p1_observation", False),
         "security_master_calendar": (
             86400.0,
             86400.0,
@@ -100,7 +121,7 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
             None,
             300.0,
             6000,
-            "history_minutes_research",
+            "p1_observation",
             False,
         ),
         "daily_valuation_financials": (
@@ -110,13 +131,20 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
             None,
             300.0,
             360,
-            "history_minutes_research",
+            "p1_observation",
             False,
         ),
-        "history_summary": (21600.0, 86400.0, None, None, 60.0, 360, "history_minutes_research", False),
-        "board_cross_section": (86400.0, 86400.0, None, None, 60.0, 24, "board_candidate_scoring", False),
-        "candidate_preselection": (86400.0, 86400.0, None, None, 60.0, 4, "board_candidate_scoring", False),
-        "local_score": (86400.0, 86400.0, None, None, 60.0, 1080, "board_candidate_scoring", False),
+        "canonical_market_snapshot": (60.0, 180.0, None, None, 10.0, 3, "p2_canonical", False),
+        "canonical_candidate_snapshot": (30.0, 90.0, None, None, 10.0, 6, "p2_canonical", False),
+        "current_quote_index": (30.0, 90.0, None, None, 10.0, 3, "p2_canonical", False),
+        "history_summary": (21600.0, 86400.0, None, None, 60.0, 360, "p3_features", False),
+        "candidate_feature_batch": (86400.0, 86400.0, None, None, 60.0, 24, "p3_features", False),
+        "hard_filter_batch": (86400.0, 86400.0, None, None, 60.0, 24, "p3_features", False),
+        "board_cross_section": (86400.0, 86400.0, None, None, 60.0, 24, "p3_features", False),
+        "candidate_preselection": (86400.0, 86400.0, None, None, 60.0, 4, "p3_features", False),
+        "local_score": (86400.0, 86400.0, None, None, 60.0, 1080, "p4_local_scoring", False),
+        "board_score_batch": (86400.0, 86400.0, None, None, 60.0, 24, "p4_local_scoring", False),
+        "global_local_draft": (86400.0, 86400.0, None, None, 60.0, 4, "p4_local_scoring", False),
         "competition_group_mapping": (
             86400.0,
             86400.0,
@@ -124,10 +152,10 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
             None,
             60.0,
             2,
-            "board_candidate_scoring",
+            "p3_features",
             False,
         ),
-        "raw_deepseek_review": (600.0, 600.0, None, None, 60.0, 2000, "board_candidate_scoring", False),
+        "raw_deepseek_review": (600.0, 600.0, None, None, 60.0, 2000, "p5_review", False),
         "strategy_deepseek_review": (
             600.0,
             600.0,
@@ -135,9 +163,12 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
             None,
             60.0,
             2000,
-            "board_candidate_scoring",
+            "p5_review",
             False,
         ),
+        "deepseek_seen_codes": (600.0, 600.0, None, None, 60.0, 6000, "p5_review", False),
+        "published_recommendation_view": (86400.0, 86400.0, None, None, 60.0, 72, "p6_delivery", False),
+        "published_date_index": (86400.0, 86400.0, None, None, 60.0, 3, "p6_delivery", False),
     }
     for name, expected in expected_policies.items():
         policy = datasets[name]
@@ -152,23 +183,29 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
             policy.persisted,
         )
         if actual != expected:
-            raise ConfigurationError(f"cache_policy.datasets.{name} must match the fixed v15 policy")
+            raise ConfigurationError(f"cache_policy.datasets.{name} must match the fixed v17 policy")
 
     groups_raw = mapping(raw, "groups")
     expected_groups = {
-        "realtime_observations": 64 * 1024 * 1024,
-        "history_minutes_research": 128 * 1024 * 1024,
-        "board_candidate_scoring": 64 * 1024 * 1024,
+        "p1_observation": 128 * 1024 * 1024,
+        "p2_canonical": 56 * 1024 * 1024,
+        "p3_features": 24 * 1024 * 1024,
+        "p4_local_scoring": 16 * 1024 * 1024,
+        "p5_review": 12 * 1024 * 1024,
+        "p6_delivery": 12 * 1024 * 1024,
     }
     if groups_raw != expected_groups:
-        raise ConfigurationError("cache_policy.groups must match the fixed 64/128/64 MiB allocation")
+        raise ConfigurationError("cache_policy.groups must match the fixed 128/56/24/16/12/12 MiB allocation")
     groups = {name: CacheGroupPolicy(max_bytes=integer(groups_raw, name, minimum=1)) for name in expected_groups}
     try:
         return CachePolicy(
+            schema_version=6,
             policy_version=policy_version,
             datasets=datasets,
             groups=groups,
             total_bytes=integer(raw, "total_bytes", minimum=1),
+            runtime_reserve_bytes=integer(raw, "runtime_reserve_bytes", minimum=1),
+            pool_total_bytes=integer(raw, "pool_total_bytes", minimum=1),
             estimator_version=estimator_version,
         )
     except ValueError as exc:
@@ -224,6 +261,7 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         "sse_delivery": 2000.0,
         "snapshot_api": 200.0,
         "etag_api": 50.0,
+        "dates_api": 100.0,
         "status_api": 100.0,
     }
     latency = _fixed_positive_number_mapping(raw, "latency_p95_ms", expected_latency)

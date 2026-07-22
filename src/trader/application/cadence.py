@@ -235,6 +235,8 @@ def freshness_level(age_seconds: float | None, interval_seconds: float | None) -
 def _due_schedule_points(local: datetime) -> tuple[SchedulePoint, ...]:
     current = local.time().replace(tzinfo=None)
     points: list[SchedulePoint] = []
+    if time(11, 19, 50) <= current < time(11, 20):
+        points.append(SchedulePoint.TODAY_CHECKPOINT)
     if current >= time(11, 20):
         points.append(SchedulePoint.TODAY_FREEZE)
     if current >= time(14, 48):
@@ -269,6 +271,8 @@ def _point_tasks(
     at: datetime,
     phase: MarketPhase,
 ) -> tuple[ScheduledPipelineTask, ...]:
+    if point is SchedulePoint.TODAY_CHECKPOINT:
+        return (ScheduledPipelineTask(PipelineTask.FINAL_CANDIDATE_QUOTES, at, phase),)
     if point is SchedulePoint.TODAY_FREEZE:
         return (ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, ("today",)),)
     if point is SchedulePoint.DEEPSEEK_CUTOFF:

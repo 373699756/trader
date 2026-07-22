@@ -442,8 +442,9 @@ def _score_strategies_on_workers(
             prepared.strategy,
             round((time.perf_counter() - scoring_started) * 1000.0, 3),
         )
-        persist(pipeline, pipeline._snapshot_writer.publish, snapshot)
         pipeline._state.publish(snapshot)
+        pipeline._published_snapshots.publish(snapshot)
+        _save_checkpoint_if_due(pipeline, snapshot, now)
         pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
         pipeline._publisher.publish(snapshot)
         snapshots.append(snapshot)
@@ -462,6 +463,33 @@ def _record_incomplete_board_score(
         f"{prepared.strategy.value} board scoring degraded; retained latest complete snapshot: "
         + ",".join(reasons)[:350]
     )
+
+
+def _save_checkpoint_if_due(
+    pipeline: RecommendationPipeline,
+    snapshot: RecommendationSnapshot,
+    now: datetime,
+) -> None:
+    if snapshot.strategy is Strategy.LONG:
+        return
+    local = shanghai_now(now)
+    if snapshot.strategy is Strategy.TODAY:
+        boundary = local.replace(hour=11, minute=20, second=0, microsecond=0)
+    else:
+        boundary = local.replace(hour=14, minute=50, second=0, microsecond=0)
+    if 0 <= (boundary - local).total_seconds() <= 10:
+        try:
+            persist(
+                pipeline,
+                pipeline._snapshot_writer.save_checkpoint,
+                snapshot,
+                boundary_at=boundary,
+            )
+        except Exception as exc:
+            pipeline._state.increment("checkpoint_save_failures")
+            pipeline._state.record_error(
+                f"{snapshot.strategy.value} checkpoint persistence degraded: {type(exc).__name__}"
+            )
 
 
 def strategies_for_phase(phase: MarketPhase) -> tuple[Strategy, ...]:

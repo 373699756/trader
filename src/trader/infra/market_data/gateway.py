@@ -25,6 +25,7 @@ from trader.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )
+from trader.infra.market_data.columnar import ColumnarQuoteBatch, MarketChangeSet, market_changes
 from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.gateway_support import (
     _cache_error_code,
@@ -103,6 +104,8 @@ class MarketDataGateway:
         self._calendar_open_dates: set[date] = set()
         self._calendar_open_dates_sorted: tuple[date, ...] = ()
         self._latest_snapshot: CanonicalMarketSnapshot | None = None
+        self._latest_batch: ColumnarQuoteBatch | None = None
+        self._latest_changes = MarketChangeSet("", (), (), ())
         self._latest_source = "unavailable"
         self._last_route_outcome: RouteOutcome | None = None
         self._merge_count = 0
@@ -189,10 +192,17 @@ class MarketDataGateway:
             with self._state_lock:
                 latest = self._latest_snapshot
             commit_snapshot = _preserve_newer_quotes(snapshot, latest)
+            columnar = ColumnarQuoteBatch.from_snapshot(
+                commit_snapshot,
+                config_version=self._config_version,
+                schema_version=self._schema_version,
+            )
             with self._state_lock:
                 if self._latest_snapshot is not latest:
                     continue
                 self._latest_snapshot = commit_snapshot
+                self._latest_changes = market_changes(self._latest_batch, columnar)
+                self._latest_batch = columnar
                 self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
                 self._latest_source = "eastmoney+sina" if len(successes) == 2 else outcome.vendor
                 self._last_route_outcome = outcome
@@ -320,6 +330,13 @@ class MarketDataGateway:
         with self._state_lock:
             self._remember_observations_locked(observations, completed_at)
             self._latest_snapshot = overlay_canonical_snapshot(self._latest_snapshot, snapshot)
+            columnar = ColumnarQuoteBatch.from_snapshot(
+                self._latest_snapshot,
+                config_version=self._config_version,
+                schema_version=self._schema_version,
+            )
+            self._latest_changes = market_changes(self._latest_batch, columnar)
+            self._latest_batch = columnar
             self._latest_by_code = {quote.code: quote for quote in self._latest_snapshot.quotes}
             self._merge_count += 1
             self._conflict_count += len(snapshot.conflicts)
@@ -413,6 +430,13 @@ class MarketDataGateway:
                 "merge_count": self._merge_count,
                 "conflict_count": self._conflict_count,
                 "merge_epoch": self._latest_snapshot.merge_epoch if self._latest_snapshot is not None else None,
+                "market_changes": {
+                    "merge_epoch": self._latest_changes.merge_epoch,
+                    "inserted": len(self._latest_changes.inserted_codes),
+                    "updated": len(self._latest_changes.updated_codes),
+                    "removed": len(self._latest_changes.removed_codes),
+                    "dirty": len(self._latest_changes.dirty_codes),
+                },
                 "canonical_snapshot": _canonical_health(self._latest_snapshot),
                 "route": _route_health(self._last_route_outcome),
                 "source_lanes": self._source_lanes.status() if self._source_lanes is not None else {},

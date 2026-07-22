@@ -10,7 +10,7 @@
 - 当前稳定版 Chrome、Edge 或 Firefox 桌面浏览器。
 - 仅支持个人 PC；手机和平板浏览器不属于产品范围，也不纳入发布验收。
 - 默认仅监听 `127.0.0.1`，不提供远程身份认证。
-- SQLite 和 JSON 运行数据写入 `.runtime/v2`，不需要 Redis、Celery、Node 或外部数据库。
+- SQLite 和 JSON 运行数据写入 `.runtime/v17`，不需要 Redis、Celery、Node 或外部数据库。
 
 ## 一键启动
 
@@ -58,6 +58,18 @@ python3 -m venv .venv
 配置路径必须为绝对路径。`TRADER_CONFIG` 可代替 `--config`。DeepSeek 密钥优先从
 `DEEPSEEK_API_KEY` 读取，也可使用 `DEEPSEEK_API_KEY_FILE` 或项目根目录
 `.token_key` 的 `DEEPSEEK_API_KEY` 字段；密钥不写入配置、快照或日志。
+
+v17 迁移和离线性能验收同样要求绝对路径：
+
+```bash
+.venv/bin/trader-cli --config "$PWD/config/v2/runtime.json" migrate-v17 \
+  --source-runtime "/absolute/path/to/.runtime/v2"
+.venv/bin/trader-cli --config "$PWD/config/v2/runtime.json" perf-check \
+  --fixture "$PWD/config/v2/performance_fixture" --suite all --output "/tmp/trader-perf.json"
+```
+
+迁移只读取源目录中已提交且哈希有效的冻结快照，忽略旧盘中草稿；重复执行幂等，不写回
+源目录。`perf-check` 使用固定 fixture 和本地合成负载，禁止外部网络。
 
 ## Tushare 慢数据
 
@@ -137,5 +149,5 @@ docs/               软件业务设计与荐股策略两份权威文档
 scripts/            工程辅助脚本
 src/trader/         唯一活动产品包
 tests/              单元、组件、契约和集成测试
-.runtime/v2/        本地运行数据，不进入 Git
+.runtime/v17/       本地运行数据，不进入 Git
 ```

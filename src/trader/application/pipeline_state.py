@@ -19,7 +19,12 @@ from trader.application.ports.market import (
     ResearchReaderPort,
 )
 from trader.application.ports.reviews import DeepSeekReviewPort
-from trader.application.ports.snapshots import SnapshotObservabilityPort, SnapshotReaderPort, SnapshotWriterPort
+from trader.application.ports.snapshots import (
+    PublishedSnapshotWritePort,
+    SnapshotObservabilityPort,
+    SnapshotReaderPort,
+    SnapshotWriterPort,
+)
 from trader.application.publisher import SnapshotPublisher
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
@@ -49,6 +54,7 @@ class PipelineState:
     _repository: SnapshotReaderPort
     _snapshot_writer: SnapshotWriterPort
     _snapshot_observability: SnapshotObservabilityPort
+    _published_snapshots: PublishedSnapshotWritePort
     _reviews: DeepSeekReviewPort | None
     _live_overlays: dict[tuple[Strategy, str], LiveOverlay]
     _scheduled_inflight: set[PipelineTask]

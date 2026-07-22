@@ -68,6 +68,7 @@ class PipelineStatusMixin(PipelineState):
             "worker_pools": worker_status(cast("RecommendationPipeline", self)),
             "cadence": cadence_status,
             "publisher": self._publisher.status(),
+            "published_snapshots": dict(self._published_snapshots.status()),
             "persistent_audit": self._observability_status(),
         }
         return self._state.snapshot(dependencies)

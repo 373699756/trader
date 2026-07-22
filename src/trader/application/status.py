@@ -98,6 +98,19 @@ class RuntimeState:
             ):
                 self._live_overlays[(overlay.strategy, overlay.trade_date)] = overlay
 
+    def recommendation_dates(self, strategy: Strategy) -> tuple[str, ...]:
+        return ()
+
+    def load_frozen(self, strategy: Strategy, trade_date: str) -> RecommendationSnapshot | None:
+        snapshot = self.latest(strategy)
+        if snapshot is not None and snapshot.trade_date == trade_date and snapshot.frozen:
+            return snapshot
+        return None
+
+    def status(self) -> Mapping[str, object]:
+        with self._lock:
+            return {"current_views": len(self._snapshots), "resident_views": 0, "cold_views": 0}
+
     def restore_overlay(self, overlay: LiveOverlay) -> None:
         self.publish_overlay(overlay)
 

@@ -22,7 +22,16 @@ def _cache() -> BoardScoringCache:
             "local_score": 1080,
         }.items()
     }
-    policy = CachePolicy("v16", datasets, {"scoring": CacheGroupPolicy(10_000_000)}, 10_000_000, "json")
+    policy = CachePolicy(
+        6,
+        "v17",
+        datasets,
+        {"scoring": CacheGroupPolicy(10_000_000)},
+        10_000_000,
+        1,
+        10_000_001,
+        "json",
+    )
     return BoardScoringCache(BoundedLruCache(policy), config_version="runtime-v16")
 
 

@@ -10,6 +10,8 @@ from pathlib import Path
 from trader.application.recommendations import RecommendationEngine
 from trader.application.threshold_report import build_threshold_report
 from trader.domain.recommendation.models import RecommendationSnapshot
+from trader.infra.performance import run_performance_check, write_report
+from trader.infra.persistence.migration import migrate_v17_archive
 from trader.infra.persistence.snapshots import snapshot_from_dict
 from trader.infra.settings import load_long_watchlist, load_runtime_settings, load_strategy_settings
 
@@ -35,6 +37,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Absolute frozen snapshot JSON path; repeat for multiple dates.",
     )
+    migrate = subparsers.add_parser("migrate-v17", help="Import committed v2 freezes into the isolated v17 runtime.")
+    migrate.add_argument("--source-runtime", required=True, help="Absolute read-only v2 runtime directory.")
+    perf = subparsers.add_parser("perf-check", help="Run the fixed offline v17 performance acceptance suite.")
+    perf.add_argument("--fixture", required=True, help="Absolute fixture directory.")
+    perf.add_argument(
+        "--suite",
+        required=True,
+        choices=("market-data", "board-scoring", "api-sse", "end-to-end", "all"),
+    )
+    perf.add_argument("--output", required=True, help="Absolute JSON report path.")
+    perf.add_argument("--baseline", help="Absolute prior report with the same identity.")
     return parser
 
 
@@ -78,6 +91,35 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"threshold report failed: {exc}") from exc
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
+    if args.command == "migrate-v17":
+        config_path = _absolute_config_path(args.config)
+        runtime = load_runtime_settings(config_path)
+        source = _absolute_directory_path(args.source_runtime, argument="--source-runtime")
+        try:
+            result = migrate_v17_archive(source, runtime.runtime_dir)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise SystemExit(f"v17 migration failed: {exc}") from exc
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.command == "perf-check":
+        config_path = _absolute_config_path(args.config)
+        runtime = load_runtime_settings(config_path)
+        fixture = _absolute_directory_path(args.fixture, argument="--fixture")
+        output = _absolute_output_path(args.output, argument="--output")
+        baseline = _absolute_file_path(args.baseline, argument="--baseline") if args.baseline else None
+        try:
+            result = run_performance_check(
+                fixture,
+                suite=args.suite,
+                budgets=runtime.performance_budgets,
+                config_path=config_path,
+                baseline_path=baseline,
+            )
+            write_report(output, result)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise SystemExit(f"performance check failed: {exc}") from exc
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0 if result["status"] == "passed" else 1
     return 2
 
 
@@ -91,6 +133,20 @@ def _absolute_config_path(raw_path: str) -> Path:
 
 
 def _absolute_file_path(raw_path: str, *, argument: str) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        raise SystemExit(f"{argument} path must be absolute")
+    return path.resolve()
+
+
+def _absolute_directory_path(raw_path: str, *, argument: str) -> Path:
+    path = _absolute_file_path(raw_path, argument=argument)
+    if not path.is_dir():
+        raise SystemExit(f"{argument} directory does not exist")
+    return path
+
+
+def _absolute_output_path(raw_path: str, *, argument: str) -> Path:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
         raise SystemExit(f"{argument} path must be absolute")

@@ -204,17 +204,14 @@ def test_snapshot_from_dict_uses_default_review_audit_values_when_fields_missing
     assert restored_review.rating == "neutral"
 
 
-def test_publish_and_freeze_create_verified_manifest(tmp_path) -> None:
+def test_freeze_creates_verified_manifest_without_published_draft_pointer(tmp_path) -> None:
     repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
     repository.initialize()
     snapshot = _snapshot()
 
-    repository.publish(snapshot)
     repository.freeze(snapshot)
 
-    latest = repository.latest(Strategy.TOMORROW)
     frozen = repository.load_frozen(Strategy.TOMORROW, "2026-07-16")
-    assert latest == replace(snapshot, frozen=True)
     assert frozen is not None
     assert frozen.snapshot_id == snapshot.snapshot_id
     assert frozen.frozen is True
@@ -228,7 +225,20 @@ def test_publish_and_freeze_create_verified_manifest(tmp_path) -> None:
     assert tuple(manifest[:4]) == ("committed", 1, "recommendation_snapshot_v2", "runtime-v2")
     assert json.loads(manifest["anchor_json"])["600001"]["age_seconds"] == 0.0
     assert tuple(recommendation) == ("600001", 1, 12.0)
-    assert tuple(published) == ("snapshot-1", "frozen/tomorrow/2026-07-16/snapshot-1.json")
+    assert published is None
+
+
+def test_checkpoint_is_hash_verified_and_consumed_once(tmp_path) -> None:
+    repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
+    repository.initialize()
+    boundary = NOW.replace(hour=14, minute=50, second=0, microsecond=0)
+    snapshot = replace(_snapshot(), published_at=boundary - timedelta(seconds=10))
+
+    repository.save_checkpoint(snapshot, boundary_at=boundary)
+
+    assert repository.load_checkpoint(Strategy.TOMORROW, snapshot.trade_date, boundary_at=boundary) == snapshot
+    repository.consume_checkpoint(Strategy.TOMORROW, snapshot.trade_date, boundary_at=boundary)
+    assert repository.load_checkpoint(Strategy.TOMORROW, snapshot.trade_date, boundary_at=boundary) is None
 
 
 def test_outcome_audit_is_idempotent_without_changing_frozen_snapshot(tmp_path) -> None:
@@ -416,7 +426,7 @@ def test_recovery_commits_file_left_after_process_crash(tmp_path) -> None:
     assert recovered.load_frozen(Strategy.TOMORROW, "2026-07-16") is not None
 
 
-def test_committed_freeze_updates_latest_pointer_before_returning(tmp_path) -> None:
+def test_committed_freeze_is_immediately_readable_without_draft_pointer(tmp_path) -> None:
     def crash(stage: str) -> None:
         if stage == "manifest_committed":
             raise SimulatedCrash
@@ -427,7 +437,7 @@ def test_committed_freeze_updates_latest_pointer_before_returning(tmp_path) -> N
     with pytest.raises(SimulatedCrash):
         repository.freeze(_snapshot())
 
-    latest = SnapshotRepository(tmp_path, config_version="runtime-v2").latest(Strategy.TOMORROW)
+    latest = SnapshotRepository(tmp_path, config_version="runtime-v2").load_frozen(Strategy.TOMORROW, "2026-07-16")
     assert latest is not None
     assert latest.snapshot_id == "snapshot-1"
     assert latest.frozen is True
@@ -460,7 +470,6 @@ def test_recovery_quarantines_committed_hash_mismatch_and_restores_previous_free
     second = replace(first, snapshot_id="snapshot-2", trade_date="2026-07-17")
     repository.freeze(first)
     repository.freeze(second)
-    repository.publish(second)
     second_path = next(path for path in (tmp_path / "frozen").rglob("*.json") if "snapshot-2" in path.name)
     second_path.write_text("{}", encoding="utf-8")
 
@@ -468,7 +477,7 @@ def test_recovery_quarantines_committed_hash_mismatch_and_restores_previous_free
 
     assert result.quarantined == 1
     assert repository.load_frozen(Strategy.TOMORROW, "2026-07-17") is None
-    assert repository.latest(Strategy.TOMORROW).snapshot_id == "snapshot-1"
+    assert repository.load_frozen(Strategy.TOMORROW, "2026-07-16").snapshot_id == "snapshot-1"
 
 
 def test_recovery_rejects_staged_manifest_version_mismatch(tmp_path) -> None:

@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续执行全工程重构计划 2.5 整节。新增 cache schema v6 的 P1-P6 六池、Polars
+  `ColumnarQuoteBatch` 与 `MarketChangeSet`、内存式 `PublishedSnapshotIndex`、20 个完整
+  三策略交易日驻留、按日期 single-flight 的三策略冷读、11:19:50/14:49:50 冻结检查点、
+  schema-v2 推荐/overlay SSE patch、源目录只读的 `migrate-v17` 和固定无网络 `perf-check`。
+
 - 用户继续执行全工程重构计划 2.4。新增行情源协调器、DeepSeek 复核上下文/请求执行器/
   状态跟踪器、原子预算批次仓库和预算报告器等有类型组合组件；新增统一的适配器失败码，
   覆盖超时、截止、熔断、负缓存、取消、被更新任务取代、无数据、限流、schema 和源失败。
@@ -162,6 +167,12 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 本批现状判断：三组 v16 缓存不能隔离观测、规范快照、特征、评分、模型复核和交付生命周期；
+  查询用例直接持有归档仓储导致热读访问 SQLite；盘中草稿与 overlay 被完整持久化；SSE
+  失效通知又触发浏览器完整 GET。修改后配置严格固定 248 MiB 六池与 8 MiB 运行预留，
+  Web 只读用例只依赖 P6，普通草稿/盘中 overlay 只更新 P6 与局部 patch，冻结、检查点和
+  closing overlay 才进入持久化边界；活动运行目录由 `.runtime/v2` 隔离到 `.runtime/v17`。
 
 - 行情、DeepSeek、预算与快照观测从多继承 mixin 改为构造时显式注入的类型化组合；复杂预算
   批次入口改用不可变请求/完成对象。历史 K 线现在强制生产者声明 `raw/qfq` 和来源，120 点
@@ -328,6 +339,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复最近历史按单策略预热可能形成不完整交易日、冷缓存逐项淘汰可能留下部分三元组、慢
+  SSE 客户端与正常客户端共享失效式全量回读，以及冻结边界重启只能依赖旧 published 指针
+  的问题。现在只接纳 manifest/SHA 合格的完整三策略驻留日期，冷区整日装载和淘汰，慢客户
+  端独立丢弃并返回 resync，边界恢复只读取同日、30 秒内、配置一致且未消费的检查点。
+
 - 修复 Tushare 原始价历史此前缺少复权元数据、可能进入收益率、均线和波动率特征的问题；
   历史存储与特征入口现在双重拒绝 raw，未知数据也不能再通过默认值伪装为 qfq，并在 raw
   审计数据出现时回退到腾讯 qfq 历史。修复带来源前缀的 `late` 失败可能被误归类为普通源
@@ -478,6 +494,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除活动流水线对 `SnapshotRepository.publish/latest`、`published/` 草稿 JSON 和
+  `published_snapshots` 当前指针的读写；保留旧 SQLite 表仅供完整旧 release 忽略，不再
+  作为 v17 事实源。移除 SSE 正常路径对推荐和 overlay 的完整 HTTP 回读。
+
 - 删除行情源、DeepSeek 复核、预算批次/状态/汇总的 5 组旧 mixin 实现文件和继承装配路径，
   不保留兼容别名；本批未删除任何策略、行情能力、DeepSeek 配额、冻结记录、API 或 Web
   资源。
@@ -561,6 +581,11 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 本批新增严格配置、列式 dirty set、P6 完整日期预热、日期 single-flight、检查点
+  hash/consume、SQLite schema v8、SSE patch 和慢客户端自动回归。首轮 145 个相关用例
+  发现 8 个旧契约或实现问题，修复后 8/8 定向复测通过；最终完整质量、打包、wheel、性能
+  与桌面门禁结果在本批提交前继续更新。
 
 - 2.4 的 659 项完整 pytest（验收时暂时隔离并随后原样恢复与本批无关的未跟踪
   `docs/plan_youhua.md`）、213 文件 Ruff format、Ruff lint/严格债务、154 个源码文件
@@ -759,6 +784,11 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- Polars 只改变基础设施层批次与变更集合，不改变领域评分、68/32 融合、风险、动作、排名
+  或冻结哈希；性能通过也不代表荐股收益提高。真实供应商、真实 DeepSeek 和真实交易日仍受
+  外部网络与数据质量影响。未跟踪的 `docs/plan_youhua.md` 属于用户既有文件，本批保留且不
+  提交；若其继续违反三份非权威计划的文档治理契约，完整测试需隔离该文件后证明本批。
 
 - 本批未调用真实外部行情或 DeepSeek 服务，供应商权限、实时限流和网络退化仍由现有超时、
   熔断、负缓存及降级契约承担；Tushare 是否支持明确 qfq 输出取决于运行时 SDK 能力，不支持

@@ -53,6 +53,7 @@ class MutableClocks:
 
 def _policy(*, capacity: int = 2, group_bytes: int = 100_000) -> CachePolicy:
     return CachePolicy(
+        schema_version=6,
         policy_version="cache_policy_v15",
         datasets={
             "full_market_quotes": CacheDatasetPolicy(
@@ -81,6 +82,8 @@ def _policy(*, capacity: int = 2, group_bytes: int = 100_000) -> CachePolicy:
             "history_minutes_research": CacheGroupPolicy(max_bytes=group_bytes),
         },
         total_bytes=group_bytes * 2,
+        runtime_reserve_bytes=1,
+        pool_total_bytes=group_bytes * 2 + 1,
         estimator_version="canonical_json_utf8_v1",
     )
 

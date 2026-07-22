@@ -93,6 +93,26 @@ def test_initialize_database_migrates_from_versioned_partial_schema(tmp_path: Pa
     assert "last_error" in health_columns
 
 
+def test_schema_v8_registers_freeze_checkpoint_lifecycle(tmp_path: Path) -> None:
+    database = tmp_path / "runtime.sqlite3"
+    initialize_database(database)
+
+    with connection_scope(database) as connection:
+        columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(freeze_checkpoints)")}
+
+    assert columns == {
+        "strategy",
+        "trade_date",
+        "boundary_at",
+        "snapshot_id",
+        "observed_at",
+        "relative_path",
+        "sha256",
+        "status",
+        "consumed_at",
+    }
+
+
 def test_initialize_database_handles_corrupt_schema_version(tmp_path: Path) -> None:
     database = tmp_path / "corrupt.sqlite3"
     with sqlite3.connect(database) as connection:

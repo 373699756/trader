@@ -57,8 +57,8 @@ class SnapshotRepository:
     ) -> None:
         self._runtime_dir = runtime_dir
         self._database_path = runtime_dir / "runtime.sqlite3"
-        self._published_dir = runtime_dir / "published"
         self._frozen_dir = runtime_dir / "frozen"
+        self._checkpoint_dir = runtime_dir / "checkpoints"
         self._quarantine_dir = runtime_dir / "quarantine"
         self._config_version = config_version
         self._fault_injector = fault_injector or (lambda _stage: None)
@@ -98,38 +98,10 @@ class SnapshotRepository:
         return self._observability.observability_status()
 
     def initialize(self) -> None:
-        self._published_dir.mkdir(parents=True, exist_ok=True)
         self._frozen_dir.mkdir(parents=True, exist_ok=True)
+        self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._quarantine_dir.mkdir(parents=True, exist_ok=True)
         initialize_database(self._database_path)
-
-    def publish(self, snapshot: RecommendationSnapshot) -> None:
-        payload = snapshot_bytes(snapshot)
-        digest = snapshot_sha256(payload)
-        relative_path = Path("published") / f"{snapshot.strategy.value}.json"
-        target = self._runtime_dir / relative_path
-        with self._lock:
-            _atomic_replace(target, payload)
-            self._fault_injector("published_file_replaced")
-            with connection_scope(self._database_path) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO published_snapshots(strategy, snapshot_id, published_at, relative_path, sha256)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(strategy) DO UPDATE SET
-                        snapshot_id = excluded.snapshot_id,
-                        published_at = excluded.published_at,
-                        relative_path = excluded.relative_path,
-                        sha256 = excluded.sha256
-                    """,
-                    (
-                        snapshot.strategy.value,
-                        snapshot.snapshot_id,
-                        snapshot.published_at.isoformat(),
-                        relative_path.as_posix(),
-                        digest,
-                    ),
-                )
 
     def freeze(self, snapshot: RecommendationSnapshot) -> None:
         if snapshot.strategy is Strategy.LONG:
@@ -149,15 +121,98 @@ class SnapshotRepository:
             self._commit_manifest(frozen)
             self._fault_injector("manifest_committed")
 
-    def latest(self, strategy: Strategy) -> RecommendationSnapshot | None:
+    def save_checkpoint(self, snapshot: RecommendationSnapshot, *, boundary_at: datetime) -> None:
+        if boundary_at.tzinfo is None or boundary_at.utcoffset() is None:
+            raise ValueError("checkpoint boundary must be timezone-aware")
+        if snapshot.strategy is Strategy.LONG or snapshot.trade_date != boundary_at.date().isoformat():
+            raise ValueError("checkpoint identity does not match its freeze boundary")
+        if snapshot.config_version != self._config_version:
+            raise ValueError("checkpoint config version does not match repository config version")
+        age = (boundary_at - snapshot.published_at).total_seconds()
+        if age < 0 or age > 30:
+            raise ValueError("checkpoint snapshot must be within 30 seconds before the boundary")
+        payload = snapshot_bytes(snapshot)
+        digest = snapshot_sha256(payload)
+        relative_path = Path("checkpoints") / snapshot.trade_date / f"{snapshot.strategy.value}.json"
+        target = self._runtime_dir / relative_path
+        with self._lock:
+            _atomic_replace(target, payload)
+            with connection_scope(self._database_path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO freeze_checkpoints(
+                        strategy, trade_date, boundary_at, snapshot_id, observed_at,
+                        relative_path, sha256, status, consumed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', NULL)
+                    ON CONFLICT(strategy, trade_date, boundary_at) DO UPDATE SET
+                        snapshot_id=excluded.snapshot_id,
+                        observed_at=excluded.observed_at,
+                        relative_path=excluded.relative_path,
+                        sha256=excluded.sha256,
+                        status='ready',
+                        consumed_at=NULL
+                    """,
+                    (
+                        snapshot.strategy.value,
+                        snapshot.trade_date,
+                        boundary_at.isoformat(),
+                        snapshot.snapshot_id,
+                        snapshot.published_at.isoformat(),
+                        relative_path.as_posix(),
+                        digest,
+                    ),
+                )
+
+    def load_checkpoint(
+        self, strategy: Strategy, trade_date: str, *, boundary_at: datetime
+    ) -> RecommendationSnapshot | None:
+        if boundary_at.tzinfo is None or boundary_at.utcoffset() is None:
+            raise ValueError("checkpoint boundary must be timezone-aware")
         with connection_scope(self._database_path) as connection:
             row = connection.execute(
-                "SELECT relative_path, sha256 FROM published_snapshots WHERE strategy = ?",
-                (strategy.value,),
+                """
+                SELECT relative_path, sha256, observed_at
+                FROM freeze_checkpoints
+                WHERE strategy=? AND trade_date=? AND boundary_at=? AND status='ready'
+                """,
+                (strategy.value, trade_date, boundary_at.isoformat()),
             ).fetchone()
         if row is None:
             return None
-        return self._load_verified_snapshot(str(row["relative_path"]), str(row["sha256"]))
+        try:
+            observed_at = datetime.fromisoformat(str(row["observed_at"]))
+        except ValueError:
+            return None
+        age = (boundary_at - observed_at).total_seconds()
+        if age < 0 or age > 30:
+            return None
+        snapshot = self._load_verified_snapshot(str(row["relative_path"]), str(row["sha256"]))
+        if (
+            snapshot is None
+            or snapshot.strategy is not strategy
+            or snapshot.trade_date != trade_date
+            or snapshot.config_version != self._config_version
+        ):
+            return None
+        return snapshot
+
+    def consume_checkpoint(self, strategy: Strategy, trade_date: str, *, boundary_at: datetime) -> None:
+        if boundary_at.tzinfo is None or boundary_at.utcoffset() is None:
+            raise ValueError("checkpoint boundary must be timezone-aware")
+        with self._lock, connection_scope(self._database_path) as connection:
+            connection.execute(
+                """
+                UPDATE freeze_checkpoints
+                SET status='consumed', consumed_at=?
+                WHERE strategy=? AND trade_date=? AND boundary_at=? AND status='ready'
+                """,
+                (boundary_at.isoformat(), strategy.value, trade_date, boundary_at.isoformat()),
+            )
+        path = self._checkpoint_dir / trade_date / f"{strategy.value}.json"
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def load_frozen(self, strategy: Strategy, trade_date: str) -> RecommendationSnapshot | None:
         with connection_scope(self._database_path) as connection:
@@ -325,15 +380,9 @@ class SnapshotRepository:
                 "SELECT snapshot_id FROM frozen_snapshots WHERE strategy = ? AND recommend_date = ? AND status = 'committed'",
                 (overlay.strategy.value, overlay.trade_date),
             ).fetchone()
-            published = connection.execute(
-                "SELECT snapshot_id FROM published_snapshots WHERE strategy = ?",
-                (overlay.strategy.value,),
-            ).fetchone()
-            authorized = (manifest is not None and str(manifest["snapshot_id"]) == overlay.snapshot_id) or (
-                published is not None and str(published["snapshot_id"]) == overlay.snapshot_id
-            )
+            authorized = manifest is not None and str(manifest["snapshot_id"]) == overlay.snapshot_id
             if not authorized:
-                raise SnapshotConflictError("live overlay must reference the current published or committed snapshot")
+                raise SnapshotConflictError("closing overlay must reference a committed snapshot")
             existing = connection.execute(
                 "SELECT snapshot_id, observed_at, closing FROM live_overlays WHERE strategy = ? AND recommend_date = ?",
                 (overlay.strategy.value, overlay.trade_date),
@@ -406,13 +455,64 @@ class SnapshotRepository:
                 if snapshot is None:
                     self._quarantine_manifest(connection, row, target, error)
                     quarantined += 1
-            self._restore_invalid_published_pointers(connection)
+            quarantined += self._recover_checkpoints(connection)
             known_paths = {
                 str(row["relative_path"])
                 for row in connection.execute("SELECT relative_path FROM frozen_snapshots").fetchall()
             }
             orphaned = self._quarantine_orphans(known_paths)
         return RecoverySummary(recovered=recovered, quarantined=quarantined, orphaned=orphaned)
+
+    def _recover_checkpoints(self, connection: sqlite3.Connection) -> int:
+        quarantined = 0
+        rows = connection.execute("SELECT * FROM freeze_checkpoints WHERE status='ready'").fetchall()
+        for row in rows:
+            committed = connection.execute(
+                """
+                SELECT 1 FROM frozen_snapshots
+                WHERE strategy=? AND recommend_date=? AND status='committed'
+                """,
+                (row["strategy"], row["trade_date"]),
+            ).fetchone()
+            if committed is not None:
+                connection.execute(
+                    """
+                    UPDATE freeze_checkpoints SET status='consumed', consumed_at=boundary_at
+                    WHERE strategy=? AND trade_date=? AND boundary_at=?
+                    """,
+                    (row["strategy"], row["trade_date"], row["boundary_at"]),
+                )
+                continue
+            target = self._runtime_dir / str(row["relative_path"])
+            snapshot = self._load_verified_snapshot(str(row["relative_path"]), str(row["sha256"]))
+            try:
+                boundary = datetime.fromisoformat(str(row["boundary_at"]))
+                observed = datetime.fromisoformat(str(row["observed_at"]))
+                age = (boundary - observed).total_seconds()
+            except (TypeError, ValueError):
+                age = -1.0
+            valid = (
+                snapshot is not None
+                and snapshot.strategy.value == str(row["strategy"])
+                and snapshot.trade_date == str(row["trade_date"])
+                and snapshot.config_version == self._config_version
+                and 0 <= age <= 30
+            )
+            if valid:
+                continue
+            connection.execute(
+                """
+                UPDATE freeze_checkpoints SET status='quarantined'
+                WHERE strategy=? AND trade_date=? AND boundary_at=?
+                """,
+                (row["strategy"], row["trade_date"], row["boundary_at"]),
+            )
+            if target.exists():
+                destination = self._quarantine_dir / "checkpoints" / Path(str(row["relative_path"]))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(target), str(destination))
+            quarantined += 1
+        return quarantined
 
     def _stage_manifest(
         self,
@@ -513,24 +613,6 @@ class SnapshotRepository:
                         snapshot.snapshot_id,
                     ),
                 )
-            database.execute(
-                """
-                INSERT INTO published_snapshots(strategy, snapshot_id, published_at, relative_path, sha256)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(strategy) DO UPDATE SET
-                    snapshot_id = excluded.snapshot_id,
-                    published_at = excluded.published_at,
-                    relative_path = excluded.relative_path,
-                    sha256 = excluded.sha256
-                """,
-                (
-                    snapshot.strategy.value,
-                    snapshot.snapshot_id,
-                    snapshot.published_at.isoformat(),
-                    str(manifest["relative_path"]),
-                    str(manifest["sha256"]),
-                ),
-            )
             changed = database.execute(
                 "UPDATE frozen_snapshots SET status = 'committed', error = '' WHERE snapshot_id = ? AND status = 'staged'",
                 (snapshot.snapshot_id,),
@@ -569,67 +651,6 @@ class SnapshotRepository:
             destination = self._quarantine_dir / "manifests" / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(target), str(destination))
-
-    def _restore_invalid_published_pointers(self, connection: sqlite3.Connection) -> None:
-        pointers = connection.execute("SELECT * FROM published_snapshots").fetchall()
-        for pointer in pointers:
-            target = self._runtime_dir / str(pointer["relative_path"])
-            manifest = connection.execute(
-                """
-                SELECT snapshot_id, frozen_at, relative_path, sha256, status
-                FROM frozen_snapshots
-                WHERE snapshot_id = ? AND strategy = ?
-                """,
-                (pointer["snapshot_id"], pointer["strategy"]),
-            ).fetchone()
-            if manifest is not None and str(manifest["status"]) == "committed":
-                if str(pointer["relative_path"]) != str(manifest["relative_path"]) or str(pointer["sha256"]) != str(
-                    manifest["sha256"]
-                ):
-                    connection.execute(
-                        """
-                        UPDATE published_snapshots
-                        SET published_at = ?, relative_path = ?, sha256 = ?
-                        WHERE strategy = ?
-                        """,
-                        (
-                            manifest["frozen_at"],
-                            manifest["relative_path"],
-                            manifest["sha256"],
-                            pointer["strategy"],
-                        ),
-                    )
-                continue
-            if manifest is None and _matches_hash(target, str(pointer["sha256"])):
-                continue
-            strategy = str(pointer["strategy"])
-            fallback = connection.execute(
-                """
-                SELECT snapshot_id, frozen_at, relative_path, sha256
-                FROM frozen_snapshots
-                WHERE strategy = ? AND status = 'committed'
-                ORDER BY recommend_date DESC, frozen_at DESC
-                LIMIT 1
-                """,
-                (strategy,),
-            ).fetchone()
-            if fallback is None:
-                connection.execute("DELETE FROM published_snapshots WHERE strategy = ?", (strategy,))
-                continue
-            connection.execute(
-                """
-                UPDATE published_snapshots
-                SET snapshot_id = ?, published_at = ?, relative_path = ?, sha256 = ?
-                WHERE strategy = ?
-                """,
-                (
-                    fallback["snapshot_id"],
-                    fallback["frozen_at"],
-                    fallback["relative_path"],
-                    fallback["sha256"],
-                    strategy,
-                ),
-            )
 
     def _quarantine_orphans(self, known_paths: set[str]) -> int:
         count = 0

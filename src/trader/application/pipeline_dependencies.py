@@ -13,7 +13,7 @@ from trader.application.ports.events import EventAuditPort
 from trader.application.ports.market import MarketDataPorts
 from trader.application.ports.outcomes import OutcomeSettlementPort
 from trader.application.ports.reviews import DeepSeekReviewPort
-from trader.application.ports.snapshots import SnapshotPorts
+from trader.application.ports.snapshots import PublishedSnapshotWritePort, SnapshotPorts
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
@@ -30,6 +30,7 @@ class PipelineDependencies:
     engine: RecommendationEngine
     state: RuntimeState
     now: Callable[[], datetime]
+    published_snapshots: PublishedSnapshotWritePort | None = None
     reviews: DeepSeekReviewPort | None = None
     outcome_settlement: OutcomeSettlementPort | None = None
 

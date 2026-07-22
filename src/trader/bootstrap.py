@@ -18,6 +18,7 @@ from trader.application.pipeline_dependencies import PipelineDependencies, Pipel
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
 from trader.application.ports.market import MarketDataPorts
 from trader.application.ports.snapshots import SnapshotPorts
+from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
@@ -77,6 +78,7 @@ class ApplicationSystem:
     pipeline: RecommendationPipeline
     repository: SnapshotRepository
     publisher: SnapshotPublisher
+    published_snapshots: PublishedSnapshotIndex
     state: RuntimeState
     market_cache: BoundedLruCache[object]
     history_pool: BoundedExecutor
@@ -321,6 +323,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         client_queue_size=settings.api.sse_client_queue_size,
         maximum_subscribers=settings.api.sse_max_clients,
     )
+    published_snapshots = PublishedSnapshotIndex(repository)
     pipeline = RecommendationPipeline(
         PipelineDependencies(
             market=MarketDataPorts(
@@ -348,6 +351,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
                 ),
             ),
             state=state,
+            published_snapshots=published_snapshots,
             now=now,
             outcome_settlement=OutcomeSettlementService(
                 market_data,
@@ -373,18 +377,17 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         PipelineResources(data_pool=data_pool, persistence_pool=persistence_pool),
     )
     queries = RecommendationQueries(
-        repository,
+        published_snapshots,
         repository,
         now=now,
         current_quote_reader=market_data,
-        current_snapshot_reader=state,
     )
     supervisor = RuntimeSupervisor(
         pipeline,
         now=now,
         initializers=(
             pipeline.initialize,
-            queries.initialize,
+            published_snapshots.initialize,
             budget.initialize,
             lambda: budget.recover_incomplete(now()),
         ),
@@ -413,6 +416,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         pipeline,
         repository,
         publisher,
+        published_snapshots,
         state,
         market_cache,
         history_pool,

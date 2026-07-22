@@ -58,7 +58,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "CACHE_MAX_AGE_MS = 30000" in dashboard
     assert "budget.available === false" in dashboard
     assert '? "不可用"' in dashboard
-    assert 'addEventListener("live_overlay"' in dashboard
+    assert 'addEventListener("overlay_patch"' in dashboard
+    assert 'addEventListener("recommendation_patch"' in dashboard
+    assert "applyRecommendationPatch" in dashboard
     assert "reconcileRecommendationIdentity(payload)" in dashboard
     assert 'loadRecommendations("status_identity")' in dashboard
     assert 'query.set("view", "live")' in dashboard

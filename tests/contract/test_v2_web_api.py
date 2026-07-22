@@ -6,6 +6,7 @@ from datetime import datetime
 
 from trader.application.events import EventAuditRecord, EventStatus
 from trader.application.ports.snapshots import RecoverySummary
+from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
@@ -606,10 +607,9 @@ def test_current_query_reads_snapshot_and_overlay_from_runtime_index(
         overlays={(Strategy.TODAY, snapshot.trade_date): overlay},
     )
     queries = RecommendationQueries(
-        persisted,
+        runtime,
         persisted,
         now=lambda: NOW,
-        current_snapshot_reader=runtime,
     )
 
     lookup = queries.recommendation(Strategy.TODAY)
@@ -631,10 +631,14 @@ def test_historical_snapshots_are_preloaded_once_as_compact_delivery_views(
         frozen=True,
         filter_details=(FilterAudit("600001", "stale_quote", "<= 20s", 21.0, "fixture", NOW),),
     )
-    repository = CountingReadRepository(
-        frozen={(Strategy.TOMORROW, snapshot.trade_date): snapshot},
-    )
-    queries = RecommendationQueries(repository, repository, now=lambda: NOW)
+    frozen = {
+        (strategy, snapshot.trade_date): replace(snapshot, strategy=strategy, snapshot_id=f"{strategy.value}-1")
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+    }
+    repository = CountingReadRepository(frozen=frozen)
+    index = PublishedSnapshotIndex(repository)
+    index.initialize()
+    queries = RecommendationQueries(index, repository, now=lambda: NOW)
 
     queries.initialize()
     first = queries.recommendation(Strategy.TOMORROW, snapshot.trade_date)
@@ -643,7 +647,11 @@ def test_historical_snapshots_are_preloaded_once_as_compact_delivery_views(
     assert first.snapshot is second.snapshot
     assert first.snapshot is not None
     assert first.snapshot.filter_details == ()
-    assert repository.frozen_loads == {(Strategy.TOMORROW, snapshot.trade_date): 1}
+    assert repository.frozen_loads == {
+        (Strategy.TODAY, snapshot.trade_date): 1,
+        (Strategy.TOMORROW, snapshot.trade_date): 1,
+        (Strategy.D25, snapshot.trade_date): 1,
+    }
 
 
 def test_missing_history_is_not_cached_across_later_freeze(
@@ -655,16 +663,18 @@ def test_missing_history_is_not_cached_across_later_freeze(
         frozen=True,
     )
     repository = CountingReadRepository()
-    queries = RecommendationQueries(repository, repository, now=lambda: NOW)
+    index = PublishedSnapshotIndex(repository)
+    queries = RecommendationQueries(index, repository, now=lambda: NOW)
 
     missing = queries.recommendation(Strategy.D25, snapshot.trade_date)
-    repository._frozen[(Strategy.D25, snapshot.trade_date)] = snapshot
+    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+        index.publish(replace(snapshot, strategy=strategy, snapshot_id=f"{strategy.value}-later"))
     ready = queries.recommendation(Strategy.D25, snapshot.trade_date)
 
     assert missing.snapshot is None
     assert ready.snapshot is not None
-    assert ready.snapshot.snapshot_id == snapshot.snapshot_id
-    assert repository.frozen_loads[(Strategy.D25, snapshot.trade_date)] == 2
+    assert ready.snapshot.snapshot_id == "d25-later"
+    assert repository.frozen_loads[(Strategy.D25, snapshot.trade_date)] == 1
 
 
 def test_historical_snapshot_has_exact_identity_and_current_quote_overlay(
@@ -980,7 +990,28 @@ def _app(
         maximum_subscribers=maximum_subscribers,
     )
     quote_reader = MemoryCurrentQuoteReader(current_quotes) if current_quotes is not None else None
-    queries = RecommendationQueries(repository, repository, now=lambda: now, current_quote_reader=quote_reader)
+    index = PublishedSnapshotIndex(repository)
+    index.initialize()
+    for snapshot in repository._latest.values():
+        index.publish(snapshot)
+    frozen_dates = sorted({trade_date for _strategy, trade_date in repository._frozen})
+    for trade_date in frozen_dates:
+        available = {
+            strategy: snapshot
+            for (strategy, candidate_date), snapshot in repository._frozen.items()
+            if candidate_date == trade_date
+        }
+        template = next(iter(available.values()))
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+            snapshot = available.get(strategy) or replace(
+                template,
+                strategy=strategy,
+                snapshot_id=f"test-companion-{strategy.value}-{trade_date}",
+            )
+            index.publish(snapshot)
+    for overlay in repository._overlays.values():
+        index.publish_overlay(overlay)
+    queries = RecommendationQueries(index, repository, now=lambda: now, current_quote_reader=quote_reader)
     app = create_app(
         lambda: {"schema_version": "v2", "status": "running", "runtime_started": True},
         queries=queries,

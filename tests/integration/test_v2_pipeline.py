@@ -201,10 +201,9 @@ def test_after_close_cold_start_rebuilds_missing_strategies_locally(
         assert pipeline._engine.verify_frozen(snapshot)["status"] == "verified"
 
     queries = RecommendationQueries(
-        repository,
+        state,
         repository,
         now=clock.now,
-        current_snapshot_reader=state,
     )
     lookup = queries.recommendation(Strategy.TOMORROW)
     assert lookup.status == "ready"
@@ -546,15 +545,15 @@ def test_frozen_topk_uses_recoverable_overlay_and_keeps_close_value(
     pipeline.initialize()
 
     assert pipeline.run_once(clock.now()) == ()
-    overlay = repository.overlays[(Strategy.TOMORROW, "2026-07-16")]
+    overlay = state.load_live_overlay(Strategy.TOMORROW, "2026-07-16")
     assert isinstance(overlay, LiveOverlay)
     assert overlay.snapshot_id == frozen.snapshot_id
     assert overlay.closing is False
-    assert state.load_live_overlay(Strategy.TOMORROW, "2026-07-16") == overlay
+    assert (Strategy.TOMORROW, "2026-07-16") not in repository.overlays
     market_data.candidate_unavailable = True
     clock.set(datetime.fromisoformat("2026-07-16T14:50:20+08:00"))
     pipeline.run_once(clock.now())
-    assert repository.overlays[(Strategy.TOMORROW, "2026-07-16")].version == overlay.version
+    assert state.load_live_overlay(Strategy.TOMORROW, "2026-07-16").version == overlay.version
     market_data.candidate_unavailable = False
     clock.set(datetime.fromisoformat("2026-07-16T15:00:00+08:00"))
     pipeline.run_once(clock.now())
@@ -680,8 +679,9 @@ def test_initialize_skips_today_freeze_when_no_pre_cutoff_snapshot(
         filtered_count=0,
         filter_reasons={},
     )
-    repository.publish(replace(tomorrow, config_version="config-v2"))
-    repository.publish(replace(d25, config_version="config-v2"))
+    boundary = now.replace(hour=14, minute=50, second=0, microsecond=0)
+    repository.save_checkpoint(replace(tomorrow, config_version="config-v2"), boundary_at=boundary)
+    repository.save_checkpoint(replace(d25, config_version="config-v2"), boundary_at=boundary)
     pipeline = build_pipeline(
         StaticMarketData(()),
         TradingDayCalendar(),
@@ -778,7 +778,7 @@ def test_freeze_reuses_persisted_snapshot_when_state_has_no_live_copy(
     draft = replace(draft, config_version="config-v2")
 
     repository = MemoryRepository()
-    repository.publish(draft)
+    repository.save_checkpoint(draft, boundary_at=boundary)
 
     pipeline = build_pipeline(
         StaticMarketData((feature,)),
@@ -1943,6 +1943,7 @@ class MemoryRepository:
         self.published: dict[Strategy, RecommendationSnapshot] = {}
         self.frozen: dict[tuple[Strategy, str], object] = {}
         self.overlays: dict[tuple[Strategy, str], LiveOverlay] = {}
+        self.checkpoints: dict[tuple[Strategy, str, datetime], RecommendationSnapshot] = {}
         self.events: list[EventAuditRecord] = []
         self.write_threads: list[str] = []
         self._event_lock = threading.Lock()
@@ -1966,6 +1967,17 @@ class MemoryRepository:
             raise AssertionError("frozen snapshot was modified")
         self.frozen[key] = snapshot
         self.published[snapshot.strategy] = snapshot
+
+    def save_checkpoint(self, snapshot: RecommendationSnapshot, *, boundary_at: datetime) -> None:
+        self.checkpoints[(snapshot.strategy, snapshot.trade_date, boundary_at)] = snapshot
+
+    def load_checkpoint(
+        self, strategy: Strategy, trade_date: str, *, boundary_at: datetime
+    ) -> RecommendationSnapshot | None:
+        return self.checkpoints.get((strategy, trade_date, boundary_at))
+
+    def consume_checkpoint(self, strategy: Strategy, trade_date: str, *, boundary_at: datetime) -> None:
+        self.checkpoints.pop((strategy, trade_date, boundary_at), None)
 
     def latest(self, strategy: Strategy) -> RecommendationSnapshot | None:
         return self.published.get(strategy)

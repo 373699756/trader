@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -11,7 +9,7 @@ from datetime import datetime
 from trader.application.events import EventAuditRecord
 from trader.application.ports.events import EventReaderPort
 from trader.application.ports.market import QuoteReaderPort
-from trader.application.ports.snapshots import CurrentSnapshotReaderPort, SnapshotReaderPort
+from trader.application.ports.snapshots import PublishedSnapshotReadPort
 from trader.application.schedule import freeze_due_at, shanghai_now, trade_date_at
 from trader.domain.market.models import LiveQuote
 from trader.domain.recommendation.models import (
@@ -41,35 +39,21 @@ class SnapshotLookup:
 
 
 class RecommendationQueries:
-    _RESIDENT_HISTORY_DAYS = 20
-    _RESIDENT_HISTORY_VIEWS = 60
-
     def __init__(
         self,
-        repository: SnapshotReaderPort,
+        snapshots: PublishedSnapshotReadPort,
         events: EventReaderPort,
         *,
         now: Callable[[], datetime],
         current_quote_reader: QuoteReaderPort | None = None,
-        current_snapshot_reader: CurrentSnapshotReaderPort | None = None,
     ) -> None:
-        self._repository = repository
+        self._snapshots = snapshots
         self._events = events
         self._now = now
         self._current_quote_reader = current_quote_reader
-        self._current_snapshot_reader = current_snapshot_reader or repository
-        self._uses_runtime_snapshot_index = current_snapshot_reader is not None
-        self._history_lock = threading.Lock()
-        self._history: OrderedDict[tuple[Strategy, str], RecommendationSnapshot] = OrderedDict()
 
     def initialize(self) -> Mapping[str, int]:
-        loaded = 0
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
-            dates = tuple(self._repository.recommendation_dates(strategy))[: self._RESIDENT_HISTORY_DAYS]
-            for trade_date in dates:
-                if self._historical_snapshot(strategy, trade_date) is not None:
-                    loaded += 1
-        return {"historical_views_preloaded": loaded}
+        return {"historical_views_preloaded": 0}
 
     def recommendation(
         self,
@@ -82,17 +66,15 @@ class RecommendationQueries:
             now = self._now()
             current_date = trade_date_at(now)
             if live:
-                snapshot = self._current_snapshot_reader.latest(strategy)
+                snapshot = self._snapshots.latest(strategy)
                 return self._current_lookup(strategy, current_date.isoformat(), snapshot)
             if strategy is not Strategy.LONG and strategy.value in freeze_due_at(now, is_trading_day=True):
-                frozen = self._current_snapshot_reader.latest(strategy)
+                frozen = self._snapshots.latest(strategy)
                 if frozen is not None and (frozen.trade_date != current_date.isoformat() or not frozen.frozen):
                     frozen = None
-                if frozen is None and not self._uses_runtime_snapshot_index:
-                    frozen = self._historical_snapshot(strategy, current_date.isoformat())
                 if frozen is not None:
                     return self._current_lookup(strategy, current_date.isoformat(), frozen)
-                latest = self._current_snapshot_reader.latest(strategy)
+                latest = self._snapshots.latest(strategy)
                 if latest is None or latest.trade_date == current_date.isoformat() or not latest.frozen:
                     return SnapshotLookup(
                         "not_ready",
@@ -101,12 +83,12 @@ class RecommendationQueries:
                         current_trade_date=current_date.isoformat(),
                     )
                 return self._current_lookup(strategy, current_date.isoformat(), latest)
-            snapshot = self._current_snapshot_reader.latest(strategy)
+            snapshot = self._snapshots.latest(strategy)
             return self._current_lookup(strategy, current_date.isoformat(), snapshot)
         if strategy is Strategy.LONG:
-            snapshot = self._current_snapshot_reader.latest(strategy) if trade_date == self.today() else None
+            snapshot = self._snapshots.latest(strategy) if trade_date == self.today() else None
         else:
-            snapshot = self._historical_snapshot(strategy, trade_date)
+            snapshot = self._snapshots.load_frozen(strategy, trade_date)
         current_trade_date = self.today()
         current_quotes = self._historical_current_quotes(strategy, snapshot, current_trade_date)
         return SnapshotLookup(
@@ -133,11 +115,11 @@ class RecommendationQueries:
                 for code, quote in quotes.items()
                 if code in codes and shanghai_now(quote.source_time).date().isoformat() == current_trade_date
             }
-        current_snapshot = self._repository.latest(strategy)
+        current_snapshot = self._snapshots.latest(strategy)
         if current_snapshot is None or current_snapshot.trade_date != current_trade_date:
             return {}
         current_quotes = _snapshot_quotes(current_snapshot)
-        current_overlay = self._repository.load_live_overlay(strategy, current_snapshot.trade_date)
+        current_overlay = self._snapshots.load_live_overlay(strategy, current_snapshot.trade_date)
         if current_overlay is not None and current_overlay.snapshot_id == current_snapshot.snapshot_id:
             current_quotes.update(current_overlay.quotes)
         return current_quotes
@@ -150,7 +132,7 @@ class RecommendationQueries:
     ) -> SnapshotLookup:
         if snapshot is None or snapshot.trade_date != current_date:
             return SnapshotLookup("not_ready", None, False, current_trade_date=current_date)
-        overlay = self._current_snapshot_reader.load_live_overlay(strategy, snapshot.trade_date)
+        overlay = self._snapshots.load_live_overlay(strategy, snapshot.trade_date)
         if overlay is not None and overlay.snapshot_id != snapshot.snapshot_id:
             overlay = None
         return SnapshotLookup(
@@ -162,30 +144,13 @@ class RecommendationQueries:
         )
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
-        return self._repository.recommendation_dates(strategy)
+        return self._snapshots.recommendation_dates(strategy)
 
     def pipeline_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
         return self._events.list_events(cursor=cursor, limit=limit)
 
     def today(self) -> str:
         return trade_date_at(self._now()).isoformat()
-
-    def _historical_snapshot(self, strategy: Strategy, trade_date: str) -> RecommendationSnapshot | None:
-        key = (strategy, trade_date)
-        with self._history_lock:
-            if key in self._history:
-                cached = self._history.pop(key)
-                self._history[key] = cached
-                return cached
-        snapshot = self._repository.load_frozen(strategy, trade_date)
-        if snapshot is None:
-            return None
-        delivery = _delivery_snapshot(snapshot)
-        with self._history_lock:
-            self._history[key] = delivery
-            while len(self._history) > self._RESIDENT_HISTORY_VIEWS:
-                self._history.popitem(last=False)
-        return delivery
 
 
 def _snapshot_quotes(snapshot: RecommendationSnapshot) -> dict[str, LiveQuote]:

@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def connect(database_path: Path) -> sqlite3.Connection:
@@ -162,6 +162,19 @@ def initialize_database(database_path: Path) -> None:
                 PRIMARY KEY(strategy, recommend_date)
             );
 
+            CREATE TABLE IF NOT EXISTS freeze_checkpoints(
+                strategy TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                boundary_at TEXT NOT NULL,
+                snapshot_id TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('ready', 'consumed', 'quarantined')),
+                consumed_at TEXT,
+                PRIMARY KEY(strategy, trade_date, boundary_at)
+            );
+
             CREATE TABLE IF NOT EXISTS outcome_benchmarks(
                 trade_date TEXT PRIMARY KEY,
                 return_pct REAL NOT NULL,
@@ -292,6 +305,20 @@ MIGRATIONS: dict[int, list[str]] = {
             quality_reason TEXT NOT NULL DEFAULT '',
             version TEXT NOT NULL,
             PRIMARY KEY(snapshot_id, stock_code, horizon)
+        )""",
+    ],
+    8: [
+        """CREATE TABLE IF NOT EXISTS freeze_checkpoints(
+            strategy TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            boundary_at TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('ready', 'consumed', 'quarantined')),
+            consumed_at TEXT,
+            PRIMARY KEY(strategy, trade_date, boundary_at)
         )""",
     ],
 }

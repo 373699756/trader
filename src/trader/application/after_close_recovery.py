@@ -402,6 +402,7 @@ def _commit_fallback(pipeline: RecommendationPipeline, snapshot: RecommendationS
     persist(pipeline, pipeline._snapshot_writer.freeze, snapshot)
     pipeline._frozen_keys.add((snapshot.strategy, snapshot.trade_date))
     pipeline._state.mark_frozen(snapshot)
+    pipeline._published_snapshots.publish(snapshot)
     pipeline._publisher.publish(snapshot)
     pipeline._state.increment("after_close_recommendations_recovered")
 
@@ -440,6 +441,7 @@ def _save_closing_overlay(
     if persist(pipeline, pipeline._snapshot_writer.save_live_overlay, overlay):
         pipeline._live_overlays[(snapshot.strategy, snapshot.trade_date)] = overlay
         pipeline._state.publish_overlay(overlay)
+        pipeline._published_snapshots.publish_overlay(overlay)
         pipeline._publisher.publish_overlay(overlay)
 
 

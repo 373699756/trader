@@ -26,6 +26,7 @@ class MarketPhase(str, Enum):
 
 
 class SchedulePoint(str, Enum):
+    TODAY_CHECKPOINT = "today_checkpoint"
     TODAY_FREEZE = "today_freeze"
     DEEPSEEK_CUTOFF = "deepseek_cutoff"
     FINAL_CANDIDATE_QUOTES = "final_candidate_quotes"
@@ -38,6 +39,7 @@ _PHASE_BOUNDARIES = (
     time(9, 30),
     time(9, 36),
     time(10, 30),
+    time(11, 19, 50),
     time(11, 20),
     time(13, 0),
     time(14, 20),
