@@ -65,6 +65,8 @@ def test_merge_is_deterministic_and_prefers_eastmoney_at_equal_time() -> None:
     assert first.field_sources["600001"]["price"] == "eastmoney"
     assert first.quotes[0].cross_source_deviation_pct == 0.4
     assert snapshot_payload_hash(first) == snapshot_payload_hash(second)
+    assert snapshot_payload_hash(first) == "269afe7618c3fa25b252792ffce1703da8eab97ab3a3b45614b47b9a6fae6ed9"
+    assert first.merge_epoch == "a48cc036aab1cad6abfc1ea7"
 
 
 def test_same_source_equal_version_uses_payload_hash_as_deterministic_tie_breaker() -> None:

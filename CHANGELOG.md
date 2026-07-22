@@ -115,6 +115,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户诉求：按工程 Review 计划先修复 v15 行情热路径性能。固定 5,500 股双源负载下，
+  两源合并和统一快照 P95 分别约为 1,761ms 与 2,252ms，超过 1,000ms/1,500ms 契约；
+  根因是逐字段反复规范化来源、分配候选列表并扫描排序，以及规范 JSON 在 Python 中递归
+  复制完整对象并重复反射 dataclass 字段。现改为单次扫描选择各字段、对小型来源/字段元数据
+  使用有界缓存，并让标准 JSON 编码器原生遍历容器。字段优先级、同序首值规则、冻结 schema、
+  缓存键、哈希和内存估算口径均保持不变；本批不处理计划中的下一项历史预热优化。
+
 - `close_fallback` 现在是数据库缺少同日正式记录时创建的正常历史结果，而非临时草稿：
   连续运行保持 P6 股票、评分、动作和排名，仅换入收盘价；冷启动不新增 DeepSeek HTTP，
   使用本地规则完整重建并由正式接口返回 `ready`。页面明确标记“收盘补算”，并提升静态
@@ -402,6 +409,15 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- v15 固定录制负载最终复测通过：两源合并 P95 860.711ms/1,000ms、统一快照 P95
+  1,090.479ms/1,500ms，规范化 P95 157.525ms；固定完整快照哈希继续为
+  `234b923cb17d1979365892791f38545598ae2d25f0cbe14817980a3080c3329b`，内存估算继续为
+  28,378,644 字节。新增规范 JSON 字节和代表性合并快照哈希回归；v16 三板评分性能复测仍
+  全部通过。`make format-check/lint/type-check/test/package` 全部通过（mypy 139 个源码文件，
+  pytest 仅保留 10 条既有未知测试模型名警告），sdist/wheel 隔离构建成功。最终 wheel 从
+  仓库外前缀导入，两个 CLI、配置校验、模板、4 个 CSS、2 个 JavaScript、2 个 SVG 和
+  `pip check` 均通过。本批未改 Web 资源或 UI 布局，因此未重复三档桌面截图。
+
 - 收盘恢复回归覆盖同进程 P6 身份保留与收盘价替换、冷启动三策略本地重建、数据库优先、
   仅补缺失策略、三板不完整不落盘并重试，以及冻结 JSON 往返、确定性回放、正式查询
   `ready` 和 Web `close_fallback` 标识。`make format-check/lint/type-check/test/package` 全部
@@ -528,6 +544,11 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- P95 数值受宿主负载和解释器版本影响，后续仍须以固定录制负载和现有预算作为回归门禁；
+  有界元数据缓存只覆盖稳定、低基数的来源名和 dataclass 类型，不缓存行情内容。下一计划项
+  （历史预热路径）尚未在本批修改；实际行情源延迟和三档桌面渲染行为亦不受本次后端纯计算
+  优化影响。
 
 - 收盘冷启动重建依赖行情适配器在同一交易日提供 14:59 后的三板完整收盘批次；供应商
   延迟、全源故障或历史/研究字段仍在预热时保持 `not_ready` 并退避重试，不会改用上一日

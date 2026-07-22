@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
+from functools import lru_cache
 from types import MappingProxyType
-from typing import Generic, Protocol, TypeVar, cast
+from typing import Any, Generic, Protocol, TypeVar, cast
 
 _T = TypeVar("_T")
 
@@ -250,43 +250,41 @@ def _normalize_request(request: Mapping[str, object]) -> dict[str, object]:
 
 def canonical_json_bytes(value: object) -> bytes:
     return json.dumps(
-        _canonical_value(value),
+        value,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
+        cls=_CanonicalJsonEncoder,
     ).encode("utf-8")
 
 
-def _canonical_value(value: object) -> object:
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("canonical JSON numbers must be finite")
-        return value
-    if isinstance(value, Decimal):
-        if not value.is_finite():
-            raise ValueError("canonical JSON decimals must be finite")
-        return format(value, "f")
-    if isinstance(value, datetime):
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("canonical JSON datetime must be timezone-aware")
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, Enum):
-        return _canonical_value(value.value)
-    if isinstance(value, Mapping):
-        return {str(key): _canonical_value(item) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
-    if isinstance(value, (tuple, list, set, frozenset)):
-        items = [_canonical_value(item) for item in value]
-        return (
-            sorted(items, key=lambda item: canonical_json_bytes(item)) if isinstance(value, (set, frozenset)) else items
-        )
-    if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _canonical_value(getattr(value, field.name)) for field in fields(value)}
-    raise TypeError(f"unsupported canonical JSON value: {type(value).__name__}")
+class _CanonicalJsonEncoder(json.JSONEncoder):
+    def default(self, value: object) -> object:
+        if isinstance(value, Decimal):
+            if not value.is_finite():
+                raise ValueError("canonical JSON decimals must be finite")
+            return format(value, "f")
+        if isinstance(value, datetime):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("canonical JSON datetime must be timezone-aware")
+            return value.isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, Mapping):
+            return {str(key): item for key, item in value.items()}
+        if isinstance(value, (set, frozenset)):
+            return sorted(value, key=canonical_json_bytes)
+        if is_dataclass(value) and not isinstance(value, type):
+            return {name: getattr(value, name) for name in _canonical_field_names(type(value))}
+        raise TypeError(f"unsupported canonical JSON value: {type(value).__name__}")
+
+
+@lru_cache(maxsize=32)
+def _canonical_field_names(value_type: type[Any]) -> tuple[str, ...]:
+    return tuple(field.name for field in fields(value_type))
 
 
 def freeze_cache_value(value: _T) -> _T:

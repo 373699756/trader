@@ -5,6 +5,8 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
+from enum import Enum
 from typing import NoReturn
 from zoneinfo import ZoneInfo
 
@@ -19,6 +21,18 @@ from trader.infra.cache import BoundedLruCache
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)
+
+
+class _CanonicalState(Enum):
+    READY = "ready"
+
+
+@dataclass(frozen=True)
+class _CanonicalRecord:
+    measured_at: datetime
+    value: Decimal
+    state: _CanonicalState
+    tags: frozenset[str]
 
 
 @dataclass
@@ -82,6 +96,23 @@ def _identity(subject: str, *, dataset: str = "daily_history", phase: str = "tod
         source_contract_version="eastmoney-v1",
         config_version="runtime-v15",
         schema_version="market-v15",
+    )
+
+
+def test_canonical_json_bytes_preserves_the_frozen_wire_representation() -> None:
+    payload = {
+        "record": _CanonicalRecord(
+            measured_at=NOW,
+            value=Decimal("1.20"),
+            state=_CanonicalState.READY,
+            tags=frozenset({"secondary", "primary"}),
+        ),
+        "enabled": True,
+    }
+
+    assert canonical_json_bytes(payload) == (
+        b'{"enabled":true,"record":{"measured_at":"2026-07-16T10:00:00+08:00",'
+        b'"state":"ready","tags":["primary","secondary"],"value":"1.20"}}'
     )
 
 

@@ -6,12 +6,14 @@ import math
 from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
+from functools import lru_cache
 
 from trader.domain.filters import board_for_code
 from trader.domain.models import Board, MarketQuote
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 
 _REALTIME_SOURCES = frozenset({"eastmoney", "sina", "tencent"})
+_BOARD_SOURCES = frozenset({"tushare", "akshare", "eastmoney", "sina", "tencent"})
 _REALTIME_FIELDS = frozenset(
     {
         "name",
@@ -62,20 +64,43 @@ def merge_code(
     values: dict[str, JsonScalar] = {}
     sources: dict[str, str] = {}
     selected_observations: dict[str, SourceObservation] = {}
-    all_fields = {field for observation in observations for field in observation.fields}
-    for field in sorted(all_fields):
-        candidates = [
-            observation
-            for observation in observations
-            if observation.fields.get(field) is not None and _source_allowed(field, observation.source)
-        ]
-        if not candidates:
-            continue
-        selected = max(candidates, key=lambda item: _field_order(item, field, targeted=targeted))
+    selected_orders: dict[str, tuple[datetime, datetime, int, str, str]] = {}
+    for observation in observations:
+        normalized_source = source_name(observation.source)
+        allows_realtime = normalized_source in _REALTIME_SOURCES
+        allows_board = normalized_source in _BOARD_SOURCES
+        priority = _SOURCE_PRIORITY.get(normalized_source, 0)
+        standard_order = (
+            observation.source_time,
+            observation.received_at,
+            priority,
+            observation.data_version,
+            observation.payload_hash,
+        )
+        realtime_order = (
+            observation.source_time,
+            observation.received_at,
+            0 if normalized_source == "tencent" and not targeted else priority,
+            observation.data_version,
+            observation.payload_hash,
+        )
+        realtime_order_differs = normalized_source == "tencent" and not targeted
+        for field, value in observation.fields.items():
+            if value is None:
+                continue
+            if not allows_realtime and field in _REALTIME_FIELDS:
+                continue
+            if not allows_board and field in _BOARD_FIELDS:
+                continue
+            order = realtime_order if realtime_order_differs and field in _REALTIME_FIELDS else standard_order
+            if field not in selected_orders or order > selected_orders[field]:
+                selected_orders[field] = order
+                selected_observations[field] = observation
+    for field in sorted(selected_observations):
+        selected = selected_observations[field]
         values[field] = selected.fields[field]
         source = source_name(selected.source)
         sources[field] = source
-        selected_observations[field] = selected
 
     price_observation = selected_observations.get("price") or max(observations, key=observation_order)
     board_values, board_sources, restrictions, board_conflicts = _board_identity(code, observations)
@@ -83,11 +108,13 @@ def merge_code(
         restrictions.add("market_data_degraded")
     values.update(board_values)
     sources.update(board_sources)
-    prices = [
-        (observation, _number(observation.fields.get("price")))
-        for observation in observations
-        if source_name(observation.source) in _REALTIME_SOURCES and _number(observation.fields.get("price")) is not None
-    ]
+    prices: list[tuple[SourceObservation, float | None]] = []
+    for observation in observations:
+        if source_name(observation.source) not in _REALTIME_SOURCES:
+            continue
+        price = _number(observation.fields.get("price"))
+        if price is not None:
+            prices.append((observation, price))
     deviation = _maximum_price_deviation(prices)
     verified = deviation is None or deviation <= 0.5
     if not verified and targeted:
@@ -227,34 +254,6 @@ def _board_identity(
     return values, sources, restrictions, conflicts
 
 
-def _source_allowed(field: str, source: str) -> bool:
-    normalized = source_name(source)
-    if field in _REALTIME_FIELDS:
-        return normalized in _REALTIME_SOURCES
-    if field in _BOARD_FIELDS:
-        return normalized in {"tushare", "akshare", "eastmoney", "sina", "tencent"}
-    return True
-
-
-def _field_order(
-    observation: SourceObservation,
-    field: str,
-    *,
-    targeted: bool,
-) -> tuple[datetime, datetime, int, str, str]:
-    source = source_name(observation.source)
-    priority = _SOURCE_PRIORITY.get(source, 0)
-    if field in _REALTIME_FIELDS and source == "tencent" and not targeted:
-        priority = 0
-    return (
-        observation.source_time,
-        observation.received_at,
-        priority,
-        observation.data_version,
-        observation.payload_hash,
-    )
-
-
 def observation_order(observation: SourceObservation) -> tuple[datetime, datetime, int, str, str]:
     return (
         observation.source_time,
@@ -298,6 +297,7 @@ def _price_deviation(first: float | None, second: float | None) -> float:
     return float(abs(first_decimal - second_decimal) / baseline * Decimal("100"))
 
 
+@lru_cache(maxsize=32)
 def source_name(source: str) -> str:
     return source.strip().lower().split("_", 1)[0].split("-", 1)[0]
 
