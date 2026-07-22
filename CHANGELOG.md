@@ -6,7 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
-- 用户诉求：把 `docs/` 下分散的需求、实施计划、问题单、架构清单和运维资料合并为两份文档。现状审计确认目录内共有 8 份文件、3623 行，活动契约、历史执行记录和未完成 v17 路线相互交叉；新增 `software-business-design.md` 作为产品、架构、运行、API/UI、运维、验收和工程路线的唯一权威，新增 `recommendation-strategy.md` 作为候选、过滤、因子、评分、DeepSeek、融合、动作与 TopK 的唯一权威。
+- 用户补充反馈回归：新增“当前日期只有昨日冻结时必须返回空 not_ready 且无 ETag”、前端不再接受或提示上一交易日 current fallback，以及 P2 特征尚未提交时仍可从已合并规范行情读取历史股票当日价的测试。
+
+- 用户诉求：把 `docs/` 下分散的需求、实施计划、问题单、架构清单和运维资料合并为两份文档。现状审计确认目录内共有 8 份文件、3623 行，活动契约、历史执行记录和未完成 v17 路线相互交叉；新增并相互链接 `software-business-design.md`（产品、架构、运行、API/UI、运维、验收和工程路线的唯一权威）与 `recommendation-strategy.md`（候选、过滤、因子、评分、DeepSeek、融合、动作与 TopK 的唯一权威），契约测试禁止 `docs/` 再出现第三份并行业务文档。
 
 - 用户问题回归：历史推荐表“锚点至今”持续为空，且“今日涨跌”显示冻结锚点涨跌。新增历史 API 对 P2 当前报价索引、未再次入选股票、当日行情缺失和旧日 overlay 隔离的契约测试，并新增行情服务当前报价索引优先采用更新腾讯定向报价的组件测试。
 
@@ -85,6 +87,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 当前策略查询只接受 `trade_date == current_trade_date` 的快照；今天尚无快照时直接返回空 `not_ready`，昨日冻结仍可通过日期选择作为历史查看。历史当日行情索引在特征批次尚未提交时可只读复用行情网关已经成功合并的规范报价，不发起新请求。前端资源版本升至 `dashboard.js?v=9`，移除上一交易日 current fallback 的缓存身份和提示分支。
+
 - 文档治理从单一综合需求文件调整为职责互斥的双文档模型；`AGENTS.md`、README 和交付契约测试同步使用新路径与更新边界。合并保留五来源、双冻结、六阶段 256 MiB 目标、v16 三板九组权重、七项本地风险、DeepSeek 188 次预算、68/32 融合、动作阈值、集中度和 long 观察公式，并把尚未完成的 v17 P1-P6 发布池/Web 热路径/冻结检查点/性能 CLI 明确登记为下一完整工程章节；本批不改变任何运行配置、代码、公式或产品行为。
 
 - 历史推荐查询现按历史股票代码只读访问 P2 已缓存的全市场/候选报价索引，不再要求该股票当天仍位于同策略 TopK；HTTP 路径不刷新行情、不评分、不访问网络，也不修改冻结快照、JSON 或 overlay。历史响应继续使用原字段名，当前价、今日涨跌和锚点至今只由同一上海自然日的实时行情派生。
@@ -160,6 +164,8 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复当前交易日没有发布快照时仍显示上一交易日冻结结果和“仅供观察”提示的问题；同时修复首轮历史行情读取只覆盖已提交特征/候选缓存，在现场全市场事件过期但规范行情已成功合并时仍导致“锚点至今”为空的问题。
+
 - 修复历史响应在当日行情缺失时把冻结 `pct_change` 回填到“今日涨跌”的字段混用：锚点价格和锚点涨跌继续保持冻结值；当日行情存在时返回真实今日涨跌并计算锚点至今，不存在或不是当前上海日期时返回 `null`，页面显示 `-`，不再伪造锚点值。根因是查询层只扫描当前同策略推荐快照且序列化层对缺失实时行情回退到冻结报价。
 
 - 修复 v16 半成品导致同步评分仍向 `prepare_snapshot()` 传入已删除参数、异步 future 类型串线、旧冻结被误标 v16 回放、序列化后 tuple/list 元数据哈希不一致、DeepSeek 缓存被纯报价版本抖动无条件击穿、Web/持久化可空数值类型错误、结构化减持字段仍沿用旧合并名，以及目标股票进入领先组后把有效 3 只领导样本误降为 2 只的问题。任一板块失败继续保留最近完整三板快照，不发布偏置 TopK。
@@ -234,6 +240,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除浏览器对 `previous_trade_date_snapshot` current fallback 的合法身份判断、冻结状态标签和警告提示；不删除昨日冻结文件、历史日期入口或任何审计数据。
+
 - 删除已被两份权威文档吸收的 8 个旧文档文件及空的 `architecture/`、`issues/`、`operations/` 层级。逐批实现历史继续由本 Changelog 和 Git 历史保存，2026-07-17 审计、2026-07-20 外部项目比较、迁移清单和最终验收记录的仍有效结论已归入软件业务设计文档，不再保留会与活动契约竞争的并行副本。
 
 - 本批未删除历史快照、锚点字段、日期接口、SSE、ETag 或任何策略数据；未以主动 HTTP 抓行情填补历史展示，也未修改冻结身份、评分、动作和哈希。
@@ -269,7 +277,9 @@ All notable changes to this project are documented here.
 
 ### Verification
 
-- 本批双文档结构契约、旧路径残留扫描、相对链接、`git diff --check` 和本批 Python 文件 Ruff format/lint 通过；全量 Ruff lint、134 个源码文件 mypy、583 个 pytest、sdist/wheel 构建通过。wheel 在仓库外临时虚拟环境安装后可从隔离路径导入，模板、CSS、两个 JavaScript 和两个 SVG 资源齐全，`trader-cli --help`、`validate-config` 与 `pip check` 通过。
+- 用户补充反馈的失败先行回归已复现并转绿：当前查询不会复用昨日快照或生成 current ETag，页面包不再包含上一交易日 fallback 提示，历史报价读取在 P2 特征提交前可命中当日规范行情。完整门禁与最终 wheel 验收见本批提交前复验记录。
+
+- 本批双文档结构契约、旧路径残留扫描、相对链接、`git diff --check` 和本批 Python 文件 Ruff format/lint 通过；全量 Ruff lint、134 个源码文件 mypy、584 个 pytest、sdist/wheel 构建通过。wheel 在仓库外临时虚拟环境安装后可从隔离路径导入，模板、CSS、两个 JavaScript 和两个 SVG 资源齐全，`trader-cli --help`、`validate-config` 与 `pip check` 通过。
 
 - 历史行情修复的 Web API 契约测试和行情索引组件测试通过；`make format-check`、`make lint`、134 个源码模块 mypy、完整 583 项 pytest 与 `make package` 全部通过，pytest 仅保留 10 条既有未知测试模型名 RuntimeWarning。仓库外隔离安装 wheel 后通过包导入、配置校验、CLI、`pip check` 及模板、4 个 CSS、2 个 JavaScript、2 个 SVG 共 9 项资源读取；本批未修改 HTML/CSS/JavaScript，桌面布局沿用同资源三档已通过基线。
 
@@ -340,7 +350,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 本批是文档信息架构重整，没有运行 UI 或业务行为变化，因此不重复桌面截图和真实外部行情/DeepSeek 验收。旧文档的逐日过程日志已压缩为决策结论，完整原文仍可从本批基线 Git 历史追溯；v17 P1-P6 工程章节仍未实施，不得因文档合并视为完成。全量 `make format-check` 仍被本批过程中出现且未纳入提交的并行用户改动 `src/trader/web/schemas.py` 和 `tests/contract/test_v2_web_api.py` 阻断；两文件保持原样，本批自身格式检查通过。
+- 当前无快照时页面会按用户要求保持空状态；这不会修复上游快照未发布本身。现场观测到当日规范行情已有 5,548 行、但全市场事件连续过期且 `snapshots_published=0`，属于独立流水线上游问题，后续仍需按事件 deadline、历史覆盖与候选形成链排查。本批只保证不再用昨日结果掩盖该状态。
+
+- 本批是文档信息架构重整，没有运行 UI 或业务行为变化，因此不重复桌面截图和真实外部行情/DeepSeek 验收。旧文档的逐日过程日志已压缩为决策结论，完整原文仍可从本批基线 Git 历史追溯；v17 P1-P6 工程章节仍未实施，不得因文档合并视为完成。
 
 - “锚点至今”和“今日涨跌”依赖 P2 当日内存行情已成功覆盖对应股票；服务冷启动尚未取得当日行情或行情源降级时，这两列会按契约显示 `-`，不会回退为旧锚点值。外部行情时效仍取决于来源可用性；本批没有修改 Web 资源，三档桌面结论沿用当前资源基线。
 

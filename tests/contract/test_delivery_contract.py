@@ -7,9 +7,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 def test_continue_command_advances_one_complete_unfinished_section() -> None:
     agents = _section(PROJECT_ROOT / "AGENTS.md", "### 4.1", "### 4.2")
-    need = _section(PROJECT_ROOT / "docs/need.md", "### 24.0", "### 24.1")
+    design = _section(PROJECT_ROOT / "docs/software-business-design.md", "### 15.1", "### 15.2")
 
-    for contract in (agents, need):
+    for contract in (agents, design):
         assert "下一个完整未完成章节" in contract
         assert "章节内全部明确子项" in contract
         assert "相邻章节" in contract
@@ -18,9 +18,9 @@ def test_continue_command_advances_one_complete_unfinished_section() -> None:
 
 def test_each_delivery_documents_user_problem_and_change_summary() -> None:
     agents = _section(PROJECT_ROOT / "AGENTS.md", "### 4.5", "## 5")
-    need = _section(PROJECT_ROOT / "docs/need.md", "### 24.0", "### 24.1")
+    design = _section(PROJECT_ROOT / "docs/software-business-design.md", "### 15.1", "### 15.2")
 
-    for contract in (agents, need):
+    for contract in (agents, design):
         assert "用户提出的问题" in contract
         assert "修改说明" in contract
         assert "验证证据" in contract
@@ -28,15 +28,21 @@ def test_each_delivery_documents_user_problem_and_change_summary() -> None:
         assert "CHANGELOG.md" in contract
 
 
-def test_need_compliance_audit_records_actionable_repair_queue() -> None:
-    audit = (PROJECT_ROOT / "docs/issues/2026-07-17.md").read_text(encoding="utf-8")
+def test_docs_are_consolidated_into_two_authoritative_documents() -> None:
+    docs_root = PROJECT_ROOT / "docs"
+    documents = sorted(path.relative_to(docs_root).as_posix() for path in docs_root.rglob("*") if path.is_file())
 
-    assert "## need.md 符合性审查与修复队列" in audit
-    for index in range(1, 17):
-        assert f"AUDIT-20260717-{index:02d}" in audit
-    for required_field in ("需求条款", "证据与影响", "修复步骤", "验收条件", "交付章节", "状态"):
-        assert required_field in audit
-    assert "具体 snapshot_id 只作为当次运行证据" in audit
+    assert documents == [
+        "recommendation-strategy.md",
+        "software-business-design.md",
+    ]
+
+    design = (docs_root / "software-business-design.md").read_text(encoding="utf-8")
+    strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
+    assert "软件业务设计文档" in design
+    assert "荐股策略文档" in strategy
+    assert "docs/need.md" not in design
+    assert "docs/hi.md" not in design
 
 
 def _section(path: Path, start: str, end: str) -> str:

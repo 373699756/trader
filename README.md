@@ -108,7 +108,10 @@ final_score = clamp(local_score * 0.68
 - long 不冻结、不进入历史推荐。
 - DeepSeek 每日物理请求全局硬上限为 188。
 
-完整业务契约见 [docs/need.md](docs/need.md)，运行维护见 [docs/operations/runbook.md](docs/operations/runbook.md)，协作与强制 review 流程见 [AGENTS.md](AGENTS.md)。
+产品、架构、运行、API 与运维契约见
+[软件业务设计文档](docs/software-business-design.md)，候选、过滤、评分、DeepSeek、融合与
+TopK 契约见[荐股策略文档](docs/recommendation-strategy.md)，协作与强制 review 流程见
+[AGENTS.md](AGENTS.md)。
 
 ## 质量检查
 
@@ -126,7 +129,7 @@ make package
 
 ```text
 config/v2/          运行与策略配置
-docs/               需求、架构、运维和 v1 归档
+docs/               软件业务设计与荐股策略两份权威文档
 scripts/            工程辅助脚本
 src/trader/         唯一活动产品包
 tests/              单元、组件、契约和集成测试
