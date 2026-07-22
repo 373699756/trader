@@ -45,6 +45,23 @@ class PipelineTask(str, Enum):
     CLOSE_QUOTES = "close_quotes"
 
 
+def task_execution_budget_seconds(task: PipelineTask) -> float | None:
+    return {
+        PipelineTask.FULL_MARKET: 20.0,
+        PipelineTask.CANDIDATE_QUOTES: 3.0,
+        PipelineTask.TOPK_QUOTES: 3.0,
+        PipelineTask.SCORE: 15.0,
+        PipelineTask.INDUSTRY_HEAT: 20.0,
+        PipelineTask.MARKET_NEWS: 8.0,
+        PipelineTask.STOCK_RISK: 8.0,
+        PipelineTask.REFERENCE_DATA: 20.0,
+        PipelineTask.DEEPSEEK_CUTOFF: 1.0,
+        PipelineTask.FINAL_CANDIDATE_QUOTES: 10.0,
+        PipelineTask.CLOSE_QUOTES: 3.0,
+        PipelineTask.FREEZE: None,
+    }[task]
+
+
 PERIODIC_TASKS = (
     PipelineTask.FULL_MARKET,
     PipelineTask.CANDIDATE_QUOTES,

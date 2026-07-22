@@ -4,11 +4,27 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from trader.application.cadence import PERIODIC_TASKS, PipelineTask, ScheduledPipelineTask
 from trader.application.events import BoundedEventQueue, EventPriority, new_event
+from trader.application.pipeline_submission import _scheduled_task_deadline, _scheduled_task_priority
+from trader.application.schedule import MarketPhase
 
 
-def test_realtime_pipeline_priority_follows_refresh_filter_score_order() -> None:
-    assert EventPriority.MARKET_QUOTES < EventPriority.CANDIDATE_QUOTES < EventPriority.SCORE
+def test_realtime_pipeline_balances_live_quotes_and_fifo_dependency_order() -> None:
+    dependency_tasks = (PipelineTask.FULL_MARKET, PipelineTask.CANDIDATE_QUOTES, PipelineTask.SCORE)
+
+    assert tuple(task for task in PERIODIC_TASKS if task in dependency_tasks) == dependency_tasks
+    assert tuple(_scheduled_task_priority(task) for task in dependency_tasks) == (EventPriority.MARKET_QUOTES,) * 3
+    assert _scheduled_task_priority(PipelineTask.TOPK_QUOTES) is EventPriority.LIVE_QUOTES
+    assert EventPriority.LIVE_QUOTES < EventPriority.MARKET_QUOTES
+
+
+def test_dependent_tasks_include_upstream_queue_time_in_expiration_deadline(utc_now) -> None:
+    candidate = ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, utc_now, MarketPhase.TODAY_MAIN)
+    score = ScheduledPipelineTask(PipelineTask.SCORE, utc_now, MarketPhase.TODAY_MAIN)
+
+    assert _scheduled_task_deadline(candidate) == utc_now + timedelta(seconds=23)
+    assert _scheduled_task_deadline(score) == utc_now + timedelta(seconds=38)
 
 
 def test_queue_reserves_capacity_for_risk_and_freeze(utc_now) -> None:

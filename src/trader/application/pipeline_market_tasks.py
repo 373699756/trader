@@ -61,13 +61,6 @@ def _refresh_candidate_quotes_on_workers(
     )
     candidate_set = set(pipeline._candidate_codes)
     pipeline._candidate_features = tuple(feature for feature in features if feature.quote.code in candidate_set)
-    if phase in {MarketPhase.AFTERNOON, MarketPhase.FINAL_REVIEW, MarketPhase.FINAL_QUOTE}:
-        _run_market_data_task(
-            pipeline,
-            pipeline._market_data.refresh_intraday_tail,
-            pipeline._candidate_codes,
-            now,
-        )
 
 
 def _refresh_market_news_on_workers(

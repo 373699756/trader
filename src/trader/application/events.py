@@ -19,6 +19,7 @@ class EventPriority(IntEnum):
     FREEZE = 0
     RISK = 10
     DEEPSEEK = 20
+    LIVE_QUOTES = 25
     MARKET_QUOTES = 30
     CANDIDATE_QUOTES = 40
     SCORE = 50

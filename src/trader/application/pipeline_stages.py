@@ -7,10 +7,10 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
-from trader.application.cadence import PipelineTask
+from trader.application.cadence import PipelineTask, task_execution_budget_seconds
 from trader.application.candidate_features import fetch_strategy_features, read_strategy_features
 from trader.application.events import EventDeadlineExpired, PipelineEvent
 from trader.application.ports import MarketDataUnavailable
@@ -232,7 +232,14 @@ def process_event_on_workers(
     phase = MarketPhase(event.phase)
     handler = _TASK_DISPATCH.get(task)
     if handler is not None:
-        return handler(pipeline, now, phase, event)
+        execution_budget = task_execution_budget_seconds(task)
+        execution_event = event
+        if execution_budget is not None:
+            execution_deadline = now + timedelta(seconds=execution_budget)
+            if event.deadline is not None:
+                execution_deadline = min(event.deadline, execution_deadline)
+            execution_event = replace(event, deadline=execution_deadline)
+        return handler(pipeline, now, phase, execution_event)
     pipeline._refresh_live_overlays(now, MarketPhase.AFTER_CLOSE, deadline=event.deadline)
     return ()
 

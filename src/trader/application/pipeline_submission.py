@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
-from trader.application.cadence import PipelineTask, ScheduledPipelineTask
+from trader.application.cadence import PipelineTask, ScheduledPipelineTask, task_execution_budget_seconds
 from trader.application.events import EventPriority, PipelineEvent, new_event
 from trader.application.pipeline_state import PipelineState
 from trader.application.pipeline_workers import persist
@@ -103,20 +103,7 @@ class PipelineSubmissionMixin(PipelineState):
                 return False
             self._scheduled_inflight.add(task)
         is_freeze = task is PipelineTask.FREEZE
-        priority = {
-            PipelineTask.FREEZE: EventPriority.FREEZE,
-            PipelineTask.STOCK_RISK: EventPriority.RISK,
-            PipelineTask.DEEPSEEK_CUTOFF: EventPriority.DEEPSEEK,
-            PipelineTask.SCORE: EventPriority.SCORE,
-            PipelineTask.CANDIDATE_QUOTES: EventPriority.CANDIDATE_QUOTES,
-            PipelineTask.FINAL_CANDIDATE_QUOTES: EventPriority.CANDIDATE_QUOTES,
-            PipelineTask.TOPK_QUOTES: EventPriority.CANDIDATE_QUOTES,
-            PipelineTask.CLOSE_QUOTES: EventPriority.CANDIDATE_QUOTES,
-            PipelineTask.FULL_MARKET: EventPriority.MARKET_QUOTES,
-            PipelineTask.INDUSTRY_HEAT: EventPriority.MARKET_QUOTES,
-            PipelineTask.MARKET_NEWS: EventPriority.MARKET_QUOTES,
-            PipelineTask.REFERENCE_DATA: EventPriority.LONG,
-        }[task]
+        priority = _scheduled_task_priority(task)
         local = shanghai_now(scheduled.scheduled_at)
         event = new_event(
             "freeze" if is_freeze else task.value,
@@ -170,19 +157,30 @@ class PipelineSubmissionMixin(PipelineState):
         return accepted
 
 
+def _scheduled_task_priority(task: PipelineTask) -> EventPriority:
+    if task in {
+        PipelineTask.FULL_MARKET,
+        PipelineTask.CANDIDATE_QUOTES,
+        PipelineTask.SCORE,
+        PipelineTask.FINAL_CANDIDATE_QUOTES,
+    }:
+        return EventPriority.MARKET_QUOTES
+    if task in {PipelineTask.TOPK_QUOTES, PipelineTask.CLOSE_QUOTES}:
+        return EventPriority.LIVE_QUOTES
+    return {
+        PipelineTask.FREEZE: EventPriority.FREEZE,
+        PipelineTask.STOCK_RISK: EventPriority.RISK,
+        PipelineTask.DEEPSEEK_CUTOFF: EventPriority.DEEPSEEK,
+        PipelineTask.INDUSTRY_HEAT: EventPriority.LONG,
+        PipelineTask.MARKET_NEWS: EventPriority.LONG,
+        PipelineTask.REFERENCE_DATA: EventPriority.LONG,
+    }[task]
+
+
 def _scheduled_task_deadline(scheduled: ScheduledPipelineTask) -> datetime | None:
-    seconds = {
-        PipelineTask.FULL_MARKET: 20.0,
-        PipelineTask.CANDIDATE_QUOTES: 3.0,
-        PipelineTask.TOPK_QUOTES: 3.0,
-        PipelineTask.SCORE: 15.0,
-        PipelineTask.INDUSTRY_HEAT: 20.0,
-        PipelineTask.MARKET_NEWS: 8.0,
-        PipelineTask.STOCK_RISK: 8.0,
-        PipelineTask.REFERENCE_DATA: 20.0,
-        PipelineTask.DEEPSEEK_CUTOFF: 1.0,
-        PipelineTask.FINAL_CANDIDATE_QUOTES: 10.0,
-        PipelineTask.CLOSE_QUOTES: 3.0,
-        PipelineTask.FREEZE: None,
-    }[scheduled.task]
+    seconds = task_execution_budget_seconds(scheduled.task)
+    if scheduled.task is PipelineTask.CANDIDATE_QUOTES:
+        seconds = 23.0
+    elif scheduled.task is PipelineTask.SCORE:
+        seconds = 38.0
     return scheduled.scheduled_at + timedelta(seconds=seconds) if seconds is not None else None
