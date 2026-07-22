@@ -1,5 +1,43 @@
 # Youhua C2 Report to A
 
+```text
+codex_and_phase: Codex C / C2.1-C2.8
+base_commit: 45bd2fab992d36eb873b7c448fbd9739f0cad43c
+head_commit_or_patch: patch only; no C-owned commit or push in shared worktree
+owned_paths_changed:
+  - src/trader/infra/deepseek/budget.py
+  - src/trader/infra/deepseek/evidence_router.py
+  - src/trader/infra/deepseek/reviewer.py
+  - src/trader/infra/deepseek/reviewer_requests.py
+  - src/trader/infra/deepseek/schema.py
+  - tests/component/test_v2_deepseek.py
+  - tests/component/test_youhua_deepseek_c2.py
+contract_assumptions:
+  - CONTRACT_BASE=45bd2fab992d36eb873b7c448fbd9739f0cad43c from docs/reports/youhua-g1-contract-base.md
+  - DeepSeek V4 facts schema owner remains A; C implements parser/prompt/cache/budget behavior only
+  - Public ports, pipeline routing, runtime config, CHANGELOG and public docs remain A-owned
+schema_or_migration_changes:
+  - SCHEMA_VERSION=deepseek_v4_review_facts_v1
+  - PROMPT_VERSION=deepseek_v4_review_facts_prompt_v1
+  - Legacy deepseek_review_v3 response parsing remains accepted for old frozen/replay compatibility
+tests_run_and_results:
+  - pytest C DeepSeek unit/component scope: passed
+  - ruff C DeepSeek source/test scope: passed
+  - mypy src/trader/infra/deepseek src/trader/domain/review: passed
+  - git diff --check: passed
+performance_before_after:
+  - baseline_peak_rss_bytes=35622912
+  - flash_8_peak_rss_bytes=36933632
+  - pro_4_peak_rss_bytes=37064704
+  - repair_peak_rss_bytes=37064704
+known_failures_and_risks:
+  - Shared worktree contains A/B/D uncommitted changes; C only modified C lease files.
+  - Public config and application caller alignment remain A-owned.
+requested_interface_changes:
+  - none
+ready_for_gate: yes
+```
+
 ## Scope
 
 - Codex: C
