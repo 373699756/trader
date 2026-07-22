@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求把 DeepSeek 各类物理请求“什么时候使用”写清楚。`docs/plan_c.md` 新增共享预热、
+  today、tomorrow、d25、Pro 和 emergency 的使用时段、准入条件、停止提交时间、跨策略
+  归属和物理请求计数规则，并给出主审 58 次、含 Pro 66 次、含 emergency 71 次的正常日
+  计划上界。该文档仍是非权威执行计划，不表示活动策略已经切换。
+
 - 用户继续执行全工程重构计划的 2.2 整节，并再次强调源码仍以 800 行为上限而不是机械拆成
   更小文件。新增领域能力拓扑契约，固定 `market`、`recommendation`、`review`、`outcome`
   四个包及旧根级路径零容忍；新增板块横截面、融合、动作/选择、长期研究、风险映射和结果
@@ -144,6 +149,11 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 用户决定暂缓历史 60 日数据与 300 条配对建设，先完整设计实时荐股和 DeepSeek 低成本
+  协同方案。重写 `docs/plan_c.md`，固定本地主链、新闻/公告证据门槛、V4 结构化事实、
+  确定性映射、高价值候选路由、Flash/Pro 分工、跨策略缓存、实施批次和延期晋级门禁；
+  历史回补、shadow、Bootstrap、自动调权和在线学习均移到后续独立任务。
 
 - 领域值对象和纯函数按行情事实、推荐决策、结构化复核、冻结结果四种能力重组；过滤规则改为
   表驱动注册对象，板内横截面构建拆为样本基准、人口统计和特征丰富三个阶段，长期研究拆为
@@ -292,6 +302,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正文档中 long 仍配置 DeepSeek 维度和正常预算、软目标只有数字而没有消费规则的计划
+  缺陷。新计划明确 long 的主审、Pro、预热和 emergency 均为 0，并规定未使用软额度不
+  跨策略转移、缓存命中不计数、失败/超时/重试/schema 修复均计入物理请求。
+
 - 修复单个领域 `models.py` 同时承载行情、复核和推荐对象，并通过模块级 `__getattr__`
   延迟导出推荐类型所形成的循环耦合和隐藏 API；修复过滤、评分、排名和研究规则被长嵌套分支
   或 6-10 个参数接口包裹、难以独立验证的问题。所有调用方已原子迁移到新内部路径，不提供
@@ -430,6 +444,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从当前 DeepSeek 优化计划中移除 long 的模型评分与请求额度，以及本批历史行情下载、
+  60 日/300 配对验证实现；后者保留为需要用户另行确认的延期晋级批次，未删除权威策略
+  已有的验证门禁。
+
 - 删除领域根级 `models.py`、`recommendation_models.py`、过滤/评分/融合/排名/研究/风险/
   结果模块及根级 `strategies` 路径，同时删除动态兼容导出和未被使用的 `FilterReason` 类型
   别名；未删除或改变任何策略、行情源、DeepSeek、冻结、API、CLI 或 Web 产品能力。
@@ -503,6 +521,14 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 本批逐节核对 `AGENTS.md`、`docs/software-business-design.md` 和
+  `docs/recommendation-strategy.md` 的固定融合、188 次全局上限、冻结时间、纯本地收盘
+  补算及验证门禁；当前文档契约 3 项、`git diff --check` 和 `make package` 通过。起始
+  `HEAD=8c81db9` 的隔离源码通过 Ruff format/check、严格债务门禁、146 个源码文件 mypy、
+  完整 pytest、无隔离构建及仓库外 wheel 的包导入、CLI 和静态资源验收。当前工作树的
+  format/lint/mypy/test 被本批开始后出现的无关 `application/ports` 重构中间态阻断，
+  本批未修改、暂存或掩盖该并发变更。
 
 - 本章最终 Review 已通过 Ruff format/lint、领域严格告警归零、146 个源码文件 mypy 和完整
   651 项 pytest；仅保留 10 条既有未知测试模型名警告。固定融合向量仍为 `83.40`。以起始
@@ -677,6 +703,12 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- `docs/plan_c.md` 描述的是待实施方案，活动代码仍会为 long 执行主审，权威策略仍保留
+  long 预算与旧五维模型；必须按计划先更新权威契约和测试，再分批实现。历史 60 日、
+  300 条有效配对和收益晋级验证已经延期，因此现阶段不能声称新方案提高实际荐股收益。
+  此外，无关 `application/ports` 并发重构仍需其所属批次闭合导出、格式和债务基线后，
+  当前工作树的完整门禁才能恢复通过。
 
 - 工程重构计划 2.3-2.6 仍待后续独立“继续”批次；当前仓库仍登记 145 项应用层和基础设施层
   复杂度、参数数量及异常命名债务，本章没有越界处理。真实行情源、真实 DeepSeek 尾延迟和
