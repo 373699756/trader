@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any, cast
 
 from trader.application.recommendation_support import (
@@ -172,8 +173,15 @@ class RecommendationReplayMixin:
     def verify_replay(self: Any, snapshot: RecommendationSnapshot) -> Mapping[str, object]:
         if not snapshot.frozen:
             raise ValueError("only frozen snapshots can be verified")
-        replayed = self.replay(snapshot)
-        expected = _business_projection(snapshot)
+        if snapshot.phase == "close_fallback" and snapshot.metadata.get("recovery_path") == "p6":
+            source_snapshot = _p6_source_snapshot(snapshot)
+            replayed = self.replay(source_snapshot)
+            expected_snapshot = _normalize_p6_close_projection(source_snapshot, replayed)
+            _verify_close_anchors(snapshot)
+        else:
+            replayed = self.replay(snapshot)
+            expected_snapshot = snapshot
+        expected = _business_projection(expected_snapshot)
         actual = _business_projection(replayed)
         if actual != expected:
             raise ValueError("frozen snapshot does not match deterministic replay")
@@ -188,3 +196,65 @@ class RecommendationReplayMixin:
             "candidate_input_count": len(replay_input.candidate_features),
             "recommendation_count": len(snapshot.recommendations),
         }
+
+
+def _normalize_p6_close_projection(
+    snapshot: RecommendationSnapshot,
+    replayed: RecommendationSnapshot,
+) -> RecommendationSnapshot:
+    replayed_by_code = {item.features.quote.code: item for item in replayed.recommendations}
+    if set(replayed_by_code) != {item.features.quote.code for item in snapshot.recommendations}:
+        raise ValueError("P6 close fallback changed the selected stock set")
+    normalized: list[Recommendation] = []
+    for item in snapshot.recommendations:
+        original = replayed_by_code[item.features.quote.code]
+        normalized.append(
+            replace(
+                item,
+                features=replace(
+                    item.features,
+                    quote=original.features.quote,
+                    observed_at=original.features.observed_at,
+                ),
+            )
+        )
+    return replace(snapshot, recommendations=tuple(normalized))
+
+
+def _p6_source_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
+    source_snapshot_id = snapshot.metadata.get("source_snapshot_id")
+    source_data_version = snapshot.metadata.get("source_data_version")
+    scoring_phase = snapshot.metadata.get("scoring_phase")
+    if not isinstance(source_snapshot_id, str) or not source_snapshot_id:
+        raise ValueError("P6 close fallback does not identify its source snapshot")
+    if not isinstance(source_data_version, str) or not source_data_version:
+        raise ValueError("P6 close fallback does not identify its source snapshot")
+    if not isinstance(scoring_phase, str) or not scoring_phase:
+        raise ValueError("P6 close fallback does not identify its source snapshot")
+    return replace(
+        snapshot,
+        snapshot_id=source_snapshot_id,
+        phase=scoring_phase,
+        data_version=source_data_version,
+    )
+
+
+def _verify_close_anchors(snapshot: RecommendationSnapshot) -> None:
+    anchors = snapshot.metadata.get("close_anchors")
+    if not isinstance(anchors, Mapping):
+        raise ValueError("P6 close fallback does not contain closing anchors")
+    for item in snapshot.recommendations:
+        quote = item.features.quote
+        raw = anchors.get(quote.code)
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"P6 close fallback is missing closing anchor for {quote.code}")
+        expected = {
+            "price": quote.price,
+            "pct_change": quote.pct_change,
+            "source": quote.source,
+            "source_time": quote.source_time.isoformat(),
+            "received_time": quote.received_time.isoformat(),
+            "data_version": quote.data_version,
+        }
+        if dict(raw) != expected:
+            raise ValueError(f"P6 close fallback anchor does not match recommendation {quote.code}")

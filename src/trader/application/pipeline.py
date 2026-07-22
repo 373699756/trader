@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from trader.application.cadence import (
     CadencePlanner,
@@ -165,6 +165,11 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._frozen_keys: set[tuple[Strategy, str]] = set()
         self._live_overlays: dict[tuple[Strategy, str], LiveOverlay] = {}
         self._scheduled_inflight: set[PipelineTask] = set()
+        self._session_snapshot_ids: set[str] = set()
+        self._after_close_lock = threading.Lock()
+        self._after_close_retry_at: datetime | None = None
+        self._after_close_retry_attempt = 0
+        self._after_close_completed_date = ""
 
     def initialize(self) -> Mapping[str, int]:
         self._repository.initialize()
@@ -446,6 +451,18 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         if age_seconds > cutoff_seconds:
             return False
         return True
+
+    def _record_after_close_recovery(self, now: datetime, *, complete: bool) -> None:
+        trade_date = trade_date_at(now).isoformat()
+        if complete:
+            self._after_close_completed_date = trade_date
+            self._after_close_retry_at = None
+            self._after_close_retry_attempt = 0
+            return
+        delays = (3.0, 5.0, 10.0, 20.0, 30.0)
+        index = min(self._after_close_retry_attempt, len(delays) - 1)
+        self._after_close_retry_at = now + timedelta(seconds=delays[index])
+        self._after_close_retry_attempt += 1
 
 
 __all__ = ["RecommendationPipeline"]

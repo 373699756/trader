@@ -253,6 +253,12 @@
       els.tableBody.innerHTML = window.TraderRender.rows(items, historical);
     }
     if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
+    else if (payload.phase === "close_fallback") {
+      const degraded = (payload.degraded_reasons || []).length
+        ? ` · 降级：${payload.degraded_reasons.join("、")}`
+        : "";
+      setNotice(`收盘补算 · ${window.TraderRender.formatDateTime(payload.published_at)}${degraded}`, degraded ? "warn" : "ok");
+    }
     else if ((payload.degraded_reasons || []).length) setNotice(`降级：${payload.degraded_reasons.join("、")}`, "warn");
     else if (payload.frozen) setNotice(`已冻结于 ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
     else if (payload.view === "live") setNotice(`临时实时 · ${window.TraderRender.formatDateTime(payload.published_at)} · 不替代正式冻结`, "warn");
@@ -454,6 +460,7 @@
       deepseek_cutoff: "模型截止",
       final_quote: "最终报价",
       frozen: "冻结窗口",
+      close_fallback: "收盘补算",
       after_close: "收盘后",
     })[value] || value;
   }

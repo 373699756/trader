@@ -13,11 +13,14 @@ from trader.application.events import EventPriority, PipelineEvent, new_event
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.ports import MarketDataUnavailable
 from trader.application.publisher import SnapshotPublisher
+from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import MarketPhase
 from trader.application.snapshot_workflow import refresh_candidates
 from trader.application.status import RuntimeState
 from trader.domain.models import FeatureSnapshot, LiveOverlay, RecommendationSnapshot, Strategy
+from trader.infra.persistence.snapshots import snapshot_from_dict, snapshot_to_dict
+from trader.web.schemas import snapshot_envelope
 
 
 def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
@@ -84,6 +87,276 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     assert pipeline.run_once(clock.now()) == ()
     assert len(repository.frozen) == 3
     assert state.latest(Strategy.LONG).frozen is False
+
+
+def test_after_close_persists_current_run_p6_with_closing_prices(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T10:30:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    state = RuntimeState()
+    market_data = ClosingPriceMarketData(features)
+    engine = RecommendationEngine(recommendation_policy)
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        engine,
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    pipeline.initialize()
+
+    assert pipeline.run_once(clock.now())[0].strategy is Strategy.TODAY
+    clock.set(datetime.fromisoformat("2026-07-16T14:30:00+08:00"))
+    pipeline.run_once(clock.now())
+    before = {strategy: state.latest(strategy) for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)}
+    assert all(snapshot is not None for snapshot in before.values())
+    assert repository.frozen == {}
+
+    clock.set(datetime.fromisoformat("2026-07-16T15:00:00+08:00"))
+    recovered = pipeline.run_once(clock.now())
+
+    assert {snapshot.strategy for snapshot in recovered} == {
+        Strategy.TODAY,
+        Strategy.TOMORROW,
+        Strategy.D25,
+    }
+    for strategy, source in before.items():
+        assert source is not None
+        frozen = repository.load_frozen(strategy, "2026-07-16")
+        assert frozen is not None
+        assert frozen.frozen is True
+        assert frozen.phase == "close_fallback"
+        assert frozen.metadata["recovery_path"] == "p6"
+        assert frozen.metadata["price_basis"] == "official_close"
+        assert tuple((item.features.quote.code, item.score, item.rank) for item in frozen.recommendations) == tuple(
+            (item.features.quote.code, item.score, item.rank) for item in source.recommendations
+        )
+        assert all(item.features.quote.price == 20.0 for item in frozen.recommendations)
+        assert engine.verify_frozen(frozen)["status"] == "verified"
+        restored = snapshot_from_dict(snapshot_to_dict(frozen))
+        assert restored == frozen
+        assert engine.verify_frozen(restored)["status"] == "verified"
+        assert snapshot_envelope(restored, top_n=18)["phase"] == "close_fallback"
+
+
+def test_after_close_cold_start_rebuilds_missing_strategies_locally(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    market_data = ClosingPriceMarketData(features)
+    state = RuntimeState()
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        FailingReviewer(),
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    pipeline.initialize()
+
+    recovered = pipeline.run_once(clock.now())
+
+    assert {snapshot.strategy for snapshot in recovered} == {
+        Strategy.TODAY,
+        Strategy.TOMORROW,
+        Strategy.D25,
+    }
+    assert market_data.market_force_requests == [True]
+    for snapshot in recovered:
+        assert snapshot.frozen is True
+        assert snapshot.phase == "close_fallback"
+        assert snapshot.fusion_mode.value == "local_degraded"
+        assert snapshot.metadata["recovery_path"] == "full_rebuild"
+        assert snapshot.metadata["deepseek_mode"] == "local_only"
+        assert repository.load_frozen(snapshot.strategy, "2026-07-16") == snapshot
+        assert pipeline._engine.verify_frozen(snapshot)["status"] == "verified"
+
+    queries = RecommendationQueries(
+        repository,
+        repository,
+        now=clock.now,
+        current_snapshot_reader=state,
+    )
+    lookup = queries.recommendation(Strategy.TOMORROW)
+    assert lookup.status == "ready"
+    assert lookup.snapshot is not None
+    assert lookup.snapshot.phase == "close_fallback"
+
+
+def test_after_close_cold_start_prefers_existing_database_records(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    first_market = ClosingPriceMarketData(features)
+    first = RecommendationPipeline(
+        first_market,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    first.initialize()
+    first.run_once(clock.now())
+    existing = dict(repository.frozen)
+
+    second_market = ClosingPriceMarketData(features)
+    second_state = RuntimeState()
+    second = RecommendationPipeline(
+        second_market,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        second_state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    second.initialize()
+
+    assert second.run_once(clock.now()) == ()
+    assert repository.frozen == existing
+    assert second_market.market_force_requests == []
+    assert all(
+        second_state.latest(strategy) == repository.load_frozen(strategy, "2026-07-16")
+        for strategy in (
+            Strategy.TODAY,
+            Strategy.TOMORROW,
+            Strategy.D25,
+        )
+    )
+
+
+def test_after_close_cold_start_rebuilds_only_missing_strategy(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    first = RecommendationPipeline(
+        ClosingPriceMarketData(features),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    first.initialize()
+    first.run_once(clock.now())
+    preserved = {
+        strategy: repository.load_frozen(strategy, "2026-07-16") for strategy in (Strategy.TODAY, Strategy.TOMORROW)
+    }
+    repository.frozen.pop((Strategy.D25, "2026-07-16"))
+
+    second_market = ClosingPriceMarketData(features)
+    second = RecommendationPipeline(
+        second_market,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    second.initialize()
+
+    recovered = second.run_once(clock.now())
+
+    assert [snapshot.strategy for snapshot in recovered] == [Strategy.D25]
+    assert second_market.market_force_requests == [True]
+    assert repository.load_frozen(Strategy.D25, "2026-07-16") is not None
+    assert {
+        strategy: repository.load_frozen(strategy, "2026-07-16") for strategy in (Strategy.TODAY, Strategy.TOMORROW)
+    } == preserved
+
+
+def test_after_close_does_not_persist_partial_market_rebuild(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    market_data = IncompleteClosingMarketData(features)
+    pipeline = RecommendationPipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    pipeline.initialize()
+
+    assert pipeline.run_once(clock.now()) == ()
+    assert repository.frozen == {}
+
+    market_data.complete = True
+    clock.set(datetime.fromisoformat("2026-07-16T15:05:03+08:00"))
+    recovered = pipeline.run_once(clock.now())
+    assert {snapshot.strategy for snapshot in recovered} == {
+        Strategy.TODAY,
+        Strategy.TOMORROW,
+        Strategy.D25,
+    }
 
 
 @pytest.mark.parametrize(
@@ -1486,6 +1759,87 @@ class StaticMarketData:
         return {"status": "ok"}
 
 
+class ClosingPriceMarketData(StaticMarketData):
+    @staticmethod
+    def _closing(features: Sequence[FeatureSnapshot], observed_at: datetime) -> tuple[FeatureSnapshot, ...]:
+        if observed_at.hour < 15:
+            return tuple(features)
+        return tuple(
+            replace(
+                feature,
+                quote=replace(
+                    feature.quote,
+                    price=20.0,
+                    high=max(20.0, feature.quote.high or 0.0),
+                    pct_change=5.0,
+                    source_time=observed_at.replace(hour=15, minute=0, second=0, microsecond=0),
+                    received_time=observed_at,
+                    data_version=f"close:{observed_at.date().isoformat()}:{feature.quote.code}",
+                ),
+                observed_at=observed_at,
+            )
+            for feature in features
+        )
+
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        return self._closing(super().fetch_market_features(observed_at, force=force, deadline=deadline), observed_at)
+
+    def fetch_candidate_features(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
+    ) -> Sequence[FeatureSnapshot]:
+        return self._closing(
+            super().fetch_candidate_features(
+                codes,
+                observed_at,
+                include_intraday_tail=include_intraday_tail,
+                include_structured_research=include_structured_research,
+            ),
+            observed_at,
+        )
+
+    def refresh_candidate_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        return self._closing(
+            super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline),
+            observed_at,
+        )
+
+
+class IncompleteClosingMarketData(ClosingPriceMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
+        super().__init__(features)
+        self.complete = False
+
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        features = tuple(super().fetch_market_features(observed_at, force=force, deadline=deadline))
+        if self.complete:
+            return features
+        return tuple(feature for feature in features if not feature.quote.code.startswith("688"))
+
+
 class DegradingMarketData(StaticMarketData):
     def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
         super().__init__(features)
@@ -1681,6 +2035,25 @@ def _at_time(feature: FeatureSnapshot, observed_at: datetime) -> FeatureSnapshot
         data_version=f"static:{observed_at.isoformat()}",
     )
     return replace(feature, quote=quote, observed_at=observed_at)
+
+
+def _three_board_features(application_feature_factory, observed_at: datetime) -> tuple[FeatureSnapshot, ...]:
+    return tuple(
+        application_feature_factory(code, observed_at, industry=f"行业-{index % 3}")
+        for index, code in enumerate(
+            (
+                "600001",
+                "600002",
+                "600003",
+                "300001",
+                "300002",
+                "300003",
+                "688001",
+                "688002",
+                "688003",
+            )
+        )
+    )
 
 
 class RecordingQueue:

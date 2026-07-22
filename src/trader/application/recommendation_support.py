@@ -28,12 +28,19 @@ _PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 _NON_ALGORITHM_METADATA_KEYS = frozenset(
     {
         "field_sources",
+        "close_anchors",
+        "deepseek_mode",
         "freeze_anchor",
         "market_conflicts",
         "market_degraded_reasons",
         "market_missing_reasons",
         "market_observed_at",
         "merge_epoch",
+        "price_basis",
+        "recovery_path",
+        "scoring_phase",
+        "source_data_version",
+        "source_snapshot_id",
         "source_versions",
         "tushare_reference_versions",
     }
@@ -47,7 +54,9 @@ def _fusion_mode(
     strategy: Strategy,
     phase: str,
 ) -> FusionMode:
-    threshold_key = "today_late" if strategy is Strategy.TODAY and phase == "today_late" else strategy.value
+    threshold_key = (
+        "today_late" if strategy is Strategy.TODAY and phase in {"today_late", "close_fallback"} else strategy.value
+    )
     if threshold_key == Strategy.TODAY.value:
         threshold_key = "today_main"
     threshold = thresholds.get(threshold_key, 100.0)
@@ -70,7 +79,9 @@ def _review_contexts_for_candidates(
     phase: str,
     selection: SelectionPolicy,
 ) -> Mapping[str, ReviewCandidateContext]:
-    threshold_key = "today_late" if strategy is Strategy.TODAY and phase == "today_late" else strategy.value
+    threshold_key = (
+        "today_late" if strategy is Strategy.TODAY and phase in {"today_late", "close_fallback"} else strategy.value
+    )
     if threshold_key == Strategy.TODAY.value:
         threshold_key = "today_main"
     threshold = selection.thresholds.get(threshold_key)

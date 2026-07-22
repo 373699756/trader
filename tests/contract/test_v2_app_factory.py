@@ -40,7 +40,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "策略验证" not in page
     assert "/static/dashboard.css?v=5" in page
     assert "/static/render.js?v=7" in page
-    assert "/static/dashboard.js?v=11" in page
+    assert "/static/dashboard.js?v=12" in page
     assert 'data-view="live"' in page
     assert "临时实时" in page
     assert 'class="runtime-error"' in page
@@ -63,6 +63,8 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'loadRecommendations("status_identity")' in dashboard
     assert 'query.set("view", "live")' in dashboard
     assert "HISTORY_REFRESH_MS = 3000" in dashboard
+    assert 'close_fallback: "收盘补算"' in dashboard
+    assert 'payload.phase === "close_fallback"' in dashboard
     stylesheet_response = client.get("/static/dashboard.css")
     stylesheet = stylesheet_response.get_data(as_text=True)
     assert stylesheet_response.status_code == 200

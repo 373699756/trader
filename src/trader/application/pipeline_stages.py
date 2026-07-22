@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
+from trader.application.after_close_recovery import recover_after_close_snapshots
 from trader.application.cadence import PipelineTask, task_execution_budget_seconds
 from trader.application.candidate_features import fetch_strategy_features, read_strategy_features
 from trader.application.events import EventDeadlineExpired, PipelineEvent
@@ -61,7 +62,10 @@ def process_schedule_on_workers(
         _refresh_candidates_on_workers(pipeline, now, phase)
     snapshots = list(_score_strategies_on_workers(pipeline, now, phase, use_cached_data=False))
     snapshots.extend(pipeline._freeze_available_snapshots(now, freeze_strategies))
-    if phase in {MarketPhase.FROZEN, MarketPhase.AFTER_CLOSE}:
+    if phase is MarketPhase.AFTER_CLOSE:
+        snapshots.extend(recover_after_close_snapshots(pipeline, now))
+        pipeline._refresh_live_overlays(now, phase)
+    elif phase is MarketPhase.FROZEN:
         pipeline._refresh_live_overlays(now, phase)
     return tuple(snapshots)
 
@@ -112,6 +116,18 @@ def _handle_topk_quotes(
 ) -> tuple[RecommendationSnapshot, ...]:
     pipeline._refresh_live_overlays(now, phase, deadline=event.deadline)
     return ()
+
+
+@_register_task(PipelineTask.CLOSE_QUOTES)
+def _handle_close_quotes(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    snapshots = recover_after_close_snapshots(pipeline, now, deadline=event.deadline)
+    pipeline._refresh_live_overlays(now, phase, deadline=event.deadline)
+    return snapshots
 
 
 @_register_task(PipelineTask.CURRENT_QUOTES)
@@ -421,6 +437,7 @@ def _score_strategies_on_workers(
         )
         persist(pipeline, pipeline._repository.publish, snapshot)
         pipeline._state.publish(snapshot)
+        pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
         pipeline._publisher.publish(snapshot)
         snapshots.append(snapshot)
 

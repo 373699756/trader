@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户规则：程序持续运行到 15:00 时依赖本次运行已经层层筛选并发布到 P6 的推荐；程序
+  重启后先读数据库，数据库缺失才获取同日收盘行情重新得到推荐并写库。新增逐策略收盘
+  恢复协调器、P6 选股身份与收盘锚点确定性回放、冷启动三板本地重建，以及
+  3/5/10/20/30 秒无重叠退避重试。
+
 - 用户问题：点击推荐股票后的详情抽屉平铺大量空值、计算中间量和技术审计字段，核心结论
   难以识别；同时推荐接口仍为每只股票传输这些页面不再消费的数据。新增 Web envelope
   schema v3 精确字段白名单、精简风险去重投影，以及“推荐结论 / 核心行情 / 评分与风险”
@@ -109,6 +114,11 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- `close_fallback` 现在是数据库缺少同日正式记录时创建的正常历史结果，而非临时草稿：
+  连续运行保持 P6 股票、评分、动作和排名，仅换入收盘价；冷启动不新增 DeepSeek HTTP，
+  使用本地规则完整重建并由正式接口返回 `ready`。页面明确标记“收盘补算”，并提升静态
+  资源版本避免浏览器复用旧脚本；已有同日记录仍拥有最高优先级且不可覆盖。
 
 - 用户诉求：将活动源码单文件行数门禁从 500 行调整为 800 行。现状是权威设计与架构
   契约测试同时固定 500 行，单改文档会造成契约与门禁不一致；修改后
@@ -218,6 +228,11 @@ All notable changes to this project are documented here.
   `runtime.json.performance_budgets` 读取，禁止适配器、评分lane或性能脚本自带默认值。
 
 ### Fixed
+
+- 修复 15:00 后数据库没有同日记录时正式接口永久 `not_ready` 的断链。原实现只恢复 P2
+  报价和已有快照 overlay，没有从 P6 固化或从收盘行情继续候选筛选、评分、TopK、冻结、
+  P6/SSE 发布；现在两条恢复路径均闭合到 SQLite/JSON 和 Web，行情或三板不完整时不写
+  单策略半成品并继续后台重试。
 
 - 股票详情不再为“无风险、无缺失、无证据、未复核”等正常空状态生成独立区块，也不再
   直接展示机器动作原因；已登记动作原因和风险代码改为可读中文，空核心行情隐藏对应指标
@@ -387,6 +402,15 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 收盘恢复回归覆盖同进程 P6 身份保留与收盘价替换、冷启动三策略本地重建、数据库优先、
+  仅补缺失策略、三板不完整不落盘并重试，以及冻结 JSON 往返、确定性回放、正式查询
+  `ready` 和 Web `close_fallback` 标识。`make format-check/lint/type-check/test/package` 全部
+  通过（mypy 139 个源码文件、pytest 624 项；仅保留 10 条既有未知测试模型名警告），
+  sdist/wheel 构建成功。最终 wheel 在仓库外目录安装并从独立 site-packages 导入，
+  `trader-cli --help`、模板、CSS、JavaScript 和图标资源通过。Firefox 152 在精确
+  1280x720、1440x900、1920x1080 视口均完整加载 `dashboard.js?v=12`，无白屏、损坏图片、
+  Header/主区或工作区块重叠、页面级横向溢出。
+
 - 行数门禁架构契约定向回归通过；为避免把并行中的用户业务修改混入本批，使用已推送
   `08c4d43` 基线叠加本批 3 个文件的隔离副本完成 Ruff format/lint、138 个源码文件
   mypy、完整 618 项 pytest、sdist/wheel 构建。仓库外 wheel 的包导入、`trader-cli`、
@@ -504,6 +528,11 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 收盘冷启动重建依赖行情适配器在同一交易日提供 14:59 后的三板完整收盘批次；供应商
+  延迟、全源故障或历史/研究字段仍在预热时保持 `not_ready` 并退避重试，不会改用上一日
+  数据或提交行情不完整的记录。冷启动分支按用户确认不新增 DeepSeek 请求，因此明确为
+  `local_degraded/local_only`，与盘中已有融合结果可能不同。
 
 - 800 行是宽松后的工程上限，不代表 501-800 行模块天然合理；职责、耦合和可测试性仍须在
   Review 中独立判断，超过 800 行仍由架构契约拒绝。本批只调整工程门禁，不产生运行、数据

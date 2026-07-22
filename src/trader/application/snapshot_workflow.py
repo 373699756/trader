@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from trader.application.after_close_recovery import recover_after_close_snapshots
 from trader.application.candidate_features import fetch_strategy_features
 from trader.application.pipeline_stages import (
     maximum_age_seconds,
@@ -64,7 +65,10 @@ def process_schedule(
             snapshots.append(snapshot)
 
     snapshots.extend(freeze_available_snapshots(pipeline, now, freeze_strategies))
-    if phase in {MarketPhase.FROZEN, MarketPhase.AFTER_CLOSE}:
+    if phase is MarketPhase.AFTER_CLOSE:
+        snapshots.extend(recover_after_close_snapshots(pipeline, now))
+        refresh_live_overlays(pipeline, now, phase)
+    elif phase is MarketPhase.FROZEN:
         refresh_live_overlays(pipeline, now, phase)
     return tuple(snapshots)
 
@@ -336,6 +340,7 @@ def score_strategy(
     )
     persist(pipeline, pipeline._repository.publish, snapshot)
     pipeline._state.publish(snapshot)
+    pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
     pipeline._publisher.publish(snapshot)
     return snapshot
 

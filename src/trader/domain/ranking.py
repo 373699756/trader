@@ -28,9 +28,9 @@ CORE_FIELDS = (
 )
 
 _EXECUTION_PHASES = {
-    Strategy.TODAY: frozenset({"today_main", "today_late"}),
-    Strategy.TOMORROW: frozenset({"afternoon", "final_review", "final_quote"}),
-    Strategy.D25: frozenset({"afternoon", "final_review", "final_quote"}),
+    Strategy.TODAY: frozenset({"today_main", "today_late", "close_fallback"}),
+    Strategy.TOMORROW: frozenset({"afternoon", "final_review", "final_quote", "close_fallback"}),
+    Strategy.D25: frozenset({"afternoon", "final_review", "final_quote", "close_fallback"}),
 }
 
 
@@ -212,7 +212,7 @@ def _threshold_key(strategy: Strategy, phase: str) -> str | None:
     if phase not in _EXECUTION_PHASES.get(strategy, frozenset()):
         return None
     if strategy is Strategy.TODAY:
-        return "today_late" if phase == "today_late" else "today_main"
+        return "today_late" if phase in {"today_late", "close_fallback"} else "today_main"
     if strategy is Strategy.TOMORROW:
         return "tomorrow"
     if strategy is Strategy.D25:

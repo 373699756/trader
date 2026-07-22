@@ -80,7 +80,17 @@ class PipelineSubmissionMixin(PipelineState):
         batch = planner.plan(now, is_trading_day=is_trading_day)
         phase = decision_at(now, is_trading_day=is_trading_day).phase
         self._state.record_tick(phase.value, now)
-        for task in batch.tasks:
+        tasks = list(batch.tasks)
+        trade_date = trade_day.isoformat()
+        retry_due = self._after_close_retry_at is None or now >= self._after_close_retry_at
+        if (
+            phase is MarketPhase.AFTER_CLOSE
+            and self._after_close_completed_date != trade_date
+            and retry_due
+            and all(item.task is not PipelineTask.CLOSE_QUOTES for item in tasks)
+        ):
+            tasks.append(ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, now, phase))
+        for task in tasks:
             self._state.increment(f"cadence_{task.task.value}_planned")
             if not self._candidate_codes and task.task not in {
                 PipelineTask.FULL_MARKET,
@@ -93,6 +103,15 @@ class PipelineSubmissionMixin(PipelineState):
                 self._state.increment(f"cadence_{task.task.value}_skipped_cold")
                 continue
             self._submit_scheduled_task(task)
+        if phase is MarketPhase.AFTER_CLOSE and self._after_close_completed_date != trade_date:
+            with self._cadence_lock:
+                recovery_inflight = PipelineTask.CLOSE_QUOTES in self._scheduled_inflight
+            return _after_close_retry_delay(
+                batch.next_delay_seconds,
+                now,
+                retry_at=self._after_close_retry_at,
+                inflight=recovery_inflight,
+            )
         return batch.next_delay_seconds
 
     def _submit_scheduled_task(self, scheduled: ScheduledPipelineTask) -> bool:
@@ -185,3 +204,15 @@ def _scheduled_task_deadline(scheduled: ScheduledPipelineTask) -> datetime | Non
     elif scheduled.task is PipelineTask.SCORE:
         seconds = 38.0
     return scheduled.scheduled_at + timedelta(seconds=seconds) if seconds is not None else None
+
+
+def _after_close_retry_delay(
+    default_delay: float,
+    now: datetime,
+    *,
+    retry_at: datetime | None,
+    inflight: bool,
+) -> float:
+    if inflight or retry_at is None:
+        return min(default_delay, 1.0)
+    return min(default_delay, max(0.05, (retry_at - now).total_seconds()))

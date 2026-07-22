@@ -6,7 +6,11 @@ import pytest
 
 from trader.application.cadence import PERIODIC_TASKS, PipelineTask, ScheduledPipelineTask
 from trader.application.events import BoundedEventQueue, EventPriority, new_event
-from trader.application.pipeline_submission import _scheduled_task_deadline, _scheduled_task_priority
+from trader.application.pipeline_submission import (
+    _after_close_retry_delay,
+    _scheduled_task_deadline,
+    _scheduled_task_priority,
+)
 from trader.application.schedule import MarketPhase
 
 
@@ -25,6 +29,12 @@ def test_dependent_tasks_include_upstream_queue_time_in_expiration_deadline(utc_
 
     assert _scheduled_task_deadline(candidate) == utc_now + timedelta(seconds=23)
     assert _scheduled_task_deadline(score) == utc_now + timedelta(seconds=38)
+
+
+def test_after_close_scheduler_wakes_for_recorded_retry_instead_of_default_delay(utc_now) -> None:
+    assert _after_close_retry_delay(30.0, utc_now, retry_at=None, inflight=True) == 1.0
+    assert _after_close_retry_delay(30.0, utc_now, retry_at=utc_now + timedelta(seconds=3), inflight=False) == 3.0
+    assert _after_close_retry_delay(30.0, utc_now, retry_at=utc_now - timedelta(seconds=1), inflight=False) == 0.05
 
 
 def test_queue_reserves_capacity_for_risk_and_freeze(utc_now) -> None:

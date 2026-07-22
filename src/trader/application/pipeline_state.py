@@ -13,7 +13,7 @@ from trader.application.ports import EventAuditPort, MarketDataPort, TradingCale
 from trader.application.publisher import SnapshotPublisher
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
-from trader.domain.models import LiveOverlay, Strategy
+from trader.domain.models import FeatureSnapshot, LiveOverlay, Strategy
 
 
 class PipelineState:
@@ -31,6 +31,11 @@ class PipelineState:
     _reviews: Any
     _live_overlays: dict[tuple[Strategy, str], LiveOverlay]
     _scheduled_inflight: set[PipelineTask]
+    _session_snapshot_ids: set[str]
+    _after_close_completed_date: str
+    _after_close_retry_at: datetime | None
+    _after_close_retry_attempt: int
+    _market_features: tuple[FeatureSnapshot, ...]
     _lifecycle_lock: Any
     _cadence_lock: Any
     _worker: threading.Thread | None
