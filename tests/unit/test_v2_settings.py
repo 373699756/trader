@@ -94,6 +94,8 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.performance_budgets.rounds.warmup == 1
     assert runtime.performance_budgets.rounds.measurement == 5
     assert runtime.performance_budgets.latency_p95_ms["market_normalization"] == 800
+    assert runtime.performance_budgets.memory.cache_logical_bytes == 260046848
+    assert runtime.performance_budgets.memory.process_peak_rss_bytes == 402653184
     assert runtime.pipeline.cadence_seconds["full_market"]["today_main"] == 5
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["today_main"] == 1
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 1
@@ -261,6 +263,14 @@ def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypa
         (
             lambda raw: raw["performance_budgets"]["workload"].update({"market_rows": 5499}),
             "performance workload",
+        ),
+        (
+            lambda raw: raw["performance_budgets"]["memory"].update({"cache_total_bytes": 268435456}),
+            "performance_budgets.memory contains unknown keys",
+        ),
+        (
+            lambda raw: raw["performance_budgets"]["memory"].update({"cache_logical_bytes": 268435456}),
+            "fixed 248/384 MiB",
         ),
         (
             lambda raw: raw["market_data"].update({"single_flight": False}),

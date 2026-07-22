@@ -39,6 +39,7 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
         "plan_youhua.md",
         "recommendation-strategy.md",
         "reports/youhua-a1-baseline.md",
+        "reports/youhua-a2-public-skeleton.md",
         "reports/youhua-d1-p6-web.md",
         "reports/youhua-g1-contract-base.md",
         "software-business-design.md",
@@ -67,6 +68,9 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
     assert "recommendation-strategy.md" in plan_youhua
     assert "A1.x 已完成本地基线采集与契约冻结" in report
     assert "G1 发布" in report
+    assert "A2 public skeleton is available" in (docs_root / "reports/youhua-a2-public-skeleton.md").read_text(
+        encoding="utf-8"
+    )
     assert "docs/need.md" not in design
     assert "docs/hi.md" not in design
 

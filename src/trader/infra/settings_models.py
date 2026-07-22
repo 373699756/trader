@@ -73,7 +73,8 @@ class PerformanceRoundSettings:
 
 @dataclass(frozen=True)
 class PerformanceMemorySettings:
-    cache_total_bytes: int
+    cache_logical_bytes: int
+    process_peak_rss_bytes: int
     growth_percent: float
 
 

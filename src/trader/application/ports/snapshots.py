@@ -3,10 +3,12 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
 from trader.application.ports.types import JsonObject
 from trader.domain.recommendation.models import LiveOverlay, RecommendationSnapshot, Strategy
+
+SnapshotStatusValue: TypeAlias = object
 
 
 @dataclass(frozen=True)
@@ -68,7 +70,7 @@ class PublishedSnapshotReadPort(CurrentSnapshotReaderPort, Protocol):
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]: ...
 
-    def status(self) -> Mapping[str, object]: ...
+    def status(self) -> Mapping[str, SnapshotStatusValue]: ...
 
 
 class PublishedSnapshotWritePort(Protocol):
@@ -76,4 +78,4 @@ class PublishedSnapshotWritePort(Protocol):
 
     def publish_overlay(self, overlay: LiveOverlay) -> None: ...
 
-    def status(self) -> Mapping[str, object]: ...
+    def status(self) -> Mapping[str, SnapshotStatusValue]: ...

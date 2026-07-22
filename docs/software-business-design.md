@@ -295,7 +295,9 @@ P6 固定 72 个视图：当前四策略 4 个、最近 20 个交易日三策略
 `cache_logical_bytes`、`process_rss_bytes`、`process_peak_rss_bytes`、可用时的
 `process_uss_bytes`、`python_traced_bytes`、`polars_estimated_bytes` 和
 `transient_peak_reason`。延迟测试关闭 `tracemalloc`，内存测试单独开启；任何验收不得
-用 Python 分配或逻辑缓存估算代替 RSS 峰值。
+用 Python 分配或逻辑缓存估算代替 RSS 峰值。运行配置的 `performance_budgets.memory`
+必须拆分为 `cache_logical_bytes` 与 `process_peak_rss_bytes`，旧 `cache_total_bytes`
+单字段或把 384 MiB 当作缓存容量的配置必须启动前拒绝。
 
 缓存身份固定包含数据集、来源、主体、请求指纹、交易日、阶段、来源契约版本、配置
 版本和 schema。请求指纹为排序后的非敏感参数规范 JSON SHA-256。TTL 条目必须有

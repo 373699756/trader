@@ -354,7 +354,8 @@ def _performance_budget_payload(settings: Any) -> dict[str, object]:
         "latency_p95_ms": dict(budgets.latency_p95_ms),
         "data_age_p95_seconds": dict(budgets.data_age_p95_seconds),
         "memory": {
-            "cache_total_bytes": budgets.memory.cache_total_bytes,
+            "cache_logical_bytes": budgets.memory.cache_logical_bytes,
+            "process_peak_rss_bytes": budgets.memory.process_peak_rss_bytes,
             "growth_percent": budgets.memory.growth_percent,
         },
         "relative_regression_percent": budgets.relative_regression_percent,

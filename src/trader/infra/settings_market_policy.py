@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from trader.application.cache import CacheDatasetPolicy, CacheGroupPolicy, CachePolicy
+from trader.application.ports.youhua import LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES
 from trader.infra.settings_models import (
     PerformanceBudgetSettings,
     PerformanceMemorySettings,
@@ -276,13 +277,18 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
     data_age = _fixed_positive_number_mapping(raw, "data_age_p95_seconds", expected_age)
 
     memory_raw = mapping(raw, "memory")
-    require_exact_keys(memory_raw, {"cache_total_bytes", "growth_percent"}, "performance_budgets.memory")
+    require_exact_keys(
+        memory_raw,
+        {"cache_logical_bytes", "process_peak_rss_bytes", "growth_percent"},
+        "performance_budgets.memory",
+    )
     memory = PerformanceMemorySettings(
-        cache_total_bytes=integer(memory_raw, "cache_total_bytes", minimum=1),
+        cache_logical_bytes=integer(memory_raw, "cache_logical_bytes", minimum=1),
+        process_peak_rss_bytes=integer(memory_raw, "process_peak_rss_bytes", minimum=1),
         growth_percent=number(memory_raw, "growth_percent", minimum=0.000001),
     )
-    if memory != PerformanceMemorySettings(256 * 1024 * 1024, 20.0):
-        raise ConfigurationError("performance memory budget must match the fixed v15/v17 contract")
+    if memory != PerformanceMemorySettings(LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES, 20.0):
+        raise ConfigurationError("performance memory budget must match the fixed 248/384 MiB contract")
     relative = number(raw, "relative_regression_percent", minimum=0.000001)
     if relative != 5.0:
         raise ConfigurationError("relative_regression_percent must remain fixed at 5")

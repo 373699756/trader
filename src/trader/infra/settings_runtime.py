@@ -323,8 +323,8 @@ def _validate_runtime_settings(settings: RuntimeSettings) -> None:
         raise ConfigurationError("pipeline.market_workers must be fixed at 5 for the five source lanes")
     if not settings.market_data.single_flight:
         raise ConfigurationError("market_data.single_flight must remain enabled")
-    if settings.market_data.cache_policy.pool_total_bytes != settings.performance_budgets.memory.cache_total_bytes:
-        raise ConfigurationError("cache and performance total byte budgets must match")
+    if settings.market_data.cache_policy.total_bytes != settings.performance_budgets.memory.cache_logical_bytes:
+        raise ConfigurationError("cache logical and performance logical byte budgets must match")
     if settings.market_data.candidate_pool_size != 120:
         raise ConfigurationError("market_data.candidate_pool_size must remain fixed at 120")
     if sum(settings.deepseek.strategy_limits.values()) != settings.deepseek.daily_hard_limit:

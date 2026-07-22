@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户发送“继续”后，A 按 `docs/plan_youhua.md` 执行 A2.1-A2.5。新增
+  `src/trader/application/ports/youhua.py`，集中提供
+  `youhua_contract_base_v1` 下的 P3/P4 `MarketChangeSet`、P4/P5 高价值复核 manifest、
+  DeepSeek V4 facts、P6 projection/overlay event、resync reason 和 248/384 MiB 内存契约；
+  新增 `src/trader/application/youhua_test_doubles.py`，为 B/C/D 单域开发提供只记录身份和
+  计数的 P4 consumer、review input、projection/overlay producer 替身；新增
+  `docs/reports/youhua-a2-public-skeleton.md` 作为 A2 交接报告。
+
 - 用户发送“继续”后，A 复核当前工作树中新到达的 B1/C1/D1 阶段 1 报告，并发布 G1。新增
   `docs/reports/youhua-g1-contract-base.md`，固定
   `CONTRACT_BASE=45bd2fab992d36eb873b7c448fbd9739f0cad43c`、三方 `ready_for_gate=yes`
@@ -179,6 +187,12 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- A2 将运行配置 `performance_budgets.memory` 从旧 `cache_total_bytes` 单字段改为
+  `cache_logical_bytes=260046848` 与 `process_peak_rss_bytes=402653184` 双字段，并更新解析
+  校验、性能报告 payload 和权威设计说明；旧字段或把进程峰值当缓存容量的配置会在启动前被
+  拒绝。同步收紧 `PublishedSnapshot*Port.status()` 返回类型，避免 application 公共边界继续
+  暴露 `Mapping[str, object]`。
 
 - A1 基线报告从“等待 C1/D1，G1 未发布”更新为“B1/C1/D1 均已收到，G1 已发布”，并把
   `ready_for_gate` 更新为 `yes`。本批仍不进入 A2.1-A2.5，不实现公共 port/event/config
@@ -605,6 +619,17 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- A2 公共骨架批次验证：定向契约与配置测试
+  `tests/contract/test_youhua_a2_public_skeleton.py tests/contract/test_v2_architecture.py tests/unit/test_v2_settings.py`
+  通过；扩展文档契约后 5 个定向文件共 71 项通过，覆盖公共 schema/version、long 零复核、
+  DeepSeek V4 facts 证据边界、P6
+  projection/overlay CAS、HTTP/DeepSeek 零副作用替身、248 MiB 逻辑缓存拒绝和 384 MiB
+  进程峰值拒绝。A2 范围 Ruff format/check 通过；`make type-check` 通过 162 个源码文件；
+  `make package` 沙箱内因构建依赖联网失败，提升权限后通过并清理生成物。全局
+  `make format-check`/`make lint` 被非 A2 的 DeepSeek/C2 未提交文件格式与导入问题阻断；
+  全局 `make test` 运行完成，剩余 2 个既有失败：bootstrap duplicate start 和 final
+  candidate cadence 计数。
+
 - G1 发布批次验证：复核 B1、C1、D1 三份标准报告均包含 `ready_for_gate=yes`；确认
   `HEAD == @{upstream}` 后发布 `CONTRACT_BASE`。`make format-check`、定向契约测试
   `tests/contract/test_delivery_contract.py tests/contract/test_youhua_contract_base.py`、
@@ -821,13 +846,16 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- A2 公共骨架已可用，但 G2 未满足；B2/C2/D2 的标准交接包尚未收齐，生产默认仍不得接入
+  真实 B/C/D 实现。当前工作树还存在其他未暂存生产改动和 C2/B2 测试文件，本批保留且不纳入
+  A2 提交。
+
 - G1 已发布但 G2 未满足；阶段 2 只能按 A/B/C/D owner 范围分别施工。全局 `make lint`
   的严格债务计数漂移和全局 `make test` 的 5 个既有失败仍未在本批修复，不能宣称完整质量
   门禁绿色。
 
-- A1/G1 未实现 A2 公共类型、配置状态字段或测试替身；当前运行配置仍保留旧 `256 MiB`
-  performance memory 字段，需在 A2 按双层内存契约实现并复验。完整 RSS/USS/Polars 原生
-  估算、真实 pipeline 100 tick 和 P6 发布峰值仍需阶段 2-4 集成门禁补齐。
+- A2 已实现公共类型、配置内存双字段和测试替身；完整 RSS/USS/Polars 原生估算、真实
+  pipeline 100 tick 和 P6 发布峰值仍需阶段 2-4 集成门禁补齐。
 
 - Polars 只改变基础设施层批次与变更集合，不改变领域评分、68/32 融合、风险、动作、排名
   或冻结哈希；性能通过也不代表荐股收益提高。真实供应商、真实 DeepSeek 和真实交易日仍受
