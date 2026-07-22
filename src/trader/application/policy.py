@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from trader.domain.filters import HardFilterPolicy
@@ -19,7 +19,7 @@ class SelectionPolicy:
     observation_margin: float
     thresholds: Mapping[str, float]
     maximum_board_fraction: float = 1.0
-    competition_group_limits: Mapping[Board, int] = MappingProxyType({})
+    competition_group_limits: Mapping[Board, int] = field(default_factory=lambda: MappingProxyType({}))
     candidate_min_score: float = 0.0
     minimum_board_reliability: float = 0.0
 
@@ -53,9 +53,13 @@ class RecommendationPolicy:
     local_strategy_weights: Mapping[Strategy, Mapping[str, float]]
     risk_rules: Mapping[str, RiskRule]
     board_policy_version: str = ""
-    board_candidate_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]] = MappingProxyType({})
-    board_local_strategy_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]] = MappingProxyType({})
-    hard_filter: HardFilterPolicy = HardFilterPolicy()
+    board_candidate_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    board_local_strategy_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    hard_filter: HardFilterPolicy = field(default_factory=HardFilterPolicy)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate_weights", MappingProxyType(dict(self.candidate_weights)))

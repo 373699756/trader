@@ -22,7 +22,7 @@ dev = [
     "mypy>=1.18,<3",
     "pytest>=7,<9",
     "pytest-xdist>=3,<4",
-    "ruff>=0.15,<1",
+    "ruff==0.15.21",
 ]
 
 [project.scripts]

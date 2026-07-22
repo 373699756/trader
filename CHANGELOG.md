@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续实施全工程重构计划，并确认活动源码继续采用 800 行上限而非任意 500 行
+  限制。新增六个独立工程重构章节、章节状态和严格 Ruff 债务单调收敛门禁；当前登记
+  `C901=42`、`N818=7`、`PLR0911=16`、`PLR0912=15`、`PLR0913=69`、`PLR0915=14`，
+  任一计数变化都必须经 Review 并同步更新，最终目录切换时全部归零。
+
 - 用户诉求：热点本身可以接受，首要目标是避免推荐次日出现大幅回撤。新增 v17 下行保护，
   用 ATR20 日内反转、趋势破位、板内低波动/低回撤尾部和弱市弱收盘四类结构事实，把原本
   可执行的高风险候选降为观察；必要风险输入缺失时关闭可执行入口，单纯热门或高热不触发
@@ -125,6 +130,11 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- `SelectionPolicy` 与 `RecommendationPolicy` 的空映射和默认硬过滤策略改由 dataclass
+  `default_factory` 为每个实例创建，再沿用既有不可变副本逻辑；候选、评分、风险、融合、
+  排名、冻结、Web API 和持久化格式均不变。Ruff 开发工具固定为 0.15.21，避免严格诊断
+  基线因工具规则版本漂移而失真；原候选总体和收益证明路线保留为工程重构后的独立策略批次。
 
 - tomorrow 三板各把 15% 权重转给确定性入场质量，d25 用入场质量替代原独立
   `not_overheated` 正向组件；融合公式、DeepSeek 预算和冻结时点保持不变。正式推荐与观察
@@ -263,6 +273,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 Python 3.11 在 pytest 收集阶段拒绝 `mappingproxy` dataclass 直接默认值、导致全部
+  业务测试无法运行的问题；根因是三个不可变映射仍被 dataclasses 视为不允许共享的默认
+  对象。新增实例隔离与运行时不可变回归，同时清理本机退休 `infrastructure` 字节码目录和
+  `docs/.mypy_cache` 对架构/文档拓扑契约的忽略缓存污染。
+
 - 根因确认：v16 主要按上行强度、稳定性和软风险扣分排序，没有融合后不可被高分覆盖的
   MAE/ATR 保护，也没有把推荐后的真实最大不利波动沉淀为可验证结果，因此热度扣分不能可靠
   阻止大幅回撤。本批增加独立动作保护和结果结算闭环；Review 同时修复连续性校验误把
@@ -391,6 +406,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除任何活动业务能力、策略、API、配置、冻结数据或 Web 资源；只移除未跟踪的退休
+  包字节码和文档类型检查缓存。旧工程计划中的性能基线、候选 shadow 和收益验证边界已迁入
+  新章节计划，没有作为“重构”名义下的废弃项丢失。
+
 - d25 不再把“不热门”作为独立正向加分组件；过热事实及其既有软风险扣分仍保留，未删除
   行情源、DeepSeek、本地评分、正式冻结或历史推荐能力。本批不引入自动交易、自动调权或
   自动回退。
@@ -456,6 +475,12 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 本章 Review 通过 Ruff format/lint、严格债务精确基线、140 个源码文件 mypy、完整 649 项
+  pytest 和架构/无副作用应用工厂定向契约；pytest 仅保留 10 条既有未知测试模型名警告。
+  sdist/wheel 隔离构建通过；wheel 从仓库外前缀导入，两个 CLI、`pip check`、模板、4 个
+  CSS、2 个 JavaScript 和 2 个 SVG 共 9 项包资源通过。1280x720、1440x900、1920x1080
+  三档 Chrome 实际截图复核无白屏、重叠、页面级横向溢出或明显布局跳动。
 
 - v17 最终 Review 通过 Ruff format/lint、140 个源码文件 mypy、完整 647 项 pytest 和
   sdist/wheel 隔离构建；pytest 仅保留 10 条既有未知测试模型名警告。79 项定向回归覆盖
@@ -613,6 +638,10 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 当前严格基线仍登记 163 项既有复杂度、参数数量和异常命名债务；本章只建立可执行棘轮，
+  没有越界进入领域、应用或基础设施重构。后续每个完整章节必须降低并同步基线，最终章节
+  前不得宣称全工程重构完成。真实行情、真实 DeepSeek 和长期收益仍不由本次基线修复证明。
 
 - v17 的目标是减少结构性大回撤，当前自动门禁只能证明实现、确定性和审计正确性，不能证明
   实盘收益已经提高。既有冻结行没有 ATR20 时不会猜测回填结果；历史 qfq 与实时未复权锚点

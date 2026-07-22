@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 PYTHON ?= .venv/bin/python
-SOURCE_PATHS := src/trader tests
+SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py
 
 .PHONY: help install-dev format format-check lint type-check test quality package
 
@@ -22,6 +22,7 @@ format-check:
 
 lint:
 	$(PYTHON) -m ruff check --select E,F,I,B,UP --ignore E501 $(SOURCE_PATHS)
+	$(PYTHON) scripts/check_refactor_quality.py
 
 type-check:
 	$(PYTHON) -m mypy src/trader
