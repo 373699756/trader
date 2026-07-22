@@ -7,7 +7,7 @@ import pytest
 
 from trader.application.recommendations import RecommendationEngine
 from trader.domain.factors import round_score
-from trader.domain.models import FeatureSnapshot, FilterAudit, Strategy
+from trader.domain.models import FeatureSnapshot, FilterAudit, RecommendationAction, Strategy
 from trader.domain.strategies import score_strategy
 
 
@@ -107,6 +107,38 @@ def test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold(
     )
 
     assert snapshot.recommendations == ()
+
+
+def test_formal_and_watch_pools_have_independent_topk_capacity(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    features = []
+    for index in range(18):
+        feature = application_feature_factory(f"600{index:03d}", now, industry=f"行业{index}")
+        if index >= 10:
+            feature = replace(feature, values={**feature.values, "trend_breakdown": 1.0})
+        features.append(feature)
+
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TODAY,
+        tuple(features),
+        now=now,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="split-pools-v17",
+        review_port=None,
+        review_deadline=datetime.fromisoformat("2026-07-16T11:20:00+08:00"),
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+        filter_details=(),
+    )
+
+    assert len(snapshot.recommendations) == 18
+    assert sum(item.action is RecommendationAction.EXECUTABLE for item in snapshot.recommendations) == 10
+    assert sum(item.action is RecommendationAction.OBSERVE for item in snapshot.recommendations) == 8
 
 
 def test_preselection_reports_history_warming_separately_from_hard_filter_reason(

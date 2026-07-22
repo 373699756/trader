@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from trader.domain.downside import DownsideAssessment
 from trader.domain.models import (
     Board,
     DeepSeekReview,
@@ -214,6 +215,31 @@ def test_action_policy_does_not_apply_neutral_audit_rating(feature_factory) -> N
 
     assert action is RecommendationAction.EXECUTABLE
     assert reason == "score_threshold_met"
+
+
+def test_action_policy_downgrades_only_executable_downside_failure(feature_factory) -> None:
+    recommendation = replace(
+        _recommendation(feature_factory(), 90.0),
+        downside=DownsideAssessment(
+            status="observe",
+            reasons=("trend_breakdown",),
+            atr20_pct=2.0,
+            intraday_reversal_atr=0.0,
+            historical_drawdown_pct=-8.0,
+            setup_type="shrink_pullback",
+        ),
+    )
+
+    action, reason = action_for(
+        recommendation,
+        {"tomorrow": 72.0},
+        phase="afternoon",
+        is_stale=False,
+        observation_margin=5.0,
+    )
+
+    assert action is RecommendationAction.OBSERVE
+    assert reason == "downside_guard:trend_breakdown"
 
 
 @pytest.mark.parametrize(("top_k", "expected_main"), [(0, 0), (1, 1), (10, 6), (18, 11)])

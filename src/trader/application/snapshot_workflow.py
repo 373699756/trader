@@ -68,6 +68,7 @@ def process_schedule(
     if phase is MarketPhase.AFTER_CLOSE:
         snapshots.extend(recover_after_close_snapshots(pipeline, now))
         refresh_live_overlays(pipeline, now, phase)
+        pipeline._settle_outcomes(now)
     elif phase is MarketPhase.FROZEN:
         refresh_live_overlays(pipeline, now, phase)
     return tuple(snapshots)

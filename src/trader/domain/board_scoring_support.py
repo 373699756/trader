@@ -54,6 +54,7 @@ _LOCAL_COMPONENT_INPUTS: Mapping[Strategy, Mapping[str, tuple[str, ...]]] = {
         "trend": ("ma20_60_position", "ma_slope", "breakout_20d", "industry_trend"),
         "stability": ("low_volatility_score", "low_drawdown_score"),
         "market_state": (),
+        "entry_quality": ("entry_quality",),
     },
     Strategy.D25: {
         "residual_momentum": ("peer_gap_20d_score", "peer_gap_60d_score"),
@@ -61,7 +62,7 @@ _LOCAL_COMPONENT_INPUTS: Mapping[Strategy, Mapping[str, tuple[str, ...]]] = {
         "quality_value": ("quality_score", "value_score", "growth_score"),
         "stability": ("low_volatility_score", "low_drawdown_score"),
         "flow_liquidity": ("amount_percentile_20d", "turnover_shock_score", "amount_shock_score"),
-        "not_overheated": ("return_20d_not_overheated",),
+        "entry_quality": ("entry_quality",),
     },
 }
 

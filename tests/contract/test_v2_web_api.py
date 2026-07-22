@@ -62,6 +62,8 @@ RECOMMENDATION_ITEM_KEYS = {
     "anchor_to_now_pct",
     "action",
     "action_reason",
+    "setup_type",
+    "downside",
     "scores",
     "risks",
     "review",
@@ -138,6 +140,15 @@ def test_recommendation_response_excludes_internal_board_and_merge_fields(
 
     assert set(payload) == RECOMMENDATION_ENVELOPE_KEYS
     assert set(item) == RECOMMENDATION_ITEM_KEYS
+    assert item["setup_type"] == "trend_unconfirmed"
+    assert item["downside"]["status"] == "pass"
+    assert set(item["downside"]) == {
+        "status",
+        "reasons",
+        "atr20_pct",
+        "intraday_reversal_atr",
+        "historical_drawdown_pct",
+    }
     assert "metadata" not in payload
     assert "weights" not in payload
     assert "board" not in item

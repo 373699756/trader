@@ -21,6 +21,7 @@ from trader.application.recommendation_support import (
     _review_contexts_for_candidates,
     _snapshot_id,
 )
+from trader.domain.downside import assess_downside
 from trader.domain.filters import FilterResult
 from trader.domain.fusion import fuse_score
 from trader.domain.models import (
@@ -37,6 +38,7 @@ from trader.domain.models import (
     RecommendationSnapshot,
     ReviewCandidateContext,
     ReviewOutcome,
+    SelectionSkip,
     Strategy,
 )
 from trader.domain.ranking import action_for, minimum_selection_score, select_top_k_with_audit
@@ -109,6 +111,8 @@ class RecommendationFinalizationMixin:
         self,
         prepared: PreparedSnapshot,
         reviews: Mapping[str, DeepSeekReview],
+        *,
+        legacy_v16: bool = False,
     ) -> RecommendationSnapshot:
         if not prepared.board_scoring_complete:
             reasons = ",".join(prepared.board_degraded_reasons) or "unknown"
@@ -125,6 +129,7 @@ class RecommendationFinalizationMixin:
             phase=phase,
             max_age_seconds=prepared.max_age_seconds,
             target_prices=prepared.target_prices,
+            apply_downside=not legacy_v16,
         )
         minimum_score = minimum_selection_score(
             strategy,
@@ -132,8 +137,12 @@ class RecommendationFinalizationMixin:
             phase=phase,
             observation_margin=self._policy.selection.observation_margin,
         )
-        selected, selection_skips = (
-            select_top_k_with_audit(
+        selected: tuple[Recommendation, ...]
+        selection_skips: tuple[SelectionSkip, ...]
+        if minimum_score is None:
+            selected, selection_skips = (), ()
+        elif strategy is Strategy.LONG or legacy_v16:
+            selected, selection_skips = select_top_k_with_audit(
                 merged,
                 top_k=self._policy.selection.default_top_k,
                 maximum_per_industry=self._policy.selection.maximum_per_industry,
@@ -141,9 +150,25 @@ class RecommendationFinalizationMixin:
                 maximum_board_fraction=self._policy.selection.maximum_board_fraction,
                 competition_group_limits=self._policy.selection.competition_group_limits,
             )
-            if minimum_score is not None
-            else ((), ())
-        )
+        else:
+            executable, executable_skips = select_top_k_with_audit(
+                (item for item in merged if item.action is RecommendationAction.EXECUTABLE),
+                top_k=self._policy.selection.default_top_k,
+                maximum_per_industry=self._policy.selection.maximum_per_industry,
+                minimum_final_score=minimum_score,
+                maximum_board_fraction=self._policy.selection.maximum_board_fraction,
+                competition_group_limits=self._policy.selection.competition_group_limits,
+            )
+            watch, watch_skips = select_top_k_with_audit(
+                (item for item in merged if item.action is RecommendationAction.OBSERVE),
+                top_k=8,
+                maximum_per_industry=self._policy.selection.maximum_per_industry,
+                minimum_final_score=minimum_score,
+                maximum_board_fraction=self._policy.selection.maximum_board_fraction,
+                competition_group_limits=self._policy.selection.competition_group_limits,
+            )
+            selected = (*executable, *watch)
+            selection_skips = (*executable_skips, *watch_skips)
         snapshot_id = _snapshot_id(strategy, prepared.trade_date, phase, prepared.data_version, now)
         degraded_reasons: list[str] = list(prepared.board_degraded_reasons)
         if fusion_mode is FusionMode.LOCAL_DEGRADED:
@@ -361,6 +386,7 @@ class RecommendationFinalizationMixin:
         phase: str,
         max_age_seconds: float,
         target_prices: Mapping[str, float | None] | None = None,
+        apply_downside: bool = True,
     ) -> tuple[tuple[Recommendation, ...], FusionMode]:
         fusion_candidates = tuple(
             candidate
@@ -398,6 +424,7 @@ class RecommendationFinalizationMixin:
                 review=review,
                 veto=fusion_result.veto,
                 target_price=(target_prices or {}).get(local.features.quote.code),
+                downside=assess_downside(local.features, strategy) if apply_downside else None,
             )
             action, reason = action_for(
                 provisional,

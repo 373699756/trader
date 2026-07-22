@@ -10,13 +10,16 @@ from trader.domain.models import CrossSectionStats
 
 PRODUCTION_FACTOR_IDS = frozenset(
     {
+        "atr20_pct",
         "amount_median_20d",
         "amount_percentile_20d",
         "breakout_20d",
+        "breakout_deviation_pct",
         "capacity_score",
         "close_location",
         "d25_overheat_factor",
         "evidence_freshness",
+        "entry_quality",
         "financial_deterioration",
         "growth_score",
         "industry_breadth",
@@ -32,7 +35,11 @@ PRODUCTION_FACTOR_IDS = frozenset(
         "low_volatility_score",
         "ma20_60_position",
         "ma20_60_structure",
+        "ma20",
         "ma20_deviation_inverse",
+        "ma20_slope_pct",
+        "ma10",
+        "ma5",
         "ma_slope",
         "market_breadth",
         "market_regime_factor",
@@ -45,6 +52,7 @@ PRODUCTION_FACTOR_IDS = frozenset(
         "price_executability",
         "price_volume_confirmation",
         "price_volume_divergence",
+        "prior_high_20d",
         "quality_score",
         "reduction_or_unlock",
         "shareholder_reduction_level",
@@ -73,6 +81,7 @@ PRODUCTION_FACTOR_IDS = frozenset(
         "upward_consistency",
         "value_score",
         "volatility_20d",
+        "volume_to_5d_average",
     }
 )
 

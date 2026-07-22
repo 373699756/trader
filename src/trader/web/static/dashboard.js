@@ -28,6 +28,7 @@
       "scoreTime", "budgetStatus", "headerFreeze", "lastError", "routeHealth",
       "refreshButton", "dateSelect", "recommendationCount", "executableCount", "filteredCount", "dataSource",
       "strategyVersion", "freezeStatus", "notice", "recommendationTable", "tableColumns", "tableHead", "tableBody",
+      "watchRegion", "watchTable", "watchColumns", "watchHead", "watchBody",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
     ]) els[id] = document.getElementById(id);
 
@@ -44,7 +45,11 @@
     });
     els.refreshButton.addEventListener("click", () => loadRecommendations("manual"));
     els.tableBody.addEventListener("click", selectRow);
+    els.watchBody.addEventListener("click", selectRow);
     els.tableBody.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") selectRow(event);
+    });
+    els.watchBody.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") selectRow(event);
     });
     els.drawerClose.addEventListener("click", closeDrawer);
@@ -231,26 +236,35 @@
 
   function renderPayload(payload) {
     const items = Array.isArray(payload.items) ? payload.items : [];
-    els.recommendationCount.textContent = String(items.length);
-    els.executableCount.textContent = String(items.filter((item) => item.action === "executable").length);
+    const historical = payload.historical === true;
+    const recommendations = historical ? items : items.filter((item) => item.action === "executable");
+    const watchItems = historical ? [] : items.filter((item) => item.action === "observe");
+    els.recommendationCount.textContent = String(recommendations.length);
+    els.executableCount.textContent = String(recommendations.filter((item) => item.action === "executable").length);
     els.filteredCount.textContent = String(payload.filtered_count || 0);
     els.dataSource.textContent = items[0] && items[0].source ? items[0].source : "-";
     els.strategyVersion.textContent = payload.strategy_version || "-";
     els.freezeStatus.textContent = payload.status === "not_ready" ? "未就绪" : payload.frozen ? "已冻结" : "实时草稿";
-    const historical = payload.historical === true;
     const definition = historical ? window.TraderRender.historyTable() : window.TraderRender.currentTable();
     els.recommendationTable.classList.toggle("is-history", historical);
+    els.watchRegion.hidden = historical || watchItems.length === 0;
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
+    els.watchColumns.innerHTML = definition.columns;
+    els.watchHead.innerHTML = definition.head;
     if (payload.status === "not_ready") {
       renderTableState("流水线已启动，当前策略尚无可用快照", historical ? 6 : 9);
+      els.watchRegion.hidden = true;
       setNotice("当前策略尚未发布快照", "warn");
       return;
     }
-    if (items.length === 0) {
-      renderTableState("当前门槛下没有推荐结果", historical ? 6 : 9);
+    if (recommendations.length === 0) {
+      renderTableState(historical ? "当前门槛下没有历史推荐结果" : "当前无通过下行保护的正式推荐", historical ? 6 : 9);
     } else {
-      els.tableBody.innerHTML = window.TraderRender.rows(items, historical);
+      els.tableBody.innerHTML = window.TraderRender.rows(recommendations, historical);
+    }
+    if (!historical) {
+      if (watchItems.length > 0) els.watchBody.innerHTML = window.TraderRender.rows(watchItems, false);
     }
     if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
     else if (payload.phase === "close_fallback") {
@@ -273,6 +287,7 @@
   function patchLiveRows(previous, payload) {
     if (!previous || !payload || previous.snapshot_id !== payload.snapshot_id) return false;
     if (previous.historical !== payload.historical) return false;
+    if (payload.historical !== true) return false;
     const before = Array.isArray(previous.items) ? previous.items : [];
     const after = Array.isArray(payload.items) ? payload.items : [];
     if (before.length !== after.length) return false;

@@ -12,6 +12,7 @@ from flask import Flask
 from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import BoardScoringCache
 from trader.application.cadence import CadencePolicy, PipelineTask
+from trader.application.outcome_settlement import OutcomeSettlementService
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
 from trader.application.publisher import SnapshotPublisher
@@ -348,6 +349,11 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         cadence_policy=cadence_policy,
         long_codes=tuple(item.code for item in watchlist.items),
         long_target_prices={item.code: item.target_price for item in watchlist.items},
+        outcome_settlement=OutcomeSettlementService(
+            market_data,
+            repository,
+            session_distance=calendar.session_distance,
+        ),
     )
     queries = RecommendationQueries(
         repository,

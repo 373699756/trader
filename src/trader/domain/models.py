@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from trader.domain.downside import DownsideAssessment
     from trader.domain.recommendation_models import (
         BoardScoreBatch,
         BoardStrategyPolicy,
@@ -432,6 +433,7 @@ class Recommendation:
     target_price: float | None = None
     selection_skip_reason: str = ""
     competition_group_limit: int | None = None
+    downside: DownsideAssessment | None = None
 
 
 @dataclass(frozen=True)

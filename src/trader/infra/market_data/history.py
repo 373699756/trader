@@ -25,8 +25,13 @@ class HistoryProfile:
     """Precomputed history metrics reused by feature extraction."""
 
     moving_average_5d: float | None
+    moving_average_10d: float | None
     moving_average_20d: float | None
     moving_average_60d: float | None
+    ma20_slope_pct: float | None
+    atr20_pct: float | None
+    average_volume_5d: float | None
+    high_20d: float | None
     volatility_20d: float | None
     max_drawdown_20d: float | None
     median_amount_20d: float | None
@@ -38,8 +43,16 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
     """Compute all history metrics used by FeatureBuilder in one local pass."""
 
     ma5 = _moving_average_from_tail(bars, 5)
+    ma10 = _moving_average_from_tail(bars, 10)
     ma20 = _moving_average_from_tail(bars, 20)
     ma60 = _moving_average_from_tail(bars, 60)
+    prior_ma20 = _moving_average_from_tail(bars[:-5], 20) if len(bars) >= 25 else None
+    ma20_slope = (
+        (ma20 / prior_ma20 - 1.0) * 100.0 if ma20 is not None and prior_ma20 is not None and prior_ma20 > 0.0 else None
+    )
+    atr20 = average_true_range_pct(bars)
+    volume_5d = _positive_average(tuple(bar.volume for bar in bars[-5:]), 5)
+    high_20d = max((bar.high for bar in bars[-20:] if bar.high > 0.0), default=None) if len(bars) >= 20 else None
 
     window_20 = bars[-20:] if len(bars) >= 20 else bars[:]
     return_window_20 = bars[-21:] if len(bars) >= 21 else bars[:]
@@ -85,8 +98,13 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
 
     return HistoryProfile(
         moving_average_5d=ma5,
+        moving_average_10d=ma10,
         moving_average_20d=ma20,
         moving_average_60d=ma60,
+        ma20_slope_pct=ma20_slope,
+        atr20_pct=atr20,
+        average_volume_5d=volume_5d,
+        high_20d=high_20d,
         volatility_20d=volatility,
         max_drawdown_20d=max_drawdown,
         median_amount_20d=median_amount,
@@ -146,6 +164,29 @@ def maximum_drawdown_pct(bars: tuple[DailyBar, ...], days: int = 20) -> float | 
     return drawdown if math.isfinite(peak) else None
 
 
+def average_true_range_pct(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
+    if len(bars) < days + 1:
+        return None
+    values: list[float] = []
+    for previous, current in zip(bars[-days - 1 : -1], bars[-days:], strict=True):
+        if previous.close <= 0.0:
+            return None
+        true_range = max(
+            current.high - current.low,
+            abs(current.high - previous.close),
+            abs(current.low - previous.close),
+        )
+        if not math.isfinite(true_range) or true_range < 0.0:
+            return None
+        values.append(true_range / previous.close * 100.0)
+    return sum(values) / days if len(values) == days else None
+
+
+def _positive_average(values: tuple[float, ...], required: int) -> float | None:
+    finite = tuple(value for value in values if math.isfinite(value) and value > 0.0)
+    return sum(finite) / required if len(finite) == required else None
+
+
 def median_amount(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
     if len(bars) < days:
         return None
@@ -162,6 +203,7 @@ def upward_consistency(bars: tuple[DailyBar, ...], days: int = 20) -> float | No
 
 __all__ = [
     "DailyBar",
+    "average_true_range_pct",
     "maximum_drawdown_pct",
     "HistoryProfile",
     "median_amount",

@@ -149,11 +149,12 @@ def test_same_input_uses_board_specific_tomorrow_weights(application_feature_fac
         Board.MAIN,
         {
             "tail_structure": 0.15,
-            "peer_leader": 0.15,
-            "turnover_flow": 0.10,
-            "trend": 0.25,
+            "peer_leader": 0.10,
+            "turnover_flow": 0.05,
+            "trend": 0.20,
             "stability": 0.25,
             "market_state": 0.10,
+            "entry_quality": 0.15,
         },
     )
     growth_policy = _policy(
@@ -161,11 +162,12 @@ def test_same_input_uses_board_specific_tomorrow_weights(application_feature_fac
         Board.CHINEXT,
         {
             "tail_structure": 0.20,
-            "peer_leader": 0.25,
-            "turnover_flow": 0.20,
-            "trend": 0.20,
+            "peer_leader": 0.20,
+            "turnover_flow": 0.15,
+            "trend": 0.15,
             "stability": 0.10,
             "market_state": 0.05,
+            "entry_quality": 0.15,
         },
     )
     main = replace(feature, values=values, board_policy_id=main_policy.policy_id)
@@ -184,7 +186,7 @@ def test_d25_score_has_no_market_regime_or_overheat_multiplier(application_featu
             "quality_value": 0.25,
             "stability": 0.15,
             "flow_liquidity": 0.10,
-            "not_overheated": 0.10,
+            "entry_quality": 0.10,
         },
     )
     feature = replace(_features(application_feature_factory, 1, Board.MAIN)[0], market_regime="risk_on")

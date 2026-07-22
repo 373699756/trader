@@ -7,8 +7,8 @@
     <title>A股策略看板</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
     <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='5') }}" />
-    <script defer src="{{ url_for('static', filename='render.js', v='7') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard.js', v='12') }}"></script>
+    <script defer src="{{ url_for('static', filename='render.js', v='8') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard.js', v='13') }}"></script>
   </head>
   <body>
     <header class="app-header">
@@ -68,12 +68,26 @@
 
       <div id="notice" class="notice" data-level="idle" role="status">正在读取推荐快照</div>
 
-      <section class="table-region" aria-label="推荐列表">
+      <section class="table-region" aria-label="正式推荐列表">
+        <h2 class="table-title">正式推荐</h2>
         <div class="table-scroll">
           <table id="recommendationTable">
             <colgroup id="tableColumns"></colgroup>
             <thead id="tableHead"></thead>
             <tbody id="tableBody">
+              <tr><td class="table-state" colspan="9">加载中</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="watchRegion" class="table-region watch-region" aria-label="观察列表" hidden>
+        <h2 class="table-title">观察列表</h2>
+        <div class="table-scroll">
+          <table id="watchTable">
+            <colgroup id="watchColumns"></colgroup>
+            <thead id="watchHead"></thead>
+            <tbody id="watchBody">
               <tr><td class="table-state" colspan="9">加载中</td></tr>
             </tbody>
           </table>

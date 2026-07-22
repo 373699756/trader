@@ -6,6 +6,7 @@ import math
 from collections.abc import Mapping
 from datetime import date, datetime
 
+from trader.domain.downside import DownsideAssessment
 from trader.domain.models import (
     Board,
     BoardPopulation,
@@ -54,6 +55,7 @@ def _recommendation_to_dict(item: Recommendation) -> dict[str, object]:
         "target_price": item.target_price,
         "selection_skip_reason": item.selection_skip_reason,
         "competition_group_limit": item.competition_group_limit,
+        "downside": _downside_to_dict(item.downside) if item.downside is not None else None,
     }
 
 
@@ -80,6 +82,35 @@ def _recommendation_from_dict(raw: Mapping[str, object]) -> Recommendation:
         target_price=_optional_number(raw.get("target_price")),
         selection_skip_reason=str(raw.get("selection_skip_reason") or ""),
         competition_group_limit=_optional_integer(raw.get("competition_group_limit")),
+        downside=_downside_from_dict(raw.get("downside")),
+    )
+
+
+def _downside_to_dict(item: DownsideAssessment) -> dict[str, object]:
+    return {
+        "status": item.status,
+        "reasons": list(item.reasons),
+        "atr20_pct": item.atr20_pct,
+        "intraday_reversal_atr": item.intraday_reversal_atr,
+        "historical_drawdown_pct": item.historical_drawdown_pct,
+        "setup_type": item.setup_type,
+    }
+
+
+def _downside_from_dict(raw: object) -> DownsideAssessment | None:
+    if not isinstance(raw, dict):
+        return None
+    status = str(raw.get("status") or "observe")
+    if status not in {"pass", "observe"}:
+        raise ValueError("downside status must be pass or observe")
+    reasons = raw.get("reasons")
+    return DownsideAssessment(
+        status=status,  # type: ignore[arg-type]
+        reasons=tuple(str(item) for item in reasons if isinstance(item, str)) if isinstance(reasons, list) else (),
+        atr20_pct=_optional_number(raw.get("atr20_pct")),
+        intraday_reversal_atr=_optional_number(raw.get("intraday_reversal_atr")),
+        historical_drawdown_pct=_optional_number(raw.get("historical_drawdown_pct")),
+        setup_type=str(raw.get("setup_type") or "none"),
     )
 
 

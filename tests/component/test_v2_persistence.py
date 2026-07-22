@@ -25,6 +25,7 @@ from trader.domain.models import (
     ScoreBreakdown,
     Strategy,
 )
+from trader.domain.outcomes import BenchmarkReturn, RecommendationOutcome
 from trader.infra.persistence.snapshots import (
     snapshot_bytes,
     snapshot_from_dict,
@@ -219,6 +220,40 @@ def test_publish_and_freeze_create_verified_manifest(tmp_path) -> None:
     assert json.loads(manifest["anchor_json"])["600001"]["age_seconds"] == 0.0
     assert tuple(recommendation) == ("600001", 1, 12.0)
     assert tuple(published) == ("snapshot-1", "frozen/tomorrow/2026-07-16/snapshot-1.json")
+
+
+def test_outcome_audit_is_idempotent_without_changing_frozen_snapshot(tmp_path) -> None:
+    repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
+    repository.initialize()
+    snapshot = _snapshot()
+    repository.freeze(snapshot)
+    frozen_path = next((tmp_path / "frozen").rglob("*.json"))
+    frozen_digest = snapshot_sha256(frozen_path.read_bytes())
+
+    targets = repository.pending_outcome_targets(limit=10)
+    assert len(targets) == 1
+    assert targets[0].atr20_pct == 2.0
+    repository.record_benchmark_return(BenchmarkReturn("2026-07-17", 0.5), observed_at=NOW)
+    assert repository.benchmark_returns_after("2026-07-16", limit=1) == (BenchmarkReturn("2026-07-17", 0.5),)
+    incomplete = RecommendationOutcome(
+        snapshot_id="snapshot-1",
+        strategy=Strategy.TOMORROW,
+        recommend_date="2026-07-16",
+        stock_code="600001",
+        horizon=1,
+        status="insufficient_data",
+        settled_at=NOW,
+        anchor_price=12.0,
+        atr20_pct=2.0,
+        quality_reason="source_unavailable",
+    )
+    repository.save_recommendation_outcomes((incomplete,))
+    assert repository.pending_outcome_targets(limit=10) == targets
+
+    repository.save_recommendation_outcomes((replace(incomplete, status="complete", quality_reason=""),))
+
+    assert repository.pending_outcome_targets(limit=10) == ()
+    assert snapshot_sha256(frozen_path.read_bytes()) == frozen_digest
 
 
 def test_persistent_observability_survives_repository_restart(tmp_path) -> None:
@@ -577,6 +612,7 @@ def _snapshot() -> RecommendationSnapshot:
             "tail_return_30m": 100.0,
             "tail_volume_ratio_raw": 1.5,
             "tail_volume_ratio": 75.0,
+            "atr20_pct": 2.0,
         },
         observed_at=NOW,
         history_days=60,

@@ -160,6 +160,18 @@ def _recommendation(
         "anchor_to_now_pct": _anchor_to_now(quote.price, live_quote.price) if live_quote is not None else None,
         "action": item.action.value,
         "action_reason": item.action_reason,
+        "setup_type": item.downside.setup_type if item.downside is not None else None,
+        "downside": (
+            {
+                "status": item.downside.status,
+                "reasons": list(item.downside.reasons),
+                "atr20_pct": item.downside.atr20_pct,
+                "intraday_reversal_atr": item.downside.intraday_reversal_atr,
+                "historical_drawdown_pct": item.downside.historical_drawdown_pct,
+            }
+            if item.downside is not None
+            else None
+        ),
         "scores": {
             "local_score": score.local_score,
             "deepseek_score": score.deepseek_score,

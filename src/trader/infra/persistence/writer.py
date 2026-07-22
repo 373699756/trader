@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from trader.domain.models import LiveOverlay, RecommendationSnapshot, Strategy
+from trader.domain.outcomes import BenchmarkReturn, OutcomeTarget, RecommendationOutcome
 from trader.infra.persistence.snapshots import (
     SNAPSHOT_SCHEMA_VERSION,
     snapshot_bytes,
@@ -142,6 +143,130 @@ class SnapshotRepository(RepositoryObservabilityMixin):
                 (strategy.value,),
             ).fetchall()
         return tuple(str(row["recommend_date"]) for row in rows)
+
+    def pending_outcome_targets(self, *, limit: int) -> Sequence[OutcomeTarget]:
+        if limit < 1:
+            raise ValueError("outcome target limit must be positive")
+        with connection_scope(self._database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT r.snapshot_id, r.strategy, r.recommend_date, r.stock_code,
+                       r.anchor_price, r.atr20_pct
+                FROM recommendations AS r
+                JOIN frozen_snapshots AS f ON f.snapshot_id = r.snapshot_id
+                WHERE f.status = 'committed' AND r.atr20_pct IS NOT NULL AND r.atr20_pct > 0
+                ORDER BY r.recommend_date, r.strategy, r.rank, r.stock_code
+                """
+            ).fetchall()
+            complete = {
+                (str(row["snapshot_id"]), str(row["stock_code"]), int(row["horizon"]))
+                for row in connection.execute(
+                    "SELECT snapshot_id, stock_code, horizon FROM recommendation_outcomes WHERE status = 'complete'"
+                ).fetchall()
+            }
+        targets: list[OutcomeTarget] = []
+        for row in rows:
+            strategy = Strategy(str(row["strategy"]))
+            required = (2, 3, 5) if strategy is Strategy.D25 else (1,)
+            identity = (str(row["snapshot_id"]), str(row["stock_code"]))
+            if all((*identity, horizon) in complete for horizon in required):
+                continue
+            targets.append(
+                OutcomeTarget(
+                    snapshot_id=identity[0],
+                    strategy=strategy,
+                    recommend_date=str(row["recommend_date"]),
+                    stock_code=identity[1],
+                    anchor_price=float(row["anchor_price"]),
+                    atr20_pct=float(row["atr20_pct"]),
+                )
+            )
+            if len(targets) >= limit:
+                break
+        return tuple(targets)
+
+    def record_benchmark_return(self, benchmark: BenchmarkReturn, *, observed_at: datetime) -> None:
+        with self._lock, connection_scope(self._database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO outcome_benchmarks(trade_date, return_pct, observed_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                    return_pct = excluded.return_pct,
+                    observed_at = excluded.observed_at
+                WHERE excluded.observed_at >= outcome_benchmarks.observed_at
+                """,
+                (benchmark.trade_date, benchmark.return_pct, observed_at.isoformat()),
+            )
+
+    def benchmark_returns_after(self, recommend_date: str, *, limit: int) -> Sequence[BenchmarkReturn]:
+        if limit < 1:
+            return ()
+        with connection_scope(self._database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT trade_date, return_pct
+                FROM outcome_benchmarks
+                WHERE trade_date > ?
+                ORDER BY trade_date
+                LIMIT ?
+                """,
+                (recommend_date, limit),
+            ).fetchall()
+        return tuple(BenchmarkReturn(str(row["trade_date"]), float(row["return_pct"])) for row in rows)
+
+    def save_recommendation_outcomes(self, outcomes: Sequence[RecommendationOutcome]) -> None:
+        if not outcomes:
+            return
+        with self._lock, connection_scope(self._database_path) as connection:
+            connection.executemany(
+                """
+                INSERT INTO recommendation_outcomes(
+                    snapshot_id, strategy, recommend_date, stock_code, horizon, status,
+                    settled_at, anchor_price, atr20_pct, minimum_low, end_close,
+                    gross_return_pct, benchmark_return_pct, net_excess_return_pct,
+                    mae_pct, mae_atr, severe_drawdown, quality_reason, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_id, stock_code, horizon) DO UPDATE SET
+                    status = excluded.status,
+                    settled_at = excluded.settled_at,
+                    minimum_low = excluded.minimum_low,
+                    end_close = excluded.end_close,
+                    gross_return_pct = excluded.gross_return_pct,
+                    benchmark_return_pct = excluded.benchmark_return_pct,
+                    net_excess_return_pct = excluded.net_excess_return_pct,
+                    mae_pct = excluded.mae_pct,
+                    mae_atr = excluded.mae_atr,
+                    severe_drawdown = excluded.severe_drawdown,
+                    quality_reason = excluded.quality_reason,
+                    version = excluded.version
+                WHERE recommendation_outcomes.status != 'complete'
+                """,
+                [
+                    (
+                        item.snapshot_id,
+                        item.strategy.value,
+                        item.recommend_date,
+                        item.stock_code,
+                        item.horizon,
+                        item.status,
+                        item.settled_at.isoformat(),
+                        item.anchor_price,
+                        item.atr20_pct,
+                        item.minimum_low,
+                        item.end_close,
+                        item.gross_return_pct,
+                        item.benchmark_return_pct,
+                        item.net_excess_return_pct,
+                        item.mae_pct,
+                        item.mae_atr,
+                        None if item.severe_drawdown is None else int(item.severe_drawdown),
+                        item.quality_reason,
+                        item.version,
+                    )
+                    for item in outcomes
+                ],
+            )
 
     def save_live_overlay(self, overlay: LiveOverlay) -> bool:
         payload = json.dumps(
@@ -323,8 +448,8 @@ class SnapshotRepository(RepositoryObservabilityMixin):
                         strategy, recommend_date, stock_code, rank, anchor_price,
                         anchor_daily_return_pct, board, board_policy_id, board_rank,
                         board_data_reliability, competition_group_id, selection_skip_reason,
-                        merge_epoch, snapshot_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        merge_epoch, atr20_pct, snapshot_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         snapshot.strategy.value,
@@ -340,6 +465,7 @@ class SnapshotRepository(RepositoryObservabilityMixin):
                         recommendation.features.competition_group_id,
                         recommendation.selection_skip_reason,
                         recommendation.features.merge_epoch,
+                        recommendation.features.optional_value("atr20_pct"),
                         snapshot.snapshot_id,
                     ),
                 )

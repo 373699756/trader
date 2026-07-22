@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def connect(database_path: Path) -> sqlite3.Connection:
@@ -76,6 +76,7 @@ def initialize_database(database_path: Path) -> None:
                 competition_group_id TEXT NOT NULL DEFAULT '',
                 selection_skip_reason TEXT NOT NULL DEFAULT '',
                 merge_epoch TEXT NOT NULL DEFAULT '',
+                atr20_pct REAL,
                 snapshot_id TEXT NOT NULL REFERENCES frozen_snapshots(snapshot_id),
                 PRIMARY KEY(strategy, recommend_date, stock_code)
             );
@@ -160,6 +161,35 @@ def initialize_database(database_path: Path) -> None:
                 payload_json TEXT NOT NULL,
                 PRIMARY KEY(strategy, recommend_date)
             );
+
+            CREATE TABLE IF NOT EXISTS outcome_benchmarks(
+                trade_date TEXT PRIMARY KEY,
+                return_pct REAL NOT NULL,
+                observed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS recommendation_outcomes(
+                snapshot_id TEXT NOT NULL REFERENCES frozen_snapshots(snapshot_id),
+                strategy TEXT NOT NULL,
+                recommend_date TEXT NOT NULL,
+                stock_code TEXT NOT NULL,
+                horizon INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('complete', 'benchmark_missing', 'insufficient_data')),
+                settled_at TEXT NOT NULL,
+                anchor_price REAL NOT NULL,
+                atr20_pct REAL NOT NULL,
+                minimum_low REAL,
+                end_close REAL,
+                gross_return_pct REAL,
+                benchmark_return_pct REAL,
+                net_excess_return_pct REAL,
+                mae_pct REAL,
+                mae_atr REAL,
+                severe_drawdown INTEGER,
+                quality_reason TEXT NOT NULL DEFAULT '',
+                version TEXT NOT NULL,
+                PRIMARY KEY(snapshot_id, stock_code, horizon)
+            );
             """
         )
         _ensure_column(
@@ -176,6 +206,7 @@ def initialize_database(database_path: Path) -> None:
         _ensure_column(connection, "recommendations", "competition_group_id", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "recommendations", "selection_skip_reason", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "recommendations", "merge_epoch", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "recommendations", "atr20_pct", "REAL")
         _ensure_column(connection, "data_source_health", "last_error", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "data_source_health", "route_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(connection, "data_source_health", "route_status", "TEXT NOT NULL DEFAULT 'idle'")
@@ -232,6 +263,36 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE recommendations ADD COLUMN competition_group_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE recommendations ADD COLUMN selection_skip_reason TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE recommendations ADD COLUMN merge_epoch TEXT NOT NULL DEFAULT ''",
+    ],
+    7: [
+        "ALTER TABLE recommendations ADD COLUMN atr20_pct REAL",
+        """CREATE TABLE IF NOT EXISTS outcome_benchmarks(
+            trade_date TEXT PRIMARY KEY,
+            return_pct REAL NOT NULL,
+            observed_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS recommendation_outcomes(
+            snapshot_id TEXT NOT NULL REFERENCES frozen_snapshots(snapshot_id),
+            strategy TEXT NOT NULL,
+            recommend_date TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            horizon INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('complete', 'benchmark_missing', 'insufficient_data')),
+            settled_at TEXT NOT NULL,
+            anchor_price REAL NOT NULL,
+            atr20_pct REAL NOT NULL,
+            minimum_low REAL,
+            end_close REAL,
+            gross_return_pct REAL,
+            benchmark_return_pct REAL,
+            net_excess_return_pct REAL,
+            mae_pct REAL,
+            mae_atr REAL,
+            severe_drawdown INTEGER,
+            quality_reason TEXT NOT NULL DEFAULT '',
+            version TEXT NOT NULL,
+            PRIMARY KEY(snapshot_id, stock_code, horizon)
+        )""",
     ],
 }
 

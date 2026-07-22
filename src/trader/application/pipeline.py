@@ -29,6 +29,7 @@ from trader.application.ports import (
     EventAuditPort,
     MarketDataDeadlineExceeded,
     MarketDataPort,
+    OutcomeSettlementPort,
     SnapshotRepositoryPort,
     TradingCalendarPort,
 )
@@ -86,6 +87,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         cadence_policy: CadencePolicy | None = None,
         long_codes: Sequence[str] = (),
         long_target_prices: Mapping[str, float | None] | None = None,
+        outcome_settlement: OutcomeSettlementPort | None = None,
     ) -> None:
         self._market_data = market_data
         self._calendar = calendar
@@ -100,6 +102,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._now = now
         self._long_codes = tuple(long_codes)
         self._long_target_prices = dict(long_target_prices or {})
+        self._outcome_settlement = outcome_settlement
         self._market_data_manages_workers = market_data_manages_workers
         self._cadence = CadencePlanner(cadence_policy) if cadence_policy is not None else None
         self._queue = BoundedEventQueue(
@@ -167,9 +170,29 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._scheduled_inflight: set[PipelineTask] = set()
         self._session_snapshot_ids: set[str] = set()
         self._after_close_lock = threading.Lock()
+        self._outcome_settlement_lock = threading.Lock()
         self._after_close_retry_at: datetime | None = None
         self._after_close_retry_attempt = 0
         self._after_close_completed_date = ""
+        self._outcome_settlement_date = ""
+
+    def _settle_outcomes(self, now: datetime) -> None:
+        if self._outcome_settlement is None:
+            return
+        trade_date = trade_date_at(now).isoformat()
+        with self._outcome_settlement_lock:
+            if self._outcome_settlement_date == trade_date:
+                return
+            try:
+                result = self._outcome_settlement.settle(now, self._market_features)
+            except Exception as exc:
+                self._state.increment("outcome_settlement_failures")
+                self._state.record_error(f"outcome settlement degraded: {type(exc).__name__}")
+                return
+            if result.benchmark_recorded:
+                self._outcome_settlement_date = trade_date
+            self._state.increment("outcome_settlement_runs")
+            self._state.increment("outcome_settlement_completed", result.completed_count)
 
     def initialize(self) -> Mapping[str, int]:
         self._repository.initialize()

@@ -24,7 +24,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
     assert runtime.schema_version == 5
-    assert strategy.schema_version == 9
+    assert strategy.schema_version == 10
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.pipeline.market_workers == 5

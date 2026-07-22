@@ -65,6 +65,7 @@ def process_schedule_on_workers(
     if phase is MarketPhase.AFTER_CLOSE:
         snapshots.extend(recover_after_close_snapshots(pipeline, now))
         pipeline._refresh_live_overlays(now, phase)
+        pipeline._settle_outcomes(now)
     elif phase is MarketPhase.FROZEN:
         pipeline._refresh_live_overlays(now, phase)
     return tuple(snapshots)
@@ -127,6 +128,7 @@ def _handle_close_quotes(
 ) -> tuple[RecommendationSnapshot, ...]:
     snapshots = recover_after_close_snapshots(pipeline, now, deadline=event.deadline)
     pipeline._refresh_live_overlays(now, phase, deadline=event.deadline)
+    pipeline._settle_outcomes(now)
     return snapshots
 
 

@@ -1,3 +1,20 @@
 @import url("./dashboard_base.css");
 @import url("./dashboard_components.css");
 @import url("./dashboard_responsive.css");
+
+[hidden] {
+  display: none !important;
+}
+
+.table-title {
+  margin: 0;
+  padding: 0.72rem 1rem 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.watch-region {
+  margin-top: 0.85rem;
+}

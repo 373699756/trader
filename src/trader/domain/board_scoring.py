@@ -361,6 +361,7 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
             ),
             "stability": _mean_known(snapshot, ("low_volatility_score", "low_drawdown_score")),
             "market_state": {"risk_on": 60.0, "neutral": 50.0, "risk_off": 40.0}.get(snapshot.market_regime, 50.0),
+            "entry_quality": snapshot.value("entry_quality"),
         }
     elif policy.strategy is Strategy.D25:
         components = {
@@ -384,7 +385,7 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
                 + 0.25 * snapshot.value("turnover_shock_score")
                 + 0.25 * snapshot.value("amount_shock_score")
             ),
-            "not_overheated": snapshot.value("return_20d_not_overheated"),
+            "entry_quality": snapshot.value("entry_quality"),
         }
     else:
         raise ValueError("long has no board score")

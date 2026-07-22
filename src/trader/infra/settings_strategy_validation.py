@@ -46,7 +46,7 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         raise ConfigurationError("risk caps are fixed at 25 local and 30 DeepSeek")
     if settings.selection.default_top_k > settings.selection.maximum_top_k:
         raise ConfigurationError("default_top_k cannot exceed maximum_top_k")
-    if settings.board_policy_version != "board_policy_v16_ttd25_2026_07":
+    if settings.board_policy_version != "board_policy_v17_downside_guard_ttd25_2026_07":
         raise ConfigurationError("unsupported board policy version")
     if settings.selection.maximum_board_fraction != 0.6:
         raise ConfigurationError("maximum board fraction is fixed at 0.6")
@@ -376,8 +376,16 @@ def _validate_board_weights(settings: StrategySettings) -> None:
     }
     local_components = {
         "today": {"intraday_structure", "turnover_state", "peer_gap", "liquidity_execution", "stability"},
-        "tomorrow": {"tail_structure", "peer_leader", "turnover_flow", "trend", "stability", "market_state"},
-        "d25": {"residual_momentum", "trend", "quality_value", "stability", "flow_liquidity", "not_overheated"},
+        "tomorrow": {
+            "tail_structure",
+            "peer_leader",
+            "turnover_flow",
+            "trend",
+            "stability",
+            "market_state",
+            "entry_quality",
+        },
+        "d25": {"residual_momentum", "trend", "quality_value", "stability", "flow_liquidity", "entry_quality"},
     }
     for strategy in strategies:
         candidate_boards = settings.board_candidate_weights[strategy]

@@ -17,9 +17,15 @@ from trader.domain.models import Recommendation, RecommendationSnapshot
 REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
 LEGACY_REPLAY_ALGORITHM_VERSION = "engine_v10_section9_hard_filter_2026_07"
 V15_REPLAY_ALGORITHM_VERSION = "engine_v15_parallel_market_data_2026_07"
-REPLAY_ALGORITHM_VERSION = "engine_v16_board_scoring_ttd25_2026_07"
+V16_REPLAY_ALGORITHM_VERSION = "engine_v16_board_scoring_ttd25_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_v17_downside_guard_ttd25_2026_07"
 _SUPPORTED_REPLAY_ALGORITHMS = frozenset(
-    {LEGACY_REPLAY_ALGORITHM_VERSION, V15_REPLAY_ALGORITHM_VERSION, REPLAY_ALGORITHM_VERSION}
+    {
+        LEGACY_REPLAY_ALGORITHM_VERSION,
+        V15_REPLAY_ALGORITHM_VERSION,
+        V16_REPLAY_ALGORITHM_VERSION,
+        REPLAY_ALGORITHM_VERSION,
+    }
 )
 
 
@@ -49,11 +55,11 @@ class RecommendationReplayMixin:
         if snapshot.fusion_version != replay_input.policy.fusion_version:
             raise ValueError("snapshot fusion version does not match its frozen replay policy")
 
-        if replay_input.algorithm_version == REPLAY_ALGORITHM_VERSION:
+        if replay_input.algorithm_version in {V16_REPLAY_ALGORITHM_VERSION, REPLAY_ALGORITHM_VERSION}:
             recorded_codes = replay_input.requested_codes
             candidate_codes = tuple(feature.quote.code for feature in replay_input.candidate_features)
             if candidate_codes != recorded_codes:
-                raise ValueError("v16 frozen candidate features do not reproduce the targeted candidate pool")
+                raise ValueError("board-scored frozen candidate features do not reproduce the targeted candidate pool")
             return cast(
                 RecommendationSnapshot,
                 replay_engine.finalize_snapshot(
@@ -68,6 +74,7 @@ class RecommendationReplayMixin:
                         filter_details=snapshot.filter_details,
                     ),
                     replay_input.reviews,
+                    legacy_v16=replay_input.algorithm_version == V16_REPLAY_ALGORITHM_VERSION,
                 ),
             )
 

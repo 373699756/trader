@@ -21,6 +21,21 @@
     pending_merge: "等待评分合并",
   };
 
+  const SETUP_LABELS = {
+    shrink_pullback: "缩量回踩",
+    volume_breakout: "放量突破",
+    trend_unconfirmed: "趋势成立，入场待确认",
+    none: "形态未成立",
+  };
+
+  const DOWNSIDE_REASON_LABELS = {
+    downside_inputs_missing: "下行保护输入不完整",
+    intraday_reversal_atr: "日内回撤超过 1 ATR",
+    trend_breakdown: "趋势结构破位",
+    low_stability_tail: "波动与历史回撤均处尾部",
+    risk_off_weak_close: "弱市且尾盘/收盘偏弱",
+  };
+
   const RISK_LABELS = {
     near_limit_crowding: "接近涨跌幅限制",
     price_volume_divergence: "价格与量能背离",
@@ -174,11 +189,14 @@
     const scores = item.scores || {};
     const historical = snapshot.historical === true;
     const action = String(item.action || "unavailable");
+    const downside = item.downside || null;
     const conclusion = [
       detailGrid([
         ["推荐动作", ACTION_LABELS[action] || action],
         ["最终评分", valueNumber(scores.final_score, 2)],
         ["当前排名", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 名` : null],
+        ["入场形态", SETUP_LABELS[item.setup_type] || item.setup_type],
+        ["下行保护", downside ? (downside.status === "pass" ? "通过" : "转观察") : null],
       ]),
       `<div class="detail-reason"><span>推荐原因</span><strong>${escapeHtml(actionReason(item.action_reason))}</strong></div>`,
     ].join("");
@@ -222,6 +240,19 @@
     if (Array.isArray(item.risks) && item.risks.length > 0) {
       scoreParts.push('<h4 class="detail-subtitle">实际风险</h4>', riskList(item.risks));
     }
+    if (downside) {
+      scoreParts.push(
+        '<h4 class="detail-subtitle">下行保护</h4>',
+        detailGrid([
+          ["ATR20", valuePercent(downside.atr20_pct)],
+          ["日内回撤 / ATR", hasValue(downside.intraday_reversal_atr) ? `${number(downside.intraday_reversal_atr, 2)} 倍` : null],
+          ["历史最大回撤", valuePercent(downside.historical_drawdown_pct)],
+        ]),
+      );
+      if (Array.isArray(downside.reasons) && downside.reasons.length > 0) {
+        scoreParts.push(note(downside.reasons.map((reason) => DOWNSIDE_REASON_LABELS[reason] || reason).join("、"), "warn"));
+      }
+    }
 
     return [
       section("推荐结论", conclusion),
@@ -258,6 +289,7 @@
     const reason = String(value || "");
     if (ACTION_REASON_LABELS[reason]) return ACTION_REASON_LABELS[reason];
     if (reason.startsWith("market_data_observe_only:")) return "行情或交易规则受限，仅供观察";
+    if (reason.startsWith("downside_guard:")) return "触发下行保护，仅进入观察池";
     return reason || "暂无补充说明";
   }
 

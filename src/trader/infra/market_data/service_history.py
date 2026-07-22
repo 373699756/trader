@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from trader.application.cache import build_cache_identity, request_fingerprint
 from trader.application.ports import MarketDataDeadlineExceeded
 from trader.application.workers import BoundedExecutor, borrow_executor, submit_or_run_inline
+from trader.domain.outcomes import OutcomeBar
 from trader.infra.market_data.history import DailyBar, HistoryProfile, summarize_history_metrics
 from trader.infra.market_data.history_seed import DailyHistoryClient
 from trader.infra.market_data.service_execution import MarketTaskRunner
@@ -425,6 +426,28 @@ class HistoryStore:
         if not callable(available_codes):
             return ()
         return tuple(available_codes(codes))
+
+    def read_outcome_bars(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+    ) -> Mapping[str, tuple[OutcomeBar, ...]]:
+        del observed_at
+        histories = self.load(codes, force=True)
+        return {
+            code: tuple(
+                OutcomeBar(
+                    trade_date=bar.trade_date,
+                    open_price=bar.open_price,
+                    high=bar.high,
+                    low=bar.low,
+                    close=bar.close,
+                    pct_change=bar.pct_change,
+                )
+                for bar in bars
+            )
+            for code, bars in histories.items()
+        }
 
 
 def _history_source_time(bars: Sequence[DailyBar]) -> datetime:

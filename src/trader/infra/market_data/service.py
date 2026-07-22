@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from trader.domain.models import FeatureSnapshot, LiveQuote
+from trader.domain.outcomes import OutcomeBar
 from trader.infra.market_data.service_candidates import QuoteStore
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_health import MarketDataHealth
@@ -272,6 +273,13 @@ class MarketFeatureService:
     def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]:
         normalized = _normalize_codes(codes)
         return self.quotes.current_quotes(normalized)
+
+    def read_outcome_bars(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+    ) -> Mapping[str, tuple[OutcomeBar, ...]]:
+        return self.history.read_outcome_bars(_normalize_codes(codes), observed_at)
 
     def health(self) -> Mapping[str, object]:
         return self.health_reporter.health()

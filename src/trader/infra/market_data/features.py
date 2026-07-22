@@ -8,7 +8,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
+from trader.domain.downside import derive_entry_setup_values
 from trader.domain.factors import clamp, percentile_scores_with_metadata
 from trader.domain.models import CrossSectionStats, FeatureSnapshot, MarketQuote
 from trader.domain.news import NewsSignalPolicy, derive_news_signals
@@ -47,6 +49,8 @@ from trader.infra.market_data.history import (
     summarize_history_metrics,
 )
 
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
 
 @dataclass(frozen=True)
 class FeatureSchema:
@@ -76,7 +80,7 @@ class StandardizedFeatureBuilder(Protocol):
 # Feature columns produced by FeatureBuilder._raw_features().
 # All are optional float; missing is left as None and later resolved per
 # the factor registry in config/v2/strategy.json.
-FEATURE_SCHEMA_VERSION = "feature_schema_v2_board_scoring"
+FEATURE_SCHEMA_VERSION = "feature_schema_v3_downside_entry"
 
 RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("amount_median_20d", "float", description="20日成交额中位数"),
@@ -88,6 +92,14 @@ RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("return_60d", "float", description="60日收益率"),
     FeatureSchema("volatility_20d", "float", description="20日波动率"),
     FeatureSchema("max_drawdown_20d", "float", description="20日最大回撤"),
+    FeatureSchema("atr20_pct", "float", description="20日平均真实波幅百分比"),
+    FeatureSchema("ma5", "float", description="5日均线"),
+    FeatureSchema("ma10", "float", description="10日均线"),
+    FeatureSchema("ma20", "float", description="20日均线"),
+    FeatureSchema("ma20_slope_pct", "float", description="MA20五日斜率"),
+    FeatureSchema("volume_to_5d_average", "float", description="当日量与5日均量比"),
+    FeatureSchema("prior_high_20d", "float", description="前20日最高价"),
+    FeatureSchema("breakout_deviation_pct", "float", description="相对前20日高点偏离"),
     FeatureSchema("price_volume_confirmation", "float", description="量价确认"),
     FeatureSchema("moderate_daily_return", "float", description="当日涨幅适中"),
     FeatureSchema("ma20_60_position", "float", description="MA20/60位置"),
@@ -148,6 +160,7 @@ DERIVED_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("tail_return_30m", "float", description="尾盘30分钟收益分"),
     FeatureSchema("tail_volume_ratio_raw", "float", description="尾盘原始量比"),
     FeatureSchema("tail_volume_ratio", "float", description="尾盘量比分"),
+    FeatureSchema("entry_quality", "float", description="确定性入场质量"),
 )
 
 FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (*RAW_FEATURE_SCHEMA, *DERIVED_FEATURE_SCHEMA)
@@ -318,6 +331,7 @@ class FeatureBuilder:
                     "evidence_freshness": news_signals.freshness_score,
                 }
             )
+            values["entry_quality"] = derive_entry_setup_values(quote, values).score
             if tail_signal is not None:
                 values.update(
                     {
@@ -396,9 +410,13 @@ class FeatureBuilder:
         history_summary: HistoryProfile | None = None,
     ) -> dict[str, float | None]:
         history = history_summary or summarize_history_metrics(bars)
+        observation_date = quote.source_time.astimezone(_SHANGHAI).date().isoformat()
+        completed_bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
+        setup_history = summarize_history_metrics(completed_bars) if len(completed_bars) != len(bars) else history
         returns = {days: return_pct(bars, days, quote.price) for days in (3, 5, 10, 20, 60)}
-        ma5 = history.moving_average_5d
-        ma20 = history.moving_average_20d
+        ma5 = setup_history.moving_average_5d
+        ma10 = setup_history.moving_average_10d
+        ma20 = setup_history.moving_average_20d
         ma60 = history.moving_average_60d
         volatility = history.volatility_20d
         drawdown = history.max_drawdown_20d
@@ -434,6 +452,12 @@ class FeatureBuilder:
             if quote.price is not None and math.isfinite(quote.price) and ma20 is not None and ma20 > 0.0
             else None
         )
+        prior_high = setup_history.high_20d
+        breakout_deviation = (
+            (quote.price / prior_high - 1.0) * 100.0
+            if quote.price is not None and quote.price > 0.0 and prior_high is not None and prior_high > 0.0
+            else None
+        )
         return {
             "amount_median_20d": amount_median,
             "turnover_median_20d": history.median_turnover_20d,
@@ -444,6 +468,14 @@ class FeatureBuilder:
             "return_60d": returns[60],
             "volatility_20d": volatility,
             "max_drawdown_20d": drawdown,
+            "atr20_pct": setup_history.atr20_pct,
+            "ma5": ma5,
+            "ma10": ma10,
+            "ma20": ma20,
+            "ma20_slope_pct": setup_history.ma20_slope_pct,
+            "volume_to_5d_average": quote.volume_ratio,
+            "prior_high_20d": prior_high,
+            "breakout_deviation_pct": breakout_deviation,
             "price_volume_confirmation": _price_volume_confirmation(returns[5], quote.amount, amount_median),
             "moderate_daily_return": _optional_band_score(quote.pct_change, -2.0, 0.5, 5.0, 8.0),
             "ma20_60_position": ma_position,
@@ -483,6 +515,7 @@ class FeatureBuilder:
             "intraday_reversal": None,
             "liquidity_contraction": None,
             "trend_breakdown": None,
+            "entry_quality": None,
         }
 
 

@@ -115,6 +115,15 @@ def application_feature_factory():
             "low_crowding_score": 70.0,
             "volatility_20d": 2.0,
             "max_drawdown_20d": -8.0,
+            "atr20_pct": 2.0,
+            "ma5": 11.9,
+            "ma10": 11.8,
+            "ma20": 11.6,
+            "ma20_slope_pct": 1.0,
+            "volume_to_5d_average": 1.0,
+            "prior_high_20d": 12.8,
+            "breakout_deviation_pct": -6.25,
+            "entry_quality": 70.0,
             "price_volume_confirmation": 70.0,
             "moderate_daily_return": 75.0,
             "ma20_60_position": 75.0,
@@ -149,6 +158,9 @@ def application_feature_factory():
             "unlock_risk": 0.0,
             "pledge_risk": 0.0,
             "negative_announcement_level": 0.0,
+            "trend_breakdown": 0.0,
+            "short_term_overheat": 0.0,
+            "intraday_reversal": 0.0,
         }
         return FeatureSnapshot(quote=quote, values=values, observed_at=observed_at, history_days=60)
 

@@ -85,8 +85,11 @@ def action_for(
     if threshold is None:
         return RecommendationAction.UNAVAILABLE, "outside_execution_window"
     if recommendation.score.final_score >= threshold:
+        if recommendation.downside is not None and recommendation.downside.status == "observe":
+            reasons = ",".join(recommendation.downside.reasons) or "unspecified"
+            return RecommendationAction.OBSERVE, f"downside_guard:{reasons}"
         return RecommendationAction.EXECUTABLE, "score_threshold_met"
-    elif recommendation.score.final_score >= threshold - observation_margin:
+    if recommendation.score.final_score >= threshold - observation_margin:
         return RecommendationAction.OBSERVE, "near_score_threshold"
     return RecommendationAction.UNAVAILABLE, "below_score_threshold"
 

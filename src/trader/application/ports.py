@@ -15,6 +15,7 @@ from trader.domain.models import (
     ReviewCandidateContext,
     Strategy,
 )
+from trader.domain.outcomes import BenchmarkReturn, OutcomeBar, OutcomeTarget, RecommendationOutcome
 
 
 class MarketDataUnavailable(RuntimeError):
@@ -125,9 +126,43 @@ class MarketDataPort(Protocol):
 
     def snapshot_metadata(self, codes: Sequence[str] | None = None) -> Mapping[str, object]: ...
 
+    def read_outcome_bars(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+    ) -> Mapping[str, tuple[OutcomeBar, ...]]: ...
+
 
 class TradingCalendarPort(Protocol):
     def is_trading_day(self, day: date) -> bool: ...
+
+    def session_distance(self, start: str, end: str) -> int | None: ...
+
+
+class OutcomeRepositoryPort(Protocol):
+    def pending_outcome_targets(self, *, limit: int) -> Sequence[OutcomeTarget]: ...
+
+    def record_benchmark_return(self, benchmark: BenchmarkReturn, *, observed_at: datetime) -> None: ...
+
+    def benchmark_returns_after(self, recommend_date: str, *, limit: int) -> Sequence[BenchmarkReturn]: ...
+
+    def save_recommendation_outcomes(self, outcomes: Sequence[RecommendationOutcome]) -> None: ...
+
+
+class OutcomeSettlementPort(Protocol):
+    def settle(
+        self,
+        now: datetime,
+        market_features: Sequence[FeatureSnapshot],
+    ) -> OutcomeSettlementResult: ...
+
+
+class OutcomeSettlementResult(Protocol):
+    @property
+    def completed_count(self) -> int: ...
+
+    @property
+    def benchmark_recorded(self) -> bool: ...
 
 
 class CurrentQuoteReaderPort(Protocol):
@@ -217,6 +252,9 @@ __all__ = [
     "MarketDataNoData",
     "MarketDataPort",
     "MarketDataUnavailable",
+    "OutcomeRepositoryPort",
+    "OutcomeSettlementPort",
+    "OutcomeSettlementResult",
     "SnapshotRepositoryPort",
     "TradingCalendarPort",
 ]
