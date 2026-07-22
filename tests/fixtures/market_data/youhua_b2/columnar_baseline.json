@@ -1,30 +1,30 @@
 {
-  "base_commit": "646509619bd491b9333f3361bfe6cda8bbf9ee96",
+  "base_commit": "03c710ee854dbead3446c0f0400ed7fe154e87b6",
   "contract_base": "45bd2fab992d36eb873b7c448fbd9739f0cad43c",
   "fixture_sha256": "2d8c93f18c8e83f2f8f8eb628d4c4d04bef9eb95bb58db18c6d05f0165a36801",
   "latency_ms": {
-    "avg": 958.151,
-    "max": 992.827,
-    "min": 935.205
+    "avg": 946.024,
+    "max": 1001.939,
+    "min": 927.909
   },
   "memory": {
     "polars_estimated_bytes_last": 640688,
     "polars_estimated_bytes_max": 642128,
-    "process_peak_rss_bytes": 203464704,
-    "process_rss_bytes_end": 202702848,
-    "process_rss_bytes_start": 159318016,
-    "process_uss_bytes_end": 200548352,
-    "process_uss_bytes_start": 137281536,
-    "python_traced_bytes_end": 650215,
-    "python_traced_bytes_peak": 48148175
+    "process_peak_rss_bytes": 204193792,
+    "process_rss_bytes_end": 200802304,
+    "process_rss_bytes_start": 160223232,
+    "process_uss_bytes_end": 198668288,
+    "process_uss_bytes_start": 157913088,
+    "python_traced_bytes_end": 676369,
+    "python_traced_bytes_peak": 48149973
   },
-  "payload_sha256": "ee6426efa815c0dcfdfe1b0d08db0cab1104b0aae0745dd832d3d140cc4617ef",
+  "payload_sha256": "43353d4b430dd192b64f72729615a6b7eb0e7f991331a61b52ed6a8d7c35e4dc",
   "performance_runner": {
     "canonical_snapshot": {
       "budget_p95_ms": 1500.0,
-      "max_ms": 775.201,
-      "p50_ms": 756.667,
-      "p95_ms": 775.201,
+      "max_ms": 761.546,
+      "p50_ms": 727.66,
+      "p95_ms": 761.546,
       "passed": true,
       "samples": 5
     },
@@ -32,17 +32,17 @@
     "logical_cache_estimated_bytes": 28378512,
     "market_merge": {
       "budget_p95_ms": 1000.0,
-      "max_ms": 524.625,
-      "p50_ms": 518.781,
-      "p95_ms": 524.625,
+      "max_ms": 518.677,
+      "p50_ms": 502.876,
+      "p95_ms": 518.677,
       "passed": true,
       "samples": 5
     },
     "market_normalization": {
       "budget_p95_ms": 800.0,
-      "max_ms": 95.909,
-      "p50_ms": 94.622,
-      "p95_ms": 95.909,
+      "max_ms": 92.301,
+      "p50_ms": 91.863,
+      "p95_ms": 92.301,
       "passed": true,
       "samples": 5
     },

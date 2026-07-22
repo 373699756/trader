@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户再次发送“继续”后，A 复核 B2 最新交接报告，确认 B2 已补齐
+  `ready_for_gate=yes`、A2 public envelope 适配、component/type-check/性能证据；A 因此发布
+  G2。`docs/reports/youhua-g2-gate-review.md` 新增 2026-07-23 再复核与 G2 发布记录，
+  明确 A2/B2/C2/D2 均已具备阶段 2 门禁证据，但本批不启动 A3。
+
 - 用户再次发送“继续”后，A 复核阶段 2 门禁新状态：C2 报告已补齐标准
   `ready_for_gate: yes` 字段，但 B2 仍为 `ready_for_gate=no`，因此仍不发布 G2、不进入 A3。
   `docs/reports/youhua-g2-gate-review.md` 增加 2026-07-23 复核记录，更新 C2 状态和当前唯一
@@ -197,6 +202,9 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- G2 状态从阻塞更新为已发布；A 只发布阶段 2 共同门禁，仍不合并 B/C/D 生产实现、不连接真实
+  实现、不修改生产默认，A3 等待下一次用户继续指令。
 
 - G2 阻塞原因从“B2 未就绪且 C2 缺标准字段”收敛为“B2 未就绪”。A 继续只登记报告状态，
   不合并 B/C/D 实现、不连接真实实现、不修改生产默认、不开始 A3。
@@ -635,6 +643,11 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- G2 发布批次验证：仅读取 B2/C2/D2 报告和 B2 fixture，确认 A2/B2/C2/D2 均为
+  `ready_for_gate=yes`；定向契约测试
+  `tests/contract/test_delivery_contract.py tests/contract/test_youhua_contract_base.py` 通过 8 项，
+  `git diff --check` 通过。
+
 - 2026-07-23 G2 复核批次验证：仅读取 B2/C2/D2 报告，确认 C2 标准字段已补齐、B2 仍为
   `ready_for_gate=no`；定向契约测试
   `tests/contract/test_delivery_contract.py tests/contract/test_youhua_contract_base.py` 通过 8 项，
@@ -872,16 +885,15 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- G2 仍被 B2 gate 阻断；C2 标准字段问题已解除。当前工作树仍有 B/C/D 未暂存实现改动，本批
-  只归档门禁复核判断，不解决其内部实现或全局质量失败。
+- G2 已发布但 A3 未开始；下一批才能按计划进入 A3 集成。当前工作树仍有 B/C/D 未暂存实现
+  改动，本批只归档门禁发布判断，不解决其内部实现或全局质量失败。
 
-- A2 公共骨架已可用，但 G2 未满足；B2 仍未 `ready_for_gate=yes`，生产默认仍不得接入真实
-  B/C/D 实现。当前工作树还存在其他未暂存生产改动和 B/C/D 测试文件，本批保留且不纳入
-  A 侧提交。
+- A2 公共骨架已可用且 G2 已发布，但生产默认仍不得接入真实 B/C/D 实现；需下一批 A3 按
+  B -> C -> D 顺序集成和复验。当前工作树还存在其他未暂存生产改动和 B/C/D 测试文件，本批
+  保留且不纳入 A 侧提交。
 
-- G1 已发布但 G2 未满足；阶段 2 只能按 A/B/C/D owner 范围分别施工。全局 `make lint`
-  的严格债务计数漂移和全局 `make test` 的 5 个既有失败仍未在本批修复，不能宣称完整质量
-  门禁绿色。
+- G2 已发布但 A3 尚未开始；阶段 3 必须继续按 A/B/C/D owner 范围集成。全局 `make lint`
+  的严格债务计数漂移和全局 `make test` 的既有失败仍未在本批修复，不能宣称完整质量门禁绿色。
 
 - A2 已实现公共类型、配置内存双字段和测试替身；完整 RSS/USS/Polars 原生估算、真实
   pipeline 100 tick 和 P6 发布峰值仍需阶段 2-4 集成门禁补齐。

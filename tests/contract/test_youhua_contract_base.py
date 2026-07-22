@@ -72,14 +72,16 @@ def test_youhua_a2_memory_config_uses_dual_budget_keys() -> None:
     assert "旧 `cache_total_bytes`" in a2
 
 
-def test_youhua_g2_is_not_published_until_all_phase2_reports_are_ready() -> None:
+def test_youhua_g2_is_published_after_all_phase2_reports_are_ready() -> None:
     g2 = (PROJECT_ROOT / "docs/reports/youhua-g2-gate-review.md").read_text(encoding="utf-8")
     c2 = (PROJECT_ROOT / "tests/fixtures/deepseek/youhua_c2/report_to_a.md").read_text(encoding="utf-8")
+    b2 = (PROJECT_ROOT / "tests/fixtures/market_data/youhua_b2/report_to_a.md").read_text(encoding="utf-8")
 
-    assert "G2 未发布" in g2
+    assert "G2 已发布" in g2
     assert "tests/fixtures/market_data/youhua_b2/report_to_a.md" in g2
     assert "tests/fixtures/deepseek/youhua_c2/report_to_a.md" in g2
-    assert "ready_for_gate` 为 `no`" in g2
+    assert "B2 标准字段 | 已补齐，`ready_for_gate=yes`" in g2
     assert "C2 标准字段 | 已补齐，`ready_for_gate: yes`" in g2
+    assert "ready_for_gate: `yes`" in b2
     assert "ready_for_gate: yes" in c2
-    assert "A 不进入 A3" in g2
+    assert "A3 has not started" in g2
