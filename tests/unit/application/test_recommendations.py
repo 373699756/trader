@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -107,6 +107,63 @@ def test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold(
     )
 
     assert snapshot.recommendations == ()
+
+
+def test_preselection_reports_history_warming_separately_from_hard_filter_reason(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    feature = application_feature_factory("600001", now)
+    feature = replace(
+        feature,
+        values={**feature.values, "amount_median_20d": None},
+        history_days=0,
+    )
+
+    candidates, reasons, _details = RecommendationEngine(recommendation_policy).preselect(
+        (feature,),
+        now=now,
+        max_age_seconds=20.0,
+        limit=120,
+        strategies=(Strategy.TODAY,),
+        trade_date="2026-07-16",
+        phase="today_main",
+    )
+
+    assert candidates == ()
+    assert reasons["missing_liquidity_history"] == 1
+    assert reasons["history_warming"] == 1
+
+
+def test_preselection_uses_receipt_freshness_before_targeted_quote_confirmation(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    feature = application_feature_factory("600001", now)
+    feature = replace(
+        feature,
+        quote=replace(
+            feature.quote,
+            source_time=now - timedelta(seconds=120),
+            received_time=now - timedelta(seconds=1),
+        ),
+    )
+
+    candidates, reasons, _details = RecommendationEngine(recommendation_policy).preselect(
+        (feature,),
+        now=now,
+        max_age_seconds=20.0,
+        limit=120,
+        strategies=(Strategy.TODAY,),
+        trade_date="2026-07-16",
+        phase="today_main",
+    )
+
+    assert [item.quote.code for item in candidates] == ["600001"]
+    assert candidates[0].quote.source_time == now - timedelta(seconds=120)
+    assert "stale_quote" not in reasons
 
 
 def test_market_data_execution_restriction_downgrades_action_without_changing_score(

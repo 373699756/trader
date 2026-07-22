@@ -44,6 +44,7 @@ class TushareClient:
         self,
         *,
         token: str,
+        points: int = 2000,
         timeout_seconds: float,
         circuit_breaker_failures: int = 3,
         circuit_breaker_seconds: float = 60.0,
@@ -55,6 +56,7 @@ class TushareClient:
         if timeout_seconds != 8.0:
             raise ValueError("Tushare transport timeout must be exactly 8 seconds")
         self._token = token.strip()
+        self._points = max(0, points)
         self._timeout_seconds = timeout_seconds
         self._failure_limit = max(1, circuit_breaker_failures)
         self._breaker_seconds = max(0.1, circuit_breaker_seconds)
@@ -77,6 +79,8 @@ class TushareClient:
         self._half_open_probe = False
 
     def fetch_security_master(self, observed_at: datetime) -> tuple[SourceObservation, ...]:
+        if not self.supports("security_master"):
+            return self._insufficient_points("security_master", observed_at)
         return self._fetch_records(
             "security_master",
             observed_at,
@@ -95,6 +99,8 @@ class TushareClient:
         end_date: date,
         observed_at: datetime,
     ) -> tuple[SourceObservation, ...]:
+        if not self.supports("trading_calendar"):
+            return self._insufficient_points("trading_calendar", observed_at)
         if end_date < start_date:
             raise ValueError("Tushare calendar end_date cannot precede start_date")
         ranges = _calendar_ranges(start_date, end_date)
@@ -124,6 +130,8 @@ class TushareClient:
         end_date: date,
         observed_at: datetime,
     ) -> tuple[SourceObservation, ...]:
+        if not self.supports("forward_adjusted_daily"):
+            return self._insufficient_points("forward_adjusted_daily", observed_at)
         return self._fetch_per_code(
             "forward_adjusted_daily",
             codes,
@@ -139,12 +147,44 @@ class TushareClient:
             ),
         )
 
+    def fetch_daily_history(
+        self,
+        codes: Sequence[str],
+        start_date: date,
+        end_date: date,
+        observed_at: datetime,
+    ) -> tuple[SourceObservation, ...]:
+        normalized = tuple(dict.fromkeys(code for code in codes if len(code) == 6 and code.isdigit()))
+        if not normalized:
+            return ()
+        return self._fetch_records(
+            "daily_history",
+            observed_at,
+            "daily",
+            {
+                "ts_code": ",".join(_ts_code(code) for code in normalized),
+                "start_date": start_date.strftime("%Y%m%d"),
+                "end_date": end_date.strftime("%Y%m%d"),
+                "fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
+            },
+            lambda row, observed, received, version: _generic_observation(
+                "daily_history",
+                row,
+                observed,
+                received,
+                version,
+            ),
+            empty_is_error=True,
+        )
+
     def fetch_daily_valuations(
         self,
         codes: Sequence[str],
         trade_date: date,
         observed_at: datetime,
     ) -> tuple[SourceObservation, ...]:
+        if not self.supports("daily_valuation"):
+            return self._insufficient_points("daily_valuation", observed_at)
         return self._fetch_per_code(
             "daily_valuation",
             codes,
@@ -163,6 +203,8 @@ class TushareClient:
         codes: Sequence[str],
         observed_at: datetime,
     ) -> tuple[SourceObservation, ...]:
+        if not self.supports("financial_indicators"):
+            return self._insufficient_points("financial_indicators", observed_at)
         return self._fetch_per_code(
             "financial_indicators",
             codes,
@@ -175,11 +217,28 @@ class TushareClient:
             ),
         )
 
+    def supports(self, dataset: str) -> bool:
+        minimum_points = {
+            "daily_history": 120,
+            "security_master": 2000,
+            "trading_calendar": 2000,
+            "forward_adjusted_daily": 2000,
+            "daily_valuation": 2000,
+            "financial_indicators": 2000,
+        }
+        required = minimum_points.get(dataset)
+        return required is not None and self._points >= required
+
+    def history_mode(self) -> str:
+        return "forward_adjusted" if self.supports("forward_adjusted_daily") else "unadjusted_daily"
+
     def health(self) -> Mapping[str, object]:
         measured_at = self._wall_clock()
         with self._lock:
             return {
                 "enabled": bool(self._token),
+                "access_points": self._points,
+                "history_mode": self.history_mode(),
                 "planned_count": self._planned_count,
                 "success_count": self._success_count,
                 "error_count": self._error_count,
@@ -203,6 +262,8 @@ class TushareClient:
         method: str,
         arguments: Mapping[str, object],
         converter: Callable[[Mapping[str, object], datetime, datetime, str], SourceObservation | None],
+        *,
+        empty_is_error: bool = False,
     ) -> tuple[SourceObservation, ...]:
         _require_aware(observed_at)
         started = self._begin()
@@ -235,9 +296,13 @@ class TushareClient:
             error_code = _error_code(exc)
             self._record_error(started, error_code)
             return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), error_code),)
-        self._record_success(started, received_at)
         if observations:
+            self._record_success(started, received_at)
             return observations
+        if empty_is_error:
+            self._record_error(started, "no_data")
+        else:
+            self._record_success(started, received_at)
         return (
             SourceObservation(
                 source="tushare",
@@ -252,6 +317,17 @@ class TushareClient:
                 payload_hash=hashlib.sha256(canonical_json_bytes([])).hexdigest(),
                 status="no_data",
                 error_code="no_data",
+            ),
+        )
+
+    def _insufficient_points(self, dataset: str, observed_at: datetime) -> tuple[SourceObservation, ...]:
+        _require_aware(observed_at)
+        return (
+            _failed_observation(
+                dataset,
+                observed_at,
+                max(observed_at, self._wall_clock()),
+                "insufficient_points",
             ),
         )
 
@@ -278,10 +354,25 @@ class TushareClient:
         try:
             client = self._client_instance()
             rows: list[Mapping[str, object]] = []
+            failures: list[SourceObservation] = []
+            failure_codes: list[str] = []
             for code in normalized:
                 if self._cancel_requested():
                     raise _SourceStopped
-                rows.extend(_records(fetcher(client, code)))
+                try:
+                    rows.extend(_records(fetcher(client, code)))
+                except Exception as exc:
+                    error_code = _error_code(exc)
+                    failure_codes.append(error_code)
+                    failures.append(
+                        _failed_observation(
+                            dataset,
+                            observed_at,
+                            max(observed_at, self._wall_clock()),
+                            error_code,
+                            subject_key=code,
+                        )
+                    )
             if self._cancel_requested():
                 raise _SourceStopped
             received_at = max(observed_at, self._wall_clock())
@@ -294,8 +385,14 @@ class TushareClient:
             error_code = _error_code(exc)
             self._record_error(started, error_code)
             return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), error_code),)
-        self._record_success(started, received_at)
-        return observations
+        if failure_codes and not observations:
+            self._record_error(started, failure_codes[0])
+            return tuple(failures)
+        if failure_codes:
+            self._record_partial_success(started, received_at, failure_codes)
+        else:
+            self._record_success(started, received_at)
+        return (*observations, *failures)
 
     def _client_instance(self) -> object:
         with self._lock:
@@ -336,6 +433,25 @@ class TushareClient:
             if self._consecutive_failures >= self._failure_limit:
                 self._open_until = self._monotonic() + self._breaker_seconds
             if error_code == "timeout":
+                self._timeout_count += 1
+
+    def _record_partial_success(
+        self,
+        started: float,
+        source_time: datetime,
+        error_codes: Sequence[str],
+    ) -> None:
+        with self._lock:
+            self._success_count += 1
+            self._error_count += 1
+            self._consecutive_failures = 0
+            self._open_until = 0.0
+            self._half_open_probe = False
+            self._last_latency_ms = (self._monotonic() - started) * 1000.0
+            self._latencies_ms.append(self._last_latency_ms)
+            self._degraded_reason = "partial_batch"
+            self._last_source_time = source_time
+            if "timeout" in error_codes:
                 self._timeout_count += 1
 
     def _record_stopped(self, started: float) -> None:

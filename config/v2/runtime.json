@@ -1,6 +1,6 @@
 {
   "schema_version": 5,
-  "config_version": "runtime_v16_board_scoring_2026_07_22",
+  "config_version": "runtime_v17_tushare_120_live_history_2026_07_22",
   "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -91,13 +91,14 @@
       "eastmoney": "eastmoney_quote_v15",
       "sina": "sina_quote_v15",
       "tencent": "tencent_quote_v15",
-      "tushare": "tushare_sdk_v15",
+      "tushare": "tushare_sdk_v17_120_point_daily",
       "akshare": "akshare_research_v15"
     },
     "tushare": {
       "enabled": true,
+      "points": 120,
       "timeout_seconds": 8,
-      "token_file": ".runtime/secrets/tushare.token"
+      "token_file": ".token_key"
     },
     "cache_policy": {
       "policy_version": "market_cache_v16",

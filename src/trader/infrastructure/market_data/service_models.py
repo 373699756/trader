@@ -13,6 +13,7 @@ from trader.infrastructure.market_data.history import DailyBar
 class _HistoryEntry:
     bars: tuple[DailyBar, ...]
     expires_at: float
+    source: str = "eastmoney"
 
 
 @dataclass(frozen=True)

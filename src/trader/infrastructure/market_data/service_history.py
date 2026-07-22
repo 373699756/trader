@@ -161,6 +161,7 @@ class MarketHistoryMixin(MarketServiceState):
                     + (
                         min(60.0, self._history_ttl_seconds) if used_fallback or not bars else self._history_ttl_seconds
                     ),
+                    source=old_entry.source if used_fallback and old_entry is not None else "eastmoney",
                 )
             self._ensure_before_deadline(deadline)
             with self._lock:
@@ -180,8 +181,14 @@ class MarketHistoryMixin(MarketServiceState):
                 self._trim_history_fallback_locked(set(codes))
         if cache is not None:
             assert cache_observed_at is not None
+            with self._lock:
+                history_sources = {
+                    code: entry.source for code in result if (entry := self._history.get(code)) is not None
+                }
             for code, bars in result.items():
                 if not bars:
+                    continue
+                if history_sources.get(code) == "tushare":
                     continue
                 cache_identity = self._data_cache_identity(
                     "daily_history",
@@ -223,18 +230,22 @@ class MarketHistoryMixin(MarketServiceState):
                 ):
                     result[code] = cast(tuple[DailyBar, ...], lookup.value)
         with self._lock:
+            history_sources: dict[str, str] = {}
             for code in requested:
                 entry = self._history.get(code)
                 if entry is None:
                     continue
                 if entry.expires_at <= now:
                     continue
+                history_sources[code] = entry.source
                 cached = result.get(code)
                 if cached is None or _history_version(entry.bars) > _history_version(cached):
                     result[code] = entry.bars
         if cache is not None:
             for code, bars in result.items():
                 if not bars:
+                    continue
+                if history_sources.get(code) == "tushare":
                     continue
                 identity = self._data_cache_identity(
                     "daily_history",

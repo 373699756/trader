@@ -37,22 +37,51 @@ def _source_batch_identity(
 
 
 def _history_preload_codes(quotes: Sequence[MarketQuote], limit: int) -> tuple[str, ...]:
-    groups: dict[str, list[MarketQuote]] = {}
+    board_groups: dict[str, dict[str, list[MarketQuote]]] = {}
     for quote in quotes:
         if quote.is_suspended or quote.price is None or not math.isfinite(quote.price) or quote.price <= 0:
             continue
-        groups.setdefault(quote.industry or "unknown", []).append(quote)
-    for group in groups.values():
-        group.sort(key=_history_priority)
-    representatives = sorted((group[0] for group in groups.values()), key=_history_priority)
-    selected = representatives[:limit]
-    selected_codes = {quote.code for quote in selected}
-    remaining = sorted(
-        (quote for group in groups.values() for quote in group if quote.code not in selected_codes),
-        key=_history_priority,
-    )
-    selected.extend(remaining[: max(0, limit - len(selected))])
-    return tuple(quote.code for quote in selected)
+        board_groups.setdefault(_history_board(quote.code), {}).setdefault(quote.industry or "unknown", []).append(
+            quote
+        )
+    board_rankings: dict[str, list[MarketQuote]] = {}
+    for board, groups in board_groups.items():
+        for group in groups.values():
+            group.sort(key=_history_priority)
+        representatives = sorted((group[0] for group in groups.values()), key=_history_priority)
+        represented = {quote.code for quote in representatives}
+        remaining = sorted(
+            (quote for group in groups.values() for quote in group if quote.code not in represented),
+            key=_history_priority,
+        )
+        board_rankings[board] = [*representatives, *remaining]
+
+    selected: list[str] = []
+    board_order = ("main", "chinext", "star", "unsupported")
+    index = 0
+    while len(selected) < limit:
+        added = False
+        for board in board_order:
+            ranking = board_rankings.get(board, ())
+            if index < len(ranking):
+                selected.append(ranking[index].code)
+                added = True
+                if len(selected) == limit:
+                    break
+        if not added:
+            break
+        index += 1
+    return tuple(selected)
+
+
+def _history_board(code: str) -> str:
+    if code.startswith(("000", "001", "002", "003", "600", "601", "603", "605")):
+        return "main"
+    if code.startswith(("300", "301")):
+        return "chinext"
+    if code.startswith(("688", "689")):
+        return "star"
+    return "unsupported"
 
 
 def _normalize_codes(codes: Sequence[str]) -> tuple[str, ...]:

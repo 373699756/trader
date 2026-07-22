@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import math
 import os
-import stat
 from collections.abc import Mapping
 from pathlib import Path
 
+from trader.infrastructure.settings_credentials import CREDENTIAL_FILE_NAME, read_credential_file
 from trader.infrastructure.settings_market_policy import (
     parse_cache_policy as _parse_cache_policy,
 )
@@ -249,7 +249,7 @@ def _load_deepseek_api_key(project_root: Path) -> str:
     if environment_key:
         return environment_key
     configured_path = os.environ.get("DEEPSEEK_API_KEY_FILE", "").strip()
-    key_path = Path(configured_path).expanduser() if configured_path else project_root / ".deepseek_key"
+    key_path = Path(configured_path).expanduser() if configured_path else project_root / CREDENTIAL_FILE_NAME
     if not key_path.is_absolute():
         key_path = project_root / key_path
     key_path = key_path.resolve()
@@ -257,34 +257,10 @@ def _load_deepseek_api_key(project_root: Path) -> str:
         if configured_path:
             raise ConfigurationError("DEEPSEEK_API_KEY_FILE does not exist")
         return ""
-    try:
-        metadata = key_path.stat()
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ConfigurationError("DeepSeek API key file must be a regular file")
-        if os.name == "posix" and stat.S_IMODE(metadata.st_mode) & 0o077:
-            raise ConfigurationError("DeepSeek API key file must not be accessible by group or other users")
-        if metadata.st_size > 4096:
-            raise ConfigurationError("DeepSeek API key file is too large")
-        content = key_path.read_text(encoding="utf-8")
-    except ConfigurationError:
-        raise
-    except (OSError, UnicodeError) as exc:
-        raise ConfigurationError("DeepSeek API key file cannot be read") from exc
-    lines = [line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")]
-    if len(lines) != 1:
-        raise ConfigurationError("DeepSeek API key file must contain exactly one key")
-    value = lines[0]
-    if value.startswith("export "):
-        value = value.removeprefix("export ").strip()
-    if value.startswith("DEEPSEEK_API_KEY="):
-        value = value.removeprefix("DEEPSEEK_API_KEY=").strip()
-    elif "=" in value:
-        raise ConfigurationError("DeepSeek API key file contains an unsupported assignment")
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        value = value[1:-1]
-    value = value.strip()
-    if not value or "\x00" in value:
-        raise ConfigurationError("DeepSeek API key file contains an empty or invalid key")
+    values = read_credential_file(key_path, label="DeepSeek API key", raw_key="DEEPSEEK_API_KEY")
+    value = values.get("DEEPSEEK_API_KEY", "")
+    if configured_path and not value:
+        raise ConfigurationError("DEEPSEEK_API_KEY_FILE does not contain DEEPSEEK_API_KEY")
     return value
 
 
@@ -304,27 +280,15 @@ def _load_tushare_token(project_root: Path, configured_file: str) -> tuple[str, 
         if environment_path:
             raise ConfigurationError("TUSHARE_TOKEN_FILE does not exist")
         return "", token_path
-    try:
-        metadata = token_path.stat()
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ConfigurationError("Tushare token file must be a regular file")
-        if os.name == "posix" and stat.S_IMODE(metadata.st_mode) & 0o077:
-            raise ConfigurationError("Tushare token file must not be accessible by group or other users")
-        if metadata.st_size > 4096:
-            raise ConfigurationError("Tushare token file is too large")
-        content = token_path.read_text(encoding="utf-8")
-    except ConfigurationError:
-        raise
-    except (OSError, UnicodeError) as exc:
-        raise ConfigurationError("Tushare token file cannot be read") from exc
-    lines = content.splitlines()
-    if len(lines) != 1 or not lines[0].strip() or "\x00" in lines[0]:
-        raise ConfigurationError("Tushare token file must contain exactly one token")
-    return lines[0].strip(), token_path
+    values = read_credential_file(token_path, label="Tushare token", raw_key="TUSHARE_TOKEN")
+    value = values.get("TUSHARE_TOKEN", "")
+    if not value:
+        raise ConfigurationError("Tushare token file does not contain TUSHARE_TOKEN")
+    return value, token_path
 
 
 def _parse_tushare_settings(raw: Mapping[str, object], project_root: Path) -> TushareSettings:
-    _require_exact_keys(raw, {"enabled", "timeout_seconds", "token_file"}, "market_data.tushare")
+    _require_exact_keys(raw, {"enabled", "points", "timeout_seconds", "token_file"}, "market_data.tushare")
     timeout = _number(raw, "timeout_seconds", minimum=0.1, maximum=8.0)
     if timeout != 8.0:
         raise ConfigurationError("market_data.tushare.timeout_seconds must be fixed at 8")
@@ -332,6 +296,7 @@ def _parse_tushare_settings(raw: Mapping[str, object], project_root: Path) -> Tu
     token, resolved_token_file = _load_tushare_token(project_root, token_file)
     return TushareSettings(
         enabled=_boolean(raw, "enabled"),
+        points=_integer(raw, "points", minimum=120),
         timeout_seconds=timeout,
         token_file=resolved_token_file,
         token=token,

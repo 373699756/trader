@@ -29,7 +29,8 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.pipeline.market_workers == 5
     assert runtime.market_data.tushare.timeout_seconds == 8
-    assert runtime.market_data.tushare.token_file == PROJECT_ROOT / ".runtime" / "secrets" / "tushare.token"
+    assert runtime.market_data.tushare.points == 120
+    assert runtime.market_data.tushare.token_file == PROJECT_ROOT / ".token_key"
     assert set(runtime.market_data.cache_policy.datasets) == {
         "full_market_quotes",
         "candidate_quotes",
@@ -132,6 +133,24 @@ def test_runtime_settings_loads_deepseek_key_from_protected_file(tmp_path, monke
     runtime = load_runtime_settings(RUNTIME_CONFIG)
 
     assert runtime.deepseek.api_key == "secret-from-file"
+
+
+def test_runtime_settings_loads_both_credentials_from_one_protected_assignment_file(tmp_path, monkeypatch) -> None:
+    credential_file = tmp_path / ".token_key"
+    credential_file.write_text(
+        "DEEPSEEK_API_KEY=deepseek-from-file\nTUSHARE_TOKEN=tushare-from-file\n",
+        encoding="utf-8",
+    )
+    credential_file.chmod(0o600)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(credential_file))
+    monkeypatch.setenv("TUSHARE_TOKEN_FILE", str(credential_file))
+
+    runtime = load_runtime_settings(RUNTIME_CONFIG)
+
+    assert runtime.deepseek.api_key == "deepseek-from-file"
+    assert runtime.market_data.tushare.token == "tushare-from-file"
 
 
 def test_runtime_settings_prefers_deepseek_environment_key(tmp_path, monkeypatch) -> None:

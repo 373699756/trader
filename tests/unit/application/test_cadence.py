@@ -66,6 +66,17 @@ def test_periodic_tasks_skip_missed_cycles_instead_of_bursting_catchup_work() ->
     assert counts[PipelineTask.TOPK_QUOTES] == 1
 
 
+def test_first_tick_after_warmup_still_initializes_reference_data_once() -> None:
+    planner = CadencePlanner(_policy())
+    late_start = datetime(2026, 7, 16, 9, 45, tzinfo=SHANGHAI)
+
+    first = planner.plan(late_start, is_trading_day=True)
+    second = planner.plan(late_start + timedelta(seconds=1), is_trading_day=True)
+
+    assert [task.task for task in first.tasks].count(PipelineTask.REFERENCE_DATA) == 1
+    assert PipelineTask.REFERENCE_DATA not in {task.task for task in second.tasks}
+
+
 def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
     raw = json.loads((Path(__file__).parents[3] / "config" / "v2" / "runtime.json").read_text(encoding="utf-8"))
     planner = CadencePlanner(CadencePolicy.from_seconds(raw["pipeline"]["cadence_seconds"]))

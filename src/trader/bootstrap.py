@@ -33,6 +33,7 @@ from trader.infrastructure.market_data.calendar import ChinaTradingCalendar
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
+from trader.infrastructure.market_data.history_seed import LocalHistorySeedClient
 from trader.infrastructure.market_data.service import MarketFeatureService
 from trader.infrastructure.market_data.sina import SinaClient
 from trader.infrastructure.market_data.tencent import TencentClient
@@ -109,13 +110,14 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
         wall_clock=now,
     )
-    history = EastmoneyClient(
+    remote_history = EastmoneyClient(
         timeout_seconds=settings.market_data.history_timeout_seconds,
         workers=settings.pipeline.market_workers,
         worker_pool=data_pool,
         cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
         wall_clock=now,
     )
+    history = LocalHistorySeedClient(settings.runtime_dir.parent / "market_data.sqlite3", remote_history)
     intraday = EastmoneyClient(
         timeout_seconds=settings.market_data.candidate_timeout_seconds,
         workers=settings.pipeline.market_workers,
@@ -166,6 +168,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         intraday_client=intraday,
         tushare_client=TushareClient(
             token=settings.market_data.tushare.token if settings.market_data.tushare.enabled else "",
+            points=settings.market_data.tushare.points,
             timeout_seconds=settings.market_data.tushare.timeout_seconds,
             circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
             circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,

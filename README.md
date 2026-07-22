@@ -57,29 +57,33 @@ python3 -m venv .venv
 
 配置路径必须为绝对路径。`TRADER_CONFIG` 可代替 `--config`。DeepSeek 密钥优先从
 `DEEPSEEK_API_KEY` 读取，也可使用 `DEEPSEEK_API_KEY_FILE` 或项目根目录
-`.deepseek_key`；密钥不写入配置、快照或日志。
+`.token_key` 的 `DEEPSEEK_API_KEY` 字段；密钥不写入配置、快照或日志。
 
-## 可选 Tushare 慢数据
+## Tushare 慢数据
 
-Tushare 只补充证券主数据、交易日历、前复权日线、日度估值和财务指标，不承担
-高频实时报价。启用 SDK extra：
+当前 120 积分档以 Tushare Pro SDK `daily` 批量未复权日线作为历史主源，不承担
+高频实时报价，也不调用需 2000 积分的证券主数据、交易日历、复权因子、日度估值和
+财务指标。SDK 已由 `pyproject.toml` 作为默认运行依赖安装；Token 缺失时显式降级。
+项目根目录 `.token_key` 同时保存两个独立字段：
 
 ```bash
-.venv/bin/python -m pip install ".[tushare]"
+DEEPSEEK_API_KEY=your-deepseek-key
+TUSHARE_TOKEN=your-tushare-token
 ```
 
 Token 优先从 `TUSHARE_TOKEN` 读取，其次读取 `TUSHARE_TOKEN_FILE`，最后读取
-`config/v2/runtime.json` 中 `market_data.tushare.token_file` 指向的单行普通文件。
-默认路径为 `.runtime/secrets/tushare.token`。POSIX 系统必须限制该文件仅属主可读写，例如：
+`config/v2/runtime.json` 中 `market_data.tushare.token_file` 指向的赋值文件，默认即
+`.token_key`。POSIX 系统必须限制该文件仅属主可读写，例如：
 
 ```bash
-chmod 600 /absolute/path/to/tushare-token
-TUSHARE_TOKEN_FILE=/absolute/path/to/tushare-token ./run.sh
+chmod 600 .token_key
+./run.sh
 ```
 
-Token、SDK、额度或网络不可用时，Tushare lane 会显式降级；东方财富/新浪全市场实时
-行情、腾讯候选定向报价、AKShare 研究数据、本地推荐和只读 Web 继续运行。Token 不会
-写入配置、日志、SQLite、快照或 API。
+Token、SDK、额度或网络不可用时，Tushare lane 会显式降级到东方财富历史；冷启动还会
+只读复用 `.runtime/market_data.sqlite3` 中每只不少于 20 条的最近有效前复权日线，不会
+写回旧运行库。东方财富/新浪全市场实时行情、腾讯候选定向报价、AKShare 研究数据、
+本地推荐和只读 Web 继续运行。Token 不会写入配置、日志、SQLite、快照或 API。
 
 ## Web API
 

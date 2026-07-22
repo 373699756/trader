@@ -13,19 +13,22 @@ from pathlib import Path
 from trader.application.cache import BoundedCache, build_cache_identity, request_fingerprint
 from trader.application.source_lanes import SourceLaneRegistry
 from trader.application.workers import BoundedExecutor
-from trader.domain.models import FeatureSnapshot, LiveQuote, MarketQuote
+from trader.domain.models import FeatureSnapshot, MarketQuote
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import StandardizedFeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.history import DailyBar, HistoryProfile, summarize_history_metrics
+from trader.infrastructure.market_data.history_seed import DailyHistoryClient
 from trader.infrastructure.market_data.service_candidates import (
     MarketCandidateMixin,
     _apply_action_restrictions,
 )
+from trader.infrastructure.market_data.service_current_quotes import MarketCurrentQuoteMixin
 from trader.infrastructure.market_data.service_execution import MarketExecutionMixin
 from trader.infrastructure.market_data.service_health import MarketHealthMixin
 from trader.infrastructure.market_data.service_history import MarketHistoryMixin
+from trader.infrastructure.market_data.service_history_warmup import MarketHistoryWarmupMixin
 from trader.infrastructure.market_data.service_intraday import MarketIntradayMixin
 from trader.infrastructure.market_data.service_models import _HistoryEntry, _IntradayEntry, _ResearchEntry
 from trader.infrastructure.market_data.service_research import MarketResearchMixin
@@ -42,6 +45,8 @@ from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter
 class MarketFeatureService(
     MarketExecutionMixin,
     MarketHealthMixin,
+    MarketCurrentQuoteMixin,
+    MarketHistoryWarmupMixin,
     MarketTushareMixin,
     MarketResearchMixin,
     MarketIntradayMixin,
@@ -51,7 +56,7 @@ class MarketFeatureService(
     def __init__(
         self,
         gateway: MarketDataGateway,
-        history_client: EastmoneyClient,
+        history_client: DailyHistoryClient,
         feature_builder: StandardizedFeatureBuilder,
         *,
         research_client: AkshareResearchClient | None = None,
@@ -61,6 +66,7 @@ class MarketFeatureService(
         research_workers: int = 4,
         intraday_workers: int = 6,
         history_preload_limit: int = 360,
+        history_warmup_batch_size: int = 30,
         history_ttl_seconds: float = 21_600,
         research_ttl_seconds: float = 600,
         research_circuit_breaker_failures: int = 3,
@@ -92,6 +98,7 @@ class MarketFeatureService(
         self._research_workers = max(1, research_workers)
         self._intraday_workers = max(1, intraday_workers)
         self._history_preload_limit = max(1, history_preload_limit)
+        self._history_warmup_batch_size = max(1, history_warmup_batch_size)
         self._history_ttl_seconds = max(60.0, history_ttl_seconds)
         self._research_ttl_seconds = max(60.0, research_ttl_seconds)
         self._research_failure_limit = max(1, research_circuit_breaker_failures)
@@ -141,6 +148,12 @@ class MarketFeatureService(
         self._history_covered_rows = 0
         self._history_error_count = 0
         self._history_data_versions: tuple[str, ...] = ()
+        self._history_warmup_universe: tuple[str, ...] = ()
+        self._history_warmup_inflight: set[str] = set()
+        self._history_warmup_planned_count = 0
+        self._history_warmup_completed_count = 0
+        self._history_warmup_failure_count = 0
+        self._history_warmup_last_source = ""
         self._quote_out_of_order_count = 0
         self._research_out_of_order_count = 0
         self._history_out_of_order_count = 0
@@ -148,27 +161,6 @@ class MarketFeatureService(
         self._tushare_reference_fields: dict[str, dict[str, float]] = {}
         self._tushare_reference_versions: dict[str, str] = {}
         self._tushare_reference_version_order: dict[str, tuple[datetime, datetime, str]] = {}
-
-    def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]:
-        normalized = _normalize_codes(codes)
-        resolved = {quote.code: quote for quote in self._candidate_quote_snapshot(normalized)}
-        for quote in self._gateway.current_quotes(normalized):
-            current = resolved.get(quote.code)
-            if current is None or _quote_version(quote) > _quote_version(current):
-                resolved[quote.code] = quote
-        return {
-            quote.code: LiveQuote(
-                code=quote.code,
-                price=quote.price,
-                pct_change=quote.pct_change,
-                source=quote.source,
-                source_time=quote.source_time,
-                received_time=quote.received_time,
-                data_version=quote.data_version,
-            )
-            for code in normalized
-            if (quote := resolved.get(code)) is not None
-        }
 
     def fetch_market_features(
         self,
@@ -193,10 +185,18 @@ class MarketFeatureService(
         )
         history_codes = _history_preload_codes(quotes, self._history_preload_limit)
         action_restrictions: dict[str, set[str]] = {}
-        histories = self._load_histories(
-            history_codes,
-            deadline=deadline,
-            action_restrictions=action_restrictions,
+        histories = (
+            self._load_histories(
+                history_codes,
+                deadline=deadline,
+                action_restrictions=action_restrictions,
+            )
+            if self._source_lanes is None
+            else self._cached_histories(
+                history_codes,
+                fresh_only=True,
+                action_restrictions=action_restrictions,
+            )
         )
         self._ensure_before_deadline(deadline)
         features = _apply_action_restrictions(
@@ -216,6 +216,8 @@ class MarketFeatureService(
             self._history_universe_rows = len(history_codes)
             self._history_covered_rows = sum(len(histories.get(code, ())) >= 20 for code in history_codes)
             self._history_data_versions = tuple(sorted({quote.data_version for quote in quotes}))
+        if self._source_lanes is not None:
+            self.schedule_history_warmup(history_codes, observed_at)
         return features
 
     def fetch_candidate_features(

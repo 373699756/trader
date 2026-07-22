@@ -8,7 +8,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from typing import TypeVar, cast
 from zoneinfo import ZoneInfo
 
@@ -90,6 +90,11 @@ class MarketTushareMixin(MarketServiceState):
     ) -> None:
         tushare_history: tuple[SourceObservation, ...] = ()
         if self._tushare_client is not None:
+            if not self._tushare_client.supports("security_master"):
+                if normalized:
+                    tushare_history = self._load_tushare_history_batch(normalized, observed_at, force=force)
+                self._apply_tushare_history(tushare_history)
+                return
             masters = self._load_tushare_reference(
                 "security_master_calendar",
                 "security_master",
@@ -127,26 +132,8 @@ class MarketTushareMixin(MarketServiceState):
             )
             self._gateway.update_reference_observations((*calendars, *masters))
             if normalized:
-                trade_date = shanghai_now(observed_at).date()
                 valuation_trade_date = _latest_effective_trade_date(calendars, observed_at)
-                tushare_history = self._load_tushare_reference(
-                    "daily_history",
-                    ",".join(normalized),
-                    {
-                        "dataset": "forward_adjusted_daily",
-                        "codes": normalized,
-                        "start_date": (trade_date - timedelta(days=120)).isoformat(),
-                        "end_date": trade_date.isoformat(),
-                        "adjust": "qfq",
-                    },
-                    observed_at,
-                    self._tushare_client.fetch_forward_adjusted_daily,
-                    normalized,
-                    trade_date - timedelta(days=120),
-                    trade_date,
-                    observed_at,
-                    force=force,
-                )
+                tushare_history = self._load_tushare_history_batch(normalized, observed_at, force=force)
                 valuation_observations = (
                     self._load_tushare_reference(
                         "daily_valuation_financials",
@@ -336,9 +323,9 @@ class MarketTushareMixin(MarketServiceState):
                 ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-90:]
                 current = self._history.get(code)
                 if current is None or not current.bars or ordered[-1].trade_date > current.bars[-1].trade_date:
-                    self._history[code] = _HistoryEntry(ordered, expires_at)
+                    self._history[code] = _HistoryEntry(ordered, expires_at, source="tushare")
             self._trim_history_fallback_locked(set(grouped))
-            self._record_tushare_version_locked("forward_adjusted_daily", applied_observations)
+            self._record_tushare_version_locked("daily_history", applied_observations)
 
     def _apply_tushare_fields(
         self,

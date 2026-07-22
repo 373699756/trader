@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,8 @@ from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import StandardizedFeatureBuilder
 from trader.infrastructure.market_data.history import DailyBar, HistoryProfile
+from trader.infrastructure.market_data.history_seed import DailyHistoryClient
+from trader.infrastructure.market_data.observations import SourceObservation
 from trader.infrastructure.market_data.service_models import _HistoryEntry, _IntradayEntry, _ResearchEntry
 from trader.infrastructure.market_data.tushare import TushareClient
 from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter
@@ -23,7 +25,7 @@ from trader.infrastructure.persistence.runtime_json import RuntimeJsonWriter
 
 class MarketServiceState:
     _gateway: Any
-    _history_client: EastmoneyClient
+    _history_client: DailyHistoryClient
     _feature_builder: StandardizedFeatureBuilder
     _research_client: AkshareResearchClient | None
     _intraday_client: EastmoneyClient | None
@@ -59,6 +61,13 @@ class MarketServiceState:
     _history_universe_rows: int
     _history_covered_rows: int
     _history_data_versions: tuple[str, ...]
+    _history_warmup_batch_size: int
+    _history_warmup_universe: tuple[str, ...]
+    _history_warmup_inflight: set[str]
+    _history_warmup_planned_count: int
+    _history_warmup_completed_count: int
+    _history_warmup_failure_count: int
+    _history_warmup_last_source: str
     _quote_out_of_order_count: int
     _research_success_count: int
     _research_error_count: int
@@ -128,4 +137,33 @@ class MarketServiceState:
         force: bool = False,
         deadline: datetime | None = None,
     ) -> Mapping[str, object]:
+        raise NotImplementedError
+
+    def _load_tushare_reference(
+        self,
+        dataset: str,
+        subject_key: str,
+        request: Mapping[str, object],
+        observed_at: datetime,
+        function: Callable[..., Sequence[SourceObservation]],
+        /,
+        *args: object,
+        force: bool,
+        **kwargs: object,
+    ) -> tuple[SourceObservation, ...]:
+        raise NotImplementedError
+
+    def _apply_tushare_history(self, observations: Sequence[SourceObservation]) -> None:
+        raise NotImplementedError
+
+    def _load_tushare_history_batch(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool,
+    ) -> tuple[SourceObservation, ...]:
+        raise NotImplementedError
+
+    def _candidate_quote_snapshot(self, codes: Sequence[str]) -> tuple[MarketQuote, ...]:
         raise NotImplementedError

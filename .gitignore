@@ -2,6 +2,7 @@
 .venc/
 .env
 .deepseek_key
+.token_key
 .runtime/
 *.sqlite3
 .agents/

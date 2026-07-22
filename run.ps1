@@ -13,7 +13,8 @@ function Show-Usage {
   TRADER_HOST=127.0.0.1
   TRADER_PORT=5000
   DEEPSEEK_API_KEY=...
-  DEEPSEEK_API_KEY_FILE=C:\protected\path (default: project root .deepseek_key)
+  DEEPSEEK_API_KEY_FILE=C:\protected\path (default: project root .token_key)
+  TUSHARE_TOKEN_FILE=C:\protected\path (default: project root .token_key)
   FORCE_INSTALL_DEPS=1
 "@ | Write-Host
 }

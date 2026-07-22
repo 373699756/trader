@@ -53,6 +53,7 @@ class MarketDataSettings:
 @dataclass(frozen=True)
 class TushareSettings:
     enabled: bool
+    points: int
     timeout_seconds: float
     token_file: Path | None = None
     token: str = field(default="", repr=False)

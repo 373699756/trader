@@ -9,7 +9,10 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from types import ModuleType
+from typing import Any, cast
 from zoneinfo import ZoneInfo
+
+import requests
 
 from trader.application.cache import canonical_json_bytes
 from trader.infrastructure.market_data.observations import JsonScalar, SourceObservation
@@ -21,9 +24,13 @@ _MAX_CALENDAR_CHUNKS = 8
 
 
 class _SdkFacade:
-    def __init__(self, module: ModuleType, pro: object) -> None:
+    def __init__(self, module: ModuleType, pro: object, token: str, timeout_seconds: float) -> None:
         self._module = module
         self._pro = pro
+        self._token = token
+        self._timeout_seconds = timeout_seconds
+        self._session = requests.Session()
+        self._session.trust_env = False
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._pro, name)
@@ -31,11 +38,45 @@ class _SdkFacade:
     def pro_bar(self, **arguments: object) -> object:
         return self._module.pro_bar(api=self._pro, **arguments)
 
+    def daily(self, **arguments: object) -> object:
+        params = dict(arguments)
+        fields = str(params.pop("fields", ""))
+        response = self._session.post(
+            "https://api.tushare.pro/daily",
+            json=cast(
+                Any,
+                {
+                    "api_name": "daily",
+                    "token": self._token,
+                    "params": params,
+                    "fields": fields,
+                },
+            ),
+            timeout=self._timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, Mapping):
+            raise ValueError("Tushare API response must be an object")
+        if payload.get("code") != 0:
+            if payload.get("code") == 40203:
+                raise PermissionError("Tushare API permission denied")
+            raise RuntimeError("Tushare API returned an error")
+        data = payload.get("data")
+        if not isinstance(data, Mapping):
+            raise ValueError("Tushare API data must be an object")
+        columns = data.get("fields")
+        items = data.get("items")
+        if not isinstance(columns, list) or not isinstance(items, list):
+            raise ValueError("Tushare API data must be record-oriented")
+        names = tuple(str(column) for column in columns)
+        return [dict(zip(names, row, strict=False)) for row in items if isinstance(row, list)]
+
 
 def _default_sdk_factory(token: str, timeout_seconds: float) -> object:
     module = importlib.import_module("tushare")
     pro_api = module.pro_api
-    return _SdkFacade(module, pro_api(token, timeout=timeout_seconds))
+    return _SdkFacade(module, pro_api(token, timeout=timeout_seconds), token, timeout_seconds)
 
 
 def _invoke(client: object, method: str, **arguments: object) -> object:
@@ -169,11 +210,13 @@ def _failed_observation(
     observed_at: datetime,
     received_at: datetime,
     error_code: str,
+    *,
+    subject_key: str | None = None,
 ) -> SourceObservation:
     payload_hash = hashlib.sha256(canonical_json_bytes({"error_code": error_code})).hexdigest()
     return SourceObservation(
         source="tushare",
-        subject_key=dataset,
+        subject_key=subject_key or dataset,
         observed_at=observed_at,
         source_time=received_at,
         received_at=received_at,
@@ -202,7 +245,13 @@ def _error_code(exc: Exception) -> str:
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return "timeout"
     message = str(exc).lower()
-    if "429" in message or "quota" in message or "频次" in message or "权限" in message:
+    if (
+        isinstance(exc, PermissionError)
+        or "429" in message
+        or "quota" in message
+        or "频次" in message
+        or "权限" in message
+    ):
         return "quota_or_rate_limit"
     if "timeout" in message or "timed out" in message:
         return "timeout"

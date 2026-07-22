@@ -41,6 +41,11 @@ class MarketHealthMixin(MarketServiceState):
             history_covered_rows = self._history_covered_rows
             history_error_count = self._history_error_count
             history_data_versions = self._history_data_versions
+            history_warmup_planned_count = self._history_warmup_planned_count
+            history_warmup_completed_count = self._history_warmup_completed_count
+            history_warmup_failure_count = self._history_warmup_failure_count
+            history_warmup_inflight_count = len(self._history_warmup_inflight)
+            history_warmup_last_source = self._history_warmup_last_source
             quote_out_of_order_count = self._quote_out_of_order_count
             research_out_of_order_count = self._research_out_of_order_count
             history_out_of_order_count = self._history_out_of_order_count
@@ -96,6 +101,11 @@ class MarketHealthMixin(MarketServiceState):
             "history_coverage_ratio": history_covered_rows / history_universe_rows if history_universe_rows else 0.0,
             "history_error_count": history_error_count,
             "history_data_versions": history_data_versions,
+            "history_warmup_planned_count": history_warmup_planned_count,
+            "history_warmup_completed_count": history_warmup_completed_count,
+            "history_warmup_failure_count": history_warmup_failure_count,
+            "history_warmup_inflight_count": history_warmup_inflight_count,
+            "history_warmup_last_source": history_warmup_last_source or None,
             "quote_out_of_order_count": quote_out_of_order_count,
             "research_out_of_order_count": research_out_of_order_count,
             "history_out_of_order_count": history_out_of_order_count,

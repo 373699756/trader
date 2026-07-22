@@ -5,10 +5,12 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Mapping
+from concurrent.futures import as_completed
 from datetime import datetime, timezone
 
 import requests
 
+from trader.application.workers import borrow_executor, submit_or_run_inline
 from trader.domain.models import MarketQuote
 from trader.infrastructure.market_data.normalize import MarketQuoteInput, build_market_quote, normalize_quotes, to_float
 
@@ -24,12 +26,14 @@ class SinaClient:
         self,
         *,
         timeout_seconds: float,
+        workers: int = 5,
         page_size: int = 80,
         session_factory: SessionFactory = requests.Session,
         cancel_requested: Callable[[], bool] = lambda: False,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._timeout_seconds = timeout_seconds
+        self._workers = max(1, workers)
         self._page_size = max(20, min(100, page_size))
         self._session_factory = session_factory
         self._cancel_requested = cancel_requested
@@ -41,28 +45,46 @@ class SinaClient:
         if total_match is None:
             raise RuntimeError("sina quote count was invalid")
         total = int(total_match.group(0))
+        page_count = max(1, math.ceil(total / self._page_size))
+        pages: dict[int, list[Mapping[str, object]]] = {}
+        with borrow_executor(
+            None,
+            worker_count=min(self._workers, page_count),
+            queue_capacity=page_count,
+            thread_name_prefix="sina-market",
+        ) as pool:
+            futures = {submit_or_run_inline(pool, self._fetch_page, page): page for page in range(1, page_count + 1)}
+            for future in as_completed(futures):
+                page = futures[future]
+                payload = future.result()
+                if not isinstance(payload, list):
+                    raise RuntimeError(f"sina page {page} was not a list")
+                pages[page] = [item for item in payload if isinstance(item, dict)]
         rows: list[Mapping[str, object]] = []
-        for page in range(1, max(1, math.ceil(total / self._page_size)) + 1):
-            payload = self._get_json(
-                QUOTE_URL,
-                {
-                    "page": str(page),
-                    "num": str(self._page_size),
-                    "sort": "symbol",
-                    "asc": "1",
-                    "node": "hs_a",
-                    "symbol": "",
-                    "_s_r_a": "page",
-                },
-            )
+        for page in range(1, page_count + 1):
+            payload = pages[page]
             if not isinstance(payload, list):
                 raise RuntimeError(f"sina page {page} was not a list")
-            rows.extend(item for item in payload if isinstance(item, dict))
+            rows.extend(payload)
         received_at = now or self._wall_clock()
         quotes = normalize_quotes(rows, received_at, normalizer=_quote_from_row)
         if len({quote.code for quote in quotes}) < min(1000, total // 2):
             raise RuntimeError(f"sina quote coverage is incomplete: {len(quotes)}/{total}")
         return quotes
+
+    def _fetch_page(self, page: int) -> object:
+        return self._get_json(
+            QUOTE_URL,
+            {
+                "page": str(page),
+                "num": str(self._page_size),
+                "sort": "symbol",
+                "asc": "1",
+                "node": "hs_a",
+                "symbol": "",
+                "_s_r_a": "page",
+            },
+        )
 
     def _get_text(self, url: str, params: Mapping[str, str]) -> str:
         value = self._request(url, params, as_json=False)

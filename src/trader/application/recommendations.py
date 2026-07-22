@@ -104,14 +104,26 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
         reasons: Counter[str] = Counter()
         details: list[FilterAudit] = []
         for snapshot in features:
-            result = self._hard_filter(
+            discovery_snapshot = replace(
                 snapshot,
+                quote=replace(
+                    snapshot.quote,
+                    source_time=min(now, snapshot.quote.received_time),
+                ),
+            )
+            result = self._hard_filter(
+                discovery_snapshot,
                 now,
                 max_age_seconds=max_age_seconds,
                 policy=self._policy.hard_filter,
             )
             if not result.allowed:
                 reasons.update(reason.code for reason in result.reasons)
+                if snapshot.history_days < 20 and any(
+                    reason.code in {"missing_liquidity_history", "invalid_liquidity_history"}
+                    for reason in result.reasons
+                ):
+                    reasons["history_warming"] += 1
                 details.extend(result.reasons)
                 continue
             board = board_for_snapshot(snapshot)

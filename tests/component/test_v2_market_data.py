@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
 from collections.abc import Iterator, Mapping
@@ -30,12 +31,14 @@ from trader.domain.strategies import score_strategy
 from trader.domain.tail import MinuteBar, TailSignalPolicy
 from trader.infrastructure.cache import BoundedLruCache
 from trader.infrastructure.market_data import gateway as gateway_module
+from trader.infrastructure.market_data import tushare_support as tushare_support_module
 from trader.infrastructure.market_data.akshare import AkshareResearchClient
 from trader.infrastructure.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailable
 from trader.infrastructure.market_data.eastmoney import EastmoneyClient
 from trader.infrastructure.market_data.features import FeatureBuilder
 from trader.infrastructure.market_data.gateway import MarketDataGateway
 from trader.infrastructure.market_data.history import DailyBar
+from trader.infrastructure.market_data.history_seed import LocalHistorySeedClient
 from trader.infrastructure.market_data.observations import SourceObservation
 from trader.infrastructure.market_data.router import VendorRoute, VendorSeverity, route
 from trader.infrastructure.market_data.service import MarketFeatureService
@@ -107,6 +110,53 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
     assert quotes[0].data_version == f"eastmoney:{int(NOW.timestamp())}"
     assert history[0].amount == 100000000
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
+
+
+def test_local_history_seed_serves_last_valid_qfq_rows_without_calling_remote(tmp_path) -> None:
+    database = tmp_path / "market_data.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE daily_bars (
+                trade_date TEXT, code TEXT, volume REAL, turnover REAL,
+                qfq_open REAL, qfq_close REAL, qfq_high REAL, qfq_low REAL, pct_chg REAL
+            )
+            """
+        )
+        connection.executemany(
+            "INSERT INTO daily_bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    (date(2026, 7, 15) - timedelta(days=index)).strftime("%Y%m%d"),
+                    "600001",
+                    1000.0,
+                    10_500_000.0,
+                    10.0,
+                    10.5,
+                    10.8,
+                    9.9,
+                    5.0,
+                )
+                for index in range(25)
+            ],
+        )
+
+    class FailingRemote:
+        calls = 0
+
+        def fetch_history(self, _code, *, days):
+            self.calls += 1
+            raise RuntimeError("remote unavailable")
+
+    remote = FailingRemote()
+    rows = LocalHistorySeedClient(database, remote).fetch_history("600001", days=90)
+
+    assert LocalHistorySeedClient(database, remote).available_codes(("600002", "600001")) == ("600001",)
+    assert len(rows) == 25
+    assert rows[-1].trade_date == "2026-07-15"
+    assert rows[-1].volume == 100_000.0
+    assert rows[-1].amount == 10_500_000.0
+    assert remote.calls == 0
 
 
 def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
@@ -191,6 +241,51 @@ def test_sina_market_request_bypasses_environment_proxy() -> None:
 
     assert quotes[0].code == "600001"
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
+
+
+def test_sina_full_market_pages_are_fetched_with_bounded_parallelism() -> None:
+    class ConcurrentSinaSession:
+        def __init__(self, state) -> None:
+            self._state = state
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def get(self, url, **kwargs):
+            if "getHQNodeStockCount" in url:
+                return FakeResponse(b"201")
+            page = int(kwargs["params"]["page"])
+            with self._state["lock"]:
+                self._state["active"] += 1
+                self._state["maximum"] = max(self._state["maximum"], self._state["active"])
+            time.sleep(0.02)
+            with self._state["lock"]:
+                self._state["active"] -= 1
+            return FakeResponse(
+                [
+                    {
+                        "symbol": f"sh{600000 + (page - 1) * 100 + index:06d}",
+                        "name": "测试股份",
+                        "trade": "12.00",
+                    }
+                    for index in range(100 if page < 3 else 1)
+                ]
+            )
+
+    state = {"active": 0, "maximum": 0, "lock": threading.Lock()}
+    client = SinaClient(
+        timeout_seconds=2,
+        workers=3,
+        session_factory=lambda: ConcurrentSinaSession(state),
+    )
+
+    quotes = client.fetch_market(NOW)
+
+    assert len(quotes) == 201
+    assert state["maximum"] >= 2
 
 
 def test_market_sources_retry_transient_disconnect_and_page_504() -> None:
@@ -443,6 +538,10 @@ def test_scheduled_tushare_reference_refresh_does_not_block_fast_source_lane() -
             assert self.release.wait(1.0)
             return ()
 
+        @staticmethod
+        def supports(_dataset):
+            return True
+
     tushare = BlockingTushareClient()
     service = MarketFeatureService(
         ReferenceGateway((_quote(),)),
@@ -487,6 +586,10 @@ def test_scheduled_reference_refresh_starts_tushare_and_eastmoney_history_indepe
             self.started.set()
             assert self.release.wait(1.0)
             return ()
+
+        @staticmethod
+        def supports(_dataset):
+            return True
 
         @staticmethod
         def fetch_forward_adjusted_daily(*_args):
@@ -1528,6 +1631,145 @@ def test_tushare_per_code_batch_stops_before_next_sdk_call_during_lane_shutdown(
     assert lanes.status()["tushare"]["running"] is False
 
 
+def test_tushare_per_code_batch_keeps_successes_when_one_code_fails() -> None:
+    class PartiallyFailingPro:
+        def pro_bar(self, **kwargs):
+            code = str(kwargs["ts_code"])
+            if code == "600002.SH":
+                raise TimeoutError("one code timed out")
+            return FakeTushareFrame(
+                [
+                    {
+                        "ts_code": code,
+                        "trade_date": "20260715",
+                        "open": 10.0,
+                        "close": 10.5,
+                        "high": 10.8,
+                        "low": 9.9,
+                        "vol": 1000.0,
+                        "amount": 10500.0,
+                        "pct_chg": 5.0,
+                    }
+                ]
+            )
+
+    client = TushareClient(
+        token="secret-token",
+        timeout_seconds=8,
+        sdk_factory=lambda _token, _timeout: PartiallyFailingPro(),
+        wall_clock=lambda: NOW,
+    )
+
+    observations = client.fetch_forward_adjusted_daily(
+        ("600001", "600002", "600003"),
+        date(2026, 7, 1),
+        date(2026, 7, 16),
+        NOW,
+    )
+
+    assert {item.subject_key for item in observations if item.status == "success"} == {"600001", "600003"}
+    assert any(
+        item.status == "failed" and item.subject_key == "600002" and item.error_code == "timeout"
+        for item in observations
+    )
+
+
+def test_tushare_120_point_profile_batches_free_daily_and_disables_paid_references() -> None:
+    class FreeDailyPro:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def daily(self, **kwargs):
+            self.calls.append(kwargs)
+            return FakeTushareFrame(
+                [
+                    {
+                        "ts_code": code,
+                        "trade_date": "20260715",
+                        "open": 10.0,
+                        "close": 10.5,
+                        "high": 10.8,
+                        "low": 9.9,
+                        "vol": 1000.0,
+                        "amount": 10500.0,
+                        "pct_chg": 5.0,
+                    }
+                    for code in str(kwargs["ts_code"]).split(",")
+                ]
+            )
+
+    pro = FreeDailyPro()
+    client = TushareClient(
+        token="secret-token",
+        timeout_seconds=8,
+        points=120,
+        sdk_factory=lambda _token, _timeout: pro,
+        wall_clock=lambda: NOW,
+    )
+
+    observations = client.fetch_daily_history(
+        ("600001", "300001", "688001"),
+        date(2026, 7, 1),
+        date(2026, 7, 16),
+        NOW,
+    )
+
+    assert {item.subject_key for item in observations} == {"600001", "300001", "688001"}
+    assert len(pro.calls) == 1
+    assert pro.calls[0]["ts_code"] == "600001.SH,300001.SZ,688001.SH"
+    assert client.supports("daily_history") is True
+    assert client.supports("security_master") is False
+    assert client.supports("trading_calendar") is False
+    assert client.supports("daily_valuation") is False
+    assert client.supports("financial_indicators") is False
+    assert client.health()["access_points"] == 120
+    assert client.health()["history_mode"] == "unadjusted_daily"
+
+
+def test_tushare_default_daily_transport_uses_direct_https_without_environment_proxy(monkeypatch) -> None:
+    class FakeResponse:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json():
+            return {
+                "code": 0,
+                "data": {
+                    "fields": ["ts_code", "trade_date", "open", "high", "low", "close", "pct_chg", "vol", "amount"],
+                    "items": [["600001.SH", "20260715", 10.0, 10.8, 9.9, 10.5, 5.0, 1000.0, 10500.0]],
+                },
+            }
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.trust_env = True
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def post(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return FakeResponse()
+
+    session = FakeSession()
+    module = type("FakeTushareModule", (), {"pro_api": staticmethod(lambda _token, timeout: object())})()
+    monkeypatch.setattr(tushare_support_module.requests, "Session", lambda: session)
+    monkeypatch.setattr(tushare_support_module.importlib, "import_module", lambda _name: module)
+    client = TushareClient(token="secret-token", points=120, timeout_seconds=8, wall_clock=lambda: NOW)
+
+    observations = client.fetch_daily_history(
+        ("600001",),
+        date(2026, 7, 1),
+        date(2026, 7, 16),
+        NOW,
+    )
+
+    assert [item.subject_key for item in observations] == ["600001"]
+    assert session.trust_env is False
+    assert session.calls[0][0] == "https://api.tushare.pro/daily"
+    assert session.calls[0][1]["timeout"] == 8
+
+
 def test_tushare_date_only_financial_records_become_effective_at_shanghai_day_end() -> None:
     class FinancialPro:
         def fina_indicator(self, **_kwargs):
@@ -2434,7 +2676,7 @@ def test_feature_service_does_not_commit_history_cache_after_deadline() -> None:
     assert service._market_features == ()
 
 
-def test_source_lane_history_deadline_returns_before_blocked_io_and_discards_late_cache() -> None:
+def test_full_market_deadline_does_not_wait_for_blocked_history_warmup() -> None:
     runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -2454,14 +2696,13 @@ def test_source_lane_history_deadline_returns_before_blocked_io_and_discards_lat
         config_version=runtime.config_version,
     )
     pool.start()
-    deadline = datetime.now(timezone.utc) + timedelta(seconds=0.01)
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=0.2)
     release_timer = threading.Timer(0.6, history.release.set)
     release_timer.start()
 
     started = time.monotonic()
     try:
-        with pytest.raises(MarketDataDeadlineExceeded):
-            service.fetch_market_features(NOW, deadline=deadline)
+        features = service.fetch_market_features(NOW, deadline=deadline)
         elapsed = time.monotonic() - started
     finally:
         history.release.set()
@@ -2470,8 +2711,9 @@ def test_source_lane_history_deadline_returns_before_blocked_io_and_discards_lat
         pool.stop(wait=True, cancel_futures=True)
         cache.stop()
 
-    assert elapsed < 0.5
-    assert service._history == {}
+    assert elapsed < 0.2
+    assert [feature.quote.code for feature in features] == ["600001"]
+    assert features[0].history_days == 0
     assert cache.status()["daily_history"]["eastmoney"]["entries"] == 0
 
 
@@ -2812,6 +3054,72 @@ def test_market_service_loads_history_before_cold_start_candidate_cross_section(
     assert all(item.history_days == 60 for item in features)
     assert service.health()["history_coverage_ratio"] == 1.0
     assert service.health()["history_universe_rows"] == 2
+
+
+def test_production_source_lanes_warm_tushare_history_after_realtime_commit() -> None:
+    quotes = (_quote(), _quote(code="300001"), _quote(code="688001"))
+    completed = threading.Event()
+
+    class HistoryPro:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def daily(self, **kwargs):
+            self.calls += 1
+            rows = [
+                {
+                    "ts_code": code,
+                    "trade_date": (date(2026, 7, 15) - timedelta(days=index)).strftime("%Y%m%d"),
+                    "open": 10.0,
+                    "close": 10.5,
+                    "high": 10.8,
+                    "low": 9.9,
+                    "vol": 1000.0,
+                    "amount": 10500.0,
+                    "pct_chg": 1.0,
+                }
+                for code in str(kwargs["ts_code"]).split(",")
+                for index in range(60)
+            ]
+            completed.set()
+            return FakeTushareFrame(rows)
+
+    pro = HistoryPro()
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    service = MarketFeatureService(
+        StaticGateway(quotes),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        tushare_client=TushareClient(
+            token="secret-token",
+            timeout_seconds=8,
+            points=120,
+            sdk_factory=lambda _token, _timeout: pro,
+            wall_clock=lambda: NOW,
+        ),
+        worker_pool=pool,
+        source_lanes=lanes,
+        history_warmup_batch_size=3,
+        market_ttl_seconds=1,
+        wall_clock=lambda: NOW,
+    )
+    pool.start()
+
+    try:
+        first = service.fetch_market_features(NOW, deadline=NOW + timedelta(seconds=1))
+        assert all(feature.history_days == 0 for feature in first)
+        assert completed.wait(1.0)
+        lanes.submit("tushare", "history-warmup-barrier", NOW + timedelta(seconds=1), lambda: None).result(timeout=1.0)
+        second = service.fetch_market_features(NOW + timedelta(seconds=2), force=True)
+    finally:
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert all(feature.history_days == 60 for feature in second)
+    assert service.health()["history_coverage_ratio"] == 1.0
+    assert service.health()["history_warmup_completed_count"] == 3
+    assert pro.calls == 1
 
 
 def test_market_service_reloads_expired_history_and_reports_failed_coverage() -> None:

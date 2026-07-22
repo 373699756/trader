@@ -107,7 +107,7 @@ class CadencePlanner:
         self._lock = threading.Lock()
         self._next_due: dict[tuple[str, CadenceBand, PipelineTask], datetime] = {}
         self._fired_points: set[tuple[str, SchedulePoint]] = set()
-        self._warmup_reference_dates: set[str] = set()
+        self._reference_dates: set[str] = set()
 
     def plan(self, at: datetime, *, is_trading_day: bool) -> CadenceBatch:
         with self._lock:
@@ -142,8 +142,8 @@ class CadencePlanner:
             return CadenceBatch((), seconds_until_next_schedule_boundary(local, maximum_seconds=30.0))
 
         tasks: list[ScheduledPipelineTask] = []
-        if band is CadenceBand.WARMUP and trade_date not in self._warmup_reference_dates:
-            self._warmup_reference_dates.add(trade_date)
+        if trade_date not in self._reference_dates:
+            self._reference_dates.add(trade_date)
             tasks.append(ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, local, phase))
         due_points = _due_schedule_points(local)
         for point in due_points:
@@ -179,7 +179,7 @@ class CadencePlanner:
     def _discard_old_state(self, trade_date: str, band: CadenceBand) -> None:
         self._next_due = {key: due for key, due in self._next_due.items() if key[0] == trade_date and key[1] is band}
         self._fired_points = {key for key in self._fired_points if key[0] == trade_date}
-        self._warmup_reference_dates = {value for value in self._warmup_reference_dates if value == trade_date}
+        self._reference_dates = {value for value in self._reference_dates if value == trade_date}
 
 
 def cadence_band(phase: MarketPhase) -> CadenceBand:
