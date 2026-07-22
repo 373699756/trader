@@ -28,7 +28,7 @@ def test_each_delivery_documents_user_problem_and_change_summary() -> None:
         assert "CHANGELOG.md" in contract
 
 
-def test_docs_keep_two_authorities_and_three_non_authoritative_plans() -> None:
+def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
     docs_root = PROJECT_ROOT / "docs"
     documents = sorted(path.relative_to(docs_root).as_posix() for path in docs_root.rglob("*") if path.is_file())
 
@@ -36,7 +36,9 @@ def test_docs_keep_two_authorities_and_three_non_authoritative_plans() -> None:
         "plan.md",
         "plan_c.md",
         "plan_sudu.md",
+        "plan_youhua.md",
         "recommendation-strategy.md",
+        "reports/youhua-a1-baseline.md",
         "software-business-design.md",
     ]
 
@@ -44,6 +46,8 @@ def test_docs_keep_two_authorities_and_three_non_authoritative_plans() -> None:
     plan = (docs_root / "plan.md").read_text(encoding="utf-8")
     plan_c = (docs_root / "plan_c.md").read_text(encoding="utf-8")
     plan_sudu = (docs_root / "plan_sudu.md").read_text(encoding="utf-8")
+    plan_youhua = (docs_root / "plan_youhua.md").read_text(encoding="utf-8")
+    report = (docs_root / "reports/youhua-a1-baseline.md").read_text(encoding="utf-8")
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
@@ -56,6 +60,11 @@ def test_docs_keep_two_authorities_and_three_non_authoritative_plans() -> None:
     assert "非权威执行计划" in plan_sudu
     assert "software-business-design.md" in plan_sudu
     assert "recommendation-strategy.md" in plan_sudu
+    assert "非权威执行计划" in plan_youhua
+    assert "software-business-design.md" in plan_youhua
+    assert "recommendation-strategy.md" in plan_youhua
+    assert "A1.x 已完成本地基线采集与契约冻结" in report
+    assert "G1 未发布" in report
     assert "docs/need.md" not in design
     assert "docs/hi.md" not in design
 

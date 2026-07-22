@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户指定本任务为 Codex A，并要求严格按 `docs/plan_youhua.md` 先完成 A1.x，等待 B1/C1/D1
+  报告后再发布 `CONTRACT_BASE` 和 G1。新增 A1 基线报告
+  `docs/reports/youhua-a1-baseline.md`，记录当前 `HEAD/upstream`、owner 范围、质量/
+  测试/package/性能/Web 三档基线、已知既有失败、B/C/D 报告等待状态和 G1 未发布状态。
+  新增契约测试固定 youhua 双层内存口径、公共接缝版本、owner 归属和 G1 等待条件。
+
 - 用户继续执行全工程重构计划 2.5 整节。新增 cache schema v6 的 P1-P6 六池、Polars
   `ColumnarQuoteBatch` 与 `MarketChangeSet`、内存式 `PublishedSnapshotIndex`、20 个完整
   三策略交易日驻留、按日期 single-flight 的三策略冷读、11:19:50/14:49:50 冻结检查点、
@@ -167,6 +173,13 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 权威文档将 P1-P6 内存验收从旧 `248/8/256 MiB` 单进程口径调整为
+  `248 MiB` 逻辑缓存和 `384 MiB` 迁移期进程峰值 RSS 双层契约，并冻结
+  `p3_p4_feature_snapshot_market_change_set_v1`、`p4_p5_high_value_review_manifest_v1`、
+  `p4p5_p6_projection_event_v1`、`p6_overlay_event_v1` 与
+  `deepseek_v4_review_facts_v1`。本批只做 A 侧契约和基线，不执行 B/C/D 内部算法；
+  具体配置、port/event 实现和集成替身留给 A2。
 
 - 本批现状判断：三组 v16 缓存不能隔离观测、规范快照、特征、评分、模型复核和交付生命周期；
   查询用例直接持有归档仓储导致热读访问 SQLite；盘中草稿与 overlay 被完整持久化；SSE
@@ -582,6 +595,13 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- A1 基线：`make format-check` 通过；`make lint` 在既有严格债务计数漂移处失败；
+  `make type-check` 通过；`make test` 在 A1 修正文档白名单后仍有 5 个既有失败；`make package` 沙箱内因
+  构建依赖联网失败，提升权限后通过。离线 `perf-check --suite all`、v15 market-data
+  runner、v16 board-scoring runner 均通过，且无外部网络调用。1280x720、1440x900 和
+  1920x1080 无头 Chrome 截图非白屏；无运行态页面显示 `not_ready`，SSE 因未注入
+  publisher 返回 503。完整证据见 `docs/reports/youhua-a1-baseline.md`。
+
 - 本批新增严格配置、列式 dirty set、P6 完整日期预热、日期 single-flight、检查点
   hash/consume、SQLite schema v8、SSE patch 和慢客户端自动回归。首轮 145 个相关用例
   发现 8 个旧契约或实现问题，修复后 8/8 定向复测通过；最终完整质量、打包、wheel、性能
@@ -784,6 +804,11 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- G1 尚未发布：B1 已收到，C1/D1 标准报告未收到，`CONTRACT_BASE` 仍为空，B/C/D 必须继续等待且
+  不进入生产实现。A1 未实现 A2 公共类型、配置状态字段或测试替身；当前运行配置仍保留旧
+  `256 MiB` performance memory 字段，需在 A2 按双层内存契约实现并复验。完整 RSS/USS/
+  Polars 原生估算、真实 pipeline 100 tick 和 P6 发布峰值仍需阶段 2-4 集成门禁补齐。
 
 - Polars 只改变基础设施层批次与变更集合，不改变领域评分、68/32 融合、风险、动作、排名
   或冻结哈希；性能通过也不代表荐股收益提高。真实供应商、真实 DeepSeek 和真实交易日仍受
