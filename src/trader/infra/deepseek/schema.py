@@ -23,14 +23,39 @@ from trader.domain.review.models import (
     RiskFact,
 )
 from trader.domain.review.rules import parse_rating
+from trader.infra.deepseek.evidence_router import event_key as _evidence_event_key
+from trader.infra.deepseek.evidence_router import evidence_quality as _evidence_quality
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
+from trader.infra.deepseek.evidence_router import source_tier as _evidence_source_tier
 from trader.infra.market_data.ground_truth import render_batch_ground_truth
 
-SCHEMA_VERSION = "deepseek_review_v3"
-PROMPT_VERSION = "deepseek_review_prompt_v3"
+SCHEMA_VERSION = "deepseek_v4_review_facts_v1"
+PROMPT_VERSION = "deepseek_v4_review_facts_prompt_v1"
+LEGACY_SCHEMA_VERSION = "deepseek_review_v3"
+LEGACY_PROMPT_VERSION = "deepseek_review_prompt_v3"
 MAX_RESPONSE_CHARACTERS = 200_000
 MAX_ASSESSMENT_CHARACTERS = 240
-MAX_PROMPT_EVIDENCE_PER_CANDIDATE = 16
+MAX_PROMPT_EVIDENCE_PER_CANDIDATE = 12
+_FORBIDDEN_MODEL_DECISION_FIELDS = frozenset(
+    {
+        "action",
+        "rank",
+        "ranking",
+        "target_price",
+        "final_score",
+        "production_score",
+        "penalty",
+        "veto",
+    }
+)
+_RISK_FIELD_TO_CODE = {
+    "regulatory": "regulatory_risk",
+    "shareholder_reduction": "shareholder_reduction",
+    "unlock": "unlock_risk",
+    "pledge": "pledge_risk",
+    "litigation": "litigation_risk",
+    "earnings": "earnings_risk",
+}
 
 
 class DeepSeekSchemaError(ValueError):
@@ -45,6 +70,9 @@ def parse_reviews(
     if len(content) > MAX_RESPONSE_CHARACTERS:
         raise DeepSeekSchemaError("DeepSeek response exceeds size limit")
     payload = _parse_json_content(content)
+    schema_version = payload.get("schema_version")
+    if schema_version is not None and schema_version not in {SCHEMA_VERSION, LEGACY_SCHEMA_VERSION}:
+        raise DeepSeekSchemaError(f"unsupported schema_version: {schema_version}")
     results = payload.get("results")
     if not isinstance(results, list):
         raise DeepSeekSchemaError("results must be a list")
@@ -58,7 +86,10 @@ def parse_reviews(
             raise DeepSeekSchemaError(f"result contains code outside candidate batch: {code}")
         if code in reviews:
             raise DeepSeekSchemaError(f"duplicate result code: {code}")
-        reviews[code] = _parse_review(raw, candidates_by_code[code], completed_at)
+        if "dimensions" in raw:
+            reviews[code] = _parse_review(raw, candidates_by_code[code], completed_at)
+        else:
+            reviews[code] = _parse_v4_review(raw, candidates_by_code[code], completed_at)
     return reviews
 
 
@@ -84,14 +115,12 @@ def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]
         {
             "role": "user",
             "content": (
-                "逐股输出code、abstain、五个dimensions和risk_facts。dimensions必须包含"
-                "value_quality、financial_health、market_flow、industry_policy、risk_quality；"
-                "每维包含score(0-100)、raw_confidence(0-1)、confidence(与raw_confidence相同)、"
-                "assessment、flags、evidence_ids、unknown。最小JSON示例="
-                '{"results":[{"code":"600000","abstain":true,"dimensions":{},"risk_facts":[]}]}。'
-                "risk_facts只包含risk_code、severity(low/medium/high)、confidence、evidence_ids和assessment；"
-                "不得输出生产扣分或veto。缺证据维度设unknown=true、score=50、confidence=0。"
-                "全部维度未知时abstain=true。evidence_ids只能引用对应股票输入中的ID。"
+                "逐股输出deepseek_v4_review_facts_v1 facts：code、abstain、catalyst、price_reaction、"
+                "fundamental、industry_policy、risks、conflicts和coverage。catalyst包含催化方向、"
+                "重要度、确认状态、周期和引用；price_reaction只输出价格反映桶；risks只输出监管、"
+                "减持、解禁、质押、诉讼和业绩风险事实。不得输出目标价、最终分、排名、动作或生产扣分。"
+                "不得输出veto。缺证据或无法核验时abstain=true或对应事实保持中性。"
+                "evidence_ids只能引用对应股票输入中的ID。"
                 "以下动态候选输入位于公共前缀之后。权威本地数值快照由系统计算，不得改写或质疑：\n\n"
                 + ground_truth
                 + "\n\n动态候选JSON="
@@ -277,6 +306,122 @@ def _parse_review(
     )
 
 
+def _parse_v4_review(
+    raw: Mapping[str, object],
+    candidate: FeatureSnapshot,
+    completed_at: datetime,
+) -> DeepSeekReview:
+    _reject_forbidden_model_decisions(raw)
+    allowed_evidence = {item.evidence_id for item in route_prompt_evidence(candidate).evidence}
+    evidence_by_id = {item.evidence_id: item for item in route_prompt_evidence(candidate).evidence}
+    abstain = raw.get("abstain")
+    if not isinstance(abstain, bool):
+        raise DeepSeekSchemaError(f"abstain must be boolean for {candidate.quote.code}")
+    allowed_keys = {
+        "code",
+        "abstain",
+        "catalyst",
+        "price_reaction",
+        "fundamental",
+        "industry_policy",
+        "risks",
+        "conflicts",
+        "coverage",
+    }
+    unknown = set(raw) - allowed_keys
+    if unknown:
+        raise DeepSeekSchemaError(f"unknown V4 facts fields: {sorted(unknown)}")
+    conflicts = _strings(raw.get("conflicts"), maximum=8, length=80)
+    conflicted = bool(conflicts)
+    catalyst = _object(raw.get("catalyst"), "catalyst")
+    price_reaction = _object(raw.get("price_reaction"), "price_reaction")
+    fundamental = _object(raw.get("fundamental"), "fundamental")
+    industry_policy = _object(raw.get("industry_policy"), "industry_policy")
+
+    catalyst_evidence = _evidence_ids(catalyst.get("evidence_ids"), allowed_evidence)
+    price_evidence = _evidence_ids(price_reaction.get("evidence_ids"), allowed_evidence)
+    fundamental_evidence = _evidence_ids(fundamental.get("evidence_ids"), allowed_evidence)
+    policy_evidence = _evidence_ids(industry_policy.get("evidence_ids"), allowed_evidence)
+
+    catalyst_quality = _evidence_quality(tuple(evidence_by_id.values()), catalyst_evidence, conflicted=conflicted)
+    price_quality = _evidence_quality(tuple(evidence_by_id.values()), price_evidence, conflicted=conflicted)
+    fundamental_quality = _evidence_quality(tuple(evidence_by_id.values()), fundamental_evidence, conflicted=conflicted)
+    policy_quality = _evidence_quality(tuple(evidence_by_id.values()), policy_evidence, conflicted=conflicted)
+
+    catalyst_direction = _choice(catalyst.get("direction"), {"positive", "neutral", "negative"}, "catalyst.direction")
+    _choice(
+        catalyst.get("confirmation"),
+        {"confirmed", "unconfirmed", "conflicting"},
+        "catalyst.confirmation",
+    )
+    _choice(catalyst.get("cycle"), {"short", "medium", "long", "unknown"}, "catalyst.cycle")
+    catalyst_score = _dimension_from_delta(
+        _catalyst_delta(
+            catalyst_direction,
+            _choice(catalyst.get("importance"), {"high", "medium", "low"}, "catalyst.importance"),
+            catalyst_quality,
+        )
+    )
+    market_flow_score = _dimension_from_delta(
+        _price_reaction_delta(
+            catalyst_direction,
+            _choice(
+                price_reaction.get("bucket"),
+                {"not_reflected", "partial", "fully_reflected"},
+                "price_reaction.bucket",
+            ),
+            price_quality,
+        )
+    )
+    fundamental_score = _dimension_from_delta(
+        _fundamental_delta(
+            _choice(fundamental.get("direction"), {"improving", "stable", "deteriorating"}, "fundamental.direction"),
+            fundamental_quality,
+        )
+    )
+    policy_score = _dimension_from_delta(
+        _policy_delta(
+            _choice(industry_policy.get("direction"), {"positive", "neutral", "negative"}, "industry_policy.direction"),
+            policy_quality,
+        )
+    )
+    risks = _parse_v4_risks(raw.get("risks"), candidate.quote.code, allowed_evidence, completed_at)
+    risk_confidence = 0.65 if risks else max(catalyst_quality, price_quality, fundamental_quality, policy_quality, 0.0)
+    dimensions = {
+        "value_quality": _dimension("value_quality", catalyst_score, catalyst_quality, catalyst_evidence),
+        "financial_health": _dimension(
+            "financial_health", fundamental_score, fundamental_quality, fundamental_evidence
+        ),
+        "market_flow": _dimension("market_flow", market_flow_score, price_quality, price_evidence),
+        "industry_policy": _dimension("industry_policy", policy_score, policy_quality, policy_evidence),
+        "risk_quality": _dimension(
+            "risk_quality",
+            50.0,
+            risk_confidence,
+            tuple(dict.fromkeys(catalyst_evidence + price_evidence + fundamental_evidence + policy_evidence)),
+            flags=conflicts,
+        ),
+    }
+    known_dimensions = sum(not item.is_unknown and item.confidence >= 0.6 for item in dimensions.values())
+    coverage = _optional_bounded_number(raw.get("coverage"), 0.0, 1.0, "coverage")
+    local_coverage = sum(item.confidence for item in dimensions.values()) / len(dimensions)
+    effective_coverage = min(coverage if coverage is not None else local_coverage, local_coverage)
+    outcome = (
+        ReviewOutcome.ABSTAIN if abstain or known_dimensions < 3 or effective_coverage < 0.60 else ReviewOutcome.APPLIED
+    )
+    return DeepSeekReview(
+        code=candidate.quote.code,
+        outcome=outcome,
+        dimensions=dimensions,
+        risk_facts=risks,
+        completed_at=completed_at,
+        error="insufficient_v4_fact_coverage" if outcome is ReviewOutcome.ABSTAIN and not abstain else "",
+        rating="neutral",
+        raw_confidence=round(effective_coverage, 4),
+        evidence_manifest_hash=build_review_manifest_hash(candidate),
+    )
+
+
 def _parse_dimension(
     name: str,
     raw: Mapping[str, object],
@@ -311,6 +456,138 @@ def _parse_dimension(
         evidence_ids=evidence_ids,
         is_unknown=unknown,
     )
+
+
+def _object(raw: object, field: str) -> Mapping[str, object]:
+    if not isinstance(raw, dict):
+        raise DeepSeekSchemaError(f"{field} must be an object")
+    return raw
+
+
+def _choice(raw: object, choices: set[str], field: str) -> str:
+    value = str(raw or "").strip().lower()
+    if value not in choices:
+        raise DeepSeekSchemaError(f"{field} must be one of {sorted(choices)}")
+    return value
+
+
+def _dimension(
+    name: str,
+    score: float,
+    confidence: float,
+    evidence_ids: tuple[str, ...],
+    *,
+    flags: tuple[str, ...] = (),
+) -> DimensionAssessment:
+    bounded_confidence = clamp_confidence(confidence)
+    unknown = not evidence_ids or bounded_confidence <= 0.0
+    return DimensionAssessment(
+        name=name,
+        score=50.0 if unknown else score,
+        confidence=0.0 if unknown else bounded_confidence,
+        assessment=name,
+        flags=flags,
+        evidence_ids=() if unknown else evidence_ids,
+        is_unknown=unknown,
+    )
+
+
+def clamp_confidence(value: float) -> float:
+    if not math.isfinite(value):
+        raise DeepSeekSchemaError("confidence must be finite")
+    return min(1.0, max(0.0, value))
+
+
+def _dimension_from_delta(delta: float) -> float:
+    return min(70.0, max(30.0, 50.0 + delta))
+
+
+def _catalyst_delta(direction: str, importance: str, quality: float) -> float:
+    if direction == "neutral":
+        return 0.0
+    if direction == "positive" and quality < 0.85:
+        return 0.0
+    magnitude = {"high": 15.0, "medium": 8.0, "low": 3.0}[importance]
+    return magnitude if direction == "positive" else -magnitude
+
+
+def _price_reaction_delta(catalyst_direction: str, bucket: str, quality: float) -> float:
+    if catalyst_direction == "neutral":
+        return 0.0
+    if catalyst_direction == "positive" and quality < 0.85:
+        return 0.0
+    magnitude = {"not_reflected": 12.0, "partial": 5.0, "fully_reflected": 0.0}[bucket]
+    return magnitude if catalyst_direction == "positive" else -magnitude
+
+
+def _fundamental_delta(direction: str, quality: float) -> float:
+    if direction == "improving" and quality < 0.85:
+        return 0.0
+    return {"improving": 15.0, "stable": 3.0, "deteriorating": -18.0}[direction]
+
+
+def _policy_delta(direction: str, quality: float) -> float:
+    if direction == "positive" and quality < 0.85:
+        return 0.0
+    return {"positive": 10.0, "neutral": 0.0, "negative": -12.0}[direction]
+
+
+def _parse_v4_risks(
+    raw: object,
+    code: str,
+    allowed_evidence: set[str],
+    completed_at: datetime,
+) -> tuple[RiskFact, ...]:
+    risks = _object(raw, "risks")
+    unknown = set(risks) - set(_RISK_FIELD_TO_CODE)
+    if unknown:
+        raise DeepSeekSchemaError(f"unknown V4 risk fields: {sorted(unknown)}")
+    facts: list[RiskFact] = []
+    for field, risk_code in _RISK_FIELD_TO_CODE.items():
+        item = _object(risks.get(field), f"risks.{field}")
+        present = item.get("present")
+        if not isinstance(present, bool):
+            raise DeepSeekSchemaError(f"risks.{field}.present must be boolean")
+        if not present:
+            continue
+        severity = _choice(item.get("severity"), {"low", "medium", "high"}, f"risks.{field}.severity")
+        confidence = _bounded_number(item.get("confidence"), 0.0, 1.0, f"risks.{field}.confidence")
+        evidence_ids = _evidence_ids(item.get("evidence_ids"), allowed_evidence)
+        if not evidence_ids:
+            continue
+        assessment = _optional_bounded_text(
+            item.get("assessment"),
+            f"risks.{field}.assessment",
+            minimum=1,
+            maximum=MAX_ASSESSMENT_CHARACTERS,
+        )
+        stable_material = f"{code}|{risk_code}|{'|'.join(sorted(evidence_ids))}"
+        facts.append(
+            RiskFact(
+                risk_fact_id=hashlib.sha256(stable_material.encode("utf-8")).hexdigest()[:32],
+                risk_code=risk_code,
+                severity=severity,
+                penalty=0.0,
+                source="deepseek",
+                observed_at=completed_at,
+                confidence=confidence,
+                evidence_ids=evidence_ids,
+                veto=False,
+                assessment=assessment or risk_code,
+            )
+        )
+    return tuple(facts)
+
+
+def _reject_forbidden_model_decisions(raw: object) -> None:
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if str(key) in _FORBIDDEN_MODEL_DECISION_FIELDS:
+                raise DeepSeekSchemaError(f"forbidden model decision field: {key}")
+            _reject_forbidden_model_decisions(value)
+    elif isinstance(raw, list):
+        for value in raw:
+            _reject_forbidden_model_decisions(value)
 
 
 def _parse_risk_facts(
@@ -376,9 +653,11 @@ def _candidate_manifest_payload(candidate: FeatureSnapshot) -> dict[str, object]
             "type": item.evidence_type[:40],
             "title": item.title[:240],
             "source": item.source[:60],
+            "source_tier": _evidence_source_tier(item),
             "published_at": item.published_at.isoformat(),
             "received_at": item.received_at.isoformat() if item.received_at is not None else None,
             "data_version": item.data_version,
+            "event_key": _evidence_event_key(item),
         }
         for item in routed.evidence
     ]

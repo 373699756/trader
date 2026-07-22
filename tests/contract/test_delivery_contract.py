@@ -40,6 +40,7 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
         "recommendation-strategy.md",
         "reports/youhua-a1-baseline.md",
         "reports/youhua-a2-public-skeleton.md",
+        "reports/youhua-a3-integration.md",
         "reports/youhua-d1-p6-web.md",
         "reports/youhua-g1-contract-base.md",
         "reports/youhua-g2-gate-review.md",
@@ -70,6 +71,9 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
     assert "A1.x 已完成本地基线采集与契约冻结" in report
     assert "G1 发布" in report
     assert "A2 public skeleton is available" in (docs_root / "reports/youhua-a2-public-skeleton.md").read_text(
+        encoding="utf-8"
+    )
+    assert "A3 integration handoff is available" in (docs_root / "reports/youhua-a3-integration.md").read_text(
         encoding="utf-8"
     )
     assert "G2 已发布" in (docs_root / "reports/youhua-g2-gate-review.md").read_text(encoding="utf-8")

@@ -80,7 +80,8 @@ class ReviewerRequestExecutor:
             return 0
         self._restore_cached_challenger(strategy, candidates, results, phase=phase)
         selected = _select_challenger_candidates(candidates, results, contexts)
-        selected = selected[: call_limit * self._settings.batch_size]
+        challenger_batch_size = min(4, self._settings.batch_size)
+        selected = selected[: call_limit * challenger_batch_size]
         if not selected:
             return 0
         challenger_deadline = _challenger_deadline(strategy, deadline)
@@ -98,8 +99,8 @@ class ReviewerRequestExecutor:
             reasoning_effort="high",
         )
         attempts = 0
-        for start in range(0, len(selected), self._settings.batch_size):
-            candidate_batch = selected[start : start + self._settings.batch_size]
+        for start in range(0, len(selected), challenger_batch_size):
+            candidate_batch = selected[start : start + challenger_batch_size]
             completed_at = _in_deadline_timezone(self._now(), challenger_deadline)
             if completed_at >= challenger_deadline:
                 _mark_challenger_unavailable(results, candidate_batch, "late")

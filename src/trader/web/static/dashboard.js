@@ -13,6 +13,7 @@
     streamRetry: null,
     pollTimer: null,
     lastEventId: 0,
+    projectionVersion: "",
     requestSequence: 0,
   };
   const CACHE_MAX_AGE_MS = 30000;
@@ -144,6 +145,7 @@
       if (state.payload !== payload) {
         const previous = state.payload;
         state.payload = payload;
+        state.projectionVersion = projectionVersion(payload);
         if (["overlay", "history_overlay"].includes(reason) && patchLiveRows(previous, payload)) {
           const first = payload.items && payload.items[0];
           els.dataSource.textContent = first && first.source ? first.source : "-";
@@ -235,6 +237,7 @@
   }
 
   function renderPayload(payload) {
+    state.projectionVersion = projectionVersion(payload);
     const items = Array.isArray(payload.items) ? payload.items : [];
     const historical = payload.historical === true;
     const recommendations = historical ? items : items.filter((item) => item.action === "executable");
@@ -277,6 +280,7 @@
     else if (payload.frozen) setNotice(`已冻结于 ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
     else if (payload.view === "live") setNotice(`临时实时 · ${window.TraderRender.formatDateTime(payload.published_at)} · 不替代正式冻结`, "warn");
     else setNotice(`快照 ${window.TraderRender.formatDateTime(payload.published_at)} · ${payload.fusion_mode}`, "ok");
+    stampRowIdentities(payload);
     updateQuoteAge();
   }
 
@@ -309,6 +313,7 @@
       const holder = document.createElement("tbody");
       holder.innerHTML = window.TraderRender.row(item, payload.historical === true);
       if (!holder.firstElementChild) return false;
+      holder.firstElementChild.dataset.rowIdentity = rowIdentity(payload, item.code);
       currentRow.replaceWith(holder.firstElementChild);
     }
     return true;
@@ -442,18 +447,33 @@
   }
 
   function applyRecommendationPatch(patch) {
-    if (!patch || patch.schema_version !== 2 || !Array.isArray(patch.upserts)) return;
-    if (patch.base_snapshot_id && (!state.payload || state.payload.snapshot_id !== patch.base_snapshot_id)) {
+    if (!patch || !patchVersionValid(patch) || !Array.isArray(patch.upserts)) return;
+    const baseVersion = patch.base_projection_version || patch.base_snapshot_id || "";
+    const currentVersion = state.projectionVersion || projectionVersion(state.payload);
+    if (baseVersion && currentVersion && baseVersion !== currentVersion) {
+      loadRecommendations("patch_base_mismatch");
+      return;
+    }
+    if (baseVersion && !currentVersion && state.payload && state.payload.status !== "not_ready") {
       loadRecommendations("patch_base_mismatch");
       return;
     }
     const current = state.payload || {};
+    const removed = new Set([...(patch.removed_codes || []), ...(patch.removals || [])]);
+    const merged = patch.replace === true
+      ? patch.upserts
+      : mergePatchItems(current.items, patch.upserts, removed);
     state.payload = {
       ...current,
       status: "ready",
       snapshot_id: patch.snapshot_id,
+      projection_version: patch.projection_version || patch.snapshot_id,
       strategy: patch.strategy,
       trade_date: patch.trade_date,
+      requested_date: null,
+      current_trade_date: patch.current_trade_date || patch.trade_date,
+      historical: false,
+      view: current.view || state.view,
       phase: patch.phase,
       published_at: patch.published_at,
       strategy_version: patch.strategy_version,
@@ -462,18 +482,27 @@
       frozen: patch.frozen,
       degraded_reasons: patch.degraded_reasons || [],
       filtered_count: patch.filtered_count,
-      items: patch.upserts,
+      items: merged,
       error: null,
     };
+    state.projectionVersion = projectionVersion(state.payload);
     state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);
     renderPayload(state.payload);
   }
 
   function applyOverlayPatch(patch) {
-    if (!state.payload || patch.schema_version !== 2) return;
+    if (!state.payload || state.date || !patchVersionValid(patch)) return;
+    if (patch.strategy !== state.strategy) return;
     if (!state.date && patch.snapshot_id !== state.payload.snapshot_id) return;
+    const incomingProjection = patch.projection_version || patch.snapshot_id || "";
+    if (incomingProjection && state.projectionVersion && incomingProjection !== state.projectionVersion) {
+      loadRecommendations("overlay_projection_mismatch");
+      return;
+    }
     const quotes = new Map((patch.quotes || []).map((quote) => [quote.code, quote]));
-    state.payload.items = (state.payload.items || []).map((item) => {
+    state.payload = {
+      ...state.payload,
+      items: (state.payload.items || []).map((item) => {
       const quote = quotes.get(item.code);
       if (!quote) return item;
       const anchor = Number(item.anchor_price);
@@ -481,9 +510,46 @@
       const anchorToNow = Number.isFinite(anchor) && anchor > 0 && Number.isFinite(current)
         ? ((current / anchor) - 1) * 100 : null;
       return { ...item, ...quote, anchor_to_now_pct: anchorToNow };
-    });
+      }),
+    };
     state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);
     renderPayload(state.payload);
+  }
+
+  function patchVersionValid(patch) {
+    return patch && (patch.patch_schema_version === 2 || patch.schema_version === 2);
+  }
+
+  function projectionVersion(payload) {
+    if (!payload) return "";
+    return payload.projection_version || payload.snapshot_id || "";
+  }
+
+  function mergePatchItems(existingItems, upserts, removed) {
+    const byCode = new Map((existingItems || []).map((item) => [item.code, item]));
+    for (const code of removed) byCode.delete(code);
+    for (const item of upserts) {
+      if (item && item.code) byCode.set(item.code, item);
+    }
+    return Array.from(byCode.values()).sort((left, right) => {
+      const leftRank = Number(left.rank);
+      const rightRank = Number(right.rank);
+      if (Number.isFinite(leftRank) && Number.isFinite(rightRank) && leftRank !== rightRank) return leftRank - rightRank;
+      return String(left.code || "").localeCompare(String(right.code || ""));
+    });
+  }
+
+  function rowIdentity(payload, code) {
+    return [payload.strategy, payload.trade_date, payload.view, code].map((value) => String(value || "")).join(":");
+  }
+
+  function stampRowIdentities(payload) {
+    if (!payload || !Array.isArray(payload.items)) return;
+    for (const tableBody of [els.tableBody, els.watchBody]) {
+      tableBody.querySelectorAll("tr[data-code]").forEach((row) => {
+        row.dataset.rowIdentity = rowIdentity(payload, row.dataset.code);
+      });
+    }
   }
 
   function rememberEvent(event) {

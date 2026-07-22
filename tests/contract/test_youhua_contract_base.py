@@ -85,3 +85,18 @@ def test_youhua_g2_is_published_after_all_phase2_reports_are_ready() -> None:
     assert "ready_for_gate: `yes`" in b2
     assert "ready_for_gate: yes" in c2
     assert "A3 has not started" in g2
+
+
+def test_youhua_a3_integration_handoff_waits_for_bcd_phase3_reports() -> None:
+    plan = (PROJECT_ROOT / "docs/plan_youhua.md").read_text(encoding="utf-8")
+    report = (PROJECT_ROOT / "docs/reports/youhua-a3-integration.md").read_text(encoding="utf-8")
+    c3 = (PROJECT_ROOT / "tests/fixtures/deepseek/youhua_c3/report_to_a.md").read_text(encoding="utf-8")
+
+    assert "A3.1-A3.7 已完成 A owner 集成接线" in report
+    assert "G3 未发布" in report
+    assert "B3/C3/D3" in report
+    assert "ready_for_gate: `yes; A3 integration handoff is available; G3 is pending B3/C3/D3 ready reports`" in report
+    assert "C3 preflight" in c3
+    assert "ready_for_gate: no" in c3
+    assert "A3.1 合并 B" in plan
+    assert "G3：阶段 3 完成条件" in plan

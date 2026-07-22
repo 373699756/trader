@@ -106,3 +106,20 @@ def test_published_index_replaces_current_draft_without_archive_write() -> None:
     assert index.latest(Strategy.LONG) is not None
     assert index.latest(Strategy.LONG).snapshot_id == second.snapshot_id
     assert index.status()["published"] == 2
+
+
+def test_published_index_does_not_replace_current_pin_with_older_frozen_history() -> None:
+    archive = _Archive(())
+    index = PublishedSnapshotIndex(archive)
+    current = replace(_snapshot(Strategy.TOMORROW, "2026-07-22"), snapshot_id="current")
+
+    index.publish(current)
+    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+        index.publish(replace(_snapshot(strategy, "2026-07-21"), snapshot_id=f"older-{strategy.value}"))
+
+    latest = index.latest(Strategy.TOMORROW)
+    assert latest is not None
+    assert latest.snapshot_id == "current"
+    frozen = index.load_frozen(Strategy.TOMORROW, "2026-07-21")
+    assert frozen is not None
+    assert frozen.snapshot_id == "older-tomorrow"

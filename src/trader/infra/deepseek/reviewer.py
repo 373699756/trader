@@ -134,6 +134,9 @@ class DeepSeekReviewer:
     ) -> Mapping[str, DeepSeekReview]:
         now = _in_deadline_timezone(self._now(), deadline)
         unique_candidates = _unique_candidates(candidates)
+        if strategy is Strategy.LONG:
+            self._status.start(strategy, phase, 0)
+            return {}
         planned_bucket = budget_bucket or strategy.value
         self._status.start(strategy, phase, len(unique_candidates))
         batch_id = self._budget.begin_batch(

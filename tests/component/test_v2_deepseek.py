@@ -250,9 +250,9 @@ def test_prompt_evidence_router_applies_slots_and_point_in_time_validation() -> 
 
     routed = route_prompt_evidence(replace(candidate, evidence=tuple(evidence)))
 
-    assert len(routed.evidence) == 14
-    assert sum(item.evidence_type == "regulatory_filing" for item in routed.evidence) == 6
-    assert sum(item.evidence_type == "news" for item in routed.evidence) == 8
+    assert len(routed.evidence) == 12
+    assert sum(item.evidence_type == "regulatory_filing" for item in routed.evidence) == 5
+    assert sum(item.evidence_type == "news" for item in routed.evidence) == 7
     assert "future_evidence" in routed.exclusion_reasons
     assert "missing_data_version" in routed.exclusion_reasons
 
@@ -585,7 +585,7 @@ def test_shared_review_cache_ignores_quote_only_version_changes() -> None:
     )
 
 
-def test_strategy_independent_review_is_reused_by_long(tmp_path) -> None:
+def test_long_review_is_empty_and_does_not_reuse_deepseek_raw_cache(tmp_path) -> None:
     candidate = _candidate_with_evidence()
     content = json.dumps(_valid_payload(candidate.quote.code), ensure_ascii=False)
     physical_calls = 0
@@ -623,10 +623,11 @@ def test_strategy_independent_review_is_reused_by_long(tmp_path) -> None:
     d25 = reviewer.review(Strategy.D25, (candidate,), phase="afternoon", deadline=NOW + timedelta(minutes=1))
     long = reviewer.review(Strategy.LONG, (candidate,), phase="afternoon", deadline=NOW + timedelta(minutes=1))
 
-    assert d25[candidate.quote.code] == long[candidate.quote.code]
+    assert d25[candidate.quote.code].outcome is ReviewOutcome.APPLIED
+    assert long == {}
     assert physical_calls == 1
     assert budget.summary(NOW.date().isoformat())["used"] == 1
-    assert reviewer.status()["last_cache_hits"] == 1
+    assert reviewer.status()["last_strategy"] == "long"
 
 
 def test_reviewer_injects_audit_metadata_when_disabled(tmp_path) -> None:

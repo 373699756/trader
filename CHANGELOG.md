@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户再次发送“继续”后，A 按 `docs/plan_youhua.md` 执行 A3.1-A3.7。新增
+  `docs/reports/youhua-a3-integration.md`，记录 B2 列式 P1-P3/change set、C2 DeepSeek V4
+  facts/预算/long 隔离、D2 P6/SSE/Web 增量补丁已按 B -> C -> D 纳入 A 集成工作树；同时
+  明确本批只发布 A3 集成 handoff，G3 仍等待 B3/C3/D3 基于本集成提交完成专业复验。
+
 - 用户再次发送“继续”后，A 复核 B2 最新交接报告，确认 B2 已补齐
   `ready_for_gate=yes`、A2 public envelope 适配、component/type-check/性能证据；A 因此发布
   G2。`docs/reports/youhua-g2-gate-review.md` 新增 2026-07-23 再复核与 G2 发布记录，
@@ -202,6 +207,20 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- A3 集成后，权威策略文档从旧 DeepSeek 证据/预算口径收敛到当前实现：每股 prompt 证据
+  上限为 12，long 物理请求永久为 0，today/tomorrow/d25/shared_preheat/emergency 软桶为
+  22/14/12/10/5，Pro 挑战者批次最多 4 只且全日软上限 8；普通 quote-only change 命中 raw
+  facts cache 时只做本地投影和 P6/SSE 发布，不新增 DeepSeek HTTP。
+
+- A3 集成后，权威 Web/SSE 契约明确 recommendation/overlay patch 均使用
+  `patch_schema_version=2`，推荐 patch 携带 base/current projection、ETag、view、upserts 和
+  removed codes；overlay 只携带报价字段且必须匹配当前 projection，不匹配时触发 ETag
+  resync。
+
+- A3 Review 发现 `scripts/check_refactor_quality.py` 的严格债务基线落后于已推送 `HEAD`
+  实际计数；已同步为 C901=39、N818=5、PLR0911=15、PLR0912=16、PLR0913=55、PLR0915=11。
+  本批新增的列式 options 值对象把自身引入的 PLR0913 增量降回 0。
 
 - G2 状态从阻塞更新为已发布；A 只发布阶段 2 共同门禁，仍不合并 B/C/D 生产实现、不连接真实
   实现、不修改生产默认，A3 等待下一次用户继续指令。
@@ -400,6 +419,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复阶段 2 合并后公共契约和权威文档之间的漂移：DeepSeek prompt 证据仍写 16 条、long
+  仍有预算、SSE 只描述游标恢复而未固定 patch v2 projection/base/overlay 身份。现在文档、
+  生产代码和契约测试使用同一组版本、预算、缓存和增量更新语义。
+
 - 修复最近历史按单策略预热可能形成不完整交易日、冷缓存逐项淘汰可能留下部分三元组、慢
   SSE 客户端与正常客户端共享失效式全量回读，以及冻结边界重启只能依赖旧 published 指针
   的问题。现在只接纳 manifest/SHA 合格的完整三策略驻留日期，冷区整日装载和淘汰，慢客户
@@ -555,6 +578,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未移除产品能力、API、策略、行情源、DeepSeek 能力或 Web 资源；只收敛旧文档口径和
+  集成已有 B/C/D 实现包，避免形成第二套 schema 或公共接缝。
+
 - 移除活动流水线对 `SnapshotRepository.publish/latest`、`published/` 草稿 JSON 和
   `published_snapshots` 当前指针的读写；保留旧 SQLite 表仅供完整旧 release 忽略，不再
   作为 v17 事实源。移除 SSE 正常路径对推荐和 overlay 的完整 HTTP 回读。
@@ -642,6 +668,12 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- A3 集成批次验证：定向集成测试
+  `tests/unit/test_v17_columnar_changes.py tests/unit/test_v17_columnar_provider_adapter.py tests/unit/test_v2_market_data_normalize.py tests/unit/test_v2_market_data_merge.py tests/unit/test_v2_market_data_router.py tests/unit/application/test_candidate_features.py tests/unit/test_v2_deepseek_base.py tests/component/test_v2_deepseek.py tests/component/test_v2_deepseek_v4.py tests/component/test_youhua_deepseek_c2.py tests/unit/application/test_published_snapshots.py tests/unit/application/test_publisher.py tests/contract/test_v2_web_api.py tests/contract/test_v2_app_factory.py tests/contract/test_youhua_a2_public_skeleton.py tests/contract/test_youhua_contract_base.py`
+  通过 183 项；`make format-check`、`make lint`、`make type-check`、`make test`、
+  `make package` 和 `git diff --check` 均通过。仓库外 wheel 安装到 `/tmp/trader-wheel-a3`
+  后可导入 `trader`、读取 Web 模板/静态资源，并可执行 `trader.entrypoints.cli --help`。
 
 - G2 发布批次验证：仅读取 B2/C2/D2 报告和 B2 fixture，确认 A2/B2/C2/D2 均为
   `ready_for_gate=yes`；定向契约测试
@@ -884,6 +916,10 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- A3 已提供集成 handoff，但 G3 仍未发布；B3/C3/D3 必须在本 A3 提交之后分别完成集成态等价/
+  性能、DeepSeek 请求/降级和 P6/Web 专业复验。C3 preflight 当前明确 `ready_for_gate=no`，
+  原因是它需要 A3 集成提交作为测试目标。
 
 - G2 已发布但 A3 未开始；下一批才能按计划进入 A3 集成。当前工作树仍有 B/C/D 未暂存实现
   改动，本批只归档门禁发布判断，不解决其内部实现或全局质量失败。

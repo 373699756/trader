@@ -61,6 +61,7 @@ def test_duplicate_system_start_does_not_stop_running_history_pool() -> None:
         pipeline=Mock(),
         repository=Mock(),
         publisher=Mock(),
+        published_snapshots=Mock(),
         state=Mock(),
         market_cache=Mock(),
         history_pool=history_pool,

@@ -12,6 +12,7 @@ from trader.domain.market.models import (
     FeatureSnapshot,
 )
 
+MAX_PROMPT_EVIDENCE_PER_CANDIDATE = 12
 _INITIAL_LIMITS = {"market": 1, "tail": 1, "research": 3, "risk": 4, "news": 7}
 _MAXIMUM_LIMITS = {"market": 1, "tail": 1, "research": 5, "risk": 6, "news": 8}
 _FILL_ORDER = ("risk", "research", "tail", "news", "market")
@@ -36,12 +37,25 @@ _TTL_BY_CATEGORY = {
 }
 _SOURCE_QUALITY = {
     "exchange": 0,
+    "official_media": 1,
     "eastmoney_announcement": 1,
     "eastmoney_financial": 1,
     "eastmoney_pledge": 1,
     "eastmoney_unlock": 1,
     "eastmoney_news": 2,
 }
+_OFFICIAL_SOURCES = frozenset({"exchange", "official_media"})
+_TRUSTED_SOURCES = frozenset(
+    {
+        "exchange",
+        "official_media",
+        "eastmoney_announcement",
+        "eastmoney_financial",
+        "eastmoney_pledge",
+        "eastmoney_unlock",
+        "eastmoney_news",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -70,10 +84,14 @@ def route_prompt_evidence(candidate: FeatureSnapshot) -> RoutedEvidence:
     for items in grouped.values():
         items.sort(key=_quality_key)
 
-    selected: dict[str, list[Evidence]] = {
-        category: grouped[category][: _INITIAL_LIMITS[category]] for category in _CATEGORY_ORDER
-    }
-    remaining_capacity = 16 - sum(len(items) for items in selected.values())
+    selected: dict[str, list[Evidence]] = {category: [] for category in _CATEGORY_ORDER}
+    remaining_capacity = MAX_PROMPT_EVIDENCE_PER_CANDIDATE
+    for category in _CATEGORY_ORDER:
+        initial = grouped[category][: min(_INITIAL_LIMITS[category], remaining_capacity)]
+        selected[category].extend(initial)
+        remaining_capacity -= len(initial)
+        if remaining_capacity <= 0:
+            break
     for category in _FILL_ORDER:
         if remaining_capacity <= 0:
             break
@@ -107,10 +125,9 @@ def _invalid_reason(item: Evidence, candidate: FeatureSnapshot, category: str | 
 
 
 def _deduplicate(items: list[tuple[str, Evidence]]) -> tuple[tuple[str, Evidence], ...]:
-    selected: dict[tuple[str, str, str], tuple[str, Evidence]] = {}
+    selected: dict[tuple[str, str], tuple[str, Evidence]] = {}
     for category, item in items:
-        content_hash = hashlib.sha256(item.title.strip().encode("utf-8")).hexdigest()
-        key = (item.evidence_type, item.published_at.isoformat(), content_hash)
+        key = (category, event_key(item))
         current = selected.get(key)
         if current is None or _quality_key(item) < _quality_key(current[1]):
             selected[key] = (category, item)
@@ -122,4 +139,41 @@ def _quality_key(item: Evidence) -> tuple[int, str, str]:
     return (_SOURCE_QUALITY.get(item.source, 10), received_at, item.evidence_id)
 
 
-__all__ = ["RoutedEvidence", "route_prompt_evidence"]
+def event_key(item: Evidence) -> str:
+    normalized_title = " ".join(item.title.strip().lower().split())
+    content_hash = hashlib.sha256(normalized_title.encode("utf-8")).hexdigest()[:24]
+    return f"{item.published_at.isoformat()}:{content_hash}"
+
+
+def source_tier(item: Evidence) -> str:
+    if item.source in _OFFICIAL_SOURCES:
+        return "official"
+    if item.source in _TRUSTED_SOURCES:
+        return "trusted"
+    return "soft"
+
+
+def evidence_quality(
+    evidence: tuple[Evidence, ...], evidence_ids: tuple[str, ...], *, conflicted: bool = False
+) -> float:
+    if conflicted:
+        return 0.25
+    selected = [item for item in evidence if item.evidence_id in set(evidence_ids)]
+    if any(source_tier(item) == "official" for item in selected):
+        return 1.0
+    trusted_sources = {item.source for item in selected if source_tier(item) == "trusted"}
+    if len(trusted_sources) >= 2:
+        return 0.85
+    if len(trusted_sources) == 1:
+        return 0.65
+    return 0.4 if selected else 0.0
+
+
+__all__ = [
+    "MAX_PROMPT_EVIDENCE_PER_CANDIDATE",
+    "RoutedEvidence",
+    "event_key",
+    "evidence_quality",
+    "route_prompt_evidence",
+    "source_tier",
+]

@@ -30,6 +30,15 @@ _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abando
 _CALL_TERMINALS = frozenset({"success", "failed", "abandoned"})
 _CANDIDATE_TERMINALS = frozenset({"applied", "abstain", "rejected", "late"})
 _EMERGENCY_REASONS = frozenset({"new_high_risk", "freeze_boundary_change"})
+_SOFT_BUCKET_LIMITS = {
+    "today": 22,
+    "tomorrow": 14,
+    "d25": 12,
+    "long": 0,
+    "shared_preheat": 10,
+    "emergency": 5,
+}
+_CHALLENGER_SOFT_LIMIT = 8
 
 SCHEMA_VERSION = 3
 
@@ -252,6 +261,8 @@ class DeepSeekBudgetStore:
         _require_aware(requested_at, "budget requested_at")
         trade_date = requested_at.date().isoformat()
         requested_bucket = "emergency" if emergency else (bucket or strategy.value)
+        if strategy is Strategy.LONG or requested_bucket == "long":
+            return BudgetReservation(False, "", requested_bucket, "long_not_allowed")
         if requested_bucket not in self._limits:
             return BudgetReservation(False, "", requested_bucket, "unknown_bucket")
         if model_role not in {"primary", "challenger"}:
@@ -279,6 +290,10 @@ class DeepSeekBudgetStore:
             if bucket_used >= self._limits[requested_bucket]:
                 connection.rollback()
                 return BudgetReservation(False, "", requested_bucket, "bucket_limit", stage)
+            soft_limit = _SOFT_BUCKET_LIMITS.get(requested_bucket)
+            if soft_limit is not None and bucket_used >= soft_limit:
+                connection.rollback()
+                return BudgetReservation(False, "", requested_bucket, "soft_bucket_limit", stage)
             if requested_bucket == "emergency":
                 normal_used = _count(
                     connection,
@@ -298,6 +313,14 @@ class DeepSeekBudgetStore:
                     connection.rollback()
                     return BudgetReservation(False, "", requested_bucket, "stage_limit", stage)
             if model_role == "challenger":
+                challenger_total = _count(
+                    connection,
+                    "trade_date = ? AND model_role = 'challenger'",
+                    (trade_date,),
+                )
+                if challenger_total >= _CHALLENGER_SOFT_LIMIT:
+                    connection.rollback()
+                    return BudgetReservation(False, "", requested_bucket, "challenger_soft_limit", stage)
                 challenger_used = _count(
                     connection,
                     "trade_date = ? AND strategy = ? AND model_role = 'challenger'",

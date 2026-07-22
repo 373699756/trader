@@ -73,7 +73,9 @@ def test_publisher_emits_overlay_without_republishing_snapshot(utc_now) -> None:
     event = publisher.publish_overlay(overlay)
 
     assert event.event_type == "overlay_patch"
+    assert event.data["patch_schema_version"] == 2
     assert event.data["schema_version"] == 2
+    assert event.data["projection_version"] == "frozen-1"
     assert event.data["snapshot_id"] == "frozen-1"
     assert event.data["overlay_version"] == "overlay-1"
 
@@ -117,7 +119,11 @@ def test_publisher_reports_bounded_sse_and_today_score_latency(utc_now, applicat
     event = publisher.events_after(0)
     assert event is not None
     assert event[0].event_type == "recommendation_patch"
+    assert event[0].data["patch_schema_version"] == 2
     assert event[0].data["schema_version"] == 2
+    assert event[0].data["projection_version"] == "today-1"
+    assert event[0].data["base_projection_version"] is None
+    assert event[0].data["removed_codes"] == []
     assert event[0].data["upserts"][0]["code"] == "600001"
 
     status = publisher.status()

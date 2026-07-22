@@ -100,8 +100,10 @@ class PublishedSnapshotIndex:
             if not self._fits(delivery):
                 self._counters["rejected_oversize_views"] += 1
                 return
-            self._current[snapshot.strategy] = delivery
-            self._discard_mismatched_overlay(delivery)
+            current = self._current.get(snapshot.strategy)
+            if current is None or snapshot.trade_date >= current.trade_date:
+                self._current[snapshot.strategy] = delivery
+                self._discard_mismatched_overlay(delivery)
             self._counters["published"] += 1
             if snapshot.frozen and snapshot.strategy in self._HISTORICAL_STRATEGIES:
                 self._pending_committed[(snapshot.strategy, snapshot.trade_date)] = delivery

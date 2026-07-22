@@ -40,7 +40,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "策略验证" not in page
     assert "/static/dashboard.css?v=5" in page
     assert "/static/render.js?v=8" in page
-    assert "/static/dashboard.js?v=13" in page
+    assert "/static/dashboard.js?v=14" in page
     assert 'data-view="live"' in page
     assert "临时实时" in page
     assert 'class="runtime-error"' in page
@@ -54,6 +54,11 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "previous_trade_date_snapshot" not in dashboard
     assert "patchLiveRows" in dashboard
     assert "currentRow.replaceWith" in dashboard
+    assert "patch_schema_version === 2" in dashboard
+    assert "base_projection_version" in dashboard
+    assert "removed_codes" in dashboard
+    assert "rowIdentity" in dashboard
+    assert "overlay_projection_mismatch" in dashboard
     assert "payload.strategy !== strategy" in dashboard
     assert "CACHE_MAX_AGE_MS = 30000" in dashboard
     assert "budget.available === false" in dashboard

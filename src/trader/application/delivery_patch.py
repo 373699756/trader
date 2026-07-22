@@ -6,12 +6,18 @@ from trader.domain.recommendation.models import LiveOverlay, Recommendation, Rec
 
 
 def snapshot_patch(snapshot: RecommendationSnapshot, *, base_snapshot_id: str | None) -> dict[str, object]:
+    projection_version = snapshot.snapshot_id
     return {
+        "patch_schema_version": 2,
         "schema_version": 2,
+        "base_projection_version": base_snapshot_id,
         "base_snapshot_id": base_snapshot_id,
+        "projection_version": projection_version,
+        "etag": f"{projection_version}:{snapshot.trade_date}",
         "snapshot_id": snapshot.snapshot_id,
         "strategy": snapshot.strategy.value,
         "trade_date": snapshot.trade_date,
+        "view": "official" if snapshot.frozen else "live",
         "phase": snapshot.phase,
         "published_at": snapshot.published_at.isoformat(),
         "strategy_version": snapshot.strategy_version,
@@ -22,13 +28,16 @@ def snapshot_patch(snapshot: RecommendationSnapshot, *, base_snapshot_id: str | 
         "filtered_count": snapshot.filtered_count,
         "replace": True,
         "upserts": [_recommendation(item) for item in snapshot.recommendations],
+        "removed_codes": [],
         "removals": [],
     }
 
 
 def overlay_patch(overlay: LiveOverlay) -> dict[str, object]:
     return {
+        "patch_schema_version": 2,
         "schema_version": 2,
+        "projection_version": overlay.snapshot_id,
         "snapshot_id": overlay.snapshot_id,
         "strategy": overlay.strategy.value,
         "trade_date": overlay.trade_date,
@@ -43,6 +52,7 @@ def overlay_patch(overlay: LiveOverlay) -> dict[str, object]:
                 "source": quote.source,
                 "source_time": quote.source_time.isoformat(),
                 "quote_data_version": quote.data_version,
+                "data_age_seconds": round((overlay.observed_at - quote.source_time).total_seconds(), 3),
             }
             for code, quote in sorted(overlay.quotes.items())
         ],

@@ -969,11 +969,27 @@ def test_sse_expired_cursor_and_connection_limit() -> None:
 
     assert connected == ": connected\n\n"
     assert "event: resync_required" in first_event
+    assert '"patch_schema_version":2' in first_event
+    assert '"reason":"cursor_expired"' in first_event
     occupied = publisher.open_subscription(publisher.status()["last_sequence"])
     try:
         assert app.test_client().get("/api/events/stream").status_code == 503
     finally:
         publisher.unsubscribe(occupied.queue)
+
+
+def test_sse_reports_cursor_ahead_separately() -> None:
+    app, _publisher = _app(MemoryReadRepository(), history_size=2)
+
+    response = app.test_client().get("/api/events/stream", headers={"Last-Event-ID": "99"}, buffered=False)
+    connected = next(response.response).decode("utf-8")
+    first_event = next(response.response).decode("utf-8")
+    response.close()
+
+    assert connected == ": connected\n\n"
+    assert "event: resync_required" in first_event
+    assert '"patch_schema_version":2' in first_event
+    assert '"reason":"cursor_ahead"' in first_event
 
 
 def _app(

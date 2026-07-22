@@ -26,7 +26,8 @@ def event_stream_response(
         try:
             yield ": connected\n\n"
             if subscription.replay is None:
-                yield encode_sse(_resync_event(publisher, "cursor_expired"))
+                reason = "cursor_ahead" if after_sequence > publisher.last_sequence() else "cursor_expired"
+                yield encode_sse(_resync_event(publisher, reason))
             else:
                 for event in subscription.replay:
                     yield encode_sse(event)
@@ -52,7 +53,7 @@ def event_stream_response(
 
 def _resync_event(publisher: SnapshotPublisher, reason: str) -> PublishedEvent:
     sequence = publisher.last_sequence()
-    return PublishedEvent(sequence, "resync_required", {"reason": reason})
+    return PublishedEvent(sequence, "resync_required", {"patch_schema_version": 2, "reason": reason})
 
 
 __all__ = ["event_stream_response"]

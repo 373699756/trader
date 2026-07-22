@@ -118,7 +118,7 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
             PipelineTask.STOCK_RISK: 81,
             PipelineTask.REFERENCE_DATA: 2,
             PipelineTask.DEEPSEEK_CUTOFF: 1,
-            PipelineTask.FINAL_CANDIDATE_QUOTES: 1,
+            PipelineTask.FINAL_CANDIDATE_QUOTES: 2,
             PipelineTask.FREEZE: 2,
             PipelineTask.CLOSE_QUOTES: 1,
         }
