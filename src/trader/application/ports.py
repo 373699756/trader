@@ -180,6 +180,12 @@ class SnapshotRepositoryPort(Protocol):
     def observability_status(self) -> Mapping[str, object]: ...
 
 
+class CurrentSnapshotReaderPort(Protocol):
+    def latest(self, strategy: Strategy) -> RecommendationSnapshot | None: ...
+
+    def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None: ...
+
+
 class EventReaderPort(Protocol):
     def list_events(self, *, cursor: int, limit: int) -> Sequence[Mapping[str, object]]: ...
 
@@ -202,6 +208,7 @@ class EventAuditPort(EventReaderPort, Protocol):
 
 __all__ = [
     "Clock",
+    "CurrentSnapshotReaderPort",
     "CurrentQuoteReaderPort",
     "DeepSeekReviewPort",
     "EventAuditPort",

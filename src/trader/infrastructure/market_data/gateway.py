@@ -371,6 +371,10 @@ class MarketDataGateway(MarketGatewaySourcesMixin):
         with self._state_lock:
             return self._latest_snapshot
 
+    def current_quotes(self, codes: Sequence[str]) -> Sequence[MarketQuote]:
+        with self._state_lock:
+            return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+
     def health(self) -> Mapping[str, object]:
         now = self._monotonic()
         measured_at = self._wall_clock()

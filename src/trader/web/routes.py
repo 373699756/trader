@@ -122,8 +122,6 @@ def register_routes(app: Flask, services: WebServices) -> None:
                 snapshot,
                 top_n=top_n,
                 overlay=lookup.overlay,
-                fallback_date=lookup.fallback_date,
-                fallback_reason=lookup.fallback_reason,
                 requested_date=trade_date,
                 current_trade_date=lookup.current_trade_date,
                 historical=lookup.historical,

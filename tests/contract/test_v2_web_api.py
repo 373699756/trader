@@ -12,6 +12,7 @@ from trader.domain.models import (
     Board,
     DeepSeekReview,
     Evidence,
+    FilterAudit,
     LiveOverlay,
     LiveQuote,
     RecommendationSnapshot,
@@ -387,7 +388,7 @@ def test_live_draft_response_uses_matching_topk_overlay_and_overlay_etag(
     assert response.headers["ETag"] != f'"{draft.snapshot_id}"'
 
 
-def test_previous_trade_date_is_explicit_stale_fallback(
+def test_previous_trade_date_is_not_reused_for_current_recommendations(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -400,13 +401,16 @@ def test_previous_trade_date_is_explicit_stale_fallback(
     repository = MemoryReadRepository(latest={Strategy.TODAY: previous})
     payload = _app(repository, now=NOW)[0].test_client().get("/api/recommendations/today").get_json()
 
-    assert payload["snapshot_id"] == "previous-freeze"
+    assert payload["status"] == "not_ready"
+    assert payload["snapshot_id"] is None
+    assert payload["trade_date"] is None
+    assert payload["items"] == []
     assert payload["stale"] is True
-    assert payload["fallback_date"] == "2026-07-15"
-    assert payload["fallback_reason"] == "previous_trade_date_snapshot"
+    assert payload["fallback_date"] is None
+    assert payload["fallback_reason"] is None
     assert payload["current_trade_date"] == "2026-07-16"
     assert payload["historical"] is False
-    assert "previous_trade_date_fallback" in payload["degraded_reasons"]
+    assert payload["degraded_reasons"] == ["snapshot_not_ready"]
 
 
 def test_explicit_historical_query_returns_previous_trade_date_snapshot(
@@ -430,7 +434,7 @@ def test_explicit_historical_query_returns_previous_trade_date_snapshot(
     assert payload["frozen"] is True
 
 
-def test_fallback_etag_changes_with_current_trade_date(
+def test_previous_trade_date_never_produces_current_etag(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -445,9 +449,103 @@ def test_fallback_etag_changes_with_current_trade_date(
     first = _app(repository, now=NOW)[0].test_client().get("/api/recommendations/today")
     second = _app(repository, now=NOW.replace(day=17))[0].test_client().get("/api/recommendations/today")
 
-    assert first.headers["ETag"] != second.headers["ETag"]
+    assert "ETag" not in first.headers
+    assert "ETag" not in second.headers
+    assert first.get_json()["status"] == "not_ready"
+    assert second.get_json()["status"] == "not_ready"
     assert first.get_json()["current_trade_date"] == "2026-07-16"
     assert second.get_json()["current_trade_date"] == "2026-07-17"
+
+
+def test_current_query_reads_snapshot_and_overlay_from_runtime_index(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    snapshot = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
+    quote = snapshot.recommendations[0].features.quote
+    overlay = LiveOverlay(
+        snapshot_id=snapshot.snapshot_id,
+        strategy=Strategy.TODAY,
+        trade_date=snapshot.trade_date,
+        version="runtime-overlay-v1",
+        observed_at=NOW,
+        quotes={
+            quote.code: LiveQuote(
+                code=quote.code,
+                price=quote.price + 1.0,
+                pct_change=7.5,
+                source="runtime",
+                source_time=NOW,
+                received_time=NOW,
+                data_version="runtime-v1",
+            )
+        },
+    )
+    persisted = CountingReadRepository()
+    runtime = MemoryReadRepository(
+        latest={Strategy.TODAY: snapshot},
+        overlays={(Strategy.TODAY, snapshot.trade_date): overlay},
+    )
+    queries = RecommendationQueries(
+        persisted,
+        persisted,
+        now=lambda: NOW,
+        current_snapshot_reader=runtime,
+    )
+
+    lookup = queries.recommendation(Strategy.TODAY)
+
+    assert lookup.snapshot is not None
+    assert lookup.snapshot.snapshot_id == snapshot.snapshot_id
+    assert lookup.snapshot.replay_input is None
+    assert lookup.overlay == overlay
+    assert persisted.latest_calls == 0
+    assert persisted.overlay_calls == 0
+
+
+def test_historical_snapshots_are_preloaded_once_as_compact_delivery_views(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    snapshot = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        frozen=True,
+        filter_details=(FilterAudit("600001", "stale_quote", "<= 20s", 21.0, "fixture", NOW),),
+    )
+    repository = CountingReadRepository(
+        frozen={(Strategy.TOMORROW, snapshot.trade_date): snapshot},
+    )
+    queries = RecommendationQueries(repository, repository, now=lambda: NOW)
+
+    queries.initialize()
+    first = queries.recommendation(Strategy.TOMORROW, snapshot.trade_date)
+    second = queries.recommendation(Strategy.TOMORROW, snapshot.trade_date)
+
+    assert first.snapshot is second.snapshot
+    assert first.snapshot is not None
+    assert first.snapshot.filter_details == ()
+    assert repository.frozen_loads == {(Strategy.TOMORROW, snapshot.trade_date): 1}
+
+
+def test_missing_history_is_not_cached_across_later_freeze(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    snapshot = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.D25),
+        frozen=True,
+    )
+    repository = CountingReadRepository()
+    queries = RecommendationQueries(repository, repository, now=lambda: NOW)
+
+    missing = queries.recommendation(Strategy.D25, snapshot.trade_date)
+    repository._frozen[(Strategy.D25, snapshot.trade_date)] = snapshot
+    ready = queries.recommendation(Strategy.D25, snapshot.trade_date)
+
+    assert missing.snapshot is None
+    assert ready.snapshot is not None
+    assert ready.snapshot.snapshot_id == snapshot.snapshot_id
+    assert repository.frozen_loads[(Strategy.D25, snapshot.trade_date)] == 2
 
 
 def test_historical_snapshot_has_exact_identity_and_current_quote_overlay(
@@ -821,3 +919,24 @@ class MemoryReadRepository:
 
     def recover(self) -> Mapping[str, int]:
         return {}
+
+
+class CountingReadRepository(MemoryReadRepository):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.latest_calls = 0
+        self.overlay_calls = 0
+        self.frozen_loads: dict[tuple[Strategy, str], int] = {}
+
+    def latest(self, strategy: Strategy) -> RecommendationSnapshot | None:
+        self.latest_calls += 1
+        return super().latest(strategy)
+
+    def load_frozen(self, strategy: Strategy, trade_date: str) -> RecommendationSnapshot | None:
+        key = (strategy, trade_date)
+        self.frozen_loads[key] = self.frozen_loads.get(key, 0) + 1
+        return super().load_frozen(strategy, trade_date)
+
+    def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
+        self.overlay_calls += 1
+        return super().load_live_overlay(strategy, trade_date)

@@ -181,6 +181,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 overlay = self._repository.load_live_overlay(strategy, latest.trade_date)
                 if overlay is not None and overlay.snapshot_id == latest.snapshot_id:
                     self._live_overlays[(strategy, latest.trade_date)] = overlay
+                    self._state.restore_overlay(overlay)
         now = self._now()
         trade_day = trade_date_at(now)
         trade_day_iso = trade_day.isoformat()

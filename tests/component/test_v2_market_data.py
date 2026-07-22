@@ -2571,6 +2571,26 @@ def test_feature_service_current_quote_index_prefers_latest_targeted_quote() -> 
     assert quotes["600001"].data_version == "targeted-v2"
 
 
+def test_feature_service_current_quote_index_reads_canonical_quote_before_feature_commit() -> None:
+    canonical_quote = replace(
+        _quote(),
+        price=14.0,
+        pct_change=6.0,
+        data_version="canonical-v2",
+    )
+    service = MarketFeatureService(
+        StaticGateway((canonical_quote,)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+    )
+
+    quotes = service.current_quotes(("600001",))
+
+    assert quotes["600001"].price == 14.0
+    assert quotes["600001"].pct_change == 6.0
+    assert quotes["600001"].data_version == "canonical-v2"
+
+
 def test_feature_builder_does_not_compute_limit_proximity_when_limit_is_inapplicable() -> None:
     quote = replace(
         _quote(),
@@ -3869,6 +3889,10 @@ class StaticGateway:
 
     def fetch_market(self, **_kwargs):
         return self._quotes
+
+    def current_quotes(self, codes):
+        requested = set(codes)
+        return tuple(quote for quote in self._quotes if quote.code in requested)
 
     @staticmethod
     def health():

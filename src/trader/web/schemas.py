@@ -24,8 +24,6 @@ def snapshot_envelope(
     *,
     top_n: int,
     overlay: LiveOverlay | None = None,
-    fallback_date: str | None = None,
-    fallback_reason: str | None = None,
     requested_date: str | None = None,
     current_trade_date: str | None = None,
     historical: bool = False,
@@ -69,8 +67,8 @@ def snapshot_envelope(
         "board_batches": _metadata_list(snapshot.metadata.get("board_batches")),
         "selection_skips": _metadata_list(snapshot.metadata.get("selection_skips")),
         "weights": _snapshot_weights(snapshot),
-        "fallback_date": fallback_date,
-        "fallback_reason": fallback_reason,
+        "fallback_date": None,
+        "fallback_reason": None,
         "live_overlay": _live_overlay(overlay) if overlay is not None else None,
         "items": [
             _recommendation(

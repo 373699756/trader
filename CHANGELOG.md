@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户本轮性能与实时字段回归：新增当前快照/overlay 必须从运行态索引读取且不得触碰持久化仓库、最近历史冻结只预热一次并生成紧凑交付视图、未冻结日期不得负缓存，以及运行态 overlay 随刷新/收盘恢复的契约与集成覆盖。
+
 - 用户补充反馈回归：新增“当前日期只有昨日冻结时必须返回空 not_ready 且无 ETag”、前端不再接受或提示上一交易日 current fallback，以及 P2 特征尚未提交时仍可从已合并规范行情读取历史股票当日价的测试。
 
 - 用户诉求：把 `docs/` 下分散的需求、实施计划、问题单、架构清单和运维资料合并为两份文档。现状审计确认目录内共有 8 份文件、3623 行，活动契约、历史执行记录和未完成 v17 路线相互交叉；新增并相互链接 `software-business-design.md`（产品、架构、运行、API/UI、运维、验收和工程路线的唯一权威）与 `recommendation-strategy.md`（候选、过滤、因子、评分、DeepSeek、融合、动作与 TopK 的唯一权威），契约测试禁止 `docs/` 再出现第三份并行业务文档。
@@ -87,6 +89,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 推荐 HTTP 当前路径改为读取线程安全的运行态快照与 overlay；服务启动在接收 HTTP 前预热 today/tomorrow/d25 最近 20 日冻结投影，热历史请求不再逐次打开 SQLite、校验哈希和读取完整 JSON。交付投影保留推荐项、评分、证据、锚点和摘要元数据，但不复制逐股全市场筛选审计与冻结重放输入；冻结文件、哈希、数据库和离线核验对象保持不变。
+
 - 当前策略查询只接受 `trade_date == current_trade_date` 的快照；今天尚无快照时直接返回空 `not_ready`，昨日冻结仍可通过日期选择作为历史查看。历史当日行情索引在特征批次尚未提交时可只读复用行情网关已经成功合并的规范报价，不发起新请求。前端资源版本升至 `dashboard.js?v=9`，移除上一交易日 current fallback 的缓存身份和提示分支。
 
 - 文档治理从单一综合需求文件调整为职责互斥的双文档模型；`AGENTS.md`、README 和交付契约测试同步使用新路径与更新边界。合并保留五来源、双冻结、六阶段 256 MiB 目标、v16 三板九组权重、七项本地风险、DeepSeek 188 次预算、68/32 融合、动作阈值、集中度和 long 观察公式，并把尚未完成的 v17 P1-P6 发布池/Web 热路径/冻结检查点/性能 CLI 明确登记为下一完整工程章节；本批不改变任何运行配置、代码、公式或产品行为。
@@ -164,6 +168,8 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复“已经读取内存但接口仍明显延迟”的实际错配：此前仅历史股票的当前报价来自内存，推荐快照仍在每个 HTTP 请求中读取并校验冻结 JSON，且 10 行表格响应携带最多 1398 条无关筛选明细，现场 TTFB 为 0.94-1.80 秒；现在快照、overlay 和报价均走内存热路径，历史交付响应只保留页面所需对象。同步确认“今日涨幅”取当日实时报价 `pct_change`，“锚点至今”由同一实时报价与冻结锚点计算，不再读取锚点日涨幅代替实时值。
+
 - 修复当前交易日没有发布快照时仍显示上一交易日冻结结果和“仅供观察”提示的问题；同时修复首轮历史行情读取只覆盖已提交特征/候选缓存，在现场全市场事件过期但规范行情已成功合并时仍导致“锚点至今”为空的问题。
 
 - 修复历史响应在当日行情缺失时把冻结 `pct_change` 回填到“今日涨跌”的字段混用：锚点价格和锚点涨跌继续保持冻结值；当日行情存在时返回真实今日涨跌并计算锚点至今，不存在或不是当前上海日期时返回 `null`，页面显示 `-`，不再伪造锚点值。根因是查询层只扫描当前同策略推荐快照且序列化层对缺失实时行情回退到冻结报价。
@@ -240,6 +246,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从 Web 交付投影移除全市场逐股 `filter_details` 和 `replay_input` 大对象；这些对象仍完整保存在 committed 冻结 JSON/SQLite 身份链并供离线审计、恢复和哈希核验使用，没有删除或改写任何历史数据。
+
 - 移除浏览器对 `previous_trade_date_snapshot` current fallback 的合法身份判断、冻结状态标签和警告提示；不删除昨日冻结文件、历史日期入口或任何审计数据。
 
 - 删除已被两份权威文档吸收的 8 个旧文档文件及空的 `architecture/`、`issues/`、`operations/` 层级。逐批实现历史继续由本 Changelog 和 Git 历史保存，2026-07-17 审计、2026-07-20 外部项目比较、迁移清单和最终验收记录的仍有效结论已归入软件业务设计文档，不再保留会与活动契约竞争的并行副本。
@@ -277,7 +285,9 @@ All notable changes to this project are documented here.
 
 ### Verification
 
-- 用户补充反馈的失败先行回归已复现并转绿：当前查询不会复用昨日快照或生成 current ETag，页面包不再包含上一交易日 fallback 提示，历史报价读取在 P2 特征提交前可命中当日规范行情。完整门禁与最终 wheel 验收见本批提交前复验记录。
+- 本地真实运行库预热 5 个历史视图耗时 3469.498ms，发生在 HTTP 接收前；同一工作树 Flask 热请求实测当前空响应 3.694ms/572B、tomorrow 2026-07-20 历史 3.030ms/92,923B、d25 同日历史 3.832ms/107,395B，均低于 200ms 当前/驻留历史预算，且响应 `filter_details` 为 0。现场旧进程对相同有效历史的修复前 TTFB 为 0.942-1.800 秒、响应最大 350,970B；有效样例同时返回实时“今日涨幅”和独立“锚点至今”。完整门禁、wheel 与提交后运行态复验见本批最终记录。
+
+- 用户补充反馈的失败先行回归已复现并转绿：当前查询不会复用昨日快照或生成 current ETag，页面包不再包含上一交易日 fallback 提示，历史报价读取在 P2 特征提交前可命中当日规范行情。`make format-check`、`make lint`、134 个源码模块 mypy、完整 584 项 pytest 与隔离 `make package` 通过，pytest 仅保留 10 条既有未知测试模型名 RuntimeWarning；最终 wheel 在仓库外覆盖安装后通过 `pip check`、配置校验、v9 缓存版本及模板、4 个 CSS、2 个 JavaScript、2 个 SVG 共 9 项资源读取。HTML/CSS 布局未变，桌面三档沿用同布局资源已通过基线。
 
 - 本批双文档结构契约、旧路径残留扫描、相对链接、`git diff --check` 和本批 Python 文件 Ruff format/lint 通过；全量 Ruff lint、134 个源码文件 mypy、584 个 pytest、sdist/wheel 构建通过。wheel 在仓库外临时虚拟环境安装后可从隔离路径导入，模板、CSS、两个 JavaScript 和两个 SVG 资源齐全，`trader-cli --help`、`validate-config` 与 `pip check` 通过。
 
@@ -349,6 +359,8 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 2026-07-21 的 today committed 快照实际为 0 条推荐，因此该日期不会凭空出现可填写两列的股票行；2026-07-20 的 tomorrow/d25 和 2026-07-17 历史已有推荐项并已现场验证实时列。最近 20 日以外首次访问仍是受哈希校验保护的冷读，随后进入 60 视图 LRU；完整 v17 P1-P6 分池、冷读 single-flight 和固定性能 CLI 仍按权威文档作为独立原子章节，不在本次缺陷批次内宣称完成。
 
 - 当前无快照时页面会按用户要求保持空状态；这不会修复上游快照未发布本身。现场观测到当日规范行情已有 5,548 行、但全市场事件连续过期且 `snapshots_published=0`，属于独立流水线上游问题，后续仍需按事件 deadline、历史覆盖与候选形成链排查。本批只保证不再用昨日结果掩盖该状态。
 

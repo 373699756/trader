@@ -150,7 +150,12 @@ class MarketFeatureService(
         self._tushare_reference_version_order: dict[str, tuple[datetime, datetime, str]] = {}
 
     def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]:
-        quotes = self._candidate_quote_snapshot(_normalize_codes(codes))
+        normalized = _normalize_codes(codes)
+        resolved = {quote.code: quote for quote in self._candidate_quote_snapshot(normalized)}
+        for quote in self._gateway.current_quotes(normalized):
+            current = resolved.get(quote.code)
+            if current is None or _quote_version(quote) > _quote_version(current):
+                resolved[quote.code] = quote
         return {
             quote.code: LiveQuote(
                 code=quote.code,
@@ -161,7 +166,8 @@ class MarketFeatureService(
                 received_time=quote.received_time,
                 data_version=quote.data_version,
             )
-            for quote in quotes
+            for code in normalized
+            if (quote := resolved.get(code)) is not None
         }
 
     def fetch_market_features(

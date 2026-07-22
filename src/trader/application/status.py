@@ -6,7 +6,7 @@ import threading
 from collections.abc import Mapping
 from datetime import datetime
 
-from trader.domain.models import RecommendationSnapshot, Strategy
+from trader.domain.models import LiveOverlay, RecommendationSnapshot, Strategy
 
 
 class RuntimeState:
@@ -17,6 +17,7 @@ class RuntimeState:
         self._last_error = ""
         self._last_tick_at: datetime | None = None
         self._snapshots: dict[Strategy, RecommendationSnapshot] = {}
+        self._live_overlays: dict[tuple[Strategy, str], LiveOverlay] = {}
         self._strategy_degraded_reasons: dict[Strategy, tuple[str, ...]] = {}
         self._frozen: set[tuple[Strategy, str]] = set()
         self._strategy_latency_ms: dict[Strategy, float] = {}
@@ -59,17 +60,20 @@ class RuntimeState:
     def publish(self, snapshot: RecommendationSnapshot) -> None:
         with self._lock:
             self._snapshots[snapshot.strategy] = snapshot
+            self._discard_mismatched_overlay(snapshot)
             self._strategy_degraded_reasons.pop(snapshot.strategy, None)
             self._counters["snapshots_published"] += 1
 
     def restore_snapshot(self, snapshot: RecommendationSnapshot) -> None:
         with self._lock:
             self._snapshots[snapshot.strategy] = snapshot
+            self._discard_mismatched_overlay(snapshot)
 
     def mark_frozen(self, snapshot: RecommendationSnapshot) -> None:
         with self._lock:
             self._frozen.add((snapshot.strategy, snapshot.trade_date))
             self._snapshots[snapshot.strategy] = snapshot
+            self._discard_mismatched_overlay(snapshot)
             self._counters["snapshots_frozen"] += 1
 
     def restore_frozen(self, strategy: Strategy, trade_date: str) -> None:
@@ -79,6 +83,33 @@ class RuntimeState:
     def latest(self, strategy: Strategy) -> RecommendationSnapshot | None:
         with self._lock:
             return self._snapshots.get(strategy)
+
+    def publish_overlay(self, overlay: LiveOverlay) -> None:
+        with self._lock:
+            snapshot = self._snapshots.get(overlay.strategy)
+            if (
+                snapshot is not None
+                and snapshot.trade_date == overlay.trade_date
+                and snapshot.snapshot_id == overlay.snapshot_id
+            ):
+                self._live_overlays[(overlay.strategy, overlay.trade_date)] = overlay
+
+    def restore_overlay(self, overlay: LiveOverlay) -> None:
+        self.publish_overlay(overlay)
+
+    def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
+        with self._lock:
+            return self._live_overlays.get((strategy, trade_date))
+
+    def _discard_mismatched_overlay(self, snapshot: RecommendationSnapshot) -> None:
+        stale_keys = tuple(
+            key
+            for key, overlay in self._live_overlays.items()
+            if key[0] is snapshot.strategy
+            and (key[1] != snapshot.trade_date or overlay.snapshot_id != snapshot.snapshot_id)
+        )
+        for key in stale_keys:
+            self._live_overlays.pop(key, None)
 
     def is_frozen(self, strategy: Strategy, trade_date: str) -> bool:
         with self._lock:

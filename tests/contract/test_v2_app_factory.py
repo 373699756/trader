@@ -39,7 +39,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "策略验证" not in page
     assert "/static/dashboard.css?v=4" in page
     assert "/static/render.js?v=6" in page
-    assert "/static/dashboard.js?v=8" in page
+    assert "/static/dashboard.js?v=9" in page
     assert 'class="runtime-error"' in page
     assert "payloads: new Map()" in dashboard
     assert "inflight: new Map()" in dashboard
@@ -47,7 +47,8 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'Promise.all([loadDates(), loadRecommendations("strategy")])' in dashboard
     assert "displayableCachedPayload" in dashboard
     assert "cacheIdentityValid" in dashboard
-    assert "上一交易日快照" in dashboard
+    assert "上一交易日快照" not in dashboard
+    assert "previous_trade_date_snapshot" not in dashboard
     assert "patchLiveRows" in dashboard
     assert "currentRow.replaceWith" in dashboard
     assert "payload.strategy !== strategy" in dashboard

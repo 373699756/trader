@@ -223,8 +223,10 @@ def refresh_live_overlays(
             persisted = pipeline._repository.load_live_overlay(strategy, trade_date)
             if persisted is not None and persisted.snapshot_id == snapshot.snapshot_id:
                 pipeline._live_overlays[key] = persisted
+                pipeline._state.restore_overlay(persisted)
             continue
         pipeline._live_overlays[key] = overlay
+        pipeline._state.publish_overlay(overlay)
         pipeline._publisher.publish_overlay(overlay)
 
 

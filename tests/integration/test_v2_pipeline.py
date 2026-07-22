@@ -267,6 +267,7 @@ def test_frozen_topk_uses_recoverable_overlay_and_keeps_close_value(
     assert isinstance(overlay, LiveOverlay)
     assert overlay.snapshot_id == frozen.snapshot_id
     assert overlay.closing is False
+    assert state.load_live_overlay(Strategy.TOMORROW, "2026-07-16") == overlay
     market_data.candidate_unavailable = True
     clock.set(datetime.fromisoformat("2026-07-16T14:50:20+08:00"))
     pipeline.run_once(clock.now())
@@ -276,6 +277,7 @@ def test_frozen_topk_uses_recoverable_overlay_and_keeps_close_value(
     pipeline.run_once(clock.now())
     closing = repository.overlays[(Strategy.TOMORROW, "2026-07-16")]
     assert closing.closing is True
+    assert state.load_live_overlay(Strategy.TOMORROW, "2026-07-16") == closing
     clock.set(datetime.fromisoformat("2026-07-16T15:01:00+08:00"))
     pipeline.run_once(clock.now())
     assert repository.overlays[(Strategy.TOMORROW, "2026-07-16")].version == closing.version

@@ -190,10 +190,7 @@
     }
     if (payload.status === "not_ready") return true;
     if (payload.historical === true || !payload.current_trade_date) return false;
-    if (payload.trade_date === payload.current_trade_date) return true;
-    return payload.stale === true
-      && payload.fallback_date === payload.trade_date
-      && payload.fallback_reason === "previous_trade_date_snapshot";
+    return payload.trade_date === payload.current_trade_date;
   }
 
   function prefetchStrategies() {
@@ -209,9 +206,7 @@
     els.filteredCount.textContent = String(payload.filtered_count || 0);
     els.dataSource.textContent = items[0] && items[0].source ? items[0].source : "-";
     els.strategyVersion.textContent = payload.strategy_version || "-";
-    els.freezeStatus.textContent = payload.fallback_date
-      ? `上一交易日 ${payload.fallback_date}`
-      : payload.frozen ? "已冻结" : "实时草稿";
+    els.freezeStatus.textContent = payload.status === "not_ready" ? "未就绪" : payload.frozen ? "已冻结" : "实时草稿";
     const historical = payload.historical === true;
     const definition = historical ? window.TraderRender.historyTable() : window.TraderRender.currentTable();
     els.recommendationTable.classList.toggle("is-history", historical);
@@ -227,9 +222,7 @@
     } else {
       els.tableBody.innerHTML = window.TraderRender.rows(items, historical);
     }
-    if (payload.fallback_date) {
-      setNotice(`当前交易日尚无快照，显示上一交易日快照 ${payload.fallback_date}，仅供观察`, "warn");
-    } else if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
+    if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
     else if ((payload.degraded_reasons || []).length) setNotice(`降级：${payload.degraded_reasons.join("、")}`, "warn");
     else if (payload.frozen) setNotice(`已冻结于 ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
     else setNotice(`快照 ${window.TraderRender.formatDateTime(payload.published_at)} · ${payload.fusion_mode}`, "ok");
@@ -323,7 +316,7 @@
       const score = state.payload && state.payload.published_at;
       els.scoreTime.textContent = score ? window.TraderRender.formatTime(score) : "-";
       els.headerFreeze.textContent = state.payload
-        ? state.payload.fallback_date ? "上一交易日" : state.payload.frozen ? "已冻结" : "草稿"
+        ? state.payload.status === "not_ready" ? "未就绪" : state.payload.frozen ? "已冻结" : "草稿"
         : "-";
       reconcileRecommendationIdentity(payload);
       updateQuoteAge();

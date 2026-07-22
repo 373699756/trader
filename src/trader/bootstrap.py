@@ -263,22 +263,29 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         long_codes=tuple(item.code for item in watchlist.items),
         long_target_prices={item.code: item.target_price for item in watchlist.items},
     )
+    queries = RecommendationQueries(
+        repository,
+        repository,
+        now=now,
+        current_quote_reader=market_data,
+        current_snapshot_reader=state,
+    )
     supervisor = RuntimeSupervisor(
         pipeline,
         now=now,
-        initializers=(pipeline.initialize, budget.initialize, lambda: budget.recover_incomplete(now())),
+        initializers=(
+            pipeline.initialize,
+            queries.initialize,
+            budget.initialize,
+            lambda: budget.recover_incomplete(now()),
+        ),
         interval_seconds=scheduler_interval_seconds,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
         record_error=state.record_error,
     )
     app = create_app(
         status_provider=pipeline.status,
-        queries=RecommendationQueries(
-            repository,
-            repository,
-            now=now,
-            current_quote_reader=market_data,
-        ),
+        queries=queries,
         publisher=publisher,
         api_config=WebApiConfig(
             default_top_n=settings.api.default_top_n,
