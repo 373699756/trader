@@ -64,8 +64,10 @@
     flex: 1 0 auto;
   }
 
-  .current-view-status {
-    justify-content: space-between;
+  .strategy-choice {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 7px;
   }
 
   .date-control {

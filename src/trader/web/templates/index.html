@@ -6,9 +6,10 @@
     <meta name="color-scheme" content="dark" />
     <title>A股策略看板</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='6') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='7') }}" />
     <script defer src="{{ url_for('static', filename='render.js', v='8') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard.js', v='16') }}"></script>
+    <script defer src="{{ url_for('static', filename='selection.js', v='1') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard.js', v='17') }}"></script>
   </head>
   <body>
     <header class="app-header">
@@ -38,15 +39,16 @@
 
     <main class="workspace">
       <section class="control-band" aria-label="策略和日期">
-        <nav class="strategy-tabs" role="tablist" aria-label="推荐策略">
-          <button class="strategy-tab is-active" type="button" role="tab" aria-selected="true" data-strategy="today">今早</button>
-          <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="tomorrow">明日</button>
-          <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="d25">2-5日</button>
-          <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="long">长期</button>
-        </nav>
-        <div class="current-view-status" role="status" aria-live="polite" aria-label="当前推荐状态">
-          <span>当前推荐</span>
-          <strong id="currentViewStatus">正在判断</strong>
+        <div class="strategy-choice">
+          <nav class="strategy-tabs" role="tablist" aria-label="推荐策略" aria-describedby="strategyDescription">
+            <button class="strategy-tab is-active" type="button" role="tab" aria-selected="true" data-strategy="today">今早</button>
+            <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="tomorrow">明日</button>
+            <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="d25">2-5日</button>
+            <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="long">长期</button>
+          </nav>
+          <p id="strategyDescription" class="strategy-description" aria-live="polite">
+            盘中短线 · 面向 T+1 · 11:20 冻结
+          </p>
         </div>
         <label class="date-control">
           <span>推荐日期</span>
@@ -61,15 +63,15 @@
         <div class="summary-item"><span>可执行</span><strong id="executableCount">-</strong></div>
         <div class="summary-item"><span>过滤数</span><strong id="filteredCount">-</strong></div>
         <div class="summary-item"><span>行情源</span><strong id="dataSource">-</strong></div>
-        <div class="summary-item"><span>评分版本</span><strong id="strategyVersion">-</strong></div>
-        <div class="summary-item"><span>冻结状态</span><strong id="freezeStatus">-</strong></div>
-        <div class="summary-item"><span>路由健康</span><strong id="routeHealth">-</strong></div>
+        <div class="summary-item"><span>最高评分</span><strong id="topScore">-</strong></div>
+        <div class="summary-item"><span>模型复核</span><strong id="modelReview">-</strong></div>
+        <div class="summary-item"><span>数据状态</span><strong id="dataQuality">-</strong></div>
       </section>
 
       <div id="notice" class="notice" data-level="idle" role="status">正在读取推荐快照</div>
 
       <section class="table-region" aria-label="正式推荐列表">
-        <h2 class="table-title">正式推荐</h2>
+        <h2 id="tableTitle" class="table-title">正式推荐</h2>
         <div class="table-scroll">
           <table id="recommendationTable">
             <colgroup id="tableColumns"></colgroup>
@@ -81,18 +83,6 @@
         </div>
       </section>
 
-      <section id="watchRegion" class="table-region watch-region" aria-label="观察列表" hidden>
-        <h2 class="table-title">观察列表</h2>
-        <div class="table-scroll">
-          <table id="watchTable">
-            <colgroup id="watchColumns"></colgroup>
-            <thead id="watchHead"></thead>
-            <tbody id="watchBody">
-              <tr><td class="table-state" colspan="9">加载中</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
     </main>
 
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>

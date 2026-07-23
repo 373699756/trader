@@ -15,10 +15,13 @@
     lastEventId: 0,
     projectionVersion: "",
     requestSequence: 0,
+    selectionSequence: 0,
+    selectedDateAvailability: "available",
   };
   const CACHE_MAX_AGE_MS = 30000;
   const HISTORY_REFRESH_MS = 3000;
   const PATCH_LATENCY_SAMPLE_CAPACITY = 256;
+  const selection = window.TraderSelection;
   const patchToPaintSamples = [];
   const diagnostics = {
     recommendationRequests: 0,
@@ -52,10 +55,9 @@
   function init() {
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
-      "scoreTime", "budgetStatus", "headerFreeze", "lastError", "routeHealth",
-      "refreshButton", "dateSelect", "currentViewStatus", "recommendationCount", "executableCount", "filteredCount", "dataSource",
-      "strategyVersion", "freezeStatus", "notice", "recommendationTable", "tableColumns", "tableHead", "tableBody",
-      "watchRegion", "watchTable", "watchColumns", "watchHead", "watchBody",
+      "scoreTime", "budgetStatus", "headerFreeze", "lastError",
+      "refreshButton", "dateSelect", "strategyDescription", "recommendationCount", "executableCount", "filteredCount", "dataSource",
+      "topScore", "modelReview", "dataQuality", "notice", "tableTitle", "recommendationTable", "tableColumns", "tableHead", "tableBody",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
     ]) els[id] = document.getElementById(id);
 
@@ -64,15 +66,12 @@
     });
     els.dateSelect.addEventListener("change", () => {
       state.date = els.dateSelect.value;
+      state.selectedDateAvailability = "available";
       loadRecommendations("date");
     });
     els.refreshButton.addEventListener("click", () => loadRecommendations("manual"));
     els.tableBody.addEventListener("click", selectRow);
-    els.watchBody.addEventListener("click", selectRow);
     els.tableBody.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") selectRow(event);
-    });
-    els.watchBody.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") selectRow(event);
     });
     els.drawerClose.addEventListener("click", closeDrawer);
@@ -93,37 +92,51 @@
   }
 
   async function selectStrategy(strategy) {
-    if (!strategy || state.strategy === strategy && state.payload) return;
-    state.strategy = strategy || "today";
-    state.date = "";
+    const nextStrategy = strategy || "today";
+    if (!selection.descriptions[nextStrategy] || state.strategy === nextStrategy && state.payload) return;
+    const previousStrategy = state.strategy;
+    const selectedDate = state.date;
+    const selectionId = ++state.selectionSequence;
+    state.requestSequence += 1;
+    state.strategy = nextStrategy;
+    state.payload = null;
+    state.projectionVersion = "";
+    closeDrawer();
+    els.dateSelect.disabled = true;
+    els.strategyDescription.textContent = selection.descriptions[nextStrategy];
     document.querySelectorAll(".strategy-tab").forEach((button) => {
       const active = button.dataset.strategy === state.strategy;
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-selected", active ? "true" : "false");
     });
+    renderLoadingState();
+    const dates = await loadDates(nextStrategy, selectionId);
+    if (selectionId !== state.selectionSequence) return;
+    const resolved = selection.resolveStrategyDate(previousStrategy, nextStrategy, selectedDate, dates);
+    state.date = resolved.date;
+    state.selectedDateAvailability = resolved.availability;
+    selection.renderDateOptions(els.dateSelect, state.strategy, dates, resolved.date, resolved.availability);
+    if (resolved.availability === "missing") {
+      renderMissingHistoricalDate(nextStrategy, resolved.date);
+      return;
+    }
     const key = recommendationKey(state.strategy, state.date, state.view);
     state.payload = displayableCachedPayload(key, state.strategy, state.date, state.view);
     if (state.payload) renderPayload(state.payload);
-    await Promise.all([loadDates(), loadRecommendations("strategy")]);
+    await loadRecommendations("strategy");
   }
 
-  async function loadDates() {
-    const strategy = state.strategy;
-    els.dateSelect.innerHTML = '<option value="">当前</option>';
-    els.dateSelect.disabled = strategy === "long";
-    if (strategy === "long") return;
+  async function loadDates(strategy, selectionId) {
+    if (strategy === "long") return [];
     try {
       const response = await fetch(`/api/recommendation-dates?strategy=${encodeURIComponent(strategy)}`, { cache: "no-store" });
       const payload = await response.json();
-      if (!response.ok || strategy !== state.strategy) return;
-      for (const value of payload.items || []) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = value;
-        els.dateSelect.append(option);
-      }
+      if (!response.ok) throw new Error("历史日期接口请求失败");
+      if (selectionId !== state.selectionSequence || strategy !== state.strategy) return [];
+      return Array.from(new Set((payload.items || []).filter((value) => typeof value === "string")));
     } catch (_error) {
-      if (strategy === state.strategy) setNotice("历史日期暂不可用", "warn");
+      if (strategy === state.strategy) setNotice("历史日期暂不可用，正在直接读取所选日期", "warn");
+      return null;
     }
   }
 
@@ -132,6 +145,14 @@
     const strategy = state.strategy;
     const selectedDate = state.date;
     const view = state.view;
+    if (
+      selectedDate
+      && state.selectedDateAvailability === "missing"
+      && reason !== "manual"
+    ) {
+      renderMissingHistoricalDate(strategy, selectedDate);
+      return;
+    }
     const key = recommendationKey(strategy, selectedDate, view);
     const cached = displayableCachedPayload(key, strategy, selectedDate, view);
     els.refreshButton.classList.add("is-busy");
@@ -141,12 +162,15 @@
         renderPayload(cached);
       }
     } else if (!state.payload || reason === "strategy" || reason === "date") {
-      els.currentViewStatus.textContent = "正在判断";
       renderTableState("正在读取推荐快照");
     }
     try {
       const payload = await requestRecommendations(strategy, selectedDate, view);
       if (requestId !== state.requestSequence) return;
+      if (selectedDate) {
+        state.selectedDateAvailability = "available";
+        selection.markDateAvailability(els.dateSelect, selectedDate, "available");
+      }
       if (state.payload !== payload) {
         const previous = state.payload;
         state.payload = payload;
@@ -161,6 +185,12 @@
       }
     } catch (error) {
       if (requestId !== state.requestSequence) return;
+      if (selectedDate && selection.isSnapshotNotFound(error)) {
+        state.selectedDateAvailability = "missing";
+        selection.markDateAvailability(els.dateSelect, selectedDate, "missing");
+        renderMissingHistoricalDate(strategy, selectedDate);
+        return;
+      }
       if (cached) {
         state.payload = cached;
         setNotice("后台刷新失败，显示最近已加载快照", "warn");
@@ -195,7 +225,12 @@
         throw new Error("推荐快照缓存不可用");
       }
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error && payload.error.message ? payload.error.message : "接口请求失败");
+      if (!response.ok) {
+        const error = new Error(payload.error && payload.error.message ? payload.error.message : "接口请求失败");
+        error.code = payload.error && payload.error.code ? payload.error.code : "";
+        error.httpStatus = response.status;
+        throw error;
+      }
       diagnostics.recommendationFullResponses += 1;
       diagnostics.fullResponseBytes += utf8Bytes(JSON.stringify(payload));
       if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
@@ -252,47 +287,50 @@
     state.projectionVersion = projectionVersion(payload);
     const items = Array.isArray(payload.items) ? payload.items : [];
     const historical = payload.historical === true;
-    const recommendations = historical ? items : items.filter((item) => item.action === "executable");
-    const watchItems = historical ? [] : items.filter((item) => item.action === "observe");
-    els.currentViewStatus.textContent = currentViewLabel(payload);
+    const recommendations = selection.visibleRecommendations(payload);
     els.recommendationCount.textContent = String(recommendations.length);
     els.executableCount.textContent = String(recommendations.filter((item) => item.action === "executable").length);
     els.filteredCount.textContent = String(payload.filtered_count || 0);
     els.dataSource.textContent = items[0] && items[0].source ? items[0].source : "-";
-    els.strategyVersion.textContent = payload.strategy_version || "-";
-    els.freezeStatus.textContent = currentViewLabel(payload);
+    const summary = selection.recommendationSummary(payload, recommendations);
+    els.topScore.textContent = summary.topScore;
+    els.modelReview.textContent = summary.modelReview;
+    els.dataQuality.textContent = summary.dataQuality;
+    els.dataQuality.title = summary.dataQualityTitle;
     const definition = historical ? window.TraderRender.historyTable() : window.TraderRender.currentTable();
+    els.tableTitle.textContent = historical ? "历史荐股" : payload.strategy === "long" ? "长期研究" : "正式推荐";
     els.recommendationTable.classList.toggle("is-history", historical);
-    els.watchRegion.hidden = historical || watchItems.length === 0;
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
-    els.watchColumns.innerHTML = definition.columns;
-    els.watchHead.innerHTML = definition.head;
     if (payload.status === "not_ready") {
-      renderTableState("流水线已启动，当前策略尚无可用快照", historical ? 6 : 9);
-      els.watchRegion.hidden = true;
-      setNotice("当前策略尚未发布快照", "warn");
+      const message = payload.strategy === "long"
+        ? "长期策略当前尚无可用数据"
+        : "当前暂无可用荐股数据";
+      renderTableState(message, historical ? 6 : 9);
+      setNotice(payload.strategy === "long" ? "长期策略只展示当前研究快照" : "等待策略数据更新", "idle");
       return;
     }
     if (recommendations.length === 0) {
-      renderTableState(historical ? "当前门槛下没有历史推荐结果" : "当前无通过下行保护的正式推荐", historical ? 6 : 9);
+      const emptyMessage = historical
+        ? "当前门槛下没有历史推荐结果"
+        : payload.strategy === "long"
+          ? "当前长期策略暂无可展示股票"
+          : "当前无通过下行保护的正式推荐";
+      renderTableState(emptyMessage, historical ? 6 : 9);
     } else {
       els.tableBody.innerHTML = window.TraderRender.rows(recommendations, historical);
-    }
-    if (!historical) {
-      if (watchItems.length > 0) els.watchBody.innerHTML = window.TraderRender.rows(watchItems, false);
     }
     if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
     else if (payload.phase === "close_fallback") {
       const degraded = (payload.degraded_reasons || []).length
         ? ` · 降级：${payload.degraded_reasons.join("、")}`
         : "";
-      setNotice(`收盘补算 · ${window.TraderRender.formatDateTime(payload.published_at)}${degraded}`, degraded ? "warn" : "ok");
+      setNotice(`已冻结 · 收盘补算 · ${window.TraderRender.formatDateTime(payload.published_at)}${degraded}`, degraded ? "warn" : "ok");
     }
     else if ((payload.degraded_reasons || []).length) setNotice(`降级：${payload.degraded_reasons.join("、")}`, "warn");
     else if (payload.frozen) setNotice(`已冻结于 ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
     else if (payload.strategy === "long") setNotice(`当前快照 · ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
-    else if (payload.view === "live") setNotice(`实时草稿 · ${window.TraderRender.formatDateTime(payload.published_at)} · 未冻结，结果可能变化`, "warn");
+    else if (payload.view === "live") setNotice(`实时数据 · ${window.TraderRender.formatDateTime(payload.published_at)} · 未冻结，结果可能变化`, "warn");
     else setNotice(`快照 ${window.TraderRender.formatDateTime(payload.published_at)} · ${payload.fusion_mode}`, "ok");
     stampRowIdentities(payload);
     updateQuoteAge();
@@ -300,6 +338,53 @@
 
   function renderTableState(message, columns) {
     els.tableBody.innerHTML = `<tr><td class="table-state" colspan="${columns || 9}">${window.TraderRender.escapeHtml(message)}</td></tr>`;
+  }
+
+  function renderLoadingState() {
+    els.recommendationCount.textContent = "-";
+    els.executableCount.textContent = "-";
+    els.filteredCount.textContent = "-";
+    els.dataSource.textContent = "-";
+    els.topScore.textContent = "-";
+    els.modelReview.textContent = "-";
+    els.dataQuality.textContent = "读取中";
+    els.dataQuality.title = "";
+    els.scoreTime.textContent = "-";
+    els.headerFreeze.textContent = "-";
+    els.quoteTime.textContent = "-";
+    els.quoteAge.textContent = "-";
+    els.tableTitle.textContent = state.strategy === "long" ? "长期研究" : "正式推荐";
+    els.recommendationTable.classList.remove("is-history");
+    const definition = window.TraderRender.currentTable();
+    els.tableColumns.innerHTML = definition.columns;
+    els.tableHead.innerHTML = definition.head;
+    renderTableState("正在读取推荐快照");
+    setNotice("正在读取推荐快照", "idle");
+  }
+
+  function renderMissingHistoricalDate(strategy, selectedDate) {
+    state.payload = null;
+    state.projectionVersion = "";
+    els.recommendationCount.textContent = "0";
+    els.executableCount.textContent = "0";
+    els.filteredCount.textContent = "-";
+    els.dataSource.textContent = "-";
+    els.topScore.textContent = "-";
+    els.modelReview.textContent = "-";
+    els.dataQuality.textContent = "无数据";
+    els.dataQuality.title = "";
+    els.scoreTime.textContent = "-";
+    els.headerFreeze.textContent = "-";
+    els.quoteTime.textContent = "-";
+    els.quoteAge.textContent = "-";
+    els.tableTitle.textContent = "历史荐股";
+    els.recommendationTable.classList.add("is-history");
+    const definition = window.TraderRender.historyTable();
+    els.tableColumns.innerHTML = definition.columns;
+    els.tableHead.innerHTML = definition.head;
+    const message = `${selection.strategyLabel(strategy)}策略在 ${selectedDate} 没有荐股数据`;
+    renderTableState(message, 6);
+    setNotice("已保留所选历史日期", "idle");
   }
 
   function patchLiveRows(previous, payload) {
@@ -338,15 +423,6 @@
     els.notice.dataset.level = level || "idle";
   }
 
-  function currentViewLabel(payload) {
-    if (!payload) return "正在判断";
-    if (payload.status === "not_ready") return "未就绪";
-    if (payload.historical === true) return "历史冻结";
-    if (payload.strategy === "long") return "当前快照";
-    if (payload.phase === "close_fallback") return "收盘补算";
-    return payload.frozen ? "已冻结" : "实时草稿";
-  }
-
   function selectRow(event) {
     const row = event.target.closest("tr[data-code]");
     if (!row || !state.payload) return;
@@ -382,28 +458,17 @@
         ? "不可用"
         : budget ? `${budget.used} / ${budget.remaining}` : "0 / 188";
       const market = payload.dependencies && payload.dependencies.market_data;
-      const route = market && market.route;
       els.quoteSource.textContent = market && market.active_source ? market.active_source : "-";
-      const routeStatus = route && route.status ? route.status : "idle";
-      const routeState = route && route.degraded ? `${routeStatus}/降级` : `${routeStatus}/稳定`;
-      const routeFallback = route && route.fallback_reason ? ` (${route.fallback_reason})` : "";
-      const routeVendor = route && route.used_vendor ? ` · ${route.used_vendor}` : "";
-      els.routeHealth.textContent = `${routeState}${routeFallback}${routeVendor}`;
-      const attempted = route && Array.isArray(route.attempted_vendors) ? route.attempted_vendors : [];
-      els.routeHealth.title = attempted
-        .map((vendor) => `${vendor.name} ${vendor.status}${vendor.error ? `: ${vendor.error}` : ""}`)
-        .join(" -> ");
       const score = state.payload && state.payload.published_at;
       els.scoreTime.textContent = score ? window.TraderRender.formatTime(score) : "-";
       els.headerFreeze.textContent = state.payload
-        ? state.payload.status === "not_ready" ? "未就绪" : state.payload.frozen ? "已冻结" : "草稿"
+        ? state.payload.status === "not_ready" ? "未就绪" : state.payload.frozen ? "已冻结" : "未冻结"
         : "-";
       reconcileRecommendationIdentity(payload);
       updateQuoteAge();
     } catch (_error) {
       els.runtimeStatus.textContent = "状态不可用";
       els.runtimeDot.dataset.state = "error";
-      els.routeHealth.textContent = "-";
     }
   }
 
@@ -681,11 +746,9 @@
 
   function stampRowIdentities(payload) {
     if (!payload || !Array.isArray(payload.items)) return;
-    for (const tableBody of [els.tableBody, els.watchBody]) {
-      tableBody.querySelectorAll("tr[data-code]").forEach((row) => {
-        row.dataset.rowIdentity = rowIdentity(payload, row.dataset.code);
-      });
-    }
+    els.tableBody.querySelectorAll("tr[data-code]").forEach((row) => {
+      row.dataset.rowIdentity = rowIdentity(payload, row.dataset.code);
+    });
   }
 
   function rememberEvent(event) {
@@ -720,7 +783,7 @@
       deepseek_cutoff: "模型截止",
       final_quote: "最终报价",
       frozen: "冻结窗口",
-      close_fallback: "收盘补算",
+      close_fallback: "收盘恢复中",
       after_close: "收盘后",
     })[value] || value;
   }

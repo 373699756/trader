@@ -225,6 +225,13 @@ tr:focus-visible {
   background: var(--surface);
 }
 
+.strategy-choice {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .strategy-tabs {
   display: flex;
   align-items: center;
@@ -257,22 +264,13 @@ tr:focus-visible {
   background: #2c5fae;
 }
 
-.current-view-status {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-height: 34px;
-  padding: 0 11px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--bg);
+.strategy-description {
+  min-width: 0;
+  margin: 0;
   color: var(--muted);
   font-size: 12px;
-}
-
-.current-view-status strong {
-  color: var(--text);
-  font-weight: 650;
+  line-height: 17px;
+  overflow-wrap: anywhere;
 }
 
 .date-control {

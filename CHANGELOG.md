@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- Web 荐股展示批次：新增独立策略/日期选择状态机和可见策略说明，明确今早、明日、
+  2-5 日与长期的持有期、冻结时间和历史能力；显式历史日期跨三种短线策略保持，
+  缺失归档时保留所选日期并显示“无数据”，不会隐式切回当前结果。
+
 - 用户反馈此前保存的推荐历史全部无法查询。新增 P6 按策略独立驻留与冷读能力：最近
   20 个交易日内，同日即使只保存 today、tomorrow 或 d25 中的部分策略，已有 committed
   快照仍可通过对应日期列表和历史 API 读取，不再依赖三策略日期交集。
@@ -291,6 +295,16 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- Web 荐股展示批次：移除与主表空态重复的“当前策略尚未发布快照”通知，短线无快照时
+  只在表格显示唯一空态并在通知栏提示“等待策略数据更新”；长期策略保留专属当前数据
+  说明。摘要栏移除重复的冻结状态、评分版本和内部路由健康，改为最高评分、模型复核
+  数和数据状态；行情路由故障仍通过行情来源和最近错误反馈。
+
+- Web 荐股展示批次：用户要求将“实时草稿”改为“实时数据”、保持荐股表格不变、
+  不展示观察池并理清四个策略与日期选择。当前日期继续只读 `view=current`，历史日期
+  继续使用显式 `date`；短线主表只显示正式推荐，long 在同一主表显示当前固定名单，
+  进入或离开 long 均从“当前”开始。长期未就绪文案改为“长期策略当前尚无可用数据”。
 
 - 15:00 后冷启动收盘补算的完整性判断从“存在三板收盘价”收紧为主板、创业板、科创板
   分别至少 100 只具备 20 日有效流动性历史；历史热缓存仍在预热时保持 `not_ready` 并
@@ -578,6 +592,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- Web 荐股展示批次：修复短线策略切换会无条件清空显式历史日期的问题；目标策略没有
+  同日归档或推荐接口返回 `snapshot_not_found` 时，现在显示该策略、该日期的正常空态，
+  不再用当前日期数据替代。策略、日期列表和荐股请求均绑定选择序号，迟到响应不能覆盖
+  新选择。
+
 - 修复 P6 初始化只取 today/tomorrow/d25 日期交集，导致旧库中按策略有效但同日不齐全的
   5 份正式历史全部不可见；同时修复收盘协调器只验证三板行情存在、未验证历史横截面，
   从而在 qfq 预热完成前把 `board_population_insufficient`、可靠度不足和 0 只推荐固化为
@@ -822,6 +841,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- Web 荐股展示批次：移除形似按钮的“当前推荐/收盘补算”状态胶囊及独立观察池 DOM、
+  样式和事件监听；`close_fallback` 仅作为“已冻结 · 收盘补算”非交互状态显示一次，
+  `official/live` API 兼容入口保持不变。
+
 - 本批未删除或改写任何历史快照、当日冻结记录、推荐公式、风险阈值、DeepSeek 预算、
   API 兼容参数或 Web 资源；仅移除测试夹具为缺失策略伪造同日 companion 快照的旧假设。
 
@@ -957,6 +980,14 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- Web 荐股展示批次：`make format-check`、`make lint`、`make type-check`、`make test`
+  （784 项）和 `make package` 通过；38 项 Web/API/SSE 定向测试与 Node 策略日期状态机
+  通过。Firefox/geckodriver 离线真实页面验证 1280x720、1440x900、1920x1080 均无页面级
+  横向溢出或浏览器错误，24 个 SSE patch 的 patch-to-paint P95 为 19ms（预算 100ms）。
+  仓库外安装 wheel 后确认 `selection.js`、模板、CSS、其他 JavaScript 与图标均可读取，
+  `trader` 从安装目录导入，`trader-cli --help`、绝对配置 `validate-config` 和
+  `pip check` 通过。
 
 - 本批先以本机运行库确认旧 v2 有 5 份 committed 历史但三策略日期交集为空，v17 当日
   三策略均已 committed 但各为 0 只，且 qfq 热缓存随后达到三板各 119 只。新增失败回归
@@ -1333,6 +1364,13 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- Web 荐股展示批次：没有已知未解决代码问题。真实交易日中“某短线策略存在所选历史日期、
+  另一策略缺失”的具体归档组合取决于用户运行库；本批用纯状态机、日期/API 契约和
+  `snapshot_not_found` 回归覆盖客户端行为，验收过程未修改或伪造用户冻结历史。首次
+  仓库外依赖全量复制因临时目录磁盘配额不足中止，已删除该临时目录；随后使用已通过
+  工程门禁的开发依赖作为只读依赖路径完成 wheel 本体、资源、CLI、配置和 `pip check`
+  验收。
 
 - 2026-07-23 已在本批修复前提交的三份 0 只 `close_fallback` 属于不可变正式记录，按冻结
   契约不能删除、覆盖或用迟到预热结果改写；本批保证旧历史恢复可查，并阻止后续冷启动在

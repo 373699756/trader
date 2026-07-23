@@ -38,16 +38,27 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     response = client.get("/")
     page = response.get_data(as_text=True)
     dashboard = client.get("/static/dashboard.js").get_data(as_text=True)
+    selection = client.get("/static/selection.js").get_data(as_text=True)
 
     assert response.status_code == 200
     assert "A股策略看板" in page
     assert "股票详情" in page
     assert "策略验证" not in page
-    assert "/static/dashboard.css?v=6" in page
+    assert "/static/dashboard.css?v=7" in page
     assert "/static/render.js?v=8" in page
-    assert "/static/dashboard.js?v=16" in page
-    assert 'id="currentViewStatus"' in page
-    assert "当前推荐" in page
+    assert "/static/selection.js?v=1" in page
+    assert "/static/dashboard.js?v=17" in page
+    assert 'id="currentViewStatus"' not in page
+    assert 'class="current-view-status"' not in page
+    assert 'id="strategyDescription"' in page
+    assert 'id="topScore"' in page
+    assert 'id="modelReview"' in page
+    assert 'id="dataQuality"' in page
+    assert 'id="routeHealth"' not in page
+    assert 'id="strategyVersion"' not in page
+    assert 'id="freezeStatus"' not in page
+    assert 'id="watchTable"' not in page
+    assert "观察列表" not in page
     assert 'data-view="live"' not in page
     assert "正式当前" not in page
     assert "临时实时" not in page
@@ -55,7 +66,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "payloads: new Map()" in dashboard
     assert "inflight: new Map()" in dashboard
     assert "prefetchStrategies();" in dashboard
-    assert 'Promise.all([loadDates(), loadRecommendations("strategy")])' in dashboard
+    assert "resolveStrategyDate" in dashboard
+    assert "renderMissingHistoricalDate" in dashboard
+    assert "selectedDateAvailability" in dashboard
     assert "displayableCachedPayload" in dashboard
     assert "cacheIdentityValid" in dashboard
     assert "上一交易日快照" not in dashboard
@@ -83,10 +96,17 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'loadRecommendations("status_identity")' in dashboard
     assert 'view: "current"' in dashboard
     assert 'query.set("view", view)' in dashboard
-    assert "currentViewLabel" in dashboard
+    assert "recommendationSummary" in selection
     assert "HISTORY_REFRESH_MS = 3000" in dashboard
-    assert 'close_fallback: "收盘补算"' in dashboard
+    assert 'close_fallback: "收盘恢复中"' in dashboard
     assert 'payload.phase === "close_fallback"' in dashboard
+    assert "实时草稿" not in dashboard
+    assert "实时数据" in dashboard
+    assert "流水线已启动，当前策略尚无可用快照" not in dashboard
+    assert "当前策略尚未发布快照" not in dashboard
+    assert "最高评分" in page
+    assert "模型复核" in page
+    assert "数据状态" in page
     stylesheet_response = client.get("/static/dashboard.css")
     stylesheet = stylesheet_response.get_data(as_text=True)
     assert stylesheet_response.status_code == 200
@@ -103,6 +123,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert ".runtime-error" in base_response.get_data(as_text=True)
     assert "overflow-wrap: anywhere" in components_response.get_data(as_text=True)
     assert client.get("/static/lucide.svg").status_code == 200
+    assert client.get("/static/selection.js").status_code == 200
     renderer_response = client.get("/static/render.js")
     renderer = renderer_response.get_data(as_text=True)
     assert renderer_response.status_code == 200
