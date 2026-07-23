@@ -992,6 +992,19 @@ def test_sse_reports_cursor_ahead_separately() -> None:
     assert '"reason":"cursor_ahead"' in first_event
 
 
+def test_sse_keeps_cursor_ahead_reason_when_new_event_catches_up_before_streaming() -> None:
+    app, publisher = _app(MemoryReadRepository(), history_size=2)
+
+    response = app.test_client().get("/api/events/stream", headers={"Last-Event-ID": "1"}, buffered=False)
+    publisher.resync("caught_up")
+    connected = next(response.response).decode("utf-8")
+    first_event = next(response.response).decode("utf-8")
+    response.close()
+
+    assert connected == ": connected\n\n"
+    assert '"reason":"cursor_ahead"' in first_event
+
+
 def test_sse_without_cursor_starts_after_current_sequence() -> None:
     app, publisher = _app(MemoryReadRepository(), history_size=4)
     old = publisher.resync("old")

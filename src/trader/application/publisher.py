@@ -30,6 +30,7 @@ class PublishedEvent:
 class Subscription:
     queue: queue.Queue[PublishedEvent]
     replay: tuple[PublishedEvent, ...] | None
+    server_sequence_at_open: int = 0
 
 
 class SubscriberLimitError(RuntimeError):
@@ -100,7 +101,10 @@ class SnapshotPublisher:
         return event
 
     def resync(self, reason: str) -> PublishedEvent:
-        return self._new_event("resync_required", {"reason": reason})
+        return self._new_event(
+            "resync_required",
+            {"patch_schema_version": 2, "reason": reason},
+        )
 
     def publish_overlay(self, overlay: LiveOverlay) -> PublishedEvent:
         started = self._monotonic()
@@ -130,8 +134,9 @@ class SnapshotPublisher:
             if len(self._subscribers) >= self._maximum_subscribers:
                 raise SubscriberLimitError("SSE subscriber limit reached")
             replay = self._events_after_locked(after_sequence)
+            server_sequence_at_open = self._sequence
             self._subscribers.add(subscriber)
-        return Subscription(subscriber, replay)
+        return Subscription(subscriber, replay, server_sequence_at_open)
 
     def unsubscribe(self, subscriber: queue.Queue[PublishedEvent]) -> None:
         with self._lock:

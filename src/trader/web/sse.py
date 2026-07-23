@@ -26,7 +26,7 @@ def event_stream_response(
         try:
             yield ": connected\n\n"
             if subscription.replay is None:
-                reason = "cursor_ahead" if after_sequence > publisher.last_sequence() else "cursor_expired"
+                reason = "cursor_ahead" if after_sequence > subscription.server_sequence_at_open else "cursor_expired"
                 yield encode_sse(_resync_event(publisher, reason))
             else:
                 for event in subscription.replay:

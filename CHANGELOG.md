@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续未完成的任务 D；本批完成 D5.1-D5.2 最终差异审查，并在
+  `docs/reports/youhua-d1-p6-web.md` 第 12 节向 A 提交 `PASS / ready_for_gate=yes`
+  签字。审查覆盖 P6 current/resident/cold、P6-first 公共接线、持久化分流、SSE、DOM
+  四元身份和 ETag resync；新增主动 resync schema 与游标分类竞态回归，不进入 G5。
+
 - 用户继续未完成的任务 A；本批按下一完整章节复核 A4/B4/C4/D4 的阶段 4 交接证据，
   确认 D4 留给 A 的 P6 接纳原子性事项已由 A4-F04 关闭，并新增
   `docs/reports/youhua-g4-gate-review.md` 发布 G4。用户可观察行为不变：不修改推荐、
@@ -236,6 +241,10 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- `SnapshotPublisher.resync()` 现在与 Web 游标/慢客户端 resync 使用同一 v2 事件身份，
+  固定携带 `patch_schema_version=2`。SSE 订阅在 publisher 锁内保存打开时的服务端序列，
+  游标原因分类不再读取生成器运行时可能变化的 sequence；历史回放、队列和事件 ID 不变。
 
 - B5 将成员插入/删除视为所有登记字段族的脏变更，并让板块/行业 dirty 集合同时覆盖旧、新
   快照维度；普通纯报价 overlay 仍保持窄 dirty 路径。B4 报告同步采用其 acceptance JSON
@@ -470,6 +479,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- D5-F01 修复主动 `resync_required` 缺少 patch schema、同一事件类型载荷不一致的问题；
+  D5-F02 修复订阅打开时为 `cursor_ahead`、但流式产出前新事件追平后被误报成
+  `cursor_expired` 的竞态。两项均先增加精确失败回归，再修改 publisher/SSE 实现。
+
 - B5-F01 修复局部 P3 重算范围可能小于全量重算：股票删除或跨板/跨行业时，旧板块和旧行业
   现在也会标脏；插入/删除代码进入风险 dirty 集合并触发全部相关字段族。新增同时覆盖插入、
   删除、板块迁移和行业迁移的回归，防止旧横截面继续复用。
@@ -661,6 +674,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- D5 未移除产品能力、API、策略、持久化 schema、SSE 兼容字段或 Web 资源；仅补齐既有
+  resync v2 契约和并发原因分类，并追加终审签字材料。
+
 - B5 未移除产品能力、数据源、策略、公共 schema、配置、API、冻结记录或 Web 资源；终审仅
   收紧 dirty 失效范围、校正既有证据并新增签字材料。
 
@@ -760,6 +776,12 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- D5 的 publisher/P6/Web API/app factory 53 项、P6/冻结恢复定向集成 9 项、D4 性能、
+  架构、固定融合 `83.40`、188 并发预算及 Node 状态机均通过。Firefox 152 在
+  1280x720、1440x900、1920x1080 精确内容视口均显示 18 行，无横向溢出、关键重叠或页面
+  错误，三分区抽屉位于视口内；两次 patch 为零完整 GET，显式 resync 产生一次 ETag GET。
+  五项 make 门禁全部通过；仓库外 wheel 可导入、执行 CLI 并读取 9 项 Web 资源。
 
 - G4 发布批次复验五项 make 门禁、固定 `83.40`、C4/D4 定向回归、v17 16 项性能、
   B4 5500 行/360 候选/100 tick、A4 同进程内存和 Firefox 152.0.4 三档桌面；最终 B4
@@ -1057,6 +1079,10 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- D5 没有已知未解决的 D-owned 缺陷。Firefox 的 SWGL framebuffer warning 属宿主日志，
+  三档 DOM、WebDriver、SSE 和页面 JavaScript 均成功；真实外部网络时延、Python
+  3.10-3.13 本机矩阵及推荐收益证明沿用 G4 已记录的外部或延期风险，不在本批伪称已验证。
 
 - G4 已发布且 A5 尚未开始。共享宿主的 B4 三次预跑有绝对时延抖动，最终普通优先级固定
   样本通过，所有样本的业务哈希和内存一致；因此结果只证明当前固定离线负载，不代表真实

@@ -70,6 +70,7 @@ def test_publisher_replays_cursor_and_drops_slow_subscriber() -> None:
 
     assert publisher.status()["subscribers"] == 0
     assert publisher.events_after(first.sequence) == (second,)
+    assert second.data == {"patch_schema_version": 2, "reason": "two"}
     assert "event: resync_required" in encode_sse(second)
 
 
