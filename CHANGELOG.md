@@ -11,6 +11,11 @@ All notable changes to this project are documented here.
   `docs/reports/youhua-g4-gate-review.md` 发布 G4。用户可观察行为不变：不修改推荐、
   冻结、API 或页面逻辑，不进入 A5。
 
+- 用户继续未完成的任务 B；本批完成 B5.1-B5.2 终审签字，新增 B5 行情、三板评分和
+  P1-P6 集成内存复验证据及 `report_to_a.md`。终审范围覆盖 P1-P3 provider/列式批次、
+  scalar 等价合并、dirty 扩张、A-owned 公共 envelope 适配、性能、内存和 A4-F01 降级闭环，
+  结论为 `PASS / ready_for_gate=yes`，不代替 A 执行 G4/G5、squash 或发布。
+
 - 继续 Codex B4：新增完整行情 canonical 行的严格 Polars 列式标准化、Eastmoney/Sina 窄路径合并与
   5500 行/360 候选/100 tick 固定验收 fixture；保留 partial、reference、Tencent overlay 和
   degraded 输入的 scalar 回退。
@@ -231,6 +236,10 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- B5 将成员插入/删除视为所有登记字段族的脏变更，并让板块/行业 dirty 集合同时覆盖旧、新
+  快照维度；普通纯报价 overlay 仍保持窄 dirty 路径。B4 报告同步采用其 acceptance JSON
+  已保存的准确 P95、RSS/USS 和已发布提交哈希，不改变历史门禁结论。
 
 - B4 将标准化、观察值构造与两源合并的固定组合路径纳入相对验收，严格复杂度债务基线因拆出
   有效观察合并 helper 从 `C901=39` 下调为 `C901=38`；新增的 Polars 入口只在 infra 内部可见，
@@ -461,6 +470,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- B5-F01 修复局部 P3 重算范围可能小于全量重算：股票删除或跨板/跨行业时，旧板块和旧行业
+  现在也会标脏；插入/删除代码进入风险 dirty 集合并触发全部相关字段族。新增同时覆盖插入、
+  删除、板块迁移和行业迁移的回归，防止旧横截面继续复用。
+
 - A4-F01（Polars 构造失败会阻断有效标量行情）已修复：行情/候选提交在列式批次构造抛出
   `PolarsError`、`RuntimeError`、`TypeError` 或 `ValueError` 时保留 scalar snapshot，生成完整
   invalidation change set，并记录 `columnar_projection_failed:scalar_fallback`；列式合并自身
@@ -648,6 +661,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- B5 未移除产品能力、数据源、策略、公共 schema、配置、API、冻结记录或 Web 资源；终审仅
+  收紧 dirty 失效范围、校正既有证据并新增签字材料。
+
 - D4 未删除活动产品能力、业务数据或兼容字段；SSE patch 继续同时携带
   `patch_schema_version=2` 与 `schema_version=2`，Web envelope 保持 v3。
 
@@ -753,9 +769,19 @@ All notable changes to this project are documented here.
   仓库外 wheel 的包导入、CLI、配置、9 项资源和 `pip check` 通过；三档均为 18 个唯一代码，
   无白屏、横向溢出、关键重叠或页面错误，增量 patch 不产生完整 GET。
 
+- B5 定向 B 域 171 项测试通过；最终固定行情复跑的 scalar/columnar process-CPU P95 为
+  `1545.992/1172.998ms`，改善 `24.126%`，标准化/两源合并/统一快照 P95 为
+  `140.455/545.278/1314.793ms`。三板预选/评分/三板三策略/稳定选择 P95 为
+  `51.411/9.030/519.941/3.700ms`。B-owned 100 tick 逻辑字节 `29,661,328B`、增长
+  `0.0%`、峰值 RSS `273,195,008B`；集成并存场景逻辑字节 `205,468,511B`、峰值 RSS
+  `387,186,688B`，均通过固定上限，业务和 canonical SHA-256 保持一致。隔离重建的精确
+  `HEAD + B5 staged diff` 通过 format、lint、164 源文件 mypy、738 项 pytest 和 package；
+  仓库外 wheel 可导入、执行 CLI/配置校验、读取 9 项 Web 资源且 `pip check` 无断裂依赖。
+  并行 A 侧补齐 G4 报告后，共享工作树同样通过五项 make 与仓库外 wheel 验收。
+
 - B4 固定验收 runner 通过：标准化+观察值构造+两源合并 process-CPU P95 相对 scalar 改善
   `27.22%`；标准化/两源合并/统一快照 wall P95 为 `134.059/586.035/1130.823ms`，
-  100 tick 逻辑缓存 `29,661,328B`、分配增长 `0.0%`、峰值 RSS `288,702,464B`，均在门禁内。
+  100 tick 逻辑缓存 `29,661,328B`、分配增长 `0.0%`、峰值 RSS `288,051,200B`，均在门禁内。
   B 域定向单元 `48` 项、行情组件 `122` 项、Ruff、mypy 和严格债务基线均通过；完整证据见
   `tests/fixtures/market_data/youhua_b4/report_to_a.md`。
 
@@ -1038,6 +1064,12 @@ All notable changes to this project are documented here.
   metadata 静态兼容证据。Firefox 的 SWGL warning 属宿主日志，三档截图、DOM、WebDriver
   和页面 JavaScript 均成功。复验期间出现的并行 B5/D5 工作树与暂存修改已保留；G4
   使用 start HEAD 叠加本批 4 个文件的仓库外树复验和提交，不混入这些并行修改。
+
+- B5 最终固定身份性能复跑通过，但同一共享宿主的两次预跑曾因调度/频率抖动未达到相对
+  20% 门槛；业务哈希与内存始终一致，A4 已有 `35.544%` 集成证据。发布复验应保留固定
+  fixture/身份并记录所有结果，不把单次计时泛化。优化路径仍只覆盖完整 Eastmoney/Sina
+  全市场行，其他合法形态继续使用 scalar；本机只实际运行 Python 3.14.4，真实供应商时延和
+  3.10-3.13 本机矩阵仍是外部风险，性能证据不代表投资收益提高。
 
 - B4 快路径按设计只覆盖完整 canonical provider 行；新浪缺失字段、reference/Tencent overlay
   与 degraded payload 继续走已复验的 scalar 路径，因此不应把所有输入都宣称为 35.544% 改善。

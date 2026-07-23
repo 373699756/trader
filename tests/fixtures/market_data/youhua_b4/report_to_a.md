@@ -4,7 +4,7 @@ codex_and_phase: `Codex B / B4.x`
 
 base_commit: `7a8a0282d025cbc23fffff5736e94c2d1bf883e0`
 
-head_commit_or_patch: `patch only; B4 implementation and acceptance artifacts`
+head_commit_or_patch: `69de151c79ab9502d0742bfc52601c455ad26a2a`
 
 owned_paths_changed:
 
@@ -41,11 +41,11 @@ performance_before_after:
 
 - Pre-fix host baseline: two-source merge P95 `1470.722 ms` and canonical snapshot P95 `2115.994 ms`, both above their B4.2 limits.
 - Identical interleaved normalization-plus-two-source-merge workload: scalar process CPU P95 `1555.037 ms`, columnar process CPU P95 `1131.749 ms`, relative improvement `27.22%`; informational wall P95 was `1561.387 ms` versus `1128.513 ms`.
-- 5500-row normalization wall P95 `149.045 ms` against `800 ms`.
-- Two-source merge wall P95 `573.552 ms` against `1000 ms`.
+- 5500-row normalization wall P95 `134.059 ms` against `800 ms`.
+- Two-source merge wall P95 `586.035 ms` against `1000 ms`.
 - Canonical snapshot wall P95 `1130.823 ms` against `1500 ms`; fixed canonical snapshot SHA-256 remains `234b923cb17d1979365892791f38545598ae2d25f0cbe14817980a3080c3329b`.
 - Board preselection P95 `90.460 ms`, board local scoring P95 `15.354 ms`, three-board/three-strategy wall P95 `872.648 ms`, global selection P95 `9.961 ms`; all B4.3 limits pass. The sequential/lane wall ratio is reported for observation only and is not claimed as CPU acceleration.
-- 100 tick allocation growth `0.0%`, B-owned logical cache `29,661,328 bytes`, process peak RSS `288,702,464 bytes`, end RSS `268,767,232 bytes`, end USS `255,959,040 bytes`, Python traced peak `1,782,835 bytes`; all B4.4 limits pass.
+- 100 tick allocation growth `0.0%`, B-owned logical cache `29,661,328 bytes`, process peak RSS `288,051,200 bytes`, end RSS `269,647,872 bytes`, end USS `256,888,832 bytes`, Python traced peak `1,782,835 bytes`; all B4.4 limits pass.
 
 known_failures_and_risks:
 

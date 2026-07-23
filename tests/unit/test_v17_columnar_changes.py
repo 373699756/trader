@@ -135,6 +135,49 @@ def test_columnar_change_set_reports_dimensions_field_families_and_risk_changes(
     assert changes.content_hash == current.identity.content_hash
 
 
+def test_columnar_membership_and_dimension_changes_dirty_old_and_new_cross_sections() -> None:
+    previous = ColumnarQuoteBatch.from_snapshot(
+        _snapshot(
+            "epoch-1",
+            (
+                _quote("600001", 10.0, "v1", board=Board.MAIN, industry="工业"),
+                _quote("300001", 20.0, "v1", board=Board.CHINEXT, industry="医药"),
+            ),
+        ),
+        config_version="config-v17",
+        schema_version="schema-v6",
+    )
+    current = ColumnarQuoteBatch.from_snapshot(
+        _snapshot(
+            "epoch-2",
+            (
+                _quote("600001", 10.0, "v2", board=Board.STAR, industry="半导体"),
+                _quote("600003", 30.0, "v1", board=Board.MAIN, industry="设备"),
+            ),
+        ),
+        config_version="config-v17",
+        schema_version="schema-v6",
+    )
+
+    changes = market_changes(previous, current)
+
+    assert changes.inserted_codes == ("600003",)
+    assert changes.updated_codes == ("600001",)
+    assert changes.removed_codes == ("300001",)
+    assert changes.dirty_boards == ("chinext", "main", "star")
+    assert changes.dirty_industries == ("医药", "半导体", "工业", "设备")
+    assert changes.dirty_field_families == (
+        "board",
+        "industry",
+        "quote_identity",
+        "quote_liquidity",
+        "quote_price",
+        "risk",
+    )
+    assert changes.risk_changed_codes == ("300001", "600003")
+    assert changes.overlay_only is False
+
+
 def test_columnar_quote_price_tick_is_overlay_only() -> None:
     previous = ColumnarQuoteBatch.from_snapshot(
         _snapshot("epoch-1", (_quote("600001", 10.0, "v1"),)),

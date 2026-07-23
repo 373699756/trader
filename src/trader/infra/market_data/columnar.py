@@ -288,7 +288,7 @@ def market_changes(
     dirty_codes = tuple(sorted((*inserted_codes, *updated_codes, *removed_codes)))
     dirty_families = _dirty_field_families(shared, comparable)
     if inserted_codes or removed_codes:
-        dirty_families = tuple(sorted({*dirty_families, "quote_identity"}))
+        dirty_families = tuple(sorted(set(_FIELD_FAMILIES.values())))
     full_invalidation_reason = None
     if previous.identity.schema_version != current.identity.schema_version:
         full_invalidation_reason = "schema_version_changed"
@@ -300,11 +300,11 @@ def market_changes(
         updated_codes,
         removed_codes,
         previous_merge_epoch=previous.identity.merge_epoch,
-        dirty_boards=_dimension_values(current.frame, "board", dirty_codes),
-        dirty_industries=_dimension_values(current.frame, "industry", dirty_codes),
+        dirty_boards=_dimension_values_across(previous.frame, current.frame, "board", dirty_codes),
+        dirty_industries=_dimension_values_across(previous.frame, current.frame, "industry", dirty_codes),
         dirty_field_families=dirty_families,
         evidence_manifest_hash=_manifest_hash_or_empty(current.identity.manifest_hash),
-        risk_changed_codes=_risk_changed_codes(shared),
+        risk_changed_codes=tuple(sorted({*inserted_codes, *removed_codes, *_risk_changed_codes(shared)})),
         overlay_only=_overlay_only(dirty_families),
         full_invalidation_reason=full_invalidation_reason,
         content_hash=current.identity.content_hash,
@@ -487,6 +487,22 @@ def _dimension_values(frame: pl.DataFrame, column: str, codes: tuple[str, ...]) 
         .to_list()
     )
     return _sorted_strings(values)
+
+
+def _dimension_values_across(
+    previous: pl.DataFrame,
+    current: pl.DataFrame,
+    column: str,
+    codes: tuple[str, ...],
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                *_dimension_values(previous, column, codes),
+                *_dimension_values(current, column, codes),
+            }
+        )
+    )
 
 
 def _dirty_field_families(shared: pl.DataFrame, comparable: tuple[str, ...]) -> tuple[str, ...]:
