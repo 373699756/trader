@@ -14,11 +14,11 @@ All notable changes to this project are documented here.
   固定 18 行性能回归、可执行的 Node 浏览器状态机契约、离线真实页面/SSE 桌面夹具，并在
   `docs/reports/youhua-d1-p6-web.md` 第 11 节形成 D4.1-D4.4 标准交接包；本批不提前执行 D5。
 
-- 用户要求继续未完成的 Codex A 任务；现状确认上一已推送批次停在 G3，A4 尚未开始。
-  新增 `docs/reports/youhua-a4-acceptance.md`，按 A4.1-A4.6 登记正确性、跨域故障、质量、
-  兼容、性能和问题闭环证据，并用可复现注入确认 Polars 构造失败会阻断已有标量行情、
-  P6 拒绝超限投影后 publisher 仍会发送错误 projection 两项开放缺陷；分别归属 B 与 D+A，
-  G4 保持未发布且不提前进入 A5。
+- 用户要求继续未完成的 Codex A 任务；A 完成 A4.1-A4.6 全量验收与问题闭环。新增
+  `docs/reports/youhua-a4-acceptance.md`、固定 v17 `perf-check` manifest 和同进程 A4 内存 runner，
+  汇总 B4/C4/D4 handoff、关闭 Polars scalar fallback 与 P6 发布原子性两项失败，并覆盖六个
+  P1-P6 字节池近上限、双 epoch/双路径、DeepSeek 最大批次、P6 冷读和慢客户端并存场景；
+  A4 标记 `ready_for_gate=yes`，本批不发布 G4、不进入 A5。
 
 - 用户再次发送“继续”后，A 按阶段 3 共同门禁复核当前 B3/C3/D3 交接状态。新增
   `docs/reports/youhua-g3-gate-review.md`，记录 A3 handoff 已发布且 B3/C3/D3 标准
@@ -240,6 +240,11 @@ All notable changes to this project are documented here.
   明确作为 mypy 外部导入边界，活动 `src/trader` 仍按完整严格规则检查，未改变运行依赖或
   Python 3.10-3.14 产品范围。
 
+- 运行态推荐发布改为 P6-first 接纳：普通草稿、重算和重启恢复只有在 P6 接纳后才更新
+  RuntimeState、session、检查点与 SSE；正式冻结继续先落不可变记录，但 P6 拒绝时不切换
+  运行态、不设置冻结标记、不消费检查点、不广播新身份；较旧正式三策略记录进入驻留历史时
+  日期索引保持倒序且不替换当前投影。
+
 - A3 集成后，权威策略文档从旧 DeepSeek 证据/预算口径收敛到当前实现：每股 prompt 证据
   上限为 12，long 物理请求永久为 0，today/tomorrow/d25/shared_preheat/emergency 软桶为
   22/14/12/10/5，Pro 挑战者批次最多 4 只且全日软上限 8；普通 quote-only change 命中 raw
@@ -456,6 +461,15 @@ All notable changes to this project are documented here.
   invalidation change set，并记录 `columnar_projection_failed:scalar_fallback`；列式合并自身
   失败也记录 `columnar_merge_failed:scalar_fallback`。新增精确注入回归覆盖返回值、health epoch、
   dirty count 和降级原因。
+
+- A4-F04（P6 拒绝后 RuntimeState/session/checkpoint/SSE 仍可能前进）已修复：公共 pipeline
+  统一使用 P6 写端口的显式接纳布尔值并调用 `admit_snapshot_to_p6()`；超限、迟到、冻结替换或
+  旧日期拒绝时保留最近有效 P6 和运行态，记录有界计数与策略降级。同步、worker、冻结、收盘
+  恢复和重启恢复均使用同一接缝。
+
+- C4 修复挑战者尝试误占普通主审软桶、emergency 以不可达策略硬桶判断“普通额度耗尽”的问题：
+  普通软用量只计主审，挑战者保持独立 8 次软上限，emergency 在对应主审软桶耗尽后才可用；
+  正常/含 Pro/含 emergency 上界保持 58/66/71，全局原子硬上限仍为 188。
 
 - 修复 overlay projection、patch schema/身份/base/TopK 错配被前端静默丢弃的问题：现在按
   原因执行 ETag resync；有效在线 patch 保持零完整 GET。P6 current pin 拒绝冻结后的同日
@@ -740,15 +754,14 @@ All notable changes to this project are documented here.
   `make format-check/lint/type-check/test/package` 全部通过；仓库外安装 wheel 后可导入包、
   执行 `trader-cli --help`，并读取模板、CSS、JavaScript 和图标资源。
 
-- A4 第一轮目标回归通过：领域/应用评分与排名、最终验收、全日确定性、行情列式、DeepSeek、
-  持久化、P6/SSE/Web 共四组测试；`tests/contract/test_delivery_contract.py`、
-  `test_youhua_contract_base.py`、`test_v2_architecture.py` 共 27 项通过；`make type-check`
-  通过当前共享树 163 个活动源码文件。固定 `perf-check --suite all` 16 个指标通过且零网络，v15 的
-  5500 行标准化/合并/统一快照与 v16 的 360 候选四项绝对预算首轮通过。dirty 中间树的
-  `make package` 成功，仓库外 wheel 安装后可导入安装目标、执行 CLI 并读取 9 项 Web 资源；
-  `make format-check` 与完整 `make test` 通过，`make lint` 因 B4 新路径令严格债务
-  `PLR0912/PLR0913` 分别从 16/55 增至 17/56 而失败。上述证据不替代稳定树的完整五项 make、
-  wheel、Python 3.10-3.13 和三档桌面最终复验，未宣称 G4 通过。
+- A4 最终稳定树验证：F01/F04 精确失败用例、pipeline/P6/publisher 定向回归、C4 七项及完整 pytest
+  通过；`make format-check/lint/type-check/test/package` 全部通过，mypy 检查 164 个活动源码，
+  严格债务保持基线。正式 `perf-check --suite all` 16 项通过且零网络；B4 最终 columnar 改善
+  `35.544%`，v15/v16/D4 专业预算全部通过。A4 同进程六池约 70%、双快照/列式 epoch、
+  DeepSeek 最大批次与 P6/SSE 压力保持强引用并存时，逻辑字节
+  `205,468,511B <= 260,046,848B`，峰值 RSS `387,452,928B <= 402,653,184B`，USS
+  `358,887,424B`。仓库外最终 wheel 可导入安装目标、执行 CLI/配置校验、读取 9 项 Web 资源，
+  `pip check` 通过；D4 Firefox 三档桌面证据通过。
 
 - G3 门禁复核批次验证：读取阶段 3 计划、A3/B3/C3/D3 报告，确认四方均已提交
   `ready_for_gate=yes` 交接证据并发布 G3；定向契约测试
@@ -1006,26 +1019,13 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- B4 快路径只覆盖完整 canonical provider 行；当前真实新浪适配器的缺失字段、reference/Tencent
-  overlay 和 degraded payload 仍按契约走 scalar，A4.5 仍需在 P1-P6 近上限并存、DeepSeek 最大批次、
-  P6 冷读和慢客户端场景汇总 RSS/USS/Polars 峰值。跨 Python 3.10-3.13 与三档桌面证据仍待 A4。
+- B4 快路径按设计只覆盖完整 canonical provider 行；新浪缺失字段、reference/Tencent overlay
+  与 degraded payload 继续走已复验的 scalar 路径，因此不应把所有输入都宣称为 35.544% 改善。
 
-- D4-owned 门禁已通过；A4 登记的 P6 拒绝原子性仍需 A 在公共 pipeline 层关闭：D 已让 P6
-  超限显式失败并禁止 D publisher 广播，但当前调用顺序仍可能先更新 RuntimeState。G4 必须
-  在 A 完成 RuntimeState/P6/session/checkpoint/SSE 原子接线并汇总 B4/C4 后才能发布。宿主
-  Firefox 输出 SWGL framebuffer warning，但本次三档截图、DOM 与页面 JavaScript 均成功。
-
-- A4/G4 当前明确未通过：C4 已提交 `ready_for_gate=yes` 报告；B 仍需让 Polars 批次构造
-  失败回退已有标量行情并显式降级；D 与 A 需让 P6 接纳结果原子控制 RuntimeState、
-  session/checkpoint 和 SSE，禁止拒绝投影继续发布；
-  还需收齐 B4/D4 标准报告，在稳定工作树重跑五项 make、仓库外 wheel、缓存近上限并存
-  RSS/USS/Polars 证据、Python 3.10-3.13 实际解释器和 1280x720/1440x900/1920x1080 桌面。
-  这些是已登记退出条件，不得以当前分域或 dirty 结果发布 G4。
-
-- G3 已发布；A4.1-A4.6 已开始且第一轮验收形成开放失败清单，必须先关闭上述 A4 阻塞并重新
-  运行完整门禁，才能发布 G4 或进入 A5。
-
-- D3 桌面检查仍基于 not_ready 页面；真实推荐行、详情抽屉和长错误文本仍需 G4/A4 集成验收。
+- A4.1-A4.6 已完成且四方阶段 4 handoff 均为 `ready_for_gate=yes`；G4 尚未在本批发布，A5
+  尚未开始。宿主只安装 Python 3.14.4；Ruff/mypy/wheel metadata 静态覆盖 3.10-3.14，但
+  3.10-3.13 没有本机实际运行证据。Firefox 的 SWGL framebuffer warning 仍是宿主警告，D4
+  三档截图、DOM、WebDriver 与页面 JavaScript 均成功。
 
 - G2 已发布但 A3 未开始；下一批才能按计划进入 A3 集成。当前工作树仍有 B/C/D 未暂存实现
   改动，本批只归档门禁发布判断，不解决其内部实现或全局质量失败。

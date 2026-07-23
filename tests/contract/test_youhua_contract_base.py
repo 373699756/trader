@@ -115,3 +115,19 @@ def test_youhua_g3_publishes_after_all_phase3_reports_are_ready() -> None:
     assert "ready_for_gate\nyes" in d3
     assert "ready_for_gate: `yes; G3 is published and A4 has not started`" in g3
     assert "A4.x 必须等待下一次用户继续指令" in g3
+
+
+def test_youhua_a4_acceptance_closes_failures_without_starting_g4_or_a5() -> None:
+    report = (PROJECT_ROOT / "docs/reports/youhua-a4-acceptance.md").read_text(encoding="utf-8")
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+
+    assert "A4.1-A4.6" in report
+    assert "A4-F01" in report
+    assert "A4-F04" in report
+    assert "| A4-F01 | B | closed |" in report
+    assert "| A4-F04 | D + A | closed |" in report
+    assert "ready_for_gate: `yes; A4.1-A4.6 complete" in report
+    assert "G4 is not published" in report
+    assert "A5 has not started" in report
+    assert "必须先由 P6 接纳，再更新 RuntimeState、session、检查点和 SSE" in design
+    assert "通过 P6 前不得" in design

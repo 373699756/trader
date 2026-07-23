@@ -14,6 +14,7 @@ from trader.application.events import EventAuditRecord, EventPriority, EventStat
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.ports.snapshots import RecoverySummary
+from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
@@ -94,6 +95,162 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     assert pipeline.run_once(clock.now()) == ()
     assert len(repository.frozen) == 3
     assert state.latest(Strategy.LONG).frozen is False
+
+
+@pytest.mark.parametrize("use_worker", [False, True], ids=("sync", "worker"))
+def test_p6_rejection_preserves_previous_publication_state(
+    recommendation_policy,
+    application_feature_factory,
+    *,
+    use_worker: bool,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T11:19:50+08:00")
+    repository = MemoryRepository()
+    state = RuntimeState()
+    publisher = SnapshotPublisher(history_size=8, client_queue_size=2)
+    published = PublishedSnapshotIndex(repository, maximum_view_bytes=1)
+    pipeline = build_pipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        publisher,
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+        published_snapshots=published,
+    )
+    pipeline.initialize()
+
+    if use_worker:
+        pipeline.start()
+        try:
+            assert pipeline.submit_tick(now) is True
+            _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+        finally:
+            pipeline.stop(timeout_seconds=2.0)
+    else:
+        assert pipeline.run_once(now) == ()
+
+    status = state.snapshot()
+    assert state.latest(Strategy.TODAY) is None
+    assert published.latest(Strategy.TODAY) is None
+    assert publisher.last_sequence() == 0
+    assert repository.checkpoints == {}
+    assert pipeline._session_snapshot_ids == set()
+    assert status["counters"]["p6_snapshot_rejections"] == 1
+    assert status["strategy_degraded_reasons"]["today"] == ("p6_snapshot_rejected",)
+
+
+def test_restart_does_not_restore_a_frozen_snapshot_rejected_by_p6(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    repository = MemoryRepository()
+    first = build_pipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+    first.initialize()
+    draft = first.run_once(now)[0]
+    repository.freeze(replace(draft, frozen=True))
+
+    state = RuntimeState()
+    publisher = SnapshotPublisher(history_size=8, client_queue_size=2)
+    published = PublishedSnapshotIndex(repository, maximum_view_bytes=1)
+    restarted = build_pipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        publisher,
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+        published_snapshots=published,
+    )
+
+    restarted.initialize()
+
+    assert state.latest(Strategy.TODAY) is None
+    assert state.is_frozen(Strategy.TODAY, draft.trade_date) is False
+    assert published.latest(Strategy.TODAY) is None
+    assert publisher.last_sequence() == 0
+    assert state.snapshot()["counters"]["p6_snapshot_rejections"] == 1
+
+
+def test_restart_does_not_restore_a_frozen_replacement_rejected_by_p6(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    repository = MemoryRepository()
+    first = build_pipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+    first.initialize()
+    stored = replace(first.run_once(now)[0], frozen=True)
+    repository.freeze(stored)
+    published = PublishedSnapshotIndex(repository)
+    assert published.publish(replace(stored, snapshot_id="already-pinned")) is True
+    state = RuntimeState()
+    restarted = build_pipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+        published_snapshots=published,
+    )
+
+    restarted.initialize()
+
+    assert state.latest(Strategy.TODAY) is None
+    assert state.is_frozen(Strategy.TODAY, stored.trade_date) is False
+    assert published.latest(Strategy.TODAY).snapshot_id == "already-pinned"
+    assert state.snapshot()["counters"]["p6_snapshot_rejections"] == 1
 
 
 def test_after_close_persists_current_run_p6_with_closing_prices(
@@ -209,6 +366,44 @@ def test_after_close_cold_start_rebuilds_missing_strategies_locally(
     assert lookup.status == "ready"
     assert lookup.snapshot is not None
     assert lookup.snapshot.phase == "close_fallback"
+
+
+def test_after_close_p6_rejection_keeps_formal_records_without_publication(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    repository = MemoryRepository()
+    state = RuntimeState()
+    publisher = SnapshotPublisher(history_size=32, client_queue_size=4)
+    pipeline = build_pipeline(
+        ClosingPriceMarketData(_three_board_features(application_feature_factory, clock.now())),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        publisher,
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+        published_snapshots=PublishedSnapshotIndex(repository, maximum_view_bytes=1),
+    )
+    pipeline.initialize()
+
+    assert pipeline.run_once(clock.now()) == ()
+
+    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+        formal = repository.load_frozen(strategy, "2026-07-16")
+        assert formal is not None
+        assert formal.phase == "close_fallback"
+        assert state.latest(strategy) is None
+        assert state.is_frozen(strategy, "2026-07-16") is False
+    assert publisher.last_sequence() == 0
+    assert state.snapshot()["counters"]["p6_snapshot_rejections"] >= 3
 
 
 def test_after_close_cold_start_prefers_existing_database_records(
@@ -499,6 +694,64 @@ def test_freeze_accepts_exact_quote_age_boundary(
 
     assert len(frozen) == 1
     assert frozen[0].metadata["freeze_anchor"]["600001"]["age_seconds"] == maximum_age
+
+
+def test_freeze_p6_rejection_keeps_formal_record_without_advancing_runtime(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    boundary = datetime.fromisoformat("2026-07-16T11:20:00+08:00")
+    draft_time = boundary - timedelta(seconds=10)
+    feature = application_feature_factory("600001", draft_time)
+    engine = RecommendationEngine(recommendation_policy)
+    draft = replace(
+        engine.build_snapshot(
+            Strategy.TODAY,
+            (feature,),
+            now=draft_time,
+            phase="today_late",
+            trade_date="2026-07-16",
+            data_version="p6-rejected-freeze",
+            review_port=None,
+            review_deadline=boundary,
+            max_age_seconds=20.0,
+            filtered_count=0,
+            filter_reasons={},
+        ),
+        config_version="config-v2",
+    )
+    repository = MemoryRepository()
+    repository.publish(draft)
+    repository.save_checkpoint(draft, boundary_at=boundary)
+    state = RuntimeState()
+    state.publish(draft)
+    publisher = SnapshotPublisher(history_size=4, client_queue_size=2)
+    pipeline = build_pipeline(
+        StaticMarketData(()),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        publisher,
+        engine,
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: boundary,
+        published_snapshots=PublishedSnapshotIndex(repository, maximum_view_bytes=1),
+    )
+
+    assert pipeline._freeze_available_snapshots(boundary, (Strategy.TODAY.value,)) == ()
+
+    formal = repository.load_frozen(Strategy.TODAY, draft.trade_date)
+    assert formal is not None
+    assert formal.frozen is True
+    assert state.latest(Strategy.TODAY) == draft
+    assert state.is_frozen(Strategy.TODAY, draft.trade_date) is False
+    assert repository.load_checkpoint(Strategy.TODAY, draft.trade_date, boundary_at=boundary) == draft
+    assert publisher.last_sequence() == 0
 
 
 def test_frozen_topk_uses_recoverable_overlay_and_keeps_close_value(

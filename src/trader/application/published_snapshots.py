@@ -96,31 +96,43 @@ class PublishedSnapshotIndex:
                         self._overlays[(strategy, latest.trade_date)] = overlay
         return {"resident_dates_preloaded": loaded_dates, "historical_views_preloaded": loaded_dates * 3}
 
-    def publish(self, snapshot: RecommendationSnapshot) -> None:
+    def publish(self, snapshot: RecommendationSnapshot) -> bool:
         delivery = _delivery_snapshot(snapshot)
         with self._lock:
             if not self._fits(delivery):
                 self._counters["rejected_oversize_views"] += 1
                 raise ValueError("P6 view exceeds the configured per-view byte limit")
+            current = self._current.get(delivery.strategy)
+            if current is not None and delivery.trade_date < current.trade_date:
+                self._record_committed_locked(snapshot, delivery)
+                return False
             if not self._accept_current_locked(delivery):
-                return
+                return False
             self._counters["published"] += 1
-            if snapshot.frozen and snapshot.strategy in self._HISTORICAL_STRATEGIES:
-                self._pending_committed[(snapshot.strategy, snapshot.trade_date)] = delivery
-                complete = all(
-                    (strategy, snapshot.trade_date) in self._pending_committed
-                    for strategy in self._HISTORICAL_STRATEGIES
-                )
-                if complete:
-                    for strategy in self._HISTORICAL_STRATEGIES:
-                        key = (strategy, snapshot.trade_date)
-                        self._resident[key] = self._pending_committed.pop(key)
-                        dates = (snapshot.trade_date, *self._dates[strategy])
-                        self._dates[strategy] = tuple(dict.fromkeys(dates))
-                        allowed = set(self._dates[strategy][: self._resident_days])
-                        for resident_key in tuple(self._resident):
-                            if resident_key[0] is strategy and resident_key[1] not in allowed:
-                                self._resident.pop(resident_key, None)
+            self._record_committed_locked(snapshot, delivery)
+            return True
+
+    def _record_committed_locked(
+        self,
+        snapshot: RecommendationSnapshot,
+        delivery: RecommendationSnapshot,
+    ) -> None:
+        if not snapshot.frozen or snapshot.strategy not in self._HISTORICAL_STRATEGIES:
+            return
+        self._pending_committed[(snapshot.strategy, snapshot.trade_date)] = delivery
+        complete = all(
+            (strategy, snapshot.trade_date) in self._pending_committed for strategy in self._HISTORICAL_STRATEGIES
+        )
+        if not complete:
+            return
+        for strategy in self._HISTORICAL_STRATEGIES:
+            key = (strategy, snapshot.trade_date)
+            self._resident[key] = self._pending_committed.pop(key)
+            self._dates[strategy] = tuple(sorted({snapshot.trade_date, *self._dates[strategy]}, reverse=True))
+            allowed = set(self._dates[strategy][: self._resident_days])
+            for resident_key in tuple(self._resident):
+                if resident_key[0] is strategy and resident_key[1] not in allowed:
+                    self._resident.pop(resident_key, None)
 
     def _accept_current_locked(self, delivery: RecommendationSnapshot) -> bool:
         current = self._current.get(delivery.strategy)
@@ -129,7 +141,7 @@ class PublishedSnapshotIndex:
             self._discard_mismatched_overlay(delivery)
             return True
         if delivery.trade_date < current.trade_date:
-            return True
+            return False
         if not current.frozen:
             self._current[delivery.strategy] = delivery
             self._discard_mismatched_overlay(delivery)

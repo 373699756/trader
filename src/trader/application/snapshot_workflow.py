@@ -23,6 +23,7 @@ from trader.application.pipeline_stages import (
 from trader.application.pipeline_workers import submit_required_urgent
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
+from trader.application.snapshot_publication import admit_snapshot_to_p6
 from trader.application.status import RuntimeState
 from trader.domain.market.models import LiveQuote
 from trader.domain.recommendation.models import (
@@ -92,8 +93,7 @@ def freeze_available_snapshots(
         if key in pipeline._frozen_keys or pipeline._state.is_frozen(strategy, trade_date):
             continue
 
-        if trade_date in pipeline._repository.recommendation_dates(strategy):
-            pipeline._state.restore_frozen(strategy, trade_date)
+        if _restore_existing_frozen(pipeline, strategy, trade_date):
             continue
 
         current = pipeline._state.latest(strategy)
@@ -108,7 +108,6 @@ def freeze_available_snapshots(
                 pipeline._state.record_error(f"{strategy.value} freeze unavailable: no current pre-cutoff snapshot")
                 continue
             current = fallback
-            pipeline._state.restore_snapshot(current)
 
         if current is None or current.trade_date != trade_date:
             pipeline._state.record_error(f"{strategy.value} freeze unavailable: no current pre-cutoff snapshot")
@@ -145,24 +144,48 @@ def freeze_available_snapshots(
             config_version=pipeline._config_version,
             metadata={**current.metadata, "freeze_anchor": anchors},
         )
-        persist(pipeline, pipeline._snapshot_writer.freeze, frozen)
-        pipeline._published_snapshots.publish(frozen)
-        pipeline._state.mark_frozen(frozen)
-        pipeline._publisher.publish(frozen)
-        pipeline._frozen_keys.add(key)
-        snapshots.append(frozen)
-        try:
-            persist(
-                pipeline,
-                pipeline._snapshot_writer.consume_checkpoint,
-                strategy,
-                trade_date,
-                boundary_at=boundary,
-            )
-        except Exception as exc:
-            pipeline._state.increment("checkpoint_consume_failures")
-            pipeline._state.record_error(f"{strategy.value} checkpoint cleanup degraded: {type(exc).__name__}")
+        snapshots.extend(_commit_frozen_snapshot(pipeline, frozen, key, boundary))
     return tuple(snapshots)
+
+
+def _restore_existing_frozen(
+    pipeline: RecommendationPipeline,
+    strategy: Strategy,
+    trade_date: str,
+) -> bool:
+    if trade_date not in pipeline._repository.recommendation_dates(strategy):
+        return False
+    existing = pipeline._repository.load_frozen(strategy, trade_date)
+    if existing is not None and admit_snapshot_to_p6(pipeline, existing):
+        pipeline._state.restore_snapshot(existing)
+        pipeline._state.restore_frozen(strategy, trade_date)
+    return True
+
+
+def _commit_frozen_snapshot(
+    pipeline: RecommendationPipeline,
+    frozen: RecommendationSnapshot,
+    key: tuple[Strategy, str],
+    boundary: datetime,
+) -> tuple[RecommendationSnapshot, ...]:
+    persist(pipeline, pipeline._snapshot_writer.freeze, frozen)
+    if not admit_snapshot_to_p6(pipeline, frozen):
+        return ()
+    pipeline._state.mark_frozen(frozen)
+    pipeline._publisher.publish(frozen)
+    pipeline._frozen_keys.add(key)
+    try:
+        persist(
+            pipeline,
+            pipeline._snapshot_writer.consume_checkpoint,
+            frozen.strategy,
+            frozen.trade_date,
+            boundary_at=boundary,
+        )
+    except Exception as exc:
+        pipeline._state.increment("checkpoint_consume_failures")
+        pipeline._state.record_error(f"{frozen.strategy.value} checkpoint cleanup degraded: {type(exc).__name__}")
+    return (frozen,)
 
 
 def refresh_live_overlays(
@@ -353,8 +376,9 @@ def score_strategy(
         strategy,
         round((time.perf_counter() - scoring_started) * 1000.0, 3),
     )
+    if not admit_snapshot_to_p6(pipeline, snapshot):
+        return None
     pipeline._state.publish(snapshot)
-    pipeline._published_snapshots.publish(snapshot)
     save_checkpoint_if_due(pipeline, snapshot, now)
     pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
     pipeline._publisher.publish(snapshot)

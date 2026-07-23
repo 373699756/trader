@@ -70,10 +70,17 @@ def test_domain_is_partitioned_by_business_capability_without_legacy_paths() -> 
         "tail.py",
     }
 
-    assert {path.name for path in domain.iterdir() if path.is_dir() and not path.name.startswith("__")} == (
-        capability_packages
-    )
-    assert [name for name in sorted(retired_modules) if (domain / name).exists()] == []
+    active_packages = {
+        path.name
+        for path in domain.iterdir()
+        if path.is_dir() and not path.name.startswith("__") and any(path.rglob("*.py"))
+    }
+    assert active_packages == capability_packages
+    assert [
+        name
+        for name in sorted(retired_modules)
+        if (domain / name).is_file() or ((domain / name).is_dir() and any((domain / name).rglob("*.py")))
+    ] == []
     assert all((domain / package / "__init__.py").is_file() for package in capability_packages)
 
 

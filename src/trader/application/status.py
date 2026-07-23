@@ -61,12 +61,13 @@ class RuntimeState:
         with self._lock:
             self._strategy_degraded_reasons[strategy] = tuple(dict.fromkeys(reasons))
 
-    def publish(self, snapshot: RecommendationSnapshot) -> None:
+    def publish(self, snapshot: RecommendationSnapshot) -> bool:
         with self._lock:
             self._snapshots[snapshot.strategy] = snapshot
             self._discard_mismatched_overlay(snapshot)
             self._strategy_degraded_reasons.pop(snapshot.strategy, None)
             self._counters["snapshots_published"] += 1
+        return True
 
     def restore_snapshot(self, snapshot: RecommendationSnapshot) -> None:
         with self._lock:

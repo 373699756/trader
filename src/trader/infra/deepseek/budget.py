@@ -291,16 +291,26 @@ class DeepSeekBudgetStore:
                 connection.rollback()
                 return BudgetReservation(False, "", requested_bucket, "bucket_limit", stage)
             soft_limit = _SOFT_BUCKET_LIMITS.get(requested_bucket)
-            if soft_limit is not None and bucket_used >= soft_limit:
-                connection.rollback()
-                return BudgetReservation(False, "", requested_bucket, "soft_bucket_limit", stage)
+            if soft_limit is not None and model_role == "primary":
+                primary_bucket_used = _count(
+                    connection,
+                    "trade_date = ? AND bucket = ? AND model_role = 'primary'",
+                    (trade_date, requested_bucket),
+                )
+                if primary_bucket_used >= soft_limit:
+                    connection.rollback()
+                    return BudgetReservation(False, "", requested_bucket, "soft_bucket_limit", stage)
             if requested_bucket == "emergency":
                 normal_used = _count(
                     connection,
-                    "trade_date = ? AND bucket = ?",
+                    "trade_date = ? AND bucket = ? AND model_role = 'primary'",
                     (trade_date, strategy.value),
                 )
-                if normal_used < self._limits[strategy.value]:
+                normal_limit = min(
+                    self._limits[strategy.value],
+                    _SOFT_BUCKET_LIMITS[strategy.value],
+                )
+                if normal_used < normal_limit:
                     connection.rollback()
                     return BudgetReservation(False, "", requested_bucket, "normal_budget_available", stage)
             else:

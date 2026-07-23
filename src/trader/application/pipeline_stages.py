@@ -17,6 +17,7 @@ from trader.application.events import EventDeadlineExpiredError, PipelineEvent
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.recommendations import PreparedSnapshot
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
+from trader.application.snapshot_publication import admit_snapshot_to_p6
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
     RecommendationSnapshot,
@@ -442,8 +443,9 @@ def _score_strategies_on_workers(
             prepared.strategy,
             round((time.perf_counter() - scoring_started) * 1000.0, 3),
         )
+        if not admit_snapshot_to_p6(pipeline, snapshot):
+            continue
         pipeline._state.publish(snapshot)
-        pipeline._published_snapshots.publish(snapshot)
         _save_checkpoint_if_due(pipeline, snapshot, now)
         pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
         pipeline._publisher.publish(snapshot)

@@ -33,6 +33,7 @@ from trader.application.schedule import (
     shanghai_now,
     trade_date_at,
 )
+from trader.application.snapshot_publication import admit_snapshot_to_p6
 from trader.application.snapshot_workflow import (
     freeze_available_snapshots,
     process_schedule,
@@ -177,12 +178,12 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             for trade_date in self._repository.recommendation_dates(strategy):
                 key = (strategy, trade_date)
                 self._frozen_keys.add(key)
-                self._state.restore_frozen(strategy, trade_date)
         for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
             dates = self._repository.recommendation_dates(strategy)
             latest = self._repository.load_frozen(strategy, dates[0]) if dates else None
-            if latest is not None:
+            if latest is not None and admit_snapshot_to_p6(self, latest):
                 self._state.restore_snapshot(latest)
+                self._state.restore_frozen(strategy, latest.trade_date)
                 overlay = self._repository.load_live_overlay(strategy, latest.trade_date)
                 if overlay is not None and overlay.snapshot_id == latest.snapshot_id:
                     self._live_overlays[(strategy, latest.trade_date)] = overlay

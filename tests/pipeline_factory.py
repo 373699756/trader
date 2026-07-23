@@ -8,7 +8,7 @@ from trader.application.pipeline import RecommendationPipeline
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
 from trader.application.ports.market import MarketDataPorts, MarketSnapshotMetadata
 from trader.application.ports.outcomes import OutcomeSettlementPort
-from trader.application.ports.snapshots import SnapshotPorts
+from trader.application.ports.snapshots import PublishedSnapshotWritePort, SnapshotPorts
 from trader.application.ports.types import JsonObject, freeze_json_object
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
@@ -42,6 +42,7 @@ def build_pipeline(
     long_codes: Sequence[str] = (),
     long_target_prices: Mapping[str, float | None] | None = None,
     outcome_settlement: OutcomeSettlementPort | None = None,
+    published_snapshots: PublishedSnapshotWritePort | None = None,
 ) -> RecommendationPipeline:
     metadata = market_data if hasattr(market_data, "snapshot_metadata") else _MarketMetadataAdapter(market_data)
     observability = (
@@ -69,6 +70,7 @@ def build_pipeline(
             state=state,
             now=now,
             outcome_settlement=outcome_settlement,
+            published_snapshots=published_snapshots,
         ),
         PipelineOptions(
             config_version=config_version,

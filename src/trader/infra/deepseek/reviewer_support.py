@@ -60,7 +60,7 @@ class _ReservationTracker:
         )
         if (
             not reservation.allowed
-            and reservation.reason == "bucket_limit"
+            and reservation.reason in {"bucket_limit", "soft_bucket_limit"}
             and self.planned_bucket == self.strategy.value
             and self.emergency_reason
         ):
@@ -260,8 +260,10 @@ def _challenger_failure_status(
         return "late"
     if reservation_error in {
         "challenger_limit",
+        "challenger_soft_limit",
         "daily_hard_limit",
         "bucket_limit",
+        "soft_bucket_limit",
         "stage_limit",
     }:
         return "budget_exhausted"

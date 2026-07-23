@@ -127,14 +127,27 @@ def test_published_index_does_not_replace_current_pin_with_older_frozen_history(
     assert frozen.snapshot_id == "older-tomorrow"
 
 
+def test_published_index_keeps_dates_descending_when_older_triplet_arrives() -> None:
+    archive = _Archive(("2026-07-22",))
+    index = PublishedSnapshotIndex(archive)
+    index.initialize()
+
+    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+        assert index.publish(_snapshot(strategy, "2026-07-21")) is False
+
+    assert index.recommendation_dates(Strategy.TODAY) == ("2026-07-22", "2026-07-21")
+    assert index.latest(Strategy.TODAY) is not None
+    assert index.latest(Strategy.TODAY).trade_date == "2026-07-22"
+
+
 def test_published_index_keeps_same_day_frozen_pin_over_late_draft() -> None:
     archive = _Archive(())
     index = PublishedSnapshotIndex(archive)
     frozen = replace(_snapshot(Strategy.TODAY, "2026-07-22"), snapshot_id="frozen")
     late_draft = replace(frozen, snapshot_id="late-draft", frozen=False, phase="today_late")
 
-    index.publish(frozen)
-    index.publish(late_draft)
+    assert index.publish(frozen) is True
+    assert index.publish(late_draft) is False
 
     latest = index.latest(Strategy.TODAY)
     assert latest is not None
@@ -150,9 +163,9 @@ def test_published_index_rejects_same_day_frozen_replacements() -> None:
     changed = replace(frozen, filtered_count=frozen.filtered_count + 1)
     replacement = replace(frozen, snapshot_id="replacement")
 
-    index.publish(frozen)
-    index.publish(changed)
-    index.publish(replacement)
+    assert index.publish(frozen) is True
+    assert index.publish(changed) is False
+    assert index.publish(replacement) is False
 
     assert index.latest(Strategy.TODAY) == frozen
     assert index.status()["rejected_frozen_replacements"] == 2
