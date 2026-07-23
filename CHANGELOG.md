@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求把 `plan_c.md`、`plan_sudu.md` 和 `plan_youhua.md` 中仍有效的策略归并到两份
+  权威文档后删除，并补充确认已被其他文档取代的 `plan.md` 可直接删除。软件权威契约新增
+  provider 三段式、列式类型/dtype 边界、dirty 路由矩阵、P1-P6/DeepSeek/SSE 观测指标和
+  长期公共接缝说明；策略权威契约新增 V4 事实映射、证据质量收缩、复核优先级、
+  批处理/整批一次修复和 58/66/71 软目标说明。
+
 - 用户要求继续未完成的任务 A，本批闭合 `docs/plan.md` 第 2.6 节。新增按只读能力拆分的
   Web 状态、推荐、事件/SSE、请求解析和服务契约模块，并为 DeepSeek cache identity
   增加独立类型契约，使路由与外部调用参数可由 mypy 静态核对。
@@ -265,6 +271,13 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 三份专项旧计划同时包含已实施方案、阶段施工指令和未落地拟议值，继续保留会形成第二套
+  策略真相源。本批以活动代码、`config/v2`、G5 报告和现有测试为准，把已实施内容改写为
+  长期契约；A/B/C/D 阶段分工只保留在 `docs/reports/` 的历史证据中。活动行为不变：
+  V4 仍使用至少 2 个有效维度和 0.50 覆盖门禁，today 主审/挑战者分别以 11:20/11:18
+  截止，long 永久零物理请求，融合仍为 0.68/0.32 且固定向量为 `83.40`。`plan.md`
+  的重构章节已全部闭合且相对当前权威文档过时，按用户确认不再重复归并。
 
 - 组合根仍唯一位于 `bootstrap.py`，`ApplicationSystem` 继续显式拥有 worker、source
   lane、pipeline、持久化和 DeepSeek 生命周期；流水线初始化、冻结恢复、事件执行、市场
@@ -529,6 +542,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正文档治理仍把已经闭合的 `plan.md`、`plan_c.md`、`plan_sudu.md` 和
+  `plan_youhua.md` 当作活动计划的问题，并补齐此前仅在实现/测试中存在的 V4 本地映射和
+  P1-P3 列式增量约束。
+  同时明确排除旧计划中与生产配置冲突的“至少 3 维/覆盖 0.60”“today 全部 11:18
+  截止”和“long 硬桶 0”等拟议值，避免删除计划时把过期设想误升格为生产规则。
+
 - 第 2.6 节此前仍为 pending，严格质量脚本还接受 `C901/N818/PLR0911/PLR0912/PLR0913/
   PLR0915` 共 137 项既有债务；原因是组合、缓存回退、并发调度、DeepSeek 和 Web 请求职责
   长期堆叠在大函数与宽参数边界。现已拆分恢复、调度、缓存、降级和序列化阶段，使用真实
@@ -747,6 +766,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除过时的 `docs/plan.md`，以及已完成归并的 `docs/plan_c.md`、
+  `docs/plan_sudu.md` 和 `docs/plan_youhua.md`；文档交付契约以失败测试防止已删除计划
+  重新成为并行真相源。
+
 - 移除 Web 单文件中的状态、推荐、事件和 SSE 具体实现，以及严格 Ruff 的非零债务基线；
   活动实现不再依赖宽 `**kwargs` 或超限函数来绕过审查。未移除任何推荐策略、行情源、
   DeepSeek、冻结、历史、CLI、API 或桌面能力。
@@ -866,6 +889,13 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 本批已逐项对照四份旧计划、两份权威文档、活动 DeepSeek/列式/P6 实现、`config/v2`
+  和 G5 报告；32 项定向契约测试与完整 `make format-check`、`make lint`、
+  `make type-check`、`make test`、`make package` 均通过，严格重构债务为零。仓库外
+  wheel 安装、顶层包导入、模板/CSS/JavaScript/SVG 资源读取、`trader-cli --help` 和
+  `pip check` 通过；首次 `--no-deps` CLI 探测因验收环境按设计没有 Polars 而失败，随后
+  使用项目已锁定依赖环境加载同一 wheel 安装目标复验通过。`git diff --check` 通过。
 
 - 任务 A 的隔离候选树通过 `make format-check`、`make lint`（严格诊断为零）、
   `make type-check`、`make test` 和 `make package`；架构/`create_app()` 无副作用、固定
@@ -1199,6 +1229,11 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 本批只归并和删除文档，不改变生产评分或请求逻辑，也不构成收益改善证据。历史
+  `docs/reports/` 为保持审计原貌仍会提到已删除计划的旧路径；活动规则只能从两份
+  权威文档读取。四份旧计划内容仍可从 Git 历史恢复，后续收益/性能实验分别以 `strage.md`
+  和 `times.md` 的独立门禁推进。
 
 - 本批是工程等价重构，未使用真实供应商或 DeepSeek 网络证明外部时延，也未改变收益策略；
   宿主只实际运行 Python 3.14 与 Firefox 152，Python 3.10-3.13 由 Ruff/mypy/打包契约覆盖。

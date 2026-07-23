@@ -190,14 +190,13 @@ def test_final_web_routes_are_partitioned_by_read_only_capability() -> None:
     } <= {path.name for path in web.glob("*.py")}
 
 
-def test_final_refactor_plan_and_strict_debt_are_closed() -> None:
-    plan = (PROJECT_ROOT / "docs" / "plan.md").read_text(encoding="utf-8")
-    section = plan.split("### 2.6", 1)[1].split("## 3.", 1)[0]
+def test_final_refactor_plan_is_retired_and_strict_debt_is_closed() -> None:
+    design = (PROJECT_ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
     quality_script = (PROJECT_ROOT / "scripts" / "check_refactor_quality.py").read_text(encoding="utf-8")
     expected_assignment = quality_script.split("EXPECTED_COUNTS:", 1)[1].split("\n", 1)[0]
 
-    assert "状态：completed（2026-07-23）" in section
-    assert "状态：pending" not in section
+    assert not (PROJECT_ROOT / "docs" / "plan.md").exists()
+    assert "原全工程重构第 2.1-2.6 节全部闭合" in design
     assert "{}" in expected_assignment
 
 

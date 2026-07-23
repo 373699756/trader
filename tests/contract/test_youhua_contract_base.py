@@ -17,7 +17,7 @@ def test_youhua_dual_memory_contract_is_authoritative() -> None:
     assert "用 Python 分配或逻辑缓存估算代替 RSS 峰值" in design
 
 
-def test_youhua_public_seams_have_single_versions_and_owners() -> None:
+def test_youhua_public_seams_keep_single_versions_and_historical_owner_evidence() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     report = (PROJECT_ROOT / "docs/reports/youhua-a1-baseline.md").read_text(encoding="utf-8")
@@ -40,17 +40,21 @@ def test_youhua_public_seams_have_single_versions_and_owners() -> None:
     assert "deepseek_v4_review_facts_v1" in report
     assert "deepseek_v4_review_facts_v1" in g1
     assert "deepseek_v4_review_facts_v1" in a2
-    assert "Codex A 是 schema、版本、公共 port/event" in design
-    assert "publisher、bootstrap 和集成测试 owner" in design
+    assert "不再表示阶段施工或代理分工" in design
+    assert "只能在各自活动模块中保留一套定义" in design
+    assert "A 是唯一公共文件修改者和集成提交者" in report
     assert "B/C/D 内部算法 | 未执行、未修改" in report
 
 
-def test_youhua_g1_waits_for_bcd_phase_reports() -> None:
+def test_youhua_g1_gate_is_preserved_as_historical_evidence() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     report = (PROJECT_ROOT / "docs/reports/youhua-a1-baseline.md").read_text(encoding="utf-8")
     g1 = (PROJECT_ROOT / "docs/reports/youhua-g1-contract-base.md").read_text(encoding="utf-8")
 
-    assert "B1/C1/D1 标准报告均 `ready_for_gate=yes`" in design
+    assert "历史分阶段交接、基线和 G1-G5 门禁" in design
+    assert "作为审计证据" in design
+    assert "不再作为活动" in design
+    assert "施工手册" in design
     assert "B1 P1-P3 盘点报告 | 已收到" in report
     assert "C1 DeepSeek 盘点报告 | 已收到" in report
     assert "D1 P6/Web 盘点报告 | 已收到" in report
@@ -87,16 +91,16 @@ def test_youhua_g2_is_published_after_all_phase2_reports_are_ready() -> None:
     assert "A3 has not started" in g2
 
 
-def test_youhua_a3_integration_handoff_waits_for_bcd_phase3_reports() -> None:
-    plan = (PROJECT_ROOT / "docs/plan_youhua.md").read_text(encoding="utf-8")
+def test_youhua_a3_integration_handoff_is_preserved_in_historical_reports() -> None:
     report = (PROJECT_ROOT / "docs/reports/youhua-a3-integration.md").read_text(encoding="utf-8")
+    g3 = (PROJECT_ROOT / "docs/reports/youhua-g3-gate-review.md").read_text(encoding="utf-8")
 
     assert "A3.1-A3.7 已完成 A owner 集成接线" in report
     assert "G3 未发布" in report
     assert "B3/C3/D3" in report
     assert "ready_for_gate: `yes; A3 integration handoff is available; G3 is pending B3/C3/D3 ready reports`" in report
-    assert "A3.1 合并 B" in plan
-    assert "G3：阶段 3 完成条件" in plan
+    assert "G3 已发布" in g3
+    assert "A3 集成 handoff 已发布，明确 G3 等待 B3/C3/D3" in g3
 
 
 def test_youhua_g3_publishes_after_all_phase3_reports_are_ready() -> None:

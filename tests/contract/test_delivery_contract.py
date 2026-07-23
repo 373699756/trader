@@ -28,15 +28,11 @@ def test_each_delivery_documents_user_problem_and_change_summary() -> None:
         assert "CHANGELOG.md" in contract
 
 
-def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
+def test_docs_keep_two_authorities_active_plans_and_delivery_reports() -> None:
     docs_root = PROJECT_ROOT / "docs"
     documents = sorted(path.relative_to(docs_root).as_posix() for path in docs_root.rglob("*") if path.is_file())
 
     assert documents == [
-        "plan.md",
-        "plan_c.md",
-        "plan_sudu.md",
-        "plan_youhua.md",
         "recommendation-strategy.md",
         "reports/youhua-a1-baseline.md",
         "reports/youhua-a2-public-skeleton.md",
@@ -55,28 +51,12 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
     ]
 
     design = (docs_root / "software-business-design.md").read_text(encoding="utf-8")
-    plan = (docs_root / "plan.md").read_text(encoding="utf-8")
-    plan_c = (docs_root / "plan_c.md").read_text(encoding="utf-8")
-    plan_sudu = (docs_root / "plan_sudu.md").read_text(encoding="utf-8")
-    plan_youhua = (docs_root / "plan_youhua.md").read_text(encoding="utf-8")
     strage = (docs_root / "strage.md").read_text(encoding="utf-8")
     times = (docs_root / "times.md").read_text(encoding="utf-8")
     report = (docs_root / "reports/youhua-a1-baseline.md").read_text(encoding="utf-8")
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
-    assert "非权威执行计划" in plan
-    assert "software-business-design.md" in plan
-    assert "recommendation-strategy.md" in plan
-    assert "非权威执行计划" in plan_c
-    assert "software-business-design.md" in plan_c
-    assert "recommendation-strategy.md" in plan_c
-    assert "非权威执行计划" in plan_sudu
-    assert "software-business-design.md" in plan_sudu
-    assert "recommendation-strategy.md" in plan_sudu
-    assert "非权威执行计划" in plan_youhua
-    assert "software-business-design.md" in plan_youhua
-    assert "recommendation-strategy.md" in plan_youhua
     assert "非权威执行计划" in strage
     assert "software-business-design.md" in strage
     assert "recommendation-strategy.md" in strage
@@ -97,6 +77,8 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
     assert "G3 已发布" in (docs_root / "reports/youhua-g3-gate-review.md").read_text(encoding="utf-8")
     assert "G4 已发布" in (docs_root / "reports/youhua-g4-gate-review.md").read_text(encoding="utf-8")
     assert "G5 已发布" in (docs_root / "reports/youhua-g5-final-gate.md").read_text(encoding="utf-8")
+    for retired_plan in ("plan.md", "plan_c.md", "plan_sudu.md", "plan_youhua.md"):
+        assert not (docs_root / retired_plan).exists()
     assert "docs/need.md" not in design
     assert "docs/hi.md" not in design
 
