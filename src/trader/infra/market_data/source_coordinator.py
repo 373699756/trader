@@ -104,6 +104,8 @@ class MarketSourceTelemetry(Protocol):
 
     def record_source_time(self, source: str, source_time: datetime) -> None: ...
 
+    def record_local_latency(self, stage: str, duration_ms: float) -> None: ...
+
 
 class MarketSourceCoordinator:
     def __init__(self, dependencies: MarketSourceDependencies, telemetry: MarketSourceTelemetry) -> None:
@@ -275,8 +277,13 @@ class MarketSourceCoordinator:
             if request.deadline is not None and completed_at >= request.deadline:
                 self._telemetry.record_fetch_result(source, False, started, "deadline")
                 raise MarketDataFailedError(source, "late")
+            normalization_started = self._monotonic()
             observations = tuple(
                 observation_from_quote(quote, source=source, observed_at=completed_at) for quote in quotes
+            )
+            self._telemetry.record_local_latency(
+                "normalization",
+                _elapsed(normalization_started, self._monotonic()),
             )
             if self._cache is not None:
                 source_time = max(observation.source_time for observation in observations)
@@ -359,8 +366,13 @@ class MarketSourceCoordinator:
                 if request.deadline is not None and completed_at >= request.deadline:
                     self._telemetry.record_fetch_result(request.source, False, started, "deadline")
                     raise MarketDataFailedError(request.source, "late")
+                normalization_started = self._monotonic()
                 observations = tuple(
                     observation_from_quote(quote, source=request.source, observed_at=completed_at) for quote in quotes
+                )
+                self._telemetry.record_local_latency(
+                    "normalization",
+                    _elapsed(normalization_started, self._monotonic()),
                 )
                 cache.put(
                     identity,

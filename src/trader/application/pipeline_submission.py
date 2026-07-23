@@ -173,11 +173,16 @@ class PipelineSubmissionMixin(PipelineState):
             except Exception as exc:
                 self._state.record_error(f"cannot persist priority event: {str(exc)[:500]}")
                 return False
-        accepted = self._queue.put(event)
+        self._latency.plan(event.event_id, event.event_type)
+        accepted, superseded_ids = self._queue.put_with_superseded(event)
+        for event_id in superseded_ids:
+            self._latency.finish(event_id, outcome="superseded")
         if accepted:
             self._state.increment("events_submitted")
-        elif is_priority:
-            self._state.record_error("priority queue full; event retained for restart replay")
+        else:
+            self._latency.finish(event.event_id, outcome="dropped")
+            if is_priority:
+                self._state.record_error("priority queue full; event retained for restart replay")
         return accepted
 
 

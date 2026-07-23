@@ -8,6 +8,7 @@ from datetime import datetime
 from types import MappingProxyType
 
 from trader.application.cadence import CadencePolicy
+from trader.application.latency import LatencyWaterfall
 from trader.application.ports.clock import TradingCalendarPort
 from trader.application.ports.events import EventAuditPort
 from trader.application.ports.market import MarketDataPorts
@@ -33,6 +34,7 @@ class PipelineDependencies:
     published_snapshots: PublishedSnapshotWritePort | None = None
     reviews: DeepSeekReviewPort | None = None
     outcome_settlement: OutcomeSettlementPort | None = None
+    latency: LatencyWaterfall | None = None
 
 
 @dataclass(frozen=True)

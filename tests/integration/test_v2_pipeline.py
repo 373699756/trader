@@ -77,6 +77,12 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     today = pipeline.run_once(clock.now())
     assert [snapshot.strategy for snapshot in today] == [Strategy.TODAY]
     assert today[0].fusion_mode.value == "local_degraded"
+    latency = pipeline.status()["dependencies"]["latency_waterfall"]
+    assert latency["planned_count"] == 1
+    assert latency["completed_count"] == 1
+    assert latency["active_trace_count"] == 0
+    assert latency["stages"]["cycle_total:run_once"]["sample_count"] == 1
+    assert "deepseek_review" not in latency["stages"]
 
     clock.set(datetime.fromisoformat("2026-07-16T11:19:50+08:00"))
     pipeline.run_once(clock.now())
@@ -1289,6 +1295,9 @@ def test_initialize_replays_persisted_priority_event(recommendation_policy, appl
     assert replayed.event_id == event.event_id
     assert replayed.retry_count == 1
     assert pipeline.status()["counters"]["events_replayed"] == 1
+    latency = pipeline.status()["dependencies"]["latency_waterfall"]
+    assert latency["planned_count"] == 1
+    assert latency["active_trace_count"] == 1
 
 
 def test_initialize_rejects_priority_event_from_another_config(
@@ -2360,6 +2369,9 @@ class RecordingQueue:
     def put(self, event: PipelineEvent) -> bool:
         self.events.append(event)
         return True
+
+    def put_with_superseded(self, event: PipelineEvent) -> tuple[bool, tuple[str, ...]]:
+        return self.put(event), ()
 
 
 class ThreadRecordingReviewer:

@@ -370,7 +370,7 @@
     }
   },
   "performance_budgets": {
-    "schema_version": 1,
+    "schema_version": 2,
     "workload": {
       "market_rows": 5500,
       "candidate_rows": 360
@@ -380,9 +380,10 @@
       "measurement": 5
     },
     "latency_p95_ms": {
-      "market_normalization": 800,
-      "market_merge": 1000,
-      "canonical_snapshot": 1500,
+      "market_normalization": 250,
+      "market_merge": 600,
+      "canonical_snapshot": 900,
+      "targeted_overlay_commit": 100,
       "board_preselection": 250,
       "board_local_scoring": 250,
       "three_strategy_board_scoring": 750,
@@ -391,7 +392,8 @@
       "board_ready_to_draft": 500,
       "quote_to_draft": 5000,
       "deepseek_to_hybrid": 1000,
-      "sse_delivery": 2000,
+      "sse_delivery": 100,
+      "browser_patch_to_paint": 100,
       "snapshot_api": 200,
       "etag_api": 50,
       "dates_api": 100,

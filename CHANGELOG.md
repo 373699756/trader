@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户确认只执行 `docs/times.md`、暂不执行 `docs/strage.md`；本批完成 T1 真实延迟瀑布
+  与性能门禁。新增组合根共享的有界 `LatencyWaterfall`、来源 lane 排队与物理请求/
+  本地处理分离计时、状态 API 聚合诊断，以及读取统一预算的 Firefox/geckodriver
+  patch-to-paint 与三档桌面验收 runner；不改变候选、评分、风险、融合或排名策略。
+
 - 用户要求把 `plan_c.md`、`plan_sudu.md` 和 `plan_youhua.md` 中仍有效的策略归并到两份
   权威文档后删除，并补充确认已被其他文档取代的 `plan.md` 可直接删除。软件权威契约新增
   provider 三段式、列式类型/dtype 边界、dirty 路由矩阵、P1-P6/DeepSeek/SSE 观测指标和
@@ -271,6 +276,11 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 正式 `perf-check` 从 `infra` 迁到入口层并改为调用活动标准化、融合、列式投影、板内
+  评分、全局选择、推荐准备/终态化、P6/SSE 和 Web 路由。性能配置升级为 schema v2，
+  固定 5500/360/120/18 行与三策略负载，并将标准化、融合、canonical、targeted commit、
+  SSE 和浏览器预算收紧到 `docs/times.md` T1 约定值。
 
 - 三份专项旧计划同时包含已实施方案、阶段施工指令和未落地拟议值，继续保留会形成第二套
   策略真相源。本批以活动代码、`config/v2`、G5 报告和现有测试为准，把已实施内容改写为
@@ -542,6 +552,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复正式性能报告用 Polars self-join、排序和 JSON 序列化代替生产链路，导致旧门禁无法
+  暴露实时瓶颈的问题。运行态现在对事件和行情周期记录有界完成/失败/超时/被替代/丢弃
+  结果；同一 trace 的重复终态不会重复计数，服务端状态不泄漏关联身份。
+
 - 修正文档治理仍把已经闭合的 `plan.md`、`plan_c.md`、`plan_sudu.md` 和
   `plan_youhua.md` 当作活动计划的问题，并补齐此前仅在实现/测试中存在的 V4 本地映射和
   P1-P3 列式增量约束。
@@ -766,6 +780,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除旧 `trader.infra.performance` 合成 runner 及其全部占位操作；CLI 仍保持原有
+  `perf-check` 命令和报告入口，不增加网络调用、线程或 `create_app()` 副作用。
+
 - 删除过时的 `docs/plan.md`，以及已完成归并的 `docs/plan_c.md`、
   `docs/plan_sudu.md` 和 `docs/plan_youhua.md`；文档交付契约以失败测试防止已删除计划
   重新成为并行真相源。
@@ -889,6 +906,13 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- T1 定向验证通过延迟采集、配置、真实性能入口、行情网关、架构、Web/API、流水线和
+  JavaScript 状态机测试；mypy 覆盖 172 个生产文件。真实浏览器应用 24 个 SSE patch，
+  最终 patch-to-paint P95 83ms（预算 100ms），1280x720、1440x900、1920x1080 均无
+  页面级横向溢出。`make format-check/lint/type-check/test/package` 全部通过；仓库外
+  全新虚拟环境成功安装最终 wheel，包导入、CLI、配置、模板、CSS、JavaScript、双图标
+  和 `pip check` 均通过。
 
 - 本批已逐项对照四份旧计划、两份权威文档、活动 DeepSeek/列式/P6 实现、`config/v2`
   和 G5 报告；32 项定向契约测试与完整 `make format-check`、`make lint`、
@@ -1229,6 +1253,11 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- T1 的职责是建立可信测量而非提前优化。固定 Python 3.14.4 全链路报告中，标准化
+  148.936ms 通过，但两来源融合 701.392ms、canonical 1620.766ms、targeted overlay
+  commit 910.829ms 分别超过 600/900/100ms；其余评分、推荐、P6/SSE 和 API 指标通过。
+  这三项继续作为 T2/T3 发布阻断项，TopK 来源年龄仍需真实交易日外部供应商观测。
 
 - 本批只归并和删除文档，不改变生产评分或请求逻辑，也不构成收益改善证据。历史
   `docs/reports/` 为保持审计原貌仍会提到已删除计划的旧路径；活动规则只能从两份

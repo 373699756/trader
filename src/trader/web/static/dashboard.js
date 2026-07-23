@@ -18,6 +18,8 @@
   };
   const CACHE_MAX_AGE_MS = 30000;
   const HISTORY_REFRESH_MS = 3000;
+  const PATCH_LATENCY_SAMPLE_CAPACITY = 256;
+  const patchToPaintSamples = [];
   const diagnostics = {
     recommendationRequests: 0,
     recommendationFullResponses: 0,
@@ -27,6 +29,7 @@
     resyncRequests: 0,
     fullResponseBytes: 0,
     incrementalSseBytes: 0,
+    patchToPaintDroppedSamples: 0,
     resyncReasons: {},
     browserErrors: [],
   };
@@ -36,6 +39,7 @@
       ...diagnostics,
       resyncReasons: { ...diagnostics.resyncReasons },
       browserErrors: [...diagnostics.browserErrors],
+      patchToPaint: latencySummary(patchToPaintSamples),
     }),
   });
   window.addEventListener("error", (event) => recordBrowserError("error", event.message));
@@ -447,18 +451,26 @@
       if (state.streamRetry) window.clearTimeout(state.streamRetry);
     };
     stream.addEventListener("recommendation_patch", (event) => {
+      const receivedAt = performance.now();
       rememberEvent(event);
       diagnostics.incrementalSseBytes += utf8Bytes(event.data || "");
       let patch = null;
       try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
-      if (!state.date && (!patch || !patch.strategy || patch.strategy === state.strategy)) applyRecommendationPatch(patch);
+      if (
+        !state.date
+        && (!patch || !patch.strategy || patch.strategy === state.strategy)
+        && applyRecommendationPatch(patch)
+      ) recordPatchPaint(receivedAt);
     });
     stream.addEventListener("overlay_patch", (event) => {
+      const receivedAt = performance.now();
       rememberEvent(event);
       diagnostics.incrementalSseBytes += utf8Bytes(event.data || "");
       let patch = null;
       try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
-      if (!patch || !patch.strategy || patch.strategy === state.strategy) applyOverlayPatch(patch);
+      if ((!patch || !patch.strategy || patch.strategy === state.strategy) && applyOverlayPatch(patch)) {
+        recordPatchPaint(receivedAt);
+      }
     });
     stream.addEventListener("resync_required", (event) => {
       rememberEvent(event);
@@ -477,10 +489,10 @@
   function applyRecommendationPatch(patch) {
     const currentVersion = state.projectionVersion || projectionVersion(state.payload);
     const decision = recommendationPatchDecision(patch, state.payload, currentVersion, state.strategy, state.view);
-    if (decision === "ignore_late_draft") return;
+    if (decision === "ignore_late_draft") return false;
     if (decision !== "apply") {
       requestRecommendationResync(decision);
-      return;
+      return false;
     }
     const current = state.payload || {};
     const removed = new Set([...(patch.removed_codes || []), ...(patch.removals || [])]);
@@ -489,7 +501,7 @@
       : mergePatchItems(current.items, patch.upserts, removed);
     if (!topKValid(merged)) {
       requestRecommendationResync("topk_mismatch");
-      return;
+      return false;
     }
     state.payload = {
       ...current,
@@ -521,14 +533,15 @@
     }
     diagnostics.recommendationPatchesApplied += 1;
     renderPayload(state.payload);
+    return true;
   }
 
   function applyOverlayPatch(patch) {
-    if (state.date) return;
+    if (state.date) return false;
     const decision = overlayPatchDecision(patch, state.payload, state.projectionVersion, state.strategy);
     if (decision !== "apply") {
       requestRecommendationResync(decision);
-      return;
+      return false;
     }
     const quotes = new Map((patch.quotes || []).map((quote) => [quote.code, quote]));
     state.payload = {
@@ -546,6 +559,7 @@
     state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);
     diagnostics.overlayPatchesApplied += 1;
     renderPayload(state.payload);
+    return true;
   }
 
   function patchVersionValid(patch) {
@@ -629,6 +643,34 @@
 
   function quotedEtag(value) {
     return value.startsWith('"') ? value : `"${value}"`;
+  }
+
+  function recordPatchPaint(receivedAt) {
+    window.requestAnimationFrame(() => {
+      const elapsed = Math.max(0, performance.now() - receivedAt);
+      if (patchToPaintSamples.length >= PATCH_LATENCY_SAMPLE_CAPACITY) {
+        patchToPaintSamples.shift();
+        diagnostics.patchToPaintDroppedSamples += 1;
+      }
+      patchToPaintSamples.push(elapsed);
+    });
+  }
+
+  function latencySummary(values) {
+    if (!Array.isArray(values) || values.length === 0) {
+      return { sample_count: 0, p50_ms: null, p95_ms: null, maximum_ms: null };
+    }
+    const ordered = values.filter((value) => Number.isFinite(value) && value >= 0).sort((left, right) => left - right);
+    if (ordered.length === 0) {
+      return { sample_count: 0, p50_ms: null, p95_ms: null, maximum_ms: null };
+    }
+    const rank = (probability) => ordered[Math.max(0, Math.ceil(ordered.length * probability) - 1)];
+    return {
+      sample_count: ordered.length,
+      p50_ms: Number(rank(0.50).toFixed(3)),
+      p95_ms: Number(rank(0.95).toFixed(3)),
+      maximum_ms: Number(ordered[ordered.length - 1].toFixed(3)),
+    };
   }
 
   function utf8Bytes(value) {

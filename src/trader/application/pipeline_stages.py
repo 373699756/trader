@@ -334,9 +334,28 @@ def _score_strategies_on_workers(
     )
     _preheat_reviews(pipeline, context)
     strategy_inputs = _strategy_inputs(pipeline, context, use_cached_data=use_cached_data)
+    local_started = time.perf_counter()
     prepared_futures = _prepare_strategy_futures(pipeline, context, strategy_inputs)
     prepared_snapshots = _resolve_prepared_snapshots(pipeline, prepared_futures)
+    pipeline._latency.record_duration(
+        "local_scoring",
+        (time.perf_counter() - local_started) * 1000.0,
+    )
+    measure_deepseek = (
+        pipeline._reviews is not None
+        and context.phase not in {MarketPhase.DEEPSEEK_CUTOFF, MarketPhase.FINAL_QUOTE}
+        and any(
+            prepared.eligible if prepared.strategy is Strategy.LONG else prepared.review_eligible
+            for prepared in prepared_snapshots
+        )
+    )
+    deepseek_started = time.perf_counter()
     review_results = _review_prepared_snapshots(pipeline, context, prepared_snapshots)
+    if measure_deepseek:
+        pipeline._latency.record_duration(
+            "deepseek_review",
+            (time.perf_counter() - deepseek_started) * 1000.0,
+        )
     return _publish_prepared_snapshots(pipeline, context, prepared_snapshots, review_results)
 
 
@@ -516,12 +535,26 @@ def _publish_prepared_snapshots(
             prepared.strategy,
             round((time.perf_counter() - context.started_at) * 1000.0, 3),
         )
+        admission_started = time.perf_counter()
         if not admit_snapshot_to_p6(pipeline, snapshot):
+            pipeline._latency.record_duration(
+                "p6_admission",
+                (time.perf_counter() - admission_started) * 1000.0,
+            )
             continue
+        pipeline._latency.record_duration(
+            "p6_admission",
+            (time.perf_counter() - admission_started) * 1000.0,
+        )
         pipeline._state.publish(snapshot)
         _save_checkpoint_if_due(pipeline, snapshot, context.now)
         pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
+        sse_started = time.perf_counter()
         pipeline._publisher.publish(snapshot)
+        pipeline._latency.record_duration(
+            "sse_enqueue",
+            (time.perf_counter() - sse_started) * 1000.0,
+        )
         snapshots.append(snapshot)
     return tuple(snapshots)
 

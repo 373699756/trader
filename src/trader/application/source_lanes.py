@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import ParamSpec, TypeVar, cast
 
+from trader.application.latency import LatencyWaterfall
 from trader.application.workers import BoundedExecutor
 
 _P = ParamSpec("_P")
@@ -28,17 +29,27 @@ class _LaneRequest:
     sequence: int
     call: Callable[[], object]
     future: Future[object]
+    submitted_at: float
 
 
 class LatestRequestLane:
     """Run at most one source task and retain only its newest pending request."""
 
-    def __init__(self, source: str, executor: BoundedExecutor) -> None:
+    def __init__(
+        self,
+        source: str,
+        executor: BoundedExecutor,
+        *,
+        latency: LatencyWaterfall | None = None,
+        monotonic: Callable[[], float] = time.perf_counter,
+    ) -> None:
         normalized = source.strip().lower()
         if not normalized:
             raise ValueError("source lane name must not be empty")
         self._source = normalized
         self._executor = executor
+        self._latency = latency
+        self._monotonic = monotonic
         self._condition = threading.Condition()
         self._running: _LaneRequest | None = None
         self._pending: _LaneRequest | None = None
@@ -101,6 +112,7 @@ class LatestRequestLane:
                 self._sequence,
                 call,
                 created,
+                self._monotonic(),
             )
             return cast(Future[_T], self._enqueue(request, urgent))
 
@@ -130,7 +142,14 @@ class LatestRequestLane:
         self._coalesced_count += 1
         if observed_at >= pending.observed_at:
             self._sequence += 1
-            self._pending = _LaneRequest(identity, observed_at, self._sequence, call, pending.future)
+            self._pending = _LaneRequest(
+                identity,
+                observed_at,
+                self._sequence,
+                call,
+                pending.future,
+                self._monotonic(),
+            )
         return pending.future
 
     def _enqueue(self, request: _LaneRequest, urgent: bool) -> Future[object]:
@@ -219,6 +238,11 @@ class LatestRequestLane:
 
     def _execute(self, request: _LaneRequest) -> None:
         should_run = request.future.set_running_or_notify_cancel()
+        if should_run and self._latency is not None:
+            self._latency.record_duration(
+                "source_queue_wait",
+                max(0.0, (self._monotonic() - request.submitted_at) * 1000.0),
+            )
         try:
             result = request.call() if should_run else None
         except BaseException as exc:
@@ -266,8 +290,8 @@ class LatestRequestLane:
 class SourceLaneRegistry:
     """Fixed five-source registry with an isolated daily-history activity lane."""
 
-    def __init__(self, executor: BoundedExecutor) -> None:
-        self._lanes = {source: LatestRequestLane(source, executor) for source in _SOURCE_NAMES}
+    def __init__(self, executor: BoundedExecutor, *, latency: LatencyWaterfall | None = None) -> None:
+        self._lanes = {source: LatestRequestLane(source, executor, latency=latency) for source in _SOURCE_NAMES}
 
     def submit(
         self,

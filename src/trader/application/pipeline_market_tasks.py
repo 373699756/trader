@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -150,6 +151,7 @@ def _refresh_candidates_on_workers(
     force: bool = False,
     deadline: datetime | None = None,
 ) -> None:
+    market_started = time.perf_counter()
     market_future = data_future(
         pipeline,
         pipeline._market_full.fetch_market_features,
@@ -165,6 +167,10 @@ def _refresh_candidates_on_workers(
             event_type=PipelineTask.FULL_MARKET.value,
         )
         market_features = tuple(market_result)
+        pipeline._latency.record_duration(
+            "market_fetch",
+            (time.perf_counter() - market_started) * 1000.0,
+        )
     except MarketDataDeadlineExceededError as exc:
         raise EventDeadlineExpiredError(
             f"event deadline expired during execution: {PipelineTask.FULL_MARKET.value}"
@@ -175,6 +181,7 @@ def _refresh_candidates_on_workers(
         pipeline._state.increment("market_refresh_failures")
         pipeline._state.record_error(f"market data degraded during {phase.value}: {reason}")
         return
+    preparation_started = time.perf_counter()
     selection = submit_required(
         pipeline,
         pipeline._normalization_pool,
@@ -192,6 +199,10 @@ def _refresh_candidates_on_workers(
         selection,
         deadline=deadline,
         event_type=PipelineTask.FULL_MARKET.value,
+    )
+    pipeline._latency.record_duration(
+        "candidate_preparation",
+        (time.perf_counter() - preparation_started) * 1000.0,
     )
     store_candidate_selection(pipeline, market_features, candidates, reasons, details)
 

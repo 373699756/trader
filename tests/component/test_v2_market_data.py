@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 import requests
 
+from trader.application.latency import LatencyWaterfall
 from trader.application.ports.market import (
     MarketDataDeadlineExceededError,
     MarketDataFailedError,
@@ -515,6 +516,12 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert [item["name"] for item in health["route"]["attempted_vendors"]] == ["eastmoney", "sina"]
     assert health["route"]["attempted_vendors"][0]["status"] == "failed"
     assert health["route"]["attempted_vendors"][1]["status"] == "success"
+    waterfall = health["latency_waterfall"]
+    assert waterfall["stages"]["external_source"]["sample_count"] == 2
+    assert waterfall["stages"]["normalization"]["sample_count"] == 1
+    assert waterfall["stages"]["merge"]["sample_count"] == 1
+    assert waterfall["stages"]["canonical_commit"]["sample_count"] == 1
+    assert waterfall["stages"]["cycle_total:full_market"]["sample_count"] == 1
     assert "eastmoney:source_failed" in gateway.canonical_snapshot().degraded_reasons
 
 
@@ -759,6 +766,23 @@ def test_scheduled_tushare_reference_refresh_does_not_block_fast_source_lane() -
         tushare.release.set()
         lanes.stop(wait=True, timeout_seconds=1.0)
         pool.stop(wait=True, cancel_futures=True)
+
+
+def test_source_lane_records_bounded_queue_wait_telemetry() -> None:
+    pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="source-latency")
+    latency = LatencyWaterfall()
+    lanes = SourceLaneRegistry(pool, latency=latency)
+    pool.start()
+
+    try:
+        assert lanes.submit("eastmoney", "market", NOW, lambda: "done").result(timeout=1.0) == "done"
+    finally:
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    summary = latency.status()["stages"]["source_queue_wait"]
+    assert summary["sample_count"] == 1
+    assert summary["maximum_ms"] >= 0.0
 
 
 def test_scheduled_reference_refresh_starts_tushare_and_eastmoney_history_independently() -> None:

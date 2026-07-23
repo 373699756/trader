@@ -91,9 +91,14 @@ def test_v2_configuration_contract_is_valid() -> None:
     }
     assert runtime.performance_budgets.workload.market_rows == 5500
     assert runtime.performance_budgets.workload.candidate_rows == 360
+    assert runtime.performance_budgets.schema_version == 2
     assert runtime.performance_budgets.rounds.warmup == 1
     assert runtime.performance_budgets.rounds.measurement == 5
-    assert runtime.performance_budgets.latency_p95_ms["market_normalization"] == 800
+    assert runtime.performance_budgets.latency_p95_ms["market_normalization"] == 250
+    assert runtime.performance_budgets.latency_p95_ms["market_merge"] == 600
+    assert runtime.performance_budgets.latency_p95_ms["canonical_snapshot"] == 900
+    assert runtime.performance_budgets.latency_p95_ms["targeted_overlay_commit"] == 100
+    assert runtime.performance_budgets.latency_p95_ms["browser_patch_to_paint"] == 100
     assert runtime.performance_budgets.memory.cache_logical_bytes == 260046848
     assert runtime.performance_budgets.memory.process_peak_rss_bytes == 402653184
     assert runtime.pipeline.cadence_seconds["full_market"]["today_main"] == 5

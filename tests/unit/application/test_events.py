@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
@@ -92,6 +93,15 @@ def test_queue_coalesces_same_idempotency_key_to_newest_event(utc_now) -> None:
     assert received.event_id == newer.event_id
     assert received.payload["version"] == 2
     assert event_queue.status()["merged_count"] == 1
+
+
+def test_queue_reports_superseded_event_identities(utc_now) -> None:
+    event_queue = BoundedEventQueue(maximum_size=4, reserved_priority_size=1)
+    old = _event(utc_now, EventPriority.MARKET_QUOTES, "market")
+    newer = replace(old, event_id="newer", created_at=utc_now + timedelta(seconds=1))
+
+    assert event_queue.put_with_superseded(old) == (True, ())
+    assert event_queue.put_with_superseded(newer) == (True, (old.event_id,))
 
 
 def test_full_queue_replaces_older_quote_version_for_same_subject(utc_now) -> None:

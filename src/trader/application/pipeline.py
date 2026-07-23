@@ -6,6 +6,7 @@ import logging
 import threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 from trader.application.cadence import (
     CadencePlanner,
@@ -20,6 +21,7 @@ from trader.application.events import (
     PipelineEvent,
     event_from_audit_record,
 )
+from trader.application.latency import LatencyWaterfall
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
 from trader.application.pipeline_stages import (
     persist,
@@ -91,6 +93,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._long_codes = options.long_codes
         self._long_target_prices = options.long_target_prices
         self._outcome_settlement = dependencies.outcome_settlement
+        self._latency = dependencies.latency or LatencyWaterfall()
         self._market_data_manages_workers = options.market_data_manages_workers
         self._cadence = CadencePlanner(options.cadence_policy) if options.cadence_policy is not None else None
 
@@ -238,9 +241,17 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
     def _replay_pending_priority_events(self) -> None:
         for record in self._event_audit.pending_priority_events():
             event = self._recover_priority_event(record)
-            if event is not None and self._queue.put(event):
+            if event is None:
+                continue
+            self._latency.plan(event.event_id, event.event_type)
+            accepted, superseded_ids = self._queue.put_with_superseded(event)
+            for event_id in superseded_ids:
+                self._latency.finish(event_id, outcome="superseded")
+            if accepted:
                 self._state.increment("events_replayed")
                 self._queue.record_replayed()
+            else:
+                self._latency.finish(event.event_id, outcome="dropped")
 
     def _recover_priority_event(self, record: EventAuditRecord) -> PipelineEvent | None:
         try:
@@ -332,14 +343,23 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._state.mark_started(False)
 
     def run_once(self, at: datetime) -> tuple[RecommendationSnapshot, ...]:
-        trade_day = trade_date_at(at)
-        is_trading_day = self._calendar.is_trading_day(trade_day)
-        decision = decision_at(at, is_trading_day=is_trading_day)
-        self._state.record_tick(decision.phase.value, at)
-        if decision.phase is MarketPhase.CLOSED:
-            return ()
-        snapshots = process_schedule(self, at, decision.phase, decision.freeze_strategies)
-        self._record_health_snapshot()
+        correlation_id = f"run-once:{uuid4().hex}"
+        self._latency.plan(correlation_id, "run_once")
+        self._latency.enter(correlation_id)
+        try:
+            trade_day = trade_date_at(at)
+            is_trading_day = self._calendar.is_trading_day(trade_day)
+            decision = decision_at(at, is_trading_day=is_trading_day)
+            self._state.record_tick(decision.phase.value, at)
+            if decision.phase is MarketPhase.CLOSED:
+                self._latency.finish(correlation_id, outcome="success")
+                return ()
+            snapshots = process_schedule(self, at, decision.phase, decision.freeze_strategies)
+            self._record_health_snapshot()
+        except BaseException:
+            self._latency.finish(correlation_id, outcome="failed")
+            raise
+        self._latency.finish(correlation_id, outcome="success")
         return snapshots
 
     def _worker_loop(self) -> None:
@@ -363,12 +383,14 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             self._merge_submitted_count += 1
 
     def _process_event(self, event: PipelineEvent) -> None:
+        self._latency.enter(event.event_id)
         if event.priority > EventPriority.RISK and not persist(
             self,
             self._event_audit.reserve_event,
             event.audit_record(status=EventStatus.PENDING),
         ):
             self._state.increment("event_reservation_conflicts")
+            self._latency.finish(event.event_id, outcome="dropped")
             return
         if not persist(
             self,
@@ -379,6 +401,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             retry_count=event.retry_count,
         ):
             self._state.increment("event_claim_conflicts")
+            self._latency.finish(event.event_id, outcome="dropped")
             return
         self._ensure_event_deadline(event, "before")
         process_event_on_workers(self, event)
@@ -393,6 +416,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         ):
             raise RuntimeError(f"event terminal compare-and-set failed: {event.event_id}")
         self._state.increment("events_completed")
+        self._latency.finish(event.event_id, outcome="success")
 
     def _ensure_event_deadline(self, event: PipelineEvent, stage: str) -> None:
         if event.deadline is not None and event.priority is not EventPriority.FREEZE and self._now() >= event.deadline:
@@ -417,6 +441,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         except Exception:
             _LOGGER.exception("pipeline event expiration state could not be persisted")
         self._state.increment("events_expired")
+        self._latency.finish(event.event_id, outcome="timeout")
 
     def _fail_event(self, event: PipelineEvent, error: Exception) -> None:
         _LOGGER.exception("pipeline event failed", extra={"event_id": event.event_id})
@@ -434,6 +459,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             _LOGGER.exception("pipeline event failure state could not be persisted")
         self._state.increment("events_failed")
         self._state.record_error(str(error))
+        self._latency.finish(event.event_id, outcome="failed")
 
     def _finish_event(self, event: PipelineEvent) -> None:
         self._record_health_snapshot()

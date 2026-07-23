@@ -70,6 +70,7 @@ class PipelineStatusMixin(PipelineState):
             "publisher": self._publisher.status(),
             "published_snapshots": dict(self._published_snapshots.status()),
             "persistent_audit": self._observability_status(),
+            "latency_waterfall": dict(self._latency.status()),
         }
         return self._state.snapshot(dependencies)
 

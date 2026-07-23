@@ -210,35 +210,40 @@ class BoundedEventQueue:
         self._replayed_count = 0
 
     def put(self, event: PipelineEvent) -> bool:
+        accepted, _superseded = self.put_with_superseded(event)
+        return accepted
+
+    def put_with_superseded(self, event: PipelineEvent) -> tuple[bool, tuple[str, ...]]:
         with self._condition:
             if self._closed:
                 self._rejected_count += 1
-                return False
+                return False, ()
             existing = self._events.get(event.idempotency_key)
             if existing is not None:
                 if event.created_at <= existing.created_at:
                     self._merged_count += 1
-                    return True
+                    return True, (event.event_id,)
                 self._events[event.idempotency_key] = event
                 self._merged_count += 1
                 self._push_locked(event)
                 self._condition.notify()
-                return True
+                return True, (existing.event_id,)
 
             is_reserved = event.priority <= EventPriority.RISK
             normal_capacity = max(1, self._maximum_size - self._reserved_priority_size)
             normal_count = sum(item.priority > EventPriority.RISK for item in self._events.values())
             normal_full = normal_count >= normal_capacity or len(self._events) >= self._maximum_size
             if not is_reserved and normal_full:
-                if self._replace_older_subject_locked(event):
-                    return True
+                replaced, superseded = self._replace_older_subject_locked(event)
+                if replaced:
+                    return True, superseded
             if (is_reserved and len(self._events) >= self._maximum_size) or (not is_reserved and normal_full):
                 self._rejected_count += 1
-                return False
+                return False, ()
             self._events[event.idempotency_key] = event
             self._push_locked(event)
             self._condition.notify()
-            return True
+            return True, ()
 
     def get(self, timeout_seconds: float | None = None) -> PipelineEvent | None:
         with self._condition:
@@ -297,7 +302,7 @@ class BoundedEventQueue:
             ]
             heapq.heapify(self._heap)
 
-    def _replace_older_subject_locked(self, event: PipelineEvent) -> bool:
+    def _replace_older_subject_locked(self, event: PipelineEvent) -> tuple[bool, tuple[str, ...]]:
         coalescing_key = _coalescing_key(event)
         matches = tuple(
             (key, queued)
@@ -310,11 +315,14 @@ class BoundedEventQueue:
             for key, _queued in matches:
                 self._events.pop(key)
             self._events[newest.idempotency_key] = newest
+            superseded = tuple(queued.event_id for _key, queued in matches if queued is not newest)
+            if newest is not event:
+                superseded = (*superseded, event.event_id)
             if newest is event:
                 self._push_locked(event)
             self._condition.notify()
-            return True
-        return False
+            return True, superseded
+        return False, ()
 
 
 def _coalescing_key(event: PipelineEvent) -> tuple[str, str, Strategy | None, str, str]:

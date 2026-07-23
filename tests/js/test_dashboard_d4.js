@@ -11,6 +11,7 @@ source = source.trimEnd();
 assert(source.endsWith(suffix), "dashboard.js must retain its IIFE boundary");
 source = `${source.slice(0, -suffix.length)}
   window.__dashboardD4 = {
+    latencySummary,
     mergePatchItems,
     overlayPatchDecision,
     patchVersionValid,
@@ -28,6 +29,10 @@ const sandbox = {
 vm.runInNewContext(source, sandbox, { filename: dashboardPath });
 const state = sandbox.window.__dashboardD4;
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.latencySummary([10, 20, 30]))),
+  { sample_count: 3, p50_ms: 20, p95_ms: 30, maximum_ms: 30 },
+);
 
 const payload = {
   status: "ready",

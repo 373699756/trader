@@ -12,6 +12,7 @@ from flask import Flask
 from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import BoardScoringCache
 from trader.application.cadence import CadencePolicy, PipelineTask
+from trader.application.latency import LatencyWaterfall
 from trader.application.outcome_settlement import OutcomeSettlementService
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
@@ -110,6 +111,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     watchlist = load_long_watchlist(settings.long_watchlist_path)
     effective_config_version = f"{settings.config_version}+{strategy.strategy_version}"
     now = _utc_now
+    latency = LatencyWaterfall()
     cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
     urgent_worker_count = 1 if settings.pipeline.market_workers > 1 else 0
     data_pool = BoundedExecutor(
@@ -118,7 +120,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         queue_capacity=5,
         thread_name_prefix="source-data",
     )
-    source_lanes = SourceLaneRegistry(data_pool)
+    source_lanes = SourceLaneRegistry(data_pool, latency=latency)
     history_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers,
         queue_capacity=settings.market_data.candidate_pool_size,
@@ -190,6 +192,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         config_version=settings.config_version,
         schema_version="market_snapshot_v15",
         wall_clock=now,
+        latency=latency,
     )
     evidence_cache_dir = settings.runtime_dir / "evidence_cache"
     feature_builder = FeatureBuilder(
@@ -360,6 +363,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
                 repository,
                 session_distance=calendar.session_distance,
             ),
+            latency=latency,
         ),
         PipelineOptions(
             config_version=effective_config_version,

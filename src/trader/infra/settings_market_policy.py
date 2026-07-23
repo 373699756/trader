@@ -237,8 +237,8 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         },
         "performance_budgets",
     )
-    if integer(raw, "schema_version", minimum=1) != 1:
-        raise ConfigurationError("performance_budgets.schema_version must be 1")
+    if integer(raw, "schema_version", minimum=1) != 2:
+        raise ConfigurationError("performance_budgets.schema_version must be 2")
     workload_raw = mapping(raw, "workload")
     require_exact_keys(workload_raw, {"market_rows", "candidate_rows"}, "performance_budgets.workload")
     workload = PerformanceWorkloadSettings(
@@ -258,9 +258,10 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         raise ConfigurationError("performance rounds must remain fixed at one warmup and five measurements")
 
     expected_latency = {
-        "market_normalization": 800.0,
-        "market_merge": 1000.0,
-        "canonical_snapshot": 1500.0,
+        "market_normalization": 250.0,
+        "market_merge": 600.0,
+        "canonical_snapshot": 900.0,
+        "targeted_overlay_commit": 100.0,
         "board_preselection": 250.0,
         "board_local_scoring": 250.0,
         "three_strategy_board_scoring": 750.0,
@@ -269,7 +270,8 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         "board_ready_to_draft": 500.0,
         "quote_to_draft": 5000.0,
         "deepseek_to_hybrid": 1000.0,
-        "sse_delivery": 2000.0,
+        "sse_delivery": 100.0,
+        "browser_patch_to_paint": 100.0,
         "snapshot_api": 200.0,
         "etag_api": 50.0,
         "dates_api": 100.0,
@@ -302,7 +304,7 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
     relative = number(raw, "relative_regression_percent", minimum=0.000001)
     if relative != 5.0:
         raise ConfigurationError("relative_regression_percent must remain fixed at 5")
-    return PerformanceBudgetSettings(1, workload, rounds, latency, data_age, memory, relative)
+    return PerformanceBudgetSettings(2, workload, rounds, latency, data_age, memory, relative)
 
 
 def _fixed_positive_number_mapping(
