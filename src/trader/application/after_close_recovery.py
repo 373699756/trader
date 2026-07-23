@@ -66,10 +66,6 @@ def recover_after_close_snapshots(
 
     with pipeline._after_close_lock:
         missing = _restore_existing(pipeline, trade_date)
-        if not missing:
-            pipeline._record_after_close_recovery(local, complete=True)
-            return ()
-
         published: list[RecommendationSnapshot] = []
         runtime_sources = {
             strategy: snapshot
@@ -87,7 +83,9 @@ def recover_after_close_snapshots(
         if rebuild:
             published.extend(_rebuild_from_close(pipeline, rebuild, local, deadline=deadline))
 
-        complete = not _restore_existing(pipeline, trade_date)
+        published.extend(_refresh_after_close_long(pipeline, local, deadline=deadline))
+
+        complete = not _restore_existing(pipeline, trade_date) and _after_close_long_ready(pipeline, trade_date)
         pipeline._record_after_close_recovery(local, complete=complete)
         return tuple(published)
 
@@ -305,14 +303,7 @@ def _build_local_close_snapshot(
     if not prepared.board_scoring_complete:
         raise RuntimeError("three-board scoring is incomplete")
     blocking_reasons = tuple(
-        reason
-        for reason in prepared.board_degraded_reasons
-        if reason.endswith(
-            (
-                "board_population_insufficient",
-                "board_data_reliability_below_threshold",
-            )
-        )
+        reason for reason in prepared.board_degraded_reasons if reason.endswith("board_population_insufficient")
     )
     if blocking_reasons:
         raise RuntimeError(
@@ -361,6 +352,137 @@ def _format_reliability_diagnostics(
             f"{best.features.quote.code}:{'|'.join(missing) or 'complete'}"
         )
     return ",".join(diagnostics)
+
+
+def _refresh_after_close_long(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    *,
+    deadline: datetime | None,
+) -> tuple[RecommendationSnapshot, ...]:
+    trade_date = trade_date_at(now).isoformat()
+    if _after_close_long_ready(pipeline, trade_date):
+        return ()
+    codes = pipeline._long_codes
+    if not codes:
+        return ()
+    try:
+        close_features = _fetch_close_candidates(pipeline, codes, now, deadline=deadline)
+        close_by_code = {feature.quote.code: feature for feature in close_features}
+        candidate_features, data_version = _strategy_close_features(pipeline, Strategy.LONG, codes, now)
+        candidate_by_code = {feature.quote.code: feature for feature in candidate_features}
+        missing = tuple(code for code in codes if code not in close_by_code or code not in candidate_by_code)
+        if missing:
+            raise MarketDataUnavailableError("long closing watchlist quotes are incomplete: " + ",".join(missing[:8]))
+        features = tuple(_feature_with_close(candidate_by_code[code], close_by_code[code]) for code in codes)
+        snapshot = _build_long_close_snapshot(pipeline, features, data_version, now)
+    except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        pipeline._state.increment("after_close_long_failures")
+        pipeline._state.record_error(f"long close rebuild degraded: {str(exc)[:400]}")
+        return ()
+    if not admit_snapshot_to_p6(pipeline, snapshot):
+        return ()
+    pipeline._state.publish(snapshot)
+    pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
+    pipeline._publisher.publish(snapshot)
+    pipeline._state.increment("after_close_long_recovered")
+    return (snapshot,)
+
+
+def _after_close_long_ready(pipeline: RecommendationPipeline, trade_date: str) -> bool:
+    if not pipeline._long_codes:
+        return True
+    snapshot = pipeline._state.latest(Strategy.LONG)
+    return snapshot is not None and snapshot.trade_date == trade_date and bool(snapshot.recommendations)
+
+
+def _feature_with_close(base: FeatureSnapshot, close_feature: FeatureSnapshot) -> FeatureSnapshot:
+    close = close_feature.quote
+    original = base.quote
+    quote = replace(
+        original,
+        price=close.price,
+        pct_change=close.pct_change,
+        source=close.source,
+        source_time=close.source_time,
+        received_time=close.received_time,
+        data_version=close.data_version,
+    )
+    return replace(base, quote=quote, observed_at=close_feature.observed_at)
+
+
+def _build_long_close_snapshot(
+    pipeline: RecommendationPipeline,
+    features: Sequence[FeatureSnapshot],
+    data_version: str,
+    now: datetime,
+) -> RecommendationSnapshot:
+    max_age = _close_max_age_seconds(now)
+    if pipeline._persistence_running:
+        prepared = submit_required(
+            pipeline,
+            pipeline._long_pool,
+            pipeline._engine.prepare_snapshot,
+            Strategy.LONG,
+            tuple(features),
+            now=now,
+            phase="close_fallback",
+            trade_date=trade_date_at(now).isoformat(),
+            data_version=data_version,
+            review_deadline=now,
+            max_age_seconds=max_age,
+            filtered_count=0,
+            filter_reasons={},
+            filter_details=(),
+            target_prices=pipeline._long_target_prices,
+            market_features=tuple(features),
+            requested_codes=tuple(pipeline._long_codes),
+            preselect_max_age_seconds=max_age,
+            candidate_pool_size=pipeline._candidate_pool_size,
+        ).result()
+    else:
+        prepared = pipeline._engine.prepare_snapshot(
+            Strategy.LONG,
+            tuple(features),
+            now=now,
+            phase="close_fallback",
+            trade_date=trade_date_at(now).isoformat(),
+            data_version=data_version,
+            review_deadline=now,
+            max_age_seconds=max_age,
+            filtered_count=0,
+            filter_reasons={},
+            filter_details=(),
+            target_prices=pipeline._long_target_prices,
+            market_features=tuple(features),
+            requested_codes=tuple(pipeline._long_codes),
+            preselect_max_age_seconds=max_age,
+            candidate_pool_size=pipeline._candidate_pool_size,
+        )
+    snapshot = pipeline._engine.finalize_snapshot(prepared, {})
+    recommendations = snapshot.recommendations
+    close_anchors = _close_anchors(recommendations)
+    close_version = _close_data_version(data_version, close_anchors)
+    return replace(
+        snapshot,
+        snapshot_id=_snapshot_id(
+            Strategy.LONG,
+            snapshot.trade_date,
+            "close_fallback",
+            close_version,
+            snapshot.published_at,
+        ),
+        data_version=close_version,
+        config_version=pipeline._config_version,
+        frozen=False,
+        metadata={
+            **snapshot.metadata,
+            "recovery_path": "after_close_current",
+            "price_basis": "official_close",
+            "deepseek_mode": "local_only",
+            "close_anchors": close_anchors,
+        },
+    )
 
 
 def _fetch_close_market(

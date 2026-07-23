@@ -29,7 +29,8 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import MarketPhase
-from trader.application.snapshot_workflow import refresh_candidates
+from trader.application.snapshot_workflow import freeze_available_snapshots, refresh_candidates
+from trader.application.source_lanes import SourceRequestSupersededError
 from trader.application.status import RuntimeState
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
@@ -389,6 +390,51 @@ def test_after_close_cold_start_rebuilds_missing_strategies_locally(
     assert lookup.status == "ready"
     assert lookup.snapshot is not None
     assert lookup.snapshot.phase == "close_fallback"
+
+
+def test_after_close_cold_start_builds_long_current_snapshot(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    state = RuntimeState()
+    pipeline = build_pipeline(
+        ClosingPriceMarketData(features),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+        long_codes=("600001", "300001", "688001"),
+    )
+    pipeline.initialize()
+
+    recovered = pipeline.run_once(clock.now())
+
+    assert Strategy.LONG in {snapshot.strategy for snapshot in recovered}
+    long_snapshot = state.latest(Strategy.LONG)
+    assert long_snapshot is not None
+    assert long_snapshot.frozen is False
+    assert long_snapshot.phase == "close_fallback"
+    assert long_snapshot.metadata["recovery_path"] == "after_close_current"
+    assert long_snapshot.metadata["price_basis"] == "official_close"
+    assert {item.features.quote.code for item in long_snapshot.recommendations} == {
+        "600001",
+        "300001",
+        "688001",
+    }
+    assert all(item.features.quote.price == 20.0 for item in long_snapshot.recommendations)
+    assert repository.load_frozen(Strategy.LONG, "2026-07-16") is None
+    assert state.snapshot()["counters"]["after_close_long_recovered"] == 1
 
 
 def test_after_close_p6_rejection_keeps_formal_records_without_publication(
@@ -785,14 +831,22 @@ def test_after_close_commits_ready_strategies_when_d25_research_is_missing(
 
     recovered = pipeline.run_once(clock.now())
 
-    assert {snapshot.strategy for snapshot in recovered} == {Strategy.TODAY, Strategy.TOMORROW}
+    assert {snapshot.strategy for snapshot in recovered} == {
+        Strategy.TODAY,
+        Strategy.TOMORROW,
+        Strategy.D25,
+    }
     assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is not None
     assert repository.load_frozen(Strategy.TOMORROW, "2026-07-16") is not None
-    assert repository.load_frozen(Strategy.D25, "2026-07-16") is None
-    assert "d25 close rebuild degraded" in state.snapshot()["last_error"]
+    d25 = repository.load_frozen(Strategy.D25, "2026-07-16")
+    assert d25 is not None
+    assert d25.phase == "close_fallback"
+    assert any("board_data_reliability_below_threshold" in reason for reason in d25.degraded_reasons)
+    assert all(item.action.value == "observe" for item in d25.recommendations)
+    assert "d25 close rebuild degraded" not in state.snapshot()["last_error"]
 
 
-def test_after_close_waits_for_reliable_board_features(
+def test_after_close_publishes_unreliable_board_features_as_degraded_observe(
     application_feature_factory,
 ) -> None:
     clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
@@ -820,25 +874,20 @@ def test_after_close_waits_for_reliable_board_features(
     )
     pipeline.initialize()
 
-    first_recovered = pipeline.run_once(clock.now())
-    assert {snapshot.strategy for snapshot in first_recovered} == {Strategy.TODAY}
-    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is not None
-    assert repository.load_frozen(Strategy.TOMORROW, "2026-07-16") is None
-    assert repository.load_frozen(Strategy.D25, "2026-07-16") is None
-
-    market_data.reliable = True
-    clock.set(datetime.fromisoformat("2026-07-16T15:05:03+08:00"))
     recovered = pipeline.run_once(clock.now())
 
     assert {snapshot.strategy for snapshot in recovered} == {
+        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
     assert all(
-        "board_data_reliability_below_threshold" not in reason
-        for snapshot in recovered
-        for reason in snapshot.degraded_reasons
+        repository.load_frozen(strategy, "2026-07-16") is not None
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
     )
+    d25 = next(snapshot for snapshot in recovered if snapshot.strategy is Strategy.D25)
+    assert any("board_data_reliability_below_threshold" in reason for reason in d25.degraded_reasons)
+    assert all(item.action.value == "observe" for item in d25.recommendations)
 
 
 @pytest.mark.parametrize(
@@ -1286,6 +1335,66 @@ def test_initialize_skips_today_freeze_when_pre_cutoff_snapshot_is_stale(
     assert recovery["catchup_frozen"] == 0
     assert "today freeze unavailable: no current pre-cutoff snapshot" not in pipeline.status()["last_error"]
     assert not any(strategy is Strategy.TODAY for strategy, _ in repository.frozen)
+
+
+def test_outcome_settlement_superseded_request_does_not_replace_last_error(
+    recommendation_policy,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T15:05:00+08:00")
+    state = RuntimeState()
+    state.record_error("d25 close rebuild degraded: research fields missing")
+    pipeline = build_pipeline(
+        StaticMarketData(()),
+        TradingDayCalendar(),
+        None,
+        MemoryRepository(),
+        MemoryRepository(),
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+        outcome_settlement=SupersededOutcomeSettlement(),
+    )
+
+    pipeline._settle_outcomes(now)
+
+    status = pipeline.status()
+    assert status["last_error"] == "d25 close rebuild degraded: research fields missing"
+    assert status["counters"]["outcome_settlement_superseded"] == 1
+    assert "outcome_settlement_failures" not in status["counters"]
+
+
+def test_missing_pre_cutoff_freeze_is_counted_without_replacing_last_error(
+    recommendation_policy,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
+    state = RuntimeState()
+    state.record_error("after-close recovery waiting for history")
+    pipeline = build_pipeline(
+        StaticMarketData(()),
+        TradingDayCalendar(),
+        None,
+        MemoryRepository(),
+        MemoryRepository(),
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+
+    assert freeze_available_snapshots(pipeline, now, ("d25",)) == ()
+
+    status = pipeline.status()
+    assert status["last_error"] == "after-close recovery waiting for history"
+    assert status["counters"]["freeze_missing_pre_cutoff_snapshot"] == 1
 
 
 def test_freeze_reuses_persisted_snapshot_when_state_has_no_live_copy(
@@ -2946,6 +3055,12 @@ class FailingReviewer(ThreadRecordingReviewer):
     ) -> Mapping[str, object]:
         del phase, deadline, contexts
         raise RuntimeError("review transport failed")
+
+
+class SupersededOutcomeSettlement:
+    @staticmethod
+    def settle(_now: datetime, _market_features: Sequence[FeatureSnapshot]) -> None:
+        raise SourceRequestSupersededError("history source request was superseded")
 
 
 class SequencedReviewer(ThreadRecordingReviewer):

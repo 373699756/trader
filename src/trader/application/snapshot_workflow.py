@@ -126,6 +126,9 @@ def _prepare_frozen_snapshot(
         current = pipeline._snapshot_writer.load_checkpoint(strategy, trade_date, boundary_at=boundary)
     error = _freeze_snapshot_error(current, trade_date, boundary)
     if error:
+        if error == "no current pre-cutoff snapshot":
+            pipeline._state.increment("freeze_missing_pre_cutoff_snapshot")
+            return None
         pipeline._state.record_error(f"{strategy.value} freeze unavailable: {error}")
         return None
     assert current is not None

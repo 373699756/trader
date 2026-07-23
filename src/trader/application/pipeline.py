@@ -43,6 +43,7 @@ from trader.application.snapshot_workflow import (
     process_schedule,
     refresh_live_overlays,
 )
+from trader.application.source_lanes import SourceRequestSupersededError
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
@@ -184,6 +185,9 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 return
             try:
                 result = self._outcome_settlement.settle(now, self._market_features)
+            except SourceRequestSupersededError:
+                self._state.increment("outcome_settlement_superseded")
+                return
             except Exception as exc:
                 self._state.increment("outcome_settlement_failures")
                 self._state.record_error(f"outcome settlement degraded: {type(exc).__name__}")

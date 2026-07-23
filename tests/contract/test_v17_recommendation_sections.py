@@ -8,8 +8,10 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
     template = (ROOT / "src/trader/web/templates/index.html").read_text(encoding="utf-8")
     dashboard = (ROOT / "src/trader/web/static/dashboard.js").read_text(encoding="utf-8")
+    selection = (ROOT / "src/trader/web/static/selection.js").read_text(encoding="utf-8")
 
     assert 'id="recommendationTable"' in template
+    assert "selection.js', v='2'" in template
     assert 'id="tableTitle"' not in template
     assert 'id="watchTable"' not in template
     assert "观察列表" not in template
@@ -18,8 +20,9 @@ def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
     assert "当前暂无可用荐股数据" in dashboard
     assert "当前策略尚未发布快照" not in dashboard
     assert "visibleRecommendations(payload)" in dashboard
-    assert 'item.action === "executable"' in dashboard
+    assert 'item.action === "executable"' in selection
     assert 'payload.strategy === "long"' in dashboard
+    assert 'payload.phase === "close_fallback"' in selection
     assert 'items.filter((item) => item.action === "observe")' not in dashboard
 
 

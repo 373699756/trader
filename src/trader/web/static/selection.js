@@ -44,7 +44,9 @@
 
   function visibleRecommendations(payload) {
     const items = payload && Array.isArray(payload.items) ? payload.items : [];
-    if (payload && (payload.historical === true || payload.strategy === "long")) return items;
+    if (payload && (payload.historical === true || payload.strategy === "long" || payload.phase === "close_fallback")) {
+      return items;
+    }
     return items.filter((item) => item.action === "executable");
   }
 

@@ -6,9 +6,26 @@ All notable changes to this project are documented here.
 
 ### Changed
 
-- 15:00 后冷启动收盘重建现在按缺失策略独立提交：单个策略因专属字段缺失或板块可靠度不足
-  降级时，只记录该策略错误并继续提交其它已满足候选、行情、历史和三板可靠度契约的
-  `close_fallback`，不再把 ready 的 today/tomorrow 一起丢弃。
+- Web 当前视图的可见行规则现在区分盘中和收盘补算：today/tomorrow/d25 盘中仍只展示
+  `executable`，但 `phase=close_fallback` 与历史视图会展示 API 返回的全部 TopK 项，避免
+  收盘补算结果全为 `observe` 时被前端过滤成空表。`selection.js` 静态资源版本同步升到 v2，
+  避免浏览器继续使用旧过滤逻辑。
+
+- 冻结时点缺少 pre-cutoff 草稿现在只增加 `freeze_missing_pre_cutoff_snapshot` 计数，不再写入
+  最近错误；后台 outcome settlement 被 latest-wins source lane 取代时只增加
+  `outcome_settlement_superseded` 计数，不再用
+  `outcome settlement degraded: SourceRequestSupersededError` 覆盖真正的推荐诊断。
+
+- 15:00 后冷启动收盘重建现在允许 d25 在结构化研究字段或板块可靠度不足时降级发布
+  `close_fallback`，逐股动作保持 `observe` 并保留 `board_data_reliability_below_threshold`
+  诊断；只有收盘报价、20 日历史样本或板块人口不足继续阻断创建。
+
+- 15:00 后冷启动现在会为已配置的 long watchlist 生成使用同日收盘价的当前非冻结快照，只发布
+  当前视图，不写冻结历史，避免服务盘后启动时长期页一直 `not_ready`。
+
+- 15:00 后冷启动收盘重建现在按缺失策略独立提交：单个策略遇到可降级研究字段或可靠度不足时
+  创建带诊断的观察项；遇到不可降级的收盘报价、历史样本或板块人口阻断时，只记录该策略错误
+  并继续提交其它已满足契约的 `close_fallback`，不再把 ready 策略一起丢弃。
 
 - tomorrow/d25 的 `volume_to_5d_average` 因子从 v1 升级到 v2：优先使用行情源点时
   `volume_ratio`，若供应商未提供，则用同日点时成交额除以最近 5 个已完成交易日平均成交额
@@ -30,6 +47,26 @@ All notable changes to this project are documented here.
   不改变 0.85 板块可靠度门槛、候选公式、动作阈值、DeepSeek 预算或冻结不可覆盖规则。
 
 ### Fixed
+
+- 用户反馈“Web 上还是没数据”，现场复核默认 5000 端口确认 API 已有
+  today/tomorrow `ready + close_fallback` 数据，但返回项的动作都是 `observe`；前端
+  `visibleRecommendations()` 对当前短线策略只保留 `action === "executable"`，导致有数据的
+  收盘补算结果被 UI 过滤成空表。现在 close_fallback 不再过滤观察项，真实 API payload 经新
+  选择逻辑验证 today 可见 5 行、tomorrow 可见 3 行。
+
+- 用户补充最近错误 `d25 freeze unavailable: no current pre-cutoff snapshot`。该信息只表示
+  14:50 前没有可冻结草稿，15:00 后应由收盘补算接管，不应作为错误压到 Web 最近错误栏。
+  现在该场景只计数不写 last_error。
+
+- 用户补充最近错误 `outcome settlement degraded: SourceRequestSupersededError`。这是后台结算
+  读取行情时被 latest-wins source lane 的新请求取代，不代表推荐生成失败；现在该场景不再写
+  last_error，避免遮挡 D25 研究字段缺失等真正诊断。
+
+- 用户明确反馈“明日、2-5 日、长期三组都没有数据”。现场复核显示明日 API 已有
+  `ready close_fallback` 但 Web 过滤掉观察项；d25 API 本身因 `growth_score`、`quality_score`、
+  `value_score` 缺失触发板块可靠度硬阻断；long 在 15:00 后启动时没有盘后当前补算路径，worker
+  提交数为 0。现在 Web 显示 close_fallback 全部 TopK，d25 可靠度不足改为降级观察项发布，
+  long 盘后按 watchlist 收盘价生成当前非冻结快照。
 
 - 用户反馈“你改的什么，Web 上还是没有数据”，并提供最新错误
   `entry_quality` 导致三板可靠度低于阈值。现场复核确认根因不是 8.5/0.85 阈值过高：
@@ -72,13 +109,31 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 通过：`tests/contract/test_v17_recommendation_sections.py`、
+  `tests/integration/test_v2_pipeline.py::test_outcome_settlement_superseded_request_does_not_replace_last_error`、
+  `tests/integration/test_v2_pipeline.py::test_missing_pre_cutoff_freeze_is_counted_without_replacing_last_error`。
+- 通过：`tests/integration/test_v2_pipeline.py::test_after_close_cold_start_builds_long_current_snapshot`、
+  `tests/integration/test_v2_pipeline.py::test_after_close_commits_ready_strategies_when_d25_research_is_missing`、
+  `tests/integration/test_v2_pipeline.py::test_after_close_publishes_unreliable_board_features_as_degraded_observe`。
+- 通过：Node 直接执行 `selection.js`，验证普通当前视图只显示 `executable`，`close_fallback`
+  显示 `observe + executable` 全部项。
+- 通过：默认 5000 端口真实 API payload 离线套用新 `selection.js` 后，
+  today 为 `ready close_fallback 5/5`，tomorrow 为 `ready close_fallback 3/3`；默认 5000
+  旧运行进程首页仍返回 `selection.js?v=1`，需重启服务进程后加载本批 `selection.js?v=2`。
+- 通过：`make format-check`、`make lint`、`make type-check`、`make test`、`make package`；
+  全量 pytest 仅保留既有 DeepSeek 测试模型名 RuntimeWarning。
+- 通过：仓库外 `/tmp/trader-wheel-nodeps-20260723-webdata` 安装 wheel 本体后，可导入
+  `trader`，可执行 `trader-cli --help`，并可读取 `index.html`、`dashboard.css`、
+  `dashboard.js`、`selection.js`、`render.js`、`trader-mark.svg` 与 `lucide.svg`。完整依赖
+  target 安装受 `polars-runtime` 大包下载速度影响被人工中止，代码包与资源验收已在仓库外路径通过。
+
 - 通过：`tests/unit/test_v17_feature_entry_inputs.py`、`tests/unit/test_v2_settings.py`、
   `tests/component/test_v2_market_data.py::test_strategy_factor_registry_is_complete_and_required`，
   以及收盘恢复相关集成回归
   `test_after_close_commits_ready_strategies_when_d25_research_is_missing`、
   `test_after_close_rebuild_reads_cached_candidate_features`、
   `test_after_close_retry_reuses_complete_cached_close_market`、
-  `test_after_close_waits_for_reliable_board_features`。
+  `test_after_close_publishes_unreliable_board_features_as_degraded_observe`。
 - 通过：隔离临时 runtime 复制现有 v17 历史缓存后，实机启动
   `TRADER_PORT=5051 trader-server --config /tmp/trader-runtime-web-check-c.json`；
   `/api/status` 显示 `after_close_recommendations_recovered=2`、`snapshots_frozen=2`，
