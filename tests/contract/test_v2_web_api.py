@@ -98,6 +98,7 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
     assert payload["requested_date"] is None
     assert payload["current_trade_date"] == "2026-07-16"
     assert payload["historical"] is False
+    assert payload["view"] == "official"
     etag = response.headers["ETag"]
     assert client.get("/api/recommendations/today", headers={"If-None-Match": etag}).status_code == 304
 
@@ -172,6 +173,9 @@ def test_recommendation_validation_and_empty_current(recommendation_policy, appl
     assert empty_payload["status"] == "not_ready"
     assert empty_payload["schema_version"] == "v3"
     assert set(empty_payload) == RECOMMENDATION_ENVELOPE_KEYS
+    empty_current = client.get("/api/recommendations/tomorrow?view=current").get_json()
+    assert empty_current["status"] == "not_ready"
+    assert empty_current["view"] == "current"
     invalid_strategy = client.get("/api/recommendations/unknown")
     assert invalid_strategy.status_code == 400
     assert invalid_strategy.get_json()["schema_version"] == "v3"
@@ -322,7 +326,7 @@ def test_status_includes_route_health_details() -> None:
     assert route["attempted_vendors"][0]["status"] == "skipped"
 
 
-def test_current_query_requires_and_prefers_today_freeze_after_cutoff(
+def test_official_query_prefers_freeze_and_current_view_keeps_same_day_draft_after_cutoff(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -349,9 +353,15 @@ def test_current_query_requires_and_prefers_today_freeze_after_cutoff(
         MemoryReadRepository(latest={Strategy.TODAY: draft}),
         now=now,
     )
-    missing = missing_app.test_client().get("/api/recommendations/today").get_json()
-    assert missing["status"] == "not_ready"
-    assert missing["items"] == []
+    missing_client = missing_app.test_client()
+    official = missing_client.get("/api/recommendations/today").get_json()
+    current = missing_client.get("/api/recommendations/today?view=current").get_json()
+    assert current["status"] == "ready"
+    assert current["snapshot_id"] == draft.snapshot_id
+    assert current["view"] == "live"
+    assert current["frozen"] is False
+    assert official["status"] == "not_ready"
+    assert official["items"] == []
 
 
 def test_frozen_current_queries_keep_tomorrow_and_d25_isolated(
@@ -510,9 +520,13 @@ def test_explicit_live_view_keeps_same_day_draft_visible_after_freeze_cutoff(
     repository = MemoryReadRepository(latest={Strategy.TOMORROW: draft})
     client = _app(repository, now=after_cutoff)[0].test_client()
 
+    current = client.get("/api/recommendations/tomorrow?view=current")
     official = client.get("/api/recommendations/tomorrow")
     live = client.get("/api/recommendations/tomorrow?view=live")
 
+    assert current.status_code == 200
+    assert current.get_json()["view"] == "live"
+    assert current.get_json()["snapshot_id"] == draft.snapshot_id
     assert official.get_json()["status"] == "not_ready"
     assert live.status_code == 200
     payload = live.get_json()
@@ -531,6 +545,28 @@ def test_recommendations_reject_unknown_view() -> None:
 
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "invalid_view"
+
+
+def test_explicit_current_view_resolves_frozen_snapshot_to_official(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    frozen = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TOMORROW),
+        snapshot_id="current-frozen",
+        frozen=True,
+    )
+    repository = MemoryReadRepository(
+        frozen={(Strategy.TOMORROW, frozen.trade_date): frozen},
+    )
+    client = _app(repository, now=NOW.replace(hour=14, minute=55))[0].test_client()
+
+    payload = client.get("/api/recommendations/tomorrow?view=current").get_json()
+
+    assert payload["status"] == "ready"
+    assert payload["snapshot_id"] == "current-frozen"
+    assert payload["view"] == "official"
+    assert payload["frozen"] is True
 
 
 def test_explicit_historical_query_returns_previous_trade_date_snapshot(

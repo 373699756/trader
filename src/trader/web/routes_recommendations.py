@@ -63,7 +63,11 @@ def _recommendation_response(parsed: RecommendationRequest, queries: Recommendat
             parsed.strategy.value,
             parsed.trade_date,
         )
-    lookup = queries.recommendation(parsed.strategy, parsed.trade_date, live=parsed.view == "live")
+    lookup = (
+        queries.current_recommendation(parsed.strategy)
+        if parsed.trade_date is None and parsed.view == "current"
+        else queries.recommendation(parsed.strategy, parsed.trade_date, live=parsed.view == "live")
+    )
     if lookup.status == "not_found":
         return _failure_response(
             RequestFailure("snapshot_not_found", "recommendation snapshot does not exist", 404),
@@ -87,6 +91,9 @@ def _snapshot_response(parsed: RecommendationRequest, lookup: SnapshotLookup) ->
     if snapshot is None:
         raise AssertionError("snapshot response requires a snapshot")
     etag = f"{lookup.etag or snapshot.snapshot_id}:{parsed.view}"
+    resolved_view = parsed.view
+    if resolved_view == "current":
+        resolved_view = "official" if snapshot.frozen else "live"
     if parsed.trade_date is None and request.if_none_match.contains(etag):
         response = Response(status=304)
         response.set_etag(etag)
@@ -101,7 +108,7 @@ def _snapshot_response(parsed: RecommendationRequest, lookup: SnapshotLookup) ->
                 current_trade_date=lookup.current_trade_date,
                 historical=lookup.historical,
                 current_quotes=lookup.current_quotes,
-                view=parsed.view,
+                view=resolved_view,
             ),
         )
     )

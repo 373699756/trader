@@ -225,8 +225,7 @@ tr:focus-visible {
   background: var(--surface);
 }
 
-.strategy-tabs,
-.view-tabs {
+.strategy-tabs {
   display: flex;
   align-items: center;
   gap: 2px;
@@ -237,8 +236,7 @@ tr:focus-visible {
   background: var(--bg);
 }
 
-.strategy-tab,
-.view-tab {
+.strategy-tab {
   height: 32px;
   min-width: 68px;
   padding: 0 14px;
@@ -249,16 +247,32 @@ tr:focus-visible {
   cursor: pointer;
 }
 
-.strategy-tab:hover,
-.view-tab:hover {
+.strategy-tab:hover {
   color: var(--text);
   background: var(--surface-hover);
 }
 
-.strategy-tab.is-active,
-.view-tab.is-active {
+.strategy-tab.is-active {
   color: #fff;
   background: #2c5fae;
+}
+
+.current-view-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.current-view-status strong {
+  color: var(--text);
+  font-weight: 650;
 }
 
 .date-control {

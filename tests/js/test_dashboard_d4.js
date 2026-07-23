@@ -11,6 +11,7 @@ source = source.trimEnd();
 assert(source.endsWith(suffix), "dashboard.js must retain its IIFE boundary");
 source = `${source.slice(0, -suffix.length)}
   window.__dashboardD4 = {
+    currentViewLabel,
     latencySummary,
     mergePatchItems,
     overlayPatchDecision,
@@ -65,6 +66,20 @@ assert.strictEqual(
   "apply",
 );
 assert.strictEqual(
+  state.recommendationPatchDecision(patch, payload, "today-base", "today", "current"),
+  "apply",
+);
+assert.strictEqual(
+  state.recommendationPatchDecision(
+    { ...patch, view: "official", frozen: true },
+    payload,
+    "today-base",
+    "today",
+    "current",
+  ),
+  "apply",
+);
+assert.strictEqual(
   state.recommendationPatchDecision({ ...patch, schema_version: 1 }, payload, "today-base", "today", "live"),
   "schema_mismatch",
 );
@@ -91,6 +106,35 @@ assert.strictEqual(
     "official",
   ),
   "ignore_late_draft",
+);
+assert.strictEqual(
+  state.recommendationPatchDecision(
+    patch,
+    { ...payload, snapshot_id: "frozen", projection_version: "frozen", frozen: true, view: "official" },
+    "frozen",
+    "today",
+    "current",
+  ),
+  "ignore_late_draft",
+);
+assert.strictEqual(state.currentViewLabel(null), "正在判断");
+assert.strictEqual(state.currentViewLabel({ status: "not_ready" }), "未就绪");
+assert.strictEqual(state.currentViewLabel({ status: "ready", historical: true }), "历史冻结");
+assert.strictEqual(
+  state.currentViewLabel({ status: "ready", strategy: "long", historical: false, frozen: false }),
+  "当前快照",
+);
+assert.strictEqual(
+  state.currentViewLabel({ status: "ready", phase: "close_fallback", historical: false, frozen: true }),
+  "收盘补算",
+);
+assert.strictEqual(
+  state.currentViewLabel({ status: "ready", historical: false, frozen: false }),
+  "实时草稿",
+);
+assert.strictEqual(
+  state.currentViewLabel({ status: "ready", historical: false, frozen: true }),
+  "已冻结",
 );
 
 const overlay = {

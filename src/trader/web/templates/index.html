@@ -6,9 +6,9 @@
     <meta name="color-scheme" content="dark" />
     <title>A股策略看板</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='5') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='6') }}" />
     <script defer src="{{ url_for('static', filename='render.js', v='8') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard.js', v='15') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard.js', v='16') }}"></script>
   </head>
   <body>
     <header class="app-header">
@@ -44,10 +44,10 @@
           <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="d25">2-5日</button>
           <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="long">长期</button>
         </nav>
-        <nav class="view-tabs" role="tablist" aria-label="推荐视图">
-          <button class="view-tab is-active" type="button" role="tab" aria-selected="true" data-view="live">临时实时</button>
-          <button class="view-tab" type="button" role="tab" aria-selected="false" data-view="official">正式当前</button>
-        </nav>
+        <div class="current-view-status" role="status" aria-live="polite" aria-label="当前推荐状态">
+          <span>当前推荐</span>
+          <strong id="currentViewStatus">正在判断</strong>
+        </div>
         <label class="date-control">
           <span>推荐日期</span>
           <select id="dateSelect" aria-label="推荐日期">

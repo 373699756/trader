@@ -99,6 +99,10 @@ class RecommendationQueries:
             current_quotes=current_quotes,
         )
 
+    def current_recommendation(self, strategy: Strategy) -> SnapshotLookup:
+        current_date = trade_date_at(self._now()).isoformat()
+        return self._current_lookup(strategy, current_date, self._snapshots.latest(strategy))
+
     def _historical_current_quotes(
         self,
         strategy: Strategy,

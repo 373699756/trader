@@ -3,7 +3,7 @@
 
   const state = {
     strategy: "today",
-    view: "live",
+    view: "current",
     date: "",
     payload: null,
     payloads: new Map(),
@@ -53,7 +53,7 @@
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
       "scoreTime", "budgetStatus", "headerFreeze", "lastError", "routeHealth",
-      "refreshButton", "dateSelect", "recommendationCount", "executableCount", "filteredCount", "dataSource",
+      "refreshButton", "dateSelect", "currentViewStatus", "recommendationCount", "executableCount", "filteredCount", "dataSource",
       "strategyVersion", "freezeStatus", "notice", "recommendationTable", "tableColumns", "tableHead", "tableBody",
       "watchRegion", "watchTable", "watchColumns", "watchHead", "watchBody",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
@@ -62,12 +62,8 @@
     document.querySelectorAll(".strategy-tab").forEach((button) => {
       button.addEventListener("click", () => selectStrategy(button.dataset.strategy));
     });
-    document.querySelectorAll(".view-tab").forEach((button) => {
-      button.addEventListener("click", () => selectView(button.dataset.view));
-    });
     els.dateSelect.addEventListener("change", () => {
       state.date = els.dateSelect.value;
-      if (state.date) setView("official");
       loadRecommendations("date");
     });
     els.refreshButton.addEventListener("click", () => loadRecommendations("manual"));
@@ -111,24 +107,6 @@
     await Promise.all([loadDates(), loadRecommendations("strategy")]);
   }
 
-  function selectView(view) {
-    if (!view || view === state.view && !state.date) return;
-    setView(view);
-    state.date = "";
-    els.dateSelect.value = "";
-    state.payload = null;
-    loadRecommendations("view");
-  }
-
-  function setView(view) {
-    state.view = view === "official" ? "official" : "live";
-    document.querySelectorAll(".view-tab").forEach((button) => {
-      const active = button.dataset.view === state.view;
-      button.classList.toggle("is-active", active);
-      button.setAttribute("aria-selected", active ? "true" : "false");
-    });
-  }
-
   async function loadDates() {
     const strategy = state.strategy;
     els.dateSelect.innerHTML = '<option value="">当前</option>';
@@ -163,6 +141,7 @@
         renderPayload(cached);
       }
     } else if (!state.payload || reason === "strategy" || reason === "date") {
+      els.currentViewStatus.textContent = "正在判断";
       renderTableState("正在读取推荐快照");
     }
     try {
@@ -201,7 +180,7 @@
     const request = (async () => {
       const query = new URLSearchParams({ top_n: "18" });
       if (selectedDate) query.set("date", selectedDate);
-      else if (view === "live") query.set("view", "live");
+      else query.set("view", view);
       const headers = {};
       if (!selectedDate && state.etags.has(key)) headers["If-None-Match"] = state.etags.get(key);
       diagnostics.recommendationRequests += 1;
@@ -255,9 +234,12 @@
         && payload.requested_date === selectedDate
         && payload.trade_date === selectedDate;
     }
-    if (payload.status === "not_ready") return true;
+    if (payload.status === "not_ready") return payload.view === view;
     if (payload.historical === true || !payload.current_trade_date) return false;
-    return payload.trade_date === payload.current_trade_date && payload.view === view;
+    const viewMatches = view === "current"
+      ? ["live", "official"].includes(payload.view)
+      : payload.view === view;
+    return payload.trade_date === payload.current_trade_date && viewMatches;
   }
 
   function prefetchStrategies() {
@@ -272,12 +254,13 @@
     const historical = payload.historical === true;
     const recommendations = historical ? items : items.filter((item) => item.action === "executable");
     const watchItems = historical ? [] : items.filter((item) => item.action === "observe");
+    els.currentViewStatus.textContent = currentViewLabel(payload);
     els.recommendationCount.textContent = String(recommendations.length);
     els.executableCount.textContent = String(recommendations.filter((item) => item.action === "executable").length);
     els.filteredCount.textContent = String(payload.filtered_count || 0);
     els.dataSource.textContent = items[0] && items[0].source ? items[0].source : "-";
     els.strategyVersion.textContent = payload.strategy_version || "-";
-    els.freezeStatus.textContent = payload.status === "not_ready" ? "未就绪" : payload.frozen ? "已冻结" : "实时草稿";
+    els.freezeStatus.textContent = currentViewLabel(payload);
     const definition = historical ? window.TraderRender.historyTable() : window.TraderRender.currentTable();
     els.recommendationTable.classList.toggle("is-history", historical);
     els.watchRegion.hidden = historical || watchItems.length === 0;
@@ -308,7 +291,8 @@
     }
     else if ((payload.degraded_reasons || []).length) setNotice(`降级：${payload.degraded_reasons.join("、")}`, "warn");
     else if (payload.frozen) setNotice(`已冻结于 ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
-    else if (payload.view === "live") setNotice(`临时实时 · ${window.TraderRender.formatDateTime(payload.published_at)} · 不替代正式冻结`, "warn");
+    else if (payload.strategy === "long") setNotice(`当前快照 · ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
+    else if (payload.view === "live") setNotice(`实时草稿 · ${window.TraderRender.formatDateTime(payload.published_at)} · 未冻结，结果可能变化`, "warn");
     else setNotice(`快照 ${window.TraderRender.formatDateTime(payload.published_at)} · ${payload.fusion_mode}`, "ok");
     stampRowIdentities(payload);
     updateQuoteAge();
@@ -352,6 +336,15 @@
   function setNotice(message, level) {
     els.notice.textContent = message;
     els.notice.dataset.level = level || "idle";
+  }
+
+  function currentViewLabel(payload) {
+    if (!payload) return "正在判断";
+    if (payload.status === "not_ready") return "未就绪";
+    if (payload.historical === true) return "历史冻结";
+    if (payload.strategy === "long") return "当前快照";
+    if (payload.phase === "close_fallback") return "收盘补算";
+    return payload.frozen ? "已冻结" : "实时草稿";
   }
 
   function selectRow(event) {
@@ -513,7 +506,7 @@
       requested_date: null,
       current_trade_date: patch.current_trade_date || patch.trade_date,
       historical: false,
-      view: current.view || state.view,
+      view: patch.view,
       phase: patch.phase,
       published_at: patch.published_at,
       strategy_version: patch.strategy_version,
@@ -574,7 +567,7 @@
       || patch.view !== (patch.frozen ? "official" : "live")) return "identity_mismatch";
     const expectedDate = payload && (payload.current_trade_date || payload.trade_date);
     if (expectedDate && patch.trade_date !== expectedDate) return "identity_mismatch";
-    if (view === "official" && payload && payload.frozen === true && patch.frozen !== true) {
+    if (["current", "official"].includes(view) && payload && payload.frozen === true && patch.frozen !== true) {
       return "ignore_late_draft";
     }
     const baseVersion = patch.base_projection_version || patch.base_snapshot_id || "";

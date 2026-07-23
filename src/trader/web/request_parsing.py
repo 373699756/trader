@@ -76,8 +76,8 @@ def _recommendation_failure(
         )
     elif trade_date is not None and not _valid_date(trade_date):
         failure = RequestFailure("invalid_date", "date must use YYYY-MM-DD")
-    elif view not in {"official", "live"}:
-        failure = RequestFailure("invalid_view", "view must be official or live")
+    elif view not in {"current", "official", "live"}:
+        failure = RequestFailure("invalid_view", "view must be current, official or live")
     elif trade_date is not None and view == "live":
         failure = RequestFailure("invalid_view", "live view cannot be combined with a historical date")
     return failure

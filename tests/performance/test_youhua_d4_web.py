@@ -183,7 +183,7 @@ def test_d4_p6_sse_api_and_transfer_budgets(application_feature_factory) -> None
         publisher=publisher,
     )
     client = app.test_client()
-    current_path = "/api/recommendations/today?view=live&top_n=18"
+    current_path = "/api/recommendations/today?view=current&top_n=18"
     resident_path = f"/api/recommendations/today?date={resident_date}&top_n=18"
     current = client.get(current_path)
     etag = current.headers["ETag"]

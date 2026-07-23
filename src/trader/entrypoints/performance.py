@@ -529,7 +529,7 @@ def _api_sse_operations() -> dict[str, Callable[[], object]]:
         publisher=publisher,
     )
     client = app.test_client()
-    current_path = "/api/recommendations/today?view=live&top_n=18"
+    current_path = "/api/recommendations/today?view=current&top_n=18"
     initial = client.get(current_path)
     etag = initial.headers["ETag"]
     counter = 0

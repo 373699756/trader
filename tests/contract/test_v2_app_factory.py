@@ -43,11 +43,14 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "A股策略看板" in page
     assert "股票详情" in page
     assert "策略验证" not in page
-    assert "/static/dashboard.css?v=5" in page
+    assert "/static/dashboard.css?v=6" in page
     assert "/static/render.js?v=8" in page
-    assert "/static/dashboard.js?v=15" in page
-    assert 'data-view="live"' in page
-    assert "临时实时" in page
+    assert "/static/dashboard.js?v=16" in page
+    assert 'id="currentViewStatus"' in page
+    assert "当前推荐" in page
+    assert 'data-view="live"' not in page
+    assert "正式当前" not in page
+    assert "临时实时" not in page
     assert 'class="runtime-error"' in page
     assert "payloads: new Map()" in dashboard
     assert "inflight: new Map()" in dashboard
@@ -78,7 +81,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "browserErrors" in dashboard
     assert "reconcileRecommendationIdentity(payload)" in dashboard
     assert 'loadRecommendations("status_identity")' in dashboard
-    assert 'query.set("view", "live")' in dashboard
+    assert 'view: "current"' in dashboard
+    assert 'query.set("view", view)' in dashboard
+    assert "currentViewLabel" in dashboard
     assert "HISTORY_REFRESH_MS = 3000" in dashboard
     assert 'close_fallback: "收盘补算"' in dashboard
     assert 'payload.phase === "close_fallback"' in dashboard

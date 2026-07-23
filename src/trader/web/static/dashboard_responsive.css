@@ -54,16 +54,18 @@
     padding: 10px 12px;
   }
 
-  .strategy-tabs,
-  .view-tabs {
+  .strategy-tabs {
     width: 100%;
     overflow-x: auto;
   }
 
-  .strategy-tab,
-  .view-tab {
+  .strategy-tab {
     min-width: 72px;
     flex: 1 0 auto;
+  }
+
+  .current-view-status {
+    justify-content: space-between;
   }
 
   .date-control {
