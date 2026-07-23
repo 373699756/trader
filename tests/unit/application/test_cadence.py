@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from trader.application.cadence import CadencePlanner, CadencePolicy, PipelineTask, freshness_level
+from trader.application.cadence import (
+    CadencePlanner,
+    CadencePolicy,
+    PipelineTask,
+    freshness_level,
+    task_execution_budget_seconds,
+)
 from trader.application.schedule import SHANGHAI
 
 
@@ -94,6 +100,10 @@ def test_first_tick_after_warmup_still_initializes_reference_data_once() -> None
 
     assert [task.task for task in first.tasks].count(PipelineTask.REFERENCE_DATA) == 1
     assert PipelineTask.REFERENCE_DATA not in {task.task for task in second.tasks}
+
+
+def test_close_quotes_budget_allows_slow_close_source_and_local_rebuild() -> None:
+    assert task_execution_budget_seconds(PipelineTask.CLOSE_QUOTES) >= 180.0
 
 
 def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:

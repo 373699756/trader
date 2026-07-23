@@ -6,11 +6,24 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 15:00 后缺失正式记录的收盘恢复现在给 `close_quotes` 留出 180 秒有界执行预算，
+  覆盖慢收盘行情源返回和本地补算写入；后续重试若已有完整、同日、三板历史样本达标且未被
+  可靠度/样本错误标记的收盘全市场缓存，会直接复用该缓存继续创建 `close_fallback`，
+  不再反复同步抓取慢全市场来源。该修改不降低 0.85 板块可靠度门槛，不改变候选、评分、
+  动作阈值、DeepSeek 预算或冻结不可覆盖规则。
+
 - 收盘补算使用的候选研究只读缓存现在会在内存/shared cache 未命中时读取未过期的本地
   structured research JSON，并回填进程内缓存；该路径仍不发起 AkShare 或其他网络研究请求，
   不改变 0.85 板块可靠度门槛、候选公式、动作阈值、DeepSeek 预算或冻结不可覆盖规则。
 
 ### Fixed
+
+- 用户反馈“15:00 之后运行，使用收盘价还是得不到荐股信息，Web 展示为空”。现场检查确认
+  v17 运行库没有当日冻结或发布快照，`freeze` 事件成功只表示没有可冻结的预截止 P6，
+  真正负责冷启动收盘补算的 `close_quotes` 多次因 60 秒执行 deadline 过期而失败；当时
+  Sina 收盘来源 P95 已接近 58 秒，Eastmoney 熔断，重试又会重新抓取全市场，导致
+  `close_fallback` 始终没有创建。现在延长 `close_quotes` 预算，并在完整缓存可复用时跳过
+  后续慢全市场抓取，使 15:00 后后台恢复能继续本地筛选、评分、TopK 和冻结写入。
 
 - 用户追问“15:00 后没有荐股是否因为 8.5 阈值太高、如何修复”。确认根因不是降低阈值，
   而是冷启动收盘补算只读路径没有恢复已落盘的结构化研究字段，且 `FinancialReport.report_date`
@@ -28,6 +41,12 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 通过：`tests/unit/application/test_cadence.py::test_close_quotes_budget_allows_slow_close_source_and_local_rebuild`、
+  `tests/integration/test_v2_pipeline.py::test_after_close_retry_reuses_complete_cached_close_market`、
+  收盘恢复可靠度/历史样本/缓存候选/延迟报价相关集成回归，以及 cadence/events 单元回归。
+- 通过：本批 `make format-check`、`make lint`、`make type-check`、`make test`、`make package`；
+  仓库外 wheel 安装后可导入 `trader`、执行 `trader-cli --help`，并读取模板、CSS、JavaScript
+  和 SVG 资源。
 - 通过：`tests/unit/domain/test_board_scoring.py`、`tests/unit/domain/test_downside.py`、
   `tests/unit/application/test_board_scoring.py`、`tests/unit/application/test_recommendations.py`
   及收盘恢复集成测试；Ruff 检查通过。
@@ -46,6 +65,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批修复了现场 Web 空结果的 `close_quotes` 超时与重复慢抓阻断；若 15:00 后所有行情来源
+  持续不可用、三板历史样本仍不足、或候选输入真实达不到可靠度门槛，系统仍会按契约保持
+  `not_ready` 并重试，而不会降低 0.85 制造推荐。
 - 本批用缓存复用和收盘恢复回归验证了结构化研究字段可在重启后恢复；尚未在新的真实交易日
   15:00 后实机证明三策略都会形成当日 `close_fallback`。如果外部研究、历史或行情字段本身
   仍未成功落盘，系统仍会保持 `not_ready` 或可靠度降级，而不会降低门槛制造推荐。

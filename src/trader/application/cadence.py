@@ -58,7 +58,7 @@ def task_execution_budget_seconds(task: PipelineTask) -> float | None:
         PipelineTask.REFERENCE_DATA: 20.0,
         PipelineTask.DEEPSEEK_CUTOFF: 1.0,
         PipelineTask.FINAL_CANDIDATE_QUOTES: 10.0,
-        PipelineTask.CLOSE_QUOTES: 60.0,
+        PipelineTask.CLOSE_QUOTES: 180.0,
         PipelineTask.CURRENT_QUOTES: 20.0,
         PipelineTask.FREEZE: None,
     }[task]

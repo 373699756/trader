@@ -370,11 +370,7 @@ def _fetch_close_market(
     deadline: datetime | None,
 ) -> tuple[FeatureSnapshot, ...]:
     cached = tuple(pipeline._market_features)
-    if (
-        pipeline._after_close_retry_attempt == 0
-        and cached
-        and all(_valid_close_feature(feature, now) for feature in cached)
-    ):
+    if cached and _cached_close_market_is_reusable(pipeline, cached, now):
         return cached
     if pipeline._persistence_running:
         return tuple(
@@ -387,6 +383,27 @@ def _fetch_close_market(
             ).result()
         )
     return tuple(pipeline._market_full.fetch_market_features(now, force=True, deadline=deadline))
+
+
+def _cached_close_market_is_reusable(
+    pipeline: RecommendationPipeline,
+    features: Sequence[FeatureSnapshot],
+    now: datetime,
+) -> bool:
+    if not all(_valid_close_feature(feature, now) for feature in features):
+        return False
+    last_error = str(pipeline._state.snapshot().get("last_error") or "")
+    if any(
+        reason in last_error
+        for reason in (
+            "board_data_reliability_below_threshold",
+            "complete three-board close quotes and history",
+            "board_population_insufficient",
+        )
+    ):
+        return False
+    _, history_counts = _close_market_readiness(features, now)
+    return all(count >= MIN_BOARD_SAMPLE for count in history_counts.values())
 
 
 def _fetch_close_candidates(

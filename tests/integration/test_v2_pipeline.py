@@ -715,6 +715,45 @@ def test_after_close_rebuild_reads_cached_candidate_features(
     assert market_data.cached_candidate_reads == 3
 
 
+def test_after_close_retry_reuses_complete_cached_close_market(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    cached_close = ClosingPriceMarketData._closing(features, clock.now())
+    repository = MemoryRepository()
+    market_data = CachedCloseMarketOnlyMarketData(features)
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    pipeline.initialize()
+    pipeline._market_features = cached_close
+    pipeline._after_close_retry_attempt = 1
+
+    recovered = pipeline.run_once(clock.now())
+
+    assert {snapshot.strategy for snapshot in recovered} == {
+        Strategy.TODAY,
+        Strategy.TOMORROW,
+        Strategy.D25,
+    }
+    assert market_data.market_fetch_attempts == 0
+    assert market_data.cached_candidate_reads == 3
+
+
 def test_after_close_waits_for_reliable_board_features(
     application_feature_factory,
 ) -> None:
@@ -1840,10 +1879,24 @@ def test_current_quote_recovery_populates_market_view_without_scoring(
         ),
     )
 
+    event = new_event(
+        "current_quotes",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="after_close",
+        strategy=None,
+        priority=EventPriority.MARKET_QUOTES,
+        data_version="current-quote-recovery-regression",
+        config_version="config-v2",
+        created_at=now,
+        deadline=now + timedelta(seconds=20),
+        payload={"schedule_task": "current_quotes"},
+    )
+
     pipeline.initialize()
     assert pipeline.start() is True
     try:
-        pipeline.submit_due(now)
+        assert pipeline.submit_event(event) is True
         _wait_until(lambda: pipeline.status()["counters"].get("current_quote_recoveries") == 1)
     finally:
         pipeline.stop(timeout_seconds=2.0)
@@ -2493,6 +2546,23 @@ class CachedOnlyClosingMarketData(ClosingPriceMarketData):
             include_intraday_tail=include_intraday_tail,
             include_structured_research=include_structured_research,
         )
+
+
+class CachedCloseMarketOnlyMarketData(CachedOnlyClosingMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
+        super().__init__(features)
+        self.market_fetch_attempts = 0
+
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        del observed_at, force, deadline
+        self.market_fetch_attempts += 1
+        raise AssertionError("after-close retry must reuse complete cached close market features")
 
 
 class DegradingMarketData(StaticMarketData):
