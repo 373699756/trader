@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+
 from trader.entrypoints import performance as performance_module
 from trader.entrypoints.performance import run_performance_check
 from trader.infra.settings import load_runtime_settings
