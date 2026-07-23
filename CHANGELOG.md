@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续未完成的任务 A；本批按下一完整章节发布 G5 最终共同门禁，新增
+  `docs/reports/youhua-g5-final-gate.md` 和对应失败优先交付契约。报告逐项确认 B5/C5/D5
+  均签字通过、A4/A5 仍满足全部门禁、文档/代码/测试/配置一致，并明确本批完成后
+  `docs/plan_youhua.md` 全部闭合，不进入其他计划章节。
+
 - 用户继续未完成的任务 A；本批完成 A5.1-A5.5 最终交付审查，新增
   `docs/reports/youhua-a5-final-review.md`，收齐 B5/C5/D5 的
   `PASS / ready_for_gate=yes` 签字并归档完整 diff 审查、提交映射和剩余外部风险。权威设计
@@ -247,6 +252,10 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- G5 不改变任何产品、策略、schema、配置、迁移、运行代码或 Web 资源；最终交付状态从
+  “A5 已完成、G5 未发布”推进为“G5 已发布”。“最终一个交付 commit”按仓库强制规则落实为
+  G5 独立批次只创建一个新提交，保留此前已推送审计历史且不 squash/amend/force-push。
 
 - C5 在不改变公共 schema 版本、融合权重或 HTTP 硬预算的前提下收紧 V4/Pro 解析：拒绝
   未知字段、错误文本类型、超长响应和 manifest 外证据；正向催化/价格/基本面/政策映射只
@@ -494,6 +503,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- G5 交付契约修复“最终共同门禁可以在缺少任一 B/C/D 签字、A4/A5 状态或 Git 一致性证据时
+  被文字宣告发布”的流程缺口；报告必须同时包含四项完成条件、单批提交语义及
+  `HEAD == @{upstream}`。本批未发现需要修改的生产缺陷。
+
 - A5-F01 修复阶段 4 P6 新方法通过抬高严格 Ruff 债务基线接纳复杂度的问题；重构后两项
   新增复杂度诊断消失，P6/Web/pipeline 回归保持一致。C5 同批修复 explicit V4 回退 legacy、
   未确认或软来源正向加分、证据时区去重、prompt/cache 身份缺口、重复 coverage 阈值和
@@ -694,6 +707,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- G5 未移除产品能力、策略、数据源、API、历史、配置、迁移、测试或资源；仅结束
+  `plan_youhua` 的未发布状态。后续工程、收益验证和外部运行风险没有被删除或伪装成完成。
+
 - A5 未移除产品、策略、数据源、冻结历史、公共 API、配置项、迁移或桌面资源；移除的是
   P6 两项新增复杂度债务和 C5 raw facts identity 中无关的策略/板块/merge-epoch 分裂因子。
   legacy DeepSeek V3 仍只为冻结/回放兼容保留。
@@ -800,6 +816,12 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- G5 复跑 A4 同进程压力，逻辑 `205,468,511 B`、峰值 RSS `385,851,392 B` 均通过；
+  正式 v17 `perf-check --suite all` 16 项通过且零网络。B4 相对 CPU 首轮改善
+  `16.842%` 未达 20%，相同身份无并行负载重跑为 `26.854%` 并通过，业务哈希、绝对时延、
+  内存始终一致；v16 三板四项绝对预算通过且未宣称 CPU 加速。五项 make、仓库外 wheel、
+  `pip check`、CLI/配置/9 项资源和 Firefox 三档由本批最终门禁复核。
 
 - A5 定向复验架构、app factory、固定融合 `83.40`、冻结/P6、SQLite 迁移、DeepSeek
   预算/C2-C5、SSE/Web 与端到端；P6 重构后的 83 项及 DeepSeek/P6/Web 联合集 148 项通过。
@@ -1109,6 +1131,11 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- G5 没有已知未解决的仓库内缺陷。B4 首轮与重跑再次证明相对 CPU 指标受共享宿主调度
+  影响，发布判断必须同时保留固定身份、业务哈希、绝对预算和重复测量上下文。本机仍只
+  实跑 Python 3.14.4；真实行情/DeepSeek 时延、其他宿主、Firefox SWGL warning、fixture
+  model warning 和前瞻收益证明继续作为外部或独立后续风险，不因 G5 发布而消失。
 
 - A5 没有已知未解决的仓库内缺陷。固定离线证据只在当前宿主实际运行 Python 3.14.4，
   不证明 Python 3.10-3.13、不同宿主、真实行情/DeepSeek 时延或推荐收益；完整实时

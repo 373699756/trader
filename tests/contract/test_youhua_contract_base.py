@@ -173,3 +173,22 @@ def test_youhua_a5_closes_final_review_after_bcd_sign_off_without_publishing_g5(
     assert "A5.1-A5.5" in a5
     assert "A5.4 不改写已推送历史" in a5
     assert "A5 is complete and G5 is not published" in a5
+
+
+def test_youhua_g5_publishes_only_after_every_final_condition_is_satisfied() -> None:
+    a4 = (PROJECT_ROOT / "docs/reports/youhua-a4-acceptance.md").read_text(encoding="utf-8")
+    a5 = (PROJECT_ROOT / "docs/reports/youhua-a5-final-review.md").read_text(encoding="utf-8")
+    b5 = (PROJECT_ROOT / "tests/fixtures/market_data/youhua_b5/report_to_a.md").read_text(encoding="utf-8")
+    c5 = (PROJECT_ROOT / "tests/fixtures/deepseek/youhua_c5/report_to_a.md").read_text(encoding="utf-8")
+    d5 = (PROJECT_ROOT / "docs/reports/youhua-d1-p6-web.md").read_text(encoding="utf-8")
+    g5 = (PROJECT_ROOT / "docs/reports/youhua-g5-final-gate.md").read_text(encoding="utf-8")
+
+    assert "ready_for_gate: `yes; A4.1-A4.6 complete" in a4
+    assert "A5 is complete and G5 is not published" in a5
+    assert "status: `PASS`" in b5 and "ready_for_gate: `yes`" in b5
+    assert "status: PASS" in c5 and "ready_for_gate: yes" in c5
+    assert "verdict\nPASS" in d5 and "ready_for_gate\nyes" in d5
+    assert "G5 已发布" in g5
+    assert "G5 批次只创建一个新的交付 commit" in g5
+    assert "HEAD == @{upstream}" in g5
+    assert "G5 is published and plan_youhua is complete" in g5
