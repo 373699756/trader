@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -43,6 +45,8 @@ _SOFT_BUCKET_LIMITS = {
     "emergency": 5,
 }
 _CHALLENGER_SOFT_LIMIT = 8
+_BEGIN_IMMEDIATE_TIMEOUT_SECONDS = 15.0
+_BEGIN_IMMEDIATE_RETRY_SECONDS = 0.02
 
 SCHEMA_VERSION = 3
 
@@ -161,6 +165,7 @@ class DeepSeekBudgetStore:
         if any(value < 0 for value in self._challenger_limits.values()):
             raise ValueError("challenger limits cannot be negative")
         self._daily_target = sum(stage_targets.values())
+        self._write_lock = threading.Lock()
         self._initialized = False
         self._batches = BudgetBatchStore(self._connect)
         self._reporting = BudgetSummaryReader(
@@ -331,14 +336,15 @@ class DeepSeekBudgetStore:
             return rejected
         assert context is not None
         reservation_id = uuid.uuid4().hex
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            rejection = self._limit_rejection(connection, context)
-            if rejection:
-                connection.rollback()
-                return BudgetReservation(False, "", context.bucket, rejection, context.stage)
-            self._insert_reservation(connection, reservation_id, context)
-            connection.commit()
+        with self._write_lock:
+            with self._connect() as connection:
+                _begin_immediate(connection)
+                rejection = self._limit_rejection(connection, context)
+                if rejection:
+                    connection.rollback()
+                    return BudgetReservation(False, "", context.bucket, rejection, context.stage)
+                self._insert_reservation(connection, reservation_id, context)
+                connection.commit()
         return BudgetReservation(True, reservation_id, context.bucket, "reserved", context.stage)
 
     def _reservation_context(
@@ -474,101 +480,104 @@ class DeepSeekBudgetStore:
         status = options["status"]
         if status not in _CALL_TERMINALS:
             raise ValueError(f"invalid physical call terminal status: {status}")
-        with self._connect() as connection:
-            completed = options.get("completed_at") or datetime.now().astimezone()
-            _require_aware(completed, "physical call completion time")
-            connection.execute("BEGIN IMMEDIATE")
-            changed = connection.execute(
-                """
-                UPDATE deepseek_call_reservations
-                SET status = ?, completed_at = ?, error = ?, http_status = ?, latency_ms = ?, token_count = ?,
-                    timed_out = ?, actual_model = ?, system_fingerprint = ?, finish_reason = ?, prompt_tokens = ?,
-                    completion_tokens = ?, prompt_cache_hit_tokens = ?, prompt_cache_miss_tokens = ?
-                WHERE reservation_id = ? AND status = 'reserved'
-                """,
-                (
-                    status,
-                    completed.isoformat(),
-                    options.get("error", "")[:1000],
-                    options.get("http_status"),
-                    options.get("latency_ms"),
-                    max(0, options.get("token_count", 0)),
-                    int(options.get("timed_out", False)),
-                    options.get("actual_model"),
-                    options.get("system_fingerprint"),
-                    options.get("finish_reason"),
-                    max(0, options.get("prompt_tokens", 0)),
-                    max(0, options.get("completion_tokens", 0)),
-                    max(0, options.get("prompt_cache_hit_tokens", 0)),
-                    max(0, options.get("prompt_cache_miss_tokens", 0)),
-                    reservation_id,
-                ),
-            ).rowcount
-            if changed != 1:
-                connection.rollback()
-                raise KeyError(f"unknown or completed reservation: {reservation_id}")
-            _sync_call_audit(connection, reservation_id)
-            connection.commit()
+        with self._write_lock:
+            with self._connect() as connection:
+                completed = options.get("completed_at") or datetime.now().astimezone()
+                _require_aware(completed, "physical call completion time")
+                _begin_immediate(connection)
+                changed = connection.execute(
+                    """
+                    UPDATE deepseek_call_reservations
+                    SET status = ?, completed_at = ?, error = ?, http_status = ?, latency_ms = ?, token_count = ?,
+                        timed_out = ?, actual_model = ?, system_fingerprint = ?, finish_reason = ?, prompt_tokens = ?,
+                        completion_tokens = ?, prompt_cache_hit_tokens = ?, prompt_cache_miss_tokens = ?
+                    WHERE reservation_id = ? AND status = 'reserved'
+                    """,
+                    (
+                        status,
+                        completed.isoformat(),
+                        options.get("error", "")[:1000],
+                        options.get("http_status"),
+                        options.get("latency_ms"),
+                        max(0, options.get("token_count", 0)),
+                        int(options.get("timed_out", False)),
+                        options.get("actual_model"),
+                        options.get("system_fingerprint"),
+                        options.get("finish_reason"),
+                        max(0, options.get("prompt_tokens", 0)),
+                        max(0, options.get("completion_tokens", 0)),
+                        max(0, options.get("prompt_cache_hit_tokens", 0)),
+                        max(0, options.get("prompt_cache_miss_tokens", 0)),
+                        reservation_id,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    connection.rollback()
+                    raise KeyError(f"unknown or completed reservation: {reservation_id}")
+                _sync_call_audit(connection, reservation_id)
+                connection.commit()
 
     def recover_incomplete(self, recovered_at: datetime) -> int:
         _require_aware(recovered_at, "recovery time")
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            reservation_ids = tuple(
-                str(row[0])
-                for row in connection.execute(
-                    "SELECT reservation_id FROM deepseek_call_reservations WHERE status = 'reserved'"
-                ).fetchall()
-            )
-            calls = connection.execute(
-                """
-                UPDATE deepseek_call_reservations
-                SET status = 'abandoned', completed_at = ?, error = 'process_restart'
-                WHERE status = 'reserved'
-                """,
-                (recovered_at.isoformat(),),
-            ).rowcount
-            for reservation_id in reservation_ids:
-                _sync_call_audit(connection, reservation_id)
-            batches = connection.execute(
-                """
-                UPDATE deepseek_review_batches
-                SET status = 'abandoned', completed_at = ?, error = 'process_restart'
-                WHERE status = 'running'
-                """,
-                (recovered_at.isoformat(),),
-            ).rowcount
-            connection.execute(
-                """
-                UPDATE deepseek_candidate_results
-                SET outcome = 'rejected', completed_at = ?, error = 'batch_abandoned'
-                WHERE outcome = 'pending'
-                  AND batch_id IN (SELECT batch_id FROM deepseek_review_batches WHERE status = 'abandoned')
-                """,
-                (recovered_at.isoformat(),),
-            )
-            connection.commit()
+        with self._write_lock:
+            with self._connect() as connection:
+                _begin_immediate(connection)
+                reservation_ids = tuple(
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT reservation_id FROM deepseek_call_reservations WHERE status = 'reserved'"
+                    ).fetchall()
+                )
+                calls = connection.execute(
+                    """
+                    UPDATE deepseek_call_reservations
+                    SET status = 'abandoned', completed_at = ?, error = 'process_restart'
+                    WHERE status = 'reserved'
+                    """,
+                    (recovered_at.isoformat(),),
+                ).rowcount
+                for reservation_id in reservation_ids:
+                    _sync_call_audit(connection, reservation_id)
+                batches = connection.execute(
+                    """
+                    UPDATE deepseek_review_batches
+                    SET status = 'abandoned', completed_at = ?, error = 'process_restart'
+                    WHERE status = 'running'
+                    """,
+                    (recovered_at.isoformat(),),
+                ).rowcount
+                connection.execute(
+                    """
+                    UPDATE deepseek_candidate_results
+                    SET outcome = 'rejected', completed_at = ?, error = 'batch_abandoned'
+                    WHERE outcome = 'pending'
+                      AND batch_id IN (SELECT batch_id FROM deepseek_review_batches WHERE status = 'abandoned')
+                    """,
+                    (recovered_at.isoformat(),),
+                )
+                connection.commit()
         return int(calls) + int(batches)
 
     def abandon_reserved(self) -> int:
-        with self._connect() as connection:
-            completed_at = datetime.now().astimezone().isoformat()
-            reservation_ids = tuple(
-                str(row[0])
-                for row in connection.execute(
-                    "SELECT reservation_id FROM deepseek_call_reservations WHERE status = 'reserved'"
-                ).fetchall()
-            )
-            changed = connection.execute(
-                """
-                UPDATE deepseek_call_reservations
-                SET status = 'abandoned', completed_at = ?, error = 'process_restart'
-                WHERE status = 'reserved'
-                """,
-                (completed_at,),
-            ).rowcount
-            for reservation_id in reservation_ids:
-                _sync_call_audit(connection, reservation_id)
+        with self._write_lock:
+            with self._connect() as connection:
+                completed_at = datetime.now().astimezone().isoformat()
+                reservation_ids = tuple(
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT reservation_id FROM deepseek_call_reservations WHERE status = 'reserved'"
+                    ).fetchall()
+                )
+                changed = connection.execute(
+                    """
+                    UPDATE deepseek_call_reservations
+                    SET status = 'abandoned', completed_at = ?, error = 'process_restart'
+                    WHERE status = 'reserved'
+                    """,
+                    (completed_at,),
+                ).rowcount
+                for reservation_id in reservation_ids:
+                    _sync_call_audit(connection, reservation_id)
         return int(changed)
 
     @contextmanager
@@ -582,6 +591,18 @@ class DeepSeekBudgetStore:
                 yield connection
         finally:
             connection.close()
+
+
+def _begin_immediate(connection: sqlite3.Connection) -> None:
+    deadline = time.monotonic() + _BEGIN_IMMEDIATE_TIMEOUT_SECONDS
+    while True:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                raise
+            time.sleep(_BEGIN_IMMEDIATE_RETRY_SECONDS)
 
 
 __all__ = ["SCHEMA_VERSION", "BudgetReservation", "DeepSeekBudgetStore"]

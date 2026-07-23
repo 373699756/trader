@@ -62,6 +62,7 @@ class HistoryProfile:
     ma20_slope_pct: float | None
     atr20_pct: float | None
     average_volume_5d: float | None
+    average_amount_5d: float | None
     high_20d: float | None
     volatility_20d: float | None
     max_drawdown_20d: float | None
@@ -83,6 +84,7 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
     )
     atr20 = average_true_range_pct(bars)
     volume_5d = _positive_average(tuple(bar.volume for bar in bars[-5:]), 5)
+    amount_5d = _positive_average(tuple(bar.amount for bar in bars[-5:]), 5)
     high_20d = max((bar.high for bar in bars[-20:] if bar.high > 0.0), default=None) if len(bars) >= 20 else None
 
     window_20 = bars[-20:] if len(bars) >= 20 else bars[:]
@@ -135,6 +137,7 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
         ma20_slope_pct=ma20_slope,
         atr20_pct=atr20,
         average_volume_5d=volume_5d,
+        average_amount_5d=amount_5d,
         high_20d=high_20d,
         volatility_20d=volatility,
         max_drawdown_20d=max_drawdown,

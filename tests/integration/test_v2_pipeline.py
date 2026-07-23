@@ -754,6 +754,44 @@ def test_after_close_retry_reuses_complete_cached_close_market(
     assert market_data.cached_candidate_reads == 3
 
 
+def test_after_close_commits_ready_strategies_when_d25_research_is_missing(
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    state = RuntimeState()
+    market_data = MissingD25ResearchClosingMarketData(features)
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(
+            _recommendation_policy(
+                load_strategy_settings(Path(__file__).parents[2] / "config" / "v2" / "strategy.json")
+            )
+        ),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    pipeline.initialize()
+
+    recovered = pipeline.run_once(clock.now())
+
+    assert {snapshot.strategy for snapshot in recovered} == {Strategy.TODAY, Strategy.TOMORROW}
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is not None
+    assert repository.load_frozen(Strategy.TOMORROW, "2026-07-16") is not None
+    assert repository.load_frozen(Strategy.D25, "2026-07-16") is None
+    assert "d25 close rebuild degraded" in state.snapshot()["last_error"]
+
+
 def test_after_close_waits_for_reliable_board_features(
     application_feature_factory,
 ) -> None:
@@ -782,15 +820,17 @@ def test_after_close_waits_for_reliable_board_features(
     )
     pipeline.initialize()
 
-    assert pipeline.run_once(clock.now()) == ()
-    assert repository.frozen == {}
+    first_recovered = pipeline.run_once(clock.now())
+    assert {snapshot.strategy for snapshot in first_recovered} == {Strategy.TODAY}
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is not None
+    assert repository.load_frozen(Strategy.TOMORROW, "2026-07-16") is None
+    assert repository.load_frozen(Strategy.D25, "2026-07-16") is None
 
     market_data.reliable = True
     clock.set(datetime.fromisoformat("2026-07-16T15:05:03+08:00"))
     recovered = pipeline.run_once(clock.now())
 
     assert {snapshot.strategy for snapshot in recovered} == {
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
@@ -2563,6 +2603,60 @@ class CachedCloseMarketOnlyMarketData(CachedOnlyClosingMarketData):
         del observed_at, force, deadline
         self.market_fetch_attempts += 1
         raise AssertionError("after-close retry must reuse complete cached close market features")
+
+
+class MissingD25ResearchClosingMarketData(ClosingPriceMarketData):
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        return self._without_d25_research(super().fetch_market_features(observed_at, force=force, deadline=deadline))
+
+    def fetch_candidate_features(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
+    ) -> Sequence[FeatureSnapshot]:
+        return self._without_d25_research(
+            super().fetch_candidate_features(
+                codes,
+                observed_at,
+                include_intraday_tail=include_intraday_tail,
+                include_structured_research=include_structured_research,
+            )
+        )
+
+    def read_candidate_features(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
+    ) -> Sequence[FeatureSnapshot]:
+        return self.fetch_candidate_features(
+            codes,
+            observed_at,
+            include_intraday_tail=include_intraday_tail,
+            include_structured_research=include_structured_research,
+        )
+
+    @staticmethod
+    def _without_d25_research(features: Sequence[FeatureSnapshot]) -> tuple[FeatureSnapshot, ...]:
+        blocked = {"growth_score", "quality_score", "value_score"}
+        return tuple(
+            replace(
+                feature,
+                values={name: value for name, value in feature.values.items() if name not in blocked},
+            )
+            for feature in features
+        )
 
 
 class DegradingMarketData(StaticMarketData):

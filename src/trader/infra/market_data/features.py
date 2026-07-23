@@ -435,6 +435,7 @@ class FeatureBuilder:
         volatility = history.volatility_20d
         drawdown = history.max_drawdown_20d
         amount_median = history.median_amount_20d
+        volume_to_5d_average = _volume_to_5d_average(quote, setup_history)
         ma_position = _ma_position(quote.price, ma20, ma60)
         breakout = _breakout_score(quote.price, bars)
         slope = _slope_score(ma5, ma20)
@@ -487,7 +488,7 @@ class FeatureBuilder:
             "ma10": ma10,
             "ma20": ma20,
             "ma20_slope_pct": setup_history.ma20_slope_pct,
-            "volume_to_5d_average": quote.volume_ratio,
+            "volume_to_5d_average": volume_to_5d_average,
             "prior_high_20d": prior_high,
             "breakout_deviation_pct": breakout_deviation,
             "price_volume_confirmation": _price_volume_confirmation(returns[5], quote.amount, amount_median),
@@ -531,6 +532,23 @@ class FeatureBuilder:
             "trend_breakdown": None,
             "entry_quality": None,
         }
+
+
+def _volume_to_5d_average(quote: MarketQuote, history: HistoryProfile) -> float | None:
+    if quote.volume_ratio is not None and math.isfinite(quote.volume_ratio) and quote.volume_ratio >= 0.0:
+        return quote.volume_ratio
+    amount = quote.amount
+    average_amount = history.average_amount_5d
+    if (
+        amount is None
+        or not math.isfinite(amount)
+        or amount < 0.0
+        or average_amount is None
+        or not math.isfinite(average_amount)
+        or average_amount <= 0.0
+    ):
+        return None
+    return amount / average_amount
 
 
 __all__ = [

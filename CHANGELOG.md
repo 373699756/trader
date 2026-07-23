@@ -6,6 +6,19 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 15:00 后冷启动收盘重建现在按缺失策略独立提交：单个策略因专属字段缺失或板块可靠度不足
+  降级时，只记录该策略错误并继续提交其它已满足候选、行情、历史和三板可靠度契约的
+  `close_fallback`，不再把 ready 的 today/tomorrow 一起丢弃。
+
+- tomorrow/d25 的 `volume_to_5d_average` 因子从 v1 升级到 v2：优先使用行情源点时
+  `volume_ratio`，若供应商未提供，则用同日点时成交额除以最近 5 个已完成交易日平均成交额
+  派生。该修改不读取同日历史 bar，不降低 0.85 板块可靠度门槛，不改变动作阈值、融合公式
+  或 DeepSeek 预算。
+
+- DeepSeek 预算仓储的物理请求预留、完成和恢复写事务现在在同一进程内串行进入 SQLite
+  `BEGIN IMMEDIATE`，保留数据库原子计数和跨进程锁语义，同时避免 16 线程并发预留时直接抛出
+  `database is locked`。
+
 - 15:00 后缺失正式记录的收盘恢复现在给 `close_quotes` 留出 180 秒有界执行预算，
   覆盖慢收盘行情源返回和本地补算写入；后续重试若已有完整、同日、三板历史样本达标且未被
   可靠度/样本错误标记的收盘全市场缓存，会直接复用该缓存继续创建 `close_fallback`，
@@ -17,6 +30,24 @@ All notable changes to this project are documented here.
   不改变 0.85 板块可靠度门槛、候选公式、动作阈值、DeepSeek 预算或冻结不可覆盖规则。
 
 ### Fixed
+
+- 用户反馈“你改的什么，Web 上还是没有数据”，并提供最新错误
+  `entry_quality` 导致三板可靠度低于阈值。现场复核确认根因不是 8.5/0.85 阈值过高：
+  当前可用行情源 Sina 不提供 `volume_ratio`，但收盘补算已有点时成交额和 5 日历史成交额，
+  旧逻辑仍把 `volume_to_5d_average` 置空，进而让 tomorrow/d25 的 `entry_quality` 缺失并压低
+  板块可靠度。现在补上成交额强度派生路径，Sina 场景下可恢复 `entry_quality` 输入。
+
+- 继续实机验证发现第二个链路问题：修复 `entry_quality` 后，D25 仍可能因
+  `growth_score`、`quality_score`、`value_score` 研究字段缺失而保持降级；旧收盘重建对
+  today/tomorrow/d25 采用整批失败返回，导致 D25 一个策略失败会让已生成的 today/tomorrow
+  也不提交，Web 三个策略看起来都为空。现在收盘重建改为逐策略降级、逐策略提交，D25
+  缺研究字段时不会阻止 today/tomorrow 创建 `close_fallback`。
+
+- 全量门禁暴露 DeepSeek 全局 188 次预算并发测试稳定失败：16 个线程同时对同一
+  `DeepSeekBudgetStore` 预留请求时，SQLite 写锁竞争会在 `BEGIN IMMEDIATE` 阶段抛出
+  `database is locked`，导致原子预算用例中断而不是返回 188 个允许和剩余拒绝。现在预算写入口
+  使用实例级写锁串行化本进程写事务，回归确认并发预留结果稳定为 188 次允许，其余为
+  `daily_hard_limit` 拒绝。
 
 - 用户反馈“15:00 之后运行，使用收盘价还是得不到荐股信息，Web 展示为空”。现场检查确认
   v17 运行库没有当日冻结或发布快照，`freeze` 事件成功只表示没有可冻结的预截止 P6，
@@ -41,6 +72,27 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 通过：`tests/unit/test_v17_feature_entry_inputs.py`、`tests/unit/test_v2_settings.py`、
+  `tests/component/test_v2_market_data.py::test_strategy_factor_registry_is_complete_and_required`，
+  以及收盘恢复相关集成回归
+  `test_after_close_commits_ready_strategies_when_d25_research_is_missing`、
+  `test_after_close_rebuild_reads_cached_candidate_features`、
+  `test_after_close_retry_reuses_complete_cached_close_market`、
+  `test_after_close_waits_for_reliable_board_features`。
+- 通过：隔离临时 runtime 复制现有 v17 历史缓存后，实机启动
+  `TRADER_PORT=5051 trader-server --config /tmp/trader-runtime-web-check-c.json`；
+  `/api/status` 显示 `after_close_recommendations_recovered=2`、`snapshots_frozen=2`，
+  `/api/recommendations/today?view=current` 和
+  `/api/recommendations/tomorrow?view=current` 返回 `ready`、`phase=close_fallback` 且含
+  items；`/api/recommendations/d25?view=current` 因研究字段缺失继续按契约返回 `not_ready`。
+- 通过：`tests/component/test_youhua_deepseek_c4.py::test_c4_global_188_limit_is_atomic_under_concurrent_reservations`、
+  `tests/component/test_v2_deepseek.py` 和 `tests/component/test_youhua_deepseek_c4.py`。
+- 通过：本批 `make format-check`、`make lint`、`make type-check`、`make test`、`make package`；
+  仓库外安装 `dist/trader_research_dashboard-0.2.0-py3-none-any.whl` 后，可导入 `trader`，
+  可执行 `trader-cli --help`，并可读取 `index.html`、`dashboard.css`、`dashboard.js` 和 SVG 资源。
+- 通过：架构 AST、`create_app()` 无线程/文件副作用、固定融合向量 `83.40`、DeepSeek 全局
+  188 预算并发、冻结检查点哈希和哈希不一致隔离的关键契约集合。
+
 - 通过：`tests/unit/application/test_cadence.py::test_close_quotes_budget_allows_slow_close_source_and_local_rebuild`、
   `tests/integration/test_v2_pipeline.py::test_after_close_retry_reuses_complete_cached_close_market`、
   收盘恢复可靠度/历史样本/缓存候选/延迟报价相关集成回归，以及 cadence/events 单元回归。
@@ -64,6 +116,10 @@ All notable changes to this project are documented here.
 - 无。
 
 ### Residual Risks
+
+- D25 仍严格依赖 `growth_score`、`quality_score`、`value_score` 研究字段。若本地结构化研究
+  缓存为空且外部研究源未成功落盘，D25 会保持 `not_ready`；本批不降低可靠度阈值，也不以
+  中性值伪造研究字段，只保证它不会拖空 today/tomorrow。
 
 - 本批修复了现场 Web 空结果的 `close_quotes` 超时与重复慢抓阻断；若 15:00 后所有行情来源
   持续不可用、三板历史样本仍不足、或候选输入真实达不到可靠度门槛，系统仍会按契约保持

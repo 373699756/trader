@@ -243,7 +243,7 @@ def _rebuild_from_close(
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             pipeline._state.increment("after_close_strategy_failures")
             pipeline._state.record_error(f"{strategy.value} close rebuild degraded: {str(exc)[:400]}")
-            return ()
+            continue
         prepared.append(snapshot)
 
     committed: list[RecommendationSnapshot] = []
