@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from trader.application.cache import canonical_json_bytes
@@ -13,6 +13,11 @@ from trader.domain.market.models import (
     Board,
     CanonicalMarketSnapshot,
     MarketQuote,
+)
+from trader.infra.market_data.columnar_merge import (
+    ColumnarMergeError,
+    columnar_merge_epoch,
+    try_merge_complete_realtime,
 )
 from trader.infra.market_data.merge_quote import (
     merge_code,
@@ -22,6 +27,15 @@ from trader.infra.market_data.merge_quote import (
     source_priority,
 )
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
+
+
+@dataclass(frozen=True)
+class _MergeContext:
+    observed_at: datetime
+    previous: CanonicalMarketSnapshot | None
+    targeted_codes: frozenset[str]
+    missing_reasons: dict[str, str]
+    degraded_reasons: tuple[str, ...]
 
 
 def merge_market_observations(
@@ -61,6 +75,44 @@ def merge_market_observations(
             )
         return _empty_snapshot(observed_at, degraded or {"all_sources_failed:no_last_valid_snapshot"})
 
+    return _merge_valid_observations(
+        valid,
+        _MergeContext(
+            observed_at=observed_at,
+            previous=previous,
+            targeted_codes=frozenset(targeted_codes),
+            missing_reasons=missing,
+            degraded_reasons=tuple(sorted(degraded)),
+        ),
+    )
+
+
+def _merge_valid_observations(
+    valid: Sequence[SourceObservation],
+    context: _MergeContext,
+) -> CanonicalMarketSnapshot:
+    if not context.targeted_codes:
+        try:
+            columnar = try_merge_complete_realtime(valid)
+        except ColumnarMergeError:
+            columnar = None
+            context = replace(
+                context,
+                degraded_reasons=tuple(sorted({*context.degraded_reasons, "columnar_merge_failed:scalar_fallback"})),
+            )
+        if columnar is not None:
+            merge_epoch = columnar_merge_epoch(context.observed_at, columnar, context.missing_reasons)
+            return _canonical_snapshot(
+                observed_at=context.observed_at,
+                quotes=columnar.quotes,
+                field_sources=columnar.field_sources,
+                source_versions=columnar.source_versions,
+                conflicts=columnar.conflicts,
+                missing_reasons=context.missing_reasons,
+                degraded_reasons=context.degraded_reasons,
+                merge_epoch=merge_epoch,
+            )
+
     grouped: dict[str, list[SourceObservation]] = defaultdict(list)
     latest_by_source: dict[str, SourceObservation] = {}
     for observation in valid:
@@ -74,28 +126,37 @@ def merge_market_observations(
     quotes: list[MarketQuote] = []
     field_sources: dict[str, dict[str, str]] = {}
     conflicts: set[str] = set()
-    targeted = set(targeted_codes)
     for code in sorted(grouped):
-        quote, sources, quote_conflicts = merge_code(code, grouped[code], targeted=code in targeted)
+        quote, sources, quote_conflicts = merge_code(
+            code,
+            grouped[code],
+            targeted=code in context.targeted_codes,
+        )
         quotes.append(quote)
         field_sources[code] = sources
         conflicts.update(quote_conflicts)
 
-    if not quotes and previous is not None:
+    if not quotes and context.previous is not None:
         return replace(
-            previous,
+            context.previous,
             degraded_reasons=tuple(
-                sorted({*previous.degraded_reasons, *degraded, "all_sources_failed:last_valid_snapshot"})
+                sorted(
+                    {
+                        *context.previous.degraded_reasons,
+                        *context.degraded_reasons,
+                        "all_sources_failed:last_valid_snapshot",
+                    }
+                )
             ),
         )
     return _canonical_snapshot(
-        observed_at=observed_at,
+        observed_at=context.observed_at,
         quotes=tuple(quotes),
         field_sources=field_sources,
         source_versions=source_versions,
         conflicts=tuple(sorted(conflicts)),
-        missing_reasons=missing,
-        degraded_reasons=tuple(sorted(degraded)),
+        missing_reasons=context.missing_reasons,
+        degraded_reasons=context.degraded_reasons,
     )
 
 
@@ -241,6 +302,7 @@ def _canonical_snapshot(
     conflicts: tuple[str, ...],
     missing_reasons: dict[str, str],
     degraded_reasons: tuple[str, ...],
+    merge_epoch: str | None = None,
 ) -> CanonicalMarketSnapshot:
     projection = {
         "observed_at": observed_at,
@@ -250,10 +312,10 @@ def _canonical_snapshot(
         "conflicts": conflicts,
         "missing_reasons": missing_reasons,
     }
-    merge_epoch = hashlib.sha256(canonical_json_bytes(projection)).hexdigest()[:24]
+    resolved_merge_epoch = merge_epoch or hashlib.sha256(canonical_json_bytes(projection)).hexdigest()[:24]
     return CanonicalMarketSnapshot(
         observed_at=observed_at,
-        merge_epoch=merge_epoch,
+        merge_epoch=resolved_merge_epoch,
         quotes=quotes,
         field_sources=field_sources,
         source_versions=source_versions,

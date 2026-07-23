@@ -6,6 +6,20 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 继续 Codex B4：新增完整行情 canonical 行的严格 Polars 列式标准化、Eastmoney/Sina 窄路径合并与
+  5500 行/360 候选/100 tick 固定验收 fixture；保留 partial、reference、Tencent overlay 和
+  degraded 输入的 scalar 回退。
+
+- 用户要求继续未完成的任务 D；现状确认 G3 已发布而 D4 尚未执行。新增 D4 P6/SSE/API
+  固定 18 行性能回归、可执行的 Node 浏览器状态机契约、离线真实页面/SSE 桌面夹具，并在
+  `docs/reports/youhua-d1-p6-web.md` 第 11 节形成 D4.1-D4.4 标准交接包；本批不提前执行 D5。
+
+- 用户要求继续未完成的 Codex A 任务；现状确认上一已推送批次停在 G3，A4 尚未开始。
+  新增 `docs/reports/youhua-a4-acceptance.md`，按 A4.1-A4.6 登记正确性、跨域故障、质量、
+  兼容、性能和问题闭环证据，并用可复现注入确认 Polars 构造失败会阻断已有标量行情、
+  P6 拒绝超限投影后 publisher 仍会发送错误 projection 两项开放缺陷；分别归属 B 与 D+A，
+  G4 保持未发布且不提前进入 A5。
+
 - 用户再次发送“继续”后，A 按阶段 3 共同门禁复核当前 B3/C3/D3 交接状态。新增
   `docs/reports/youhua-g3-gate-review.md`，记录 A3 handoff 已发布且 B3/C3/D3 标准
   `ready_for_gate=yes` 报告均已到达；A 因此发布 G3，但不启动 A4、不创建 PR/tag/release。
@@ -212,6 +226,19 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- B4 将标准化、观察值构造与两源合并的固定组合路径纳入相对验收，严格复杂度债务基线因拆出
+  有效观察合并 helper 从 `C901=39` 下调为 `C901=38`；新增的 Polars 入口只在 infra 内部可见，
+  不改变公共行情 schema、应用端口、配置或 Web API。
+
+- publisher 状态把 100ms 内部 SSE 入队耗时与 2s 权威发布年龄拆成两个有界 P50/P95 指标；
+  无游标的新 SSE 连接从当前 sequence 开始，只在显式 `Last-Event-ID`/`cursor` 时执行历史恢复。
+  patch ETag 现与 `snapshot:trade_date:view` HTTP 身份一致，dashboard 资产版本提升到 15。
+
+- A4 质量复验在安装声明的 Polars 后发现 mypy 会递归解析当前 NumPy 第三方 stub，并以
+  Python 3.10 目标拒绝 stub 中的 Python 3.12 `type` 语句；`pyproject.toml` 现把 Polars
+  明确作为 mypy 外部导入边界，活动 `src/trader` 仍按完整严格规则检查，未改变运行依赖或
+  Python 3.10-3.14 产品范围。
 
 - A3 集成后，权威策略文档从旧 DeepSeek 证据/预算口径收敛到当前实现：每股 prompt 证据
   上限为 12，long 物理请求永久为 0，today/tomorrow/d25/shared_preheat/emergency 软桶为
@@ -424,6 +451,22 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- A4-F01（Polars 构造失败会阻断有效标量行情）已修复：行情/候选提交在列式批次构造抛出
+  `PolarsError`、`RuntimeError`、`TypeError` 或 `ValueError` 时保留 scalar snapshot，生成完整
+  invalidation change set，并记录 `columnar_projection_failed:scalar_fallback`；列式合并自身
+  失败也记录 `columnar_merge_failed:scalar_fallback`。新增精确注入回归覆盖返回值、health epoch、
+  dirty count 和降级原因。
+
+- 修复 overlay projection、patch schema/身份/base/TopK 错配被前端静默丢弃的问题：现在按
+  原因执行 ETag resync；有效在线 patch 保持零完整 GET。P6 current pin 拒绝冻结后的同日
+  迟到草稿和冻结身份替换，且不会被较旧投影覆盖；publisher 同步禁止这些非权威投影发出
+  SSE。P6 当前视图超限改为显式失败，阻止调用链继续广播错误 SSE。新页面也不再在完整
+  GET 最新投影后重放旧 SSE 导致短暂回滚。
+
+- 修复架构契约把仅残留忽略 `__pycache__`、没有任何 `*.py` 的退休目录误判为活动业务包：
+  目录拓扑与退休路径检查现在只认真实 Python 源文件，仍零容忍旧业务实现，且不会因本地
+  解释器缓存产生伪失败。
+
 - 修复阶段 2 合并后公共契约和权威文档之间的漂移：DeepSeek prompt 证据仍写 16 条、long
   仍有预算、SSE 只描述游标恢复而未固定 patch v2 projection/base/overlay 身份。现在文档、
   生产代码和契约测试使用同一组版本、预算、缓存和增量更新语义。
@@ -583,6 +626,12 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- D4 未删除活动产品能力、业务数据或兼容字段；SSE patch 继续同时携带
+  `patch_schema_version=2` 与 `schema_version=2`，Web envelope 保持 v3。
+
+- 本批未删除活动产品代码、业务契约或历史数据；A4 失败探针只在本地复现期间存在，确认
+  缺陷后已移除，复现条件和 owner 保留在 A4 报告中。
+
 - 本批未移除产品能力、API、策略、行情源、DeepSeek 能力或 Web 资源；只收敛旧文档口径和
   集成已有 B/C/D 实现包，避免形成第二套 schema 或公共接缝。
 
@@ -673,6 +722,30 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- B4 固定验收 runner 通过：标准化+观察值构造+两源合并 process-CPU P95 相对 scalar 改善
+  `27.22%`；标准化/两源合并/统一快照 wall P95 为 `134.059/586.035/1130.823ms`，
+  100 tick 逻辑缓存 `29,661,328B`、分配增长 `0.0%`、峰值 RSS `288,702,464B`，均在门禁内。
+  B 域定向单元 `48` 项、行情组件 `122` 项、Ruff、mypy 和严格债务基线均通过；完整证据见
+  `tests/fixtures/market_data/youhua_b4/report_to_a.md`。
+
+- D4 固定门禁记录 P6→SSE 入队 P95 `4.357ms`、权威 SSE 年龄 `0.000s`、当前/驻留/ETag/日期/状态
+  API P95 `2.382/1.808/0.797/1.352/1.758ms`；单股 patch `1,133B` 对完整响应 `10,952B`，节省
+  `89.655%`。Firefox 152 三档精确内容视口用 10 条正式 + 8 条观察、长错误、详情抽屉和
+  实际 SSE 验收，无白屏、关键重叠、页面横向溢出或页面错误；有效 patch 的完整 GET 增量
+  为 0、布局位移 0px，显式 resync 只产生一次条件 GET 并命中 304。最终稳定共享树的
+  `make format-check/lint/type-check/test/package` 全部通过；仓库外安装 wheel 后可导入包、
+  执行 `trader-cli --help`，并读取模板、CSS、JavaScript 和图标资源。
+
+- A4 第一轮目标回归通过：领域/应用评分与排名、最终验收、全日确定性、行情列式、DeepSeek、
+  持久化、P6/SSE/Web 共四组测试；`tests/contract/test_delivery_contract.py`、
+  `test_youhua_contract_base.py`、`test_v2_architecture.py` 共 27 项通过；`make type-check`
+  通过当前共享树 163 个活动源码文件。固定 `perf-check --suite all` 16 个指标通过且零网络，v15 的
+  5500 行标准化/合并/统一快照与 v16 的 360 候选四项绝对预算首轮通过。dirty 中间树的
+  `make package` 成功，仓库外 wheel 安装后可导入安装目标、执行 CLI 并读取 9 项 Web 资源；
+  `make format-check` 与完整 `make test` 通过，`make lint` 因 B4 新路径令严格债务
+  `PLR0912/PLR0913` 分别从 16/55 增至 17/56 而失败。上述证据不替代稳定树的完整五项 make、
+  wheel、Python 3.10-3.13 和三档桌面最终复验，未宣称 G4 通过。
 
 - G3 门禁复核批次验证：读取阶段 3 计划、A3/B3/C3/D3 报告，确认四方均已提交
   `ready_for_gate=yes` 交接证据并发布 G3；定向契约测试
@@ -930,8 +1003,24 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- G3 已发布；A4.x 尚未开始，必须等待下一次用户“继续”后再执行跨域正确性、故障注入、完整质量、
-  兼容、性能总门禁和问题闭环。
+- B4 快路径只覆盖完整 canonical provider 行；当前真实新浪适配器的缺失字段、reference/Tencent
+  overlay 和 degraded payload 仍按契约走 scalar，A4.5 仍需在 P1-P6 近上限并存、DeepSeek 最大批次、
+  P6 冷读和慢客户端场景汇总 RSS/USS/Polars 峰值。跨 Python 3.10-3.13 与三档桌面证据仍待 A4。
+
+- D4-owned 门禁已通过；A4 登记的 P6 拒绝原子性仍需 A 在公共 pipeline 层关闭：D 已让 P6
+  超限显式失败并禁止 D publisher 广播，但当前调用顺序仍可能先更新 RuntimeState。G4 必须
+  在 A 完成 RuntimeState/P6/session/checkpoint/SSE 原子接线并汇总 B4/C4 后才能发布。宿主
+  Firefox 输出 SWGL framebuffer warning，但本次三档截图、DOM 与页面 JavaScript 均成功。
+
+- A4/G4 当前明确未通过：C4 已提交 `ready_for_gate=yes` 报告；B 仍需让 Polars 批次构造
+  失败回退已有标量行情并显式降级；D 与 A 需让 P6 接纳结果原子控制 RuntimeState、
+  session/checkpoint 和 SSE，禁止拒绝投影继续发布；
+  还需收齐 B4/D4 标准报告，在稳定工作树重跑五项 make、仓库外 wheel、缓存近上限并存
+  RSS/USS/Polars 证据、Python 3.10-3.13 实际解释器和 1280x720/1440x900/1920x1080 桌面。
+  这些是已登记退出条件，不得以当前分域或 dirty 结果发布 G4。
+
+- G3 已发布；A4.1-A4.6 已开始且第一轮验收形成开放失败清单，必须先关闭上述 A4 阻塞并重新
+  运行完整门禁，才能发布 G4 或进入 A5。
 
 - D3 桌面检查仍基于 not_ready 页面；真实推荐行、详情抽屉和长错误文本仍需 G4/A4 集成验收。
 

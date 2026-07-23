@@ -11,6 +11,8 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import replace
 from datetime import date, datetime, timezone
 
+from polars.exceptions import PolarsError
+
 from trader.application.cache import BoundedCache, canonical_json_bytes
 from trader.application.ports.market import (
     MarketDataDeadlineExceededError,
@@ -45,6 +47,7 @@ from trader.infra.market_data.merge import (
     merge_market_observations,
     observation_from_quote,
     overlay_canonical_snapshot,
+    snapshot_payload_hash,
 )
 from trader.infra.market_data.merge_quote import rejection_reason, source_name
 from trader.infra.market_data.observations import SourceObservation
@@ -192,7 +195,7 @@ class MarketDataGateway:
             with self._state_lock:
                 latest = self._latest_snapshot
             commit_snapshot = _preserve_newer_quotes(snapshot, latest)
-            columnar = ColumnarQuoteBatch.from_snapshot(
+            commit_snapshot, columnar = _columnar_projection_or_scalar_fallback(
                 commit_snapshot,
                 config_version=self._config_version,
                 schema_version=self._schema_version,
@@ -201,8 +204,11 @@ class MarketDataGateway:
                 if self._latest_snapshot is not latest:
                     continue
                 self._latest_snapshot = commit_snapshot
-                self._latest_changes = market_changes(self._latest_batch, columnar)
-                self._latest_batch = columnar
+                if columnar is None:
+                    self._latest_changes = _columnar_failure_changes(latest, commit_snapshot)
+                else:
+                    self._latest_changes = market_changes(self._latest_batch, columnar)
+                    self._latest_batch = columnar
                 self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
                 self._latest_source = "eastmoney+sina" if len(successes) == 2 else outcome.vendor
                 self._last_route_outcome = outcome
@@ -328,19 +334,33 @@ class MarketDataGateway:
             targeted_codes=codes,
         )
         with self._state_lock:
-            self._remember_observations_locked(observations, completed_at)
-            self._latest_snapshot = overlay_canonical_snapshot(self._latest_snapshot, snapshot)
-            columnar = ColumnarQuoteBatch.from_snapshot(
-                self._latest_snapshot,
-                config_version=self._config_version,
-                schema_version=self._schema_version,
-            )
+            return self._commit_candidate_snapshot_locked(observations, snapshot, completed_at, codes)
+
+    def _commit_candidate_snapshot_locked(
+        self,
+        observations: Sequence[SourceObservation],
+        snapshot: CanonicalMarketSnapshot,
+        completed_at: datetime,
+        codes: Sequence[str],
+    ) -> tuple[MarketQuote, ...]:
+        self._remember_observations_locked(observations, completed_at)
+        previous = self._latest_snapshot
+        commit_snapshot = overlay_canonical_snapshot(previous, snapshot)
+        commit_snapshot, columnar = _columnar_projection_or_scalar_fallback(
+            commit_snapshot,
+            config_version=self._config_version,
+            schema_version=self._schema_version,
+        )
+        self._latest_snapshot = commit_snapshot
+        if columnar is None:
+            self._latest_changes = _columnar_failure_changes(previous, commit_snapshot)
+        else:
             self._latest_changes = market_changes(self._latest_batch, columnar)
             self._latest_batch = columnar
-            self._latest_by_code = {quote.code: quote for quote in self._latest_snapshot.quotes}
-            self._merge_count += 1
-            self._conflict_count += len(snapshot.conflicts)
-            return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+        self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
+        self._merge_count += 1
+        self._conflict_count += len(snapshot.conflicts)
+        return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
 
     def update_reference_observations(self, observations: Sequence[SourceObservation]) -> None:
         with self._state_lock:
@@ -530,6 +550,53 @@ class MarketDataGateway:
             state = self._states[source]
             state.error_count += 1
             state.last_error = "circuit_open"
+
+
+def _columnar_projection_or_scalar_fallback(
+    snapshot: CanonicalMarketSnapshot,
+    *,
+    config_version: str,
+    schema_version: str,
+) -> tuple[CanonicalMarketSnapshot, ColumnarQuoteBatch | None]:
+    try:
+        columnar = ColumnarQuoteBatch.from_snapshot(
+            snapshot,
+            config_version=config_version,
+            schema_version=schema_version,
+        )
+    except (PolarsError, RuntimeError, TypeError, ValueError):
+        degraded = replace(
+            snapshot,
+            degraded_reasons=tuple(sorted({*snapshot.degraded_reasons, "columnar_projection_failed:scalar_fallback"})),
+        )
+        return degraded, None
+    return snapshot, columnar
+
+
+def _columnar_failure_changes(
+    previous: CanonicalMarketSnapshot | None,
+    current: CanonicalMarketSnapshot,
+) -> MarketChangeSet:
+    previous_quotes = {} if previous is None else {quote.code: quote for quote in previous.quotes}
+    current_quotes = {quote.code: quote for quote in current.quotes}
+    previous_codes = set(previous_quotes)
+    current_codes = set(current_quotes)
+    dirty_codes = tuple(sorted(previous_codes | current_codes))
+    dimensions = (*previous_quotes.values(), *current_quotes.values())
+    return MarketChangeSet(
+        merge_epoch=current.merge_epoch,
+        inserted_codes=tuple(sorted(current_codes - previous_codes)),
+        updated_codes=tuple(sorted(current_codes & previous_codes)),
+        removed_codes=tuple(sorted(previous_codes - current_codes)),
+        previous_merge_epoch=None if previous is None else previous.merge_epoch,
+        dirty_boards=tuple(sorted({quote.board.value for quote in dimensions})),
+        dirty_industries=tuple(sorted({quote.industry for quote in dimensions if quote.industry})),
+        dirty_field_families=("board", "industry", "quote_identity", "quote_liquidity", "quote_price", "risk"),
+        risk_changed_codes=dirty_codes,
+        overlay_only=False,
+        full_invalidation_reason="columnar_projection_failed",
+        content_hash=snapshot_payload_hash(current),
+    )
 
 
 __all__ = ["MarketDataGateway"]

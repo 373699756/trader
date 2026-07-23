@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from trader.application.cache import canonical_json_bytes
 from trader.domain.market.models import CanonicalMarketSnapshot
+from trader.infra.market_data import columnar_merge as columnar_merge_module
+from trader.infra.market_data.columnar_merge import (
+    CompleteRealtimeNormalization,
+    columnar_merge_epoch,
+    try_merge_complete_realtime,
+    try_normalize_complete_realtime_rows,
+)
 from trader.infra.market_data.merge import (
     merge_market_observations,
+    observation_from_quote,
     overlay_canonical_snapshot,
     snapshot_payload_hash,
 )
+from trader.infra.market_data.merge_quote import merge_code
+from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.observations import SourceObservation
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -67,6 +79,164 @@ def test_merge_is_deterministic_and_prefers_eastmoney_at_equal_time() -> None:
     assert snapshot_payload_hash(first) == snapshot_payload_hash(second)
     assert snapshot_payload_hash(first) == "269afe7618c3fa25b252792ffce1703da8eab97ab3a3b45614b47b9a6fae6ed9"
     assert first.merge_epoch == "a48cc036aab1cad6abfc1ea7"
+
+
+def test_complete_realtime_columnar_projection_matches_scalar_field_merge() -> None:
+    complete_fields = {
+        "name": "测试股份",
+        "price": 10.0,
+        "previous_close": 9.8,
+        "open_price": 9.9,
+        "high": 10.1,
+        "low": 9.7,
+        "pct_change": 2.0,
+        "change_5m": 0.2,
+        "speed": 0.3,
+        "volume_ratio": 1.4,
+        "turnover_rate": 2.0,
+        "amount": 300_000_000.0,
+        "amplitude": 4.0,
+        "market_cap": 20_000_000_000.0,
+        "industry": "工业",
+        "is_st": False,
+        "is_suspended": False,
+        "is_one_price_limit": False,
+        "is_blacklisted": False,
+        "has_major_regulatory_risk": False,
+    }
+    eastmoney = replace(_observation("eastmoney"), fields=complete_fields)
+    sina = replace(
+        _observation("sina", price=10.04),
+        fields={**complete_fields, "price": 10.04},
+    )
+
+    projection = try_merge_complete_realtime((sina, eastmoney))
+    expected_quote, expected_sources, expected_conflicts = merge_code(
+        "600001",
+        (sina, eastmoney),
+        targeted=False,
+    )
+
+    assert projection is not None
+    assert projection.quotes == (expected_quote,)
+    assert projection.field_sources == {"600001": expected_sources}
+    assert projection.source_versions == {"eastmoney": "eastmoney-v1", "sina": "sina-v1"}
+    assert projection.conflicts == tuple(sorted(expected_conflicts))
+    canonical_projection = {
+        "observed_at": NOW,
+        "quotes": projection.quotes,
+        "field_sources": projection.field_sources,
+        "source_versions": projection.source_versions,
+        "conflicts": projection.conflicts,
+        "missing_reasons": {},
+    }
+    expected_epoch = hashlib.sha256(canonical_json_bytes(canonical_projection)).hexdigest()[:24]
+    assert columnar_merge_epoch(NOW, projection, {}) == expected_epoch
+    assert try_merge_complete_realtime((eastmoney, replace(sina, fields={"price": 10.04}))) is None
+    assert try_merge_complete_realtime((replace(eastmoney, fields={**complete_fields, "price": "10.0"}), sina)) is None
+    assert try_merge_complete_realtime((eastmoney, replace(sina, status="failed", error_code="offline"))) is None
+
+
+def test_columnar_merge_failure_uses_scalar_projection_and_marks_degraded(monkeypatch) -> None:
+    complete_fields = {
+        **_observation("eastmoney").fields,
+        "change_5m": 0.2,
+        "speed": 0.3,
+        "volume_ratio": 1.4,
+        "turnover_rate": 2.0,
+        "amplitude": 4.0,
+        "market_cap": 20_000_000_000.0,
+        "is_st": False,
+        "is_suspended": False,
+        "is_one_price_limit": False,
+        "is_blacklisted": False,
+        "has_major_regulatory_risk": False,
+    }
+    eastmoney = replace(_observation("eastmoney"), fields=complete_fields)
+    sina = replace(_observation("sina", price=10.04), fields={**complete_fields, "price": 10.04})
+
+    def fail_winner_projection(*_args, **_kwargs):
+        raise columnar_merge_module.pl.exceptions.ComputeError("injected columnar merge failure")
+
+    monkeypatch.setattr(columnar_merge_module, "_winner_indexes", fail_winner_projection)
+
+    snapshot = merge_market_observations((sina, eastmoney), observed_at=NOW)
+
+    assert snapshot.quotes[0].price == 10.0
+    assert "columnar_merge_failed:scalar_fallback" in snapshot.degraded_reasons
+
+
+def test_columnar_normalization_matches_scalar_quote_observation() -> None:
+    row = {
+        "code": "600001",
+        "name": "测试股份",
+        "price": 10.0,
+        "previous_close": 9.8,
+        "open_price": 9.9,
+        "high": 10.1,
+        "low": 9.7,
+        "pct_change": 2.0,
+        "change_5m": 0.2,
+        "speed": 0.3,
+        "volume_ratio": 1.4,
+        "turnover_rate": 2.0,
+        "amount": 300_000_000.0,
+        "amplitude": 4.0,
+        "market_cap": 20_000_000_000.0,
+        "industry": "工业",
+    }
+    scalar_quote = build_market_quote(
+        MarketQuoteInput(
+            code="600001",
+            name="测试股份",
+            price=10.04,
+            previous_close=9.8,
+            open_price=9.9,
+            high=10.1,
+            low=9.7,
+            pct_change=2.0,
+            change_5m=0.2,
+            speed=0.3,
+            volume_ratio=1.4,
+            turnover_rate=2.0,
+            amount=300_000_000.0,
+            amplitude=4.0,
+            market_cap=20_000_000_000.0,
+            industry="工业",
+            source="sina",
+            source_time=NOW,
+            received_time=NOW,
+            data_version="sina-v1",
+        )
+    )
+
+    columnar = try_normalize_complete_realtime_rows(
+        (row,),
+        CompleteRealtimeNormalization(
+            source="sina",
+            observed_at=NOW,
+            source_time=NOW,
+            received_at=NOW,
+            data_version="sina-v1",
+            price_multiplier=1.004,
+        ),
+    )
+
+    assert columnar == (observation_from_quote(scalar_quote, source="sina", observed_at=NOW),)
+    assert (
+        try_normalize_complete_realtime_rows(
+            ({**row, "price": "10.0"},),
+            CompleteRealtimeNormalization(
+                source="sina",
+                observed_at=NOW,
+                source_time=NOW,
+                received_at=NOW,
+                data_version="sina-v1",
+                price_multiplier=1.004,
+            ),
+        )
+        is None
+    )
 
 
 def test_same_source_equal_version_uses_payload_hash_as_deterministic_tie_breaker() -> None:

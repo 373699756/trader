@@ -533,6 +533,35 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert "eastmoney:source_failed" in gateway.canonical_snapshot().degraded_reasons
 
 
+def test_gateway_columnar_projection_failure_preserves_scalar_market_and_marks_degraded(monkeypatch) -> None:
+    quote = replace(_quote(), source="sina")
+    gateway = MarketDataGateway(
+        FailingMarketClient(),
+        StaticMarketClient((quote,)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=1,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+
+    def fail_projection(*_args, **_kwargs):
+        raise RuntimeError("injected Polars construction failure")
+
+    monkeypatch.setattr(gateway_module.ColumnarQuoteBatch, "from_snapshot", fail_projection)
+
+    fetched = tuple(gateway.fetch_market(observed_at=NOW))
+
+    snapshot = gateway.canonical_snapshot()
+    health = gateway.health()
+    assert [(item.code, item.price, item.source) for item in fetched] == [(quote.code, quote.price, "sina")]
+    assert snapshot is not None
+    assert "columnar_projection_failed:scalar_fallback" in snapshot.degraded_reasons
+    assert health["merge_epoch"] == snapshot.merge_epoch
+    assert health["market_changes"]["merge_epoch"] == snapshot.merge_epoch
+    assert health["market_changes"]["inserted"] == 1
+
+
 def test_source_lane_coalesces_running_identity_and_keeps_only_latest_pending_request() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     pool.start()

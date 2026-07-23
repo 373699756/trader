@@ -1,0 +1,98 @@
+{
+  "absolute_market": {
+    "canonical_snapshot_sha256": "234b923cb17d1979365892791f38545598ae2d25f0cbe14817980a3080c3329b",
+    "metrics": {
+      "canonical_snapshot": {
+        "budget_p95_ms": 1500.0,
+        "max_ms": 1130.823,
+        "p50_ms": 1047.38,
+        "p95_ms": 1130.823,
+        "passed": true,
+        "samples": 5
+      },
+      "market_merge": {
+        "budget_p95_ms": 1000.0,
+        "max_ms": 586.035,
+        "p50_ms": 555.864,
+        "p95_ms": 586.035,
+        "passed": true,
+        "samples": 5
+      },
+      "market_normalization": {
+        "budget_p95_ms": 800.0,
+        "max_ms": 134.059,
+        "p50_ms": 132.244,
+        "p95_ms": 134.059,
+        "passed": true,
+        "samples": 5
+      }
+    },
+    "passed": true
+  },
+  "fixture_sha256": "2d8c93f18c8e83f2f8f8eb628d4c4d04bef9eb95bb58db18c6d05f0165a36801",
+  "identity": {
+    "b_owned_tree_sha256": "8ecdb73dcd32c5eead60d69bfb8bfd282ab6a199fd3d2a8525d6cf5ae9351eff",
+    "base_commit": "7a8a0282d025cbc23fffff5736e94c2d1bf883e0",
+    "config_sha256": "06331da5ffa48ef40cff5c83b8a99e81b44d9a90613b67f6271a6decd4a85329",
+    "cpu": "unknown",
+    "machine": "x86_64",
+    "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43",
+    "python": "3.14.4"
+  },
+  "memory": {
+    "allocation_growth_budget_percent": 20.0,
+    "allocation_growth_percent": 0.0,
+    "cache_logical_budget_bytes": 260046848,
+    "cache_logical_bytes": 29661328,
+    "last_dirty_codes": 360,
+    "market_cache_estimated_bytes": 28378512,
+    "polars_estimated_bytes": 1282816,
+    "process_peak_rss_budget_bytes": 402653184,
+    "process_peak_rss_bytes": 288051200,
+    "process_rss_bytes": 269647872,
+    "process_uss_bytes": 256888832,
+    "python_traced_bytes": 23779,
+    "python_traced_peak_bytes": 1782835,
+    "ticks": 100,
+    "transient_peak_reason": "two retained 5500-row columnar epochs plus alternating full/targeted dirty projection"
+  },
+  "passed": true,
+  "relative_normalize_and_merge": {
+    "business_snapshot_sha256": "af791c795eb6447976b0542986c60bf85f229d771146d2b046a4abbcac9436e3",
+    "clock": "process_cpu",
+    "columnar_p95_ms": 1131.749,
+    "columnar_samples_ms": [
+      1128.42,
+      1024.718,
+      1108.447,
+      1131.749,
+      1100.893
+    ],
+    "improvement_percent": 27.22,
+    "passed": true,
+    "required_improvement_percent": 20.0,
+    "scalar_p95_ms": 1555.037,
+    "scalar_samples_ms": [
+      1449.95,
+      1412.996,
+      1555.037,
+      1363.721,
+      1431.947
+    ],
+    "wall_p95_ms": {
+      "columnar": 1128.513,
+      "scalar": 1561.387
+    }
+  },
+  "schema_version": "youhua-b4-market-acceptance-v1",
+  "workload": {
+    "candidate_rows": 360,
+    "market_rows": 5500,
+    "network_calls": 0,
+    "sources": [
+      "eastmoney",
+      "sina"
+    ],
+    "ticks": 100
+  }
+}
