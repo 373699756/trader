@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求将硬过滤、评分、融合、荐股和 Web 展示的全链路收益优化审查方案写入
+  `docs/strage.md`。新增非权威执行计划，记录数据覆盖基线、v17/v18 同期影子、风险分层、
+  热度组合、流动性对照、分支独立入场形态、候选召回、缺失值收缩、融合归因、TopK、
+  Web 决策轨迹及收益晋级门禁。
+
 - 用户继续未完成的任务 A；本批按下一完整章节发布 G5 最终共同门禁，新增
   `docs/reports/youhua-g5-final-gate.md` 和对应失败优先交付契约。报告逐项确认 B5/C5/D5
   均签字通过、A4/A5 仍满足全部门禁、文档/代码/测试/配置一致，并明确本批完成后
@@ -252,6 +257,10 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 本批只补充后续策略研究路线，不修改活动 v17、固定 0.68/0.32 融合、硬预算、冻结、
+  运行配置、API schema 或 Web 行为。计划要求先恢复至少 95% 历史覆盖并积累点时配对样本，
+  所有判断条件调整先以不增加 DeepSeek 请求的 v18 影子运行。
 
 - G5 不改变任何产品、策略、schema、配置、迁移、运行代码或 Web 资源；最终交付状态从
   “A5 已完成、G5 未发布”推进为“G5 已发布”。“最终一个交付 commit”按仓库强制规则落实为
@@ -503,6 +512,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 文档计划明确修正后续实施中容易出现的四类设计缺口：结构化风险硬过滤使软扣分失效、
+  候选分与最终分不一致造成不可观测误杀、回踩和突破分支错误共用全部输入，以及缺失值在
+  评分、可靠度和动作门中的语义不一致。本批只记录修复方案，尚未改变生产判断。
+
 - G5 交付契约修复“最终共同门禁可以在缺少任一 B/C/D 签字、A4/A5 状态或 Git 一致性证据时
   被文字宣告发布”的流程缺口；报告必须同时包含四项完成条件、单批提交语义及
   `HEAD == @{upstream}`。本批未发现需要修改的生产缺陷。
@@ -707,6 +720,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未移除任何生产过滤、因子、风险、推荐、API、持久化或 Web 能力；计划明确禁止在
+  收益门禁通过前删除 v17 或把影子结果展示为实际收益。
+
 - G5 未移除产品能力、策略、数据源、API、历史、配置、迁移、测试或资源；仅结束
   `plan_youhua` 的未发布状态。后续工程、收益验证和外部运行风险没有被删除或伪装成完成。
 
@@ -816,6 +832,11 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- `docs/strage.md` 已按非权威计划边界复核完整链路、固定融合、冻结、预算和不承诺收益
+  约束；文档契约 3 项及 `make format-check`、`make lint`、`make type-check`、`make test`、
+  `make package` 全部通过。仓库外 wheel 可导入包、读取 6 项 Web 资源并执行
+  `trader-cli --help`；`git diff --check` 未发现空白错误。
 
 - G5 复跑 A4 同进程压力，逻辑 `205,468,511 B`、峰值 RSS `385,851,392 B` 均通过；
   正式 v17 `perf-check --suite all` 16 项通过且零网络。B4 相对 CPU 首轮改善
@@ -1131,6 +1152,11 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 当前运行样本仍不足以证明任何规则能提高荐股收益：审查时 5,548 只股票中 5,349 只缺少
+  20 日流动性历史，v2 仅有 5 个冻结快照。风险分层、热度、流动性、形态、候选和 TopK
+  方案必须在至少 60 个交易日、300 条有效配对、净超额收益差 95% 置信下界为正且严重
+  回撤率下降后，才能另立版本晋级。
 
 - G5 没有已知未解决的仓库内缺陷。B4 首轮与重跑再次证明相对 CPU 指标受共享宿主调度
   影响，发布判断必须同时保留固定身份、业务哈希、绝对预算和重复测量上下文。本机仍只

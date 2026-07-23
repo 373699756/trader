@@ -50,6 +50,7 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
         "reports/youhua-g4-gate-review.md",
         "reports/youhua-g5-final-gate.md",
         "software-business-design.md",
+        "strage.md",
     ]
 
     design = (docs_root / "software-business-design.md").read_text(encoding="utf-8")
@@ -57,6 +58,7 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
     plan_c = (docs_root / "plan_c.md").read_text(encoding="utf-8")
     plan_sudu = (docs_root / "plan_sudu.md").read_text(encoding="utf-8")
     plan_youhua = (docs_root / "plan_youhua.md").read_text(encoding="utf-8")
+    strage = (docs_root / "strage.md").read_text(encoding="utf-8")
     report = (docs_root / "reports/youhua-a1-baseline.md").read_text(encoding="utf-8")
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
@@ -73,6 +75,9 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
     assert "非权威执行计划" in plan_youhua
     assert "software-business-design.md" in plan_youhua
     assert "recommendation-strategy.md" in plan_youhua
+    assert "非权威执行计划" in strage
+    assert "software-business-design.md" in strage
+    assert "recommendation-strategy.md" in strage
     assert "A1.x 已完成本地基线采集与契约冻结" in report
     assert "G1 发布" in report
     assert "A2 public skeleton is available" in (docs_root / "reports/youhua-a2-public-skeleton.md").read_text(
