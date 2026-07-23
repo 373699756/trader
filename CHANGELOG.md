@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求把 SDK/API 取股、行情统一、候选/评分、P6/SSE 和 Web 实时展示的性能优化计划
+  写入 `docs/times.md`。新增非权威执行计划，归档真实链路审查证据、P0/P1 瓶颈、T1-T5
+  独立实施顺序、拟议接口影响、确定性/冻结/资源边界和量化验收矩阵。
+
 - 用户要求将硬过滤、评分、融合、荐股和 Web 展示的全链路收益优化审查方案写入
   `docs/strage.md`。新增非权威执行计划，记录数据覆盖基线、v17/v18 同期影子、风险分层、
   热度组合、流动性对照、分支独立入场形态、候选召回、缺失值收缩、融合归因、TopK、
@@ -257,6 +261,10 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- `docs/times.md` 将后续实时性能工作固定为先建立真实延迟瀑布，再依次处理 SDK 连接与
+  有界分页、列式/dirty 提交、本地推荐先发布和浏览器逐行绘制；本批不修改生产线程、
+  `fusion_mode`、API/SSE schema、评分、冻结或运行配置。
 
 - 本批只补充后续策略研究路线，不修改活动 v17、固定 0.68/0.32 融合、硬预算、冻结、
   运行配置、API schema 或 Web 行为。计划要求先恢复至少 95% 历史覆盖并积累点时配对样本，
@@ -512,6 +520,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 文档计划修正“当前毫秒级 P6/API/SSE 是实时链路首要瓶颈”的判断偏差，明确优先处理
+  定向报价重复重建 5500 行、DeepSeek 同步等待占用 merge/event 线程、SDK Session/分页
+  生命周期、浏览器整表重绘和合成性能门禁失真；生产缺陷仍待各独立实施批次验证和修复。
+
 - 文档计划明确修正后续实施中容易出现的四类设计缺口：结构化风险硬过滤使软扣分失效、
   候选分与最终分不一致造成不可观测误杀、回踩和突破分支错误共用全部输入，以及缺失值在
   评分、可靠度和动作门中的语义不一致。本批只记录修复方案，尚未改变生产判断。
@@ -720,6 +732,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未移除或修改任何生产行情源、推荐、DeepSeek、P6、API、SSE、Web、配置或测试能力；
+  `docs/times.md` 明确禁止以增加隐藏线程、放宽实时门限或削弱确定性换取表面性能。
+
 - 本批未移除任何生产过滤、因子、风险、推荐、API、持久化或 Web 能力；计划明确禁止在
   收益门禁通过前删除 v17 或把影子结果展示为实际收益。
 
@@ -832,6 +847,11 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- `docs/times.md` 已核对非权威边界、两份权威文档链接、现有性能证据、固定融合/冻结/
+  188 次预算和桌面范围。以当前上游叠加本批 3 个文件的隔离快照执行五项 make 门禁，
+  235 文件格式、严格 Ruff 债务、164 个源码文件 mypy 和完整 pytest 均通过；sdist/wheel
+  构建成功，仓库外安装可导入、执行 CLI、读取 9 项 Web 资源且 `pip check` 无破损依赖。
 
 - `docs/strage.md` 已按非权威计划边界复核完整链路、固定融合、冻结、预算和不承诺收益
   约束；文档契约 3 项及 `make format-check`、`make lint`、`make type-check`、`make test`、
@@ -1152,6 +1172,10 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- `docs/times.md` 只记录审查结论和实施门禁，T1-T5 尚未实现；供应商真实网络时延、
+  Session 复用线程安全、dirty 全量等价和 `local_pending` 用户语义必须在对应批次验证，
+  固定离线性能结果不证明真实投资收益。
 
 - 当前运行样本仍不足以证明任何规则能提高荐股收益：审查时 5,548 只股票中 5,349 只缺少
   20 日流动性历史，v2 仅有 5 个冻结快照。风险分层、热度、流动性、形态、候选和 TopK
