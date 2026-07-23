@@ -7,8 +7,11 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, TypedDict
 from zoneinfo import ZoneInfo
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.domain.market.factors import clamp, percentile_scores_with_metadata
 from trader.domain.market.models import (
@@ -68,18 +71,25 @@ class FeatureSchema:
     description: str = ""
 
 
+class FeatureBuildOptions(TypedDict, total=False):
+    cross_section_reference: Mapping[str, Mapping[str, float | None]] | None
+    cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None
+    research_observations: Mapping[str, ResearchObservation] | None
+    intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None
+    history_summaries: Mapping[str, HistoryProfile] | None
+
+
+class _FeatureGroupOptions(FeatureBuildOptions):
+    data_version: str
+
+
 class StandardizedFeatureBuilder(Protocol):
     def build(
         self,
         quotes: Sequence[MarketQuote],
         histories: Mapping[str, tuple[DailyBar, ...]],
         observed_at: datetime,
-        *,
-        cross_section_reference: Mapping[str, Mapping[str, float | None]] | None = ...,
-        cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None = ...,
-        research_observations: Mapping[str, ResearchObservation] | None = ...,
-        intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None = ...,
-        history_summaries: Mapping[str, HistoryProfile] | None = ...,
+        **options: Unpack[FeatureBuildOptions],
     ) -> tuple[FeatureSnapshot, ...]: ...
 
 
@@ -194,12 +204,7 @@ class FeatureBuilder:
         quotes: Sequence[MarketQuote],
         histories: Mapping[str, tuple[DailyBar, ...]],
         observed_at: datetime,
-        *,
-        cross_section_reference: Mapping[str, Mapping[str, float | None]] | None = None,
-        cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None = None,
-        research_observations: Mapping[str, ResearchObservation] | None = None,
-        intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None = None,
-        history_summaries: Mapping[str, HistoryProfile] | None = None,
+        **options: Unpack[FeatureBuildOptions],
     ) -> tuple[FeatureSnapshot, ...]:
         require_qfq_history(histories)
         grouped: dict[str, list[MarketQuote]] = defaultdict(list)
@@ -212,11 +217,11 @@ class FeatureBuilder:
                 histories,
                 observed_at,
                 data_version=data_version,
-                cross_section_reference=cross_section_reference,
-                cross_section_normalization_reference=cross_section_normalization_reference,
-                research_observations=research_observations,
-                intraday_minutes=intraday_minutes,
-                history_summaries=history_summaries,
+                cross_section_reference=options.get("cross_section_reference"),
+                cross_section_normalization_reference=options.get("cross_section_normalization_reference"),
+                research_observations=options.get("research_observations"),
+                intraday_minutes=options.get("intraday_minutes"),
+                history_summaries=options.get("history_summaries"),
             ):
                 built[snapshot.quote.code] = snapshot
         return tuple(built[quote.code] for quote in quotes)
@@ -226,14 +231,14 @@ class FeatureBuilder:
         quotes: Sequence[MarketQuote],
         histories: Mapping[str, tuple[DailyBar, ...]],
         observed_at: datetime,
-        *,
-        data_version: str,
-        cross_section_reference: Mapping[str, Mapping[str, float | None]] | None,
-        cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None,
-        research_observations: Mapping[str, ResearchObservation] | None,
-        intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None,
-        history_summaries: Mapping[str, HistoryProfile] | None,
+        **options: Unpack[_FeatureGroupOptions],
     ) -> tuple[FeatureSnapshot, ...]:
+        data_version = options["data_version"]
+        cross_section_reference = options.get("cross_section_reference")
+        cross_section_normalization_reference = options.get("cross_section_normalization_reference")
+        research_observations = options.get("research_observations")
+        intraday_minutes = options.get("intraday_minutes")
+        history_summaries = options.get("history_summaries")
         tail_signals = (
             {
                 quote.code: derive_tail_signals(

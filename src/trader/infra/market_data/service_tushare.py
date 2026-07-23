@@ -8,14 +8,14 @@ import math
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from typing import TypeVar, cast
 from zoneinfo import ZoneInfo
 
-from trader.application.cache import CacheIdentity, build_cache_identity, canonical_json_bytes
+from trader.application.cache import CacheIdentity, CacheIdentitySpec, build_cache_identity, canonical_json_bytes
 from trader.application.schedule import shanghai_now
-from trader.application.source_lanes import SourceRequestSuperseded
+from trader.application.source_lanes import SourceRequestSupersededError
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
@@ -28,6 +28,18 @@ _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DAY_END = time(23, 59, 59)
+
+
+@dataclass(frozen=True)
+class ReferenceLoadRequest:
+    dataset: str
+    subject_key: str
+    request: Mapping[str, object]
+    observed_at: datetime
+    function: Callable[..., Sequence[SourceObservation]]
+    args: tuple[object, ...]
+    force: bool
+    kwargs: Mapping[str, object]
 
 
 class ReferenceLoader:
@@ -118,13 +130,16 @@ class ReferenceLoader:
                 self.apply_history(tushare_history)
                 return
             masters = self.load(
-                "security_master_calendar",
-                "security_master",
-                {"dataset": "security_master", "market": "ashare"},
-                observed_at,
-                self._client.fetch_security_master,
-                observed_at,
-                force=force,
+                ReferenceLoadRequest(
+                    "security_master_calendar",
+                    "security_master",
+                    {"dataset": "security_master", "market": "ashare"},
+                    observed_at,
+                    self._client.fetch_security_master,
+                    (observed_at,),
+                    force,
+                    {},
+                )
             )
             listing_dates = tuple(
                 parsed
@@ -135,19 +150,20 @@ class ReferenceLoader:
             )
             calendars = (
                 self.load(
-                    "security_master_calendar",
-                    "trading_calendar",
-                    {
-                        "dataset": "trading_calendar",
-                        "start_date": min(listing_dates).isoformat(),
-                        "end_date": shanghai_now(observed_at).date().isoformat(),
-                    },
-                    observed_at,
-                    self._client.fetch_trading_calendar,
-                    min(listing_dates),
-                    shanghai_now(observed_at).date(),
-                    observed_at,
-                    force=force,
+                    ReferenceLoadRequest(
+                        "security_master_calendar",
+                        "trading_calendar",
+                        {
+                            "dataset": "trading_calendar",
+                            "start_date": min(listing_dates).isoformat(),
+                            "end_date": shanghai_now(observed_at).date().isoformat(),
+                        },
+                        observed_at,
+                        self._client.fetch_trading_calendar,
+                        (min(listing_dates), shanghai_now(observed_at).date(), observed_at),
+                        force,
+                        {},
+                    )
                 )
                 if listing_dates
                 else ()
@@ -159,32 +175,35 @@ class ReferenceLoader:
                     tushare_history = self.load_history_batch(normalized, observed_at, force=force)
                 valuation_observations = (
                     self.load(
-                        "daily_valuation_financials",
-                        "daily_valuation:" + ",".join(normalized),
-                        {
-                            "dataset": "daily_valuation",
-                            "codes": normalized,
-                            "trade_date": valuation_trade_date.isoformat(),
-                        },
-                        observed_at,
-                        self._client.fetch_daily_valuations,
-                        normalized,
-                        valuation_trade_date,
-                        observed_at,
-                        force=force,
+                        ReferenceLoadRequest(
+                            "daily_valuation_financials",
+                            "daily_valuation:" + ",".join(normalized),
+                            {
+                                "dataset": "daily_valuation",
+                                "codes": normalized,
+                                "trade_date": valuation_trade_date.isoformat(),
+                            },
+                            observed_at,
+                            self._client.fetch_daily_valuations,
+                            (normalized, valuation_trade_date, observed_at),
+                            force,
+                            {},
+                        )
                     )
                     if valuation_trade_date is not None
                     else ()
                 )
                 financial_observations = self.load(
-                    "daily_valuation_financials",
-                    "financial_indicators:" + ",".join(normalized),
-                    {"dataset": "financial_indicators", "codes": normalized},
-                    observed_at,
-                    self._client.fetch_financial_indicators,
-                    normalized,
-                    observed_at,
-                    force=force,
+                    ReferenceLoadRequest(
+                        "daily_valuation_financials",
+                        "financial_indicators:" + ",".join(normalized),
+                        {"dataset": "financial_indicators", "codes": normalized},
+                        observed_at,
+                        self._client.fetch_financial_indicators,
+                        (normalized, observed_at),
+                        force,
+                        {},
+                    )
                 )
                 self.apply_fields("valuation", valuation_observations)
                 self.apply_fields("financial", financial_observations)
@@ -192,37 +211,44 @@ class ReferenceLoader:
 
     def load(
         self,
-        dataset: str,
-        subject_key: str,
-        request: Mapping[str, object],
-        observed_at: datetime,
-        function: Callable[..., Sequence[SourceObservation]],
-        /,
-        *args: object,
-        force: bool,
-        **kwargs: object,
+        request: ReferenceLoadRequest,
     ) -> tuple[SourceObservation, ...]:
         if self._client is None:
             return ()
         identity = build_cache_identity(
-            dataset=dataset,
-            source="tushare",
-            subject_key=subject_key,
-            request=request,
-            trade_date=shanghai_now(observed_at).date().isoformat(),
-            phase="all_day",
-            source_contract_version=self._runner.source_contract_versions.get("tushare", "tushare-component-v1"),
-            config_version=self._runner.config_version,
-            schema_version=self._runner.schema_version,
+            CacheIdentitySpec(
+                dataset=request.dataset,
+                source="tushare",
+                subject_key=request.subject_key,
+                request=request.request,
+                trade_date=shanghai_now(request.observed_at).date().isoformat(),
+                phase="all_day",
+                source_contract_version=self._runner.source_contract_versions.get("tushare", "tushare-component-v1"),
+                config_version=self._runner.config_version,
+                schema_version=self._runner.schema_version,
+            )
         )
         cache = self._runner.cache
 
         def load() -> tuple[SourceObservation, ...]:
-            lane_identity = _source_batch_identity(dataset, (subject_key,), observed_at, request=request, force=force)
-            observations = tuple(
-                self._runner.run_source_task("tushare", lane_identity, observed_at, function, *args, **kwargs)
+            lane_identity = _source_batch_identity(
+                request.dataset,
+                (request.subject_key,),
+                request.observed_at,
+                request=request.request,
+                force=request.force,
             )
-            completed_at = max(observed_at, self._runner.wall_clock())
+            observations = tuple(
+                self._runner.run_source_task(
+                    "tushare",
+                    lane_identity,
+                    request.observed_at,
+                    request.function,
+                    *request.args,
+                    **request.kwargs,
+                )
+            )
+            completed_at = max(request.observed_at, self._runner.wall_clock())
             cacheable = tuple(
                 item
                 for item in observations
@@ -248,52 +274,57 @@ class ReferenceLoader:
                     cache.put_negative(identity, error_code=error_code)
             return cacheable
 
-        if cache is not None and not force:
-            lookup = cache.get(identity)
-            if lookup is not None and lookup.state == "negative":
-                return ()
-            if lookup is not None and lookup.value is not None:
-                observations = cast(tuple[SourceObservation, ...], lookup.value)
-                if lookup.state != "fresh" and not lookup.retry_suppressed:
-                    if self._runner.source_lanes is not None and self._runner.source_lanes.owns_current_thread(
-                        "tushare"
-                    ):
-                        refreshed = cast(tuple[SourceObservation, ...], cache.coalesce(identity, load))
-                        if refreshed:
-                            return refreshed
-                        refreshed_lookup = cache.get(identity)
-                        reason = (
-                            refreshed_lookup.error_code
-                            if refreshed_lookup is not None and refreshed_lookup.error_code is not None
-                            else "reference_refresh_failed"
-                        )
-                        return tuple(self._mark_reference_degraded(item, reason) for item in observations)
-                    else:
-                        self._schedule_tushare_refresh(
-                            identity,
-                            dataset,
-                            subject_key,
-                            request,
-                            observed_at,
-                            function,
-                            args,
-                            kwargs,
-                        )
-                if lookup.state != "fresh" or lookup.error_code is not None:
-                    observations = tuple(
-                        self._mark_reference_degraded(item, lookup.error_code or "reference_data_degraded")
-                        for item in observations
-                    )
-                return observations
+        if cache is not None and not request.force:
+            cached = self._cached_reference(identity, request, load)
+            if cached is not None:
+                return cached
 
         if cache is None:
             return load()
         loaded = cast(tuple[SourceObservation, ...], cache.coalesce(identity, load))
         if loaded:
             return loaded
+        return self._reference_fallback(identity, loaded)
+
+    def _cached_reference(
+        self,
+        identity: CacheIdentity,
+        request: ReferenceLoadRequest,
+        load: Callable[[], tuple[SourceObservation, ...]],
+    ) -> tuple[SourceObservation, ...] | None:
+        cache = self._runner.cache
+        assert cache is not None
+        lookup = cache.get(identity)
+        if lookup is None:
+            return None
+        if lookup.state == "negative":
+            return ()
+        if lookup.value is None:
+            return None
+        observations = cast(tuple[SourceObservation, ...], lookup.value)
+        if lookup.state != "fresh" and not lookup.retry_suppressed:
+            lanes = self._runner.source_lanes
+            if lanes is not None and lanes.owns_current_thread("tushare"):
+                refreshed = cast(tuple[SourceObservation, ...], cache.coalesce(identity, load))
+                if refreshed:
+                    return refreshed
+                return self._reference_fallback(identity, observations)
+            self._schedule_tushare_refresh(identity, request)
+        if lookup.state != "fresh" or lookup.error_code is not None:
+            reason = lookup.error_code or "reference_data_degraded"
+            observations = tuple(self._mark_reference_degraded(item, reason) for item in observations)
+        return observations
+
+    def _reference_fallback(
+        self,
+        identity: CacheIdentity,
+        default: tuple[SourceObservation, ...],
+    ) -> tuple[SourceObservation, ...]:
+        cache = self._runner.cache
+        assert cache is not None
         fallback = cache.get(identity)
         if fallback is None or fallback.value is None:
-            return loaded
+            return default
         reason = fallback.error_code or "reference_refresh_failed"
         return tuple(
             self._mark_reference_degraded(item, reason) for item in cast(tuple[SourceObservation, ...], fallback.value)
@@ -302,13 +333,7 @@ class ReferenceLoader:
     def _schedule_tushare_refresh(
         self,
         identity: CacheIdentity,
-        dataset: str,
-        subject_key: str,
-        request: Mapping[str, object],
-        observed_at: datetime,
-        function: Callable[..., Sequence[SourceObservation]],
-        args: tuple[object, ...],
-        kwargs: Mapping[str, object],
+        request: ReferenceLoadRequest,
     ) -> None:
         lanes = self._runner.source_lanes
         if lanes is None:
@@ -317,17 +342,10 @@ class ReferenceLoader:
 
         def refresh() -> tuple[SourceObservation, ...]:
             return self.load(
-                dataset,
-                subject_key,
-                request,
-                observed_at,
-                function,
-                *args,
-                force=True,
-                **kwargs,
+                replace(request, force=True),
             )
 
-        lanes.submit("tushare", refresh_identity, observed_at, refresh)
+        lanes.submit("tushare", refresh_identity, request.observed_at, refresh)
 
     def apply_history(self, observations: Sequence[SourceObservation]) -> None:
         grouped: dict[str, list[DailyBar]] = {}
@@ -410,22 +428,22 @@ class ReferenceLoader:
         adjust = "qfq" if forward_adjusted else "none"
         loader = client.fetch_forward_adjusted_daily if forward_adjusted else client.fetch_daily_history
         return self.load(
-            "daily_history",
-            ",".join(normalized),
-            {
-                "dataset": dataset,
-                "codes": normalized,
-                "start_date": start_date.isoformat(),
-                "end_date": trade_date.isoformat(),
-                "adjust": adjust,
-            },
-            observed_at,
-            loader,
-            normalized,
-            start_date,
-            trade_date,
-            observed_at,
-            force=force,
+            ReferenceLoadRequest(
+                "daily_history",
+                ",".join(normalized),
+                {
+                    "dataset": dataset,
+                    "codes": normalized,
+                    "start_date": start_date.isoformat(),
+                    "end_date": trade_date.isoformat(),
+                    "adjust": adjust,
+                },
+                observed_at,
+                loader,
+                (normalized, start_date, trade_date, observed_at),
+                force,
+                {},
+            )
         )
 
     def fields(self, codes: Sequence[str]) -> Mapping[str, Mapping[str, float]]:
@@ -535,7 +553,7 @@ def _finite_number(value: object) -> float | None:
 def _observe_reference_refresh(future: Future[_T]) -> None:
     try:
         future.result()
-    except SourceRequestSuperseded:
+    except SourceRequestSupersededError:
         return
     except Exception as exc:
         _LOGGER.warning("reference data refresh failed: %s", type(exc).__name__)

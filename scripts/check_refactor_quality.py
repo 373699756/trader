@@ -12,14 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "trader"
 SELECTED_RULES = ("C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "N")
-EXPECTED_COUNTS = {
-    "C901": 36,
-    "N818": 5,
-    "PLR0911": 15,
-    "PLR0912": 15,
-    "PLR0913": 55,
-    "PLR0915": 11,
-}
+EXPECTED_COUNTS: dict[str, int] = {}
 
 
 def main() -> int:
@@ -65,8 +58,7 @@ def main() -> int:
         print(f"actual:   {actual_counts}", file=sys.stderr)
         return 1
 
-    summary = ", ".join(f"{code}={count}" for code, count in EXPECTED_COUNTS.items())
-    print(f"Strict refactor debt baseline verified: {summary}")
+    print("Strict refactor debt baseline verified: zero diagnostics")
     return 0
 
 

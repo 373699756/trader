@@ -84,22 +84,23 @@ def _manifest_snapshot_error(row: Mapping[str, object], snapshot: Recommendation
     for field, actual in expected.items():
         if str(row[field]) != actual:
             return f"{field}_mismatch"
-    if str(row["frozen_at"]) != snapshot.published_at.isoformat():
-        return "frozen_at_mismatch"
-    if int(str(row["record_count"])) != len(snapshot.recommendations):
-        return "record_count_mismatch"
     expected_path = Path("frozen") / snapshot.strategy.value / snapshot.trade_date / f"{snapshot.snapshot_id}.json"
-    if str(row["relative_path"]) != expected_path.as_posix():
-        return "relative_path_mismatch"
-    if str(row["schema_version"]) != SNAPSHOT_SCHEMA_VERSION:
-        return "schema_version_mismatch"
-    if snapshot.config_version not in {str(row["config_version"]), "legacy-unrecorded"}:
-        return "config_version_mismatch"
-    if snapshot.config_version != "legacy-unrecorded" and str(row["anchor_json"]) != _anchor_json(snapshot):
-        return "anchor_json_mismatch"
-    if not snapshot.frozen:
-        return "snapshot_not_frozen"
-    return ""
+    checks = (
+        (str(row["frozen_at"]) != snapshot.published_at.isoformat(), "frozen_at_mismatch"),
+        (int(str(row["record_count"])) != len(snapshot.recommendations), "record_count_mismatch"),
+        (str(row["relative_path"]) != expected_path.as_posix(), "relative_path_mismatch"),
+        (str(row["schema_version"]) != SNAPSHOT_SCHEMA_VERSION, "schema_version_mismatch"),
+        (
+            snapshot.config_version not in {str(row["config_version"]), "legacy-unrecorded"},
+            "config_version_mismatch",
+        ),
+        (
+            snapshot.config_version != "legacy-unrecorded" and str(row["anchor_json"]) != _anchor_json(snapshot),
+            "anchor_json_mismatch",
+        ),
+        (not snapshot.frozen, "snapshot_not_frozen"),
+    )
+    return next((error for invalid, error in checks if invalid), "")
 
 
 def _overlay_to_dict(overlay: LiveOverlay) -> dict[str, object]:

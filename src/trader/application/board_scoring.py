@@ -8,7 +8,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from trader.application.board_scoring_cache import BoardScoringCache, ScoringCacheContext
 from trader.application.workers import BoundedExecutor
@@ -34,6 +34,16 @@ from trader.domain.recommendation.scoring import (
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 ScoreOne = Callable[[Strategy, FeatureSnapshot, BoardStrategyPolicy, LocalScoreResult], Recommendation]
+
+
+@dataclass(frozen=True)
+class _BoardScoreRequest:
+    strategy: Strategy
+    board: Board
+    features: Sequence[FeatureSnapshot]
+    policy: BoardStrategyPolicy
+    context: ScoringCacheContext
+    score_one: ScoreOne
 
 
 class _LatestBoardLane:
@@ -201,7 +211,9 @@ class BoardScoringCoordinator:
             running = self._running
         if not running:
             return tuple(
-                self._score_board(strategy, board, grouped[board], policies[board], context, score_one)
+                self._score_board(
+                    _BoardScoreRequest(strategy, board, grouped[board], policies[board], context, score_one)
+                )
                 for board in self._lanes
             )
 
@@ -210,12 +222,14 @@ class BoardScoringCoordinator:
 
             def score_lane(board: Board = board) -> BoardScoreBatch:
                 return self._score_board(
-                    strategy,
-                    board,
-                    grouped[board],
-                    policies[board],
-                    context,
-                    score_one,
+                    _BoardScoreRequest(
+                        strategy,
+                        board,
+                        grouped[board],
+                        policies[board],
+                        context,
+                        score_one,
+                    )
                 )
 
             futures[board] = lane.submit(score_lane)
@@ -244,13 +258,14 @@ class BoardScoringCoordinator:
 
     def _score_board(
         self,
-        strategy: Strategy,
-        board: Board,
-        features: Sequence[FeatureSnapshot],
-        policy: BoardStrategyPolicy,
-        context: ScoringCacheContext,
-        score_one: ScoreOne,
+        request: _BoardScoreRequest,
     ) -> BoardScoreBatch:
+        strategy = request.strategy
+        board = request.board
+        features = request.features
+        policy = request.policy
+        context = request.context
+        score_one = request.score_one
         if not features:
             return BoardScoreBatch(
                 board,

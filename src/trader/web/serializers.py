@@ -8,6 +8,7 @@ from trader.application.events import EventAuditRecord
 from trader.domain.recommendation.models import Strategy
 from trader.web.schemas import (
     API_SCHEMA_VERSION,
+    SnapshotDeliveryContext,
     empty_snapshot_envelope,
     error_envelope,
     snapshot_envelope,
@@ -57,6 +58,7 @@ def serialize_events(
 
 __all__ = [
     "empty_snapshot_envelope",
+    "SnapshotDeliveryContext",
     "snapshot_envelope",
     "serialize_error",
     "serialize_recommendation_dates",

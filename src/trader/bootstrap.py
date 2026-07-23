@@ -22,7 +22,7 @@ from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
-from trader.application.runtime import RuntimeSupervisor, scheduler_interval_seconds
+from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.source_lanes import SourceLaneRegistry
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
@@ -42,10 +42,10 @@ from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
-from trader.infra.market_data.service import MarketFeatureService
-from trader.infra.market_data.service_candidates import QuoteStore
+from trader.infra.market_data.service import MarketFeatureDependencies, MarketFeatureService
+from trader.infra.market_data.service_candidates import QuoteStore, QuoteStoreDependencies
 from trader.infra.market_data.service_execution import MarketTaskRunner
-from trader.infra.market_data.service_health import MarketDataHealth
+from trader.infra.market_data.service_health import MarketDataHealth, MarketDataHealthDependencies
 from trader.infra.market_data.service_history import HistoryStore
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
@@ -262,32 +262,33 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         monotonic=time.monotonic,
     )
     quote_store = QuoteStore(
-        gateway,
-        feature_builder,
-        history_store,
-        references,
+        QuoteStoreDependencies(gateway, feature_builder, history_store, references),
         market_ttl_seconds=min(cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
         candidate_capacity=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
         monotonic=time.monotonic,
     )
     market_health = MarketDataHealth(
-        quote_store,
-        history_store,
-        warmup,
-        research,
-        intraday_loader,
-        references,
+        MarketDataHealthDependencies(
+            quote_store,
+            history_store,
+            warmup,
+            research,
+            intraday_loader,
+            references,
+        ),
         wall_clock=now,
     )
     market_data = MarketFeatureService(
-        quote_store,
-        history_store,
-        warmup,
-        research,
-        intraday_loader,
-        references,
-        runner,
-        market_health,
+        MarketFeatureDependencies(
+            quote_store,
+            history_store,
+            warmup,
+            research,
+            intraday_loader,
+            references,
+            runner,
+            market_health,
+        ),
         history_preload_limit=settings.market_data.candidate_pool_size * 3,
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
@@ -384,16 +385,18 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     )
     supervisor = RuntimeSupervisor(
         pipeline,
-        now=now,
-        initializers=(
-            pipeline.initialize,
-            published_snapshots.initialize,
-            budget.initialize,
-            lambda: budget.recover_incomplete(now()),
+        RuntimeSupervisorConfig(
+            now=now,
+            initializers=(
+                pipeline.initialize,
+                published_snapshots.initialize,
+                budget.initialize,
+                lambda: budget.recover_incomplete(now()),
+            ),
+            interval_seconds=scheduler_interval_seconds,
+            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
+            record_error=state.record_error,
         ),
-        interval_seconds=scheduler_interval_seconds,
-        shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-        record_error=state.record_error,
     )
     app = create_app(
         status_provider=pipeline.status,

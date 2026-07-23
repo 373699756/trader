@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 
 from trader.application.ports.market import MarketSnapshotMetadata
@@ -23,28 +24,33 @@ from trader.infra.market_data.service_support import _history_preload_codes, _no
 from trader.infra.market_data.service_tushare import ReferenceLoader
 
 
+@dataclass(frozen=True)
+class MarketFeatureDependencies:
+    quotes: QuoteStore
+    history: HistoryStore
+    warmup: HistoryWarmup
+    research: ResearchLoader
+    intraday: IntradayLoader
+    references: ReferenceLoader
+    runner: MarketTaskRunner
+    health: MarketDataHealth
+
+
 class MarketFeatureService:
     def __init__(
         self,
-        quotes: QuoteStore,
-        history: HistoryStore,
-        warmup: HistoryWarmup,
-        research: ResearchLoader,
-        intraday: IntradayLoader,
-        references: ReferenceLoader,
-        runner: MarketTaskRunner,
-        health: MarketDataHealth,
+        dependencies: MarketFeatureDependencies,
         *,
         history_preload_limit: int,
     ) -> None:
-        self.quotes = quotes
-        self.history = history
-        self.warmup = warmup
-        self.research = research
-        self.intraday = intraday
-        self.references = references
-        self.runner = runner
-        self.health_reporter = health
+        self.quotes = dependencies.quotes
+        self.history = dependencies.history
+        self.warmup = dependencies.warmup
+        self.research = dependencies.research
+        self.intraday = dependencies.intraday
+        self.references = dependencies.references
+        self.runner = dependencies.runner
+        self.health_reporter = dependencies.health
         self.history_preload_limit = max(1, history_preload_limit)
 
     def fetch_market_features(

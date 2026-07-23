@@ -12,7 +12,7 @@ from pathlib import Path
 CalendarFetcher = Callable[[], Iterable[date]]
 
 
-class TradingCalendarUnavailable(RuntimeError):
+class TradingCalendarUnavailableError(RuntimeError):
     pass
 
 
@@ -35,7 +35,7 @@ class ChinaTradingCalendar:
     def is_trading_day(self, day: date) -> bool:
         self._ensure_loaded()
         if not self._dates:
-            raise TradingCalendarUnavailable("trading calendar is unavailable")
+            raise TradingCalendarUnavailableError("trading calendar is unavailable")
         return day in self._dates
 
     def session_distance(self, start: str, end: str) -> int | None:
@@ -51,7 +51,7 @@ class ChinaTradingCalendar:
             if end_date < start_date:
                 return None
             self._ensure_loaded()
-        except (OSError, TradingCalendarUnavailable, ValueError):
+        except (OSError, TradingCalendarUnavailableError, ValueError):
             return None
         return sum(day > start_date and day <= end_date for day in self._dates)
 
@@ -63,9 +63,9 @@ class ChinaTradingCalendar:
         try:
             dates = frozenset(self._fetcher())
         except Exception as exc:
-            raise TradingCalendarUnavailable(f"cannot refresh trading calendar: {exc}") from exc
+            raise TradingCalendarUnavailableError(f"cannot refresh trading calendar: {exc}") from exc
         if not dates:
-            raise TradingCalendarUnavailable("calendar provider returned no dates")
+            raise TradingCalendarUnavailableError("calendar provider returned no dates")
         self._dates = dates
         self._fetched_at = self._now()
         self._save_cache()
@@ -118,4 +118,4 @@ def _fetch_akshare_calendar() -> Iterable[date]:
     )
 
 
-__all__ = ["ChinaTradingCalendar", "TradingCalendarUnavailable"]
+__all__ = ["ChinaTradingCalendar", "TradingCalendarUnavailableError"]

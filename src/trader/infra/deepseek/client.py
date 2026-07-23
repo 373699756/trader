@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, cast
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, TypedDict, cast
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 import requests
 
 from trader.infra.deepseek.base_client import (
+    CompletionOptions,
     DeepSeekClientBase,
     DeepSeekHttpAttempt,
     DeepSeekHttpResult,
@@ -19,6 +24,50 @@ from trader.infra.deepseek.model_catalog import validate_model
 from trader.infra.failures import classify_adapter_failure
 
 _POST_TYPE = Callable[..., "requests.Response"]
+
+
+@dataclass(frozen=True)
+class _HttpAttemptRequest:
+    base_url: str
+    api_key: str
+    model: str
+    messages: Sequence[Mapping[str, Any]]
+    timeout_seconds: float
+    max_tokens: int
+    capabilities: ModelCapabilities
+
+
+@dataclass(frozen=True)
+class _AttemptOutcome:
+    result: DeepSeekHttpResult | None
+    status: int | None
+    error: str
+    timed_out: bool
+    should_retry: bool
+    retry_delay: float
+    record: DeepSeekHttpAttempt
+
+
+class _AttemptRecordRequiredOptions(TypedDict):
+    succeeded: bool
+    timed_out: bool
+    error: str
+    started: float
+
+
+class _AttemptRecordOptionalOptions(TypedDict, total=False):
+    token_count: int
+
+
+class _AttemptRecordOptions(_AttemptRecordRequiredOptions, _AttemptRecordOptionalOptions):
+    pass
+
+
+class _FailedAttemptOptions(TypedDict):
+    timed_out: bool
+    should_retry: bool
+    retry_delay: float
+    started: float
 
 
 class DeepSeekHttpClient(DeepSeekClientBase):
@@ -33,22 +82,23 @@ class DeepSeekHttpClient(DeepSeekClientBase):
 
     def complete(
         self,
-        *,
-        base_url: str,
-        api_key: str,
-        model: str,
-        messages: Sequence[Mapping[str, Any]],
-        timeout_seconds: float,
-        max_tokens: int,
-        reserve_attempt: Callable[[], bool],
-        maximum_attempts: int = 2,
+        **options: Unpack[CompletionOptions],
     ) -> DeepSeekHttpResult:
+        base_url = options["base_url"]
+        api_key = options["api_key"]
+        model = options["model"]
+        messages = options["messages"]
+        timeout_seconds = options["timeout_seconds"]
+        max_tokens = options["max_tokens"]
+        reserve_attempt = options["reserve_attempt"]
+        maximum_attempts = options.get("maximum_attempts", 2)
         if not api_key:
             return DeepSeekHttpResult(None, None, 0, False, "api_key_missing")
         if not 1 <= maximum_attempts <= 2:
             raise ValueError("DeepSeek batch maximum attempts must be between 1 and 2")
         validate_model(model)
         caps = _lookup_capabilities(model)
+        request = _HttpAttemptRequest(base_url, api_key, model, messages, timeout_seconds, max_tokens, caps)
         last_error = ""
         last_status: int | None = None
         timed_out = False
@@ -65,91 +115,15 @@ class DeepSeekHttpClient(DeepSeekClientBase):
                     attempt_records=tuple(attempt_records),
                 )
             attempts += 1
-            attempt_status: int | None = None
-            attempt_started = time.perf_counter()
-            try:
-                payload = _request_payload(model, messages, max_tokens, caps)
-                response = self._post(
-                    f"{base_url.rstrip('/')}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json=payload,
-                    timeout=timeout_seconds,
-                )
-                attempt_status = response.status_code
-                last_status = attempt_status
-                if response.status_code in self.RETRYABLE_STATUS_CODES:
-                    last_error = f"http_{response.status_code}"
-                    attempt_records.append(
-                        _attempt_record(
-                            attempt_status,
-                            succeeded=False,
-                            timed_out=False,
-                            error=last_error,
-                            started=attempt_started,
-                        )
-                    )
-                    if attempt + 1 < maximum_attempts:
-                        self._sleep(_retry_delay(response))
-                        continue
-                    break
-                response.raise_for_status()
-                payload_obj = response.json()
-                content, usage, actual_model, system_fingerprint, finish_reason, reasoning_content = _extract_content(
-                    payload_obj
-                )
-                attempt_records.append(
-                    _attempt_record(
-                        attempt_status,
-                        succeeded=True,
-                        timed_out=False,
-                        error="",
-                        started=attempt_started,
-                        token_count=_token_count(usage),
-                    )
-                )
-                return DeepSeekHttpResult(
-                    content,
-                    response.status_code,
-                    attempts,
-                    False,
-                    "",
-                    usage,
-                    tuple(attempt_records),
-                    actual_model,
-                    system_fingerprint,
-                    finish_reason,
-                    _usage_integer(usage, "prompt_cache_hit_tokens"),
-                    _usage_integer(usage, "prompt_cache_miss_tokens"),
-                    reasoning_content,
-                )
-            except requests.Timeout as exc:
-                timed_out = True
-                last_error = str(exc) or "request_timed_out"
-                attempt_timed_out = True
-                should_retry = True
-            except requests.HTTPError as exc:
-                last_error = str(exc) or exc.__class__.__name__
-                attempt_timed_out = False
-                should_retry = False
-            except requests.RequestException as exc:
-                last_error = str(exc) or exc.__class__.__name__
-                attempt_timed_out = False
-                should_retry = True
-            except (ValueError, TypeError, KeyError) as exc:
-                last_error = str(exc) or exc.__class__.__name__
-                attempt_timed_out = False
-                should_retry = True
-            attempt_records.append(
-                _attempt_record(
-                    attempt_status,
-                    succeeded=False,
-                    timed_out=attempt_timed_out,
-                    error=last_error,
-                    started=attempt_started,
-                )
-            )
-            if should_retry and attempt + 1 < maximum_attempts:
-                self._sleep(0.2)
+            outcome = self._perform_attempt(request)
+            last_status = outcome.status
+            last_error = outcome.error
+            timed_out = timed_out or outcome.timed_out
+            attempt_records.append(outcome.record)
+            if outcome.result is not None:
+                return replace(outcome.result, attempts=attempts, attempt_records=tuple(attempt_records))
+            if outcome.should_retry and attempt + 1 < maximum_attempts:
+                self._sleep(outcome.retry_delay)
                 continue
             break
         return DeepSeekHttpResult(
@@ -165,6 +139,90 @@ class DeepSeekHttpClient(DeepSeekClientBase):
                 operation="chat_completion",
             ),
         )
+
+    def _perform_attempt(self, request: _HttpAttemptRequest) -> _AttemptOutcome:
+        attempt_started = time.perf_counter()
+        status: int | None = None
+        try:
+            response = self._post(
+                f"{request.base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {request.api_key}", "Content-Type": "application/json"},
+                json=_request_payload(request.model, request.messages, request.max_tokens, request.capabilities),
+                timeout=request.timeout_seconds,
+            )
+            status = response.status_code
+            if status in self.RETRYABLE_STATUS_CODES:
+                error = f"http_{status}"
+                return _failed_attempt(
+                    status,
+                    error,
+                    timed_out=False,
+                    should_retry=True,
+                    retry_delay=_retry_delay(response),
+                    started=attempt_started,
+                )
+            response.raise_for_status()
+            content, usage, actual_model, fingerprint, finish_reason, reasoning = _extract_content(response.json())
+            record = _attempt_record(
+                status,
+                succeeded=True,
+                timed_out=False,
+                error="",
+                started=attempt_started,
+                token_count=_token_count(usage),
+            )
+            result = DeepSeekHttpResult(
+                content,
+                status,
+                0,
+                False,
+                "",
+                usage,
+                (),
+                actual_model,
+                fingerprint,
+                finish_reason,
+                _usage_integer(usage, "prompt_cache_hit_tokens"),
+                _usage_integer(usage, "prompt_cache_miss_tokens"),
+                reasoning,
+            )
+            return _AttemptOutcome(result, status, "", False, False, 0.0, record)
+        except requests.Timeout as exc:
+            return _failed_attempt(
+                status,
+                str(exc) or "request_timed_out",
+                timed_out=True,
+                should_retry=True,
+                retry_delay=0.2,
+                started=attempt_started,
+            )
+        except requests.HTTPError as exc:
+            return _failed_attempt(
+                status,
+                str(exc) or exc.__class__.__name__,
+                timed_out=False,
+                should_retry=False,
+                retry_delay=0.0,
+                started=attempt_started,
+            )
+        except requests.RequestException as exc:
+            return _failed_attempt(
+                status,
+                str(exc) or exc.__class__.__name__,
+                timed_out=False,
+                should_retry=True,
+                retry_delay=0.2,
+                started=attempt_started,
+            )
+        except (ValueError, TypeError, KeyError) as exc:
+            return _failed_attempt(
+                status,
+                str(exc) or exc.__class__.__name__,
+                timed_out=False,
+                should_retry=True,
+                retry_delay=0.2,
+                started=attempt_started,
+            )
 
 
 def _request_payload(
@@ -241,20 +299,18 @@ def _retry_delay(response: requests.Response) -> float:
 
 def _attempt_record(
     http_status: int | None,
-    *,
-    succeeded: bool,
-    timed_out: bool,
-    error: str,
-    started: float,
-    token_count: int = 0,
+    **options: Unpack[_AttemptRecordOptions],
 ) -> DeepSeekHttpAttempt:
+    succeeded = options["succeeded"]
+    timed_out = options["timed_out"]
+    error = options["error"]
     return DeepSeekHttpAttempt(
         http_status=http_status,
         succeeded=succeeded,
         timed_out=timed_out,
         error=error,
-        latency_ms=(time.perf_counter() - started) * 1000.0,
-        token_count=token_count,
+        latency_ms=(time.perf_counter() - options["started"]) * 1000.0,
+        token_count=options.get("token_count", 0),
         failure=(
             None
             if succeeded
@@ -263,6 +319,29 @@ def _attempt_record(
                 provider="deepseek",
                 operation="chat_completion",
             )
+        ),
+    )
+
+
+def _failed_attempt(
+    status: int | None,
+    error: str,
+    **options: Unpack[_FailedAttemptOptions],
+) -> _AttemptOutcome:
+    timed_out = options["timed_out"]
+    return _AttemptOutcome(
+        None,
+        status,
+        error,
+        timed_out,
+        options["should_retry"],
+        options["retry_delay"],
+        _attempt_record(
+            status,
+            succeeded=False,
+            timed_out=timed_out,
+            error=error,
+            started=options["started"],
         ),
     )
 

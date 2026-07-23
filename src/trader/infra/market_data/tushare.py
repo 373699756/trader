@@ -7,9 +7,12 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.application.cache import canonical_json_bytes
 from trader.infra.market_data.observations import SourceObservation
@@ -34,8 +37,50 @@ class _SdkFactory(Protocol):
     def __call__(self, token: str, timeout_seconds: float) -> object: ...
 
 
-class _SourceStopped(RuntimeError):
+class _SourceStoppedError(RuntimeError):
     """Internal cooperative cancellation signal for a Tushare batch."""
+
+
+_ObservationConverter = Callable[
+    [Mapping[str, object], datetime, datetime, str],
+    SourceObservation | None,
+]
+
+
+@dataclass(frozen=True)
+class _RecordFetchRequest:
+    dataset: str
+    observed_at: datetime
+    method: str
+    arguments: Mapping[str, object]
+    converter: _ObservationConverter
+    empty_is_error: bool = False
+
+
+@dataclass(frozen=True)
+class _PerCodeRecords:
+    rows: tuple[Mapping[str, object], ...]
+    failures: tuple[SourceObservation, ...]
+    failure_codes: tuple[str, ...]
+
+
+class _TushareRequiredOptions(TypedDict):
+    token: str
+    timeout_seconds: float
+
+
+class _TushareOptionalOptions(TypedDict, total=False):
+    points: int
+    circuit_breaker_failures: int
+    circuit_breaker_seconds: float
+    sdk_factory: _SdkFactory | None
+    cancel_requested: Callable[[], bool]
+    monotonic: Callable[[], float]
+    wall_clock: Callable[[], datetime]
+
+
+class _TushareOptions(_TushareRequiredOptions, _TushareOptionalOptions):
+    pass
 
 
 class TushareClient:
@@ -43,28 +88,20 @@ class TushareClient:
 
     def __init__(
         self,
-        *,
-        token: str,
-        points: int = 2000,
-        timeout_seconds: float,
-        circuit_breaker_failures: int = 3,
-        circuit_breaker_seconds: float = 60.0,
-        sdk_factory: _SdkFactory | None = None,
-        cancel_requested: Callable[[], bool] = lambda: False,
-        monotonic: Callable[[], float] = time.monotonic,
-        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        **options: Unpack[_TushareOptions],
     ) -> None:
+        timeout_seconds = options["timeout_seconds"]
         if timeout_seconds != 8.0:
             raise ValueError("Tushare transport timeout must be exactly 8 seconds")
-        self._token = token.strip()
-        self._points = max(0, points)
+        self._token = options["token"].strip()
+        self._points = max(0, options.get("points", 2000))
         self._timeout_seconds = timeout_seconds
-        self._failure_limit = max(1, circuit_breaker_failures)
-        self._breaker_seconds = max(0.1, circuit_breaker_seconds)
-        self._sdk_factory = sdk_factory or _default_sdk_factory
-        self._cancel_requested = cancel_requested
-        self._monotonic = monotonic
-        self._wall_clock = wall_clock
+        self._failure_limit = max(1, options.get("circuit_breaker_failures", 3))
+        self._breaker_seconds = max(0.1, options.get("circuit_breaker_seconds", 60.0))
+        self._sdk_factory = options.get("sdk_factory") or _default_sdk_factory
+        self._cancel_requested = options.get("cancel_requested", lambda: False)
+        self._monotonic = options.get("monotonic", time.monotonic)
+        self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
         self._lock = threading.Lock()
         self._client: object | None = None
         self._planned_count = 0
@@ -83,15 +120,17 @@ class TushareClient:
         if not self.supports("security_master"):
             return self._insufficient_points("security_master", observed_at)
         return self._fetch_records(
-            "security_master",
-            observed_at,
-            "stock_basic",
-            {
-                "exchange": "",
-                "list_status": "L",
-                "fields": "ts_code,symbol,name,area,industry,market,exchange,list_status,list_date,delist_date",
-            },
-            _security_master_observation,
+            _RecordFetchRequest(
+                "security_master",
+                observed_at,
+                "stock_basic",
+                {
+                    "exchange": "",
+                    "list_status": "L",
+                    "fields": "ts_code,symbol,name,area,industry,market,exchange,list_status,list_date,delist_date",
+                },
+                _security_master_observation,
+            )
         )
 
     def fetch_trading_calendar(
@@ -108,16 +147,18 @@ class TushareClient:
         observations: list[SourceObservation] = []
         for range_start, range_end in ranges:
             chunk = self._fetch_records(
-                "trading_calendar",
-                observed_at,
-                "trade_cal",
-                {
-                    "exchange": "SSE",
-                    "start_date": range_start.strftime("%Y%m%d"),
-                    "end_date": range_end.strftime("%Y%m%d"),
-                    "fields": "exchange,cal_date,is_open,pretrade_date",
-                },
-                _calendar_observation,
+                _RecordFetchRequest(
+                    "trading_calendar",
+                    observed_at,
+                    "trade_cal",
+                    {
+                        "exchange": "SSE",
+                        "start_date": range_start.strftime("%Y%m%d"),
+                        "end_date": range_end.strftime("%Y%m%d"),
+                        "fields": "exchange,cal_date,is_open,pretrade_date",
+                    },
+                    _calendar_observation,
+                )
             )
             observations.extend(chunk)
             if any(item.status == "failed" for item in chunk):
@@ -163,23 +204,25 @@ class TushareClient:
             return ()
         return _with_price_adjustment(
             self._fetch_records(
-                "daily_history",
-                observed_at,
-                "daily",
-                {
-                    "ts_code": ",".join(_ts_code(code) for code in normalized),
-                    "start_date": start_date.strftime("%Y%m%d"),
-                    "end_date": end_date.strftime("%Y%m%d"),
-                    "fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
-                },
-                lambda row, observed, received, version: _generic_observation(
+                _RecordFetchRequest(
                     "daily_history",
-                    row,
-                    observed,
-                    received,
-                    version,
+                    observed_at,
+                    "daily",
+                    {
+                        "ts_code": ",".join(_ts_code(code) for code in normalized),
+                        "start_date": start_date.strftime("%Y%m%d"),
+                        "end_date": end_date.strftime("%Y%m%d"),
+                        "fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
+                    },
+                    lambda row, observed, received, version: _generic_observation(
+                        "daily_history",
+                        row,
+                        observed,
+                        received,
+                        version,
+                    ),
+                    empty_is_error=True,
                 ),
-                empty_is_error=True,
             ),
             "raw",
         )
@@ -264,39 +307,29 @@ class TushareClient:
 
     def _fetch_records(
         self,
-        dataset: str,
-        observed_at: datetime,
-        method: str,
-        arguments: Mapping[str, object],
-        converter: Callable[[Mapping[str, object], datetime, datetime, str], SourceObservation | None],
-        *,
-        empty_is_error: bool = False,
+        request: _RecordFetchRequest,
     ) -> tuple[SourceObservation, ...]:
-        _require_aware(observed_at)
-        started = self._begin()
-        if started is None:
-            return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), "circuit_open"),)
-        if self._cancel_requested():
-            self._record_stopped(started)
-            return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), "stopped"),)
-        if not self._token:
-            self._record_error(started, "missing_token")
-            return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), "missing_token"),)
+        dataset = request.dataset
+        observed_at = request.observed_at
+        started, failure = self._begin_fetch(dataset, observed_at)
+        if failure is not None:
+            return failure
+        assert started is not None
         try:
             client = self._client_instance()
             if self._cancel_requested():
-                raise _SourceStopped
-            records = _records(_invoke(client, method, **dict(arguments)))
+                raise _SourceStoppedError
+            records = _records(_invoke(client, request.method, **dict(request.arguments)))
             if self._cancel_requested():
-                raise _SourceStopped
+                raise _SourceStoppedError
             received_at = max(observed_at, self._wall_clock())
             data_version = _data_version(dataset, records)
             observations = tuple(
                 observation
                 for row in records
-                if (observation := converter(row, observed_at, received_at, data_version)) is not None
+                if (observation := request.converter(row, observed_at, received_at, data_version)) is not None
             )
-        except _SourceStopped:
+        except _SourceStoppedError:
             self._record_stopped(started)
             return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), "stopped"),)
         except Exception as exc:
@@ -306,7 +339,7 @@ class TushareClient:
         if observations:
             self._record_success(started, received_at)
             return observations
-        if empty_is_error:
+        if request.empty_is_error:
             self._record_error(started, "no_data")
         else:
             self._record_success(started, received_at)
@@ -326,6 +359,27 @@ class TushareClient:
                 error_code="no_data",
             ),
         )
+
+    def _begin_fetch(
+        self,
+        dataset: str,
+        observed_at: datetime,
+    ) -> tuple[float | None, tuple[SourceObservation, ...] | None]:
+        _require_aware(observed_at)
+        started = self._begin()
+        error = ""
+        if started is None:
+            error = "circuit_open"
+        elif self._cancel_requested():
+            self._record_stopped(started)
+            error = "stopped"
+        elif not self._token:
+            self._record_error(started, "missing_token")
+            error = "missing_token"
+        failure = (
+            (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), error),) if error else None
+        )
+        return started, failure
 
     def _insufficient_points(self, dataset: str, observed_at: datetime) -> tuple[SourceObservation, ...]:
         _require_aware(observed_at)
@@ -349,57 +403,64 @@ class TushareClient:
         normalized = tuple(dict.fromkeys(code for code in codes if len(code) == 6 and code.isdigit()))
         if not normalized:
             return ()
-        started = self._begin()
-        if started is None:
-            return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), "circuit_open"),)
-        if self._cancel_requested():
-            self._record_stopped(started)
-            return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), "stopped"),)
-        if not self._token:
-            self._record_error(started, "missing_token")
-            return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), "missing_token"),)
+        started, failure = self._begin_fetch(dataset, observed_at)
+        if failure is not None:
+            return failure
+        assert started is not None
         try:
-            client = self._client_instance()
-            rows: list[Mapping[str, object]] = []
-            failures: list[SourceObservation] = []
-            failure_codes: list[str] = []
-            for code in normalized:
-                if self._cancel_requested():
-                    raise _SourceStopped
-                try:
-                    rows.extend(_records(fetcher(client, code)))
-                except Exception as exc:
-                    error_code = _error_code(exc)
-                    failure_codes.append(error_code)
-                    failures.append(
-                        _failed_observation(
-                            dataset,
-                            observed_at,
-                            max(observed_at, self._wall_clock()),
-                            error_code,
-                            subject_key=code,
-                        )
-                    )
-            if self._cancel_requested():
-                raise _SourceStopped
+            records = self._collect_per_code(dataset, normalized, observed_at, fetcher)
             received_at = max(observed_at, self._wall_clock())
-            version = _data_version(dataset, rows)
-            observations = tuple(_generic_observation(dataset, row, observed_at, received_at, version) for row in rows)
-        except _SourceStopped:
+            version = _data_version(dataset, records.rows)
+            observations = tuple(
+                _generic_observation(dataset, row, observed_at, received_at, version) for row in records.rows
+            )
+        except _SourceStoppedError:
             self._record_stopped(started)
             return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), "stopped"),)
         except Exception as exc:
             error_code = _error_code(exc)
             self._record_error(started, error_code)
             return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), error_code),)
-        if failure_codes and not observations:
-            self._record_error(started, failure_codes[0])
-            return tuple(failures)
-        if failure_codes:
-            self._record_partial_success(started, received_at, failure_codes)
+        if records.failure_codes and not observations:
+            self._record_error(started, records.failure_codes[0])
+            return records.failures
+        if records.failure_codes:
+            self._record_partial_success(started, received_at, records.failure_codes)
         else:
             self._record_success(started, received_at)
-        return (*observations, *failures)
+        return (*observations, *records.failures)
+
+    def _collect_per_code(
+        self,
+        dataset: str,
+        codes: Sequence[str],
+        observed_at: datetime,
+        fetcher: Callable[[object, str], object],
+    ) -> _PerCodeRecords:
+        client = self._client_instance()
+        rows: list[Mapping[str, object]] = []
+        failures: list[SourceObservation] = []
+        failure_codes: list[str] = []
+        for code in codes:
+            if self._cancel_requested():
+                raise _SourceStoppedError
+            try:
+                rows.extend(_records(fetcher(client, code)))
+            except Exception as exc:
+                error_code = _error_code(exc)
+                failure_codes.append(error_code)
+                failures.append(
+                    _failed_observation(
+                        dataset,
+                        observed_at,
+                        max(observed_at, self._wall_clock()),
+                        error_code,
+                        subject_key=code,
+                    )
+                )
+        if self._cancel_requested():
+            raise _SourceStoppedError
+        return _PerCodeRecords(tuple(rows), tuple(failures), tuple(failure_codes))
 
     def _client_instance(self) -> object:
         with self._lock:

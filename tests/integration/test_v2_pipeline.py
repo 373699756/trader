@@ -10,7 +10,16 @@ import pytest
 
 from tests.pipeline_factory import build_pipeline
 from trader.application.cadence import CadencePolicy
-from trader.application.events import EventAuditRecord, EventPriority, EventStatus, PipelineEvent, new_event
+from trader.application.events import (
+    EventAuditRecord,
+    EventPriority,
+    EventSpec,
+    EventStatus,
+    PipelineEvent,
+)
+from trader.application.events import (
+    new_event as create_event,
+)
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.ports.snapshots import RecoverySummary
@@ -29,6 +38,10 @@ from trader.domain.recommendation.models import (
 )
 from trader.infra.persistence.snapshots import snapshot_from_dict, snapshot_to_dict
 from trader.web.schemas import snapshot_envelope
+
+
+def new_event(event_type: str, **values) -> PipelineEvent:
+    return create_event(EventSpec(event_type=event_type, **values))
 
 
 def test_virtual_trading_day_publishes_and_freezes_expected_strategies(

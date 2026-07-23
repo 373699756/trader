@@ -7,10 +7,14 @@ import re
 from collections.abc import Callable, Mapping
 from concurrent.futures import as_completed
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, TypedDict
 
 import requests
 
-from trader.application.workers import borrow_executor, submit_or_run_inline
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
+
+from trader.application.workers import BorrowExecutorOptions, borrow_executor, submit_or_run_inline
 from trader.domain.market.models import MarketQuote
 from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote, normalize_quotes, to_float
 
@@ -21,23 +25,33 @@ _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _REQUEST_ATTEMPTS = 2
 
 
+class _SinaRequiredOptions(TypedDict):
+    timeout_seconds: float
+
+
+class _SinaOptionalOptions(TypedDict, total=False):
+    workers: int
+    page_size: int
+    session_factory: SessionFactory
+    cancel_requested: Callable[[], bool]
+    wall_clock: Callable[[], datetime]
+
+
+class _SinaOptions(_SinaRequiredOptions, _SinaOptionalOptions):
+    pass
+
+
 class SinaClient:
     def __init__(
         self,
-        *,
-        timeout_seconds: float,
-        workers: int = 5,
-        page_size: int = 80,
-        session_factory: SessionFactory = requests.Session,
-        cancel_requested: Callable[[], bool] = lambda: False,
-        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        **options: Unpack[_SinaOptions],
     ) -> None:
-        self._timeout_seconds = timeout_seconds
-        self._workers = max(1, workers)
-        self._page_size = max(20, min(100, page_size))
-        self._session_factory = session_factory
-        self._cancel_requested = cancel_requested
-        self._wall_clock = wall_clock
+        self._timeout_seconds = options["timeout_seconds"]
+        self._workers = max(1, options.get("workers", 5))
+        self._page_size = max(20, min(100, options.get("page_size", 80)))
+        self._session_factory = options.get("session_factory", requests.Session)
+        self._cancel_requested = options.get("cancel_requested", lambda: False)
+        self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
 
     def fetch_market(self, now: datetime | None = None) -> tuple[MarketQuote, ...]:
         total_text = self._get_text(COUNT_URL, {"node": "hs_a"})
@@ -49,9 +63,11 @@ class SinaClient:
         pages: dict[int, list[Mapping[str, object]]] = {}
         with borrow_executor(
             None,
-            worker_count=min(self._workers, page_count),
-            queue_capacity=page_count,
-            thread_name_prefix="sina-market",
+            BorrowExecutorOptions(
+                worker_count=min(self._workers, page_count),
+                queue_capacity=page_count,
+                thread_name_prefix="sina-market",
+            ),
         ) as pool:
             futures = {submit_or_run_inline(pool, self._fetch_page, page): page for page in range(1, page_count + 1)}
             for future in as_completed(futures):

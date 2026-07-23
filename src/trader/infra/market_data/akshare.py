@@ -7,8 +7,11 @@ import logging
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 import requests
 
@@ -55,23 +58,28 @@ _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _SOURCE_EXCEPTIONS = (OSError, RuntimeError, ValueError, requests.RequestException)
 
 
+class _AkshareOptions(TypedDict, total=False):
+    timeout_seconds: float
+    get: GetFunction | None
+    long_research_policy: LongResearchPolicy | None
+    evidence_cache_dir: Path | None
+    json_writer: RuntimeJsonWriter | None
+    cancel_requested: Callable[[], bool]
+
+
 class AkshareResearchClient:
     def __init__(
         self,
-        *,
-        timeout_seconds: float = 8.0,
-        get: GetFunction | None = None,
-        long_research_policy: LongResearchPolicy | None = None,
-        evidence_cache_dir: Path | None = None,
-        json_writer: RuntimeJsonWriter | None = None,
-        cancel_requested: Callable[[], bool] = lambda: False,
+        **options: Unpack[_AkshareOptions],
     ) -> None:
+        timeout_seconds = options.get("timeout_seconds", 8.0)
+        get = options.get("get")
         self._timeout_seconds = max(0.1, timeout_seconds)
         self._get = get if get is not None else cast(GetFunction, requests.get)
-        self._long_research_policy = long_research_policy
-        self._evidence_cache_dir = evidence_cache_dir
-        self._json_writer = json_writer
-        self._cancel_requested = cancel_requested
+        self._long_research_policy = options.get("long_research_policy")
+        self._evidence_cache_dir = options.get("evidence_cache_dir")
+        self._json_writer = options.get("json_writer")
+        self._cancel_requested = options.get("cancel_requested", lambda: False)
 
     def fetch_news(self, code: str, *, observed_at: datetime, limit: int = 5) -> tuple[Evidence, ...]:
         return _fetch_news(self, code, observed_at=observed_at, limit=limit)

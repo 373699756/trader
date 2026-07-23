@@ -173,20 +173,7 @@ class CadencePlanner:
             self._fired_points.add((trade_date, point))
             tasks.extend(_point_tasks(point, local, phase))
         tasks = list(_combine_freeze_tasks(tasks))
-
-        point_task_names = {item.task for item in tasks}
-        for task in PERIODIC_TASKS:
-            interval = self._policy.interval(task, band)
-            if interval is None:
-                continue
-            if SchedulePoint.FINAL_CANDIDATE_QUOTES in due_points and task is PipelineTask.CANDIDATE_QUOTES:
-                continue
-            key = (trade_date, band, task)
-            due = self._next_due.get(key)
-            if due is None or local >= due:
-                if task not in point_task_names:
-                    tasks.append(ScheduledPipelineTask(task, local, phase))
-                self._next_due[key] = local + timedelta(seconds=interval)
+        self._append_periodic_tasks(tasks, local, phase, due_points)
 
         next_delays = tuple(
             max(0.05, (due - local).total_seconds())
@@ -196,6 +183,29 @@ class CadencePlanner:
         maximum = min(next_delays, default=30.0)
         delay = seconds_until_next_schedule_boundary(local, maximum_seconds=maximum)
         return CadenceBatch(tuple(tasks), delay)
+
+    def _append_periodic_tasks(
+        self,
+        tasks: list[ScheduledPipelineTask],
+        local: datetime,
+        phase: MarketPhase,
+        due_points: tuple[SchedulePoint, ...],
+    ) -> None:
+        trade_date = local.date().isoformat()
+        band = cadence_band(phase)
+        point_task_names = {item.task for item in tasks}
+        final_quotes_due = SchedulePoint.FINAL_CANDIDATE_QUOTES in due_points
+        for task in PERIODIC_TASKS:
+            interval = self._policy.interval(task, band)
+            if interval is None or (final_quotes_due and task is PipelineTask.CANDIDATE_QUOTES):
+                continue
+            key = (trade_date, band, task)
+            due = self._next_due.get(key)
+            if due is not None and local < due:
+                continue
+            if task not in point_task_names:
+                tasks.append(ScheduledPipelineTask(task, local, phase))
+            self._next_due[key] = local + timedelta(seconds=interval)
 
     def _discard_old_state(self, trade_date: str, band: CadenceBand) -> None:
         self._next_due = {key: due for key, due in self._next_due.items() if key[0] == trade_date and key[1] is band}

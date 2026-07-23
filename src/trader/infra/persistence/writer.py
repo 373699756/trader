@@ -580,39 +580,7 @@ class SnapshotRepository:
             if manifest_error:
                 raise SnapshotConflictError(f"frozen manifest mismatch: {manifest_error}")
             database.execute("DELETE FROM recommendations WHERE snapshot_id = ?", (snapshot.snapshot_id,))
-            for recommendation in snapshot.recommendations:
-                price = recommendation.features.quote.price
-                if price is None or price <= 0:
-                    raise ValueError(
-                        f"cannot freeze recommendation without anchor price: {recommendation.features.quote.code}"
-                    )
-                database.execute(
-                    """
-                    INSERT INTO recommendations(
-                        strategy, recommend_date, stock_code, rank, anchor_price,
-                        anchor_daily_return_pct, board, board_policy_id, board_rank,
-                        board_data_reliability, competition_group_id, selection_skip_reason,
-                        merge_epoch, atr20_pct, snapshot_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        snapshot.strategy.value,
-                        snapshot.trade_date,
-                        recommendation.features.quote.code,
-                        recommendation.rank,
-                        price,
-                        recommendation.features.quote.pct_change,
-                        recommendation.features.quote.board.value,
-                        recommendation.features.board_policy_id,
-                        recommendation.board_rank,
-                        recommendation.features.board_data_reliability,
-                        recommendation.features.competition_group_id,
-                        recommendation.selection_skip_reason,
-                        recommendation.features.merge_epoch,
-                        recommendation.features.optional_value("atr20_pct"),
-                        snapshot.snapshot_id,
-                    ),
-                )
+            self._insert_recommendations(database, snapshot)
             changed = database.execute(
                 "UPDATE frozen_snapshots SET status = 'committed', error = '' WHERE snapshot_id = ? AND status = 'staged'",
                 (snapshot.snapshot_id,),
@@ -628,6 +596,45 @@ class SnapshotRepository:
         finally:
             if owns_connection:
                 database.close()
+
+    def _insert_recommendations(
+        self,
+        database: sqlite3.Connection,
+        snapshot: RecommendationSnapshot,
+    ) -> None:
+        for recommendation in snapshot.recommendations:
+            price = recommendation.features.quote.price
+            if price is None or price <= 0:
+                raise ValueError(
+                    f"cannot freeze recommendation without anchor price: {recommendation.features.quote.code}"
+                )
+            database.execute(
+                """
+                INSERT INTO recommendations(
+                    strategy, recommend_date, stock_code, rank, anchor_price,
+                    anchor_daily_return_pct, board, board_policy_id, board_rank,
+                    board_data_reliability, competition_group_id, selection_skip_reason,
+                    merge_epoch, atr20_pct, snapshot_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot.strategy.value,
+                    snapshot.trade_date,
+                    recommendation.features.quote.code,
+                    recommendation.rank,
+                    price,
+                    recommendation.features.quote.pct_change,
+                    recommendation.features.quote.board.value,
+                    recommendation.features.board_policy_id,
+                    recommendation.board_rank,
+                    recommendation.features.board_data_reliability,
+                    recommendation.features.competition_group_id,
+                    recommendation.selection_skip_reason,
+                    recommendation.features.merge_epoch,
+                    recommendation.features.optional_value("atr20_pct"),
+                    snapshot.snapshot_id,
+                ),
+            )
 
     def _load_verified_snapshot(self, relative_path: str, expected_sha256: str) -> RecommendationSnapshot | None:
         target = self._runtime_dir / relative_path

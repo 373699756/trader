@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from functools import lru_cache
@@ -58,12 +59,63 @@ _BOARD_FIELDS = frozenset(
 _SOURCE_PRIORITY = {"sina": 1, "eastmoney": 2, "tencent": 3, "akshare": 4, "tushare": 5}
 
 
+@dataclass(frozen=True)
+class _QuoteProjection:
+    code: str
+    values: dict[str, JsonScalar]
+    sources: dict[str, str]
+    price_observation: SourceObservation
+    restrictions: set[str]
+    deviation: float | None
+    verified: bool
+
+
+@dataclass
+class _BoardProjection:
+    values: dict[str, JsonScalar]
+    sources: dict[str, str]
+    restrictions: set[str]
+    conflicts: set[str]
+
+
 def merge_code(
     code: str,
     observations: Sequence[SourceObservation],
     *,
     targeted: bool,
 ) -> tuple[MarketQuote, dict[str, str], set[str]]:
+    values, sources, selected_observations = _select_fields(observations, targeted=targeted)
+    price_observation = selected_observations.get("price") or max(observations, key=observation_order)
+    board_values, board_sources, restrictions, board_conflicts = _board_identity(code, observations)
+    if price_observation.missing_reasons.get("cache_refresh") == "cache_degraded":
+        restrictions.add("market_data_degraded")
+    values.update(board_values)
+    sources.update(board_sources)
+    prices = _realtime_prices(observations)
+    deviation, verified = _verify_prices(prices, targeted=targeted)
+    conflicts = set(board_conflicts)
+    if deviation is not None and deviation > 0.5 and not verified:
+        conflicts.add(f"price_divergence:{code}")
+        restrictions.add("cross_source_deviation")
+    quote = _project_quote(
+        _QuoteProjection(
+            code,
+            values,
+            sources,
+            price_observation,
+            restrictions,
+            deviation,
+            verified,
+        )
+    )
+    return quote, sources, conflicts
+
+
+def _select_fields(
+    observations: Sequence[SourceObservation],
+    *,
+    targeted: bool,
+) -> tuple[dict[str, JsonScalar], dict[str, str], dict[str, SourceObservation]]:
     values: dict[str, JsonScalar] = {}
     sources: dict[str, str] = {}
     selected_observations: dict[str, SourceObservation] = {}
@@ -104,20 +156,25 @@ def merge_code(
         values[field] = selected.fields[field]
         source = source_name(selected.source)
         sources[field] = source
+    return values, sources, selected_observations
 
-    price_observation = selected_observations.get("price") or max(observations, key=observation_order)
-    board_values, board_sources, restrictions, board_conflicts = _board_identity(code, observations)
-    if price_observation.missing_reasons.get("cache_refresh") == "cache_degraded":
-        restrictions.add("market_data_degraded")
-    values.update(board_values)
-    sources.update(board_sources)
-    prices: list[tuple[SourceObservation, float | None]] = []
-    for observation in observations:
-        if source_name(observation.source) not in _REALTIME_SOURCES:
-            continue
-        price = _number(observation.fields.get("price"))
-        if price is not None:
-            prices.append((observation, price))
+
+def _realtime_prices(
+    observations: Sequence[SourceObservation],
+) -> list[tuple[SourceObservation, float | None]]:
+    return [
+        (observation, price)
+        for observation in observations
+        if source_name(observation.source) in _REALTIME_SOURCES
+        if (price := _number(observation.fields.get("price"))) is not None
+    ]
+
+
+def _verify_prices(
+    prices: Sequence[tuple[SourceObservation, float | None]],
+    *,
+    targeted: bool,
+) -> tuple[float | None, bool]:
     deviation = _maximum_price_deviation(prices)
     verified = deviation is None or deviation <= 0.5
     if not verified and targeted:
@@ -130,13 +187,14 @@ def merge_code(
         verified = tencent is not None and any(
             _price_deviation(tencent, full_market_price) <= 0.5 for full_market_price in full_market_prices
         )
-    conflicts = set(board_conflicts)
-    if deviation is not None and deviation > 0.5 and not verified:
-        conflicts.add(f"price_divergence:{code}")
-        restrictions.add("cross_source_deviation")
+    return deviation, verified
 
-    quote = MarketQuote(
-        code=code,
+
+def _project_quote(projection: _QuoteProjection) -> MarketQuote:
+    values = projection.values
+    price_observation = projection.price_observation
+    return MarketQuote(
+        code=projection.code,
         name=_text(values.get("name")),
         price=_number(values.get("price")),
         previous_close=_number(values.get("previous_close")),
@@ -161,10 +219,10 @@ def merge_code(
         is_one_price_limit=_boolean(values.get("is_one_price_limit")),
         is_blacklisted=_boolean(values.get("is_blacklisted")),
         has_major_regulatory_risk=_boolean(values.get("has_major_regulatory_risk")),
-        cross_source_deviation_pct=round(deviation, 6) if deviation is not None else None,
-        cross_source_verified=verified,
+        cross_source_deviation_pct=round(projection.deviation, 6) if projection.deviation is not None else None,
+        cross_source_verified=projection.verified,
         board=Board(_text(values.get("board")) or Board.UNSUPPORTED.value),
-        board_source=sources.get("board", "code_prefix_fallback"),
+        board_source=projection.sources.get("board", "code_prefix_fallback"),
         board_reliability=_text(values.get("board_reliability")) or "degraded",
         exchange=_text(values.get("exchange")),
         listing_date=_optional_date(values.get("listing_date")),
@@ -176,9 +234,8 @@ def merge_code(
         strategy_hot_cap_pct=_number(values.get("strategy_hot_cap_pct")),
         rule_version=_text(values.get("rule_version")),
         rule_effective_date=_optional_date(values.get("rule_effective_date")),
-        execution_restrictions=tuple(sorted(restrictions)),
+        execution_restrictions=tuple(sorted(projection.restrictions)),
     )
-    return quote, sources, conflicts
 
 
 def _board_identity(
@@ -187,54 +244,71 @@ def _board_identity(
 ) -> tuple[dict[str, JsonScalar], dict[str, str], set[str], set[str]]:
     candidates = [observation for observation in observations if observation.fields.get("board") is not None]
     fallback = board_for_code(code)
-    restrictions: set[str] = set()
-    conflicts: set[str] = set()
-    values: dict[str, JsonScalar] = {}
-    sources: dict[str, str] = {}
+    projection = _BoardProjection({}, {}, set(), set())
     if candidates:
-        selected = max(
-            candidates,
-            key=lambda item: (_SOURCE_PRIORITY.get(source_name(item.source), 0), *observation_order(item)),
-        )
-        source = source_name(selected.source)
-        selected_board = _board_value(selected.fields.get("board"))
-        reported = {_board_value(item.fields.get("board")) for item in candidates}
-        if len(reported) > 1 or (fallback is not Board.UNSUPPORTED and selected_board is not fallback):
-            restrictions.add("board_classification_conflict")
-            conflicts.add(f"board_classification_conflict:{code}")
-            values["board_reliability"] = "conflict"
-            sources["board"] = "conflict"
-            sources["board_reliability"] = "conflict"
-        else:
-            source_reliability = selected.fields.get("board_reliability")
-            values["board_reliability"] = (
-                "degraded"
-                if source_reliability == "degraded"
-                else "verified"
-                if source in {"tushare", "akshare"}
-                else "reported"
-            )
-            sources["board"] = source
-            sources["board_reliability"] = source
-            if source_reliability == "degraded":
-                restrictions.add("board_identity_degraded")
-        values["board"] = selected_board.value
-        for field in _BOARD_FIELDS - {"board"}:
-            value = selected.fields.get(field)
-            if value is not None:
-                values[field] = value
-                if field in {"listing_age_sessions", "has_price_limit"}:
-                    sources[field] = "trading_calendar"
-                elif field == "exchange_limit_pct":
-                    sources[field] = "local_rule"
-                else:
-                    sources[field] = source
+        _apply_reported_board(code, candidates, fallback, projection)
     else:
-        values["board"] = fallback.value
-        values["board_reliability"] = "degraded"
-        sources["board"] = "code_prefix_fallback"
-        sources["board_reliability"] = "code_prefix_fallback"
-        restrictions.add("board_identity_degraded")
+        projection.values["board"] = fallback.value
+        projection.values["board_reliability"] = "degraded"
+        projection.sources["board"] = "code_prefix_fallback"
+        projection.sources["board_reliability"] = "code_prefix_fallback"
+        projection.restrictions.add("board_identity_degraded")
+    _apply_board_defaults(projection.values, projection.sources, projection.restrictions)
+    return projection.values, projection.sources, projection.restrictions, projection.conflicts
+
+
+def _apply_reported_board(
+    code: str,
+    candidates: Sequence[SourceObservation],
+    fallback: Board,
+    projection: _BoardProjection,
+) -> None:
+    values = projection.values
+    sources = projection.sources
+    selected = max(
+        candidates,
+        key=lambda item: (_SOURCE_PRIORITY.get(source_name(item.source), 0), *observation_order(item)),
+    )
+    source = source_name(selected.source)
+    selected_board = _board_value(selected.fields.get("board"))
+    reported = {_board_value(item.fields.get("board")) for item in candidates}
+    if len(reported) > 1 or (fallback is not Board.UNSUPPORTED and selected_board is not fallback):
+        projection.restrictions.add("board_classification_conflict")
+        projection.conflicts.add(f"board_classification_conflict:{code}")
+        values["board_reliability"] = "conflict"
+        sources["board"] = "conflict"
+        sources["board_reliability"] = "conflict"
+    else:
+        source_reliability = selected.fields.get("board_reliability")
+        values["board_reliability"] = (
+            "degraded"
+            if source_reliability == "degraded"
+            else "verified"
+            if source in {"tushare", "akshare"}
+            else "reported"
+        )
+        sources["board"] = source
+        sources["board_reliability"] = source
+        if source_reliability == "degraded":
+            projection.restrictions.add("board_identity_degraded")
+    values["board"] = selected_board.value
+    for field in _BOARD_FIELDS - {"board"}:
+        value = selected.fields.get(field)
+        if value is not None:
+            values[field] = value
+            if field in {"listing_age_sessions", "has_price_limit"}:
+                sources[field] = "trading_calendar"
+            elif field == "exchange_limit_pct":
+                sources[field] = "local_rule"
+            else:
+                sources[field] = source
+
+
+def _apply_board_defaults(
+    values: dict[str, JsonScalar],
+    sources: dict[str, str],
+    restrictions: set[str],
+) -> None:
     listing_date = _optional_date(values.get("listing_date"))
     listing_age_sessions = _optional_integer(values.get("listing_age_sessions"))
     if listing_date is None:
@@ -254,7 +328,6 @@ def _board_identity(
         sources["rule_version"] = "local_rule"
     if values.get("rule_effective_date") is not None:
         sources["rule_effective_date"] = "local_rule"
-    return values, sources, restrictions, conflicts
 
 
 def observation_order(observation: SourceObservation) -> tuple[datetime, datetime, int, str, str]:

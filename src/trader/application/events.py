@@ -143,33 +143,35 @@ class PipelineEvent:
         )
 
 
-def new_event(
-    event_type: str,
-    *,
-    subject_key: str,
-    trade_date: str,
-    phase: str,
-    strategy: Strategy | None,
-    priority: EventPriority,
-    data_version: str,
-    config_version: str,
-    created_at: datetime,
-    deadline: datetime | None = None,
-    payload: Mapping[str, JsonInput] | None = None,
-) -> PipelineEvent:
+@dataclass(frozen=True)
+class EventSpec:
+    event_type: str
+    subject_key: str
+    trade_date: str
+    phase: str
+    strategy: Strategy | None
+    priority: EventPriority
+    data_version: str
+    config_version: str
+    created_at: datetime
+    deadline: datetime | None = None
+    payload: Mapping[str, JsonInput] | None = None
+
+
+def new_event(spec: EventSpec) -> PipelineEvent:
     return PipelineEvent(
         event_id=uuid4().hex,
-        event_type=event_type,
-        subject_key=subject_key,
-        trade_date=trade_date,
-        phase=phase,
-        strategy=strategy,
-        priority=priority,
-        data_version=data_version,
-        config_version=config_version,
-        created_at=created_at,
-        deadline=deadline,
-        payload=freeze_json_object(payload or {}),
+        event_type=spec.event_type,
+        subject_key=spec.subject_key,
+        trade_date=spec.trade_date,
+        phase=spec.phase,
+        strategy=spec.strategy,
+        priority=spec.priority,
+        data_version=spec.data_version,
+        config_version=spec.config_version,
+        created_at=spec.created_at,
+        deadline=spec.deadline,
+        payload=freeze_json_object(spec.payload or {}),
     )
 
 
@@ -348,6 +350,7 @@ __all__ = [
     "EventAuditRecord",
     "EventDeadlineExpiredError",
     "EventPriority",
+    "EventSpec",
     "EventStatus",
     "PipelineEvent",
     "event_from_audit_record",

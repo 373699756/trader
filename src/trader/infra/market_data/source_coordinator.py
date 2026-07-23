@@ -10,14 +10,20 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol, cast
 
-from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity, canonical_json_bytes
+from trader.application.cache import (
+    BoundedCache,
+    CacheIdentity,
+    CacheIdentitySpec,
+    build_cache_identity,
+    canonical_json_bytes,
+)
 from trader.application.ports.market import MarketDataFailedError, MarketDataNoDataError
 from trader.application.schedule import phase_at, shanghai_now
 from trader.application.source_lanes import (
     SourceLaneRegistry,
-    SourceRequestSuperseded,
+    SourceRequestSupersededError,
 )
-from trader.application.workers import BoundedExecutor, borrow_executor
+from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
 from trader.domain.market.models import (
     MarketQuote,
 )
@@ -47,6 +53,39 @@ class MarketSourceDependencies:
     schema_version: str
     monotonic: Callable[[], float]
     wall_clock: Callable[[], datetime]
+
+
+@dataclass(frozen=True)
+class SourceObservationRequest:
+    source: str
+    dataset: str
+    subject_key: str
+    request: Mapping[str, object]
+    fetcher: Callable[[], Sequence[MarketQuote]]
+    observed_at: datetime
+    force: bool
+    deadline: datetime | None
+    minimum_rows: int
+
+
+@dataclass(frozen=True)
+class SourceLaneIdentityRequest:
+    dataset: str
+    source: str
+    subject_key: str
+    request: Mapping[str, object]
+    observed_at: datetime
+    force: bool
+    deadline: datetime | None
+
+
+@dataclass(frozen=True)
+class _SourceRefreshRequest:
+    source: str
+    fetcher: Callable[[], Sequence[MarketQuote]]
+    observed_at: datetime
+    deadline: datetime | None
+    minimum_rows: int
 
 
 class MarketSourceTelemetry(Protocol):
@@ -97,13 +136,15 @@ class MarketSourceCoordinator:
             for source, fetcher in fetchers.items():
                 request = {"universe": "ashare", "fields": ["realtime_quote"]}
                 identity = self.lane_identity(
-                    "full_market_quotes",
-                    source,
-                    "market",
-                    request,
-                    observed_at,
-                    force=force,
-                    deadline=deadline,
+                    SourceLaneIdentityRequest(
+                        "full_market_quotes",
+                        source,
+                        "market",
+                        request,
+                        observed_at,
+                        force,
+                        deadline,
+                    )
                 )
                 futures[source] = self._source_lanes.submit(
                     source,
@@ -127,7 +168,7 @@ class MarketSourceCoordinator:
                 except FutureTimeoutError:
                     future.cancel()
                     results[source] = _SourceFetch(source, "failed", error="deadline")
-                except SourceRequestSuperseded:
+                except SourceRequestSupersededError:
                     results[source] = _SourceFetch(source, "skipped", error="superseded", skipped=True)
                 except Exception as exc:
                     results[source] = _SourceFetch(source, "failed", error=_cache_error_code(exc))
@@ -137,9 +178,11 @@ class MarketSourceCoordinator:
         immediate: dict[str, _SourceFetch] = {}
         with borrow_executor(
             self._worker_pool,
-            worker_count=2,
-            queue_capacity=2,
-            thread_name_prefix="source-data",
+            BorrowExecutorOptions(
+                worker_count=2,
+                queue_capacity=2,
+                thread_name_prefix="source-data",
+            ),
         ) as executor:
             for source, fetcher in fetchers.items():
                 submitted = executor.submit(
@@ -178,15 +221,17 @@ class MarketSourceCoordinator:
         started = self._monotonic()
         try:
             observations = self.fetch_source_observations(
-                source,
-                "full_market_quotes",
-                "market",
-                {"universe": "ashare", "fields": ["realtime_quote"]},
-                fetcher,
-                observed_at,
-                force=force,
-                deadline=deadline,
-                minimum_rows=self._minimum_market_rows,
+                SourceObservationRequest(
+                    source,
+                    "full_market_quotes",
+                    "market",
+                    {"universe": "ashare", "fields": ["realtime_quote"]},
+                    fetcher,
+                    observed_at,
+                    force,
+                    deadline,
+                    self._minimum_market_rows,
+                )
             )
         except MarketDataNoDataError as exc:
             return _SourceFetch(
@@ -208,27 +253,26 @@ class MarketSourceCoordinator:
 
     def fetch_source_observations(
         self,
-        source: str,
-        dataset: str,
-        subject_key: str,
-        request: Mapping[str, object],
-        fetcher: Callable[[], Sequence[MarketQuote]],
-        observed_at: datetime,
-        *,
-        force: bool,
-        deadline: datetime | None,
-        minimum_rows: int,
+        request: SourceObservationRequest,
     ) -> tuple[SourceObservation, ...]:
+        source = request.source
+        observed_at = request.observed_at
         self._telemetry.record_planned(source)
-        if not _before_deadline(self._wall_clock(), deadline):
+        if not _before_deadline(self._wall_clock(), request.deadline):
             self._telemetry.record_deadline(source)
             raise MarketDataFailedError(source, "late")
-        identity = self._cache_identity(dataset, source, subject_key, request, observed_at)
+        identity = self._cache_identity(
+            request.dataset,
+            source,
+            request.subject_key,
+            request.request,
+            observed_at,
+        )
 
         def load() -> tuple[SourceObservation, ...]:
-            quotes, started = self._telemetry.fetch_physical(source, fetcher, minimum_rows)
+            quotes, started = self._telemetry.fetch_physical(source, request.fetcher, request.minimum_rows)
             completed_at = max(observed_at, self._wall_clock())
-            if deadline is not None and completed_at >= deadline:
+            if request.deadline is not None and completed_at >= request.deadline:
                 self._telemetry.record_fetch_result(source, False, started, "deadline")
                 raise MarketDataFailedError(source, "late")
             observations = tuple(
@@ -242,27 +286,10 @@ class MarketSourceCoordinator:
             self._telemetry.record_source_time(source, max(observation.source_time for observation in observations))
             return observations
 
-        if self._cache is not None and not force:
-            lookup = self._cache.get(identity)
-            if lookup is not None and lookup.state == "negative":
-                raise MarketDataFailedError(source, lookup.error_code or "negative_cache")
-            if lookup is not None and lookup.value is not None:
-                observations = cast(tuple[SourceObservation, ...], lookup.value)
-                if lookup.state != "fresh":
-                    observations = _mark_observations_degraded(
-                        observations,
-                        "cache_refresh",
-                        f"cache_{lookup.state}",
-                    )
-                if lookup.error_code is not None:
-                    observations = _mark_observations_degraded(
-                        observations,
-                        "cache_error",
-                        lookup.error_code,
-                    )
-                if lookup.state != "fresh" and not lookup.retry_suppressed:
-                    self._schedule_refresh(identity, source, fetcher, observed_at, deadline, minimum_rows)
-                return observations
+        if self._cache is not None and not request.force:
+            cached = self._cached_source_observations(identity, request)
+            if cached is not None:
+                return cached
 
         try:
             return (
@@ -271,18 +298,54 @@ class MarketSourceCoordinator:
                 else load()
             )
         except Exception as exc:
-            if self._cache is not None and _before_deadline(self._wall_clock(), deadline):
+            if self._cache is not None and _before_deadline(self._wall_clock(), request.deadline):
                 self._cache.put_negative(identity, error_code=_cache_error_code(exc))
             raise
+
+    def _cached_source_observations(
+        self,
+        identity: CacheIdentity,
+        request: SourceObservationRequest,
+    ) -> tuple[SourceObservation, ...] | None:
+        cache = self._cache
+        assert cache is not None
+        lookup = cache.get(identity)
+        if lookup is None:
+            return None
+        if lookup.state == "negative":
+            raise MarketDataFailedError(request.source, lookup.error_code or "negative_cache")
+        if lookup.value is None:
+            return None
+        observations = cast(tuple[SourceObservation, ...], lookup.value)
+        if lookup.state != "fresh":
+            observations = _mark_observations_degraded(
+                observations,
+                "cache_refresh",
+                f"cache_{lookup.state}",
+            )
+        if lookup.error_code is not None:
+            observations = _mark_observations_degraded(
+                observations,
+                "cache_error",
+                lookup.error_code,
+            )
+        if lookup.state != "fresh" and not lookup.retry_suppressed:
+            self._schedule_refresh(
+                identity,
+                _SourceRefreshRequest(
+                    request.source,
+                    request.fetcher,
+                    request.observed_at,
+                    request.deadline,
+                    request.minimum_rows,
+                ),
+            )
+        return observations
 
     def _schedule_refresh(
         self,
         identity: CacheIdentity,
-        source: str,
-        fetcher: Callable[[], Sequence[MarketQuote]],
-        observed_at: datetime,
-        deadline: datetime | None,
-        minimum_rows: int,
+        request: _SourceRefreshRequest,
     ) -> None:
         if self._worker_pool is None or not self._worker_pool.is_running() or self._cache is None:
             return
@@ -291,13 +354,13 @@ class MarketSourceCoordinator:
 
         def refresh() -> None:
             def load() -> tuple[SourceObservation, ...]:
-                quotes, started = self._telemetry.fetch_physical(source, fetcher, minimum_rows)
-                completed_at = max(observed_at, self._wall_clock())
-                if deadline is not None and completed_at >= deadline:
-                    self._telemetry.record_fetch_result(source, False, started, "deadline")
-                    raise MarketDataFailedError(source, "late")
+                quotes, started = self._telemetry.fetch_physical(request.source, request.fetcher, request.minimum_rows)
+                completed_at = max(request.observed_at, self._wall_clock())
+                if request.deadline is not None and completed_at >= request.deadline:
+                    self._telemetry.record_fetch_result(request.source, False, started, "deadline")
+                    raise MarketDataFailedError(request.source, "late")
                 observations = tuple(
-                    observation_from_quote(quote, source=source, observed_at=completed_at) for quote in quotes
+                    observation_from_quote(quote, source=request.source, observed_at=completed_at) for quote in quotes
                 )
                 cache.put(
                     identity,
@@ -305,45 +368,44 @@ class MarketSourceCoordinator:
                     data_version=max(item.data_version for item in observations),
                     source_time=max(item.source_time for item in observations),
                 )
-                self._telemetry.record_fetch_result(source, True, started, "")
-                self._telemetry.record_source_time(source, max(item.source_time for item in observations))
+                self._telemetry.record_fetch_result(request.source, True, started, "")
+                self._telemetry.record_source_time(request.source, max(item.source_time for item in observations))
                 return observations
 
             try:
                 cache.coalesce(identity, load)
             except Exception as exc:
-                if _before_deadline(self._wall_clock(), deadline):
+                if _before_deadline(self._wall_clock(), request.deadline):
                     cache.put_negative(identity, error_code=_cache_error_code(exc))
                 return
 
         if self._source_lanes is not None:
             refresh_identity = "refresh:" + hashlib.sha256(canonical_json_bytes(identity.as_dict())).hexdigest()
-            self._source_lanes.submit(source, refresh_identity, observed_at, refresh)
+            self._source_lanes.submit(request.source, refresh_identity, request.observed_at, refresh)
             return
         worker_pool.submit(refresh)
 
     def lane_identity(
         self,
-        dataset: str,
-        source: str,
-        subject_key: str,
-        request: Mapping[str, object],
-        observed_at: datetime,
-        *,
-        force: bool,
-        deadline: datetime | None,
+        request: SourceLaneIdentityRequest,
     ) -> str:
-        cache_identity = self._cache_identity(dataset, source, subject_key, request, observed_at)
+        cache_identity = self._cache_identity(
+            request.dataset,
+            request.source,
+            request.subject_key,
+            request.request,
+            request.observed_at,
+        )
         digest = hashlib.sha256(
             canonical_json_bytes(
                 {
                     "cache_identity": cache_identity.as_dict(),
-                    "force": force,
-                    "deadline": deadline,
+                    "force": request.force,
+                    "deadline": request.deadline,
                 }
             )
         ).hexdigest()
-        return f"{dataset}:{digest}"
+        return f"{request.dataset}:{digest}"
 
     def _cache_identity(
         self,
@@ -356,15 +418,17 @@ class MarketSourceCoordinator:
         local = shanghai_now(observed_at)
         phase = phase_at(local, is_trading_day=True).value
         return build_cache_identity(
-            dataset=dataset,
-            source=source,
-            subject_key=subject_key,
-            request=request,
-            trade_date=local.date().isoformat(),
-            phase=phase,
-            source_contract_version=self._source_contract_versions[source],
-            config_version=self._config_version,
-            schema_version=self._schema_version,
+            CacheIdentitySpec(
+                dataset=dataset,
+                source=source,
+                subject_key=subject_key,
+                request=request,
+                trade_date=local.date().isoformat(),
+                phase=phase,
+                source_contract_version=self._source_contract_versions[source],
+                config_version=self._config_version,
+                schema_version=self._schema_version,
+            )
         )
 
 

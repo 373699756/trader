@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pytest
 
-from trader.application.runtime import RuntimeSupervisor, scheduler_interval_seconds
+from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.schedule import SHANGHAI
 
 
@@ -15,10 +15,12 @@ def test_supervisor_initializes_starts_ticks_and_stops() -> None:
     now = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)
     supervisor = RuntimeSupervisor(
         pipeline,
-        now=lambda: now,
-        initializers=(lambda: initialized.append("ready"),),
-        interval_seconds=lambda _at: 60.0,
-        shutdown_timeout_seconds=1.0,
+        RuntimeSupervisorConfig(
+            now=lambda: now,
+            initializers=(lambda: initialized.append("ready"),),
+            interval_seconds=lambda _at: 60.0,
+            shutdown_timeout_seconds=1.0,
+        ),
     )
 
     assert supervisor.start() is True
@@ -38,9 +40,12 @@ def test_supervisor_initializes_starts_ticks_and_stops() -> None:
 def test_supervisor_does_not_restart_after_shutdown() -> None:
     supervisor = RuntimeSupervisor(
         FakePipeline(),
-        now=lambda: datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI),
-        interval_seconds=lambda _at: 60.0,
-        shutdown_timeout_seconds=1.0,
+        RuntimeSupervisorConfig(
+            now=lambda: datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI),
+            initializers=(),
+            interval_seconds=lambda _at: 60.0,
+            shutdown_timeout_seconds=1.0,
+        ),
     )
     assert supervisor.start() is True
     supervisor.stop()
@@ -60,10 +65,13 @@ def test_supervisor_waits_for_blocked_scheduler_before_returning() -> None:
 
     supervisor = RuntimeSupervisor(
         pipeline,
-        now=lambda: datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI),
-        interval_seconds=lambda _at: 60.0,
-        shutdown_timeout_seconds=0.1,
-        record_error=record_error,
+        RuntimeSupervisorConfig(
+            now=lambda: datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI),
+            initializers=(),
+            interval_seconds=lambda _at: 60.0,
+            shutdown_timeout_seconds=0.1,
+            record_error=record_error,
+        ),
     )
     assert supervisor.start() is True
     assert pipeline.tick_started.wait(timeout=1.0)
@@ -88,9 +96,12 @@ def test_supervisor_scheduler_start_interruption_stops_started_pipeline(monkeypa
     pipeline = FakePipeline()
     supervisor = RuntimeSupervisor(
         pipeline,
-        now=lambda: datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI),
-        interval_seconds=lambda _at: 60.0,
-        shutdown_timeout_seconds=1.0,
+        RuntimeSupervisorConfig(
+            now=lambda: datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI),
+            initializers=(),
+            interval_seconds=lambda _at: 60.0,
+            shutdown_timeout_seconds=1.0,
+        ),
     )
 
     def interrupt_scheduler_start(thread: threading.Thread) -> None:

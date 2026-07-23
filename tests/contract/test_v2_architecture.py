@@ -178,6 +178,29 @@ def test_bootstrap_is_the_only_composition_root() -> None:
     assert not (SOURCE_ROOT / "infra" / "container.py").exists()
 
 
+def test_final_web_routes_are_partitioned_by_read_only_capability() -> None:
+    web = SOURCE_ROOT / "web"
+
+    assert {
+        "routes.py",
+        "routes_events.py",
+        "routes_recommendations.py",
+        "routes_status.py",
+        "request_parsing.py",
+    } <= {path.name for path in web.glob("*.py")}
+
+
+def test_final_refactor_plan_and_strict_debt_are_closed() -> None:
+    plan = (PROJECT_ROOT / "docs" / "plan.md").read_text(encoding="utf-8")
+    section = plan.split("### 2.6", 1)[1].split("## 3.", 1)[0]
+    quality_script = (PROJECT_ROOT / "scripts" / "check_refactor_quality.py").read_text(encoding="utf-8")
+    expected_assignment = quality_script.split("EXPECTED_COUNTS:", 1)[1].split("\n", 1)[0]
+
+    assert "状态：completed（2026-07-23）" in section
+    assert "状态：pending" not in section
+    assert "{}" in expected_assignment
+
+
 def test_market_data_service_uses_typed_composition_without_mixins() -> None:
     market_data = SOURCE_ROOT / "infra" / "market_data"
     service_tree = ast.parse((market_data / "service.py").read_text(encoding="utf-8"))

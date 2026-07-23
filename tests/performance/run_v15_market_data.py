@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from trader.application.cache import build_cache_identity, canonical_json_bytes
+from trader.application.cache import CacheIdentitySpec, build_cache_identity, canonical_json_bytes
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import MarketQuote
 from trader.infra.cache import BoundedLruCache
@@ -190,26 +190,30 @@ def _cache_probe(
     first_hot_states: tuple[str | None, str | None] | None = None
     for index in range(rounds.warmup + rounds.measurement):
         market_identity = build_cache_identity(
-            dataset="full_market_quotes",
-            source="eastmoney",
-            subject_key=f"market-{index}",
-            request={"universe": "ashare", "fields": ["realtime_quote"], "sample": index},
-            trade_date=observed_at.date().isoformat(),
-            phase="today_main",
-            source_contract_version="performance-v1",
-            config_version=settings.config_version,
-            schema_version="market_snapshot_v15",
+            CacheIdentitySpec(
+                dataset="full_market_quotes",
+                source="eastmoney",
+                subject_key=f"market-{index}",
+                request={"universe": "ashare", "fields": ["realtime_quote"], "sample": index},
+                trade_date=observed_at.date().isoformat(),
+                phase="today_main",
+                source_contract_version="performance-v1",
+                config_version=settings.config_version,
+                schema_version="market_snapshot_v15",
+            )
         )
         candidate_identity = build_cache_identity(
-            dataset="candidate_quotes",
-            source="tencent",
-            subject_key=f"candidate-{index}",
-            request={"codes": [item.subject_key for item in candidate_observations], "sample": index},
-            trade_date=observed_at.date().isoformat(),
-            phase="today_main",
-            source_contract_version="performance-v1",
-            config_version=settings.config_version,
-            schema_version="market_snapshot_v15",
+            CacheIdentitySpec(
+                dataset="candidate_quotes",
+                source="tencent",
+                subject_key=f"candidate-{index}",
+                request={"codes": [item.subject_key for item in candidate_observations], "sample": index},
+                trade_date=observed_at.date().isoformat(),
+                phase="today_main",
+                source_contract_version="performance-v1",
+                config_version=settings.config_version,
+                schema_version="market_snapshot_v15",
+            )
         )
         started = time.perf_counter()
         cold_market = cache.get(market_identity)

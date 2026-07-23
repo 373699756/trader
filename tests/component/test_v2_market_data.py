@@ -22,7 +22,7 @@ from trader.application.ports.market import (
 from trader.application.source_lanes import (
     LatestRequestLane,
     SourceLaneRegistry,
-    SourceRequestSuperseded,
+    SourceRequestSupersededError,
 )
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import (
@@ -38,7 +38,7 @@ from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data import gateway as gateway_module
 from trader.infra.market_data import tushare_support as tushare_support_module
 from trader.infra.market_data.akshare import AkshareResearchClient
-from trader.infra.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailable
+from trader.infra.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailableError
 from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
@@ -46,15 +46,15 @@ from trader.infra.market_data.history import DailyBar, HistoryAdjustmentError, P
 from trader.infra.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
-from trader.infra.market_data.service import MarketFeatureService
-from trader.infra.market_data.service_candidates import QuoteStore
+from trader.infra.market_data.service import MarketFeatureDependencies, MarketFeatureService
+from trader.infra.market_data.service_candidates import QuoteStore, QuoteStoreDependencies
 from trader.infra.market_data.service_execution import MarketTaskRunner
-from trader.infra.market_data.service_health import MarketDataHealth
+from trader.infra.market_data.service_health import MarketDataHealth, MarketDataHealthDependencies
 from trader.infra.market_data.service_history import HistoryStore
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
-from trader.infra.market_data.service_tushare import ReferenceLoader
+from trader.infra.market_data.service_tushare import ReferenceLoader, ReferenceLoadRequest
 from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
@@ -148,34 +148,19 @@ def _service(
         monotonic=monotonic,
     )
     quotes = QuoteStore(
-        gateway,
-        feature_builder,
-        history,
-        references,
+        QuoteStoreDependencies(gateway, feature_builder, history, references),
         market_ttl_seconds=kwargs.pop("market_ttl_seconds", 30),
         candidate_capacity=intraday_capacity,
         monotonic=monotonic,
     )
     health = MarketDataHealth(
-        quotes,
-        history,
-        warmup,
-        research,
-        intraday,
-        references,
+        MarketDataHealthDependencies(quotes, history, warmup, research, intraday, references),
         wall_clock=wall_clock,
     )
     history_preload_limit = kwargs.pop("history_preload_limit", 360)
     assert kwargs == {}
     return MarketFeatureService(
-        quotes,
-        history,
-        warmup,
-        research,
-        intraday,
-        references,
-        runner,
-        health,
+        MarketFeatureDependencies(quotes, history, warmup, research, intraday, references, runner, health),
         history_preload_limit=history_preload_limit,
     )
 
@@ -585,7 +570,7 @@ def test_source_lane_coalesces_running_identity_and_keeps_only_latest_pending_re
     latest = lane.submit("intraday", NOW + timedelta(seconds=2), load, "latest")
 
     try:
-        with pytest.raises(SourceRequestSuperseded):
+        with pytest.raises(SourceRequestSupersededError):
             superseded.result(timeout=1.0)
         release.set()
         assert running.result(timeout=1.0) == "running"
@@ -2279,34 +2264,20 @@ def test_tushare_negative_refresh_marks_preserved_reference_data_degraded() -> N
     )
     request = {"dataset": "security_master", "market": "ashare"}
 
-    first = service.references.load(
+    reference_request = ReferenceLoadRequest(
         "security_master_calendar",
         "security_master",
         request,
         NOW,
         client.fetch_security_master,
-        NOW,
-        force=False,
+        (NOW,),
+        False,
+        {},
     )
+    first = service.references.load(reference_request)
     pro.fail = True
-    service.references.load(
-        "security_master_calendar",
-        "security_master",
-        request,
-        NOW,
-        client.fetch_security_master,
-        NOW,
-        force=True,
-    )
-    preserved = service.references.load(
-        "security_master_calendar",
-        "security_master",
-        request,
-        NOW,
-        client.fetch_security_master,
-        NOW,
-        force=False,
-    )
+    service.references.load(replace(reference_request, force=True))
+    preserved = service.references.load(reference_request)
 
     assert "reference_data_degraded" not in first[0].fields
     assert preserved[0].fields["board_reliability"] == "degraded"
@@ -4422,7 +4393,7 @@ def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
         fetcher=lambda: (_ for _ in ()).throw(RuntimeError("offline")),
         now=lambda: NOW,
     )
-    with pytest.raises(TradingCalendarUnavailable):
+    with pytest.raises(TradingCalendarUnavailableError):
         unavailable.is_trading_day(date(2026, 7, 16))
 
     stale_cache = tmp_path / "stale-calendar.json"
@@ -4435,7 +4406,7 @@ def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
         fetcher=lambda: (_ for _ in ()).throw(RuntimeError("offline")),
         now=lambda: NOW,
     )
-    with pytest.raises(TradingCalendarUnavailable, match="cannot refresh"):
+    with pytest.raises(TradingCalendarUnavailableError, match="cannot refresh"):
         stale.is_trading_day(date(2026, 7, 16))
 
 

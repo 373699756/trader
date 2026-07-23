@@ -6,6 +6,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.reviews import DeepSeekReviewPort
@@ -111,6 +115,42 @@ class PreparedSnapshot:
             for feature in self.eligible
             if self.strategy is Strategy.LONG or feature.board_data_reliability >= 0.85
         )
+
+
+class _FrozenReplayOptions(TypedDict):
+    phase: str
+    trade_date: str
+    data_version: str
+    filtered_count: int
+    filter_reasons: Mapping[str, int]
+    filter_details: Sequence[FilterAudit]
+
+
+class _MergeRequiredOptions(TypedDict):
+    now: datetime
+    phase: str
+    max_age_seconds: float
+
+
+class _MergeOptionalOptions(TypedDict, total=False):
+    target_prices: Mapping[str, float | None] | None
+
+
+class _MergeOptions(_MergeRequiredOptions, _MergeOptionalOptions):
+    pass
+
+
+class _MergeCandidatesOptions(_MergeOptions):
+    review_port: DeepSeekReviewPort | None
+    review_deadline: datetime
+
+
+class _MergeReviewedOptionalOptions(_MergeOptionalOptions, total=False):
+    apply_downside: bool
+
+
+class _MergeReviewedOptions(_MergeRequiredOptions, _MergeReviewedOptionalOptions):
+    pass
 
 
 class RecommendationFinalizationMixin:
@@ -296,13 +336,7 @@ class RecommendationFinalizationMixin:
         self,
         strategy: Strategy,
         replay_input: RecommendationReplayInput,
-        *,
-        phase: str,
-        trade_date: str,
-        data_version: str,
-        filtered_count: int,
-        filter_reasons: Mapping[str, int],
-        filter_details: Sequence[FilterAudit],
+        **options: Unpack[_FrozenReplayOptions],
     ) -> PreparedSnapshot:
         batches = replay_input.board_batches
         if len(batches) != 3 or {batch.board for batch in batches} != {Board.MAIN, Board.CHINEXT, Board.STAR}:
@@ -324,14 +358,14 @@ class RecommendationFinalizationMixin:
             eligible=tuple(item.features for item in candidates),
             local_candidates=candidates,
             now=replay_input.evaluated_at,
-            phase=phase,
-            trade_date=trade_date,
-            data_version=data_version,
+            phase=options["phase"],
+            trade_date=options["trade_date"],
+            data_version=options["data_version"],
             review_deadline=replay_input.evaluated_at,
             max_age_seconds=replay_input.score_max_age_seconds,
-            filtered_count=filtered_count,
-            filter_reasons=filter_reasons,
-            filter_details=tuple(filter_details),
+            filtered_count=options["filtered_count"],
+            filter_reasons=options["filter_reasons"],
+            filter_details=tuple(options["filter_details"]),
             target_prices=replay_input.target_prices,
             market_features=replay_input.market_features,
             requested_codes=replay_input.requested_codes,
@@ -356,21 +390,18 @@ class RecommendationFinalizationMixin:
         self,
         strategy: Strategy,
         eligible: Sequence[FeatureSnapshot],
-        *,
-        now: datetime,
-        phase: str,
-        review_port: DeepSeekReviewPort | None,
-        review_deadline: datetime,
-        max_age_seconds: float,
-        target_prices: Mapping[str, float | None] | None = None,
+        **options: Unpack[_MergeCandidatesOptions],
     ) -> tuple[tuple[Recommendation, ...], Mapping[str, DeepSeekReview], FusionMode]:
+        now = options["now"]
+        phase = options["phase"]
+        review_port = options["review_port"]
         local_candidates = tuple(self._local_candidate(strategy, feature, now) for feature in eligible)
         reviews = (
             review_port.review(
                 strategy,
                 tuple(eligible),
                 phase=phase,
-                deadline=review_deadline,
+                deadline=options["review_deadline"],
                 contexts=_review_contexts_for_candidates(
                     strategy,
                     local_candidates,
@@ -387,8 +418,8 @@ class RecommendationFinalizationMixin:
             reviews,
             now=now,
             phase=phase,
-            max_age_seconds=max_age_seconds,
-            target_prices=target_prices,
+            max_age_seconds=options["max_age_seconds"],
+            target_prices=options.get("target_prices"),
         )
         return merged, reviews, fusion_mode
 
@@ -397,13 +428,13 @@ class RecommendationFinalizationMixin:
         strategy: Strategy,
         local_candidates: Sequence[Recommendation],
         reviews: Mapping[str, DeepSeekReview],
-        *,
-        now: datetime,
-        phase: str,
-        max_age_seconds: float,
-        target_prices: Mapping[str, float | None] | None = None,
-        apply_downside: bool = True,
+        **options: Unpack[_MergeReviewedOptions],
     ) -> tuple[tuple[Recommendation, ...], FusionMode]:
+        now = options["now"]
+        phase = options["phase"]
+        max_age_seconds = options["max_age_seconds"]
+        target_prices = options.get("target_prices")
+        apply_downside = options.get("apply_downside", True)
         fusion_candidates = tuple(
             candidate
             for candidate in local_candidates

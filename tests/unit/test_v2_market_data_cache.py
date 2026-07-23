@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from trader.application.cache import (
     CacheDatasetPolicy,
     CacheGroupPolicy,
+    CacheIdentitySpec,
     CachePolicy,
     build_cache_identity,
     canonical_json_bytes,
@@ -90,15 +91,17 @@ def _policy(*, capacity: int = 2, group_bytes: int = 100_000) -> CachePolicy:
 
 def _identity(subject: str, *, dataset: str = "daily_history", phase: str = "today_main"):
     return build_cache_identity(
-        dataset=dataset,
-        source="eastmoney",
-        subject_key=subject,
-        request={"codes": ["600002", "600001"], "fields": ["close"], "adjust": "qfq"},
-        trade_date="2026-07-16",
-        phase=phase,
-        source_contract_version="eastmoney-v1",
-        config_version="runtime-v15",
-        schema_version="market-v15",
+        CacheIdentitySpec(
+            dataset=dataset,
+            source="eastmoney",
+            subject_key=subject,
+            request={"codes": ["600002", "600001"], "fields": ["close"], "adjust": "qfq"},
+            trade_date="2026-07-16",
+            phase=phase,
+            source_contract_version="eastmoney-v1",
+            config_version="runtime-v15",
+            schema_version="market-v15",
+        )
     )
 
 
@@ -122,15 +125,17 @@ def test_canonical_json_bytes_preserves_the_frozen_wire_representation() -> None
 def test_cache_identity_is_stable_and_slow_data_reuses_all_day_phase() -> None:
     first = _identity("600001", phase="today_main")
     second = build_cache_identity(
-        dataset="daily_history",
-        source="eastmoney",
-        subject_key="600001",
-        request={"adjust": "qfq", "fields": ["close"], "codes": ["600001", "600002"]},
-        trade_date="2026-07-16",
-        phase="final_review",
-        source_contract_version="eastmoney-v1",
-        config_version="runtime-v15",
-        schema_version="market-v15",
+        CacheIdentitySpec(
+            dataset="daily_history",
+            source="eastmoney",
+            subject_key="600001",
+            request={"adjust": "qfq", "fields": ["close"], "codes": ["600001", "600002"]},
+            trade_date="2026-07-16",
+            phase="final_review",
+            source_contract_version="eastmoney-v1",
+            config_version="runtime-v15",
+            schema_version="market-v15",
+        )
     )
 
     assert first == second

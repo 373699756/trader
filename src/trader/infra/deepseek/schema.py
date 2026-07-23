@@ -10,15 +10,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
+from typing_extensions import Unpack
+
 from trader.domain.market.models import Evidence, FeatureSnapshot
 from trader.domain.recommendation.fusion import DIMENSION_NAMES, STRUCTURED_REVIEW_FEATURES
-from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact
 from trader.domain.review.rules import parse_rating
 from trader.infra.deepseek.evidence_router import event_key as _evidence_event_key
 from trader.infra.deepseek.evidence_router import evidence_quality as _evidence_quality
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
 from trader.infra.deepseek.evidence_router import source_tier as _evidence_source_tier
+from trader.infra.deepseek.schema_options import ReviewCacheOptions, StrategyCacheOptions
 from trader.infra.market_data.ground_truth import render_batch_ground_truth
 
 SCHEMA_VERSION = "deepseek_v4_review_facts_v1"
@@ -29,6 +31,8 @@ MAX_RESPONSE_CHARACTERS = 200_000
 MAX_ASSESSMENT_CHARACTERS = 240
 MAX_PROMPT_EVIDENCE_PER_CANDIDATE = 12
 RAW_FACTS_CACHE_GENERATION = "raw_facts_v1"
+
+
 _FORBIDDEN_MODEL_DECISION_FIELDS = frozenset(
     {
         "action",
@@ -148,15 +152,15 @@ def build_repair_messages(
 
 def review_cache_key(
     candidate: FeatureSnapshot,
-    *,
-    model: str,
-    generation: str = "regular",
-    model_role: str = "primary",
-    thinking_mode: str = "standard",
-    reasoning_effort: str | None = None,
-    schema_version: str = SCHEMA_VERSION,
-    prompt_version: str = PROMPT_VERSION,
+    **options: Unpack[ReviewCacheOptions],
 ) -> str:
+    model = options["model"]
+    generation = options.get("generation", "regular")
+    model_role = options.get("model_role", "primary")
+    thinking_mode = options.get("thinking_mode", "standard")
+    reasoning_effort = options.get("reasoning_effort")
+    schema_version = options.get("schema_version", SCHEMA_VERSION)
+    prompt_version = options.get("prompt_version", PROMPT_VERSION)
     payload = {
         "code": candidate.quote.code,
         "structured_features": _cache_features(candidate),
@@ -192,15 +196,15 @@ def build_review_manifest_hash(candidate: FeatureSnapshot) -> str:
 
 def strategy_review_cache_key(
     raw_key: str,
-    *,
-    strategy: Strategy,
-    strategy_version: str,
-    dimension_weights: Mapping[str, float],
-    confidence_coverage_min: float,
-    minimum_known_dimensions: int,
-    challenger_identity: str = "",
-    challenger_status: str = "not_run",
+    **options: Unpack[StrategyCacheOptions],
 ) -> str:
+    strategy = options["strategy"]
+    strategy_version = options["strategy_version"]
+    dimension_weights = options["dimension_weights"]
+    confidence_coverage_min = options["confidence_coverage_min"]
+    minimum_known_dimensions = options["minimum_known_dimensions"]
+    challenger_identity = options.get("challenger_identity", "")
+    challenger_status = options.get("challenger_status", "not_run")
     payload = {
         "raw_key": raw_key,
         "strategy": strategy.value,

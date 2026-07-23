@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -23,23 +24,27 @@ class ScheduledPipeline(Protocol):
     def submit_due(self, at: datetime | None = None) -> float: ...
 
 
+@dataclass(frozen=True)
+class RuntimeSupervisorConfig:
+    now: Callable[[], datetime]
+    initializers: Sequence[Callable[[], object]]
+    interval_seconds: Callable[[datetime], float]
+    shutdown_timeout_seconds: float
+    record_error: Callable[[str], None] | None = None
+
+
 class RuntimeSupervisor:
     def __init__(
         self,
         pipeline: ScheduledPipeline,
-        *,
-        now: Callable[[], datetime],
-        initializers: Sequence[Callable[[], object]] = (),
-        interval_seconds: Callable[[datetime], float],
-        shutdown_timeout_seconds: float,
-        record_error: Callable[[str], None] | None = None,
+        config: RuntimeSupervisorConfig,
     ) -> None:
         self._pipeline = pipeline
-        self._now = now
-        self._initializers = tuple(initializers)
-        self._interval_seconds = interval_seconds
-        self._shutdown_timeout_seconds = max(0.1, shutdown_timeout_seconds)
-        self._record_error = record_error or (lambda _error: None)
+        self._now = config.now
+        self._initializers = tuple(config.initializers)
+        self._interval_seconds = config.interval_seconds
+        self._shutdown_timeout_seconds = max(0.1, config.shutdown_timeout_seconds)
+        self._record_error = config.record_error or (lambda _error: None)
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._scheduler: threading.Thread | None = None
@@ -127,4 +132,4 @@ def scheduler_interval_seconds(at: datetime) -> float:
     return seconds_until_next_schedule_boundary(at, maximum_seconds=maximum)
 
 
-__all__ = ["RuntimeSupervisor", "scheduler_interval_seconds"]
+__all__ = ["RuntimeSupervisor", "RuntimeSupervisorConfig", "scheduler_interval_seconds"]

@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import Strategy
@@ -51,6 +55,15 @@ from trader.infra.deepseek.schema import (
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
 
 
+class _ChallengerOptions(TypedDict):
+    contexts: Mapping[str, ReviewCandidateContext]
+    phase: str
+    deadline: datetime
+    planned_bucket: str
+    emergency_reason: str
+    batch_id: str
+
+
 class ReviewerRequestExecutor:
     def __init__(self, context: ReviewerContext, status: ReviewerStatusTracker) -> None:
         self._settings = context.settings
@@ -69,14 +82,14 @@ class ReviewerRequestExecutor:
         strategy: Strategy,
         candidates: Sequence[FeatureSnapshot],
         results: dict[str, DeepSeekReview],
-        *,
-        contexts: Mapping[str, ReviewCandidateContext],
-        phase: str,
-        deadline: datetime,
-        planned_bucket: str,
-        emergency_reason: str,
-        batch_id: str,
+        **options: Unpack[_ChallengerOptions],
     ) -> int:
+        contexts = options["contexts"]
+        phase = options["phase"]
+        deadline = options["deadline"]
+        planned_bucket = options["planned_bucket"]
+        emergency_reason = options["emergency_reason"]
+        batch_id = options["batch_id"]
         call_limit = self._settings.challenger_limits.get(strategy.value, 0)
         if call_limit <= 0 or strategy is Strategy.LONG or planned_bucket == "shared_preheat":
             return 0
@@ -213,16 +226,9 @@ class ReviewerRequestExecutor:
         )
         self._finish_attempts(tracker.reservation_ids[first_offset:], response)
         completed_at = _in_deadline_timezone(self._now(), tracker.deadline)
-        parse_error = "finish_reason_length" if response.finish_reason == "length" else ""
-        if response.content is not None and not parse_error:
-            try:
-                return parse_challenger_reviews(response.content, candidates, completed_at), response, ""
-            except ValueError as exc:
-                parse_error = str(exc)
-        if response.content is None:
-            return None, response, response.error
-        if response.attempts >= 2 or completed_at >= tracker.deadline:
-            return None, response, parse_error
+        parsed, parse_error = _parse_challenger_response(response, candidates, completed_at)
+        if parsed is not None or response.content is None or response.attempts >= 2 or completed_at >= tracker.deadline:
+            return parsed, response, parse_error
         repair_offset = len(tracker.reservation_ids)
         repaired = self._client.complete(
             base_url=self._settings.base_url,
@@ -242,22 +248,12 @@ class ReviewerRequestExecutor:
         )
         self._finish_attempts(tracker.reservation_ids[repair_offset:], repaired)
         combined = _combine_results(response, repaired)
-        if repaired.content is None:
-            return None, combined, repaired.error or parse_error
-        if repaired.finish_reason == "length":
-            return None, combined, "finish_reason_length"
-        try:
-            return (
-                parse_challenger_reviews(
-                    repaired.content,
-                    candidates,
-                    _in_deadline_timezone(self._now(), tracker.deadline),
-                ),
-                combined,
-                "",
-            )
-        except ValueError as exc:
-            return None, combined, str(exc)
+        parsed, repair_error = _parse_challenger_response(
+            repaired,
+            candidates,
+            _in_deadline_timezone(self._now(), tracker.deadline),
+        )
+        return parsed, combined, repair_error or parse_error
 
     def request_and_parse(
         self,
@@ -276,18 +272,10 @@ class ReviewerRequestExecutor:
             maximum_attempts=2,
         )
         self._finish_attempts(tracker.reservation_ids[first_offset:], response)
-        if response.content is None:
-            return None, response, response.error
         completed_at = _in_deadline_timezone(self._now(), tracker.deadline)
-        first_error: DeepSeekSchemaError | None = None
-        if response.finish_reason != "length":
-            try:
-                return parse_reviews(response.content, candidates, completed_at), response, ""
-            except DeepSeekSchemaError as exc:
-                first_error = exc
-        error = "finish_reason_length" if response.finish_reason == "length" else str(first_error)
-        if response.attempts >= 2 or completed_at >= tracker.deadline:
-            return None, response, error
+        parsed, error = _parse_primary_response(response, candidates, completed_at)
+        if parsed is not None or response.content is None or response.attempts >= 2 or completed_at >= tracker.deadline:
+            return parsed, response, error
 
         repair_offset = len(tracker.reservation_ids)
         repaired = self._client.complete(
@@ -302,22 +290,12 @@ class ReviewerRequestExecutor:
         )
         self._finish_attempts(tracker.reservation_ids[repair_offset:], repaired)
         combined = _combine_results(response, repaired)
-        if repaired.content is None:
-            return None, combined, repaired.error or error
-        if repaired.finish_reason == "length":
-            return None, combined, "finish_reason_length"
-        try:
-            return (
-                parse_reviews(
-                    repaired.content,
-                    candidates,
-                    _in_deadline_timezone(self._now(), tracker.deadline),
-                ),
-                combined,
-                "",
-            )
-        except DeepSeekSchemaError as repair_error:
-            return None, combined, str(repair_error)
+        parsed, repair_error = _parse_primary_response(
+            repaired,
+            candidates,
+            _in_deadline_timezone(self._now(), tracker.deadline),
+        )
+        return parsed, combined, repair_error or error
 
     def _finish_attempts(self, reservation_ids: Sequence[str], response: DeepSeekHttpResult) -> None:
         if len(reservation_ids) != len(response.attempt_records):
@@ -368,3 +346,33 @@ class ReviewerRequestExecutor:
             challenger_identity=challenger_identity,
             challenger_status=challenger_status,
         )
+
+
+def _parse_challenger_response(
+    response: DeepSeekHttpResult,
+    candidates: Sequence[FeatureSnapshot],
+    completed_at: datetime,
+) -> tuple[dict[str, ChallengerReview] | None, str]:
+    if response.content is None:
+        return None, response.error
+    if response.finish_reason == "length":
+        return None, "finish_reason_length"
+    try:
+        return parse_challenger_reviews(response.content, candidates, completed_at), ""
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _parse_primary_response(
+    response: DeepSeekHttpResult,
+    candidates: Sequence[FeatureSnapshot],
+    completed_at: datetime,
+) -> tuple[dict[str, DeepSeekReview] | None, str]:
+    if response.content is None:
+        return None, response.error
+    if response.finish_reason == "length":
+        return None, "finish_reason_length"
+    try:
+        return parse_reviews(response.content, candidates, completed_at), ""
+    except DeepSeekSchemaError as exc:
+        return None, str(exc)

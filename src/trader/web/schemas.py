@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from trader.domain.market.models import LiveQuote
 from trader.domain.recommendation.models import (
@@ -18,30 +19,42 @@ from trader.domain.review.models import (
 API_SCHEMA_VERSION = "v3"
 
 
+@dataclass(frozen=True)
+class SnapshotDeliveryContext:
+    overlay: LiveOverlay | None = None
+    requested_date: str | None = None
+    current_trade_date: str | None = None
+    historical: bool = False
+    current_quotes: Mapping[str, LiveQuote] | None = None
+    view: str = "official"
+
+
 def snapshot_envelope(
     snapshot: RecommendationSnapshot,
     *,
     top_n: int,
-    overlay: LiveOverlay | None = None,
-    requested_date: str | None = None,
-    current_trade_date: str | None = None,
-    historical: bool = False,
-    current_quotes: Mapping[str, LiveQuote] | None = None,
-    view: str = "official",
+    delivery: SnapshotDeliveryContext | None = None,
 ) -> dict[str, object]:
     """Project a domain snapshot into the compact dashboard contract."""
-    live_quotes = overlay.quotes if overlay is not None and overlay.snapshot_id == snapshot.snapshot_id else {}
-    displayed_quotes = current_quotes if historical and current_quotes is not None else live_quotes
+    context = delivery or SnapshotDeliveryContext()
+    live_quotes = (
+        context.overlay.quotes
+        if context.overlay is not None and context.overlay.snapshot_id == snapshot.snapshot_id
+        else {}
+    )
+    displayed_quotes = (
+        context.current_quotes if context.historical and context.current_quotes is not None else live_quotes
+    )
     return {
         "schema_version": API_SCHEMA_VERSION,
         "status": "ready",
         "snapshot_id": snapshot.snapshot_id,
         "strategy": snapshot.strategy.value,
         "trade_date": snapshot.trade_date,
-        "requested_date": requested_date,
-        "current_trade_date": current_trade_date,
-        "historical": historical,
-        "view": "history" if historical else view,
+        "requested_date": context.requested_date,
+        "current_trade_date": context.current_trade_date,
+        "historical": context.historical,
+        "view": "history" if context.historical else context.view,
         "phase": snapshot.phase,
         "published_at": snapshot.published_at.isoformat(),
         "strategy_version": snapshot.strategy_version,
@@ -54,7 +67,7 @@ def snapshot_envelope(
             _recommendation(
                 item,
                 displayed_quotes.get(item.features.quote.code),
-                historical=historical,
+                historical=context.historical,
             )
             for item in snapshot.recommendations[:top_n]
         ],
@@ -217,6 +230,7 @@ def _anchor_to_now(anchor_price: float | None, current_price: float | None) -> f
 
 __all__ = [
     "API_SCHEMA_VERSION",
+    "SnapshotDeliveryContext",
     "empty_snapshot_envelope",
     "error_envelope",
     "snapshot_envelope",

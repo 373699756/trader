@@ -9,6 +9,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.domain.recommendation.models import Strategy
 from trader.infra.deepseek.budget_batch_store import (
@@ -52,17 +56,90 @@ class BudgetReservation:
     stage: str = ""
 
 
+class _BudgetStoreRequiredOptions(TypedDict):
+    daily_hard_limit: int
+    strategy_limits: Mapping[str, int]
+    stage_targets: Mapping[str, int]
+    stage_limits: Mapping[str, int]
+
+
+class _BudgetStoreOptionalOptions(TypedDict, total=False):
+    challenger_limits: Mapping[str, int] | None
+
+
+class BudgetStoreOptions(_BudgetStoreRequiredOptions, _BudgetStoreOptionalOptions):
+    pass
+
+
+class _ReserveRequiredOptions(TypedDict):
+    phase: str
+    requested_at: datetime
+
+
+class _ReserveOptionalOptions(TypedDict, total=False):
+    bucket: str | None
+    emergency: bool
+    emergency_reason: str
+    batch_id: str
+    model_role: str
+    requested_model: str
+    reasoning_effort: str
+
+
+class ReserveOptions(_ReserveRequiredOptions, _ReserveOptionalOptions):
+    pass
+
+
+class _FinishRequiredOptions(TypedDict):
+    status: str
+
+
+class _FinishOptionalOptions(TypedDict, total=False):
+    error: str
+    http_status: int | None
+    latency_ms: float | None
+    token_count: int
+    timed_out: bool
+    completed_at: datetime | None
+    actual_model: str | None
+    system_fingerprint: str | None
+    finish_reason: str | None
+    prompt_tokens: int
+    completion_tokens: int
+    prompt_cache_hit_tokens: int
+    prompt_cache_miss_tokens: int
+
+
+class FinishOptions(_FinishRequiredOptions, _FinishOptionalOptions):
+    pass
+
+
+@dataclass(frozen=True)
+class _ReservationContext:
+    strategy: Strategy
+    phase: str
+    requested_at: datetime
+    trade_date: str
+    bucket: str
+    emergency_reason: str
+    batch_id: str
+    model_role: str
+    requested_model: str
+    reasoning_effort: str
+    stage: str
+
+
 class DeepSeekBudgetStore:
     def __init__(
         self,
         database_path: Path,
-        *,
-        daily_hard_limit: int,
-        strategy_limits: Mapping[str, int],
-        stage_targets: Mapping[str, int],
-        stage_limits: Mapping[str, int],
-        challenger_limits: Mapping[str, int] | None = None,
+        **options: Unpack[BudgetStoreOptions],
     ) -> None:
+        daily_hard_limit = options["daily_hard_limit"]
+        strategy_limits = options["strategy_limits"]
+        stage_targets = options["stage_targets"]
+        stage_limits = options["stage_limits"]
+        challenger_limits = options.get("challenger_limits")
         if not 0 <= daily_hard_limit <= 188:
             raise ValueError("daily hard limit must be between 0 and 188")
         if sum(strategy_limits.values()) != daily_hard_limit:
@@ -247,147 +324,158 @@ class DeepSeekBudgetStore:
     def reserve(
         self,
         strategy: Strategy,
-        *,
-        phase: str,
-        requested_at: datetime,
-        bucket: str | None = None,
-        emergency: bool = False,
-        emergency_reason: str = "",
-        batch_id: str = "",
-        model_role: str = "primary",
-        requested_model: str = "",
-        reasoning_effort: str = "",
+        **options: Unpack[ReserveOptions],
     ) -> BudgetReservation:
-        _require_aware(requested_at, "budget requested_at")
-        trade_date = requested_at.date().isoformat()
-        requested_bucket = "emergency" if emergency else (bucket or strategy.value)
-        if strategy is Strategy.LONG or requested_bucket == "long":
-            return BudgetReservation(False, "", requested_bucket, "long_not_allowed")
-        if requested_bucket not in self._limits:
-            return BudgetReservation(False, "", requested_bucket, "unknown_bucket")
-        if model_role not in {"primary", "challenger"}:
-            return BudgetReservation(False, "", requested_bucket, "invalid_model_role")
-        if model_role == "challenger" and strategy is Strategy.LONG:
-            return BudgetReservation(False, "", requested_bucket, "challenger_not_allowed")
-        stage = _stage_key(strategy, phase, requested_bucket)
-        if stage not in self._stage_limits:
-            return BudgetReservation(False, "", requested_bucket, "unknown_stage", stage)
-        if requested_bucket == "emergency" and emergency_reason not in _EMERGENCY_REASONS:
-            return BudgetReservation(False, "", requested_bucket, "invalid_emergency_reason", stage)
-
+        context, rejected = self._reservation_context(strategy, options)
+        if rejected is not None:
+            return rejected
+        assert context is not None
         reservation_id = uuid.uuid4().hex
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            total = _count(connection, "trade_date = ?", (trade_date,))
-            if total >= self._daily_hard_limit:
+            rejection = self._limit_rejection(connection, context)
+            if rejection:
                 connection.rollback()
-                return BudgetReservation(False, "", requested_bucket, "daily_hard_limit", stage)
-            bucket_used = _count(
-                connection,
-                "trade_date = ? AND bucket = ?",
-                (trade_date, requested_bucket),
-            )
-            if bucket_used >= self._limits[requested_bucket]:
-                connection.rollback()
-                return BudgetReservation(False, "", requested_bucket, "bucket_limit", stage)
-            soft_limit = _SOFT_BUCKET_LIMITS.get(requested_bucket)
-            if soft_limit is not None and model_role == "primary":
-                primary_bucket_used = _count(
-                    connection,
-                    "trade_date = ? AND bucket = ? AND model_role = 'primary'",
-                    (trade_date, requested_bucket),
-                )
-                if primary_bucket_used >= soft_limit:
-                    connection.rollback()
-                    return BudgetReservation(False, "", requested_bucket, "soft_bucket_limit", stage)
-            if requested_bucket == "emergency":
-                normal_used = _count(
-                    connection,
-                    "trade_date = ? AND bucket = ? AND model_role = 'primary'",
-                    (trade_date, strategy.value),
-                )
-                normal_limit = min(
-                    self._limits[strategy.value],
-                    _SOFT_BUCKET_LIMITS[strategy.value],
-                )
-                if normal_used < normal_limit:
-                    connection.rollback()
-                    return BudgetReservation(False, "", requested_bucket, "normal_budget_available", stage)
-            else:
-                stage_used = _count(
-                    connection,
-                    "trade_date = ? AND stage_key = ?",
-                    (trade_date, stage),
-                )
-                if stage_used >= self._stage_limits[stage]:
-                    connection.rollback()
-                    return BudgetReservation(False, "", requested_bucket, "stage_limit", stage)
-            if model_role == "challenger":
-                challenger_total = _count(
-                    connection,
-                    "trade_date = ? AND model_role = 'challenger'",
-                    (trade_date,),
-                )
-                if challenger_total >= _CHALLENGER_SOFT_LIMIT:
-                    connection.rollback()
-                    return BudgetReservation(False, "", requested_bucket, "challenger_soft_limit", stage)
-                challenger_used = _count(
-                    connection,
-                    "trade_date = ? AND strategy = ? AND model_role = 'challenger'",
-                    (trade_date, strategy.value),
-                )
-                if challenger_used >= self._challenger_limits[strategy.value]:
-                    connection.rollback()
-                    return BudgetReservation(False, "", requested_bucket, "challenger_limit", stage)
-            connection.execute(
-                """
-                INSERT INTO deepseek_call_reservations(
-                    reservation_id, trade_date, strategy, bucket, phase, stage_key,
-                    batch_id, emergency_reason, requested_at, status,
-                    model_role, requested_model, reasoning_effort
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?)
-                """,
-                (
-                    reservation_id,
-                    trade_date,
-                    strategy.value,
-                    requested_bucket,
-                    phase,
-                    stage,
-                    batch_id,
-                    emergency_reason,
-                    requested_at.isoformat(),
-                    model_role,
-                    requested_model or None,
-                    reasoning_effort or None,
-                ),
-            )
+                return BudgetReservation(False, "", context.bucket, rejection, context.stage)
+            self._insert_reservation(connection, reservation_id, context)
             connection.commit()
-        return BudgetReservation(True, reservation_id, requested_bucket, "reserved", stage)
+        return BudgetReservation(True, reservation_id, context.bucket, "reserved", context.stage)
+
+    def _reservation_context(
+        self,
+        strategy: Strategy,
+        options: ReserveOptions,
+    ) -> tuple[_ReservationContext | None, BudgetReservation | None]:
+        requested_at = options["requested_at"]
+        _require_aware(requested_at, "budget requested_at")
+        bucket = "emergency" if options.get("emergency", False) else (options.get("bucket") or strategy.value)
+        model_role = options.get("model_role", "primary")
+        emergency_reason = options.get("emergency_reason", "")
+        stage = _stage_key(strategy, options["phase"], bucket)
+        checks = (
+            (strategy is Strategy.LONG or bucket == "long", "long_not_allowed"),
+            (bucket not in self._limits, "unknown_bucket"),
+            (model_role not in {"primary", "challenger"}, "invalid_model_role"),
+            (model_role == "challenger" and strategy is Strategy.LONG, "challenger_not_allowed"),
+            (stage not in self._stage_limits, "unknown_stage"),
+            (bucket == "emergency" and emergency_reason not in _EMERGENCY_REASONS, "invalid_emergency_reason"),
+        )
+        reason = next((value for invalid, value in checks if invalid), "")
+        if reason:
+            rejection_stage = stage if reason in {"unknown_stage", "invalid_emergency_reason"} else ""
+            return None, BudgetReservation(False, "", bucket, reason, rejection_stage)
+        return (
+            _ReservationContext(
+                strategy,
+                options["phase"],
+                requested_at,
+                requested_at.date().isoformat(),
+                bucket,
+                emergency_reason,
+                options.get("batch_id", ""),
+                model_role,
+                options.get("requested_model", ""),
+                options.get("reasoning_effort", ""),
+                stage,
+            ),
+            None,
+        )
+
+    def _limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
+        rejection = self._primary_limit_rejection(connection, context)
+        if rejection or context.model_role != "challenger":
+            return rejection
+        return self._challenger_limit_rejection(connection, context)
+
+    def _primary_limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
+        trade_date = context.trade_date
+        bucket = context.bucket
+        if _count(connection, "trade_date = ?", (trade_date,)) >= self._daily_hard_limit:
+            return "daily_hard_limit"
+        if _count(connection, "trade_date = ? AND bucket = ?", (trade_date, bucket)) >= self._limits[bucket]:
+            return "bucket_limit"
+        soft_limit = _SOFT_BUCKET_LIMITS.get(bucket)
+        if context.model_role == "primary" and soft_limit is not None:
+            used = _count(
+                connection,
+                "trade_date = ? AND bucket = ? AND model_role = 'primary'",
+                (trade_date, bucket),
+            )
+            if used >= soft_limit:
+                return "soft_bucket_limit"
+        return self._stage_limit_rejection(connection, context)
+
+    def _stage_limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
+        if context.bucket == "emergency":
+            normal_used = _count(
+                connection,
+                "trade_date = ? AND bucket = ? AND model_role = 'primary'",
+                (context.trade_date, context.strategy.value),
+            )
+            normal_limit = min(self._limits[context.strategy.value], _SOFT_BUCKET_LIMITS[context.strategy.value])
+            return "normal_budget_available" if normal_used < normal_limit else ""
+        stage_used = _count(
+            connection,
+            "trade_date = ? AND stage_key = ?",
+            (context.trade_date, context.stage),
+        )
+        return "stage_limit" if stage_used >= self._stage_limits[context.stage] else ""
+
+    def _challenger_limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
+        challenger_total = _count(
+            connection,
+            "trade_date = ? AND model_role = 'challenger'",
+            (context.trade_date,),
+        )
+        if challenger_total >= _CHALLENGER_SOFT_LIMIT:
+            return "challenger_soft_limit"
+        challenger_used = _count(
+            connection,
+            "trade_date = ? AND strategy = ? AND model_role = 'challenger'",
+            (context.trade_date, context.strategy.value),
+        )
+        return "challenger_limit" if challenger_used >= self._challenger_limits[context.strategy.value] else ""
+
+    @staticmethod
+    def _insert_reservation(
+        connection: sqlite3.Connection,
+        reservation_id: str,
+        context: _ReservationContext,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO deepseek_call_reservations(
+                reservation_id, trade_date, strategy, bucket, phase, stage_key,
+                batch_id, emergency_reason, requested_at, status,
+                model_role, requested_model, reasoning_effort
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?)
+            """,
+            (
+                reservation_id,
+                context.trade_date,
+                context.strategy.value,
+                context.bucket,
+                context.phase,
+                context.stage,
+                context.batch_id,
+                context.emergency_reason,
+                context.requested_at.isoformat(),
+                context.model_role,
+                context.requested_model or None,
+                context.reasoning_effort or None,
+            ),
+        )
 
     def finish(
         self,
         reservation_id: str,
-        *,
-        status: str,
-        error: str = "",
-        http_status: int | None = None,
-        latency_ms: float | None = None,
-        token_count: int = 0,
-        timed_out: bool = False,
-        completed_at: datetime | None = None,
-        actual_model: str | None = None,
-        system_fingerprint: str | None = None,
-        finish_reason: str | None = None,
-        prompt_tokens: int = 0,
-        completion_tokens: int = 0,
-        prompt_cache_hit_tokens: int = 0,
-        prompt_cache_miss_tokens: int = 0,
+        **options: Unpack[FinishOptions],
     ) -> None:
+        status = options["status"]
         if status not in _CALL_TERMINALS:
             raise ValueError(f"invalid physical call terminal status: {status}")
         with self._connect() as connection:
-            completed = completed_at or datetime.now().astimezone()
+            completed = options.get("completed_at") or datetime.now().astimezone()
             _require_aware(completed, "physical call completion time")
             connection.execute("BEGIN IMMEDIATE")
             changed = connection.execute(
@@ -401,18 +489,18 @@ class DeepSeekBudgetStore:
                 (
                     status,
                     completed.isoformat(),
-                    error[:1000],
-                    http_status,
-                    latency_ms,
-                    max(0, token_count),
-                    int(timed_out),
-                    actual_model,
-                    system_fingerprint,
-                    finish_reason,
-                    max(0, prompt_tokens),
-                    max(0, completion_tokens),
-                    max(0, prompt_cache_hit_tokens),
-                    max(0, prompt_cache_miss_tokens),
+                    options.get("error", "")[:1000],
+                    options.get("http_status"),
+                    options.get("latency_ms"),
+                    max(0, options.get("token_count", 0)),
+                    int(options.get("timed_out", False)),
+                    options.get("actual_model"),
+                    options.get("system_fingerprint"),
+                    options.get("finish_reason"),
+                    max(0, options.get("prompt_tokens", 0)),
+                    max(0, options.get("completion_tokens", 0)),
+                    max(0, options.get("prompt_cache_hit_tokens", 0)),
+                    max(0, options.get("prompt_cache_miss_tokens", 0)),
                     reservation_id,
                 ),
             ).rowcount

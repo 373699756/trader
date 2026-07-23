@@ -6,7 +6,11 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from typing import TYPE_CHECKING, TypedDict
 from zoneinfo import ZoneInfo
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import Strategy
@@ -23,6 +27,37 @@ from trader.infra.deepseek.schema import (
 )
 
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
+
+
+class _AnnotateRequiredOptions(TypedDict):
+    candidate: FeatureSnapshot
+    review_stage: str
+    challenger_status: str
+    requested_model: str
+    actual_model: str | None
+    thinking_mode: str
+
+
+class _AnnotateOptionalOptions(TypedDict, total=False):
+    model_role: str
+    reasoning_effort: str | None
+    system_fingerprint: str | None
+    prompt_cache_hit_tokens: int | None
+    prompt_cache_miss_tokens: int | None
+
+
+class _AnnotateOptions(_AnnotateRequiredOptions, _AnnotateOptionalOptions):
+    pass
+
+
+class _PhysicalCallOptions(TypedDict):
+    enabled: bool
+    configured: bool
+    candidate_count: int
+    cache_hits: int
+    batch_status: str
+    last_error: str
+    physical_attempts: int
 
 
 @dataclass
@@ -99,28 +134,22 @@ def _terminal_review(
 
 def _annotate_review(
     review: DeepSeekReview,
-    *,
-    candidate: FeatureSnapshot,
-    review_stage: str,
-    challenger_status: str,
-    requested_model: str,
-    actual_model: str | None,
-    thinking_mode: str,
-    model_role: str = "primary",
-    reasoning_effort: str | None = None,
-    system_fingerprint: str | None = None,
-    prompt_cache_hit_tokens: int | None = None,
-    prompt_cache_miss_tokens: int | None = None,
+    **options: Unpack[_AnnotateOptions],
 ) -> DeepSeekReview:
+    candidate = options["candidate"]
+    actual_model = options["actual_model"]
+    system_fingerprint = options.get("system_fingerprint")
+    prompt_cache_hit_tokens = options.get("prompt_cache_hit_tokens")
+    prompt_cache_miss_tokens = options.get("prompt_cache_miss_tokens")
     return replace(
         review,
-        review_stage=review_stage,
-        challenger_status=challenger_status,
-        requested_model=requested_model or None,
+        review_stage=options["review_stage"],
+        challenger_status=options["challenger_status"],
+        requested_model=options["requested_model"] or None,
         actual_model=actual_model if actual_model is not None else review.actual_model,
-        thinking_mode=thinking_mode or None,
-        model_role=model_role,
-        reasoning_effort=reasoning_effort,
+        thinking_mode=options["thinking_mode"] or None,
+        model_role=options.get("model_role", "primary"),
+        reasoning_effort=options.get("reasoning_effort"),
         system_fingerprint=(system_fingerprint if system_fingerprint is not None else review.system_fingerprint),
         prompt_cache_hit_tokens=(
             prompt_cache_hit_tokens if prompt_cache_hit_tokens is not None else review.prompt_cache_hit_tokens
@@ -325,15 +354,15 @@ def _challenger_deadline(strategy: Strategy, deadline: datetime) -> datetime:
 
 
 def _physical_call_acceptance(
-    *,
-    enabled: bool,
-    configured: bool,
-    candidate_count: int,
-    cache_hits: int,
-    batch_status: str,
-    last_error: str,
-    physical_attempts: int,
+    **options: Unpack[_PhysicalCallOptions],
 ) -> Mapping[str, object]:
+    enabled = options["enabled"]
+    configured = options["configured"]
+    candidate_count = options["candidate_count"]
+    cache_hits = options["cache_hits"]
+    batch_status = options["batch_status"]
+    last_error = options["last_error"]
+    physical_attempts = options["physical_attempts"]
     applicable = enabled and configured and candidate_count > 0 and cache_hits < candidate_count
     if physical_attempts > 0:
         reason = ""

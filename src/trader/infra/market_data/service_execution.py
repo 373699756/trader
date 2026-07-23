@@ -5,9 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
-from typing import ParamSpec, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar
 
-from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
+
+from trader.application.cache import BoundedCache, CacheIdentity, CacheIdentitySpec, build_cache_identity
 from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.schedule import phase_at, shanghai_now
 from trader.application.source_lanes import SourceLaneRegistry
@@ -17,25 +20,28 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 
+class MarketTaskRunnerOptions(TypedDict):
+    worker_pool: BoundedExecutor | None
+    source_lanes: SourceLaneRegistry | None
+    cache: BoundedCache[object] | None
+    source_contract_versions: Mapping[str, str]
+    config_version: str
+    schema_version: str
+    wall_clock: Callable[[], datetime]
+
+
 class MarketTaskRunner:
     def __init__(
         self,
-        *,
-        worker_pool: BoundedExecutor | None,
-        source_lanes: SourceLaneRegistry | None,
-        cache: BoundedCache[object] | None,
-        source_contract_versions: Mapping[str, str],
-        config_version: str,
-        schema_version: str,
-        wall_clock: Callable[[], datetime],
+        **options: Unpack[MarketTaskRunnerOptions],
     ) -> None:
-        self.worker_pool = worker_pool
-        self.source_lanes = source_lanes
-        self.cache = cache
-        self.source_contract_versions = dict(source_contract_versions)
-        self.config_version = config_version
-        self.schema_version = schema_version
-        self.wall_clock = wall_clock
+        self.worker_pool = options["worker_pool"]
+        self.source_lanes = options["source_lanes"]
+        self.cache = options["cache"]
+        self.source_contract_versions = dict(options["source_contract_versions"])
+        self.config_version = options["config_version"]
+        self.schema_version = options["schema_version"]
+        self.wall_clock = options["wall_clock"]
 
     def run_data_task(
         self,
@@ -79,15 +85,17 @@ class MarketTaskRunner:
     ) -> CacheIdentity:
         local = shanghai_now(observed_at)
         return build_cache_identity(
-            dataset=dataset,
-            source=source,
-            subject_key=subject_key,
-            request=request,
-            trade_date=local.date().isoformat(),
-            phase=phase_at(local, is_trading_day=True).value,
-            source_contract_version=self.source_contract_versions.get(source, f"{source}-component-v1"),
-            config_version=self.config_version,
-            schema_version=self.schema_version,
+            CacheIdentitySpec(
+                dataset=dataset,
+                source=source,
+                subject_key=subject_key,
+                request=request,
+                trade_date=local.date().isoformat(),
+                phase=phase_at(local, is_trading_day=True).value,
+                source_contract_version=self.source_contract_versions.get(source, f"{source}-component-v1"),
+                config_version=self.config_version,
+                schema_version=self.schema_version,
+            )
         )
 
     def run_data_task_until(

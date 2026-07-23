@@ -6,6 +6,10 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.infra.market_data.features import FEATURE_SCHEMA_NAMES, FEATURE_SCHEMA_VERSION
 from trader.infra.settings_models import FactorDefinition, StrategySettings
@@ -318,17 +322,27 @@ def _validate_factor_definition(
             )
 
 
+class _TailFactorOptions(TypedDict):
+    raw_inputs: tuple[str, ...]
+    formula: str
+    unit: str
+    minimum_samples: int
+    normalization: str
+    missing_policy: str
+    output_range: tuple[float, float]
+
+
 def _validate_tail_factor_definition(
     definition: FactorDefinition,
-    *,
-    raw_inputs: tuple[str, ...],
-    formula: str,
-    unit: str,
-    minimum_samples: int,
-    normalization: str,
-    missing_policy: str,
-    output_range: tuple[float, float],
+    **options: Unpack[_TailFactorOptions],
 ) -> None:
+    raw_inputs = options["raw_inputs"]
+    formula = options["formula"]
+    unit = options["unit"]
+    minimum_samples = options["minimum_samples"]
+    normalization = options["normalization"]
+    missing_policy = options["missing_policy"]
+    output_range = options["output_range"]
     expected: tuple[tuple[str, object], ...] = (
         ("strategies", ("tomorrow",)),
         ("raw_inputs", raw_inputs),

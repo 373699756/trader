@@ -6,12 +6,15 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import as_completed
 from datetime import datetime, timedelta, timezone
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 import requests
 
-from trader.application.workers import BoundedExecutor, borrow_executor
+from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
 from trader.domain.market.models import MarketQuote
 from trader.domain.market.tail import MinuteBar
 from trader.infra.market_data.history import DailyBar, PriceAdjustment
@@ -33,25 +36,35 @@ _REQUEST_ROUNDS = 2
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
+class _EastmoneyRequiredOptions(TypedDict):
+    timeout_seconds: float
+
+
+class _EastmoneyOptionalOptions(TypedDict, total=False):
+    workers: int
+    page_size: int
+    worker_pool: BoundedExecutor | None
+    session_factory: SessionFactory
+    cancel_requested: Callable[[], bool]
+    wall_clock: Callable[[], datetime]
+
+
+class _EastmoneyOptions(_EastmoneyRequiredOptions, _EastmoneyOptionalOptions):
+    pass
+
+
 class EastmoneyClient:
     def __init__(
         self,
-        *,
-        timeout_seconds: float,
-        workers: int = 6,
-        page_size: int = 500,
-        worker_pool: BoundedExecutor | None = None,
-        session_factory: SessionFactory = requests.Session,
-        cancel_requested: Callable[[], bool] = lambda: False,
-        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        **options: Unpack[_EastmoneyOptions],
     ) -> None:
-        self._timeout_seconds = timeout_seconds
-        self._workers = max(1, workers)
-        self._page_size = max(100, page_size)
-        self._worker_pool = worker_pool
-        self._session_factory = session_factory
-        self._cancel_requested = cancel_requested
-        self._wall_clock = wall_clock
+        self._timeout_seconds = options["timeout_seconds"]
+        self._workers = max(1, options.get("workers", 6))
+        self._page_size = max(100, options.get("page_size", 500))
+        self._worker_pool = options.get("worker_pool")
+        self._session_factory = options.get("session_factory", requests.Session)
+        self._cancel_requested = options.get("cancel_requested", lambda: False)
+        self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
 
     def fetch_market(self, now: datetime | None = None) -> tuple[MarketQuote, ...]:
         first = self._fetch_page(1)
@@ -70,9 +83,11 @@ class EastmoneyClient:
             else:
                 with borrow_executor(
                     worker_pool,
-                    worker_count=min(self._workers, page_count - 1),
-                    thread_name_prefix="eastmoney",
-                    queue_capacity=page_count - 1,
+                    BorrowExecutorOptions(
+                        worker_count=min(self._workers, page_count - 1),
+                        thread_name_prefix="eastmoney",
+                        queue_capacity=page_count - 1,
+                    ),
                 ) as pool:
                     futures = {}
                     for page in range(2, page_count + 1):

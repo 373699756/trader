@@ -5,16 +5,19 @@ from __future__ import annotations
 import math
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import Future, as_completed, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from concurrent.futures import as_completed, wait
 from dataclasses import dataclass
 from datetime import date, datetime, time
-from typing import ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar, cast
 from zoneinfo import ZoneInfo
 
-from trader.application.cache import build_cache_identity, request_fingerprint
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
+
+from trader.application.cache import CacheIdentity, CacheIdentitySpec, build_cache_identity, request_fingerprint
 from trader.application.ports.market import MarketDataDeadlineExceededError
-from trader.application.workers import BoundedExecutor, borrow_executor, submit_or_run_inline
+from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.history import (
     DailyBar,
@@ -48,25 +51,45 @@ class HistoryStoreStatus:
     out_of_order_count: int
 
 
+@dataclass(frozen=True)
+class _HistoryLoadRequest:
+    codes: tuple[str, ...]
+    force: bool
+    deadline: datetime | None
+    action_restrictions: dict[str, set[str]] | None
+
+
+@dataclass
+class _HistoryLoadState:
+    request: _HistoryLoadRequest
+    result: dict[str, tuple[DailyBar, ...]]
+    previous: dict[str, _HistoryEntry]
+    cache_observed_at: datetime | None
+    pending_entries: dict[str, _HistoryEntry]
+
+
+class HistoryStoreOptions(TypedDict):
+    history_worker_pool: BoundedExecutor | None
+    workers: int
+    ttl_seconds: float
+    capacity: int
+    monotonic: Callable[[], float]
+
+
 class HistoryStore:
     def __init__(
         self,
         history_client: DailyHistoryClient,
         runner: MarketTaskRunner,
-        *,
-        history_worker_pool: BoundedExecutor | None,
-        workers: int,
-        ttl_seconds: float,
-        capacity: int,
-        monotonic: Callable[[], float],
+        **options: Unpack[HistoryStoreOptions],
     ) -> None:
         self._history_client = history_client
         self._runner = runner
-        self._history_worker_pool = history_worker_pool
-        self._history_workers = max(1, workers)
-        self._history_ttl_seconds = max(60.0, ttl_seconds)
-        self._history_cache_limit = max(1, capacity)
-        self._monotonic = monotonic
+        self._history_worker_pool = options["history_worker_pool"]
+        self._history_workers = max(1, options["workers"])
+        self._history_ttl_seconds = max(60.0, options["ttl_seconds"])
+        self._history_cache_limit = max(1, options["capacity"])
+        self._monotonic = options["monotonic"]
         self._lock = threading.Lock()
         self._history: dict[str, _HistoryEntry] = {}
         self._history_error_count = 0
@@ -83,181 +106,224 @@ class HistoryStore:
         deadline: datetime | None = None,
         action_restrictions: dict[str, set[str]] | None = None,
     ) -> Mapping[str, tuple[DailyBar, ...]]:
-        self._runner.ensure_before_deadline(deadline)
+        request = _HistoryLoadRequest(tuple(codes), force, deadline, action_restrictions)
+        self._runner.ensure_before_deadline(request.deadline)
         source_lanes = self._runner.source_lanes
         if source_lanes is not None and not source_lanes.owns_current_thread(_HISTORY_SOURCE_LANE):
-            observed_at = self._runner.wall_clock()
-            identity = _source_batch_identity(
-                "daily_history",
-                codes,
-                observed_at,
-                force=force,
-                deadline=deadline,
-            )
-            lane_future = source_lanes.submit(
-                _HISTORY_SOURCE_LANE,
-                identity,
-                observed_at,
-                self.load,
-                codes,
-                force=force,
-                deadline=deadline,
-                action_restrictions=action_restrictions,
-            )
-            if deadline is None:
-                return lane_future.result()
-            remaining = max(0.0, (deadline - self._runner.wall_clock()).total_seconds())
-            try:
-                lane_result = lane_future.result(timeout=remaining)
-            except FutureTimeoutError as exc:
-                lane_future.cancel()
-                with self._lock:
-                    self._history_error_count += 1
-                raise MarketDataDeadlineExceededError("history source lane exceeded its batch deadline") from exc
-            self._runner.ensure_before_deadline(deadline)
-            return lane_result
+            return self._load_via_source_lane(request)
+        return self._load_local(request)
+
+    def _load_via_source_lane(
+        self,
+        request: _HistoryLoadRequest,
+    ) -> Mapping[str, tuple[DailyBar, ...]]:
+        source_lanes = self._runner.source_lanes
+        assert source_lanes is not None
+        observed_at = self._runner.wall_clock()
+        identity = _source_batch_identity(
+            "daily_history",
+            request.codes,
+            observed_at,
+            force=request.force,
+            deadline=request.deadline,
+        )
+        lane_future = source_lanes.submit(
+            _HISTORY_SOURCE_LANE,
+            identity,
+            observed_at,
+            self.load,
+            request.codes,
+            force=request.force,
+            deadline=request.deadline,
+            action_restrictions=request.action_restrictions,
+        )
+        if request.deadline is None:
+            return lane_future.result()
+        remaining = max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
+        try:
+            lane_result = lane_future.result(timeout=remaining)
+        except FutureTimeoutError as exc:
+            lane_future.cancel()
+            with self._lock:
+                self._history_error_count += 1
+            raise MarketDataDeadlineExceededError("history source lane exceeded its batch deadline") from exc
+        self._runner.ensure_before_deadline(request.deadline)
+        return lane_result
+
+    def _load_local(
+        self,
+        request: _HistoryLoadRequest,
+    ) -> Mapping[str, tuple[DailyBar, ...]]:
         result = (
             {}
-            if force
+            if request.force
             else self.cached(
-                codes,
+                request.codes,
                 fresh_only=True,
-                action_restrictions=action_restrictions,
+                action_restrictions=request.action_restrictions,
             )
         )
         cache_observed_at = self._runner.wall_clock() if self._runner.cache is not None else None
         with self._lock:
-            previous = {code: self._history[code] for code in codes if code in self._history}
-        missing = [code for code in codes if force or code not in result]
+            previous = {code: self._history[code] for code in request.codes if code in self._history}
+        missing = [code for code in request.codes if request.force or code not in result]
         if not missing:
-            self._runner.ensure_before_deadline(deadline)
+            self._runner.ensure_before_deadline(request.deadline)
             return result
+        state = _HistoryLoadState(request, result, previous, cache_observed_at, {})
+        self._fetch_missing_history(state, missing)
+        self._mark_non_actionable_history(state)
+        return result
+
+    def _fetch_missing_history(
+        self,
+        state: _HistoryLoadState,
+        missing: Sequence[str],
+    ) -> None:
+        request = state.request
+        source_lanes = self._runner.source_lanes
         history_pool = self._history_worker_pool or self._runner.worker_pool
         with borrow_executor(
             history_pool,
-            worker_count=min(self._history_workers, len(missing)),
-            thread_name_prefix="candidate-history",
-            queue_capacity=len(missing),
-            wait_on_exit=deadline is None,
-            nested_inline=(
-                history_pool is self._runner.worker_pool
-                and source_lanes is not None
-                and source_lanes.owns_current_thread(_HISTORY_SOURCE_LANE)
+            BorrowExecutorOptions(
+                worker_count=min(self._history_workers, len(missing)),
+                thread_name_prefix="candidate-history",
+                queue_capacity=len(missing),
+                wait_on_exit=request.deadline is None,
+                nested_inline=(
+                    history_pool is self._runner.worker_pool
+                    and source_lanes is not None
+                    and source_lanes.owns_current_thread(_HISTORY_SOURCE_LANE)
+                ),
             ),
         ) as pool:
             futures = {}
             for code in missing:
-                self._runner.ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(request.deadline)
                 future = submit_or_run_inline(pool, self._history_client.fetch_history, code, days=90)
-                self._runner.ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(request.deadline)
                 futures[future] = code
-            if deadline is None:
-                completed = as_completed(futures)
-            else:
-                timeout = max(0.0, (deadline - self._runner.wall_clock()).total_seconds())
-                completed_set, pending = wait(futures, timeout=timeout)
-                if pending:
-                    for future in pending:
-                        future.cancel()
-                    with self._lock:
-                        self._history_error_count += len(pending)
-                    raise MarketDataDeadlineExceededError("history preload exceeded its batch deadline")
-                completed = iter(completed_set)
-            self._runner.ensure_before_deadline(deadline)
-            pending_entries: dict[str, _HistoryEntry] = {}
+            completed = self._completed_history_futures(futures, request.deadline)
             for future in completed:
-                self._runner.ensure_before_deadline(deadline)
+                self._runner.ensure_before_deadline(request.deadline)
                 code = futures[future]
-                with self._lock:
-                    old_entry = self._history.get(code) or previous.get(code)
-                used_fallback = False
-                try:
-                    bars = tuple(future.result())
-                except Exception:
-                    bars = ()
-                    with self._lock:
-                        self._history_error_count += 1
-                if any(bar.adjustment is not PriceAdjustment.QFQ for bar in bars):
-                    bars = ()
-                    with self._lock:
-                        self._history_error_count += 1
-                self._runner.ensure_before_deadline(deadline)
-                if bars and old_entry is not None and _history_version(bars) < _history_version(old_entry.bars):
-                    bars = old_entry.bars
-                    used_fallback = True
-                    with self._lock:
+                self._consume_history_future(state, code, future)
+        self._commit_history_entries(state)
+
+    def _completed_history_futures(
+        self,
+        futures: Mapping[Future[Sequence[DailyBar]], str],
+        deadline: datetime | None,
+    ) -> Iterable[Future[Sequence[DailyBar]]]:
+        if deadline is None:
+            return as_completed(futures)
+        timeout = max(0.0, (deadline - self._runner.wall_clock()).total_seconds())
+        completed, pending = wait(futures, timeout=timeout)
+        if not pending:
+            return completed
+        for future in pending:
+            future.cancel()
+        with self._lock:
+            self._history_error_count += len(pending)
+        raise MarketDataDeadlineExceededError("history preload exceeded its batch deadline")
+
+    def _consume_history_future(
+        self,
+        state: _HistoryLoadState,
+        code: str,
+        future: Future[Sequence[DailyBar]],
+    ) -> None:
+        with self._lock:
+            old_entry = self._history.get(code) or state.previous.get(code)
+        used_fallback = False
+        try:
+            bars = tuple(future.result())
+        except Exception:
+            bars = ()
+            with self._lock:
+                self._history_error_count += 1
+        if any(bar.adjustment is not PriceAdjustment.QFQ for bar in bars):
+            bars = ()
+            with self._lock:
+                self._history_error_count += 1
+        self._runner.ensure_before_deadline(state.request.deadline)
+        if bars and old_entry is not None and _history_version(bars) < _history_version(old_entry.bars):
+            bars = old_entry.bars
+            used_fallback = True
+            with self._lock:
+                self._history_out_of_order_count += 1
+        elif not bars and old_entry is not None and old_entry.bars:
+            bars = old_entry.bars
+            used_fallback = True
+        state.result[code] = bars
+        self._cache_history_result(state, code, bars, used_fallback)
+        state.pending_entries[code] = _HistoryEntry(
+            bars=bars,
+            expires_at=self._monotonic()
+            + (min(60.0, self._history_ttl_seconds) if used_fallback or not bars else self._history_ttl_seconds),
+            source=old_entry.source if used_fallback and old_entry is not None else "eastmoney",
+        )
+
+    def _cache_history_result(
+        self,
+        state: _HistoryLoadState,
+        code: str,
+        bars: tuple[DailyBar, ...],
+        used_fallback: bool,
+    ) -> None:
+        cache = self._runner.cache
+        if cache is None:
+            return
+        self._runner.ensure_before_deadline(state.request.deadline)
+        assert state.cache_observed_at is not None
+        identity = self._history_cache_identity(code, state.cache_observed_at)
+        if bars:
+            cache.put(identity, bars, data_version=_history_version(bars), source_time=_history_source_time(bars))
+            if used_fallback:
+                cache.put_negative(identity, error_code="history_refresh_failed")
+            return
+        cache.put_negative(identity, error_code="history_no_data")
+
+    def _commit_history_entries(self, state: _HistoryLoadState) -> None:
+        self._runner.ensure_before_deadline(state.request.deadline)
+        with self._lock:
+            self._runner.ensure_before_deadline(state.request.deadline)
+            for code, incoming in tuple(state.pending_entries.items()):
+                current = self._history.get(code)
+                if (
+                    current is not None
+                    and current.bars
+                    and (not incoming.bars or _history_version(incoming.bars) < _history_version(current.bars))
+                ):
+                    if incoming.bars:
                         self._history_out_of_order_count += 1
-                elif not bars and old_entry is not None and old_entry.bars:
-                    bars = old_entry.bars
-                    used_fallback = True
-                result[code] = bars
-                cache = self._runner.cache
-                if cache is not None:
-                    self._runner.ensure_before_deadline(deadline)
-                    assert cache_observed_at is not None
-                    cache_identity = self._runner.cache_identity(
-                        "daily_history",
-                        "eastmoney",
-                        code,
-                        {"code": code, "days": 90, "adjust": "qfq"},
-                        cache_observed_at,
-                    )
-                    if bars:
-                        cache.put(
-                            cache_identity,
-                            bars,
-                            data_version=_history_version(bars),
-                            source_time=_history_source_time(bars),
-                        )
-                        if used_fallback:
-                            cache.put_negative(cache_identity, error_code="history_refresh_failed")
-                    else:
-                        cache.put_negative(cache_identity, error_code="history_no_data")
-                pending_entries[code] = _HistoryEntry(
-                    bars=bars,
-                    expires_at=self._monotonic()
-                    + (
-                        min(60.0, self._history_ttl_seconds) if used_fallback or not bars else self._history_ttl_seconds
-                    ),
-                    source=old_entry.source if used_fallback and old_entry is not None else "eastmoney",
-                )
-            self._runner.ensure_before_deadline(deadline)
-            with self._lock:
-                self._runner.ensure_before_deadline(deadline)
-                for code, incoming in tuple(pending_entries.items()):
-                    current = self._history.get(code)
-                    if (
-                        current is not None
-                        and current.bars
-                        and (not incoming.bars or _history_version(incoming.bars) < _history_version(current.bars))
-                    ):
-                        if incoming.bars:
-                            self._history_out_of_order_count += 1
-                        pending_entries[code] = current
-                        result[code] = current.bars
-                self._history.update(pending_entries)
-                self.trim(set(codes))
-        if cache is not None:
-            assert cache_observed_at is not None
-            with self._lock:
-                history_sources = {
-                    code: entry.source for code in result if (entry := self._history.get(code)) is not None
-                }
-            for code, bars in result.items():
-                if not bars:
-                    continue
-                if history_sources.get(code) == "tushare":
-                    continue
-                cache_identity = self._runner.cache_identity(
-                    "daily_history",
-                    "eastmoney",
-                    code,
-                    {"code": code, "days": 90, "adjust": "qfq"},
-                    cache_observed_at,
-                )
-                if not cache.is_actionable(cache_identity, _history_source_time(bars)):
-                    _add_action_restriction(action_restrictions, code, "history_data_degraded")
-        return result
+                    state.pending_entries[code] = current
+                    state.result[code] = current.bars
+            self._history.update(state.pending_entries)
+            self.trim(set(state.request.codes))
+
+    def _mark_non_actionable_history(self, state: _HistoryLoadState) -> None:
+        cache = self._runner.cache
+        if cache is None:
+            return
+        assert state.cache_observed_at is not None
+        with self._lock:
+            sources = {code: entry.source for code in state.result if (entry := self._history.get(code)) is not None}
+        for code, bars in state.result.items():
+            if not bars or sources.get(code) == "tushare":
+                continue
+            identity = self._history_cache_identity(code, state.cache_observed_at)
+            if not cache.is_actionable(identity, _history_source_time(bars)):
+                _add_action_restriction(state.request.action_restrictions, code, "history_data_degraded")
+
+    def _history_cache_identity(self, code: str, observed_at: datetime) -> CacheIdentity:
+        return self._runner.cache_identity(
+            "daily_history",
+            "eastmoney",
+            code,
+            {"code": code, "days": 90, "adjust": "qfq"},
+            observed_at,
+        )
 
     def cached(
         self,
@@ -268,25 +334,7 @@ class HistoryStore:
     ) -> dict[str, tuple[DailyBar, ...]]:
         requested = tuple(codes)
         now = self._monotonic()
-        result: dict[str, tuple[DailyBar, ...]] = {}
-        cache = self._runner.cache
-        if cache is not None:
-            observed_at = self._runner.wall_clock()
-            for code in requested:
-                identity = self._runner.cache_identity(
-                    "daily_history",
-                    "eastmoney",
-                    code,
-                    {"code": code, "days": 90, "adjust": "qfq"},
-                    observed_at,
-                )
-                lookup = cache.get(identity)
-                if (
-                    lookup is not None
-                    and lookup.value is not None
-                    and (not fresh_only or lookup.state == "fresh" or lookup.retry_suppressed)
-                ):
-                    result[code] = cast(tuple[DailyBar, ...], lookup.value)
+        result, observed_at = self._shared_cached_history(requested, fresh_only)
         with self._lock:
             history_sources: dict[str, str] = {}
             for code in requested:
@@ -299,22 +347,44 @@ class HistoryStore:
                 cached = result.get(code)
                 if cached is None or _history_version(entry.bars) > _history_version(cached):
                     result[code] = entry.bars
-        if cache is not None:
+        self._mark_cached_history_actionability(result, history_sources, observed_at, action_restrictions)
+        return result
+
+    def _shared_cached_history(
+        self,
+        codes: Sequence[str],
+        fresh_only: bool,
+    ) -> tuple[dict[str, tuple[DailyBar, ...]], datetime | None]:
+        result: dict[str, tuple[DailyBar, ...]] = {}
+        cache = self._runner.cache
+        if cache is None:
+            return result, None
+        observed_at = self._runner.wall_clock()
+        for code in codes:
+            lookup = cache.get(self._history_cache_identity(code, observed_at))
+            if (
+                lookup is not None
+                and lookup.value is not None
+                and (not fresh_only or lookup.state == "fresh" or lookup.retry_suppressed)
+            ):
+                result[code] = cast(tuple[DailyBar, ...], lookup.value)
+        return result, observed_at
+
+    def _mark_cached_history_actionability(
+        self,
+        result: Mapping[str, tuple[DailyBar, ...]],
+        history_sources: Mapping[str, str],
+        observed_at: datetime | None,
+        action_restrictions: dict[str, set[str]] | None,
+    ) -> None:
+        cache = self._runner.cache
+        if cache is not None and observed_at is not None:
             for code, bars in result.items():
-                if not bars:
+                if not bars or history_sources.get(code) == "tushare":
                     continue
-                if history_sources.get(code) == "tushare":
-                    continue
-                identity = self._runner.cache_identity(
-                    "daily_history",
-                    "eastmoney",
-                    code,
-                    {"code": code, "days": 90, "adjust": "qfq"},
-                    observed_at,
-                )
+                identity = self._history_cache_identity(code, observed_at)
                 if not cache.is_actionable(identity, _history_source_time(bars)):
                     _add_action_restriction(action_restrictions, code, "history_data_degraded")
-        return result
 
     def trim(self, requested: set[str]) -> None:
         excess = len(self._history) - self._history_cache_limit
@@ -381,15 +451,17 @@ class HistoryStore:
             )
             history_version = request_fingerprint({"bars": material})[:24]
             identity = build_cache_identity(
-                dataset="history_summary",
-                source="history-summary",
-                subject_key=code,
-                request={"history_version": history_version},
-                trade_date="versioned",
-                phase="all_day",
-                source_contract_version="history-summary-v16",
-                config_version=self._runner.config_version,
-                schema_version=self._runner.schema_version,
+                CacheIdentitySpec(
+                    dataset="history_summary",
+                    source="history-summary",
+                    subject_key=code,
+                    request={"history_version": history_version},
+                    trade_date="versioned",
+                    phase="all_day",
+                    source_contract_version="history-summary-v16",
+                    config_version=self._runner.config_version,
+                    schema_version=self._runner.schema_version,
+                )
             )
             cache = self._runner.cache
             cached = cache.get(identity) if cache is not None else None

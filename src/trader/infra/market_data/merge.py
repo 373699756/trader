@@ -7,6 +7,10 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.application.cache import canonical_json_bytes
 from trader.domain.market.models import (
@@ -293,17 +297,35 @@ def _empty_snapshot(observed_at: datetime, degraded: set[str]) -> CanonicalMarke
     return CanonicalMarketSnapshot(observed_at, merge_epoch, (), {}, {}, (), {}, tuple(sorted(degraded)))
 
 
+class _CanonicalSnapshotRequiredOptions(TypedDict):
+    observed_at: datetime
+    quotes: tuple[MarketQuote, ...]
+    field_sources: dict[str, dict[str, str]]
+    source_versions: dict[str, str]
+    conflicts: tuple[str, ...]
+    missing_reasons: dict[str, str]
+    degraded_reasons: tuple[str, ...]
+
+
+class _CanonicalSnapshotOptionalOptions(TypedDict, total=False):
+    merge_epoch: str | None
+
+
+class _CanonicalSnapshotOptions(_CanonicalSnapshotRequiredOptions, _CanonicalSnapshotOptionalOptions):
+    pass
+
+
 def _canonical_snapshot(
-    *,
-    observed_at: datetime,
-    quotes: tuple[MarketQuote, ...],
-    field_sources: dict[str, dict[str, str]],
-    source_versions: dict[str, str],
-    conflicts: tuple[str, ...],
-    missing_reasons: dict[str, str],
-    degraded_reasons: tuple[str, ...],
-    merge_epoch: str | None = None,
+    **options: Unpack[_CanonicalSnapshotOptions],
 ) -> CanonicalMarketSnapshot:
+    observed_at = options["observed_at"]
+    quotes = options["quotes"]
+    field_sources = options["field_sources"]
+    source_versions = options["source_versions"]
+    conflicts = options["conflicts"]
+    missing_reasons = options["missing_reasons"]
+    degraded_reasons = options["degraded_reasons"]
+    merge_epoch = options.get("merge_epoch")
     projection = {
         "observed_at": observed_at,
         "quotes": quotes,
@@ -344,21 +366,28 @@ def _overlay_replaces(
     incoming_source = source_name(incoming.source)
     current_source = source_name(current.source)
     if incoming_source == current_source:
-        if incoming.data_version != current.data_version:
-            return incoming.data_version > current.data_version
-        current_restrictions = set(current.execution_restrictions)
-        incoming_restrictions = set(incoming.execution_restrictions)
-        if current_restrictions < incoming_restrictions:
-            return True
-        if incoming_restrictions < current_restrictions:
-            return False
-        if overlay_observed_at != base_observed_at:
-            return overlay_observed_at > base_observed_at
-        return canonical_json_bytes(incoming) > canonical_json_bytes(current)
+        return _same_source_overlay_replaces(current, incoming, base_observed_at, overlay_observed_at)
     return (source_priority(incoming_source), incoming_source) > (
         source_priority(current_source),
         current_source,
     )
+
+
+def _same_source_overlay_replaces(
+    current: MarketQuote,
+    incoming: MarketQuote,
+    base_observed_at: datetime,
+    overlay_observed_at: datetime,
+) -> bool:
+    if incoming.data_version != current.data_version:
+        return incoming.data_version > current.data_version
+    current_restrictions = set(current.execution_restrictions)
+    incoming_restrictions = set(incoming.execution_restrictions)
+    if current_restrictions != incoming_restrictions:
+        return current_restrictions < incoming_restrictions
+    if overlay_observed_at != base_observed_at:
+        return overlay_observed_at > base_observed_at
+    return canonical_json_bytes(incoming) > canonical_json_bytes(current)
 
 
 def _conflict_subject(conflict: str) -> str:

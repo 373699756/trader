@@ -9,19 +9,19 @@ from trader.domain.recommendation.models import Strategy
 
 
 def _stage_key(strategy: Strategy, phase: str, bucket: str) -> str:
-    if bucket == "shared_preheat":
-        return "shared_preheat"
-    if bucket == "emergency":
-        return "emergency"
-    if strategy is Strategy.TODAY and phase in {"today_observe", "today_main", "today_late"}:
-        return phase
-    if strategy is Strategy.TOMORROW and phase in {"afternoon", "final_review"}:
-        return "tomorrow_final" if phase == "final_review" else "tomorrow_afternoon"
-    if strategy is Strategy.D25 and phase in {"afternoon", "final_review"}:
-        return "d25_final" if phase == "final_review" else "d25_afternoon"
-    if strategy is Strategy.LONG and phase in {"afternoon", "final_review"}:
-        return "long_afternoon"
-    return f"{strategy.value}_{phase}"
+    bucket_key = {"shared_preheat": "shared_preheat", "emergency": "emergency"}.get(bucket)
+    stage_key = {
+        (Strategy.TODAY, "today_observe"): "today_observe",
+        (Strategy.TODAY, "today_main"): "today_main",
+        (Strategy.TODAY, "today_late"): "today_late",
+        (Strategy.TOMORROW, "afternoon"): "tomorrow_afternoon",
+        (Strategy.TOMORROW, "final_review"): "tomorrow_final",
+        (Strategy.D25, "afternoon"): "d25_afternoon",
+        (Strategy.D25, "final_review"): "d25_final",
+        (Strategy.LONG, "afternoon"): "long_afternoon",
+        (Strategy.LONG, "final_review"): "long_afternoon",
+    }.get((strategy, phase), f"{strategy.value}_{phase}")
+    return bucket_key or stage_key
 
 
 def _count(connection: sqlite3.Connection, where: str, parameters: tuple[object, ...]) -> int:

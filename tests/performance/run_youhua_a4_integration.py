@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 import run_v15_market_data as scalar_runner
 
 import trader.infra.market_data.merge as merge_module
-from trader.application.cache import build_cache_identity, canonical_json_bytes
+from trader.application.cache import CacheIdentitySpec, build_cache_identity, canonical_json_bytes
 from trader.application.events import EventAuditRecord
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
@@ -231,15 +231,17 @@ def _fill_cache_pools(cache: BoundedLruCache[object], policy: Any) -> dict[str, 
         source = f"a4:{group}"
         for index in range(entries):
             identity = build_cache_identity(
-                dataset=dataset,
-                source=source,
-                subject_key=f"{group}:{index}",
-                request={"index": index, "pool": group},
-                trade_date=NOW.date().isoformat(),
-                phase="today_main",
-                source_contract_version="a4-memory-v1",
-                config_version="a4-memory-v1",
-                schema_version="a4-memory-v1",
+                CacheIdentitySpec(
+                    dataset=dataset,
+                    source=source,
+                    subject_key=f"{group}:{index}",
+                    request={"index": index, "pool": group},
+                    trade_date=NOW.date().isoformat(),
+                    phase="today_main",
+                    source_contract_version="a4-memory-v1",
+                    config_version="a4-memory-v1",
+                    schema_version="a4-memory-v1",
+                )
             )
             payload = f"{group}:{index}:" + "x" * payload_size
             if not cache.put(identity, payload, data_version=f"a4:{index}", source_time=NOW):

@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续未完成的任务 A，本批闭合 `docs/plan.md` 第 2.6 节。新增按只读能力拆分的
+  Web 状态、推荐、事件/SSE、请求解析和服务契约模块，并为 DeepSeek cache identity
+  增加独立类型契约，使路由与外部调用参数可由 mypy 静态核对。
+
 - 用户要求把 SDK/API 取股、行情统一、候选/评分、P6/SSE 和 Web 实时展示的性能优化计划
   写入 `docs/times.md`。新增非权威执行计划，归档真实链路审查证据、P0/P1 瓶颈、T1-T5
   独立实施顺序、拟议接口影响、确定性/冻结/资源边界和量化验收矩阵。
@@ -261,6 +265,11 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 组合根仍唯一位于 `bootstrap.py`，`ApplicationSystem` 继续显式拥有 worker、source
+  lane、pipeline、持久化和 DeepSeek 生命周期；流水线初始化、冻结恢复、事件执行、市场
+  缓存、评分准备和审查发布改为分阶段函数与不可变请求对象。Web 由单文件路由改为薄注册
+  facade，保持原 API、ETag、SSE 游标、错误码和桌面 payload 等价。
 
 - `docs/times.md` 将后续实时性能工作固定为先建立真实延迟瀑布，再依次处理 SDK 连接与
   有界分页、列式/dirty 提交、本地推荐先发布和浏览器逐行绘制；本批不修改生产线程、
@@ -520,6 +529,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 第 2.6 节此前仍为 pending，严格质量脚本还接受 `C901/N818/PLR0911/PLR0912/PLR0913/
+  PLR0915` 共 137 项既有债务；原因是组合、缓存回退、并发调度、DeepSeek 和 Web 请求职责
+  长期堆叠在大函数与宽参数边界。现已拆分恢复、调度、缓存、降级和序列化阶段，使用真实
+  `Error` 命名与类型化请求边界，并把上述严格诊断归零；冻结、188 次物理预算、固定融合
+  和最近有效快照降级语义由回归保持。
+
 - 文档计划修正“当前毫秒级 P6/API/SSE 是实时链路首要瓶颈”的判断偏差，明确优先处理
   定向报价重复重建 5500 行、DeepSeek 同步等待占用 merge/event 线程、SDK Session/分页
   生命周期、浏览器整表重绘和合成性能门禁失真；生产缺陷仍待各独立实施批次验证和修复。
@@ -732,6 +747,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 Web 单文件中的状态、推荐、事件和 SSE 具体实现，以及严格 Ruff 的非零债务基线；
+  活动实现不再依赖宽 `**kwargs` 或超限函数来绕过审查。未移除任何推荐策略、行情源、
+  DeepSeek、冻结、历史、CLI、API 或桌面能力。
+
 - 本批未移除或修改任何生产行情源、推荐、DeepSeek、P6、API、SSE、Web、配置或测试能力；
   `docs/times.md` 明确禁止以增加隐藏线程、放宽实时门限或削弱确定性换取表面性能。
 
@@ -847,6 +866,14 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 任务 A 的隔离候选树通过 `make format-check`、`make lint`（严格诊断为零）、
+  `make type-check`、`make test` 和 `make package`；架构/`create_app()` 无副作用、固定
+  融合 `83.40`、188 原子预算、冻结恢复、哈希、SSE 游标/慢客户端均包含在全量回归。
+  仓库外安装 wheel 后从 `site-packages` 导入包、执行 `trader-cli --help`、读取模板、
+  4 CSS、2 JavaScript、2 SVG 共 9 项资源并通过 `pip check`。Firefox 在 1280x720、
+  1440x900、1920x1080 精确内容视口均显示 18 个唯一代码，无白屏、页面横向溢出、关键
+  重叠、页面脚本错误或更新后布局跳动，详情抽屉 3 分区完整位于视口。
 
 - `docs/times.md` 已核对非权威边界、两份权威文档链接、现有性能证据、固定融合/冻结/
   188 次预算和桌面范围。以当前上游叠加本批 3 个文件的隔离快照执行五项 make 门禁，
@@ -1172,6 +1199,12 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 本批是工程等价重构，未使用真实供应商或 DeepSeek 网络证明外部时延，也未改变收益策略；
+  宿主只实际运行 Python 3.14 与 Firefox 152，Python 3.10-3.13 由 Ruff/mypy/打包契约覆盖。
+  Firefox 仍输出宿主 SWGL 与浏览器实验告警，但页面级错误捕获、DOM、SSE 和三档布局均
+  通过；用户并行的 `docs/name.md`、`docs/times.md` 及其 CHANGELOG/交付契约修改未纳入
+  本任务提交。
 
 - `docs/times.md` 只记录审查结论和实施门禁，T1-T5 尚未实现；供应商真实网络时延、
   Session 复用线程安全、dirty 全量等价和 `local_pending` 用户语义必须在对应批次验证，

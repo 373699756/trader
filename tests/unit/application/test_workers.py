@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from trader.application.workers import BoundedExecutor, borrow_executor
+from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
 
 
 def test_bounded_executor_rejects_over_capacity_and_stops_all_workers() -> None:
@@ -155,9 +155,11 @@ def test_nested_shared_pool_borrow_does_not_wait_on_its_own_worker() -> None:
     def nested_fetch() -> int:
         with borrow_executor(
             executor,
-            worker_count=1,
-            thread_name_prefix="test-nested-local",
-            queue_capacity=2,
+            BorrowExecutorOptions(
+                worker_count=1,
+                thread_name_prefix="test-nested-local",
+                queue_capacity=2,
+            ),
         ) as borrowed:
             future = borrowed.submit(lambda: 42)
             assert future is not None
@@ -185,8 +187,10 @@ def test_nested_borrow_uses_spare_shared_worker() -> None:
         outer_thread = threading.current_thread().name
         with borrow_executor(
             executor,
-            worker_count=1,
-            thread_name_prefix="test-nested-unused",
+            BorrowExecutorOptions(
+                worker_count=1,
+                thread_name_prefix="test-nested-unused",
+            ),
         ) as borrowed:
             future = borrowed.submit(lambda: threading.current_thread().name)
             assert future is not None
@@ -218,8 +222,10 @@ def test_all_shared_pool_workers_can_borrow_without_waiting_on_their_own_queue()
         entered.wait(timeout=1.0)
         with borrow_executor(
             executor,
-            worker_count=1,
-            thread_name_prefix="test-nested-unused",
+            BorrowExecutorOptions(
+                worker_count=1,
+                thread_name_prefix="test-nested-unused",
+            ),
         ) as borrowed:
             future = borrowed.submit(lambda: 42)
             assert future is not None

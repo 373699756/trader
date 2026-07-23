@@ -10,8 +10,12 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import replace
 from datetime import date, datetime, timezone
+from typing import TYPE_CHECKING, TypedDict
 
 from polars.exceptions import PolarsError
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.application.cache import BoundedCache, canonical_json_bytes
 from trader.application.ports.market import (
@@ -21,7 +25,7 @@ from trader.application.ports.market import (
     MarketDataUnavailableError,
 )
 from trader.application.schedule import shanghai_now
-from trader.application.source_lanes import SourceLaneRegistry, SourceRequestSuperseded
+from trader.application.source_lanes import SourceLaneRegistry, SourceRequestSupersededError
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import (
     CanonicalMarketSnapshot,
@@ -53,8 +57,34 @@ from trader.infra.market_data.merge_quote import rejection_reason, source_name
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.router import RouteOutcome
 from trader.infra.market_data.sina import SinaClient
-from trader.infra.market_data.source_coordinator import MarketSourceCoordinator, MarketSourceDependencies
+from trader.infra.market_data.source_coordinator import (
+    MarketSourceCoordinator,
+    MarketSourceDependencies,
+    SourceLaneIdentityRequest,
+    SourceObservationRequest,
+)
 from trader.infra.market_data.tencent import TencentClient
+
+
+class _GatewayRequiredOptions(TypedDict):
+    minimum_market_rows: int
+    circuit_breaker_failures: int
+    circuit_breaker_seconds: int
+
+
+class _GatewayOptionalOptions(TypedDict, total=False):
+    worker_pool: BoundedExecutor | None
+    source_lanes: SourceLaneRegistry | None
+    cache: BoundedCache[object] | None
+    source_contract_versions: Mapping[str, str] | None
+    config_version: str
+    schema_version: str
+    monotonic: Callable[[], float]
+    wall_clock: Callable[[], datetime]
+
+
+class _GatewayOptions(_GatewayRequiredOptions, _GatewayOptionalOptions):
+    pass
 
 
 class MarketDataGateway:
@@ -63,40 +93,29 @@ class MarketDataGateway:
         eastmoney: EastmoneyClient,
         sina: SinaClient,
         tencent: TencentClient,
-        *,
-        minimum_market_rows: int,
-        circuit_breaker_failures: int,
-        circuit_breaker_seconds: int,
-        worker_pool: BoundedExecutor | None = None,
-        source_lanes: SourceLaneRegistry | None = None,
-        cache: BoundedCache[object] | None = None,
-        source_contract_versions: Mapping[str, str] | None = None,
-        config_version: str = "component-default",
-        schema_version: str = "market-v15",
-        monotonic: Callable[[], float] = time.monotonic,
-        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        **options: Unpack[_GatewayOptions],
     ) -> None:
         self._eastmoney = eastmoney
         self._sina = sina
         self._tencent = tencent
-        self._minimum_market_rows = minimum_market_rows
-        self._failure_limit = circuit_breaker_failures
-        self._breaker_seconds = circuit_breaker_seconds
-        self._worker_pool = worker_pool
-        self._source_lanes = source_lanes
-        self._cache = cache
+        self._minimum_market_rows = options["minimum_market_rows"]
+        self._failure_limit = options["circuit_breaker_failures"]
+        self._breaker_seconds = options["circuit_breaker_seconds"]
+        self._worker_pool = options.get("worker_pool")
+        self._source_lanes = options.get("source_lanes")
+        self._cache = options.get("cache")
         self._source_contract_versions = dict(
-            source_contract_versions
+            options.get("source_contract_versions")
             or {
                 "eastmoney": "eastmoney-component-v1",
                 "sina": "sina-component-v1",
                 "tencent": "tencent-component-v1",
             }
         )
-        self._config_version = config_version
-        self._schema_version = schema_version
-        self._monotonic = monotonic
-        self._wall_clock = wall_clock
+        self._config_version = options.get("config_version", "component-default")
+        self._schema_version = options.get("schema_version", "market-v15")
+        self._monotonic = options.get("monotonic", time.monotonic)
+        self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
         self._market_flight: _SingleFlight[Sequence[MarketQuote]] = _SingleFlight()
         self._candidate_fetch_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -117,15 +136,15 @@ class MarketDataGateway:
             MarketSourceDependencies(
                 eastmoney=eastmoney,
                 sina=sina,
-                minimum_market_rows=minimum_market_rows,
-                worker_pool=worker_pool,
-                source_lanes=source_lanes,
-                cache=cache,
+                minimum_market_rows=self._minimum_market_rows,
+                worker_pool=self._worker_pool,
+                source_lanes=self._source_lanes,
+                cache=self._cache,
                 source_contract_versions=self._source_contract_versions,
-                config_version=config_version,
-                schema_version=schema_version,
-                monotonic=monotonic,
-                wall_clock=wall_clock,
+                config_version=self._config_version,
+                schema_version=self._schema_version,
+                monotonic=self._monotonic,
+                wall_clock=self._wall_clock,
             ),
             self,
         )
@@ -244,41 +263,47 @@ class MarketDataGateway:
         try:
             if self._source_lanes is None:
                 observations = self._sources.fetch_source_observations(
-                    "tencent",
-                    "candidate_quotes",
-                    ",".join(normalized_codes),
-                    {"codes": normalized_codes, "fields": ["realtime_quote"]},
-                    lambda: self._tencent.fetch_quotes(normalized_codes),
-                    requested_at,
-                    force=force,
-                    deadline=deadline,
-                    minimum_rows=1,
+                    SourceObservationRequest(
+                        "tencent",
+                        "candidate_quotes",
+                        ",".join(normalized_codes),
+                        {"codes": normalized_codes, "fields": ["realtime_quote"]},
+                        lambda: self._tencent.fetch_quotes(normalized_codes),
+                        requested_at,
+                        force,
+                        deadline,
+                        1,
+                    )
                 )
             else:
                 request = {"codes": normalized_codes, "fields": ["realtime_quote"]}
                 identity = self._sources.lane_identity(
-                    "candidate_quotes",
-                    "tencent",
-                    ",".join(normalized_codes),
-                    request,
-                    requested_at,
-                    force=force,
-                    deadline=deadline,
+                    SourceLaneIdentityRequest(
+                        "candidate_quotes",
+                        "tencent",
+                        ",".join(normalized_codes),
+                        request,
+                        requested_at,
+                        force,
+                        deadline,
+                    )
                 )
                 lane_future = self._source_lanes.submit_urgent(
                     "tencent",
                     identity,
                     requested_at,
                     self._sources.fetch_source_observations,
-                    "tencent",
-                    "candidate_quotes",
-                    ",".join(normalized_codes),
-                    request,
-                    lambda: self._tencent.fetch_quotes(normalized_codes),
-                    requested_at,
-                    force=force,
-                    deadline=deadline,
-                    minimum_rows=1,
+                    SourceObservationRequest(
+                        "tencent",
+                        "candidate_quotes",
+                        ",".join(normalized_codes),
+                        request,
+                        lambda: self._tencent.fetch_quotes(normalized_codes),
+                        requested_at,
+                        force,
+                        deadline,
+                        1,
+                    ),
                 )
                 if deadline is None:
                     observations = lane_future.result()
@@ -293,7 +318,7 @@ class MarketDataGateway:
             self._mark_snapshot_degraded("tencent:late", max(requested_at, self._wall_clock()))
             with self._state_lock:
                 return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
-        except SourceRequestSuperseded:
+        except SourceRequestSupersededError:
             self._mark_snapshot_degraded("tencent:superseded", requested_at)
             with self._state_lock:
                 return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)

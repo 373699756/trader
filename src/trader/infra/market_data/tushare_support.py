@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from types import ModuleType
@@ -21,6 +22,18 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DAY_END = datetime_time(23, 59, 59)
 _CALENDAR_CHUNK_DAYS = 3650
 _MAX_CALENDAR_CHUNKS = 8
+
+
+@dataclass(frozen=True)
+class _ObservationRequest:
+    dataset: str
+    subject_key: str
+    fields: Mapping[str, JsonScalar]
+    observed_at: datetime
+    received_at: datetime
+    effective_at: datetime
+    data_version: str
+    missing_reasons: Mapping[str, str] | None = None
 
 
 class _SdkFacade:
@@ -118,17 +131,19 @@ def _security_master_observation(
         _SHANGHAI,
     )
     return _observation(
-        "security_master",
-        code,
-        fields,
-        observed_at,
-        received_at,
-        effective_at,
-        data_version,
-        missing_reasons={
-            "is_relisted_first_session": "source_field_unavailable",
-            "is_delisting_period_first_session": "source_field_unavailable",
-        },
+        _ObservationRequest(
+            "security_master",
+            code,
+            fields,
+            observed_at,
+            received_at,
+            effective_at,
+            data_version,
+            {
+                "is_relisted_first_session": "source_field_unavailable",
+                "is_delisting_period_first_session": "source_field_unavailable",
+            },
+        )
     )
 
 
@@ -149,13 +164,15 @@ def _calendar_observation(
     }
     effective_at = datetime.combine(calendar_date, datetime_time.min, _SHANGHAI)
     return _observation(
-        "trading_calendar",
-        calendar_date.isoformat(),
-        fields,
-        observed_at,
-        received_at,
-        effective_at,
-        data_version,
+        _ObservationRequest(
+            "trading_calendar",
+            calendar_date.isoformat(),
+            fields,
+            observed_at,
+            received_at,
+            effective_at,
+            data_version,
+        )
     )
 
 
@@ -174,31 +191,25 @@ def _generic_observation(
         _DAY_END,
         _SHANGHAI,
     )
-    return _observation(dataset, code, fields, observed_at, received_at, effective_at, data_version)
+    return _observation(
+        _ObservationRequest(dataset, code, fields, observed_at, received_at, effective_at, data_version)
+    )
 
 
 def _observation(
-    dataset: str,
-    subject_key: str,
-    fields: Mapping[str, JsonScalar],
-    observed_at: datetime,
-    received_at: datetime,
-    effective_at: datetime,
-    data_version: str,
-    *,
-    missing_reasons: Mapping[str, str] | None = None,
+    request: _ObservationRequest,
 ) -> SourceObservation:
-    payload_hash = hashlib.sha256(canonical_json_bytes(fields)).hexdigest()
+    payload_hash = hashlib.sha256(canonical_json_bytes(request.fields)).hexdigest()
     return SourceObservation(
         source="tushare",
-        subject_key=subject_key,
-        observed_at=observed_at,
-        source_time=received_at,
-        received_at=received_at,
-        effective_at=effective_at,
-        data_version=data_version,
-        fields=fields,
-        missing_reasons=missing_reasons or {},
+        subject_key=request.subject_key,
+        observed_at=request.observed_at,
+        source_time=request.received_at,
+        received_at=request.received_at,
+        effective_at=request.effective_at,
+        data_version=request.data_version,
+        fields=request.fields,
+        missing_reasons=request.missing_reasons or {},
         payload_hash=payload_hash,
         status="success",
         error_code=None,

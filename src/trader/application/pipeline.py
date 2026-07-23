@@ -13,9 +13,11 @@ from trader.application.cadence import (
 )
 from trader.application.events import (
     BoundedEventQueue,
+    EventAuditRecord,
     EventDeadlineExpiredError,
     EventPriority,
     EventStatus,
+    PipelineEvent,
     event_from_audit_record,
 )
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
@@ -58,6 +60,15 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         options: PipelineOptions,
         resources: PipelineResources,
     ) -> None:
+        self._bind_dependencies(dependencies, options)
+        self._configure_workers(options, resources)
+        self._initialize_runtime_state()
+
+    def _bind_dependencies(
+        self,
+        dependencies: PipelineDependencies,
+        options: PipelineOptions,
+    ) -> None:
         self._market_full = dependencies.market.full_market
         self._candidate_data = dependencies.market.candidates
         self._quotes = dependencies.market.quotes
@@ -82,6 +93,12 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._outcome_settlement = dependencies.outcome_settlement
         self._market_data_manages_workers = options.market_data_manages_workers
         self._cadence = CadencePlanner(options.cadence_policy) if options.cadence_policy is not None else None
+
+    def _configure_workers(
+        self,
+        options: PipelineOptions,
+        resources: PipelineResources,
+    ) -> None:
         self._queue = BoundedEventQueue(
             maximum_size=options.event_queue_size,
             reserved_priority_size=options.priority_queue_size,
@@ -125,6 +142,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             self._deepseek_pool,
             self._long_pool,
         )
+
+    def _initialize_runtime_state(self) -> None:
         self._lifecycle_lock = threading.Lock()
         self._cadence_lock = threading.Lock()
         self._merge_status_lock = threading.Lock()
@@ -174,10 +193,20 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
     def initialize(self) -> Mapping[str, int]:
         self._snapshot_writer.initialize()
         recovery = self._snapshot_writer.recover()
+        self._restore_frozen_snapshots()
+        catchup = self._catch_up_due_freezes()
+        self._replay_pending_priority_events()
+        return {
+            "recovered": recovery.recovered,
+            "quarantined": recovery.quarantined,
+            "orphaned": recovery.orphaned,
+            "catchup_frozen": len(catchup),
+        }
+
+    def _restore_frozen_snapshots(self) -> None:
         for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
             for trade_date in self._repository.recommendation_dates(strategy):
-                key = (strategy, trade_date)
-                self._frozen_keys.add(key)
+                self._frozen_keys.add((strategy, trade_date))
         for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
             dates = self._repository.recommendation_dates(strategy)
             latest = self._repository.load_frozen(strategy, dates[0]) if dates else None
@@ -188,6 +217,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 if overlay is not None and overlay.snapshot_id == latest.snapshot_id:
                     self._live_overlays[(strategy, latest.trade_date)] = overlay
                     self._state.restore_overlay(overlay)
+
+    def _catch_up_due_freezes(self) -> tuple[RecommendationSnapshot, ...]:
         now = self._now()
         trade_day = trade_date_at(now)
         trade_day_iso = trade_day.isoformat()
@@ -202,46 +233,46 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                     trade_date=trade_day_iso,
                 )
             )
-        catchup = self._freeze_available_snapshots(now, freeze_targets)
+        return self._freeze_available_snapshots(now, freeze_targets)
+
+    def _replay_pending_priority_events(self) -> None:
         for record in self._event_audit.pending_priority_events():
-            try:
-                event = event_from_audit_record(record)
-            except (TypeError, ValueError) as exc:
-                self._event_audit.compare_and_set_event(
-                    record.event_id,
-                    expected_status=record.status,
-                    status=EventStatus.FAILED,
-                    retry_count=record.retry_count + 1,
-                    error="invalid_persisted_event",
-                )
-                self._state.record_error(f"cannot replay persisted priority event: {exc}")
-                continue
-            if event.config_version != self._config_version:
-                self._event_audit.compare_and_set_event(
-                    event.event_id,
-                    expected_status=record.status,
-                    status=EventStatus.FAILED,
-                    retry_count=event.retry_count,
-                    error="config_version_mismatch",
-                )
-                self._state.record_error("cannot replay priority event from another config version")
-                continue
-            if record.status is EventStatus.RUNNING and not self._event_audit.compare_and_set_event(
-                event.event_id,
-                expected_status=EventStatus.RUNNING,
-                status=EventStatus.PENDING,
-                retry_count=event.retry_count,
-            ):
-                continue
-            if self._queue.put(event):
+            event = self._recover_priority_event(record)
+            if event is not None and self._queue.put(event):
                 self._state.increment("events_replayed")
                 self._queue.record_replayed()
-        return {
-            "recovered": recovery.recovered,
-            "quarantined": recovery.quarantined,
-            "orphaned": recovery.orphaned,
-            "catchup_frozen": len(catchup),
-        }
+
+    def _recover_priority_event(self, record: EventAuditRecord) -> PipelineEvent | None:
+        try:
+            event = event_from_audit_record(record)
+        except (TypeError, ValueError) as exc:
+            self._event_audit.compare_and_set_event(
+                record.event_id,
+                expected_status=record.status,
+                status=EventStatus.FAILED,
+                retry_count=record.retry_count + 1,
+                error="invalid_persisted_event",
+            )
+            self._state.record_error(f"cannot replay persisted priority event: {exc}")
+            return None
+        if event.config_version != self._config_version:
+            self._event_audit.compare_and_set_event(
+                event.event_id,
+                expected_status=record.status,
+                status=EventStatus.FAILED,
+                retry_count=event.retry_count,
+                error="config_version_mismatch",
+            )
+            self._state.record_error("cannot replay priority event from another config version")
+            return None
+        if record.status is EventStatus.RUNNING and not self._event_audit.compare_and_set_event(
+            event.event_id,
+            expected_status=EventStatus.RUNNING,
+            status=EventStatus.PENDING,
+            retry_count=event.retry_count,
+        ):
+            return None
+        return event
 
     def start(self) -> bool:
         with self._lifecycle_lock:
@@ -316,95 +347,108 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             event = self._queue.get(timeout_seconds=0.5)
             if event is None:
                 continue
-            with self._merge_status_lock:
-                self._merge_inflight += 1
-                self._merge_submitted_count += 1
+            self._begin_event()
             try:
-                if event.priority > EventPriority.RISK and not persist(
-                    self,
-                    self._event_audit.reserve_event,
-                    event.audit_record(status=EventStatus.PENDING),
-                ):
-                    self._state.increment("event_reservation_conflicts")
-                    continue
-                if not persist(
-                    self,
-                    self._event_audit.compare_and_set_event,
-                    event.event_id,
-                    expected_status=EventStatus.PENDING,
-                    status=EventStatus.RUNNING,
-                    retry_count=event.retry_count,
-                ):
-                    self._state.increment("event_claim_conflicts")
-                    continue
-                if (
-                    event.deadline is not None
-                    and event.priority is not EventPriority.FREEZE
-                    and self._now() >= event.deadline
-                ):
-                    raise EventDeadlineExpiredError(f"event deadline expired before execution: {event.event_type}")
-                process_event_on_workers(self, event)
-                if (
-                    event.deadline is not None
-                    and event.priority is not EventPriority.FREEZE
-                    and self._now() >= event.deadline
-                ):
-                    raise EventDeadlineExpiredError(f"event deadline expired during execution: {event.event_type}")
-                if not persist(
-                    self,
-                    self._event_audit.compare_and_set_event,
-                    event.event_id,
-                    expected_status=EventStatus.RUNNING,
-                    status=EventStatus.SUCCESS,
-                    retry_count=event.retry_count,
-                ):
-                    raise RuntimeError(f"event terminal compare-and-set failed: {event.event_id}")
-                self._state.increment("events_completed")
+                self._process_event(event)
             except (EventDeadlineExpiredError, MarketDataDeadlineExceededError) as exc:
-                _LOGGER.info("pipeline event expired", extra={"event_id": event.event_id})
-                try:
-                    persist(
-                        self,
-                        self._event_audit.compare_and_set_event,
-                        event.event_id,
-                        expected_status=EventStatus.RUNNING,
-                        status=EventStatus.EXPIRED,
-                        retry_count=event.retry_count,
-                        error=str(exc),
-                    )
-                except Exception:
-                    _LOGGER.exception("pipeline event expiration state could not be persisted")
-                self._state.increment("events_expired")
+                self._expire_event(event, exc)
             except Exception as exc:
-                _LOGGER.exception("pipeline event failed", extra={"event_id": event.event_id})
-                try:
-                    persist(
-                        self,
-                        self._event_audit.compare_and_set_event,
-                        event.event_id,
-                        expected_status=EventStatus.RUNNING,
-                        status=EventStatus.FAILED,
-                        retry_count=event.retry_count,
-                        error=str(exc),
-                    )
-                except Exception:
-                    _LOGGER.exception("pipeline event failure state could not be persisted")
-                self._state.increment("events_failed")
-                self._state.record_error(str(exc))
+                self._fail_event(event, exc)
             finally:
-                self._record_health_snapshot()
-                task_raw = event.payload.get("schedule_task")
-                if isinstance(task_raw, str):
-                    try:
-                        scheduled_task = PipelineTask(task_raw)
-                    except ValueError:
-                        pass
-                    else:
-                        with self._cadence_lock:
-                            self._scheduled_inflight.discard(scheduled_task)
-                with self._merge_status_lock:
-                    self._merge_inflight -= 1
-                    self._merge_completed_count += 1
+                self._finish_event(event)
+
+    def _begin_event(self) -> None:
+        with self._merge_status_lock:
+            self._merge_inflight += 1
+            self._merge_submitted_count += 1
+
+    def _process_event(self, event: PipelineEvent) -> None:
+        if event.priority > EventPriority.RISK and not persist(
+            self,
+            self._event_audit.reserve_event,
+            event.audit_record(status=EventStatus.PENDING),
+        ):
+            self._state.increment("event_reservation_conflicts")
+            return
+        if not persist(
+            self,
+            self._event_audit.compare_and_set_event,
+            event.event_id,
+            expected_status=EventStatus.PENDING,
+            status=EventStatus.RUNNING,
+            retry_count=event.retry_count,
+        ):
+            self._state.increment("event_claim_conflicts")
+            return
+        self._ensure_event_deadline(event, "before")
+        process_event_on_workers(self, event)
+        self._ensure_event_deadline(event, "during")
+        if not persist(
+            self,
+            self._event_audit.compare_and_set_event,
+            event.event_id,
+            expected_status=EventStatus.RUNNING,
+            status=EventStatus.SUCCESS,
+            retry_count=event.retry_count,
+        ):
+            raise RuntimeError(f"event terminal compare-and-set failed: {event.event_id}")
+        self._state.increment("events_completed")
+
+    def _ensure_event_deadline(self, event: PipelineEvent, stage: str) -> None:
+        if event.deadline is not None and event.priority is not EventPriority.FREEZE and self._now() >= event.deadline:
+            raise EventDeadlineExpiredError(f"event deadline expired {stage} execution: {event.event_type}")
+
+    def _expire_event(
+        self,
+        event: PipelineEvent,
+        error: EventDeadlineExpiredError | MarketDataDeadlineExceededError,
+    ) -> None:
+        _LOGGER.info("pipeline event expired", extra={"event_id": event.event_id})
+        try:
+            persist(
+                self,
+                self._event_audit.compare_and_set_event,
+                event.event_id,
+                expected_status=EventStatus.RUNNING,
+                status=EventStatus.EXPIRED,
+                retry_count=event.retry_count,
+                error=str(error),
+            )
+        except Exception:
+            _LOGGER.exception("pipeline event expiration state could not be persisted")
+        self._state.increment("events_expired")
+
+    def _fail_event(self, event: PipelineEvent, error: Exception) -> None:
+        _LOGGER.exception("pipeline event failed", extra={"event_id": event.event_id})
+        try:
+            persist(
+                self,
+                self._event_audit.compare_and_set_event,
+                event.event_id,
+                expected_status=EventStatus.RUNNING,
+                status=EventStatus.FAILED,
+                retry_count=event.retry_count,
+                error=str(error),
+            )
+        except Exception:
+            _LOGGER.exception("pipeline event failure state could not be persisted")
+        self._state.increment("events_failed")
+        self._state.record_error(str(error))
+
+    def _finish_event(self, event: PipelineEvent) -> None:
+        self._record_health_snapshot()
+        task_raw = event.payload.get("schedule_task")
+        if isinstance(task_raw, str):
+            try:
+                scheduled_task = PipelineTask(task_raw)
+            except ValueError:
+                pass
+            else:
+                with self._cadence_lock:
+                    self._scheduled_inflight.discard(scheduled_task)
+        with self._merge_status_lock:
+            self._merge_inflight -= 1
+            self._merge_completed_count += 1
 
     def _freeze_available_snapshots(
         self,

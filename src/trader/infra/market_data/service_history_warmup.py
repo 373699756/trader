@@ -9,7 +9,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.application.source_lanes import SourceRequestSuperseded
+from trader.application.source_lanes import SourceRequestSupersededError
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_history import HistoryStore
 from trader.infra.market_data.service_support import _normalize_codes, _source_batch_identity
@@ -132,7 +132,7 @@ class HistoryWarmup:
         superseded = False
         try:
             future.result()
-        except SourceRequestSuperseded:
+        except SourceRequestSupersededError:
             superseded = True
         except Exception as exc:
             _LOGGER.warning("history warmup batch degraded: %s", type(exc).__name__)

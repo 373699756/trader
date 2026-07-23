@@ -20,6 +20,19 @@ from trader.infra.settings_parser import (
 
 
 def _validate_strategy_settings(settings: StrategySettings) -> None:
+    _validate_filter_fusion_selection(settings)
+    _validate_signal_policies(settings)
+    _validate_strategy_weights(settings)
+    _validate_risk_registry(settings)
+
+
+def _validate_filter_fusion_selection(settings: StrategySettings) -> None:
+    _validate_hard_filters(settings)
+    _validate_fusion(settings)
+    _validate_selection(settings)
+
+
+def _validate_hard_filters(settings: StrategySettings) -> None:
     expected_hard_filter_thresholds = {
         "negative_announcement_level": 0.0,
         "shareholder_reduction_level": 0.0,
@@ -32,6 +45,9 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
     hard_filtered_factors = set(expected_hard_filter_thresholds)
     if any(rule.local_trigger_enabled for rule in settings.risk_rules if rule.trigger_factor in hard_filtered_factors):
         raise ConfigurationError("hard-filtered structured risks cannot also trigger local penalties")
+
+
+def _validate_fusion(settings: StrategySettings) -> None:
     if abs(settings.fusion.local_weight + settings.fusion.deepseek_weight - 1.0) > 1e-9:
         raise ConfigurationError("fusion weights must sum to 1.0")
     if abs(settings.fusion.local_weight - 0.68) > 1e-9 or abs(settings.fusion.deepseek_weight - 0.32) > 1e-9:
@@ -44,6 +60,9 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         raise ConfigurationError("unsupported score rounding mode")
     if settings.fusion.local_risk_cap != 25.0 or settings.fusion.deepseek_risk_cap != 30.0:
         raise ConfigurationError("risk caps are fixed at 25 local and 30 DeepSeek")
+
+
+def _validate_selection(settings: StrategySettings) -> None:
     if settings.selection.default_top_k > settings.selection.maximum_top_k:
         raise ConfigurationError("default_top_k cannot exceed maximum_top_k")
     if settings.board_policy_version != "board_policy_v17_downside_guard_ttd25_2026_07":
@@ -54,6 +73,9 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         raise ConfigurationError("competition group limits must be main=3, chinext=2 and star=2")
     if settings.selection.candidate_min_score != 50.0 or settings.selection.minimum_board_reliability != 0.85:
         raise ConfigurationError("candidate score and board reliability gates are fixed at 50 and 0.85")
+
+
+def _validate_signal_policies(settings: StrategySettings) -> None:
     news = settings.today_news_signal
     if (
         news.lookback_hours != 72.0
@@ -105,6 +127,9 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         or long.policy_keyword_score_step != 10.0
     ):
         raise ConfigurationError("long research windows, scoring slopes and risk thresholds are fixed")
+
+
+def _validate_strategy_weights(settings: StrategySettings) -> None:
     _validate_weight_sum("candidate_weights", settings.candidate_weights)
     required_candidate_weights = {
         "liquidity",
@@ -151,6 +176,14 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
         if set(weights) != required_local_components[strategy]:
             raise ConfigurationError(f"local_strategy_weights.{strategy} components are invalid")
     _validate_board_weights(settings)
+
+
+def _validate_risk_registry(settings: StrategySettings) -> None:
+    _validate_risk_registry_contract(settings)
+    _validate_short_risk_contract(settings)
+
+
+def _validate_risk_registry_contract(settings: StrategySettings) -> None:
     risk_codes = [rule.risk_code for rule in settings.risk_rules]
     if len(risk_codes) != len(set(risk_codes)):
         raise ConfigurationError("risk rule codes must be unique")
@@ -191,6 +224,9 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
             raise ConfigurationError(f"risk rule {rule.risk_code} trigger factor is not registered")
         if not set(rule.strategies).issubset(definition.strategies):
             raise ConfigurationError(f"risk rule {rule.risk_code} uses a factor outside its registered strategies")
+
+
+def _validate_short_risk_contract(settings: StrategySettings) -> None:
     short_risk_penalties = {
         "near_limit_crowding": 5.0,
         "price_volume_divergence": 4.0,

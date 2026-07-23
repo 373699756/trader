@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
@@ -18,24 +19,29 @@ from trader.infra.market_data.service_support import _quote_age_summary
 from trader.infra.market_data.service_tushare import ReferenceLoader
 
 
+@dataclass(frozen=True)
+class MarketDataHealthDependencies:
+    quotes: QuoteStore
+    history: HistoryStore
+    warmup: HistoryWarmup
+    research: ResearchLoader
+    intraday: IntradayLoader
+    references: ReferenceLoader
+
+
 class MarketDataHealth:
     def __init__(
         self,
-        quotes: QuoteStore,
-        history: HistoryStore,
-        warmup: HistoryWarmup,
-        research: ResearchLoader,
-        intraday: IntradayLoader,
-        references: ReferenceLoader,
+        dependencies: MarketDataHealthDependencies,
         *,
         wall_clock: Callable[[], datetime],
     ) -> None:
-        self._quotes = quotes
-        self._history = history
-        self._warmup = warmup
-        self._research = research
-        self._intraday = intraday
-        self._references = references
+        self._quotes = dependencies.quotes
+        self._history = dependencies.history
+        self._warmup = dependencies.warmup
+        self._research = dependencies.research
+        self._intraday = dependencies.intraday
+        self._references = dependencies.references
         self._wall_clock = wall_clock
 
     def health(self) -> JsonObject:

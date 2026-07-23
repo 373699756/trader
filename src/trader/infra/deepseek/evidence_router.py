@@ -109,10 +109,25 @@ def route_prompt_evidence(candidate: FeatureSnapshot) -> RoutedEvidence:
 def _invalid_reason(item: Evidence, candidate: FeatureSnapshot, category: str | None) -> str:
     if category is None:
         return "unsupported_evidence_type"
+    reasons = (
+        _identity_invalid_reason(item),
+        _time_invalid_reason(item, candidate, category),
+        _content_invalid_reason(item),
+    )
+    return next((reason for reason in reasons if reason), "")
+
+
+def _identity_invalid_reason(item: Evidence) -> str:
     if not item.evidence_id or len(item.evidence_id) > 80:
         return "invalid_evidence_id"
     if not item.data_version:
         return "missing_data_version"
+    if item.received_at is None:
+        return "missing_received_at"
+    return ""
+
+
+def _time_invalid_reason(item: Evidence, candidate: FeatureSnapshot, category: str) -> str:
     if item.received_at is None:
         return "missing_received_at"
     if (
@@ -128,6 +143,10 @@ def _invalid_reason(item: Evidence, candidate: FeatureSnapshot, category: str | 
         return "future_evidence"
     if candidate.observed_at - item.published_at > _TTL_BY_CATEGORY[category]:
         return "expired_evidence"
+    return ""
+
+
+def _content_invalid_reason(item: Evidence) -> str:
     if not item.title or len(item.title) > 240:
         return "invalid_evidence_content"
     return ""

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from trader.application.cadence import PipelineTask, ScheduledPipelineTask, task_execution_budget_seconds
-from trader.application.events import EventPriority, EventStatus, PipelineEvent, new_event
+from trader.application.events import EventPriority, EventSpec, EventStatus, PipelineEvent, new_event
 from trader.application.pipeline_state import PipelineState
 from trader.application.pipeline_workers import persist
 from trader.application.schedule import (
@@ -49,23 +49,25 @@ class PipelineSubmissionMixin(PipelineState):
             event_type = schedule_point.value
             priority = EventPriority.CANDIDATE_QUOTES
         event = new_event(
-            event_type,
-            subject_key="market",
-            trade_date=trade_day.isoformat(),
-            phase=decision.phase.value,
-            strategy=None,
-            priority=priority,
-            data_version=(
-                f"schedule:{schedule_point.value}"
-                if schedule_point is not None
-                else f"tick:{shanghai_now(now).strftime('%H%M%S')}"
-            ),
-            config_version=self._config_version,
-            created_at=now,
-            payload={
-                "freeze_strategies": list(decision.freeze_strategies),
-                "schedule_point": schedule_point.value if schedule_point is not None else "",
-            },
+            EventSpec(
+                event_type=event_type,
+                subject_key="market",
+                trade_date=trade_day.isoformat(),
+                phase=decision.phase.value,
+                strategy=None,
+                priority=priority,
+                data_version=(
+                    f"schedule:{schedule_point.value}"
+                    if schedule_point is not None
+                    else f"tick:{shanghai_now(now).strftime('%H%M%S')}"
+                ),
+                config_version=self._config_version,
+                created_at=now,
+                payload={
+                    "freeze_strategies": list(decision.freeze_strategies),
+                    "schedule_point": schedule_point.value if schedule_point is not None else "",
+                },
+            )
         )
         return self.submit_event(event)
 
@@ -126,20 +128,22 @@ class PipelineSubmissionMixin(PipelineState):
         priority = _scheduled_task_priority(task)
         local = shanghai_now(scheduled.scheduled_at)
         event = new_event(
-            "freeze" if is_freeze else task.value,
-            subject_key="market",
-            trade_date=local.date().isoformat(),
-            phase=scheduled.phase.value,
-            strategy=None,
-            priority=priority,
-            data_version=f"cadence:{task.value}:{local.strftime('%H%M%S')}",
-            config_version=self._config_version,
-            created_at=scheduled.scheduled_at,
-            deadline=_scheduled_task_deadline(scheduled),
-            payload={
-                "freeze_strategies": list(scheduled.freeze_strategies),
-                "schedule_task": task.value,
-            },
+            EventSpec(
+                event_type="freeze" if is_freeze else task.value,
+                subject_key="market",
+                trade_date=local.date().isoformat(),
+                phase=scheduled.phase.value,
+                strategy=None,
+                priority=priority,
+                data_version=f"cadence:{task.value}:{local.strftime('%H%M%S')}",
+                config_version=self._config_version,
+                created_at=scheduled.scheduled_at,
+                deadline=_scheduled_task_deadline(scheduled),
+                payload={
+                    "freeze_strategies": list(scheduled.freeze_strategies),
+                    "schedule_task": task.value,
+                },
+            )
         )
         accepted = self.submit_event(event)
         if not accepted:

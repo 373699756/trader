@@ -5,7 +5,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.infra.failures import AdapterFailure
 
@@ -60,21 +63,31 @@ class DeepSeekHttpResult:
     failure: AdapterFailure | None = None
 
 
+class _CompletionRequiredOptions(TypedDict):
+    base_url: str
+    api_key: str
+    model: str
+    messages: Sequence[Mapping[str, Any]]
+    timeout_seconds: float
+    max_tokens: int
+    reserve_attempt: Callable[[], bool]
+
+
+class _CompletionOptionalOptions(TypedDict, total=False):
+    maximum_attempts: int
+
+
+class CompletionOptions(_CompletionRequiredOptions, _CompletionOptionalOptions):
+    pass
+
+
 class DeepSeekClientBase(ABC):
     """Interface that every DeepSeek HTTP transport must implement."""
 
     @abstractmethod
     def complete(
         self,
-        *,
-        base_url: str,
-        api_key: str,
-        model: str,
-        messages: Sequence[Mapping[str, Any]],
-        timeout_seconds: float,
-        max_tokens: int,
-        reserve_attempt: Callable[[], bool],
-        maximum_attempts: int = 2,
+        **options: Unpack[CompletionOptions],
     ) -> DeepSeekHttpResult: ...
 
     @abstractmethod
@@ -87,5 +100,6 @@ __all__ = [
     "DeepSeekClientBase",
     "DeepSeekHttpAttempt",
     "DeepSeekHttpResult",
+    "CompletionOptions",
     "ModelCapabilities",
 ]

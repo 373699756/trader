@@ -14,6 +14,7 @@ from trader.application.recommendation_support import (
 from trader.domain.recommendation.filters import hard_filter, legacy_v14_hard_filter
 from trader.domain.recommendation.models import (
     Recommendation,
+    RecommendationReplayInput,
     RecommendationSnapshot,
 )
 
@@ -34,17 +35,7 @@ _SUPPORTED_REPLAY_ALGORITHMS = frozenset(
 
 class RecommendationReplayMixin:
     def replay(self: Any, snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
-        replay_input = snapshot.replay_input
-        if replay_input is None:
-            raise ValueError("snapshot does not contain replay input")
-        if replay_input.schema_version != REPLAY_SCHEMA_VERSION:
-            raise ValueError("snapshot replay schema is unsupported")
-        if replay_input.algorithm_version not in _SUPPORTED_REPLAY_ALGORITHMS:
-            raise ValueError("snapshot replay algorithm is unsupported")
-        if not replay_input.market_features:
-            raise ValueError("snapshot replay input does not contain the frozen market universe")
-        if replay_input.candidate_pool_size < 1:
-            raise ValueError("snapshot replay input has an invalid candidate pool size")
+        replay_input = _validated_replay_input(snapshot)
         replay_engine = cast(Any, type(self))(
             _restore_policy(replay_input.policy),
             hard_filter_function=(
@@ -206,6 +197,21 @@ class RecommendationReplayMixin:
             "candidate_input_count": len(replay_input.candidate_features),
             "recommendation_count": len(snapshot.recommendations),
         }
+
+
+def _validated_replay_input(snapshot: RecommendationSnapshot) -> RecommendationReplayInput:
+    replay_input = snapshot.replay_input
+    if replay_input is None:
+        raise ValueError("snapshot does not contain replay input")
+    if replay_input.schema_version != REPLAY_SCHEMA_VERSION:
+        raise ValueError("snapshot replay schema is unsupported")
+    if replay_input.algorithm_version not in _SUPPORTED_REPLAY_ALGORITHMS:
+        raise ValueError("snapshot replay algorithm is unsupported")
+    if not replay_input.market_features:
+        raise ValueError("snapshot replay input does not contain the frozen market universe")
+    if replay_input.candidate_pool_size < 1:
+        raise ValueError("snapshot replay input has an invalid candidate pool size")
+    return replay_input
 
 
 def _normalize_p6_close_projection(

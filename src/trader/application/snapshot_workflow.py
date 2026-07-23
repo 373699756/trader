@@ -7,7 +7,7 @@ import logging
 import math
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -25,7 +25,7 @@ from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
 from trader.application.snapshot_publication import admit_snapshot_to_p6
 from trader.application.status import RuntimeState
-from trader.domain.market.models import LiveQuote
+from trader.domain.market.models import LiveQuote, MarketQuote
 from trader.domain.recommendation.models import (
     LiveOverlay,
     RecommendationSnapshot,
@@ -36,6 +36,14 @@ if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _OverlayTarget:
+    strategy: Strategy
+    snapshot: RecommendationSnapshot
+    codes: tuple[str, ...]
+    existing: LiveOverlay | None
 
 
 def process_schedule(
@@ -96,56 +104,81 @@ def freeze_available_snapshots(
         if _restore_existing_frozen(pipeline, strategy, trade_date):
             continue
 
-        current = pipeline._state.latest(strategy)
-        boundary = _freeze_boundary(now, strategy)
-        if current is None or current.trade_date != trade_date:
-            fallback = pipeline._snapshot_writer.load_checkpoint(
-                strategy,
-                trade_date,
-                boundary_at=boundary,
-            )
-            if fallback is None:
-                pipeline._state.record_error(f"{strategy.value} freeze unavailable: no current pre-cutoff snapshot")
-                continue
-            current = fallback
+        prepared = _prepare_frozen_snapshot(pipeline, strategy, trade_date, now)
+        if prepared is None:
+            continue
+        frozen, boundary = prepared
+        snapshots.extend(_commit_frozen_snapshot(pipeline, frozen, key, boundary))
+    return tuple(snapshots)
 
-        if current is None or current.trade_date != trade_date:
-            pipeline._state.record_error(f"{strategy.value} freeze unavailable: no current pre-cutoff snapshot")
-            continue
-        if current.published_at > boundary:
-            pipeline._state.record_error(f"{strategy.value} freeze unavailable: latest snapshot is after cutoff")
-            continue
-        if (boundary - current.published_at).total_seconds() > 30:
-            pipeline._state.record_error(f"{strategy.value} freeze unavailable: latest snapshot is stale at cutoff")
-            continue
-        maximum_age = 20.0 if strategy is Strategy.TODAY else 30.0
-        anchors: dict[str, object] = {}
-        invalid_quotes: list[str] = []
-        for recommendation in current.recommendations:
-            quote = recommendation.features.quote
-            age = (boundary - quote.source_time).total_seconds()
-            anchors[quote.code] = {
-                "source": quote.source,
-                "source_time": quote.source_time.isoformat(),
-                "age_seconds": round(age, 3),
-            }
-            if age < 0.0 or age > maximum_age:
-                invalid_quotes.append(f"{quote.code}:{age:.3f}")
-        if invalid_quotes:
-            pipeline._state.record_error(
-                f"{strategy.value} freeze unavailable: quote age outside 0-{maximum_age:.0f}s at cutoff "
-                + ",".join(invalid_quotes)
-            )
-            continue
-        frozen = replace(
+
+def _prepare_frozen_snapshot(
+    pipeline: RecommendationPipeline,
+    strategy: Strategy,
+    trade_date: str,
+    now: datetime,
+) -> tuple[RecommendationSnapshot, datetime] | None:
+    boundary = _freeze_boundary(now, strategy)
+    current = pipeline._state.latest(strategy)
+    if current is None or current.trade_date != trade_date:
+        current = pipeline._snapshot_writer.load_checkpoint(strategy, trade_date, boundary_at=boundary)
+    error = _freeze_snapshot_error(current, trade_date, boundary)
+    if error:
+        pipeline._state.record_error(f"{strategy.value} freeze unavailable: {error}")
+        return None
+    assert current is not None
+    maximum_age = 20.0 if strategy is Strategy.TODAY else 30.0
+    anchors, invalid_quotes = _freeze_anchors(current, boundary, maximum_age)
+    if invalid_quotes:
+        pipeline._state.record_error(
+            f"{strategy.value} freeze unavailable: quote age outside 0-{maximum_age:.0f}s at cutoff "
+            + ",".join(invalid_quotes)
+        )
+        return None
+    return (
+        replace(
             current,
             frozen=True,
             published_at=boundary,
             config_version=pipeline._config_version,
             metadata={**current.metadata, "freeze_anchor": anchors},
-        )
-        snapshots.extend(_commit_frozen_snapshot(pipeline, frozen, key, boundary))
-    return tuple(snapshots)
+        ),
+        boundary,
+    )
+
+
+def _freeze_snapshot_error(
+    current: RecommendationSnapshot | None,
+    trade_date: str,
+    boundary: datetime,
+) -> str:
+    if current is None or current.trade_date != trade_date:
+        return "no current pre-cutoff snapshot"
+    if current.published_at > boundary:
+        return "latest snapshot is after cutoff"
+    if (boundary - current.published_at).total_seconds() > 30:
+        return "latest snapshot is stale at cutoff"
+    return ""
+
+
+def _freeze_anchors(
+    snapshot: RecommendationSnapshot,
+    boundary: datetime,
+    maximum_age: float,
+) -> tuple[dict[str, object], list[str]]:
+    anchors: dict[str, object] = {}
+    invalid_quotes: list[str] = []
+    for recommendation in snapshot.recommendations:
+        quote = recommendation.features.quote
+        age = (boundary - quote.source_time).total_seconds()
+        anchors[quote.code] = {
+            "source": quote.source,
+            "source_time": quote.source_time.isoformat(),
+            "age_seconds": round(age, 3),
+        }
+        if age < 0.0 or age > maximum_age:
+            invalid_quotes.append(f"{quote.code}:{age:.3f}")
+    return anchors, invalid_quotes
 
 
 def _restore_existing_frozen(
@@ -196,8 +229,22 @@ def refresh_live_overlays(
     deadline: datetime | None = None,
 ) -> None:
     trade_date = trade_date_at(now).isoformat()
-    active: list[tuple[Strategy, RecommendationSnapshot, tuple[str, ...], LiveOverlay | None]] = []
-    all_codes: list[str] = []
+    active = _active_overlay_targets(pipeline, trade_date)
+    if not active:
+        return
+    requested = tuple(dict.fromkeys(code for target in active for code in target.codes))
+    fetched_quotes = _fetch_overlay_quotes(pipeline, requested, now, deadline)
+    if fetched_quotes is None:
+        return
+    for target in active:
+        _publish_overlay_update(pipeline, target, fetched_quotes, now, phase)
+
+
+def _active_overlay_targets(
+    pipeline: RecommendationPipeline,
+    trade_date: str,
+) -> tuple[_OverlayTarget, ...]:
+    active: list[_OverlayTarget] = []
     for strategy in Strategy:
         snapshot = pipeline._state.latest(strategy)
         if snapshot is None or snapshot.trade_date != trade_date:
@@ -214,12 +261,16 @@ def refresh_live_overlays(
         codes = tuple(item.features.quote.code for item in snapshot.recommendations)
         if not codes:
             continue
-        active.append((strategy, snapshot, codes, existing))
-        all_codes.extend(codes)
-    if not active:
-        return
+        active.append(_OverlayTarget(strategy, snapshot, codes, existing))
+    return tuple(active)
 
-    requested = tuple(dict.fromkeys(all_codes))
+
+def _fetch_overlay_quotes(
+    pipeline: RecommendationPipeline,
+    requested: tuple[str, ...],
+    now: datetime,
+    deadline: datetime | None,
+) -> Mapping[str, MarketQuote] | None:
     try:
         if pipeline._persistence_running and not pipeline._market_data_manages_workers:
             fetched = submit_required_urgent(
@@ -235,50 +286,57 @@ def refresh_live_overlays(
         features = tuple(fetched)
     except (MarketDataUnavailableError, OSError, RuntimeError, ValueError) as exc:
         pipeline._state.record_error(f"TopK live overlay degraded: {str(exc)[:500]}")
-        return
-    fetched_quotes = {feature.quote.code: feature.quote for feature in features}
+        return None
+    return {feature.quote.code: feature.quote for feature in features}
 
-    for strategy, snapshot, codes, existing in active:
-        key = (strategy, trade_date)
-        quotes = dict(existing.quotes) if existing is not None else {}
-        allowed = set(codes)
-        updated_codes: set[str] = set()
-        for code in codes:
-            quote = fetched_quotes.get(code)
-            if quote is None or quote.source_time > now or quote.price is None or quote.price <= 0:
-                continue
-            quotes[code] = LiveQuote(
-                code=code,
-                price=quote.price,
-                pct_change=quote.pct_change,
-                source=quote.source,
-                source_time=quote.source_time,
-                received_time=quote.received_time,
-                data_version=quote.data_version,
-            )
-            updated_codes.add(code)
-        if not updated_codes:
+
+def _publish_overlay_update(
+    pipeline: RecommendationPipeline,
+    target: _OverlayTarget,
+    fetched_quotes: Mapping[str, MarketQuote],
+    now: datetime,
+    phase: MarketPhase,
+) -> None:
+    quotes = dict(target.existing.quotes) if target.existing is not None else {}
+    updated_codes: set[str] = set()
+    for code in target.codes:
+        quote = fetched_quotes.get(code)
+        if quote is None:
             continue
-        overlay = LiveOverlay(
-            snapshot_id=snapshot.snapshot_id,
-            strategy=strategy,
-            trade_date=trade_date,
-            version=_overlay_version(snapshot.snapshot_id, now, quotes),
-            observed_at=now,
-            quotes=quotes,
-            closing=phase is MarketPhase.AFTER_CLOSE and updated_codes == allowed,
+        if quote.source_time > now or quote.price is None or quote.price <= 0:
+            continue
+        quotes[code] = LiveQuote(
+            code=code,
+            price=quote.price,
+            pct_change=quote.pct_change,
+            source=quote.source,
+            source_time=quote.source_time,
+            received_time=quote.received_time,
+            data_version=quote.data_version,
         )
-        if (
-            overlay.closing
-            and snapshot.frozen
-            and not persist(pipeline, pipeline._snapshot_writer.save_live_overlay, overlay)
-        ):
-            pipeline._state.record_error(f"{strategy.value} closing overlay persistence failed")
-            continue
-        pipeline._live_overlays[key] = overlay
-        pipeline._state.publish_overlay(overlay)
-        pipeline._published_snapshots.publish_overlay(overlay)
-        pipeline._publisher.publish_overlay(overlay)
+        updated_codes.add(code)
+    if not updated_codes:
+        return
+    overlay = LiveOverlay(
+        snapshot_id=target.snapshot.snapshot_id,
+        strategy=target.strategy,
+        trade_date=target.snapshot.trade_date,
+        version=_overlay_version(target.snapshot.snapshot_id, now, quotes),
+        observed_at=now,
+        quotes=quotes,
+        closing=phase is MarketPhase.AFTER_CLOSE and updated_codes == set(target.codes),
+    )
+    if (
+        overlay.closing
+        and target.snapshot.frozen
+        and not persist(pipeline, pipeline._snapshot_writer.save_live_overlay, overlay)
+    ):
+        pipeline._state.record_error(f"{target.strategy.value} closing overlay persistence failed")
+        return
+    pipeline._live_overlays[(target.strategy, target.snapshot.trade_date)] = overlay
+    pipeline._state.publish_overlay(overlay)
+    pipeline._published_snapshots.publish_overlay(overlay)
+    pipeline._publisher.publish_overlay(overlay)
 
 
 def refresh_candidates(

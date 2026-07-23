@@ -6,6 +6,10 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import ScoringCacheContext
@@ -24,6 +28,7 @@ from trader.domain.recommendation.filters import FilterResult, board_for_snapsho
 from trader.domain.recommendation.models import (
     BoardScoreBatch,
     FilterAudit,
+    Recommendation,
     RecommendationSnapshot,
     Strategy,
 )
@@ -48,6 +53,82 @@ _LONG_RESEARCH_FIELDS = (
     "risk_protection_score",
     *_STRUCTURED_RISK_FIELDS,
 )
+
+
+class _PreselectRequiredOptions(TypedDict):
+    now: datetime
+    max_age_seconds: float
+    limit: int
+
+
+class _PreselectOptionalOptions(TypedDict, total=False):
+    strategies: Sequence[Strategy] | None
+    trade_date: str | None
+    phase: str
+    data_version: str | None
+    merge_epoch: str | None
+
+
+class PreselectOptions(_PreselectRequiredOptions, _PreselectOptionalOptions):
+    pass
+
+
+class _ScoringContextRequiredOptions(TypedDict):
+    now: datetime
+    phase: str
+
+
+class _ScoringContextOptionalOptions(TypedDict, total=False):
+    trade_date: str | None
+    data_version: str | None
+    merge_epoch: str | None
+
+
+class _ScoringContextOptions(_ScoringContextRequiredOptions, _ScoringContextOptionalOptions):
+    pass
+
+
+class _SnapshotRequiredOptions(TypedDict):
+    now: datetime
+    phase: str
+    trade_date: str
+    data_version: str
+    review_deadline: datetime
+    max_age_seconds: float
+    filtered_count: int
+    filter_reasons: Mapping[str, int]
+
+
+class _SnapshotOptionalOptions(TypedDict, total=False):
+    filter_details: Sequence[FilterAudit]
+    target_prices: Mapping[str, float | None] | None
+    market_features: Sequence[FeatureSnapshot]
+    requested_codes: Sequence[str]
+    preselect_max_age_seconds: float | None
+    candidate_pool_size: int
+
+
+class PrepareSnapshotOptions(_SnapshotRequiredOptions, _SnapshotOptionalOptions):
+    pass
+
+
+class BuildSnapshotOptions(PrepareSnapshotOptions):
+    review_port: DeepSeekReviewPort | None
+
+
+class _RefreshFilterOptions(TypedDict):
+    now: datetime
+    max_age_seconds: float
+    filtered_count: int
+    filter_reasons: Mapping[str, int]
+    filter_details: Sequence[FilterAudit]
+
+
+class _BoardScoringOptions(TypedDict):
+    now: datetime
+    phase: str
+    trade_date: str
+    data_version: str
 
 
 def _merge_epoch_for_features(features: Sequence[FeatureSnapshot], data_version: str) -> str:
@@ -92,63 +173,19 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
     def preselect(
         self,
         features: Sequence[FeatureSnapshot],
-        *,
-        now: datetime,
-        max_age_seconds: float,
-        limit: int,
-        strategies: Sequence[Strategy] | None = None,
-        trade_date: str | None = None,
-        phase: str = "preselection",
-        data_version: str | None = None,
-        merge_epoch: str | None = None,
+        **options: Unpack[PreselectOptions],
     ) -> tuple[tuple[FeatureSnapshot, ...], Mapping[str, int], tuple[FilterAudit, ...]]:
-        accepted: list[FeatureSnapshot] = []
-        reasons: Counter[str] = Counter()
-        details: list[FilterAudit] = []
-        for snapshot in features:
-            discovery_snapshot = replace(
-                snapshot,
-                quote=replace(
-                    snapshot.quote,
-                    source_time=min(now, snapshot.quote.received_time),
-                ),
-            )
-            result = self._hard_filter(
-                discovery_snapshot,
-                now,
-                max_age_seconds=max_age_seconds,
-                policy=self._policy.hard_filter,
-            )
-            if not result.allowed:
-                reasons.update(reason.code for reason in result.reasons)
-                if snapshot.history_days < 20 and any(
-                    reason.code in {"missing_liquidity_history", "invalid_liquidity_history"}
-                    for reason in result.reasons
-                ):
-                    reasons["history_warming"] += 1
-                details.extend(result.reasons)
-                continue
-            board = board_for_snapshot(snapshot)
-            accepted.append(replace(snapshot, quote=replace(snapshot.quote, board=board)))
+        now = options["now"]
+        max_age_seconds = options["max_age_seconds"]
+        limit = options["limit"]
+        strategies = options.get("strategies")
+        trade_date = options.get("trade_date")
+        phase = options.get("phase", "preselection")
+        data_version = options.get("data_version")
+        merge_epoch = options.get("merge_epoch")
+        accepted, reasons, details = self._filter_preselection(features, now, max_age_seconds)
         if not self._policy.board_candidate_weights:
-            legacy_accepted: list[tuple[float, FeatureSnapshot]] = []
-            for snapshot in accepted:
-                if snapshot.missing_ratio(CORE_FIELDS) > 0.30:
-                    reasons["insufficient_candidate_history"] += 1
-                    details.append(
-                        FilterAudit(
-                            stock_code=snapshot.quote.code,
-                            filter_code="insufficient_candidate_history",
-                            threshold="<= 0.30",
-                            actual=round(snapshot.missing_ratio(CORE_FIELDS), 6),
-                            source=snapshot.quote.source,
-                            observed_at=snapshot.quote.source_time,
-                        )
-                    )
-                    continue
-                legacy_accepted.append((candidate_score(snapshot, self._policy.candidate_weights), snapshot))
-            legacy_accepted.sort(key=lambda item: (-item[0], item[1].quote.code))
-            return tuple(snapshot for _score, snapshot in legacy_accepted[:limit]), dict(reasons), tuple(details)
+            return self._legacy_preselection(accepted, reasons, details, limit)
 
         active = tuple(strategies or (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25))
         market_by_code = {snapshot.quote.code: snapshot for snapshot in accepted}
@@ -189,16 +226,79 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
             tuple(details),
         )
 
+    def _filter_preselection(
+        self,
+        features: Sequence[FeatureSnapshot],
+        now: datetime,
+        max_age_seconds: float,
+    ) -> tuple[list[FeatureSnapshot], Counter[str], list[FilterAudit]]:
+        accepted: list[FeatureSnapshot] = []
+        reasons: Counter[str] = Counter()
+        details: list[FilterAudit] = []
+        for snapshot in features:
+            discovery_snapshot = replace(
+                snapshot,
+                quote=replace(
+                    snapshot.quote,
+                    source_time=min(now, snapshot.quote.received_time),
+                ),
+            )
+            result = self._hard_filter(
+                discovery_snapshot,
+                now,
+                max_age_seconds=max_age_seconds,
+                policy=self._policy.hard_filter,
+            )
+            if not result.allowed:
+                reasons.update(reason.code for reason in result.reasons)
+                if snapshot.history_days < 20 and any(
+                    reason.code in {"missing_liquidity_history", "invalid_liquidity_history"}
+                    for reason in result.reasons
+                ):
+                    reasons["history_warming"] += 1
+                details.extend(result.reasons)
+                continue
+            board = board_for_snapshot(snapshot)
+            accepted.append(replace(snapshot, quote=replace(snapshot.quote, board=board)))
+        return accepted, reasons, details
+
+    def _legacy_preselection(
+        self,
+        accepted: Sequence[FeatureSnapshot],
+        reasons: Counter[str],
+        details: list[FilterAudit],
+        limit: int,
+    ) -> tuple[tuple[FeatureSnapshot, ...], Mapping[str, int], tuple[FilterAudit, ...]]:
+        legacy_accepted: list[tuple[float, FeatureSnapshot]] = []
+        for snapshot in accepted:
+            missing_ratio = snapshot.missing_ratio(CORE_FIELDS)
+            if missing_ratio > 0.30:
+                reasons["insufficient_candidate_history"] += 1
+                details.append(
+                    FilterAudit(
+                        stock_code=snapshot.quote.code,
+                        filter_code="insufficient_candidate_history",
+                        threshold="<= 0.30",
+                        actual=round(missing_ratio, 6),
+                        source=snapshot.quote.source,
+                        observed_at=snapshot.quote.source_time,
+                    )
+                )
+                continue
+            legacy_accepted.append((candidate_score(snapshot, self._policy.candidate_weights), snapshot))
+        legacy_accepted.sort(key=lambda item: (-item[0], item[1].quote.code))
+        return tuple(snapshot for _score, snapshot in legacy_accepted[:limit]), dict(reasons), tuple(details)
+
     def _scoring_context(
         self,
         features: Sequence[FeatureSnapshot],
-        *,
-        now: datetime,
-        trade_date: str | None,
-        phase: str,
-        data_version: str | None,
-        merge_epoch: str | None,
+        **options: Unpack[_ScoringContextOptions],
     ) -> ScoringCacheContext:
+        now = options["now"]
+        trade_date = options.get("trade_date")
+        phase = options["phase"]
+        data_version = options.get("data_version")
+        merge_epoch = options.get("merge_epoch")
         material = tuple(
             (
                 feature.quote.code,
@@ -223,40 +323,28 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
         self,
         strategy: Strategy,
         features: Sequence[FeatureSnapshot],
-        *,
-        now: datetime,
-        phase: str,
-        trade_date: str,
-        data_version: str,
-        review_port: DeepSeekReviewPort | None,
-        review_deadline: datetime,
-        max_age_seconds: float,
-        filtered_count: int,
-        filter_reasons: Mapping[str, int],
-        filter_details: Sequence[FilterAudit] = (),
-        target_prices: Mapping[str, float | None] | None = None,
-        market_features: Sequence[FeatureSnapshot] = (),
-        requested_codes: Sequence[str] = (),
-        preselect_max_age_seconds: float | None = None,
-        candidate_pool_size: int = 0,
+        **options: Unpack[BuildSnapshotOptions],
     ) -> RecommendationSnapshot:
+        phase = options["phase"]
+        review_port = options["review_port"]
+        review_deadline = options["review_deadline"]
         prepared = self.prepare_snapshot(
             strategy,
             features,
-            now=now,
-            phase=phase,
-            trade_date=trade_date,
-            data_version=data_version,
-            review_deadline=review_deadline,
-            max_age_seconds=max_age_seconds,
-            filtered_count=filtered_count,
-            filter_reasons=filter_reasons,
-            filter_details=filter_details,
-            target_prices=target_prices,
-            market_features=market_features,
-            requested_codes=requested_codes,
-            preselect_max_age_seconds=preselect_max_age_seconds,
-            candidate_pool_size=candidate_pool_size,
+            now=options["now"],
+            phase=options["phase"],
+            trade_date=options["trade_date"],
+            data_version=options["data_version"],
+            review_deadline=options["review_deadline"],
+            max_age_seconds=options["max_age_seconds"],
+            filtered_count=options["filtered_count"],
+            filter_reasons=options["filter_reasons"],
+            filter_details=options.get("filter_details", ()),
+            target_prices=options.get("target_prices"),
+            market_features=options.get("market_features", ()),
+            requested_codes=options.get("requested_codes", ()),
+            preselect_max_age_seconds=options.get("preselect_max_age_seconds"),
+            candidate_pool_size=options.get("candidate_pool_size", 0),
         )
         reviews = (
             review_port.review(
@@ -275,96 +363,42 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
         self,
         strategy: Strategy,
         features: Sequence[FeatureSnapshot],
-        *,
-        now: datetime,
-        phase: str,
-        trade_date: str,
-        data_version: str,
-        review_deadline: datetime,
-        max_age_seconds: float,
-        filtered_count: int,
-        filter_reasons: Mapping[str, int],
-        filter_details: Sequence[FilterAudit] = (),
-        target_prices: Mapping[str, float | None] | None = None,
-        market_features: Sequence[FeatureSnapshot] = (),
-        requested_codes: Sequence[str] = (),
-        preselect_max_age_seconds: float | None = None,
-        candidate_pool_size: int = 0,
+        **options: Unpack[PrepareSnapshotOptions],
     ) -> PreparedSnapshot:
-        eligible: list[FeatureSnapshot] = []
-        refreshed_filter_reasons = Counter(filter_reasons)
-        refreshed_filter_details = list(filter_details)
-        refreshed_filtered_count = filtered_count
-        for feature in features:
-            filter_result = self._hard_filter(
-                feature,
-                now,
-                max_age_seconds=max_age_seconds,
-                policy=self._policy.hard_filter,
-            )
-            if filter_result.allowed:
-                refreshed_filter_details.extend(filter_result.optional_flags)
-                eligible.append(feature)
-                continue
-            refreshed_filter_reasons.update(reason.code for reason in filter_result.reasons)
-            refreshed_filter_details.extend(filter_result.reasons)
-            refreshed_filtered_count += 1
-
-        normalized_eligible = tuple(
-            replace(feature, quote=replace(feature.quote, board=board_for_snapshot(feature))) for feature in eligible
-        )
-        board_batches: tuple[BoardScoreBatch, ...] = ()
-        board_scoring_complete = True
-        board_degraded_reasons: list[str] = []
-        if strategy is not Strategy.LONG and self._policy.board_candidate_weights:
-            policies = {
-                board: policy
-                for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
-                if (policy := self._policy.board_policy(strategy, board)) is not None
-            }
-            if len(policies) != 3:
-                raise RuntimeError(f"v16 board policies are incomplete for {strategy.value}")
-            context = self._scoring_context(
-                normalized_eligible,
+        now = options["now"]
+        phase = options["phase"]
+        trade_date = options["trade_date"]
+        data_version = options["data_version"]
+        review_deadline = options["review_deadline"]
+        max_age_seconds = options["max_age_seconds"]
+        filtered_count = options["filtered_count"]
+        filter_reasons = options["filter_reasons"]
+        filter_details = options.get("filter_details", ())
+        target_prices = options.get("target_prices")
+        market_features = options.get("market_features", ())
+        requested_codes = options.get("requested_codes", ())
+        preselect_max_age_seconds = options.get("preselect_max_age_seconds")
+        candidate_pool_size = options.get("candidate_pool_size", 0)
+        normalized_eligible, refreshed_filtered_count, refreshed_filter_reasons, refreshed_filter_details = (
+            self._refresh_eligible(
+                features,
                 now=now,
-                trade_date=trade_date,
-                phase=phase,
-                data_version=data_version,
-                merge_epoch=_merge_epoch_for_features(normalized_eligible, data_version),
+                max_age_seconds=max_age_seconds,
+                filtered_count=filtered_count,
+                filter_reasons=filter_reasons,
+                filter_details=filter_details,
             )
-            board_batches = self._board_scoring.score(
+        )
+        local_candidates, board_batches, board_scoring_complete, board_degraded_reasons, normalized_eligible = (
+            self._score_prepared_candidates(
                 strategy,
                 normalized_eligible,
-                policies,
-                context,
-                lambda scored_strategy, feature, policy, local_score: self._local_candidate_with_policy(
-                    scored_strategy,
-                    feature,
-                    now,
-                    policy,
-                    local_score,
-                ),
+                now=now,
+                phase=phase,
+                trade_date=trade_date,
+                data_version=data_version,
             )
-            expected_epoch = context.merge_epoch
-            if len(board_batches) != 3:
-                board_scoring_complete = False
-                board_degraded_reasons.append("board_batch_count_mismatch")
-            for batch in board_batches:
-                if batch.merge_epoch != expected_epoch:
-                    board_scoring_complete = False
-                    board_degraded_reasons.append(f"{batch.board.value}:merge_epoch_mismatch")
-                if batch.status == "failed":
-                    board_scoring_complete = False
-                    board_degraded_reasons.extend(
-                        f"{batch.board.value}:{reason}" for reason in batch.degraded_reasons or ("failed",)
-                    )
-                elif batch.status in {"degraded", "empty"}:
-                    board_degraded_reasons.extend(f"{batch.board.value}:{reason}" for reason in batch.degraded_reasons)
-            local_candidates = tuple(item for batch in board_batches for item in batch.recommendations)
-            if board_scoring_complete:
-                normalized_eligible = tuple(item.features for item in local_candidates)
-        else:
-            local_candidates = tuple(self._local_candidate(strategy, feature, now) for feature in normalized_eligible)
+        )
 
         return PreparedSnapshot(
             strategy=strategy,
@@ -389,8 +423,110 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
             candidate_pool_size=candidate_pool_size,
             board_batches=board_batches,
             board_scoring_complete=board_scoring_complete,
-            board_degraded_reasons=tuple(dict.fromkeys(board_degraded_reasons)),
+            board_degraded_reasons=board_degraded_reasons,
         )
+
+    def _refresh_eligible(
+        self,
+        features: Sequence[FeatureSnapshot],
+        **options: Unpack[_RefreshFilterOptions],
+    ) -> tuple[tuple[FeatureSnapshot, ...], int, Counter[str], list[FilterAudit]]:
+        refreshed_filter_reasons = Counter(options["filter_reasons"])
+        refreshed_filter_details = list(options["filter_details"])
+        refreshed_filtered_count = options["filtered_count"]
+        eligible: list[FeatureSnapshot] = []
+        for feature in features:
+            filter_result = self._hard_filter(
+                feature,
+                options["now"],
+                max_age_seconds=options["max_age_seconds"],
+                policy=self._policy.hard_filter,
+            )
+            if filter_result.allowed:
+                refreshed_filter_details.extend(filter_result.optional_flags)
+                eligible.append(feature)
+                continue
+            refreshed_filter_reasons.update(reason.code for reason in filter_result.reasons)
+            refreshed_filter_details.extend(filter_result.reasons)
+            refreshed_filtered_count += 1
+        normalized = tuple(
+            replace(feature, quote=replace(feature.quote, board=board_for_snapshot(feature))) for feature in eligible
+        )
+        return normalized, refreshed_filtered_count, refreshed_filter_reasons, refreshed_filter_details
+
+    def _score_prepared_candidates(
+        self,
+        strategy: Strategy,
+        normalized_eligible: tuple[FeatureSnapshot, ...],
+        **options: Unpack[_BoardScoringOptions],
+    ) -> tuple[
+        tuple[Recommendation, ...],
+        tuple[BoardScoreBatch, ...],
+        bool,
+        tuple[str, ...],
+        tuple[FeatureSnapshot, ...],
+    ]:
+        now = options["now"]
+        board_batches: tuple[BoardScoreBatch, ...] = ()
+        board_scoring_complete = True
+        board_degraded_reasons: list[str] = []
+        if strategy is not Strategy.LONG and self._policy.board_candidate_weights:
+            policies = {
+                board: policy
+                for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
+                if (policy := self._policy.board_policy(strategy, board)) is not None
+            }
+            if len(policies) != 3:
+                raise RuntimeError(f"v16 board policies are incomplete for {strategy.value}")
+            context = self._scoring_context(
+                normalized_eligible,
+                now=now,
+                trade_date=options["trade_date"],
+                phase=options["phase"],
+                data_version=options["data_version"],
+                merge_epoch=_merge_epoch_for_features(normalized_eligible, options["data_version"]),
+            )
+            board_batches = self._board_scoring.score(
+                strategy,
+                normalized_eligible,
+                policies,
+                context,
+                lambda scored_strategy, feature, policy, local_score: self._local_candidate_with_policy(
+                    scored_strategy,
+                    feature,
+                    now,
+                    policy,
+                    local_score,
+                ),
+            )
+            board_scoring_complete, board_degraded_reasons = _board_batch_status(board_batches, context.merge_epoch)
+            local_candidates = tuple(item for batch in board_batches for item in batch.recommendations)
+            if board_scoring_complete:
+                normalized_eligible = tuple(item.features for item in local_candidates)
+        else:
+            local_candidates = tuple(self._local_candidate(strategy, feature, now) for feature in normalized_eligible)
+        return (
+            local_candidates,
+            board_batches,
+            board_scoring_complete,
+            tuple(dict.fromkeys(board_degraded_reasons)),
+            normalized_eligible,
+        )
+
+
+def _board_batch_status(batches: Sequence[BoardScoreBatch], expected_epoch: str) -> tuple[bool, list[str]]:
+    complete = len(batches) == 3
+    reasons = [] if complete else ["board_batch_count_mismatch"]
+    for batch in batches:
+        if batch.merge_epoch != expected_epoch:
+            complete = False
+            reasons.append(f"{batch.board.value}:merge_epoch_mismatch")
+        if batch.status == "failed":
+            complete = False
+            reasons.extend(f"{batch.board.value}:{reason}" for reason in batch.degraded_reasons or ("failed",))
+        elif batch.status in {"degraded", "empty"}:
+            reasons.extend(f"{batch.board.value}:{reason}" for reason in batch.degraded_reasons)
+    return complete, reasons
 
 
 __all__ = ["PreparedSnapshot", "RecommendationEngine"]

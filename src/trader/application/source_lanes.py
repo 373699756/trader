@@ -17,7 +17,7 @@ _T = TypeVar("_T")
 _SOURCE_NAMES = ("eastmoney", "history", "sina", "tencent", "tushare", "akshare")
 
 
-class SourceRequestSuperseded(RuntimeError):
+class SourceRequestSupersededError(RuntimeError):
     """A queued source request was replaced by a newer observation point."""
 
 
@@ -84,83 +84,87 @@ class LatestRequestLane:
         **kwargs: _P.kwargs,
     ) -> Future[_T]:
         normalized_identity = identity.strip()
-        if not normalized_identity:
-            raise ValueError("source lane request identity must not be empty")
-        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
-            raise ValueError("source lane observed_at must be timezone-aware")
-
+        _validate_request(normalized_identity, observed_at)
         created: Future[object] = Future()
-        with self._condition:
-            if self._stopped:
-                created.set_exception(RuntimeError(f"{self._source} source lane is stopped"))
-                self._rejected_count += 1
-                return cast(Future[_T], created)
-            if (
-                self._running is not None
-                and self._running.identity == normalized_identity
-                and observed_at <= self._running.observed_at
-                and not self._running.future.cancelled()
-            ):
-                self._coalesced_count += 1
-                return cast(Future[_T], self._running.future)
-            if (
-                self._pending is not None
-                and self._pending.identity == normalized_identity
-                and not self._pending.future.cancelled()
-            ):
-                self._coalesced_count += 1
-                if observed_at >= self._pending.observed_at:
-                    self._sequence += 1
-                    self._pending = _LaneRequest(
-                        normalized_identity,
-                        observed_at,
-                        self._sequence,
-                        lambda: function(*args, **kwargs),
-                        self._pending.future,
-                    )
-                return cast(Future[_T], self._pending.future)
 
+        def call() -> object:
+            return function(*args, **kwargs)
+
+        with self._condition:
+            existing = self._existing_future(normalized_identity, observed_at, call, created)
+            if existing is not None:
+                return cast(Future[_T], existing)
             self._sequence += 1
             request = _LaneRequest(
                 normalized_identity,
                 observed_at,
                 self._sequence,
-                lambda: function(*args, **kwargs),
+                call,
                 created,
             )
-            if self._running is None:
-                self._running = request
-                submit = self._executor.submit_urgent if urgent else self._executor.submit
-                runner = submit(self._drain)
-                if runner is None:
-                    self._running = None
-                    self._rejected_count += 1
-                    created.set_exception(RuntimeError(f"{self._source} source lane queue is full or stopped"))
-                else:
-                    self._runner_future = runner
-                    runner.add_done_callback(self._runner_finished)
-                return cast(Future[_T], created)
+            return cast(Future[_T], self._enqueue(request, urgent))
 
-            if (request.observed_at, request.sequence) <= (
-                self._running.observed_at,
-                self._running.sequence,
-            ):
-                self._superseded_count += 1
-                created.set_exception(SourceRequestSuperseded(f"{self._source} source request was superseded"))
-                return cast(Future[_T], created)
-            if self._pending is not None:
-                pending = self._pending
-                if (request.observed_at, request.sequence) <= (pending.observed_at, pending.sequence):
-                    self._superseded_count += 1
-                    created.set_exception(SourceRequestSuperseded(f"{self._source} source request was superseded"))
-                    return cast(Future[_T], created)
-                self._superseded_count += 1
-                if not pending.future.done():
-                    pending.future.set_exception(
-                        SourceRequestSuperseded(f"{self._source} source request was superseded")
-                    )
-            self._pending = request
-            return cast(Future[_T], created)
+    def _existing_future(
+        self,
+        identity: str,
+        observed_at: datetime,
+        call: Callable[[], object],
+        created: Future[object],
+    ) -> Future[object] | None:
+        if self._stopped:
+            created.set_exception(RuntimeError(f"{self._source} source lane is stopped"))
+            self._rejected_count += 1
+            return created
+        running = self._running
+        if (
+            running is not None
+            and running.identity == identity
+            and observed_at <= running.observed_at
+            and not running.future.cancelled()
+        ):
+            self._coalesced_count += 1
+            return running.future
+        pending = self._pending
+        if pending is None or pending.identity != identity or pending.future.cancelled():
+            return None
+        self._coalesced_count += 1
+        if observed_at >= pending.observed_at:
+            self._sequence += 1
+            self._pending = _LaneRequest(identity, observed_at, self._sequence, call, pending.future)
+        return pending.future
+
+    def _enqueue(self, request: _LaneRequest, urgent: bool) -> Future[object]:
+        if self._running is None:
+            self._start_runner(request, urgent)
+            return request.future
+        if _request_order(request) <= _request_order(self._running):
+            self._supersede(request.future)
+            return request.future
+        pending = self._pending
+        if pending is not None and _request_order(request) <= _request_order(pending):
+            self._supersede(request.future)
+            return request.future
+        if pending is not None:
+            self._supersede(pending.future)
+        self._pending = request
+        return request.future
+
+    def _start_runner(self, request: _LaneRequest, urgent: bool) -> None:
+        self._running = request
+        submit = self._executor.submit_urgent if urgent else self._executor.submit
+        runner = submit(self._drain)
+        if runner is None:
+            self._running = None
+            self._rejected_count += 1
+            request.future.set_exception(RuntimeError(f"{self._source} source lane queue is full or stopped"))
+            return
+        self._runner_future = runner
+        runner.add_done_callback(self._runner_finished)
+
+    def _supersede(self, future: Future[object]) -> None:
+        self._superseded_count += 1
+        if not future.done():
+            future.set_exception(SourceRequestSupersededError(f"{self._source} source request was superseded"))
 
     def stop(self, *, wait: bool = True, timeout_seconds: float | None = None) -> None:
         deadline = None if timeout_seconds is None else time.monotonic() + max(0.0, timeout_seconds)
@@ -209,34 +213,38 @@ class LatestRequestLane:
                 if request is None:
                     return
                 self._active_thread_ident = threading.get_ident()
-            has_next = False
-            should_run = request.future.set_running_or_notify_cancel()
-            try:
-                result = request.call() if should_run else None
-            except BaseException as exc:
-                if not request.future.done():
-                    request.future.set_exception(exc)
-            else:
-                if should_run and not request.future.done():
-                    request.future.set_result(result)
-            finally:
-                with self._condition:
-                    self._completed_count += 1
-                    self._active_thread_ident = None
-                    if self._stopped:
-                        if self._pending is not None and not self._pending.future.done():
-                            self._pending.future.set_exception(RuntimeError(f"{self._source} source lane stopped"))
-                        self._pending = None
-                        self._running = None
-                    elif self._pending is not None:
-                        self._running = self._pending
-                        self._pending = None
-                    else:
-                        self._running = None
-                    has_next = self._running is not None
-                    self._condition.notify_all()
-            if not has_next:
+            self._execute(request)
+            if not self._advance():
                 return
+
+    def _execute(self, request: _LaneRequest) -> None:
+        should_run = request.future.set_running_or_notify_cancel()
+        try:
+            result = request.call() if should_run else None
+        except BaseException as exc:
+            if not request.future.done():
+                request.future.set_exception(exc)
+        else:
+            if should_run and not request.future.done():
+                request.future.set_result(result)
+
+    def _advance(self) -> bool:
+        with self._condition:
+            self._completed_count += 1
+            self._active_thread_ident = None
+            if self._stopped:
+                if self._pending is not None and not self._pending.future.done():
+                    self._pending.future.set_exception(RuntimeError(f"{self._source} source lane stopped"))
+                self._pending = None
+                self._running = None
+            elif self._pending is not None:
+                self._running = self._pending
+                self._pending = None
+            else:
+                self._running = None
+            has_next = self._running is not None
+            self._condition.notify_all()
+            return has_next
 
     def _runner_finished(self, future: Future[None]) -> None:
         with self._condition:
@@ -309,4 +317,15 @@ class SourceLaneRegistry:
             raise ValueError(f"unknown source lane: {source}") from exc
 
 
-__all__ = ["LatestRequestLane", "SourceLaneRegistry", "SourceRequestSuperseded"]
+__all__ = ["LatestRequestLane", "SourceLaneRegistry", "SourceRequestSupersededError"]
+
+
+def _validate_request(identity: str, observed_at: datetime) -> None:
+    if not identity:
+        raise ValueError("source lane request identity must not be empty")
+    if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+        raise ValueError("source lane observed_at must be timezone-aware")
+
+
+def _request_order(request: _LaneRequest) -> tuple[datetime, int]:
+    return request.observed_at, request.sequence

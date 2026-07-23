@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
@@ -48,6 +48,23 @@ from trader.application.pipeline_workers import (
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _ScoringContext:
+    now: datetime
+    phase: MarketPhase
+    trade_date: str
+    started_at: float
+    completion_deadline: datetime | None
+
+
+_StrategyInput = tuple[
+    Strategy,
+    Sequence[str],
+    Future[tuple[tuple[FeatureSnapshot, ...], str]],
+]
+_PreparedFuture = tuple[Strategy, Future[PreparedSnapshot]]
 
 
 def process_schedule_on_workers(
@@ -308,39 +325,72 @@ def _score_strategies_on_workers(
     use_cached_data: bool,
     completion_deadline: datetime | None = None,
 ) -> tuple[RecommendationSnapshot, ...]:
-    scoring_started = time.perf_counter()
-    snapshots: list[RecommendationSnapshot] = []
-    trade_date = trade_date_at(now).isoformat()
-    if phase is MarketPhase.WARMUP and pipeline._reviews is not None and pipeline._candidate_features:
+    context = _ScoringContext(
+        now,
+        phase,
+        trade_date_at(now).isoformat(),
+        time.perf_counter(),
+        completion_deadline,
+    )
+    _preheat_reviews(pipeline, context)
+    strategy_inputs = _strategy_inputs(pipeline, context, use_cached_data=use_cached_data)
+    prepared_futures = _prepare_strategy_futures(pipeline, context, strategy_inputs)
+    prepared_snapshots = _resolve_prepared_snapshots(pipeline, prepared_futures)
+    review_results = _review_prepared_snapshots(pipeline, context, prepared_snapshots)
+    return _publish_prepared_snapshots(pipeline, context, prepared_snapshots, review_results)
+
+
+def _preheat_reviews(
+    pipeline: RecommendationPipeline,
+    context: _ScoringContext,
+) -> None:
+    if context.phase is MarketPhase.WARMUP and pipeline._reviews is not None and pipeline._candidate_features:
         preheat = submit_required(
             pipeline,
             pipeline._deepseek_pool,
             pipeline._reviews.preheat,
             pipeline._candidate_features,
-            phase=phase.value,
-            deadline=shanghai_now(now).replace(hour=9, minute=30, second=0, microsecond=0),
+            phase=context.phase.value,
+            deadline=shanghai_now(context.now).replace(hour=9, minute=30, second=0, microsecond=0),
         )
         preheat.result()
 
-    strategy_inputs: list[tuple[Strategy, Sequence[str], Future[tuple[tuple[FeatureSnapshot, ...], str]]]] = []
-    for strategy in strategies_for_phase(phase):
-        if (strategy, trade_date) in pipeline._frozen_keys or pipeline._state.is_frozen(strategy, trade_date):
+
+def _strategy_inputs(
+    pipeline: RecommendationPipeline,
+    context: _ScoringContext,
+    *,
+    use_cached_data: bool,
+) -> list[_StrategyInput]:
+    inputs: list[_StrategyInput] = []
+    feature_reader = read_strategy_features if use_cached_data else fetch_strategy_features
+    for strategy in strategies_for_phase(context.phase):
+        if (strategy, context.trade_date) in pipeline._frozen_keys or pipeline._state.is_frozen(
+            strategy,
+            context.trade_date,
+        ):
             continue
         codes = pipeline._long_codes if strategy is Strategy.LONG else pipeline._candidate_codes
         if not codes:
             continue
-        feature_reader = read_strategy_features if use_cached_data else fetch_strategy_features
         strategy_future = data_future(
             pipeline,
             feature_reader,
             pipeline._candidate_data,
             strategy,
             codes,
-            now,
+            context.now,
         )
-        strategy_inputs.append((strategy, codes, strategy_future))
+        inputs.append((strategy, codes, strategy_future))
+    return inputs
 
-    prepared_futures: list[tuple[Strategy, Future[PreparedSnapshot]]] = []
+
+def _prepare_strategy_futures(
+    pipeline: RecommendationPipeline,
+    context: _ScoringContext,
+    strategy_inputs: Sequence[_StrategyInput],
+) -> list[_PreparedFuture]:
+    prepared_futures: list[_PreparedFuture] = []
     for strategy, requested_codes, strategy_data_future in strategy_inputs:
         try:
             features, data_version = strategy_data_future.result()
@@ -361,24 +411,30 @@ def _score_strategies_on_workers(
                     pipeline._engine.prepare_snapshot,
                     strategy,
                     features,
-                    now=now,
-                    phase=phase.value,
-                    trade_date=trade_date,
+                    now=context.now,
+                    phase=context.phase.value,
+                    trade_date=context.trade_date,
                     data_version=data_version,
-                    review_deadline=review_deadline(now, phase),
-                    max_age_seconds=maximum_age_seconds(phase, strategy),
+                    review_deadline=review_deadline(context.now, context.phase),
+                    max_age_seconds=maximum_age_seconds(context.phase, strategy),
                     filtered_count=0 if is_long else pipeline._filtered_count,
                     filter_reasons={} if is_long else pipeline._filter_reasons,
                     filter_details=() if is_long else pipeline._filter_details,
                     target_prices=pipeline._long_target_prices if is_long else None,
                     market_features=pipeline._market_features,
                     requested_codes=requested_codes,
-                    preselect_max_age_seconds=maximum_age_seconds(phase),
+                    preselect_max_age_seconds=maximum_age_seconds(context.phase),
                     candidate_pool_size=pipeline._candidate_pool_size,
                 ),
             )
         )
+    return prepared_futures
 
+
+def _resolve_prepared_snapshots(
+    pipeline: RecommendationPipeline,
+    prepared_futures: Sequence[_PreparedFuture],
+) -> list[PreparedSnapshot]:
     prepared_snapshots: list[PreparedSnapshot] = []
     for strategy, prepared_future in prepared_futures:
         try:
@@ -391,8 +447,16 @@ def _score_strategies_on_workers(
             _record_incomplete_board_score(pipeline, prepared)
             continue
         prepared_snapshots.append(prepared)
+    return prepared_snapshots
+
+
+def _review_prepared_snapshots(
+    pipeline: RecommendationPipeline,
+    context: _ScoringContext,
+    prepared_snapshots: Sequence[PreparedSnapshot],
+) -> dict[Strategy, Mapping[str, DeepSeekReview]]:
     review_results: dict[Strategy, Mapping[str, DeepSeekReview]] = {}
-    review_enabled = pipeline._reviews is not None and phase not in {
+    review_enabled = pipeline._reviews is not None and context.phase not in {
         MarketPhase.DEEPSEEK_CUTOFF,
         MarketPhase.FINAL_QUOTE,
     }
@@ -429,9 +493,18 @@ def _score_strategies_on_workers(
                 contexts=pipeline._engine.review_contexts(long_prepared),
             )
             review_results[Strategy.LONG] = _resolve_review(pipeline, Strategy.LONG, long_review)
+    return review_results
 
+
+def _publish_prepared_snapshots(
+    pipeline: RecommendationPipeline,
+    context: _ScoringContext,
+    prepared_snapshots: Sequence[PreparedSnapshot],
+    review_results: Mapping[Strategy, Mapping[str, DeepSeekReview]],
+) -> tuple[RecommendationSnapshot, ...]:
+    snapshots: list[RecommendationSnapshot] = []
     for prepared in prepared_snapshots:
-        if completion_deadline is not None and pipeline._now() >= completion_deadline:
+        if context.completion_deadline is not None and pipeline._now() >= context.completion_deadline:
             pipeline._state.increment("score_results_discarded_late")
             raise EventDeadlineExpiredError(f"event deadline expired during execution: {PipelineTask.SCORE.value}")
         reviews = review_results.get(prepared.strategy, {})
@@ -441,16 +514,15 @@ def _score_strategies_on_workers(
         )
         pipeline._state.record_strategy_latency(
             prepared.strategy,
-            round((time.perf_counter() - scoring_started) * 1000.0, 3),
+            round((time.perf_counter() - context.started_at) * 1000.0, 3),
         )
         if not admit_snapshot_to_p6(pipeline, snapshot):
             continue
         pipeline._state.publish(snapshot)
-        _save_checkpoint_if_due(pipeline, snapshot, now)
+        _save_checkpoint_if_due(pipeline, snapshot, context.now)
         pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
         pipeline._publisher.publish(snapshot)
         snapshots.append(snapshot)
-
     return tuple(snapshots)
 
 

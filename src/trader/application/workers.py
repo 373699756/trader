@@ -6,6 +6,7 @@ import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import partial
 from typing import ParamSpec, Protocol, TypeVar
 
@@ -22,6 +23,15 @@ class WorkerExecutor(Protocol):
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> Future[_T] | None: ...
+
+
+@dataclass(frozen=True)
+class BorrowExecutorOptions:
+    worker_count: int
+    thread_name_prefix: str
+    queue_capacity: int | None = None
+    wait_on_exit: bool = True
+    nested_inline: bool = False
 
 
 class BoundedExecutor:
@@ -230,32 +240,30 @@ def _warm_worker(ready: threading.Barrier) -> int:
 @contextmanager
 def borrow_executor(
     shared: BoundedExecutor | None,
-    *,
-    worker_count: int,
-    thread_name_prefix: str,
-    queue_capacity: int | None = None,
-    wait_on_exit: bool = True,
-    nested_inline: bool = False,
+    options: BorrowExecutorOptions,
 ) -> Iterator[WorkerExecutor]:
     if shared is not None and shared.is_running():
         # When every worker enters a nested path together, queued work cannot
         # start. Keep normal nested fan-out when at least one worker is spare.
-        if shared.owns_current_thread() and (nested_inline or not shared.has_spare_worker()):
+        if shared.owns_current_thread() and (options.nested_inline or not shared.has_spare_worker()):
             yield _InlineExecutor()
         else:
             yield shared
         return
 
     local = BoundedExecutor(
-        worker_count=max(1, worker_count),
-        queue_capacity=max(1, queue_capacity if queue_capacity is not None else worker_count),
-        thread_name_prefix=thread_name_prefix,
+        worker_count=max(1, options.worker_count),
+        queue_capacity=max(
+            1,
+            options.queue_capacity if options.queue_capacity is not None else options.worker_count,
+        ),
+        thread_name_prefix=options.thread_name_prefix,
     )
     local.start()
     try:
         yield local
     finally:
-        local.stop(wait=wait_on_exit, cancel_futures=not wait_on_exit)
+        local.stop(wait=options.wait_on_exit, cancel_futures=not options.wait_on_exit)
 
 
 def submit_or_run_inline(
@@ -294,6 +302,7 @@ class _InlineExecutor:
 
 __all__ = [
     "BoundedExecutor",
+    "BorrowExecutorOptions",
     "WorkerExecutor",
     "borrow_executor",
     "submit_or_run_inline",

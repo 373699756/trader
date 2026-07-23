@@ -48,6 +48,18 @@ _PHASE_BOUNDARIES = (
     time(14, 50),
     time(15, 0),
 )
+_TRADING_PHASE_RANGES = (
+    (time(9, 15), time(9, 30), MarketPhase.WARMUP),
+    (time(9, 30), time(9, 36), MarketPhase.TODAY_OBSERVE),
+    (time(9, 36), time(10, 30), MarketPhase.TODAY_MAIN),
+    (time(10, 30), time(11, 20), MarketPhase.TODAY_LATE),
+    (time(11, 20), time(13, 0), MarketPhase.MIDDAY),
+    (time(13, 0), time(14, 20), MarketPhase.AFTERNOON),
+    (time(14, 20), time(14, 48), MarketPhase.FINAL_REVIEW),
+    (time(14, 48), time(14, 49, 50), MarketPhase.DEEPSEEK_CUTOFF),
+    (time(14, 49, 50), time(14, 50), MarketPhase.FINAL_QUOTE),
+    (time(14, 50), time(15, 0), MarketPhase.FROZEN),
+)
 
 
 @dataclass(frozen=True)
@@ -69,29 +81,12 @@ def phase_at(value: datetime, *, is_trading_day: bool) -> MarketPhase:
     if not is_trading_day:
         return MarketPhase.CLOSED
     current = shanghai_now(value).time().replace(tzinfo=None)
-    if time(9, 15) <= current < time(9, 30):
-        return MarketPhase.WARMUP
-    if time(9, 30) <= current < time(9, 36):
-        return MarketPhase.TODAY_OBSERVE
-    if time(9, 36) <= current < time(10, 30):
-        return MarketPhase.TODAY_MAIN
-    if time(10, 30) <= current < time(11, 20):
-        return MarketPhase.TODAY_LATE
-    if time(11, 20) <= current < time(13, 0):
-        return MarketPhase.MIDDAY
-    if time(13, 0) <= current < time(14, 20):
-        return MarketPhase.AFTERNOON
-    if time(14, 20) <= current < time(14, 48):
-        return MarketPhase.FINAL_REVIEW
-    if time(14, 48) <= current < time(14, 49, 50):
-        return MarketPhase.DEEPSEEK_CUTOFF
-    if time(14, 49, 50) <= current < time(14, 50):
-        return MarketPhase.FINAL_QUOTE
-    if time(14, 50) <= current < time(15, 0):
-        return MarketPhase.FROZEN
-    if current >= time(15, 0):
-        return MarketPhase.AFTER_CLOSE
-    return MarketPhase.CLOSED
+    phase = MarketPhase.AFTER_CLOSE if current >= time(15, 0) else MarketPhase.CLOSED
+    for start, end, candidate in _TRADING_PHASE_RANGES:
+        if start <= current < end:
+            phase = candidate
+            break
+    return phase
 
 
 def decision_at(value: datetime, *, is_trading_day: bool) -> ScheduleDecision:

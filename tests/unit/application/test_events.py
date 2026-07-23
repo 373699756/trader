@@ -5,13 +5,26 @@ from datetime import datetime, timedelta
 import pytest
 
 from trader.application.cadence import PERIODIC_TASKS, PipelineTask, ScheduledPipelineTask
-from trader.application.events import BoundedEventQueue, EventPriority, EventStatus, new_event
+from trader.application.events import (
+    BoundedEventQueue,
+    EventPriority,
+    EventSpec,
+    EventStatus,
+    PipelineEvent,
+)
+from trader.application.events import (
+    new_event as create_event,
+)
 from trader.application.pipeline_submission import (
     _after_close_retry_delay,
     _scheduled_task_deadline,
     _scheduled_task_priority,
 )
 from trader.application.schedule import MarketPhase
+
+
+def new_event(event_type: str, **values) -> PipelineEvent:
+    return create_event(EventSpec(event_type=event_type, **values))
 
 
 def test_realtime_pipeline_balances_live_quotes_and_fifo_dependency_order() -> None:

@@ -6,6 +6,10 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.domain.market.models import (
     FeatureSnapshot,
@@ -35,22 +39,40 @@ class QuoteStoreStatus:
     out_of_order_count: int
 
 
+@dataclass(frozen=True)
+class QuoteStoreDependencies:
+    gateway: MarketDataGateway
+    feature_builder: StandardizedFeatureBuilder
+    history: HistoryStore
+    references: ReferenceLoader
+
+
+class _CandidateFeatureRequiredOptions(TypedDict):
+    research_observations: Mapping[str, ResearchObservation]
+    intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None
+
+
+class _CandidateFeatureOptionalOptions(TypedDict, total=False):
+    action_restrictions: Mapping[str, set[str]] | None
+
+
+class _CandidateFeatureOptions(_CandidateFeatureRequiredOptions, _CandidateFeatureOptionalOptions):
+    pass
+
+
 class QuoteStore:
     def __init__(
         self,
-        gateway: MarketDataGateway,
-        feature_builder: StandardizedFeatureBuilder,
-        history: HistoryStore,
-        references: ReferenceLoader,
+        dependencies: QuoteStoreDependencies,
         *,
         market_ttl_seconds: float,
         candidate_capacity: int,
         monotonic: Callable[[], float],
     ) -> None:
-        self.gateway = gateway
-        self._feature_builder = feature_builder
-        self._history = history
-        self._references = references
+        self.gateway = dependencies.gateway
+        self._feature_builder = dependencies.feature_builder
+        self._history = dependencies.history
+        self._references = dependencies.references
         self._market_ttl_seconds = max(1.0, market_ttl_seconds)
         self._candidate_capacity = max(1, candidate_capacity)
         self._monotonic = monotonic
@@ -77,11 +99,11 @@ class QuoteStore:
         quotes: Sequence[MarketQuote],
         histories: Mapping[str, tuple[DailyBar, ...]],
         observed_at: datetime,
-        *,
-        research_observations: Mapping[str, ResearchObservation],
-        intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None,
-        action_restrictions: Mapping[str, set[str]] | None = None,
+        **options: Unpack[_CandidateFeatureOptions],
     ) -> tuple[FeatureSnapshot, ...]:
+        research_observations = options["research_observations"]
+        intraday_minutes = options["intraday_minutes"]
+        action_restrictions = options.get("action_restrictions")
         with self._lock:
             cross_section_reference = {feature.quote.code: feature.values for feature in self._market_features}
             cross_section_normalization_reference = {

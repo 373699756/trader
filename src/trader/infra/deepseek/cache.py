@@ -9,8 +9,12 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import TYPE_CHECKING, TypedDict
 
-from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
+
+from trader.application.cache import BoundedCache, CacheIdentity, CacheIdentitySpec, build_cache_identity
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.review.models import DeepSeekReview
 
@@ -36,17 +40,26 @@ class _SharedRawCacheValue:
     volume_ratio: float | None
 
 
+class _ReviewCacheOptions(TypedDict, total=False):
+    maximum_entries: int
+    ttl_seconds: float
+    monotonic: Callable[[], float]
+    shared_cache: BoundedCache[object] | None
+    config_version: str
+    seen_capacity: int
+
+
 class ReviewCache:
     def __init__(
         self,
-        *,
-        maximum_entries: int = 2000,
-        ttl_seconds: float = 600,
-        monotonic: Callable[[], float] = time.monotonic,
-        shared_cache: BoundedCache[object] | None = None,
-        config_version: str = "component-default",
-        seen_capacity: int = 6000,
+        **options: Unpack[_ReviewCacheOptions],
     ) -> None:
+        maximum_entries = options.get("maximum_entries", 2000)
+        ttl_seconds = options.get("ttl_seconds", 600)
+        monotonic = options.get("monotonic", time.monotonic)
+        shared_cache = options.get("shared_cache")
+        config_version = options.get("config_version", "component-default")
+        seen_capacity = options.get("seen_capacity", 6000)
         self._maximum_entries = max(1, maximum_entries)
         self._ttl_seconds = max(1.0, ttl_seconds)
         self._monotonic = monotonic
@@ -198,41 +211,47 @@ class ReviewCache:
 
     def _raw_identity(self, key: str, candidate: FeatureSnapshot) -> CacheIdentity:
         return build_cache_identity(
-            dataset="raw_deepseek_review",
-            source="deepseek:raw",
-            subject_key=candidate.quote.code,
-            request={"raw_key": key},
-            trade_date=_candidate_trade_date(candidate),
-            phase="review",
-            source_contract_version="deepseek_review_v17",
-            config_version=self._config_version,
-            schema_version="deepseek_cache_v17",
+            CacheIdentitySpec(
+                dataset="raw_deepseek_review",
+                source="deepseek:raw",
+                subject_key=candidate.quote.code,
+                request={"raw_key": key},
+                trade_date=_candidate_trade_date(candidate),
+                phase="review",
+                source_contract_version="deepseek_review_v17",
+                config_version=self._config_version,
+                schema_version="deepseek_cache_v17",
+            )
         )
 
     def _fusion_identity(self, key: str) -> CacheIdentity:
         return build_cache_identity(
-            dataset="strategy_deepseek_review",
-            source="deepseek:fusion",
-            subject_key=key[:24],
-            request={"strategy_key": key},
-            trade_date="embedded",
-            phase="review",
-            source_contract_version="deepseek_review_v17",
-            config_version=self._config_version,
-            schema_version="deepseek_cache_v17",
+            CacheIdentitySpec(
+                dataset="strategy_deepseek_review",
+                source="deepseek:fusion",
+                subject_key=key[:24],
+                request={"strategy_key": key},
+                trade_date="embedded",
+                phase="review",
+                source_contract_version="deepseek_review_v17",
+                config_version=self._config_version,
+                schema_version="deepseek_cache_v17",
+            )
         )
 
     def _seen_identity(self, code: str, trade_date: str) -> CacheIdentity:
         return build_cache_identity(
-            dataset="deepseek_seen_codes",
-            source="deepseek:seen",
-            subject_key=code,
-            request={"code": code},
-            trade_date=trade_date,
-            phase="review",
-            source_contract_version="deepseek_review_v17",
-            config_version=self._config_version,
-            schema_version="deepseek_cache_v17",
+            CacheIdentitySpec(
+                dataset="deepseek_seen_codes",
+                source="deepseek:seen",
+                subject_key=code,
+                request={"code": code},
+                trade_date=trade_date,
+                phase="review",
+                source_contract_version="deepseek_review_v17",
+                config_version=self._config_version,
+                schema_version="deepseek_cache_v17",
+            )
         )
 
     def _shared_entry_counts(self) -> tuple[int, int]:

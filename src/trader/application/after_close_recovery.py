@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, time
 from typing import TYPE_CHECKING
 
@@ -34,6 +34,19 @@ if TYPE_CHECKING:
 
 _SHORT_STRATEGIES = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
 _MINIMUM_CLOSE_TIME = time(14, 59)
+
+
+@dataclass(frozen=True)
+class _CloseSnapshotRequest:
+    strategy: Strategy
+    features: Sequence[FeatureSnapshot]
+    data_version: str
+    market_features: Sequence[FeatureSnapshot]
+    codes: Sequence[str]
+    reasons: Mapping[str, int]
+    details: Sequence[FilterAudit]
+    now: datetime
+    max_age: float
 
 
 def recover_after_close_snapshots(
@@ -206,15 +219,17 @@ def _rebuild_from_close(
                 raise MarketDataUnavailableError(f"{strategy.value} closing candidate quotes are incomplete")
             snapshot = _build_local_close_snapshot(
                 pipeline,
-                strategy,
-                candidate_features,
-                data_version,
-                market_features,
-                codes,
-                reasons,
-                details,
-                now,
-                max_age,
+                _CloseSnapshotRequest(
+                    strategy,
+                    candidate_features,
+                    data_version,
+                    market_features,
+                    codes,
+                    reasons,
+                    details,
+                    now,
+                    max_age,
+                ),
             )
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             pipeline._state.increment("after_close_strategy_failures")
@@ -234,16 +249,11 @@ def _rebuild_from_close(
 
 def _build_local_close_snapshot(
     pipeline: RecommendationPipeline,
-    strategy: Strategy,
-    features: Sequence[FeatureSnapshot],
-    data_version: str,
-    market_features: Sequence[FeatureSnapshot],
-    codes: Sequence[str],
-    reasons: Mapping[str, int],
-    details: Sequence[FilterAudit],
-    now: datetime,
-    max_age: float,
+    request: _CloseSnapshotRequest,
 ) -> RecommendationSnapshot:
+    strategy = request.strategy
+    features = request.features
+    now = request.now
     if pipeline._persistence_running:
         prepared = submit_required(
             pipeline,
@@ -254,15 +264,15 @@ def _build_local_close_snapshot(
             now=now,
             phase="close_fallback",
             trade_date=trade_date_at(now).isoformat(),
-            data_version=data_version,
+            data_version=request.data_version,
             review_deadline=now,
-            max_age_seconds=max_age,
-            filtered_count=len({item.stock_code for item in details}),
-            filter_reasons=reasons,
-            filter_details=tuple(details),
-            market_features=tuple(market_features),
-            requested_codes=tuple(codes),
-            preselect_max_age_seconds=max_age,
+            max_age_seconds=request.max_age,
+            filtered_count=len({item.stock_code for item in request.details}),
+            filter_reasons=request.reasons,
+            filter_details=tuple(request.details),
+            market_features=tuple(request.market_features),
+            requested_codes=tuple(request.codes),
+            preselect_max_age_seconds=request.max_age,
             candidate_pool_size=pipeline._candidate_pool_size,
         ).result()
     else:
@@ -272,15 +282,15 @@ def _build_local_close_snapshot(
             now=now,
             phase="close_fallback",
             trade_date=trade_date_at(now).isoformat(),
-            data_version=data_version,
+            data_version=request.data_version,
             review_deadline=now,
-            max_age_seconds=max_age,
-            filtered_count=len({item.stock_code for item in details}),
-            filter_reasons=reasons,
-            filter_details=tuple(details),
-            market_features=tuple(market_features),
-            requested_codes=tuple(codes),
-            preselect_max_age_seconds=max_age,
+            max_age_seconds=request.max_age,
+            filtered_count=len({item.stock_code for item in request.details}),
+            filter_reasons=request.reasons,
+            filter_details=tuple(request.details),
+            market_features=tuple(request.market_features),
+            requested_codes=tuple(request.codes),
+            preselect_max_age_seconds=request.max_age,
             candidate_pool_size=pipeline._candidate_pool_size,
         )
     if not prepared.board_scoring_complete:

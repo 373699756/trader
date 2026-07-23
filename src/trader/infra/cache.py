@@ -175,20 +175,7 @@ class BoundedLruCache(Generic[_T]):
 
     def coalesce(self, identity: CacheIdentity, loader: Callable[[], _T]) -> _T:
         with self._lock:
-            self._dataset_policy(identity)
-            if self._stopped:
-                raise RuntimeError("cache is stopped")
-            future = self._inflight.get(identity)
-            owner = future is None
-            if future is None:
-                policy = self._policy.datasets[identity.dataset]
-                scope = (identity.dataset, identity.source)
-                if self._inflight_scope_entries.get(scope, 0) >= policy.capacity:
-                    raise RuntimeError("cache in-flight registry is full")
-                future = Future()
-                self._inflight[identity] = future
-                self._inflight_scope_entries[scope] = self._inflight_scope_entries.get(scope, 0) + 1
-                self._stats_for(identity).refresh += 1
+            future, owner = self._claim_inflight(identity)
         if not owner:
             return future.result()
         try:
@@ -216,6 +203,23 @@ class BoundedLruCache(Generic[_T]):
                     else:
                         self._inflight_scope_entries.pop(scope, None)
                 self._condition.notify_all()
+
+    def _claim_inflight(self, identity: CacheIdentity) -> tuple[Future[_T], bool]:
+        self._dataset_policy(identity)
+        if self._stopped:
+            raise RuntimeError("cache is stopped")
+        current = self._inflight.get(identity)
+        if current is not None:
+            return current, False
+        policy = self._policy.datasets[identity.dataset]
+        scope = (identity.dataset, identity.source)
+        if self._inflight_scope_entries.get(scope, 0) >= policy.capacity:
+            raise RuntimeError("cache in-flight registry is full")
+        future: Future[_T] = Future()
+        self._inflight[identity] = future
+        self._inflight_scope_entries[scope] = self._inflight_scope_entries.get(scope, 0) + 1
+        self._stats_for(identity).refresh += 1
+        return future, True
 
     def is_actionable(self, identity: CacheIdentity, source_time: datetime) -> bool:
         _require_aware(source_time, "cache source_time")

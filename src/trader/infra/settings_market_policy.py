@@ -46,7 +46,25 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
     estimator_version = text(raw, "estimator_version")
     if estimator_version != "canonical_json_utf8_v1":
         raise ConfigurationError("cache_policy.estimator_version must be canonical_json_utf8_v1")
-    datasets_raw = mapping(raw, "datasets")
+    datasets = _parse_cache_datasets(mapping(raw, "datasets"))
+    _validate_fixed_cache_datasets(datasets)
+    groups = _parse_cache_groups(mapping(raw, "groups"))
+    try:
+        return CachePolicy(
+            schema_version=6,
+            policy_version=policy_version,
+            datasets=datasets,
+            groups=groups,
+            total_bytes=integer(raw, "total_bytes", minimum=1),
+            runtime_reserve_bytes=integer(raw, "runtime_reserve_bytes", minimum=1),
+            pool_total_bytes=integer(raw, "pool_total_bytes", minimum=1),
+            estimator_version=estimator_version,
+        )
+    except ValueError as exc:
+        raise ConfigurationError(f"cache_policy: {exc}") from exc
+
+
+def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, CacheDatasetPolicy]:
     expected_datasets = {
         "full_market_quotes",
         "candidate_quotes",
@@ -108,6 +126,10 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
         except ValueError as exc:
             raise ConfigurationError(f"cache_policy.datasets.{name}: {exc}") from exc
 
+    return datasets
+
+
+def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -> None:
     expected_policies = {
         "full_market_quotes": (None, None, "full_market", 3.0, 10.0, 6000, "p1_observation", False),
         "candidate_quotes": (None, None, "candidate_quotes", 3.0, 3.0, 360, "p1_observation", False),
@@ -186,7 +208,8 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
         if actual != expected:
             raise ConfigurationError(f"cache_policy.datasets.{name} must match the fixed v17 policy")
 
-    groups_raw = mapping(raw, "groups")
+
+def _parse_cache_groups(groups_raw: Mapping[str, object]) -> dict[str, CacheGroupPolicy]:
     expected_groups = {
         "p1_observation": 128 * 1024 * 1024,
         "p2_canonical": 56 * 1024 * 1024,
@@ -197,20 +220,7 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
     }
     if groups_raw != expected_groups:
         raise ConfigurationError("cache_policy.groups must match the fixed 128/56/24/16/12/12 MiB allocation")
-    groups = {name: CacheGroupPolicy(max_bytes=integer(groups_raw, name, minimum=1)) for name in expected_groups}
-    try:
-        return CachePolicy(
-            schema_version=6,
-            policy_version=policy_version,
-            datasets=datasets,
-            groups=groups,
-            total_bytes=integer(raw, "total_bytes", minimum=1),
-            runtime_reserve_bytes=integer(raw, "runtime_reserve_bytes", minimum=1),
-            pool_total_bytes=integer(raw, "pool_total_bytes", minimum=1),
-            estimator_version=estimator_version,
-        )
-    except ValueError as exc:
-        raise ConfigurationError(f"cache_policy: {exc}") from exc
+    return {name: CacheGroupPolicy(max_bytes=integer(groups_raw, name, minimum=1)) for name in expected_groups}
 
 
 def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSettings:

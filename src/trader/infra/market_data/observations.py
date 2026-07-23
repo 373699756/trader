@@ -41,25 +41,30 @@ class SourceObservation:
                 raise ValueError(f"observation {name} must be timezone-aware")
         if self.status not in {"success", "no_data", "failed", "late"}:
             raise ValueError("unsupported observation status")
-        normalized_fields: dict[str, JsonScalar] = {}
-        for key, field_value in self.fields.items():
-            if not isinstance(key, str) or not key:
-                raise ValueError("observation field names must not be empty")
-            if field_value is None or isinstance(field_value, (str, bool)):
-                normalized_fields[key] = field_value
-                continue
-            if isinstance(field_value, (int, float)) and not isinstance(field_value, bool):
-                number = float(field_value)
-                if not math.isfinite(number):
-                    raise ValueError("observation numeric fields must be finite")
-                normalized_fields[key] = number
-                continue
-            raise TypeError("observation fields must contain JSON scalars")
+        normalized_fields = _normalize_fields(self.fields)
         missing = {str(key): str(value) for key, value in self.missing_reasons.items()}
         if any(not key or not value for key, value in missing.items()):
             raise ValueError("observation missing reasons must not be empty")
         object.__setattr__(self, "fields", MappingProxyType(normalized_fields))
         object.__setattr__(self, "missing_reasons", MappingProxyType(missing))
+
+
+def _normalize_fields(fields: Mapping[str, JsonScalar]) -> dict[str, JsonScalar]:
+    normalized: dict[str, JsonScalar] = {}
+    for key, field_value in fields.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("observation field names must not be empty")
+        if field_value is None or isinstance(field_value, (str, bool)):
+            normalized[key] = field_value
+            continue
+        if isinstance(field_value, (int, float)) and not isinstance(field_value, bool):
+            number = float(field_value)
+            if not math.isfinite(number):
+                raise ValueError("observation numeric fields must be finite")
+            normalized[key] = number
+            continue
+        raise TypeError("observation fields must contain JSON scalars")
+    return normalized
 
 
 __all__ = ["JsonScalar", "ObservationStatus", "SourceObservation"]

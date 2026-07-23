@@ -313,6 +313,12 @@ def _text_mapping(raw: Mapping[str, object], key: str) -> dict[str, str]:
 
 
 def _validate_runtime_settings(settings: RuntimeSettings) -> None:
+    _validate_pipeline_runtime(settings)
+    _validate_deepseek_runtime(settings)
+    _validate_cadence_settings(settings.pipeline.cadence_seconds)
+
+
+def _validate_pipeline_runtime(settings: RuntimeSettings) -> None:
     if settings.pipeline.priority_queue_size >= settings.pipeline.event_queue_size:
         raise ConfigurationError("priority_queue_size must be smaller than event_queue_size")
     if settings.api.default_top_n > settings.api.maximum_top_n:
@@ -327,6 +333,9 @@ def _validate_runtime_settings(settings: RuntimeSettings) -> None:
         raise ConfigurationError("cache logical and performance logical byte budgets must match")
     if settings.market_data.candidate_pool_size != 120:
         raise ConfigurationError("market_data.candidate_pool_size must remain fixed at 120")
+
+
+def _validate_deepseek_runtime(settings: RuntimeSettings) -> None:
     if sum(settings.deepseek.strategy_limits.values()) != settings.deepseek.daily_hard_limit:
         raise ConfigurationError("DeepSeek strategy limits must sum to the daily hard limit")
     required_buckets = {"today", "tomorrow", "d25", "long", "shared_preheat", "emergency"}
@@ -379,7 +388,6 @@ def _validate_runtime_settings(settings: RuntimeSettings) -> None:
         raise ConfigurationError("DeepSeek stage targets must match the section 16 allocation")
     if dict(settings.deepseek.stage_limits) != expected_stage_limits:
         raise ConfigurationError("DeepSeek stage limits must match the section 16 allocation")
-    _validate_cadence_settings(settings.pipeline.cadence_seconds)
 
 
 def _nested_positive_number_mapping(

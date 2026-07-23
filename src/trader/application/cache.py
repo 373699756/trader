@@ -36,6 +36,19 @@ class CacheDatasetPolicy:
     persisted: bool
 
     def __post_init__(self) -> None:
+        self._validate_timing()
+        self._validate_storage()
+
+    def _validate_timing(self) -> None:
+        cadence_fields = (self.cadence_task, self.action_max_age_multiplier)
+        if (cadence_fields[0] is None) != (cadence_fields[1] is None):
+            raise ValueError("cadence cache policy must define both cadence fields")
+        if self.cadence_task is None:
+            self._validate_fixed_timing()
+        else:
+            self._validate_cadence_timing()
+
+    def _validate_fixed_timing(self) -> None:
         if self.refresh_ttl_seconds is not None and self.refresh_ttl_seconds <= 0:
             raise ValueError("cache refresh TTL must be positive")
         if self.action_max_age_seconds is not None and self.action_max_age_seconds <= 0:
@@ -43,19 +56,20 @@ class CacheDatasetPolicy:
         if self.action_max_age_seconds is not None and self.refresh_ttl_seconds is not None:
             if self.action_max_age_seconds < self.refresh_ttl_seconds:
                 raise ValueError("cache action age cannot be smaller than refresh TTL")
-        cadence_fields = (self.cadence_task, self.action_max_age_multiplier)
-        if (cadence_fields[0] is None) != (cadence_fields[1] is None):
-            raise ValueError("cadence cache policy must define both cadence fields")
-        if self.cadence_task is None and self.refresh_ttl_seconds is None:
+        if self.refresh_ttl_seconds is None:
             raise ValueError("non-cadence cache policy requires refresh TTL")
-        if self.cadence_task is None and self.action_max_age_seconds is None:
+        if self.action_max_age_seconds is None:
             raise ValueError("non-cadence cache policy requires action age")
-        if self.cadence_task is not None and self.refresh_ttl_seconds is not None:
+
+    def _validate_cadence_timing(self) -> None:
+        if self.refresh_ttl_seconds is not None:
             raise ValueError("cadence cache policy cannot define a fixed refresh TTL")
-        if self.cadence_task is not None and self.action_max_age_seconds is not None:
+        if self.action_max_age_seconds is not None:
             raise ValueError("cadence cache policy cannot define a fixed action age")
         if self.action_max_age_multiplier is not None and self.action_max_age_multiplier < 1:
             raise ValueError("cache action age multiplier must be at least one")
+
+    def _validate_storage(self) -> None:
         if self.negative_ttl_seconds <= 0:
             raise ValueError("cache negative TTL must be positive")
         if self.capacity <= 0:
@@ -149,6 +163,19 @@ class CacheIdentity:
 
 
 @dataclass(frozen=True)
+class CacheIdentitySpec:
+    dataset: str
+    source: str
+    subject_key: str
+    request: Mapping[str, object]
+    trade_date: str
+    phase: str
+    source_contract_version: str
+    config_version: str
+    schema_version: str
+
+
+@dataclass(frozen=True)
 class CacheStats:
     entries: int
     capacity: int
@@ -202,29 +229,18 @@ class BoundedCache(Protocol, Generic[_T]):
     def stop(self, *, wait: bool = True, timeout_seconds: float | None = None) -> None: ...
 
 
-def build_cache_identity(
-    *,
-    dataset: str,
-    source: str,
-    subject_key: str,
-    request: Mapping[str, object],
-    trade_date: str,
-    phase: str,
-    source_contract_version: str,
-    config_version: str,
-    schema_version: str,
-) -> CacheIdentity:
-    normalized_phase = "all_day" if dataset in SLOW_DATASETS else normalize_cache_phase(phase)
+def build_cache_identity(spec: CacheIdentitySpec) -> CacheIdentity:
+    normalized_phase = "all_day" if spec.dataset in SLOW_DATASETS else normalize_cache_phase(spec.phase)
     return CacheIdentity(
-        dataset=dataset,
-        source=source,
-        subject_key=subject_key,
-        request_fingerprint=request_fingerprint(request),
-        trade_date=trade_date,
+        dataset=spec.dataset,
+        source=spec.source,
+        subject_key=spec.subject_key,
+        request_fingerprint=request_fingerprint(spec.request),
+        trade_date=spec.trade_date,
         phase=normalized_phase,
-        source_contract_version=source_contract_version,
-        config_version=config_version,
-        schema_version=schema_version,
+        source_contract_version=spec.source_contract_version,
+        config_version=spec.config_version,
+        schema_version=spec.schema_version,
     )
 
 
@@ -268,25 +284,28 @@ def canonical_json_bytes(value: object) -> bytes:
 
 class _CanonicalJsonEncoder(json.JSONEncoder):
     def default(self, value: object) -> object:
+        encoded: object
         if isinstance(value, Decimal):
             if not value.is_finite():
                 raise ValueError("canonical JSON decimals must be finite")
-            return format(value, "f")
-        if isinstance(value, datetime):
+            encoded = format(value, "f")
+        elif isinstance(value, datetime):
             if value.tzinfo is None or value.utcoffset() is None:
                 raise ValueError("canonical JSON datetime must be timezone-aware")
-            return value.isoformat()
-        if isinstance(value, date):
-            return value.isoformat()
-        if isinstance(value, Enum):
-            return value.value
-        if isinstance(value, Mapping):
-            return {str(key): item for key, item in value.items()}
-        if isinstance(value, (set, frozenset)):
-            return sorted(value, key=canonical_json_bytes)
-        if is_dataclass(value) and not isinstance(value, type):
-            return {name: getattr(value, name) for name in _canonical_field_names(type(value))}
-        raise TypeError(f"unsupported canonical JSON value: {type(value).__name__}")
+            encoded = value.isoformat()
+        elif isinstance(value, date):
+            encoded = value.isoformat()
+        elif isinstance(value, Enum):
+            encoded = value.value
+        elif isinstance(value, Mapping):
+            encoded = {str(key): item for key, item in value.items()}
+        elif isinstance(value, (set, frozenset)):
+            encoded = sorted(value, key=canonical_json_bytes)
+        elif is_dataclass(value) and not isinstance(value, type):
+            encoded = {name: getattr(value, name) for name in _canonical_field_names(type(value))}
+        else:
+            raise TypeError(f"unsupported canonical JSON value: {type(value).__name__}")
+        return encoded
 
 
 @lru_cache(maxsize=32)
@@ -312,6 +331,7 @@ __all__ = [
     "CacheDatasetPolicy",
     "CacheGroupPolicy",
     "CacheIdentity",
+    "CacheIdentitySpec",
     "CacheLookup",
     "CachePolicy",
     "CacheStats",

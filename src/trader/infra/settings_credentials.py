@@ -13,6 +13,11 @@ _CREDENTIAL_KEYS = frozenset({"DEEPSEEK_API_KEY", "TUSHARE_TOKEN"})
 
 
 def read_credential_file(path: Path, *, label: str, raw_key: str) -> dict[str, str]:
+    content = _read_credential_content(path, label)
+    return _parse_credentials(content, label=label, raw_key=raw_key)
+
+
+def _read_credential_content(path: Path, label: str) -> str:
     try:
         metadata = path.stat()
         if not stat.S_ISREG(metadata.st_mode):
@@ -27,6 +32,10 @@ def read_credential_file(path: Path, *, label: str, raw_key: str) -> dict[str, s
     except (OSError, UnicodeError) as exc:
         raise ConfigurationError(f"{label} file cannot be read") from exc
 
+    return content
+
+
+def _parse_credentials(content: str, *, label: str, raw_key: str) -> dict[str, str]:
     lines = [line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")]
     if len(lines) == 1 and "=" not in lines[0]:
         return {raw_key: _credential_value(lines[0], label=label)}

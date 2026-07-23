@@ -8,7 +8,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TypeVar, cast
 
-from trader.application.cache import BoundedCache, CacheIdentity, build_cache_identity, request_fingerprint
+from trader.application.cache import (
+    BoundedCache,
+    CacheIdentity,
+    CacheIdentitySpec,
+    build_cache_identity,
+    request_fingerprint,
+)
 from trader.domain.market.models import (
     Board,
     FeatureSnapshot,
@@ -203,18 +209,20 @@ class BoardScoringCache:
         manual_group_version = "manual:none:v1"
         composite_version = f"industry:{industry_version}+{manual_group_version}"
         identity = build_cache_identity(
-            dataset="competition_group_mapping",
-            source=f"board-scoring:{board.value}",
-            subject_key="competition-groups",
-            request={
-                "industry_version": industry_version,
-                "manual_group_version": manual_group_version,
-            },
-            trade_date="versioned",
-            phase="all_day",
-            source_contract_version="board_scoring_v16",
-            config_version=self._config_version,
-            schema_version=self._schema_version,
+            CacheIdentitySpec(
+                dataset="competition_group_mapping",
+                source=f"board-scoring:{board.value}",
+                subject_key="competition-groups",
+                request={
+                    "industry_version": industry_version,
+                    "manual_group_version": manual_group_version,
+                },
+                trade_date="versioned",
+                phase="all_day",
+                source_contract_version="board_scoring_v16",
+                config_version=self._config_version,
+                schema_version=self._schema_version,
+            )
         )
         lookup = self._cache.get(identity)
         cached = lookup.value if lookup is not None and lookup.state not in {"negative", "degraded"} else None
@@ -272,28 +280,32 @@ class BoardScoringCache:
         request: dict[str, object],
     ) -> CacheIdentity:
         return build_cache_identity(
-            dataset=dataset,
-            source=source,
-            subject_key=subject_key,
-            request=request,
-            trade_date=context.trade_date,
-            phase=context.phase,
-            source_contract_version="board_scoring_v16",
-            config_version=self._config_version,
-            schema_version=self._schema_version,
+            CacheIdentitySpec(
+                dataset=dataset,
+                source=source,
+                subject_key=subject_key,
+                request=request,
+                trade_date=context.trade_date,
+                phase=context.phase,
+                source_contract_version="board_scoring_v16",
+                config_version=self._config_version,
+                schema_version=self._schema_version,
+            )
         )
 
     def _latest_cross_section_identity(self, board: Board) -> CacheIdentity:
         return build_cache_identity(
-            dataset="board_cross_section",
-            source="board-scoring",
-            subject_key=board.value,
-            request={"kind": "latest_valid", "board": board.value},
-            trade_date="latest",
-            phase="all_day",
-            source_contract_version="board_scoring_v16",
-            config_version=self._config_version,
-            schema_version=self._schema_version,
+            CacheIdentitySpec(
+                dataset="board_cross_section",
+                source="board-scoring",
+                subject_key=board.value,
+                request={"kind": "latest_valid", "board": board.value},
+                trade_date="latest",
+                phase="all_day",
+                source_contract_version="board_scoring_v16",
+                config_version=self._config_version,
+                schema_version=self._schema_version,
+            )
         )
 
     def _value(self, identity: CacheIdentity, expected_type: type[_T]) -> _T | None:
