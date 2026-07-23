@@ -841,6 +841,7 @@ def test_after_close_commits_ready_strategies_when_d25_research_is_missing(
     d25 = repository.load_frozen(Strategy.D25, "2026-07-16")
     assert d25 is not None
     assert d25.phase == "close_fallback"
+    assert d25.recommendations
     assert any("board_data_reliability_below_threshold" in reason for reason in d25.degraded_reasons)
     assert all(item.action.value == "observe" for item in d25.recommendations)
     assert "d25 close rebuild degraded" not in state.snapshot()["last_error"]

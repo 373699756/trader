@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.application.policy import RecommendationPolicy
+from trader.application.policy import SelectionPolicy as AppSelectionPolicy
 from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.recommendation_replay import (
     REPLAY_ALGORITHM_VERSION,
@@ -47,10 +48,12 @@ from trader.domain.recommendation.models import (
 )
 from trader.domain.recommendation.ranking import (
     ActionPolicy,
-    SelectionPolicy,
     action_for,
     minimum_selection_score,
     select_top_k_with_audit,
+)
+from trader.domain.recommendation.ranking import (
+    SelectionPolicy as RankingSelectionPolicy,
 )
 from trader.domain.recommendation.strategies import score_strategy
 from trader.domain.recommendation.strategies.composition import LocalScoreResult, compose
@@ -76,6 +79,8 @@ _LONG_RESEARCH_FIELDS = (
     "risk_protection_score",
     *_STRUCTURED_RISK_FIELDS,
 )
+_CLOSE_FALLBACK_OBSERVE_TOP_K = 8
+_CLOSE_FALLBACK_OBSERVATION_FLOOR_REASON = "close_fallback_observation_floor_relaxed"
 
 
 @dataclass(frozen=True)
@@ -153,6 +158,110 @@ class _MergeReviewedOptions(_MergeRequiredOptions, _MergeReviewedOptionalOptions
     pass
 
 
+@dataclass(frozen=True)
+class _SelectionResult:
+    selected: tuple[Recommendation, ...]
+    skips: tuple[SelectionSkip, ...]
+    close_fallback_floor_relaxed: bool = False
+
+
+@dataclass(frozen=True)
+class _SelectionRequest:
+    strategy: Strategy
+    phase: str
+    minimum_score: float | None
+    selection: AppSelectionPolicy
+    legacy_v16: bool
+
+
+def _select_final_recommendations(
+    merged: Sequence[Recommendation],
+    request: _SelectionRequest,
+) -> _SelectionResult:
+    if request.minimum_score is None:
+        return _SelectionResult((), ())
+    if request.strategy is Strategy.LONG or request.legacy_v16:
+        selected, skips = select_top_k_with_audit(
+            merged,
+            _ranking_policy(
+                request.selection,
+                top_k=request.selection.default_top_k,
+                minimum_final_score=request.minimum_score,
+            ),
+        )
+        return _SelectionResult(selected, skips)
+    return _select_short_recommendations(
+        merged,
+        phase=request.phase,
+        minimum_score=request.minimum_score,
+        selection=request.selection,
+    )
+
+
+def _select_short_recommendations(
+    merged: Sequence[Recommendation],
+    *,
+    phase: str,
+    minimum_score: float,
+    selection: AppSelectionPolicy,
+) -> _SelectionResult:
+    executable, executable_skips = select_top_k_with_audit(
+        (item for item in merged if item.action is RecommendationAction.EXECUTABLE),
+        _ranking_policy(selection, top_k=selection.default_top_k, minimum_final_score=minimum_score),
+    )
+    watch, watch_skips = select_top_k_with_audit(
+        (item for item in merged if item.action is RecommendationAction.OBSERVE),
+        _ranking_policy(selection, top_k=_CLOSE_FALLBACK_OBSERVE_TOP_K, minimum_final_score=minimum_score),
+    )
+    selected = (*executable, *watch)
+    skips = (*executable_skips, *watch_skips)
+    if selected or phase != "close_fallback":
+        return _SelectionResult(selected, skips)
+    fallback, fallback_skips = select_top_k_with_audit(
+        _close_fallback_observe_pool(merged),
+        _ranking_policy(selection, top_k=_CLOSE_FALLBACK_OBSERVE_TOP_K, minimum_final_score=0.0),
+    )
+    return _SelectionResult(
+        fallback,
+        (*skips, *fallback_skips),
+        close_fallback_floor_relaxed=bool(fallback),
+    )
+
+
+def _ranking_policy(
+    selection: AppSelectionPolicy,
+    *,
+    top_k: int,
+    minimum_final_score: float,
+) -> RankingSelectionPolicy:
+    return RankingSelectionPolicy(
+        top_k=top_k,
+        maximum_per_industry=selection.maximum_per_industry,
+        minimum_final_score=minimum_final_score,
+        maximum_board_fraction=selection.maximum_board_fraction,
+        competition_group_limits=selection.competition_group_limits,
+    )
+
+
+def _close_fallback_observe_pool(candidates: Sequence[Recommendation]) -> tuple[Recommendation, ...]:
+    return tuple(
+        replace(
+            item,
+            action=RecommendationAction.OBSERVE,
+            action_reason=_close_fallback_action_reason(item),
+        )
+        for item in candidates
+        if not item.veto
+    )
+
+
+def _close_fallback_action_reason(item: Recommendation) -> str:
+    if item.action is RecommendationAction.OBSERVE and item.action_reason:
+        return item.action_reason
+    reason = item.action_reason or "below_observation_floor"
+    return f"close_fallback_observe_only:{reason}"
+
+
 class RecommendationFinalizationMixin:
     _policy: RecommendationPolicy
     _hard_filter: Callable[..., FilterResult]
@@ -187,46 +296,22 @@ class RecommendationFinalizationMixin:
             phase=phase,
             observation_margin=self._policy.selection.observation_margin,
         )
-        selected: tuple[Recommendation, ...]
-        selection_skips: tuple[SelectionSkip, ...]
-        if minimum_score is None:
-            selected, selection_skips = (), ()
-        elif strategy is Strategy.LONG or legacy_v16:
-            selected, selection_skips = select_top_k_with_audit(
-                merged,
-                SelectionPolicy(
-                    top_k=self._policy.selection.default_top_k,
-                    maximum_per_industry=self._policy.selection.maximum_per_industry,
-                    minimum_final_score=minimum_score,
-                    maximum_board_fraction=self._policy.selection.maximum_board_fraction,
-                    competition_group_limits=self._policy.selection.competition_group_limits,
-                ),
-            )
-        else:
-            executable, executable_skips = select_top_k_with_audit(
-                (item for item in merged if item.action is RecommendationAction.EXECUTABLE),
-                SelectionPolicy(
-                    top_k=self._policy.selection.default_top_k,
-                    maximum_per_industry=self._policy.selection.maximum_per_industry,
-                    minimum_final_score=minimum_score,
-                    maximum_board_fraction=self._policy.selection.maximum_board_fraction,
-                    competition_group_limits=self._policy.selection.competition_group_limits,
-                ),
-            )
-            watch, watch_skips = select_top_k_with_audit(
-                (item for item in merged if item.action is RecommendationAction.OBSERVE),
-                SelectionPolicy(
-                    top_k=8,
-                    maximum_per_industry=self._policy.selection.maximum_per_industry,
-                    minimum_final_score=minimum_score,
-                    maximum_board_fraction=self._policy.selection.maximum_board_fraction,
-                    competition_group_limits=self._policy.selection.competition_group_limits,
-                ),
-            )
-            selected = (*executable, *watch)
-            selection_skips = (*executable_skips, *watch_skips)
+        selection = _select_final_recommendations(
+            merged,
+            _SelectionRequest(
+                strategy=strategy,
+                phase=phase,
+                minimum_score=minimum_score,
+                selection=self._policy.selection,
+                legacy_v16=legacy_v16,
+            ),
+        )
+        selected = selection.selected
+        selection_skips = selection.skips
         snapshot_id = _snapshot_id(strategy, prepared.trade_date, phase, prepared.data_version, now)
         degraded_reasons: list[str] = list(prepared.board_degraded_reasons)
+        if selection.close_fallback_floor_relaxed:
+            degraded_reasons.append(_CLOSE_FALLBACK_OBSERVATION_FLOOR_REASON)
         if strategy is not Strategy.LONG and fusion_mode is FusionMode.LOCAL_DEGRADED:
             degraded_reasons.append(
                 "deepseek_incomplete" if prepared.review_eligible else "deepseek_skipped_no_eligible_candidates"
@@ -297,6 +382,9 @@ class RecommendationFinalizationMixin:
                     }
                     for skip in selection_skips
                 ],
+                **(
+                    {"close_fallback_observation_floor_relaxed": True} if selection.close_fallback_floor_relaxed else {}
+                ),
                 **(
                     {
                         "tail_data_covered_count": tail_covered_count,

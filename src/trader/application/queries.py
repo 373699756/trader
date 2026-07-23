@@ -9,7 +9,8 @@ from datetime import datetime
 from trader.application.events import EventAuditRecord
 from trader.application.ports.events import EventReaderPort
 from trader.application.ports.market import QuoteReaderPort
-from trader.application.ports.snapshots import PublishedSnapshotReadPort
+from trader.application.ports.snapshots import PublishedSnapshotReadPort, SnapshotReaderPort
+from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import freeze_due_at, shanghai_now, trade_date_at
 from trader.domain.market.models import LiveQuote
 from trader.domain.recommendation.models import (
@@ -38,6 +39,12 @@ class SnapshotLookup:
         return ":".join(values)
 
 
+@dataclass(frozen=True)
+class CloseFallbackReplay:
+    archive: SnapshotReaderPort
+    engine: RecommendationEngine
+
+
 class RecommendationQueries:
     def __init__(
         self,
@@ -46,11 +53,13 @@ class RecommendationQueries:
         *,
         now: Callable[[], datetime],
         current_quote_reader: QuoteReaderPort | None = None,
+        close_fallback_replay: CloseFallbackReplay | None = None,
     ) -> None:
         self._snapshots = snapshots
         self._events = events
         self._now = now
         self._current_quote_reader = current_quote_reader
+        self._close_fallback_replay = close_fallback_replay
 
     def initialize(self) -> Mapping[str, int]:
         return {"historical_views_preloaded": 0}
@@ -89,6 +98,7 @@ class RecommendationQueries:
             snapshot = self._snapshots.latest(strategy) if trade_date == self.today() else None
         else:
             snapshot = self._snapshots.load_frozen(strategy, trade_date)
+            snapshot = self._recover_empty_close_fallback(snapshot)
         current_trade_date = self.today()
         current_quotes = self._historical_current_quotes(strategy, snapshot, current_trade_date)
         return SnapshotLookup(
@@ -136,6 +146,8 @@ class RecommendationQueries:
     ) -> SnapshotLookup:
         if snapshot is None or snapshot.trade_date != current_date:
             return SnapshotLookup("not_ready", None, False, current_trade_date=current_date)
+        snapshot = self._recover_empty_close_fallback(snapshot)
+        assert snapshot is not None
         overlay = self._snapshots.load_live_overlay(strategy, snapshot.trade_date)
         if overlay is not None and overlay.snapshot_id != snapshot.snapshot_id:
             overlay = None
@@ -146,6 +158,24 @@ class RecommendationQueries:
             overlay=overlay,
             current_trade_date=current_date,
         )
+
+    def _recover_empty_close_fallback(
+        self,
+        snapshot: RecommendationSnapshot | None,
+    ) -> RecommendationSnapshot | None:
+        if not _needs_close_fallback_replay(snapshot) or self._close_fallback_replay is None:
+            return snapshot
+        assert snapshot is not None
+        raw_snapshot = _raw_close_fallback_snapshot(snapshot, self._close_fallback_replay.archive)
+        if raw_snapshot.replay_input is None:
+            return snapshot
+        try:
+            recovered = self._close_fallback_replay.engine.replay(raw_snapshot)
+        except (RuntimeError, ValueError):
+            return snapshot
+        if not recovered.recommendations:
+            return snapshot
+        return replace(recovered, frozen=raw_snapshot.frozen, config_version=raw_snapshot.config_version)
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
         return self._snapshots.recommendation_dates(strategy)
@@ -172,10 +202,29 @@ def _snapshot_quotes(snapshot: RecommendationSnapshot) -> dict[str, LiveQuote]:
     }
 
 
+def _needs_close_fallback_replay(snapshot: RecommendationSnapshot | None) -> bool:
+    return (
+        snapshot is not None
+        and snapshot.strategy is not Strategy.LONG
+        and snapshot.phase == "close_fallback"
+        and snapshot.frozen
+        and not snapshot.recommendations
+    )
+
+
+def _raw_close_fallback_snapshot(
+    snapshot: RecommendationSnapshot,
+    archive: SnapshotReaderPort,
+) -> RecommendationSnapshot:
+    if snapshot.replay_input is not None:
+        return snapshot
+    return archive.load_frozen(snapshot.strategy, snapshot.trade_date) or snapshot
+
+
 def _delivery_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
     if not snapshot.filter_details and snapshot.replay_input is None:
         return snapshot
     return replace(snapshot, filter_details=(), replay_input=None)
 
 
-__all__ = ["RecommendationQueries", "SnapshotLookup"]
+__all__ = ["CloseFallbackReplay", "RecommendationQueries", "SnapshotLookup"]

@@ -114,6 +114,42 @@ def test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold(
     assert snapshot.recommendations == ()
 
 
+def test_close_fallback_observes_local_candidates_below_observation_floor(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T15:05:00+08:00")
+    policy = replace(
+        recommendation_policy,
+        selection=replace(
+            recommendation_policy.selection,
+            thresholds={**recommendation_policy.selection.thresholds, "d25": 99.0},
+        ),
+    )
+
+    snapshot = RecommendationEngine(policy).build_snapshot(
+        Strategy.D25,
+        (application_feature_factory("600001", now),),
+        now=now,
+        phase="close_fallback",
+        trade_date="2026-07-16",
+        data_version="close-fallback-below-floor",
+        review_port=None,
+        review_deadline=now,
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+        filter_details=(),
+    )
+
+    assert len(snapshot.recommendations) == 1
+    recommendation = snapshot.recommendations[0]
+    assert recommendation.action is RecommendationAction.OBSERVE
+    assert recommendation.action_reason == "close_fallback_observe_only:below_score_threshold"
+    assert "close_fallback_observation_floor_relaxed" in snapshot.degraded_reasons
+    assert snapshot.metadata["close_fallback_observation_floor_relaxed"] is True
+
+
 def test_snapshot_reports_deepseek_skip_when_board_reliability_blocks_all_candidates(
     recommendation_policy,
     application_feature_factory,

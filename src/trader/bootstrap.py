@@ -21,7 +21,7 @@ from trader.application.ports.market import MarketDataPorts
 from trader.application.ports.snapshots import SnapshotPorts
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
-from trader.application.queries import RecommendationQueries
+from trader.application.queries import CloseFallbackReplay, RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.source_lanes import SourceLaneRegistry
@@ -341,6 +341,16 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         maximum_subscribers=settings.api.sse_max_clients,
     )
     published_snapshots = PublishedSnapshotIndex(repository)
+    recommendation_engine = RecommendationEngine(
+        _recommendation_policy(strategy),
+        board_scoring=BoardScoringCoordinator(
+            BoardScoringCache(
+                market_cache,
+                config_version=effective_config_version,
+                session_distance=calendar.session_distance,
+            )
+        ),
+    )
     pipeline = RecommendationPipeline(
         PipelineDependencies(
             market=MarketDataPorts(
@@ -357,16 +367,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             snapshots=SnapshotPorts(reader=repository, writer=repository, observability=repository),
             events=repository,
             publisher=publisher,
-            engine=RecommendationEngine(
-                _recommendation_policy(strategy),
-                board_scoring=BoardScoringCoordinator(
-                    BoardScoringCache(
-                        market_cache,
-                        config_version=effective_config_version,
-                        session_distance=calendar.session_distance,
-                    )
-                ),
-            ),
+            engine=recommendation_engine,
             state=state,
             published_snapshots=published_snapshots,
             now=now,
@@ -399,6 +400,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         repository,
         now=now,
         current_quote_reader=market_data,
+        close_fallback_replay=CloseFallbackReplay(repository, recommendation_engine),
     )
     supervisor = RuntimeSupervisor(
         pipeline,

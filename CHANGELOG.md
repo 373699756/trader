@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `close_fallback` 的短线 TopK 现在增加只限收盘补算的空池恢复：today/tomorrow/d25 仍先按
+  正常动作阈值和 5 分观察窗口选择；若本地候选非空但正式/观察池都为空，则按原集中度规则
+  发布最多 8 个无 veto 的本地候选为 `observe`，追加
+  `close_fallback_observation_floor_relaxed`，不生成 `executable`，不改盘中普通快照。
+  Web 查询层对已落盘的旧空 `close_fallback` 冻结快照执行只读 replay 投影，保留冻结文件不变。
+
 - Web 当前视图的可见行规则现在区分盘中和收盘补算：today/tomorrow/d25 盘中仍只展示
   `executable`，但 `phase=close_fallback` 与历史视图会展示 API 返回的全部 TopK 项，避免
   收盘补算结果全为 `observe` 时被前端过滤成空表。`selection.js` 静态资源版本同步升到 v2，
@@ -47,6 +53,12 @@ All notable changes to this project are documented here.
   不改变 0.85 板块可靠度门槛、候选公式、动作阈值、DeepSeek 预算或冻结不可覆盖规则。
 
 ### Fixed
+
+- 用户反馈“已经重启了，2-5 日还是没数据”。现场确认 d25 API 已是
+  `ready + close_fallback + frozen=true`，但 `items=[]`；真实 replay input 合并后有 192 个
+  本地候选，最高 68.49 分，而活动 d25 阈值为 76、观察窗口 5 分，观察 TopK 最低需 71 分，
+  因此旧逻辑把降级观察池筛成空。现在 close fallback 在正常 TopK 空池时保留本地观察行；
+  同一 2026-07-23 旧空冻结记录经只读 replay 可返回 7 行 observe。
 
 - 用户反馈“Web 上还是没数据”，现场复核默认 5000 端口确认 API 已有
   today/tomorrow `ready + close_fallback` 数据，但返回项的动作都是 `observe`；前端
@@ -108,6 +120,17 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 通过：`tests/unit/application/test_recommendations.py::test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold`、
+  `tests/unit/application/test_recommendations.py::test_close_fallback_observes_local_candidates_below_observation_floor`、
+  `tests/integration/test_v2_pipeline.py::test_after_close_commits_ready_strategies_when_d25_research_is_missing`、
+  `tests/contract/test_v2_web_api.py::test_current_view_replays_empty_close_fallback_snapshot_from_archive`。
+- 通过：使用当前代码直接读取真实 `.runtime/v17` 运行库，2026-07-23 d25 旧空冻结记录经
+  `RecommendationQueries.current_recommendation()` 只读 replay 返回 `ready close_fallback frozen`
+  且 7 行 observe，降级原因为
+  `main/star:board_data_reliability_below_threshold`、
+  `close_fallback_observation_floor_relaxed`、`deepseek_incomplete` 和
+  `d25_structured_research_incomplete`。
 
 - 通过：`tests/contract/test_v17_recommendation_sections.py`、
   `tests/integration/test_v2_pipeline.py::test_outcome_settlement_superseded_request_does_not_replace_last_error`、
@@ -171,6 +194,10 @@ All notable changes to this project are documented here.
 - 无。
 
 ### Residual Risks
+
+- 该修复只在 `close_fallback` 且正常正式/观察 TopK 为空时生效。它会让 Web 不再显示空表，
+  但这些行全部是降级 `observe`，不代表达到 d25 76 分可执行门槛；如果本地候选本身为空、
+  有 veto，或冻结记录没有 replay input，仍会保持空状态并显示既有诊断。
 
 - D25 仍严格依赖 `growth_score`、`quality_score`、`value_score` 研究字段。若本地结构化研究
   缓存为空且外部研究源未成功落盘，D25 会保持 `not_ready`；本批不降低可靠度阈值，也不以

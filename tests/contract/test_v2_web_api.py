@@ -8,13 +8,14 @@ from trader.application.events import EventAuditRecord, EventStatus
 from trader.application.ports.snapshots import RecoverySummary
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
-from trader.application.queries import RecommendationQueries
+from trader.application.queries import CloseFallbackReplay, RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import SHANGHAI
 from trader.domain.market.models import LiveQuote
 from trader.domain.recommendation.models import (
     FilterAudit,
     LiveOverlay,
+    RecommendationAction,
     RecommendationSnapshot,
     Strategy,
 )
@@ -569,6 +570,57 @@ def test_explicit_current_view_resolves_frozen_snapshot_to_official(
     assert payload["frozen"] is True
 
 
+def test_current_view_replays_empty_close_fallback_snapshot_from_archive(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T15:05:00+08:00")
+    policy = replace(
+        recommendation_policy,
+        selection=replace(
+            recommendation_policy.selection,
+            thresholds={**recommendation_policy.selection.thresholds, "d25": 99.0},
+        ),
+    )
+    engine = RecommendationEngine(policy)
+    feature = application_feature_factory("600001", now)
+    source = engine.build_snapshot(
+        Strategy.D25,
+        (feature,),
+        now=now,
+        phase="close_fallback",
+        trade_date="2026-07-16",
+        data_version="legacy-empty-close-fallback",
+        review_port=None,
+        review_deadline=now,
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+        market_features=(feature,),
+        requested_codes=("600001",),
+        preselect_max_age_seconds=30.0,
+        candidate_pool_size=120,
+    )
+    assert source.recommendations
+    assert source.recommendations[0].action is RecommendationAction.OBSERVE
+    legacy_empty = replace(source, recommendations=(), frozen=True)
+    repository = MemoryReadRepository(frozen={(Strategy.D25, "2026-07-16"): legacy_empty})
+
+    app, _publisher = _app(
+        repository,
+        now=now,
+        close_fallback_replay=CloseFallbackReplay(repository, engine),
+    )
+    payload = app.test_client().get("/api/recommendations/d25?view=current").get_json()
+
+    assert payload["status"] == "ready"
+    assert payload["view"] == "official"
+    assert payload["frozen"] is True
+    assert [item["code"] for item in payload["items"]] == ["600001"]
+    assert payload["items"][0]["action"] == "observe"
+    assert "close_fallback_observation_floor_relaxed" in payload["degraded_reasons"]
+
+
 def test_explicit_historical_query_returns_previous_trade_date_snapshot(
     recommendation_policy,
     application_feature_factory,
@@ -1064,6 +1116,7 @@ def _app(
     maximum_subscribers: int = 4,
     now: datetime = NOW,
     current_quotes: Mapping[str, LiveQuote] | None = None,
+    close_fallback_replay: CloseFallbackReplay | None = None,
 ):
     publisher = SnapshotPublisher(
         history_size=history_size,
@@ -1077,7 +1130,13 @@ def _app(
         index.publish(snapshot)
     for overlay in repository._overlays.values():
         index.publish_overlay(overlay)
-    queries = RecommendationQueries(index, repository, now=lambda: now, current_quote_reader=quote_reader)
+    queries = RecommendationQueries(
+        index,
+        repository,
+        now=lambda: now,
+        current_quote_reader=quote_reader,
+        close_fallback_replay=close_fallback_replay,
+    )
     app = create_app(
         lambda: {"schema_version": "v2", "status": "running", "runtime_started": True},
         queries=queries,
