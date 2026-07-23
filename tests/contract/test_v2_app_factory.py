@@ -44,10 +44,10 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "A股策略看板" in page
     assert "股票详情" in page
     assert "策略验证" not in page
-    assert "/static/dashboard.css?v=7" in page
+    assert "/static/dashboard.css?v=9" in page
     assert "/static/render.js?v=8" in page
     assert "/static/selection.js?v=1" in page
-    assert "/static/dashboard.js?v=17" in page
+    assert "/static/dashboard.js?v=19" in page
     assert 'id="currentViewStatus"' not in page
     assert 'class="current-view-status"' not in page
     assert 'id="strategyDescription"' in page
@@ -62,7 +62,12 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'data-view="live"' not in page
     assert "正式当前" not in page
     assert "临时实时" not in page
-    assert 'class="runtime-error"' in page
+    assert 'class="runtime-error runtime-message"' in page
+    assert 'class="runtime-messages"' in page
+    assert 'id="noticeText"' in page
+    assert page.index('class="runtime-messages"') < page.index('class="control-band"')
+    assert page.index('class="summary-band"') < page.index('class="control-band"') < page.index('class="table-region"')
+    assert 'id="tableTitle"' not in page
     assert "payloads: new Map()" in dashboard
     assert "inflight: new Map()" in dashboard
     assert "prefetchStrategies();" in dashboard
@@ -120,7 +125,11 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert base_response.status_code == 200
     assert components_response.status_code == 200
     assert responsive_response.status_code == 200
-    assert ".runtime-error" in base_response.get_data(as_text=True)
+    base_styles = base_response.get_data(as_text=True)
+    assert ".runtime-error" in base_styles
+    assert "--runtime-message-height: 52px" in base_styles
+    assert "height: var(--runtime-message-height)" in base_styles
+    assert "overflow-y: auto" in base_styles
     assert "overflow-wrap: anywhere" in components_response.get_data(as_text=True)
     assert client.get("/static/lucide.svg").status_code == 200
     assert client.get("/static/selection.js").status_code == 200

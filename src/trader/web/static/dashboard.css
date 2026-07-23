@@ -5,12 +5,3 @@
 [hidden] {
   display: none !important;
 }
-
-.table-title {
-  margin: 0;
-  padding: 0.72rem 1rem 0.5rem;
-  color: var(--text-muted);
-  font-size: 0.86rem;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-}

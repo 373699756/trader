@@ -57,7 +57,7 @@
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
       "scoreTime", "budgetStatus", "headerFreeze", "lastError",
       "refreshButton", "dateSelect", "strategyDescription", "recommendationCount", "executableCount", "filteredCount", "dataSource",
-      "topScore", "modelReview", "dataQuality", "notice", "tableTitle", "recommendationTable", "tableColumns", "tableHead", "tableBody",
+      "topScore", "modelReview", "dataQuality", "notice", "noticeText", "recommendationTable", "tableColumns", "tableHead", "tableBody",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
     ]) els[id] = document.getElementById(id);
 
@@ -298,7 +298,6 @@
     els.dataQuality.textContent = summary.dataQuality;
     els.dataQuality.title = summary.dataQualityTitle;
     const definition = historical ? window.TraderRender.historyTable() : window.TraderRender.currentTable();
-    els.tableTitle.textContent = historical ? "历史荐股" : payload.strategy === "long" ? "长期研究" : "正式推荐";
     els.recommendationTable.classList.toggle("is-history", historical);
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
@@ -353,7 +352,6 @@
     els.headerFreeze.textContent = "-";
     els.quoteTime.textContent = "-";
     els.quoteAge.textContent = "-";
-    els.tableTitle.textContent = state.strategy === "long" ? "长期研究" : "正式推荐";
     els.recommendationTable.classList.remove("is-history");
     const definition = window.TraderRender.currentTable();
     els.tableColumns.innerHTML = definition.columns;
@@ -377,7 +375,6 @@
     els.headerFreeze.textContent = "-";
     els.quoteTime.textContent = "-";
     els.quoteAge.textContent = "-";
-    els.tableTitle.textContent = "历史荐股";
     els.recommendationTable.classList.add("is-history");
     const definition = window.TraderRender.historyTable();
     els.tableColumns.innerHTML = definition.columns;
@@ -419,7 +416,7 @@
   }
 
   function setNotice(message, level) {
-    els.notice.textContent = message;
+    els.noticeText.textContent = message;
     els.notice.dataset.level = level || "idle";
   }
 

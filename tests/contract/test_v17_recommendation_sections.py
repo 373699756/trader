@@ -10,14 +10,13 @@ def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
     dashboard = (ROOT / "src/trader/web/static/dashboard.js").read_text(encoding="utf-8")
 
     assert 'id="recommendationTable"' in template
-    assert 'id="tableTitle"' in template
+    assert 'id="tableTitle"' not in template
     assert 'id="watchTable"' not in template
     assert "观察列表" not in template
     assert "当前无通过下行保护的正式推荐" in dashboard
     assert "长期策略当前尚无可用数据" in dashboard
     assert "当前暂无可用荐股数据" in dashboard
     assert "当前策略尚未发布快照" not in dashboard
-    assert '"长期研究"' in dashboard
     assert "visibleRecommendations(payload)" in dashboard
     assert 'item.action === "executable"' in dashboard
     assert 'payload.strategy === "long"' in dashboard

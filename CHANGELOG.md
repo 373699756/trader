@@ -296,6 +296,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把“已冻结 · 收盘补算 · 降级…”状态和最近错误移到页面上方并固定高度，随后
+  明确摘要行应位于四策略按钮行上方、两行紧邻股票表。页面现将快照状态与最近错误放入
+  Header 顶部信息区，两栏均固定为 52px，长文本在各自区域滚动；主体顺序固定为摘要、
+  策略/日期、股票表，不再由状态长度改变纵向位置。
+
 - Web 荐股展示批次：移除与主表空态重复的“当前策略尚未发布快照”通知，短线无快照时
   只在表格显示唯一空态并在通知栏提示“等待策略数据更新”；长期策略保留专属当前数据
   说明。摘要栏移除重复的冻结状态、评分版本和内部路由健康，改为最高评分、模型复核
@@ -592,6 +597,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复长快照状态和长错误文本换行时撑高整个 Header、把股票列表向下推移的问题；同时
+  修复运行服务热加载新 CSS、但仍缓存旧模板时，“正式推荐”旧标题失去样式后反而按默认
+  `h2` 放大的现场表现。最终模板、CSS 与 JavaScript 资源版本同步提升，实际本地服务重启
+  后已确认只返回同一版布局。
+
 - Web 荐股展示批次：修复短线策略切换会无条件清空显式历史日期的问题；目标策略没有
   同日归档或推荐接口返回 `snapshot_not_found` 时，现在显示该策略、该日期的正常空态，
   不再用当前日期数据替代。策略、日期列表和荐股请求均绑定选择序号，迟到响应不能覆盖
@@ -841,6 +851,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 按用户要求移除股票表上方重复的“正式推荐”标题 DOM、样式及历史/长期动态标题赋值；
+  推荐类型仍由策略按钮、摘要、表格内容和空态文案表达，不改变 API 或推荐业务语义。
+
 - Web 荐股展示批次：移除形似按钮的“当前推荐/收盘补算”状态胶囊及独立观察池 DOM、
   样式和事件监听；`close_fallback` 仅作为“已冻结 · 收盘补算”非交互状态显示一次，
   `official/live` API 兼容入口保持不变。
@@ -980,6 +993,16 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 顶部信息区与紧凑列表布局通过 Web 资源/主表契约测试和真实 Firefox/geckodriver 验收；
+  用户提供的完整长收盘补算降级串与长最近错误在 1280x720、1440x900、1920x1080 下
+  均保持两栏 52px、各自可滚动，摘要紧邻策略行、策略行紧邻表头，页面无横向溢出、
+  浏览器错误或 resync。24 个 SSE patch 的 patch-to-paint P95 为 23ms（预算 100ms）。
+  对实际 `127.0.0.1:5000` 服务重启前后分别取 HTML 与 1440x900 截图，确认混合缓存时
+  放大的“正式推荐”存在，重启加载最终模板后该节点消失且行序正确。`make lint`、
+  172 个源码文件 mypy、除一条既有盘后恢复用例外的全量 pytest、`make package` 通过；
+  仓库外 wheel 可从安装目录导入、执行 `trader-cli --help` 与绝对配置校验、读取模板与
+  10 项 CSS/JavaScript/SVG 资源，并通过 `pip check`。
 
 - Web 荐股展示批次：`make format-check`、`make lint`、`make type-check`、`make test`
   （784 项）和 `make package` 通过；38 项 Web/API/SSE 定向测试与 Node 策略日期状态机
@@ -1364,6 +1387,14 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 顶部两栏固定高度意味着超长状态必须在栏内滚动，避免页面跳动是本次明确取舍；手机和
+  平板仍不属于产品范围。当前任务开始前已有的 `src/trader/application/recommendations.py`
+  未提交修改不符合 Ruff format，导致全仓 `make format-check` 仍会在该无关文件失败；
+  同批既有 `tests/integration/test_v2_pipeline.py::test_after_close_waits_for_reliable_board_features`
+  与对应应用修改当前也存在预期不一致，导致不排除该节点的 `make test` 失败。本批 Python
+  文件的独立 format-check/Ruff、其余测试、lint、mypy、package 和 wheel 验收通过，且未
+  改写上述用户变更。
 
 - Web 荐股展示批次：没有已知未解决代码问题。真实交易日中“某短线策略存在所选历史日期、
   另一策略缺失”的具体归档组合取决于用户运行库；本批用纯状态机、日期/API 契约和

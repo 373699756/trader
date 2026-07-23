@@ -17,6 +17,7 @@
   --radius: 6px;
   --rank-width: 56px;
   --stock-width: 168px;
+  --runtime-message-height: 52px;
   color-scheme: dark;
 }
 
@@ -130,27 +131,46 @@ tr:focus-visible {
   grid-row: 1;
 }
 
-.runtime-error {
+.runtime-messages {
   min-width: 0;
   grid-column: 1 / -1;
   grid-row: 2;
+  height: var(--runtime-message-height);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  background: var(--line);
+}
+
+.runtime-message {
+  min-width: 0;
+  height: var(--runtime-message-height);
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   align-items: start;
   column-gap: 8px;
-  padding-top: 6px;
-  border-top: 1px solid rgb(255 255 255 / 6%);
+  padding: 9px 10px;
+  background: var(--surface);
   color: var(--muted);
   font-size: 12px;
   line-height: 16px;
 }
 
-.runtime-error b {
+.runtime-message b {
   min-width: 0;
+  max-height: 34px;
+  overflow-x: hidden;
+  overflow-y: auto;
   color: var(--text);
   font-weight: 600;
   overflow-wrap: anywhere;
+  scrollbar-width: thin;
   white-space: normal;
+}
+
+.runtime-error {
+  background: var(--surface);
 }
 
 .status-dot {
@@ -326,27 +346,21 @@ tr:focus-visible {
 }
 
 .notice {
-  min-height: 38px;
-  display: flex;
-  align-items: center;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--line);
   color: var(--muted);
   background: var(--surface);
-  font-size: 12px;
 }
 
-.notice[data-level="ok"] {
+.notice[data-level="ok"],
+.notice[data-level="ok"] b {
   color: var(--green);
-  background: #15251f;
 }
 
-.notice[data-level="warn"] {
+.notice[data-level="warn"],
+.notice[data-level="warn"] b {
   color: #e4b455;
-  background: var(--warning-bg);
 }
 
-.notice[data-level="error"] {
+.notice[data-level="error"],
+.notice[data-level="error"] b {
   color: #ef858a;
-  background: var(--danger-bg);
 }

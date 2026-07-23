@@ -15,7 +15,7 @@
     padding-bottom: 2px;
   }
 
-  .runtime-error {
+  .runtime-messages {
     grid-row: 3;
   }
 
@@ -85,10 +85,6 @@
   .summary-item {
     min-height: 58px;
     padding: 9px 12px;
-  }
-
-  .notice {
-    padding: 8px 12px;
   }
 
   .detail-drawer {

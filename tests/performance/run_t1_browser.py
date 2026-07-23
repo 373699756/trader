@@ -23,6 +23,16 @@ from tests.performance.youhua_d4_browser_fixture import build_app  # noqa: E402
 from trader.infra.settings import load_runtime_settings  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))
+LONG_SNAPSHOT_STATUS = (
+    "已冻结 · 收盘补算 · 2026/7/23 17:29:49 · 降级：main:board_population_insufficient、"
+    "main:board_data_reliability_below_threshold、chinext:board_population_insufficient、"
+    "chinext:board_data_reliability_below_threshold、star:board_population_insufficient、"
+    "star:board_data_reliability_below_threshold、deepseek_skipped_no_eligible_candidates"
+)
+LONG_RUNTIME_ERROR = (
+    "TopK live overlay degraded: data_source_task exceeded its bounded deadline; the last valid projection "
+    "remains visible while the source lane recovers"
+)
 
 
 def main() -> int:
@@ -106,6 +116,14 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
             "return window.TraderDashboardDiagnostics.snapshot().patchToPaint.sample_count >= 20;",
         )
         diagnostics = _execute(base, "return window.TraderDashboardDiagnostics.snapshot();")
+        _execute(
+            base,
+            "document.getElementById('noticeText').textContent = "
+            f"{json.dumps(LONG_SNAPSHOT_STATUS, ensure_ascii=False)};"
+            "document.getElementById('lastError').textContent = "
+            f"{json.dumps(LONG_RUNTIME_ERROR, ensure_ascii=False)};"
+            "return true;",
+        )
         viewport_results = []
         for width, height in VIEWPORTS:
             _request_json(
@@ -120,7 +138,13 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
                 "width: window.innerWidth,"
                 "height: window.innerHeight,"
                 "overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,"
-                "body: Boolean(document.body && document.body.getBoundingClientRect().height > 0)"
+                "body: Boolean(document.body && document.body.getBoundingClientRect().height > 0),"
+                "runtimeMessageHeights: Array.from(document.querySelectorAll('.runtime-message')).map((item) => item.offsetHeight),"
+                "runtimeMessageOverflow: Array.from(document.querySelectorAll('.runtime-message b')).map((item) => getComputedStyle(item).overflowY),"
+                "runtimeMessageScrollable: Array.from(document.querySelectorAll('.runtime-message b')).map((item) => item.scrollHeight > item.clientHeight),"
+                "messagesAboveControls: document.querySelector('.runtime-messages').getBoundingClientRect().bottom <= document.querySelector('.control-band').getBoundingClientRect().top,"
+                "summaryTouchesControls: document.querySelector('.summary-band').getBoundingClientRect().bottom === document.querySelector('.control-band').getBoundingClientRect().top,"
+                "controlsTouchTable: document.querySelector('.control-band').getBoundingClientRect().bottom === document.querySelector('.table-region').getBoundingClientRect().top"
                 "};",
             )
             viewport_results.append({"requested": [width, height], **layout})
@@ -130,7 +154,17 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
             isinstance(p95, (int, float))
             and not isinstance(p95, bool)
             and p95 <= budget_p95_ms
-            and all(item.get("body") is True and item.get("overflow") is False for item in viewport_results)
+            and all(
+                item.get("body") is True
+                and item.get("overflow") is False
+                and item.get("runtimeMessageHeights") == [52, 52]
+                and item.get("runtimeMessageOverflow") == ["auto", "auto"]
+                and item.get("runtimeMessageScrollable") == [True, True]
+                and item.get("messagesAboveControls") is True
+                and item.get("summaryTouchesControls") is True
+                and item.get("controlsTouchTable") is True
+                for item in viewport_results
+            )
         )
         return {
             "schema_version": "t1-browser-performance-v1",
