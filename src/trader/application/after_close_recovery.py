@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, time
 from typing import TYPE_CHECKING
 
-from trader.application.candidate_features import bind_strategy_input_version, fetch_strategy_features
+from trader.application.candidate_features import bind_strategy_input_version, read_strategy_features
 from trader.application.pipeline_workers import data_future, persist, store_candidate_selection, submit_required
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.recommendation_support import _snapshot_id
@@ -28,10 +28,11 @@ from trader.domain.recommendation.models import (
     RecommendationSnapshot,
     Strategy,
 )
-from trader.domain.recommendation.scoring_support import MIN_BOARD_SAMPLE
+from trader.domain.recommendation.scoring_support import MIN_BOARD_SAMPLE, reliability_fields
 
 if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline
+    from trader.application.recommendation_finalization import PreparedSnapshot
 
 _SHORT_STRATEGIES = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
 _MINIMUM_CLOSE_TIME = time(14, 59)
@@ -196,19 +197,23 @@ def _rebuild_from_close(
         pipeline._state.increment("after_close_rebuild_failures")
         pipeline._state.record_error(f"after-close market recovery degraded: {str(exc)[:400]}")
         return ()
-    if not _complete_close_market(market_features, now):
+    validation_at = max(now, shanghai_now(pipeline._now()))
+    close_counts, history_counts = _close_market_readiness(market_features, validation_at)
+    if not all(count >= MIN_BOARD_SAMPLE for count in history_counts.values()):
         pipeline._state.increment("after_close_incomplete_market")
         pipeline._state.record_error(
-            "after-close market recovery waiting for complete three-board close quotes and history"
+            "after-close market recovery waiting for complete three-board close quotes and history: "
+            f"close_quotes={_format_board_counts(close_counts)}; "
+            f"history={_format_board_counts(history_counts)}"
         )
         return ()
 
-    max_age = _close_max_age_seconds(now)
+    max_age = _close_max_age_seconds(validation_at)
     candidates, reasons, details = _preselect_close(
         pipeline,
         market_features,
         strategies,
-        now,
+        validation_at,
         max_age,
     )
     store_candidate_selection(pipeline, market_features, candidates, reasons, details)
@@ -217,8 +222,9 @@ def _rebuild_from_close(
     codes = tuple(feature.quote.code for feature in candidates)
     for strategy in strategies:
         try:
-            candidate_features, data_version = _strategy_close_features(pipeline, strategy, codes, now)
-            if codes and not _complete_requested_close_features(candidate_features, codes, now):
+            candidate_features, data_version = _strategy_close_features(pipeline, strategy, codes, validation_at)
+            strategy_validation_at = max(validation_at, shanghai_now(pipeline._now()))
+            if codes and not _complete_requested_close_features(candidate_features, codes, strategy_validation_at):
                 raise MarketDataUnavailableError(f"{strategy.value} closing candidate quotes are incomplete")
             snapshot = _build_local_close_snapshot(
                 pipeline,
@@ -230,8 +236,8 @@ def _rebuild_from_close(
                     codes,
                     reasons,
                     details,
-                    now,
-                    max_age,
+                    strategy_validation_at,
+                    _close_max_age_seconds(strategy_validation_at),
                 ),
             )
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -245,7 +251,7 @@ def _rebuild_from_close(
         if not _commit_fallback(pipeline, snapshot):
             continue
         close_by_code = {item.features.quote.code: item.features for item in snapshot.recommendations}
-        _save_closing_overlay(pipeline, snapshot, close_by_code, now)
+        _save_closing_overlay(pipeline, snapshot, close_by_code, snapshot.published_at)
         committed.append(snapshot)
     return tuple(committed)
 
@@ -298,6 +304,22 @@ def _build_local_close_snapshot(
         )
     if not prepared.board_scoring_complete:
         raise RuntimeError("three-board scoring is incomplete")
+    blocking_reasons = tuple(
+        reason
+        for reason in prepared.board_degraded_reasons
+        if reason.endswith(
+            (
+                "board_population_insufficient",
+                "board_data_reliability_below_threshold",
+            )
+        )
+    )
+    if blocking_reasons:
+        raise RuntimeError(
+            "three-board scoring is not ready: "
+            f"{','.join(blocking_reasons)}; "
+            f"reliability={_format_reliability_diagnostics(pipeline, prepared)}"
+        )
     snapshot = pipeline._engine.finalize_snapshot(prepared, {})
     recommendations = snapshot.recommendations
     return replace(
@@ -312,6 +334,33 @@ def _build_local_close_snapshot(
             "close_anchors": _close_anchors(recommendations),
         },
     )
+
+
+def _format_reliability_diagnostics(
+    pipeline: RecommendationPipeline,
+    prepared: PreparedSnapshot,
+) -> str:
+    diagnostics: list[str] = []
+    for batch in prepared.board_batches:
+        policy = pipeline._engine._policy.board_policy(prepared.strategy, batch.board)
+        if policy is None or not batch.recommendations:
+            diagnostics.append(f"{batch.board.value}:none")
+            continue
+        best = max(
+            batch.recommendations,
+            key=lambda item: item.features.board_data_reliability,
+        )
+        fields = reliability_fields(
+            prepared.strategy,
+            policy.local_weights,
+            phase=prepared.phase,
+        )
+        missing = tuple(name for name in fields if best.features.optional_value(name) is None)
+        diagnostics.append(
+            f"{batch.board.value}:{best.features.board_data_reliability:.3f}:"
+            f"{best.features.quote.code}:{'|'.join(missing) or 'complete'}"
+        )
+    return ",".join(diagnostics)
 
 
 def _fetch_close_market(
@@ -363,7 +412,8 @@ def _fetch_close_candidates(
             force=True,
             deadline=deadline,
         )
-    return tuple(feature for feature in features if _valid_close_feature(feature, now))
+    validation_at = max(now, shanghai_now(pipeline._now()))
+    return tuple(feature for feature in features if _valid_close_feature(feature, validation_at))
 
 
 def _strategy_close_features(
@@ -377,13 +427,13 @@ def _strategy_close_features(
     if pipeline._persistence_running:
         return data_future(
             pipeline,
-            fetch_strategy_features,
+            read_strategy_features,
             pipeline._candidate_data,
             strategy,
             tuple(codes),
             now,
         ).result()
-    return fetch_strategy_features(pipeline._candidate_data, strategy, tuple(codes), now)
+    return read_strategy_features(pipeline._candidate_data, strategy, tuple(codes), now)
 
 
 def _preselect_close(
@@ -468,21 +518,30 @@ def _save_closing_overlay(
         pipeline._publisher.publish_overlay(overlay)
 
 
-def _complete_close_market(features: Sequence[FeatureSnapshot], now: datetime) -> bool:
-    ready_by_board = {Board.MAIN: 0, Board.CHINEXT: 0, Board.STAR: 0}
+def _close_market_readiness(
+    features: Sequence[FeatureSnapshot],
+    now: datetime,
+) -> tuple[dict[Board, int], dict[Board, int]]:
+    close_by_board = {Board.MAIN: 0, Board.CHINEXT: 0, Board.STAR: 0}
+    history_by_board = {Board.MAIN: 0, Board.CHINEXT: 0, Board.STAR: 0}
     for feature in features:
         board = board_for_snapshot(feature)
+        if board not in close_by_board or not _valid_close_feature(feature, now):
+            continue
+        close_by_board[board] += 1
         amount_median = feature.optional_value("amount_median_20d")
         if (
-            board in ready_by_board
-            and _valid_close_feature(feature, now)
-            and feature.history_days >= 20
+            feature.history_days >= 20
             and amount_median is not None
             and math.isfinite(amount_median)
             and amount_median > 0.0
         ):
-            ready_by_board[board] += 1
-    return all(count >= MIN_BOARD_SAMPLE for count in ready_by_board.values())
+            history_by_board[board] += 1
+    return close_by_board, history_by_board
+
+
+def _format_board_counts(counts: Mapping[Board, int]) -> str:
+    return ",".join(f"{board.value}:{counts[board]}" for board in (Board.MAIN, Board.CHINEXT, Board.STAR))
 
 
 def _complete_requested_close_features(

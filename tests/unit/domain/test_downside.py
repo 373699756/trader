@@ -106,3 +106,25 @@ def test_shrink_pullback_and_volume_breakout_are_deterministic(feature_factory) 
     assert derive_entry_setup(pullback).score == 100.0
     assert derive_entry_setup(breakout).setup_type == "volume_breakout"
     assert derive_entry_setup(breakout).score == 100.0
+
+
+def test_entry_quality_remains_available_without_optional_industry_breadth(feature_factory) -> None:
+    feature = feature_factory(
+        price=10.3,
+        values={
+            "ma5": 10.0,
+            "ma10": 9.9,
+            "ma20": 9.8,
+            "ma20_slope_pct": 1.0,
+            "volume_to_5d_average": 1.0,
+            "prior_high_20d": 10.5,
+            "breakout_deviation_pct": -1.9,
+            "close_location": 70.0,
+            "industry_breadth": None,
+        },
+    )
+
+    setup = derive_entry_setup(feature)
+
+    assert setup.setup_type == "trend_unconfirmed"
+    assert setup.score == 50.0

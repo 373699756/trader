@@ -16,6 +16,7 @@ from trader.domain.recommendation.scoring import (
     apply_board_policy,
     build_board_cross_section,
     score_board_strategy,
+    supported_weight,
 )
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -230,3 +231,69 @@ def test_d25_score_has_no_market_regime_or_overheat_multiplier(application_featu
     risk_off = score_board_strategy(replace(scored, market_regime="risk_off"), policy)
 
     assert risk_on == risk_off
+
+
+def test_supported_weight_tracks_known_inputs_within_component() -> None:
+    supported = supported_weight(
+        Strategy.D25,
+        {
+            "quality_score": 70.0,
+            "value_score": 70.0,
+            "growth_score": None,
+        },
+        {"quality_value": 1.0},
+    )
+
+    assert supported == pytest.approx(2.0 / 3.0)
+
+
+def test_supported_weight_treats_industry_trend_as_optional_overlay() -> None:
+    supported = supported_weight(
+        Strategy.TOMORROW,
+        {
+            "ma20_60_position": 70.0,
+            "ma_slope": 70.0,
+            "breakout_20d": 70.0,
+            "industry_trend": None,
+        },
+        {"trend": 1.0},
+    )
+
+    assert supported == 1.0
+
+
+def test_close_fallback_reliability_excludes_unavailable_intraday_tail() -> None:
+    values = {
+        "tail_return_30m": None,
+        "tail_volume_ratio": None,
+        "close_location": None,
+        "peer_gap_5d_score": 70.0,
+        "peer_gap_20d_score": 70.0,
+        "leader_gap_score": 70.0,
+        "turnover_shock_score": 70.0,
+        "amount_shock_score": 70.0,
+        "flow_confirmation_score": 70.0,
+        "ma20_60_position": 70.0,
+        "ma_slope": 70.0,
+        "breakout_20d": 70.0,
+        "low_volatility_score": 70.0,
+        "low_drawdown_score": 70.0,
+        "entry_quality": 70.0,
+    }
+    weights = {
+        "tail_structure": 0.15,
+        "peer_leader": 0.10,
+        "turnover_flow": 0.05,
+        "trend": 0.20,
+        "stability": 0.25,
+        "market_state": 0.10,
+        "entry_quality": 0.15,
+    }
+
+    assert supported_weight(Strategy.TOMORROW, values, weights) == pytest.approx(0.85)
+    assert supported_weight(
+        Strategy.TOMORROW,
+        values,
+        weights,
+        phase="close_fallback",
+    ) == 1.0

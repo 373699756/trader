@@ -325,7 +325,7 @@ class BoardScoringCoordinator:
             reasons: list[str] = []
             if cross_section.population.status != "current":
                 reasons.append(f"board_population_{cross_section.population.status}")
-            if any(item.features.board_data_reliability < policy.minimum_reliability for item in ranked):
+            if _all_candidates_below_reliability(ranked, policy.minimum_reliability):
                 reasons.append("board_data_reliability_below_threshold")
             return BoardScoreBatch(
                 board,
@@ -394,6 +394,15 @@ def _select_candidates(
         )
     scored.sort(key=lambda row: (row[0], -row[1], row[2].quote.code))
     return tuple(row[2] for row in scored[:limit])
+
+
+def _all_candidates_below_reliability(
+    recommendations: Sequence[Recommendation],
+    minimum_reliability: float,
+) -> bool:
+    return bool(recommendations) and all(
+        item.features.board_data_reliability < minimum_reliability for item in recommendations
+    )
 
 
 def _copy_future(source: Future[BoardScoreBatch], target: Future[BoardScoreBatch]) -> None:

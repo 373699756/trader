@@ -5,10 +5,12 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from tests.pipeline_factory import build_pipeline
+from trader.bootstrap import _recommendation_policy
 from trader.application.cadence import CadencePolicy
 from trader.application.events import (
     EventAuditRecord,
@@ -37,6 +39,7 @@ from trader.domain.recommendation.models import (
     Strategy,
 )
 from trader.infra.persistence.snapshots import snapshot_from_dict, snapshot_to_dict
+from trader.infra.settings import load_strategy_settings
 from trader.web.schemas import snapshot_envelope
 
 
@@ -609,6 +612,11 @@ def test_after_close_waits_for_complete_historical_board_population(
     assert pipeline.run_once(clock.now()) == ()
     assert repository.frozen == {}
     assert market_data.market_force_requests == [True]
+    assert state.snapshot()["last_error"] == (
+        "after-close market recovery waiting for complete three-board close quotes and history: "
+        "close_quotes=main:100,chinext:100,star:100; "
+        "history=main:0,chinext:0,star:0"
+    )
 
     clock.set(datetime.fromisoformat("2026-07-16T15:05:03+08:00"))
     market_data.warmed = True
@@ -635,6 +643,123 @@ def test_after_close_waits_for_complete_historical_board_population(
     assert current.status == "ready"
     assert current.snapshot is not None
     assert current.snapshot.phase == "close_fallback"
+
+
+def test_after_close_accepts_quotes_received_after_request_started(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    market_data = DelayedClosingMarketData(features, clock)
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    pipeline.initialize()
+
+    recovered = pipeline.run_once(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+
+    assert {snapshot.strategy for snapshot in recovered} == {
+        Strategy.TODAY,
+        Strategy.TOMORROW,
+        Strategy.D25,
+    }
+    assert all(snapshot.recommendations for snapshot in recovered)
+
+
+def test_after_close_rebuild_reads_cached_candidate_features(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    market_data = CachedOnlyClosingMarketData(features)
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    pipeline.initialize()
+
+    recovered = pipeline.run_once(clock.now())
+
+    assert {snapshot.strategy for snapshot in recovered} == {
+        Strategy.TODAY,
+        Strategy.TOMORROW,
+        Strategy.D25,
+    }
+    assert market_data.cached_candidate_reads == 3
+
+
+def test_after_close_waits_for_reliable_board_features(
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    market_data = UnreliableClosingMarketData(features)
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(
+            _recommendation_policy(
+                load_strategy_settings(Path(__file__).parents[2] / "config" / "v2" / "strategy.json")
+            )
+        ),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    pipeline.initialize()
+
+    assert pipeline.run_once(clock.now()) == ()
+    assert repository.frozen == {}
+
+    market_data.reliable = True
+    clock.set(datetime.fromisoformat("2026-07-16T15:05:03+08:00"))
+    recovered = pipeline.run_once(clock.now())
+
+    assert {snapshot.strategy for snapshot in recovered} == {
+        Strategy.TODAY,
+        Strategy.TOMORROW,
+        Strategy.D25,
+    }
+    assert all(
+        "board_data_reliability_below_threshold" not in reason
+        for snapshot in recovered
+        for reason in snapshot.degraded_reasons
+    )
 
 
 @pytest.mark.parametrize(
@@ -2254,6 +2379,121 @@ class WarmingClosingMarketData(ClosingPriceMarketData):
                 history_days=0,
             )
             for feature in features
+        )
+
+
+class DelayedClosingMarketData(ClosingPriceMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot], clock: MutableClock) -> None:
+        super().__init__(features)
+        self._clock = clock
+
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        features = tuple(super().fetch_market_features(observed_at, force=force, deadline=deadline))
+        completed_at = observed_at + timedelta(seconds=5)
+        self._clock.set(completed_at)
+        return tuple(
+            replace(
+                feature,
+                quote=replace(
+                    feature.quote,
+                    source_time=completed_at,
+                    received_time=completed_at,
+                ),
+                observed_at=completed_at,
+            )
+            for feature in features
+        )
+
+
+class UnreliableClosingMarketData(ClosingPriceMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
+        super().__init__(features)
+        self.reliable = False
+
+    def _with_reliability(self, features: Sequence[FeatureSnapshot]) -> tuple[FeatureSnapshot, ...]:
+        if self.reliable:
+            return tuple(features)
+        blocked = {
+            "entry_quality",
+            "growth_score",
+            "industry_trend",
+            "quality_score",
+            "value_score",
+        }
+        return tuple(
+            replace(
+                feature,
+                values={name: value for name, value in feature.values.items() if name not in blocked},
+            )
+            for feature in features
+        )
+
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        return self._with_reliability(
+            super().fetch_market_features(observed_at, force=force, deadline=deadline)
+        )
+
+    def fetch_candidate_features(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
+    ) -> Sequence[FeatureSnapshot]:
+        return self._with_reliability(
+            super().fetch_candidate_features(
+                codes,
+                observed_at,
+                include_intraday_tail=include_intraday_tail,
+                include_structured_research=include_structured_research,
+            )
+        )
+
+
+class CachedOnlyClosingMarketData(ClosingPriceMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
+        super().__init__(features)
+        self.cached_candidate_reads = 0
+
+    def fetch_candidate_features(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
+    ) -> Sequence[FeatureSnapshot]:
+        del codes, observed_at, include_intraday_tail, include_structured_research
+        raise AssertionError("close fallback must not fetch candidate research")
+
+    def read_candidate_features(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool = False,
+        include_structured_research: bool = False,
+    ) -> Sequence[FeatureSnapshot]:
+        self.cached_candidate_reads += 1
+        return ClosingPriceMarketData.fetch_candidate_features(
+            self,
+            codes,
+            observed_at,
+            include_intraday_tail=include_intraday_tail,
+            include_structured_research=include_structured_research,
         )
 
 

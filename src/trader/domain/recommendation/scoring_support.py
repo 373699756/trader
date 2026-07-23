@@ -56,14 +56,14 @@ _LOCAL_COMPONENT_INPUTS: Mapping[Strategy, Mapping[str, tuple[str, ...]]] = {
         "tail_structure": ("tail_return_30m", "tail_volume_ratio", "close_location"),
         "peer_leader": ("peer_gap_5d_score", "peer_gap_20d_score", "leader_gap_score"),
         "turnover_flow": ("turnover_shock_score", "amount_shock_score", "flow_confirmation_score"),
-        "trend": ("ma20_60_position", "ma_slope", "breakout_20d", "industry_trend"),
+        "trend": ("ma20_60_position", "ma_slope", "breakout_20d"),
         "stability": ("low_volatility_score", "low_drawdown_score"),
         "market_state": (),
         "entry_quality": ("entry_quality",),
     },
     Strategy.D25: {
         "residual_momentum": ("peer_gap_20d_score", "peer_gap_60d_score"),
-        "trend": ("ma20_60_structure", "ma_slope", "breakout_20d", "industry_trend"),
+        "trend": ("ma20_60_structure", "ma_slope", "breakout_20d"),
         "quality_value": ("quality_score", "value_score", "growth_score"),
         "stability": ("low_volatility_score", "low_drawdown_score"),
         "flow_liquidity": ("amount_percentile_20d", "turnover_shock_score", "amount_shock_score"),
@@ -334,17 +334,51 @@ def candidate_fields(strategy: Strategy) -> tuple[str, ...]:
     return _candidate_fields(strategy)
 
 
-def supported_weight(strategy: Strategy, values: Mapping[str, float | None], weights: Mapping[str, float]) -> float:
-    return _supported_weight(strategy, values, weights)
+def supported_weight(
+    strategy: Strategy,
+    values: Mapping[str, float | None],
+    weights: Mapping[str, float],
+    *,
+    phase: str | None = None,
+) -> float:
+    return _supported_weight(strategy, values, weights, phase=phase)
 
 
-def _supported_weight(strategy: Strategy, values: Mapping[str, float | None], weights: Mapping[str, float]) -> float:
+def reliability_fields(
+    strategy: Strategy,
+    weights: Mapping[str, float],
+    *,
+    phase: str | None = None,
+) -> tuple[str, ...]:
+    fields: set[str] = set()
+    for component in weights:
+        if phase == "close_fallback" and strategy is Strategy.TOMORROW and component == "tail_structure":
+            continue
+        fields.update(_LOCAL_COMPONENT_INPUTS[strategy].get(component, ()))
+    return tuple(sorted(fields))
+
+
+def _supported_weight(
+    strategy: Strategy,
+    values: Mapping[str, float | None],
+    weights: Mapping[str, float],
+    *,
+    phase: str | None = None,
+) -> float:
     supported = 0.0
+    applicable = 0.0
     for component, weight in weights.items():
+        if phase == "close_fallback" and strategy is Strategy.TOMORROW and component == "tail_structure":
+            continue
+        applicable += weight
         inputs = _LOCAL_COMPONENT_INPUTS[strategy].get(component, ())
-        if not inputs or all(_finite_value(values.get(name)) for name in inputs):
+        if not inputs:
             supported += weight
-    return min(1.0, max(0.0, supported))
+            continue
+        known = sum(_finite_value(values.get(name)) for name in inputs)
+        supported += weight * known / len(inputs)
+    reliability = supported / applicable if applicable > 0.0 else 1.0
+    return min(1.0, max(0.0, reliability))
 
 
 def _base_reliability(values: Mapping[str, float | None]) -> float:
@@ -440,4 +474,4 @@ def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values)
 
 
-__all__ = ["MAX_FALLBACK_SESSIONS", "MIN_BOARD_SAMPLE"]
+__all__ = ["MAX_FALLBACK_SESSIONS", "MIN_BOARD_SAMPLE", "reliability_fields", "supported_weight"]

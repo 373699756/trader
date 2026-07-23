@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- 针对用户反馈“15:00 后当天没有荐股、明日/2-5 日仍显示板块可靠度降级”补齐收盘恢复边界：
+  收盘补算使用收盘时刻重新校验报价年龄，三板评分改用全市场样本后再过滤候选；组件可靠度按已知输入比例计算，
+  盘后冷启动不把天然缺失的尾盘分钟字段作为永久阻断，入场质量不再因可选行业宽度缺失而整体置空。
+  收盘补算只读取候选缓存，不再同步抓取 AkShare 研究；板块人口或可靠度阻断时拒绝冻结并保留重试诊断。
+  新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
+
+### Verification
+
+- 通过：`tests/unit/domain/test_board_scoring.py`、`tests/unit/domain/test_downside.py`、
+  `tests/unit/application/test_board_scoring.py`、`tests/unit/application/test_recommendations.py`
+  及收盘恢复集成测试；Ruff 检查通过。
+- 实机复核仍发现未解决项：2026-07-23 冷启动收盘补算最高候选仍低于 `0.85`，
+  因此按契约拒绝冻结，Web 当前三策略继续 `not_ready`；当天三条错误快照已按用户授权备份并清除，
+  历史日期查询已恢复。剩余根因需后续针对真实行情字段覆盖继续处理，不能将本批次宣称为当天荐股已恢复。
+
 ### Added
 
 - Web 荐股展示批次：新增独立策略/日期选择状态机和可见策略说明，明确今早、明日、

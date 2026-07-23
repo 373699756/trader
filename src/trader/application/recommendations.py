@@ -129,6 +129,7 @@ class _BoardScoringOptions(TypedDict):
     phase: str
     trade_date: str
     data_version: str
+    population_features: Sequence[FeatureSnapshot]
 
 
 def _merge_epoch_for_features(features: Sequence[FeatureSnapshot], data_version: str) -> str:
@@ -397,6 +398,7 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
                 phase=phase,
                 trade_date=trade_date,
                 data_version=data_version,
+                population_features=market_features,
             )
         )
 
@@ -478,17 +480,25 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
             }
             if len(policies) != 3:
                 raise RuntimeError(f"v16 board policies are incomplete for {strategy.value}")
+            population_features = tuple(
+                replace(
+                    feature,
+                    quote=replace(feature.quote, board=board_for_snapshot(feature)),
+                )
+                for feature in options["population_features"]
+            ) or normalized_eligible
+            candidate_codes = {feature.quote.code for feature in normalized_eligible}
             context = self._scoring_context(
-                normalized_eligible,
+                population_features,
                 now=now,
                 trade_date=options["trade_date"],
                 phase=options["phase"],
                 data_version=options["data_version"],
-                merge_epoch=_merge_epoch_for_features(normalized_eligible, options["data_version"]),
+                merge_epoch=_merge_epoch_for_features(population_features, options["data_version"]),
             )
             board_batches = self._board_scoring.score(
                 strategy,
-                normalized_eligible,
+                population_features,
                 policies,
                 context,
                 lambda scored_strategy, feature, policy, local_score: self._local_candidate_with_policy(
@@ -498,6 +508,15 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
                     policy,
                     local_score,
                 ),
+            )
+            board_batches = tuple(
+                replace(
+                    batch,
+                    recommendations=tuple(
+                        item for item in batch.recommendations if item.features.quote.code in candidate_codes
+                    ),
+                )
+                for batch in board_batches
             )
             board_scoring_complete, board_degraded_reasons = _board_batch_status(board_batches, context.merge_epoch)
             local_candidates = tuple(item for batch in board_batches for item in batch.recommendations)

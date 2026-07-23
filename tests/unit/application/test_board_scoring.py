@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from trader.application.board_scoring import BoardScoringCoordinator
+from trader.application.board_scoring import (
+    BoardScoringCoordinator,
+    _all_candidates_below_reliability,
+)
 from trader.application.board_scoring_cache import ScoringCacheContext
 from trader.domain.market.models import Board
 from trader.domain.recommendation.models import (
@@ -66,3 +70,17 @@ def test_coordinator_owns_three_single_worker_lanes_and_preserves_epoch(applicat
     assert all(lane["workers"] == 1 and lane["queue_capacity"] == 1 for lane in status.values())
     assert all(lane["queue_wait_samples"] == 1 for lane in status.values())
     assert all(float(lane["queue_wait_p95_ms"]) >= 0.0 for lane in status.values())
+
+
+def test_board_reliability_degrades_only_when_every_ranked_candidate_is_below_threshold() -> None:
+    mixed = (
+        SimpleNamespace(features=SimpleNamespace(board_data_reliability=0.84)),
+        SimpleNamespace(features=SimpleNamespace(board_data_reliability=0.90)),
+    )
+    unreliable = (
+        SimpleNamespace(features=SimpleNamespace(board_data_reliability=0.84)),
+        SimpleNamespace(features=SimpleNamespace(board_data_reliability=0.80)),
+    )
+
+    assert _all_candidates_below_reliability(mixed, 0.85) is False
+    assert _all_candidates_below_reliability(unreliable, 0.85) is True

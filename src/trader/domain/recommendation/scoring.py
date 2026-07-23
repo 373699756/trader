@@ -280,7 +280,12 @@ def apply_board_policy(
         raise ValueError("board policy does not match cross-section")
     result: list[FeatureSnapshot] = []
     for item in cross_section.features:
-        supported = _supported_weight(strategy, item.values, policy.local_weights)
+        supported = _supported_weight(
+            strategy,
+            item.values,
+            policy.local_weights,
+            phase=cross_section.phase,
+        )
         reliability = supported
         if item.parameter_status in {"stale", "insufficient"}:
             reliability = min(reliability, 0.84)

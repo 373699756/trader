@@ -64,14 +64,13 @@ def derive_entry_setup_values(quote: MarketQuote, values: Mapping[str, float | N
         prior_high,
         breakout_deviation,
         close_location,
-        industry_breadth,
     )
     if any(value is None for value in required):
         return EntrySetup("none", None)
     assert ma5 is not None and ma10 is not None and ma20 is not None
     assert slope is not None and price is not None and volume_ratio is not None
     assert prior_high is not None and breakout_deviation is not None
-    assert close_location is not None and industry_breadth is not None
+    assert close_location is not None
     trend_ok = ma5 >= ma10 >= ma20 and slope > 0.0 and price >= ma20
     if not trend_ok:
         return EntrySetup("none", 0.0)
@@ -83,6 +82,7 @@ def derive_entry_setup_values(quote: MarketQuote, values: Mapping[str, float | N
         and volume_ratio >= 2.0
         and close_location >= 70.0
         and 0.0 <= breakout_deviation <= 5.0
+        and industry_breadth is not None
         and industry_breadth >= 60.0
     )
     if breakout:
