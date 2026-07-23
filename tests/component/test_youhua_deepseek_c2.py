@@ -13,7 +13,7 @@ from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.client import DeepSeekHttpClient
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
-from trader.infra.deepseek.schema import DeepSeekSchemaError, build_messages, parse_reviews
+from trader.infra.deepseek.schema import DeepSeekSchemaError, build_messages, classify_review, parse_reviews
 from trader.infra.settings import DeepSeekSettings
 
 NOW = datetime(2026, 7, 16, 6, 30, tzinfo=timezone.utc)
@@ -83,12 +83,74 @@ def test_v4_facts_reject_forbidden_model_decision_fields() -> None:
         parse_reviews(json.dumps(payload), [candidate], NOW)
 
 
+def test_v4_facts_reject_unknown_response_root_fields() -> None:
+    candidate = _candidate()
+    payload = _v4_payload(candidate.quote.code)
+    payload["final_score"] = 99
+
+    with pytest.raises(DeepSeekSchemaError, match="unknown response fields"):
+        parse_reviews(json.dumps(payload), [candidate], NOW)
+
+
 def test_v4_facts_reject_unsupported_schema_version() -> None:
     candidate = _candidate()
     payload = _v4_payload(candidate.quote.code)
     payload["schema_version"] = "unexpected"
 
     with pytest.raises(DeepSeekSchemaError, match="unsupported schema_version"):
+        parse_reviews(json.dumps(payload), [candidate], NOW)
+
+
+def test_explicit_v4_schema_cannot_fall_back_to_legacy_dimensions() -> None:
+    candidate = _candidate()
+    payload = _v4_payload(candidate.quote.code)
+    payload["results"][0] = {
+        "code": candidate.quote.code,
+        "abstain": False,
+        "dimensions": {},
+        "risk_facts": [],
+    }
+
+    with pytest.raises(DeepSeekSchemaError, match="unknown V4 facts fields"):
+        parse_reviews(json.dumps(payload), [candidate], NOW)
+
+
+def test_v4_facts_reject_non_string_result_code() -> None:
+    candidate = _candidate()
+    payload = _v4_payload(candidate.quote.code)
+    payload["results"][0]["code"] = 600001
+
+    with pytest.raises(DeepSeekSchemaError, match="result code must be a string"):
+        parse_reviews(json.dumps(payload), [candidate], NOW)
+
+
+def test_v4_facts_reject_unknown_nested_fields() -> None:
+    candidate = _candidate()
+    payload = _v4_payload(candidate.quote.code)
+    payload["results"][0]["catalyst"]["commentary"] = "model supplied free text"
+
+    with pytest.raises(DeepSeekSchemaError, match="unknown catalyst fields"):
+        parse_reviews(json.dumps(payload), [candidate], NOW)
+
+
+def test_v4_facts_reject_truncated_evidence_id_aliases() -> None:
+    evidence_id = "e" * 80
+    candidate = _candidate(
+        evidence=(
+            Evidence(
+                evidence_id,
+                "announcement",
+                "交易所公告",
+                "exchange",
+                NOW - timedelta(hours=1),
+                NOW,
+                "v1",
+            ),
+        )
+    )
+    payload = _v4_payload(candidate.quote.code, evidence_ids=(evidence_id + "-forged",))
+
+    with pytest.raises(DeepSeekSchemaError, match="1 to 80 characters"):
         parse_reviews(json.dumps(payload), [candidate], NOW)
 
 
@@ -107,11 +169,85 @@ def test_v4_positive_soft_news_does_not_add_score_without_two_trusted_sources() 
     )
     payload = _v4_payload(soft.quote.code, evidence_ids=("soft-1",))
 
-    review = parse_reviews(json.dumps(payload), [soft], NOW)[soft.quote.code]
+    raw = parse_reviews(json.dumps(payload), [soft], NOW)[soft.quote.code]
+    review = classify_review(
+        raw,
+        dimension_weights={
+            "value_quality": 0.10,
+            "financial_health": 0.10,
+            "market_flow": 0.40,
+            "industry_policy": 0.15,
+            "risk_quality": 0.25,
+        },
+        confidence_coverage_min=0.50,
+        minimum_known_dimensions=2,
+    )
 
     assert review.outcome is ReviewOutcome.ABSTAIN
     assert review.dimensions["value_quality"].score == 50.0
     assert review.dimensions["value_quality"].confidence == 0.4
+
+
+def test_v4_soft_source_cannot_add_stable_fundamental_score() -> None:
+    soft = _candidate(
+        evidence=(
+            Evidence(
+                "soft-1",
+                "news",
+                "市场传闻基本面稳定",
+                "social_media",
+                NOW - timedelta(hours=1),
+                NOW,
+                "v1",
+            ),
+        )
+    )
+    payload = _v4_payload(soft.quote.code, evidence_ids=("soft-1",))
+    payload["results"][0]["catalyst"]["direction"] = "neutral"
+    payload["results"][0]["industry_policy"]["direction"] = "neutral"
+    payload["results"][0]["fundamental"]["direction"] = "stable"
+
+    review = parse_reviews(json.dumps(payload), [soft], NOW)[soft.quote.code]
+
+    assert review.dimensions["financial_health"].score == 50.0
+
+
+def test_v4_unconfirmed_positive_catalyst_cannot_add_score() -> None:
+    candidate = _candidate()
+    payload = _v4_payload(candidate.quote.code)
+    payload["results"][0]["catalyst"]["confirmation"] = "unconfirmed"
+
+    review = parse_reviews(json.dumps(payload), [candidate], NOW)[candidate.quote.code]
+
+    assert review.dimensions["value_quality"].score == 50.0
+    assert review.dimensions["market_flow"].score == 50.0
+
+
+def test_v4_weighted_two_dimension_coverage_uses_authoritative_classifier_thresholds() -> None:
+    candidate = _candidate()
+    payload = _v4_payload(candidate.quote.code)
+    result = payload["results"][0]
+    result["catalyst"].update({"direction": "neutral", "evidence_ids": []})
+    result["price_reaction"].update({"bucket": "fully_reflected", "evidence_ids": ["e-1"]})
+    result["fundamental"].update({"direction": "stable", "evidence_ids": []})
+    result["industry_policy"].update({"direction": "neutral", "evidence_ids": []})
+    result["coverage"] = 1.0
+
+    raw = parse_reviews(json.dumps(payload), [candidate], NOW)[candidate.quote.code]
+    classified = classify_review(
+        raw,
+        dimension_weights={
+            "value_quality": 0.10,
+            "financial_health": 0.10,
+            "market_flow": 0.40,
+            "industry_policy": 0.15,
+            "risk_quality": 0.25,
+        },
+        confidence_coverage_min=0.50,
+        minimum_known_dimensions=2,
+    )
+
+    assert classified.outcome is ReviewOutcome.APPLIED
 
 
 def test_v4_positive_fact_uses_two_independent_trusted_sources() -> None:
@@ -190,6 +326,37 @@ def test_prompt_evidence_router_caps_each_stock_at_twelve_items_and_dedupes_even
 
     assert len(routed.evidence) <= 12
     assert sum(item.title == "同一事件标题" for item in routed.evidence) == 1
+
+
+def test_prompt_evidence_router_normalizes_timezones_and_keeps_earliest_receipt() -> None:
+    china_timezone = timezone(timedelta(hours=8))
+    published_at = NOW - timedelta(hours=1)
+    candidate = _candidate(
+        evidence=(
+            Evidence(
+                "later",
+                "news",
+                "同一跨时区事件",
+                "eastmoney_news",
+                published_at,
+                NOW - timedelta(minutes=10),
+                "later-v1",
+            ),
+            Evidence(
+                "earlier",
+                "news",
+                "同一跨时区事件",
+                "eastmoney_news",
+                published_at.astimezone(china_timezone),
+                (NOW - timedelta(minutes=15)).astimezone(china_timezone),
+                "earlier-v1",
+            ),
+        )
+    )
+
+    routed = route_prompt_evidence(candidate)
+
+    assert tuple(item.evidence_id for item in routed.evidence) == ("earlier",)
 
 
 def test_budget_enforces_c2_soft_bucket_limits(tmp_path) -> None:

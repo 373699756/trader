@@ -4,6 +4,8 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from trader.domain.market.models import (
     Evidence,
     FeatureSnapshot,
@@ -17,6 +19,7 @@ from trader.domain.review.models import (
 )
 from trader.infra.deepseek.budget import DeepSeekBudgetStore
 from trader.infra.deepseek.cache import ReviewCache
+from trader.infra.deepseek.challenger import parse_challenger_reviews
 from trader.infra.deepseek.client import DeepSeekHttpClient
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.infra.settings import DeepSeekSettings
@@ -218,6 +221,49 @@ def test_challenger_schema_failure_keeps_valid_primary_review(tmp_path) -> None:
     assert review.review_stage == "primary"
     assert review.challenger_status == "schema_invalid"
     assert budget.summary(NOW.date().isoformat())["used"] == 3
+
+
+@pytest.mark.parametrize(
+    ("target", "field"),
+    (
+        ("result", "action"),
+        ("dimensions", "final_score"),
+        ("dimension", "score"),
+    ),
+)
+def test_challenger_schema_rejects_unknown_decision_fields(target: str, field: str) -> None:
+    candidate = _candidate()
+    payload = _challenger_payload()
+    result = payload["results"][0]
+    if target == "result":
+        result[field] = "buy"
+    elif target == "dimensions":
+        result["dimensions"][field] = 99
+    else:
+        result["dimensions"]["market_flow"][field] = 99
+
+    with pytest.raises(ValueError, match="unknown challenger"):
+        parse_challenger_reviews(json.dumps(payload), (candidate,), NOW)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    (
+        ("code", 600001, "code must be a string"),
+        ("reason_code", 123, "reason_code"),
+    ),
+)
+def test_challenger_schema_rejects_non_string_text_fields(field: str, value: object, error: str) -> None:
+    candidate = _candidate()
+    payload = _challenger_payload()
+    result = payload["results"][0]
+    if field == "code":
+        result[field] = value
+    else:
+        result["dimensions"]["market_flow"][field] = value
+
+    with pytest.raises(ValueError, match=error):
+        parse_challenger_reviews(json.dumps(payload), (candidate,), NOW)
 
 
 def test_budget_enforces_challenger_limit_inside_strategy_bucket(tmp_path) -> None:

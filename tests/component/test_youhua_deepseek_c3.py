@@ -14,6 +14,7 @@ from trader.infra.deepseek.budget import DeepSeekBudgetStore
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.client import DeepSeekHttpClient
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.infra.deepseek.schema import build_messages, review_cache_key
 from trader.infra.settings import DeepSeekSettings
 
 NOW = datetime(2026, 7, 16, 6, 30, tzinfo=timezone.utc)
@@ -42,10 +43,40 @@ def test_c3_same_stock_three_strategies_share_one_raw_facts_request(tmp_path: Pa
 
     reviewer, budget = _reviewer(tmp_path / "runtime.sqlite3", post=post)
     candidate = _candidate()
+    today_candidate = replace(
+        candidate,
+        board_policy_id="today-main",
+        values={**candidate.values, "board_candidate_score": 81.0},
+    )
+    tomorrow_candidate = replace(
+        candidate,
+        board_policy_id="tomorrow-main",
+        values={**candidate.values, "board_candidate_score": 72.0},
+    )
+    d25_candidate = replace(
+        candidate,
+        board_policy_id="d25-main",
+        values={**candidate.values, "board_candidate_score": 63.0},
+    )
 
-    today = reviewer.review(Strategy.TODAY, (candidate,), phase="today_main", deadline=NOW + timedelta(minutes=1))
-    tomorrow = reviewer.review(Strategy.TOMORROW, (candidate,), phase="afternoon", deadline=NOW + timedelta(minutes=1))
-    d25 = reviewer.review(Strategy.D25, (candidate,), phase="afternoon", deadline=NOW + timedelta(minutes=1))
+    today = reviewer.review(
+        Strategy.TODAY,
+        (today_candidate,),
+        phase="today_main",
+        deadline=NOW + timedelta(minutes=1),
+    )
+    tomorrow = reviewer.review(
+        Strategy.TOMORROW,
+        (tomorrow_candidate,),
+        phase="afternoon",
+        deadline=NOW + timedelta(minutes=1),
+    )
+    d25 = reviewer.review(
+        Strategy.D25,
+        (d25_candidate,),
+        phase="afternoon",
+        deadline=NOW + timedelta(minutes=1),
+    )
 
     assert today[candidate.quote.code].outcome is ReviewOutcome.APPLIED
     assert tomorrow[candidate.quote.code].outcome is ReviewOutcome.APPLIED
@@ -67,8 +98,12 @@ def test_c3_quote_only_cache_hit_adds_no_http_but_manifest_change_routes(tmp_pat
         return _ok_response(_candidate().quote.code)
 
     reviewer, budget = _reviewer(tmp_path / "runtime.sqlite3", post=post)
-    candidate = _candidate()
-    quote_only = replace(candidate, quote=replace(candidate.quote, price=12.01, data_version="quote-v2"))
+    candidate = replace(_candidate(), merge_epoch="epoch-1")
+    quote_only = replace(
+        candidate,
+        quote=replace(candidate.quote, price=12.01, data_version="quote-v2"),
+        merge_epoch="epoch-2",
+    )
     manifest_changed = _candidate(evidence_title="交易所公告新增合同")
 
     first = reviewer.review(Strategy.TODAY, (candidate,), phase="today_main", deadline=NOW + timedelta(minutes=1))
@@ -85,6 +120,58 @@ def test_c3_quote_only_cache_hit_adds_no_http_but_manifest_change_routes(tmp_pat
     assert third[candidate.quote.code].outcome is ReviewOutcome.APPLIED
     assert calls == ["deepseek-v4-flash", "deepseek-v4-flash"]
     assert budget.summary(NOW.date().isoformat())["used"] == 2
+
+
+def test_c3_raw_cache_identity_covers_every_feature_rendered_in_prompt() -> None:
+    candidate = _candidate()
+    changed = replace(
+        candidate,
+        values={**candidate.values, "industry_policy_score": 61.0},
+    )
+
+    assert build_messages((candidate,)) != build_messages((changed,))
+    assert review_cache_key(candidate, model="deepseek-v4-flash") != review_cache_key(
+        changed,
+        model="deepseek-v4-flash",
+    )
+
+
+def test_c3_strategy_only_scores_are_excluded_from_raw_facts_prompt() -> None:
+    candidate = _candidate()
+    changed = replace(
+        candidate,
+        board_policy_id="tomorrow-main",
+        values={
+            **candidate.values,
+            "relative_strength_5d": 66.0,
+            "board_candidate_score": 72.0,
+        },
+    )
+
+    assert build_messages((candidate,)) == build_messages((changed,))
+    assert review_cache_key(candidate, model="deepseek-v4-flash") == review_cache_key(
+        changed,
+        model="deepseek-v4-flash",
+    )
+
+
+def test_c3_raw_cache_identity_includes_evidence_receipt_time() -> None:
+    candidate = _candidate()
+    changed = replace(
+        candidate,
+        evidence=(
+            replace(
+                candidate.evidence[0],
+                received_at=NOW - timedelta(minutes=1),
+            ),
+        ),
+    )
+
+    assert build_messages((candidate,)) != build_messages((changed,))
+    assert review_cache_key(candidate, model="deepseek-v4-flash") != review_cache_key(
+        changed,
+        model="deepseek-v4-flash",
+    )
 
 
 def test_c3_long_late_hard_limit_and_all_fail_remain_degraded_not_blocking(tmp_path: Path) -> None:

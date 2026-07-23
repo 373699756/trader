@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续未完成的任务 A；本批完成 A5.1-A5.5 最终交付审查，新增
+  `docs/reports/youhua-a5-final-review.md`，收齐 B5/C5/D5 的
+  `PASS / ready_for_gate=yes` 签字并归档完整 diff 审查、提交映射和剩余外部风险。权威设计
+  补记 384 MiB 迁移硬上限、`387,186,688` 字节实测峰值、峰值并存场景、纯 columnar
+  `254,447,616` 字节结束 RSS，以及未来是否收紧上限必须另立决策；本批不发布 G5。
+
 - 用户继续未完成的任务 D；本批完成 D5.1-D5.2 最终差异审查，并在
   `docs/reports/youhua-d1-p6-web.md` 第 12 节向 A 提交 `PASS / ready_for_gate=yes`
   签字。审查覆盖 P6 current/resident/cold、P6-first 公共接线、持久化分流、SSE、DOM
@@ -241,6 +247,15 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- C5 在不改变公共 schema 版本、融合权重或 HTTP 硬预算的前提下收紧 V4/Pro 解析：拒绝
+  未知字段、错误文本类型、超长响应和 manifest 外证据；正向催化/价格/基本面/政策映射只
+  接受合格可信证据，跨时区事件按统一时间去重。raw facts prompt/cache 只包含共同结构化
+  输入和证据身份，普通策略分数、board policy 与 merge epoch 不再拆分跨策略原始复核。
+
+- P6 resident 初始化、current 恢复、cold future ownership、完整日期装载和按日期淘汰拆为
+  单一职责私有方法；完整日期补足、三策略 single-flight、异常传播、LRU 和字节上限行为不变。
+  严格复杂度债务从 `C901=38 / PLR0912=16` 降为 `36 / 15`。
 
 - `SnapshotPublisher.resync()` 现在与 Web 游标/慢客户端 resync 使用同一 v2 事件身份，
   固定携带 `patch_schema_version=2`。SSE 订阅在 publisher 锁内保存打开时的服务端序列，
@@ -479,6 +494,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- A5-F01 修复阶段 4 P6 新方法通过抬高严格 Ruff 债务基线接纳复杂度的问题；重构后两项
+  新增复杂度诊断消失，P6/Web/pipeline 回归保持一致。C5 同批修复 explicit V4 回退 legacy、
+  未确认或软来源正向加分、证据时区去重、prompt/cache 身份缺口、重复 coverage 阈值和
+  emergency 资格跨物理批次泄漏；所有模型输出仍由本地规则决定应用与风险。
+
 - D5-F01 修复主动 `resync_required` 缺少 patch schema、同一事件类型载荷不一致的问题；
   D5-F02 修复订阅打开时为 `cursor_ahead`、但流式产出前新事件追平后被误报成
   `cursor_expired` 的竞态。两项均先增加精确失败回归，再修改 publisher/SSE 实现。
@@ -674,6 +694,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- A5 未移除产品、策略、数据源、冻结历史、公共 API、配置项、迁移或桌面资源；移除的是
+  P6 两项新增复杂度债务和 C5 raw facts identity 中无关的策略/板块/merge-epoch 分裂因子。
+  legacy DeepSeek V3 仍只为冻结/回放兼容保留。
+
 - D5 未移除产品能力、API、策略、持久化 schema、SSE 兼容字段或 Web 资源；仅补齐既有
   resync v2 契约和并发原因分类，并追加终审签字材料。
 
@@ -776,6 +800,12 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- A5 定向复验架构、app factory、固定融合 `83.40`、冻结/P6、SQLite 迁移、DeepSeek
+  预算/C2-C5、SSE/Web 与端到端；P6 重构后的 83 项及 DeepSeek/P6/Web 联合集 148 项通过。
+  Firefox 152.0.4 在 1280x720、1440x900、1920x1080 均显示 18 行，无页面横向溢出、
+  关键重叠或浏览器错误，抽屉三分区完整；两次 patch 为零完整推荐 GET、成功应用 2 次。
+  五项 make、仓库外 wheel 导入/CLI/资源和最终 `HEAD == @{upstream}` 由本批最终门禁核对。
 
 - D5 的 publisher/P6/Web API/app factory 53 项、P6/冻结恢复定向集成 9 项、D4 性能、
   架构、固定融合 `83.40`、188 并发预算及 Node 状态机均通过。Firefox 152 在
@@ -1079,6 +1109,12 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- A5 没有已知未解决的仓库内缺陷。固定离线证据只在当前宿主实际运行 Python 3.14.4，
+  不证明 Python 3.10-3.13、不同宿主、真实行情/DeepSeek 时延或推荐收益；完整实时
+  columnar 窄路径当前只覆盖 Eastmoney/Sina，其他输入保守降级 scalar。Firefox 的 SWGL
+  warning 和 fixture model catalog warning 均未形成测试失败。是否收紧 384 MiB 必须另立
+  任务收集真实峰值分布，不能把当前余量直接转换成缓存或业务容量。
 
 - D5 没有已知未解决的 D-owned 缺陷。Firefox 的 SWGL framebuffer warning 属宿主日志，
   三档 DOM、WebDriver、SSE 和页面 JavaScript 均成功；真实外部网络时延、Python

@@ -26,6 +26,7 @@ from trader.infra.deepseek.challenger import (
 from trader.infra.deepseek.reviewer_context import ReviewerContext
 from trader.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.infra.deepseek.reviewer_support import (
+    _automatic_emergency_reason,
     _challenger_deadline,
     _challenger_failure_status,
     _combine_results,
@@ -102,6 +103,7 @@ class ReviewerRequestExecutor:
         attempts = 0
         for start in range(0, len(selected), challenger_batch_size):
             candidate_batch = selected[start : start + challenger_batch_size]
+            tracker.emergency_reason = emergency_reason or _automatic_emergency_reason(candidate_batch, phase)
             completed_at = _in_deadline_timezone(self._now(), challenger_deadline)
             if completed_at >= challenger_deadline:
                 _mark_challenger_unavailable(results, candidate_batch, "late")

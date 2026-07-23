@@ -31,7 +31,7 @@ from trader.infra.deepseek.challenger import (
 from trader.infra.deepseek.client import DeepSeekHttpClient
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
-from trader.infra.deepseek.schema import parse_reviews
+from trader.infra.deepseek.schema import classify_review, parse_reviews
 from trader.infra.settings import DeepSeekSettings
 
 NOW = datetime(2026, 7, 16, 6, 30, tzinfo=timezone.utc)
@@ -149,11 +149,23 @@ def test_c4_rumors_duplicate_events_and_pro_cannot_relax_local_guards() -> None:
             ),
         )
     )
-    rumor_review = parse_reviews(
+    rumor_raw = parse_reviews(
         json.dumps(_v4_payload((rumor.quote.code,), evidence_ids=("rumor-1",))),
         (rumor,),
         NOW,
     )[rumor.quote.code]
+    rumor_review = classify_review(
+        rumor_raw,
+        dimension_weights={
+            "value_quality": 0.10,
+            "financial_health": 0.10,
+            "market_flow": 0.40,
+            "industry_policy": 0.15,
+            "risk_quality": 0.25,
+        },
+        confidence_coverage_min=0.50,
+        minimum_known_dimensions=2,
+    )
     assert rumor_review.outcome is ReviewOutcome.ABSTAIN
     assert rumor_review.dimensions["value_quality"].score == 50.0
 
@@ -320,6 +332,57 @@ def test_c4_reviewer_enters_emergency_only_after_normal_soft_limit(tmp_path: Pat
     summary = budget.summary(NOW.date().isoformat())
     assert summary["used"] == 23
     assert summary["by_bucket"] == {"today": 22, "emergency": 1}
+
+
+def test_c4_emergency_reason_does_not_leak_to_later_ordinary_batch(tmp_path: Path) -> None:
+    calls = 0
+
+    def post(*_args: Any, **kwargs: Any) -> _Response:
+        nonlocal calls
+        calls += 1
+        request_payload = kwargs["json"]
+        assert isinstance(request_payload, dict)
+        messages = request_payload["messages"]
+        assert isinstance(messages, list)
+        user_message = messages[1]
+        assert isinstance(user_message, dict)
+        content = user_message["content"]
+        assert isinstance(content, str)
+        dynamic_payload = json.loads(content.rsplit("动态候选JSON=", 1)[1])
+        codes = tuple(item["code"] for item in dynamic_payload["candidates"])
+        return _ok_response(codes)
+
+    reviewer, budget = _reviewer(tmp_path / "emergency-scope.sqlite3", post=post)
+    assert all(item.allowed for item in _reserve_many(budget, Strategy.TODAY, "today_main", 21))
+    high_risk = _candidate(
+        code="600100",
+        external_risk_facts=(
+            RiskFact(
+                risk_fact_id="new-high-risk",
+                risk_code="regulatory_risk",
+                severity="high",
+                penalty=0.0,
+                source="exchange",
+                observed_at=NOW,
+                confidence=0.9,
+                evidence_ids=("e-1",),
+            ),
+        ),
+    )
+    ordinary = tuple(_candidate(code=f"600{code}") for code in range(101, 109))
+
+    results = reviewer.review(
+        Strategy.TODAY,
+        (high_risk, *ordinary),
+        phase="today_main",
+        deadline=NOW + timedelta(minutes=1),
+    )
+
+    assert calls == 1
+    assert results[high_risk.quote.code].outcome is ReviewOutcome.APPLIED
+    assert all(results[candidate.quote.code].outcome is ReviewOutcome.APPLIED for candidate in ordinary[:-1])
+    assert results[ordinary[-1].quote.code].error == "budget_exhausted"
+    assert budget.summary(NOW.date().isoformat())["by_bucket"] == {"today": 22}
 
 
 def test_c4_challenger_global_soft_exhaustion_is_classified_as_budget_exhausted(tmp_path: Path) -> None:

@@ -197,20 +197,11 @@ class ReviewCache:
             self._seen_codes.popitem(last=False)
 
     def _raw_identity(self, key: str, candidate: FeatureSnapshot) -> CacheIdentity:
-        population_version = (
-            candidate.board_population.population_version if candidate.board_population is not None else "missing"
-        )
         return build_cache_identity(
             dataset="raw_deepseek_review",
             source="deepseek:raw",
             subject_key=candidate.quote.code,
-            request={
-                "raw_key": key,
-                "board": candidate.quote.board.value,
-                "board_policy_id": candidate.board_policy_id,
-                "board_population": population_version,
-                "merge_epoch": candidate.merge_epoch,
-            },
+            request={"raw_key": key},
             trade_date=_candidate_trade_date(candidate),
             phase="review",
             source_contract_version="deepseek_review_v17",

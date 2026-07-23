@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from trader.domain.market.models import (
     Evidence,
@@ -109,11 +109,20 @@ def route_prompt_evidence(candidate: FeatureSnapshot) -> RoutedEvidence:
 def _invalid_reason(item: Evidence, candidate: FeatureSnapshot, category: str | None) -> str:
     if category is None:
         return "unsupported_evidence_type"
+    if not item.evidence_id or len(item.evidence_id) > 80:
+        return "invalid_evidence_id"
     if not item.data_version:
         return "missing_data_version"
     if item.received_at is None:
         return "missing_received_at"
-    if item.published_at.tzinfo is None or item.received_at.tzinfo is None:
+    if (
+        item.published_at.tzinfo is None
+        or item.published_at.utcoffset() is None
+        or item.received_at.tzinfo is None
+        or item.received_at.utcoffset() is None
+        or candidate.observed_at.tzinfo is None
+        or candidate.observed_at.utcoffset() is None
+    ):
         return "invalid_evidence_time"
     if item.published_at > candidate.observed_at or item.received_at > candidate.observed_at:
         return "future_evidence"
@@ -134,15 +143,16 @@ def _deduplicate(items: list[tuple[str, Evidence]]) -> tuple[tuple[str, Evidence
     return tuple(selected.values())
 
 
-def _quality_key(item: Evidence) -> tuple[int, str, str]:
-    received_at = item.received_at.isoformat() if item.received_at is not None else ""
+def _quality_key(item: Evidence) -> tuple[int, float, str]:
+    received_at = item.received_at.timestamp() if item.received_at is not None else float("inf")
     return (_SOURCE_QUALITY.get(item.source, 10), received_at, item.evidence_id)
 
 
 def event_key(item: Evidence) -> str:
     normalized_title = " ".join(item.title.strip().lower().split())
     content_hash = hashlib.sha256(normalized_title.encode("utf-8")).hexdigest()[:24]
-    return f"{item.published_at.isoformat()}:{content_hash}"
+    normalized_published_at = item.published_at.astimezone(timezone.utc).isoformat()
+    return f"{normalized_published_at}:{content_hash}"
 
 
 def source_tier(item: Evidence) -> str:

@@ -42,6 +42,7 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
         "reports/youhua-a2-public-skeleton.md",
         "reports/youhua-a3-integration.md",
         "reports/youhua-a4-acceptance.md",
+        "reports/youhua-a5-final-review.md",
         "reports/youhua-d1-p6-web.md",
         "reports/youhua-g1-contract-base.md",
         "reports/youhua-g2-gate-review.md",
@@ -80,6 +81,7 @@ def test_docs_keep_two_authorities_plans_and_delivery_reports() -> None:
         encoding="utf-8"
     )
     assert "A4.1-A4.6" in (docs_root / "reports/youhua-a4-acceptance.md").read_text(encoding="utf-8")
+    assert "A5.1-A5.5" in (docs_root / "reports/youhua-a5-final-review.md").read_text(encoding="utf-8")
     assert "G2 已发布" in (docs_root / "reports/youhua-g2-gate-review.md").read_text(encoding="utf-8")
     assert "G3 已发布" in (docs_root / "reports/youhua-g3-gate-review.md").read_text(encoding="utf-8")
     assert "G4 已发布" in (docs_root / "reports/youhua-g4-gate-review.md").read_text(encoding="utf-8")

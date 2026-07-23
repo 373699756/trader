@@ -10,18 +10,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
-from trader.domain.market.models import (
-    Evidence,
-    FeatureSnapshot,
-)
+from trader.domain.market.models import Evidence, FeatureSnapshot
 from trader.domain.recommendation.fusion import DIMENSION_NAMES, STRUCTURED_REVIEW_FEATURES
 from trader.domain.recommendation.models import Strategy
-from trader.domain.review.models import (
-    DeepSeekReview,
-    DimensionAssessment,
-    ReviewOutcome,
-    RiskFact,
-)
+from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact
 from trader.domain.review.rules import parse_rating
 from trader.infra.deepseek.evidence_router import event_key as _evidence_event_key
 from trader.infra.deepseek.evidence_router import evidence_quality as _evidence_quality
@@ -71,6 +63,7 @@ def parse_reviews(
     if len(content) > MAX_RESPONSE_CHARACTERS:
         raise DeepSeekSchemaError("DeepSeek response exceeds size limit")
     payload = _parse_json_content(content)
+    _reject_unknown_fields(payload, {"schema_version", "results"}, "response")
     schema_version = payload.get("schema_version")
     if schema_version is not None and schema_version not in {SCHEMA_VERSION, LEGACY_SCHEMA_VERSION}:
         raise DeepSeekSchemaError(f"unsupported schema_version: {schema_version}")
@@ -82,15 +75,18 @@ def parse_reviews(
     for index, raw in enumerate(results):
         if not isinstance(raw, dict):
             raise DeepSeekSchemaError(f"result {index} must be an object")
-        code = str(raw.get("code") or "").strip()
+        raw_code = raw.get("code")
+        if not isinstance(raw_code, str):
+            raise DeepSeekSchemaError("result code must be a string")
+        code = raw_code.strip()
         if code not in candidates_by_code:
             raise DeepSeekSchemaError(f"result contains code outside candidate batch: {code}")
         if code in reviews:
             raise DeepSeekSchemaError(f"duplicate result code: {code}")
-        if "dimensions" in raw:
-            reviews[code] = _parse_review(raw, candidates_by_code[code], completed_at)
-        else:
+        if schema_version == SCHEMA_VERSION or (schema_version is None and "dimensions" not in raw):
             reviews[code] = _parse_v4_review(raw, candidates_by_code[code], completed_at)
+        else:
+            reviews[code] = _parse_review(raw, candidates_by_code[code], completed_at)
     return reviews
 
 
@@ -98,7 +94,7 @@ def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]
     if not 1 <= len(candidates) <= 8:
         raise ValueError("DeepSeek batch must contain 1 to 8 candidates")
     ordered_candidates = tuple(sorted(candidates, key=lambda candidate: candidate.quote.code))
-    ground_truth = render_batch_ground_truth(ordered_candidates)
+    ground_truth = render_batch_ground_truth(tuple(_prompt_candidate(candidate) for candidate in ordered_candidates))
     payload = {
         "schema_version": SCHEMA_VERSION,
         "prompt_version": PROMPT_VERSION,
@@ -163,15 +159,6 @@ def review_cache_key(
 ) -> str:
     payload = {
         "code": candidate.quote.code,
-        "board": candidate.quote.board.value,
-        "board_policy_id": candidate.board_policy_id,
-        "board_policy_version": candidate.board_policy_version,
-        "board_population_version": (
-            candidate.board_population.population_version if candidate.board_population is not None else None
-        ),
-        "merge_epoch": candidate.merge_epoch,
-        "parameter_status": candidate.parameter_status,
-        "board_data_reliability": round(candidate.board_data_reliability, 6),
         "structured_features": _cache_features(candidate),
         "evidence": sorted(_cache_evidence(item) for item in route_prompt_evidence(candidate).evidence),
         "risk_facts": sorted(
@@ -253,21 +240,29 @@ def classify_review(
 
 
 def _cache_features(candidate: FeatureSnapshot) -> list[tuple[str, float | None]]:
-    features = [
+    return [
         (name, None if raw is None else round(float(raw), 4))
         for name, raw in sorted(candidate.values.items())
         if name in STRUCTURED_REVIEW_FEATURES
     ]
-    return features
 
 
-def _cache_evidence(item: Evidence) -> tuple[str, str, str, str, str, str]:
+def _prompt_candidate(candidate: FeatureSnapshot) -> FeatureSnapshot:
+    return replace(
+        candidate,
+        values={name: raw for name, raw in candidate.values.items() if name in STRUCTURED_REVIEW_FEATURES},
+        missing_fields=tuple(name for name in candidate.missing_fields if name in STRUCTURED_REVIEW_FEATURES),
+    )
+
+
+def _cache_evidence(item: Evidence) -> tuple[str, str, str, str, str, str | None, str]:
     return (
         item.evidence_id,
         item.evidence_type,
         item.title,
         item.source,
         item.published_at.isoformat(),
+        item.received_at.isoformat() if item.received_at is not None else None,
         item.data_version,
     )
 
@@ -313,8 +308,9 @@ def _parse_v4_review(
     completed_at: datetime,
 ) -> DeepSeekReview:
     _reject_forbidden_model_decisions(raw)
-    allowed_evidence = {item.evidence_id for item in route_prompt_evidence(candidate).evidence}
-    evidence_by_id = {item.evidence_id: item for item in route_prompt_evidence(candidate).evidence}
+    routed_evidence = route_prompt_evidence(candidate).evidence
+    allowed_evidence = {item.evidence_id for item in routed_evidence}
+    evidence_by_id = {item.evidence_id: item for item in routed_evidence}
     abstain = raw.get("abstain")
     if not isinstance(abstain, bool):
         raise DeepSeekSchemaError(f"abstain must be boolean for {candidate.quote.code}")
@@ -338,6 +334,14 @@ def _parse_v4_review(
     price_reaction = _object(raw.get("price_reaction"), "price_reaction")
     fundamental = _object(raw.get("fundamental"), "fundamental")
     industry_policy = _object(raw.get("industry_policy"), "industry_policy")
+    _reject_unknown_fields(
+        catalyst,
+        {"direction", "importance", "confirmation", "cycle", "evidence_ids"},
+        "catalyst",
+    )
+    _reject_unknown_fields(price_reaction, {"bucket", "evidence_ids"}, "price_reaction")
+    _reject_unknown_fields(fundamental, {"direction", "evidence_ids"}, "fundamental")
+    _reject_unknown_fields(industry_policy, {"direction", "evidence_ids"}, "industry_policy")
 
     catalyst_evidence = _evidence_ids(catalyst.get("evidence_ids"), allowed_evidence)
     price_evidence = _evidence_ids(price_reaction.get("evidence_ids"), allowed_evidence)
@@ -350,7 +354,7 @@ def _parse_v4_review(
     policy_quality = _evidence_quality(tuple(evidence_by_id.values()), policy_evidence, conflicted=conflicted)
 
     catalyst_direction = _choice(catalyst.get("direction"), {"positive", "neutral", "negative"}, "catalyst.direction")
-    _choice(
+    catalyst_confirmation = _choice(
         catalyst.get("confirmation"),
         {"confirmed", "unconfirmed", "conflicting"},
         "catalyst.confirmation",
@@ -361,6 +365,7 @@ def _parse_v4_review(
             catalyst_direction,
             _choice(catalyst.get("importance"), {"high", "medium", "low"}, "catalyst.importance"),
             catalyst_quality,
+            catalyst_confirmation,
         )
     )
     market_flow_score = _dimension_from_delta(
@@ -372,6 +377,7 @@ def _parse_v4_review(
                 "price_reaction.bucket",
             ),
             price_quality,
+            catalyst_confirmation,
         )
     )
     fundamental_score = _dimension_from_delta(
@@ -403,12 +409,13 @@ def _parse_v4_review(
             flags=conflicts,
         ),
     }
-    known_dimensions = sum(not item.is_unknown and item.confidence >= 0.6 for item in dimensions.values())
     coverage = _optional_bounded_number(raw.get("coverage"), 0.0, 1.0, "coverage")
     local_coverage = sum(item.confidence for item in dimensions.values()) / len(dimensions)
     effective_coverage = min(coverage if coverage is not None else local_coverage, local_coverage)
     outcome = (
-        ReviewOutcome.ABSTAIN if abstain or known_dimensions < 3 or effective_coverage < 0.60 else ReviewOutcome.APPLIED
+        ReviewOutcome.ABSTAIN
+        if abstain or all(item.is_unknown for item in dimensions.values())
+        else ReviewOutcome.APPLIED
     )
     return DeepSeekReview(
         code=candidate.quote.code,
@@ -465,6 +472,12 @@ def _object(raw: object, field: str) -> Mapping[str, object]:
     return raw
 
 
+def _reject_unknown_fields(raw: Mapping[str, object], allowed: set[str], field: str) -> None:
+    unknown = set(raw) - allowed
+    if unknown:
+        raise DeepSeekSchemaError(f"unknown {field} fields: {sorted(unknown)}")
+
+
 def _choice(raw: object, choices: set[str], field: str) -> str:
     value = str(raw or "").strip().lower()
     if value not in choices:
@@ -503,28 +516,29 @@ def _dimension_from_delta(delta: float) -> float:
     return min(70.0, max(30.0, 50.0 + delta))
 
 
-def _catalyst_delta(direction: str, importance: str, quality: float) -> float:
+def _catalyst_delta(direction: str, importance: str, quality: float, confirmation: str) -> float:
     if direction == "neutral":
         return 0.0
-    if direction == "positive" and quality < 0.85:
+    if direction == "positive" and (quality < 0.85 or confirmation != "confirmed"):
         return 0.0
     magnitude = {"high": 15.0, "medium": 8.0, "low": 3.0}[importance]
     return magnitude if direction == "positive" else -magnitude
 
 
-def _price_reaction_delta(catalyst_direction: str, bucket: str, quality: float) -> float:
+def _price_reaction_delta(catalyst_direction: str, bucket: str, quality: float, confirmation: str) -> float:
     if catalyst_direction == "neutral":
         return 0.0
-    if catalyst_direction == "positive" and quality < 0.85:
+    if catalyst_direction == "positive" and (quality < 0.85 or confirmation != "confirmed"):
         return 0.0
     magnitude = {"not_reflected": 12.0, "partial": 5.0, "fully_reflected": 0.0}[bucket]
     return magnitude if catalyst_direction == "positive" else -magnitude
 
 
 def _fundamental_delta(direction: str, quality: float) -> float:
-    if direction == "improving" and quality < 0.85:
+    delta = {"improving": 15.0, "stable": 3.0, "deteriorating": -18.0}[direction]
+    if delta > 0.0 and quality < 0.85:
         return 0.0
-    return {"improving": 15.0, "stable": 3.0, "deteriorating": -18.0}[direction]
+    return delta
 
 
 def _policy_delta(direction: str, quality: float) -> float:
@@ -546,6 +560,11 @@ def _parse_v4_risks(
     facts: list[RiskFact] = []
     for field, risk_code in _RISK_FIELD_TO_CODE.items():
         item = _object(risks.get(field), f"risks.{field}")
+        _reject_unknown_fields(
+            item,
+            {"present", "severity", "confidence", "evidence_ids", "assessment"},
+            f"risks.{field}",
+        )
         present = item.get("present")
         if not isinstance(present, bool):
             raise DeepSeekSchemaError(f"risks.{field}.present must be boolean")
@@ -645,7 +664,7 @@ def _candidate_manifest_payload(candidate: FeatureSnapshot) -> dict[str, object]
     values = {
         name: round(value, 4)
         for name, raw in candidate.values.items()
-        if raw is not None and math.isfinite(value := float(raw))
+        if name in STRUCTURED_REVIEW_FEATURES and raw is not None and math.isfinite(value := float(raw))
     }
     routed = route_prompt_evidence(candidate)
     evidence = [
@@ -713,8 +732,10 @@ def _strings(raw: object, *, maximum: int, length: int) -> tuple[str, ...]:
     for value in raw:
         if not isinstance(value, str):
             raise DeepSeekSchemaError("string list contains a non-string value")
-        text = value.strip()[:length]
-        if text and text not in result:
+        text = value.strip()
+        if not 1 <= len(text) <= length:
+            raise DeepSeekSchemaError(f"string list items must contain 1 to {length} characters")
+        if text not in result:
             result.append(text)
     return tuple(result)
 

@@ -19,6 +19,7 @@ from trader.infra.deepseek.evidence_router import route_prompt_evidence
 
 CHALLENGER_SCHEMA_VERSION = "deepseek_challenger_v1"
 CHALLENGER_PROMPT_VERSION = "deepseek_challenger_prompt_v1"
+MAX_CHALLENGER_RESPONSE_CHARACTERS = 100_000
 
 
 @dataclass(frozen=True)
@@ -127,29 +128,53 @@ def parse_challenger_reviews(
     candidates: Sequence[FeatureSnapshot],
     completed_at: datetime,
 ) -> dict[str, ChallengerReview]:
+    if len(content) > MAX_CHALLENGER_RESPONSE_CHARACTERS:
+        raise ValueError("challenger response exceeds size limit")
     try:
         raw = json.loads(content)
     except json.JSONDecodeError as exc:
         raise ValueError("invalid challenger JSON") from exc
-    results = raw.get("results") if isinstance(raw, dict) else None
+    if not isinstance(raw, dict):
+        raise ValueError("challenger response root must be an object")
+    _reject_unknown_fields(raw, {"schema_version", "results"}, "challenger response")
+    schema_version = raw.get("schema_version")
+    if schema_version is not None and schema_version != CHALLENGER_SCHEMA_VERSION:
+        raise ValueError("unsupported challenger schema_version")
+    results = raw.get("results")
     if not isinstance(results, list):
         raise ValueError("challenger results must be a list")
     candidates_by_code = {candidate.quote.code: candidate for candidate in candidates}
     parsed: dict[str, ChallengerReview] = {}
     for result in results:
-        if not isinstance(result, dict):
-            raise ValueError("challenger result must be an object")
-        code = str(result.get("code") or "")
-        candidate = candidates_by_code.get(code)
-        if candidate is None or code in parsed:
+        code, review = _parse_challenger_result(result, candidates_by_code, completed_at)
+        if code in parsed:
             raise ValueError("challenger result contains invalid code")
-        allowed = {item.evidence_id for item in route_prompt_evidence(candidate).evidence}
-        dimensions_raw = result.get("dimensions")
-        if not isinstance(dimensions_raw, dict):
-            raise ValueError("challenger dimensions must be an object")
-        dimensions = {name: _parse_dimension(dimensions_raw.get(name), allowed) for name in DIMENSION_NAMES}
-        parsed[code] = ChallengerReview(code, dimensions, completed_at)
+        parsed[code] = review
     return parsed
+
+
+def _parse_challenger_result(
+    raw: object,
+    candidates_by_code: Mapping[str, FeatureSnapshot],
+    completed_at: datetime,
+) -> tuple[str, ChallengerReview]:
+    if not isinstance(raw, dict):
+        raise ValueError("challenger result must be an object")
+    _reject_unknown_fields(raw, {"code", "dimensions"}, "challenger result")
+    raw_code = raw.get("code")
+    if not isinstance(raw_code, str):
+        raise ValueError("challenger result code must be a string")
+    code = raw_code.strip()
+    candidate = candidates_by_code.get(code)
+    if candidate is None:
+        raise ValueError("challenger result contains invalid code")
+    allowed = {item.evidence_id for item in route_prompt_evidence(candidate).evidence}
+    dimensions_raw = raw.get("dimensions")
+    if not isinstance(dimensions_raw, dict):
+        raise ValueError("challenger dimensions must be an object")
+    _reject_unknown_fields(dimensions_raw, set(DIMENSION_NAMES), "challenger dimensions")
+    dimensions = {name: _parse_dimension(dimensions_raw.get(name), allowed) for name in DIMENSION_NAMES}
+    return code, ChallengerReview(code, dimensions, completed_at)
 
 
 def merge_challenger_review(
@@ -186,10 +211,15 @@ def merge_challenger_review(
 def _parse_dimension(raw: object, allowed: set[str]) -> ChallengerDimensionVerdict:
     if not isinstance(raw, dict):
         raise ValueError("challenger dimension must be an object")
+    _reject_unknown_fields(
+        raw,
+        {"verdict", "raw_confidence", "evidence_ids", "reason_code"},
+        "challenger dimension",
+    )
     verdict = str(raw.get("verdict") or "")
     confidence = raw.get("raw_confidence")
     evidence_ids = raw.get("evidence_ids")
-    reason_code = str(raw.get("reason_code") or "")
+    reason_code = raw.get("reason_code")
     if verdict not in {"confirm", "contradict", "insufficient"}:
         raise ValueError("invalid challenger verdict")
     if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not math.isfinite(confidence):
@@ -200,9 +230,15 @@ def _parse_dimension(raw: object, allowed: set[str]) -> ChallengerDimensionVerdi
         raise ValueError("invalid challenger evidence_ids")
     if set(evidence_ids) - allowed:
         raise ValueError("challenger referenced evidence outside prompt")
-    if not reason_code or len(reason_code) > 80:
+    if not isinstance(reason_code, str) or not reason_code or len(reason_code) > 80:
         raise ValueError("invalid challenger reason_code")
     return ChallengerDimensionVerdict(verdict, float(confidence), tuple(evidence_ids), reason_code)
+
+
+def _reject_unknown_fields(raw: Mapping[str, object], allowed: set[str], field: str) -> None:
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ValueError(f"unknown {field} fields: {sorted(unknown)}")
 
 
 def _direction(dimension: DimensionAssessment) -> str:

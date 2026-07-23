@@ -297,7 +297,6 @@ class DeepSeekReviewer:
         slice_statuses: list[str] = []
         physical_attempts = 0
         last_error = ""
-        automatic_emergency_reason = emergency_reason or _automatic_emergency_reason(missing, phase)
         tracker = _ReservationTracker(
             budget=self._budget,
             strategy=strategy,
@@ -306,7 +305,7 @@ class DeepSeekReviewer:
             now=self._now,
             planned_bucket=planned_bucket,
             batch_id=batch_id,
-            emergency_reason=automatic_emergency_reason,
+            emergency_reason=emergency_reason,
             model_role="primary",
             requested_model=self._settings.model,
             reasoning_effort="",
@@ -314,6 +313,7 @@ class DeepSeekReviewer:
 
         for start in range(0, len(missing), self._settings.batch_size):
             candidate_batch = missing[start : start + self._settings.batch_size]
+            tracker.emergency_reason = emergency_reason or _automatic_emergency_reason(candidate_batch, phase)
             completed_at = _in_deadline_timezone(self._now(), deadline)
             if completed_at >= deadline:
                 for candidate in candidate_batch:
@@ -439,7 +439,7 @@ class DeepSeekReviewer:
             phase=phase,
             deadline=deadline,
             planned_bucket=planned_bucket,
-            emergency_reason=automatic_emergency_reason,
+            emergency_reason=emergency_reason,
             batch_id=batch_id,
         )
         physical_attempts += challenger_attempts

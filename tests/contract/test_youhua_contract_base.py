@@ -149,3 +149,27 @@ def test_youhua_g4_publishes_after_all_phase4_gates_are_ready() -> None:
     assert "8e7ab24985ff73f7ec54cf62c9440f97b5d179c6" in g4
     assert "A4-F04" in g4
     assert "G4 is published and A5 has not started" in g4
+
+
+def test_youhua_a5_closes_final_review_after_bcd_sign_off_without_publishing_g5() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    b5 = (PROJECT_ROOT / "tests/fixtures/market_data/youhua_b5/report_to_a.md").read_text(encoding="utf-8")
+    c5 = (PROJECT_ROOT / "tests/fixtures/deepseek/youhua_c5/report_to_a.md").read_text(encoding="utf-8")
+    d5 = (PROJECT_ROOT / "docs/reports/youhua-d1-p6-web.md").read_text(encoding="utf-8")
+    a5 = (PROJECT_ROOT / "docs/reports/youhua-a5-final-review.md").read_text(encoding="utf-8")
+
+    assert "Codex B / B5.1-B5.2" in b5
+    assert "status: `PASS`" in b5
+    assert "ready_for_gate: `yes`" in b5
+    assert "C5" in c5
+    assert "PASS" in c5
+    assert "ready_for_gate" in c5
+    assert "Codex D / D5.1-D5.2" in d5
+    assert "verdict\nPASS" in d5
+    assert "ready_for_gate\nyes" in d5
+    assert "387,186,688" in design
+    assert "254,447,616" in design
+    assert "收紧 384 MiB" in design
+    assert "A5.1-A5.5" in a5
+    assert "A5.4 不改写已推送历史" in a5
+    assert "A5 is complete and G5 is not published" in a5

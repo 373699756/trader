@@ -63,38 +63,48 @@ class PublishedSnapshotIndex:
         for trade_date in complete_dates:
             if loaded_dates >= self._resident_days:
                 break
-            snapshots = self._load_complete_date(trade_date)
-            if len(snapshots) != len(self._HISTORICAL_STRATEGIES):
-                self._counters["rejected_incomplete_dates"] += 1
-                continue
-            with self._lock:
-                for snapshot in snapshots:
-                    delivery = _delivery_snapshot(snapshot)
-                    if not self._fits(delivery):
-                        self._counters["rejected_oversize_views"] += 1
-                        break
-                    self._resident[(snapshot.strategy, trade_date)] = delivery
-                else:
-                    loaded_dates += 1
-                    accepted_dates.append(trade_date)
-                    continue
-                for strategy in self._HISTORICAL_STRATEGIES:
-                    self._resident.pop((strategy, trade_date), None)
-        with self._lock:
-            accepted = tuple(accepted_dates)
-            for strategy in self._HISTORICAL_STRATEGIES:
-                self._dates[strategy] = tuple(complete_dates)
-                strategy_dates = tuple(sorted(date_sets[strategy], reverse=True))
-                latest = self._resident.get((strategy, accepted[0])) if accepted else None
-                if latest is None and strategy_dates:
-                    archived = self._archive.load_frozen(strategy, strategy_dates[0])
-                    latest = _delivery_snapshot(archived) if archived is not None else None
-                if latest is not None and self._fits(latest):
-                    self._current[strategy] = latest
-                    overlay = self._archive.load_live_overlay(strategy, latest.trade_date)
-                    if overlay is not None and overlay.snapshot_id == latest.snapshot_id:
-                        self._overlays[(strategy, latest.trade_date)] = overlay
+            if self._preload_resident_date(trade_date):
+                loaded_dates += 1
+                accepted_dates.append(trade_date)
+        accepted = tuple(accepted_dates)
+        for strategy in self._HISTORICAL_STRATEGIES:
+            self._initialize_strategy(strategy, complete_dates, date_sets[strategy], accepted)
         return {"resident_dates_preloaded": loaded_dates, "historical_views_preloaded": loaded_dates * 3}
+
+    def _preload_resident_date(self, trade_date: str) -> bool:
+        snapshots = self._load_complete_date(trade_date)
+        if len(snapshots) != len(self._HISTORICAL_STRATEGIES):
+            self._counters["rejected_incomplete_dates"] += 1
+            return False
+        deliveries = tuple(_delivery_snapshot(snapshot) for snapshot in snapshots)
+        if not all(self._fits(delivery) for delivery in deliveries):
+            self._counters["rejected_oversize_views"] += 1
+            return False
+        with self._lock:
+            for delivery in deliveries:
+                self._resident[(delivery.strategy, trade_date)] = delivery
+        return True
+
+    def _initialize_strategy(
+        self,
+        strategy: Strategy,
+        complete_dates: Sequence[str],
+        strategy_dates: set[str],
+        accepted_dates: Sequence[str],
+    ) -> None:
+        with self._lock:
+            self._dates[strategy] = tuple(complete_dates)
+            latest = self._resident.get((strategy, accepted_dates[0])) if accepted_dates else None
+        if latest is None and strategy_dates:
+            archived = self._archive.load_frozen(strategy, max(strategy_dates))
+            latest = _delivery_snapshot(archived) if archived is not None else None
+        if latest is None or not self._fits(latest):
+            return
+        overlay = self._archive.load_live_overlay(strategy, latest.trade_date)
+        with self._lock:
+            self._current[strategy] = latest
+            if overlay is not None and overlay.snapshot_id == latest.snapshot_id:
+                self._overlays[(strategy, latest.trade_date)] = overlay
 
     def publish(self, snapshot: RecommendationSnapshot) -> bool:
         delivery = _delivery_snapshot(snapshot)
@@ -206,6 +216,21 @@ class PublishedSnapshotIndex:
             }
 
     def _cold_date(self, trade_date: str) -> tuple[RecommendationSnapshot, ...]:
+        future, owner = self._cold_future(trade_date)
+        if not owner:
+            return future.result()
+        try:
+            result = self._load_cold_date(trade_date)
+            future.set_result(result)
+            return result
+        except BaseException as exc:
+            future.set_exception(exc)
+            raise
+        finally:
+            with self._lock:
+                self._inflight.pop(trade_date, None)
+
+    def _cold_future(self, trade_date: str) -> tuple[Future[tuple[RecommendationSnapshot, ...]], bool]:
         with self._lock:
             future = self._inflight.get(trade_date)
             owner = future is None
@@ -215,46 +240,32 @@ class PublishedSnapshotIndex:
                 self._counters["cold_loads"] += 1
             else:
                 self._counters["cold_coalesced"] += 1
-        if not owner:
-            return future.result()
-        try:
-            snapshots = self._load_complete_date(trade_date)
-            if len(snapshots) != len(self._HISTORICAL_STRATEGIES):
-                snapshots = ()
-                with self._lock:
-                    self._counters["rejected_incomplete_dates"] += 1
+        return future, owner
+
+    def _load_cold_date(self, trade_date: str) -> tuple[RecommendationSnapshot, ...]:
+        snapshots = self._load_complete_date(trade_date)
+        if len(snapshots) != len(self._HISTORICAL_STRATEGIES):
             with self._lock:
-                for snapshot in snapshots:
-                    key = (snapshot.strategy, trade_date)
-                    delivery = _delivery_snapshot(snapshot)
-                    if not self._fits(delivery):
-                        self._counters["rejected_oversize_views"] += 1
-                        snapshots = ()
-                        break
-                    self._cold[key] = delivery
-                if not snapshots:
-                    for strategy in self._HISTORICAL_STRATEGIES:
-                        self._cold.pop((strategy, trade_date), None)
-                while len(self._cold) > self._cold_slots:
-                    oldest_key = next(iter(self._cold))
-                    oldest_date = oldest_key[1]
-                    for strategy in self._HISTORICAL_STRATEGIES:
-                        self._cold.pop((strategy, oldest_date), None)
-                if snapshots:
-                    result = tuple(self._cold[(strategy, trade_date)] for strategy in self._HISTORICAL_STRATEGIES)
-                    for strategy in self._HISTORICAL_STRATEGIES:
-                        dates = (*self._dates[strategy], trade_date)
-                        self._dates[strategy] = tuple(dict.fromkeys(dates))
-                else:
-                    result = ()
-            future.set_result(result)
-            return result
-        except BaseException as exc:
-            future.set_exception(exc)
-            raise
-        finally:
+                self._counters["rejected_incomplete_dates"] += 1
+            return ()
+        deliveries = tuple(_delivery_snapshot(snapshot) for snapshot in snapshots)
+        if not all(self._fits(delivery) for delivery in deliveries):
             with self._lock:
-                self._inflight.pop(trade_date, None)
+                self._counters["rejected_oversize_views"] += 1
+            return ()
+        with self._lock:
+            for delivery in deliveries:
+                self._cold[(delivery.strategy, trade_date)] = delivery
+            self._evict_cold_dates_locked()
+            for strategy in self._HISTORICAL_STRATEGIES:
+                self._dates[strategy] = tuple(dict.fromkeys((*self._dates[strategy], trade_date)))
+            return tuple(self._cold[(strategy, trade_date)] for strategy in self._HISTORICAL_STRATEGIES)
+
+    def _evict_cold_dates_locked(self) -> None:
+        while len(self._cold) > self._cold_slots:
+            oldest_date = next(iter(self._cold))[1]
+            for strategy in self._HISTORICAL_STRATEGIES:
+                self._cold.pop((strategy, oldest_date), None)
 
     def _load_complete_date(self, trade_date: str) -> tuple[RecommendationSnapshot, ...]:
         snapshots = tuple(self._archive.load_frozen(strategy, trade_date) for strategy in self._HISTORICAL_STRATEGIES)
