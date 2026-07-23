@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续未完成的任务 A；本批按下一完整章节复核 A4/B4/C4/D4 的阶段 4 交接证据，
+  确认 D4 留给 A 的 P6 接纳原子性事项已由 A4-F04 关闭，并新增
+  `docs/reports/youhua-g4-gate-review.md` 发布 G4。用户可观察行为不变：不修改推荐、
+  冻结、API 或页面逻辑，不进入 A5。
+
 - 继续 Codex B4：新增完整行情 canonical 行的严格 Polars 列式标准化、Eastmoney/Sina 窄路径合并与
   5500 行/360 候选/100 tick 固定验收 fixture；保留 partial、reference、Tencent overlay 和
   degraded 输入的 scalar 回退。
@@ -740,6 +745,14 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- G4 发布批次复验五项 make 门禁、固定 `83.40`、C4/D4 定向回归、v17 16 项性能、
+  B4 5500 行/360 候选/100 tick、A4 同进程内存和 Firefox 152.0.4 三档桌面；最终 B4
+  columnar 改善 `32.404%`，标准化/合并/canonical P95 为
+  `169.247/675.536/1219.953ms`。综合逻辑字节 `205,468,511B`、当前/峰值 RSS
+  `370,069,504/387,112,960B`、USS `312,655,872B`、Polars `1,282,816B`，均在上限内。
+  仓库外 wheel 的包导入、CLI、配置、9 项资源和 `pip check` 通过；三档均为 18 个唯一代码，
+  无白屏、横向溢出、关键重叠或页面错误，增量 patch 不产生完整 GET。
+
 - B4 固定验收 runner 通过：标准化+观察值构造+两源合并 process-CPU P95 相对 scalar 改善
   `27.22%`；标准化/两源合并/统一快照 wall P95 为 `134.059/586.035/1130.823ms`，
   100 tick 逻辑缓存 `29,661,328B`、分配增长 `0.0%`、峰值 RSS `288,702,464B`，均在门禁内。
@@ -1018,6 +1031,13 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- G4 已发布且 A5 尚未开始。共享宿主的 B4 三次预跑有绝对时延抖动，最终普通优先级固定
+  样本通过，所有样本的业务哈希和内存一致；因此结果只证明当前固定离线负载，不代表真实
+  供应商或 DeepSeek 时延。本机只实际运行 Python 3.14.4，3.10-3.13 仅有 Ruff/mypy/wheel
+  metadata 静态兼容证据。Firefox 的 SWGL warning 属宿主日志，三档截图、DOM、WebDriver
+  和页面 JavaScript 均成功。复验期间出现的并行 B5/D5 工作树与暂存修改已保留；G4
+  使用 start HEAD 叠加本批 4 个文件的仓库外树复验和提交，不混入这些并行修改。
 
 - B4 快路径按设计只覆盖完整 canonical provider 行；新浪缺失字段、reference/Tencent overlay
   与 degraded payload 继续走已复验的 scalar 路径，因此不应把所有输入都宣称为 35.544% 改善。

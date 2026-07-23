@@ -131,3 +131,21 @@ def test_youhua_a4_acceptance_closes_failures_without_starting_g4_or_a5() -> Non
     assert "A5 has not started" in report
     assert "必须先由 P6 接纳，再更新 RuntimeState、session、检查点和 SSE" in design
     assert "通过 P6 前不得" in design
+
+
+def test_youhua_g4_publishes_after_all_phase4_gates_are_ready() -> None:
+    a4 = (PROJECT_ROOT / "docs/reports/youhua-a4-acceptance.md").read_text(encoding="utf-8")
+    b4 = (PROJECT_ROOT / "tests/fixtures/market_data/youhua_b4/report_to_a.md").read_text(encoding="utf-8")
+    c4 = (PROJECT_ROOT / "tests/fixtures/deepseek/youhua_c4/report_to_a.md").read_text(encoding="utf-8")
+    d4 = (PROJECT_ROOT / "docs/reports/youhua-d1-p6-web.md").read_text(encoding="utf-8")
+    g4 = (PROJECT_ROOT / "docs/reports/youhua-g4-gate-review.md").read_text(encoding="utf-8")
+
+    assert "ready_for_gate: `yes; A4.1-A4.6 complete" in a4
+    assert "ready_for_gate: `yes`" in b4
+    assert "ready_for_gate: yes" in c4
+    assert "Codex D / D4.x" in d4
+    assert "ready_for_gate\nyes; D4-owned gates pass" in d4
+    assert "G4 已发布" in g4
+    assert "8e7ab24985ff73f7ec54cf62c9440f97b5d179c6" in g4
+    assert "A4-F04" in g4
+    assert "G4 is published and A5 has not started" in g4
