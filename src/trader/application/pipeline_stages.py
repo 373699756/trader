@@ -32,6 +32,7 @@ from trader.application.pipeline_market_tasks import (
     _event_result,
     _refresh_candidate_quotes_on_workers,
     _refresh_candidates_on_workers,
+    _refresh_intraday_tail_before_score,
     _refresh_market_news_on_workers,
     _refresh_reference_data_on_workers,
     _refresh_stock_risk_on_workers,
@@ -83,6 +84,7 @@ def process_schedule_on_workers(
         MarketPhase.FINAL_QUOTE,
     }:
         _refresh_candidates_on_workers(pipeline, now, phase)
+    _refresh_intraday_tail_before_score(pipeline, now, phase)
     snapshots = list(_score_strategies_on_workers(pipeline, now, phase, use_cached_data=False))
     snapshots.extend(pipeline._freeze_available_snapshots(now, freeze_strategies))
     if phase is MarketPhase.AFTER_CLOSE:
@@ -193,6 +195,7 @@ def _handle_score(
     phase: MarketPhase,
     event: PipelineEvent,
 ) -> tuple[RecommendationSnapshot, ...]:
+    _refresh_intraday_tail_before_score(pipeline, now, phase)
     return _score_strategies_on_workers(
         pipeline,
         now,
@@ -268,6 +271,7 @@ def _handle_final_candidate_quotes(
 ) -> tuple[RecommendationSnapshot, ...]:
     _refresh_candidates_on_workers(pipeline, now, phase, force=True, deadline=event.deadline)
     _refresh_candidate_quotes_on_workers(pipeline, now, phase, deadline=event.deadline)
+    _refresh_intraday_tail_before_score(pipeline, now, phase)
     return _score_strategies_on_workers(
         pipeline,
         now,

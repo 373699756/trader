@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from trader.application.after_close_recovery import recover_after_close_snapshots
 from trader.application.candidate_features import fetch_strategy_features
+from trader.application.pipeline_market_tasks import _refresh_intraday_tail_before_score
 from trader.application.pipeline_stages import (
     maximum_age_seconds,
     persist,
@@ -70,6 +71,7 @@ def process_schedule(
             phase=phase.value,
             deadline=shanghai_now(now).replace(hour=9, minute=30, second=0, microsecond=0),
         )
+    _refresh_intraday_tail_before_score(pipeline, now, phase, on_workers=False)
 
     for strategy in strategies_for_phase(phase):
         if (strategy, trade_date) in pipeline._frozen_keys or pipeline._state.is_frozen(strategy, trade_date):

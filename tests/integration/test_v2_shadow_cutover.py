@@ -146,6 +146,10 @@ class StaticMarketData:
         return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
 
     @staticmethod
+    def refresh_intraday_tail(codes: Sequence[str], observed_at: datetime) -> None:
+        del codes, observed_at
+
+    @staticmethod
     def health() -> Mapping[str, object]:
         return {"status": "recorded-shadow"}
 

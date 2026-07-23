@@ -114,6 +114,58 @@ def test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold(
     assert snapshot.recommendations == ()
 
 
+def test_snapshot_reports_deepseek_skip_when_board_reliability_blocks_all_candidates(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+    unreliable = replace(
+        application_feature_factory("600001", now),
+        board_data_reliability=0.84,
+    )
+
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TOMORROW,
+        (unreliable,),
+        now=now,
+        phase="afternoon",
+        trade_date="2026-07-16",
+        data_version="unreliable-board",
+        review_port=None,
+        review_deadline=datetime.fromisoformat("2026-07-16T14:48:00+08:00"),
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+
+    assert "deepseek_skipped_no_eligible_candidates" in snapshot.degraded_reasons
+    assert "deepseek_incomplete" not in snapshot.degraded_reasons
+
+
+def test_long_snapshot_does_not_report_deepseek_degradation(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.LONG,
+        (application_feature_factory("600001", now),),
+        now=now,
+        phase="afternoon",
+        trade_date="2026-07-16",
+        data_version="long-local-only",
+        review_port=None,
+        review_deadline=datetime.fromisoformat("2026-07-16T14:48:00+08:00"),
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+
+    assert "deepseek_skipped_no_eligible_candidates" not in snapshot.degraded_reasons
+    assert "deepseek_incomplete" not in snapshot.degraded_reasons
+
+
 def test_formal_and_watch_pools_have_independent_topk_capacity(
     recommendation_policy,
     application_feature_factory,

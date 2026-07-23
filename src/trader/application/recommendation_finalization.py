@@ -227,8 +227,10 @@ class RecommendationFinalizationMixin:
             selection_skips = (*executable_skips, *watch_skips)
         snapshot_id = _snapshot_id(strategy, prepared.trade_date, phase, prepared.data_version, now)
         degraded_reasons: list[str] = list(prepared.board_degraded_reasons)
-        if fusion_mode is FusionMode.LOCAL_DEGRADED:
-            degraded_reasons.append("deepseek_incomplete")
+        if strategy is not Strategy.LONG and fusion_mode is FusionMode.LOCAL_DEGRADED:
+            degraded_reasons.append(
+                "deepseek_incomplete" if prepared.review_eligible else "deepseek_skipped_no_eligible_candidates"
+            )
         tail_covered_count = 0
         if strategy is Strategy.TOMORROW:
             tail_covered_count = sum(

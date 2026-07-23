@@ -97,6 +97,7 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     afternoon = pipeline.run_once(clock.now())
     assert {snapshot.strategy for snapshot in afternoon} == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
     assert market_data.candidate_tail_requests[-3:] == [True, False, False]
+    assert market_data.tail_refreshes[-1] == tuple(feature.quote.code for feature in features)
 
     clock.set(datetime.fromisoformat("2026-07-16T14:49:50+08:00"))
     pipeline.run_once(clock.now())
@@ -1473,6 +1474,55 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert not any(thread.name.startswith("trader-") for thread in threading.enumerate())
 
 
+def test_afternoon_score_event_refreshes_tail_before_cached_tomorrow_scoring(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+    market_data = StaticMarketData((application_feature_factory("600001", now),))
+    repository = MemoryRepository()
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+    pipeline._candidate_codes = ("600001",)
+    event = new_event(
+        "score",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="afternoon",
+        strategy=None,
+        priority=EventPriority.MARKET_QUOTES,
+        data_version="tail-refresh-regression",
+        config_version="config-v2",
+        created_at=now,
+        deadline=now + timedelta(seconds=15),
+        payload={"schedule_task": "score"},
+    )
+
+    pipeline.initialize()
+    assert pipeline.start() is True
+    try:
+        assert pipeline.submit_event(event) is True
+        _wait_until(lambda: repository.events and repository.events[-1].status is EventStatus.SUCCESS)
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert market_data.tail_refreshes == [("600001",)]
+    assert True in market_data.candidate_tail_requests
+
+
 def test_expired_full_market_event_does_not_commit_candidates_or_set_recent_error(
     recommendation_policy,
     application_feature_factory,
@@ -1946,6 +1996,7 @@ class StaticMarketData:
     def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
         self._features = tuple(features)
         self.candidate_tail_requests: list[bool] = []
+        self.tail_refreshes: list[tuple[str, ...]] = []
         self.fetch_threads: list[str] = []
         self.market_force_requests: list[bool] = []
 
@@ -2019,9 +2070,9 @@ class StaticMarketData:
     ) -> None:
         del codes, observed_at, force
 
-    @staticmethod
-    def refresh_intraday_tail(codes: Sequence[str], observed_at: datetime) -> None:
-        del codes, observed_at
+    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None:
+        del observed_at
+        self.tail_refreshes.append(tuple(codes))
 
     def read_candidate_features(
         self,

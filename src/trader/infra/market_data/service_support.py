@@ -22,6 +22,7 @@ from trader.infra.market_data.service_models import _ResearchEntry
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
+_HISTORY_PRELOAD_PER_BOARD_LIMIT = 120
 
 
 def _source_batch_identity(
@@ -57,10 +58,10 @@ def _history_preload_codes(quotes: Sequence[MarketQuote], limit: int) -> tuple[s
             (quote for group in groups.values() for quote in group if quote.code not in represented),
             key=_history_priority,
         )
-        board_rankings[board] = [*representatives, *remaining]
+        board_rankings[board] = [*representatives, *remaining][:_HISTORY_PRELOAD_PER_BOARD_LIMIT]
 
     selected: list[str] = []
-    board_order = ("main", "chinext", "star", "unsupported")
+    board_order = ("main", "chinext", "star")
     index = 0
     while len(selected) < limit:
         added = False

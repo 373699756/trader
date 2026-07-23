@@ -42,7 +42,12 @@ from trader.infra.market_data.calendar import ChinaTradingCalendar
 from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
-from trader.infra.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
+from trader.infra.market_data.history_seed import (
+    FallbackHistoryClient,
+    LocalHistorySeedClient,
+    RuntimeHistoryCacheClient,
+    RuntimeHistoryCachePolicy,
+)
 from trader.infra.market_data.service import MarketFeatureDependencies, MarketFeatureService
 from trader.infra.market_data.service_candidates import QuoteStore, QuoteStoreDependencies
 from trader.infra.market_data.service_execution import MarketTaskRunner
@@ -152,16 +157,24 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         cancel_requested=lambda: source_lanes.is_stopped("history"),
         wall_clock=now,
     )
-    history_client = LocalHistorySeedClient(
-        settings.runtime_dir.parent / "market_data.sqlite3",
-        FallbackHistoryClient(
-            TencentClient(
-                timeout_seconds=settings.market_data.history_timeout_seconds,
-                cancel_requested=lambda: source_lanes.is_stopped("history"),
-                wall_clock=now,
+    history_client = RuntimeHistoryCacheClient(
+        settings.runtime_dir / "history_cache.sqlite3",
+        LocalHistorySeedClient(
+            settings.runtime_dir.parent / "market_data.sqlite3",
+            FallbackHistoryClient(
+                TencentClient(
+                    timeout_seconds=settings.market_data.history_timeout_seconds,
+                    cancel_requested=lambda: source_lanes.is_stopped("history"),
+                    wall_clock=now,
+                ),
+                remote_history,
             ),
-            remote_history,
         ),
+        policy=RuntimeHistoryCachePolicy(
+            capacity=settings.market_data.cache_policy.datasets["daily_history"].capacity,
+            freshness_seconds=_fixed_cache_ttl(settings, "daily_history"),
+        ),
+        wall_clock=now,
     )
     intraday_client = EastmoneyClient(
         timeout_seconds=settings.market_data.candidate_timeout_seconds,

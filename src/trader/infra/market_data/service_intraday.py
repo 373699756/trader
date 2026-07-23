@@ -218,14 +218,25 @@ class IntradayLoader:
                 nested_inline=nested_inline,
             ),
         ) as pool:
-            futures, timed_out = self._submit_intraday(pool, state, missing, batch_deadline, nested_inline)
+            futures, timed_out, deferred = self._submit_intraday(
+                pool,
+                state,
+                missing,
+                batch_deadline,
+                nested_inline,
+            )
             completed, pending = wait(futures, timeout=max(0.0, batch_deadline - self._monotonic()))
             for future in completed:
                 self._consume_intraday_future(state, futures[future], future)
             for future in pending:
-                future.cancel()
-                timed_out.append(futures[future])
-            self._consume_intraday_timeouts(state, tuple(dict.fromkeys(timed_out)))
+                if future.cancel():
+                    deferred.append(futures[future])
+                else:
+                    timed_out.append(futures[future])
+            self._consume_intraday_timeouts(state, tuple(timed_out))
+            if deferred:
+                with self._lock:
+                    self._last_error = "intraday_batch_deferred"
 
     def _submit_intraday(
         self,
@@ -234,13 +245,14 @@ class IntradayLoader:
         missing: Sequence[str],
         batch_deadline: float,
         nested_inline: bool,
-    ) -> tuple[dict[Future[tuple[MinuteBar, ...]], str], list[str]]:
+    ) -> tuple[dict[Future[tuple[MinuteBar, ...]], str], list[str], list[str]]:
         futures: dict[Future[tuple[MinuteBar, ...]], str] = {}
         timed_out: list[str] = []
+        deferred: list[str] = []
         assert self._client is not None
         for index, code in enumerate(missing):
-            if nested_inline and self._monotonic() >= batch_deadline:
-                timed_out.extend(missing[index:])
+            if self._monotonic() >= batch_deadline:
+                deferred.extend(missing[index:])
                 break
             future = submit_or_run_inline(
                 pool,
@@ -249,10 +261,11 @@ class IntradayLoader:
                 now=state.request.observed_at,
             )
             if nested_inline and self._monotonic() >= batch_deadline:
-                timed_out.extend(missing[index:])
+                timed_out.append(code)
+                deferred.extend(missing[index + 1 :])
                 break
             futures[future] = code
-        return futures, timed_out
+        return futures, timed_out, deferred
 
     def _consume_intraday_future(
         self,

@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户反馈 Web 长期只有三板样本不足、可靠度不足、DeepSeek 不完整和 tomorrow 尾盘
+  不完整，实时荐股为空。新增 afternoon/final-review/final-quote 评分前的有界尾盘分钟
+  刷新，使周期评分不再只读一个永远为空的缓存；新增独立 v17 qfq 历史热缓存，使优化
+  或服务重启不再把已预热的 360 只三板历史恢复为仅 40 只旧种子的冷状态。
+
 - 用户确认只执行 `docs/times.md`、暂不执行 `docs/strage.md`；本批完成 T1 真实延迟瀑布
   与性能门禁。新增组合根共享的有界 `LatencyWaterfall`、来源 lane 排队与物理请求/
   本地处理分离计时、状态 API 聚合诊断，以及读取统一预算的 Firefox/geckodriver
@@ -276,6 +281,9 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 历史预热 360 个槽改为只在主板、创业板、科创板间稳定轮询，每板最多 120 个；保留
+  板内至少 100 个样本和可靠度 0.85 的原风控门槛，不通过降低门槛制造荐股。
 
 - 正式 `perf-check` 从 `infra` 迁到入口层并改为调用活动标准化、融合、列式投影、板内
   评分、全局选择、推荐准备/终态化、P6/SSE 和 Web 路由。性能配置升级为 schema v2，
@@ -552,6 +560,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复历史预热把 `unsupported` 当作第四板平均分配，导致三个活动板块理论上每板最多
+  90 只、永远低于 100 样本门槛的问题；同时修复尚未开始就被取消的分钟请求被写入负
+  缓存、后续评分无法继续推进的问题。无合格候选现在报告
+  `deepseek_skipped_no_eligible_candidates`，不再误报为 DeepSeek 请求不完整；永久不
+  复核的 long 不再附加任一 DeepSeek 降级原因。
+
 - 修复正式性能报告用 Polars self-join、排序和 JSON 序列化代替生产链路，导致旧门禁无法
   暴露实时瓶颈的问题。运行态现在对事件和行情周期记录有界完成/失败/超时/被替代/丢弃
   结果；同一 trace 的重复终态不会重复计数，服务端状态不泄漏关联身份。
@@ -780,6 +794,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从历史预热和远端历史重试集合移除 `unsupported` 股票；硬过滤和 Web API 兼容不变。
+  旧 `.runtime/market_data.sqlite3` 仍保持只读，未被新热缓存替代或写回。
+
 - 删除旧 `trader.infra.performance` 合成 runner 及其全部占位操作；CLI 仍保持原有
   `perf-check` 命令和报告入口，不增加网络调用、线程或 `create_app()` 副作用。
 
@@ -906,6 +923,17 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 本批先用四项失败回归复现三板配额不足、分钟请求错误负缓存、评分前未刷新尾盘缓存和
+  DeepSeek 降级误报；并发回归连续三轮及包含原 deadline 语义的扩展回归通过。另以
+  同 TTL 重启零远端调用、过期刷新失败回退、容量淘汰/损坏库不中断三类回归验证独立
+  历史热缓存，并覆盖同步 `run_once`、异步评分事件和录制影子适配器。完整
+  `make format-check`、`make lint`、`make type-check`、`make test` 和 `make package`
+  通过；37 项架构、`create_app()` 无副作用、固定融合 `83.40`、188 原子预算、SSE
+  游标/慢客户端、冻结和哈希专项通过。仓库外 wheel 安装、包导入、`trader-cli --help`
+  及模板、4 个 CSS、2 个 JavaScript、2 个 SVG 共 9 项资源读取通过。Firefox 无头真实
+  浏览器在 1280x720、1440x900 和 1920x1080 均有有效页面、无浏览器错误和页面级横向
+  溢出；24 次实时补丁均应用，patch-to-paint p95 为 39ms。
 
 - T1 定向验证通过延迟采集、配置、真实性能入口、行情网关、架构、Web/API、流水线和
   JavaScript 状态机测试；mypy 覆盖 172 个生产文件。真实浏览器应用 24 个 SSE patch，
@@ -1253,6 +1281,11 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 本批恢复数据就绪和展示链路，不保证每日一定产生推荐或提高收益；候选仍必须通过既有
+  硬过滤、每板 100 样本、可靠度 0.85、风险和动作门槛。外部行情源持续失败时仍会明确
+  降级并保留最近有效快照。2026-07-23 15:00 在修复前固化的空 `close_fallback` 按冻结
+  契约不可覆盖；新热缓存需完成一次预热写入后才能为后续重启提供即时复用。
 
 - T1 的职责是建立可信测量而非提前优化。固定 Python 3.14.4 全链路报告中，标准化
   148.936ms 通过，但两来源融合 701.392ms、canonical 1620.766ms、targeted overlay

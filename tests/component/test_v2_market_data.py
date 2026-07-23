@@ -44,7 +44,12 @@ from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar, HistoryAdjustmentError, PriceAdjustment
-from trader.infra.market_data.history_seed import FallbackHistoryClient, LocalHistorySeedClient
+from trader.infra.market_data.history_seed import (
+    FallbackHistoryClient,
+    LocalHistorySeedClient,
+    RuntimeHistoryCacheClient,
+    RuntimeHistoryCachePolicy,
+)
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
 from trader.infra.market_data.service import MarketFeatureDependencies, MarketFeatureService
@@ -55,6 +60,7 @@ from trader.infra.market_data.service_history import HistoryStore
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
+from trader.infra.market_data.service_support import _history_preload_codes
 from trader.infra.market_data.service_tushare import ReferenceLoader, ReferenceLoadRequest
 from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.tencent import TencentClient
@@ -274,6 +280,111 @@ def test_local_history_seed_serves_last_valid_qfq_rows_without_calling_remote(tm
     assert rows[-1].volume == 100_000.0
     assert rows[-1].amount == 10_500_000.0
     assert remote.calls == 0
+
+
+def test_runtime_history_cache_survives_restart_without_calling_remote(tmp_path) -> None:
+    database = tmp_path / "history_cache.sqlite3"
+    bars = _history_bars()
+    now = datetime(2026, 7, 23, 8, 0, tzinfo=timezone.utc)
+
+    class CountingRemote:
+        def __init__(self, result):
+            self.result = result
+            self.calls = 0
+
+        def fetch_history(self, _code, *, days):
+            self.calls += 1
+            return self.result[-days:]
+
+    first_remote = CountingRemote(bars)
+    first = RuntimeHistoryCacheClient(database, first_remote, wall_clock=lambda: now)
+
+    assert first.fetch_history("600001", days=90) == bars
+    assert first_remote.calls == 1
+
+    restarted_remote = CountingRemote(())
+    restarted = RuntimeHistoryCacheClient(database, restarted_remote, wall_clock=lambda: now)
+
+    assert restarted.fetch_history("600001", days=90) == bars
+    assert restarted.available_codes(("600002", "600001")) == ("600001",)
+    assert restarted_remote.calls == 0
+
+
+def test_runtime_history_cache_refreshes_stale_rows_and_falls_back_on_failure(tmp_path) -> None:
+    database = tmp_path / "history_cache.sqlite3"
+    bars = _history_bars()
+    first_now = datetime(2026, 7, 23, 8, 0, tzinfo=timezone.utc)
+
+    class CountingRemote:
+        def __init__(self, result):
+            self.result = result
+            self.calls = 0
+
+        def fetch_history(self, _code, *, days):
+            self.calls += 1
+            return self.result[-days:]
+
+    first = RuntimeHistoryCacheClient(database, CountingRemote(bars), wall_clock=lambda: first_now)
+    assert first.fetch_history("600001") == bars
+
+    stale_remote = CountingRemote(())
+    restarted = RuntimeHistoryCacheClient(
+        database,
+        stale_remote,
+        policy=RuntimeHistoryCachePolicy(freshness_seconds=60),
+        wall_clock=lambda: first_now + timedelta(seconds=61),
+    )
+
+    assert restarted.fetch_history("600001") == bars
+    assert stale_remote.calls == 1
+
+    raw_remote = CountingRemote((replace(bars[0], adjustment=PriceAdjustment.RAW), *bars[1:]))
+    raw_restarted = RuntimeHistoryCacheClient(
+        database,
+        raw_remote,
+        policy=RuntimeHistoryCachePolicy(freshness_seconds=60),
+        wall_clock=lambda: first_now + timedelta(seconds=62),
+    )
+
+    assert raw_restarted.fetch_history("600001") == bars
+    assert raw_remote.calls == 1
+
+
+def test_runtime_history_cache_bounds_codes_and_ignores_corrupt_database(tmp_path) -> None:
+    database = tmp_path / "history_cache.sqlite3"
+    bars = _history_bars()
+    clock_values = iter(
+        (
+            datetime(2026, 7, 23, 8, 0, tzinfo=timezone.utc),
+            datetime(2026, 7, 23, 8, 1, tzinfo=timezone.utc),
+        )
+    )
+
+    class StaticRemote:
+        calls = 0
+
+        def fetch_history(self, _code, *, days):
+            self.calls += 1
+            return bars[-days:]
+
+    remote = StaticRemote()
+    cache = RuntimeHistoryCacheClient(
+        database,
+        remote,
+        policy=RuntimeHistoryCachePolicy(capacity=1),
+        wall_clock=lambda: next(clock_values),
+    )
+    assert cache.fetch_history("600001") == bars
+    assert cache.fetch_history("600002") == bars
+    assert cache.available_codes(("600001", "600002")) == ("600002",)
+
+    corrupt_database = tmp_path / "corrupt.sqlite3"
+    corrupt_database.write_bytes(b"not a sqlite database")
+    fallback_remote = StaticRemote()
+    corrupt_cache = RuntimeHistoryCacheClient(corrupt_database, fallback_remote)
+
+    assert corrupt_cache.fetch_history("600003") == bars
+    assert fallback_remote.calls == 1
 
 
 def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
@@ -3249,6 +3360,38 @@ def test_market_service_bounds_history_preload_to_stratified_candidate_universe(
     assert service.health()["history_universe_rows"] == 2
 
 
+def test_history_preload_reserves_120_slots_for_each_supported_board() -> None:
+    quotes = tuple(
+        [
+            *(_quote(code=f"600{index:03d}", industry=f"主板{index % 12}") for index in range(120)),
+            *(_quote(code=f"300{index:03d}", industry=f"创业板{index % 12}") for index in range(120)),
+            *(_quote(code=f"688{index:03d}", industry=f"科创板{index % 12}") for index in range(120)),
+            *(_quote(code=f"830{index:03d}", industry=f"不支持{index % 12}") for index in range(120)),
+        ]
+    )
+
+    selected = _history_preload_codes(quotes, 360)
+
+    assert len(selected) == 360
+    assert sum(code.startswith("600") for code in selected) == 120
+    assert sum(code.startswith("300") for code in selected) == 120
+    assert sum(code.startswith("688") for code in selected) == 120
+    assert not any(code.startswith("830") for code in selected)
+
+    imbalanced = _history_preload_codes(
+        tuple(
+            [
+                *(_quote(code=f"600{index:03d}") for index in range(121)),
+                _quote(code="300001"),
+                _quote(code="688001"),
+            ]
+        ),
+        360,
+    )
+
+    assert sum(code.startswith("600") for code in imbalanced) == 120
+
+
 def test_market_service_uses_injected_lifecycle_data_pool() -> None:
     pool = BoundedExecutor(worker_count=1, queue_capacity=8, thread_name_prefix="shared-data")
     history = ThreadRecordingHistoryClient(_history_bars())
@@ -3776,6 +3919,33 @@ def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request() -> 
     assert time.monotonic() - started < 0.5
     assert result[0].values["tail_return_30m"] is None
     assert service.health()["intraday_tail_last_error"] == "intraday_batch_deadline"
+
+
+def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh() -> None:
+    intraday = BlockingIntradayClient()
+    service = _service(
+        StaticGateway((_quote(), _quote(code="600002"))),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        intraday_client=intraday,
+        intraday_workers=1,
+        intraday_batch_timeout_seconds=0.01,
+    )
+
+    first_refresh = threading.Thread(
+        target=service.refresh_intraday_tail,
+        args=(("600001", "600002"), AFTERNOON),
+    )
+    try:
+        first_refresh.start()
+        assert intraday.started.wait(1.0)
+        first_refresh.join(1.0)
+        assert not first_refresh.is_alive()
+        service.refresh_intraday_tail(("600001", "600002"), AFTERNOON)
+    finally:
+        intraday.release.set()
+
+    assert intraday.calls == ["600001", "600002"]
 
 
 def test_source_lane_intraday_batch_timeout_returns_without_waiting_for_blocked_io() -> None:
@@ -4747,8 +4917,12 @@ class FailingIntradayClient:
 class BlockingIntradayClient:
     def __init__(self) -> None:
         self.release = threading.Event()
+        self.started = threading.Event()
+        self.calls = []
 
-    def fetch_intraday_minutes(self, _code, *, now):
+    def fetch_intraday_minutes(self, code, *, now):
+        self.calls.append(code)
+        self.started.set()
         self.release.wait(2.0)
         return _tail_minute_bars()
 

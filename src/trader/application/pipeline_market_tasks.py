@@ -119,6 +119,32 @@ def _refresh_reference_data_on_workers(
     )
 
 
+def _refresh_intraday_tail_before_score(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    *,
+    on_workers: bool = True,
+) -> None:
+    if phase not in {MarketPhase.AFTERNOON, MarketPhase.FINAL_REVIEW, MarketPhase.FINAL_QUOTE}:
+        return
+    if not pipeline._candidate_codes:
+        return
+    try:
+        if on_workers:
+            _run_market_data_task(
+                pipeline,
+                pipeline._references.refresh_intraday_tail,
+                pipeline._candidate_codes,
+                now,
+            )
+        else:
+            pipeline._references.refresh_intraday_tail(pipeline._candidate_codes, now)
+    except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        pipeline._state.increment("intraday_tail_refresh_failures")
+        pipeline._state.record_error(f"intraday tail refresh degraded: {str(exc)[:400]}")
+
+
 def _active_codes(pipeline: RecommendationPipeline) -> tuple[str, ...]:
     return tuple(dict.fromkeys((*pipeline._candidate_codes, *pipeline._long_codes)))
 
