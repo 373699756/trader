@@ -18,6 +18,28 @@
   };
   const CACHE_MAX_AGE_MS = 30000;
   const HISTORY_REFRESH_MS = 3000;
+  const diagnostics = {
+    recommendationRequests: 0,
+    recommendationFullResponses: 0,
+    recommendationNotModified: 0,
+    recommendationPatchesApplied: 0,
+    overlayPatchesApplied: 0,
+    resyncRequests: 0,
+    fullResponseBytes: 0,
+    incrementalSseBytes: 0,
+    resyncReasons: {},
+    browserErrors: [],
+  };
+
+  window.TraderDashboardDiagnostics = Object.freeze({
+    snapshot: () => ({
+      ...diagnostics,
+      resyncReasons: { ...diagnostics.resyncReasons },
+      browserErrors: [...diagnostics.browserErrors],
+    }),
+  });
+  window.addEventListener("error", (event) => recordBrowserError("error", event.message));
+  window.addEventListener("unhandledrejection", (event) => recordBrowserError("unhandledrejection", event.reason));
 
   const els = {};
 
@@ -178,17 +200,21 @@
       else if (view === "live") query.set("view", "live");
       const headers = {};
       if (!selectedDate && state.etags.has(key)) headers["If-None-Match"] = state.etags.get(key);
+      diagnostics.recommendationRequests += 1;
       const response = await fetch(`/api/recommendations/${encodeURIComponent(strategy)}?${query}`, {
         headers,
         cache: "no-store",
       });
       if (response.status === 304) {
+        diagnostics.recommendationNotModified += 1;
         const cached = state.payloads.get(key);
         if (cached) return cached;
         throw new Error("推荐快照缓存不可用");
       }
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error && payload.error.message ? payload.error.message : "接口请求失败");
+      diagnostics.recommendationFullResponses += 1;
+      diagnostics.fullResponseBytes += utf8Bytes(JSON.stringify(payload));
       if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
       if (!cacheIdentityValid(payload, strategy, selectedDate, view)) throw new Error("推荐快照身份不匹配");
       const etag = response.headers.get("ETag");
@@ -422,19 +448,21 @@
     };
     stream.addEventListener("recommendation_patch", (event) => {
       rememberEvent(event);
+      diagnostics.incrementalSseBytes += utf8Bytes(event.data || "");
       let patch = null;
       try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
-      if (!state.date && patch && patch.strategy === state.strategy) applyRecommendationPatch(patch);
+      if (!state.date && (!patch || !patch.strategy || patch.strategy === state.strategy)) applyRecommendationPatch(patch);
     });
     stream.addEventListener("overlay_patch", (event) => {
       rememberEvent(event);
+      diagnostics.incrementalSseBytes += utf8Bytes(event.data || "");
       let patch = null;
       try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
-      if (patch && patch.strategy === state.strategy) applyOverlayPatch(patch);
+      if (!patch || !patch.strategy || patch.strategy === state.strategy) applyOverlayPatch(patch);
     });
     stream.addEventListener("resync_required", (event) => {
       rememberEvent(event);
-      if (!state.date) loadRecommendations("resync");
+      if (!state.date) requestRecommendationResync("server_resync");
     });
     stream.onerror = () => {
       stream.close();
@@ -447,15 +475,11 @@
   }
 
   function applyRecommendationPatch(patch) {
-    if (!patch || !patchVersionValid(patch) || !Array.isArray(patch.upserts)) return;
-    const baseVersion = patch.base_projection_version || patch.base_snapshot_id || "";
     const currentVersion = state.projectionVersion || projectionVersion(state.payload);
-    if (baseVersion && currentVersion && baseVersion !== currentVersion) {
-      loadRecommendations("patch_base_mismatch");
-      return;
-    }
-    if (baseVersion && !currentVersion && state.payload && state.payload.status !== "not_ready") {
-      loadRecommendations("patch_base_mismatch");
+    const decision = recommendationPatchDecision(patch, state.payload, currentVersion, state.strategy, state.view);
+    if (decision === "ignore_late_draft") return;
+    if (decision !== "apply") {
+      requestRecommendationResync(decision);
       return;
     }
     const current = state.payload || {};
@@ -463,6 +487,10 @@
     const merged = patch.replace === true
       ? patch.upserts
       : mergePatchItems(current.items, patch.upserts, removed);
+    if (!topKValid(merged)) {
+      requestRecommendationResync("topk_mismatch");
+      return;
+    }
     state.payload = {
       ...current,
       status: "ready",
@@ -486,38 +514,73 @@
       error: null,
     };
     state.projectionVersion = projectionVersion(state.payload);
-    state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);
+    const key = recommendationKey(state.strategy, state.date, state.view);
+    state.payloads.set(key, state.payload);
+    if (typeof patch.etag === "string" && patch.etag && patch.view === state.view) {
+      state.etags.set(key, quotedEtag(patch.etag));
+    }
+    diagnostics.recommendationPatchesApplied += 1;
     renderPayload(state.payload);
   }
 
   function applyOverlayPatch(patch) {
-    if (!state.payload || state.date || !patchVersionValid(patch)) return;
-    if (patch.strategy !== state.strategy) return;
-    if (!state.date && patch.snapshot_id !== state.payload.snapshot_id) return;
-    const incomingProjection = patch.projection_version || patch.snapshot_id || "";
-    if (incomingProjection && state.projectionVersion && incomingProjection !== state.projectionVersion) {
-      loadRecommendations("overlay_projection_mismatch");
+    if (state.date) return;
+    const decision = overlayPatchDecision(patch, state.payload, state.projectionVersion, state.strategy);
+    if (decision !== "apply") {
+      requestRecommendationResync(decision);
       return;
     }
     const quotes = new Map((patch.quotes || []).map((quote) => [quote.code, quote]));
     state.payload = {
       ...state.payload,
       items: (state.payload.items || []).map((item) => {
-      const quote = quotes.get(item.code);
-      if (!quote) return item;
-      const anchor = Number(item.anchor_price);
-      const current = Number(quote.price);
-      const anchorToNow = Number.isFinite(anchor) && anchor > 0 && Number.isFinite(current)
-        ? ((current / anchor) - 1) * 100 : null;
-      return { ...item, ...quote, anchor_to_now_pct: anchorToNow };
+        const quote = quotes.get(item.code);
+        if (!quote) return item;
+        const anchor = Number(item.anchor_price);
+        const current = Number(quote.price);
+        const anchorToNow = Number.isFinite(anchor) && anchor > 0 && Number.isFinite(current)
+          ? ((current / anchor) - 1) * 100 : null;
+        return { ...item, ...quote, anchor_to_now_pct: anchorToNow };
       }),
     };
     state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);
+    diagnostics.overlayPatchesApplied += 1;
     renderPayload(state.payload);
   }
 
   function patchVersionValid(patch) {
-    return patch && (patch.patch_schema_version === 2 || patch.schema_version === 2);
+    return Boolean(patch && patch.patch_schema_version === 2 && patch.schema_version === 2);
+  }
+
+  function recommendationPatchDecision(patch, payload, currentVersion, strategy, view) {
+    if (!patchVersionValid(patch) || !Array.isArray(patch.upserts)
+      || !Array.isArray(patch.removed_codes) || !Array.isArray(patch.removals || [])) return "schema_mismatch";
+    if (!patch.projection_version || patch.snapshot_id !== patch.projection_version
+      || patch.strategy !== strategy || !["live", "official"].includes(patch.view)
+      || patch.view !== (patch.frozen ? "official" : "live")) return "identity_mismatch";
+    const expectedDate = payload && (payload.current_trade_date || payload.trade_date);
+    if (expectedDate && patch.trade_date !== expectedDate) return "identity_mismatch";
+    if (view === "official" && payload && payload.frozen === true && patch.frozen !== true) {
+      return "ignore_late_draft";
+    }
+    const baseVersion = patch.base_projection_version || patch.base_snapshot_id || "";
+    if (baseVersion && baseVersion !== currentVersion) return "base_mismatch";
+    if (!baseVersion && patch.replace !== true && payload && payload.status !== "not_ready") return "base_mismatch";
+    if (!patchItemsValid(patch.upserts, patch.removed_codes, patch.removals || [])) return "topk_mismatch";
+    return "apply";
+  }
+
+  function overlayPatchDecision(patch, payload, currentVersion, strategy) {
+    if (!patchVersionValid(patch) || !Array.isArray(patch.quotes)) return "schema_mismatch";
+    if (!payload || patch.strategy !== strategy || patch.trade_date !== payload.trade_date) return "identity_mismatch";
+    const incomingProjection = patch.projection_version || patch.snapshot_id || "";
+    if (!incomingProjection || incomingProjection !== currentVersion || patch.snapshot_id !== payload.snapshot_id) {
+      return "overlay_projection_mismatch";
+    }
+    if (!patch.quotes.every((quote) => quote && typeof quote.code === "string" && quote.code)) {
+      return "schema_mismatch";
+    }
+    return "apply";
   }
 
   function projectionVersion(payload) {
@@ -537,6 +600,44 @@
       if (Number.isFinite(leftRank) && Number.isFinite(rightRank) && leftRank !== rightRank) return leftRank - rightRank;
       return String(left.code || "").localeCompare(String(right.code || ""));
     });
+  }
+
+  function patchItemsValid(upserts, removedCodes, removals) {
+    const codes = upserts.map((item) => item && item.code);
+    const removed = [...removedCodes, ...removals];
+    return codes.every((code) => typeof code === "string" && code)
+      && removed.every((code) => typeof code === "string" && code)
+      && new Set(codes).size === codes.length
+      && !codes.some((code) => removed.includes(code));
+  }
+
+  function topKValid(items) {
+    if (!Array.isArray(items) || items.length > 18) return false;
+    const codes = items.map((item) => item && item.code);
+    const ranks = items.map((item) => Number(item && item.rank));
+    return codes.every((code) => typeof code === "string" && code)
+      && new Set(codes).size === codes.length
+      && ranks.every((rank) => Number.isInteger(rank) && rank > 0)
+      && new Set(ranks).size === ranks.length;
+  }
+
+  function requestRecommendationResync(reason) {
+    diagnostics.resyncRequests += 1;
+    diagnostics.resyncReasons[reason] = (diagnostics.resyncReasons[reason] || 0) + 1;
+    loadRecommendations(`resync_${reason}`);
+  }
+
+  function quotedEtag(value) {
+    return value.startsWith('"') ? value : `"${value}"`;
+  }
+
+  function utf8Bytes(value) {
+    return new TextEncoder().encode(String(value || "")).byteLength;
+  }
+
+  function recordBrowserError(kind, detail) {
+    diagnostics.browserErrors.push(`${kind}:${String(detail || "unknown").slice(0, 300)}`);
+    if (diagnostics.browserErrors.length > 20) diagnostics.browserErrors.shift();
   }
 
   function rowIdentity(payload, code) {

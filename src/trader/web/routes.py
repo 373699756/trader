@@ -195,7 +195,14 @@ def register_routes(app: Flask, services: WebServices) -> None:
     @app.get("/api/events/stream")
     def event_stream() -> Response | tuple[Response, int]:
         raw_cursor = request.headers.get("Last-Event-ID", request.args.get("cursor"))
-        cursor = _bounded_integer(raw_cursor, 0)
+        publisher = services.publisher
+        if raw_cursor is None and publisher is None:
+            return jsonify(serialize_error("stream_not_ready", "event stream is not ready")), 503
+        cursor = (
+            publisher.last_sequence()
+            if raw_cursor is None and publisher is not None
+            else _bounded_integer(raw_cursor, 0)
+        )
         if cursor is None:
             return jsonify(
                 serialize_error(
@@ -203,11 +210,11 @@ def register_routes(app: Flask, services: WebServices) -> None:
                     "Last-Event-ID must be a non-negative integer",
                 )
             ), 400
-        if services.publisher is None:
+        if publisher is None:
             return jsonify(serialize_error("stream_not_ready", "event stream is not ready")), 503
         try:
             return event_stream_response(
-                services.publisher,
+                publisher,
                 after_sequence=cursor,
                 heartbeat_seconds=services.config.heartbeat_seconds,
             )

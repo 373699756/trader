@@ -468,3 +468,143 @@ requested_interface_changes
 ready_for_gate
 yes
 ```
+## 11. D4 P6/SSE/API/桌面全量验收报告
+
+状态：D4.1-D4.4 在 G3 发布提交后完成；D owner 范围内的性能、传输、状态机与桌面门禁
+均通过。G4 仍由 A 汇总，D4 不提前执行 D5。
+
+### 11.1 工作树封存与范围
+
+| 项 | 值 |
+| --- | --- |
+| codex_and_phase | Codex D / D4.x |
+| branch | `branch` |
+| base_commit | `7a8a0282d025cbc23fffff5736e94c2d1bf883e0` |
+| upstream_commit_at_start | `7a8a0282d025cbc23fffff5736e94c2d1bf883e0` |
+| start_worktree | clean，且 `HEAD == @{upstream}` |
+| D 范围 | P6 current pin、publisher/SSE、Web patch/ETag/resync、桌面夹具与 D4 测试 |
+| 非 D 并发范围 | A4/B4/C4 在 D4 执行期间写入各自报告、行情、DeepSeek、配置和契约文件；D 未修改或暂存这些变更 |
+
+### 11.2 D4.1-D4.2 延迟门禁
+
+固定 18 行离线投影、120 次 P6 发布和各 100 次 Flask 热读的最终定向结果：
+
+| 指标 | D4 结果 | 门限 | 结论 |
+| --- | ---: | ---: | --- |
+| P6 -> SSE 入队 P95 | `4.357ms` | `100ms` | 通过 |
+| 权威 SSE 发布年龄 P95 | `0.000s` | `2s` | 通过 |
+| 当前 API P95 | `2.382ms` | `200ms` | 通过 |
+| 驻留历史 API P95 | `1.808ms` | `200ms` | 通过 |
+| ETag 304 P95 | `0.797ms` | `50ms` | 通过 |
+| 日期 API P95 | `1.352ms` | `100ms` | 通过 |
+| 状态 API P95 | `1.758ms` | `100ms` | 通过 |
+
+`SnapshotPublisher.status()` 新增独立 `sse_enqueue_latency`，明确记录 `target_ms=100`，原
+`sse_publish_latency` 补充 `target_seconds=2`，避免用快照年龄冒充内部入队耗时。时钟与
+单调计时器均可注入，统计窗口继续有界。
+
+### 11.3 D4.3 零完整 GET 与传输节省
+
+- 单股价格变化的 SSE 编码为 `1,133B`，同一 18 行完整 HTTP 响应为 `10,952B`，节省
+  `89.655%`。
+- Firefox 实际页面连接后触发两次有效增量发布：`recommendationRequests +0`、
+  `recommendationFullResponses +0`、`resyncRequests +0`、每次 `patchApplied +1`，首行价格
+  正确更新，页面关键区域最大布局位移 `0px`。
+- 显式 `resync_required` 触发 `recommendationRequests +1`，命中 ETag 304，
+  `recommendationFullResponses +0`；因此正常更新不完整 GET，只有明确 resync 才重新校验。
+- 无 `Last-Event-ID`/`cursor` 的新连接从 publisher 当前序列开始，不再在完整 GET 最新投影
+  后重放旧历史；显式游标的过期、超前和连续恢复语义保持不变。
+- patch 要求 `patch_schema_version=2` 与兼容 `schema_version=2` 同时成立；schema、身份、
+  base、TopK 或 overlay projection 错配进入有原因计数的 ETag resync，不再静默丢弃。
+
+### 11.4 D4.4 三档桌面
+
+使用 Firefox `152.0.4`、离线 18 行真实投影（10 条正式、8 条观察）、长错误文本、持续 SSE
+和详情抽屉执行精确内容视口检查：
+
+| 视口 | 截图 | 结果 |
+| --- | --- | --- |
+| 1280x720 | `/tmp/trader-d4-1280x720.png` | 无页面级横向溢出/关键区域重叠；详情抽屉含 3 个分区且完整位于视口内 |
+| 1440x900 | `/tmp/trader-d4-1440x900.png` | 18 行身份完整，无页面级横向溢出/关键区域重叠 |
+| 1920x1080 | `/tmp/trader-d4-1920x1080.png` | 正式与观察区同时可见，无页面级横向溢出/关键区域重叠 |
+
+三档均非白屏；长错误使用 `overflow-wrap:anywhere`；页面诊断 `browserErrors=[]`。宿主 Firefox
+仍输出自身 SWGL framebuffer warning，但本次截图、DOM、WebDriver 和页面 JavaScript 均成功，
+该宿主警告未形成产品门禁失败。
+
+### 11.5 Review 修复与交接边界
+
+Review 额外修复：
+
+- P6 current pin 不再被同交易日迟到草稿或不同身份冻结替换，拒绝计数进入状态。
+- publisher 同样拒绝较旧日期、冻结后迟到草稿和冻结身份替换，不产生 SSE 事件。
+- 超过 P6 单视图上限的当前发布从静默拒绝改为显式 `ValueError`，使调用链在 publisher 前
+  停止；旧 P6 保持可读。
+- patch ETag 与实际 `snapshot:trade_date:view` 热读身份一致；浏览器只把匹配当前 view 的
+  patch ETag 写入对应缓存。
+- 浏览器 TopK 在合并后同时校验最多 18 行、股票代码唯一和正整数 rank 唯一；重复或非法
+  rank 与代码错配一样进入有原因的 resync。
+- 权威架构文档把 P6 -> SSE 内部入队 `100ms` 与权威发布年龄 `2s` 分离，并补齐无游标
+  新连接从当前 sequence 开始的 API 语义。
+
+A4 已登记的跨 owner 原子性仍需 A 在集成层确认：当前流水线先更新 `RuntimeState` 再调用
+P6；D 已提供显式接纳失败并保证 D publisher 不自行广播，但 A 仍需决定把 P6 接纳前置或
+回滚 RuntimeState/session/checkpoint。该事项不属于 D4 内部实现，保持为 G4 阻塞而不是由 D
+越权修改公共 pipeline。
+
+### 11.6 验证记录
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `pytest tests/performance/test_youhua_d4_web.py -s` | D4 当前/驻留延迟与传输门限通过，数值见 11.2-11.3 |
+| `pytest tests/unit/application/test_publisher.py tests/unit/application/test_published_snapshots.py` | publisher/P6 入队、冻结 pin、超限与拒绝状态通过 |
+| `pytest tests/contract/test_v2_web_api.py -k 'sse_'` | 无游标新连接、过期/超前恢复和容量门通过 |
+| Node dashboard state contract | schema/identity/base/overlay/TopK 决策通过 |
+| Firefox 精确三档视口 | 18 行、长错误、详情抽屉、零正常 GET、304 resync、零布局跳动通过 |
+| D 文件 Ruff/mypy/JS syntax | 通过 |
+| `make format-check && make lint && make type-check && make test && make package` | 最终共享树五项门禁全部通过；严格债务 C901 降为 38，其余计数不变 |
+| 仓库外 wheel 安装 | 可从安装目录导入 `trader`、执行 `trader-cli --help`，并读取模板及 5 项 CSS/JS/图标资源 |
+
+### 11.7 D4 标准交接包
+
+```text
+codex_and_phase
+Codex D / D4.x
+
+base_commit
+7a8a0282d025cbc23fffff5736e94c2d1bf883e0
+
+owned_paths_changed
+src/trader/application/delivery_patch.py
+src/trader/application/published_snapshots.py
+src/trader/application/publisher.py
+src/trader/web/routes.py
+src/trader/web/static/dashboard.js
+src/trader/web/templates/index.html
+docs/software-business-design.md
+tests/contract/test_v2_app_factory.py
+tests/contract/test_v2_web_api.py
+tests/js/test_dashboard_d4.js
+tests/performance/test_youhua_d4_web.py
+tests/performance/youhua_d4_browser_fixture.py
+tests/unit/application/test_published_snapshots.py
+tests/unit/application/test_publisher.py
+docs/reports/youhua-d1-p6-web.md
+CHANGELOG.md
+
+schema_or_migration_changes
+无持久化 schema/migration；SSE patch 仍为 v2，Web envelope 仍为 v3。
+
+performance_and_browser
+见 11.2-11.4；全部 D4 门限通过。
+
+requested_interface_changes
+A 在 G4 集成层原子处理 PublishedSnapshotIndex.publish() 的接纳失败，禁止 RuntimeState、
+session/checkpoint 与 P6/SSE 身份分裂。
+
+known_failures_and_risks
+D-owned 门禁无已知失败；G4 仍等待 A 完成上述跨 owner 原子接线并汇总 B4/C4/A4。
+
+ready_for_gate
+yes; D4-owned gates pass, while G4 remains blocked on the recorded A integration handoff
+```

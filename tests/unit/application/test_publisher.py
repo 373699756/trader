@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta
+from itertools import cycle
 from typing import cast
 
 import pytest
@@ -130,10 +131,12 @@ def test_publisher_reports_bounded_sse_and_today_score_latency(
     application_feature_factory: ApplicationFeatureFactory,
 ) -> None:
     measured_at = utc_now
+    monotonic = iter((10.0, 10.075))
     publisher = SnapshotPublisher(
         history_size=2,
         client_queue_size=2,
         now=lambda: measured_at,
+        monotonic=lambda: next(monotonic),
     )
     recommendation = _recommendation("600001", utc_now - timedelta(seconds=10), application_feature_factory)
     snapshot = _snapshot("today-1", utc_now - timedelta(seconds=2), (recommendation,))
@@ -157,6 +160,15 @@ def test_publisher_reports_bounded_sse_and_today_score_latency(
         "p50_seconds": 2.0,
         "p95_seconds": 2.0,
         "maximum_seconds": 2.0,
+        "target_seconds": 2.0,
+        "meets_target": True,
+    }
+    assert status["sse_enqueue_latency"] == {
+        "sample_count": 1,
+        "p50_ms": 75.0,
+        "p95_ms": 75.0,
+        "maximum_ms": 75.0,
+        "target_ms": 100.0,
         "meets_target": True,
     }
     assert status["today_score_publish_latency"] == {
@@ -164,6 +176,7 @@ def test_publisher_reports_bounded_sse_and_today_score_latency(
         "p50_seconds": 10.0,
         "p95_seconds": 10.0,
         "maximum_seconds": 10.0,
+        "target_seconds": 15.0,
         "meets_target": True,
     }
 
@@ -194,5 +207,75 @@ def test_publisher_emits_incremental_snapshot_patch_after_base_snapshot(
     assert incremental_patch["replace"] is False
     assert incremental_patch["base_projection_version"] == "today-base"
     assert incremental_patch["projection_version"] == "today-next"
+    assert incremental_patch["etag"] == "today-next:2026-07-16:live"
     assert [item["code"] for item in incremental_upserts] == ["600001", "600003"]
     assert incremental_patch["removed_codes"] == ["600002"]
+
+
+def test_publisher_enqueue_latency_reports_failed_internal_target(
+    utc_now: datetime,
+    application_feature_factory: ApplicationFeatureFactory,
+) -> None:
+    monotonic = cycle((20.0, 20.101))
+    publisher = SnapshotPublisher(
+        history_size=2,
+        client_queue_size=2,
+        now=lambda: utc_now,
+        monotonic=lambda: next(monotonic),
+    )
+
+    publisher.publish(_snapshot("today-slow", utc_now, ()))
+
+    latency = cast(Mapping[str, object], publisher.status()["sse_enqueue_latency"])
+    assert latency["p95_ms"] == 101.0
+    assert latency["target_ms"] == 100.0
+    assert latency["meets_target"] is False
+
+
+def test_publisher_does_not_emit_same_day_draft_after_frozen_projection(
+    utc_now: datetime,
+) -> None:
+    publisher = SnapshotPublisher(history_size=4, client_queue_size=2, now=lambda: utc_now)
+    draft = _snapshot("today-draft", utc_now, ())
+    frozen = replace(draft, snapshot_id="today-frozen", frozen=True, phase="frozen")
+    late_draft = replace(draft, snapshot_id="today-late", phase="today_late")
+
+    publisher.publish(draft)
+    frozen_event = publisher.publish(frozen)
+    late_event = publisher.publish(late_draft)
+
+    assert frozen_event is not None
+    assert late_event is None
+    assert publisher.last_sequence() == frozen_event.sequence
+    assert publisher.status()["rejected_late_drafts"] == 1
+
+
+def test_publisher_rejects_same_day_frozen_replacements(utc_now: datetime) -> None:
+    publisher = SnapshotPublisher(history_size=4, client_queue_size=2, now=lambda: utc_now)
+    frozen = replace(_snapshot("today-frozen", utc_now, ()), frozen=True, phase="frozen")
+    changed = replace(frozen, filtered_count=frozen.filtered_count + 1)
+    replacement = replace(frozen, snapshot_id="today-replacement")
+
+    frozen_event = publisher.publish(frozen)
+    changed_event = publisher.publish(changed)
+    replacement_event = publisher.publish(replacement)
+
+    assert frozen_event is not None
+    assert changed_event is None
+    assert replacement_event is None
+    assert publisher.last_sequence() == frozen_event.sequence
+    assert publisher.status()["rejected_frozen_replacements"] == 2
+
+
+def test_publisher_rejects_older_snapshot_without_emitting_event(utc_now: datetime) -> None:
+    publisher = SnapshotPublisher(history_size=4, client_queue_size=2, now=lambda: utc_now)
+    current = _snapshot("today-current", utc_now, ())
+    older = replace(current, snapshot_id="today-older", trade_date="2026-07-15")
+
+    current_event = publisher.publish(current)
+    older_event = publisher.publish(older)
+
+    assert current_event is not None
+    assert older_event is None
+    assert publisher.last_sequence() == current_event.sequence
+    assert publisher.status()["rejected_older_snapshots"] == 1

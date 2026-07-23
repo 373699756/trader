@@ -463,6 +463,9 @@ All notable changes to this project are documented here.
   SSE。P6 当前视图超限改为显式失败，阻止调用链继续广播错误 SSE。新页面也不再在完整
   GET 最新投影后重放旧 SSE 导致短暂回滚。
 
+- D4 最终独立 Review 进一步封闭同身份内容漂移：即使 `snapshot_id` 未变，只要同日冻结
+  投影内容不同，P6 与 publisher 也会拒绝替换并保持原冻结版本及 SSE sequence 不变。
+
 - 修复架构契约把仅残留忽略 `__pycache__`、没有任何 `*.py` 的退休目录误判为活动业务包：
   目录拓扑与退休路径检查现在只认真实 Python 源文件，仍零容忍旧业务实现，且不会因本地
   解释器缓存产生伪失败。

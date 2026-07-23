@@ -48,6 +48,8 @@ class PublishedSnapshotIndex:
             "cold_loads": 0,
             "cold_coalesced": 0,
             "rejected_incomplete_dates": 0,
+            "rejected_late_drafts": 0,
+            "rejected_frozen_replacements": 0,
             "rejected_oversize_views": 0,
         }
 
@@ -99,11 +101,9 @@ class PublishedSnapshotIndex:
         with self._lock:
             if not self._fits(delivery):
                 self._counters["rejected_oversize_views"] += 1
+                raise ValueError("P6 view exceeds the configured per-view byte limit")
+            if not self._accept_current_locked(delivery):
                 return
-            current = self._current.get(snapshot.strategy)
-            if current is None or snapshot.trade_date >= current.trade_date:
-                self._current[snapshot.strategy] = delivery
-                self._discard_mismatched_overlay(delivery)
             self._counters["published"] += 1
             if snapshot.frozen and snapshot.strategy in self._HISTORICAL_STRATEGIES:
                 self._pending_committed[(snapshot.strategy, snapshot.trade_date)] = delivery
@@ -121,6 +121,26 @@ class PublishedSnapshotIndex:
                         for resident_key in tuple(self._resident):
                             if resident_key[0] is strategy and resident_key[1] not in allowed:
                                 self._resident.pop(resident_key, None)
+
+    def _accept_current_locked(self, delivery: RecommendationSnapshot) -> bool:
+        current = self._current.get(delivery.strategy)
+        if current is None or delivery.trade_date > current.trade_date:
+            self._current[delivery.strategy] = delivery
+            self._discard_mismatched_overlay(delivery)
+            return True
+        if delivery.trade_date < current.trade_date:
+            return True
+        if not current.frozen:
+            self._current[delivery.strategy] = delivery
+            self._discard_mismatched_overlay(delivery)
+            return True
+        if not delivery.frozen:
+            self._counters["rejected_late_drafts"] += 1
+            return False
+        if current.snapshot_id != delivery.snapshot_id or current != delivery:
+            self._counters["rejected_frozen_replacements"] += 1
+            return False
+        return True
 
     def publish_overlay(self, overlay: LiveOverlay) -> None:
         with self._lock:

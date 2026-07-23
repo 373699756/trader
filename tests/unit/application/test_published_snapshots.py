@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.domain.recommendation.models import FusionMode, RecommendationSnapshot, Strategy
 
@@ -123,3 +125,44 @@ def test_published_index_does_not_replace_current_pin_with_older_frozen_history(
     frozen = index.load_frozen(Strategy.TOMORROW, "2026-07-21")
     assert frozen is not None
     assert frozen.snapshot_id == "older-tomorrow"
+
+
+def test_published_index_keeps_same_day_frozen_pin_over_late_draft() -> None:
+    archive = _Archive(())
+    index = PublishedSnapshotIndex(archive)
+    frozen = replace(_snapshot(Strategy.TODAY, "2026-07-22"), snapshot_id="frozen")
+    late_draft = replace(frozen, snapshot_id="late-draft", frozen=False, phase="today_late")
+
+    index.publish(frozen)
+    index.publish(late_draft)
+
+    latest = index.latest(Strategy.TODAY)
+    assert latest is not None
+    assert latest.snapshot_id == "frozen"
+    assert latest.frozen is True
+    assert index.status()["rejected_late_drafts"] == 1
+
+
+def test_published_index_rejects_same_day_frozen_replacements() -> None:
+    archive = _Archive(())
+    index = PublishedSnapshotIndex(archive)
+    frozen = replace(_snapshot(Strategy.TODAY, "2026-07-22"), snapshot_id="frozen")
+    changed = replace(frozen, filtered_count=frozen.filtered_count + 1)
+    replacement = replace(frozen, snapshot_id="replacement")
+
+    index.publish(frozen)
+    index.publish(changed)
+    index.publish(replacement)
+
+    assert index.latest(Strategy.TODAY) == frozen
+    assert index.status()["rejected_frozen_replacements"] == 2
+
+
+def test_published_index_raises_when_current_view_exceeds_p6_limit() -> None:
+    index = PublishedSnapshotIndex(_Archive(()), maximum_view_bytes=1)
+
+    with pytest.raises(ValueError, match="P6 view exceeds"):
+        index.publish(_snapshot(Strategy.TODAY, "2026-07-22"))
+
+    assert index.latest(Strategy.TODAY) is None
+    assert index.status()["rejected_oversize_views"] == 1

@@ -14,17 +14,18 @@ def snapshot_patch(
     projection_version = snapshot.snapshot_id
     base_projection_version = base_snapshot.snapshot_id if base_snapshot is not None else base_snapshot_id
     upserts, removed_codes, replace_all = _projection_changes(snapshot, base_snapshot)
+    view = "official" if snapshot.frozen else "live"
     return {
         "patch_schema_version": 2,
         "schema_version": 2,
         "base_projection_version": base_projection_version,
         "base_snapshot_id": base_projection_version,
         "projection_version": projection_version,
-        "etag": f"{projection_version}:{snapshot.trade_date}",
+        "etag": f"{projection_version}:{snapshot.trade_date}:{view}",
         "snapshot_id": snapshot.snapshot_id,
         "strategy": snapshot.strategy.value,
         "trade_date": snapshot.trade_date,
-        "view": "official" if snapshot.frozen else "live",
+        "view": view,
         "phase": snapshot.phase,
         "published_at": snapshot.published_at.isoformat(),
         "strategy_version": snapshot.strategy_version,

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 import threading
+from pathlib import Path
+
+import pytest
 
 from trader.web import create_app
 
@@ -40,7 +45,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "策略验证" not in page
     assert "/static/dashboard.css?v=5" in page
     assert "/static/render.js?v=8" in page
-    assert "/static/dashboard.js?v=14" in page
+    assert "/static/dashboard.js?v=15" in page
     assert 'data-view="live"' in page
     assert "临时实时" in page
     assert 'class="runtime-error"' in page
@@ -66,6 +71,11 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'addEventListener("overlay_patch"' in dashboard
     assert 'addEventListener("recommendation_patch"' in dashboard
     assert "applyRecommendationPatch" in dashboard
+    assert "recommendationPatchDecision" in dashboard
+    assert "overlayPatchDecision" in dashboard
+    assert "requestRecommendationResync" in dashboard
+    assert "TraderDashboardDiagnostics" in dashboard
+    assert "browserErrors" in dashboard
     assert "reconcileRecommendationIdentity(payload)" in dashboard
     assert 'loadRecommendations("status_identity")' in dashboard
     assert 'query.set("view", "live")' in dashboard
@@ -110,3 +120,22 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "review.prompt_cache_hit_tokens" not in renderer
     assert "row," in renderer
     assert client.get("/static/dashboard.js").status_code == 200
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for the dashboard state contract")
+def test_dashboard_patch_state_machine_contract() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [
+            "node",
+            str(repository_root / "tests" / "js" / "test_dashboard_d4.js"),
+            str(repository_root / "src" / "trader" / "web" / "static" / "dashboard.js"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.strip() == "dashboard D4 state contract passed"
