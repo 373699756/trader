@@ -580,6 +580,63 @@ def test_after_close_does_not_persist_partial_market_rebuild(
     }
 
 
+def test_after_close_waits_for_complete_historical_board_population(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    market_data = WarmingClosingMarketData(features)
+    state = RuntimeState()
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    pipeline.initialize()
+
+    assert pipeline.run_once(clock.now()) == ()
+    assert repository.frozen == {}
+    assert market_data.market_force_requests == [True]
+
+    clock.set(datetime.fromisoformat("2026-07-16T15:05:03+08:00"))
+    market_data.warmed = True
+
+    recovered = pipeline.run_once(clock.now())
+
+    assert {snapshot.strategy for snapshot in recovered} == {
+        Strategy.TODAY,
+        Strategy.TOMORROW,
+        Strategy.D25,
+    }
+    assert all(snapshot.recommendations for snapshot in recovered)
+    assert all(
+        "board_population_insufficient" not in reason and "board_data_reliability_below_threshold" not in reason
+        for snapshot in recovered
+        for reason in snapshot.degraded_reasons
+    )
+    assert market_data.market_force_requests == [True, True]
+    assert all(
+        repository.load_frozen(strategy, "2026-07-16") is not None
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+    )
+    current = RecommendationQueries(state, repository, now=clock.now).current_recommendation(Strategy.TODAY)
+    assert current.status == "ready"
+    assert current.snapshot is not None
+    assert current.snapshot.phase == "close_fallback"
+
+
 @pytest.mark.parametrize(
     ("strategy", "boundary", "phase", "quote_age_seconds", "maximum_age"),
     (
@@ -2175,6 +2232,31 @@ class IncompleteClosingMarketData(ClosingPriceMarketData):
         return tuple(feature for feature in features if not feature.quote.code.startswith("688"))
 
 
+class WarmingClosingMarketData(ClosingPriceMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
+        super().__init__(features)
+        self.warmed = False
+
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        features = tuple(super().fetch_market_features(observed_at, force=force, deadline=deadline))
+        if self.warmed:
+            return features
+        return tuple(
+            replace(
+                feature,
+                values={name: value for name, value in feature.values.items() if name != "amount_median_20d"},
+                history_days=0,
+            )
+            for feature in features
+        )
+
+
 class DegradingMarketData(StaticMarketData):
     def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
         super().__init__(features)
@@ -2399,15 +2481,9 @@ def _three_board_features(application_feature_factory, observed_at: datetime) ->
         application_feature_factory(code, observed_at, industry=f"行业-{index % 3}")
         for index, code in enumerate(
             (
-                "600001",
-                "600002",
-                "600003",
-                "300001",
-                "300002",
-                "300003",
-                "688001",
-                "688002",
-                "688003",
+                *(f"600{suffix:03d}" for suffix in range(1, 101)),
+                *(f"300{suffix:03d}" for suffix in range(1, 101)),
+                *(f"688{suffix:03d}" for suffix in range(1, 101)),
             )
         )
     )

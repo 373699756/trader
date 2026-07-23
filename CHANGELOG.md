@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户反馈此前保存的推荐历史全部无法查询。新增 P6 按策略独立驻留与冷读能力：最近
+  20 个交易日内，同日即使只保存 today、tomorrow 或 d25 中的部分策略，已有 committed
+  快照仍可通过对应日期列表和历史 API 读取，不再依赖三策略日期交集。
+
 - 用户反馈 Web 同时提供“临时实时”和“正式当前”两个并列按钮，难以判断日常应该选择
   哪一个。新增只读 `view=current` 自动当前视图：同日 P6 未冻结时解析为实时草稿，
   正式冻结后自动解析为正式结果，`close_fallback`、long、历史和未就绪状态分别显示
@@ -287,6 +291,10 @@ All notable changes to this project are documented here.
   内存预算、背压、状态指标、性能 CLI、回归矩阵和停止条件落实到可执行文件与命令。
 
 ### Changed
+
+- 15:00 后冷启动收盘补算的完整性判断从“存在三板收盘价”收紧为主板、创业板、科创板
+  分别至少 100 只具备 20 日有效流动性历史；历史热缓存仍在预热时保持 `not_ready` 并
+  按既有 3/5/10/20/30 秒退避重试，不提前冻结三板样本不足的半成品。
 
 - 桌面首页改为单一“当前推荐”状态入口，策略或日期切换仍隔离迟到请求；Web 明确请求
   `view=current`，SSE 可在同一页面从草稿无缝切换为冻结结果，冻结完成后拒绝迟到草稿。
@@ -570,6 +578,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 P6 初始化只取 today/tomorrow/d25 日期交集，导致旧库中按策略有效但同日不齐全的
+  5 份正式历史全部不可见；同时修复收盘协调器只验证三板行情存在、未验证历史横截面，
+  从而在 qfq 预热完成前把 `board_population_insufficient`、可靠度不足和 0 只推荐固化为
+  当日 `close_fallback` 的问题。当前机器已用只读 `migrate-v17` 将旧 v2 的 5 份 committed
+  快照导入 v17，源目录前后摘要一致。
+
 - 修复用户必须理解内部“可变草稿/不可变冻结”发布状态并手动切换视图的问题。两种后端
   状态继续用于盘中实时性、冻结不可覆盖和失败降级，但页面自动选择同日最新有效状态，
   草稿明确提示“未冻结，结果可能变化”，不会冒充正式推荐或回退到上一交易日。
@@ -808,6 +822,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除或改写任何历史快照、当日冻结记录、推荐公式、风险阈值、DeepSeek 预算、
+  API 兼容参数或 Web 资源；仅移除测试夹具为缺失策略伪造同日 companion 快照的旧假设。
+
 - 移除桌面的“临时实时/正式当前”双按钮、对应点击状态和重复 CSS；未移除草稿、正式
   冻结、收盘补算、历史、SSE 或显式 `view=official|live` API 能力。
 
@@ -940,6 +957,17 @@ All notable changes to this project are documented here.
   第二个数据库、缓存框架、benchmark依赖、移动端分支或用性能优化放宽实时性门槛。
 
 ### Verification
+
+- 本批先以本机运行库确认旧 v2 有 5 份 committed 历史但三策略日期交集为空，v17 当日
+  三策略均已 committed 但各为 0 只，且 qfq 热缓存随后达到三板各 119 只。新增失败回归
+  分别复现部分策略历史被隐藏、历史未就绪仍固化收盘结果；修复后验证 resident 与 cold
+  部分策略日期、日期级 single-flight、冻结 current pin、历史 API、收盘退避重试，以及
+  预热完成后三策略均实际产生股票且不含三板样本/可靠度不足降级。相关 Web、P6 和流水线
+  完整测试通过；`make format-check`、`make lint`、172 个源码文件 mypy、全量 pytest
+  和 `make package` 通过。仓库外 wheel 从隔离目标导入，`trader-cli validate-config`、
+  `pip check` 与模板、4 个 CSS、2 个 JavaScript、2 个 SVG 共 9 项资源通过。
+  Firefox/geckodriver 应用 24 个实时 patch，零 resync、零页面错误，patch-to-paint P95
+  为 61ms；1280x720、1440x900、1920x1080 均有有效页面且无页面级横向溢出。
 
 - 自动当前视图覆盖冻结前草稿、冻结后正式结果、冻结失败保留同日草稿、上一交易日拒绝、
   空 `not_ready`、历史和显式 API 兼容；Node 状态机覆盖 current 模式的实时 patch、
@@ -1305,6 +1333,10 @@ All notable changes to this project are documented here.
   资源通过。本批未改活动UI、API或运行逻辑，未重复三档桌面截图。
 
 ### Residual Risks
+
+- 2026-07-23 已在本批修复前提交的三份 0 只 `close_fallback` 属于不可变正式记录，按冻结
+  契约不能删除、覆盖或用迟到预热结果改写；本批保证旧历史恢复可查，并阻止后续冷启动在
+  三板历史未就绪时再次固化同类半成品，但不承诺每日必有推荐或放宽既有收益/风险门槛。
 
 - 单入口只消除人工选态，不改变外部行情、DeepSeek、冻结或收盘补算的可用性；供应商持续
   失败时页面仍会展示最近同日有效草稿及降级状态，不能据此承诺数据始终实时或一定产生

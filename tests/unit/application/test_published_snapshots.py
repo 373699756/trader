@@ -34,8 +34,16 @@ def _snapshot(strategy: Strategy, trade_date: str) -> RecommendationSnapshot:
 
 
 class _Archive:
-    def __init__(self, dates: Sequence[str]) -> None:
+    def __init__(
+        self,
+        dates: Sequence[str] = (),
+        *,
+        dates_by_strategy: dict[Strategy, Sequence[str]] | None = None,
+    ) -> None:
         self.dates = tuple(dates)
+        self.dates_by_strategy = {
+            strategy: tuple(strategy_dates) for strategy, strategy_dates in (dates_by_strategy or {}).items()
+        }
         self.loads = 0
         self.block_date = ""
         self.started = threading.Event()
@@ -45,13 +53,15 @@ class _Archive:
         return None
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
-        return self.dates
+        return self.dates_by_strategy.get(strategy, self.dates)
 
     def load_frozen(self, strategy: Strategy, trade_date: str) -> RecommendationSnapshot | None:
         self.loads += 1
         if trade_date == self.block_date:
             self.started.set()
             self.release.wait(timeout=2)
+        if trade_date not in self.recommendation_dates(strategy):
+            return None
         return _snapshot(strategy, trade_date)
 
     def load_live_overlay(self, strategy: Strategy, trade_date: str):
@@ -69,6 +79,25 @@ def test_published_index_keeps_complete_resident_triplets_off_persistence() -> N
     assert index.load_frozen(Strategy.D25, "2026-07-21") is not None
     assert index.recommendation_dates(Strategy.TOMORROW) == ("2026-07-22", "2026-07-21")
     assert archive.loads == loads_after_initialize
+
+
+def test_published_index_keeps_partial_strategy_history_queryable() -> None:
+    archive = _Archive(
+        dates_by_strategy={
+            Strategy.TODAY: ("2026-07-21",),
+            Strategy.TOMORROW: ("2026-07-20", "2026-07-17"),
+            Strategy.D25: ("2026-07-20", "2026-07-17"),
+        }
+    )
+    index = PublishedSnapshotIndex(archive)
+
+    assert index.initialize() == {"resident_dates_preloaded": 3, "historical_views_preloaded": 5}
+    assert index.recommendation_dates(Strategy.TODAY) == ("2026-07-21",)
+    assert index.recommendation_dates(Strategy.TOMORROW) == ("2026-07-20", "2026-07-17")
+    assert index.load_frozen(Strategy.TODAY, "2026-07-21") is not None
+    assert index.load_frozen(Strategy.TOMORROW, "2026-07-20") is not None
+    assert index.load_frozen(Strategy.D25, "2026-07-17") is not None
+    assert index.load_frozen(Strategy.TODAY, "2026-07-20") is None
 
 
 def test_published_index_coalesces_cold_reads_by_date_and_prefetches_three_strategies() -> None:
@@ -94,6 +123,24 @@ def test_published_index_coalesces_cold_reads_by_date_and_prefetches_three_strat
     assert index.status()["cold_loads"] == 1
     assert index.status()["cold_coalesced"] == 1
     assert index.status()["cold_views"] == 3
+
+
+def test_published_index_cold_reads_only_available_strategy_views() -> None:
+    dates = tuple(f"2026-06-{day:02d}" for day in range(30, 9, -1))
+    archive = _Archive(
+        dates_by_strategy={
+            Strategy.TODAY: dates[:-1],
+            Strategy.TOMORROW: dates,
+            Strategy.D25: dates[:-1],
+        }
+    )
+    index = PublishedSnapshotIndex(archive)
+    index.initialize()
+    cold_date = dates[-1]
+
+    assert index.load_frozen(Strategy.TOMORROW, cold_date) is not None
+    assert index.load_frozen(Strategy.TODAY, cold_date) is None
+    assert index.status()["cold_views"] == 1
 
 
 def test_published_index_replaces_current_draft_without_archive_write() -> None:

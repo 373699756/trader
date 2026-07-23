@@ -710,7 +710,7 @@ def test_missing_history_is_not_cached_across_later_freeze(
     assert missing.snapshot is None
     assert ready.snapshot is not None
     assert ready.snapshot.snapshot_id == "d25-later"
-    assert repository.frozen_loads[(Strategy.D25, snapshot.trade_date)] == 1
+    assert repository.frozen_loads.get((Strategy.D25, snapshot.trade_date), 0) == 0
 
 
 def test_historical_snapshot_has_exact_identity_and_current_quote_overlay(
@@ -1075,21 +1075,6 @@ def _app(
     index.initialize()
     for snapshot in repository._latest.values():
         index.publish(snapshot)
-    frozen_dates = sorted({trade_date for _strategy, trade_date in repository._frozen})
-    for trade_date in frozen_dates:
-        available = {
-            strategy: snapshot
-            for (strategy, candidate_date), snapshot in repository._frozen.items()
-            if candidate_date == trade_date
-        }
-        template = next(iter(available.values()))
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
-            snapshot = available.get(strategy) or replace(
-                template,
-                strategy=strategy,
-                snapshot_id=f"test-companion-{strategy.value}-{trade_date}",
-            )
-            index.publish(snapshot)
     for overlay in repository._overlays.values():
         index.publish_overlay(overlay)
     queries = RecommendationQueries(index, repository, now=lambda: now, current_quote_reader=quote_reader)

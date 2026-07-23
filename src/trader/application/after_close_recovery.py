@@ -28,6 +28,7 @@ from trader.domain.recommendation.models import (
     RecommendationSnapshot,
     Strategy,
 )
+from trader.domain.recommendation.scoring_support import MIN_BOARD_SAMPLE
 
 if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline
@@ -197,7 +198,9 @@ def _rebuild_from_close(
         return ()
     if not _complete_close_market(market_features, now):
         pipeline._state.increment("after_close_incomplete_market")
-        pipeline._state.record_error("after-close market recovery waiting for a complete three-board close snapshot")
+        pipeline._state.record_error(
+            "after-close market recovery waiting for complete three-board close quotes and history"
+        )
         return ()
 
     max_age = _close_max_age_seconds(now)
@@ -466,8 +469,20 @@ def _save_closing_overlay(
 
 
 def _complete_close_market(features: Sequence[FeatureSnapshot], now: datetime) -> bool:
-    boards = {board_for_snapshot(feature) for feature in features if _valid_close_feature(feature, now)}
-    return {Board.MAIN, Board.CHINEXT, Board.STAR} <= boards
+    ready_by_board = {Board.MAIN: 0, Board.CHINEXT: 0, Board.STAR: 0}
+    for feature in features:
+        board = board_for_snapshot(feature)
+        amount_median = feature.optional_value("amount_median_20d")
+        if (
+            board in ready_by_board
+            and _valid_close_feature(feature, now)
+            and feature.history_days >= 20
+            and amount_median is not None
+            and math.isfinite(amount_median)
+            and amount_median > 0.0
+        ):
+            ready_by_board[board] += 1
+    return all(count >= MIN_BOARD_SAMPLE for count in ready_by_board.values())
 
 
 def _complete_requested_close_features(
