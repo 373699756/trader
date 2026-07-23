@@ -4,7 +4,21 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+### Changed
+
+- 收盘补算使用的候选研究只读缓存现在会在内存/shared cache 未命中时读取未过期的本地
+  structured research JSON，并回填进程内缓存；该路径仍不发起 AkShare 或其他网络研究请求，
+  不改变 0.85 板块可靠度门槛、候选公式、动作阈值、DeepSeek 预算或冻结不可覆盖规则。
+
 ### Fixed
+
+- 用户追问“15:00 后没有荐股是否因为 8.5 阈值太高、如何修复”。确认根因不是降低阈值，
+  而是冷启动收盘补算只读路径没有恢复已落盘的结构化研究字段，且 `FinancialReport.report_date`
+  以日期字符串写入缓存却按带时区 datetime 反序列化，导致 `quality_score`、`value_score`
+  和 `growth_score` 在重启后保持 `null`，D25 等候选可靠度被压低并触发
+  `board_data_reliability_below_threshold`。现在修复 structured research 磁盘缓存只读恢复和
+  财务报告日期反序列化，字段存在时可恢复候选可靠度；字段仍缺失时继续按契约拒绝冻结并
+  保留诊断。
 
 - 针对用户反馈“15:00 后当天没有荐股、明日/2-5 日仍显示板块可靠度降级”补齐收盘恢复边界：
   收盘补算使用收盘时刻重新校验报价年龄，三板评分改用全市场样本后再过滤候选；组件可靠度按已知输入比例计算，
@@ -17,9 +31,24 @@ All notable changes to this project are documented here.
 - 通过：`tests/unit/domain/test_board_scoring.py`、`tests/unit/domain/test_downside.py`、
   `tests/unit/application/test_board_scoring.py`、`tests/unit/application/test_recommendations.py`
   及收盘恢复集成测试；Ruff 检查通过。
+- 通过：structured research 缓存重启复用组件回归、research cache 过期/复用回归、收盘恢复
+  缓存候选/可靠度/延迟报价集成回归，以及板块评分、下行风险和推荐应用层相关单元测试。
+- 通过：`make format-check`、`make lint`、`make type-check`、`make test`、`make package`；
+  仓库外 wheel 安装后可从安装目录导入 `trader`、执行 `trader-cli --help`，并读取模板、CSS、
+  JavaScript 和 SVG 资源。
 - 实机复核仍发现未解决项：2026-07-23 冷启动收盘补算最高候选仍低于 `0.85`，
   因此按契约拒绝冻结，Web 当前三策略继续 `not_ready`；当天三条错误快照已按用户授权备份并清除，
   历史日期查询已恢复。剩余根因需后续针对真实行情字段覆盖继续处理，不能将本批次宣称为当天荐股已恢复。
+
+### Removed
+
+- 无。
+
+### Residual Risks
+
+- 本批用缓存复用和收盘恢复回归验证了结构化研究字段可在重启后恢复；尚未在新的真实交易日
+  15:00 后实机证明三策略都会形成当日 `close_fallback`。如果外部研究、历史或行情字段本身
+  仍未成功落盘，系统仍会保持 `not_ready` 或可靠度降级，而不会降低门槛制造推荐。
 
 ### Added
 

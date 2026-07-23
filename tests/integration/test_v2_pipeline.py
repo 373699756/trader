@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from tests.pipeline_factory import build_pipeline
-from trader.bootstrap import _recommendation_policy
 from trader.application.cadence import CadencePolicy
 from trader.application.events import (
     EventAuditRecord,
@@ -32,6 +31,7 @@ from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import MarketPhase
 from trader.application.snapshot_workflow import refresh_candidates
 from trader.application.status import RuntimeState
+from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
     LiveOverlay,
@@ -2441,9 +2441,7 @@ class UnreliableClosingMarketData(ClosingPriceMarketData):
         force: bool = False,
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]:
-        return self._with_reliability(
-            super().fetch_market_features(observed_at, force=force, deadline=deadline)
-        )
+        return self._with_reliability(super().fetch_market_features(observed_at, force=force, deadline=deadline))
 
     def fetch_candidate_features(
         self,

@@ -6,7 +6,7 @@ import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from typing import ParamSpec, TypeVar
 
 from trader.application.cache import canonical_json_bytes
@@ -287,7 +287,7 @@ def _serialize_financial_report(report: FinancialReport) -> dict[str, object]:
 
 
 def _deserialize_financial_report(raw: Mapping[str, object]) -> FinancialReport:
-    report_date = _as_aware_datetime(raw, "report_date").date()
+    report_date = _as_date(raw, "report_date")
     published_at = _as_aware_datetime(raw, "published_at")
     return FinancialReport(
         report_date=report_date,
@@ -301,6 +301,13 @@ def _deserialize_financial_report(raw: Mapping[str, object]) -> FinancialReport:
         parent_net_profit=_optional_float(raw.get("parent_net_profit")),
         core_net_profit=_optional_float(raw.get("core_net_profit")),
     )
+
+
+def _as_date(raw: Mapping[str, object], key: str) -> date:
+    value = raw.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} must be an ISO-8601 date")
+    return date.fromisoformat(value)
 
 
 def _serialize_research_announcement(item: ResearchAnnouncement) -> dict[str, object]:

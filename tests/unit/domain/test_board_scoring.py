@@ -291,9 +291,12 @@ def test_close_fallback_reliability_excludes_unavailable_intraday_tail() -> None
     }
 
     assert supported_weight(Strategy.TOMORROW, values, weights) == pytest.approx(0.85)
-    assert supported_weight(
-        Strategy.TOMORROW,
-        values,
-        weights,
-        phase="close_fallback",
-    ) == 1.0
+    assert (
+        supported_weight(
+            Strategy.TOMORROW,
+            values,
+            weights,
+            phase="close_fallback",
+        )
+        == 1.0
+    )

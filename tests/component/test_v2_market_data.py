@@ -31,7 +31,7 @@ from trader.domain.market.models import (
     MarketQuote,
 )
 from trader.domain.market.news import NewsSignalPolicy
-from trader.domain.market.research import ResearchObservation
+from trader.domain.market.research import FinancialReport, ResearchObservation
 from trader.domain.market.tail import MinuteBar, TailSignalPolicy
 from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.strategies import score_strategy
@@ -4519,6 +4519,54 @@ def test_structured_research_upgrades_news_only_cache_and_is_reused() -> None:
     assert news_only[0].values["pledge_risk"] is None
     assert first_full[0].values["pledge_risk"] == 1.0
     assert second_full[0].values["pledge_risk"] == 1.0
+
+
+def test_read_candidate_features_reuses_structured_research_disk_cache_after_restart(tmp_path) -> None:
+    cache_dir = tmp_path / "evidence_cache"
+    observation = ResearchObservation(
+        financial=FinancialReport(
+            report_date=date(2026, 3, 31),
+            published_at=datetime.fromisoformat("2026-04-30T23:59:59+08:00"),
+            basic_eps=1.0,
+            book_value_per_share=10.0,
+            revenue_growth_pct=20.0,
+            net_profit_growth_pct=10.0,
+            core_profit_growth_pct=0.0,
+            roe_pct=3.0,
+            parent_net_profit=100.0,
+            core_net_profit=80.0,
+        ),
+        announcements_available=True,
+    )
+    writer = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=StaticStructuredResearchClient((), observation),
+        research_cache_dir=cache_dir,
+        research_workers=1,
+        wall_clock=lambda: NOW,
+    )
+
+    written = writer.fetch_candidate_features(("600001",), NOW, include_structured_research=True)
+    assert written[0].values["quality_score"] == pytest.approx(67.5)
+
+    reader = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=None,
+        research_cache_dir=cache_dir,
+        research_workers=1,
+        wall_clock=lambda: NOW,
+    )
+    reader.fetch_market_features(NOW)
+
+    restored = reader.read_candidate_features(("600001",), NOW, include_structured_research=True)
+
+    assert restored[0].values["value_score"] == pytest.approx(written[0].values["value_score"])
+    assert restored[0].values["growth_score"] == pytest.approx(written[0].values["growth_score"])
+    assert restored[0].values["quality_score"] == pytest.approx(written[0].values["quality_score"])
 
 
 def test_stock_risk_refresh_reuses_successful_ten_minute_cache() -> None:

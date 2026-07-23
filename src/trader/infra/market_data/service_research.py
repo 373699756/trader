@@ -152,25 +152,73 @@ class ResearchLoader:
             fresh_only=fresh_only,
             action_restrictions=action_restrictions,
         )
-        memory_entries: dict[str, _ResearchEntry] = {}
+        wall_now = self._runner.wall_clock()
+        entries = {
+            **self._load_cached_research_from_memory(codes, include_structured, now, result),
+            **self._load_cached_research_from_disk(codes, include_structured, wall_now, result),
+        }
+        self._mark_cached_research_actionability(
+            entries,
+            include_structured=include_structured,
+            observed_at=observed_at or wall_now,
+            action_restrictions=action_restrictions,
+        )
+        return result
+
+    def _load_cached_research_from_memory(
+        self,
+        codes: Sequence[str],
+        include_structured: bool,
+        now: float,
+        result: dict[str, ResearchObservation],
+    ) -> dict[str, _ResearchEntry]:
+        entries: dict[str, _ResearchEntry] = {}
         with self._lock:
             for code in codes:
                 if code in result:
                     continue
                 entry = self._entries.get((code, include_structured))
-                if entry is None:
-                    continue
-                if entry.expires_at <= now:
+                if entry is None or entry.expires_at <= now:
                     continue
                 result[code] = entry.observation
-                memory_entries[code] = entry
-        if observed_at is not None:
-            for code, entry in memory_entries.items():
-                self._mark_research_actionability(
-                    _ResearchActionScope(code, include_structured, observed_at, action_restrictions),
-                    entry.observation,
-                )
-        return result
+                entries[code] = entry
+        return entries
+
+    def _load_cached_research_from_disk(
+        self,
+        codes: Sequence[str],
+        include_structured: bool,
+        wall_now: datetime,
+        result: dict[str, ResearchObservation],
+    ) -> dict[str, _ResearchEntry]:
+        entries: dict[str, _ResearchEntry] = {}
+        for code in codes:
+            if code in result:
+                continue
+            entry = self._load_research_cache(code, include_structured, wall_now)
+            if entry is None:
+                continue
+            result[code] = entry.observation
+            entries[code] = entry
+        if entries:
+            with self._lock:
+                for code, entry in entries.items():
+                    self._entries[(code, include_structured)] = entry
+        return entries
+
+    def _mark_cached_research_actionability(
+        self,
+        entries: Mapping[str, _ResearchEntry],
+        *,
+        include_structured: bool,
+        observed_at: datetime,
+        action_restrictions: dict[str, set[str]] | None,
+    ) -> None:
+        for code, entry in entries.items():
+            self._mark_research_actionability(
+                _ResearchActionScope(code, include_structured, observed_at, action_restrictions),
+                entry.observation,
+            )
 
     def _shared_cached_research(
         self,

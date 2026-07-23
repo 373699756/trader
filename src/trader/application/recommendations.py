@@ -480,13 +480,16 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
             }
             if len(policies) != 3:
                 raise RuntimeError(f"v16 board policies are incomplete for {strategy.value}")
-            population_features = tuple(
-                replace(
-                    feature,
-                    quote=replace(feature.quote, board=board_for_snapshot(feature)),
+            population_features = (
+                tuple(
+                    replace(
+                        feature,
+                        quote=replace(feature.quote, board=board_for_snapshot(feature)),
+                    )
+                    for feature in options["population_features"]
                 )
-                for feature in options["population_features"]
-            ) or normalized_eligible
+                or normalized_eligible
+            )
             candidate_codes = {feature.quote.code for feature in normalized_eligible}
             context = self._scoring_context(
                 population_features,
