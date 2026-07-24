@@ -27,7 +27,6 @@ CORE_FIELDS = (
     "ma20_60_position",
     "volatility_20d",
     "max_drawdown_20d",
-    "industry_strength",
 )
 
 _EXECUTION_PHASES = {
@@ -56,6 +55,7 @@ class SelectionPolicy:
     minimum_final_score: float = 0.0
     maximum_board_fraction: float = 1.0
     competition_group_limits: Mapping[Board, int] = field(default_factory=dict)
+    enforce_competition_group_limits: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "competition_group_limits", MappingProxyType(dict(self.competition_group_limits)))
@@ -88,9 +88,10 @@ def candidate_score(snapshot: FeatureSnapshot, weights: Mapping[str, float]) -> 
         "liquidity": clamp(liquidity),
         "short_momentum": clamp(short_momentum),
         "trend": clamp(snapshot.value("trend_score")),
-        "industry_strength": clamp(snapshot.value("industry_strength")),
         "data_completeness": 100.0 * (1.0 - snapshot.missing_ratio(CORE_FIELDS)),
     }
+    if "industry_strength" in weights:
+        values["industry_strength"] = clamp(snapshot.value("industry_strength"))
     return weighted_score(values, weights)
 
 
@@ -123,6 +124,11 @@ def _action_blocker(
         (recommendation.strategy is Strategy.LONG, RecommendationAction.OBSERVE, "long_watch_only"),
         (recommendation.veto, RecommendationAction.UNAVAILABLE, "risk_veto"),
         (policy.is_stale, RecommendationAction.OBSERVE, "stale_quote"),
+        (
+            recommendation.features.value("corporate_risk_history_unavailable", 0.0) > 0.0,
+            RecommendationAction.OBSERVE,
+            "corporate_risk_history_unavailable",
+        ),
         (
             not recommendation.features.board_policy_id and recommendation.features.missing_ratio(CORE_FIELDS) > 0.30,
             RecommendationAction.OBSERVE,
@@ -177,11 +183,11 @@ def select_top_k_with_audit(
             continue
         board = item.features.quote.board
         group = item.features.competition_group_id or item.features.quote.industry or "unknown"
-        group_limit = policy.competition_group_limits.get(board)
+        group_limit = policy.competition_group_limits.get(board) if policy.enforce_competition_group_limits else None
         if group_limit is not None:
             state.competition_counts[(board, group)] += 1
         else:
-            industry = item.features.quote.industry or "unknown"
+            industry = item.features.quote.industry.strip() or "unknown"
             state.industry_counts[industry] += 1
         state.board_counts[board] += 1
         state.selected.append(
@@ -213,8 +219,9 @@ def _selection_limit(
     maximum_per_board: int,
 ) -> tuple[str, int] | None:
     board = item.features.quote.board
+    industry = item.features.quote.industry.strip() or "unknown"
     group = item.features.competition_group_id or item.features.quote.industry or "unknown"
-    group_limit = policy.competition_group_limits.get(board)
+    group_limit = policy.competition_group_limits.get(board) if policy.enforce_competition_group_limits else None
     checks = (
         (len(state.selected) >= policy.top_k, "top_k_limit", policy.top_k),
         (state.board_counts[board] >= maximum_per_board, "board_fraction_limit", maximum_per_board),
@@ -224,8 +231,7 @@ def _selection_limit(
             group_limit or 0,
         ),
         (
-            group_limit is None
-            and state.industry_counts[item.features.quote.industry or "unknown"] >= policy.maximum_per_industry,
+            group_limit is None and state.industry_counts[industry] >= policy.maximum_per_industry,
             "industry_limit",
             policy.maximum_per_industry,
         ),

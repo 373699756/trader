@@ -25,11 +25,9 @@ from trader.domain.recommendation.scoring_support import (
     _candidate_fields,
     _default_competition_group,
     _distributions,
-    _leader_gaps,
     _liquidity_bucket,
     _mean_known,
     _normalize_features,
-    _peer_gaps,
     _population_version,
     _PopulationVersionIdentity,
     _quantile,
@@ -40,7 +38,7 @@ from trader.domain.recommendation.scoring_support import (
 )
 from trader.domain.recommendation.strategies.composition import LocalScoreResult, compose
 
-BOARD_SCHEMA_VERSION = "board_cross_section_v16"
+BOARD_SCHEMA_VERSION = "board_cross_section_v18_score_first"
 
 
 @dataclass(frozen=True)
@@ -110,9 +108,7 @@ def build_board_cross_section(request: BoardCrossSectionRequest) -> BoardCrossSe
             key=lambda item: item.quote.code,
         )
     )
-    peer_raw = _peer_gaps(ordered)
-    leader_raw = _leader_gaps(ordered)
-    current_distributions = _distributions(ordered, peer_raw, leader_raw)
+    current_distributions = _distributions(ordered)
     current_sample = sum(
         item.optional_value("amount_median_20d") is not None and item.value("amount_median_20d") > 0.0
         for item in ordered
@@ -125,8 +121,6 @@ def build_board_cross_section(request: BoardCrossSectionRequest) -> BoardCrossSe
     )
     normalized, normalization = _normalize_features(
         ordered,
-        peer_raw,
-        leader_raw,
         basis.reference_values,
         normalization_version,
     )
@@ -328,13 +322,11 @@ def board_candidate_score(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy
                 + 0.20 * band_score(snapshot.quote.volume_ratio, 0.8, 1.2, 3.5, 6.0)
             ),
             "turnover_state": _mean_known(snapshot, ("turnover_shock_score", "amount_shock_score")),
-            "peer_gap": _mean_known(snapshot, ("peer_gap_1d_score", "peer_gap_3d_score", "peer_gap_5d_score")),
             "data_completeness": completeness,
         }
     elif policy.strategy is Strategy.TOMORROW:
         values = {
             "liquidity": snapshot.value("amount_percentile_20d"),
-            "peer_gap": _mean_known(snapshot, ("peer_gap_5d_score", "peer_gap_20d_score")),
             "trend": snapshot.value("trend_score"),
             "stability": _mean_known(snapshot, ("low_volatility_score", "low_drawdown_score")),
             "data_completeness": completeness,
@@ -342,7 +334,6 @@ def board_candidate_score(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy
     else:
         values = {
             "liquidity": snapshot.value("amount_percentile_20d"),
-            "residual_momentum": _mean_known(snapshot, ("peer_gap_20d_score", "peer_gap_60d_score")),
             "trend": snapshot.value("trend_score"),
             "stability": _mean_known(snapshot, ("low_volatility_score", "low_drawdown_score")),
             "execution": _mean_known(snapshot, ("capacity_score", "moderate_amplitude", "price_executability")),
@@ -366,7 +357,6 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
             "turnover_state": _mean_known(
                 snapshot, ("turnover_shock_score", "amount_shock_score", "flow_confirmation_score")
             ),
-            "peer_gap": _mean_known(snapshot, ("peer_gap_1d_score", "peer_gap_3d_score", "peer_gap_5d_score")),
             "liquidity_execution": clamp(
                 0.60 * snapshot.value("amount_percentile_20d")
                 + 0.20 * band_score(snapshot.quote.turnover_rate, 0.5, 1.5, 8.0, 15.0)
@@ -381,21 +371,15 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
                 + 0.30 * snapshot.value("tail_volume_ratio")
                 + 0.35 * snapshot.value("close_location")
             ),
-            "peer_leader": clamp(
-                0.40 * snapshot.value("peer_gap_5d_score")
-                + 0.40 * snapshot.value("peer_gap_20d_score")
-                + 0.20 * snapshot.value("leader_gap_score")
-            ),
             "turnover_flow": clamp(
                 0.35 * snapshot.value("turnover_shock_score")
                 + 0.35 * snapshot.value("amount_shock_score")
                 + 0.30 * snapshot.value("flow_confirmation_score")
             ),
             "trend": clamp(
-                0.30 * snapshot.value("ma20_60_position")
-                + 0.30 * snapshot.value("ma_slope")
-                + 0.20 * snapshot.value("breakout_20d")
-                + 0.20 * snapshot.value("industry_trend")
+                0.375 * snapshot.value("ma20_60_position")
+                + 0.375 * snapshot.value("ma_slope")
+                + 0.25 * snapshot.value("breakout_20d")
             ),
             "stability": _mean_known(snapshot, ("low_volatility_score", "low_drawdown_score")),
             "market_state": {"risk_on": 60.0, "neutral": 50.0, "risk_off": 40.0}.get(snapshot.market_regime, 50.0),
@@ -403,14 +387,10 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
         }
     elif policy.strategy is Strategy.D25:
         components = {
-            "residual_momentum": clamp(
-                0.60 * snapshot.value("peer_gap_20d_score") + 0.40 * snapshot.value("peer_gap_60d_score")
-            ),
             "trend": clamp(
-                0.35 * snapshot.value("ma20_60_structure")
-                + 0.30 * snapshot.value("ma_slope")
-                + 0.20 * snapshot.value("breakout_20d")
-                + 0.15 * snapshot.value("industry_trend")
+                7 / 17 * snapshot.value("ma20_60_structure")
+                + 6 / 17 * snapshot.value("ma_slope")
+                + 4 / 17 * snapshot.value("breakout_20d")
             ),
             "quality_value": clamp(
                 0.50 * snapshot.value("quality_score")

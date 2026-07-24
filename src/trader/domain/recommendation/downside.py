@@ -39,11 +39,24 @@ _REQUIRED_DOWNSIDE_FIELDS = (
 )
 
 
-def derive_entry_setup(snapshot: FeatureSnapshot) -> EntrySetup:
-    return derive_entry_setup_values(snapshot.quote, snapshot.values)
+def derive_entry_setup(
+    snapshot: FeatureSnapshot,
+    *,
+    require_industry_breadth: bool = False,
+) -> EntrySetup:
+    return derive_entry_setup_values(
+        snapshot.quote,
+        snapshot.values,
+        require_industry_breadth=require_industry_breadth,
+    )
 
 
-def derive_entry_setup_values(quote: MarketQuote, values: Mapping[str, float | None]) -> EntrySetup:
+def derive_entry_setup_values(
+    quote: MarketQuote,
+    values: Mapping[str, float | None],
+    *,
+    require_industry_breadth: bool = False,
+) -> EntrySetup:
     ma5 = _finite(values.get("ma5"))
     ma10 = _finite(values.get("ma10"))
     ma20 = _finite(values.get("ma20"))
@@ -82,18 +95,22 @@ def derive_entry_setup_values(quote: MarketQuote, values: Mapping[str, float | N
         and volume_ratio >= 2.0
         and close_location >= 70.0
         and 0.0 <= breakout_deviation <= 5.0
-        and industry_breadth is not None
-        and industry_breadth >= 60.0
+        and (not require_industry_breadth or (industry_breadth is not None and industry_breadth >= 60.0))
     )
     if breakout:
         return EntrySetup("volume_breakout", 100.0)
     return EntrySetup("trend_unconfirmed", 50.0)
 
 
-def assess_downside(snapshot: FeatureSnapshot, strategy: Strategy) -> DownsideAssessment:
+def assess_downside(
+    snapshot: FeatureSnapshot,
+    strategy: Strategy,
+    *,
+    require_industry_breadth: bool = False,
+) -> DownsideAssessment:
     if strategy is Strategy.LONG:
         return DownsideAssessment("pass", (), None, None, None, "none")
-    setup = derive_entry_setup(snapshot)
+    setup = derive_entry_setup(snapshot, require_industry_breadth=require_industry_breadth)
     missing = any(snapshot.optional_value(field) is None for field in _REQUIRED_DOWNSIDE_FIELDS)
     atr = snapshot.optional_value("atr20_pct")
     historical_drawdown = snapshot.optional_value("max_drawdown_20d")

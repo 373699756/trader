@@ -34,8 +34,13 @@ def _validate_filter_fusion_selection(settings: StrategySettings) -> None:
 
 def _validate_hard_filters(settings: StrategySettings) -> None:
     expected_hard_filter_thresholds = {
-        "negative_announcement_level": 0.0,
-        "shareholder_reduction_level": 0.0,
+        "major_shareholder_reduction": 0.0,
+        "financial_fraud_history": 0.0,
+        "official_investigation_history": 0.0,
+        "major_illegal_history": 0.0,
+        "fund_occupation_history": 0.0,
+        "illegal_guarantee_history": 0.0,
+        "forced_delisting_risk": 0.0,
         "unlock_risk": 0.0,
         "pledge_risk": 0.0,
         "financial_deterioration": 0.5,
@@ -65,12 +70,14 @@ def _validate_fusion(settings: StrategySettings) -> None:
 def _validate_selection(settings: StrategySettings) -> None:
     if settings.selection.default_top_k > settings.selection.maximum_top_k:
         raise ConfigurationError("default_top_k cannot exceed maximum_top_k")
-    if settings.board_policy_version != "board_policy_v17_downside_guard_ttd25_2026_07":
+    if settings.board_policy_version != "board_policy_v18_score_first_2026_07":
         raise ConfigurationError("unsupported board policy version")
     if settings.selection.maximum_board_fraction != 0.6:
         raise ConfigurationError("maximum board fraction is fixed at 0.6")
-    if dict(settings.selection.competition_group_limits) != {"main": 3, "chinext": 2, "star": 2}:
-        raise ConfigurationError("competition group limits must be main=3, chinext=2 and star=2")
+    if settings.selection.maximum_per_industry != 2:
+        raise ConfigurationError("final recommendation industry limit must be 2")
+    if settings.selection.competition_group_limits:
+        raise ConfigurationError("competition group limits must be disabled")
     if settings.selection.candidate_min_score != 50.0 or settings.selection.minimum_board_reliability != 0.85:
         raise ConfigurationError("candidate score and board reliability gates are fixed at 50 and 0.85")
 
@@ -135,7 +142,6 @@ def _validate_strategy_weights(settings: StrategySettings) -> None:
         "liquidity",
         "short_momentum",
         "trend",
-        "industry_strength",
         "data_completeness",
     }
     if set(settings.candidate_weights) != required_candidate_weights:
@@ -151,31 +157,38 @@ def _validate_strategy_weights(settings: StrategySettings) -> None:
     }:
         raise ConfigurationError("v16 selection thresholds must be 70/76/78/76")
     required_strategies = {"today", "tomorrow", "d25", "long"}
-    if set(settings.dimension_weights) != required_strategies:
-        raise ConfigurationError("dimension_weights must define today, tomorrow, d25 and long")
-    for strategy, weights in settings.dimension_weights.items():
-        _validate_weight_sum(f"dimension_weights.{strategy}", weights)
-        if set(weights) != {
-            "value_quality",
-            "financial_health",
-            "market_flow",
-            "industry_policy",
-            "risk_quality",
-        }:
-            raise ConfigurationError(f"dimension_weights.{strategy} must define the five review dimensions")
+    _validate_dimension_weights(settings, required_strategies)
     if set(settings.local_strategy_weights) != required_strategies:
         raise ConfigurationError("local_strategy_weights must define today, tomorrow, d25 and long")
     required_local_components: dict[str, set[str]] = {
-        "today": {"momentum", "liquidity", "industry", "sentiment", "protection"},
+        "today": {"momentum", "liquidity", "sentiment", "protection"},
         "tomorrow": {"liquidity", "momentum", "trend", "historical_edge", "execution", "tail_structure"},
         "d25": {"momentum", "trend", "liquidity", "execution", "not_overheated"},
-        "long": {"value", "growth", "quality", "industry_policy", "protection"},
+        "long": {"value", "growth", "quality", "protection"},
     }
     for strategy, weights in settings.local_strategy_weights.items():
         _validate_weight_sum(f"local_strategy_weights.{strategy}", weights)
         if set(weights) != required_local_components[strategy]:
             raise ConfigurationError(f"local_strategy_weights.{strategy} components are invalid")
     _validate_board_weights(settings)
+
+
+def _validate_dimension_weights(settings: StrategySettings, required_strategies: set[str]) -> None:
+    if set(settings.dimension_weights) != required_strategies:
+        raise ConfigurationError("dimension_weights must define today, tomorrow, d25 and long")
+    required_dimensions = {
+        "value_quality",
+        "financial_health",
+        "market_flow",
+        "industry_policy",
+        "risk_quality",
+    }
+    for strategy, weights in settings.dimension_weights.items():
+        _validate_weight_sum(f"dimension_weights.{strategy}", weights)
+        if set(weights) != required_dimensions:
+            raise ConfigurationError(f"dimension_weights.{strategy} must define the five review dimensions")
+        if weights["industry_policy"] != 0.0:
+            raise ConfigurationError(f"dimension_weights.{strategy}.industry_policy must be a non-scoring tag")
 
 
 def _validate_risk_registry(settings: StrategySettings) -> None:
@@ -406,22 +419,21 @@ def _validate_board_weights(settings: StrategySettings) -> None:
     if set(settings.board_candidate_weights) != strategies or set(settings.board_local_strategy_weights) != strategies:
         raise ConfigurationError("board weights must define today, tomorrow and d25")
     candidate_components = {
-        "today": {"liquidity", "intraday_structure", "turnover_state", "peer_gap", "data_completeness"},
-        "tomorrow": {"liquidity", "peer_gap", "trend", "stability", "data_completeness"},
-        "d25": {"liquidity", "residual_momentum", "trend", "stability", "execution", "data_completeness"},
+        "today": {"liquidity", "intraday_structure", "turnover_state", "data_completeness"},
+        "tomorrow": {"liquidity", "trend", "stability", "data_completeness"},
+        "d25": {"liquidity", "trend", "stability", "execution", "data_completeness"},
     }
     local_components = {
-        "today": {"intraday_structure", "turnover_state", "peer_gap", "liquidity_execution", "stability"},
+        "today": {"intraday_structure", "turnover_state", "liquidity_execution", "stability"},
         "tomorrow": {
             "tail_structure",
-            "peer_leader",
             "turnover_flow",
             "trend",
             "stability",
             "market_state",
             "entry_quality",
         },
-        "d25": {"residual_momentum", "trend", "quality_value", "stability", "flow_liquidity", "entry_quality"},
+        "d25": {"trend", "quality_value", "stability", "flow_liquidity", "entry_quality"},
     }
     for strategy in strategies:
         candidate_boards = settings.board_candidate_weights[strategy]

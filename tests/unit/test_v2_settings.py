@@ -24,7 +24,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
     assert runtime.schema_version == 5
-    assert strategy.schema_version == 10
+    assert strategy.schema_version == 11
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v17"
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.pipeline.market_workers == 5
@@ -113,8 +113,13 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.deepseek.challenger_limits == {"today": 6, "tomorrow": 6, "d25": 5, "long": 0}
     assert strategy.hard_filters.blacklist_codes == ()
     assert strategy.hard_filters.structured_risk_thresholds == {
-        "negative_announcement_level": 0.0,
-        "shareholder_reduction_level": 0.0,
+        "major_shareholder_reduction": 0.0,
+        "financial_fraud_history": 0.0,
+        "official_investigation_history": 0.0,
+        "major_illegal_history": 0.0,
+        "fund_occupation_history": 0.0,
+        "illegal_guarantee_history": 0.0,
+        "forced_delisting_risk": 0.0,
         "unlock_risk": 0.0,
         "pledge_risk": 0.0,
         "financial_deterioration": 0.5,
@@ -122,7 +127,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.fusion.local_weight == pytest.approx(0.68)
     assert strategy.fusion.deepseek_weight == pytest.approx(0.32)
     regulatory_rule = next(rule for rule in strategy.risk_rules if rule.risk_code == "regulatory_risk")
-    assert regulatory_rule.veto is True
+    assert regulatory_rule.veto is False
     assert regulatory_rule.allowed_evidence_types == ("announcement", "regulatory_filing")
     assert regulatory_rule.trigger_factor == "negative_announcement_level"
     assert regulatory_rule.trigger_thresholds == (3.0,)

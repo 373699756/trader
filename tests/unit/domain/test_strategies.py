@@ -51,12 +51,11 @@ def test_today_score_matches_all_documented_component_and_subcomponent_weights(f
         {
             "momentum": 88.75,
             "liquidity": 82.0,
-            "industry": 60.0,
             "sentiment": 59.5,
             "protection": 66.75,
         }
     )
-    assert result.base_score == pytest.approx(76.1375)
+    assert result.base_score == pytest.approx(77.9305555556)
 
 
 def test_score_strategy_uses_override_component_weights(feature_factory) -> None:
@@ -65,7 +64,6 @@ def test_score_strategy_uses_override_component_weights(feature_factory) -> None
         Strategy.TODAY: {
             "momentum": 0.0,
             "liquidity": 0.0,
-            "industry": 0.0,
             "sentiment": 1.0,
             "protection": 0.0,
         },
@@ -88,7 +86,6 @@ def test_score_strategy_uses_override_component_weights(feature_factory) -> None
             "value": 1.0,
             "growth": 0.0,
             "quality": 0.0,
-            "industry_policy": 0.0,
             "protection": 0.0,
         },
     }
@@ -129,13 +126,13 @@ def test_tomorrow_score_matches_all_documented_component_and_subcomponent_weight
         {
             "liquidity": 82.0,
             "momentum": 22.0,
-            "trend": 25.3,
+            "trend": 20.625,
             "historical_edge": 21.6,
             "execution": 24.7,
             "tail_structure": 28.0,
         }
     )
-    assert result.base_score == pytest.approx(38.77)
+    assert result.base_score == pytest.approx(37.835)
 
 
 def test_tomorrow_missing_tail_inputs_are_neutral_without_becoming_zero(feature_factory) -> None:

@@ -14,7 +14,13 @@ from trader.domain.market.models import (
     Evidence,
     MarketQuote,
 )
-from trader.domain.market.research import FinancialReport, ResearchAnnouncement, ResearchObservation
+from trader.domain.market.research import (
+    CorporateRiskCategory,
+    CorporateRiskFact,
+    FinancialReport,
+    ResearchAnnouncement,
+    ResearchObservation,
+)
 from trader.domain.market.tail import MinuteBar
 from trader.infra.market_data.history import DailyBar
 from trader.infra.market_data.merge_quote import source_name, source_priority
@@ -192,11 +198,17 @@ def _merge_research_observation(
     old_entry: _ResearchEntry | None,
     current: ResearchObservation,
 ) -> ResearchObservation:
-    if old_entry is None or not current.source_errors:
+    if old_entry is None:
         return current
     previous = old_entry.observation
     failed_sources = {error.partition(":")[0] for error in current.source_errors}
     evidence = tuple({item.evidence_id: item for item in (*previous.evidence, *current.evidence)}.values())[-60:]
+    corporate_risk_facts = tuple(
+        {
+            (item.category, item.evidence_id): item
+            for item in (*previous.corporate_risk_facts, *current.corporate_risk_facts)
+        }.values()
+    )
     return replace(
         current,
         financial=(
@@ -222,6 +234,15 @@ def _merge_research_observation(
             if "unlock" in failed_sources and current.unlock_ratio_pct is None
             else current.unlock_ratio_pct
         ),
+        corporate_risk_facts=corporate_risk_facts,
+        corporate_risk_history_complete=(
+            previous.corporate_risk_history_complete
+            if "announcements" in failed_sources and not current.corporate_risk_history_complete
+            else current.corporate_risk_history_complete
+        ),
+        corporate_risk_registry_version=(
+            current.corporate_risk_registry_version or previous.corporate_risk_registry_version
+        ),
         evidence=evidence,
         source_errors=tuple(dict.fromkeys((*previous.source_errors, *current.source_errors))),
     )
@@ -242,6 +263,11 @@ def _serialize_research_observation(observation: ResearchObservation) -> dict[st
         "announcements_available": observation.announcements_available,
         "pledge_ratio_pct": observation.pledge_ratio_pct,
         "unlock_ratio_pct": observation.unlock_ratio_pct,
+        "corporate_risk_facts": tuple(
+            _serialize_corporate_risk_fact(item) for item in observation.corporate_risk_facts
+        ),
+        "corporate_risk_history_complete": observation.corporate_risk_history_complete,
+        "corporate_risk_registry_version": observation.corporate_risk_registry_version,
         "evidence": tuple(_serialize_evidence(item) for item in observation.evidence),
         "source_errors": list(observation.source_errors),
     }
@@ -251,6 +277,7 @@ def _deserialize_research_observation(raw: Mapping[str, object]) -> ResearchObse
     financial_raw = raw.get("financial")
     announcements_raw = raw.get("announcements")
     evidence_raw = raw.get("evidence")
+    corporate_risk_raw = raw.get("corporate_risk_facts")
     source_errors = raw.get("source_errors")
     if not isinstance(source_errors, list):
         raise ValueError("source_errors must be a list")
@@ -264,6 +291,13 @@ def _deserialize_research_observation(raw: Mapping[str, object]) -> ResearchObse
         announcements_available=bool(raw.get("announcements_available", False)),
         pledge_ratio_pct=_optional_float(raw.get("pledge_ratio_pct")),
         unlock_ratio_pct=_optional_float(raw.get("unlock_ratio_pct")),
+        corporate_risk_facts=tuple(
+            _deserialize_corporate_risk_fact(item) for item in corporate_risk_raw if isinstance(item, dict)
+        )
+        if isinstance(corporate_risk_raw, list)
+        else (),
+        corporate_risk_history_complete=bool(raw.get("corporate_risk_history_complete", False)),
+        corporate_risk_registry_version=str(raw.get("corporate_risk_registry_version") or ""),
         evidence=tuple(_deserialize_evidence(item) for item in evidence_raw if isinstance(item, dict))
         if isinstance(evidence_raw, list)
         else (),
@@ -314,6 +348,8 @@ def _serialize_research_announcement(item: ResearchAnnouncement) -> dict[str, ob
     return {
         "title": item.title,
         "published_at": item.published_at.isoformat(),
+        "announcement_id": item.announcement_id,
+        "source": item.source,
     }
 
 
@@ -321,6 +357,33 @@ def _deserialize_research_announcement(raw: Mapping[str, object]) -> ResearchAnn
     return ResearchAnnouncement(
         title=str(raw.get("title") or ""),
         published_at=_as_aware_datetime(raw, "published_at"),
+        announcement_id=str(raw.get("announcement_id") or ""),
+        source=str(raw.get("source") or "issuer_disclosure"),
+    )
+
+
+def _serialize_corporate_risk_fact(item: CorporateRiskFact) -> dict[str, object]:
+    return {
+        "category": item.category.value,
+        "announced_at": item.announced_at.isoformat(),
+        "resolved_at": item.resolved_at.isoformat() if item.resolved_at is not None else None,
+        "evidence_id": item.evidence_id,
+        "source": item.source,
+    }
+
+
+def _deserialize_corporate_risk_fact(raw: Mapping[str, object]) -> CorporateRiskFact:
+    resolved_raw = raw.get("resolved_at")
+    return CorporateRiskFact(
+        category=CorporateRiskCategory(str(raw.get("category") or "")),
+        announced_at=_as_aware_datetime(raw, "announced_at"),
+        resolved_at=(
+            _as_aware_datetime({"resolved_at": resolved_raw}, "resolved_at")
+            if isinstance(resolved_raw, str) and resolved_raw
+            else None
+        ),
+        evidence_id=str(raw.get("evidence_id") or ""),
+        source=str(raw.get("source") or ""),
     )
 
 

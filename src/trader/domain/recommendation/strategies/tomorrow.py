@@ -26,10 +26,9 @@ def score_tomorrow(snapshot: FeatureSnapshot, component_weights: Mapping[str, fl
         + 0.15 * normalized(snapshot, "moderate_daily_return")
     )
     trend = (
-        0.30 * normalized(snapshot, "ma20_60_position")
-        + 0.30 * normalized(snapshot, "ma_slope")
-        + 0.20 * normalized(snapshot, "breakout_20d")
-        + 0.20 * normalized(snapshot, "industry_trend")
+        0.375 * normalized(snapshot, "ma20_60_position")
+        + 0.375 * normalized(snapshot, "ma_slope")
+        + 0.25 * normalized(snapshot, "breakout_20d")
     )
     historical_edge = (
         0.45 * normalized(snapshot, "risk_adjusted_return_20d")

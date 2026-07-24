@@ -17,11 +17,13 @@ import requests
 
 from trader.domain.market.models import Evidence
 from trader.domain.market.research import (
+    CorporateRiskFact,
     FinancialReport,
     LongResearchPolicy,
     ResearchAnnouncement,
     ResearchObservation,
     announcement_level,
+    corporate_risk_facts_from_announcements,
     reduction_level,
 )
 from trader.infra.market_data.akshare_news import fetch_news as _fetch_news
@@ -42,6 +44,35 @@ from trader.infra.market_data.akshare_parsing import (
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter, atomic_write_json
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _corporate_risk_projection(
+    announcements: list[ResearchAnnouncement],
+    observed_at: datetime,
+    version: str,
+) -> tuple[tuple[CorporateRiskFact, ...], tuple[Evidence, ...]]:
+    facts = corporate_risk_facts_from_announcements(tuple(announcements))
+    by_id = {announcement.announcement_id: announcement for announcement in announcements}
+    evidence = tuple(
+        Evidence(
+            evidence_id=fact.evidence_id,
+            evidence_type="regulatory_filing",
+            title=by_id[fact.evidence_id].title,
+            source="issuer_disclosure",
+            published_at=fact.announced_at,
+            received_at=observed_at,
+            data_version=version,
+        )
+        for fact in facts
+        if fact.evidence_id in by_id
+    )
+    return facts, evidence
+
+
+def _announcement_history_complete(payload: Mapping[str, object], valid_rows: int) -> bool:
+    data = payload.get("data")
+    total_hits = data.get("total_hits") if isinstance(data, Mapping) else None
+    return isinstance(total_hits, int) and total_hits >= 0 and total_hits <= valid_rows
 
 
 class HttpResponse(Protocol):
@@ -96,6 +127,9 @@ class AkshareResearchClient:
         financial_evidence: tuple[Evidence, ...] = ()
         announcements: tuple[ResearchAnnouncement, ...] = ()
         announcement_evidence: tuple[Evidence, ...] = ()
+        corporate_risk_facts: tuple[CorporateRiskFact, ...] = ()
+        corporate_risk_history_complete = False
+        corporate_risk_registry_version = ""
         announcements_available = False
         pledge_ratio: float | None = None
         pledge_evidence: tuple[Evidence, ...] = ()
@@ -108,7 +142,13 @@ class AkshareResearchClient:
             source_errors.append(_source_error("financial", exc))
 
         try:
-            announcements, announcement_evidence = self._fetch_announcements(code, point_in_time, policy)
+            (
+                announcements,
+                announcement_evidence,
+                corporate_risk_facts,
+                corporate_risk_history_complete,
+                corporate_risk_registry_version,
+            ) = self._fetch_announcements(code, point_in_time, policy)
         except _SOURCE_EXCEPTIONS as exc:
             source_errors.append(_source_error("announcements", exc))
         else:
@@ -140,6 +180,9 @@ class AkshareResearchClient:
             announcements_available=announcements_available,
             pledge_ratio_pct=pledge_ratio,
             unlock_ratio_pct=unlock_ratio,
+            corporate_risk_facts=corporate_risk_facts,
+            corporate_risk_history_complete=corporate_risk_history_complete,
+            corporate_risk_registry_version=corporate_risk_registry_version,
             evidence=evidence,
             source_errors=tuple(source_errors),
         )
@@ -229,19 +272,25 @@ class AkshareResearchClient:
         code: str,
         observed_at: datetime,
         policy: LongResearchPolicy,
-    ) -> tuple[tuple[ResearchAnnouncement, ...], tuple[Evidence, ...]]:
+    ) -> tuple[
+        tuple[ResearchAnnouncement, ...],
+        tuple[Evidence, ...],
+        tuple[CorporateRiskFact, ...],
+        bool,
+        str,
+    ]:
         payload = self._request_json(
             "https://np-anotice-stock.eastmoney.com/api/security/ann",
             params={
                 "sr": "-1",
-                "page_size": str(policy.announcement_limit),
+                "page_size": "10000",
                 "page_index": "1",
                 "ann_type": "A",
                 "client_source": "web",
                 "f_node": "0",
                 "s_node": "0",
                 "stock_list": code,
-                "begin_time": (observed_at - timedelta(days=policy.announcement_lookback_days)).date().isoformat(),
+                "begin_time": "1990-01-01",
                 "end_time": observed_at.date().isoformat(),
             },
         )
@@ -250,6 +299,7 @@ class AkshareResearchClient:
         cutoff = observed_at - timedelta(days=policy.announcement_lookback_days)
         version = _payload_version("eastmoney-announcement", payload)
         parsed: list[tuple[ResearchAnnouncement, tuple[Evidence, ...], int]] = []
+        historical_announcements: list[ResearchAnnouncement] = []
         seen: set[tuple[str, datetime]] = set()
         invalid_rows = 0
         for row in rows:
@@ -258,13 +308,22 @@ class AkshareResearchClient:
             if not title or published_at is None:
                 invalid_rows += 1
                 continue
-            if not cutoff <= published_at <= observed_at:
+            if published_at > observed_at:
                 continue
             identity = (str(row.get("art_code") or title), published_at)
             if identity in seen:
                 continue
             seen.add(identity)
-            announcement = ResearchAnnouncement(title=title[:240], published_at=published_at)
+            art_code = str(row.get("art_code") or "")
+            announcement = ResearchAnnouncement(
+                title=title[:240],
+                published_at=published_at,
+                announcement_id=f"announcement:{code}:{art_code or identity[0]}",
+                source="issuer_disclosure",
+            )
+            historical_announcements.append(announcement)
+            if published_at < cutoff:
+                continue
             negative_level = announcement_level(title, policy)
             ownership_level = reduction_level(title, policy)
             evidence_id = hashlib.sha256(
@@ -316,8 +375,14 @@ class AkshareResearchClient:
             received_at=observed_at,
             data_version=version,
         )
-        evidence = (summary, *(evidence for item in evidence_rows for evidence in item[1]))
-        return tuple(item[0] for item in parsed), evidence
+        corporate_facts, corporate_evidence = _corporate_risk_projection(
+            historical_announcements,
+            observed_at,
+            version,
+        )
+        evidence = (summary, *corporate_evidence, *(evidence for item in evidence_rows for evidence in item[1]))
+        history_complete = _announcement_history_complete(payload, len(historical_announcements))
+        return tuple(item[0] for item in parsed), evidence, corporate_facts, history_complete, version
 
     def _fetch_pledge(
         self,

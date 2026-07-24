@@ -37,13 +37,24 @@ from trader.domain.recommendation.ranking import (
     candidate_score,
 )
 
-_PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 _STRUCTURED_RISK_FIELDS = (
     "financial_deterioration",
-    "negative_announcement_level",
+    "financial_fraud_history",
+    "forced_delisting_risk",
+    "fund_occupation_history",
+    "illegal_guarantee_history",
+    "major_illegal_history",
+    "major_shareholder_reduction",
+    "official_investigation_history",
     "pledge_risk",
-    "shareholder_reduction_level",
     "unlock_risk",
+    "corporate_risk_history_unavailable",
+)
+_PRESELECTION_VALUE_FIELDS = (
+    *CORE_FIELDS,
+    "amount_median_20d",
+    "trend_score",
+    *_STRUCTURED_RISK_FIELDS,
 )
 _LONG_RESEARCH_FIELDS = (
     "value_score",
@@ -112,8 +123,16 @@ class PrepareSnapshotOptions(_SnapshotRequiredOptions, _SnapshotOptionalOptions)
     pass
 
 
-class BuildSnapshotOptions(PrepareSnapshotOptions):
+class _BuildSnapshotRequiredOptions(PrepareSnapshotOptions):
     review_port: DeepSeekReviewPort | None
+
+
+class _BuildSnapshotOptionalOptions(TypedDict, total=False):
+    legacy_replay: bool
+
+
+class BuildSnapshotOptions(_BuildSnapshotRequiredOptions, _BuildSnapshotOptionalOptions):
+    pass
 
 
 class _RefreshFilterOptions(TypedDict):
@@ -329,6 +348,7 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
         phase = options["phase"]
         review_port = options["review_port"]
         review_deadline = options["review_deadline"]
+        legacy_replay = options.get("legacy_replay", False)
         prepared = self.prepare_snapshot(
             strategy,
             features,
@@ -355,10 +375,15 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
                 deadline=review_deadline,
                 contexts=self.review_contexts(prepared),
             )
-            if review_port is not None and prepared.review_eligible
+            if review_port is not None and prepared.review_eligible and (strategy is not Strategy.LONG or legacy_replay)
             else {}
         )
-        return self.finalize_snapshot(prepared, reviews)
+        return self.finalize_snapshot(
+            prepared,
+            reviews,
+            legacy_replay=legacy_replay,
+            projection_stage="hybrid" if legacy_replay or reviews else "local",
+        )
 
     def prepare_snapshot(
         self,

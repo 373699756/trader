@@ -165,8 +165,10 @@ def test_legacy_v14_growth_board_filter_replays_with_original_algorithm(
         requested_codes=(),
         preselect_max_age_seconds=20.0,
         candidate_pool_size=120,
+        legacy_replay=True,
     )
     assert snapshot.replay_input is not None
+    assert "projection_stage" not in snapshot.metadata
     legacy_input = replace(
         snapshot.replay_input,
         algorithm_version="engine_v10_section9_hard_filter_2026_07",

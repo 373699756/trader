@@ -29,11 +29,10 @@ from trader.domain.review.models import (
 from trader.domain.review.rules import Rating
 
 CANDIDATE_WEIGHTS = {
-    "liquidity": 0.35,
-    "short_momentum": 0.25,
-    "trend": 0.20,
-    "industry_strength": 0.10,
-    "data_completeness": 0.10,
+    "liquidity": 7 / 18,
+    "short_momentum": 5 / 18,
+    "trend": 2 / 9,
+    "data_completeness": 1 / 9,
 }
 
 
@@ -56,6 +55,15 @@ def test_top_k_enforces_industry_cap_and_stable_tie_break(feature_factory) -> No
     assert _select_top_k(rows, top_k=0, maximum_per_industry=2) == ()
     with pytest.raises(ValueError, match="between 0 and 18"):
         _select_top_k(rows, top_k=19, maximum_per_industry=2)
+
+
+def test_top_k_treats_missing_industry_as_one_unknown_group(feature_factory) -> None:
+    rows = [_recommendation(feature_factory(code=f"60000{index}", industry=""), 90.0 - index) for index in range(1, 5)]
+
+    selected, skips = _select_top_k_with_audit(rows, top_k=4, maximum_per_industry=2)
+
+    assert [item.features.quote.code for item in selected] == ["600001", "600002"]
+    assert [item.reason for item in skips] == ["industry_limit", "industry_limit"]
 
 
 def test_top_k_ignores_review_audit_fields_when_scores_tie(feature_factory) -> None:
@@ -174,6 +182,24 @@ def test_action_policy_observes_missing_core_features(feature_factory) -> None:
     assert reason == "insufficient_core_features"
 
 
+def test_action_policy_observes_incomplete_corporate_risk_history(feature_factory) -> None:
+    recommendation = _recommendation(
+        feature_factory(values={"corporate_risk_history_unavailable": 1.0}),
+        90.0,
+    )
+
+    action, reason = _action_for(
+        recommendation,
+        {"tomorrow": 72.0},
+        phase="afternoon",
+        is_stale=False,
+        observation_margin=5.0,
+    )
+
+    assert action is RecommendationAction.OBSERVE
+    assert reason == "corporate_risk_history_unavailable"
+
+
 def test_action_policy_does_not_apply_bearish_audit_rating(feature_factory) -> None:
     recommendation = replace(_recommendation(feature_factory(), 90.0), strategy=Strategy.TODAY)
     recommendation = replace(
@@ -273,7 +299,9 @@ def test_board_fraction_uses_ceil_at_all_topk_boundaries(feature_factory, top_k:
 
 
 @pytest.mark.parametrize(("board", "limit"), [(Board.MAIN, 3), (Board.CHINEXT, 2), (Board.STAR, 2)])
-def test_competition_group_limit_records_first_skipped_boundary(feature_factory, board: Board, limit: int) -> None:
+def test_competition_group_mapping_does_not_override_final_industry_cap(
+    feature_factory, board: Board, limit: int
+) -> None:
     prefix = {Board.MAIN: "600", Board.CHINEXT: "300", Board.STAR: "688"}[board]
     rows = []
     for index in range(limit + 1):
@@ -284,14 +312,14 @@ def test_competition_group_limit_records_first_skipped_boundary(feature_factory,
     selected, skips = _select_top_k_with_audit(
         rows,
         top_k=10,
-        maximum_per_industry=10,
+        maximum_per_industry=2,
         maximum_board_fraction=1.0,
         competition_group_limits={board: limit},
     )
 
-    assert len(selected) == limit
-    assert skips[0].global_rank == limit + 1
-    assert skips[0].reason == "competition_group_limit"
+    assert len(selected) == 2
+    assert skips[0].global_rank == 3
+    assert skips[0].reason == "industry_limit"
 
 
 def _action_for(

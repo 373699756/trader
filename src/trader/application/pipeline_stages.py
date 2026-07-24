@@ -345,13 +345,17 @@ def _score_strategies_on_workers(
         "local_scoring",
         (time.perf_counter() - local_started) * 1000.0,
     )
+    local_snapshots = _publish_prepared_snapshots(
+        pipeline,
+        context,
+        prepared_snapshots,
+        {},
+        projection_stage="local",
+    )
     measure_deepseek = (
         pipeline._reviews is not None
         and context.phase not in {MarketPhase.DEEPSEEK_CUTOFF, MarketPhase.FINAL_QUOTE}
-        and any(
-            prepared.eligible if prepared.strategy is Strategy.LONG else prepared.review_eligible
-            for prepared in prepared_snapshots
-        )
+        and any(prepared.review_eligible for prepared in prepared_snapshots if prepared.strategy is not Strategy.LONG)
     )
     deepseek_started = time.perf_counter()
     review_results = _review_prepared_snapshots(pipeline, context, prepared_snapshots)
@@ -360,7 +364,21 @@ def _score_strategies_on_workers(
             "deepseek_review",
             (time.perf_counter() - deepseek_started) * 1000.0,
         )
-    return _publish_prepared_snapshots(pipeline, context, prepared_snapshots, review_results)
+    hybrid_prepared = tuple(
+        prepared
+        for prepared in prepared_snapshots
+        if prepared.strategy is not Strategy.LONG and review_results.get(prepared.strategy)
+    )
+    hybrid_snapshots = _publish_prepared_snapshots(
+        pipeline,
+        context,
+        hybrid_prepared,
+        review_results,
+        projection_stage="hybrid",
+    )
+    latest = {snapshot.strategy: snapshot for snapshot in local_snapshots}
+    latest.update((snapshot.strategy, snapshot) for snapshot in hybrid_snapshots)
+    return tuple(latest[prepared.strategy] for prepared in prepared_snapshots if prepared.strategy in latest)
 
 
 def _preheat_reviews(
@@ -500,22 +518,6 @@ def _review_prepared_snapshots(
             )
         for strategy, review_future in review_futures.items():
             review_results[strategy] = _resolve_review(pipeline, strategy, review_future)
-        long_prepared = next(
-            (prepared for prepared in prepared_snapshots if prepared.strategy is Strategy.LONG and prepared.eligible),
-            None,
-        )
-        if long_prepared is not None:
-            long_review = submit_required(
-                pipeline,
-                pipeline._deepseek_pool,
-                pipeline._reviews.review,
-                Strategy.LONG,
-                long_prepared.eligible,
-                phase=long_prepared.phase,
-                deadline=long_prepared.review_deadline,
-                contexts=pipeline._engine.review_contexts(long_prepared),
-            )
-            review_results[Strategy.LONG] = _resolve_review(pipeline, Strategy.LONG, long_review)
     return review_results
 
 
@@ -524,6 +526,8 @@ def _publish_prepared_snapshots(
     context: _ScoringContext,
     prepared_snapshots: Sequence[PreparedSnapshot],
     review_results: Mapping[Strategy, Mapping[str, DeepSeekReview]],
+    *,
+    projection_stage: str,
 ) -> tuple[RecommendationSnapshot, ...]:
     snapshots: list[RecommendationSnapshot] = []
     for prepared in prepared_snapshots:
@@ -532,7 +536,11 @@ def _publish_prepared_snapshots(
             raise EventDeadlineExpiredError(f"event deadline expired during execution: {PipelineTask.SCORE.value}")
         reviews = review_results.get(prepared.strategy, {})
         snapshot = replace(
-            pipeline._engine.finalize_snapshot(prepared, reviews),
+            pipeline._engine.finalize_snapshot(
+                prepared,
+                reviews,
+                projection_stage=projection_stage,
+            ),
             config_version=pipeline._config_version,
         )
         pipeline._state.record_strategy_latency(

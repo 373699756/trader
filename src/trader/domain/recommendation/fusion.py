@@ -158,6 +158,8 @@ def _review_score(
     coverage = 0.0
     known = 0
     for name in DIMENSION_NAMES:
+        if weights[name] == 0.0:
+            continue
         dimension = review.dimensions.get(name)
         if dimension is None or dimension.is_unknown:
             total += 50.0 * weights[name]

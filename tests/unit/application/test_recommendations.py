@@ -14,6 +14,7 @@ from trader.domain.recommendation.models import (
     Strategy,
 )
 from trader.domain.recommendation.strategies import score_strategy
+from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome
 
 
 def test_targeted_quotes_are_hard_filtered_again_before_review_and_scoring(
@@ -232,6 +233,79 @@ def test_formal_and_watch_pools_have_independent_topk_capacity(
     assert len(snapshot.recommendations) == 18
     assert sum(item.action is RecommendationAction.EXECUTABLE for item in snapshot.recommendations) == 10
     assert sum(item.action is RecommendationAction.OBSERVE for item in snapshot.recommendations) == 8
+
+
+def test_formal_and_watch_pools_apply_industry_limit_independently(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    features = []
+    for index in range(6):
+        feature = application_feature_factory(f"600{index:03d}", now, industry="同一行业")
+        if index >= 3:
+            feature = replace(feature, values={**feature.values, "trend_breakdown": 1.0})
+        features.append(feature)
+
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TODAY,
+        tuple(features),
+        now=now,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="independent-industry-pools-v18",
+        review_port=None,
+        review_deadline=datetime.fromisoformat("2026-07-16T11:20:00+08:00"),
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+        filter_details=(),
+    )
+
+    assert sum(item.action is RecommendationAction.EXECUTABLE for item in snapshot.recommendations) == 2
+    assert sum(item.action is RecommendationAction.OBSERVE for item in snapshot.recommendations) == 2
+
+
+def test_local_and_hybrid_projections_have_distinct_snapshot_identity(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    engine = RecommendationEngine(recommendation_policy)
+    prepared = engine.prepare_snapshot(
+        Strategy.TODAY,
+        (application_feature_factory("600001", now),),
+        now=now,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="projection-identity-v18",
+        review_deadline=datetime.fromisoformat("2026-07-16T11:20:00+08:00"),
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    dimensions = {
+        name: DimensionAssessment(name, 80.0, 1.0, "fixture")
+        for name in ("value_quality", "financial_health", "market_flow", "risk_quality")
+    }
+    review = DeepSeekReview(
+        code="600001",
+        outcome=ReviewOutcome.APPLIED,
+        dimensions=dimensions,
+        risk_facts=(),
+        completed_at=now,
+    )
+
+    local = engine.finalize_snapshot(prepared, {}, projection_stage="local")
+    hybrid = engine.finalize_snapshot(
+        prepared,
+        {"600001": review},
+        projection_stage="hybrid",
+    )
+
+    assert local.snapshot_id != hybrid.snapshot_id
+    assert local.metadata["projection_stage"] == "local"
+    assert hybrid.metadata["projection_stage"] == "hybrid"
 
 
 def test_preselection_reports_history_warming_separately_from_hard_filter_reason(

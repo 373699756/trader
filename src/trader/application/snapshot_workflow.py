@@ -23,6 +23,8 @@ from trader.application.pipeline_stages import (
 )
 from trader.application.pipeline_workers import submit_required_urgent
 from trader.application.ports.market import MarketDataUnavailableError
+from trader.application.ports.reviews import DeepSeekReviewPort
+from trader.application.recommendation_finalization import PreparedSnapshot
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
 from trader.application.snapshot_publication import admit_snapshot_to_p6
 from trader.application.status import RuntimeState
@@ -32,6 +34,7 @@ from trader.domain.recommendation.models import (
     RecommendationSnapshot,
     Strategy,
 )
+from trader.domain.review.models import DeepSeekReview
 
 if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline
@@ -413,39 +416,81 @@ def score_strategy(
             f"{strategy.value} board scoring degraded; retained latest complete snapshot: " + ",".join(reasons)[:350]
         )
         return None
-    reviews = (
-        review_port.review(
-            strategy,
-            prepared.review_eligible,
-            phase=phase.value,
-            deadline=deadline,
-            contexts=pipeline._engine.review_contexts(prepared),
-        )
-        if review_port is not None and prepared.review_eligible
-        else {}
+    local_snapshot = _decorate_live_snapshot(
+        pipeline,
+        pipeline._engine.finalize_snapshot(prepared, {}, projection_stage="local"),
     )
-    snapshot = pipeline._engine.finalize_snapshot(prepared, reviews)
-    snapshot = replace(snapshot, config_version=pipeline._config_version)
-    market_metadata = pipeline._market_metadata.snapshot_metadata(
-        tuple(item.features.quote.code for item in snapshot.recommendations)
-    )
-    if market_metadata.merge_epoch:
-        snapshot = replace(
-            snapshot,
-            metadata={**snapshot.metadata, **market_metadata.to_json()},
-            degraded_reasons=tuple(dict.fromkeys((*snapshot.degraded_reasons, *market_metadata.degraded_reasons))),
+    if not _publish_live_snapshot(pipeline, local_snapshot, now):
+        return None
+    reviews = _review_local_snapshot(pipeline, prepared, review_port)
+    snapshot = local_snapshot
+    if reviews:
+        hybrid_snapshot = _decorate_live_snapshot(
+            pipeline,
+            pipeline._engine.finalize_snapshot(
+                prepared,
+                reviews,
+                projection_stage="hybrid",
+            ),
         )
+        if _publish_live_snapshot(pipeline, hybrid_snapshot, now):
+            snapshot = hybrid_snapshot
     pipeline._state.record_strategy_latency(
         strategy,
         round((time.perf_counter() - scoring_started) * 1000.0, 3),
     )
+    return snapshot
+
+
+def _review_local_snapshot(
+    pipeline: RecommendationPipeline,
+    prepared: PreparedSnapshot,
+    review_port: DeepSeekReviewPort | None,
+) -> Mapping[str, DeepSeekReview]:
+    if review_port is None or not prepared.review_eligible or prepared.strategy is Strategy.LONG:
+        return {}
+    try:
+        return review_port.review(
+            prepared.strategy,
+            prepared.review_eligible,
+            phase=prepared.phase,
+            deadline=prepared.review_deadline,
+            contexts=pipeline._engine.review_contexts(prepared),
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        pipeline._state.record_error(f"{prepared.strategy.value} DeepSeek review degraded: {str(exc)[:350]}")
+        return {}
+
+
+def _decorate_live_snapshot(
+    pipeline: RecommendationPipeline,
+    snapshot: RecommendationSnapshot,
+) -> RecommendationSnapshot:
+    snapshot = replace(snapshot, config_version=pipeline._config_version)
+    market_metadata = pipeline._market_metadata.snapshot_metadata(
+        tuple(item.features.quote.code for item in snapshot.recommendations)
+    )
+    if not market_metadata.merge_epoch:
+        return snapshot
+    return replace(
+        snapshot,
+        metadata={**snapshot.metadata, **market_metadata.to_json()},
+        degraded_reasons=tuple(dict.fromkeys((*snapshot.degraded_reasons, *market_metadata.degraded_reasons))),
+    )
+
+
+def _publish_live_snapshot(
+    pipeline: RecommendationPipeline,
+    snapshot: RecommendationSnapshot,
+    now: datetime,
+) -> bool:
     if not admit_snapshot_to_p6(pipeline, snapshot):
-        return None
+        return False
     pipeline._state.publish(snapshot)
     save_checkpoint_if_due(pipeline, snapshot, now)
     pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
     pipeline._publisher.publish(snapshot)
-    return snapshot
+    return True
 
 
 def topk_quote_age(

@@ -66,6 +66,19 @@ from trader.domain.review.rules import derive_local_risk_facts
 
 _STRUCTURED_RISK_FIELDS = (
     "financial_deterioration",
+    "financial_fraud_history",
+    "forced_delisting_risk",
+    "fund_occupation_history",
+    "illegal_guarantee_history",
+    "major_illegal_history",
+    "major_shareholder_reduction",
+    "official_investigation_history",
+    "pledge_risk",
+    "unlock_risk",
+    "corporate_risk_history_unavailable",
+)
+_LEGACY_STRUCTURED_RISK_FIELDS = (
+    "financial_deterioration",
     "negative_announcement_level",
     "pledge_risk",
     "shareholder_reduction_level",
@@ -78,6 +91,14 @@ _LONG_RESEARCH_FIELDS = (
     "industry_policy_score",
     "risk_protection_score",
     *_STRUCTURED_RISK_FIELDS,
+)
+_LEGACY_LONG_RESEARCH_FIELDS = (
+    "value_score",
+    "growth_score",
+    "quality_score",
+    "industry_policy_score",
+    "risk_protection_score",
+    *_LEGACY_STRUCTURED_RISK_FIELDS,
 )
 _CLOSE_FALLBACK_OBSERVE_TOP_K = 8
 _CLOSE_FALLBACK_OBSERVATION_FLOOR_REASON = "close_fallback_observation_floor_relaxed"
@@ -152,6 +173,7 @@ class _MergeCandidatesOptions(_MergeOptions):
 
 class _MergeReviewedOptionalOptions(_MergeOptionalOptions, total=False):
     apply_downside: bool
+    require_industry_breadth: bool
 
 
 class _MergeReviewedOptions(_MergeRequiredOptions, _MergeReviewedOptionalOptions):
@@ -172,6 +194,7 @@ class _SelectionRequest:
     minimum_score: float | None
     selection: AppSelectionPolicy
     legacy_v16: bool
+    legacy_replay: bool
 
 
 def _select_final_recommendations(
@@ -187,6 +210,7 @@ def _select_final_recommendations(
                 request.selection,
                 top_k=request.selection.default_top_k,
                 minimum_final_score=request.minimum_score,
+                enforce_competition_group_limits=request.legacy_replay,
             ),
         )
         return _SelectionResult(selected, skips)
@@ -195,6 +219,7 @@ def _select_final_recommendations(
         phase=request.phase,
         minimum_score=request.minimum_score,
         selection=request.selection,
+        enforce_competition_group_limits=request.legacy_replay,
     )
 
 
@@ -204,14 +229,25 @@ def _select_short_recommendations(
     phase: str,
     minimum_score: float,
     selection: AppSelectionPolicy,
+    enforce_competition_group_limits: bool,
 ) -> _SelectionResult:
     executable, executable_skips = select_top_k_with_audit(
         (item for item in merged if item.action is RecommendationAction.EXECUTABLE),
-        _ranking_policy(selection, top_k=selection.default_top_k, minimum_final_score=minimum_score),
+        _ranking_policy(
+            selection,
+            top_k=selection.default_top_k,
+            minimum_final_score=minimum_score,
+            enforce_competition_group_limits=enforce_competition_group_limits,
+        ),
     )
     watch, watch_skips = select_top_k_with_audit(
         (item for item in merged if item.action is RecommendationAction.OBSERVE),
-        _ranking_policy(selection, top_k=_CLOSE_FALLBACK_OBSERVE_TOP_K, minimum_final_score=minimum_score),
+        _ranking_policy(
+            selection,
+            top_k=_CLOSE_FALLBACK_OBSERVE_TOP_K,
+            minimum_final_score=minimum_score,
+            enforce_competition_group_limits=enforce_competition_group_limits,
+        ),
     )
     selected = (*executable, *watch)
     skips = (*executable_skips, *watch_skips)
@@ -219,7 +255,12 @@ def _select_short_recommendations(
         return _SelectionResult(selected, skips)
     fallback, fallback_skips = select_top_k_with_audit(
         _close_fallback_observe_pool(merged),
-        _ranking_policy(selection, top_k=_CLOSE_FALLBACK_OBSERVE_TOP_K, minimum_final_score=0.0),
+        _ranking_policy(
+            selection,
+            top_k=_CLOSE_FALLBACK_OBSERVE_TOP_K,
+            minimum_final_score=0.0,
+            enforce_competition_group_limits=enforce_competition_group_limits,
+        ),
     )
     return _SelectionResult(
         fallback,
@@ -233,6 +274,7 @@ def _ranking_policy(
     *,
     top_k: int,
     minimum_final_score: float,
+    enforce_competition_group_limits: bool = False,
 ) -> RankingSelectionPolicy:
     return RankingSelectionPolicy(
         top_k=top_k,
@@ -240,6 +282,7 @@ def _ranking_policy(
         minimum_final_score=minimum_final_score,
         maximum_board_fraction=selection.maximum_board_fraction,
         competition_group_limits=selection.competition_group_limits,
+        enforce_competition_group_limits=enforce_competition_group_limits,
     )
 
 
@@ -272,7 +315,11 @@ class RecommendationFinalizationMixin:
         reviews: Mapping[str, DeepSeekReview],
         *,
         legacy_v16: bool = False,
+        legacy_replay: bool = False,
+        projection_stage: str = "hybrid",
     ) -> RecommendationSnapshot:
+        if projection_stage not in {"local", "hybrid"}:
+            raise ValueError("projection_stage must be local or hybrid")
         if not prepared.board_scoring_complete:
             reasons = ",".join(prepared.board_degraded_reasons) or "unknown"
             raise RuntimeError(f"v16 board scoring is incomplete: {reasons}")
@@ -289,6 +336,7 @@ class RecommendationFinalizationMixin:
             max_age_seconds=prepared.max_age_seconds,
             target_prices=prepared.target_prices,
             apply_downside=not legacy_v16,
+            require_industry_breadth=legacy_replay,
         )
         minimum_score = minimum_selection_score(
             strategy,
@@ -304,17 +352,25 @@ class RecommendationFinalizationMixin:
                 minimum_score=minimum_score,
                 selection=self._policy.selection,
                 legacy_v16=legacy_v16,
+                legacy_replay=legacy_replay,
             ),
         )
         selected = selection.selected
         selection_skips = selection.skips
-        snapshot_id = _snapshot_id(strategy, prepared.trade_date, phase, prepared.data_version, now)
+        identity_data_version = (
+            prepared.data_version if legacy_replay else f"{prepared.data_version}|projection={projection_stage}"
+        )
+        snapshot_id = _snapshot_id(strategy, prepared.trade_date, phase, identity_data_version, now)
         degraded_reasons: list[str] = list(prepared.board_degraded_reasons)
         if selection.close_fallback_floor_relaxed:
             degraded_reasons.append(_CLOSE_FALLBACK_OBSERVATION_FLOOR_REASON)
         if strategy is not Strategy.LONG and fusion_mode is FusionMode.LOCAL_DEGRADED:
             degraded_reasons.append(
-                "deepseek_incomplete" if prepared.review_eligible else "deepseek_skipped_no_eligible_candidates"
+                "deepseek_pending"
+                if projection_stage == "local" and prepared.review_eligible
+                else "deepseek_incomplete"
+                if prepared.review_eligible
+                else "deepseek_skipped_no_eligible_candidates"
             )
         tail_covered_count = 0
         if strategy is Strategy.TOMORROW:
@@ -327,7 +383,14 @@ class RecommendationFinalizationMixin:
         research_covered_count = 0
         research_fields: tuple[str, ...] = ()
         if strategy in {Strategy.D25, Strategy.LONG}:
-            research_fields = _LONG_RESEARCH_FIELDS if strategy is Strategy.LONG else _STRUCTURED_RISK_FIELDS
+            structured_fields = _LEGACY_STRUCTURED_RISK_FIELDS if legacy_replay else _STRUCTURED_RISK_FIELDS
+            research_fields = (
+                _LEGACY_LONG_RESEARCH_FIELDS
+                if strategy is Strategy.LONG and legacy_replay
+                else _LONG_RESEARCH_FIELDS
+                if strategy is Strategy.LONG
+                else structured_fields
+            )
             research_covered_count = sum(
                 all(feature.optional_value(field) is not None for field in research_fields) for feature in eligible
             )
@@ -335,6 +398,17 @@ class RecommendationFinalizationMixin:
                 degraded_reasons.append(
                     "long_research_incomplete" if strategy is Strategy.LONG else "d25_structured_research_incomplete"
                 )
+        corporate_risk_covered_count = sum(
+            feature.value("corporate_risk_history_unavailable", 1.0) == 0.0 for feature in eligible
+        )
+        corporate_risk_registry_versions = sorted(
+            {
+                evidence.data_version
+                for feature in eligible
+                for evidence in feature.evidence
+                if evidence.source == "issuer_disclosure" and evidence.data_version
+            }
+        )
         return RecommendationSnapshot(
             snapshot_id=snapshot_id,
             strategy=strategy,
@@ -352,9 +426,21 @@ class RecommendationFinalizationMixin:
             stale=any(item.features.quote.age_seconds(now) > prepared.max_age_seconds for item in selected),
             degraded_reasons=tuple(degraded_reasons),
             metadata={
+                **({} if legacy_replay else {"projection_stage": projection_stage}),
                 "candidate_count": len(eligible),
                 "reviewed_count": sum(
                     review.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN} for review in reviews.values()
+                ),
+                **(
+                    {}
+                    if legacy_replay
+                    else {
+                        "corporate_risk_covered_count": corporate_risk_covered_count,
+                        "corporate_risk_coverage_ratio": (
+                            corporate_risk_covered_count / len(eligible) if eligible else 0.0
+                        ),
+                        "corporate_risk_registry_versions": corporate_risk_registry_versions,
+                    }
                 ),
                 "board_batches": [
                     {
@@ -525,6 +611,7 @@ class RecommendationFinalizationMixin:
         max_age_seconds = options["max_age_seconds"]
         target_prices = options.get("target_prices")
         apply_downside = options.get("apply_downside", True)
+        require_industry_breadth = options.get("require_industry_breadth", False)
         fusion_candidates = tuple(
             candidate
             for candidate in local_candidates
@@ -563,7 +650,15 @@ class RecommendationFinalizationMixin:
                 review=review,
                 veto=fusion_result.veto,
                 target_price=(target_prices or {}).get(local.features.quote.code),
-                downside=assess_downside(local.features, strategy) if apply_downside else None,
+                downside=(
+                    assess_downside(
+                        local.features,
+                        strategy,
+                        require_industry_breadth=require_industry_breadth,
+                    )
+                    if apply_downside
+                    else None
+                ),
             )
             action, reason = action_for(
                 provisional,

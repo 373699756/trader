@@ -22,12 +22,14 @@ REPLAY_SCHEMA_VERSION = "recommendation_replay_v1"
 LEGACY_REPLAY_ALGORITHM_VERSION = "engine_v10_section9_hard_filter_2026_07"
 V15_REPLAY_ALGORITHM_VERSION = "engine_v15_parallel_market_data_2026_07"
 V16_REPLAY_ALGORITHM_VERSION = "engine_v16_board_scoring_ttd25_2026_07"
-REPLAY_ALGORITHM_VERSION = "engine_v17_downside_guard_ttd25_2026_07"
+V17_REPLAY_ALGORITHM_VERSION = "engine_v17_downside_guard_ttd25_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_v18_score_first_risk_history_2026_07"
 _SUPPORTED_REPLAY_ALGORITHMS = frozenset(
     {
         LEGACY_REPLAY_ALGORITHM_VERSION,
         V15_REPLAY_ALGORITHM_VERSION,
         V16_REPLAY_ALGORITHM_VERSION,
+        V17_REPLAY_ALGORITHM_VERSION,
         REPLAY_ALGORITHM_VERSION,
     }
 )
@@ -49,7 +51,12 @@ class RecommendationReplayMixin:
         if snapshot.fusion_version != replay_input.policy.fusion_version:
             raise ValueError("snapshot fusion version does not match its frozen replay policy")
 
-        if replay_input.algorithm_version in {V16_REPLAY_ALGORITHM_VERSION, REPLAY_ALGORITHM_VERSION}:
+        legacy_replay = "projection_stage" not in snapshot.metadata
+        if replay_input.algorithm_version in {
+            V16_REPLAY_ALGORITHM_VERSION,
+            V17_REPLAY_ALGORITHM_VERSION,
+            REPLAY_ALGORITHM_VERSION,
+        }:
             recorded_codes = replay_input.requested_codes
             candidate_codes = tuple(feature.quote.code for feature in replay_input.candidate_features)
             if candidate_codes != recorded_codes:
@@ -69,6 +76,8 @@ class RecommendationReplayMixin:
                     ),
                     replay_input.reviews,
                     legacy_v16=replay_input.algorithm_version == V16_REPLAY_ALGORITHM_VERSION,
+                    legacy_replay=legacy_replay,
+                    projection_stage=str(snapshot.metadata.get("projection_stage") or "hybrid"),
                 ),
             )
 
@@ -103,6 +112,7 @@ class RecommendationReplayMixin:
                 requested_codes=replay_input.requested_codes,
                 preselect_max_age_seconds=replay_input.preselect_max_age_seconds,
                 candidate_pool_size=replay_input.candidate_pool_size,
+                legacy_replay=legacy_replay,
             ),
         )
 
@@ -137,7 +147,7 @@ class RecommendationReplayMixin:
                 else hard_filter
             ),
         )
-        if replay_input.algorithm_version == REPLAY_ALGORITHM_VERSION:
+        if replay_input.algorithm_version in {V17_REPLAY_ALGORITHM_VERSION, REPLAY_ALGORITHM_VERSION}:
             merged, _mode = engine._merge_reviewed_candidates(
                 snapshot.strategy,
                 tuple(item for batch in replay_input.board_batches for item in batch.recommendations),
@@ -146,6 +156,7 @@ class RecommendationReplayMixin:
                 phase=snapshot.phase,
                 max_age_seconds=replay_input.score_max_age_seconds,
                 target_prices=replay_input.target_prices,
+                require_industry_breadth=replay_input.algorithm_version == V17_REPLAY_ALGORITHM_VERSION,
             )
             return cast(tuple[Recommendation, ...], merged)
 

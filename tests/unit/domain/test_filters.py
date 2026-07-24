@@ -111,8 +111,13 @@ def test_quote_age_boundary_and_future_quote_are_auditable(feature_factory, obse
 @pytest.mark.parametrize(
     ("field", "value", "expected_code"),
     [
-        ("negative_announcement_level", 1.0, "negative_announcement"),
-        ("shareholder_reduction_level", 1.0, "shareholder_reduction"),
+        ("major_shareholder_reduction", 1.0, "major_shareholder_reduction"),
+        ("financial_fraud_history", 1.0, "financial_fraud_history"),
+        ("official_investigation_history", 1.0, "official_investigation_history"),
+        ("major_illegal_history", 1.0, "major_illegal_history"),
+        ("fund_occupation_history", 1.0, "fund_occupation_history"),
+        ("illegal_guarantee_history", 1.0, "illegal_guarantee_history"),
+        ("forced_delisting_risk", 1.0, "forced_delisting_risk"),
         ("pledge_risk", 1.0, "pledge_risk"),
         ("financial_deterioration", 1.0, "financial_deterioration"),
     ],
@@ -129,12 +134,12 @@ def test_structured_negative_risks_are_hard_filters(
 
 
 def test_missing_structured_risk_is_audited_without_blocking_local_fallback(feature_factory, observed_at) -> None:
-    snapshot = feature_factory(values={"pledge_risk": None})
+    snapshot = feature_factory(values={"corporate_risk_history_unavailable": 1.0})
 
     result = hard_filter(snapshot, observed_at, max_age_seconds=20)
 
     assert result.allowed is True
-    assert "structured_risk_unavailable" in {item.filter_code for item in result.optional_flags}
+    assert "corporate_risk_history_unavailable" in {item.filter_code for item in result.optional_flags}
 
 
 def test_configured_blacklist_is_a_hard_filter(feature_factory, observed_at) -> None:

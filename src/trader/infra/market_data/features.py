@@ -25,6 +25,7 @@ from trader.domain.market.research import (
     LongResearchInputs,
     LongResearchPolicy,
     ResearchObservation,
+    derive_corporate_risk_features,
     derive_d25_signals,
     derive_long_research_features,
 )
@@ -97,7 +98,7 @@ class StandardizedFeatureBuilder(Protocol):
 # Feature columns produced by FeatureBuilder._raw_features().
 # All are optional float; missing is left as None and later resolved per
 # the factor registry in config/v2/strategy.json.
-FEATURE_SCHEMA_VERSION = "feature_schema_v3_downside_entry"
+FEATURE_SCHEMA_VERSION = "feature_schema_v4_corporate_risk"
 
 RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("amount_median_20d", "float", description="20日成交额中位数"),
@@ -168,6 +169,18 @@ DERIVED_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("unlock_risk", "float", description="未来90日解禁等级"),
     FeatureSchema("pledge_risk", "float", description="质押风险"),
     FeatureSchema("negative_announcement_level", "float", description="负面公告等级"),
+    FeatureSchema("major_shareholder_reduction", "float", description="大股东减持硬风险"),
+    FeatureSchema("financial_fraud_history", "float", description="财务造假历史"),
+    FeatureSchema("official_investigation_history", "float", description="正式立案调查历史"),
+    FeatureSchema("major_illegal_history", "float", description="重大违法历史"),
+    FeatureSchema("fund_occupation_history", "float", description="资金占用历史"),
+    FeatureSchema("illegal_guarantee_history", "float", description="违规担保历史"),
+    FeatureSchema("forced_delisting_risk", "float", description="强制退市程序风险"),
+    FeatureSchema(
+        "corporate_risk_history_unavailable",
+        "float",
+        description="公司严重风险历史覆盖不完整",
+    ),
     FeatureSchema("price_volume_divergence", "float", description="量价背离"),
     FeatureSchema("short_term_overheat", "float", description="短期过热极端结构"),
     FeatureSchema("intraday_reversal", "float", description="冲高回落极端结构"),
@@ -382,6 +395,14 @@ class FeatureBuilder:
                     self._long_research_policy,
                 )
             )
+            observation = research_observation or ResearchObservation()
+            values.update(
+                derive_corporate_risk_features(
+                    observation.corporate_risk_facts,
+                    observed_at,
+                    history_complete=observation.corporate_risk_history_complete,
+                )
+            )
             values.update(
                 extreme_structure_risks(
                     quote,
@@ -535,6 +556,14 @@ class FeatureBuilder:
             "unlock_risk": None,
             "pledge_risk": None,
             "negative_announcement_level": None,
+            "major_shareholder_reduction": None,
+            "financial_fraud_history": None,
+            "official_investigation_history": None,
+            "major_illegal_history": None,
+            "fund_occupation_history": None,
+            "illegal_guarantee_history": None,
+            "forced_delisting_risk": None,
+            "corporate_risk_history_unavailable": None,
             "news_sentiment": None,
             "evidence_freshness": None,
             "value_score": None,

@@ -4,7 +4,30 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+### Added
+
+- 新增严重公司风险事实注册表：只从带稳定公告 ID 的发行人/交易所/监管/司法结构化披露
+  映射大股东减持、财务造假、正式立案、重大违法、资金占用、违规担保和强制退市程序；
+  研究缓存按事实身份持久化合并，并在状态和推荐快照元数据中暴露覆盖数、事实数及版本。
+- 新增 local/hybrid 两阶段发布身份。P4 本地评分完成即发布 `projection_stage=local`，
+  DeepSeek 结果随后以不同 snapshot ID/ETag 发布 `projection_stage=hybrid`；long 固定
+  local-only。
+
 ### Changed
+
+- 用户要求“先判断分数，最后再处理行业”，并质疑行业参数造成无荐股。确认活动评分原先
+  同时使用同行收益差、领先组、行业趋势、长期行业政策和 DeepSeek 行业维度，且竞争组上限
+  会覆盖全局行业上限。现在 today/tomorrow/d25/long 的活动候选分、本地分、DeepSeek 分、
+  动作和下行保护均不读取行业；行业只保留展示/审计标签，在最终稳定排序后限制每行业最多
+  2 只。正式池与观察池分别计数，空行业统一进入 `unknown` 组，竞争组不再覆盖该限制。
+- 用户要求硬过滤增加“大股东减持、财务造假、被立案调查等黑历史”。大股东现固定为控股
+  股东、实际控制人和持股不低于 5% 股东；减持计划至完成/终止后 90 天阻断，正式立案和
+  强退程序至结案后三自然年阻断，确认造假/重大违法/资金占用/违规担保永久阻断。一般问询、
+  普通诉讼、亏损预告和风险提示不再通过旧 `negative_announcement_level` 直接硬过滤，
+  DeepSeek 也不能创建、解除或 veto 这些硬事实。
+- 行业组件删除后的权重按剩余组件原比例归一化，固定融合公式
+  `local_score*0.68 + deepseek_score*0.32 - deepseek_risk_penalty`、动作阈值和本地风险
+  上限保持不变。放量突破不再要求行业上涨宽度。
 
 - 用户要求启动历史严格按“最多 360 只、每只内存最多 20 根原始日线”收敛。冷启动现在
   不再读取旧历史种子或 `.runtime/v17/history_cache.sqlite3`，而是从腾讯/东方财富临时取得
@@ -66,6 +89,14 @@ All notable changes to this project are documented here.
   不改变 0.85 板块可靠度门槛、候选公式、动作阈值、DeepSeek 预算或冻结不可覆盖规则。
 
 ### Fixed
+
+- 修复本地评分必须等待 DeepSeek 终态才进入 P6 的发布顺序；复核失败、超时或空响应现在
+  保留已经接纳的 local 快照，迟到 hybrid 继续受冻结 compare-and-set 保护。
+- 修复行业缺失股票被同行算法归入单一 `unknown` 后执行两两比较的二次复杂度；活动板内
+  评分不再构造同行/领先差，5500 行全行业缺失场景保持线性横截面处理。
+- 修复策略语义更新后仍复用 v17 重放版本的问题；活动冻结输入升级为 v18，缺少
+  `projection_stage` 的 v14-v17 历史快照继续沿用旧 snapshot ID、竞争组限制、行业宽度
+  突破条件和元数据结构，避免不可变历史因新策略上线而无法校验。
 
 - 用户指出此前只在 `_fail_event` 外包异常并没有解决数据库错误。重新调查确认运行库本身
   `quick_check=ok`，真正的写放大来自每个流水线事件的 reserve/running/terminal 三次审计写、
@@ -140,6 +171,15 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 新增回归覆盖行业字段不改变板内评分、`unknown` 行业限 2、正式/观察池独立限额、
+  local 在阻塞复核完成前可见、local/hybrid 身份不同、long 不复核、严重风险永久/90 日/
+  三自然年边界、终止标题不生成重复风险周期、严格公告映射、风险覆盖缺失只观察、研究缓存
+  序列化及 v14-v17 冻结重放兼容。完整通过 `make format-check`、`make lint`、`make
+  type-check`、`make test` 和 `make package`；仓库外安装最终 wheel 后已验证包导入、
+  `trader-cli --help` 与模板/CSS/JavaScript/图标资源。真实无头 Firefox 在 1280x720、
+  1440x900、1920x1080 三档均无页面级横向溢出或浏览器错误，24 个 SSE patch 全部应用，
+  patch-to-paint P95 为 22 ms。
 
 - 隔离目录真实执行 `ApplicationSystem.start()` 并请求 `/api/status`：返回 HTTP 200、
   `started=true`、`status=running`；外部行情在沙箱禁网时按契约降级，未出现 SQLite/WAL/
@@ -240,12 +280,20 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从活动评分链删除同行收益差、领先组差、残差动量、行业趋势、长期行业政策分和放量突破
+  行业宽度条件；删除竞争组作为 TopK 数量限制的行为，保留字段仅供兼容回放与审计。
+
 - 删除 SQLite `pipeline_events`、`data_source_health` 活动表与仓储实现、启动重放、
   `GET /api/events` 分页接口及其配置。
 - 删除本地历史种子和 v17 SQLite 历史热缓存实现；现有
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 严重风险历史使用发行人法定披露索引的 `total_hits` 校验完整性；供应商截断、schema
+  漂移或全量历史未返回时会保守标记覆盖不可用并把对应候选降为观察。公告标题映射刻意
+  从严以避免把问询、诉讼或传闻误判成永久黑历史，未被官方标题明确表达的复杂事实仍可能
+  需要后续扩展结构化字段映射。
 
 - 流水线事件和来源健康按用户要求只存在于当前进程，重启后不会恢复旧事件明细；运行状态、
   SSE 快照和调度会从当前进程重新建立。归档随交易日增长，需要用户按本机磁盘容量定期通过

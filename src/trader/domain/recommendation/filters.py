@@ -27,8 +27,13 @@ class HardFilterPolicy:
     structured_risk_thresholds: Mapping[str, float] = field(
         default_factory=lambda: MappingProxyType(
             {
-                "negative_announcement_level": 0.0,
-                "shareholder_reduction_level": 0.0,
+                "major_shareholder_reduction": 0.0,
+                "financial_fraud_history": 0.0,
+                "official_investigation_history": 0.0,
+                "major_illegal_history": 0.0,
+                "fund_occupation_history": 0.0,
+                "illegal_guarantee_history": 0.0,
+                "forced_delisting_risk": 0.0,
                 "unlock_risk": 0.0,
                 "pledge_risk": 0.0,
                 "financial_deterioration": 0.5,
@@ -384,8 +389,13 @@ class _DefaultFilterRules:
 
     def structured_negative_risk(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         code_by_field = {
-            "negative_announcement_level": "negative_announcement",
-            "shareholder_reduction_level": "shareholder_reduction",
+            "major_shareholder_reduction": "major_shareholder_reduction",
+            "financial_fraud_history": "financial_fraud_history",
+            "official_investigation_history": "official_investigation_history",
+            "major_illegal_history": "major_illegal_history",
+            "fund_occupation_history": "fund_occupation_history",
+            "illegal_guarantee_history": "illegal_guarantee_history",
+            "forced_delisting_risk": "forced_delisting_risk",
             "unlock_risk": "unlock_risk",
             "reduction_or_unlock": "reduction_or_unlock",
             "pledge_risk": "pledge_risk",
@@ -409,6 +419,21 @@ class _DefaultFilterRules:
                 "structured_risk_unavailable",
                 "all structured risks available",
                 ",".join(missing),
+            )
+        return None
+
+    def corporate_risk_history_unavailable(
+        self,
+        snapshot: FeatureSnapshot,
+        _now: datetime,
+    ) -> FilterAudit | None:
+        value = snapshot.values.get("corporate_risk_history_unavailable")
+        if value is not None and math.isfinite(value) and value > 0.0:
+            return _make_audit(
+                snapshot,
+                "corporate_risk_history_unavailable",
+                "complete official-history coverage",
+                value,
             )
         return None
 
@@ -446,6 +471,11 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
         FilterRule("major_regulatory_risk", FilterSeverity.REQUIRED, registry.major_regulatory_risk),
         FilterRule("structured_negative_risk", FilterSeverity.REQUIRED, registry.structured_negative_risk),
         FilterRule("structured_risk_unavailable", FilterSeverity.OPTIONAL, registry.structured_risk_unavailable),
+        FilterRule(
+            "corporate_risk_history_unavailable",
+            FilterSeverity.OPTIONAL,
+            registry.corporate_risk_history_unavailable,
+        ),
         FilterRule("invalid_quote_structure", FilterSeverity.REQUIRED, registry.invalid_quote_structure),
         FilterRule("invalid_pct_change", FilterSeverity.REQUIRED, registry.invalid_pct_change),
     )

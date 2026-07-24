@@ -62,8 +62,8 @@ from trader.infra.settings_strategy_validation import _validate_strategy_setting
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 10:
-        raise ConfigurationError("strategy schema_version must be 10")
+    if _integer(raw, "schema_version", minimum=1) != 11:
+        raise ConfigurationError("strategy schema_version must be 11")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     hard_filters_raw = _mapping(raw, "hard_filters")
@@ -92,7 +92,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         for factor_id, definition in factor_registry_raw.items()
     }
     settings = StrategySettings(
-        schema_version=10,
+        schema_version=11,
         strategy_version=_strategy_contract_version(raw),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),

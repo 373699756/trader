@@ -26,10 +26,9 @@ def score_d25(snapshot: FeatureSnapshot, component_weights: Mapping[str, float] 
         + 0.15 * normalized(snapshot, "price_volume_confirmation")
     )
     trend = (
-        0.35 * normalized(snapshot, "ma20_60_structure")
-        + 0.30 * normalized(snapshot, "ma_slope")
-        + 0.20 * normalized(snapshot, "breakout_20d")
-        + 0.15 * normalized(snapshot, "industry_trend")
+        7 / 17 * normalized(snapshot, "ma20_60_structure")
+        + 6 / 17 * normalized(snapshot, "ma_slope")
+        + 4 / 17 * normalized(snapshot, "breakout_20d")
     )
     execution = (
         0.40 * normalized(snapshot, "capacity_score")

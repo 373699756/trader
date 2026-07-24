@@ -82,6 +82,7 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     today = pipeline.run_once(clock.now())
     assert [snapshot.strategy for snapshot in today] == [Strategy.TODAY]
     assert today[0].fusion_mode.value == "local_degraded"
+    assert today[0].metadata["projection_stage"] == "local"
     latency = pipeline.status()["dependencies"]["latency_waterfall"]
     assert latency["planned_count"] == 1
     assert latency["completed_count"] == 1
@@ -120,6 +121,43 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     assert pipeline.run_once(clock.now()) == ()
     assert len(repository.frozen) == 3
     assert state.latest(Strategy.LONG).frozen is False
+
+
+def test_v17_frozen_board_snapshot_remains_replayable(
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    features = _three_board_features(application_feature_factory, now)
+    engine = RecommendationEngine(
+        _recommendation_policy(load_strategy_settings(Path(__file__).parents[2] / "config" / "v2" / "strategy.json"))
+    )
+    prepared = engine.prepare_snapshot(
+        Strategy.TODAY,
+        features,
+        now=now,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="legacy-v17",
+        review_deadline=datetime.fromisoformat("2026-07-16T11:20:00+08:00"),
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+        market_features=features,
+        requested_codes=tuple(feature.quote.code for feature in features),
+        preselect_max_age_seconds=20.0,
+        candidate_pool_size=120,
+    )
+    snapshot = engine.finalize_snapshot(prepared, {}, legacy_replay=True)
+    assert snapshot.replay_input is not None
+    assert snapshot.replay_input.algorithm_version == "engine_v18_score_first_risk_history_2026_07"
+    legacy_input = replace(
+        snapshot.replay_input,
+        algorithm_version="engine_v17_downside_guard_ttd25_2026_07",
+    )
+    frozen = replace(snapshot, frozen=True, replay_input=legacy_input)
+
+    assert "projection_stage" not in frozen.metadata
+    assert engine.verify_frozen(frozen)["status"] == "verified"
 
 
 @pytest.mark.parametrize("use_worker", [False, True], ids=("sync", "worker"))
@@ -2096,10 +2134,49 @@ def test_deepseek_worker_failure_falls_back_to_local_snapshot(
 
     assert snapshot is not None
     assert snapshot.fusion_mode.value == "local_degraded"
+    assert snapshot.metadata["projection_stage"] == "local"
     assert "DeepSeek review degraded" in pipeline.status()["last_error"]
 
 
-def test_long_review_starts_after_shared_strategy_reviews_complete(
+def test_local_snapshot_is_published_before_deepseek_review_finishes(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    reviewer = BlockingReviewer()
+    state = RuntimeState()
+    pipeline = build_pipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        reviewer,
+        MemoryRepository(),
+        MemoryRepository(),
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+    pipeline.initialize()
+    pipeline.start()
+    try:
+        assert pipeline.submit_tick(now) is True
+        assert reviewer.started.wait(timeout=1.0)
+        local = state.latest(Strategy.TODAY)
+        assert local is not None
+        assert local.metadata["projection_stage"] == "local"
+        assert "deepseek_pending" in local.degraded_reasons
+        reviewer.release.set()
+        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+    finally:
+        reviewer.release.set()
+        pipeline.stop(timeout_seconds=2.0)
+
+
+def test_long_is_local_only_while_short_strategies_remain_review_eligible(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -2132,7 +2209,7 @@ def test_long_review_starts_after_shared_strategy_reviews_complete(
         pipeline.stop(timeout_seconds=2.0)
 
     assert reviewer.out_of_order is False
-    assert reviewer.completed_strategies == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
+    assert reviewer.completed_strategies == {Strategy.TOMORROW, Strategy.D25}
 
 
 def test_one_strategy_data_failure_does_not_block_other_snapshots(
@@ -2955,6 +3032,27 @@ class FailingReviewer(ThreadRecordingReviewer):
     ) -> Mapping[str, object]:
         del phase, deadline, contexts
         raise RuntimeError("review transport failed")
+
+
+class BlockingReviewer(ThreadRecordingReviewer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def review(
+        self,
+        _strategy: Strategy,
+        _candidates: Sequence[FeatureSnapshot],
+        *,
+        phase: str,
+        deadline: datetime,
+        contexts=None,
+    ) -> Mapping[str, object]:
+        del phase, deadline, contexts
+        self.started.set()
+        self.release.wait(timeout=1.0)
+        return {}
 
 
 class SupersededOutcomeSettlement:

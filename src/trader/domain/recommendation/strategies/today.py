@@ -9,11 +9,10 @@ from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.strategies.composition import LocalScoreResult, compose, liquidity_score, normalized
 
 COMPONENT_WEIGHTS = {
-    "momentum": 0.35,
-    "liquidity": 0.25,
-    "industry": 0.10,
-    "sentiment": 0.20,
-    "protection": 0.10,
+    "momentum": 7 / 18,
+    "liquidity": 5 / 18,
+    "sentiment": 2 / 9,
+    "protection": 1 / 9,
 }
 
 
@@ -26,7 +25,6 @@ def score_today(snapshot: FeatureSnapshot, component_weights: Mapping[str, float
         + 0.15 * band_score(snapshot.quote.volume_ratio, 0.8, 1.2, 3.5, 6.0)
         + 0.15 * normalized(snapshot, "relative_strength_3d")
     )
-    industry = 0.70 * normalized(snapshot, "industry_strength") + 0.30 * normalized(snapshot, "industry_breadth")
     sentiment = (
         0.50 * normalized(snapshot, "news_sentiment")
         + 0.30 * normalized(snapshot, "evidence_freshness")
@@ -37,16 +35,17 @@ def score_today(snapshot: FeatureSnapshot, component_weights: Mapping[str, float
         + 0.35 * normalized(snapshot, "low_drawdown_score")
         + 0.30 * normalized(snapshot, "low_crowding_score")
     )
-    return compose(
-        {
-            "momentum": momentum,
-            "liquidity": liquidity_score(snapshot),
-            "industry": industry,
-            "sentiment": sentiment,
-            "protection": protection,
-        },
-        component_weights,
-    )
+    components = {
+        "momentum": momentum,
+        "liquidity": liquidity_score(snapshot),
+        "sentiment": sentiment,
+        "protection": protection,
+    }
+    if "industry" in component_weights:
+        components["industry"] = 0.70 * normalized(snapshot, "industry_strength") + 0.30 * normalized(
+            snapshot, "industry_breadth"
+        )
+    return compose(components, component_weights)
 
 
 __all__ = ["score_today"]

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
@@ -24,19 +23,16 @@ _CANDIDATE_INPUTS: Mapping[Strategy, Mapping[str, tuple[str, ...]]] = {
         "liquidity": ("amount_percentile_20d",),
         "intraday_structure": ("speed_percentile", "relative_strength_3d"),
         "turnover_state": ("turnover_shock_score", "amount_shock_score"),
-        "peer_gap": ("peer_gap_1d_score", "peer_gap_3d_score", "peer_gap_5d_score"),
         "data_completeness": (),
     },
     Strategy.TOMORROW: {
         "liquidity": ("amount_percentile_20d",),
-        "peer_gap": ("peer_gap_5d_score", "peer_gap_20d_score"),
         "trend": ("trend_score",),
         "stability": ("low_volatility_score", "low_drawdown_score"),
         "data_completeness": (),
     },
     Strategy.D25: {
         "liquidity": ("amount_percentile_20d",),
-        "residual_momentum": ("peer_gap_20d_score", "peer_gap_60d_score"),
         "trend": ("trend_score",),
         "stability": ("low_volatility_score", "low_drawdown_score"),
         "execution": ("capacity_score", "moderate_amplitude", "price_executability"),
@@ -48,13 +44,11 @@ _LOCAL_COMPONENT_INPUTS: Mapping[Strategy, Mapping[str, tuple[str, ...]]] = {
     Strategy.TODAY: {
         "intraday_structure": ("speed_percentile", "relative_strength_3d"),
         "turnover_state": ("turnover_shock_score", "amount_shock_score", "flow_confirmation_score"),
-        "peer_gap": ("peer_gap_1d_score", "peer_gap_3d_score", "peer_gap_5d_score"),
         "liquidity_execution": ("amount_percentile_20d", "limit_distance_safety"),
         "stability": ("low_volatility_score", "low_drawdown_score"),
     },
     Strategy.TOMORROW: {
         "tail_structure": ("tail_return_30m", "tail_volume_ratio", "close_location"),
-        "peer_leader": ("peer_gap_5d_score", "peer_gap_20d_score", "leader_gap_score"),
         "turnover_flow": ("turnover_shock_score", "amount_shock_score", "flow_confirmation_score"),
         "trend": ("ma20_60_position", "ma_slope", "breakout_20d"),
         "stability": ("low_volatility_score", "low_drawdown_score"),
@@ -62,7 +56,6 @@ _LOCAL_COMPONENT_INPUTS: Mapping[Strategy, Mapping[str, tuple[str, ...]]] = {
         "entry_quality": ("entry_quality",),
     },
     Strategy.D25: {
-        "residual_momentum": ("peer_gap_20d_score", "peer_gap_60d_score"),
         "trend": ("ma20_60_structure", "ma_slope", "breakout_20d"),
         "quality_value": ("quality_score", "value_score", "growth_score"),
         "stability": ("low_volatility_score", "low_drawdown_score"),
@@ -80,25 +73,16 @@ _NORMALIZED_FIELDS: Mapping[str, tuple[str, bool]] = {
     "return_20d": ("relative_strength_20d", False),
     "volatility_20d": ("low_volatility_score", True),
     "max_drawdown_20d": ("low_drawdown_score", False),
-    "leader_gap": ("leader_gap_score", True),
-    "peer_gap_1d": ("peer_gap_1d_score", False),
-    "peer_gap_3d": ("peer_gap_3d_score", False),
-    "peer_gap_5d": ("peer_gap_5d_score", False),
-    "peer_gap_20d": ("peer_gap_20d_score", False),
-    "peer_gap_60d": ("peer_gap_60d_score", False),
 }
 
 
 def _normalize_features(
     features: Sequence[FeatureSnapshot],
-    peer_raw: Mapping[str, Mapping[str, float | None]],
-    leader_raw: Mapping[str, float | None],
     reference_values: Mapping[str, Sequence[float]],
     data_version: str,
 ) -> tuple[tuple[FeatureSnapshot, ...], Mapping[str, CrossSectionStats]]:
     raw_by_name: dict[str, dict[str, float | None]] = {
-        name: {item.quote.code: _raw_field(item, name, peer_raw, leader_raw) for item in features}
-        for name in _NORMALIZED_FIELDS
+        name: {item.quote.code: _raw_field(item, name) for item in features} for name in _NORMALIZED_FIELDS
     }
     scores: dict[str, dict[str, float]] = {}
     stats: dict[str, CrossSectionStats] = {}
@@ -119,8 +103,6 @@ def _normalize_features(
     normalized: list[FeatureSnapshot] = []
     for item in features:
         values = dict(item.values)
-        values.update(peer_raw[item.quote.code])
-        values["leader_gap"] = leader_raw[item.quote.code]
         for raw_name, (score_name, _inverse) in _NORMALIZED_FIELDS.items():
             raw_value = raw_by_name[raw_name][item.quote.code]
             values[score_name] = scores[score_name][item.quote.code] if raw_value is not None else None
@@ -141,12 +123,10 @@ def _normalize_features(
 
 def _distributions(
     features: Sequence[FeatureSnapshot],
-    peer_raw: Mapping[str, Mapping[str, float | None]],
-    leader_raw: Mapping[str, float | None],
 ) -> dict[str, tuple[float, ...]]:
     result: dict[str, tuple[float, ...]] = {}
     for raw_name in _NORMALIZED_FIELDS:
-        values = [_raw_field(item, raw_name, peer_raw, leader_raw) for item in features]
+        values = [_raw_field(item, raw_name) for item in features]
         result[raw_name] = tuple(
             sorted(
                 float(value)
@@ -154,25 +134,13 @@ def _distributions(
                 if value is not None and math.isfinite(value) and (raw_name != "amount_median_20d" or value > 0.0)
             )
         )
-    result["leader_gap"] = tuple(
-        sorted(float(value) for value in leader_raw.values() if value is not None and math.isfinite(value))
-    )
-    for name in ("peer_gap_1d", "peer_gap_3d", "peer_gap_5d", "peer_gap_20d", "peer_gap_60d"):
-        peer_values = (item.get(name) for item in peer_raw.values())
-        result[name] = tuple(sorted(value for value in peer_values if value is not None and math.isfinite(value)))
     return result
 
 
 def _raw_field(
     item: FeatureSnapshot,
     name: str,
-    peer_raw: Mapping[str, Mapping[str, float | None]],
-    leader_raw: Mapping[str, float | None],
 ) -> float | None:
-    if name.startswith("peer_gap_"):
-        return peer_raw[item.quote.code].get(name)
-    if name == "leader_gap":
-        return leader_raw[item.quote.code]
     if name == "speed":
         return item.quote.speed
     return item.optional_value(name)
@@ -209,64 +177,6 @@ def _reference_is_needed(values: Mapping[str, float | None], reference: Sequence
     return (
         len(reference) >= MIN_BOARD_SAMPLE and sum(_finite_value(value) for value in values.values()) < MIN_BOARD_SAMPLE
     )
-
-
-def _peer_gaps(features: Sequence[FeatureSnapshot]) -> dict[str, dict[str, float | None]]:
-    grouped: dict[str, list[FeatureSnapshot]] = defaultdict(list)
-    for item in features:
-        grouped[item.quote.industry.strip() or "unknown"].append(item)
-    result: dict[str, dict[str, float | None]] = {item.quote.code: {} for item in features}
-    horizons = {"1d": None, "3d": "return_3d", "5d": "return_5d", "20d": "return_20d", "60d": "return_60d"}
-    for group in grouped.values():
-        for suffix, field in horizons.items():
-            for item in group:
-                own = item.quote.pct_change if field is None else item.optional_value(field)
-                peers = [
-                    peer.quote.pct_change if field is None else peer.optional_value(field)
-                    for peer in group
-                    if peer.quote.code != item.quote.code
-                ]
-                finite = sorted(float(value) for value in peers if value is not None and math.isfinite(float(value)))
-                result[item.quote.code][f"peer_gap_{suffix}"] = (
-                    float(own) - _median(finite)
-                    if len(finite) >= 10 and own is not None and math.isfinite(float(own))
-                    else None
-                )
-    return result
-
-
-def _leader_gaps(features: Sequence[FeatureSnapshot]) -> dict[str, float | None]:
-    grouped: dict[str, list[FeatureSnapshot]] = defaultdict(list)
-    for item in features:
-        grouped[item.quote.industry.strip() or "unknown"].append(item)
-    result: dict[str, float | None] = {}
-    for group in grouped.values():
-        ranked = sorted(
-            (
-                item
-                for item in group
-                if _positive_finite(item.optional_value("amount_median_20d"))
-                and _finite_value(item.optional_value("return_20d"))
-            ),
-            key=lambda item: (-item.value("amount_median_20d"), item.quote.code),
-        )
-        for item in group:
-            own = item.optional_value("return_20d")
-            ranked_peers = [peer for peer in ranked if peer.quote.code != item.quote.code]
-            leader_count = math.ceil(len(ranked_peers) * 0.20)
-            leaders = ranked_peers[:leader_count]
-            peer_values = [leader.optional_value("return_20d") for leader in leaders]
-            finite = [float(value) for value in peer_values if value is not None and math.isfinite(float(value))]
-            result[item.quote.code] = (
-                _mean(finite) - own
-                if len(ranked_peers) >= 10
-                and leader_count >= 3
-                and len(finite) >= 3
-                and own is not None
-                and _finite_value(own)
-                else None
-            )
-    return result
 
 
 def _turnover_shock(item: FeatureSnapshot) -> float | None:

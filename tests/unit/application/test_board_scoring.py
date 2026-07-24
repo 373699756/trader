@@ -26,19 +26,18 @@ def _policy(board: Board) -> BoardStrategyPolicy:
         board=board,
         strategy=Strategy.TODAY,
         candidate_weights={
-            "liquidity": 0.30,
-            "intraday_structure": 0.25,
-            "turnover_state": 0.20,
-            "peer_gap": 0.15,
-            "data_completeness": 0.10,
+            "liquidity": 0.3529411764705882,
+            "intraday_structure": 0.2941176470588235,
+            "turnover_state": 0.2352941176470588,
+            "data_completeness": 0.1176470588235294,
         },
         local_weights={
-            "intraday_structure": 0.30,
-            "turnover_state": 0.20,
-            "peer_gap": 0.20,
-            "liquidity_execution": 0.20,
-            "stability": 0.10,
+            "intraday_structure": 0.375,
+            "turnover_state": 0.25,
+            "liquidity_execution": 0.25,
+            "stability": 0.125,
         },
+        candidate_min_score=100.0,
     )
 
 

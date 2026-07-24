@@ -53,6 +53,9 @@ class ResearchLoaderStatus:
     latest_source_time: datetime | None
     last_error: str
     out_of_order_count: int
+    corporate_risk_covered_count: int
+    corporate_risk_fact_count: int
+    corporate_risk_registry_versions: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -693,6 +696,7 @@ class ResearchLoader:
 
     def status(self) -> ResearchLoaderStatus:
         with self._lock:
+            observations = tuple(entry.observation for entry in self._entries.values())
             return ResearchLoaderStatus(
                 entries=len(self._entries),
                 success_count=self._success_count,
@@ -705,6 +709,19 @@ class ResearchLoader:
                 latest_source_time=self._latest_source_time,
                 last_error=self._last_error,
                 out_of_order_count=self._out_of_order_count,
+                corporate_risk_covered_count=sum(
+                    observation.corporate_risk_history_complete for observation in observations
+                ),
+                corporate_risk_fact_count=sum(len(observation.corporate_risk_facts) for observation in observations),
+                corporate_risk_registry_versions=tuple(
+                    sorted(
+                        {
+                            observation.corporate_risk_registry_version
+                            for observation in observations
+                            if observation.corporate_risk_registry_version
+                        }
+                    )
+                ),
             )
 
     def entries(self) -> Mapping[tuple[str, bool], _ResearchEntry]:

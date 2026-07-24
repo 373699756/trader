@@ -311,7 +311,7 @@ def _build_local_close_snapshot(
             f"{','.join(blocking_reasons)}; "
             f"reliability={_format_reliability_diagnostics(pipeline, prepared)}"
         )
-    snapshot = pipeline._engine.finalize_snapshot(prepared, {})
+    snapshot = pipeline._engine.finalize_snapshot(prepared, {}, projection_stage="local")
     recommendations = snapshot.recommendations
     return replace(
         snapshot,
@@ -459,7 +459,7 @@ def _build_long_close_snapshot(
             preselect_max_age_seconds=max_age,
             candidate_pool_size=pipeline._candidate_pool_size,
         )
-    snapshot = pipeline._engine.finalize_snapshot(prepared, {})
+    snapshot = pipeline._engine.finalize_snapshot(prepared, {}, projection_stage="local")
     recommendations = snapshot.recommendations
     close_anchors = _close_anchors(recommendations)
     close_version = _close_data_version(data_version, close_anchors)
