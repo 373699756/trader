@@ -1,6 +1,6 @@
 {
   "schema_version": 12,
-  "strategy_version": "strategy_v19_bounded_review_2026_07",
+  "strategy_version": "strategy_v20_review28_2026_07",
   "board_policy_version": "board_policy_v18_score_first_2026_07",
   "fusion": {
     "version": "fusion_v2_local68_deepseek32",
@@ -21,7 +21,7 @@
     "competition_group_limits": {},
     "candidate_min_score": 50,
     "minimum_board_reliability": 0.85,
-    "review_candidate_limit": 24,
+    "review_candidate_limit": 28,
     "observation_margin": 5,
     "thresholds": {
       "today_main": 70,

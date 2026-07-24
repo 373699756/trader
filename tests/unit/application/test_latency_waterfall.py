@@ -57,6 +57,12 @@ def test_latency_waterfall_is_bounded_and_exposes_only_aggregates() -> None:
         "p95_ms": 10.0,
         "maximum_ms": 10.0,
     }
+    assert status["stages"]["execution_total:full_market"] == {
+        "sample_count": 1,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "maximum_ms": 0.0,
+    }
     assert "secret-cycle-1" not in repr(status)
 
 

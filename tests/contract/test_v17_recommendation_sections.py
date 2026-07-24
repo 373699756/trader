@@ -11,7 +11,7 @@ def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
     selection = (ROOT / "src/trader/web/static/selection.js").read_text(encoding="utf-8")
 
     assert 'id="recommendationTable"' in template
-    assert "selection.js', v='2'" in template
+    assert "selection.js', v='3'" in template
     assert 'id="tableTitle"' not in template
     assert 'id="watchTable"' not in template
     assert "观察列表" not in template

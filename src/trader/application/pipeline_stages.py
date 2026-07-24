@@ -6,18 +6,23 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from trader.application.after_close_recovery import recover_after_close_snapshots
 from trader.application.cadence import PipelineTask, task_execution_budget_seconds
 from trader.application.candidate_features import fetch_strategy_features, read_strategy_features
-from trader.application.events import EventDeadlineExpiredError, PipelineEvent
+from trader.application.events import EventPriority, EventSpec, PipelineEvent, new_event
+from trader.application.pipeline_review_updates import (
+    ScoringContext,
+    publish_pending_hybrid,
+    publish_prepared_snapshots,
+    schedule_async_reviews,
+)
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.recommendations import PreparedSnapshot
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
-from trader.application.snapshot_publication import admit_snapshot_to_p6
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
     RecommendationSnapshot,
@@ -49,15 +54,7 @@ from trader.application.pipeline_workers import (
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _LOGGER = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class _ScoringContext:
-    now: datetime
-    phase: MarketPhase
-    trade_date: str
-    started_at: float
-    completion_deadline: datetime | None
+_TRIGGERED_SCORE_QUEUE_BUDGET_SECONDS = 38.0
 
 
 _StrategyInput = tuple[
@@ -130,6 +127,8 @@ def _handle_candidate_quotes(
     event: PipelineEvent,
 ) -> tuple[RecommendationSnapshot, ...]:
     _refresh_candidate_quotes_on_workers(pipeline, now, phase, deadline=event.deadline)
+    if pipeline._decision_execution_mode == "versioned_dag":
+        _submit_triggered_score(pipeline, event)
     return ()
 
 
@@ -151,10 +150,40 @@ def _handle_close_quotes(
     phase: MarketPhase,
     event: PipelineEvent,
 ) -> tuple[RecommendationSnapshot, ...]:
+    pipeline._submit_overlay_event(_overlay_event_for_close(pipeline, event))
     snapshots = recover_after_close_snapshots(pipeline, now, deadline=event.deadline)
-    pipeline._refresh_live_overlays(now, phase, deadline=event.deadline)
-    pipeline._settle_outcomes(now)
+    pipeline._submit_overlay_event(_overlay_event_for_close(pipeline, event))
+    settlement_started = time.perf_counter()
+    try:
+        pipeline._settle_outcomes(now)
+    finally:
+        pipeline._latency.record_duration(
+            "close_quotes:outcome_settlement",
+            (time.perf_counter() - settlement_started) * 1000.0,
+        )
     return snapshots
+
+
+def _overlay_event_for_close(
+    pipeline: RecommendationPipeline,
+    event: PipelineEvent,
+) -> PipelineEvent:
+    observed_at = max(event.created_at, pipeline._now())
+    return new_event(
+        EventSpec(
+            event_type=PipelineTask.TOPK_QUOTES.value,
+            subject_key="market",
+            trade_date=event.trade_date,
+            phase=event.phase,
+            strategy=None,
+            priority=EventPriority.LIVE_QUOTES,
+            data_version=f"close-overlay:{observed_at.isoformat()}",
+            config_version=event.config_version,
+            created_at=observed_at,
+            deadline=observed_at + timedelta(seconds=task_execution_budget_seconds(PipelineTask.TOPK_QUOTES) or 3.0),
+            payload={"overlay_trigger": PipelineTask.CLOSE_QUOTES.value},
+        )
+    )
 
 
 @_register_task(PipelineTask.CURRENT_QUOTES)
@@ -226,6 +255,8 @@ def _handle_market_news(
     event: PipelineEvent,
 ) -> tuple[RecommendationSnapshot, ...]:
     _refresh_market_news_on_workers(pipeline, now, event.deadline)
+    if pipeline._decision_execution_mode == "versioned_dag":
+        _submit_triggered_score(pipeline, event)
     return ()
 
 
@@ -237,7 +268,41 @@ def _handle_stock_risk(
     event: PipelineEvent,
 ) -> tuple[RecommendationSnapshot, ...]:
     _refresh_stock_risk_on_workers(pipeline, now, event.deadline)
+    if pipeline._decision_execution_mode == "versioned_dag":
+        _submit_triggered_score(pipeline, event)
     return ()
+
+
+def _submit_triggered_score(
+    pipeline: RecommendationPipeline,
+    source_event: PipelineEvent,
+) -> None:
+    completed_at = max(source_event.created_at, pipeline._now())
+    priority = (
+        EventPriority.RISK if source_event.event_type == PipelineTask.STOCK_RISK.value else EventPriority.MARKET_QUOTES
+    )
+    event = new_event(
+        EventSpec(
+            event_type=PipelineTask.SCORE.value,
+            subject_key="market",
+            trade_date=source_event.trade_date,
+            phase=source_event.phase,
+            strategy=None,
+            priority=priority,
+            data_version=f"{source_event.event_type}:{source_event.data_version}",
+            config_version=source_event.config_version,
+            created_at=completed_at,
+            deadline=completed_at + timedelta(seconds=_TRIGGERED_SCORE_QUEUE_BUDGET_SECONDS),
+            payload={
+                "schedule_task": PipelineTask.SCORE.value,
+                "trigger_event_type": source_event.event_type,
+            },
+        )
+    )
+    if pipeline.submit_event(event):
+        pipeline._state.increment("triggered_scores_submitted")
+    else:
+        pipeline._state.increment("triggered_scores_dropped")
 
 
 @_register_task(PipelineTask.REFERENCE_DATA)
@@ -293,6 +358,16 @@ def _handle_freeze(
     return pipeline._freeze_available_snapshots(now, freezes)
 
 
+@_register_task(PipelineTask.HYBRID_READY)
+def _handle_hybrid_ready(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+    phase: MarketPhase,
+    event: PipelineEvent,
+) -> tuple[RecommendationSnapshot, ...]:
+    return publish_pending_hybrid(pipeline, phase, event)
+
+
 def process_event_on_workers(
     pipeline: RecommendationPipeline,
     event: PipelineEvent,
@@ -329,7 +404,7 @@ def _score_strategies_on_workers(
     use_cached_data: bool,
     completion_deadline: datetime | None = None,
 ) -> tuple[RecommendationSnapshot, ...]:
-    context = _ScoringContext(
+    context = ScoringContext(
         now,
         phase,
         trade_date_at(now).isoformat(),
@@ -345,13 +420,16 @@ def _score_strategies_on_workers(
         "local_scoring",
         (time.perf_counter() - local_started) * 1000.0,
     )
-    local_snapshots = _publish_prepared_snapshots(
+    local_snapshots = publish_prepared_snapshots(
         pipeline,
         context,
         prepared_snapshots,
         {},
         projection_stage="local",
     )
+    if pipeline._decision_execution_mode == "versioned_dag":
+        schedule_async_reviews(pipeline, context, prepared_snapshots, local_snapshots)
+        return local_snapshots
     measure_deepseek = (
         pipeline._reviews is not None
         and context.phase not in {MarketPhase.DEEPSEEK_CUTOFF, MarketPhase.FINAL_QUOTE}
@@ -367,9 +445,9 @@ def _score_strategies_on_workers(
     hybrid_prepared = tuple(
         prepared
         for prepared in prepared_snapshots
-        if prepared.strategy is not Strategy.LONG and review_results.get(prepared.strategy)
+        if prepared.strategy is not Strategy.LONG and prepared.strategy in review_results
     )
-    hybrid_snapshots = _publish_prepared_snapshots(
+    hybrid_snapshots = publish_prepared_snapshots(
         pipeline,
         context,
         hybrid_prepared,
@@ -383,7 +461,7 @@ def _score_strategies_on_workers(
 
 def _preheat_reviews(
     pipeline: RecommendationPipeline,
-    context: _ScoringContext,
+    context: ScoringContext,
 ) -> None:
     if context.phase is MarketPhase.WARMUP and pipeline._reviews is not None and pipeline._candidate_features:
         preheat = submit_required(
@@ -399,7 +477,7 @@ def _preheat_reviews(
 
 def _strategy_inputs(
     pipeline: RecommendationPipeline,
-    context: _ScoringContext,
+    context: ScoringContext,
     *,
     use_cached_data: bool,
 ) -> list[_StrategyInput]:
@@ -428,7 +506,7 @@ def _strategy_inputs(
 
 def _prepare_strategy_futures(
     pipeline: RecommendationPipeline,
-    context: _ScoringContext,
+    context: ScoringContext,
     strategy_inputs: Sequence[_StrategyInput],
 ) -> list[_PreparedFuture]:
     prepared_futures: list[_PreparedFuture] = []
@@ -493,7 +571,7 @@ def _resolve_prepared_snapshots(
 
 def _review_prepared_snapshots(
     pipeline: RecommendationPipeline,
-    context: _ScoringContext,
+    context: ScoringContext,
     prepared_snapshots: Sequence[PreparedSnapshot],
 ) -> dict[Strategy, Mapping[str, DeepSeekReview]]:
     review_results: dict[Strategy, Mapping[str, DeepSeekReview]] = {}
@@ -521,56 +599,6 @@ def _review_prepared_snapshots(
     return review_results
 
 
-def _publish_prepared_snapshots(
-    pipeline: RecommendationPipeline,
-    context: _ScoringContext,
-    prepared_snapshots: Sequence[PreparedSnapshot],
-    review_results: Mapping[Strategy, Mapping[str, DeepSeekReview]],
-    *,
-    projection_stage: str,
-) -> tuple[RecommendationSnapshot, ...]:
-    snapshots: list[RecommendationSnapshot] = []
-    for prepared in prepared_snapshots:
-        if context.completion_deadline is not None and pipeline._now() >= context.completion_deadline:
-            pipeline._state.increment("score_results_discarded_late")
-            raise EventDeadlineExpiredError(f"event deadline expired during execution: {PipelineTask.SCORE.value}")
-        reviews = review_results.get(prepared.strategy, {})
-        snapshot = replace(
-            pipeline._engine.finalize_snapshot(
-                prepared,
-                reviews,
-                projection_stage=projection_stage,
-            ),
-            config_version=pipeline._config_version,
-        )
-        pipeline._state.record_strategy_latency(
-            prepared.strategy,
-            round((time.perf_counter() - context.started_at) * 1000.0, 3),
-        )
-        admission_started = time.perf_counter()
-        if not admit_snapshot_to_p6(pipeline, snapshot):
-            pipeline._latency.record_duration(
-                "p6_admission",
-                (time.perf_counter() - admission_started) * 1000.0,
-            )
-            continue
-        pipeline._latency.record_duration(
-            "p6_admission",
-            (time.perf_counter() - admission_started) * 1000.0,
-        )
-        pipeline._state.publish(snapshot)
-        _save_checkpoint_if_due(pipeline, snapshot, context.now)
-        pipeline._session_snapshot_ids.add(snapshot.snapshot_id)
-        sse_started = time.perf_counter()
-        pipeline._publisher.publish(snapshot)
-        pipeline._latency.record_duration(
-            "sse_enqueue",
-            (time.perf_counter() - sse_started) * 1000.0,
-        )
-        snapshots.append(snapshot)
-    return tuple(snapshots)
-
-
 def _record_incomplete_board_score(
     pipeline: RecommendationPipeline,
     prepared: PreparedSnapshot,
@@ -582,33 +610,6 @@ def _record_incomplete_board_score(
         f"{prepared.strategy.value} board scoring degraded; retained latest complete snapshot: "
         + ",".join(reasons)[:350]
     )
-
-
-def _save_checkpoint_if_due(
-    pipeline: RecommendationPipeline,
-    snapshot: RecommendationSnapshot,
-    now: datetime,
-) -> None:
-    if snapshot.strategy is Strategy.LONG:
-        return
-    local = shanghai_now(now)
-    if snapshot.strategy is Strategy.TODAY:
-        boundary = local.replace(hour=11, minute=20, second=0, microsecond=0)
-    else:
-        boundary = local.replace(hour=14, minute=50, second=0, microsecond=0)
-    if 0 <= (boundary - local).total_seconds() <= 10:
-        try:
-            persist(
-                pipeline,
-                pipeline._snapshot_writer.save_checkpoint,
-                snapshot,
-                boundary_at=boundary,
-            )
-        except Exception as exc:
-            pipeline._state.increment("checkpoint_save_failures")
-            pipeline._state.record_error(
-                f"{snapshot.strategy.value} checkpoint persistence degraded: {type(exc).__name__}"
-            )
 
 
 def strategies_for_phase(phase: MarketPhase) -> tuple[Strategy, ...]:

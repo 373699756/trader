@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from tests.pipeline_factory import build_pipeline
-from trader.application.cadence import CadencePolicy
+from trader.application.after_close_recovery import _cached_close_market_is_reusable
+from trader.application.cadence import CadencePolicy, PipelineTask, ScheduledPipelineTask
 from trader.application.events import (
     EventAuditRecord,
     EventPriority,
@@ -40,6 +41,7 @@ from trader.domain.recommendation.models import (
     RecommendationSnapshot,
     Strategy,
 )
+from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome
 from trader.infra.persistence.snapshots import snapshot_from_dict, snapshot_to_dict
 from trader.infra.settings import load_strategy_settings
 from trader.web.schemas import snapshot_envelope
@@ -157,7 +159,7 @@ def test_v17_and_v18_frozen_board_snapshots_remain_replayable(
     )
     snapshot = engine.finalize_snapshot(prepared, {}, legacy_replay=True)
     assert snapshot.replay_input is not None
-    assert snapshot.replay_input.algorithm_version == "engine_v19_bounded_review_2026_07"
+    assert snapshot.replay_input.algorithm_version == "engine_v20_review28_2026_07"
     legacy_input = replace(
         snapshot.replay_input,
         algorithm_version=legacy_algorithm,
@@ -813,7 +815,10 @@ def test_after_close_retry_reuses_complete_cached_close_market(
 ) -> None:
     clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
     features = _three_board_features(application_feature_factory, clock.now())
-    cached_close = ClosingPriceMarketData._closing(features, clock.now())
+    cached_close = tuple(
+        replace(feature, merge_epoch="close-epoch-v1")
+        for feature in ClosingPriceMarketData._closing(features, clock.now())
+    )
     repository = MemoryRepository()
     market_data = CachedCloseMarketOnlyMarketData(features)
     pipeline = build_pipeline(
@@ -829,11 +834,15 @@ def test_after_close_retry_reuses_complete_cached_close_market(
         candidate_pool_size=120,
         event_queue_size=32,
         priority_queue_size=4,
+        decision_execution_mode="versioned_dag",
         now=clock.now,
     )
     pipeline.initialize()
     pipeline._market_features = cached_close
     pipeline._after_close_retry_attempt = 1
+    pipeline._state.record_error("main:board_data_reliability_below_threshold")
+    incomplete_epoch = (replace(cached_close[0], merge_epoch=""), *cached_close[1:])
+    assert _cached_close_market_is_reusable(pipeline, incomplete_epoch, clock.now()) is False
 
     recovered = pipeline.run_once(clock.now())
 
@@ -844,6 +853,8 @@ def test_after_close_retry_reuses_complete_cached_close_market(
     }
     assert market_data.market_fetch_attempts == 0
     assert market_data.cached_candidate_reads == 3
+    assert pipeline.status()["counters"]["after_close_market_cache_hits"] == 1
+    assert "close_quotes:market_fetch" in pipeline.status()["dependencies"]["latency_waterfall"]["stages"]
 
 
 def test_after_close_commits_ready_strategies_when_d25_research_is_missing(
@@ -1193,6 +1204,120 @@ def test_frozen_topk_uses_recoverable_overlay_and_keeps_close_value(
     clock.set(datetime.fromisoformat("2026-07-16T15:01:00+08:00"))
     pipeline.run_once(clock.now())
     assert repository.overlays[(Strategy.TOMORROW, "2026-07-16")].version == closing.version
+
+
+def test_topk_overlay_lane_updates_while_main_market_event_is_blocked(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    feature = application_feature_factory("600001", now)
+    state = RuntimeState()
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TODAY,
+        (feature,),
+        now=now,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="overlay-base",
+        review_port=None,
+        review_deadline=now.replace(hour=11, minute=20),
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    state.publish(replace(snapshot, config_version="config-v2"))
+    market_data = BlockingFullMarketData((feature,))
+    repository = MemoryRepository()
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        market_workers=2,
+        decision_execution_mode="versioned_dag",
+        now=lambda: now,
+    )
+    full_market = new_event(
+        "full_market",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="today_main",
+        strategy=None,
+        priority=EventPriority.MARKET_QUOTES,
+        data_version="blocked-full-market",
+        config_version="config-v2",
+        created_at=now,
+        deadline=now + timedelta(seconds=20),
+        payload={"schedule_task": "full_market"},
+    )
+    overlay = new_event(
+        "topk_quotes",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="today_main",
+        strategy=None,
+        priority=EventPriority.LIVE_QUOTES,
+        data_version="independent-overlay",
+        config_version="config-v2",
+        created_at=now,
+        deadline=now + timedelta(seconds=3),
+        payload={"schedule_task": "topk_quotes"},
+    )
+
+    pipeline.initialize()
+    pipeline.start()
+    try:
+        assert pipeline.submit_event(full_market) is True
+        assert market_data.full_market_started.wait(timeout=1.0)
+        assert pipeline._submit_overlay_event(overlay) is True
+        _wait_until(lambda: state.load_live_overlay(Strategy.TODAY, "2026-07-16") is not None)
+        assert pipeline.status()["counters"].get("events_completed", 0) == 0
+    finally:
+        market_data.release_full_market.set()
+        pipeline.stop(timeout_seconds=2.0)
+
+    pools = pipeline.status()["dependencies"]["worker_pools"]
+    assert pools["overlay"]["workers"] == 1
+    assert pools["overlay_lane"]["completed_count"] == 1
+
+
+def test_rejected_topk_schedule_is_not_counted_as_submitted(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    pipeline = build_pipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        MemoryRepository(),
+        MemoryRepository(),
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+    pipeline.initialize()
+
+    accepted = pipeline._submit_scheduled_task(
+        ScheduledPipelineTask(PipelineTask.TOPK_QUOTES, now, MarketPhase.TODAY_MAIN)
+    )
+
+    assert accepted is False
+    assert pipeline.status()["counters"].get("cadence_topk_quotes_submitted", 0) == 0
 
 
 def test_initialize_restores_frozen_gate(recommendation_policy, application_feature_factory) -> None:
@@ -1951,6 +2076,70 @@ def test_periodic_full_market_event_requires_a_fresh_physical_refresh(
     assert market_data.market_force_requests == [True]
 
 
+@pytest.mark.parametrize(
+    ("source_task", "source_priority", "score_priority"),
+    (
+        ("candidate_quotes", EventPriority.CANDIDATE_QUOTES, EventPriority.MARKET_QUOTES),
+        ("stock_risk", EventPriority.RISK, EventPriority.RISK),
+    ),
+)
+def test_versioned_data_refresh_queues_score_with_its_own_budget(
+    recommendation_policy,
+    application_feature_factory,
+    source_task,
+    source_priority,
+    score_priority,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    repository = MemoryRepository()
+    pipeline = build_pipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        decision_execution_mode="versioned_dag",
+        now=lambda: now,
+    )
+    pipeline._candidate_codes = ("600001",)
+    event = new_event(
+        source_task,
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="today_main",
+        strategy=None,
+        priority=source_priority,
+        data_version=f"{source_task}-trigger-regression",
+        config_version="config-v2",
+        created_at=now,
+        deadline=now + timedelta(seconds=3),
+        payload={"schedule_task": source_task},
+    )
+
+    pipeline.initialize()
+    assert pipeline.start() is True
+    try:
+        assert pipeline.submit_event(event) is True
+        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 2)
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    source_record = next(item for item in repository.events if item.event_type == source_task)
+    score_record = next(item for item in repository.events if item.event_type == "score")
+    assert source_record.status is EventStatus.SUCCESS
+    assert score_record.status is EventStatus.SUCCESS
+    assert score_record.payload["trigger_event_type"] == source_task
+    assert score_record.priority == int(score_priority)
+    assert score_record.deadline == now + timedelta(seconds=38)
+
+
 def test_current_quote_recovery_populates_market_view_without_scoring(
     recommendation_policy,
     application_feature_factory,
@@ -2142,8 +2331,51 @@ def test_deepseek_worker_failure_falls_back_to_local_snapshot(
 
     assert snapshot is not None
     assert snapshot.fusion_mode.value == "local_degraded"
-    assert snapshot.metadata["projection_stage"] == "local"
+    assert snapshot.metadata["projection_stage"] == "hybrid"
+    assert "deepseek_incomplete" in snapshot.degraded_reasons
+    assert "deepseek_pending" not in snapshot.degraded_reasons
     assert "DeepSeek review degraded" in pipeline.status()["last_error"]
+
+
+def test_versioned_review_failure_replaces_pending_with_terminal_local_snapshot(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    state = RuntimeState()
+    pipeline = build_pipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        FailingReviewer(),
+        MemoryRepository(),
+        MemoryRepository(),
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        decision_execution_mode="versioned_dag",
+        now=lambda: now,
+    )
+    pipeline.initialize()
+    pipeline.start()
+    try:
+        assert pipeline.submit_tick(now) is True
+        _wait_until(
+            lambda: (
+                (latest := state.latest(Strategy.TODAY)) is not None and latest.metadata["projection_stage"] == "hybrid"
+            )
+        )
+        snapshot = state.latest(Strategy.TODAY)
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert snapshot is not None
+    assert snapshot.fusion_mode.value == "local_degraded"
+    assert "deepseek_incomplete" in snapshot.degraded_reasons
+    assert "deepseek_pending" not in snapshot.degraded_reasons
 
 
 def test_local_snapshot_is_published_before_deepseek_review_finishes(
@@ -2166,6 +2398,7 @@ def test_local_snapshot_is_published_before_deepseek_review_finishes(
         candidate_pool_size=120,
         event_queue_size=8,
         priority_queue_size=2,
+        decision_execution_mode="versioned_dag",
         now=lambda: now,
     )
     pipeline.initialize()
@@ -2177,11 +2410,55 @@ def test_local_snapshot_is_published_before_deepseek_review_finishes(
         assert local is not None
         assert local.metadata["projection_stage"] == "local"
         assert "deepseek_pending" in local.degraded_reasons
-        reviewer.release.set()
         _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+        reviewer.release.set()
     finally:
         reviewer.release.set()
         pipeline.stop(timeout_seconds=2.0)
+
+
+def test_versioned_dag_publishes_hybrid_only_through_main_commit_worker(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    reviewer = ApplyingBlockingReviewer(now)
+    state = RuntimeState()
+    engine = ThreadRecordingEngine(recommendation_policy)
+    repository = MemoryRepository()
+    pipeline = build_pipeline(
+        StaticMarketData((application_feature_factory("600001", now),)),
+        TradingDayCalendar(),
+        reviewer,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        engine,
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        decision_execution_mode="versioned_dag",
+        now=lambda: now,
+    )
+    pipeline.initialize()
+    pipeline.start()
+    try:
+        assert pipeline.submit_tick(now) is True
+        assert reviewer.started.wait(timeout=1.0)
+        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+        assert state.latest(Strategy.TODAY).metadata["projection_stage"] == "local"
+        reviewer.release.set()
+        _wait_until(lambda: state.latest(Strategy.TODAY).metadata["projection_stage"] == "hybrid")
+    finally:
+        reviewer.release.set()
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert engine.finalize_threads[-1] == "trader-merge"
+    assert pipeline.status()["counters"]["hybrid_results_queued"] == 1
+    hybrid_record = next(item for item in repository.events if item.event_type == "hybrid_ready")
+    assert hybrid_record.deadline == hybrid_record.created_at + timedelta(seconds=38)
 
 
 def test_long_is_local_only_while_short_strategies_remain_review_eligible(
@@ -2781,6 +3058,24 @@ class DegradingMarketData(StaticMarketData):
         return super().fetch_market_features(observed_at, force=force, deadline=deadline)
 
 
+class BlockingFullMarketData(StaticMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
+        super().__init__(features)
+        self.full_market_started = threading.Event()
+        self.release_full_market = threading.Event()
+
+    def fetch_market_features(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        self.full_market_started.set()
+        self.release_full_market.wait(timeout=2.0)
+        return super().fetch_market_features(observed_at, force=force, deadline=deadline)
+
+
 class DeadlineAdvancingMarketData(StaticMarketData):
     def __init__(self, features: Sequence[FeatureSnapshot], clock: MutableClock) -> None:
         super().__init__(features)
@@ -3061,6 +3356,39 @@ class BlockingReviewer(ThreadRecordingReviewer):
         self.started.set()
         self.release.wait(timeout=1.0)
         return {}
+
+
+class ApplyingBlockingReviewer(BlockingReviewer):
+    def __init__(self, completed_at: datetime) -> None:
+        super().__init__()
+        self._completed_at = completed_at
+
+    def review(
+        self,
+        _strategy: Strategy,
+        candidates: Sequence[FeatureSnapshot],
+        *,
+        phase: str,
+        deadline: datetime,
+        contexts=None,
+    ) -> Mapping[str, DeepSeekReview]:
+        del phase, deadline, contexts
+        self.started.set()
+        self.release.wait(timeout=1.0)
+        dimensions = {
+            name: DimensionAssessment(name, 80.0, 1.0, "测试证据")
+            for name in ("value_quality", "financial_health", "market_flow", "risk_quality")
+        }
+        return {
+            feature.quote.code: DeepSeekReview(
+                code=feature.quote.code,
+                outcome=ReviewOutcome.APPLIED,
+                dimensions=dimensions,
+                risk_facts=(),
+                completed_at=self._completed_at,
+            )
+            for feature in candidates
+        }
 
 
 class SupersededOutcomeSettlement:

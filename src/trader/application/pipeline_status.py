@@ -61,6 +61,7 @@ class PipelineStatusMixin(PipelineState):
             for item in snapshot.recommendations
         )
         dependencies = {
+            "decision_execution_mode": self._decision_execution_mode,
             "market_data": market_data,
             "deepseek": deepseek_status,
             "event_queue": self._queue.status(),

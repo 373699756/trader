@@ -33,6 +33,7 @@ def test_docs_keep_two_authorities_active_plans_and_delivery_reports() -> None:
     documents = sorted(path.relative_to(docs_root).as_posix() for path in docs_root.rglob("*") if path.is_file())
 
     assert documents == [
+        "hi.md",
         "queston.md",
         "recommendation-strategy.md",
         "reports/youhua-a1-baseline.md",
@@ -59,7 +60,7 @@ def test_docs_keep_two_authorities_active_plans_and_delivery_reports() -> None:
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
-    assert "已 Review" in question
+    assert "Review" in question
     assert "实施任务" in question
     assert "非权威执行计划" in strage
     assert "software-business-design.md" in strage

@@ -35,6 +35,7 @@
     patchToPaintDroppedSamples: 0,
     resyncReasons: {},
     browserErrors: [],
+    runtimeDiagnostics: [],
   };
 
   window.TraderDashboardDiagnostics = Object.freeze({
@@ -42,14 +43,13 @@
       ...diagnostics,
       resyncReasons: { ...diagnostics.resyncReasons },
       browserErrors: [...diagnostics.browserErrors],
+      runtimeDiagnostics: [...diagnostics.runtimeDiagnostics],
       patchToPaint: latencySummary(patchToPaintSamples),
     }),
   });
   window.addEventListener("error", (event) => recordBrowserError("error", event.message));
   window.addEventListener("unhandledrejection", (event) => recordBrowserError("unhandledrejection", event.reason));
-
   const els = {};
-
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
@@ -322,15 +322,15 @@
     if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
     else if (payload.phase === "close_fallback") {
       const degraded = (payload.degraded_reasons || []).length
-        ? ` · 降级：${payload.degraded_reasons.join("、")}`
+        ? ` · 降级：${window.TraderRender.reasonLabels(payload.degraded_reasons).join("、")}`
         : "";
       setNotice(`已冻结 · 收盘补算 · ${window.TraderRender.formatDateTime(payload.published_at)}${degraded}`, degraded ? "warn" : "ok");
     }
-    else if ((payload.degraded_reasons || []).length) setNotice(`降级：${payload.degraded_reasons.join("、")}`, "warn");
+    else if ((payload.degraded_reasons || []).length) setNotice(`降级：${window.TraderRender.reasonLabels(payload.degraded_reasons).join("、")}`, "warn");
     else if (payload.frozen) setNotice(`已冻结于 ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
     else if (payload.strategy === "long") setNotice(`当前快照 · ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
     else if (payload.view === "live") setNotice(`实时数据 · ${window.TraderRender.formatDateTime(payload.published_at)} · 未冻结，结果可能变化`, "warn");
-    else setNotice(`快照 ${window.TraderRender.formatDateTime(payload.published_at)} · ${payload.fusion_mode}`, "ok");
+    else setNotice(`快照 ${window.TraderRender.formatDateTime(payload.published_at)} · ${window.TraderRender.fusionModeLabel(payload.fusion_mode)}`, "ok");
     stampRowIdentities(payload);
     updateQuoteAge();
   }
@@ -448,7 +448,9 @@
       els.runtimeStatus.textContent = running ? "运行中" : payload.status === "not_ready" ? "未就绪" : "已停止";
       els.runtimeDot.dataset.state = running ? "ok" : payload.last_error ? "error" : "warn";
       els.marketPhase.textContent = phaseLabel(payload.phase || "closed");
-      els.lastError.textContent = payload.last_error || "无";
+      const rawLastError = payload.last_error || "";
+      els.lastError.textContent = window.TraderRender.statusErrorLabel(rawLastError);
+      window.TraderRender.rememberDiagnostic(diagnostics.runtimeDiagnostics, rawLastError);
       const deepseek = payload.dependencies && payload.dependencies.deepseek;
       const budget = deepseek && deepseek.budget;
       els.budgetStatus.textContent = budget && budget.available === false
@@ -744,12 +746,10 @@
   function utf8Bytes(value) {
     return new TextEncoder().encode(String(value || "")).byteLength;
   }
-
   function recordBrowserError(kind, detail) {
     diagnostics.browserErrors.push(`${kind}:${String(detail || "unknown").slice(0, 300)}`);
     if (diagnostics.browserErrors.length > 20) diagnostics.browserErrors.shift();
   }
-
   function rowIdentity(payload, code) {
     return [payload.strategy, payload.trade_date, payload.view, code].map((value) => String(value || "")).join(":");
   }

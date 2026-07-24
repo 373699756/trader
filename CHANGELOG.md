@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增 `docs/hi.md`，归档用户要求的“分板评分后最多 28 支送审、最高实时性但不降低荐股
+  安全”的完整实施计划、固定业务顺序、版本化执行、TopK/收盘专项、中文诊断和验收边界。
+  状态接口新增执行模式、TopK overlay lane、分周期排队/执行总耗时、`close_quotes` 分阶段
+  耗时，以及每策略正式推荐数和观察数。
+- 新增 `versioned_dag` 运行模式：候选行情、市场新闻和公司风险完成后提交独立本地评分
+  事件；本地 P6 先发布，DeepSeek 通过每策略“一个在途、一个 latest-wins 待处理”的有界
+  通道异步复核，结果只经单一 merge worker 且通过基础快照、交易日、数据版本、配置版本和
+  未冻结校验后发布 hybrid。schema v5 缺省继续使用旧串行模式，便于完整进程回退。
 - 新增 `docs/queston.md`，归档 2026-07-24 “候选很多但 Web 无荐股、TopK 超时和多项降级”
   的整链路证据、Review 结论、实施边界与验收计划；推荐快照、状态 API、推荐 API 和 SSE
   patch 新增确定性的选择诊断，页面可区分无可评分候选、低于观察门槛、风险/执行拦截及
@@ -19,6 +27,15 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户将分板本地评分后的 DeepSeek 送审候选上限从每策略每次投影 24 支调整为 28 支；
+  活动策略/回放身份升级为 `strategy_v20_review28_2026_07` /
+  `engine_v20_review28_2026_07`，v19 冻结输入仍按记录策略确定性回放。评分、严重公司风险
+  硬过滤、0.85 板块可靠度、68/32 融合、动作门槛、TopK、最后执行的同行业最多两支及 long
+  当前观察语义均未改变。
+- TopK 报价改由独立单 worker、单 latest-wins 槽处理，不再排在 `close_quotes`、参考数据或
+  DeepSeek 后面；来源完成触发的本地评分拥有独立 15 秒执行/38 秒含排队预算，DeepSeek 完成
+  事件也拥有 38 秒排队窗口及开始执行后的 2 秒预算。收盘重试只复用逐行同一 merge epoch、
+  同日 14:59 后、正价格且三板 20 日历史各至少 100 只的完整缓存，并只补取缺失候选报价。
 - DeepSeek 每日物理 HTTP 硬上限由 188 调整为 168：today/tomorrow/d25/long/shared/
   emergency 硬桶固定为 68/45/35/0/15/5，阶段目标合计 146，失败、超时、schema 修复和
   重试仍计数。评分后每策略每次投影只复核最多 24 支可靠候选，并以同一集合判断 hybrid
@@ -100,6 +117,19 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户看到 `TopK live overlay degraded: ... batch deadline`、板块可靠度和公司风险英文原因，
+  并反复遇到 Web 无荐股。确认 TopK 超时本身只影响报价 overlay，不是“行情差导致零荐股”
+  的直接证据；无数据必须结合 P6 是否产生、正式/观察数量和选择诊断判断。现在页面对全部
+  已登记原因、板块前缀、融合模式、风险码和最近错误显示简短中文，未知英文使用中文兜底，
+  原始值只保留在最多 20 条的浏览器诊断中。
+- 修复 TopK 与最长 `close_quotes` 共用主事件队列造成的排队超时，以及约 31.3 秒总耗时无法
+  区分排队和业务执行的问题；TopK 现可在主全市场事件阻塞时独立更新，周期同时暴露
+  `queue_wait:<cycle>`、`execution_total:<cycle>` 和 `cycle_total:<cycle>`，收盘链路进一步
+  拆分恢复、P6、全市场、完整性、预选、逐策略、long 和结算耗时。
+- 修复收盘重试因历史 `last_error` 否定当前已通过完整校验的收盘缓存而重复抓取全市场，
+  以及部分行缺少 merge epoch 仍可能被误判为同批次的问题；缓存命中与未命中现有独立计数，
+  完整命中路径远程全市场请求为零。修复被拒绝的 TopK 调度仍误计“已提交”，并避免把候选
+  行情 3 秒截止时间用于后续评分，防止来源事件过期后已经发布结果的边界竞态。
 - 修复历史预热失败批次被回调立即递归重提、数分钟制造百万级计划/失败计数并挤占实时行情
   线程的问题。失败代码现在按 60/120/240/480/900 秒逐股退避，未尝试代码继续推进，成功
   或移出 universe 后清理状态；历史 entries 读取移出 warmup 锁，状态额外暴露冷却数、唯一
@@ -193,6 +223,16 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批完整 `make format-check`、`make lint`、`make type-check`、`make test` 和
+  `make package` 通过；全量测试仅保留既有 DeepSeek 测试模型名 RuntimeWarning。新增回归
+  覆盖 28 支送审、v19/v20 回放、schema v5/v6、TopK 与阻塞主事件隔离、本地先于 DeepSeek
+  发布、复核异常从 pending 收敛到本地降级终态、hybrid 单提交器及 38 秒排队预算、陈旧
+  结果拒绝、收盘完整缓存零全市场请求、缺失 merge epoch 拒绝、TopK 拒绝计数、中文原因
+  与原始诊断隔离。
+- 仓库外安装最终 wheel 后已从外部目录导入 `trader`、执行 `trader-cli --help`，并读取
+  `index.html`、CSS、三项 JavaScript 和两项 SVG 资源。真实 Firefox/geckodriver 在
+  1280x720、1440x900、1920x1080 三档均无页面级横向溢出，24 个 SSE patch 全部应用、
+  浏览器错误和 resync 均为 0，patch-to-paint P95 为 28 ms（预算 100 ms）。
 - 本批 816 项 pytest 全量通过；`make format-check`、`make lint`、`make type-check`、
   `make test` 和 `make package` 通过。新增回归覆盖 60/120/240/480/900 秒历史退避、
   未失败代码继续推进、三板 intraday 轮转、24 支复核上限及冲突优先、168 次并发原子
@@ -313,6 +353,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除任何评分因子、安全校验、冻结记录、运行数据库或 long 观察路径；只从推荐关键
+  路径移除对 DeepSeek 完成和 TopK 主事件排队的同步等待。
 - 从活动评分链删除同行收益差、领先组差、残差动量、行业趋势、长期行业政策分和放量突破
   行业宽度条件；删除竞争组作为 TopK 数量限制的行为，保留字段仅供兼容回放与审计。
 
@@ -323,6 +365,11 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批未调用真实外部行情或 DeepSeek 服务，也不以工程门禁证明推荐收益；外部供应商超时、
+  熔断或字段覆盖不足时仍可能合法只保留最近有效快照或得到零正式推荐。需要在真实交易日
+  持续观察 `queue_wait/execution_total`、overlay 年龄、触发评分丢弃数、收盘缓存命中率和
+  各策略正式/观察数，才能量化 31.3 秒现场长尾的实际改善。28 支送审会增加单次候选覆盖，
+  但不会突破现有 168 次物理请求硬上限，预算耗尽时继续使用本地结果。
 - 本批终止了已确认的历史失败自旋并提高三板尾盘覆盖公平性，但外部行情/历史/DeepSeek
   供应商仍可能超时或返回不完整数据；系统会保留本地快照并显式降级。未降低 today、
   tomorrow、d25 的分数、可靠度、风险或冻结门槛，因此健康数据下最高分仍低于观察门槛时

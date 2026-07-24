@@ -12,6 +12,7 @@
     risk_veto: "风险事实触发限制",
     stale_quote: "行情已过期，仅供观察",
     insufficient_core_features: "核心数据不足，仅供观察",
+    corporate_risk_history_unavailable: "公司风险历史暂不可核验",
     board_data_reliability_below_threshold: "板块数据可靠度不足",
     observation_window: "当前处于观察时段",
     outside_execution_window: "当前不在执行时段",
@@ -48,6 +49,15 @@
     pledge_risk: "质押风险",
     reduction_or_unlock: "减持或解禁风险",
     negative_announcement_level: "负面公告风险",
+    major_shareholder_reduction: "大股东减持风险",
+    financial_fraud_history: "财务造假历史",
+    official_investigation_history: "立案调查历史",
+    major_illegal_history: "重大违法历史",
+    fund_occupation_history: "资金占用历史",
+    illegal_guarantee_history: "违规担保历史",
+    forced_delisting_risk: "强制退市风险",
+    unlock_risk: "限售股解禁风险",
+    corporate_risk_history_unavailable: "公司风险历史暂不可核验",
   };
 
   const RISK_SEVERITY_LABELS = {
@@ -66,6 +76,34 @@
     daily_hard_limit: "未复核：每日额度已用尽",
     deadline_reached: "未复核：已到复核截止时间",
     completed_after_deadline: "迟到：结果未参与评分",
+  };
+
+  const DEGRADED_REASON_LABELS = {
+    snapshot_not_ready: "荐股快照尚未就绪",
+    board_data_reliability_below_threshold: "板块数据可靠度不足",
+    board_population_insufficient: "板块有效样本不足",
+    deepseek_skipped_no_eligible_candidates: "没有符合模型复核条件的候选",
+    deepseek_incomplete: "模型复核结果不完整",
+    close_fallback_observation_floor_relaxed: "收盘补算已放宽观察展示门槛",
+    deepseek_pending: "模型复核进行中",
+    tomorrow_tail_data_incomplete: "尾盘量价数据不完整",
+    d25_structured_research_incomplete: "2至5日结构化研究数据不完整",
+    long_research_incomplete: "长期研究数据不完整",
+    corporate_risk_history_unavailable: "公司风险历史暂不可核验",
+    model_unavailable: "模型服务暂不可用",
+    quote_fallback: "行情已使用备用数据",
+  };
+
+  const BOARD_LABELS = {
+    main: "主板",
+    chinext: "创业板",
+    star: "科创板",
+  };
+
+  const FUSION_MODE_LABELS = {
+    hybrid: "本地与模型融合",
+    local_degraded: "本地评分模式",
+    local_only: "仅本地评分",
   };
 
   function escapeHtml(value) {
@@ -166,7 +204,7 @@
       <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
       <td>${compact(item.market_cap)}</td>
       <td><div class="score-stack"><span><b>${number(scores.local_score, 2)}</b>本地</span><span><b>${deepseek}</b>模型</span><span><b>${deepseekPenalty}</b>扣分</span><span><b>${number(scores.final_score, 2)}</b>最终</span></div></td>
-      <td><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || action)}</span></td>
+      <td><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || "动作状态未知")}</span></td>
       <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
   }
@@ -192,10 +230,10 @@
     const downside = item.downside || null;
     const conclusion = [
       detailGrid([
-        ["推荐动作", ACTION_LABELS[action] || action],
+        ["推荐动作", ACTION_LABELS[action] || "动作状态未知"],
         ["最终评分", valueNumber(scores.final_score, 2)],
         ["当前排名", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 名` : null],
-        ["入场形态", SETUP_LABELS[item.setup_type] || item.setup_type],
+        ["入场形态", SETUP_LABELS[item.setup_type] || "形态信息暂不可用"],
         ["下行保护", downside ? (downside.status === "pass" ? "通过" : "转观察") : null],
       ]),
       `<div class="detail-reason"><span>推荐原因</span><strong>${escapeHtml(actionReason(item.action_reason))}</strong></div>`,
@@ -226,7 +264,7 @@
     const marketNotes = [];
     if (requiredMarket.some((value) => !hasValue(value))) marketNotes.push(note("部分核心行情暂缺", "warn"));
     if (Array.isArray(snapshot.degraded_reasons) && snapshot.degraded_reasons.length > 0) {
-      marketNotes.push(note(`数据降级：${snapshot.degraded_reasons.join("、")}`, "warn"));
+      marketNotes.push(note(`数据降级：${reasonLabels(snapshot.degraded_reasons).join("、")}`, "warn"));
     }
 
     const scoreValues = [
@@ -250,7 +288,7 @@
         ]),
       );
       if (Array.isArray(downside.reasons) && downside.reasons.length > 0) {
-        scoreParts.push(note(downside.reasons.map((reason) => DOWNSIDE_REASON_LABELS[reason] || reason).join("、"), "warn"));
+        scoreParts.push(note(downside.reasons.map((reason) => DOWNSIDE_REASON_LABELS[reason] || "下行保护条件触发").join("、"), "warn"));
       }
     }
 
@@ -278,8 +316,8 @@
 
   function riskList(risks) {
     return `<ul class="detail-list detail-risk-list">${risks.map((risk) => {
-      const label = RISK_LABELS[risk.risk_code] || risk.risk_code || "风险提示";
-      const severity = RISK_SEVERITY_LABELS[risk.severity] || risk.severity || "-";
+      const label = RISK_LABELS[risk.risk_code] || "其他风险提示";
+      const severity = RISK_SEVERITY_LABELS[risk.severity] || "未知";
       const assessment = risk.assessment ? `<p>${escapeHtml(risk.assessment)}</p>` : "";
       return `<li><b>${escapeHtml(label)}</b><span class="risk-meta">${escapeHtml(severity)}风险 · 扣分 ${number(risk.penalty, 2)}</span>${assessment}</li>`;
     }).join("")}</ul>`;
@@ -290,7 +328,7 @@
     if (ACTION_REASON_LABELS[reason]) return ACTION_REASON_LABELS[reason];
     if (reason.startsWith("market_data_observe_only:")) return "行情或交易规则受限，仅供观察";
     if (reason.startsWith("downside_guard:")) return "触发下行保护，仅进入观察池";
-    return reason || "暂无补充说明";
+    return reason ? "推荐条件暂未满足" : "暂无补充说明";
   }
 
   function reviewResult(review) {
@@ -299,13 +337,62 @@
     if (REVIEW_ERROR_LABELS[error]) return REVIEW_ERROR_LABELS[error];
     if (review.outcome === "abstain") return "模型弃权：使用本地评分";
     if (review.outcome === "late") return "迟到：结果未参与评分";
-    if (review.outcome !== "rejected") return String(review.outcome);
+    if (review.outcome !== "rejected") return "模型复核已完成";
     if (
       error.startsWith("http_")
       || error.startsWith("internal_")
       || ["timeout", "request_error", "request_failed", "empty_response", "invalid_response"].includes(error)
     ) return "调用失败：已回退本地评分";
     return "拒绝：响应未通过结构化校验";
+  }
+
+  function reasonLabel(value) {
+    const reason = String(value || "").trim();
+    if (!reason) return "部分数据暂不可用";
+    if (DEGRADED_REASON_LABELS[reason]) return DEGRADED_REASON_LABELS[reason];
+    const separator = reason.indexOf(":");
+    if (separator > 0) {
+      const prefix = reason.slice(0, separator);
+      const suffix = reason.slice(separator + 1);
+      if (BOARD_LABELS[prefix] && DEGRADED_REASON_LABELS[suffix]) {
+        return `${BOARD_LABELS[prefix]}：${DEGRADED_REASON_LABELS[suffix]}`;
+      }
+      if (["eastmoney", "sina", "tencent", "tushare", "akshare"].includes(prefix)) {
+        return "行情数据源暂不可用";
+      }
+    }
+    if (/[\u3400-\u9fff]/u.test(reason)) return reason;
+    return "部分数据暂不可用";
+  }
+
+  function reasonLabels(values) {
+    if (!Array.isArray(values)) return [];
+    return [...new Set(values.map(reasonLabel))];
+  }
+
+  function statusErrorLabel(value) {
+    const error = String(value || "").trim();
+    if (!error) return "无";
+    if (error.includes("TopK live overlay degraded")) return "TopK 行情刷新暂时降级";
+    if (error.includes("batch deadline") || error.includes("deadline expired")) return "数据处理超过本批截止时间";
+    if (error.includes("after-close") || error.includes("close rebuild")) return "收盘荐股恢复暂时降级";
+    if (error.includes("board scoring degraded")) return "分板评分暂时降级，已保留最近有效结果";
+    if (error.includes("DeepSeek review degraded")) return "模型复核暂时降级，继续使用本地评分";
+    if (error.includes("market data degraded")) return "行情数据暂时降级";
+    if (DEGRADED_REASON_LABELS[error] || error.includes(":board_")) return reasonLabel(error);
+    if (/^[\u3400-\u9fff，。：；、\s]+$/u.test(error)) return error;
+    return "运行链路暂时降级";
+  }
+
+  function fusionModeLabel(value) {
+    return FUSION_MODE_LABELS[String(value || "")] || "评分模式";
+  }
+
+  function rememberDiagnostic(values, value) {
+    const raw = String(value || "").trim();
+    if (!raw || values.includes(raw)) return;
+    values.push(raw.slice(0, 300));
+    if (values.length > 20) values.shift();
   }
 
   function hasValue(value) {
@@ -347,9 +434,14 @@
     formatDateTime,
     formatTime,
     historyTable,
+    fusionModeLabel,
+    rememberDiagnostic,
     number,
     pct,
+    reasonLabel,
+    reasonLabels,
     row,
     rows,
+    statusErrorLabel,
   };
 })();

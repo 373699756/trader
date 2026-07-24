@@ -7,6 +7,7 @@ const vm = require("vm");
 const dashboardPath = process.argv[2];
 const path = require("path");
 const selectionPath = path.join(path.dirname(dashboardPath), "selection.js");
+const renderPath = path.join(path.dirname(dashboardPath), "render.js");
 let source = fs.readFileSync(dashboardPath, "utf8");
 const suffix = "\n})();";
 source = source.trimEnd();
@@ -29,6 +30,7 @@ const sandbox = {
   document: { addEventListener() {}, createElement() { return {}; } },
   window: { addEventListener() {} },
 };
+vm.runInNewContext(fs.readFileSync(renderPath, "utf8"), sandbox, { filename: renderPath });
 vm.runInNewContext(fs.readFileSync(selectionPath, "utf8"), sandbox, { filename: selectionPath });
 vm.runInNewContext(source, sandbox, { filename: dashboardPath });
 const state = { ...sandbox.window.TraderSelection, ...sandbox.window.__dashboardD4 };
@@ -249,7 +251,7 @@ assert.deepStrictEqual(
     topScore: "-",
     modelReview: "-",
     dataQuality: "无数据",
-    dataQualityTitle: "snapshot_not_ready",
+    dataQualityTitle: "荐股快照尚未就绪",
   },
 );
 assert.deepStrictEqual(
@@ -265,9 +267,28 @@ assert.deepStrictEqual(
     topScore: "-",
     modelReview: "0 / 1",
     dataQuality: "降级 · 2项",
-    dataQualityTitle: "model_unavailable、quote_fallback",
+    dataQualityTitle: "模型服务暂不可用、行情已使用备用数据",
   },
 );
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(sandbox.window.TraderRender.reasonLabels([
+    "main:board_data_reliability_below_threshold",
+    "corporate_risk_history_unavailable",
+    "unknown_runtime_code",
+  ]))),
+  ["主板：板块数据可靠度不足", "公司风险历史暂不可核验", "部分数据暂不可用"],
+);
+assert.strictEqual(
+  sandbox.window.TraderRender.statusErrorLabel(
+    "TopK live overlay degraded: market-data result completed after its batch deadline",
+  ),
+  "TopK 行情刷新暂时降级",
+);
+assert.strictEqual(sandbox.window.TraderRender.fusionModeLabel("local_degraded"), "本地评分模式");
+const runtimeDiagnostics = [];
+sandbox.window.TraderRender.rememberDiagnostic(runtimeDiagnostics, "raw_runtime_code");
+sandbox.window.TraderRender.rememberDiagnostic(runtimeDiagnostics, "raw_runtime_code");
+assert.deepStrictEqual(JSON.parse(JSON.stringify(runtimeDiagnostics)), ["raw_runtime_code"]);
 assert.strictEqual(state.isSnapshotNotFound({ code: "snapshot_not_found" }), true);
 assert.strictEqual(state.isSnapshotNotFound({ code: "other" }), false);
 

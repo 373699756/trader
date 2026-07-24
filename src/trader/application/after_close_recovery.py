@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, time
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 from trader.application.candidate_features import bind_strategy_input_version, read_strategy_features
@@ -65,7 +67,8 @@ def recover_after_close_snapshots(
         return ()
 
     with pipeline._after_close_lock:
-        missing = _restore_existing(pipeline, trade_date)
+        with _close_stage(pipeline, "restore_existing"):
+            missing = _restore_existing(pipeline, trade_date)
         published: list[RecommendationSnapshot] = []
         runtime_sources = {
             strategy: snapshot
@@ -76,16 +79,21 @@ def recover_after_close_snapshots(
             and snapshot.snapshot_id in pipeline._session_snapshot_ids
         }
         if runtime_sources:
-            published.extend(_persist_runtime_results(pipeline, runtime_sources, local, deadline=deadline))
+            with _close_stage(pipeline, "persist_runtime_p6"):
+                published.extend(_persist_runtime_results(pipeline, runtime_sources, local, deadline=deadline))
 
-        missing = _restore_existing(pipeline, trade_date)
+        with _close_stage(pipeline, "restore_after_p6"):
+            missing = _restore_existing(pipeline, trade_date)
         rebuild = tuple(strategy for strategy in missing if strategy not in runtime_sources)
         if rebuild:
-            published.extend(_rebuild_from_close(pipeline, rebuild, local, deadline=deadline))
+            with _close_stage(pipeline, "full_rebuild"):
+                published.extend(_rebuild_from_close(pipeline, rebuild, local, deadline=deadline))
 
-        published.extend(_refresh_after_close_long(pipeline, local, deadline=deadline))
+        with _close_stage(pipeline, "long_observation"):
+            published.extend(_refresh_after_close_long(pipeline, local, deadline=deadline))
 
-        complete = not _restore_existing(pipeline, trade_date) and _after_close_long_ready(pipeline, trade_date)
+        with _close_stage(pipeline, "completion_check"):
+            complete = not _restore_existing(pipeline, trade_date) and _after_close_long_ready(pipeline, trade_date)
         pipeline._record_after_close_recovery(local, complete=complete)
         return tuple(published)
 
@@ -116,7 +124,9 @@ def _persist_runtime_results(
     codes = tuple(
         dict.fromkeys(item.features.quote.code for snapshot in sources.values() for item in snapshot.recommendations)
     )
-    close_features = _fetch_close_candidates(pipeline, codes, now, deadline=deadline) if codes else ()
+    close_features = (
+        _fetch_close_candidates(pipeline, codes, now, deadline=deadline, reuse_market=True) if codes else ()
+    )
     close_by_code = {feature.quote.code: feature for feature in close_features}
     published: list[RecommendationSnapshot] = []
     for strategy, source in sources.items():
@@ -190,13 +200,15 @@ def _rebuild_from_close(
     deadline: datetime | None,
 ) -> tuple[RecommendationSnapshot, ...]:
     try:
-        market_features = _fetch_close_market(pipeline, now, deadline=deadline)
+        with _close_stage(pipeline, "market_fetch"):
+            market_features = _fetch_close_market(pipeline, now, deadline=deadline)
     except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
         pipeline._state.increment("after_close_rebuild_failures")
         pipeline._state.record_error(f"after-close market recovery degraded: {str(exc)[:400]}")
         return ()
     validation_at = max(now, shanghai_now(pipeline._now()))
-    close_counts, history_counts = _close_market_readiness(market_features, validation_at)
+    with _close_stage(pipeline, "market_readiness"):
+        close_counts, history_counts = _close_market_readiness(market_features, validation_at)
     if not all(count >= MIN_BOARD_SAMPLE for count in history_counts.values()):
         pipeline._state.increment("after_close_incomplete_market")
         pipeline._state.record_error(
@@ -207,37 +219,39 @@ def _rebuild_from_close(
         return ()
 
     max_age = _close_max_age_seconds(validation_at)
-    candidates, reasons, details = _preselect_close(
-        pipeline,
-        market_features,
-        strategies,
-        validation_at,
-        max_age,
-    )
+    with _close_stage(pipeline, "preselection"):
+        candidates, reasons, details = _preselect_close(
+            pipeline,
+            market_features,
+            strategies,
+            validation_at,
+            max_age,
+        )
     store_candidate_selection(pipeline, market_features, candidates, reasons, details)
 
     prepared: list[RecommendationSnapshot] = []
     codes = tuple(feature.quote.code for feature in candidates)
     for strategy in strategies:
         try:
-            candidate_features, data_version = _strategy_close_features(pipeline, strategy, codes, validation_at)
-            strategy_validation_at = max(validation_at, shanghai_now(pipeline._now()))
-            if codes and not _complete_requested_close_features(candidate_features, codes, strategy_validation_at):
-                raise MarketDataUnavailableError(f"{strategy.value} closing candidate quotes are incomplete")
-            snapshot = _build_local_close_snapshot(
-                pipeline,
-                _CloseSnapshotRequest(
-                    strategy,
-                    candidate_features,
-                    data_version,
-                    market_features,
-                    codes,
-                    reasons,
-                    details,
-                    strategy_validation_at,
-                    _close_max_age_seconds(strategy_validation_at),
-                ),
-            )
+            with _close_stage(pipeline, f"strategy:{strategy.value}"):
+                candidate_features, data_version = _strategy_close_features(pipeline, strategy, codes, validation_at)
+                strategy_validation_at = max(validation_at, shanghai_now(pipeline._now()))
+                if codes and not _complete_requested_close_features(candidate_features, codes, strategy_validation_at):
+                    raise MarketDataUnavailableError(f"{strategy.value} closing candidate quotes are incomplete")
+                snapshot = _build_local_close_snapshot(
+                    pipeline,
+                    _CloseSnapshotRequest(
+                        strategy,
+                        candidate_features,
+                        data_version,
+                        market_features,
+                        codes,
+                        reasons,
+                        details,
+                        strategy_validation_at,
+                        _close_max_age_seconds(strategy_validation_at),
+                    ),
+                )
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             pipeline._state.increment("after_close_strategy_failures")
             pipeline._state.record_error(f"{strategy.value} close rebuild degraded: {str(exc)[:400]}")
@@ -245,12 +259,13 @@ def _rebuild_from_close(
         prepared.append(snapshot)
 
     committed: list[RecommendationSnapshot] = []
-    for snapshot in prepared:
-        if not _commit_fallback(pipeline, snapshot):
-            continue
-        close_by_code = {item.features.quote.code: item.features for item in snapshot.recommendations}
-        _save_closing_overlay(pipeline, snapshot, close_by_code, snapshot.published_at)
-        committed.append(snapshot)
+    with _close_stage(pipeline, "commit"):
+        for snapshot in prepared:
+            if not _commit_fallback(pipeline, snapshot):
+                continue
+            close_by_code = {item.features.quote.code: item.features for item in snapshot.recommendations}
+            _save_closing_overlay(pipeline, snapshot, close_by_code, snapshot.published_at)
+            committed.append(snapshot)
     return tuple(committed)
 
 
@@ -493,7 +508,9 @@ def _fetch_close_market(
 ) -> tuple[FeatureSnapshot, ...]:
     cached = tuple(pipeline._market_features)
     if cached and _cached_close_market_is_reusable(pipeline, cached, now):
+        pipeline._state.increment("after_close_market_cache_hits")
         return cached
+    pipeline._state.increment("after_close_market_cache_misses")
     if pipeline._persistence_running:
         return tuple(
             data_future(
@@ -514,16 +531,10 @@ def _cached_close_market_is_reusable(
 ) -> bool:
     if not all(_valid_close_feature(feature, now) for feature in features):
         return False
-    last_error = str(pipeline._state.snapshot().get("last_error") or "")
-    if any(
-        reason in last_error
-        for reason in (
-            "board_data_reliability_below_threshold",
-            "complete three-board close quotes and history",
-            "board_population_insufficient",
-        )
-    ):
-        return False
+    if pipeline._decision_execution_mode == "versioned_dag":
+        epochs = {feature.merge_epoch for feature in features}
+        if "" in epochs or len(epochs) != 1:
+            return False
     _, history_counts = _close_market_readiness(features, now)
     return all(count >= MIN_BOARD_SAMPLE for count in history_counts.values())
 
@@ -534,25 +545,58 @@ def _fetch_close_candidates(
     now: datetime,
     *,
     deadline: datetime | None,
+    reuse_market: bool = False,
 ) -> tuple[FeatureSnapshot, ...]:
+    cached_by_code = (
+        {
+            feature.quote.code: feature
+            for feature in pipeline._market_features
+            if feature.quote.code in codes and _valid_close_feature(feature, now)
+        }
+        if reuse_market
+        else {}
+    )
+    missing = tuple(code for code in codes if code not in cached_by_code)
+    if not missing:
+        pipeline._state.increment("after_close_candidate_cache_hits")
+        return tuple(cached_by_code[code] for code in codes)
     if pipeline._persistence_running:
         features = data_future(
             pipeline,
             pipeline._quotes.refresh_candidate_quotes,
-            tuple(codes),
+            missing,
             now,
             force=True,
             deadline=deadline,
         ).result()
     else:
         features = pipeline._quotes.refresh_candidate_quotes(
-            tuple(codes),
+            missing,
             now,
             force=True,
             deadline=deadline,
         )
     validation_at = max(now, shanghai_now(pipeline._now()))
-    return tuple(feature for feature in features if _valid_close_feature(feature, validation_at))
+    fetched_by_code = {
+        feature.quote.code: feature for feature in features if _valid_close_feature(feature, validation_at)
+    }
+    combined = {**cached_by_code, **fetched_by_code}
+    return tuple(combined[code] for code in codes if code in combined)
+
+
+@contextmanager
+def _close_stage(
+    pipeline: RecommendationPipeline,
+    name: str,
+) -> Iterator[None]:
+    started = perf_counter()
+    try:
+        yield
+    finally:
+        pipeline._latency.record_duration(
+            f"close_quotes:{name}",
+            (perf_counter() - started) * 1000.0,
+        )
 
 
 def _strategy_close_features(

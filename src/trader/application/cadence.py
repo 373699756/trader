@@ -44,6 +44,7 @@ class PipelineTask(str, Enum):
     FREEZE = "freeze"
     CLOSE_QUOTES = "close_quotes"
     CURRENT_QUOTES = "current_quotes"
+    HYBRID_READY = "hybrid_ready"
 
 
 def task_execution_budget_seconds(task: PipelineTask) -> float | None:
@@ -60,6 +61,7 @@ def task_execution_budget_seconds(task: PipelineTask) -> float | None:
         PipelineTask.FINAL_CANDIDATE_QUOTES: 10.0,
         PipelineTask.CLOSE_QUOTES: 180.0,
         PipelineTask.CURRENT_QUOTES: 20.0,
+        PipelineTask.HYBRID_READY: 2.0,
         PipelineTask.FREEZE: None,
     }[task]
 

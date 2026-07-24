@@ -67,7 +67,7 @@
       topScore: scores.length ? Math.max(...scores).toFixed(2) : "-",
       modelReview: recommendations.length ? `${reviewed} / ${recommendations.length}` : "-",
       dataQuality,
-      dataQualityTitle: degradedReasons.join("、"),
+      dataQualityTitle: window.TraderRender.reasonLabels(degradedReasons).join("、"),
     };
   }
 

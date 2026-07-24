@@ -45,9 +45,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "股票详情" in page
     assert "策略验证" not in page
     assert "/static/dashboard.css?v=9" in page
-    assert "/static/render.js?v=8" in page
-    assert "/static/selection.js?v=2" in page
-    assert "/static/dashboard.js?v=20" in page
+    assert "/static/render.js?v=9" in page
+    assert "/static/selection.js?v=3" in page
+    assert "/static/dashboard.js?v=21" in page
     assert 'id="currentViewStatus"' not in page
     assert 'class="current-view-status"' not in page
     assert 'id="strategyDescription"' in page

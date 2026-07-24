@@ -29,6 +29,7 @@ class PipelineSettings:
     normalization_workers: int
     strategy_workers: int
     deepseek_workers: int
+    decision_execution_mode: str
     shutdown_timeout_seconds: float
     cadence_seconds: Mapping[str, Mapping[str, float]]
     publish_heartbeat_seconds: int

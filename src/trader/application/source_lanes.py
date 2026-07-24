@@ -41,6 +41,7 @@ class LatestRequestLane:
         executor: BoundedExecutor,
         *,
         latency: LatencyWaterfall | None = None,
+        latency_stage: str = "source_queue_wait",
         monotonic: Callable[[], float] = time.perf_counter,
     ) -> None:
         normalized = source.strip().lower()
@@ -49,6 +50,7 @@ class LatestRequestLane:
         self._source = normalized
         self._executor = executor
         self._latency = latency
+        self._latency_stage = latency_stage
         self._monotonic = monotonic
         self._condition = threading.Condition()
         self._running: _LaneRequest | None = None
@@ -240,7 +242,7 @@ class LatestRequestLane:
         should_run = request.future.set_running_or_notify_cancel()
         if should_run and self._latency is not None:
             self._latency.record_duration(
-                "source_queue_wait",
+                self._latency_stage,
                 max(0.0, (self._monotonic() - request.submitted_at) * 1000.0),
             )
         try:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Mapping, Sequence
+from concurrent.futures import Future
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -38,7 +39,7 @@ from trader.application.snapshot_workflow import (
     process_schedule,
     refresh_live_overlays,
 )
-from trader.application.source_lanes import SourceRequestSupersededError
+from trader.application.source_lanes import LatestRequestLane, SourceRequestSupersededError
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
@@ -83,6 +84,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._engine = dependencies.engine
         self._state = dependencies.state
         self._config_version = options.config_version
+        self._options_decision_execution_mode = options.decision_execution_mode
         self._candidate_pool_size = options.candidate_pool_size
         self._now = dependencies.now
         self._long_codes = options.long_codes
@@ -128,6 +130,17 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-long",
         )
+        self._overlay_pool = BoundedExecutor(
+            worker_count=1,
+            queue_capacity=1,
+            thread_name_prefix="trader-overlay",
+        )
+        self._overlay_lane = LatestRequestLane(
+            "topk-overlay",
+            self._overlay_pool,
+            latency=self._latency,
+            latency_stage="overlay_queue_wait",
+        )
         self._persistence_pool = resources.persistence_pool or BoundedExecutor(
             worker_count=1,
             queue_capacity=worker_queue_capacity,
@@ -139,6 +152,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             self._strategy_pool,
             self._deepseek_pool,
             self._long_pool,
+            self._overlay_pool,
         )
 
     def _initialize_runtime_state(self) -> None:
@@ -165,10 +179,17 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._session_snapshot_ids: set[str] = set()
         self._after_close_lock = threading.Lock()
         self._outcome_settlement_lock = threading.Lock()
+        self._pending_hybrid_lock = threading.Lock()
+        self._pending_hybrids: dict[str, object] = {}
+        self._async_review_lock = threading.Lock()
+        self._async_review_inflight: set[Strategy] = set()
+        self._async_review_pending: dict[Strategy, object] = {}
         self._after_close_retry_at: datetime | None = None
         self._after_close_retry_attempt = 0
         self._after_close_completed_date = ""
         self._outcome_settlement_date = ""
+        self._decision_execution_mode = self._options_decision_execution_mode
+        self._overlay_lock = threading.Lock()
 
     def _settle_outcomes(self, now: datetime) -> None:
         if self._outcome_settlement is None:
@@ -288,6 +309,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             if worker.is_alive():
                 self._state.record_error("pipeline shutdown exceeded timeout while draining events")
                 worker.join()
+        self._overlay_lane.stop(wait=True, timeout_seconds=max(0.0, timeout_seconds))
         for pool in self._compute_pools:
             pool.stop()
         self._engine.stop()
@@ -431,7 +453,49 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         *,
         deadline: datetime | None = None,
     ) -> None:
-        refresh_live_overlays(self, now, phase, deadline=deadline)
+        with self._overlay_lock:
+            refresh_live_overlays(self, now, phase, deadline=deadline)
+
+    def _submit_overlay_event(self, event: PipelineEvent) -> bool:
+        self._latency.plan(event.event_id, event.event_type)
+        future = self._overlay_lane.submit(
+            event.event_id,
+            event.created_at,
+            self._execute_overlay_event,
+            event,
+        )
+        future.add_done_callback(lambda completed: self._finish_overlay_event(event, completed))
+        if future.done():
+            try:
+                future.result()
+            except SourceRequestSupersededError:
+                return True
+            except RuntimeError:
+                return False
+        self._state.increment("overlay_events_submitted")
+        return True
+
+    def _execute_overlay_event(self, event: PipelineEvent) -> None:
+        self._latency.enter(event.event_id)
+        self._refresh_live_overlays(
+            max(event.created_at, self._now()),
+            MarketPhase(event.phase),
+            deadline=event.deadline,
+        )
+
+    def _finish_overlay_event(self, event: PipelineEvent, future: Future[None]) -> None:
+        try:
+            future.result()
+        except SourceRequestSupersededError:
+            self._state.increment("overlay_events_superseded")
+            self._latency.finish(event.event_id, outcome="superseded")
+        except Exception as exc:
+            self._state.increment("overlay_events_failed")
+            self._state.record_error(f"TopK 行情刷新暂时降级：{type(exc).__name__}")
+            self._latency.finish(event.event_id, outcome="failed")
+        else:
+            self._state.increment("overlay_events_completed")
+            self._latency.finish(event.event_id, outcome="success")
 
     def _has_pre_cutoff_snapshot_for_catchup(
         self,

@@ -47,12 +47,15 @@ class PipelineOptions:
     normalization_workers: int = 2
     strategy_workers: int = 3
     deepseek_workers: int = 4
+    decision_execution_mode: str = "serialized"
     market_data_manages_workers: bool = False
     cadence_policy: CadencePolicy | None = None
     long_codes: tuple[str, ...] = ()
     long_target_prices: Mapping[str, float | None] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
+        if self.decision_execution_mode not in {"serialized", "versioned_dag"}:
+            raise ValueError("decision_execution_mode must be serialized or versioned_dag")
         object.__setattr__(self, "long_codes", tuple(self.long_codes))
         object.__setattr__(self, "long_target_prices", MappingProxyType(dict(self.long_target_prices)))
 

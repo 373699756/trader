@@ -151,6 +151,8 @@ class RuntimeState:
                         "published_at": snapshot.published_at.isoformat(),
                         "fusion_mode": snapshot.fusion_mode.value,
                         "recommendation_count": len(snapshot.recommendations),
+                        "executable_count": sum(item.action.value == "executable" for item in snapshot.recommendations),
+                        "observation_count": sum(item.action.value == "observe" for item in snapshot.recommendations),
                         "frozen": snapshot.frozen,
                         "stale": snapshot.stale,
                         "phase": snapshot.phase,

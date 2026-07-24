@@ -121,7 +121,7 @@ def test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold(
     assert diagnostics["maximum_final_score"] < diagnostics["selection_floor"]
 
 
-def test_deepseek_review_set_is_bounded_to_twenty_four_candidates(
+def test_deepseek_review_set_is_bounded_to_twenty_eight_candidates(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -156,7 +156,7 @@ def test_deepseek_review_set_is_bounded_to_twenty_four_candidates(
         filter_details=(),
     )
 
-    assert len(reviewer.reviewed_codes) == 24
+    assert len(reviewer.reviewed_codes) == 28
     assert "600039" in reviewer.reviewed_codes
 
 

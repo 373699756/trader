@@ -7,13 +7,14 @@ import threading
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
 class _Trace:
     cycle_kind: str
     planned_at: float
+    entered_at: float | None = None
 
 
 class LatencyWaterfall:
@@ -65,7 +66,10 @@ class LatencyWaterfall:
             trace = self._traces.get(correlation_id)
             if trace is None:
                 return
-            self._append_locked("queue_wait", max(0.0, (entered_at - trace.planned_at) * 1000.0))
+            queue_wait_ms = max(0.0, (entered_at - trace.planned_at) * 1000.0)
+            self._append_locked("queue_wait", queue_wait_ms)
+            self._append_locked(f"queue_wait:{trace.cycle_kind}", queue_wait_ms)
+            self._traces[correlation_id] = replace(trace, entered_at=entered_at)
 
     def record_duration(self, stage: str, duration_ms: float) -> None:
         normalized_stage = stage.strip()
@@ -84,6 +88,11 @@ class LatencyWaterfall:
             trace = self._traces.pop(correlation_id, None)
             if trace is None:
                 return
+            if trace.entered_at is not None:
+                self._append_locked(
+                    f"execution_total:{trace.cycle_kind}",
+                    max(0.0, (finished_at - trace.entered_at) * 1000.0),
+                )
             self._append_locked(
                 f"cycle_total:{trace.cycle_kind}",
                 max(0.0, (finished_at - trace.planned_at) * 1000.0),

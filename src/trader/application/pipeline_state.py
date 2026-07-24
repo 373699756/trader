@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 
 from trader.application.cadence import CadencePlanner, PipelineTask
-from trader.application.events import BoundedEventQueue
+from trader.application.events import BoundedEventQueue, PipelineEvent
 from trader.application.latency import LatencyWaterfall
 from trader.application.ports.clock import TradingCalendarPort
 from trader.application.ports.events import EventAuditPort
@@ -70,5 +70,7 @@ class PipelineState:
     _persistence_running: bool
     _persistence_pool: BoundedExecutor
     _latency: LatencyWaterfall
+    _decision_execution_mode: str
 
     _freshness_status: Callable[..., Mapping[str, object]]
+    _submit_overlay_event: Callable[[PipelineEvent], bool]

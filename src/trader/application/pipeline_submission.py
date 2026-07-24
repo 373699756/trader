@@ -113,12 +113,14 @@ class PipelineSubmissionMixin(PipelineState):
 
     def _submit_scheduled_task(self, scheduled: ScheduledPipelineTask) -> bool:
         task = scheduled.task
-        with self._cadence_lock:
-            if task in self._scheduled_inflight:
-                self._state.increment("cadence_skipped_inflight")
-                self._state.increment(f"cadence_{task.value}_skipped_inflight")
-                return False
-            self._scheduled_inflight.add(task)
+        track_inflight = task is not PipelineTask.TOPK_QUOTES
+        if track_inflight:
+            with self._cadence_lock:
+                if task in self._scheduled_inflight:
+                    self._state.increment("cadence_skipped_inflight")
+                    self._state.increment(f"cadence_{task.value}_skipped_inflight")
+                    return False
+                self._scheduled_inflight.add(task)
         is_freeze = task is PipelineTask.FREEZE
         priority = _scheduled_task_priority(task)
         local = shanghai_now(scheduled.scheduled_at)
@@ -140,10 +142,11 @@ class PipelineSubmissionMixin(PipelineState):
                 },
             )
         )
-        accepted = self.submit_event(event)
+        accepted = self._submit_overlay_event(event) if task is PipelineTask.TOPK_QUOTES else self.submit_event(event)
         if not accepted:
-            with self._cadence_lock:
-                self._scheduled_inflight.discard(task)
+            if track_inflight:
+                with self._cadence_lock:
+                    self._scheduled_inflight.discard(task)
         else:
             self._state.increment(f"cadence_{task.value}_submitted")
         return accepted

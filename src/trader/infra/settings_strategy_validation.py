@@ -80,8 +80,8 @@ def _validate_selection(settings: StrategySettings) -> None:
         raise ConfigurationError("competition group limits must be disabled")
     if settings.selection.candidate_min_score != 50.0 or settings.selection.minimum_board_reliability != 0.85:
         raise ConfigurationError("candidate score and board reliability gates are fixed at 50 and 0.85")
-    if settings.selection.review_candidate_limit != 24:
-        raise ConfigurationError("DeepSeek review candidate limit must be 24")
+    if settings.selection.review_candidate_limit != 28:
+        raise ConfigurationError("DeepSeek review candidate limit must be 28")
 
 
 def _validate_signal_policies(settings: StrategySettings) -> None:

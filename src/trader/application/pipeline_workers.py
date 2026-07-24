@@ -173,6 +173,8 @@ def worker_status(pipeline: RecommendationPipeline) -> dict[str, object]:
         "board_scoring": dict(pipeline._engine.board_scoring_status()),
         "deepseek": pipeline._deepseek_pool.status(),
         "long": pipeline._long_pool.status(),
+        "overlay": pipeline._overlay_pool.status(),
+        "overlay_lane": pipeline._overlay_lane.status(),
         "merge": merge_status,
         "persistence": pipeline._persistence_pool.status(),
     }

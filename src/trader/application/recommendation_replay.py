@@ -25,7 +25,8 @@ V15_REPLAY_ALGORITHM_VERSION = "engine_v15_parallel_market_data_2026_07"
 V16_REPLAY_ALGORITHM_VERSION = "engine_v16_board_scoring_ttd25_2026_07"
 V17_REPLAY_ALGORITHM_VERSION = "engine_v17_downside_guard_ttd25_2026_07"
 V18_REPLAY_ALGORITHM_VERSION = "engine_v18_score_first_risk_history_2026_07"
-REPLAY_ALGORITHM_VERSION = "engine_v19_bounded_review_2026_07"
+V19_REPLAY_ALGORITHM_VERSION = "engine_v19_bounded_review_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_v20_review28_2026_07"
 _SUPPORTED_REPLAY_ALGORITHMS = frozenset(
     {
         LEGACY_REPLAY_ALGORITHM_VERSION,
@@ -33,6 +34,7 @@ _SUPPORTED_REPLAY_ALGORITHMS = frozenset(
         V16_REPLAY_ALGORITHM_VERSION,
         V17_REPLAY_ALGORITHM_VERSION,
         V18_REPLAY_ALGORITHM_VERSION,
+        V19_REPLAY_ALGORITHM_VERSION,
         REPLAY_ALGORITHM_VERSION,
     }
 )
@@ -59,6 +61,7 @@ class RecommendationReplayMixin:
             V16_REPLAY_ALGORITHM_VERSION,
             V17_REPLAY_ALGORITHM_VERSION,
             V18_REPLAY_ALGORITHM_VERSION,
+            V19_REPLAY_ALGORITHM_VERSION,
             REPLAY_ALGORITHM_VERSION,
         }:
             recorded_codes = replay_input.requested_codes
@@ -154,6 +157,7 @@ class RecommendationReplayMixin:
         if replay_input.algorithm_version in {
             V17_REPLAY_ALGORITHM_VERSION,
             V18_REPLAY_ALGORITHM_VERSION,
+            V19_REPLAY_ALGORITHM_VERSION,
             REPLAY_ALGORITHM_VERSION,
         }:
             merged, _mode = engine._merge_reviewed_candidates(
@@ -235,7 +239,7 @@ def _validated_replay_input(snapshot: RecommendationSnapshot) -> RecommendationR
 
 def _replay_policy(replay_input: RecommendationReplayInput) -> RecommendationPolicy:
     policy = _restore_policy(replay_input.policy)
-    if replay_input.algorithm_version == REPLAY_ALGORITHM_VERSION:
+    if replay_input.algorithm_version in {V19_REPLAY_ALGORITHM_VERSION, REPLAY_ALGORITHM_VERSION}:
         return policy
     return replace(policy, selection=replace(policy.selection, review_candidate_limit=0))
 

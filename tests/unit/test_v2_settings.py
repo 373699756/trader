@@ -23,11 +23,12 @@ def test_v2_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert runtime.schema_version == 5
+    assert runtime.schema_version == 6
     assert strategy.schema_version == 12
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v17"
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.pipeline.market_workers == 5
+    assert runtime.pipeline.decision_execution_mode == "versioned_dag"
     assert runtime.market_data.tushare.timeout_seconds == 8
     assert runtime.market_data.tushare.points == 120
     assert runtime.market_data.tushare.token_file == PROJECT_ROOT / ".token_key"
@@ -153,11 +154,34 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.d25_signal.risk_on_breadth_min == 60.0
     assert strategy.d25_signal.risk_off_factor == 0.92
     assert strategy.d25_signal.overheat_linear_end_factor == 0.85
-    assert strategy.selection.review_candidate_limit == 24
+    assert strategy.selection.review_candidate_limit == 28
     assert strategy.long_research.financial_max_age_days == 550
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
     assert len(watchlist.items) == 10
+
+
+def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -> None:
+    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw["schema_version"] = 5
+    del raw["pipeline"]["decision_execution_mode"]
+    changed_path = tmp_path / "runtime.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    runtime = load_runtime_settings(changed_path)
+
+    assert runtime.schema_version == 5
+    assert runtime.pipeline.decision_execution_mode == "serialized"
+
+
+def test_runtime_rejects_unknown_decision_execution_mode(tmp_path) -> None:
+    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw["pipeline"]["decision_execution_mode"] = "unsafe_parallel"
+    changed_path = tmp_path / "runtime.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="decision_execution_mode"):
+        load_runtime_settings(changed_path)
 
 
 @pytest.mark.parametrize("model", ["deepseek-chat", "deepseek-reasoner", "unknown-model"])

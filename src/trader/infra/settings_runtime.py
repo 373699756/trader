@@ -82,8 +82,9 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         },
         "runtime",
     )
-    if _integer(raw, "schema_version", minimum=1) != 5:
-        raise ConfigurationError("runtime schema_version must be 5")
+    schema_version = _integer(raw, "schema_version", minimum=1)
+    if schema_version not in {5, 6}:
+        raise ConfigurationError("runtime schema_version must be 5 or 6")
 
     config_dir = path.parent
     project_root = _infer_project_root(config_dir)
@@ -98,21 +99,20 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         {"host", "port", "debug", "use_reloader", "allow_insecure_non_loopback"},
         "server",
     )
-    _require_exact_keys(
-        pipeline_raw,
-        {
-            "event_queue_size",
-            "priority_queue_size",
-            "market_workers",
-            "normalization_workers",
-            "strategy_workers",
-            "deepseek_workers",
-            "shutdown_timeout_seconds",
-            "cadence_seconds",
-            "publish_heartbeat_seconds",
-        },
-        "pipeline",
-    )
+    pipeline_keys = {
+        "event_queue_size",
+        "priority_queue_size",
+        "market_workers",
+        "normalization_workers",
+        "strategy_workers",
+        "deepseek_workers",
+        "shutdown_timeout_seconds",
+        "cadence_seconds",
+        "publish_heartbeat_seconds",
+    }
+    if schema_version >= 6:
+        pipeline_keys.add("decision_execution_mode")
+    _require_exact_keys(pipeline_raw, pipeline_keys, "pipeline")
     _require_exact_keys(
         market_raw,
         {
@@ -168,7 +168,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     long_watchlist_path = _resolve_config_path(config_dir, _text(raw, "long_watchlist"))
 
     settings = RuntimeSettings(
-        schema_version=5,
+        schema_version=schema_version,
         config_version=_text(raw, "config_version"),
         config_path=path,
         project_root=project_root,
@@ -189,6 +189,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             normalization_workers=_integer(pipeline_raw, "normalization_workers", minimum=1),
             strategy_workers=_integer(pipeline_raw, "strategy_workers", minimum=1),
             deepseek_workers=_integer(pipeline_raw, "deepseek_workers", minimum=1),
+            decision_execution_mode=_decision_execution_mode(pipeline_raw.get("decision_execution_mode", "serialized")),
             shutdown_timeout_seconds=_number(pipeline_raw, "shutdown_timeout_seconds", minimum=0.1),
             cadence_seconds=_nested_positive_number_mapping(pipeline_raw, "cadence_seconds"),
             publish_heartbeat_seconds=_integer(pipeline_raw, "publish_heartbeat_seconds", minimum=1),
@@ -238,6 +239,12 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     )
     _validate_runtime_settings(settings)
     return settings
+
+
+def _decision_execution_mode(raw: object) -> str:
+    if not isinstance(raw, str) or raw not in {"serialized", "versioned_dag"}:
+        raise ConfigurationError("pipeline.decision_execution_mode must be serialized or versioned_dag")
+    return raw
 
 
 def _load_deepseek_api_key(project_root: Path) -> str:

@@ -27,7 +27,7 @@ class SelectionPolicy:
     competition_group_limits: Mapping[Board, int] = field(default_factory=lambda: MappingProxyType({}))
     candidate_min_score: float = 0.0
     minimum_board_reliability: float = 0.0
-    review_candidate_limit: int = 24
+    review_candidate_limit: int = 28
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "thresholds", MappingProxyType(dict(self.thresholds)))

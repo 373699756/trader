@@ -382,6 +382,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             normalization_workers=settings.pipeline.normalization_workers,
             strategy_workers=settings.pipeline.strategy_workers,
             deepseek_workers=settings.pipeline.deepseek_workers,
+            decision_execution_mode=settings.pipeline.decision_execution_mode,
             market_data_manages_workers=True,
             cadence_policy=cadence_policy,
             long_codes=tuple(item.code for item in watchlist.items),
