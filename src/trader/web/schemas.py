@@ -10,6 +10,7 @@ from trader.domain.recommendation.models import (
     LiveOverlay,
     Recommendation,
     RecommendationSnapshot,
+    Strategy,
 )
 from trader.domain.review.models import (
     DeepSeekReview,
@@ -45,6 +46,9 @@ def snapshot_envelope(
     displayed_quotes = (
         context.current_quotes if context.historical and context.current_quotes is not None else live_quotes
     )
+    recommendations = (
+        snapshot.recommendations if snapshot.strategy is Strategy.LONG else snapshot.recommendations[:top_n]
+    )
     return {
         "schema_version": API_SCHEMA_VERSION,
         "status": "ready",
@@ -64,13 +68,14 @@ def snapshot_envelope(
         "degraded_reasons": list(snapshot.degraded_reasons),
         "filtered_count": snapshot.filtered_count,
         "selection_diagnostics": _selection_diagnostics(snapshot.metadata),
+        "long_groups": _long_groups(snapshot.metadata, recommendations) if snapshot.strategy is Strategy.LONG else [],
         "items": [
             _recommendation(
                 item,
                 displayed_quotes.get(item.features.quote.code),
                 historical=context.historical,
             )
-            for item in snapshot.recommendations[:top_n]
+            for item in recommendations
         ],
         "error": None,
     }
@@ -102,6 +107,7 @@ def empty_snapshot_envelope(
         "degraded_reasons": ["snapshot_not_ready"],
         "filtered_count": 0,
         "selection_diagnostics": _selection_diagnostics({}),
+        "long_groups": [],
         "items": [],
         "error": None,
     }
@@ -119,6 +125,38 @@ def _selection_diagnostics(metadata: Mapping[str, object]) -> dict[str, object]:
         "maximum_final_score": values.get("maximum_final_score"),
         "empty_reason": values.get("empty_reason", "diagnostics_unavailable"),
     }
+
+
+def _long_groups(
+    metadata: Mapping[str, object],
+    recommendations: tuple[Recommendation, ...],
+) -> list[dict[str, object]]:
+    item_codes = {item.features.quote.code for item in recommendations}
+    raw = metadata.get("long_groups")
+    groups = raw if isinstance(raw, (tuple, list)) else ()
+    result: list[dict[str, object]] = []
+    for group in groups:
+        if not isinstance(group, Mapping):
+            continue
+        name = group.get("name")
+        category = group.get("category")
+        codes = group.get("codes")
+        if not isinstance(name, str) or not isinstance(category, str) or not isinstance(codes, (list, tuple)):
+            continue
+        visible_codes = [code for code in codes if isinstance(code, str) and code in item_codes]
+        if not visible_codes:
+            continue
+        source = group.get("source")
+        result.append(
+            {
+                "name": name,
+                "category": category,
+                "codes": visible_codes,
+                "count": len(visible_codes),
+                "source": source if isinstance(source, str) else "",
+            }
+        )
+    return result
 
 
 def error_envelope(
@@ -148,6 +186,7 @@ def error_envelope(
         "degraded_reasons": [],
         "filtered_count": 0,
         "selection_diagnostics": _selection_diagnostics({}),
+        "long_groups": [],
         "items": [],
         "error": {
             "code": code,

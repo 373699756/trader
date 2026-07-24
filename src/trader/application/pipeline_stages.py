@@ -540,6 +540,7 @@ def _prepare_strategy_futures(
                     filter_reasons={} if is_long else pipeline._filter_reasons,
                     filter_details=() if is_long else pipeline._filter_details,
                     target_prices=pipeline._long_target_prices if is_long else None,
+                    long_groups=pipeline._long_groups if is_long else (),
                     market_features=pipeline._market_features,
                     requested_codes=requested_codes,
                     preselect_max_age_seconds=maximum_age_seconds(context.phase),

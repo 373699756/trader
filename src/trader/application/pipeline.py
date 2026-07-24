@@ -89,6 +89,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._now = dependencies.now
         self._long_codes = options.long_codes
         self._long_target_prices = options.long_target_prices
+        self._long_groups = options.long_groups
         self._outcome_settlement = dependencies.outcome_settlement
         self._latency = dependencies.latency or LatencyWaterfall()
         self._market_data_manages_workers = options.market_data_manages_workers

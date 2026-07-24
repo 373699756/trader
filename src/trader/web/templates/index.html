@@ -6,10 +6,12 @@
     <meta name="color-scheme" content="dark" />
     <title>A股策略看板</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='9') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='10') }}" />
     <script defer src="{{ url_for('static', filename='render.js', v='9') }}"></script>
     <script defer src="{{ url_for('static', filename='selection.js', v='3') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard.js', v='21') }}"></script>
+    <script defer src="{{ url_for('static', filename='long_groups.js', v='1') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard_utils.js', v='1') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard.js', v='22') }}"></script>
   </head>
   <body>
     <header class="app-header">
@@ -72,6 +74,14 @@
             <option value="">当前</option>
           </select>
         </label>
+      </section>
+
+      <section id="longGroupBar" class="long-group-bar" aria-label="长期研究分组" hidden>
+        <nav id="longScopeTabs" class="long-scope-tabs" role="tablist" aria-label="长期研究类别">
+          <button class="long-scope-tab is-active" type="button" role="tab" aria-selected="true" data-scope="chokepoint">卡脖子行业</button>
+          <button class="long-scope-tab" type="button" role="tab" aria-selected="false" data-scope="low_price_potential">低价潜力股</button>
+        </nav>
+        <nav id="longIndustryTabs" class="long-industry-tabs" role="tablist" aria-label="卡脖子行业"></nav>
       </section>
 
       <section class="table-region" aria-label="正式推荐列表">

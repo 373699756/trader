@@ -33,6 +33,7 @@ def test_docs_keep_two_authorities_active_plans_and_delivery_reports() -> None:
     documents = sorted(path.relative_to(docs_root).as_posix() for path in docs_root.rglob("*") if path.is_file())
 
     assert documents == [
+        "celue.md",
         "hi.md",
         "queston.md",
         "recommendation-strategy.md",

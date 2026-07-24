@@ -24,6 +24,10 @@ All notable changes to this project are documented here.
 - 新增 local/hybrid 两阶段发布身份。P4 本地评分完成即发布 `projection_stage=local`，
   DeepSeek 结果随后以不同 snapshot ID/ETag 发布 `projection_stage=hybrid`；long 固定
   local-only。
+- 新增长期固定研究池分组：`long_watchlist.json` 改为卡脖子/国产替代固定池，股票来源追溯到
+  `main` 历史中的 `CHOKEPOINT_INDUSTRY_LEADERS`；`long_groups` 暴露卡脖子行业分组和
+  `低价潜力股` 分组，其中卡脖子每行业最多 5 只，低价潜力股最多 26 只。Web 长期页新增
+  `卡脖子行业`/`低价潜力股` 二级 tab，卡脖子页内继续按行业 tab 过滤展示。
 
 ### Changed
 
@@ -47,6 +51,11 @@ All notable changes to this project are documented here.
   会覆盖全局行业上限。现在 today/tomorrow/d25/long 的活动候选分、本地分、DeepSeek 分、
   动作和下行保护均不读取行业；行业只保留展示/审计标签，在最终稳定排序后限制每行业最多
   2 只。正式池与观察池分别计数，空行业统一进入 `unknown` 组，竞争组不再覆盖该限制。
+- 用户明确要求“去掉现在 long 的荐股策略，新的跟现在策略没有关系”。long 现在不再计算旧
+  长期价值/成长/质量/风险评分，不调用 DeepSeek，不做 TopK 或行业集中度选择，也不因旧
+  long 研究字段缺失降级；运行时只按配置顺序生成 `observe` 固定观察项并刷新价格、涨跌幅、
+  来源和时间。推荐 API 对 long 不再按 `top_n` 截断，SSE patch 和发布索引会保留
+  `long_groups`，避免长连接或 P6 发布后丢失二级 tab 数据。
 - 用户要求硬过滤增加“大股东减持、财务造假、被立案调查等黑历史”。大股东现固定为控股
   股东、实际控制人和持股不低于 5% 股东；减持计划至完成/终止后 90 天阻断，正式立案和
   强退程序至结案后三自然年阻断，确认造假/重大违法/资金占用/违规担保永久阻断。一般问询、
@@ -223,6 +232,19 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批新增 targeted 验证通过：`pytest tests/unit/test_v2_settings.py
+  tests/contract/test_v2_web_api.py tests/unit/application/test_recommendations.py
+  tests/unit/application/test_published_snapshots.py` 共 114 项通过；`node
+  tests/js/test_dashboard_d4.js src/trader/web/static/dashboard.js` 通过，覆盖 long 固定池
+  配置校验、`long_groups` API、long 不受 `top_n` 截断、发布索引 metadata 保留、前端二级
+  tab 过滤和 long 26 条 patch 校验。
+- 本批完整 `make format-check`、`make lint`、`make type-check`、`make test` 和
+  `make package` 通过；`make test` 仅保留既有 DeepSeek 测试模型名 RuntimeWarning。
+  仓库外用 `pip --prefix /tmp/trader-wheel-long-check-prefix` 安装 wheel 后，`trader-cli --help`
+  可执行，且可读取 `index.html`、CSS、`dashboard.js`、`dashboard_utils.js`、`long_groups.js`、
+  `render.js`、`selection.js` 和 SVG 资源。Headless Chrome 在 1280x720、1440x900、
+  1920x1080 三档截图成功，DevTools 指标均为 `scrollWidth == clientWidth`、有正文且无
+  页面级横向溢出。
 - 本批完整 `make format-check`、`make lint`、`make type-check`、`make test` 和
   `make package` 通过；全量测试仅保留既有 DeepSeek 测试模型名 RuntimeWarning。新增回归
   覆盖 28 支送审、v19/v20 回放、schema v5/v6、TopK 与阻塞主事件隔离、本地先于 DeepSeek
@@ -365,6 +387,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- `低价潜力股` 本批按用户要求固定在 `main` 历史卡脖子/国产替代股票池中，运行时只刷新
+  行情，不自动按最新价格重筛；若未来希望按实时低价阈值或财务质量动态换股，需要作为新的
+  策略/配置任务另行设计，并重新定义数据来源、阈值和回测口径。
 - 本批未调用真实外部行情或 DeepSeek 服务，也不以工程门禁证明推荐收益；外部供应商超时、
   熔断或字段覆盖不足时仍可能合法只保留最近有效快照或得到零正式推荐。需要在真实交易日
   持续观察 `queue_wait/execution_total`、overlay 年龄、触发评分丢弃数、收盘缓存命中率和

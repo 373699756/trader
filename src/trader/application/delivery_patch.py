@@ -37,6 +37,7 @@ def snapshot_patch(
         "degraded_reasons": list(snapshot.degraded_reasons),
         "filtered_count": snapshot.filtered_count,
         "selection_diagnostics": _selection_diagnostics(snapshot),
+        "long_groups": _long_groups(snapshot),
         "replace": replace_all,
         "upserts": upserts,
         "removed_codes": removed_codes,
@@ -47,6 +48,31 @@ def snapshot_patch(
 def _selection_diagnostics(snapshot: RecommendationSnapshot) -> dict[str, object]:
     raw = snapshot.metadata.get("selection_diagnostics")
     return dict(raw) if isinstance(raw, Mapping) else {}
+
+
+def _long_groups(snapshot: RecommendationSnapshot) -> list[dict[str, object]]:
+    raw = snapshot.metadata.get("long_groups")
+    groups = raw if isinstance(raw, (tuple, list)) else ()
+    result: list[dict[str, object]] = []
+    for group in groups:
+        if not isinstance(group, Mapping):
+            continue
+        name = group.get("name")
+        category = group.get("category")
+        codes = group.get("codes")
+        if not isinstance(name, str) or not isinstance(category, str) or not isinstance(codes, (list, tuple)):
+            continue
+        source = group.get("source")
+        result.append(
+            {
+                "name": name,
+                "category": category,
+                "codes": [code for code in codes if isinstance(code, str)],
+                "count": group.get("count", len(codes)),
+                "source": source if isinstance(source, str) else "",
+            }
+        )
+    return result
 
 
 def overlay_patch(overlay: LiveOverlay) -> dict[str, object]:

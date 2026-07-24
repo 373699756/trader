@@ -39,15 +39,18 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     page = response.get_data(as_text=True)
     dashboard = client.get("/static/dashboard.js").get_data(as_text=True)
     selection = client.get("/static/selection.js").get_data(as_text=True)
+    dashboard_utils = client.get("/static/dashboard_utils.js").get_data(as_text=True)
 
     assert response.status_code == 200
     assert "A股策略看板" in page
     assert "股票详情" in page
     assert "策略验证" not in page
-    assert "/static/dashboard.css?v=9" in page
+    assert "/static/dashboard.css?v=10" in page
     assert "/static/render.js?v=9" in page
     assert "/static/selection.js?v=3" in page
-    assert "/static/dashboard.js?v=21" in page
+    assert "/static/long_groups.js?v=1" in page
+    assert "/static/dashboard_utils.js?v=1" in page
+    assert "/static/dashboard.js?v=22" in page
     assert 'id="currentViewStatus"' not in page
     assert 'class="current-view-status"' not in page
     assert 'id="strategyDescription"' in page
@@ -103,7 +106,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'query.set("view", view)' in dashboard
     assert "recommendationSummary" in selection
     assert "HISTORY_REFRESH_MS = 3000" in dashboard
-    assert 'close_fallback: "收盘恢复中"' in dashboard
+    assert 'close_fallback: "收盘恢复中"' in dashboard_utils
     assert 'payload.phase === "close_fallback"' in dashboard
     assert "实时草稿" not in dashboard
     assert "实时数据" in dashboard
@@ -133,6 +136,12 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "overflow-wrap: anywhere" in components_response.get_data(as_text=True)
     assert client.get("/static/lucide.svg").status_code == 200
     assert client.get("/static/selection.js").status_code == 200
+    long_groups_response = client.get("/static/long_groups.js")
+    assert long_groups_response.status_code == 200
+    assert "window.TraderLongGroups" in long_groups_response.get_data(as_text=True)
+    utils_response = client.get("/static/dashboard_utils.js")
+    assert utils_response.status_code == 200
+    assert "window.TraderDashboardUtils" in utils_response.get_data(as_text=True)
     renderer_response = client.get("/static/render.js")
     renderer = renderer_response.get_data(as_text=True)
     assert renderer_response.status_code == 200

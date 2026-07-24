@@ -8,13 +8,14 @@ const dashboardPath = process.argv[2];
 const path = require("path");
 const selectionPath = path.join(path.dirname(dashboardPath), "selection.js");
 const renderPath = path.join(path.dirname(dashboardPath), "render.js");
+const longGroupsPath = path.join(path.dirname(dashboardPath), "long_groups.js");
+const utilsPath = path.join(path.dirname(dashboardPath), "dashboard_utils.js");
 let source = fs.readFileSync(dashboardPath, "utf8");
 const suffix = "\n})();";
 source = source.trimEnd();
 assert(source.endsWith(suffix), "dashboard.js must retain its IIFE boundary");
 source = `${source.slice(0, -suffix.length)}
   window.__dashboardD4 = {
-    latencySummary,
     emptyRecommendationMessage,
     mergePatchItems,
     overlayPatchDecision,
@@ -32,8 +33,16 @@ const sandbox = {
 };
 vm.runInNewContext(fs.readFileSync(renderPath, "utf8"), sandbox, { filename: renderPath });
 vm.runInNewContext(fs.readFileSync(selectionPath, "utf8"), sandbox, { filename: selectionPath });
+vm.runInNewContext(fs.readFileSync(longGroupsPath, "utf8"), sandbox, { filename: longGroupsPath });
+vm.runInNewContext(fs.readFileSync(utilsPath, "utf8"), sandbox, { filename: utilsPath });
 vm.runInNewContext(source, sandbox, { filename: dashboardPath });
-const state = { ...sandbox.window.TraderSelection, ...sandbox.window.__dashboardD4 };
+const state = {
+  ...sandbox.window.TraderSelection,
+  ...sandbox.window.__dashboardD4,
+  latencySummary: sandbox.window.TraderDashboardUtils.latencySummary,
+  longGroupNormalized: sandbox.window.TraderLongGroups.normalized,
+  longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
+};
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
 assert.strictEqual(
   state.emptyRecommendationMessage({
@@ -160,6 +169,14 @@ assert.deepStrictEqual(
   [{ code: "600003", rank: 1 }, { code: "600001", rank: 2 }],
 );
 assert.strictEqual(state.topKValid(merged), true);
+assert.strictEqual(
+  state.topKValid(Array.from({ length: 26 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "long"),
+  true,
+);
+assert.strictEqual(
+  state.topKValid(Array.from({ length: 19 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "today"),
+  false,
+);
 assert.strictEqual(state.topKValid([{ code: "600001", rank: 1 }, { code: "600002", rank: 1 }]), false);
 assert.strictEqual(state.topKValid([{ code: "600001", rank: 0 }]), false);
 assert.deepStrictEqual(
@@ -218,6 +235,30 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.visibleRecommendations({ strategy: "today", historical: true, items: mixedItems }))),
   mixedItems,
+);
+const longPayload = {
+  strategy: "long",
+  long_groups: [
+    { name: "半导体设备", category: "chokepoint", codes: ["600002", "600001"], count: 2 },
+    { name: "低价潜力股", category: "low_price_potential", codes: ["600003", "600001"], count: 2 },
+  ],
+};
+const longItems = [
+  { code: "600001", rank: 11 },
+  { code: "600002", rank: 12 },
+  { code: "600003", rank: 13 },
+];
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.longGroupNormalized(longPayload, "chokepoint"))),
+  [{ name: "半导体设备", category: "chokepoint", codes: ["600002", "600001"], count: 2 }],
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.longGroupVisibleRecommendations(longPayload, longItems, "chokepoint", "半导体设备"))),
+  [{ code: "600002", rank: 1 }, { code: "600001", rank: 2 }],
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.longGroupVisibleRecommendations(longPayload, longItems, "low_price_potential", ""))),
+  [{ code: "600003", rank: 1 }, { code: "600001", rank: 2 }],
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.recommendationSummary(

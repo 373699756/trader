@@ -17,11 +17,15 @@
     requestSequence: 0,
     selectionSequence: 0,
     selectedDateAvailability: "available",
+    longScope: "chokepoint",
+    longGroup: "",
   };
   const CACHE_MAX_AGE_MS = 30000;
   const HISTORY_REFRESH_MS = 3000;
   const PATCH_LATENCY_SAMPLE_CAPACITY = 256;
   const selection = window.TraderSelection;
+  const longGroups = window.TraderLongGroups;
+  const utils = window.TraderDashboardUtils;
   const patchToPaintSamples = [];
   const diagnostics = {
     recommendationRequests: 0,
@@ -44,7 +48,7 @@
       resyncReasons: { ...diagnostics.resyncReasons },
       browserErrors: [...diagnostics.browserErrors],
       runtimeDiagnostics: [...diagnostics.runtimeDiagnostics],
-      patchToPaint: latencySummary(patchToPaintSamples),
+      patchToPaint: utils.latencySummary(patchToPaintSamples),
     }),
   });
   window.addEventListener("error", (event) => recordBrowserError("error", event.message));
@@ -58,11 +62,25 @@
       "scoreTime", "budgetStatus", "headerFreeze", "lastError",
       "refreshButton", "dateSelect", "strategyDescription", "recommendationCount", "executableCount", "filteredCount", "dataSource",
       "topScore", "modelReview", "dataQuality", "notice", "noticeText", "recommendationTable", "tableColumns", "tableHead", "tableBody",
+      "longGroupBar", "longScopeTabs", "longIndustryTabs",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
     ]) els[id] = document.getElementById(id);
 
     document.querySelectorAll(".strategy-tab").forEach((button) => {
       button.addEventListener("click", () => selectStrategy(button.dataset.strategy));
+    });
+    els.longScopeTabs.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-scope]");
+      if (!button || state.longScope === button.dataset.scope) return;
+      state.longScope = button.dataset.scope;
+      state.longGroup = "";
+      if (state.payload) renderPayload(state.payload);
+    });
+    els.longIndustryTabs.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-group]");
+      if (!button || state.longGroup === button.dataset.group) return;
+      state.longGroup = button.dataset.group;
+      if (state.payload) renderPayload(state.payload);
     });
     els.dateSelect.addEventListener("change", () => {
       state.date = els.dateSelect.value;
@@ -101,6 +119,10 @@
     state.strategy = nextStrategy;
     state.payload = null;
     state.projectionVersion = "";
+    if (nextStrategy !== "long") {
+      state.longScope = "chokepoint";
+      state.longGroup = "";
+    }
     closeDrawer();
     els.dateSelect.disabled = true;
     els.strategyDescription.textContent = selection.descriptions[nextStrategy];
@@ -232,7 +254,7 @@
         throw error;
       }
       diagnostics.recommendationFullResponses += 1;
-      diagnostics.fullResponseBytes += utf8Bytes(JSON.stringify(payload));
+      diagnostics.fullResponseBytes += utils.utf8Bytes(JSON.stringify(payload));
       if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
       if (!cacheIdentityValid(payload, strategy, selectedDate, view)) throw new Error("推荐快照身份不匹配");
       const etag = response.headers.get("ETag");
@@ -287,11 +309,18 @@
     state.projectionVersion = projectionVersion(payload);
     const items = Array.isArray(payload.items) ? payload.items : [];
     const historical = payload.historical === true;
-    const recommendations = selection.visibleRecommendations(payload);
+    longGroups.renderBar(els, state, payload.status === "ready" ? payload : null);
+    const recommendations = longGroups.visibleRecommendations(
+      payload,
+      selection.visibleRecommendations(payload),
+      state.longScope,
+      state.longGroup,
+    );
     els.recommendationCount.textContent = String(recommendations.length);
     els.executableCount.textContent = String(recommendations.filter((item) => item.action === "executable").length);
     els.filteredCount.textContent = String(payload.filtered_count || 0);
-    els.dataSource.textContent = items[0] && items[0].source ? items[0].source : "-";
+    const firstVisible = recommendations[0] || items[0];
+    els.dataSource.textContent = firstVisible && firstVisible.source ? firstVisible.source : "-";
     const summary = selection.recommendationSummary(payload, recommendations);
     els.topScore.textContent = summary.topScore;
     els.modelReview.textContent = summary.modelReview;
@@ -313,7 +342,7 @@
       const emptyMessage = historical
         ? "当前门槛下没有历史推荐结果"
         : payload.strategy === "long"
-          ? "当前长期策略暂无可展示股票"
+          ? longGroups.emptyMessage(payload, state.longScope)
           : emptyRecommendationMessage(payload);
       renderTableState(emptyMessage, historical ? 6 : 9);
     } else {
@@ -356,6 +385,7 @@
     const definition = window.TraderRender.currentTable();
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
+    if (els.longGroupBar) els.longGroupBar.hidden = true;
     renderTableState("正在读取推荐快照");
     setNotice("正在读取推荐快照", "idle");
   }
@@ -376,6 +406,7 @@
     els.quoteTime.textContent = "-";
     els.quoteAge.textContent = "-";
     els.recommendationTable.classList.add("is-history");
+    if (els.longGroupBar) els.longGroupBar.hidden = true;
     const definition = window.TraderRender.historyTable();
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
@@ -447,7 +478,7 @@
       const running = Boolean(payload.runtime_started);
       els.runtimeStatus.textContent = running ? "运行中" : payload.status === "not_ready" ? "未就绪" : "已停止";
       els.runtimeDot.dataset.state = running ? "ok" : payload.last_error ? "error" : "warn";
-      els.marketPhase.textContent = phaseLabel(payload.phase || "closed");
+      els.marketPhase.textContent = utils.phaseLabel(payload.phase || "closed");
       const rawLastError = payload.last_error || "";
       els.lastError.textContent = window.TraderRender.statusErrorLabel(rawLastError);
       window.TraderRender.rememberDiagnostic(diagnostics.runtimeDiagnostics, rawLastError);
@@ -510,7 +541,7 @@
     stream.addEventListener("recommendation_patch", (event) => {
       const receivedAt = performance.now();
       rememberEvent(event);
-      diagnostics.incrementalSseBytes += utf8Bytes(event.data || "");
+      diagnostics.incrementalSseBytes += utils.utf8Bytes(event.data || "");
       let patch = null;
       try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
       if (
@@ -522,7 +553,7 @@
     stream.addEventListener("overlay_patch", (event) => {
       const receivedAt = performance.now();
       rememberEvent(event);
-      diagnostics.incrementalSseBytes += utf8Bytes(event.data || "");
+      diagnostics.incrementalSseBytes += utils.utf8Bytes(event.data || "");
       let patch = null;
       try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
       if ((!patch || !patch.strategy || patch.strategy === state.strategy) && applyOverlayPatch(patch)) {
@@ -556,7 +587,7 @@
     const merged = patch.replace === true
       ? patch.upserts
       : mergePatchItems(current.items, patch.upserts, removed);
-    if (!topKValid(merged)) {
+    if (!topKValid(merged, patch.strategy)) {
       requestRecommendationResync("topk_mismatch");
       return false;
     }
@@ -580,6 +611,7 @@
       degraded_reasons: patch.degraded_reasons || [],
       filtered_count: patch.filtered_count,
       selection_diagnostics: patch.selection_diagnostics || {},
+      long_groups: Array.isArray(patch.long_groups) ? patch.long_groups : current.long_groups || [],
       items: merged,
       error: null,
     };
@@ -587,7 +619,7 @@
     const key = recommendationKey(state.strategy, state.date, state.view);
     state.payloads.set(key, state.payload);
     if (typeof patch.etag === "string" && patch.etag && patch.view === state.view) {
-      state.etags.set(key, quotedEtag(patch.etag));
+      state.etags.set(key, utils.quotedEtag(patch.etag));
     }
     diagnostics.recommendationPatchesApplied += 1;
     renderPayload(state.payload);
@@ -695,8 +727,9 @@
       && !codes.some((code) => removed.includes(code));
   }
 
-  function topKValid(items) {
-    if (!Array.isArray(items) || items.length > 18) return false;
+  function topKValid(items, strategy) {
+    const effectiveStrategy = strategy || state.strategy;
+    if (!Array.isArray(items) || (effectiveStrategy !== "long" && items.length > 18)) return false;
     const codes = items.map((item) => item && item.code);
     const ranks = items.map((item) => Number(item && item.rank));
     return codes.every((code) => typeof code === "string" && code)
@@ -711,10 +744,6 @@
     loadRecommendations(`resync_${reason}`);
   }
 
-  function quotedEtag(value) {
-    return value.startsWith('"') ? value : `"${value}"`;
-  }
-
   function recordPatchPaint(receivedAt) {
     window.requestAnimationFrame(() => {
       const elapsed = Math.max(0, performance.now() - receivedAt);
@@ -726,26 +755,6 @@
     });
   }
 
-  function latencySummary(values) {
-    if (!Array.isArray(values) || values.length === 0) {
-      return { sample_count: 0, p50_ms: null, p95_ms: null, maximum_ms: null };
-    }
-    const ordered = values.filter((value) => Number.isFinite(value) && value >= 0).sort((left, right) => left - right);
-    if (ordered.length === 0) {
-      return { sample_count: 0, p50_ms: null, p95_ms: null, maximum_ms: null };
-    }
-    const rank = (probability) => ordered[Math.max(0, Math.ceil(ordered.length * probability) - 1)];
-    return {
-      sample_count: ordered.length,
-      p50_ms: Number(rank(0.50).toFixed(3)),
-      p95_ms: Number(rank(0.95).toFixed(3)),
-      maximum_ms: Number(ordered[ordered.length - 1].toFixed(3)),
-    };
-  }
-
-  function utf8Bytes(value) {
-    return new TextEncoder().encode(String(value || "")).byteLength;
-  }
   function recordBrowserError(kind, detail) {
     diagnostics.browserErrors.push(`${kind}:${String(detail || "unknown").slice(0, 300)}`);
     if (diagnostics.browserErrors.length > 20) diagnostics.browserErrors.shift();
@@ -780,21 +789,4 @@
     state.pollTimer = null;
   }
 
-  function phaseLabel(value) {
-    return ({
-      closed: "休市",
-      warmup: "共享预热",
-      today_observe: "今早观察",
-      today_main: "今早主执行",
-      today_late: "今早降级执行",
-      midday: "午间暂停",
-      afternoon: "午后主审",
-      final_review: "最终补审",
-      deepseek_cutoff: "模型截止",
-      final_quote: "最终报价",
-      frozen: "冻结窗口",
-      close_fallback: "收盘恢复中",
-      after_close: "收盘后",
-    })[value] || value;
-  }
 })();

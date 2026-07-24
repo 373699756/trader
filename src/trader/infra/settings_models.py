@@ -237,7 +237,16 @@ class LongWatchItem:
 
 
 @dataclass(frozen=True)
+class LongWatchGroup:
+    name: str
+    category: str
+    codes: tuple[str, ...]
+    source: str
+
+
+@dataclass(frozen=True)
 class LongWatchlist:
     schema_version: int
     watchlist_version: str
     items: tuple[LongWatchItem, ...]
+    groups: tuple[LongWatchGroup, ...] = ()

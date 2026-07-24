@@ -177,6 +177,32 @@ def test_published_index_preserves_selection_diagnostics_in_delivery_views() -> 
         assert delivery.metadata == {"selection_diagnostics": diagnostics}
 
 
+def test_published_index_preserves_long_groups_in_delivery_views() -> None:
+    long_groups = (
+        {
+            "name": "低价潜力股",
+            "category": "low_price_potential",
+            "codes": ["600001"],
+            "count": 1,
+            "source": "main history fixture",
+        },
+    )
+    snapshot = replace(
+        _snapshot(Strategy.LONG, "2026-07-22"),
+        metadata={
+            "long_groups": long_groups,
+            "internal_only": {"must": "not leak"},
+        },
+    )
+    published = PublishedSnapshotIndex(_Archive(()))
+    published.publish(snapshot)
+
+    delivery = published.latest(Strategy.LONG)
+
+    assert delivery is not None
+    assert delivery.metadata == {"long_groups": [dict(long_groups[0])]}
+
+
 def test_published_index_does_not_replace_current_pin_with_older_frozen_history() -> None:
     archive = _Archive(())
     index = PublishedSnapshotIndex(archive)

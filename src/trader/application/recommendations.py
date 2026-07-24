@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import ScoringCacheContext
 from trader.application.cache import request_fingerprint
+from trader.application.long_groups import LongGroupDefinition
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.recommendation_finalization import PreparedSnapshot, RecommendationFinalizationMixin
@@ -29,8 +30,11 @@ from trader.domain.recommendation.filters import FilterResult, board_for_snapsho
 from trader.domain.recommendation.models import (
     BoardScoreBatch,
     FilterAudit,
+    FusionMode,
     Recommendation,
+    RecommendationAction,
     RecommendationSnapshot,
+    ScoreBreakdown,
     Strategy,
 )
 from trader.domain.recommendation.ranking import (
@@ -114,6 +118,7 @@ class _SnapshotRequiredOptions(TypedDict):
 class _SnapshotOptionalOptions(TypedDict, total=False):
     filter_details: Sequence[FilterAudit]
     target_prices: Mapping[str, float | None] | None
+    long_groups: Sequence[LongGroupDefinition]
     market_features: Sequence[FeatureSnapshot]
     requested_codes: Sequence[str]
     preselect_max_age_seconds: float | None
@@ -363,6 +368,7 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
             filter_reasons=options["filter_reasons"],
             filter_details=options.get("filter_details", ()),
             target_prices=options.get("target_prices"),
+            long_groups=options.get("long_groups", ()),
             market_features=options.get("market_features", ()),
             requested_codes=options.get("requested_codes", ()),
             preselect_max_age_seconds=options.get("preselect_max_age_seconds"),
@@ -402,6 +408,7 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
         filter_reasons = options["filter_reasons"]
         filter_details = options.get("filter_details", ())
         target_prices = options.get("target_prices")
+        long_groups = options.get("long_groups", ())
         market_features = options.get("market_features", ())
         requested_codes = options.get("requested_codes", ())
         preselect_max_age_seconds = options.get("preselect_max_age_seconds")
@@ -462,6 +469,7 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
             filter_reasons=dict(refreshed_filter_reasons),
             filter_details=tuple(refreshed_filter_details),
             target_prices=dict(target_prices or {}),
+            long_groups=tuple(long_groups),
             market_features=tuple(market_features),
             requested_codes=tuple(requested_codes),
             preselect_max_age_seconds=preselect_max_age_seconds
@@ -518,7 +526,12 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
         board_batches: tuple[BoardScoreBatch, ...] = ()
         board_scoring_complete = True
         board_degraded_reasons: list[str] = []
-        if strategy is not Strategy.LONG and self._policy.board_candidate_weights:
+        if strategy is Strategy.LONG:
+            local_candidates = tuple(
+                replace(self._long_watch_candidate(feature), rank=index)
+                for index, feature in enumerate(normalized_eligible, start=1)
+            )
+        elif self._policy.board_candidate_weights:
             policies = {
                 board: policy
                 for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
@@ -579,6 +592,30 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
             board_scoring_complete,
             tuple(dict.fromkeys(board_degraded_reasons)),
             normalized_eligible,
+        )
+
+    def _long_watch_candidate(self, features: FeatureSnapshot) -> Recommendation:
+        return Recommendation(
+            strategy=Strategy.LONG,
+            features=features,
+            score=ScoreBreakdown(
+                components={},
+                base_score=0.0,
+                local_risk_penalty=0.0,
+                local_score=0.0,
+                deepseek_score=None,
+                confidence_coverage=0.0,
+                deepseek_risk_penalty=0.0,
+                final_score=0.0,
+                fusion_mode=FusionMode.LOCAL_DEGRADED,
+                fusion_applied=False,
+            ),
+            local_risk_facts=(),
+            deepseek_risk_facts=(),
+            review=None,
+            action=RecommendationAction.OBSERVE,
+            action_reason="fixed_long_watchlist",
+            veto=False,
         )
 
 

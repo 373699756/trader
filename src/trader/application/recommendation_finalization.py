@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+from trader.application.long_groups import LongGroupDefinition, long_groups_metadata
 from trader.application.policy import RecommendationPolicy
 from trader.application.policy import SelectionPolicy as AppSelectionPolicy
 from trader.application.ports.reviews import DeepSeekReviewPort
@@ -121,6 +122,7 @@ class PreparedSnapshot:
     filter_reasons: Mapping[str, int]
     filter_details: tuple[FilterAudit, ...]
     target_prices: Mapping[str, float | None]
+    long_groups: tuple[LongGroupDefinition, ...]
     market_features: tuple[FeatureSnapshot, ...]
     requested_codes: tuple[str, ...]
     preselect_max_age_seconds: float
@@ -133,6 +135,7 @@ class PreparedSnapshot:
     def __post_init__(self) -> None:
         object.__setattr__(self, "filter_reasons", MappingProxyType(dict(self.filter_reasons)))
         object.__setattr__(self, "target_prices", MappingProxyType(dict(self.target_prices)))
+        object.__setattr__(self, "long_groups", tuple(self.long_groups))
 
     @property
     def review_eligible(self) -> tuple[FeatureSnapshot, ...]:
@@ -333,36 +336,52 @@ class RecommendationFinalizationMixin:
         eligible = prepared.eligible
         now = prepared.now
         phase = prepared.phase
-        merged, fusion_mode = self._merge_reviewed_candidates(
-            strategy,
-            prepared.local_candidates,
-            reviews,
-            now=now,
-            phase=phase,
-            max_age_seconds=prepared.max_age_seconds,
-            target_prices=prepared.target_prices,
-            apply_downside=not legacy_v16,
-            require_industry_breadth=legacy_replay,
-        )
-        minimum_score = minimum_selection_score(
-            strategy,
-            self._policy.selection.thresholds,
-            phase=phase,
-            observation_margin=self._policy.selection.observation_margin,
-        )
-        selection = _select_final_recommendations(
-            merged,
-            _SelectionRequest(
-                strategy=strategy,
+        selection_skips: tuple[SelectionSkip, ...]
+        if strategy is Strategy.LONG and not legacy_replay:
+            merged = tuple(prepared.local_candidates)
+            fusion_mode = FusionMode.LOCAL_DEGRADED
+            minimum_score = None
+            selected = tuple(
+                replace(
+                    item,
+                    rank=index,
+                    target_price=prepared.target_prices.get(item.features.quote.code),
+                )
+                for index, item in enumerate(merged, start=1)
+            )
+            selection = _SelectionResult(selected, ())
+            selection_skips = ()
+        else:
+            merged, fusion_mode = self._merge_reviewed_candidates(
+                strategy,
+                prepared.local_candidates,
+                reviews,
+                now=now,
                 phase=phase,
-                minimum_score=minimum_score,
-                selection=self._policy.selection,
-                legacy_v16=legacy_v16,
-                legacy_replay=legacy_replay,
-            ),
-        )
-        selected = selection.selected
-        selection_skips = selection.skips
+                max_age_seconds=prepared.max_age_seconds,
+                target_prices=prepared.target_prices,
+                apply_downside=not legacy_v16,
+                require_industry_breadth=legacy_replay,
+            )
+            minimum_score = minimum_selection_score(
+                strategy,
+                self._policy.selection.thresholds,
+                phase=phase,
+                observation_margin=self._policy.selection.observation_margin,
+            )
+            selection = _select_final_recommendations(
+                merged,
+                _SelectionRequest(
+                    strategy=strategy,
+                    phase=phase,
+                    minimum_score=minimum_score,
+                    selection=self._policy.selection,
+                    legacy_v16=legacy_v16,
+                    legacy_replay=legacy_replay,
+                ),
+            )
+            selected = selection.selected
+            selection_skips = selection.skips
         identity_data_version = (
             prepared.data_version if legacy_replay else f"{prepared.data_version}|projection={projection_stage}"
         )
@@ -388,7 +407,7 @@ class RecommendationFinalizationMixin:
                 degraded_reasons.append("tomorrow_tail_data_incomplete")
         research_covered_count = 0
         research_fields: tuple[str, ...] = ()
-        if strategy in {Strategy.D25, Strategy.LONG}:
+        if strategy is Strategy.D25 or (strategy is Strategy.LONG and legacy_replay):
             structured_fields = _LEGACY_STRUCTURED_RISK_FIELDS if legacy_replay else _STRUCTURED_RISK_FIELDS
             research_fields = (
                 _LEGACY_LONG_RESEARCH_FIELDS
@@ -482,6 +501,11 @@ class RecommendationFinalizationMixin:
                     phase,
                 ),
                 **(
+                    {"long_groups": long_groups_metadata(prepared.long_groups, selected)}
+                    if strategy is Strategy.LONG and not legacy_replay
+                    else {}
+                ),
+                **(
                     {"close_fallback_observation_floor_relaxed": True} if selection.close_fallback_floor_relaxed else {}
                 ),
                 **(
@@ -556,6 +580,7 @@ class RecommendationFinalizationMixin:
             filter_reasons=options["filter_reasons"],
             filter_details=tuple(options["filter_details"]),
             target_prices=replay_input.target_prices,
+            long_groups=(),
             market_features=replay_input.market_features,
             requested_codes=replay_input.requested_codes,
             preselect_max_age_seconds=replay_input.preselect_max_age_seconds,

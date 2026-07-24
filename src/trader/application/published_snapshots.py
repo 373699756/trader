@@ -252,10 +252,14 @@ def _delivery_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapsh
 
 
 def _delivery_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
+    delivery: dict[str, object] = {}
     diagnostics = metadata.get("selection_diagnostics")
-    if not isinstance(diagnostics, Mapping):
-        return {}
-    return {"selection_diagnostics": dict(diagnostics)}
+    if isinstance(diagnostics, Mapping):
+        delivery["selection_diagnostics"] = dict(diagnostics)
+    long_groups = metadata.get("long_groups")
+    if isinstance(long_groups, (tuple, list)):
+        delivery["long_groups"] = [dict(group) for group in long_groups if isinstance(group, Mapping)]
+    return delivery
 
 
 __all__ = ["PublishedSnapshotIndex"]

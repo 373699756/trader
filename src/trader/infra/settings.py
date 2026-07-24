@@ -17,6 +17,7 @@ from trader.infra.settings_models import (
     FactorDefinition,
     FusionSettings,
     HardFilterSettings,
+    LongWatchGroup,
     LongWatchItem,
     LongWatchlist,
     MarketDataSettings,
@@ -176,11 +177,88 @@ def load_long_watchlist(config_path: str | os.PathLike[str]) -> LongWatchlist:
                 target_price=float(target) if target is not None else None,
             )
         )
+    groups = _parse_long_watch_groups(raw, codes)
     return LongWatchlist(
         schema_version=_integer(raw, "schema_version", minimum=1),
         watchlist_version=_text(raw, "watchlist_version"),
         items=tuple(items),
+        groups=groups,
     )
+
+
+def _parse_long_watch_groups(raw: Mapping[str, object], item_codes: set[str]) -> tuple[LongWatchGroup, ...]:
+    groups_raw = raw.get("groups")
+    if groups_raw is None:
+        return ()
+    if not isinstance(groups_raw, list):
+        raise ConfigurationError("long watchlist groups must be a list")
+    seen_names: set[tuple[str, str]] = set()
+    groups = tuple(
+        _parse_long_watch_group(group, index, item_codes, seen_names) for index, group in enumerate(groups_raw)
+    )
+    if sum(1 for group in groups if group.category == "low_price_potential") != 1:
+        raise ConfigurationError("long watchlist must define exactly one low_price_potential group")
+    return groups
+
+
+def _parse_long_watch_group(
+    raw: object,
+    index: int,
+    item_codes: set[str],
+    seen_names: set[tuple[str, str]],
+) -> LongWatchGroup:
+    if not isinstance(raw, dict):
+        raise ConfigurationError(f"long watchlist group {index} must be an object")
+    name = _text(raw, "name")
+    category = _text(raw, "category")
+    if category not in {"chokepoint", "low_price_potential"}:
+        raise ConfigurationError(f"long watchlist group {name} category is invalid")
+    key = (category, name)
+    if key in seen_names:
+        raise ConfigurationError(f"duplicate long watchlist group: {category}/{name}")
+    seen_names.add(key)
+    return LongWatchGroup(
+        name=name,
+        category=category,
+        codes=_parse_long_group_codes(raw, name, category, item_codes),
+        source=_text(raw, "source") if "source" in raw else "",
+    )
+
+
+def _parse_long_group_codes(
+    raw: Mapping[str, object],
+    name: str,
+    category: str,
+    item_codes: set[str],
+) -> tuple[str, ...]:
+    codes_raw = raw.get("codes")
+    if not isinstance(codes_raw, list) or not codes_raw:
+        raise ConfigurationError(f"long watchlist group {name} codes must be a non-empty list")
+    maximum = 26 if category == "low_price_potential" else 5
+    if len(codes_raw) > maximum:
+        raise ConfigurationError(f"long watchlist group {name} cannot contain more than {maximum} codes")
+    codes: list[str] = []
+    seen_codes: set[str] = set()
+    for code in codes_raw:
+        _validate_long_group_code(code, name, item_codes, seen_codes)
+        assert isinstance(code, str)
+        seen_codes.add(code)
+        codes.append(code)
+    return tuple(codes)
+
+
+def _validate_long_group_code(
+    code: object,
+    group_name: str,
+    item_codes: set[str],
+    seen_codes: set[str],
+) -> None:
+    if not isinstance(code, str) or len(code) != 6 or not code.isdigit():
+        raise ConfigurationError(f"invalid long watchlist group code in {group_name}: {code}")
+    if code in seen_codes:
+        raise ConfigurationError(f"duplicate long watchlist group code in {group_name}: {code}")
+    if code not in item_codes:
+        raise ConfigurationError(f"long watchlist group {group_name} references unknown code: {code}")
 
 
 def _parse_risk_rule(raw: object, index: int) -> RiskRuleSettings:
@@ -386,6 +464,7 @@ __all__ = [
     "FusionSettings",
     "FactorDefinition",
     "HardFilterSettings",
+    "LongWatchGroup",
     "LongWatchItem",
     "LongWatchlist",
     "MarketDataSettings",

@@ -528,10 +528,7 @@ def test_tomorrow_snapshot_marks_incomplete_tail_data_as_degraded(
 
 @pytest.mark.parametrize(
     ("strategy", "missing_field", "reason"),
-    (
-        (Strategy.D25, "pledge_risk", "d25_structured_research_incomplete"),
-        (Strategy.LONG, "value_score", "long_research_incomplete"),
-    ),
+    ((Strategy.D25, "pledge_risk", "d25_structured_research_incomplete"),),
 )
 def test_long_horizon_snapshot_marks_incomplete_structured_research_as_degraded(
     recommendation_policy,
@@ -563,7 +560,49 @@ def test_long_horizon_snapshot_marks_incomplete_structured_research_as_degraded(
     )
 
     assert reason in snapshot.degraded_reasons
-    assert snapshot.metadata["research_data_covered_count"] == 0
+
+
+def test_long_snapshot_is_fixed_watchlist_without_research_strategy(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+    features = []
+    for index in range(1, 4):
+        feature = application_feature_factory(f"60000{index}", now)
+        features.append(
+            replace(
+                feature,
+                values={
+                    **feature.values,
+                    "value_score": None,
+                    "growth_score": None,
+                    "quality_score": None,
+                },
+                missing_fields=("value_score", "growth_score", "quality_score"),
+            )
+        )
+
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.LONG,
+        tuple(features),
+        now=now,
+        phase="afternoon",
+        trade_date="2026-07-16",
+        data_version="fixed-long-watchlist",
+        review_port=None,
+        review_deadline=datetime.fromisoformat("2026-07-16T14:48:00+08:00"),
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+
+    assert len(snapshot.recommendations) == 3
+    assert "long_research_incomplete" not in snapshot.degraded_reasons
+    assert [item.rank for item in snapshot.recommendations] == [1, 2, 3]
+    assert {item.action_reason for item in snapshot.recommendations} == {"fixed_long_watchlist"}
+    assert {item.score.final_score for item in snapshot.recommendations} == {0.0}
+    assert "research_data_covered_count" not in snapshot.metadata
     assert "shadow_scoring" not in snapshot.metadata
 
 

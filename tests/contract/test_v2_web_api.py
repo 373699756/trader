@@ -47,6 +47,7 @@ RECOMMENDATION_ENVELOPE_KEYS = {
     "degraded_reasons",
     "filtered_count",
     "selection_diagnostics",
+    "long_groups",
     "items",
     "error",
 }
@@ -111,6 +112,57 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
     }
     etag = response.headers["ETag"]
     assert client.get("/api/recommendations/today", headers={"If-None-Match": etag}).status_code == 304
+
+
+def test_long_response_exposes_fixed_groups_and_ignores_top_n(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    snapshot = _snapshot(recommendation_policy, application_feature_factory, Strategy.LONG)
+    snapshot = replace(
+        snapshot,
+        metadata={
+            **snapshot.metadata,
+            "long_groups": (
+                {
+                    "name": "半导体设备",
+                    "category": "chokepoint",
+                    "codes": ["600001", "600002", "600999"],
+                    "count": 2,
+                    "source": "main history fixture",
+                },
+                {
+                    "name": "低价潜力股",
+                    "category": "low_price_potential",
+                    "codes": ["600003"],
+                    "count": 1,
+                    "source": "main history fixture",
+                },
+            ),
+        },
+    )
+    repository = MemoryReadRepository(latest={Strategy.LONG: snapshot})
+    payload = _app(repository)[0].test_client().get("/api/recommendations/long?top_n=1").get_json()
+
+    assert len(payload["items"]) == 3
+    assert payload["items"][0]["action"] == "observe"
+    assert payload["items"][0]["action_reason"] == "fixed_long_watchlist"
+    assert payload["long_groups"] == [
+        {
+            "name": "半导体设备",
+            "category": "chokepoint",
+            "codes": ["600001", "600002"],
+            "count": 2,
+            "source": "main history fixture",
+        },
+        {
+            "name": "低价潜力股",
+            "category": "low_price_potential",
+            "codes": ["600003"],
+            "count": 1,
+            "source": "main history fixture",
+        },
+    ]
 
 
 def test_recommendations_exclude_internal_missing_features_and_evidence(

@@ -158,7 +158,14 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.long_research.financial_max_age_days == 550
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
-    assert len(watchlist.items) == 10
+    assert watchlist.schema_version == 2
+    assert len(watchlist.items) == 133
+    assert len(watchlist.groups) == 30
+    assert max(len(group.codes) for group in watchlist.groups if group.category == "chokepoint") <= 5
+    low_price_groups = tuple(group for group in watchlist.groups if group.category == "low_price_potential")
+    assert len(low_price_groups) == 1
+    assert len(low_price_groups[0].codes) == 26
+    assert low_price_groups[0].name == "低价潜力股"
 
 
 def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -> None:
@@ -172,6 +179,16 @@ def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -
 
     assert runtime.schema_version == 5
     assert runtime.pipeline.decision_execution_mode == "serialized"
+
+
+def test_long_watchlist_group_limits_are_enforced(tmp_path) -> None:
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "long_watchlist.json").read_text(encoding="utf-8"))
+    raw["groups"][-1]["codes"] = [f"{index:06d}" for index in range(27)]
+    changed_path = tmp_path / "long_watchlist.json"
+    changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="cannot contain more than 26 codes"):
+        load_long_watchlist(changed_path)
 
 
 def test_runtime_rejects_unknown_decision_execution_mode(tmp_path) -> None:
