@@ -314,7 +314,7 @@
         ? "当前门槛下没有历史推荐结果"
         : payload.strategy === "long"
           ? "当前长期策略暂无可展示股票"
-          : "当前无通过下行保护的正式推荐";
+          : emptyRecommendationMessage(payload);
       renderTableState(emptyMessage, historical ? 6 : 9);
     } else {
       els.tableBody.innerHTML = window.TraderRender.rows(recommendations, historical);
@@ -453,7 +453,7 @@
       const budget = deepseek && deepseek.budget;
       els.budgetStatus.textContent = budget && budget.available === false
         ? "不可用"
-        : budget ? `${budget.used} / ${budget.remaining}` : "0 / 188";
+        : budget ? `${budget.used} / ${budget.remaining}` : "0 / 168";
       const market = payload.dependencies && payload.dependencies.market_data;
       els.quoteSource.textContent = market && market.active_source ? market.active_source : "-";
       const score = state.payload && state.payload.published_at;
@@ -577,6 +577,7 @@
       frozen: patch.frozen,
       degraded_reasons: patch.degraded_reasons || [],
       filtered_count: patch.filtered_count,
+      selection_diagnostics: patch.selection_diagnostics || {},
       items: merged,
       error: null,
     };
@@ -657,6 +658,18 @@
     return payload.projection_version || payload.snapshot_id || "";
   }
 
+  function emptyRecommendationMessage(payload) {
+    const diagnostics = payload && payload.selection_diagnostics || {};
+    const maximum = Number(diagnostics.maximum_final_score), floor = Number(diagnostics.selection_floor);
+    if (diagnostics.empty_reason === "score_below_observation_floor" && diagnostics.maximum_final_score != null
+      && diagnostics.selection_floor != null && Number.isFinite(maximum) && Number.isFinite(floor)) {
+      return `最高评分 ${maximum.toFixed(2)}，低于观察门槛 ${floor.toFixed(2)}，本轮不荐股`;
+    }
+    if (diagnostics.empty_reason === "no_scored_candidates") return "本轮没有可评分候选";
+    if (diagnostics.empty_reason === "risk_or_execution_blocked") return "候选达到评分门槛，但被风险或执行条件拦截";
+    if (diagnostics.empty_reason === "selection_limits") return "候选达到门槛，但未通过最终集中度限制";
+    return "当前没有达到正式推荐条件的股票";
+  }
   function mergePatchItems(existingItems, upserts, removed) {
     const byCode = new Map((existingItems || []).map((item) => [item.code, item]));
     for (const code of removed) byCode.delete(code);

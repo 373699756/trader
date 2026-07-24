@@ -125,7 +125,7 @@ final_score = clamp(local_score * 0.68
 - today 于 11:20 冻结。
 - tomorrow 和 d25 于 14:50 冻结。
 - long 不冻结、不进入历史推荐。
-- DeepSeek 每日物理请求全局硬上限为 188。
+- DeepSeek 每日物理请求全局硬上限为 168。
 
 产品、架构、运行、API 与运维契约见
 [软件业务设计文档](docs/software-business-design.md)，候选、过滤、评分、DeepSeek、融合与

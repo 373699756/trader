@@ -27,6 +27,7 @@ class SelectionPolicy:
     competition_group_limits: Mapping[Board, int] = field(default_factory=lambda: MappingProxyType({}))
     candidate_min_score: float = 0.0
     minimum_board_reliability: float = 0.0
+    review_candidate_limit: int = 24
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "thresholds", MappingProxyType(dict(self.thresholds)))
@@ -45,6 +46,8 @@ class SelectionPolicy:
             raise ValueError("candidate_min_score must be in [0, 100]")
         if not 0.0 <= self.minimum_board_reliability <= 1.0:
             raise ValueError("minimum_board_reliability must be in [0, 1]")
+        if not 0 <= self.review_candidate_limit <= 120:
+            raise ValueError("review_candidate_limit must be in [0, 120]")
 
 
 @dataclass(frozen=True)

@@ -468,6 +468,7 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
             },
             candidate_min_score=settings.selection.candidate_min_score,
             minimum_board_reliability=settings.selection.minimum_board_reliability,
+            review_candidate_limit=settings.selection.review_candidate_limit,
         ),
         candidate_weights=settings.candidate_weights,
         dimension_weights={Strategy(name): weights for name, weights in settings.dimension_weights.items()},

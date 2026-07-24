@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,8 +10,10 @@ from datetime import datetime
 from trader.application.ports.market import MarketSnapshotMetadata
 from trader.application.ports.types import JsonObject
 from trader.domain.market.models import (
+    Board,
     FeatureSnapshot,
     LiveQuote,
+    MarketQuote,
 )
 from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.service_candidates import QuoteStore
@@ -127,7 +130,11 @@ class MarketFeatureService:
             action_restrictions=action_restrictions,
         )
         intraday = (
-            self.intraday.load(normalized, observed_at, action_restrictions=action_restrictions)
+            self.intraday.load(
+                _board_fair_codes(normalized, quotes),
+                observed_at,
+                action_restrictions=action_restrictions,
+            )
             if include_intraday_tail
             else None
         )
@@ -297,6 +304,22 @@ class MarketFeatureService:
 
     def snapshot_metadata(self, codes: Sequence[str] | None = None) -> MarketSnapshotMetadata:
         return self.health_reporter.snapshot_metadata(codes)
+
+
+def _board_fair_codes(codes: Sequence[str], quotes: Sequence[MarketQuote]) -> tuple[str, ...]:
+    by_code = {quote.code: quote for quote in quotes}
+    board_order = (Board.MAIN, Board.CHINEXT, Board.STAR)
+    queues = {
+        board: deque(code for code in codes if by_code.get(code) is not None and by_code[code].board is board)
+        for board in board_order
+    }
+    trailing = [code for code in codes if code not in by_code or by_code[code].board is Board.UNSUPPORTED]
+    ordered: list[str] = []
+    while any(queues.values()):
+        for board in board_order:
+            if queues[board]:
+                ordered.append(queues[board].popleft())
+    return tuple((*ordered, *trailing))
 
 
 __all__ = ["MarketFeatureService"]

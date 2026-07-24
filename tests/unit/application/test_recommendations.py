@@ -113,6 +113,51 @@ def test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold(
     )
 
     assert snapshot.recommendations == ()
+    diagnostics = snapshot.metadata["selection_diagnostics"]
+    assert diagnostics["empty_reason"] == "score_below_observation_floor"
+    assert diagnostics["selection_floor"] == 65.0
+    assert diagnostics["scored_candidate_count"] == 1
+    assert diagnostics["score_qualified_count"] == 0
+    assert diagnostics["maximum_final_score"] < diagnostics["selection_floor"]
+
+
+def test_deepseek_review_set_is_bounded_to_twenty_four_candidates(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    candidates = tuple(
+        application_feature_factory(f"600{index:03d}", now, industry=f"行业{index}") for index in range(40)
+    )
+    candidates = (
+        *candidates[:-1],
+        replace(
+            candidates[-1],
+            quote=replace(
+                candidates[-1].quote,
+                execution_restrictions=("board_classification_conflict",),
+            ),
+        ),
+    )
+    reviewer = RecordingReviewer()
+
+    RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TODAY,
+        candidates,
+        now=now,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="bounded-review-set",
+        review_port=reviewer,
+        review_deadline=datetime.fromisoformat("2026-07-16T11:20:00+08:00"),
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+        filter_details=(),
+    )
+
+    assert len(reviewer.reviewed_codes) == 24
+    assert "600039" in reviewer.reviewed_codes
 
 
 def test_close_fallback_observes_local_candidates_below_observation_floor(
@@ -264,6 +309,33 @@ def test_formal_and_watch_pools_apply_industry_limit_independently(
 
     assert sum(item.action is RecommendationAction.EXECUTABLE for item in snapshot.recommendations) == 2
     assert sum(item.action is RecommendationAction.OBSERVE for item in snapshot.recommendations) == 2
+
+
+def test_observe_only_snapshot_reports_why_formal_recommendations_are_empty(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    feature = application_feature_factory("600001", now)
+    feature = replace(feature, values={**feature.values, "trend_breakdown": 1.0})
+
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TODAY,
+        (feature,),
+        now=now,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="observe-only-diagnostics",
+        review_port=None,
+        review_deadline=datetime.fromisoformat("2026-07-16T11:20:00+08:00"),
+        max_age_seconds=20.0,
+        filtered_count=0,
+        filter_reasons={},
+        filter_details=(),
+    )
+
+    assert snapshot.recommendations[0].action is RecommendationAction.OBSERVE
+    assert snapshot.metadata["selection_diagnostics"]["empty_reason"] == "risk_or_execution_blocked"
 
 
 def test_local_and_hybrid_projections_have_distinct_snapshot_identity(

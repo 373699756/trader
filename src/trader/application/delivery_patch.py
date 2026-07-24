@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from trader.domain.recommendation.models import LiveOverlay, Recommendation, RecommendationSnapshot
 
 
@@ -34,11 +36,17 @@ def snapshot_patch(
         "frozen": snapshot.frozen,
         "degraded_reasons": list(snapshot.degraded_reasons),
         "filtered_count": snapshot.filtered_count,
+        "selection_diagnostics": _selection_diagnostics(snapshot),
         "replace": replace_all,
         "upserts": upserts,
         "removed_codes": removed_codes,
         "removals": [],
     }
+
+
+def _selection_diagnostics(snapshot: RecommendationSnapshot) -> dict[str, object]:
+    raw = snapshot.metadata.get("selection_diagnostics")
+    return dict(raw) if isinstance(raw, Mapping) else {}
 
 
 def overlay_patch(overlay: LiveOverlay) -> dict[str, object]:

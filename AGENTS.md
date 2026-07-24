@@ -25,7 +25,7 @@
 - 融合公式固定为 `clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)`，最终使用 `ROUND_HALF_UP` 保留两位小数。
 - `local_score` 已扣本地风险，融合时禁止再次扣除 `local_risk_penalty`。
 - DeepSeek 自由文本不得直接决定扣分；只允许本地规则映射经 schema 和证据校验的风险事实。
-- DeepSeek 每日物理 HTTP 请求全局上限为 188，重试和失败同样计数；共享预热与 emergency 必须使用独立原子预算桶。
+- DeepSeek 每日物理 HTTP 请求全局上限为 168，重试和失败同样计数；共享预热与 emergency 必须使用独立原子预算桶。
 - today 在 11:20 冻结，tomorrow/d25 在 14:50 冻结。已有同日正式记录在冻结后不得被迟到结果修改；若同日正式记录缺失，15:00 后允许优先固化本次运行 P6 结果，或在冷启动时按同日收盘行情执行一次本地补算并创建 `close_fallback`，创建后同样不可覆盖。
 - long 只展示当前快照，不冻结、不写推荐历史。
 - 所有业务时间使用 `Asia/Shanghai`，时钟必须可注入且带时区。

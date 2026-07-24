@@ -24,7 +24,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
     assert runtime.schema_version == 5
-    assert strategy.schema_version == 11
+    assert strategy.schema_version == 12
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v17"
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.pipeline.market_workers == 5
@@ -106,8 +106,17 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 1
     assert runtime.pipeline.cadence_seconds["topk_quotes"]["today_main"] == 1
     assert runtime.performance_budgets.data_age_p95_seconds["full_market_main"] == 10
-    assert sum(runtime.deepseek.strategy_limits.values()) == 188
-    assert sum(runtime.deepseek.stage_targets.values()) == 158
+    assert runtime.deepseek.daily_hard_limit == 168
+    assert runtime.deepseek.strategy_limits == {
+        "today": 68,
+        "tomorrow": 45,
+        "d25": 35,
+        "long": 0,
+        "shared_preheat": 15,
+        "emergency": 5,
+    }
+    assert sum(runtime.deepseek.strategy_limits.values()) == 168
+    assert sum(runtime.deepseek.stage_targets.values()) == 146
     assert runtime.deepseek.model == "deepseek-v4-flash"
     assert runtime.deepseek.challenger_model == "deepseek-v4-pro"
     assert runtime.deepseek.challenger_limits == {"today": 6, "tomorrow": 6, "d25": 5, "long": 0}
@@ -144,6 +153,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.d25_signal.risk_on_breadth_min == 60.0
     assert strategy.d25_signal.risk_off_factor == 0.92
     assert strategy.d25_signal.overheat_linear_end_factor == 0.85
+    assert strategy.selection.review_candidate_limit == 24
     assert strategy.long_research.financial_max_age_days == 550
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords

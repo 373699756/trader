@@ -20,6 +20,7 @@ from trader.application.recommendation_finalization import PreparedSnapshot, Rec
 from trader.application.recommendation_replay import (
     RecommendationReplayMixin,
 )
+from trader.application.recommendation_support import _select_review_candidates
 from trader.domain.market.models import (
     Board,
     FeatureSnapshot,
@@ -426,6 +427,25 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
                 population_features=market_features,
             )
         )
+        reliable_review_candidates = tuple(
+            item
+            for item in local_candidates
+            if strategy is Strategy.LONG
+            or item.features.board_data_reliability >= self._policy.selection.minimum_board_reliability
+        )
+        review_candidate_codes = (
+            tuple(
+                item.features.quote.code
+                for item in _select_review_candidates(
+                    strategy,
+                    reliable_review_candidates,
+                    phase,
+                    self._policy.selection,
+                )
+            )
+            if self._policy.selection.review_candidate_limit
+            else None
+        )
 
         return PreparedSnapshot(
             strategy=strategy,
@@ -451,6 +471,7 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
             board_batches=board_batches,
             board_scoring_complete=board_scoring_complete,
             board_degraded_reasons=board_degraded_reasons,
+            review_candidate_codes=review_candidate_codes,
         )
 
     def _refresh_eligible(

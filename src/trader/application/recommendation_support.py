@@ -18,6 +18,7 @@ from trader.domain.recommendation.models import (
     FrozenReplayPolicy,
     FusionMode,
     Recommendation,
+    RecommendationAction,
     RecommendationSnapshot,
     Strategy,
 )
@@ -43,6 +44,7 @@ _NON_ALGORITHM_METADATA_KEYS = frozenset(
         "price_basis",
         "recovery_path",
         "scoring_phase",
+        "selection_diagnostics",
         "source_data_version",
         "source_snapshot_id",
         "source_versions",
@@ -51,19 +53,82 @@ _NON_ALGORITHM_METADATA_KEYS = frozenset(
 )
 
 
+def _selection_diagnostics(
+    merged: Sequence[Recommendation],
+    selected: Sequence[Recommendation],
+    minimum_score: float | None,
+    strategy: Strategy,
+    phase: str,
+) -> dict[str, object]:
+    score_qualified = (
+        tuple(item for item in merged if minimum_score is not None and item.score.final_score >= minimum_score)
+        if minimum_score is not None
+        else ()
+    )
+    actionable = tuple(
+        item for item in merged if item.action in {RecommendationAction.EXECUTABLE, RecommendationAction.OBSERVE}
+    )
+    qualified_actionable = tuple(
+        item for item in actionable if minimum_score is not None and item.score.final_score >= minimum_score
+    )
+    visible_selected = (
+        tuple(selected)
+        if strategy is Strategy.LONG or phase == "close_fallback"
+        else tuple(item for item in selected if item.action is RecommendationAction.EXECUTABLE)
+    )
+    if visible_selected:
+        empty_reason: str | None = None
+    elif not merged:
+        empty_reason = "no_scored_candidates"
+    elif selected:
+        empty_reason = "risk_or_execution_blocked"
+    elif minimum_score is None:
+        empty_reason = "selection_limits"
+    elif not score_qualified:
+        empty_reason = "score_below_observation_floor"
+    elif not qualified_actionable:
+        empty_reason = "risk_or_execution_blocked"
+    else:
+        empty_reason = "selection_limits"
+    return {
+        "scored_candidate_count": len(merged),
+        "actionable_candidate_count": len(actionable),
+        "score_qualified_count": len(score_qualified),
+        "selection_floor": minimum_score,
+        "maximum_local_score": max((item.score.local_score for item in merged), default=None),
+        "maximum_final_score": max((item.score.final_score for item in merged), default=None),
+        "empty_reason": empty_reason,
+    }
+
+
 def _fusion_mode(
     local_candidates: Sequence[Recommendation],
     reviews: Mapping[str, DeepSeekReview],
-    thresholds: Mapping[str, float],
+    selection: SelectionPolicy,
     strategy: Strategy,
     phase: str,
 ) -> FusionMode:
+    if selection.review_candidate_limit:
+        protected = {
+            item.features.quote.code
+            for item in _select_review_candidates(
+                strategy,
+                local_candidates,
+                phase,
+                selection,
+            )
+        }
+        for code in protected:
+            review = reviews.get(code)
+            if review is None or review.outcome not in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN}:
+                return FusionMode.LOCAL_DEGRADED
+        return FusionMode.HYBRID if protected else FusionMode.LOCAL_DEGRADED
     threshold_key = (
         "today_late" if strategy is Strategy.TODAY and phase in {"today_late", "close_fallback"} else strategy.value
     )
     if threshold_key == Strategy.TODAY.value:
         threshold_key = "today_main"
-    threshold = thresholds.get(threshold_key, 100.0)
+    threshold = selection.thresholds.get(threshold_key, 100.0)
     ordered = sorted(local_candidates, key=lambda item: (-item.score.local_score, item.features.quote.code))
     protected = {
         item.features.quote.code
@@ -75,6 +140,27 @@ def _fusion_mode(
         if review is None or review.outcome not in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN}:
             return FusionMode.LOCAL_DEGRADED
     return FusionMode.HYBRID if protected else FusionMode.LOCAL_DEGRADED
+
+
+def _select_review_candidates(
+    strategy: Strategy,
+    candidates: Sequence[Recommendation],
+    phase: str,
+    selection: SelectionPolicy,
+) -> tuple[Recommendation, ...]:
+    contexts = _review_contexts_for_candidates(strategy, candidates, phase, selection)
+    ordered = sorted(
+        candidates,
+        key=lambda item: (
+            not contexts[item.features.quote.code].has_new_high_risk,
+            not contexts[item.features.quote.code].near_action_threshold,
+            not contexts[item.features.quote.code].near_global_boundary,
+            not contexts[item.features.quote.code].evidence_conflict,
+            contexts[item.features.quote.code].local_rank,
+            item.features.quote.code,
+        ),
+    )
+    return tuple(ordered[: selection.review_candidate_limit])
 
 
 def _review_contexts_for_candidates(
@@ -209,6 +295,7 @@ def _freeze_policy(policy: RecommendationPolicy) -> FrozenReplayPolicy:
         },
         candidate_min_score=policy.selection.candidate_min_score,
         minimum_board_reliability=policy.selection.minimum_board_reliability,
+        review_candidate_limit=policy.selection.review_candidate_limit,
         board_policy_version=policy.board_policy_version,
         board_candidate_weights={
             strategy.value: {board.value: weights for board, weights in boards.items()}
@@ -243,6 +330,7 @@ def _restore_policy(policy: FrozenReplayPolicy) -> RecommendationPolicy:
             competition_group_limits={Board(name): limit for name, limit in policy.competition_group_limits.items()},
             candidate_min_score=policy.candidate_min_score,
             minimum_board_reliability=policy.minimum_board_reliability,
+            review_candidate_limit=policy.review_candidate_limit,
         ),
         candidate_weights=policy.candidate_weights,
         dimension_weights={Strategy(name): weights for name, weights in policy.dimension_weights.items()},

@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增 `docs/queston.md`，归档 2026-07-24 “候选很多但 Web 无荐股、TopK 超时和多项降级”
+  的整链路证据、Review 结论、实施边界与验收计划；推荐快照、状态 API、推荐 API 和 SSE
+  patch 新增确定性的选择诊断，页面可区分无可评分候选、低于观察门槛、风险/执行拦截及
+  最终集中度限制，并在分数不足时展示最高最终分和观察门槛。
 - 新增严重公司风险事实注册表：只从带稳定公告 ID 的发行人/交易所/监管/司法结构化披露
   映射大股东减持、财务造假、正式立案、重大违法、资金占用、违规担保和强制退市程序；
   研究缓存按事实身份持久化合并，并在状态和推荐快照元数据中暴露覆盖数、事实数及版本。
@@ -15,6 +19,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- DeepSeek 每日物理 HTTP 硬上限由 188 调整为 168：today/tomorrow/d25/long/shared/
+  emergency 硬桶固定为 68/45/35/0/15/5，阶段目标合计 146，失败、超时、schema 修复和
+  重试仍计数。评分后每策略每次投影只复核最多 24 支可靠候选，并以同一集合判断 hybrid
+  完整性；v17/v18 冻结输入继续按旧范围回放，未复核候选保留本地评分。
+- tomorrow 尾盘分钟线只改变 I/O 调度顺序：在保持候选集合、评分和返回顺序不变的前提下，
+  按主板、创业板、科创板稳定轮转，避免单一板块在 3 秒执行窗口内占满请求。
 - 用户要求“先判断分数，最后再处理行业”，并质疑行业参数造成无荐股。确认活动评分原先
   同时使用同行收益差、领先组、行业趋势、长期行业政策和 DeepSeek 行业维度，且竞争组上限
   会覆盖全局行业上限。现在 today/tomorrow/d25/long 的活动候选分、本地分、DeepSeek 分、
@@ -40,7 +50,7 @@ All notable changes to this project are documented here.
   Web 不读取归档。
 
 - 流水线事件 CAS 与实时来源健康全部改为有界进程内状态；必要 SQLite 写入只剩冻结、
-  检查点、结果结算和 DeepSeek 188 次原子预算，并由组合根注入的同一写锁协调。
+  检查点、结果结算和 DeepSeek 168 次原子预算，并由组合根注入的同一写锁协调。
 
 - `close_fallback` 的短线 TopK 现在增加只限收盘补算的空池恢复：today/tomorrow/d25 仍先按
   正常动作阈值和 5 分观察窗口选择；若本地候选非空但正式/观察池都为空，则按原集中度规则
@@ -90,12 +100,23 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复历史预热失败批次被回调立即递归重提、数分钟制造百万级计划/失败计数并挤占实时行情
+  线程的问题。失败代码现在按 60/120/240/480/900 秒逐股退避，未尝试代码继续推进，成功
+  或移出 universe 后清理状态；历史 entries 读取移出 warmup 锁，状态额外暴露冷却数、唯一
+  失败代码数和最近重试剩余秒数。
+- 修复 Web 把所有正式空结果统一误报为“未通过下行保护”的问题。空结果现在来自评分后的
+  选择诊断，TopK overlay 超时仍作为独立数据降级展示，不再被描述为无荐股的直接原因；
+  本批未降低分数、可靠度或风险门槛，也未强制凑股。
+- 修复运行态已有完整选择诊断、但冻结记录经 `PublishedSnapshotIndex` 压缩后把整个
+  `metadata` 清空，导致推荐 API 重启后退回 `diagnostics_unavailable` 的跨层丢失。
+  轻量发布视图现在只白名单保留 `selection_diagnostics`，评分证据和内部元数据仍不向
+  Web 泄露；回归同时覆盖启动预载和运行中发布。
 - 修复本地评分必须等待 DeepSeek 终态才进入 P6 的发布顺序；复核失败、超时或空响应现在
   保留已经接纳的 local 快照，迟到 hybrid 继续受冻结 compare-and-set 保护。
 - 修复行业缺失股票被同行算法归入单一 `unknown` 后执行两两比较的二次复杂度；活动板内
   评分不再构造同行/领先差，5500 行全行业缺失场景保持线性横截面处理。
-- 修复策略语义更新后仍复用 v17 重放版本的问题；活动冻结输入升级为 v18，缺少
-  `projection_stage` 的 v14-v17 历史快照继续沿用旧 snapshot ID、竞争组限制、行业宽度
+- 修复策略语义更新后仍复用旧重放版本的问题；活动冻结输入升级为 v19，缺少
+  `projection_stage` 的 v14-v18 历史快照继续沿用旧 snapshot ID、竞争组限制、行业宽度
   突破条件和元数据结构，避免不可变历史因新策略上线而无法校验。
 
 - 用户指出此前只在 `_fail_event` 外包异常并没有解决数据库错误。重新调查确认运行库本身
@@ -143,10 +164,10 @@ All notable changes to this project are documented here.
   也不提交，Web 三个策略看起来都为空。现在收盘重建改为逐策略降级、逐策略提交，D25
   缺研究字段时不会阻止 today/tomorrow 创建 `close_fallback`。
 
-- 全量门禁暴露 DeepSeek 全局 188 次预算并发测试稳定失败：16 个线程同时对同一
+- 全量门禁暴露 DeepSeek 全局 168 次预算并发测试稳定失败：16 个线程同时对同一
   `DeepSeekBudgetStore` 预留请求时，SQLite 写锁竞争会在 `BEGIN IMMEDIATE` 阶段抛出
-  `database is locked`，导致原子预算用例中断而不是返回 188 个允许和剩余拒绝。现在预算写入口
-  使用实例级写锁串行化本进程写事务，回归确认并发预留结果稳定为 188 次允许，其余为
+  `database is locked`，导致原子预算用例中断而不是返回 168 个允许和剩余拒绝。现在预算写入口
+  使用实例级写锁串行化本进程写事务，回归确认并发预留结果稳定为 168 次允许，其余为
   `daily_hard_limit` 拒绝。
 
 - 用户反馈“15:00 之后运行，使用收盘价还是得不到荐股信息，Web 展示为空”。现场检查确认
@@ -172,6 +193,18 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批 816 项 pytest 全量通过；`make format-check`、`make lint`、`make type-check`、
+  `make test` 和 `make package` 通过。新增回归覆盖 60/120/240/480/900 秒历史退避、
+  未失败代码继续推进、三板 intraday 轮转、24 支复核上限及冲突优先、168 次并发原子
+  预算、long 零调用、v17/v18 冻结回放、冻结发布诊断保留、选择诊断 API/SSE 与前端文案。
+  实机 14:52 至 15:04 观察期间，历史计划/完成/失败由 360/358/2 有界推进到
+  421/414/7，未再自旋；15:00 后 today/tomorrow/d25 分别从 133/220/238 个候选发布
+  2/2/2 项 `close_fallback`，重启后推荐 API 从冻结记录恢复相同数据及完整诊断，
+  `last_error` 为空。仓库外安装最终
+  wheel 后验证 `trader` 从隔离目录导入、`trader-cli --help`、`validate-config` 和 7 项
+  模板/CSS/JavaScript/SVG 资源；真实无头 Firefox 在 1280x720、1440x900、1920x1080
+  均无页面级横向溢出或浏览器错误，24 个 patch 全部应用、无 resync，patch-to-paint
+  P95 为 62 ms（预算 100 ms）。
 - 新增回归覆盖行业字段不改变板内评分、`unknown` 行业限 2、正式/观察池独立限额、
   local 在阻塞复核完成前可见、local/hybrid 身份不同、long 不复核、严重风险永久/90 日/
   三自然年边界、终止标题不生成重复风险周期、严格公告映射、风险覆盖缺失只观察、研究缓存
@@ -252,13 +285,13 @@ All notable changes to this project are documented here.
   `/api/recommendations/today?view=current` 和
   `/api/recommendations/tomorrow?view=current` 返回 `ready`、`phase=close_fallback` 且含
   items；`/api/recommendations/d25?view=current` 因研究字段缺失继续按契约返回 `not_ready`。
-- 通过：`tests/component/test_youhua_deepseek_c4.py::test_c4_global_188_limit_is_atomic_under_concurrent_reservations`、
+- 通过：`tests/component/test_youhua_deepseek_c4.py::test_c4_global_168_limit_is_atomic_under_concurrent_reservations`、
   `tests/component/test_v2_deepseek.py` 和 `tests/component/test_youhua_deepseek_c4.py`。
 - 通过：本批 `make format-check`、`make lint`、`make type-check`、`make test`、`make package`；
   仓库外安装 `dist/trader_research_dashboard-0.2.0-py3-none-any.whl` 后，可导入 `trader`，
   可执行 `trader-cli --help`，并可读取 `index.html`、`dashboard.css`、`dashboard.js` 和 SVG 资源。
 - 通过：架构 AST、`create_app()` 无线程/文件副作用、固定融合向量 `83.40`、DeepSeek 全局
-  188 预算并发、冻结检查点哈希和哈希不一致隔离的关键契约集合。
+  168 预算并发、冻结检查点哈希和哈希不一致隔离的关键契约集合。
 
 - 通过：`tests/unit/application/test_cadence.py::test_close_quotes_budget_allows_slow_close_source_and_local_rebuild`、
   `tests/integration/test_v2_pipeline.py::test_after_close_retry_reuses_complete_cached_close_market`、
@@ -290,6 +323,11 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批终止了已确认的历史失败自旋并提高三板尾盘覆盖公平性，但外部行情/历史/DeepSeek
+  供应商仍可能超时或返回不完整数据；系统会保留本地快照并显式降级。未降低 today、
+  tomorrow、d25 的分数、可靠度、风险或冻结门槛，因此健康数据下最高分仍低于观察门槛时
+  推荐可以合法为 0，页面现在会显示最高分和门槛。history source lane 的线程拓扑未改；
+  若上线观测仍证明不同来源互相阻塞，需以新的压力证据另立任务。
 - 严重风险历史使用发行人法定披露索引的 `total_hits` 校验完整性；供应商截断、schema
   漂移或全量历史未返回时会保守标记覆盖不可用并把对应候选降为观察。公告标题映射刻意
   从严以避免把问询、诉讼或传闻误判成永久黑历史，未被官方标题明确表达的复杂事实仍可能

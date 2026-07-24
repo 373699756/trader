@@ -156,6 +156,7 @@ class SelectionSettings:
     competition_group_limits: Mapping[str, int]
     candidate_min_score: float
     minimum_board_reliability: float
+    review_candidate_limit: int
 
 
 @dataclass(frozen=True)

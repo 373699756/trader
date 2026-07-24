@@ -62,8 +62,8 @@ from trader.infra.settings_strategy_validation import _validate_strategy_setting
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 11:
-        raise ConfigurationError("strategy schema_version must be 11")
+    if _integer(raw, "schema_version", minimum=1) != 12:
+        raise ConfigurationError("strategy schema_version must be 12")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     hard_filters_raw = _mapping(raw, "hard_filters")
@@ -92,7 +92,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         for factor_id, definition in factor_registry_raw.items()
     }
     settings = StrategySettings(
-        schema_version=11,
+        schema_version=12,
         strategy_version=_strategy_contract_version(raw),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),
@@ -122,6 +122,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
             },
             candidate_min_score=_number(selection_raw, "candidate_min_score", minimum=0.0, maximum=100.0),
             minimum_board_reliability=_number(selection_raw, "minimum_board_reliability", minimum=0.0, maximum=1.0),
+            review_candidate_limit=_integer(selection_raw, "review_candidate_limit", minimum=1, maximum=120),
         ),
         candidate_weights=_number_mapping(raw, "candidate_weights"),
         hard_filters=HardFilterSettings(

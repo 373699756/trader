@@ -139,6 +139,44 @@ def test_published_index_replaces_current_draft_without_archive_write() -> None:
     assert index.status()["published"] == 2
 
 
+def test_published_index_preserves_selection_diagnostics_in_delivery_views() -> None:
+    diagnostics = {
+        "scored_candidate_count": 220,
+        "actionable_candidate_count": 2,
+        "score_qualified_count": 0,
+        "selection_floor": 73.0,
+        "maximum_local_score": 72.72,
+        "maximum_final_score": 72.72,
+        "empty_reason": None,
+    }
+    snapshot = replace(
+        _snapshot(Strategy.TOMORROW, "2026-07-22"),
+        metadata={
+            "selection_diagnostics": diagnostics,
+            "internal_only": {"must": "not leak"},
+        },
+    )
+    archive = _Archive(
+        dates_by_strategy={Strategy.TOMORROW: (snapshot.trade_date,)},
+    )
+    archive.load_frozen = lambda strategy, trade_date: (
+        snapshot if strategy is Strategy.TOMORROW and trade_date == snapshot.trade_date else None
+    )
+
+    initialized = PublishedSnapshotIndex(archive)
+    initialized.initialize()
+    published = PublishedSnapshotIndex(_Archive(()))
+    published.publish(snapshot)
+
+    for delivery in (
+        initialized.latest(Strategy.TOMORROW),
+        initialized.load_frozen(Strategy.TOMORROW, snapshot.trade_date),
+        published.latest(Strategy.TOMORROW),
+    ):
+        assert delivery is not None
+        assert delivery.metadata == {"selection_diagnostics": diagnostics}
+
+
 def test_published_index_does_not_replace_current_pin_with_older_frozen_history() -> None:
     archive = _Archive(())
     index = PublishedSnapshotIndex(archive)

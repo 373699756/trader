@@ -46,6 +46,7 @@ RECOMMENDATION_ENVELOPE_KEYS = {
     "frozen",
     "degraded_reasons",
     "filtered_count",
+    "selection_diagnostics",
     "items",
     "error",
 }
@@ -99,6 +100,15 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
     assert payload["current_trade_date"] == "2026-07-16"
     assert payload["historical"] is False
     assert payload["view"] == "official"
+    assert set(payload["selection_diagnostics"]) == {
+        "scored_candidate_count",
+        "actionable_candidate_count",
+        "score_qualified_count",
+        "selection_floor",
+        "maximum_local_score",
+        "maximum_final_score",
+        "empty_reason",
+    }
     etag = response.headers["ETag"]
     assert client.get("/api/recommendations/today", headers={"If-None-Match": etag}).status_code == 304
 

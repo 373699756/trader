@@ -18,6 +18,7 @@ from trader.infra.market_data.service_tushare import ReferenceLoader
 _LOGGER = logging.getLogger(__name__)
 _HISTORY_SOURCE_LANE = "history"
 _PERMANENT_TUSHARE_DEGRADATIONS = frozenset({"missing_token", "insufficient_points", "permission_denied"})
+_RETRY_DELAYS_SECONDS = (60.0, 120.0, 240.0, 480.0, 900.0)
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,9 @@ class HistoryWarmupStatus:
     completed_count: int
     failure_count: int
     inflight_count: int
+    retry_deferred_count: int
+    unique_failure_count: int
+    next_retry_seconds: float | None
     last_source: str
 
 
@@ -47,6 +51,8 @@ class HistoryWarmup:
         self._lock = threading.Lock()
         self._universe: tuple[str, ...] = ()
         self._inflight: set[str] = set()
+        self._retry_attempts: dict[str, int] = {}
+        self._retry_after: dict[str, float] = {}
         self._planned_count = 0
         self._completed_count = 0
         self._failure_count = 0
@@ -62,15 +68,21 @@ class HistoryWarmup:
         if not normalized or lanes is None:
             return
         now = self._monotonic()
+        entries = self._history.entries()
         with self._lock:
             self._universe = normalized
+            active_codes = set(normalized)
+            self._retry_attempts = {
+                code: attempts for code, attempts in self._retry_attempts.items() if code in active_codes
+            }
+            self._retry_after = {code: retry_at for code, retry_at in self._retry_after.items() if code in active_codes}
             if self._inflight:
                 return
-            entries = self._history.entries()
             missing = tuple(
                 code
                 for code in normalized
-                if code not in self._inflight and ((entry := entries.get(code)) is None or entry.expires_at <= now)
+                if self._retry_after.get(code, 0.0) <= now
+                and ((entry := entries.get(code)) is None or entry.expires_at <= now)
             )
         if not missing:
             return
@@ -140,13 +152,23 @@ class HistoryWarmup:
         entries = self._history.entries()
         with self._lock:
             self._inflight.difference_update(codes)
-            covered = sum(
-                (entry := entries.get(code)) is not None and entry.expires_at > now and len(entry.bars) >= 20
+            covered_codes = {
+                code
                 for code in codes
-            )
-            self._completed_count += covered
+                if (entry := entries.get(code)) is not None and entry.expires_at > now and len(entry.bars) >= 20
+            }
+            self._completed_count += len(covered_codes)
+            for code in covered_codes:
+                self._retry_attempts.pop(code, None)
+                self._retry_after.pop(code, None)
             if not superseded:
-                self._failure_count += max(0, len(codes) - covered)
+                failed_codes = tuple(code for code in codes if code not in covered_codes)
+                self._failure_count += len(failed_codes)
+                for code in failed_codes:
+                    attempts = self._retry_attempts.get(code, 0) + 1
+                    self._retry_attempts[code] = attempts
+                    delay = _RETRY_DELAYS_SECONDS[min(attempts - 1, len(_RETRY_DELAYS_SECONDS) - 1)]
+                    self._retry_after[code] = now + delay
             universe = self._universe
         self._history.update_coverage(universe)
         lanes = self._runner.source_lanes
@@ -154,12 +176,21 @@ class HistoryWarmup:
             self.schedule_history_warmup(universe, self._runner.wall_clock())
 
     def status(self) -> HistoryWarmupStatus:
+        now = self._monotonic()
         with self._lock:
+            deferred = tuple(
+                retry_at - now
+                for code, retry_at in self._retry_after.items()
+                if code in self._universe and retry_at > now
+            )
             return HistoryWarmupStatus(
                 planned_count=self._planned_count,
                 completed_count=self._completed_count,
                 failure_count=self._failure_count,
                 inflight_count=len(self._inflight),
+                retry_deferred_count=len(deferred),
+                unique_failure_count=len(self._retry_attempts),
+                next_retry_seconds=min(deferred) if deferred else None,
                 last_source=self._last_source,
             )
 

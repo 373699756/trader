@@ -106,13 +106,13 @@ def test_c4_budget_enforces_normal_pro_and_emergency_daily_envelopes(tmp_path: P
     assert summary["by_model_role"] == {"primary": 63, "challenger": 8}
 
 
-def test_c4_global_188_limit_is_atomic_under_concurrent_reservations(tmp_path: Path) -> None:
+def test_c4_global_168_limit_is_atomic_under_concurrent_reservations(tmp_path: Path) -> None:
     budget = DeepSeekBudgetStore(
         tmp_path / "runtime.sqlite3",
-        daily_hard_limit=188,
-        strategy_limits={"c4_global_probe": 188},
+        daily_hard_limit=168,
+        strategy_limits={"c4_global_probe": 168},
         stage_targets={"today_main": 0},
-        stage_limits={"today_main": 188},
+        stage_limits={"today_main": 168},
         challenger_limits={"today": 0, "tomorrow": 0, "d25": 0, "long": 0},
     )
     budget.initialize()
@@ -130,9 +130,9 @@ def test_c4_global_188_limit_is_atomic_under_concurrent_reservations(tmp_path: P
             )
         )
 
-    assert sum(item.allowed for item in reservations) == 188
+    assert sum(item.allowed for item in reservations) == 168
     assert {item.reason for item in reservations if not item.allowed} == {"daily_hard_limit"}
-    assert budget.summary(NOW.date().isoformat())["used"] == 188
+    assert budget.summary(NOW.date().isoformat())["used"] == 168
 
 
 def test_c4_rumors_duplicate_events_and_pro_cannot_relax_local_guards() -> None:
@@ -486,12 +486,12 @@ def _reserve_many(
 def _production_budget(path: Path) -> DeepSeekBudgetStore:
     budget = DeepSeekBudgetStore(
         path,
-        daily_hard_limit=188,
+        daily_hard_limit=168,
         strategy_limits={
-            "today": 70,
+            "today": 68,
             "tomorrow": 45,
             "d25": 35,
-            "long": 18,
+            "long": 0,
             "shared_preheat": 15,
             "emergency": 5,
         },
@@ -504,10 +504,10 @@ def _production_budget(path: Path) -> DeepSeekBudgetStore:
             "emergency": 0,
         },
         stage_limits={
-            "today_main": 70,
+            "today_main": 68,
             "tomorrow_afternoon": 45,
             "d25_afternoon": 35,
-            "long_afternoon": 18,
+            "long_afternoon": 0,
             "shared_preheat": 15,
             "emergency": 5,
         },
@@ -554,12 +554,12 @@ def _reviewer(
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
-        daily_hard_limit=188,
+        daily_hard_limit=168,
         strategy_limits={
-            "today": 70,
+            "today": 68,
             "tomorrow": 45,
             "d25": 35,
-            "long": 18,
+            "long": 0,
             "shared_preheat": 15,
             "emergency": 5,
         },
@@ -572,10 +572,10 @@ def _reviewer(
             "emergency": 0,
         },
         stage_limits={
-            "today_main": 70,
+            "today_main": 68,
             "tomorrow_afternoon": 45,
             "d25_afternoon": 35,
-            "long_afternoon": 18,
+            "long_afternoon": 0,
             "shared_preheat": 15,
             "emergency": 5,
         },

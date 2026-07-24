@@ -123,8 +123,16 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     assert state.latest(Strategy.LONG).frozen is False
 
 
-def test_v17_frozen_board_snapshot_remains_replayable(
+@pytest.mark.parametrize(
+    "legacy_algorithm",
+    (
+        "engine_v17_downside_guard_ttd25_2026_07",
+        "engine_v18_score_first_risk_history_2026_07",
+    ),
+)
+def test_v17_and_v18_frozen_board_snapshots_remain_replayable(
     application_feature_factory,
+    legacy_algorithm: str,
 ) -> None:
     now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
     features = _three_board_features(application_feature_factory, now)
@@ -149,10 +157,10 @@ def test_v17_frozen_board_snapshot_remains_replayable(
     )
     snapshot = engine.finalize_snapshot(prepared, {}, legacy_replay=True)
     assert snapshot.replay_input is not None
-    assert snapshot.replay_input.algorithm_version == "engine_v18_score_first_risk_history_2026_07"
+    assert snapshot.replay_input.algorithm_version == "engine_v19_bounded_review_2026_07"
     legacy_input = replace(
         snapshot.replay_input,
-        algorithm_version="engine_v17_downside_guard_ttd25_2026_07",
+        algorithm_version=legacy_algorithm,
     )
     frozen = replace(snapshot, frozen=True, replay_input=legacy_input)
 

@@ -14,6 +14,7 @@ assert(source.endsWith(suffix), "dashboard.js must retain its IIFE boundary");
 source = `${source.slice(0, -suffix.length)}
   window.__dashboardD4 = {
     latencySummary,
+    emptyRecommendationMessage,
     mergePatchItems,
     overlayPatchDecision,
     patchVersionValid,
@@ -32,6 +33,22 @@ vm.runInNewContext(fs.readFileSync(selectionPath, "utf8"), sandbox, { filename: 
 vm.runInNewContext(source, sandbox, { filename: dashboardPath });
 const state = { ...sandbox.window.TraderSelection, ...sandbox.window.__dashboardD4 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+assert.strictEqual(
+  state.emptyRecommendationMessage({
+    selection_diagnostics: {
+      empty_reason: "score_below_observation_floor",
+      maximum_final_score: 64.5,
+      selection_floor: 65,
+    },
+  }),
+  "最高评分 64.50，低于观察门槛 65.00，本轮不荐股",
+);
+assert.strictEqual(
+  state.emptyRecommendationMessage({
+    selection_diagnostics: { empty_reason: "risk_or_execution_blocked" },
+  }),
+  "候选达到评分门槛，但被风险或执行条件拦截",
+);
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.latencySummary([10, 20, 30]))),
   { sample_count: 3, p50_ms: 20, p95_ms: 30, maximum_ms: 30 },

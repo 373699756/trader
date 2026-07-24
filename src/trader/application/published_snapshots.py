@@ -246,9 +246,16 @@ def _delivery_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapsh
         recommendations=recommendations,
         filter_reasons={},
         filter_details=(),
-        metadata={},
+        metadata=_delivery_metadata(snapshot.metadata),
         replay_input=None,
     )
+
+
+def _delivery_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
+    diagnostics = metadata.get("selection_diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        return {}
+    return {"selection_diagnostics": dict(diagnostics)}
 
 
 __all__ = ["PublishedSnapshotIndex"]

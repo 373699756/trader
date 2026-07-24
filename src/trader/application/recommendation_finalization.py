@@ -24,6 +24,7 @@ from trader.application.recommendation_support import (
     _fusion_mode,
     _preselection_replay_feature,
     _review_contexts_for_candidates,
+    _selection_diagnostics,
     _snapshot_id,
 )
 from trader.domain.market.models import (
@@ -127,6 +128,7 @@ class PreparedSnapshot:
     board_batches: tuple[BoardScoreBatch, ...] = ()
     board_scoring_complete: bool = True
     board_degraded_reasons: tuple[str, ...] = ()
+    review_candidate_codes: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "filter_reasons", MappingProxyType(dict(self.filter_reasons)))
@@ -136,11 +138,15 @@ class PreparedSnapshot:
     def review_eligible(self) -> tuple[FeatureSnapshot, ...]:
         if not self.board_scoring_complete:
             return ()
-        return tuple(
+        eligible = tuple(
             feature
             for feature in self.eligible
             if self.strategy is Strategy.LONG or feature.board_data_reliability >= 0.85
         )
+        if self.review_candidate_codes is None:
+            return eligible
+        allowed = frozenset(self.review_candidate_codes)
+        return tuple(feature for feature in eligible if feature.quote.code in allowed)
 
 
 class _FrozenReplayOptions(TypedDict):
@@ -468,6 +474,13 @@ class RecommendationFinalizationMixin:
                     }
                     for skip in selection_skips
                 ],
+                "selection_diagnostics": _selection_diagnostics(
+                    merged,
+                    selected,
+                    minimum_score,
+                    strategy,
+                    phase,
+                ),
                 **(
                     {"close_fallback_observation_floor_relaxed": True} if selection.close_fallback_floor_relaxed else {}
                 ),
@@ -549,6 +562,7 @@ class RecommendationFinalizationMixin:
             candidate_pool_size=replay_input.candidate_pool_size,
             board_batches=batches,
             board_degraded_reasons=degraded,
+            review_candidate_codes=None,
         )
 
     def review_contexts(self, prepared: PreparedSnapshot) -> Mapping[str, ReviewCandidateContext]:
@@ -618,7 +632,13 @@ class RecommendationFinalizationMixin:
             if strategy is Strategy.LONG
             or candidate.features.board_data_reliability >= self._policy.selection.minimum_board_reliability
         )
-        fusion_mode = _fusion_mode(fusion_candidates, reviews, self._policy.selection.thresholds, strategy, phase)
+        fusion_mode = _fusion_mode(
+            fusion_candidates,
+            reviews,
+            self._policy.selection,
+            strategy,
+            phase,
+        )
         merged: list[Recommendation] = []
         for local in local_candidates:
             review = reviews.get(local.features.quote.code)

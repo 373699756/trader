@@ -222,7 +222,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             timeout_seconds=_number(deepseek_raw, "timeout_seconds", minimum=0.1),
             batch_size=_integer(deepseek_raw, "batch_size", minimum=1, maximum=8),
             max_tokens=_integer(deepseek_raw, "max_tokens", minimum=64),
-            daily_hard_limit=_integer(deepseek_raw, "daily_hard_limit", minimum=0, maximum=188),
+            daily_hard_limit=_integer(deepseek_raw, "daily_hard_limit", minimum=0, maximum=168),
             strategy_limits=_integer_mapping(deepseek_raw, "strategy_limits", minimum=0),
             stage_targets=_integer_mapping(deepseek_raw, "stage_targets", minimum=0),
             stage_limits=_integer_mapping(deepseek_raw, "stage_limits", minimum=0),
@@ -336,10 +336,10 @@ def _validate_deepseek_runtime(settings: RuntimeSettings) -> None:
     if set(settings.deepseek.strategy_limits) != required_buckets:
         raise ConfigurationError("DeepSeek strategy limits must define all six budget buckets")
     expected_strategy_limits = {
-        "today": 70,
+        "today": 68,
         "tomorrow": 45,
         "d25": 35,
-        "long": 18,
+        "long": 0,
         "shared_preheat": 15,
         "emergency": 5,
     }
@@ -357,25 +357,25 @@ def _validate_deepseek_runtime(settings: RuntimeSettings) -> None:
     expected_stage_targets = {
         "shared_preheat": 15,
         "today_observe": 14,
-        "today_main": 42,
+        "today_main": 40,
         "today_late": 12,
         "tomorrow_afternoon": 21,
         "tomorrow_final": 14,
         "d25_afternoon": 19,
         "d25_final": 11,
-        "long_afternoon": 10,
+        "long_afternoon": 0,
         "emergency": 0,
     }
     expected_stage_limits = {
         "shared_preheat": 15,
         "today_observe": 15,
-        "today_main": 42,
+        "today_main": 40,
         "today_late": 13,
         "tomorrow_afternoon": 25,
         "tomorrow_final": 20,
         "d25_afternoon": 22,
         "d25_final": 13,
-        "long_afternoon": 18,
+        "long_afternoon": 0,
         "emergency": 5,
     }
     if dict(settings.deepseek.stage_targets) != expected_stage_targets:

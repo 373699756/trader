@@ -136,6 +136,7 @@ def _replay_policy_to_dict(policy: FrozenReplayPolicy) -> dict[str, object]:
             "competition_group_limits": dict(policy.competition_group_limits),
             "candidate_min_score": policy.candidate_min_score,
             "minimum_board_reliability": policy.minimum_board_reliability,
+            "review_candidate_limit": policy.review_candidate_limit,
         },
         "board_policy_version": policy.board_policy_version,
         "board_candidate_weights": {
@@ -230,6 +231,7 @@ def _replay_policy_from_dict(raw: Mapping[str, object]) -> FrozenReplayPolicy:
         competition_group_limits={str(name): int(value) for name, value in competition_raw.items()},
         candidate_min_score=_optional_number(selection.get("candidate_min_score")) or 0.0,
         minimum_board_reliability=_optional_number(selection.get("minimum_board_reliability")) or 0.0,
+        review_candidate_limit=int(_optional_number(selection.get("review_candidate_limit")) or 0),
         board_policy_version=str(raw.get("board_policy_version") or ""),
         board_candidate_weights=_triple_number_mapping(board_candidate_raw),
         board_local_strategy_weights=_triple_number_mapping(board_local_raw),

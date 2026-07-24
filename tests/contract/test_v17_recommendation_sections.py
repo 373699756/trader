@@ -15,7 +15,9 @@ def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
     assert 'id="tableTitle"' not in template
     assert 'id="watchTable"' not in template
     assert "观察列表" not in template
-    assert "当前无通过下行保护的正式推荐" in dashboard
+    assert "最高评分" in dashboard
+    assert "低于观察门槛" in dashboard
+    assert "当前没有达到正式推荐条件的股票" in dashboard
     assert "长期策略当前尚无可用数据" in dashboard
     assert "当前暂无可用荐股数据" in dashboard
     assert "当前策略尚未发布快照" not in dashboard

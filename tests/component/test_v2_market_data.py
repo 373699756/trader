@@ -26,6 +26,7 @@ from trader.application.source_lanes import (
 )
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import (
+    Board,
     Evidence,
     MarketQuote,
 )
@@ -3719,6 +3720,31 @@ def test_market_service_fetches_intraday_minutes_only_for_requested_candidate_mo
     assert service.health()["intraday_tail_latest_source_time"] == AFTERNOON.isoformat()
     assert service.health()["intraday_tail_sources"] == ("eastmoney_intraday",)
     assert service.health()["intraday_tail_data_versions"] == ("intraday-v1",)
+
+
+def test_market_service_schedules_intraday_io_round_robin_across_boards() -> None:
+    intraday = StaticIntradayClient(_tail_minute_bars())
+    quotes = (
+        replace(_quote(code="600001"), board=Board.MAIN),
+        replace(_quote(code="600002"), board=Board.MAIN),
+        replace(_quote(code="300001"), board=Board.CHINEXT),
+        replace(_quote(code="688001"), board=Board.STAR),
+    )
+    service = _service(
+        StaticGateway(quotes),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        intraday_client=intraday,
+        intraday_workers=1,
+    )
+
+    service.fetch_candidate_features(
+        ("600001", "600002", "300001", "688001"),
+        AFTERNOON,
+        include_intraday_tail=True,
+    )
+
+    assert intraday.calls == ["600001", "300001", "688001", "600002"]
 
 
 def test_intraday_cache_has_a_hard_entry_limit() -> None:

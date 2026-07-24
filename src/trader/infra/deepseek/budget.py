@@ -146,8 +146,8 @@ class DeepSeekBudgetStore:
         stage_limits = options["stage_limits"]
         challenger_limits = options.get("challenger_limits")
         write_lock = options.get("write_lock")
-        if not 0 <= daily_hard_limit <= 188:
-            raise ValueError("daily hard limit must be between 0 and 188")
+        if not 0 <= daily_hard_limit <= 168:
+            raise ValueError("daily hard limit must be between 0 and 168")
         if sum(strategy_limits.values()) != daily_hard_limit:
             raise ValueError("strategy limits must sum to daily hard limit")
         if set(stage_targets) != set(stage_limits):

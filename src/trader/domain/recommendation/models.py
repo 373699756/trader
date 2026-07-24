@@ -204,6 +204,7 @@ class FrozenReplayPolicy:
     competition_group_limits: Mapping[str, int] = field(default_factory=dict)
     candidate_min_score: float = 0.0
     minimum_board_reliability: float = 0.0
+    review_candidate_limit: int = 0
     board_policy_version: str = ""
     board_candidate_weights: Mapping[str, Mapping[str, Mapping[str, float]]] = field(default_factory=dict)
     board_local_strategy_weights: Mapping[str, Mapping[str, Mapping[str, float]]] = field(default_factory=dict)

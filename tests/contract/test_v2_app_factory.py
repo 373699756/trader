@@ -47,7 +47,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "/static/dashboard.css?v=9" in page
     assert "/static/render.js?v=8" in page
     assert "/static/selection.js?v=2" in page
-    assert "/static/dashboard.js?v=19" in page
+    assert "/static/dashboard.js?v=20" in page
     assert 'id="currentViewStatus"' not in page
     assert 'class="current-view-status"' not in page
     assert 'id="strategyDescription"' in page

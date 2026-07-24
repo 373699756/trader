@@ -158,6 +158,7 @@ class RuntimeState:
                         "strategy_version": snapshot.strategy_version,
                         "config_version": snapshot.config_version,
                         "candidate_count": _metadata_integer(snapshot.metadata, "candidate_count"),
+                        "selection_diagnostics": snapshot.metadata.get("selection_diagnostics", {}),
                         "filtered_count": snapshot.filtered_count,
                         "filter_reasons": dict(snapshot.filter_reasons),
                         "score_latency_ms": self._strategy_latency_ms.get(strategy),

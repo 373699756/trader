@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Any, cast
 
+from trader.application.policy import RecommendationPolicy
 from trader.application.recommendation_support import (
     _business_projection,
     _RecordedReviewPort,
@@ -23,13 +24,15 @@ LEGACY_REPLAY_ALGORITHM_VERSION = "engine_v10_section9_hard_filter_2026_07"
 V15_REPLAY_ALGORITHM_VERSION = "engine_v15_parallel_market_data_2026_07"
 V16_REPLAY_ALGORITHM_VERSION = "engine_v16_board_scoring_ttd25_2026_07"
 V17_REPLAY_ALGORITHM_VERSION = "engine_v17_downside_guard_ttd25_2026_07"
-REPLAY_ALGORITHM_VERSION = "engine_v18_score_first_risk_history_2026_07"
+V18_REPLAY_ALGORITHM_VERSION = "engine_v18_score_first_risk_history_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_v19_bounded_review_2026_07"
 _SUPPORTED_REPLAY_ALGORITHMS = frozenset(
     {
         LEGACY_REPLAY_ALGORITHM_VERSION,
         V15_REPLAY_ALGORITHM_VERSION,
         V16_REPLAY_ALGORITHM_VERSION,
         V17_REPLAY_ALGORITHM_VERSION,
+        V18_REPLAY_ALGORITHM_VERSION,
         REPLAY_ALGORITHM_VERSION,
     }
 )
@@ -39,7 +42,7 @@ class RecommendationReplayMixin:
     def replay(self: Any, snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
         replay_input = _validated_replay_input(snapshot)
         replay_engine = cast(Any, type(self))(
-            _restore_policy(replay_input.policy),
+            _replay_policy(replay_input),
             hard_filter_function=(
                 legacy_v14_hard_filter
                 if replay_input.algorithm_version == LEGACY_REPLAY_ALGORITHM_VERSION
@@ -55,6 +58,7 @@ class RecommendationReplayMixin:
         if replay_input.algorithm_version in {
             V16_REPLAY_ALGORITHM_VERSION,
             V17_REPLAY_ALGORITHM_VERSION,
+            V18_REPLAY_ALGORITHM_VERSION,
             REPLAY_ALGORITHM_VERSION,
         }:
             recorded_codes = replay_input.requested_codes
@@ -122,7 +126,7 @@ class RecommendationReplayMixin:
         if replay_input is None:
             raise ValueError("snapshot does not contain replay input")
         engine = cast(Callable[..., Any], cls)(
-            _restore_policy(replay_input.policy),
+            _replay_policy(replay_input),
             hard_filter_function=(
                 legacy_v14_hard_filter
                 if replay_input.algorithm_version == LEGACY_REPLAY_ALGORITHM_VERSION
@@ -140,14 +144,18 @@ class RecommendationReplayMixin:
         if replay_input is None:
             raise ValueError("snapshot does not contain replay input")
         engine = cast(Callable[..., Any], cls)(
-            _restore_policy(replay_input.policy),
+            _replay_policy(replay_input),
             hard_filter_function=(
                 legacy_v14_hard_filter
                 if replay_input.algorithm_version == LEGACY_REPLAY_ALGORITHM_VERSION
                 else hard_filter
             ),
         )
-        if replay_input.algorithm_version in {V17_REPLAY_ALGORITHM_VERSION, REPLAY_ALGORITHM_VERSION}:
+        if replay_input.algorithm_version in {
+            V17_REPLAY_ALGORITHM_VERSION,
+            V18_REPLAY_ALGORITHM_VERSION,
+            REPLAY_ALGORITHM_VERSION,
+        }:
             merged, _mode = engine._merge_reviewed_candidates(
                 snapshot.strategy,
                 tuple(item for batch in replay_input.board_batches for item in batch.recommendations),
@@ -223,6 +231,13 @@ def _validated_replay_input(snapshot: RecommendationSnapshot) -> RecommendationR
     if replay_input.candidate_pool_size < 1:
         raise ValueError("snapshot replay input has an invalid candidate pool size")
     return replay_input
+
+
+def _replay_policy(replay_input: RecommendationReplayInput) -> RecommendationPolicy:
+    policy = _restore_policy(replay_input.policy)
+    if replay_input.algorithm_version == REPLAY_ALGORITHM_VERSION:
+        return policy
+    return replace(policy, selection=replace(policy.selection, review_candidate_limit=0))
 
 
 def _normalize_p6_close_projection(

@@ -233,7 +233,7 @@ def _reviewer(
     path: Path,
     *,
     post: Any,
-    hard_limit: int = 188,
+    hard_limit: int = 168,
     now: Callable[[], datetime] = lambda: NOW,
 ) -> tuple[DeepSeekReviewer, DeepSeekBudgetStore]:
     budget = DeepSeekBudgetStore(
@@ -285,8 +285,8 @@ def _settings(*, hard_limit: int) -> DeepSeekSettings:
 
 
 def _strategy_limits(hard_limit: int) -> dict[str, int]:
-    if hard_limit == 188:
-        return {"today": 70, "tomorrow": 45, "d25": 35, "long": 18, "shared_preheat": 15, "emergency": 5}
+    if hard_limit == 168:
+        return {"today": 68, "tomorrow": 45, "d25": 35, "long": 0, "shared_preheat": 15, "emergency": 5}
     return {"today": hard_limit, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0}
 
 
@@ -295,12 +295,12 @@ def _stage_targets(hard_limit: int) -> dict[str, int]:
 
 
 def _stage_limits(hard_limit: int) -> dict[str, int]:
-    if hard_limit == 188:
+    if hard_limit == 168:
         return {
-            "today_main": 70,
+            "today_main": 68,
             "tomorrow_afternoon": 45,
             "d25_afternoon": 35,
-            "long_afternoon": 18,
+            "long_afternoon": 0,
             "shared_preheat": 15,
             "emergency": 5,
         }

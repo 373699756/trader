@@ -63,6 +63,7 @@ def snapshot_envelope(
         "frozen": snapshot.frozen,
         "degraded_reasons": list(snapshot.degraded_reasons),
         "filtered_count": snapshot.filtered_count,
+        "selection_diagnostics": _selection_diagnostics(snapshot.metadata),
         "items": [
             _recommendation(
                 item,
@@ -100,8 +101,23 @@ def empty_snapshot_envelope(
         "frozen": False,
         "degraded_reasons": ["snapshot_not_ready"],
         "filtered_count": 0,
+        "selection_diagnostics": _selection_diagnostics({}),
         "items": [],
         "error": None,
+    }
+
+
+def _selection_diagnostics(metadata: Mapping[str, object]) -> dict[str, object]:
+    raw = metadata.get("selection_diagnostics")
+    values = raw if isinstance(raw, Mapping) else {}
+    return {
+        "scored_candidate_count": values.get("scored_candidate_count", 0),
+        "actionable_candidate_count": values.get("actionable_candidate_count", 0),
+        "score_qualified_count": values.get("score_qualified_count", 0),
+        "selection_floor": values.get("selection_floor"),
+        "maximum_local_score": values.get("maximum_local_score"),
+        "maximum_final_score": values.get("maximum_final_score"),
+        "empty_reason": values.get("empty_reason", "diagnostics_unavailable"),
     }
 
 
@@ -131,6 +147,7 @@ def error_envelope(
         "frozen": False,
         "degraded_reasons": [],
         "filtered_count": 0,
+        "selection_diagnostics": _selection_diagnostics({}),
         "items": [],
         "error": {
             "code": code,
