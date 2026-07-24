@@ -209,7 +209,7 @@ def test_configured_deepseek_candidate_makes_physical_call_and_status_reports_qu
     budget = DeepSeekBudgetStore(
         runtime_dir / "runtime.sqlite3",
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0},
         stage_limits={"today_main": 2},
     )
@@ -379,12 +379,12 @@ def _deepseek_settings() -> DeepSeekSettings:
         base_url="https://api.deepseek.example/v1",
         model="model",
         challenger_model="deepseek-v4-pro",
-        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0, "long": 0},
+        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0},
         stage_limits={"today_main": 2},
         api_key="secret",

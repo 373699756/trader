@@ -40,7 +40,6 @@ _SOFT_BUCKET_LIMITS = {
     "today": 22,
     "tomorrow": 14,
     "d25": 12,
-    "long": 0,
     "shared_preheat": 10,
     "emergency": 5,
 }
@@ -161,9 +160,9 @@ class DeepSeekBudgetStore:
         self._limits = dict(strategy_limits)
         self._stage_targets = dict(stage_targets)
         self._stage_limits = dict(stage_limits)
-        self._challenger_limits = dict(challenger_limits or {strategy.value: 0 for strategy in Strategy})
-        if set(self._challenger_limits) != {strategy.value for strategy in Strategy}:
-            raise ValueError("challenger limits must define all strategies")
+        self._challenger_limits = dict(challenger_limits or {})
+        if "long" in self._challenger_limits:
+            raise ValueError("challenger limits must not define long")
         if any(value < 0 for value in self._challenger_limits.values()):
             raise ValueError("challenger limits cannot be negative")
         self._daily_target = sum(stage_targets.values())
@@ -365,10 +364,9 @@ class DeepSeekBudgetStore:
         emergency_reason = options.get("emergency_reason", "")
         stage = _stage_key(strategy, options["phase"], bucket)
         checks = (
-            (strategy is Strategy.LONG or bucket == "long", "long_not_allowed"),
+            (strategy.value not in self._limits and bucket in {strategy.value, "emergency"}, "unknown_strategy"),
             (bucket not in self._limits, "unknown_bucket"),
             (model_role not in {"primary", "challenger"}, "invalid_model_role"),
-            (model_role == "challenger" and strategy is Strategy.LONG, "challenger_not_allowed"),
             (stage not in self._stage_limits, "unknown_stage"),
             (bucket == "emergency" and emergency_reason not in _EMERGENCY_REASONS, "invalid_emergency_reason"),
         )
@@ -446,7 +444,7 @@ class DeepSeekBudgetStore:
             "trade_date = ? AND strategy = ? AND model_role = 'challenger'",
             (context.trade_date, context.strategy.value),
         )
-        return "challenger_limit" if challenger_used >= self._challenger_limits[context.strategy.value] else ""
+        return "challenger_limit" if challenger_used >= self._challenger_limits.get(context.strategy.value, 0) else ""
 
     @staticmethod
     def _insert_reservation(

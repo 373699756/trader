@@ -88,6 +88,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._candidate_pool_size = options.candidate_pool_size
         self._now = dependencies.now
         self._long_codes = options.long_codes
+        self._long_items = options.long_items
         self._long_target_prices = options.long_target_prices
         self._long_groups = options.long_groups
         self._outcome_settlement = dependencies.outcome_settlement

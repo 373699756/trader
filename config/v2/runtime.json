@@ -423,8 +423,7 @@
     "challenger_limits": {
       "today": 6,
       "tomorrow": 6,
-      "d25": 5,
-      "long": 0
+      "d25": 5
     },
     "timeout_seconds": 12,
     "batch_size": 8,
@@ -434,7 +433,6 @@
       "today": 68,
       "tomorrow": 45,
       "d25": 35,
-      "long": 0,
       "shared_preheat": 15,
       "emergency": 5
     },
@@ -447,7 +445,6 @@
       "tomorrow_final": 14,
       "d25_afternoon": 19,
       "d25_final": 11,
-      "long_afternoon": 0,
       "emergency": 0
     },
     "stage_limits": {
@@ -459,7 +456,6 @@
       "tomorrow_final": 20,
       "d25_afternoon": 22,
       "d25_final": 13,
-      "long_afternoon": 0,
       "emergency": 5
     }
   },

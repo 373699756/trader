@@ -9,7 +9,7 @@ from types import MappingProxyType
 
 from trader.application.cadence import CadencePolicy
 from trader.application.latency import LatencyWaterfall
-from trader.application.long_groups import LongGroupDefinition
+from trader.application.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.application.ports.clock import TradingCalendarPort
 from trader.application.ports.events import EventAuditPort
 from trader.application.ports.market import MarketDataPorts
@@ -52,6 +52,7 @@ class PipelineOptions:
     market_data_manages_workers: bool = False
     cadence_policy: CadencePolicy | None = None
     long_codes: tuple[str, ...] = ()
+    long_items: tuple[LongWatchItemDefinition, ...] = ()
     long_target_prices: Mapping[str, float | None] = field(default_factory=lambda: MappingProxyType({}))
     long_groups: tuple[LongGroupDefinition, ...] = ()
 
@@ -59,6 +60,7 @@ class PipelineOptions:
         if self.decision_execution_mode not in {"serialized", "versioned_dag"}:
             raise ValueError("decision_execution_mode must be serialized or versioned_dag")
         object.__setattr__(self, "long_codes", tuple(self.long_codes))
+        object.__setattr__(self, "long_items", tuple(self.long_items))
         object.__setattr__(self, "long_target_prices", MappingProxyType(dict(self.long_target_prices)))
         object.__setattr__(self, "long_groups", tuple(self.long_groups))
 

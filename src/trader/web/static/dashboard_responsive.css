@@ -50,8 +50,12 @@
 
   .control-band {
     align-items: stretch;
-    flex-direction: column;
+    grid-template-columns: minmax(0, 1fr);
     padding: 10px 12px;
+  }
+
+  .date-control {
+    grid-column: 1;
   }
 
   .strategy-tabs {
@@ -68,6 +72,11 @@
     align-items: stretch;
     flex-direction: column;
     gap: 7px;
+  }
+
+  .strategy-choice > .long-scope-tabs {
+    flex-basis: auto;
+    width: 100%;
   }
 
   .date-control {

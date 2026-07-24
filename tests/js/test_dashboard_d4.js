@@ -29,7 +29,14 @@ const sandbox = {
   URLSearchParams,
   console,
   document: { addEventListener() {}, createElement() { return {}; } },
-  window: { addEventListener() {} },
+  window: {
+    addEventListener() {},
+    TraderLongWatchlistData: {
+      watchlist_version: "test-watchlist",
+      items: [{ code: "600001", name: "配置名称", industry: "配置行业" }],
+      groups: [{ name: "半导体设备", category: "chokepoint", codes: ["600001"] }],
+    },
+  },
 };
 vm.runInNewContext(fs.readFileSync(renderPath, "utf8"), sandbox, { filename: renderPath });
 vm.runInNewContext(fs.readFileSync(selectionPath, "utf8"), sandbox, { filename: selectionPath });
@@ -40,6 +47,10 @@ const state = {
   ...sandbox.window.TraderSelection,
   ...sandbox.window.__dashboardD4,
   latencySummary: sandbox.window.TraderDashboardUtils.latencySummary,
+  longTable: sandbox.window.TraderRender.longTable,
+  tableColumnCount: sandbox.window.TraderRender.tableColumnCount,
+  tableRows: sandbox.window.TraderRender.tableRows,
+  longGroupDisplayPayload: sandbox.window.TraderLongGroups.displayPayload,
   longGroupNormalized: sandbox.window.TraderLongGroups.normalized,
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
@@ -64,6 +75,40 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.latencySummary([10, 20, 30]))),
   { sample_count: 3, p50_ms: 20, p95_ms: 30, maximum_ms: 30 },
 );
+assert.strictEqual(
+  state.longTable().head,
+  "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
+);
+assert.strictEqual(state.tableColumnCount({ strategy: "long", historical: false }), 7);
+assert.match(
+  state.tableRows([
+    {
+      rank: 1,
+      code: "688012",
+      name: "中微公司",
+      industry: "半导体设备",
+      price: 182.4,
+      pct_change: 1.23,
+      amount: 900000000,
+      turnover_rate: 2.5,
+      market_cap: 120000000000,
+      source: "eastmoney+sina",
+      source_time: "2026-07-24T14:50:00+08:00",
+    },
+  ], { strategy: "long" }),
+  /eastmoney\+sina/,
+);
+assert.strictEqual(sandbox.window.TraderLongGroups.scopeLabel("chokepoint"), "卡脖子行业");
+assert.strictEqual(sandbox.window.TraderLongGroups.scopeLabel("future_growth"), "高成长赛道");
+const liveLongPayload = state.longGroupDisplayPayload({
+  strategy: "long",
+  status: "ready",
+  items: [{ code: "600001", name: "实时名称", industry: "", price: 12.3, market_cap: 5000000000 }],
+  long_groups: [],
+});
+assert.strictEqual(liveLongPayload.items[0].name, "实时名称");
+assert.strictEqual(liveLongPayload.items[0].industry, "配置行业");
+assert.strictEqual(liveLongPayload.items[0].market_cap, 5000000000);
 
 const payload = {
   status: "ready",
@@ -240,13 +285,16 @@ const longPayload = {
   strategy: "long",
   long_groups: [
     { name: "半导体设备", category: "chokepoint", codes: ["600002", "600001"], count: 2 },
-    { name: "低价潜力股", category: "low_price_potential", codes: ["600003", "600001"], count: 2 },
+    { name: "具身智能", category: "future_growth", codes: ["600004", "600002"], count: 2 },
+    { name: "芯片与电子", category: "low_price_potential", codes: ["600003", "600001"], count: 2 },
+    { name: "算力与卫星", category: "low_price_potential", codes: ["600004", "600002"], count: 2 },
   ],
 };
 const longItems = [
   { code: "600001", rank: 11 },
   { code: "600002", rank: 12 },
   { code: "600003", rank: 13 },
+  { code: "600004", rank: 14 },
 ];
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.longGroupNormalized(longPayload, "chokepoint"))),
@@ -257,8 +305,12 @@ assert.deepStrictEqual(
   [{ code: "600002", rank: 1 }, { code: "600001", rank: 2 }],
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.longGroupVisibleRecommendations(longPayload, longItems, "low_price_potential", ""))),
-  [{ code: "600003", rank: 1 }, { code: "600001", rank: 2 }],
+  JSON.parse(JSON.stringify(state.longGroupVisibleRecommendations(longPayload, longItems, "future_growth", "具身智能"))),
+  [{ code: "600004", rank: 1 }, { code: "600002", rank: 2 }],
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.longGroupVisibleRecommendations(longPayload, longItems, "low_price_potential", "算力与卫星"))),
+  [{ code: "600004", rank: 1 }, { code: "600002", rank: 2 }],
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.recommendationSummary(

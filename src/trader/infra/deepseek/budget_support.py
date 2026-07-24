@@ -18,8 +18,6 @@ def _stage_key(strategy: Strategy, phase: str, bucket: str) -> str:
         (Strategy.TOMORROW, "final_review"): "tomorrow_final",
         (Strategy.D25, "afternoon"): "d25_afternoon",
         (Strategy.D25, "final_review"): "d25_final",
-        (Strategy.LONG, "afternoon"): "long_afternoon",
-        (Strategy.LONG, "final_review"): "long_afternoon",
     }.get((strategy, phase), f"{strategy.value}_{phase}")
     return bucket_key or stage_key
 

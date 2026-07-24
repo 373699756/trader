@@ -1,6 +1,6 @@
-@import url("./dashboard_base.css");
-@import url("./dashboard_components.css");
-@import url("./dashboard_responsive.css");
+@import url("./dashboard_base.css?v=4");
+@import url("./dashboard_components.css?v=20");
+@import url("./dashboard_responsive.css?v=4");
 
 [hidden] {
   display: none !important;

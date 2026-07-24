@@ -88,7 +88,6 @@
     deepseek_pending: "模型复核进行中",
     tomorrow_tail_data_incomplete: "尾盘量价数据不完整",
     d25_structured_research_incomplete: "2至5日结构化研究数据不完整",
-    long_research_incomplete: "长期研究数据不完整",
     corporate_risk_history_unavailable: "公司风险历史暂不可核验",
     model_unavailable: "模型服务暂不可用",
     quote_fallback: "行情已使用备用数据",
@@ -162,6 +161,21 @@
     };
   }
 
+  function longTable() {
+    return {
+      columns: [
+        '<col style="width:56px">',
+        '<col style="width:220px">',
+        '<col style="width:110px">',
+        '<col style="width:110px">',
+        '<col style="width:170px">',
+        '<col style="width:130px">',
+        '<col style="width:168px">',
+      ].join(""),
+      head: "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
+    };
+  }
+
   function historyTable() {
     return {
       columns: [
@@ -179,6 +193,11 @@
   function rows(items, historical) {
     if (!Array.isArray(items) || items.length === 0) return "";
     return items.map((item) => row(item, historical)).join("");
+  }
+
+  function longRows(items) {
+    if (!Array.isArray(items) || items.length === 0) return "";
+    return items.map(longRow).join("");
   }
 
   function row(item, historical) {
@@ -207,6 +226,37 @@
       <td><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || "动作状态未知")}</span></td>
       <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
+  }
+
+  function longRow(item) {
+    const change = pct(item.pct_change);
+    return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
+      <td>${number(item.rank, 0)}</td>
+      <td>${stock(item)}</td>
+      <td>${number(item.price, 2)}</td>
+      <td class="${change.className}">${change.text}</td>
+      <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
+      <td>${compact(item.market_cap)}</td>
+      <td>${hasValue(item.source_time) ? formatDateTime(item.source_time) : "-"}<span class="stock-code">${escapeHtml(item.source || "来源未知")}</span></td>
+    </tr>`;
+  }
+
+  function tableDefinition(snapshot) {
+    if (snapshot && snapshot.historical === true) return historyTable();
+    if (snapshot && snapshot.strategy === "long") return longTable();
+    return currentTable();
+  }
+
+  function tableRows(items, snapshot) {
+    if (snapshot && snapshot.historical === true) return rows(items, true);
+    if (snapshot && snapshot.strategy === "long") return longRows(items);
+    return rows(items, false);
+  }
+
+  function tableColumnCount(snapshot) {
+    if (snapshot && snapshot.historical === true) return 6;
+    if (snapshot && snapshot.strategy === "long") return 7;
+    return 9;
   }
 
   function historyRow(item) {
@@ -434,6 +484,7 @@
     formatDateTime,
     formatTime,
     historyTable,
+    longTable,
     fusionModeLabel,
     rememberDiagnostic,
     number,
@@ -442,6 +493,9 @@
     reasonLabels,
     row,
     rows,
+    tableColumnCount,
+    tableDefinition,
+    tableRows,
     statusErrorLabel,
   };
 })();

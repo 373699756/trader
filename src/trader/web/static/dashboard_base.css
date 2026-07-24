@@ -236,7 +236,8 @@ tr:focus-visible {
 
 .control-band {
   min-height: 54px;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -250,6 +251,10 @@ tr:focus-visible {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.strategy-choice > .long-scope-tabs {
+  flex: 0 1 420px;
 }
 
 .strategy-tabs {

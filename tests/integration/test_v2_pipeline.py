@@ -82,9 +82,11 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     pipeline.initialize()
 
     today = pipeline.run_once(clock.now())
-    assert [snapshot.strategy for snapshot in today] == [Strategy.TODAY]
+    assert [snapshot.strategy for snapshot in today] == [Strategy.TODAY, Strategy.LONG]
     assert today[0].fusion_mode.value == "local_degraded"
     assert today[0].metadata["projection_stage"] == "local"
+    assert today[1].phase == "today_main"
+    assert today[1].metadata["projection_stage"] == "local"
     latency = pipeline.status()["dependencies"]["latency_waterfall"]
     assert latency["planned_count"] == 1
     assert latency["completed_count"] == 1

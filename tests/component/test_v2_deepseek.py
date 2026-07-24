@@ -366,7 +366,7 @@ def test_budget_initialize_repair_schema_version_if_missing_or_invalid(tmp_path)
     store = DeepSeekBudgetStore(
         database_path,
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0},
         stage_limits={"today_main": 2},
     )
@@ -385,7 +385,7 @@ def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
     store = DeepSeekBudgetStore(
         database_path,
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0},
         stage_limits={"today_main": 2},
     )
@@ -480,7 +480,7 @@ def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
     store = DeepSeekBudgetStore(
         tmp_path / "deepseek.sqlite3",
         daily_hard_limit=3,
-        strategy_limits={"today": 2, "tomorrow": 1, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"today": 2, "tomorrow": 1, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0, "tomorrow_afternoon": 0},
         stage_limits={"today_main": 2, "tomorrow_afternoon": 1},
     )
@@ -514,7 +514,7 @@ def test_budget_supports_shared_and_explicit_emergency_buckets(tmp_path) -> None
     store = DeepSeekBudgetStore(
         tmp_path / "deepseek.sqlite3",
         daily_hard_limit=3,
-        strategy_limits={"today": 1, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 1, "emergency": 1},
+        strategy_limits={"today": 1, "tomorrow": 0, "d25": 0, "shared_preheat": 1, "emergency": 1},
         stage_targets={"shared_preheat": 0, "today_main": 0, "emergency": 0},
         stage_limits={"shared_preheat": 1, "today_main": 1, "emergency": 1},
     )
@@ -601,15 +601,15 @@ def test_long_review_is_empty_and_does_not_reuse_deepseek_raw_cache(tmp_path) ->
     database_path = tmp_path / "runtime.sqlite3"
     budget = DeepSeekBudgetStore(
         database_path,
-        daily_hard_limit=2,
-        strategy_limits={"today": 0, "tomorrow": 0, "d25": 1, "long": 1, "shared_preheat": 0, "emergency": 0},
-        stage_targets={"d25_afternoon": 0, "long_afternoon": 0},
-        stage_limits={"d25_afternoon": 1, "long_afternoon": 1},
+        daily_hard_limit=1,
+        strategy_limits={"today": 0, "tomorrow": 0, "d25": 1, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"d25_afternoon": 0},
+        stage_limits={"d25_afternoon": 1},
     )
     budget.initialize()
     settings = replace(
         _settings(),
-        strategy_limits={"today": 0, "tomorrow": 0, "d25": 1, "long": 1, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"today": 0, "tomorrow": 0, "d25": 1, "shared_preheat": 0, "emergency": 0},
     )
     reviewer = DeepSeekReviewer(
         settings,
@@ -907,7 +907,7 @@ def test_budget_enforces_stage_limit_independently_from_strategy_limit(tmp_path)
     store = DeepSeekBudgetStore(
         tmp_path / "runtime.sqlite3",
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_observe": 0, "today_main": 0},
         stage_limits={"today_observe": 1, "today_main": 1},
     )
@@ -926,7 +926,7 @@ def test_emergency_requires_exhausted_normal_bucket_and_registered_trigger(tmp_p
     store = DeepSeekBudgetStore(
         tmp_path / "runtime.sqlite3",
         daily_hard_limit=2,
-        strategy_limits={"today": 1, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 1},
+        strategy_limits={"today": 1, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 1},
         stage_targets={"today_main": 0, "emergency": 0},
         stage_limits={"today_main": 1, "emergency": 1},
     )
@@ -1174,7 +1174,7 @@ def _budget(database_path) -> DeepSeekBudgetStore:
     store = DeepSeekBudgetStore(
         database_path,
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0},
         stage_limits={"today_main": 2},
     )
@@ -1188,12 +1188,12 @@ def _settings() -> DeepSeekSettings:
         base_url="https://api.deepseek.example/v1",
         model="model",
         challenger_model="deepseek-v4-pro",
-        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0, "long": 0},
+        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0},
         stage_limits={"today_main": 2},
         api_key="secret",

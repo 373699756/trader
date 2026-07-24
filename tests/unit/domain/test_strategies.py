@@ -7,7 +7,7 @@ from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.strategies import score_strategy
 
 
-@pytest.mark.parametrize("strategy", list(Strategy))
+@pytest.mark.parametrize("strategy", [Strategy.TODAY, Strategy.TOMORROW, Strategy.D25])
 def test_strategy_scores_are_deterministic_and_bounded(feature_factory, strategy) -> None:
     snapshot = feature_factory()
 
@@ -82,18 +82,17 @@ def test_score_strategy_uses_override_component_weights(feature_factory) -> None
             "execution": 0.0,
             "not_overheated": 0.0,
         },
-        Strategy.LONG: {
-            "value": 1.0,
-            "growth": 0.0,
-            "quality": 0.0,
-            "protection": 0.0,
-        },
     }
     overridden = score_strategy(Strategy.TODAY, feature, custom)
     today_default = score_strategy(Strategy.TODAY, feature)
 
     assert overridden.base_score == pytest.approx(today_default.components["sentiment"])
     assert overridden.base_score != pytest.approx(today_default.base_score)
+
+
+def test_long_has_no_local_scoring_strategy(feature_factory) -> None:
+    with pytest.raises(ValueError, match="long does not have a local scoring strategy"):
+        score_strategy(Strategy.LONG, feature_factory())
 
 
 def test_tomorrow_score_matches_all_documented_component_and_subcomponent_weights(feature_factory) -> None:

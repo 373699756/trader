@@ -158,15 +158,14 @@ def _validate_strategy_weights(settings: StrategySettings) -> None:
         "d25": 76.0,
     }:
         raise ConfigurationError("v16 selection thresholds must be 70/76/78/76")
-    required_strategies = {"today", "tomorrow", "d25", "long"}
+    required_strategies = {"today", "tomorrow", "d25"}
     _validate_dimension_weights(settings, required_strategies)
     if set(settings.local_strategy_weights) != required_strategies:
-        raise ConfigurationError("local_strategy_weights must define today, tomorrow, d25 and long")
+        raise ConfigurationError("local_strategy_weights must define today, tomorrow and d25")
     required_local_components: dict[str, set[str]] = {
         "today": {"momentum", "liquidity", "sentiment", "protection"},
         "tomorrow": {"liquidity", "momentum", "trend", "historical_edge", "execution", "tail_structure"},
         "d25": {"momentum", "trend", "liquidity", "execution", "not_overheated"},
-        "long": {"value", "growth", "quality", "protection"},
     }
     for strategy, weights in settings.local_strategy_weights.items():
         _validate_weight_sum(f"local_strategy_weights.{strategy}", weights)
@@ -177,7 +176,7 @@ def _validate_strategy_weights(settings: StrategySettings) -> None:
 
 def _validate_dimension_weights(settings: StrategySettings, required_strategies: set[str]) -> None:
     if set(settings.dimension_weights) != required_strategies:
-        raise ConfigurationError("dimension_weights must define today, tomorrow, d25 and long")
+        raise ConfigurationError("dimension_weights must define today, tomorrow and d25")
     required_dimensions = {
         "value_quality",
         "financial_health",

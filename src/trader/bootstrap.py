@@ -15,7 +15,7 @@ from trader.application.board_scoring_cache import BoardScoringCache
 from trader.application.cadence import CadencePolicy, PipelineTask
 from trader.application.events import InMemoryEventLedger
 from trader.application.latency import LatencyWaterfall
-from trader.application.long_groups import LongGroupDefinition
+from trader.application.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.application.outcome_settlement import OutcomeSettlementService
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
@@ -387,6 +387,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             market_data_manages_workers=True,
             cadence_policy=cadence_policy,
             long_codes=tuple(item.code for item in watchlist.items),
+            long_items=tuple(LongWatchItemDefinition(item.code, item.name, item.industry) for item in watchlist.items),
             long_target_prices={item.code: item.target_price for item in watchlist.items},
             long_groups=tuple(
                 LongGroupDefinition(group.name, group.category, group.codes, group.source) for group in watchlist.groups

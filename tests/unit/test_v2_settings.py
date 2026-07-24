@@ -112,7 +112,6 @@ def test_v2_configuration_contract_is_valid() -> None:
         "today": 68,
         "tomorrow": 45,
         "d25": 35,
-        "long": 0,
         "shared_preheat": 15,
         "emergency": 5,
     }
@@ -120,7 +119,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert sum(runtime.deepseek.stage_targets.values()) == 146
     assert runtime.deepseek.model == "deepseek-v4-flash"
     assert runtime.deepseek.challenger_model == "deepseek-v4-pro"
-    assert runtime.deepseek.challenger_limits == {"today": 6, "tomorrow": 6, "d25": 5, "long": 0}
+    assert runtime.deepseek.challenger_limits == {"today": 6, "tomorrow": 6, "d25": 5}
     assert strategy.hard_filters.blacklist_codes == ()
     assert strategy.hard_filters.structured_risk_thresholds == {
         "major_shareholder_reduction": 0.0,
@@ -155,17 +154,28 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.d25_signal.risk_off_factor == 0.92
     assert strategy.d25_signal.overheat_linear_end_factor == 0.85
     assert strategy.selection.review_candidate_limit == 28
+    assert set(strategy.local_strategy_weights) == {"today", "tomorrow", "d25"}
+    assert set(strategy.dimension_weights) == {"today", "tomorrow", "d25"}
     assert strategy.long_research.financial_max_age_days == 550
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
     assert watchlist.schema_version == 2
-    assert len(watchlist.items) == 133
-    assert len(watchlist.groups) == 30
+    assert len(watchlist.items) == 154
+    assert len(watchlist.groups) == 43
     assert max(len(group.codes) for group in watchlist.groups if group.category == "chokepoint") <= 5
+    future_growth_groups = tuple(group for group in watchlist.groups if group.category == "future_growth")
+    assert len(future_growth_groups) == 9
+    assert max(len(group.codes) for group in future_growth_groups) <= 5
     low_price_groups = tuple(group for group in watchlist.groups if group.category == "low_price_potential")
-    assert len(low_price_groups) == 1
-    assert len(low_price_groups[0].codes) == 26
-    assert low_price_groups[0].name == "低价潜力股"
+    assert tuple(group.name for group in low_price_groups) == (
+        "芯片与电子",
+        "智能制造与软件",
+        "算力与卫星",
+        "材料与资源",
+        "种业与生物育种",
+    )
+    assert sum(len(group.codes) for group in low_price_groups) == 26
+    assert len({code for group in low_price_groups for code in group.codes}) == 26
 
 
 def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -> None:
@@ -183,11 +193,22 @@ def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -
 
 def test_long_watchlist_group_limits_are_enforced(tmp_path) -> None:
     raw = json.loads((PROJECT_ROOT / "config" / "v2" / "long_watchlist.json").read_text(encoding="utf-8"))
-    raw["groups"][-1]["codes"] = [f"{index:06d}" for index in range(27)]
+    raw["groups"][-1]["codes"] = [item["code"] for item in raw["items"][:9]]
     changed_path = tmp_path / "long_watchlist.json"
     changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="cannot contain more than 26 codes"):
+    with pytest.raises(ConfigurationError, match="cannot contain more than 8 codes"):
+        load_long_watchlist(changed_path)
+
+
+def test_long_watchlist_low_price_groups_reject_duplicate_codes(tmp_path) -> None:
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "long_watchlist.json").read_text(encoding="utf-8"))
+    low_price_groups = [group for group in raw["groups"] if group["category"] == "low_price_potential"]
+    low_price_groups[1]["codes"][0] = low_price_groups[0]["codes"][0]
+    changed_path = tmp_path / "long_watchlist.json"
+    changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="cannot contain duplicate codes"):
         load_long_watchlist(changed_path)
 
 

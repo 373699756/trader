@@ -9,6 +9,13 @@ from trader.domain.recommendation.models import Recommendation
 
 
 @dataclass(frozen=True)
+class LongWatchItemDefinition:
+    code: str
+    name: str
+    industry: str
+
+
+@dataclass(frozen=True)
 class LongGroupDefinition:
     name: str
     category: str
@@ -41,4 +48,4 @@ def long_groups_metadata(
     return tuple(metadata)
 
 
-__all__ = ["LongGroupDefinition", "long_groups_metadata"]
+__all__ = ["LongGroupDefinition", "LongWatchItemDefinition", "long_groups_metadata"]

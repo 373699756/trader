@@ -113,7 +113,7 @@ def test_c4_global_168_limit_is_atomic_under_concurrent_reservations(tmp_path: P
         strategy_limits={"c4_global_probe": 168},
         stage_targets={"today_main": 0},
         stage_limits={"today_main": 168},
-        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0, "long": 0},
+        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0},
     )
     budget.initialize()
 
@@ -396,7 +396,7 @@ def test_c4_challenger_global_soft_exhaustion_is_classified_as_budget_exhausted(
     reviewer, budget = _reviewer(
         tmp_path / "challenger.sqlite3",
         post=post,
-        challenger_limits={"today": 6, "tomorrow": 6, "d25": 5, "long": 0},
+        challenger_limits={"today": 6, "tomorrow": 6, "d25": 5},
     )
     assert all(
         item.allowed
@@ -491,7 +491,6 @@ def _production_budget(path: Path) -> DeepSeekBudgetStore:
             "today": 68,
             "tomorrow": 45,
             "d25": 35,
-            "long": 0,
             "shared_preheat": 15,
             "emergency": 5,
         },
@@ -499,7 +498,6 @@ def _production_budget(path: Path) -> DeepSeekBudgetStore:
             "today_main": 0,
             "tomorrow_afternoon": 0,
             "d25_afternoon": 0,
-            "long_afternoon": 0,
             "shared_preheat": 0,
             "emergency": 0,
         },
@@ -507,11 +505,10 @@ def _production_budget(path: Path) -> DeepSeekBudgetStore:
             "today_main": 68,
             "tomorrow_afternoon": 45,
             "d25_afternoon": 35,
-            "long_afternoon": 0,
             "shared_preheat": 15,
             "emergency": 5,
         },
-        challenger_limits={"today": 6, "tomorrow": 6, "d25": 5, "long": 0},
+        challenger_limits={"today": 6, "tomorrow": 6, "d25": 5},
     )
     budget.initialize()
     return budget
@@ -550,7 +547,7 @@ def _reviewer(
         base_url="https://api.deepseek.example/v1",
         model="deepseek-v4-flash",
         challenger_model="deepseek-v4-pro",
-        challenger_limits=challenger_limits or {"today": 0, "tomorrow": 0, "d25": 0, "long": 0},
+        challenger_limits=challenger_limits or {"today": 0, "tomorrow": 0, "d25": 0},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
@@ -559,7 +556,6 @@ def _reviewer(
             "today": 68,
             "tomorrow": 45,
             "d25": 35,
-            "long": 0,
             "shared_preheat": 15,
             "emergency": 5,
         },
@@ -567,7 +563,6 @@ def _reviewer(
             "today_main": 0,
             "tomorrow_afternoon": 0,
             "d25_afternoon": 0,
-            "long_afternoon": 0,
             "shared_preheat": 0,
             "emergency": 0,
         },
@@ -575,7 +570,6 @@ def _reviewer(
             "today_main": 68,
             "tomorrow_afternoon": 45,
             "d25_afternoon": 35,
-            "long_afternoon": 0,
             "shared_preheat": 15,
             "emergency": 5,
         },

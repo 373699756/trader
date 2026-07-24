@@ -61,14 +61,6 @@ _PRESELECTION_VALUE_FIELDS = (
     "trend_score",
     *_STRUCTURED_RISK_FIELDS,
 )
-_LONG_RESEARCH_FIELDS = (
-    "value_score",
-    "growth_score",
-    "quality_score",
-    "industry_policy_score",
-    "risk_protection_score",
-    *_STRUCTURED_RISK_FIELDS,
-)
 
 
 class _PreselectRequiredOptions(TypedDict):
@@ -382,7 +374,7 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
                 deadline=review_deadline,
                 contexts=self.review_contexts(prepared),
             )
-            if review_port is not None and prepared.review_eligible and (strategy is not Strategy.LONG or legacy_replay)
+            if review_port is not None and prepared.review_eligible
             else {}
         )
         return self.finalize_snapshot(
@@ -413,16 +405,25 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
         requested_codes = options.get("requested_codes", ())
         preselect_max_age_seconds = options.get("preselect_max_age_seconds")
         candidate_pool_size = options.get("candidate_pool_size", 0)
-        normalized_eligible, refreshed_filtered_count, refreshed_filter_reasons, refreshed_filter_details = (
-            self._refresh_eligible(
-                features,
-                now=now,
-                max_age_seconds=max_age_seconds,
-                filtered_count=filtered_count,
-                filter_reasons=filter_reasons,
-                filter_details=filter_details,
+        if strategy is Strategy.LONG:
+            normalized_eligible = tuple(
+                replace(feature, quote=replace(feature.quote, board=board_for_snapshot(feature)))
+                for feature in features
             )
-        )
+            refreshed_filtered_count = filtered_count
+            refreshed_filter_reasons = Counter(filter_reasons)
+            refreshed_filter_details = list(filter_details)
+        else:
+            normalized_eligible, refreshed_filtered_count, refreshed_filter_reasons, refreshed_filter_details = (
+                self._refresh_eligible(
+                    features,
+                    now=now,
+                    max_age_seconds=max_age_seconds,
+                    filtered_count=filtered_count,
+                    filter_reasons=filter_reasons,
+                    filter_details=filter_details,
+                )
+            )
         local_candidates, board_batches, board_scoring_complete, board_degraded_reasons, normalized_eligible = (
             self._score_prepared_candidates(
                 strategy,

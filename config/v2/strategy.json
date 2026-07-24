@@ -72,12 +72,6 @@
       "liquidity": 0.20,
       "execution": 0.15,
       "not_overheated": 0.10
-    },
-    "long": {
-      "value": 0.3529411764705882,
-      "growth": 0.2941176470588235,
-      "quality": 0.2352941176470588,
-      "protection": 0.1176470588235294
     }
   },
   "board_candidate_weights": {
@@ -196,13 +190,6 @@
       "market_flow": 0.25,
       "industry_policy": 0,
       "risk_quality": 0.1875
-    },
-    "long": {
-      "value_quality": 0.375,
-      "financial_health": 0.375,
-      "market_flow": 0.125,
-      "industry_policy": 0,
-      "risk_quality": 0.125
     }
   },
   "risk_rules": [

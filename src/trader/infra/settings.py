@@ -196,8 +196,14 @@ def _parse_long_watch_groups(raw: Mapping[str, object], item_codes: set[str]) ->
     groups = tuple(
         _parse_long_watch_group(group, index, item_codes, seen_names) for index, group in enumerate(groups_raw)
     )
-    if sum(1 for group in groups if group.category == "low_price_potential") != 1:
-        raise ConfigurationError("long watchlist must define exactly one low_price_potential group")
+    low_price_groups = tuple(group for group in groups if group.category == "low_price_potential")
+    if len(low_price_groups) < 2:
+        raise ConfigurationError("long watchlist must define multiple low_price_potential groups")
+    low_price_codes = tuple(code for group in low_price_groups for code in group.codes)
+    if len(low_price_codes) > 26:
+        raise ConfigurationError("long watchlist low_price_potential groups cannot contain more than 26 codes total")
+    if len(set(low_price_codes)) != len(low_price_codes):
+        raise ConfigurationError("long watchlist low_price_potential groups cannot contain duplicate codes")
     return groups
 
 
@@ -211,7 +217,7 @@ def _parse_long_watch_group(
         raise ConfigurationError(f"long watchlist group {index} must be an object")
     name = _text(raw, "name")
     category = _text(raw, "category")
-    if category not in {"chokepoint", "low_price_potential"}:
+    if category not in {"chokepoint", "future_growth", "low_price_potential"}:
         raise ConfigurationError(f"long watchlist group {name} category is invalid")
     key = (category, name)
     if key in seen_names:
@@ -234,7 +240,7 @@ def _parse_long_group_codes(
     codes_raw = raw.get("codes")
     if not isinstance(codes_raw, list) or not codes_raw:
         raise ConfigurationError(f"long watchlist group {name} codes must be a non-empty list")
-    maximum = 26 if category == "low_price_potential" else 5
+    maximum = 8 if category == "low_price_potential" else 5
     if len(codes_raw) > maximum:
         raise ConfigurationError(f"long watchlist group {name} cannot contain more than {maximum} codes")
     codes: list[str] = []

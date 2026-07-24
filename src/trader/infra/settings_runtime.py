@@ -339,14 +339,15 @@ def _validate_pipeline_runtime(settings: RuntimeSettings) -> None:
 def _validate_deepseek_runtime(settings: RuntimeSettings) -> None:
     if sum(settings.deepseek.strategy_limits.values()) != settings.deepseek.daily_hard_limit:
         raise ConfigurationError("DeepSeek strategy limits must sum to the daily hard limit")
-    required_buckets = {"today", "tomorrow", "d25", "long", "shared_preheat", "emergency"}
+    required_buckets = {"today", "tomorrow", "d25", "shared_preheat", "emergency"}
     if set(settings.deepseek.strategy_limits) != required_buckets:
-        raise ConfigurationError("DeepSeek strategy limits must define all six budget buckets")
+        raise ConfigurationError(
+            "DeepSeek strategy limits must define today, tomorrow, d25, shared_preheat and emergency"
+        )
     expected_strategy_limits = {
         "today": 68,
         "tomorrow": 45,
         "d25": 35,
-        "long": 0,
         "shared_preheat": 15,
         "emergency": 5,
     }
@@ -358,7 +359,7 @@ def _validate_deepseek_runtime(settings: RuntimeSettings) -> None:
         raise ConfigurationError("DeepSeek primary model must be deepseek-v4-flash")
     if settings.deepseek.challenger_model != "deepseek-v4-pro":
         raise ConfigurationError("DeepSeek challenger model must be deepseek-v4-pro")
-    expected_challenger_limits = {"today": 6, "tomorrow": 6, "d25": 5, "long": 0}
+    expected_challenger_limits = {"today": 6, "tomorrow": 6, "d25": 5}
     if dict(settings.deepseek.challenger_limits) != expected_challenger_limits:
         raise ConfigurationError("DeepSeek challenger limits must match the section 16 allocation")
     expected_stage_targets = {
@@ -370,7 +371,6 @@ def _validate_deepseek_runtime(settings: RuntimeSettings) -> None:
         "tomorrow_final": 14,
         "d25_afternoon": 19,
         "d25_final": 11,
-        "long_afternoon": 0,
         "emergency": 0,
     }
     expected_stage_limits = {
@@ -382,7 +382,6 @@ def _validate_deepseek_runtime(settings: RuntimeSettings) -> None:
         "tomorrow_final": 20,
         "d25_afternoon": 22,
         "d25_final": 13,
-        "long_afternoon": 0,
         "emergency": 5,
     }
     if dict(settings.deepseek.stage_targets) != expected_stage_targets:

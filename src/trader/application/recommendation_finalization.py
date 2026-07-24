@@ -86,22 +86,6 @@ _LEGACY_STRUCTURED_RISK_FIELDS = (
     "shareholder_reduction_level",
     "unlock_risk",
 )
-_LONG_RESEARCH_FIELDS = (
-    "value_score",
-    "growth_score",
-    "quality_score",
-    "industry_policy_score",
-    "risk_protection_score",
-    *_STRUCTURED_RISK_FIELDS,
-)
-_LEGACY_LONG_RESEARCH_FIELDS = (
-    "value_score",
-    "growth_score",
-    "quality_score",
-    "industry_policy_score",
-    "risk_protection_score",
-    *_LEGACY_STRUCTURED_RISK_FIELDS,
-)
 _CLOSE_FALLBACK_OBSERVE_TOP_K = 8
 _CLOSE_FALLBACK_OBSERVATION_FLOOR_REASON = "close_fallback_observation_floor_relaxed"
 
@@ -139,13 +123,9 @@ class PreparedSnapshot:
 
     @property
     def review_eligible(self) -> tuple[FeatureSnapshot, ...]:
-        if not self.board_scoring_complete:
+        if not self.board_scoring_complete or self.strategy is Strategy.LONG:
             return ()
-        eligible = tuple(
-            feature
-            for feature in self.eligible
-            if self.strategy is Strategy.LONG or feature.board_data_reliability >= 0.85
-        )
+        eligible = tuple(feature for feature in self.eligible if feature.board_data_reliability >= 0.85)
         if self.review_candidate_codes is None:
             return eligible
         allowed = frozenset(self.review_candidate_codes)
@@ -337,7 +317,7 @@ class RecommendationFinalizationMixin:
         now = prepared.now
         phase = prepared.phase
         selection_skips: tuple[SelectionSkip, ...]
-        if strategy is Strategy.LONG and not legacy_replay:
+        if strategy is Strategy.LONG:
             merged = tuple(prepared.local_candidates)
             fusion_mode = FusionMode.LOCAL_DEGRADED
             minimum_score = None
@@ -407,22 +387,14 @@ class RecommendationFinalizationMixin:
                 degraded_reasons.append("tomorrow_tail_data_incomplete")
         research_covered_count = 0
         research_fields: tuple[str, ...] = ()
-        if strategy is Strategy.D25 or (strategy is Strategy.LONG and legacy_replay):
+        if strategy is Strategy.D25:
             structured_fields = _LEGACY_STRUCTURED_RISK_FIELDS if legacy_replay else _STRUCTURED_RISK_FIELDS
-            research_fields = (
-                _LEGACY_LONG_RESEARCH_FIELDS
-                if strategy is Strategy.LONG and legacy_replay
-                else _LONG_RESEARCH_FIELDS
-                if strategy is Strategy.LONG
-                else structured_fields
-            )
+            research_fields = structured_fields
             research_covered_count = sum(
                 all(feature.optional_value(field) is not None for field in research_fields) for feature in eligible
             )
             if research_covered_count != len(eligible):
-                degraded_reasons.append(
-                    "long_research_incomplete" if strategy is Strategy.LONG else "d25_structured_research_incomplete"
-                )
+                degraded_reasons.append("d25_structured_research_incomplete")
         corporate_risk_covered_count = sum(
             feature.value("corporate_risk_history_unavailable", 1.0) == 0.0 for feature in eligible
         )
@@ -502,7 +474,7 @@ class RecommendationFinalizationMixin:
                 ),
                 **(
                     {"long_groups": long_groups_metadata(prepared.long_groups, selected)}
-                    if strategy is Strategy.LONG and not legacy_replay
+                    if strategy is Strategy.LONG
                     else {}
                 ),
                 **(
@@ -654,8 +626,7 @@ class RecommendationFinalizationMixin:
         fusion_candidates = tuple(
             candidate
             for candidate in local_candidates
-            if strategy is Strategy.LONG
-            or candidate.features.board_data_reliability >= self._policy.selection.minimum_board_reliability
+            if candidate.features.board_data_reliability >= self._policy.selection.minimum_board_reliability
         )
         fusion_mode = _fusion_mode(
             fusion_candidates,

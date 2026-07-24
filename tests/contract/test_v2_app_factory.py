@@ -45,12 +45,13 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "A股策略看板" in page
     assert "股票详情" in page
     assert "策略验证" not in page
-    assert "/static/dashboard.css?v=10" in page
-    assert "/static/render.js?v=9" in page
+    assert "/static/dashboard.css?v=20" in page
+    assert "/static/render.js?v=12" in page
     assert "/static/selection.js?v=3" in page
-    assert "/static/long_groups.js?v=1" in page
+    assert "/static/long_watchlist_data.js?v=2" in page
+    assert "/static/long_groups.js?v=5" in page
     assert "/static/dashboard_utils.js?v=1" in page
-    assert "/static/dashboard.js?v=22" in page
+    assert "/static/dashboard.js?v=25" in page
     assert 'id="currentViewStatus"' not in page
     assert 'class="current-view-status"' not in page
     assert 'id="strategyDescription"' in page
@@ -68,6 +69,8 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'class="runtime-error runtime-message"' in page
     assert 'class="runtime-messages"' in page
     assert 'id="noticeText"' in page
+    assert 'id="recommendationLayout"' in page
+    assert 'id="longGroupBar"' in page
     assert page.index('class="runtime-messages"') < page.index('class="control-band"')
     assert page.index('class="summary-band"') < page.index('class="control-band"') < page.index('class="table-region"')
     assert 'id="tableTitle"' not in page
@@ -77,6 +80,10 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "resolveStrategyDate" in dashboard
     assert "renderMissingHistoricalDate" in dashboard
     assert "selectedDateAvailability" in dashboard
+    assert 'new URLSearchParams(strategy === "long" ? {} : { top_n: "18" })' in dashboard
+    assert "setLongLayout" in dashboard
+    assert 'payload.strategy === "long" && payload.status === "ready" && !historical' in dashboard
+    assert "tableDefinition(payload)" in dashboard
     assert "displayableCachedPayload" in dashboard
     assert "cacheIdentityValid" in dashboard
     assert "上一交易日快照" not in dashboard
@@ -115,12 +122,15 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "最高评分" in page
     assert "模型复核" in page
     assert "数据状态" in page
+    assert 'id="longPanelTitle">卡脖子行业<' in page
+    assert 'id="longStockHeader"' in page
+    assert ">股票信息<" in page
     stylesheet_response = client.get("/static/dashboard.css")
     stylesheet = stylesheet_response.get_data(as_text=True)
     assert stylesheet_response.status_code == 200
-    assert '@import url("./dashboard_base.css");' in stylesheet
-    assert '@import url("./dashboard_components.css");' in stylesheet
-    assert '@import url("./dashboard_responsive.css");' in stylesheet
+    assert '@import url("./dashboard_base.css?v=4");' in stylesheet
+    assert '@import url("./dashboard_components.css?v=20");' in stylesheet
+    assert '@import url("./dashboard_responsive.css?v=4");' in stylesheet
 
     base_response = client.get("/static/dashboard_base.css")
     components_response = client.get("/static/dashboard_components.css")
@@ -138,7 +148,10 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert client.get("/static/selection.js").status_code == 200
     long_groups_response = client.get("/static/long_groups.js")
     assert long_groups_response.status_code == 200
-    assert "window.TraderLongGroups" in long_groups_response.get_data(as_text=True)
+    assert "displayPayload" in long_groups_response.get_data(as_text=True)
+    long_watchlist_response = client.get("/static/long_watchlist_data.js")
+    assert long_watchlist_response.status_code == 200
+    assert "TraderLongWatchlistData" in long_watchlist_response.get_data(as_text=True)
     utils_response = client.get("/static/dashboard_utils.js")
     assert utils_response.status_code == 200
     assert "window.TraderDashboardUtils" in utils_response.get_data(as_text=True)
@@ -163,6 +176,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "review.challenger_actual_model" not in renderer
     assert "review.prompt_cache_hit_tokens" not in renderer
     assert "row," in renderer
+    assert "longTable" in renderer
+    assert "tableColumnCount" in renderer
+    assert "行情来源 / 时间" in renderer
     assert client.get("/static/dashboard.js").status_code == 200
 
 

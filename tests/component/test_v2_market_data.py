@@ -274,6 +274,7 @@ def test_tencent_normalizes_targeted_quote() -> None:
     fields[35] = "0/0/300000000"
     fields[38] = "3.0"
     fields[43] = "4.0"
+    fields[45] = "120.5"
     fields[49] = "2.0"
     body = f'v_sh600001="{"~".join(fields)}";'.encode("gb18030")
     session = FakeSession([body])
@@ -283,6 +284,7 @@ def test_tencent_normalizes_targeted_quote() -> None:
 
     assert quotes[0].price == 12.0
     assert quotes[0].amount == 300000000.0
+    assert quotes[0].market_cap == 12_050_000_000.0
     assert quotes[0].source_time.isoformat() == "2026-07-16T10:00:00+08:00"
     assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 

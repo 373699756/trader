@@ -130,7 +130,7 @@ def _parse_payload(fields: Mapping[str, object], received_at: datetime, requeste
             turnover_rate=to_float(fields.get("38")),
             amount=amount,
             amplitude=to_float(fields.get("43")),
-            market_cap=None,
+            market_cap=_market_cap(fields.get("45")),
             industry="",
             source="tencent",
             source_time=source_time,
@@ -144,6 +144,11 @@ def _parse_payload(fields: Mapping[str, object], received_at: datetime, requeste
 
 def _symbol(code: str) -> str:
     return ("sh" if code.startswith("6") else "sz") + code
+
+
+def _market_cap(raw: object) -> float | None:
+    value = to_float(raw)
+    return value * 100_000_000.0 if value is not None and value > 0 else None
 
 
 def _timestamp(raw: str, fallback: datetime) -> datetime:

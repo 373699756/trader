@@ -56,7 +56,7 @@ def test_budget_rejects_all_long_reservations(tmp_path, emergency: bool) -> None
         emergency_reason="new_high_risk" if emergency else "",
     )
 
-    assert (result.allowed, result.reason) == (False, "long_not_allowed")
+    assert (result.allowed, result.reason) == (False, "unknown_strategy")
     assert budget.summary(NOW.date().isoformat())["used"] == 0
 
 
@@ -70,7 +70,7 @@ def test_budget_rejects_long_bucket_even_for_non_long_strategy(tmp_path) -> None
         bucket="long",
     )
 
-    assert (result.allowed, result.reason) == (False, "long_not_allowed")
+    assert (result.allowed, result.reason) == (False, "unknown_bucket")
     assert budget.summary(NOW.date().isoformat())["used"] == 0
 
 
@@ -395,17 +395,16 @@ def _settings() -> DeepSeekSettings:
         base_url="https://api.deepseek.example/v1",
         model="deepseek-v4-flash",
         challenger_model="deepseek-v4-pro",
-        challenger_limits={"today": 6, "tomorrow": 6, "d25": 5, "long": 0},
+        challenger_limits={"today": 6, "tomorrow": 6, "d25": 5},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
         daily_hard_limit=168,
-        strategy_limits={"today": 68, "tomorrow": 45, "d25": 35, "long": 0, "shared_preheat": 15, "emergency": 5},
+        strategy_limits={"today": 68, "tomorrow": 45, "d25": 35, "shared_preheat": 15, "emergency": 5},
         stage_targets={
             "today_main": 0,
             "tomorrow_afternoon": 0,
             "d25_afternoon": 0,
-            "long_afternoon": 0,
             "shared_preheat": 0,
             "emergency": 0,
         },
@@ -413,7 +412,6 @@ def _settings() -> DeepSeekSettings:
             "today_main": 68,
             "tomorrow_afternoon": 45,
             "d25_afternoon": 35,
-            "long_afternoon": 0,
             "shared_preheat": 15,
             "emergency": 5,
         },
@@ -425,12 +423,11 @@ def _budget(path, *, hard_limit: int) -> DeepSeekBudgetStore:
     budget = DeepSeekBudgetStore(
         path,
         daily_hard_limit=hard_limit,
-        strategy_limits={"today": 68, "tomorrow": 45, "d25": 35, "long": 0, "shared_preheat": 15, "emergency": 5},
+        strategy_limits={"today": 68, "tomorrow": 45, "d25": 35, "shared_preheat": 15, "emergency": 5},
         stage_targets={
             "today_main": 0,
             "tomorrow_afternoon": 0,
             "d25_afternoon": 0,
-            "long_afternoon": 0,
             "shared_preheat": 0,
             "emergency": 0,
         },
@@ -438,11 +435,10 @@ def _budget(path, *, hard_limit: int) -> DeepSeekBudgetStore:
             "today_main": 68,
             "tomorrow_afternoon": 45,
             "d25_afternoon": 35,
-            "long_afternoon": 0,
             "shared_preheat": 15,
             "emergency": 5,
         },
-        challenger_limits={"today": 6, "tomorrow": 6, "d25": 5, "long": 0},
+        challenger_limits={"today": 6, "tomorrow": 6, "d25": 5},
     )
     budget.initialize()
     return budget

@@ -304,7 +304,7 @@ def _reviewer(
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
         challenger_model="deepseek-v4-pro",
-        challenger_limits={"today": challenger_limit, "tomorrow": 0, "d25": 0, "long": 0},
+        challenger_limits={"today": challenger_limit, "tomorrow": 0, "d25": 0},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
@@ -313,7 +313,6 @@ def _reviewer(
             "today": hard_limit,
             "tomorrow": 0,
             "d25": 0,
-            "long": 0,
             "shared_preheat": 0,
             "emergency": 0,
         },
@@ -343,13 +342,12 @@ def _budget(path, *, hard_limit: int, challenger_limit: int) -> DeepSeekBudgetSt
             "today": hard_limit,
             "tomorrow": 0,
             "d25": 0,
-            "long": 0,
             "shared_preheat": 0,
             "emergency": 0,
         },
         stage_targets={"today_main": 0},
         stage_limits={"today_main": hard_limit},
-        challenger_limits={"today": challenger_limit, "tomorrow": 0, "d25": 0, "long": 0},
+        challenger_limits={"today": challenger_limit, "tomorrow": 0, "d25": 0},
     )
     store.initialize()
     return store

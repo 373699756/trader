@@ -6,12 +6,13 @@
     <meta name="color-scheme" content="dark" />
     <title>A股策略看板</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='10') }}" />
-    <script defer src="{{ url_for('static', filename='render.js', v='9') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='20') }}" />
+    <script defer src="{{ url_for('static', filename='render.js', v='12') }}"></script>
     <script defer src="{{ url_for('static', filename='selection.js', v='3') }}"></script>
-    <script defer src="{{ url_for('static', filename='long_groups.js', v='1') }}"></script>
+    <script defer src="{{ url_for('static', filename='long_watchlist_data.js', v='2') }}"></script>
+    <script defer src="{{ url_for('static', filename='long_groups.js', v='5') }}"></script>
     <script defer src="{{ url_for('static', filename='dashboard_utils.js', v='1') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard.js', v='22') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard.js', v='25') }}"></script>
   </head>
   <body>
     <header class="app-header">
@@ -67,6 +68,11 @@
           <p id="strategyDescription" class="strategy-description" aria-live="polite">
             盘中短线 · 面向 T+1 · 11:20 冻结
           </p>
+          <nav id="longScopeTabs" class="long-scope-tabs" role="tablist" aria-label="长期研究类别" hidden>
+            <button class="long-scope-tab is-active" type="button" role="tab" aria-selected="true" data-scope="chokepoint">卡脖子行业</button>
+            <button class="long-scope-tab" type="button" role="tab" aria-selected="false" data-scope="future_growth">高成长赛道</button>
+            <button class="long-scope-tab" type="button" role="tab" aria-selected="false" data-scope="low_price_potential">低价潜力股</button>
+          </nav>
         </div>
         <label class="date-control">
           <span>推荐日期</span>
@@ -76,24 +82,36 @@
         </label>
       </section>
 
-      <section id="longGroupBar" class="long-group-bar" aria-label="长期研究分组" hidden>
-        <nav id="longScopeTabs" class="long-scope-tabs" role="tablist" aria-label="长期研究类别">
-          <button class="long-scope-tab is-active" type="button" role="tab" aria-selected="true" data-scope="chokepoint">卡脖子行业</button>
-          <button class="long-scope-tab" type="button" role="tab" aria-selected="false" data-scope="low_price_potential">低价潜力股</button>
-        </nav>
-        <nav id="longIndustryTabs" class="long-industry-tabs" role="tablist" aria-label="卡脖子行业"></nav>
-      </section>
+      <section id="recommendationLayout" class="recommendation-layout" aria-label="推荐列表">
+        <aside id="longGroupBar" class="long-group-bar" aria-label="长期研究分组" hidden>
+          <header class="long-panel-heading">
+            <div>
+              <span>长期研究分组</span>
+              <h2 id="longPanelTitle">卡脖子行业</h2>
+            </div>
+            <b id="longPanelMeta">-</b>
+          </header>
+          <nav id="longIndustryTabs" class="long-industry-tabs" role="tablist" aria-label="长期行业赛道"></nav>
+        </aside>
 
-      <section class="table-region" aria-label="正式推荐列表">
-        <div class="table-scroll">
-          <table id="recommendationTable">
-            <colgroup id="tableColumns"></colgroup>
-            <thead id="tableHead"></thead>
-            <tbody id="tableBody">
-              <tr><td class="table-state" colspan="9">加载中</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <section class="table-region" aria-label="股票信息">
+          <header id="longStockHeader" class="long-stock-header" hidden>
+            <div>
+              <span>长期固定观察池</span>
+              <h2>股票信息</h2>
+            </div>
+            <b id="longStockContext">请选择左侧行业</b>
+          </header>
+          <div class="table-scroll">
+            <table id="recommendationTable">
+              <colgroup id="tableColumns"></colgroup>
+              <thead id="tableHead"></thead>
+              <tbody id="tableBody">
+                <tr><td class="table-state" colspan="9">加载中</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </section>
 
     </main>

@@ -242,7 +242,7 @@ def _reviewer(
         strategy_limits=_strategy_limits(hard_limit),
         stage_targets=_stage_targets(hard_limit),
         stage_limits=_stage_limits(hard_limit),
-        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0, "long": 0},
+        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0},
     )
     budget.initialize()
     weights = {
@@ -272,7 +272,7 @@ def _settings(*, hard_limit: int) -> DeepSeekSettings:
         base_url="https://api.deepseek.example/v1",
         model="deepseek-v4-flash",
         challenger_model="deepseek-v4-pro",
-        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0, "long": 0},
+        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
@@ -286,8 +286,8 @@ def _settings(*, hard_limit: int) -> DeepSeekSettings:
 
 def _strategy_limits(hard_limit: int) -> dict[str, int]:
     if hard_limit == 168:
-        return {"today": 68, "tomorrow": 45, "d25": 35, "long": 0, "shared_preheat": 15, "emergency": 5}
-    return {"today": hard_limit, "tomorrow": 0, "d25": 0, "long": 0, "shared_preheat": 0, "emergency": 0}
+        return {"today": 68, "tomorrow": 45, "d25": 35, "shared_preheat": 15, "emergency": 5}
+    return {"today": hard_limit, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0}
 
 
 def _stage_targets(hard_limit: int) -> dict[str, int]:
@@ -300,7 +300,6 @@ def _stage_limits(hard_limit: int) -> dict[str, int]:
             "today_main": 68,
             "tomorrow_afternoon": 45,
             "d25_afternoon": 35,
-            "long_afternoon": 0,
             "shared_preheat": 15,
             "emergency": 5,
         }
@@ -308,7 +307,6 @@ def _stage_limits(hard_limit: int) -> dict[str, int]:
         "today_main": hard_limit,
         "tomorrow_afternoon": 0,
         "d25_afternoon": 0,
-        "long_afternoon": 0,
         "shared_preheat": 0,
         "emergency": 0,
     }

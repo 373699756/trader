@@ -91,7 +91,7 @@ class ReviewerRequestExecutor:
         emergency_reason = options["emergency_reason"]
         batch_id = options["batch_id"]
         call_limit = self._settings.challenger_limits.get(strategy.value, 0)
-        if call_limit <= 0 or strategy is Strategy.LONG or planned_bucket == "shared_preheat":
+        if call_limit <= 0 or planned_bucket == "shared_preheat":
             return 0
         self._restore_cached_challenger(strategy, candidates, results, phase=phase)
         selected = _select_challenger_candidates(candidates, results, contexts)

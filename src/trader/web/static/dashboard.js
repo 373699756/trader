@@ -41,7 +41,6 @@
     browserErrors: [],
     runtimeDiagnostics: [],
   };
-
   window.TraderDashboardDiagnostics = Object.freeze({
     snapshot: () => ({
       ...diagnostics,
@@ -55,17 +54,15 @@
   window.addEventListener("unhandledrejection", (event) => recordBrowserError("unhandledrejection", event.reason));
   const els = {};
   document.addEventListener("DOMContentLoaded", init);
-
   function init() {
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
       "scoreTime", "budgetStatus", "headerFreeze", "lastError",
       "refreshButton", "dateSelect", "strategyDescription", "recommendationCount", "executableCount", "filteredCount", "dataSource",
       "topScore", "modelReview", "dataQuality", "notice", "noticeText", "recommendationTable", "tableColumns", "tableHead", "tableBody",
-      "longGroupBar", "longScopeTabs", "longIndustryTabs",
+      "recommendationLayout", "longGroupBar", "longScopeTabs", "longPanelTitle", "longPanelMeta", "longIndustryTabs", "longStockHeader", "longStockContext",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
     ]) els[id] = document.getElementById(id);
-
     document.querySelectorAll(".strategy-tab").forEach((button) => {
       button.addEventListener("click", () => selectStrategy(button.dataset.strategy));
     });
@@ -126,6 +123,7 @@
     closeDrawer();
     els.dateSelect.disabled = true;
     els.strategyDescription.textContent = selection.descriptions[nextStrategy];
+    setLongControls(nextStrategy === "long");
     document.querySelectorAll(".strategy-tab").forEach((button) => {
       const active = button.dataset.strategy === state.strategy;
       button.classList.toggle("is-active", active);
@@ -230,7 +228,7 @@
     const pending = state.inflight.get(key);
     if (pending) return pending;
     const request = (async () => {
-      const query = new URLSearchParams({ top_n: "18" });
+      const query = new URLSearchParams(strategy === "long" ? {} : { top_n: "18" });
       if (selectedDate) query.set("date", selectedDate);
       else query.set("view", view);
       const headers = {};
@@ -306,9 +304,11 @@
   }
 
   function renderPayload(payload) {
+    payload = longGroups.displayPayload(payload);
     state.projectionVersion = projectionVersion(payload);
-    const items = Array.isArray(payload.items) ? payload.items : [];
-    const historical = payload.historical === true;
+    const items = Array.isArray(payload.items) ? payload.items : [], historical = payload.historical === true;
+    setLongControls(payload.strategy === "long" && !historical);
+    setLongLayout(payload.strategy === "long" && payload.status === "ready" && !historical);
     longGroups.renderBar(els, state, payload.status === "ready" ? payload : null);
     const recommendations = longGroups.visibleRecommendations(
       payload,
@@ -326,15 +326,16 @@
     els.modelReview.textContent = summary.modelReview;
     els.dataQuality.textContent = summary.dataQuality;
     els.dataQuality.title = summary.dataQualityTitle;
-    const definition = historical ? window.TraderRender.historyTable() : window.TraderRender.currentTable();
+    const definition = window.TraderRender.tableDefinition(payload);
     els.recommendationTable.classList.toggle("is-history", historical);
+    els.recommendationTable.classList.toggle("is-long-table", payload.strategy === "long" && !historical);
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
     if (payload.status === "not_ready") {
       const message = payload.strategy === "long"
         ? "长期策略当前尚无可用数据"
         : "当前暂无可用荐股数据";
-      renderTableState(message, historical ? 6 : 9);
+      renderTableState(message, window.TraderRender.tableColumnCount(payload));
       setNotice(payload.strategy === "long" ? "长期策略只展示当前研究快照" : "等待策略数据更新", "idle");
       return;
     }
@@ -344,9 +345,9 @@
         : payload.strategy === "long"
           ? longGroups.emptyMessage(payload, state.longScope)
           : emptyRecommendationMessage(payload);
-      renderTableState(emptyMessage, historical ? 6 : 9);
+      renderTableState(emptyMessage, window.TraderRender.tableColumnCount(payload));
     } else {
-      els.tableBody.innerHTML = window.TraderRender.rows(recommendations, historical);
+      els.tableBody.innerHTML = window.TraderRender.tableRows(recommendations, payload);
     }
     if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
     else if (payload.phase === "close_fallback") {
@@ -363,11 +364,11 @@
     stampRowIdentities(payload);
     updateQuoteAge();
   }
-
   function renderTableState(message, columns) {
     els.tableBody.innerHTML = `<tr><td class="table-state" colspan="${columns || 9}">${window.TraderRender.escapeHtml(message)}</td></tr>`;
   }
-
+  function setLongLayout(enabled) { if (els.recommendationLayout) els.recommendationLayout.classList.toggle("is-long", Boolean(enabled)); }
+  function setLongControls(enabled) { if (els.longScopeTabs) els.longScopeTabs.hidden = !enabled; }
   function renderLoadingState() {
     els.recommendationCount.textContent = "-";
     els.executableCount.textContent = "-";
@@ -382,6 +383,9 @@
     els.quoteTime.textContent = "-";
     els.quoteAge.textContent = "-";
     els.recommendationTable.classList.remove("is-history");
+    els.recommendationTable.classList.remove("is-long-table");
+    setLongControls(state.strategy === "long");
+    setLongLayout(false);
     const definition = window.TraderRender.currentTable();
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
@@ -406,6 +410,9 @@
     els.quoteTime.textContent = "-";
     els.quoteAge.textContent = "-";
     els.recommendationTable.classList.add("is-history");
+    els.recommendationTable.classList.remove("is-long-table");
+    setLongControls(false);
+    setLongLayout(false);
     if (els.longGroupBar) els.longGroupBar.hidden = true;
     const definition = window.TraderRender.historyTable();
     els.tableColumns.innerHTML = definition.columns;

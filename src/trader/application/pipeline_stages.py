@@ -23,7 +23,7 @@ from trader.application.pipeline_review_updates import (
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.recommendations import PreparedSnapshot
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
-from trader.domain.market.models import FeatureSnapshot
+from trader.domain.market.models import Board, FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.models import (
     RecommendationSnapshot,
     Strategy,
@@ -514,9 +514,19 @@ def _prepare_strategy_futures(
         try:
             features, data_version = strategy_data_future.result()
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            if strategy is Strategy.LONG:
+                features = _fallback_long_features(pipeline, context.now)
+                data_version = "long-watchlist:fallback"
+                pipeline._state.increment("long_watchlist_fallbacks")
+            else:
+                pipeline._state.increment("strategy_data_failures")
+                pipeline._state.record_error(f"{strategy.value} data degraded: {str(exc)[:400]}")
+                continue
+        if not features and strategy is Strategy.LONG:
+            features = _fallback_long_features(pipeline, context.now)
+            data_version = "long-watchlist:fallback-empty"
             pipeline._state.increment("strategy_data_failures")
-            pipeline._state.record_error(f"{strategy.value} data degraded: {str(exc)[:400]}")
-            continue
+            pipeline._state.increment("long_watchlist_fallbacks")
         if not features:
             continue
         is_long = strategy is Strategy.LONG
@@ -549,6 +559,44 @@ def _prepare_strategy_futures(
             )
         )
     return prepared_futures
+
+
+def _fallback_long_features(
+    pipeline: RecommendationPipeline,
+    now: datetime,
+) -> tuple[FeatureSnapshot, ...]:
+    return tuple(
+        FeatureSnapshot(
+            quote=MarketQuote(
+                code=item.code,
+                name=item.name,
+                price=None,
+                previous_close=None,
+                open_price=None,
+                high=None,
+                low=None,
+                pct_change=None,
+                change_5m=None,
+                speed=None,
+                volume_ratio=None,
+                turnover_rate=None,
+                amount=None,
+                amplitude=None,
+                market_cap=None,
+                industry=item.industry,
+                source="long_watchlist",
+                source_time=now,
+                received_time=now,
+                data_version="long-watchlist:fallback",
+                board=Board.UNSUPPORTED,
+            ),
+            values={},
+            observed_at=now,
+            missing_fields=("price", "pct_change", "amount", "turnover_rate", "market_cap"),
+            missing_reasons={"quote": "long_watchlist_quote_unavailable"},
+        )
+        for item in pipeline._long_items
+    )
 
 
 def _resolve_prepared_snapshots(
@@ -614,8 +662,10 @@ def _record_incomplete_board_score(
 
 
 def strategies_for_phase(phase: MarketPhase) -> tuple[Strategy, ...]:
+    if phase is MarketPhase.WARMUP:
+        return (Strategy.LONG,)
     if phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
-        return (Strategy.TODAY,)
+        return (Strategy.TODAY, Strategy.LONG)
     if phase in {MarketPhase.AFTERNOON, MarketPhase.FINAL_REVIEW, MarketPhase.FINAL_QUOTE}:
         return (Strategy.TOMORROW, Strategy.D25, Strategy.LONG)
     return ()
