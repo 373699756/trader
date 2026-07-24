@@ -11,6 +11,7 @@ from trader.application.events import (
     EventPriority,
     EventSpec,
     EventStatus,
+    InMemoryEventLedger,
     PipelineEvent,
 )
 from trader.application.events import (
@@ -130,7 +131,6 @@ def test_full_queue_replaces_older_quote_version_for_same_subject(utc_now) -> No
         "heap_storage_depth": 0,
         "merged_count": 1,
         "rejected_count": 0,
-        "replayed_count": 0,
         "closed": False,
     }
 
@@ -159,13 +159,11 @@ def test_full_queue_collapses_all_older_versions_for_subject(utc_now) -> None:
     assert event_queue.empty() is True
 
 
-def test_queue_reports_replay_and_rejects_after_close(utc_now) -> None:
+def test_queue_rejects_after_close(utc_now) -> None:
     event_queue = BoundedEventQueue(maximum_size=2, reserved_priority_size=1)
-    event_queue.record_replayed()
     event_queue.close()
 
     assert event_queue.put(_event(utc_now, EventPriority.FREEZE, "market")) is False
-    assert event_queue.status()["replayed_count"] == 1
     assert event_queue.status()["rejected_count"] == 1
 
 
@@ -247,6 +245,28 @@ def test_event_audit_fields_and_idempotency_key_are_complete(utc_now) -> None:
         "payload",
         "error",
     }
+
+
+def test_process_local_event_ledger_reserves_and_compare_and_sets_without_persistence(utc_now) -> None:
+    ledger = InMemoryEventLedger(terminal_capacity=1)
+    first = _event(utc_now, EventPriority.MARKET_QUOTES, "market", data_version="quote-v3")
+    duplicate = replace(first, event_id="duplicate")
+    audit = first.audit_record(status=EventStatus.PENDING)
+
+    assert ledger.reserve_event(audit) is True
+    assert ledger.reserve_event(duplicate.audit_record(status=EventStatus.PENDING)) is False
+    assert ledger.compare_and_set_event(
+        first.event_id,
+        expected_status=EventStatus.PENDING,
+        status=EventStatus.RUNNING,
+        retry_count=0,
+    )
+    assert ledger.compare_and_set_event(
+        first.event_id,
+        expected_status=EventStatus.RUNNING,
+        status=EventStatus.SUCCESS,
+        retry_count=0,
+    )
 
 
 def test_event_payload_is_deeply_owned_and_audit_record_is_json_shaped(utc_now) -> None:

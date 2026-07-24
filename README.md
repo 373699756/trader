@@ -66,6 +66,9 @@ v17 迁移和离线性能验收同样要求绝对路径：
   --source-runtime "/absolute/path/to/.runtime/v2"
 .venv/bin/trader-cli --config "$PWD/config/v2/runtime.json" perf-check \
   --fixture "$PWD/config/v2/performance_fixture" --suite all --output "/tmp/trader-perf.json"
+.venv/bin/trader-cli --config "$PWD/config/v2/runtime.json" recommendation-archive list
+.venv/bin/trader-cli --config "$PWD/config/v2/runtime.json" recommendation-archive verify \
+  --strategy tomorrow --trade-date 2026-07-01
 ```
 
 迁移只读取源目录中已提交且哈希有效的冻结快照，忽略旧盘中草稿；重复执行幂等，不写回
@@ -92,17 +95,17 @@ chmod 600 .token_key
 ./run.sh
 ```
 
-Token、SDK、额度或网络不可用时，Tushare lane 会显式降级到东方财富历史；冷启动还会
-只读复用 `.runtime/market_data.sqlite3` 中每只不少于 20 条的最近有效前复权日线，不会
-写回旧运行库。东方财富/新浪全市场实时行情、腾讯候选定向报价、AKShare 研究数据、
-本地推荐和只读 Web 继续运行。Token 不会写入配置、日志、SQLite、快照或 API。
+Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。历史特征由腾讯前复权日线
+主源和东方财富回退源重新预热，不读取或写入旧历史 SQLite；每只临时计算最多 61 根，
+进程内只保留最近 20 根原始日线及紧凑长周期摘要。东方财富/新浪全市场实时行情、腾讯
+候选定向报价、AKShare 研究数据、本地推荐和只读 Web 继续运行。Token 不会写入配置、
+日志、SQLite、快照或 API。
 
 ## Web API
 
 - `GET /api/status`
 - `GET /api/recommendations/<today|tomorrow|d25|long>?date=YYYY-MM-DD&top_n=10`
 - `GET /api/recommendation-dates?strategy=<today|tomorrow|d25>`
-- `GET /api/events?cursor=0&limit=100`
 - `GET /api/events/stream`
 
 当前快照支持 ETag。SSE 使用单调事件 ID 和 `Last-Event-ID` 恢复；游标过旧时返回 `resync_required`。Web 请求只读取已发布快照，不抓行情、不评分、不调用 DeepSeek。

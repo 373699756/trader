@@ -30,7 +30,6 @@ class RuntimeState:
             "events_submitted": 0,
             "events_completed": 0,
             "events_failed": 0,
-            "events_replayed": 0,
             "snapshots_published": 0,
             "snapshots_frozen": 0,
         }

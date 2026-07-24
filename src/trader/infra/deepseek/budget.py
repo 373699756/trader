@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -69,6 +69,7 @@ class _BudgetStoreRequiredOptions(TypedDict):
 
 class _BudgetStoreOptionalOptions(TypedDict, total=False):
     challenger_limits: Mapping[str, int] | None
+    write_lock: AbstractContextManager[object] | None
 
 
 class BudgetStoreOptions(_BudgetStoreRequiredOptions, _BudgetStoreOptionalOptions):
@@ -144,6 +145,7 @@ class DeepSeekBudgetStore:
         stage_targets = options["stage_targets"]
         stage_limits = options["stage_limits"]
         challenger_limits = options.get("challenger_limits")
+        write_lock = options.get("write_lock")
         if not 0 <= daily_hard_limit <= 188:
             raise ValueError("daily hard limit must be between 0 and 188")
         if sum(strategy_limits.values()) != daily_hard_limit:
@@ -165,7 +167,7 @@ class DeepSeekBudgetStore:
         if any(value < 0 for value in self._challenger_limits.values()):
             raise ValueError("challenger limits cannot be negative")
         self._daily_target = sum(stage_targets.values())
-        self._write_lock = threading.Lock()
+        self._write_lock = write_lock or threading.Lock()
         self._initialized = False
         self._batches = BudgetBatchStore(self._connect)
         self._reporting = BudgetSummaryReader(
@@ -180,16 +182,20 @@ class DeepSeekBudgetStore:
         )
 
     def begin_batch(self, request: BudgetBatchRequest) -> str:
-        return self._batches.begin_batch(request)
+        with self._write_lock:
+            return self._batches.begin_batch(request)
 
     def finish_batch(self, completion: BudgetBatchCompletion) -> None:
-        self._batches.finish_batch(completion)
+        with self._write_lock:
+            self._batches.finish_batch(completion)
 
     def set_batch_cache_hits(self, batch_id: str, count: int) -> None:
-        self._batches.set_batch_cache_hits(batch_id, count)
+        with self._write_lock:
+            self._batches.set_batch_cache_hits(batch_id, count)
 
     def fail_running_batch(self, batch_id: str, *, completed_at: datetime, error: str) -> bool:
-        return self._batches.fail_running_batch(batch_id, completed_at=completed_at, error=error)
+        with self._write_lock:
+            return self._batches.fail_running_batch(batch_id, completed_at=completed_at, error=error)
 
     def summary(self, day: str) -> dict[str, object]:
         return self._reporting.summary(day)
@@ -584,7 +590,6 @@ class DeepSeekBudgetStore:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self._path, timeout=10.0)
         try:
-            connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA busy_timeout=10000")
             with connection:

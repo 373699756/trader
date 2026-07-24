@@ -1,4 +1,4 @@
-"""Read-only recommendation and audit queries for delivery adapters."""
+"""Read-only recommendation queries for delivery adapters."""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.application.events import EventAuditRecord
-from trader.application.ports.events import EventReaderPort
 from trader.application.ports.market import QuoteReaderPort
 from trader.application.ports.snapshots import PublishedSnapshotReadPort, SnapshotReaderPort
 from trader.application.recommendations import RecommendationEngine
@@ -49,14 +47,12 @@ class RecommendationQueries:
     def __init__(
         self,
         snapshots: PublishedSnapshotReadPort,
-        events: EventReaderPort,
         *,
         now: Callable[[], datetime],
         current_quote_reader: QuoteReaderPort | None = None,
         close_fallback_replay: CloseFallbackReplay | None = None,
     ) -> None:
         self._snapshots = snapshots
-        self._events = events
         self._now = now
         self._current_quote_reader = current_quote_reader
         self._close_fallback_replay = close_fallback_replay
@@ -179,9 +175,6 @@ class RecommendationQueries:
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
         return self._snapshots.recommendation_dates(strategy)
-
-    def pipeline_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
-        return self._events.list_events(cursor=cursor, limit=limit)
 
     def today(self) -> str:
         return trade_date_at(self._now()).isoformat()

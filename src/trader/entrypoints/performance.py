@@ -19,7 +19,6 @@ from zoneinfo import ZoneInfo
 
 from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import ScoringCacheContext
-from trader.application.events import EventAuditRecord
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
@@ -494,8 +493,6 @@ class _Archive(Protocol):
 
     def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None: ...
 
-    def list_events(self, *, cursor: int, limit: int) -> tuple[EventAuditRecord, ...]: ...
-
 
 class _EmptyArchive:
     def latest(self, strategy: Strategy) -> RecommendationSnapshot | None:
@@ -510,9 +507,6 @@ class _EmptyArchive:
     def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
         return None
 
-    def list_events(self, *, cursor: int, limit: int) -> tuple[EventAuditRecord, ...]:
-        return ()
-
 
 def _api_sse_operations() -> dict[str, Callable[[], object]]:
     now = datetime(2026, 7, 23, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -522,7 +516,7 @@ def _api_sse_operations() -> dict[str, Callable[[], object]]:
     base = _snapshot("perf-api-000", now)
     index.publish(base)
     publisher.publish(base)
-    queries = RecommendationQueries(index, archive, now=lambda: now)
+    queries = RecommendationQueries(index, now=lambda: now)
     app = create_app(
         lambda: {"schema_version": "v3", "status": "running", "runtime_started": True},
         queries=queries,

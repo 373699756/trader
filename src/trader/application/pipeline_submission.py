@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, cast
 
 from trader.application.cadence import PipelineTask, ScheduledPipelineTask, task_execution_budget_seconds
 from trader.application.events import EventPriority, EventSpec, EventStatus, PipelineEvent, new_event
 from trader.application.pipeline_state import PipelineState
-from trader.application.pipeline_workers import persist
 from trader.application.schedule import (
     MarketPhase,
     SchedulePoint,
@@ -17,9 +15,6 @@ from trader.application.schedule import (
     shanghai_now,
     trade_date_at,
 )
-
-if TYPE_CHECKING:
-    from trader.application.pipeline import RecommendationPipeline
 
 
 class PipelineSubmissionMixin(PipelineState):
@@ -163,15 +158,11 @@ class PipelineSubmissionMixin(PipelineState):
         is_priority = event.priority <= EventPriority.RISK
         if is_priority:
             try:
-                if not persist(
-                    cast("RecommendationPipeline", self),
-                    self._event_audit.reserve_event,
-                    event.audit_record(status=EventStatus.PENDING),
-                ):
+                if not self._event_audit.reserve_event(event.audit_record(status=EventStatus.PENDING)):
                     self._state.increment("event_reservation_conflicts")
                     return False
             except Exception as exc:
-                self._state.record_error(f"cannot persist priority event: {str(exc)[:500]}")
+                self._state.record_error(f"cannot reserve priority event: {str(exc)[:500]}")
                 return False
         self._latency.plan(event.event_id, event.event_type)
         accepted, superseded_ids = self._queue.put_with_superseded(event)
@@ -182,7 +173,14 @@ class PipelineSubmissionMixin(PipelineState):
         else:
             self._latency.finish(event.event_id, outcome="dropped")
             if is_priority:
-                self._state.record_error("priority queue full; event retained for restart replay")
+                self._event_audit.compare_and_set_event(
+                    event.event_id,
+                    expected_status=EventStatus.PENDING,
+                    status=EventStatus.FAILED,
+                    retry_count=event.retry_count,
+                    error="priority queue full",
+                )
+                self._state.record_error("priority queue full")
         return accepted
 
 

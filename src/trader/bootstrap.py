@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from flask import Flask
 from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import BoardScoringCache
 from trader.application.cadence import CadencePolicy, PipelineTask
+from trader.application.events import InMemoryEventLedger
 from trader.application.latency import LatencyWaterfall
 from trader.application.outcome_settlement import OutcomeSettlementService
 from trader.application.pipeline import RecommendationPipeline
@@ -44,9 +46,6 @@ from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history_seed import (
     FallbackHistoryClient,
-    LocalHistorySeedClient,
-    RuntimeHistoryCacheClient,
-    RuntimeHistoryCachePolicy,
 )
 from trader.infra.market_data.service import MarketFeatureDependencies, MarketFeatureService
 from trader.infra.market_data.service_candidates import QuoteStore, QuoteStoreDependencies
@@ -157,24 +156,13 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         cancel_requested=lambda: source_lanes.is_stopped("history"),
         wall_clock=now,
     )
-    history_client = RuntimeHistoryCacheClient(
-        settings.runtime_dir / "history_cache.sqlite3",
-        LocalHistorySeedClient(
-            settings.runtime_dir.parent / "market_data.sqlite3",
-            FallbackHistoryClient(
-                TencentClient(
-                    timeout_seconds=settings.market_data.history_timeout_seconds,
-                    cancel_requested=lambda: source_lanes.is_stopped("history"),
-                    wall_clock=now,
-                ),
-                remote_history,
-            ),
+    history_client = FallbackHistoryClient(
+        TencentClient(
+            timeout_seconds=settings.market_data.history_timeout_seconds,
+            cancel_requested=lambda: source_lanes.is_stopped("history"),
+            wall_clock=now,
         ),
-        policy=RuntimeHistoryCachePolicy(
-            capacity=settings.market_data.cache_policy.datasets["daily_history"].capacity,
-            freshness_seconds=_fixed_cache_ttl(settings, "daily_history"),
-        ),
-        wall_clock=now,
+        remote_history,
     )
     intraday_client = EastmoneyClient(
         timeout_seconds=settings.market_data.candidate_timeout_seconds,
@@ -308,7 +296,12 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         history_preload_limit=settings.market_data.candidate_pool_size * 3,
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
-    repository = SnapshotRepository(settings.runtime_dir, config_version=effective_config_version)
+    runtime_database_lock = threading.Lock()
+    repository = SnapshotRepository(
+        settings.runtime_dir,
+        config_version=effective_config_version,
+        write_lock=runtime_database_lock,
+    )
     budget = DeepSeekBudgetStore(
         settings.runtime_dir / "runtime.sqlite3",
         daily_hard_limit=settings.deepseek.daily_hard_limit,
@@ -316,6 +309,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         stage_targets=settings.deepseek.stage_targets,
         stage_limits=settings.deepseek.stage_limits,
         challenger_limits=settings.deepseek.challenger_limits,
+        write_lock=runtime_database_lock,
     )
     reviewer = DeepSeekReviewer(
         settings.deepseek,
@@ -364,8 +358,8 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             ),
             calendar=calendar,
             reviews=reviewer,
-            snapshots=SnapshotPorts(reader=repository, writer=repository, observability=repository),
-            events=repository,
+            snapshots=SnapshotPorts(reader=repository, writer=repository),
+            events=InMemoryEventLedger(terminal_capacity=max(1024, settings.pipeline.event_queue_size * 4)),
             publisher=publisher,
             engine=recommendation_engine,
             state=state,
@@ -397,7 +391,6 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     )
     queries = RecommendationQueries(
         published_snapshots,
-        repository,
         now=now,
         current_quote_reader=market_data,
         close_fallback_replay=CloseFallbackReplay(repository, recommendation_engine),
@@ -424,8 +417,6 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         api_config=WebApiConfig(
             default_top_n=settings.api.default_top_n,
             maximum_top_n=settings.api.maximum_top_n,
-            default_event_limit=settings.api.event_page_limit,
-            maximum_event_limit=settings.api.maximum_event_page_limit,
             heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
         ),
     )

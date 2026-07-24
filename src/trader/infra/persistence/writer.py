@@ -7,13 +7,12 @@ import shutil
 import sqlite3
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from trader.application.events import EventAuditRecord, EventStatus
 from trader.application.ports.snapshots import RecoverySummary
-from trader.application.ports.types import JsonObject
 from trader.domain.outcome.models import (
     BenchmarkReturn,
     OutcomeTarget,
@@ -24,13 +23,14 @@ from trader.domain.recommendation.models import (
     RecommendationSnapshot,
     Strategy,
 )
+from trader.infra.persistence.recommendation_archive import RecommendationArchive
 from trader.infra.persistence.snapshots import (
     SNAPSHOT_SCHEMA_VERSION,
     snapshot_bytes,
     snapshot_sha256,
 )
 from trader.infra.persistence.sqlite import connect, connection_scope, initialize_database
-from trader.infra.persistence.writer_observability import RepositoryObservability
+from trader.infra.persistence.writer_retention import archive_trade_date
 from trader.infra.persistence.writer_utils import (
     SnapshotConflictError,
     _anchor_json,
@@ -54,48 +54,17 @@ class SnapshotRepository:
         *,
         config_version: str,
         fault_injector: FaultInjector | None = None,
+        write_lock: AbstractContextManager[object] | None = None,
     ) -> None:
         self._runtime_dir = runtime_dir
         self._database_path = runtime_dir / "runtime.sqlite3"
         self._frozen_dir = runtime_dir / "frozen"
         self._checkpoint_dir = runtime_dir / "checkpoints"
         self._quarantine_dir = runtime_dir / "quarantine"
+        self._archive = RecommendationArchive(runtime_dir)
         self._config_version = config_version
         self._fault_injector = fault_injector or (lambda _stage: None)
-        self._lock = threading.Lock()
-        self._observability = RepositoryObservability(self._database_path, self._lock)
-
-    def reserve_event(self, event: EventAuditRecord) -> bool:
-        return self._observability.reserve_event(event)
-
-    def compare_and_set_event(
-        self,
-        event_id: str,
-        *,
-        expected_status: EventStatus,
-        status: EventStatus,
-        retry_count: int,
-        error: str = "",
-    ) -> bool:
-        return self._observability.compare_and_set_event(
-            event_id,
-            expected_status=expected_status,
-            status=status,
-            retry_count=retry_count,
-            error=error,
-        )
-
-    def list_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
-        return self._observability.list_events(cursor=cursor, limit=limit)
-
-    def pending_priority_events(self) -> Sequence[EventAuditRecord]:
-        return self._observability.pending_priority_events()
-
-    def record_data_source_health(self, health: JsonObject, *, updated_at: datetime) -> None:
-        self._observability.record_data_source_health(health, updated_at=updated_at)
-
-    def observability_status(self) -> JsonObject:
-        return self._observability.observability_status()
+        self._lock = write_lock or threading.Lock()
 
     def initialize(self) -> None:
         self._frozen_dir.mkdir(parents=True, exist_ok=True)
@@ -120,6 +89,30 @@ class SnapshotRepository:
             self._fault_injector("frozen_file_created")
             self._commit_manifest(frozen)
             self._fault_injector("manifest_committed")
+        self.enforce_retention()
+
+    def enforce_retention(self) -> int:
+        archived = 0
+        with self._lock:
+            with connection_scope(self._database_path) as connection:
+                dates = tuple(
+                    str(row["recommend_date"])
+                    for row in connection.execute(
+                        """
+                        SELECT DISTINCT recommend_date FROM frozen_snapshots
+                        WHERE status='committed' ORDER BY recommend_date DESC
+                        """
+                    ).fetchall()
+                )
+            for trade_date in dates[20:]:
+                archived += archive_trade_date(
+                    self._runtime_dir,
+                    self._database_path,
+                    self._checkpoint_dir,
+                    self._archive,
+                    trade_date,
+                )
+        return archived
 
     def save_checkpoint(self, snapshot: RecommendationSnapshot, *, boundary_at: datetime) -> None:
         if boundary_at.tzinfo is None or boundary_at.utcoffset() is None:
@@ -263,6 +256,13 @@ class SnapshotRepository:
                     "SELECT snapshot_id, stock_code, horizon FROM recommendation_outcomes WHERE status = 'complete'"
                 ).fetchall()
             }
+            backlog_rows = connection.execute(
+                """
+                SELECT snapshot_id, strategy, recommend_date, stock_code, anchor_price, atr20_pct
+                FROM outcome_backlog
+                ORDER BY recommend_date, strategy, stock_code
+                """
+            ).fetchall()
         targets: list[OutcomeTarget] = []
         for row in rows:
             strategy = Strategy(str(row["strategy"]))
@@ -280,9 +280,19 @@ class SnapshotRepository:
                     atr20_pct=float(row["atr20_pct"]),
                 )
             )
-            if len(targets) >= limit:
-                break
-        return tuple(targets)
+        for row in backlog_rows:
+            targets.append(
+                OutcomeTarget(
+                    snapshot_id=str(row["snapshot_id"]),
+                    strategy=Strategy(str(row["strategy"])),
+                    recommend_date=str(row["recommend_date"]),
+                    stock_code=str(row["stock_code"]),
+                    anchor_price=float(row["anchor_price"]),
+                    atr20_pct=float(row["atr20_pct"]),
+                )
+            )
+        targets.sort(key=lambda item: (item.recommend_date, item.strategy.value, item.stock_code))
+        return tuple(targets[:limit])
 
     def record_benchmark_return(self, benchmark: BenchmarkReturn, *, observed_at: datetime) -> None:
         with self._lock, connection_scope(self._database_path) as connection:
@@ -317,9 +327,44 @@ class SnapshotRepository:
     def save_recommendation_outcomes(self, outcomes: Sequence[RecommendationOutcome]) -> None:
         if not outcomes:
             return
-        with self._lock, connection_scope(self._database_path) as connection:
-            connection.executemany(
-                """
+        with self._lock:
+            with connection_scope(self._database_path) as connection:
+                backlog = {
+                    (str(row["snapshot_id"]), str(row["stock_code"])): (
+                        str(row["archive_relative_path"]),
+                        Strategy(str(row["strategy"])),
+                    )
+                    for row in connection.execute("SELECT * FROM outcome_backlog").fetchall()
+                }
+            active = tuple(item for item in outcomes if (item.snapshot_id, item.stock_code) not in backlog)
+            archived = tuple(item for item in outcomes if (item.snapshot_id, item.stock_code) in backlog)
+            if active:
+                with connection_scope(self._database_path) as connection:
+                    self._insert_outcomes(connection, active)
+            completed_backlog: list[tuple[str, str]] = []
+            for item in archived:
+                if item.status != "complete":
+                    continue
+                relative_path, strategy = backlog[(item.snapshot_id, item.stock_code)]
+                self._archive.record_outcome(relative_path, _outcome_to_row(item))
+                required = {2, 3, 5} if strategy is Strategy.D25 else {1}
+                completed = self._archive.completed_horizons(relative_path, item.stock_code)
+                if required.issubset(completed):
+                    completed_backlog.append((item.snapshot_id, item.stock_code))
+            if completed_backlog:
+                with connection_scope(self._database_path) as connection:
+                    connection.executemany(
+                        "DELETE FROM outcome_backlog WHERE snapshot_id=? AND stock_code=?",
+                        completed_backlog,
+                    )
+
+    def _insert_outcomes(
+        self,
+        connection: sqlite3.Connection,
+        outcomes: Sequence[RecommendationOutcome],
+    ) -> None:
+        connection.executemany(
+            """
                 INSERT INTO recommendation_outcomes(
                     snapshot_id, strategy, recommend_date, stock_code, horizon, status,
                     settled_at, anchor_price, atr20_pct, minimum_low, end_close,
@@ -341,31 +386,8 @@ class SnapshotRepository:
                     version = excluded.version
                 WHERE recommendation_outcomes.status != 'complete'
                 """,
-                [
-                    (
-                        item.snapshot_id,
-                        item.strategy.value,
-                        item.recommend_date,
-                        item.stock_code,
-                        item.horizon,
-                        item.status,
-                        item.settled_at.isoformat(),
-                        item.anchor_price,
-                        item.atr20_pct,
-                        item.minimum_low,
-                        item.end_close,
-                        item.gross_return_pct,
-                        item.benchmark_return_pct,
-                        item.net_excess_return_pct,
-                        item.mae_pct,
-                        item.mae_atr,
-                        None if item.severe_drawdown is None else int(item.severe_drawdown),
-                        item.quality_reason,
-                        item.version,
-                    )
-                    for item in outcomes
-                ],
-            )
+            [tuple(_outcome_to_row(item).values()) for item in outcomes],
+        )
 
     def save_live_overlay(self, overlay: LiveOverlay) -> bool:
         payload = json.dumps(
@@ -670,6 +692,30 @@ class SnapshotRepository:
             shutil.move(str(path), str(destination))
             count += 1
         return count
+
+
+def _outcome_to_row(item: RecommendationOutcome) -> dict[str, object]:
+    return {
+        "snapshot_id": item.snapshot_id,
+        "strategy": item.strategy.value,
+        "recommend_date": item.recommend_date,
+        "stock_code": item.stock_code,
+        "horizon": item.horizon,
+        "status": item.status,
+        "settled_at": item.settled_at.isoformat(),
+        "anchor_price": item.anchor_price,
+        "atr20_pct": item.atr20_pct,
+        "minimum_low": item.minimum_low,
+        "end_close": item.end_close,
+        "gross_return_pct": item.gross_return_pct,
+        "benchmark_return_pct": item.benchmark_return_pct,
+        "net_excess_return_pct": item.net_excess_return_pct,
+        "mae_pct": item.mae_pct,
+        "mae_atr": item.mae_atr,
+        "severe_drawdown": None if item.severe_drawdown is None else int(item.severe_drawdown),
+        "quality_reason": item.quality_reason,
+        "version": item.version,
+    }
 
 
 __all__ = ["SnapshotConflictError", "SnapshotRepository"]

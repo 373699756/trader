@@ -14,19 +14,14 @@ from trader.application.cadence import (
 )
 from trader.application.events import (
     BoundedEventQueue,
-    EventAuditRecord,
     EventDeadlineExpiredError,
     EventPriority,
     EventStatus,
     PipelineEvent,
-    event_from_audit_record,
 )
 from trader.application.latency import LatencyWaterfall
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
-from trader.application.pipeline_stages import (
-    persist,
-    process_event_on_workers,
-)
+from trader.application.pipeline_stages import process_event_on_workers
 from trader.application.pipeline_status import PipelineStatusMixin
 from trader.application.pipeline_submission import PipelineSubmissionMixin
 from trader.application.ports.market import MarketDataDeadlineExceededError
@@ -82,7 +77,6 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._reviews = dependencies.reviews
         self._repository = dependencies.snapshots.reader
         self._snapshot_writer = dependencies.snapshots.writer
-        self._snapshot_observability = dependencies.snapshots.observability
         self._event_audit = dependencies.events
         self._publisher = dependencies.publisher
         self._published_snapshots = dependencies.published_snapshots or dependencies.state
@@ -200,13 +194,15 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
     def initialize(self) -> Mapping[str, int]:
         self._snapshot_writer.initialize()
         recovery = self._snapshot_writer.recover()
+        retention = getattr(self._snapshot_writer, "enforce_retention", None)
+        archived = int(retention()) if callable(retention) else 0
         self._restore_frozen_snapshots()
         catchup = self._catch_up_due_freezes()
-        self._replay_pending_priority_events()
         return {
             "recovered": recovery.recovered,
             "quarantined": recovery.quarantined,
             "orphaned": recovery.orphaned,
+            "archived": archived,
             "catchup_frozen": len(catchup),
         }
 
@@ -241,53 +237,6 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 )
             )
         return self._freeze_available_snapshots(now, freeze_targets)
-
-    def _replay_pending_priority_events(self) -> None:
-        for record in self._event_audit.pending_priority_events():
-            event = self._recover_priority_event(record)
-            if event is None:
-                continue
-            self._latency.plan(event.event_id, event.event_type)
-            accepted, superseded_ids = self._queue.put_with_superseded(event)
-            for event_id in superseded_ids:
-                self._latency.finish(event_id, outcome="superseded")
-            if accepted:
-                self._state.increment("events_replayed")
-                self._queue.record_replayed()
-            else:
-                self._latency.finish(event.event_id, outcome="dropped")
-
-    def _recover_priority_event(self, record: EventAuditRecord) -> PipelineEvent | None:
-        try:
-            event = event_from_audit_record(record)
-        except (TypeError, ValueError) as exc:
-            self._event_audit.compare_and_set_event(
-                record.event_id,
-                expected_status=record.status,
-                status=EventStatus.FAILED,
-                retry_count=record.retry_count + 1,
-                error="invalid_persisted_event",
-            )
-            self._state.record_error(f"cannot replay persisted priority event: {exc}")
-            return None
-        if event.config_version != self._config_version:
-            self._event_audit.compare_and_set_event(
-                event.event_id,
-                expected_status=record.status,
-                status=EventStatus.FAILED,
-                retry_count=event.retry_count,
-                error="config_version_mismatch",
-            )
-            self._state.record_error("cannot replay priority event from another config version")
-            return None
-        if record.status is EventStatus.RUNNING and not self._event_audit.compare_and_set_event(
-            event.event_id,
-            expected_status=EventStatus.RUNNING,
-            status=EventStatus.PENDING,
-            retry_count=event.retry_count,
-        ):
-            return None
-        return event
 
     def start(self) -> bool:
         with self._lifecycle_lock:
@@ -359,7 +308,6 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 self._latency.finish(correlation_id, outcome="success")
                 return ()
             snapshots = process_schedule(self, at, decision.phase, decision.freeze_strategies)
-            self._record_health_snapshot()
         except BaseException:
             self._latency.finish(correlation_id, outcome="failed")
             raise
@@ -388,17 +336,13 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
 
     def _process_event(self, event: PipelineEvent) -> None:
         self._latency.enter(event.event_id)
-        if event.priority > EventPriority.RISK and not persist(
-            self,
-            self._event_audit.reserve_event,
-            event.audit_record(status=EventStatus.PENDING),
+        if event.priority > EventPriority.RISK and not self._event_audit.reserve_event(
+            event.audit_record(status=EventStatus.PENDING)
         ):
             self._state.increment("event_reservation_conflicts")
             self._latency.finish(event.event_id, outcome="dropped")
             return
-        if not persist(
-            self,
-            self._event_audit.compare_and_set_event,
+        if not self._event_audit.compare_and_set_event(
             event.event_id,
             expected_status=EventStatus.PENDING,
             status=EventStatus.RUNNING,
@@ -410,9 +354,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._ensure_event_deadline(event, "before")
         process_event_on_workers(self, event)
         self._ensure_event_deadline(event, "during")
-        if not persist(
-            self,
-            self._event_audit.compare_and_set_event,
+        if not self._event_audit.compare_and_set_event(
             event.event_id,
             expected_status=EventStatus.RUNNING,
             status=EventStatus.SUCCESS,
@@ -433,9 +375,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
     ) -> None:
         _LOGGER.info("pipeline event expired", extra={"event_id": event.event_id})
         try:
-            persist(
-                self,
-                self._event_audit.compare_and_set_event,
+            self._event_audit.compare_and_set_event(
                 event.event_id,
                 expected_status=EventStatus.RUNNING,
                 status=EventStatus.EXPIRED,
@@ -443,16 +383,14 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 error=str(error),
             )
         except Exception:
-            _LOGGER.exception("pipeline event expiration state could not be persisted")
+            _LOGGER.exception("pipeline event expiration state could not be recorded in memory")
         self._state.increment("events_expired")
         self._latency.finish(event.event_id, outcome="timeout")
 
     def _fail_event(self, event: PipelineEvent, error: Exception) -> None:
         _LOGGER.exception("pipeline event failed", extra={"event_id": event.event_id})
         try:
-            persist(
-                self,
-                self._event_audit.compare_and_set_event,
+            self._event_audit.compare_and_set_event(
                 event.event_id,
                 expected_status=EventStatus.RUNNING,
                 status=EventStatus.FAILED,
@@ -460,13 +398,12 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 error=str(error),
             )
         except Exception:
-            _LOGGER.exception("pipeline event failure state could not be persisted")
+            _LOGGER.exception("pipeline event failure state could not be recorded in memory")
         self._state.increment("events_failed")
         self._state.record_error(str(error))
         self._latency.finish(event.event_id, outcome="failed")
 
     def _finish_event(self, event: PipelineEvent) -> None:
-        self._record_health_snapshot()
         task_raw = event.payload.get("schedule_task")
         if isinstance(task_raw, str):
             try:

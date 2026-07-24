@@ -85,7 +85,7 @@ def build_app() -> Flask:
             "strategies": {"today": {"snapshot_id": state["snapshot_id"]}},
         }
 
-    queries = RecommendationQueries(index, archive, now=lambda: observed_at)
+    queries = RecommendationQueries(index, now=lambda: observed_at)
     app = create_app(status, queries=queries, publisher=publisher)
 
     @app.post("/__d4/publish")

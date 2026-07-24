@@ -7,14 +7,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def connect(database_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(database_path, timeout=10.0)
     try:
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=10000")
     except BaseException:
@@ -36,6 +35,7 @@ def connection_scope(database_path: Path) -> Iterator[sqlite3.Connection]:
 def initialize_database(database_path: Path) -> None:
     database_path.parent.mkdir(parents=True, exist_ok=True)
     with connection_scope(database_path) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS schema_meta(
@@ -87,68 +87,6 @@ def initialize_database(database_path: Path) -> None:
                 published_at TEXT NOT NULL,
                 relative_path TEXT NOT NULL,
                 sha256 TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS pipeline_events(
-                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_id TEXT NOT NULL UNIQUE,
-                event_type TEXT NOT NULL,
-                subject_key TEXT NOT NULL,
-                trade_date TEXT NOT NULL,
-                phase TEXT NOT NULL,
-                strategy TEXT NOT NULL,
-                priority INTEGER NOT NULL,
-                data_version TEXT NOT NULL,
-                config_version TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                deadline TEXT,
-                retry_count INTEGER NOT NULL DEFAULT 0,
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                error TEXT NOT NULL DEFAULT '',
-                UNIQUE(trade_date, phase, strategy, event_type, subject_key, data_version)
-            );
-
-            CREATE TABLE IF NOT EXISTS data_source_health(
-                source TEXT PRIMARY KEY,
-                planned_count INTEGER NOT NULL DEFAULT 0,
-                success_count INTEGER NOT NULL DEFAULT 0,
-                failure_count INTEGER NOT NULL DEFAULT 0,
-                circuit_open INTEGER NOT NULL DEFAULT 0,
-                p50_latency_ms REAL,
-                p95_latency_ms REAL,
-                data_age_seconds REAL,
-                last_error TEXT NOT NULL DEFAULT '',
-                route_json TEXT NOT NULL DEFAULT '{}',
-                route_status TEXT NOT NULL DEFAULT 'idle',
-                route_fallback_reason TEXT NOT NULL DEFAULT '',
-                route_degraded INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS deepseek_calls(
-                call_id TEXT PRIMARY KEY,
-                strategy TEXT NOT NULL,
-                phase TEXT NOT NULL,
-                model TEXT NOT NULL,
-                batch_id TEXT NOT NULL,
-                requested_at TEXT NOT NULL,
-                completed_at TEXT,
-                http_status INTEGER,
-                prompt_tokens INTEGER,
-                completion_tokens INTEGER,
-                latency_ms REAL,
-                outcome TEXT NOT NULL,
-                error_code TEXT NOT NULL DEFAULT '',
-                model_role TEXT NOT NULL DEFAULT 'primary',
-                requested_model TEXT,
-                actual_model TEXT,
-                reasoning_effort TEXT,
-                system_fingerprint TEXT,
-                finish_reason TEXT,
-                total_tokens INTEGER NOT NULL DEFAULT 0,
-                prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
-                prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS live_overlays(
@@ -203,6 +141,17 @@ def initialize_database(database_path: Path) -> None:
                 version TEXT NOT NULL,
                 PRIMARY KEY(snapshot_id, stock_code, horizon)
             );
+
+            CREATE TABLE IF NOT EXISTS outcome_backlog(
+                snapshot_id TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                recommend_date TEXT NOT NULL,
+                stock_code TEXT NOT NULL,
+                anchor_price REAL NOT NULL,
+                atr20_pct REAL NOT NULL,
+                archive_relative_path TEXT NOT NULL,
+                PRIMARY KEY(snapshot_id, stock_code)
+            );
             """
         )
         _ensure_column(
@@ -220,11 +169,6 @@ def initialize_database(database_path: Path) -> None:
         _ensure_column(connection, "recommendations", "selection_skip_reason", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "recommendations", "merge_epoch", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "recommendations", "atr20_pct", "REAL")
-        _ensure_column(connection, "data_source_health", "last_error", "TEXT NOT NULL DEFAULT ''")
-        _ensure_column(connection, "data_source_health", "route_json", "TEXT NOT NULL DEFAULT '{}'")
-        _ensure_column(connection, "data_source_health", "route_status", "TEXT NOT NULL DEFAULT 'idle'")
-        _ensure_column(connection, "data_source_health", "route_fallback_reason", "TEXT NOT NULL DEFAULT ''")
-        _ensure_column(connection, "data_source_health", "route_degraded", "INTEGER NOT NULL DEFAULT 0")
         apply_migrations(connection)
         if _current_schema_version(connection) < SCHEMA_VERSION:
             connection.execute(
@@ -321,6 +265,20 @@ MIGRATIONS: dict[int, list[str]] = {
             PRIMARY KEY(strategy, trade_date, boundary_at)
         )""",
     ],
+    9: [
+        "DROP TABLE IF EXISTS pipeline_events",
+        "DROP TABLE IF EXISTS data_source_health",
+        """CREATE TABLE IF NOT EXISTS outcome_backlog(
+            snapshot_id TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            recommend_date TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            anchor_price REAL NOT NULL,
+            atr20_pct REAL NOT NULL,
+            archive_relative_path TEXT NOT NULL,
+            PRIMARY KEY(snapshot_id, stock_code)
+        )""",
+    ],
 }
 
 
@@ -334,7 +292,8 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
             try:
                 connection.execute(statement)
             except sqlite3.OperationalError as exc:
-                if "duplicate column name" not in str(exc).lower():
+                message = str(exc).lower()
+                if "duplicate column name" not in message and "no such table" not in message:
                     raise
         connection.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', ?)",

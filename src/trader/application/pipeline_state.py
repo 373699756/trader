@@ -22,7 +22,6 @@ from trader.application.ports.market import (
 from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.ports.snapshots import (
     PublishedSnapshotWritePort,
-    SnapshotObservabilityPort,
     SnapshotReaderPort,
     SnapshotWriterPort,
 )
@@ -54,7 +53,6 @@ class PipelineState:
     _config_version: str
     _repository: SnapshotReaderPort
     _snapshot_writer: SnapshotWriterPort
-    _snapshot_observability: SnapshotObservabilityPort
     _published_snapshots: PublishedSnapshotWritePort
     _reviews: DeepSeekReviewPort | None
     _live_overlays: dict[tuple[Strategy, str], LiveOverlay]

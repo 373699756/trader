@@ -465,8 +465,6 @@
   "api": {
     "default_top_n": 10,
     "maximum_top_n": 18,
-    "event_page_limit": 100,
-    "maximum_event_page_limit": 500,
     "sse_history_size": 256,
     "sse_client_queue_size": 16,
     "sse_max_clients": 32

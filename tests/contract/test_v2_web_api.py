@@ -4,7 +4,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
-from trader.application.events import EventAuditRecord, EventStatus
 from trader.application.ports.snapshots import RecoverySummary
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
@@ -696,7 +695,6 @@ def test_current_query_reads_snapshot_and_overlay_from_runtime_index(
     )
     queries = RecommendationQueries(
         runtime,
-        persisted,
         now=lambda: NOW,
     )
 
@@ -726,7 +724,7 @@ def test_historical_snapshots_are_preloaded_once_as_compact_delivery_views(
     repository = CountingReadRepository(frozen=frozen)
     index = PublishedSnapshotIndex(repository)
     index.initialize()
-    queries = RecommendationQueries(index, repository, now=lambda: NOW)
+    queries = RecommendationQueries(index, now=lambda: NOW)
 
     queries.initialize()
     first = queries.recommendation(Strategy.TOMORROW, snapshot.trade_date)
@@ -752,7 +750,7 @@ def test_missing_history_is_not_cached_across_later_freeze(
     )
     repository = CountingReadRepository()
     index = PublishedSnapshotIndex(repository)
-    queries = RecommendationQueries(index, repository, now=lambda: NOW)
+    queries = RecommendationQueries(index, now=lambda: NOW)
 
     missing = queries.recommendation(Strategy.D25, snapshot.trade_date)
     for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
@@ -1010,37 +1008,10 @@ def test_validation_errors_keep_request_context() -> None:
     assert invalid_strategy.get_json()["trade_date"] == "2026-07-16"
 
 
-def test_event_query_validates_cursor_and_limit() -> None:
-    repository = MemoryReadRepository(
-        events=(
-            EventAuditRecord(
-                event_id="event-3",
-                event_type="score",
-                subject_key="market",
-                trade_date="2026-07-16",
-                phase="afternoon",
-                strategy="today",
-                priority=50,
-                data_version="tick:100000",
-                config_version="runtime-v2",
-                status=EventStatus.SUCCESS,
-                created_at=NOW,
-                deadline=None,
-                retry_count=0,
-                sequence=3,
-            ),
-        )
-    )
-    app, _publisher = _app(repository)
-    client = app.test_client()
+def test_event_audit_query_is_not_exposed() -> None:
+    app, _publisher = _app(MemoryReadRepository())
 
-    response = client.get("/api/events?cursor=2&limit=1")
-
-    assert response.status_code == 200
-    assert response.get_json()["schema_version"] == "v3"
-    assert response.get_json()["next_cursor"] == 3
-    assert client.get("/api/events?cursor=-1").status_code == 400
-    assert client.get("/api/events?limit=501").status_code == 400
+    assert app.test_client().get("/api/events").status_code == 404
 
 
 def test_sse_expired_cursor_and_connection_limit() -> None:
@@ -1132,7 +1103,6 @@ def _app(
         index.publish_overlay(overlay)
     queries = RecommendationQueries(
         index,
-        repository,
         now=lambda: now,
         current_quote_reader=quote_reader,
         close_fallback_replay=close_fallback_replay,
@@ -1177,12 +1147,10 @@ class MemoryReadRepository:
         *,
         latest: Mapping[Strategy, RecommendationSnapshot] | None = None,
         frozen: Mapping[tuple[Strategy, str], RecommendationSnapshot] | None = None,
-        events: Sequence[EventAuditRecord] = (),
         overlays: Mapping[tuple[Strategy, str], LiveOverlay] | None = None,
     ) -> None:
         self._latest = dict(latest or {})
         self._frozen = dict(frozen or {})
-        self._events = tuple(events)
         self._overlays = dict(overlays or {})
 
     def latest(self, strategy: Strategy) -> RecommendationSnapshot | None:
@@ -1200,9 +1168,6 @@ class MemoryReadRepository:
 
     def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
         return self._overlays.get((strategy, trade_date))
-
-    def list_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
-        return tuple(item for item in self._events if item.sequence > cursor)[:limit]
 
     def initialize(self) -> None:
         return None

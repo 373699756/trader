@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import heapq
 import threading
+from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, IntEnum
 from types import MappingProxyType
@@ -79,6 +80,73 @@ class EventAuditRecord:
             "payload": thaw_json_value(self.payload),
             "error": self.error,
         }
+
+
+class InMemoryEventLedger:
+    """Bounded process-local event CAS and idempotency ledger."""
+
+    def __init__(self, *, terminal_capacity: int = 1024) -> None:
+        if terminal_capacity < 1:
+            raise ValueError("terminal event capacity must be positive")
+        self._terminal_capacity = terminal_capacity
+        self._lock = threading.Lock()
+        self._records: dict[str, EventAuditRecord] = {}
+        self._idempotency: dict[str, str] = {}
+        self._terminal: OrderedDict[str, None] = OrderedDict()
+
+    def reserve_event(self, event: EventAuditRecord) -> bool:
+        identity = _audit_idempotency_key(event)
+        with self._lock:
+            if event.event_id in self._records or identity in self._idempotency:
+                return False
+            self._records[event.event_id] = event
+            self._idempotency[identity] = event.event_id
+            return True
+
+    def compare_and_set_event(
+        self,
+        event_id: str,
+        *,
+        expected_status: EventStatus,
+        status: EventStatus,
+        retry_count: int,
+        error: str = "",
+    ) -> bool:
+        with self._lock:
+            current = self._records.get(event_id)
+            if current is None or current.status is not expected_status:
+                return False
+            self._records[event_id] = replace(
+                current,
+                status=status,
+                retry_count=retry_count,
+                error=error[:1000],
+            )
+            if status in {EventStatus.SUCCESS, EventStatus.FAILED, EventStatus.EXPIRED}:
+                self._terminal.pop(event_id, None)
+                self._terminal[event_id] = None
+                self._trim_terminal_locked()
+            return True
+
+    def _trim_terminal_locked(self) -> None:
+        while len(self._terminal) > self._terminal_capacity:
+            event_id, _value = self._terminal.popitem(last=False)
+            record = self._records.pop(event_id, None)
+            if record is not None:
+                self._idempotency.pop(_audit_idempotency_key(record), None)
+
+
+def _audit_idempotency_key(event: EventAuditRecord) -> str:
+    return ":".join(
+        (
+            event.trade_date,
+            event.phase,
+            event.strategy,
+            event.event_type,
+            event.subject_key,
+            event.data_version,
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -175,27 +243,6 @@ def new_event(spec: EventSpec) -> PipelineEvent:
     )
 
 
-def event_from_audit_record(record: EventAuditRecord) -> PipelineEvent:
-    if not isinstance(record.payload, Mapping):
-        raise ValueError("persisted event payload must be a mapping")
-    strategy_raw = record.strategy
-    return PipelineEvent(
-        event_id=record.event_id,
-        event_type=record.event_type,
-        subject_key=record.subject_key,
-        trade_date=record.trade_date,
-        phase=record.phase,
-        strategy=None if strategy_raw == "shared" else Strategy(strategy_raw),
-        priority=EventPriority(record.priority),
-        data_version=record.data_version,
-        config_version=record.config_version,
-        created_at=record.created_at,
-        deadline=record.deadline,
-        retry_count=record.retry_count + 1,
-        payload=record.payload,
-    )
-
-
 class BoundedEventQueue:
     def __init__(self, *, maximum_size: int, reserved_priority_size: int) -> None:
         self._maximum_size = max(1, maximum_size)
@@ -207,7 +254,6 @@ class BoundedEventQueue:
         self._closed = False
         self._merged_count = 0
         self._rejected_count = 0
-        self._replayed_count = 0
 
     def put(self, event: PipelineEvent) -> bool:
         accepted, _superseded = self.put_with_superseded(event)
@@ -267,10 +313,6 @@ class BoundedEventQueue:
         with self._condition:
             return not self._events
 
-    def record_replayed(self, count: int = 1) -> None:
-        with self._condition:
-            self._replayed_count += max(0, count)
-
     def status(self) -> dict[str, JsonValue]:
         with self._condition:
             return {
@@ -284,7 +326,6 @@ class BoundedEventQueue:
                 "heap_storage_depth": len(self._heap),
                 "merged_count": self._merged_count,
                 "rejected_count": self._rejected_count,
-                "replayed_count": self._replayed_count,
                 "closed": self._closed,
             }
 
@@ -360,7 +401,7 @@ __all__ = [
     "EventPriority",
     "EventSpec",
     "EventStatus",
+    "InMemoryEventLedger",
     "PipelineEvent",
-    "event_from_audit_record",
     "new_event",
 ]

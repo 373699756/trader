@@ -1,16 +1,11 @@
-"""Event audit read/write ports."""
+"""In-process event state port."""
 
-from collections.abc import Sequence
 from typing import Protocol
 
 from trader.application.events import EventAuditRecord, EventStatus
 
 
-class EventReaderPort(Protocol):
-    def list_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]: ...
-
-
-class EventAuditPort(EventReaderPort, Protocol):
+class EventAuditPort(Protocol):
     def reserve_event(self, event: EventAuditRecord) -> bool: ...
 
     def compare_and_set_event(
@@ -22,5 +17,3 @@ class EventAuditPort(EventReaderPort, Protocol):
         retry_count: int,
         error: str = "",
     ) -> bool: ...
-
-    def pending_priority_events(self) -> Sequence[EventAuditRecord]: ...

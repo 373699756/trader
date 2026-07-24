@@ -45,11 +45,6 @@ def build_pipeline(
     published_snapshots: PublishedSnapshotWritePort | None = None,
 ) -> RecommendationPipeline:
     metadata = market_data if hasattr(market_data, "snapshot_metadata") else _MarketMetadataAdapter(market_data)
-    observability = (
-        repository
-        if hasattr(repository, "record_data_source_health") and hasattr(repository, "observability_status")
-        else _SnapshotObservabilityAdapter()
-    )
     return RecommendationPipeline(
         PipelineDependencies(
             market=MarketDataPorts(
@@ -63,7 +58,7 @@ def build_pipeline(
             ),
             calendar=calendar,
             reviews=reviews,
-            snapshots=SnapshotPorts(reader=repository, writer=repository, observability=observability),
+            snapshots=SnapshotPorts(reader=repository, writer=repository),
             events=event_audit,
             publisher=publisher,
             engine=engine,
@@ -100,11 +95,3 @@ class _MarketMetadataAdapter:
 
     def snapshot_metadata(self, codes: Sequence[str] | None = None) -> MarketSnapshotMetadata:
         return MarketSnapshotMetadata()
-
-
-class _SnapshotObservabilityAdapter:
-    def record_data_source_health(self, health: JsonObject, *, updated_at: datetime) -> None:
-        return None
-
-    def observability_status(self) -> JsonObject:
-        return freeze_json_object({})

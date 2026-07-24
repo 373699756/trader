@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from statistics import quantiles
 from zoneinfo import ZoneInfo
 
-from trader.application.events import EventAuditRecord
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher, encode_sse
 from trader.application.queries import RecommendationQueries
@@ -41,9 +40,6 @@ class _Archive:
 
     def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
         return None
-
-    def list_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
-        return ()
 
 
 def _recommendation(feature: FeatureSnapshot, rank: int, *, strategy: Strategy) -> Recommendation:
@@ -176,7 +172,7 @@ def test_d4_p6_sse_api_and_transfer_budgets(application_feature_factory) -> None
     finally:
         publisher.unsubscribe(subscription.queue)
 
-    queries = RecommendationQueries(index, archive, now=lambda: NOW)
+    queries = RecommendationQueries(index, now=lambda: NOW)
     app = create_app(
         lambda: {"schema_version": "v3", "status": "running", "runtime_started": True},
         queries=queries,

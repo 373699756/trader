@@ -16,6 +16,7 @@ from trader.application.events import (
     EventPriority,
     EventSpec,
     EventStatus,
+    InMemoryEventLedger,
     PipelineEvent,
 )
 from trader.application.events import (
@@ -65,7 +66,7 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
         TradingDayCalendar(),
         None,
         repository,
-        repository,
+        InMemoryEventLedger(),
         SnapshotPublisher(history_size=32, client_queue_size=4),
         RecommendationEngine(recommendation_policy),
         state,
@@ -383,7 +384,6 @@ def test_after_close_cold_start_rebuilds_missing_strategies_locally(
 
     queries = RecommendationQueries(
         state,
-        repository,
         now=clock.now,
     )
     lookup = queries.recommendation(Strategy.TOMORROW)
@@ -685,7 +685,7 @@ def test_after_close_waits_for_complete_historical_board_population(
         repository.load_frozen(strategy, "2026-07-16") is not None
         for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
     )
-    current = RecommendationQueries(state, repository, now=clock.now).current_recommendation(Strategy.TODAY)
+    current = RecommendationQueries(state, now=clock.now).current_recommendation(Strategy.TODAY)
     assert current.status == "ready"
     assert current.snapshot is not None
     assert current.snapshot.phase == "close_fallback"
@@ -1555,7 +1555,7 @@ def test_status_uses_recorded_phase_without_calling_calendar(recommendation_poli
     assert status["phase"] == "today_main"
 
 
-def test_freeze_tick_uses_reserved_priority_and_is_persisted_before_enqueue(
+def test_freeze_tick_uses_reserved_priority_and_is_reserved_before_enqueue(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -1587,7 +1587,7 @@ def test_freeze_tick_uses_reserved_priority_and_is_persisted_before_enqueue(
     assert repository.events[0].status is EventStatus.PENDING
 
 
-def test_risk_event_is_persisted_before_reserved_enqueue(
+def test_risk_event_is_reserved_before_priority_enqueue(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -1628,51 +1628,7 @@ def test_risk_event_is_persisted_before_reserved_enqueue(
     assert repository.events[0].status is EventStatus.PENDING
 
 
-def test_initialize_replays_persisted_priority_event(recommendation_policy, application_feature_factory) -> None:
-    now = datetime.fromisoformat("2026-07-16T11:20:00+08:00")
-    event = new_event(
-        "freeze",
-        subject_key="market",
-        trade_date="2026-07-16",
-        phase="midday",
-        strategy=None,
-        priority=EventPriority.FREEZE,
-        data_version="tick:112000",
-        config_version="config-v2",
-        created_at=now,
-        payload={"freeze_strategies": ["today"]},
-    )
-    repository = MemoryRepository()
-    repository.events.append(event.audit_record(status=EventStatus.PENDING))
-    pipeline = build_pipeline(
-        StaticMarketData((application_feature_factory("600001", now),)),
-        TradingDayCalendar(),
-        None,
-        repository,
-        repository,
-        SnapshotPublisher(history_size=4, client_queue_size=2),
-        RecommendationEngine(recommendation_policy),
-        RuntimeState(),
-        config_version="config-v2",
-        candidate_pool_size=120,
-        event_queue_size=4,
-        priority_queue_size=1,
-        now=lambda: now,
-    )
-
-    pipeline.initialize()
-
-    replayed = pipeline._queue.get()
-    assert replayed is not None
-    assert replayed.event_id == event.event_id
-    assert replayed.retry_count == 1
-    assert pipeline.status()["counters"]["events_replayed"] == 1
-    latency = pipeline.status()["dependencies"]["latency_waterfall"]
-    assert latency["planned_count"] == 1
-    assert latency["active_trace_count"] == 1
-
-
-def test_initialize_rejects_priority_event_from_another_config(
+def test_initialize_does_not_replay_event_state_from_repository(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -1710,53 +1666,7 @@ def test_initialize_rejects_priority_event_from_another_config(
     pipeline.initialize()
 
     assert pipeline._queue.empty() is True
-    assert repository.events[0].status is EventStatus.FAILED
-    assert repository.events[0].error == "config_version_mismatch"
-    assert "config version" in pipeline.status()["last_error"]
-
-
-def test_initialize_closes_malformed_priority_event(
-    recommendation_policy,
-    application_feature_factory,
-) -> None:
-    now = datetime.fromisoformat("2026-07-16T11:20:00+08:00")
-    event = new_event(
-        "freeze",
-        subject_key="market",
-        trade_date="2026-07-16",
-        phase="midday",
-        strategy=None,
-        priority=EventPriority.FREEZE,
-        data_version="tick:112000",
-        config_version="config-v2",
-        created_at=now,
-        payload={"freeze_strategies": ["today"]},
-    )
-    repository = MemoryRepository()
-    malformed = event.audit_record(status=EventStatus.PENDING)
-    object.__setattr__(malformed, "payload", [])
-    repository.events.append(malformed)
-    pipeline = build_pipeline(
-        StaticMarketData((application_feature_factory("600001", now),)),
-        TradingDayCalendar(),
-        None,
-        repository,
-        repository,
-        SnapshotPublisher(history_size=4, client_queue_size=2),
-        RecommendationEngine(recommendation_policy),
-        RuntimeState(),
-        config_version="config-v2",
-        candidate_pool_size=120,
-        event_queue_size=4,
-        priority_queue_size=1,
-        now=lambda: now,
-    )
-
-    pipeline.initialize()
-
-    assert pipeline._queue.empty() is True
-    assert repository.events[0].status is EventStatus.FAILED
-    assert repository.events[0].error == "invalid_persisted_event"
+    assert repository.events == [event.audit_record(status=EventStatus.PENDING)]
 
 
 def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
@@ -1774,7 +1684,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
         TradingDayCalendar(),
         reviewer,
         repository,
-        repository,
+        InMemoryEventLedger(),
         SnapshotPublisher(history_size=8, client_queue_size=2),
         engine,
         RuntimeState(),
@@ -1812,8 +1722,8 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert all(name.startswith("trader-long") for strategy, name in engine.prepare_threads if strategy is Strategy.LONG)
     assert reviewer.review_threads and all(name.startswith("trader-deepseek") for name in reviewer.review_threads)
     assert engine.finalize_threads and all(name == "trader-merge" for name in engine.finalize_threads)
-    assert repository.write_threads and all(name.startswith("trader-persistence") for name in repository.write_threads)
-    assert {event.status for event in repository.events} == {EventStatus.SUCCESS}
+    assert repository.write_threads == []
+    assert repository.events == []
     pools = running_status["dependencies"]["worker_pools"]
     assert pools["data"]["workers"] == 2
     assert pools["normalization"]["workers"] == 2
@@ -1826,7 +1736,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert pools["merge"]["rejected_count"] == 0
     assert pools["merge"]["running"] is True
     assert pools["persistence"]["workers"] == 1
-    assert running_status["dependencies"]["persistent_audit"] == {}
+    assert "persistent_audit" not in running_status["dependencies"]
     for strategy in ("tomorrow", "d25", "long"):
         strategy_status = running_status["strategies"][strategy]
         assert strategy_status["candidate_count"] >= strategy_status["topk_count"]
@@ -2965,17 +2875,6 @@ class MemoryRepository:
                 )
                 return True
         return False
-
-    def pending_priority_events(self) -> Sequence[EventAuditRecord]:
-        latest = {event.event_id: event for event in self.events}
-        return tuple(
-            event
-            for event in latest.values()
-            if event.status in {EventStatus.PENDING, EventStatus.RUNNING} and event.priority <= int(EventPriority.RISK)
-        )
-
-    def list_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
-        return tuple(self.events[cursor : cursor + limit])
 
 
 def _at_time(feature: FeatureSnapshot, observed_at: datetime) -> FeatureSnapshot:

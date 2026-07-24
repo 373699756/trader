@@ -89,7 +89,9 @@ class MarketDataHealth:
                 Mapping[str, JsonInput],
                 {
                     **gateway_health,
-                    "history_cache_entries": history.entries,
+                    "history_memory_entries": history.entries,
+                    "history_raw_rows": history.raw_rows,
+                    "history_profile_entries": history.profile_entries,
                     "market_feature_rows": quote_status.market_feature_rows,
                     "candidate_quote_cache_entries": quote_status.candidate_quote_entries,
                     "research_cache_entries": research.entries,

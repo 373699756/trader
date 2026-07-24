@@ -19,7 +19,6 @@ import run_v15_market_data as scalar_runner
 
 import trader.infra.market_data.merge as merge_module
 from trader.application.cache import CacheIdentitySpec, build_cache_identity, canonical_json_bytes
-from trader.application.events import EventAuditRecord
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
 from trader.domain.market.models import FeatureSnapshot, MarketQuote
@@ -72,9 +71,6 @@ class _Archive:
     def load_live_overlay(self, strategy: Strategy, trade_date: str) -> LiveOverlay | None:
         return None
 
-    def list_events(self, *, cursor: int, limit: int) -> Sequence[EventAuditRecord]:
-        return ()
-
 
 def _measure(config_path: Path, fixture_path: Path) -> dict[str, Any]:
     settings = load_runtime_settings(config_path)
@@ -105,7 +101,6 @@ def _measure(config_path: Path, fixture_path: Path) -> dict[str, Any]:
         and market.old_epoch != market.new_epoch
         and market.dirty_codes > 0
         and deepseek["batch_size"] == 8
-        and delivery["cold_loads"] >= 1
         and delivery["dropped_slow_clients"] >= 1
         and logical_bytes <= memory_budget.cache_logical_bytes
         and peak <= memory_budget.process_peak_rss_bytes
@@ -127,7 +122,7 @@ def _measure(config_path: Path, fixture_path: Path) -> dict[str, Any]:
             "scalar_and_columnar": True,
             "deepseek_batch_size": deepseek["batch_size"],
             "p6_resident_days": delivery["resident_days"],
-            "p6_cold_prefetch_views": delivery["cold_prefetch_views"],
+            "p6_rejects_older_dates": delivery["rejects_older_dates"],
             "slow_clients_opened": delivery["slow_clients_opened"],
         },
         "market": {
@@ -153,7 +148,7 @@ def _measure(config_path: Path, fixture_path: Path) -> dict[str, Any]:
             "stages": stages,
             "transient_peak_reason": (
                 "two 5500-row scalar/columnar epochs, six bounded cache pools at 70% byte limits, "
-                "an eight-stock DeepSeek batch, 20 resident P6 dates, cold triplet prefetch, "
+                "an eight-stock DeepSeek batch, 20 resident P6 dates, older-date rejection, "
                 "atomic replacements and undrained slow-client queues coexist in one process"
             ),
             "retained_scope_count": len(retained),
@@ -291,12 +286,12 @@ def _exercise_delivery_pressure() -> tuple[dict[str, Any], tuple[object, ...]]:
         for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
     )
     archive = _Archive(archive_snapshots)
-    index = PublishedSnapshotIndex(archive, resident_days=20, cold_slots=6)
+    index = PublishedSnapshotIndex(archive, resident_days=20)
     initialized = index.initialize()
     cold_date = (NOW - timedelta(days=21)).date().isoformat()
     cold = index.load_frozen(Strategy.TODAY, cold_date)
-    if cold is None:
-        raise ValueError("P6 cold triplet prefetch failed")
+    if cold is not None:
+        raise ValueError("P6 exposed a recommendation date older than the active 20 dates")
     publisher = SnapshotPublisher(history_size=64, client_queue_size=1, maximum_subscribers=32, now=lambda: NOW)
     base = _snapshot("live:base", Strategy.TODAY, NOW.date().isoformat())
     index.publish(base)
@@ -315,13 +310,12 @@ def _exercise_delivery_pressure() -> tuple[dict[str, Any], tuple[object, ...]]:
     )
     history = publisher.events_after(0) or ()
     history_bytes = sum(len(canonical_json_bytes(item)) for item in history)
-    p6_bytes = sum(len(canonical_json_bytes(item)) for item in archive_snapshots) + len(canonical_json_bytes(base))
+    p6_bytes = sum(len(canonical_json_bytes(item)) for item in archive_snapshots[:60]) + len(canonical_json_bytes(base))
     return (
         {
             "resident_days": initialized["resident_dates_preloaded"],
             "resident_views": status["resident_views"],
-            "cold_loads": status["cold_loads"],
-            "cold_prefetch_views": 3,
+            "rejects_older_dates": cold is None,
             "atomic_replacements": 12,
             "slow_clients_opened": len(slow),
             "dropped_slow_clients": publisher_status["dropped_subscribers"],

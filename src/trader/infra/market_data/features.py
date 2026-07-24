@@ -52,6 +52,7 @@ from trader.infra.market_data.feature_math import (
 from trader.infra.market_data.feature_risks import extreme_structure_risks
 from trader.infra.market_data.history import (
     DailyBar,
+    HistoryContext,
     HistoryProfile,
     require_qfq_history,
     return_pct,
@@ -76,7 +77,7 @@ class FeatureBuildOptions(TypedDict, total=False):
     cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] | None
     research_observations: Mapping[str, ResearchObservation] | None
     intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None
-    history_summaries: Mapping[str, HistoryProfile] | None
+    history_summaries: Mapping[str, HistoryContext] | None
 
 
 class _FeatureGroupOptions(FeatureBuildOptions):
@@ -404,7 +405,11 @@ class FeatureBuilder:
                     quote=quote,
                     values=values,
                     observed_at=observed_at,
-                    history_days=len(histories.get(quote.code, ())),
+                    history_days=(
+                        history_summaries[quote.code].sample_count
+                        if history_summaries is not None and quote.code in history_summaries
+                        else len(histories.get(quote.code, ()))
+                    ),
                     market_regime=d25_signals.market_regime,
                     missing_fields=missing,
                     evidence=(
@@ -421,13 +426,24 @@ class FeatureBuilder:
         self,
         quote: MarketQuote,
         bars: tuple[DailyBar, ...],
-        history_summary: HistoryProfile | None = None,
+        history_summary: HistoryContext | None = None,
     ) -> dict[str, float | None]:
-        history = history_summary or summarize_history_metrics(bars)
+        context = history_summary
+        history = context.profile if context is not None else summarize_history_metrics(bars)
         observation_date = quote.source_time.astimezone(_SHANGHAI).date().isoformat()
         completed_bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
-        setup_history = summarize_history_metrics(completed_bars) if len(completed_bars) != len(bars) else history
-        returns = {days: return_pct(bars, days, quote.price) for days in (3, 5, 10, 20, 60)}
+        if (
+            context is not None
+            and context.latest_trade_date >= observation_date
+            and context.previous_profile is not None
+        ):
+            setup_history = context.previous_profile
+        else:
+            setup_history = summarize_history_metrics(completed_bars) if len(completed_bars) != len(bars) else history
+        returns = {
+            days: context.return_pct(days, quote.price) if context is not None else return_pct(bars, days, quote.price)
+            for days in (3, 5, 10, 20, 60)
+        }
         ma5 = setup_history.moving_average_5d
         ma10 = setup_history.moving_average_10d
         ma20 = setup_history.moving_average_20d

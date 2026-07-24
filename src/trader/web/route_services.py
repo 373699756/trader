@@ -15,8 +15,6 @@ StatusProvider = Callable[[], dict[str, object]]
 class WebApiConfig:
     default_top_n: int = 10
     maximum_top_n: int = 18
-    default_event_limit: int = 100
-    maximum_event_limit: int = 500
     heartbeat_seconds: float = 15.0
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, as_completed, wait
@@ -15,16 +14,16 @@ from zoneinfo import ZoneInfo
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.cache import CacheIdentity, CacheIdentitySpec, build_cache_identity, request_fingerprint
+from trader.application.cache import CacheIdentity
 from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.history import (
     DailyBar,
-    HistoryProfile,
+    HistoryContext,
     PriceAdjustment,
+    build_history_context,
     require_qfq_history,
-    summarize_history_metrics,
 )
 from trader.infra.market_data.history_seed import DailyHistoryClient
 from trader.infra.market_data.service_execution import MarketTaskRunner
@@ -44,6 +43,8 @@ _HISTORY_SOURCE_LANE = "history"
 @dataclass(frozen=True)
 class HistoryStoreStatus:
     entries: int
+    raw_rows: int
+    profile_entries: int
     universe_rows: int
     covered_rows: int
     error_count: int
@@ -200,7 +201,7 @@ class HistoryStore:
             futures = {}
             for code in missing:
                 self._runner.ensure_before_deadline(request.deadline)
-                future = submit_or_run_inline(pool, self._history_client.fetch_history, code, days=90)
+                future = submit_or_run_inline(pool, self._history_client.fetch_history, code, days=61)
                 self._runner.ensure_before_deadline(request.deadline)
                 futures[future] = code
             completed = self._completed_history_futures(futures, request.deadline)
@@ -237,7 +238,7 @@ class HistoryStore:
             old_entry = self._history.get(code) or state.previous.get(code)
         used_fallback = False
         try:
-            bars = tuple(future.result())
+            bars = tuple(sorted(future.result(), key=lambda item: item.trade_date))[-61:]
         except Exception:
             bars = ()
             with self._lock:
@@ -255,13 +256,16 @@ class HistoryStore:
         elif not bars and old_entry is not None and old_entry.bars:
             bars = old_entry.bars
             used_fallback = True
-        state.result[code] = bars
-        self._cache_history_result(state, code, bars, used_fallback)
+        context = old_entry.context if used_fallback and old_entry is not None else build_history_context(bars)
+        retained = bars[-20:]
+        state.result[code] = retained
+        self._cache_history_result(state, code, retained, used_fallback)
         state.pending_entries[code] = _HistoryEntry(
-            bars=bars,
+            bars=retained,
             expires_at=self._monotonic()
             + (min(60.0, self._history_ttl_seconds) if used_fallback or not bars else self._history_ttl_seconds),
             source=old_entry.source if used_fallback and old_entry is not None else "eastmoney",
+            context=context,
         )
 
     def _cache_history_result(
@@ -321,7 +325,7 @@ class HistoryStore:
             "daily_history",
             "eastmoney",
             code,
-            {"code": code, "days": 90, "adjust": "qfq"},
+            {"code": code, "days": 61, "retained_days": 20, "adjust": "qfq"},
             observed_at,
         )
 
@@ -417,84 +421,44 @@ class HistoryStore:
         expires_at = self._monotonic() + self._history_ttl_seconds
         with self._lock:
             for code, bars in bars_by_code.items():
-                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-90:]
+                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-61:]
                 if not ordered or any(bar.adjustment is not PriceAdjustment.QFQ for bar in ordered):
                     if ordered:
                         self._history_error_count += 1
                     continue
                 current = self._history.get(code)
                 if current is None or not current.bars or ordered[-1].trade_date > current.bars[-1].trade_date:
-                    self._history[code] = _HistoryEntry(ordered, expires_at, source=source)
+                    self._history[code] = _HistoryEntry(
+                        ordered[-20:],
+                        expires_at,
+                        source=source,
+                        context=build_history_context(ordered),
+                    )
             self.trim(set(bars_by_code))
 
     def summaries(
         self,
         histories: Mapping[str, tuple[DailyBar, ...]],
         observed_at: datetime,
-    ) -> Mapping[str, HistoryProfile]:
+    ) -> Mapping[str, HistoryContext]:
         require_qfq_history(histories)
-        summaries: dict[str, HistoryProfile] = {}
+        summaries: dict[str, HistoryContext] = {}
+        del observed_at
         for code, bars in histories.items():
-            material = tuple(
-                (
-                    bar.trade_date,
-                    _finite_or_none(bar.open_price),
-                    _finite_or_none(bar.close),
-                    _finite_or_none(bar.high),
-                    _finite_or_none(bar.low),
-                    _finite_or_none(bar.volume),
-                    _finite_or_none(bar.amount),
-                    _finite_or_none(bar.pct_change),
-                    _finite_or_none(bar.turnover_rate),
-                )
-                for bar in bars
-            )
-            history_version = request_fingerprint({"bars": material})[:24]
-            identity = build_cache_identity(
-                CacheIdentitySpec(
-                    dataset="history_summary",
-                    source="history-summary",
-                    subject_key=code,
-                    request={"history_version": history_version},
-                    trade_date="versioned",
-                    phase="all_day",
-                    source_contract_version="history-summary-v16",
-                    config_version=self._runner.config_version,
-                    schema_version=self._runner.schema_version,
-                )
-            )
-            cache = self._runner.cache
-            cached = cache.get(identity) if cache is not None else None
-            if (
-                cached is not None
-                and isinstance(cached.value, HistoryProfile)
-                and cached.state not in {"negative", "degraded"}
-            ):
-                summaries[code] = cached.value
-                continue
-            if cache is None:
-                summaries[code] = summarize_history_metrics(bars)
-                continue
-
-            def load_summary(bars: tuple[DailyBar, ...] = bars) -> HistoryProfile:
-                return summarize_history_metrics(bars)
-
-            summary = cache.coalesce(identity, load_summary)
-            if not isinstance(summary, HistoryProfile):
-                raise TypeError("history summary cache returned an invalid value")
-            cache.put(
-                identity,
-                summary,
-                data_version=f"history:{history_version}",
-                source_time=observed_at,
-            )
-            summaries[code] = summary
+            with self._lock:
+                entry = self._history.get(code)
+            if entry is not None and entry.bars == bars and entry.context is not None:
+                summaries[code] = entry.context
+            else:
+                summaries[code] = build_history_context(bars)
         return summaries
 
     def status(self) -> HistoryStoreStatus:
         with self._lock:
             return HistoryStoreStatus(
                 entries=len(self._history),
+                raw_rows=sum(len(entry.bars) for entry in self._history.values()),
+                profile_entries=sum(entry.context is not None for entry in self._history.values()),
                 universe_rows=self._history_universe_rows,
                 covered_rows=self._history_covered_rows,
                 error_count=self._history_error_count,
@@ -538,13 +502,3 @@ class HistoryStore:
 def _history_source_time(bars: Sequence[DailyBar]) -> datetime:
     latest = date.fromisoformat(_history_version(bars))
     return datetime.combine(latest, time(15, 0), _SHANGHAI)
-
-
-def _finite_or_none(value: float | None) -> float | None:
-    if value is None:
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return parsed if math.isfinite(parsed) else None

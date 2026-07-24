@@ -154,8 +154,6 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         {
             "default_top_n",
             "maximum_top_n",
-            "event_page_limit",
-            "maximum_event_page_limit",
             "sse_history_size",
             "sse_client_queue_size",
             "sse_max_clients",
@@ -233,8 +231,6 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         api=ApiSettings(
             default_top_n=_integer(api_raw, "default_top_n", minimum=0),
             maximum_top_n=_integer(api_raw, "maximum_top_n", minimum=0, maximum=18),
-            event_page_limit=_integer(api_raw, "event_page_limit", minimum=1),
-            maximum_event_page_limit=_integer(api_raw, "maximum_event_page_limit", minimum=1),
             sse_history_size=_integer(api_raw, "sse_history_size", minimum=1),
             sse_client_queue_size=_integer(api_raw, "sse_client_queue_size", minimum=1),
             sse_max_clients=_integer(api_raw, "sse_max_clients", minimum=1, maximum=256),
@@ -323,8 +319,6 @@ def _validate_pipeline_runtime(settings: RuntimeSettings) -> None:
         raise ConfigurationError("priority_queue_size must be smaller than event_queue_size")
     if settings.api.default_top_n > settings.api.maximum_top_n:
         raise ConfigurationError("default_top_n cannot exceed maximum_top_n")
-    if settings.api.event_page_limit > settings.api.maximum_event_page_limit:
-        raise ConfigurationError("event_page_limit cannot exceed maximum_event_page_limit")
     if settings.pipeline.market_workers != 5:
         raise ConfigurationError("pipeline.market_workers must be fixed at 5 for the five source lanes")
     if not settings.market_data.single_flight:

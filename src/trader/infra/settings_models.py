@@ -110,8 +110,6 @@ class DeepSeekSettings:
 class ApiSettings:
     default_top_n: int
     maximum_top_n: int
-    event_page_limit: int
-    maximum_event_page_limit: int
     sse_history_size: int
     sse_client_queue_size: int
     sse_max_clients: int

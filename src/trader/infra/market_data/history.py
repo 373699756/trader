@@ -71,6 +71,39 @@ class HistoryProfile:
     upward_consistency_20d: float | None
 
 
+@dataclass(frozen=True)
+class HistoryContext:
+    """Compact long-lookback state retained alongside the 20 raw bars."""
+
+    profile: HistoryProfile
+    previous_profile: HistoryProfile | None
+    latest_trade_date: str
+    sample_count: int
+    return_anchors: tuple[tuple[int, float], ...]
+
+    def return_pct(self, days: int, current_price: float | None) -> float | None:
+        start = dict(self.return_anchors).get(days)
+        if start is None or start <= 0 or current_price is None or current_price <= 0:
+            return None
+        return (current_price / start - 1.0) * 100.0
+
+
+def build_history_context(bars: tuple[DailyBar, ...]) -> HistoryContext:
+    ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-61:]
+    anchors = tuple(
+        (days, ordered[-days - 1].close)
+        for days in (3, 5, 10, 20, 60)
+        if len(ordered) >= days + 1 and ordered[-days - 1].close > 0
+    )
+    return HistoryContext(
+        profile=summarize_history_metrics(ordered),
+        previous_profile=summarize_history_metrics(ordered[:-1]) if len(ordered) > 1 else None,
+        latest_trade_date=ordered[-1].trade_date if ordered else "",
+        sample_count=len(ordered),
+        return_anchors=anchors,
+    )
+
+
 def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
     """Compute all history metrics used by FeatureBuilder in one local pass."""
 
@@ -238,8 +271,10 @@ def upward_consistency(bars: tuple[DailyBar, ...], days: int = 20) -> float | No
 __all__ = [
     "DailyBar",
     "HistoryAdjustmentError",
+    "HistoryContext",
     "PriceAdjustment",
     "average_true_range_pct",
+    "build_history_context",
     "maximum_drawdown_pct",
     "HistoryProfile",
     "median_amount",

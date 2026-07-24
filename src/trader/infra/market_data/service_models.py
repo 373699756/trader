@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from trader.domain.market.research import ResearchObservation
 from trader.domain.market.tail import MinuteBar
-from trader.infra.market_data.history import DailyBar
+from trader.infra.market_data.history import DailyBar, HistoryContext
 
 
 @dataclass(frozen=True)
@@ -14,6 +14,7 @@ class _HistoryEntry:
     bars: tuple[DailyBar, ...]
     expires_at: float
     source: str = "eastmoney"
+    context: HistoryContext | None = None
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,12 @@ from zoneinfo import ZoneInfo
 
 from trader.domain.market.models import MarketQuote
 from trader.infra.market_data.features import FeatureBuilder
-from trader.infra.market_data.history import DailyBar, PriceAdjustment, summarize_history_metrics
+from trader.infra.market_data.history import (
+    DailyBar,
+    PriceAdjustment,
+    build_history_context,
+    summarize_history_metrics,
+)
 from trader.infra.settings import load_strategy_settings
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -78,7 +83,7 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
         (quote,),
         {quote.code: bars},
         NOW,
-        history_summaries={quote.code: summarize_history_metrics(bars)},
+        history_summaries={quote.code: build_history_context(bars)},
     )[0]
 
     assert feature.values["prior_high_20d"] == max(bar.high for bar in prior[-20:])

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import time
 from collections.abc import Iterator, Mapping
@@ -13,7 +12,6 @@ from typing import Any
 import pytest
 import requests
 
-from trader.application.events import EventAuditRecord, EventStatus
 from trader.application.latency import LatencyWaterfall
 from trader.application.ports.market import (
     MarketDataDeadlineExceededError,
@@ -38,7 +36,6 @@ from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.strategies import score_strategy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data import gateway as gateway_module
-from trader.infra.market_data import history_seed as history_seed_module
 from trader.infra.market_data import tushare_support as tushare_support_module
 from trader.infra.market_data.akshare import AkshareResearchClient
 from trader.infra.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailableError
@@ -48,9 +45,6 @@ from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar, HistoryAdjustmentError, PriceAdjustment
 from trader.infra.market_data.history_seed import (
     FallbackHistoryClient,
-    LocalHistorySeedClient,
-    RuntimeHistoryCacheClient,
-    RuntimeHistoryCachePolicy,
 )
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
@@ -67,7 +61,6 @@ from trader.infra.market_data.service_tushare import ReferenceLoader, ReferenceL
 from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
-from trader.infra.persistence.writer import SnapshotRepository
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
@@ -238,260 +231,6 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
 
 
-def test_local_history_seed_serves_last_valid_qfq_rows_without_calling_remote(tmp_path) -> None:
-    database = tmp_path / "market_data.sqlite3"
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            """
-            CREATE TABLE daily_bars (
-                trade_date TEXT, code TEXT, volume REAL, turnover REAL,
-                qfq_open REAL, qfq_close REAL, qfq_high REAL, qfq_low REAL, pct_chg REAL
-            )
-            """
-        )
-        connection.executemany(
-            "INSERT INTO daily_bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    (date(2026, 7, 15) - timedelta(days=index)).strftime("%Y%m%d"),
-                    "600001",
-                    1000.0,
-                    10_500_000.0,
-                    10.0,
-                    10.5,
-                    10.8,
-                    9.9,
-                    5.0,
-                )
-                for index in range(25)
-            ],
-        )
-
-    class FailingRemote:
-        calls = 0
-
-        def fetch_history(self, _code, *, days):
-            self.calls += 1
-            raise RuntimeError("remote unavailable")
-
-    remote = FailingRemote()
-    rows = LocalHistorySeedClient(database, remote).fetch_history("600001", days=90)
-
-    assert LocalHistorySeedClient(database, remote).available_codes(("600002", "600001")) == ("600001",)
-    assert len(rows) == 25
-    assert rows[-1].trade_date == "2026-07-15"
-    assert rows[-1].volume == 100_000.0
-    assert rows[-1].amount == 10_500_000.0
-    assert remote.calls == 0
-
-
-def test_runtime_history_cache_survives_restart_without_calling_remote(tmp_path) -> None:
-    database = tmp_path / "history_cache.sqlite3"
-    bars = _history_bars()
-    now = datetime(2026, 7, 23, 8, 0, tzinfo=timezone.utc)
-
-    class CountingRemote:
-        def __init__(self, result):
-            self.result = result
-            self.calls = 0
-
-        def fetch_history(self, _code, *, days):
-            self.calls += 1
-            return self.result[-days:]
-
-    first_remote = CountingRemote(bars)
-    first = RuntimeHistoryCacheClient(database, first_remote, wall_clock=lambda: now)
-
-    assert first.fetch_history("600001", days=90) == bars
-    assert first_remote.calls == 1
-
-    restarted_remote = CountingRemote(())
-    restarted = RuntimeHistoryCacheClient(database, restarted_remote, wall_clock=lambda: now)
-
-    assert restarted.fetch_history("600001", days=90) == bars
-    assert restarted.available_codes(("600002", "600001")) == ("600001",)
-    assert restarted_remote.calls == 0
-
-
-def test_history_connections_close_and_preserve_event_persistence(tmp_path, monkeypatch) -> None:
-    legacy_database = tmp_path / "market_data.sqlite3"
-    with sqlite3.connect(legacy_database) as connection:
-        connection.execute(
-            """
-            CREATE TABLE daily_bars (
-                trade_date TEXT, code TEXT, volume REAL, turnover REAL,
-                qfq_open REAL, qfq_close REAL, qfq_high REAL, qfq_low REAL, pct_chg REAL
-            )
-            """
-        )
-        connection.executemany(
-            "INSERT INTO daily_bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    bar.trade_date,
-                    "600001",
-                    bar.volume / 100.0,
-                    bar.amount,
-                    bar.open_price,
-                    bar.close,
-                    bar.high,
-                    bar.low,
-                    bar.pct_change,
-                )
-                for bar in _history_bars()
-            ],
-        )
-    event_repository = SnapshotRepository(tmp_path / "runtime", config_version="runtime-v2")
-    event_repository.initialize()
-
-    real_connect = sqlite3.connect
-    opened_connections: list[sqlite3.Connection] = []
-    live_connections: set[int] = set()
-
-    class TrackingConnection(sqlite3.Connection):
-        def close(self) -> None:
-            live_connections.discard(id(self))
-            super().close()
-
-    def tracking_connect(*args, **kwargs):
-        if len(live_connections) >= 5:
-            raise sqlite3.OperationalError("simulated open-file limit")
-        kwargs["factory"] = TrackingConnection
-        connection = real_connect(*args, **kwargs)
-        opened_connections.append(connection)
-        live_connections.add(id(connection))
-        return connection
-
-    monkeypatch.setattr(history_seed_module.sqlite3, "connect", tracking_connect)
-    remote = CountingHistoryClient(_history_bars())
-    seed = LocalHistorySeedClient(legacy_database, remote)
-    runtime = RuntimeHistoryCacheClient(tmp_path / "history_cache.sqlite3", remote, wall_clock=lambda: NOW)
-
-    assert len(seed.fetch_history("600001")) >= 20
-    assert seed.available_codes(("600001",)) == ("600001",)
-    assert len(runtime.fetch_history("600001")) >= 20
-    assert len(runtime.fetch_history("600001")) >= 20
-    assert runtime.available_codes(("600001",)) == ("600001",)
-
-    assert len(opened_connections) == 5
-    for connection in opened_connections:
-        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-            connection.execute("SELECT 1")
-    assert live_connections == set()
-
-    event = EventAuditRecord(
-        event_id="history-pressure-event",
-        event_type="score",
-        subject_key="market",
-        trade_date="2026-07-16",
-        phase="today_main",
-        strategy="shared",
-        priority=40,
-        data_version="history-pressure",
-        config_version="runtime-v2",
-        status=EventStatus.PENDING,
-        created_at=NOW,
-        deadline=NOW + timedelta(seconds=38),
-        retry_count=0,
-        payload={"schedule_task": "score"},
-    )
-    assert event_repository.reserve_event(event) is True
-    assert event_repository.compare_and_set_event(
-        event.event_id,
-        expected_status=EventStatus.PENDING,
-        status=EventStatus.RUNNING,
-        retry_count=0,
-    )
-    assert event_repository.compare_and_set_event(
-        event.event_id,
-        expected_status=EventStatus.RUNNING,
-        status=EventStatus.EXPIRED,
-        retry_count=0,
-        error="event deadline expired during execution: score",
-    )
-    stored = event_repository.list_events(cursor=0, limit=10)
-    assert len(stored) == 1
-    assert stored[0].status is EventStatus.EXPIRED
-    assert live_connections == set()
-
-
-def test_runtime_history_cache_refreshes_stale_rows_and_falls_back_on_failure(tmp_path) -> None:
-    database = tmp_path / "history_cache.sqlite3"
-    bars = _history_bars()
-    first_now = datetime(2026, 7, 23, 8, 0, tzinfo=timezone.utc)
-
-    class CountingRemote:
-        def __init__(self, result):
-            self.result = result
-            self.calls = 0
-
-        def fetch_history(self, _code, *, days):
-            self.calls += 1
-            return self.result[-days:]
-
-    first = RuntimeHistoryCacheClient(database, CountingRemote(bars), wall_clock=lambda: first_now)
-    assert first.fetch_history("600001") == bars
-
-    stale_remote = CountingRemote(())
-    restarted = RuntimeHistoryCacheClient(
-        database,
-        stale_remote,
-        policy=RuntimeHistoryCachePolicy(freshness_seconds=60),
-        wall_clock=lambda: first_now + timedelta(seconds=61),
-    )
-
-    assert restarted.fetch_history("600001") == bars
-    assert stale_remote.calls == 1
-
-    raw_remote = CountingRemote((replace(bars[0], adjustment=PriceAdjustment.RAW), *bars[1:]))
-    raw_restarted = RuntimeHistoryCacheClient(
-        database,
-        raw_remote,
-        policy=RuntimeHistoryCachePolicy(freshness_seconds=60),
-        wall_clock=lambda: first_now + timedelta(seconds=62),
-    )
-
-    assert raw_restarted.fetch_history("600001") == bars
-    assert raw_remote.calls == 1
-
-
-def test_runtime_history_cache_bounds_codes_and_ignores_corrupt_database(tmp_path) -> None:
-    database = tmp_path / "history_cache.sqlite3"
-    bars = _history_bars()
-    clock_values = iter(
-        (
-            datetime(2026, 7, 23, 8, 0, tzinfo=timezone.utc),
-            datetime(2026, 7, 23, 8, 1, tzinfo=timezone.utc),
-        )
-    )
-
-    class StaticRemote:
-        calls = 0
-
-        def fetch_history(self, _code, *, days):
-            self.calls += 1
-            return bars[-days:]
-
-    remote = StaticRemote()
-    cache = RuntimeHistoryCacheClient(
-        database,
-        remote,
-        policy=RuntimeHistoryCachePolicy(capacity=1),
-        wall_clock=lambda: next(clock_values),
-    )
-    assert cache.fetch_history("600001") == bars
-    assert cache.fetch_history("600002") == bars
-    assert cache.available_codes(("600001", "600002")) == ("600002",)
-
-    corrupt_database = tmp_path / "corrupt.sqlite3"
-    corrupt_database.write_bytes(b"not a sqlite database")
-    fallback_remote = StaticRemote()
-    corrupt_cache = RuntimeHistoryCacheClient(corrupt_database, fallback_remote)
-
-    assert corrupt_cache.fetch_history("600003") == bars
-    assert fallback_remote.calls == 1
-
-
 def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
     payload = {
         "data": {
@@ -593,6 +332,52 @@ def test_history_fallback_uses_eastmoney_only_when_tencent_is_insufficient() -> 
     assert len(bars) == 60
     assert primary.calls == ["600001"]
     assert fallback.calls == ["600001"]
+
+
+def test_history_store_fetches_sixty_one_bars_but_retains_only_twenty_raw_rows() -> None:
+    bars = (
+        DailyBar(
+            trade_date="2026-04-30",
+            open_price=9.9,
+            close=9.9,
+            high=10.0,
+            low=9.8,
+            volume=1_000_000,
+            amount=100_000_000,
+            pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        ),
+        *_history_bars(),
+    )
+
+    class RecordingHistory:
+        days: list[int] = []
+
+        def fetch_history(self, _code, *, days):
+            self.days.append(days)
+            return bars
+
+    history = RecordingHistory()
+    service = _service(
+        StaticGateway((_quote(),)),
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        wall_clock=lambda: NOW,
+    )
+
+    loaded = service.history.load(("600001",))
+    entry = service.history.entries()["600001"]
+    status = service.history.status()
+
+    assert history.days == [61]
+    assert len(loaded["600001"]) == 20
+    assert len(entry.bars) == 20
+    assert entry.context is not None
+    assert entry.context.sample_count == 61
+    assert entry.context.profile.moving_average_60d is not None
+    assert status.raw_rows == 20
+    assert status.profile_entries == 1
 
 
 def test_sina_market_request_bypasses_environment_proxy() -> None:
@@ -1042,7 +827,7 @@ def test_scheduled_reference_refresh_starts_tushare_and_eastmoney_history_indepe
             self.thread_name = ""
 
         def fetch_history(self, _code, *, days):
-            assert days == 90
+            assert days == 61
             self.thread_name = threading.current_thread().name
             self.started.set()
             return ()
@@ -1105,7 +890,7 @@ def test_dedicated_history_workers_do_not_consume_realtime_source_workers() -> N
     class BlockingRemoteHistory:
         @staticmethod
         def fetch_history(_code, *, days):
-            assert days == 90
+            assert days == 61
             history_started.set()
             assert release_history.wait(1.0)
             return _history_bars()
@@ -2619,7 +2404,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
             "daily_history",
             "eastmoney",
             quote.code,
-            {"code": quote.code, "days": 90, "adjust": "qfq"},
+            {"code": quote.code, "days": 61, "retained_days": 20, "adjust": "qfq"},
             measured_at,
         ),
         history,
@@ -2885,7 +2670,7 @@ def test_eastmoney_history_completion_cannot_overwrite_newer_tushare_history() -
             self.release = threading.Event()
 
         def fetch_history(self, _code, *, days):
-            assert days == 90
+            assert days == 61
             self.started.set()
             assert self.release.wait(1.0)
             return (eastmoney_bar,)
@@ -3720,7 +3505,7 @@ def test_repeated_refresh_does_not_queue_multiple_history_warmup_batches() -> No
     class BlockingHistory:
         @staticmethod
         def fetch_history(_code, *, days):
-            assert days == 90
+            assert days == 61
             started.set()
             assert release.wait(1.0)
             return _history_bars()

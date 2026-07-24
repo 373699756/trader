@@ -1,11 +1,9 @@
-"""Bounded P6 recommendation read model with resident and cold-date tiers."""
+"""Bounded P6 recommendation read model for active recommendation dates."""
 
 from __future__ import annotations
 
 import threading
-from collections import OrderedDict
 from collections.abc import Mapping, Sequence
-from concurrent.futures import Future
 from dataclasses import replace
 
 from trader.application.cache import canonical_json_bytes
@@ -14,7 +12,7 @@ from trader.domain.recommendation.models import LiveOverlay, RecommendationSnaps
 
 
 class PublishedSnapshotIndex:
-    """Own the complete Web read path and isolate cold readers with date single-flight."""
+    """Own the Web read path for at most the latest 20 recommendation dates."""
 
     _HISTORICAL_STRATEGIES = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
 
@@ -23,30 +21,21 @@ class PublishedSnapshotIndex:
         archive: SnapshotReaderPort,
         *,
         resident_days: int = 20,
-        cold_slots: int = 8,
         maximum_view_bytes: int = 160 * 1024,
     ) -> None:
-        if resident_days < 1 or cold_slots < 3 or maximum_view_bytes < 1:
+        if resident_days < 1 or maximum_view_bytes < 1:
             raise ValueError("published snapshot index limits must be positive")
         self._archive = archive
         self._resident_days = resident_days
-        self._cold_slots = cold_slots
         self._maximum_view_bytes = maximum_view_bytes
         self._lock = threading.RLock()
         self._current: dict[Strategy, RecommendationSnapshot] = {}
         self._resident: dict[tuple[Strategy, str], RecommendationSnapshot] = {}
-        self._cold: OrderedDict[tuple[Strategy, str], RecommendationSnapshot] = OrderedDict()
         self._dates: dict[Strategy, tuple[str, ...]] = {strategy: () for strategy in self._HISTORICAL_STRATEGIES}
         self._overlays: dict[tuple[Strategy, str], LiveOverlay] = {}
-        self._inflight: dict[str, Future[tuple[RecommendationSnapshot, ...]]] = {}
         self._counters: dict[str, int] = {
             "published": 0,
             "resident_hits": 0,
-            "cold_hits": 0,
-            "cold_misses": 0,
-            "cold_loads": 0,
-            "cold_coalesced": 0,
-            "rejected_incomplete_dates": 0,
             "rejected_late_drafts": 0,
             "rejected_frozen_replacements": 0,
             "rejected_oversize_views": 0,
@@ -68,7 +57,9 @@ class PublishedSnapshotIndex:
                     for delivery in accepted:
                         self._resident[(delivery.strategy, trade_date)] = delivery
         for strategy in self._HISTORICAL_STRATEGIES:
-            strategy_dates = tuple(sorted(date_sets[strategy], reverse=True))
+            strategy_dates = tuple(
+                trade_date for trade_date in sorted(date_sets[strategy], reverse=True) if trade_date in resident_dates
+            )
             with self._lock:
                 self._dates[strategy] = strategy_dates
                 latest = next(
@@ -121,14 +112,18 @@ class PublishedSnapshotIndex:
                 reverse=True,
             )[: self._resident_days]
         )
+        for strategy in self._HISTORICAL_STRATEGIES:
+            self._dates[strategy] = tuple(
+                trade_date for trade_date in self._dates[strategy] if trade_date in allowed_dates
+            )
         if snapshot.trade_date in allowed_dates:
             self._resident[key] = delivery
-        else:
-            self._cold[key] = delivery
-            self._evict_cold_dates_locked()
         for resident_key in tuple(self._resident):
             if resident_key[1] not in allowed_dates:
                 self._resident.pop(resident_key, None)
+        for overlay_key in tuple(self._overlays):
+            if overlay_key[0] in self._HISTORICAL_STRATEGIES and overlay_key[1] not in allowed_dates:
+                self._overlays.pop(overlay_key, None)
 
     def _accept_current_locked(self, delivery: RecommendationSnapshot) -> bool:
         current = self._current.get(delivery.strategy)
@@ -167,23 +162,13 @@ class PublishedSnapshotIndex:
     def load_frozen(self, strategy: Strategy, trade_date: str) -> RecommendationSnapshot | None:
         key = (strategy, trade_date)
         with self._lock:
+            if trade_date not in self._dates.get(strategy, ()):
+                return None
             resident = self._resident.get(key)
             if resident is not None:
                 self._counters["resident_hits"] += 1
                 return resident
-            cold = self._cold.pop(key, None)
-            if cold is not None:
-                self._cold[key] = cold
-                for other_strategy in self._HISTORICAL_STRATEGIES:
-                    other_key = (other_strategy, trade_date)
-                    other = self._cold.pop(other_key, None)
-                    if other is not None:
-                        self._cold[other_key] = other
-                self._counters["cold_hits"] += 1
-                return cold
-            self._counters["cold_misses"] += 1
-        snapshots = self._cold_date(trade_date)
-        return next((snapshot for snapshot in snapshots if snapshot.strategy is strategy), None)
+        return None
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
         with self._lock:
@@ -194,64 +179,10 @@ class PublishedSnapshotIndex:
             return {
                 "current_views": len(self._current),
                 "resident_views": len(self._resident),
-                "cold_views": len(self._cold),
-                "maximum_views": 4 + self._resident_days * 3 + self._cold_slots,
+                "maximum_views": 4 + self._resident_days * 3,
                 "maximum_view_bytes": self._maximum_view_bytes,
-                "inflight_dates": len(self._inflight),
                 **self._counters,
             }
-
-    def _cold_date(self, trade_date: str) -> tuple[RecommendationSnapshot, ...]:
-        future, owner = self._cold_future(trade_date)
-        if not owner:
-            return future.result()
-        try:
-            result = self._load_cold_date(trade_date)
-            future.set_result(result)
-            return result
-        except BaseException as exc:
-            future.set_exception(exc)
-            raise
-        finally:
-            with self._lock:
-                self._inflight.pop(trade_date, None)
-
-    def _cold_future(self, trade_date: str) -> tuple[Future[tuple[RecommendationSnapshot, ...]], bool]:
-        with self._lock:
-            future = self._inflight.get(trade_date)
-            owner = future is None
-            if future is None:
-                future = Future()
-                self._inflight[trade_date] = future
-                self._counters["cold_loads"] += 1
-            else:
-                self._counters["cold_coalesced"] += 1
-        return future, owner
-
-    def _load_cold_date(self, trade_date: str) -> tuple[RecommendationSnapshot, ...]:
-        snapshots = self._load_available_date(trade_date)
-        if not snapshots:
-            with self._lock:
-                self._counters["rejected_incomplete_dates"] += 1
-            return ()
-        deliveries = self._compact_fitting_views(snapshots)
-        if not deliveries:
-            return ()
-        with self._lock:
-            for delivery in deliveries:
-                self._cold[(delivery.strategy, trade_date)] = delivery
-            self._evict_cold_dates_locked()
-            return tuple(
-                self._cold[(strategy, trade_date)]
-                for strategy in self._HISTORICAL_STRATEGIES
-                if (strategy, trade_date) in self._cold
-            )
-
-    def _evict_cold_dates_locked(self) -> None:
-        while len(self._cold) > self._cold_slots:
-            oldest_date = next(iter(self._cold))[1]
-            for strategy in self._HISTORICAL_STRATEGIES:
-                self._cold.pop((strategy, oldest_date), None)
 
     def _load_available_date(
         self,

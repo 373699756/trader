@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-import threading
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from trader.application.events import EventAuditRecord, EventStatus
 from trader.application.ports.snapshots import RecoverySummary
 from trader.domain.market.models import (
     Board,
@@ -35,6 +33,7 @@ from trader.domain.review.models import (
     DeepSeekReview,
     ReviewOutcome,
 )
+from trader.infra.persistence.recommendation_archive import list_bundles, verify_bundle
 from trader.infra.persistence.snapshots import (
     snapshot_bytes,
     snapshot_from_dict,
@@ -275,77 +274,51 @@ def test_outcome_audit_is_idempotent_without_changing_frozen_snapshot(tmp_path) 
     assert snapshot_sha256(frozen_path.read_bytes()) == frozen_digest
 
 
-def test_persistent_observability_survives_repository_restart(tmp_path) -> None:
+def test_recommendation_store_keeps_twenty_dates_and_archives_older_outcome_backlog(tmp_path) -> None:
     repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
     repository.initialize()
-    repository.record_data_source_health(
-        {
-            "active_source": "eastmoney",
-            "market_quote_age": {"maximum_seconds": 7.5},
-            "candidate_quote_age": {"maximum_seconds": 1.5},
-            "sources": {
-                "eastmoney": {
-                    "planned_count": 3,
-                    "success_count": 2,
-                    "error_count": 1,
-                    "circuit_open": False,
-                    "p50_latency_ms": 12.0,
-                    "p95_latency_ms": 25.0,
-                    "last_error": "upstream unavailable",
-                },
-                "tencent": {
-                    "planned_count": 2,
-                    "success_count": 2,
-                    "error_count": 0,
-                    "circuit_open": False,
-                    "p50_latency_ms": 8.0,
-                    "p95_latency_ms": 10.0,
-                    "last_error": "",
-                },
-            },
-        },
-        updated_at=NOW,
-    )
-    repository.freeze(_snapshot())
-    with connect(tmp_path / "runtime.sqlite3") as connection:
-        connection.executemany(
-            """
-            INSERT INTO deepseek_calls(
-                call_id, strategy, phase, model, batch_id, requested_at, completed_at,
-                http_status, prompt_tokens, completion_tokens, latency_ms, outcome, error_code
-            ) VALUES (?, 'tomorrow', 'afternoon', 'model', 'batch', ?, ?, ?, 10, 20, ?, ?, ?)
-            """,
-            (
-                ("call-1", NOW.isoformat(), NOW.isoformat(), 429, 10.0, "failed", "http_429"),
-                ("call-2", NOW.isoformat(), NOW.isoformat(), None, 30.0, "failed", "timeout"),
-                ("call-3", NOW.isoformat(), NOW.isoformat(), 200, 20.0, "success", ""),
-            ),
+    start = date(2026, 6, 1)
+    for offset in range(21):
+        trade_date = (start + timedelta(days=offset)).isoformat()
+        repository.freeze(
+            replace(
+                _snapshot(),
+                snapshot_id=f"snapshot-{trade_date}",
+                trade_date=trade_date,
+            )
         )
 
-    restarted = SnapshotRepository(tmp_path, config_version="runtime-v2")
-    status = restarted.observability_status()
+    active_dates = repository.recommendation_dates(Strategy.TOMORROW)
+    bundles = list_bundles(tmp_path)
 
-    assert status["data_sources"]["eastmoney"]["planned_count"] == 3
-    assert status["data_sources"]["eastmoney"]["data_age_seconds"] == 7.5
-    assert status["data_sources"]["tencent"]["data_age_seconds"] == 1.5
-    assert status["deepseek_calls"] == {
-        "sample_size": 3,
-        "outcomes": {"failed": 2, "success": 1},
-        "http_429_count": 1,
-        "timeout_count": 1,
-        "p50_latency_ms": 20.0,
-        "p95_latency_ms": 30.0,
-    }
-    freeze = status["freezes"]["tomorrow"]
-    assert freeze["trade_date"] == "2026-07-16"
-    assert freeze["data_version"] == "fixture-v1"
-    assert freeze["fusion_version"] == "fusion-v2"
-    assert len(freeze["sha256"]) == 64
-    assert freeze["anchors"]["600001"] == {
-        "source": "fixture",
-        "source_time": NOW.isoformat(),
-        "age_seconds": 0.0,
-    }
+    assert len(active_dates) == 20
+    assert active_dates[-1] == "2026-06-02"
+    assert len(bundles) == 1
+    assert bundles[0]["trade_date"] == "2026-06-01"
+    bundle_path = tmp_path / bundles[0]["relative_path"]
+    assert verify_bundle(bundle_path)["schema"] == "recommendations-v1"
+    assert repository.load_frozen(Strategy.TOMORROW, "2026-06-01") is None
+
+    targets = repository.pending_outcome_targets(limit=100)
+    archived_target = next(target for target in targets if target.recommend_date == "2026-06-01")
+    repository.save_recommendation_outcomes(
+        (
+            RecommendationOutcome(
+                snapshot_id=archived_target.snapshot_id,
+                strategy=archived_target.strategy,
+                recommend_date=archived_target.recommend_date,
+                stock_code=archived_target.stock_code,
+                horizon=1,
+                status="complete",
+                settled_at=NOW,
+                anchor_price=archived_target.anchor_price,
+                atr20_pct=archived_target.atr20_pct,
+            ),
+        )
+    )
+
+    assert all(target.recommend_date != "2026-06-01" for target in repository.pending_outcome_targets(limit=100))
+    assert verify_bundle(bundle_path)["schema"] == "recommendations-v1"
 
 
 def test_live_overlay_is_recoverable_without_changing_frozen_json(tmp_path) -> None:
@@ -528,70 +501,6 @@ def test_long_snapshot_cannot_be_frozen(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="never frozen"):
         repository.freeze(replace(_snapshot(), strategy=Strategy.LONG))
-
-
-def test_event_claim_is_compare_and_set_for_one_idempotency_key(tmp_path) -> None:
-    repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
-    repository.initialize()
-    event = EventAuditRecord(
-        event_id="event-1",
-        event_type="freeze",
-        subject_key="market",
-        trade_date="2026-07-16",
-        phase="midday",
-        strategy="shared",
-        priority=0,
-        data_version="tick:112000",
-        config_version="runtime-v2",
-        status=EventStatus.PENDING,
-        created_at=NOW,
-        deadline=None,
-        retry_count=0,
-        payload={"freeze_strategies": ["today"]},
-    )
-    duplicate = replace(event, event_id="event-2")
-
-    assert repository.reserve_event(event) is True
-    assert repository.reserve_event(duplicate) is False
-    repositories = tuple(SnapshotRepository(tmp_path, config_version="runtime-v2") for _index in range(8))
-    barrier = threading.Barrier(9)
-    results: list[bool] = []
-    result_lock = threading.Lock()
-
-    def claim(candidate_repository: SnapshotRepository) -> None:
-        barrier.wait(timeout=2.0)
-        claimed = candidate_repository.compare_and_set_event(
-            "event-1",
-            expected_status=EventStatus.PENDING,
-            status=EventStatus.RUNNING,
-            retry_count=1,
-        )
-        with result_lock:
-            results.append(claimed)
-
-    threads = [threading.Thread(target=claim, args=(candidate,)) for candidate in repositories]
-    for thread in threads:
-        thread.start()
-    barrier.wait(timeout=2.0)
-    for thread in threads:
-        thread.join(timeout=2.0)
-
-    assert results.count(True) == 1
-    assert results.count(False) == 7
-    assert (
-        repository.compare_and_set_event(
-            "event-1",
-            expected_status=EventStatus.PENDING,
-            status=EventStatus.SUCCESS,
-            retry_count=1,
-        )
-        is False
-    )
-    stored = repository.list_events(cursor=0, limit=10)
-    assert len(stored) == 1
-    assert stored[0].event_id == "event-1"
-    assert stored[0].status is EventStatus.RUNNING
-    assert stored[0].retry_count == 1
 
 
 class SimulatedCrash(RuntimeError):

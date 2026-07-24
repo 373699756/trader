@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
@@ -45,9 +44,6 @@ class _Archive:
             strategy: tuple(strategy_dates) for strategy, strategy_dates in (dates_by_strategy or {}).items()
         }
         self.loads = 0
-        self.block_date = ""
-        self.started = threading.Event()
-        self.release = threading.Event()
 
     def latest(self, strategy: Strategy) -> RecommendationSnapshot | None:
         return None
@@ -57,9 +53,6 @@ class _Archive:
 
     def load_frozen(self, strategy: Strategy, trade_date: str) -> RecommendationSnapshot | None:
         self.loads += 1
-        if trade_date == self.block_date:
-            self.started.set()
-            self.release.wait(timeout=2)
         if trade_date not in self.recommendation_dates(strategy):
             return None
         return _snapshot(strategy, trade_date)
@@ -100,32 +93,21 @@ def test_published_index_keeps_partial_strategy_history_queryable() -> None:
     assert index.load_frozen(Strategy.TODAY, "2026-07-20") is None
 
 
-def test_published_index_coalesces_cold_reads_by_date_and_prefetches_three_strategies() -> None:
+def test_published_index_rejects_dates_older_than_twenty_without_storage_reads() -> None:
     dates = tuple(f"2026-06-{day:02d}" for day in range(30, 8, -1))
     archive = _Archive(dates)
     index = PublishedSnapshotIndex(archive)
     index.initialize()
     cold_date = dates[-1]
-    archive.block_date = cold_date
-    results: list[RecommendationSnapshot | None] = []
+    loads_after_initialize = archive.loads
 
-    first = threading.Thread(target=lambda: results.append(index.load_frozen(Strategy.TODAY, cold_date)))
-    second = threading.Thread(target=lambda: results.append(index.load_frozen(Strategy.D25, cold_date)))
-    first.start()
-    archive.started.wait(timeout=2)
-    second.start()
-    archive.release.set()
-    first.join(timeout=2)
-    second.join(timeout=2)
-
-    assert len(results) == 2
-    assert all(snapshot is not None for snapshot in results)
-    assert index.status()["cold_loads"] == 1
-    assert index.status()["cold_coalesced"] == 1
-    assert index.status()["cold_views"] == 3
+    assert index.load_frozen(Strategy.TODAY, cold_date) is None
+    assert index.load_frozen(Strategy.D25, cold_date) is None
+    assert archive.loads == loads_after_initialize
+    assert index.status()["resident_views"] == 60
 
 
-def test_published_index_cold_reads_only_available_strategy_views() -> None:
+def test_published_index_exposes_only_latest_twenty_partial_strategy_dates() -> None:
     dates = tuple(f"2026-06-{day:02d}" for day in range(30, 9, -1))
     archive = _Archive(
         dates_by_strategy={
@@ -138,9 +120,9 @@ def test_published_index_cold_reads_only_available_strategy_views() -> None:
     index.initialize()
     cold_date = dates[-1]
 
-    assert index.load_frozen(Strategy.TOMORROW, cold_date) is not None
+    assert index.load_frozen(Strategy.TOMORROW, cold_date) is None
     assert index.load_frozen(Strategy.TODAY, cold_date) is None
-    assert index.status()["cold_views"] == 1
+    assert index.status()["resident_views"] == 60
 
 
 def test_published_index_replaces_current_draft_without_archive_write() -> None:

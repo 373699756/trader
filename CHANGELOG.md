@@ -6,9 +6,18 @@ All notable changes to this project are documented here.
 
 ### Changed
 
-- 本地历史种子与 v17 历史热缓存的 SQLite 读取、可用代码查询和写入现在统一使用显式资源
-  作用域；事务成功、失败或提前返回后都会立即关闭连接，保留只读 URI、1/5 秒 timeout、
-  WAL、单写锁、缓存容量和失败回退语义不变。
+- 用户要求启动历史严格按“最多 360 只、每只内存最多 20 根原始日线”收敛。冷启动现在
+  不再读取旧历史种子或 `.runtime/v17/history_cache.sqlite3`，而是从腾讯/东方财富临时取得
+  最多 61 根 qfq 日线，计算 MA60、60 日收益锚点等紧凑摘要后只保留最近 20 根原始记录；
+  重启重新预热，现有因子公式、阈值和策略版本不变。
+
+- 活动推荐库只保留 today/tomorrow/d25 最近 20 个不同交易日、每策略每日最多 18 条。
+  更旧冻结、overlay 和 outcome 先写入带 SHA-256 的 `recommendations-v1` 不可变文件归档，
+  验证成功后才从活动库删除；未结算目标留最小 backlog，CLI 支持 `list|verify|export`，
+  Web 不读取归档。
+
+- 流水线事件 CAS 与实时来源健康全部改为有界进程内状态；必要 SQLite 写入只剩冻结、
+  检查点、结果结算和 DeepSeek 188 次原子预算，并由组合根注入的同一写锁协调。
 
 - `close_fallback` 的短线 TopK 现在增加只限收盘补算的空池恢复：today/tomorrow/d25 仍先按
   正常动作阈值和 5 分观察窗口选择；若本地候选非空但正式/观察池都为空，则按原集中度规则
@@ -58,14 +67,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
-- 用户报告评分事件失败或超过 deadline 后，`running -> failed/expired` 审计写入又在
-  `PRAGMA journal_mode=WAL` 阶段失败，日志显示
-  `pipeline event failure/expiration state could not be persisted`。现场 v17 运行库
-  `quick_check` 正常，但遗留 11 条 `running`，其中包含用户报错时刻的 `score`。原因已确认：
-  评分依赖的旧历史种子和热缓存共五条 SQLite 路径把事务上下文误当成关闭边界；Python
-  `sqlite3.Connection.__exit__` 只提交或回滚、不关闭连接，批量历史预热会持续占用文件描述符，
-  进而使后续事件终态连接无法打开。现在五条路径都在成功、失败和提前返回后确定关闭，事件
-  deadline、候选提交隔离和降级语义不变。
+- 用户指出此前只在 `_fail_event` 外包异常并没有解决数据库错误。重新调查确认运行库本身
+  `quick_check=ok`，真正的写放大来自每个流水线事件的 reserve/running/terminal 三次审计写、
+  高频来源健康 upsert，以及每次新连接都执行写性质的 `PRAGMA journal_mode=WAL`；历史缓存
+  另有 360 只、32,235 行，但不应属于运行数据库路径。现在常规连接只设置 foreign keys 和
+  busy timeout，WAL 仅初始化一次；事件/健康完全不落库，历史 SQLite 路径被移除，因此失败
+  事件不再递归触发第二次数据库写错。
 
 - 用户反馈“已经重启了，2-5 日还是没数据”。现场确认 d25 API 已是
   `ready + close_fallback + frozen=true`，但 `items=[]`；真实 replay input 合并后有 192 个
@@ -133,6 +140,20 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 隔离目录真实执行 `ApplicationSystem.start()` 并请求 `/api/status`：返回 HTTP 200、
+  `started=true`、`status=running`；外部行情在沙箱禁网时按契约降级，未出现 SQLite/WAL/
+  locked 错误。隔离运行库 `quick_check=ok`，不存在 `pipeline_events`、
+  `data_source_health` 或 `history_cache.sqlite3`；原 `.runtime/v17/history_cache.sqlite3`
+  启动前后 SHA-256、大小和 mtime 完全一致。
+- 聚焦回归覆盖：20 日活动留存与第 21 日归档、归档后 outcome 结算、归档哈希校验、
+  20 根原始历史+61 日摘要、进程内事件 CAS、普通连接不切 WAL、`/api/events` 返回 404、
+  SSE 保留，以及 DeepSeek 原子预算组件与流水线集成。
+- 完整通过 `make format-check`、`make lint`（严格重构债务为零）、`make type-check`
+  （173 个源码文件）、`make test` 和 `make package`；仓库外安装最终 wheel 后已验证包导入、
+  `trader-cli` 入口与模板/CSS/JavaScript/图标资源。无头浏览器在 1280x720、1440x900 和
+  1920x1080 三档桌面分辨率全部通过，无页面级横向溢出或浏览器错误，SSE patch-to-paint
+  P95 为 39 ms。
 
 - 失败先行回归 `test_history_connections_close_and_preserve_event_persistence` 在旧连接边界下确认
   五个连接离开操作后仍可执行 SQL；修复后确认五个连接全部关闭，并在模拟最多五个活动连接的
@@ -219,13 +240,19 @@ All notable changes to this project are documented here.
 
 ### Removed
 
-- 无。
+- 删除 SQLite `pipeline_events`、`data_source_health` 活动表与仓储实现、启动重放、
+  `GET /api/events` 分页接口及其配置。
+- 删除本地历史种子和 v17 SQLite 历史热缓存实现；现有
+  `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
 
-- 本批不改写故障发生前已经遗留为 `running` 的普通评分审计行，也不伪造其未知执行结果；服务
-  重启后调度器会按正常 cadence 产生新事件。修复已覆盖确定性连接生命周期回归，但尚未在一个
-  新的完整交易时段长期运行后复核操作系统文件描述符曲线。
+- 流水线事件和来源健康按用户要求只存在于当前进程，重启后不会恢复旧事件明细；运行状态、
+  SSE 快照和调度会从当前进程重新建立。归档随交易日增长，需要用户按本机磁盘容量定期通过
+  CLI 校验和导出，但 Web 与活动 SQLite 的大小保持 20 日上限。
+- 本批环境禁止访问外部行情供应商，因此不能用真实供应商成功响应复验 360 只完整预热；
+  禁网失败已按契约降级，隔离启动、HTTP 路由、三档本地浏览器、运行库结构和旧历史文件
+  不触碰均已验证。
 
 - 该修复只在 `close_fallback` 且正常正式/观察 TopK 为空时生效。它会让 Web 不再显示空表，
   但这些行全部是降级 `observe`，不代表达到 d25 76 分可执行门槛；如果本地候选本身为空、

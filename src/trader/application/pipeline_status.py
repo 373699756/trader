@@ -1,4 +1,4 @@
-"""Read-only runtime status and health persistence mixin."""
+"""Read-only runtime status and health mixin."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, cast
 from trader.application.cadence import PipelineTask, freshness_level
 from trader.application.pipeline_state import PipelineState
 from trader.application.pipeline_workers import worker_status
-from trader.application.ports.types import JsonObject
 from trader.application.schedule import MarketPhase
 from trader.application.snapshot_workflow import topk_quote_age
 from trader.domain.recommendation.models import Strategy
@@ -69,30 +68,9 @@ class PipelineStatusMixin(PipelineState):
             "cadence": cadence_status,
             "publisher": self._publisher.status(),
             "published_snapshots": dict(self._published_snapshots.status()),
-            "persistent_audit": self._observability_status(),
             "latency_waterfall": dict(self._latency.status()),
         }
         return self._state.snapshot(dependencies)
-
-    def _observability_status(self) -> JsonObject:
-        try:
-            return self._snapshot_observability.observability_status()
-        except (OSError, RuntimeError, ValueError):
-            return {"error": "persistent_observability_unavailable"}
-
-    def _record_health_snapshot(self) -> None:
-        health = dict(self._market_metadata.health())
-        updated_at = self._now()
-        if not self._persistence_running:
-            self._snapshot_observability.record_data_source_health(health, updated_at=updated_at)
-            return
-        future = self._persistence_pool.submit(
-            self._snapshot_observability.record_data_source_health,
-            health,
-            updated_at=updated_at,
-        )
-        if future is None:
-            self._state.increment("observability_write_rejections")
 
     def _freshness_status(
         self,

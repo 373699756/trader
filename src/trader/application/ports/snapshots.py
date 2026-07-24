@@ -1,11 +1,10 @@
-"""Snapshot read/write and observability ports."""
+"""Snapshot read/write ports."""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, TypeAlias
 
-from trader.application.ports.types import JsonObject
 from trader.domain.recommendation.models import LiveOverlay, RecommendationSnapshot, Strategy
 
 SnapshotStatusValue: TypeAlias = object
@@ -43,18 +42,13 @@ class SnapshotWriterPort(Protocol):
 
     def recover(self) -> RecoverySummary: ...
 
-
-class SnapshotObservabilityPort(Protocol):
-    def record_data_source_health(self, health: JsonObject, *, updated_at: datetime) -> None: ...
-
-    def observability_status(self) -> JsonObject: ...
+    def enforce_retention(self) -> int: ...
 
 
 @dataclass(frozen=True)
 class SnapshotPorts:
     reader: SnapshotReaderPort
     writer: SnapshotWriterPort
-    observability: SnapshotObservabilityPort
 
 
 class CurrentSnapshotReaderPort(Protocol):
