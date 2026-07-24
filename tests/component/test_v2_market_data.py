@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 import requests
 
+from trader.application.events import EventAuditRecord, EventStatus
 from trader.application.latency import LatencyWaterfall
 from trader.application.ports.market import (
     MarketDataDeadlineExceededError,
@@ -37,6 +38,7 @@ from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.strategies import score_strategy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data import gateway as gateway_module
+from trader.infra.market_data import history_seed as history_seed_module
 from trader.infra.market_data import tushare_support as tushare_support_module
 from trader.infra.market_data.akshare import AkshareResearchClient
 from trader.infra.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailableError
@@ -65,6 +67,7 @@ from trader.infra.market_data.service_tushare import ReferenceLoader, ReferenceL
 from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
+from trader.infra.persistence.writer import SnapshotRepository
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
@@ -308,6 +311,108 @@ def test_runtime_history_cache_survives_restart_without_calling_remote(tmp_path)
     assert restarted.fetch_history("600001", days=90) == bars
     assert restarted.available_codes(("600002", "600001")) == ("600001",)
     assert restarted_remote.calls == 0
+
+
+def test_history_connections_close_and_preserve_event_persistence(tmp_path, monkeypatch) -> None:
+    legacy_database = tmp_path / "market_data.sqlite3"
+    with sqlite3.connect(legacy_database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE daily_bars (
+                trade_date TEXT, code TEXT, volume REAL, turnover REAL,
+                qfq_open REAL, qfq_close REAL, qfq_high REAL, qfq_low REAL, pct_chg REAL
+            )
+            """
+        )
+        connection.executemany(
+            "INSERT INTO daily_bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    bar.trade_date,
+                    "600001",
+                    bar.volume / 100.0,
+                    bar.amount,
+                    bar.open_price,
+                    bar.close,
+                    bar.high,
+                    bar.low,
+                    bar.pct_change,
+                )
+                for bar in _history_bars()
+            ],
+        )
+    event_repository = SnapshotRepository(tmp_path / "runtime", config_version="runtime-v2")
+    event_repository.initialize()
+
+    real_connect = sqlite3.connect
+    opened_connections: list[sqlite3.Connection] = []
+    live_connections: set[int] = set()
+
+    class TrackingConnection(sqlite3.Connection):
+        def close(self) -> None:
+            live_connections.discard(id(self))
+            super().close()
+
+    def tracking_connect(*args, **kwargs):
+        if len(live_connections) >= 5:
+            raise sqlite3.OperationalError("simulated open-file limit")
+        kwargs["factory"] = TrackingConnection
+        connection = real_connect(*args, **kwargs)
+        opened_connections.append(connection)
+        live_connections.add(id(connection))
+        return connection
+
+    monkeypatch.setattr(history_seed_module.sqlite3, "connect", tracking_connect)
+    remote = CountingHistoryClient(_history_bars())
+    seed = LocalHistorySeedClient(legacy_database, remote)
+    runtime = RuntimeHistoryCacheClient(tmp_path / "history_cache.sqlite3", remote, wall_clock=lambda: NOW)
+
+    assert len(seed.fetch_history("600001")) >= 20
+    assert seed.available_codes(("600001",)) == ("600001",)
+    assert len(runtime.fetch_history("600001")) >= 20
+    assert len(runtime.fetch_history("600001")) >= 20
+    assert runtime.available_codes(("600001",)) == ("600001",)
+
+    assert len(opened_connections) == 5
+    for connection in opened_connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+    assert live_connections == set()
+
+    event = EventAuditRecord(
+        event_id="history-pressure-event",
+        event_type="score",
+        subject_key="market",
+        trade_date="2026-07-16",
+        phase="today_main",
+        strategy="shared",
+        priority=40,
+        data_version="history-pressure",
+        config_version="runtime-v2",
+        status=EventStatus.PENDING,
+        created_at=NOW,
+        deadline=NOW + timedelta(seconds=38),
+        retry_count=0,
+        payload={"schedule_task": "score"},
+    )
+    assert event_repository.reserve_event(event) is True
+    assert event_repository.compare_and_set_event(
+        event.event_id,
+        expected_status=EventStatus.PENDING,
+        status=EventStatus.RUNNING,
+        retry_count=0,
+    )
+    assert event_repository.compare_and_set_event(
+        event.event_id,
+        expected_status=EventStatus.RUNNING,
+        status=EventStatus.EXPIRED,
+        retry_count=0,
+        error="event deadline expired during execution: score",
+    )
+    stored = event_repository.list_events(cursor=0, limit=10)
+    assert len(stored) == 1
+    assert stored[0].status is EventStatus.EXPIRED
+    assert live_connections == set()
 
 
 def test_runtime_history_cache_refreshes_stale_rows_and_falls_back_on_failure(tmp_path) -> None:

@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 本地历史种子与 v17 历史热缓存的 SQLite 读取、可用代码查询和写入现在统一使用显式资源
+  作用域；事务成功、失败或提前返回后都会立即关闭连接，保留只读 URI、1/5 秒 timeout、
+  WAL、单写锁、缓存容量和失败回退语义不变。
+
 - `close_fallback` 的短线 TopK 现在增加只限收盘补算的空池恢复：today/tomorrow/d25 仍先按
   正常动作阈值和 5 分观察窗口选择；若本地候选非空但正式/观察池都为空，则按原集中度规则
   发布最多 8 个无 veto 的本地候选为 `observe`，追加
@@ -53,6 +57,15 @@ All notable changes to this project are documented here.
   不改变 0.85 板块可靠度门槛、候选公式、动作阈值、DeepSeek 预算或冻结不可覆盖规则。
 
 ### Fixed
+
+- 用户报告评分事件失败或超过 deadline 后，`running -> failed/expired` 审计写入又在
+  `PRAGMA journal_mode=WAL` 阶段失败，日志显示
+  `pipeline event failure/expiration state could not be persisted`。现场 v17 运行库
+  `quick_check` 正常，但遗留 11 条 `running`，其中包含用户报错时刻的 `score`。原因已确认：
+  评分依赖的旧历史种子和热缓存共五条 SQLite 路径把事务上下文误当成关闭边界；Python
+  `sqlite3.Connection.__exit__` 只提交或回滚、不关闭连接，批量历史预热会持续占用文件描述符，
+  进而使后续事件终态连接无法打开。现在五条路径都在成功、失败和提前返回后确定关闭，事件
+  deadline、候选提交隔离和降级语义不变。
 
 - 用户反馈“已经重启了，2-5 日还是没数据”。现场确认 d25 API 已是
   `ready + close_fallback + frozen=true`，但 `items=[]`；真实 replay input 合并后有 192 个
@@ -120,6 +133,21 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 失败先行回归 `test_history_connections_close_and_preserve_event_persistence` 在旧连接边界下确认
+  五个连接离开操作后仍可执行 SQL；修复后确认五个连接全部关闭，并在模拟最多五个活动连接的
+  资源压力下继续完成事件 `pending -> running -> expired` CAS。
+- 通过完整 `tests/component/test_v2_market_data.py`、`tests/component/test_v2_persistence.py` 和
+  `test_expired_full_market_event_does_not_commit_candidates_or_set_recent_error`；目标文件 Ruff、mypy
+  通过，实际 v17 运行库 `PRAGMA quick_check` 返回 `ok`。
+- 使用真实配置和运行库启动服务：新浪全市场返回 5530 行，历史预热完成 357/360；进程 FD
+  稳定在 9-10，持久化执行器完成 78 次且零拒绝，新评分事件 `1384` 超时后成功由 `running`
+  落为 `expired`，未再出现 SQLite/WAL 终态写入异常。
+- 完整 `make format-check`、`make lint`、`make type-check`、803 项 `make test` 和
+  `make package` 通过；仓库外全新虚拟环境安装 wheel 后，包导入、`trader-cli
+  validate-config`、模板/CSS/JavaScript/图标资源和 `pip check` 通过。
+- 无头 Firefox 桌面验收覆盖 1280×720、1440×900、1920×1080，三档均无页面级横向溢出，
+  浏览器错误和 resync 均为 0，24 个 patch 全部应用，patch-to-paint P95 为 16ms。
 
 - 通过：`tests/unit/application/test_recommendations.py::test_snapshot_returns_zero_recommendations_instead_of_lowering_threshold`、
   `tests/unit/application/test_recommendations.py::test_close_fallback_observes_local_candidates_below_observation_floor`、
@@ -194,6 +222,10 @@ All notable changes to this project are documented here.
 - 无。
 
 ### Residual Risks
+
+- 本批不改写故障发生前已经遗留为 `running` 的普通评分审计行，也不伪造其未知执行结果；服务
+  重启后调度器会按正常 cadence 产生新事件。修复已覆盖确定性连接生命周期回归，但尚未在一个
+  新的完整交易时段长期运行后复核操作系统文件描述符曲线。
 
 - 该修复只在 `close_fallback` 且正常正式/观察 TopK 为空时生效。它会让 Web 不再显示空表，
   但这些行全部是降级 `observe`，不代表达到 d25 76 分可执行门槛；如果本地候选本身为空、

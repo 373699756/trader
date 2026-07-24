@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,7 +66,7 @@ class LocalHistorySeedClient:
         placeholders = ",".join("?" for _ in normalized)
         uri = self._path.resolve().as_uri() + "?mode=ro"
         try:
-            with sqlite3.connect(uri, uri=True, timeout=1.0) as connection:
+            with _connection_scope(uri, uri=True, timeout=1.0) as connection:
                 rows = connection.execute(
                     f"""
                     SELECT code
@@ -86,7 +87,7 @@ class LocalHistorySeedClient:
             return ()
         uri = self._path.resolve().as_uri() + "?mode=ro"
         try:
-            with sqlite3.connect(uri, uri=True, timeout=1.0) as connection:
+            with _connection_scope(uri, uri=True, timeout=1.0) as connection:
                 rows = connection.execute(
                     """
                     SELECT trade_date, qfq_open, qfq_close, qfq_high, qfq_low,
@@ -170,7 +171,7 @@ class RuntimeHistoryCacheClient:
             return ()
         placeholders = ",".join("?" for _ in normalized)
         try:
-            with sqlite3.connect(self._read_uri(), uri=True, timeout=1.0) as connection:
+            with _connection_scope(self._read_uri(), uri=True, timeout=1.0) as connection:
                 rows = connection.execute(
                     f"""
                     SELECT code
@@ -190,7 +191,7 @@ class RuntimeHistoryCacheClient:
         if len(code) != 6 or not code.isdigit() or not self._path.is_file():
             return (), None
         try:
-            with sqlite3.connect(self._read_uri(), uri=True, timeout=1.0) as connection:
+            with _connection_scope(self._read_uri(), uri=True, timeout=1.0) as connection:
                 metadata = connection.execute(
                     "SELECT updated_at FROM history_cache_codes WHERE code = ?",
                     (code,),
@@ -256,7 +257,7 @@ class RuntimeHistoryCacheClient:
         try:
             with self._write_lock:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
-                with sqlite3.connect(self._path, timeout=5.0) as connection:
+                with _connection_scope(self._path, timeout=5.0) as connection:
                     connection.execute("PRAGMA journal_mode=WAL")
                     connection.execute("PRAGMA busy_timeout=5000")
                     _initialize_runtime_history_cache(connection)
@@ -310,6 +311,21 @@ class RuntimeHistoryCacheClient:
 
     def _read_uri(self) -> str:
         return self._path.resolve().as_uri() + "?mode=ro"
+
+
+@contextmanager
+def _connection_scope(
+    database: str | Path,
+    *,
+    uri: bool = False,
+    timeout: float,
+) -> Iterator[sqlite3.Connection]:
+    connection = sqlite3.connect(database, uri=uri, timeout=timeout)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def _initialize_runtime_history_cache(connection: sqlite3.Connection) -> None:
