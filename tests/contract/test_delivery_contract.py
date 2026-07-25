@@ -38,6 +38,7 @@ def test_docs_keep_two_authorities_active_plans_and_delivery_reports() -> None:
         "queston.md",
         "recommendation-strategy.md",
         "reports/a-share-long-industry-research-2026-07-24.md",
+        "reports/long-watchlist-changes-2026-07-25.md",
         "reports/youhua-a1-baseline.md",
         "reports/youhua-a2-public-skeleton.md",
         "reports/youhua-a3-integration.md",

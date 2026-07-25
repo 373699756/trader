@@ -160,12 +160,24 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
     assert watchlist.schema_version == 2
-    assert len(watchlist.items) == 207
-    assert len(watchlist.groups) == 43
+    assert len(watchlist.items) == 213
+    assert len(watchlist.groups) == 46
     assert max(len(group.codes) for group in watchlist.groups if group.category == "chokepoint") <= 5
+    groups_by_key = {(group.category, group.name): group.codes for group in watchlist.groups}
+    assert groups_by_key[("chokepoint", "脑机接口")] == ("688626", "688273")
+    assert groups_by_key[("chokepoint", "AI算力")] == ("603019", "601138", "000977", "000938")
+    assert groups_by_key[("chokepoint", "液冷")] == ("002837", "300499", "300990")
+    assert groups_by_key[("chokepoint", "数据中心电源")] == ("002335", "002518", "002364")
     future_growth_groups = tuple(group for group in watchlist.groups if group.category == "future_growth")
     assert len(future_growth_groups) == 9
     assert max(len(group.codes) for group in future_growth_groups) <= 5
+    assert groups_by_key[("future_growth", "光模块")] == (
+        "300548",
+        "300570",
+        "301205",
+        "688498",
+        "300620",
+    )
     low_price_groups = tuple(group for group in watchlist.groups if group.category == "low_price_potential")
     assert tuple(group.name for group in low_price_groups) == (
         "芯片与电子",
@@ -174,8 +186,8 @@ def test_v2_configuration_contract_is_valid() -> None:
         "材料与资源",
         "种业与生物育种",
     )
-    assert sum(len(group.codes) for group in low_price_groups) == 26
-    assert len({code for group in low_price_groups for code in group.codes}) == 26
+    assert sum(len(group.codes) for group in low_price_groups) == 24
+    assert len({code for group in low_price_groups for code in group.codes}) == 24
     grouped_codes = tuple(code for group in watchlist.groups for code in group.codes)
     assert len(grouped_codes) == len(set(grouped_codes))
     assert set(grouped_codes) == {item.code for item in watchlist.items}

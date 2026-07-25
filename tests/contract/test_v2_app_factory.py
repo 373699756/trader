@@ -48,7 +48,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "/static/dashboard.css?v=21" in page
     assert "/static/render.js?v=13" in page
     assert "/static/selection.js?v=3" in page
-    assert "/static/long_watchlist_data.js?v=3" in page
+    assert "/static/long_watchlist_data.js?v=4" in page
     assert "/static/long_groups.js?v=5" in page
     assert "/static/dashboard_utils.js?v=2" in page
     assert "/static/dashboard.js?v=26" in page
