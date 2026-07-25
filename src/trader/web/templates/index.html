@@ -6,13 +6,13 @@
     <meta name="color-scheme" content="dark" />
     <title>A股策略看板</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='20') }}" />
-    <script defer src="{{ url_for('static', filename='render.js', v='12') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='21') }}" />
+    <script defer src="{{ url_for('static', filename='render.js', v='13') }}"></script>
     <script defer src="{{ url_for('static', filename='selection.js', v='3') }}"></script>
-    <script defer src="{{ url_for('static', filename='long_watchlist_data.js', v='2') }}"></script>
+    <script defer src="{{ url_for('static', filename='long_watchlist_data.js', v='3') }}"></script>
     <script defer src="{{ url_for('static', filename='long_groups.js', v='5') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard_utils.js', v='1') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard.js', v='25') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard_utils.js', v='2') }}"></script>
+    <script defer src="{{ url_for('static', filename='dashboard.js', v='26') }}"></script>
   </head>
   <body>
     <header class="app-header">
@@ -28,7 +28,7 @@
         <span>行情 <b id="quoteSource">-</b> <b id="quoteTime">-</b> / <b id="quoteAge">-</b></span>
         <span>推送 <b id="streamStatus">连接中</b></span>
         <span>评分 <b id="scoreTime">-</b></span>
-        <span>DeepSeek 已用/剩余 <b id="budgetStatus">0 / 168</b></span>
+        <span>模型额度 已用/剩余 <b id="budgetStatus">0 / 168</b></span>
         <span>冻结 <b id="headerFreeze">-</b></span>
       </div>
       <button id="refreshButton" class="icon-button" type="button" title="刷新当前策略" aria-label="刷新当前策略">
@@ -86,7 +86,7 @@
         <aside id="longGroupBar" class="long-group-bar" aria-label="长期研究分组" hidden>
           <header class="long-panel-heading">
             <div>
-              <span>长期研究分组</span>
+              <span>重点研究方向</span>
               <h2 id="longPanelTitle">卡脖子行业</h2>
             </div>
             <b id="longPanelMeta">-</b>
@@ -97,8 +97,8 @@
         <section class="table-region" aria-label="股票信息">
           <header id="longStockHeader" class="long-stock-header" hidden>
             <div>
-              <span>长期固定观察池</span>
-              <h2>股票信息</h2>
+              <span>长期重点观察池</span>
+              <h2>重点股票行情</h2>
             </div>
             <b id="longStockContext">请选择左侧行业</b>
           </header>

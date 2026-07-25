@@ -48,6 +48,7 @@ const state = {
   ...sandbox.window.__dashboardD4,
   latencySummary: sandbox.window.TraderDashboardUtils.latencySummary,
   longTable: sandbox.window.TraderRender.longTable,
+  sourceLabel: sandbox.window.TraderRender.sourceLabel,
   tableColumnCount: sandbox.window.TraderRender.tableColumnCount,
   tableRows: sandbox.window.TraderRender.tableRows,
   longGroupDisplayPayload: sandbox.window.TraderLongGroups.displayPayload,
@@ -80,6 +81,9 @@ assert.strictEqual(
   "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
 );
 assert.strictEqual(state.tableColumnCount({ strategy: "long", historical: false }), 7);
+assert.strictEqual(state.sourceLabel("unavailable"), "行情暂不可用");
+assert.strictEqual(state.sourceLabel("long_watchlist"), "长期观察名单");
+assert.strictEqual(state.sourceLabel("tencent"), "腾讯行情");
 assert.match(
   state.tableRows([
     {
@@ -96,7 +100,7 @@ assert.match(
       source_time: "2026-07-24T14:50:00+08:00",
     },
   ], { strategy: "long" }),
-  /eastmoney\+sina/,
+  /东方财富 · 新浪行情/,
 );
 assert.strictEqual(sandbox.window.TraderLongGroups.scopeLabel("chokepoint"), "卡脖子行业");
 assert.strictEqual(sandbox.window.TraderLongGroups.scopeLabel("future_growth"), "高成长赛道");

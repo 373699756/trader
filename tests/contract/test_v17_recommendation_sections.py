@@ -74,6 +74,9 @@ def test_long_dashboard_uses_left_group_sidebar() -> None:
     assert ".long-group-bar" in components
     assert "flex-direction: column" in components
     assert ".long-stock-header" in components
+    assert ".long-panel-heading::before" in components
+    assert ".long-stock-header::before" in components
+    assert ".is-long-table tbody tr:hover" in components
 
 
 def test_long_scope_controls_follow_the_long_strategy_description() -> None:
@@ -101,3 +104,6 @@ def test_packaged_long_watchlist_matches_runtime_configuration() -> None:
     assert source.rstrip().endswith(suffix)
     packaged = json.loads(source[len(prefix) : -len(suffix)])
     assert packaged == config
+    grouped_codes = [code for group in config["groups"] for code in group["codes"]]
+    assert len(grouped_codes) == len(set(grouped_codes))
+    assert set(grouped_codes) == {item["code"] for item in config["items"]}

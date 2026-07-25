@@ -41,7 +41,7 @@
   min-width: 0;
   padding: 12px;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid #334b73;
   border-radius: var(--radius);
   background: var(--surface);
 }
@@ -153,11 +153,13 @@
   color: #fff;
   border-bottom-color: #5d8ad6;
   background: transparent;
+  font-weight: 700;
 }
 
 .long-industry-tab.is-active {
   border-color: #5d8ad6;
-  background: #172238;
+  background: linear-gradient(90deg, #1d3151, #172238);
+  box-shadow: inset 3px 0 0 #73a7f5;
 }
 
 .long-scope-tab:focus-visible,
@@ -168,11 +170,29 @@
 
 .long-panel-heading,
 .long-stock-header {
+  position: relative;
   min-height: 58px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.long-panel-heading::before,
+.long-stock-header::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 17px;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(#78adff, #3567b2);
+}
+
+.long-panel-heading > div,
+.long-stock-header > div {
+  padding-left: 11px;
 }
 
 .long-panel-heading {
@@ -221,6 +241,21 @@
 .recommendation-layout.is-long .table-scroll {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+.is-long-table tbody tr {
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.is-long-table tbody tr:hover,
+.is-long-table tbody tr:focus {
+  background: #18243a;
+  box-shadow: inset 3px 0 0 #5d8ad6;
+}
+
+.is-long-table .stock-name {
+  color: #f5f8ff;
+  font-weight: 700;
 }
 
 table {

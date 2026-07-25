@@ -160,7 +160,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
     assert watchlist.schema_version == 2
-    assert len(watchlist.items) == 154
+    assert len(watchlist.items) == 207
     assert len(watchlist.groups) == 43
     assert max(len(group.codes) for group in watchlist.groups if group.category == "chokepoint") <= 5
     future_growth_groups = tuple(group for group in watchlist.groups if group.category == "future_growth")
@@ -176,6 +176,9 @@ def test_v2_configuration_contract_is_valid() -> None:
     )
     assert sum(len(group.codes) for group in low_price_groups) == 26
     assert len({code for group in low_price_groups for code in group.codes}) == 26
+    grouped_codes = tuple(code for group in watchlist.groups for code in group.codes)
+    assert len(grouped_codes) == len(set(grouped_codes))
+    assert set(grouped_codes) == {item.code for item in watchlist.items}
 
 
 def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -> None:
@@ -209,6 +212,16 @@ def test_long_watchlist_low_price_groups_reject_duplicate_codes(tmp_path) -> Non
     changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="cannot contain duplicate codes"):
+        load_long_watchlist(changed_path)
+
+
+def test_long_watchlist_rejects_codes_repeated_across_any_groups(tmp_path) -> None:
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "long_watchlist.json").read_text(encoding="utf-8"))
+    raw["groups"][1]["codes"][0] = raw["groups"][0]["codes"][0]
+    changed_path = tmp_path / "long_watchlist.json"
+    changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="cannot repeat across groups"):
         load_long_watchlist(changed_path)
 
 

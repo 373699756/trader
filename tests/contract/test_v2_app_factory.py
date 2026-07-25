@@ -45,13 +45,13 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "A股策略看板" in page
     assert "股票详情" in page
     assert "策略验证" not in page
-    assert "/static/dashboard.css?v=20" in page
-    assert "/static/render.js?v=12" in page
+    assert "/static/dashboard.css?v=21" in page
+    assert "/static/render.js?v=13" in page
     assert "/static/selection.js?v=3" in page
-    assert "/static/long_watchlist_data.js?v=2" in page
+    assert "/static/long_watchlist_data.js?v=3" in page
     assert "/static/long_groups.js?v=5" in page
-    assert "/static/dashboard_utils.js?v=1" in page
-    assert "/static/dashboard.js?v=25" in page
+    assert "/static/dashboard_utils.js?v=2" in page
+    assert "/static/dashboard.js?v=26" in page
     assert 'id="currentViewStatus"' not in page
     assert 'class="current-view-status"' not in page
     assert 'id="strategyDescription"' in page
@@ -114,6 +114,11 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "recommendationSummary" in selection
     assert "HISTORY_REFRESH_MS = 3000" in dashboard
     assert 'close_fallback: "收盘恢复中"' in dashboard_utils
+    assert 'continuous: "连续交易"' in dashboard_utils
+    assert 'unavailable: "暂不可用"' in dashboard_utils
+    assert "sourceLabel(market.active_source)" in dashboard
+    assert "sourceLabel(firstVisible.source)" in dashboard
+    assert "sourceLabel(first.source)" in dashboard
     assert 'payload.phase === "close_fallback"' in dashboard
     assert "实时草稿" not in dashboard
     assert "实时数据" in dashboard
@@ -124,12 +129,12 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "数据状态" in page
     assert 'id="longPanelTitle">卡脖子行业<' in page
     assert 'id="longStockHeader"' in page
-    assert ">股票信息<" in page
+    assert ">重点股票行情<" in page
     stylesheet_response = client.get("/static/dashboard.css")
     stylesheet = stylesheet_response.get_data(as_text=True)
     assert stylesheet_response.status_code == 200
     assert '@import url("./dashboard_base.css?v=4");' in stylesheet
-    assert '@import url("./dashboard_components.css?v=20");' in stylesheet
+    assert '@import url("./dashboard_components.css?v=21");' in stylesheet
     assert '@import url("./dashboard_responsive.css?v=4");' in stylesheet
 
     base_response = client.get("/static/dashboard_base.css")

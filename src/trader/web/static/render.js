@@ -7,8 +7,19 @@
     unavailable: "不可执行",
   };
 
+  const SOURCE_LABELS = {
+    unavailable: "行情暂不可用",
+    long_watchlist: "长期观察名单",
+    tencent: "腾讯行情",
+    eastmoney: "东方财富",
+    sina: "新浪行情",
+    tushare: "专业行情",
+    akshare: "公开行情",
+  };
+
   const ACTION_REASON_LABELS = {
     long_watch_only: "长期观察池",
+    fixed_long_watchlist: "固定长期观察名单",
     risk_veto: "风险事实触发限制",
     stale_quote: "行情已过期，仅供观察",
     insufficient_core_features: "核心数据不足，仅供观察",
@@ -237,8 +248,19 @@
       <td class="${change.className}">${change.text}</td>
       <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
       <td>${compact(item.market_cap)}</td>
-      <td>${hasValue(item.source_time) ? formatDateTime(item.source_time) : "-"}<span class="stock-code">${escapeHtml(item.source || "来源未知")}</span></td>
+      <td>${hasValue(item.source_time) ? formatDateTime(item.source_time) : "-"}<span class="stock-code">${escapeHtml(sourceLabel(item.source))}</span></td>
     </tr>`;
+  }
+
+  function sourceLabel(value) {
+    if (!hasValue(value)) return "来源未知";
+    const raw = String(value).trim();
+    if (SOURCE_LABELS[raw]) return SOURCE_LABELS[raw];
+    const parts = raw.split("+").map((part) => part.trim()).filter(Boolean);
+    if (parts.length > 1 && parts.every((part) => SOURCE_LABELS[part])) {
+      return parts.map((part) => SOURCE_LABELS[part]).join(" · ");
+    }
+    return /[A-Za-z_]/.test(raw) ? "行情来源待确认" : raw;
   }
 
   function tableDefinition(snapshot) {
@@ -497,5 +519,6 @@
     tableDefinition,
     tableRows,
     statusErrorLabel,
+    sourceLabel,
   };
 })();

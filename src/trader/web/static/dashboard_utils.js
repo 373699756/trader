@@ -30,6 +30,8 @@
     return ({
       closed: "休市",
       warmup: "共享预热",
+      current: "当前行情",
+      continuous: "连续交易",
       today_observe: "今早观察",
       today_main: "今早主执行",
       today_late: "今早降级执行",
@@ -41,7 +43,8 @@
       frozen: "冻结窗口",
       close_fallback: "收盘恢复中",
       after_close: "收盘后",
-    })[value] || value;
+      unavailable: "暂不可用",
+    })[value] || (/[A-Za-z_]/.test(String(value || "")) ? "状态待确认" : value);
   }
 
   window.TraderDashboardUtils = Object.freeze({

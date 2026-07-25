@@ -197,7 +197,7 @@
         state.projectionVersion = projectionVersion(payload);
         if (["overlay", "history_overlay"].includes(reason) && patchLiveRows(previous, payload)) {
           const first = payload.items && payload.items[0];
-          els.dataSource.textContent = first && first.source ? first.source : "-";
+          els.dataSource.textContent = first && first.source ? window.TraderRender.sourceLabel(first.source) : "-";
           updateQuoteAge();
         } else {
           renderPayload(payload);
@@ -320,7 +320,7 @@
     els.executableCount.textContent = String(recommendations.filter((item) => item.action === "executable").length);
     els.filteredCount.textContent = String(payload.filtered_count || 0);
     const firstVisible = recommendations[0] || items[0];
-    els.dataSource.textContent = firstVisible && firstVisible.source ? firstVisible.source : "-";
+    els.dataSource.textContent = firstVisible && firstVisible.source ? window.TraderRender.sourceLabel(firstVisible.source) : "-";
     const summary = selection.recommendationSummary(payload, recommendations);
     els.topScore.textContent = summary.topScore;
     els.modelReview.textContent = summary.modelReview;
@@ -495,7 +495,7 @@
         ? "不可用"
         : budget ? `${budget.used} / ${budget.remaining}` : "0 / 168";
       const market = payload.dependencies && payload.dependencies.market_data;
-      els.quoteSource.textContent = market && market.active_source ? market.active_source : "-";
+      els.quoteSource.textContent = market && market.active_source ? window.TraderRender.sourceLabel(market.active_source) : "-";
       const score = state.payload && state.payload.published_at;
       els.scoreTime.textContent = score ? window.TraderRender.formatTime(score) : "-";
       els.headerFreeze.textContent = state.payload

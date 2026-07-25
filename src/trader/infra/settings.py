@@ -204,6 +204,11 @@ def _parse_long_watch_groups(raw: Mapping[str, object], item_codes: set[str]) ->
         raise ConfigurationError("long watchlist low_price_potential groups cannot contain more than 26 codes total")
     if len(set(low_price_codes)) != len(low_price_codes):
         raise ConfigurationError("long watchlist low_price_potential groups cannot contain duplicate codes")
+    grouped_codes = tuple(code for group in groups for code in group.codes)
+    if len(set(grouped_codes)) != len(grouped_codes):
+        raise ConfigurationError("long watchlist codes cannot repeat across groups")
+    if set(grouped_codes) != item_codes:
+        raise ConfigurationError("every long watchlist item must belong to exactly one group")
     return groups
 
 
