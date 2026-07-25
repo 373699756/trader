@@ -91,6 +91,9 @@ def test_long_scope_controls_follow_the_long_strategy_description() -> None:
     assert 'data-scope="chokepoint">卡脖子行业</button>' in template
     assert 'data-scope="future_growth">高成长赛道</button>' in template
     assert 'data-scope="low_price_potential">低价潜力股</button>' in template
+    render = (ROOT / "src/trader/web/static/render.js").read_text(encoding="utf-8")
+    assert "long_section_divider" in render
+    assert "has-long-section-divider" in render
     assert "els.longScopeTabs.hidden = !isLong" not in long_groups
 
 
@@ -104,6 +107,7 @@ def test_packaged_long_watchlist_matches_runtime_configuration() -> None:
     assert source.rstrip().endswith(suffix)
     packaged = json.loads(source[len(prefix) : -len(suffix)])
     assert packaged == config
+    assert any(len(group["sections"]) > 1 for group in config["groups"] if group["category"] == "chokepoint")
     grouped_codes = [code for group in config["groups"] for code in group["codes"]]
     assert len(grouped_codes) == len(set(grouped_codes))
     assert set(grouped_codes) == {item["code"] for item in config["items"]}

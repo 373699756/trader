@@ -241,7 +241,8 @@
 
   function longRow(item) {
     const change = pct(item.pct_change);
-    return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
+    const rowClass = item.long_section_divider ? "has-long-section-divider" : "";
+    return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${stock(item)}</td>
       <td>${number(item.price, 2)}</td>

@@ -18,6 +18,7 @@ from trader.infra.settings_models import (
     FusionSettings,
     HardFilterSettings,
     LongWatchGroup,
+    LongWatchGroupSection,
     LongWatchItem,
     LongWatchlist,
     MarketDataSettings,
@@ -224,16 +225,58 @@ def _parse_long_watch_group(
     category = _text(raw, "category")
     if category not in {"chokepoint", "future_growth", "low_price_potential"}:
         raise ConfigurationError(f"long watchlist group {name} category is invalid")
+    source_section = _text(raw, "source_section") if "source_section" in raw else "current_leaders"
+    if source_section not in {"document_scan", "current_leaders"}:
+        raise ConfigurationError(f"long watchlist group {name} source_section is invalid")
     key = (category, name)
     if key in seen_names:
         raise ConfigurationError(f"duplicate long watchlist group: {category}/{name}")
     seen_names.add(key)
+    codes = _parse_long_group_codes(raw, name, category, item_codes)
     return LongWatchGroup(
         name=name,
         category=category,
-        codes=_parse_long_group_codes(raw, name, category, item_codes),
+        codes=codes,
         source=_text(raw, "source") if "source" in raw else "",
+        source_section=source_section,
+        sections=_parse_long_group_sections(raw, name, codes),
     )
+
+
+def _parse_long_group_sections(
+    raw: Mapping[str, object],
+    name: str,
+    group_codes: tuple[str, ...],
+) -> tuple[LongWatchGroupSection, ...]:
+    sections_raw = raw.get("sections")
+    if sections_raw is None:
+        source_section = _text(raw, "source_section") if "source_section" in raw else "current_leaders"
+        return (LongWatchGroupSection(source_section=source_section, codes=group_codes),)
+    if not isinstance(sections_raw, list) or not sections_raw:
+        raise ConfigurationError(f"long watchlist group {name} sections must be a non-empty list")
+    sections: list[LongWatchGroupSection] = []
+    flattened: list[str] = []
+    for index, section_raw in enumerate(sections_raw):
+        if not isinstance(section_raw, dict):
+            raise ConfigurationError(f"long watchlist group {name} section {index} must be an object")
+        source_section = _text(section_raw, "source_section")
+        if source_section not in {"document_scan", "current_leaders"}:
+            raise ConfigurationError(f"long watchlist group {name} source_section is invalid")
+        codes_raw = section_raw.get("codes")
+        if not isinstance(codes_raw, list) or not codes_raw:
+            raise ConfigurationError(f"long watchlist group {name} section {source_section} codes must be non-empty")
+        codes = tuple(_parse_section_code(code, name, group_codes) for code in codes_raw)
+        flattened.extend(codes)
+        sections.append(LongWatchGroupSection(source_section=source_section, codes=codes))
+    if tuple(flattened) != group_codes:
+        raise ConfigurationError(f"long watchlist group {name} sections must match codes order")
+    return tuple(sections)
+
+
+def _parse_section_code(code: object, group_name: str, group_codes: tuple[str, ...]) -> str:
+    if not isinstance(code, str) or code not in group_codes:
+        raise ConfigurationError(f"long watchlist group {group_name} section references unknown code: {code}")
+    return code
 
 
 def _parse_long_group_codes(

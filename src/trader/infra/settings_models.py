@@ -237,11 +237,19 @@ class LongWatchItem:
 
 
 @dataclass(frozen=True)
+class LongWatchGroupSection:
+    source_section: str
+    codes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class LongWatchGroup:
     name: str
     category: str
     codes: tuple[str, ...]
     source: str
+    source_section: str
+    sections: tuple[LongWatchGroupSection, ...]
 
 
 @dataclass(frozen=True)

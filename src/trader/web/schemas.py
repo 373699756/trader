@@ -147,6 +147,7 @@ def _long_groups(
         if not visible_codes:
             continue
         source = group.get("source")
+        source_section = group.get("source_section")
         result.append(
             {
                 "name": name,
@@ -154,8 +155,27 @@ def _long_groups(
                 "codes": visible_codes,
                 "count": len(visible_codes),
                 "source": source if isinstance(source, str) else "",
+                "source_section": source_section if isinstance(source_section, str) else "current_leaders",
+                "sections": _long_group_sections(group, item_codes),
             }
         )
+    return result
+
+
+def _long_group_sections(group: Mapping[str, object], item_codes: set[str]) -> list[dict[str, object]]:
+    sections = group.get("sections")
+    raw_sections = sections if isinstance(sections, (tuple, list)) else ()
+    result: list[dict[str, object]] = []
+    for section in raw_sections:
+        if not isinstance(section, Mapping):
+            continue
+        source_section = section.get("source_section")
+        codes = section.get("codes")
+        if not isinstance(source_section, str) or not isinstance(codes, (list, tuple)):
+            continue
+        visible_codes = [code for code in codes if isinstance(code, str) and code in item_codes]
+        if visible_codes:
+            result.append({"source_section": source_section, "codes": visible_codes})
     return result
 
 

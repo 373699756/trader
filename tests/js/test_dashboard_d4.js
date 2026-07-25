@@ -288,7 +288,17 @@ assert.deepStrictEqual(
 const longPayload = {
   strategy: "long",
   long_groups: [
-    { name: "半导体设备", category: "chokepoint", codes: ["600002", "600001"], count: 2 },
+    {
+      name: "半导体设备",
+      category: "chokepoint",
+      source_section: "document_scan",
+      codes: ["600002", "600001", "600003"],
+      count: 3,
+      sections: [
+        { source_section: "document_scan", codes: ["600002", "600001"] },
+        { source_section: "current_leaders", codes: ["600003"] },
+      ],
+    },
     { name: "具身智能", category: "future_growth", codes: ["600004", "600002"], count: 2 },
     { name: "芯片与电子", category: "low_price_potential", codes: ["600003", "600001"], count: 2 },
     { name: "算力与卫星", category: "low_price_potential", codes: ["600004", "600002"], count: 2 },
@@ -302,11 +312,32 @@ const longItems = [
 ];
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.longGroupNormalized(longPayload, "chokepoint"))),
-  [{ name: "半导体设备", category: "chokepoint", codes: ["600002", "600001"], count: 2 }],
+  [
+    {
+      key: "document_scan:半导体设备",
+      name: "半导体设备",
+      category: "chokepoint",
+      source_section: "document_scan",
+      sections: [
+        { source_section: "document_scan", codes: ["600002", "600001"] },
+        { source_section: "current_leaders", codes: ["600003"] },
+      ],
+      codes: ["600002", "600001", "600003"],
+      count: 3,
+    },
+  ],
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.longGroupVisibleRecommendations(longPayload, longItems, "chokepoint", "半导体设备"))),
-  [{ code: "600002", rank: 1 }, { code: "600001", rank: 2 }],
+  JSON.parse(
+    JSON.stringify(
+      state.longGroupVisibleRecommendations(longPayload, longItems, "chokepoint", "document_scan:半导体设备"),
+    ),
+  ),
+  [
+    { code: "600002", rank: 1, long_section: "document_scan", long_section_divider: false },
+    { code: "600001", rank: 2, long_section: "document_scan", long_section_divider: false },
+    { code: "600003", rank: 3, long_section: "current_leaders", long_section_divider: true },
+  ],
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.longGroupVisibleRecommendations(longPayload, longItems, "future_growth", "具身智能"))),

@@ -288,6 +288,10 @@ td {
   white-space: nowrap;
 }
 
+table.is-long-table tbody tr.has-long-section-divider td {
+  border-top: 2px solid var(--line-strong);
+}
+
 th {
   position: sticky;
   top: 0;

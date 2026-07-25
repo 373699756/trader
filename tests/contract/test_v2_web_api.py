@@ -130,6 +130,8 @@ def test_long_response_exposes_fixed_groups_and_ignores_top_n(
                     "codes": ["600001", "600002", "600999"],
                     "count": 2,
                     "source": "main history fixture",
+                    "source_section": "document_scan",
+                    "sections": [],
                 },
                 {
                     "name": "低价潜力股",
@@ -137,6 +139,8 @@ def test_long_response_exposes_fixed_groups_and_ignores_top_n(
                     "codes": ["600003"],
                     "count": 1,
                     "source": "main history fixture",
+                    "source_section": "current_leaders",
+                    "sections": [],
                 },
             ),
         },
@@ -154,6 +158,8 @@ def test_long_response_exposes_fixed_groups_and_ignores_top_n(
             "codes": ["600001", "600002"],
             "count": 2,
             "source": "main history fixture",
+            "source_section": "document_scan",
+            "sections": [],
         },
         {
             "name": "低价潜力股",
@@ -161,6 +167,8 @@ def test_long_response_exposes_fixed_groups_and_ignores_top_n(
             "codes": ["600003"],
             "count": 1,
             "source": "main history fixture",
+            "source_section": "current_leaders",
+            "sections": [],
         },
     ]
 

@@ -45,11 +45,11 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "A股策略看板" in page
     assert "股票详情" in page
     assert "策略验证" not in page
-    assert "/static/dashboard.css?v=21" in page
+    assert "/static/dashboard.css?v=22" in page
     assert "/static/render.js?v=13" in page
     assert "/static/selection.js?v=3" in page
-    assert "/static/long_watchlist_data.js?v=4" in page
-    assert "/static/long_groups.js?v=5" in page
+    assert "/static/long_watchlist_data.js?v=6" in page
+    assert "/static/long_groups.js?v=6" in page
     assert "/static/dashboard_utils.js?v=2" in page
     assert "/static/dashboard.js?v=26" in page
     assert 'id="currentViewStatus"' not in page
@@ -134,7 +134,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     stylesheet = stylesheet_response.get_data(as_text=True)
     assert stylesheet_response.status_code == 200
     assert '@import url("./dashboard_base.css?v=4");' in stylesheet
-    assert '@import url("./dashboard_components.css?v=21");' in stylesheet
+    assert '@import url("./dashboard_components.css?v=22");' in stylesheet
     assert '@import url("./dashboard_responsive.css?v=4");' in stylesheet
 
     base_response = client.get("/static/dashboard_base.css")

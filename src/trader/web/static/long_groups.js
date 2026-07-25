@@ -8,7 +8,6 @@
     future_growth: "高成长赛道",
     low_price_potential: "低价潜力股",
   });
-
   function scopeLabel(scope) {
     return scopeLabels[scope] || scopeLabels.chokepoint;
   }
@@ -63,12 +62,18 @@
     if (!payload || payload.strategy !== "long" || !Array.isArray(payload.long_groups)) return [];
     return payload.long_groups
       .filter((group) => group && group.category === category && typeof group.name === "string")
-      .map((group) => ({
-        name: group.name,
-        category: group.category,
-        codes: Array.isArray(group.codes) ? group.codes.filter((code) => typeof code === "string" && code) : [],
-        count: Number.isInteger(group.count) ? group.count : 0,
-      }))
+      .map((group) => {
+        const sourceSection = sourceSectionKey(group.source_section);
+        return {
+          key: `${sourceSection}:${group.name}`,
+          name: group.name,
+          category: group.category,
+          source_section: sourceSection,
+          sections: normalizedSections(group, sourceSection),
+          codes: Array.isArray(group.codes) ? group.codes.filter((code) => typeof code === "string" && code) : [],
+          count: Number.isInteger(group.count) ? group.count : 0,
+        };
+      })
       .filter((group) => group.codes.length > 0);
   }
 
@@ -87,31 +92,76 @@
       button.setAttribute("aria-selected", active ? "true" : "false");
     });
     const scopedGroups = normalized(payload, scope);
-    if (!scopedGroups.some((group) => group.name === state.longGroup)) {
-      state.longGroup = scopedGroups[0] ? scopedGroups[0].name : "";
+    if (!scopedGroups.some((group) => group.key === state.longGroup || group.name === state.longGroup)) {
+      state.longGroup = scopedGroups[0] ? scopedGroups[0].key : "";
+    } else if (scopedGroups.some((group) => group.name === state.longGroup)) {
+      const namedGroup = scopedGroups.find((group) => group.name === state.longGroup);
+      state.longGroup = namedGroup ? namedGroup.key : state.longGroup;
     }
     els.longIndustryTabs.innerHTML = scopedGroups.map((group) => industryButton(group, state.longGroup)).join("");
     if (els.longPanelMeta) els.longPanelMeta.textContent = `${scopedGroups.length} 个分组`;
-    if (els.longStockContext) els.longStockContext.textContent = state.longGroup || scopeLabel(scope);
+    const activeGroup = scopedGroups.find((group) => group.key === state.longGroup);
+    if (els.longStockContext) els.longStockContext.textContent = activeGroup ? activeGroup.name : scopeLabel(scope);
   }
 
   function industryButton(group, activeGroup) {
-    const active = group.name === activeGroup;
+    const active = group.key === activeGroup;
     const name = window.TraderRender.escapeHtml(group.name);
-    return `<button class="long-industry-tab${active ? " is-active" : ""}" type="button" role="tab" aria-selected="${active ? "true" : "false"}" data-group="${name}"><span>${name}</span><b>${group.codes.length} 只</b></button>`;
+    const key = window.TraderRender.escapeHtml(group.key);
+    const className = `long-industry-tab${active ? " is-active" : ""}`;
+    return `<button class="${className}" type="button" role="tab" aria-selected="${active ? "true" : "false"}" data-group="${key}"><span>${name}</span><b>${group.codes.length} 只</b></button>`;
   }
 
   function visibleRecommendations(payload, recommendations, scope, groupName) {
     if (!payload || payload.strategy !== "long") return recommendations;
     const category = categories.includes(scope) ? scope : "chokepoint";
     const groups = normalized(payload, category);
-    const group = groups.find((candidate) => candidate.name === groupName) || groups[0];
+    const group =
+      groups.find((candidate) => candidate.key === groupName) ||
+      groups.find((candidate) => candidate.name === groupName) ||
+      groups[0];
     if (!group) return [];
     const byCode = new Map(recommendations.map((item) => [item.code, item]));
+    const sectionByCode = groupSectionByCode(group);
+    const sectioned = group.sections.length > 1;
+    let previousSection = "";
     return group.codes
-      .map((code) => byCode.get(code))
+      .map((code) => {
+        const item = byCode.get(code);
+        if (!item) return null;
+        if (!sectioned) return item;
+        const section = sectionByCode.get(code) || group.source_section;
+        const divider = Boolean(previousSection && section !== previousSection);
+        previousSection = section;
+        return { ...item, long_section: section, long_section_divider: divider };
+      })
       .filter(Boolean)
       .map((item, index) => ({ ...item, rank: index + 1 }));
+  }
+
+  function normalizedSections(group, fallbackSection) {
+    const sections = Array.isArray(group.sections) ? group.sections : [];
+    const normalized = sections
+      .map((section) => ({
+        source_section: sourceSectionKey(section && section.source_section),
+        codes: Array.isArray(section && section.codes)
+          ? section.codes.filter((code) => typeof code === "string" && code)
+          : [],
+      }))
+      .filter((section) => section.codes.length > 0);
+    return normalized.length ? normalized : [{ source_section: fallbackSection, codes: [] }];
+  }
+
+  function groupSectionByCode(group) {
+    const byCode = new Map();
+    group.sections.forEach((section) => {
+      section.codes.forEach((code) => byCode.set(code, section.source_section));
+    });
+    return byCode;
+  }
+
+  function sourceSectionKey(value) {
+    return value === "document_scan" ? "document_scan" : "current_leaders";
   }
 
   function emptyMessage(payload, scope) {

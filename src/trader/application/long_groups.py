@@ -16,14 +16,26 @@ class LongWatchItemDefinition:
 
 
 @dataclass(frozen=True)
+class LongGroupSectionDefinition:
+    source_section: str
+    codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "codes", tuple(self.codes))
+
+
+@dataclass(frozen=True)
 class LongGroupDefinition:
     name: str
     category: str
     codes: tuple[str, ...]
     source: str = ""
+    source_section: str = "current_leaders"
+    sections: tuple[LongGroupSectionDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "codes", tuple(self.codes))
+        object.__setattr__(self, "sections", tuple(self.sections))
 
 
 def long_groups_metadata(
@@ -43,9 +55,23 @@ def long_groups_metadata(
                 "codes": list(visible_codes),
                 "count": len(visible_codes),
                 "source": group.source,
+                "source_section": group.source_section,
+                "sections": _sections_metadata(group.sections, selected_codes),
             }
         )
     return tuple(metadata)
 
 
-__all__ = ["LongGroupDefinition", "LongWatchItemDefinition", "long_groups_metadata"]
+def _sections_metadata(
+    sections: Sequence[LongGroupSectionDefinition],
+    selected_codes: set[str],
+) -> list[dict[str, object]]:
+    metadata: list[dict[str, object]] = []
+    for section in sections:
+        visible_codes = [code for code in section.codes if code in selected_codes]
+        if visible_codes:
+            metadata.append({"source_section": section.source_section, "codes": visible_codes})
+    return metadata
+
+
+__all__ = ["LongGroupDefinition", "LongGroupSectionDefinition", "LongWatchItemDefinition", "long_groups_metadata"]

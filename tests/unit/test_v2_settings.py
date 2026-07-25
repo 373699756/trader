@@ -160,18 +160,57 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
     assert watchlist.schema_version == 2
-    assert len(watchlist.items) == 213
+    assert len(watchlist.items) == 212
     assert len(watchlist.groups) == 46
     assert max(len(group.codes) for group in watchlist.groups if group.category == "chokepoint") <= 5
-    groups_by_key = {(group.category, group.name): group.codes for group in watchlist.groups}
-    assert groups_by_key[("chokepoint", "脑机接口")] == ("688626", "688273")
-    assert groups_by_key[("chokepoint", "AI算力")] == ("603019", "601138", "000977", "000938")
-    assert groups_by_key[("chokepoint", "液冷")] == ("002837", "300499", "300990")
-    assert groups_by_key[("chokepoint", "数据中心电源")] == ("002335", "002518", "002364")
+    groups_by_key = {(group.category, group.name): group for group in watchlist.groups}
+    chokepoint_groups = tuple(group for group in watchlist.groups if group.category == "chokepoint")
+    assert len(chokepoint_groups) == 33
+    document_sections = tuple(
+        section
+        for group in chokepoint_groups
+        for section in group.sections
+        if section.source_section == "document_scan"
+    )
+    current_leader_sections = tuple(
+        section
+        for group in chokepoint_groups
+        for section in group.sections
+        if section.source_section == "current_leaders"
+    )
+    assert len(document_sections) == 29
+    assert sum(len(section.codes) for section in document_sections) == 93
+    assert len(current_leader_sections) == 24
+    liquid = groups_by_key[("chokepoint", "液冷")]
+    assert liquid.codes == ("002837", "300499", "300990")
+    assert [(section.source_section, section.codes) for section in liquid.sections] == [
+        ("document_scan", ("002837",)),
+        ("current_leaders", ("300499", "300990")),
+    ]
+    power = groups_by_key[("chokepoint", "数据中心电源")]
+    assert power.codes == ("002518", "002335", "002364")
+    assert [(section.source_section, section.codes) for section in power.sections] == [
+        ("document_scan", ("002518", "002335")),
+        ("current_leaders", ("002364",)),
+    ]
+    assert groups_by_key[("chokepoint", "固态电池")].sections[0].codes == (
+        "002074",
+        "300073",
+        "300014",
+        "002812",
+    )
+    assert groups_by_key[("chokepoint", "脑机接口")].codes == ("688626", "688273")
+    assert groups_by_key[("chokepoint", "AI算力")].codes == (
+        "603019",
+        "601138",
+        "000977",
+        "000938",
+    )
     future_growth_groups = tuple(group for group in watchlist.groups if group.category == "future_growth")
-    assert len(future_growth_groups) == 9
+    assert len(future_growth_groups) == 8
     assert max(len(group.codes) for group in future_growth_groups) <= 5
-    assert groups_by_key[("future_growth", "光模块")] == (
+    assert ("future_growth", "新型储能/固态电池") not in groups_by_key
+    assert groups_by_key[("future_growth", "光模块")].codes == (
         "300548",
         "300570",
         "301205",
@@ -220,6 +259,7 @@ def test_long_watchlist_low_price_groups_reject_duplicate_codes(tmp_path) -> Non
     raw = json.loads((PROJECT_ROOT / "config" / "v2" / "long_watchlist.json").read_text(encoding="utf-8"))
     low_price_groups = [group for group in raw["groups"] if group["category"] == "low_price_potential"]
     low_price_groups[1]["codes"][0] = low_price_groups[0]["codes"][0]
+    low_price_groups[1]["sections"][0]["codes"][0] = low_price_groups[0]["codes"][0]
     changed_path = tmp_path / "long_watchlist.json"
     changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
@@ -230,10 +270,21 @@ def test_long_watchlist_low_price_groups_reject_duplicate_codes(tmp_path) -> Non
 def test_long_watchlist_rejects_codes_repeated_across_any_groups(tmp_path) -> None:
     raw = json.loads((PROJECT_ROOT / "config" / "v2" / "long_watchlist.json").read_text(encoding="utf-8"))
     raw["groups"][1]["codes"][0] = raw["groups"][0]["codes"][0]
+    raw["groups"][1]["sections"][0]["codes"][0] = raw["groups"][0]["codes"][0]
     changed_path = tmp_path / "long_watchlist.json"
     changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="cannot repeat across groups"):
+        load_long_watchlist(changed_path)
+
+
+def test_long_watchlist_rejects_unknown_source_section(tmp_path) -> None:
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "long_watchlist.json").read_text(encoding="utf-8"))
+    raw["groups"][0]["source_section"] = "ad_hoc"
+    changed_path = tmp_path / "long_watchlist.json"
+    changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="source_section"):
         load_long_watchlist(changed_path)
 
 
