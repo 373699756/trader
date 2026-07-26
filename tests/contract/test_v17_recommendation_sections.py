@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
     template = (ROOT / "src/trader/web/templates/index.html").read_text(encoding="utf-8")
     dashboard = (ROOT / "src/trader/web/static/dashboard.js").read_text(encoding="utf-8")
+    patches = (ROOT / "src/trader/web/static/dashboard_patches.js").read_text(encoding="utf-8")
     selection = (ROOT / "src/trader/web/static/selection.js").read_text(encoding="utf-8")
 
     assert 'id="recommendationTable"' in template
@@ -24,13 +25,14 @@ def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
     assert template.index('id="longScopeTabs"') < template.index('id="recommendation-layout"')
     assert template.index('id="long-sidebar"') < template.index('id="longStockHeader"')
     assert 'data-scope="low_price_potential"' in template
-    assert "selection.js', v='3'" in template
+    assert "web_asset('selection.js')" in template
+    assert "?v=" not in template
     assert 'id="tableTitle"' not in template
     assert 'id="watchTable"' not in template
     assert "观察列表" not in template
-    assert "最高评分" in dashboard
-    assert "低于观察门槛" in dashboard
-    assert "当前没有达到正式推荐条件的股票" in dashboard
+    assert "最高评分" in patches
+    assert "低于观察门槛" in patches
+    assert "当前没有达到正式推荐条件的股票" in patches
     assert "长期策略当前尚无可用数据" in dashboard
     assert "当前暂无可用荐股数据" in dashboard
     assert "当前策略尚未发布快照" not in dashboard

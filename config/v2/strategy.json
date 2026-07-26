@@ -1,9 +1,9 @@
 {
   "schema_version": 12,
-  "strategy_version": "strategy_v20_review28_2026_07",
-  "board_policy_version": "board_policy_v18_score_first_2026_07",
+  "strategy_version": "strategy_review28_2026_07",
+  "board_policy_version": "board_policy_score_first_2026_07",
   "fusion": {
-    "version": "fusion_v2_local68_deepseek32",
+    "version": "fusion_local68_deepseek32",
     "local_weight": 0.68,
     "deepseek_weight": 0.32,
     "confidence_coverage_min": 0.5,

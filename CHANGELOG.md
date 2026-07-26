@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增前端静态资源治理入口 `web_asset()` 和统一 `WEB_ASSET_REVISION`，页面 CSS/JS 资源统一
+  使用同一个 `rev` 修订号；新增版本治理契约测试，禁止活动业务身份继续使用
+  `strategy_v20`、`engine_v20`、`board_policy_v18` 这类施工编号。
+- 新增 `dashboard_patches.js`，把推荐 patch、overlay patch、projection identity 和空推荐
+  文案等纯前端状态机规则从主 `dashboard.js` 拆出；新增缺失补丁模块回归，覆盖静态资源
+  缓存撕裂时主页面不再因 `TraderDashboardPatches` 缺失而抛出 undefined。
+- 新增 DeepSeek schema 常量与 prompt/cache identity 专门模块，保留 `schema.py` 兼容重导出，
+  使解析、prompt 构造和缓存 key 职责分离。
+
 - 新增 `docs/reports/chokepoint-watchlist-document-split-2026-07-25.md`，归档用户要求“卡脖子行业
   按扫描文档更新，并在中间画线区分文档名单与当前龙头股”的修改说明、行为变化、验证证据和
   剩余风险。
@@ -55,6 +64,20 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- 用户要求 Review 全工程 JS、代码框架、结构、文件、类、函数、设计和划分是否仍有优化空间，
+  并要求执行计划；随后反馈“快照状态 Cannot read properties of undefined (reading
+  'projectionVersion')”，并要求优先清理乱七八糟的 V 几版本命名。现状判断：核心分层依赖
+  仍符合 `entrypoints/web/infra -> application -> domain`，但 `dashboard.js`、DeepSeek
+  `schema.py` 和 `bootstrap.py` 分别承担过多职责；前端每个静态文件各自维护 `?v=数字`，
+  容易让浏览器缓存到不一致资源。现在主 dashboard 降到轻量编排，patch 规则独立，DeepSeek
+  prompt/cache identity 独立，`bootstrap.py` 通过私有 context/helper 拆分装配步骤，仍保持
+  唯一组合根且 `create_app()` 无线程、网络、数据库或文件写入副作用。
+- 活动可读版本身份改名为 `strategy_review28_2026_07`、`engine_review28_2026_07`、
+  `fusion_local68_deepseek32`、`board_policy_score_first_2026_07`、
+  `market_cache_p1_p6` 和 `long_watchlist_document_merge_2026_07`。历史冻结回放常量、
+  SQLite/API/SSE schema 版本、`config/v2` 路径和 DeepSeek `deepseek-v4-*` 模型名保留，
+  避免破坏协议和旧快照兼容。
 
 - 用户再次要求 Review 全工程命名，选择“严格全改”，要求继续处理不专业、不简单通俗的残留。
   本批确认源码和文件名已无新的拼音旧词、旧阶段词或 `support/utils/helper/manager/processor`
@@ -236,6 +259,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复快照状态区域可能显示 `Cannot read properties of undefined (reading 'projectionVersion')`
+  的前端启动错误。根因是拆分后的 `dashboard_patches.js` 被主 `dashboard.js` 作为硬依赖使用，
+  当浏览器缓存、模板版本或静态资源加载出现不一致时，`window.TraderDashboardPatches` 可能缺失。
+  现在模板统一加载补丁模块和主模块的同一资源修订号，主模块在补丁模块缺失时使用降级补丁对象：
+  完整推荐快照仍可渲染，SSE patch 会触发 resync，诊断中记录
+  `dependency_missing:TraderDashboardPatches`，不再让页面抛 undefined。
+
 - 用户看到 `TopK live overlay degraded: ... batch deadline`、板块可靠度和公司风险英文原因，
   并反复遇到 Web 无荐股。确认 TopK 超时本身只影响报价 overlay，不是“行情差导致零荐股”
   的直接证据；无数据必须结合 P6 是否产生、正式/观察数量和选择诊断判断。现在页面对全部
@@ -341,6 +371,19 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 本批 targeted 验证通过：`node --check src/trader/web/static/dashboard.js`、
+  `node --check src/trader/web/static/dashboard_patches.js`、
+  `node tests/js/test_dashboard_d4.js src/trader/web/static/dashboard.js`、
+  `pytest tests/contract/test_v2_app_factory.py tests/contract/test_v17_recommendation_sections.py
+  tests/unit/test_v2_settings.py
+  tests/integration/test_v2_pipeline.py::test_v17_and_v18_frozen_board_snapshots_remain_replayable`、
+  `ruff check` 受影响文件、`mypy src/trader` 和 `scripts/check_refactor_quality.py`。完整
+  `make format-check`、`make lint`、`make type-check`、`make test` 和 `make package`
+  均通过；仓库外 wheel 安装后可执行 `trader-cli --help`，并确认模板、CSS、JavaScript 和
+  SVG 资源完整。Chrome headless 通过离线 fixture 打开首页，确认脚本资源均为统一
+  `?rev=dashboard-refactor-2026-07-26`，`hasPatches=true`，`browserErrors=[]`，快照状态正常；
+  1280x720、1440x900 和 1920x1080 三档桌面视口均无页面级横向溢出，关键区域顺序正常。
 
 - 二次命名清理验证：严格扫描确认活动代码、测试、配置、报告路径和 `CHANGELOG.md` 不再包含
   旧收盘补算观察原因码、旧列式投影/合并降级码、旧列式投影函数名或旧长期区域驼峰 DOM id。
@@ -578,6 +621,11 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 静态资源缺失时的前端兜底只保证完整快照可继续显示并触发 resync；若用户仍运行旧进程或旧
+  wheel，需要重启到本提交后才能获得统一 `rev` 模板和新 `dashboard_patches.js`。Firefox/
+  geckodriver 在当前环境不可用，官方 Firefox 浏览器性能脚本仍需在具备该依赖的发布环境补跑；
+  本批已用 Chrome headless 验证首页无浏览器错误。
 
 - 本批按用户选择执行严格破坏性改名：依赖旧降级原因码、旧 metadata key 或旧 DOM id 的外部
   脚本、浏览器自动化和历史断言需要同步更新；本批不提供兼容 alias。真实运行中已落盘的旧

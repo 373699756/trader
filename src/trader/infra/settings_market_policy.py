@@ -41,8 +41,8 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
     if integer(raw, "schema_version", minimum=1) != 6:
         raise ConfigurationError("cache_policy.schema_version must be 6")
     policy_version = text(raw, "policy_version")
-    if policy_version != "market_cache_v17_p1_p6":
-        raise ConfigurationError("cache_policy.policy_version must be market_cache_v17_p1_p6")
+    if policy_version != "market_cache_p1_p6":
+        raise ConfigurationError("cache_policy.policy_version must be market_cache_p1_p6")
     estimator_version = text(raw, "estimator_version")
     if estimator_version != "canonical_json_utf8_v1":
         raise ConfigurationError("cache_policy.estimator_version must be canonical_json_utf8_v1")

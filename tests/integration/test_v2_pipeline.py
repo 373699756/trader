@@ -161,7 +161,7 @@ def test_v17_and_v18_frozen_board_snapshots_remain_replayable(
     )
     snapshot = engine.finalize_snapshot(prepared, {}, legacy_replay=True)
     assert snapshot.replay_input is not None
-    assert snapshot.replay_input.algorithm_version == "engine_v20_review28_2026_07"
+    assert snapshot.replay_input.algorithm_version == "engine_review28_2026_07"
     legacy_input = replace(
         snapshot.replay_input,
         algorithm_version=legacy_algorithm,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import shutil
 import subprocess
 import threading
@@ -8,6 +10,9 @@ from pathlib import Path
 import pytest
 
 from trader.web import create_app
+from trader.web.static_assets import WEB_ASSET_REVISION
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_create_app_has_no_thread_or_filesystem_side_effects(tmp_path, monkeypatch) -> None:
@@ -40,18 +45,24 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     dashboard = client.get("/static/dashboard.js").get_data(as_text=True)
     selection = client.get("/static/selection.js").get_data(as_text=True)
     dashboard_formatters = client.get("/static/dashboard_formatters.js").get_data(as_text=True)
+    dashboard_patches = client.get("/static/dashboard_patches.js").get_data(as_text=True)
 
     assert response.status_code == 200
     assert "A股策略看板" in page
     assert "股票详情" in page
     assert "策略验证" not in page
-    assert "/static/dashboard.css?v=22" in page
-    assert "/static/render.js?v=13" in page
-    assert "/static/selection.js?v=3" in page
-    assert "/static/long_watchlist_data.js?v=6" in page
-    assert "/static/long_groups.js?v=6" in page
-    assert "/static/dashboard_formatters.js?v=2" in page
-    assert "/static/dashboard.js?v=26" in page
+    assert "?v=" not in page
+    assert page.count(f"?rev={WEB_ASSET_REVISION}") == 10
+    assert f"/static/dashboard_base.css?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/dashboard_components.css?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/dashboard_responsive.css?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/render.js?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/selection.js?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/long_watchlist_data.js?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/long_groups.js?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/dashboard_formatters.js?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/dashboard_patches.js?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/dashboard.js?rev={WEB_ASSET_REVISION}" in page
     assert 'id="currentViewStatus"' not in page
     assert 'class="current-view-status"' not in page
     assert 'id="strategyDescription"' in page
@@ -86,16 +97,17 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "tableDefinition(payload)" in dashboard
     assert "displayableCachedPayload" in dashboard
     assert "cacheIdentityValid" in dashboard
+    assert "state.projectionVersion = projectionVersion(payload)" not in dashboard
     assert "上一交易日快照" not in dashboard
     assert "previous_trade_date_snapshot" not in dashboard
     assert "patchLiveRows" in dashboard
     assert "currentRow.replaceWith" in dashboard
-    assert "patch_schema_version === 2" in dashboard
-    assert "base_projection_version" in dashboard
+    assert "patch_schema_version === 2" in dashboard_patches
+    assert "base_projection_version" in dashboard_patches
     assert "removed_codes" in dashboard
     assert "rowIdentity" in dashboard
-    assert "overlay_projection_mismatch" in dashboard
-    assert "payload.strategy !== strategy" in dashboard
+    assert "overlay_projection_mismatch" in dashboard_patches
+    assert "patch.strategy !== strategy" in dashboard_patches
     assert "CACHE_MAX_AGE_MS = 30000" in dashboard
     assert "budget.available === false" in dashboard
     assert '? "不可用"' in dashboard
@@ -105,6 +117,8 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "recommendationPatchDecision" in dashboard
     assert "overlayPatchDecision" in dashboard
     assert "requestRecommendationResync" in dashboard
+    assert "fallbackDashboardPatches" in dashboard
+    assert "dependency_missing:TraderDashboardPatches" in dashboard
     assert "TraderDashboardDiagnostics" in dashboard
     assert "browserErrors" in dashboard
     assert "reconcileRecommendationIdentity(payload)" in dashboard
@@ -133,9 +147,10 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     stylesheet_response = client.get("/static/dashboard.css")
     stylesheet = stylesheet_response.get_data(as_text=True)
     assert stylesheet_response.status_code == 200
-    assert '@import url("./dashboard_base.css?v=4");' in stylesheet
-    assert '@import url("./dashboard_components.css?v=22");' in stylesheet
-    assert '@import url("./dashboard_responsive.css?v=4");' in stylesheet
+    assert "?v=" not in stylesheet
+    assert '@import url("./dashboard_base.css");' in stylesheet
+    assert '@import url("./dashboard_components.css");' in stylesheet
+    assert '@import url("./dashboard_responsive.css");' in stylesheet
 
     base_response = client.get("/static/dashboard_base.css")
     components_response = client.get("/static/dashboard_components.css")
@@ -160,6 +175,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     formatters_response = client.get("/static/dashboard_formatters.js")
     assert formatters_response.status_code == 200
     assert "window.TraderDashboardFormatters" in formatters_response.get_data(as_text=True)
+    patches_response = client.get("/static/dashboard_patches.js")
+    assert patches_response.status_code == 200
+    assert "window.TraderDashboardPatches" in patches_response.get_data(as_text=True)
     renderer_response = client.get("/static/render.js")
     renderer = renderer_response.get_data(as_text=True)
     assert renderer_response.status_code == 200
@@ -185,6 +203,34 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "tableColumnCount" in renderer
     assert "行情来源 / 时间" in renderer
     assert client.get("/static/dashboard.js").status_code == 200
+
+
+def test_active_version_labels_are_readable_and_governed() -> None:
+    strategy = json.loads((PROJECT_ROOT / "config" / "v2" / "strategy.json").read_text(encoding="utf-8"))
+    runtime = json.loads((PROJECT_ROOT / "config" / "v2" / "runtime.json").read_text(encoding="utf-8"))
+    watchlist = json.loads((PROJECT_ROOT / "config" / "v2" / "long_watchlist.json").read_text(encoding="utf-8"))
+    replay = (PROJECT_ROOT / "src" / "trader" / "application" / "recommendation_replay.py").read_text(encoding="utf-8")
+
+    active_labels = (
+        strategy["strategy_version"],
+        strategy["board_policy_version"],
+        strategy["fusion"]["version"],
+        runtime["market_data"]["cache_policy"]["policy_version"],
+        watchlist["watchlist_version"],
+        re.search(r'^REPLAY_ALGORITHM_VERSION = "([^"]+)"$', replay, re.MULTILINE).group(1),
+    )
+
+    assert active_labels == (
+        "strategy_review28_2026_07",
+        "board_policy_score_first_2026_07",
+        "fusion_local68_deepseek32",
+        "market_cache_p1_p6",
+        "long_watchlist_document_merge_2026_07",
+        "engine_review28_2026_07",
+    )
+    assert all(not re.search(r"(^|_)v\d+($|_)", label) for label in active_labels)
+    assert "LEGACY_REPLAY_ALGORITHM_VERSION" in replay
+    assert "V17_REPLAY_ALGORITHM_VERSION" in replay
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for the dashboard state contract")

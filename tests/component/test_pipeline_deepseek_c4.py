@@ -442,7 +442,7 @@ def test_c4_deepseek_result_republication_p95_is_within_one_second() -> None:
             phase="today_main",
             data_version=f"c4-{sequence}",
             strategy_version="c4",
-            fusion_version="fusion_v2_local68_deepseek32",
+            fusion_version="fusion_local68_deepseek32",
             fusion_mode=FusionMode.HYBRID,
             published_at=NOW,
             recommendations=recommendations,

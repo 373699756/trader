@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -110,6 +111,49 @@ class ApplicationSystem:
         self.market_cache.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
 
 
+@dataclass(frozen=True)
+class _WorkerContext:
+    data_pool: BoundedExecutor
+    history_pool: BoundedExecutor
+    persistence_pool: BoundedExecutor
+    source_lanes: SourceLaneRegistry
+    json_writer: RuntimeJsonWriter
+    market_cache: BoundedLruCache[object]
+
+
+@dataclass(frozen=True)
+class _BuildContext:
+    settings: RuntimeSettings
+    strategy: StrategySettings
+    watchlist: LongWatchlist
+    effective_config_version: str
+    now: Callable[[], datetime]
+    latency: LatencyWaterfall
+    cadence_policy: CadencePolicy
+    workers: _WorkerContext
+
+
+@dataclass(frozen=True)
+class _PersistenceContext:
+    repository: SnapshotRepository
+    budget: DeepSeekBudgetLedger
+
+
+@dataclass(frozen=True)
+class _PublicationContext:
+    state: RuntimeState
+    publisher: SnapshotPublisher
+    published_snapshots: PublishedSnapshotIndex
+    recommendation_engine: RecommendationEngine
+
+
+@dataclass(frozen=True)
+class _PipelineAdapters:
+    market_data: MarketFeatureService
+    calendar: ChinaTradingCalendar
+    reviewer: DeepSeekReviewer
+
+
 def build_system(config_path: str | Path) -> ApplicationSystem:
     settings = load_runtime_settings(config_path)
     strategy = load_strategy_settings(settings.strategy_config_path)
@@ -118,6 +162,66 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     now = _utc_now
     latency = LatencyWaterfall()
     cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
+    workers = _build_worker_context(settings, latency)
+    context = _BuildContext(
+        settings, strategy, watchlist, effective_config_version, now, latency, cadence_policy, workers
+    )
+    market_data = _build_market_data(context)
+    calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
+    persistence = _build_persistence(context)
+    reviewer = _build_reviewer(context, persistence.budget)
+    publication = _build_publication(context, calendar, persistence.repository)
+    adapters = _PipelineAdapters(market_data, calendar, reviewer)
+    pipeline = _build_pipeline(context, adapters, persistence, publication)
+    queries = RecommendationQueries(
+        publication.published_snapshots,
+        now=now,
+        current_quote_reader=market_data,
+        close_fallback_replay=CloseFallbackReplay(persistence.repository, publication.recommendation_engine),
+    )
+    supervisor = RuntimeSupervisor(
+        pipeline,
+        RuntimeSupervisorConfig(
+            now=now,
+            initializers=(
+                pipeline.initialize,
+                publication.published_snapshots.initialize,
+                persistence.budget.initialize,
+                lambda: persistence.budget.recover_incomplete(now()),
+            ),
+            interval_seconds=scheduler_interval_seconds,
+            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
+            record_error=publication.state.record_error,
+        ),
+    )
+    app = create_app(
+        status_provider=pipeline.status,
+        queries=queries,
+        publisher=publication.publisher,
+        api_config=WebApiConfig(
+            default_top_n=settings.api.default_top_n,
+            maximum_top_n=settings.api.maximum_top_n,
+            heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
+        ),
+    )
+    return ApplicationSystem(
+        settings,
+        strategy,
+        watchlist,
+        app,
+        supervisor,
+        pipeline,
+        persistence.repository,
+        publication.publisher,
+        publication.published_snapshots,
+        publication.state,
+        workers.market_cache,
+        workers.history_pool,
+        workers.source_lanes,
+    )
+
+
+def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) -> _WorkerContext:
     urgent_worker_count = 1 if settings.pipeline.market_workers > 1 else 0
     data_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers + urgent_worker_count,
@@ -142,7 +246,17 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         cadence_seconds=settings.pipeline.cadence_seconds,
         wall_clock=_utc_now,
     )
+    return _WorkerContext(data_pool, history_pool, persistence_pool, source_lanes, json_writer, market_cache)
 
+
+def _build_market_data(context: _BuildContext) -> MarketFeatureService:
+    settings = context.settings
+    strategy = context.strategy
+    workers = context.workers
+    now = context.now
+    data_pool = workers.data_pool
+    source_lanes = workers.source_lanes
+    market_cache = workers.market_cache
     eastmoney = EastmoneyClient(
         timeout_seconds=settings.market_data.eastmoney_timeout_seconds,
         workers=settings.pipeline.market_workers,
@@ -194,7 +308,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         config_version=settings.config_version,
         schema_version="market_snapshot_v15",
         wall_clock=now,
-        latency=latency,
+        latency=context.latency,
     )
     evidence_cache_dir = settings.runtime_dir / "evidence_cache"
     feature_builder = FeatureBuilder(
@@ -207,7 +321,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         timeout_seconds=settings.market_data.research_timeout_seconds,
         long_research_policy=strategy.long_research,
         evidence_cache_dir=evidence_cache_dir,
-        json_writer=json_writer,
+        json_writer=workers.json_writer,
         cancel_requested=lambda: source_lanes.is_stopped("akshare"),
     )
     tushare_client = TushareClient(
@@ -231,7 +345,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     history_cache = HistoryCache(
         history_client,
         runner,
-        history_worker_pool=history_pool,
+        history_worker_pool=workers.history_pool,
         workers=settings.pipeline.market_workers,
         ttl_seconds=_fixed_cache_ttl(settings, "daily_history"),
         capacity=settings.market_data.cache_policy.datasets["daily_history"].capacity,
@@ -254,7 +368,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
         capacity=settings.market_data.cache_policy.datasets["research_success"].capacity,
         cache_dir=evidence_cache_dir,
-        json_writer=json_writer,
+        json_writer=workers.json_writer,
         monotonic=time.monotonic,
     )
     intraday_loader = IntradayLoader(
@@ -268,7 +382,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     )
     quote_cache = QuoteCache(
         QuoteCacheDependencies(gateway, feature_builder, history_cache, references),
-        market_ttl_seconds=min(cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
+        market_ttl_seconds=min(context.cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
         candidate_capacity=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
         monotonic=time.monotonic,
     )
@@ -296,11 +410,15 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         ),
         history_preload_limit=settings.market_data.candidate_pool_size * 3,
     )
-    calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
+    return market_data
+
+
+def _build_persistence(context: _BuildContext) -> _PersistenceContext:
+    settings = context.settings
     runtime_database_lock = threading.Lock()
     repository = SnapshotRepository(
         settings.runtime_dir,
-        config_version=effective_config_version,
+        config_version=context.effective_config_version,
         write_lock=runtime_database_lock,
     )
     budget = DeepSeekBudgetLedger(
@@ -312,23 +430,37 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         challenger_limits=settings.deepseek.challenger_limits,
         write_lock=runtime_database_lock,
     )
-    reviewer = DeepSeekReviewer(
+    return _PersistenceContext(repository, budget)
+
+
+def _build_reviewer(context: _BuildContext, budget: DeepSeekBudgetLedger) -> DeepSeekReviewer:
+    settings = context.settings
+    strategy = context.strategy
+    return DeepSeekReviewer(
         settings.deepseek,
         budget,
         create_deepseek_client(),
         ReviewCache(
             maximum_entries=2000,
             ttl_seconds=600,
-            shared_cache=market_cache,
-            config_version=effective_config_version,
+            shared_cache=context.workers.market_cache,
+            config_version=context.effective_config_version,
             seen_capacity=6000,
         ),
         dimension_weights={Strategy(name): weights for name, weights in strategy.dimension_weights.items()},
         strategy_version=strategy.strategy_version,
         confidence_coverage_min=strategy.fusion.confidence_coverage_min,
         minimum_known_dimensions=strategy.fusion.minimum_known_dimensions,
-        now=now,
+        now=context.now,
     )
+
+
+def _build_publication(
+    context: _BuildContext,
+    calendar: ChinaTradingCalendar,
+    repository: SnapshotRepository,
+) -> _PublicationContext:
+    settings = context.settings
     state = RuntimeState()
     publisher = SnapshotPublisher(
         history_size=settings.api.sse_history_size,
@@ -336,46 +468,60 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         maximum_subscribers=settings.api.sse_max_clients,
     )
     published_snapshots = PublishedSnapshotIndex(repository)
-    recommendation_engine = RecommendationEngine(
-        _recommendation_policy(strategy),
+    recommendation_engine = _build_recommendation_engine(context, calendar)
+    return _PublicationContext(state, publisher, published_snapshots, recommendation_engine)
+
+
+def _build_recommendation_engine(context: _BuildContext, calendar: ChinaTradingCalendar) -> RecommendationEngine:
+    return RecommendationEngine(
+        _recommendation_policy(context.strategy),
         board_scoring=BoardScoringCoordinator(
             BoardScoringCache(
-                market_cache,
-                config_version=effective_config_version,
+                context.workers.market_cache,
+                config_version=context.effective_config_version,
                 session_distance=calendar.session_distance,
             )
         ),
     )
-    pipeline = RecommendationPipeline(
+
+
+def _build_pipeline(
+    context: _BuildContext,
+    adapters: _PipelineAdapters,
+    persistence: _PersistenceContext,
+    publication: _PublicationContext,
+) -> RecommendationPipeline:
+    settings = context.settings
+    return RecommendationPipeline(
         PipelineDependencies(
             market=MarketDataPorts(
-                full_market=market_data,
-                candidates=market_data,
-                quotes=market_data,
-                research=market_data,
-                references=market_data,
-                metadata=market_data,
-                outcomes=market_data,
+                full_market=adapters.market_data,
+                candidates=adapters.market_data,
+                quotes=adapters.market_data,
+                research=adapters.market_data,
+                references=adapters.market_data,
+                metadata=adapters.market_data,
+                outcomes=adapters.market_data,
             ),
-            calendar=calendar,
-            reviews=reviewer,
-            snapshots=SnapshotPorts(reader=repository, writer=repository),
+            calendar=adapters.calendar,
+            reviews=adapters.reviewer,
+            snapshots=SnapshotPorts(reader=persistence.repository, writer=persistence.repository),
             events=InMemoryEventLedger(terminal_capacity=max(1024, settings.pipeline.event_queue_size * 4)),
-            publisher=publisher,
-            engine=recommendation_engine,
-            state=state,
-            published_snapshots=published_snapshots,
-            now=now,
+            publisher=publication.publisher,
+            engine=publication.recommendation_engine,
+            state=publication.state,
+            published_snapshots=publication.published_snapshots,
+            now=context.now,
             outcome_settlement=OutcomeSettlementService(
-                market_data,
-                repository,
-                repository,
-                session_distance=calendar.session_distance,
+                adapters.market_data,
+                persistence.repository,
+                persistence.repository,
+                session_distance=adapters.calendar.session_distance,
             ),
-            latency=latency,
+            latency=context.latency,
         ),
         PipelineOptions(
-            config_version=effective_config_version,
+            config_version=context.effective_config_version,
             candidate_pool_size=settings.market_data.candidate_pool_size,
             event_queue_size=settings.pipeline.event_queue_size,
             priority_queue_size=settings.pipeline.priority_queue_size,
@@ -385,71 +531,31 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             deepseek_workers=settings.pipeline.deepseek_workers,
             decision_execution_mode=settings.pipeline.decision_execution_mode,
             market_data_manages_workers=True,
-            cadence_policy=cadence_policy,
-            long_codes=tuple(item.code for item in watchlist.items),
-            long_items=tuple(LongWatchItemDefinition(item.code, item.name, item.industry) for item in watchlist.items),
-            long_target_prices={item.code: item.target_price for item in watchlist.items},
-            long_groups=tuple(
-                LongGroupDefinition(
-                    name=group.name,
-                    category=group.category,
-                    codes=group.codes,
-                    source=group.source,
-                    source_section=group.source_section,
-                    sections=tuple(
-                        LongGroupSectionDefinition(section.source_section, section.codes) for section in group.sections
-                    ),
-                )
-                for group in watchlist.groups
+            cadence_policy=context.cadence_policy,
+            long_codes=tuple(item.code for item in context.watchlist.items),
+            long_items=tuple(
+                LongWatchItemDefinition(item.code, item.name, item.industry) for item in context.watchlist.items
             ),
+            long_target_prices={item.code: item.target_price for item in context.watchlist.items},
+            long_groups=_long_groups(context.watchlist),
         ),
-        PipelineResources(data_pool=data_pool, persistence_pool=persistence_pool),
+        PipelineResources(data_pool=context.workers.data_pool, persistence_pool=context.workers.persistence_pool),
     )
-    queries = RecommendationQueries(
-        published_snapshots,
-        now=now,
-        current_quote_reader=market_data,
-        close_fallback_replay=CloseFallbackReplay(repository, recommendation_engine),
-    )
-    supervisor = RuntimeSupervisor(
-        pipeline,
-        RuntimeSupervisorConfig(
-            now=now,
-            initializers=(
-                pipeline.initialize,
-                published_snapshots.initialize,
-                budget.initialize,
-                lambda: budget.recover_incomplete(now()),
+
+
+def _long_groups(watchlist: LongWatchlist) -> tuple[LongGroupDefinition, ...]:
+    return tuple(
+        LongGroupDefinition(
+            name=group.name,
+            category=group.category,
+            codes=group.codes,
+            source=group.source,
+            source_section=group.source_section,
+            sections=tuple(
+                LongGroupSectionDefinition(section.source_section, section.codes) for section in group.sections
             ),
-            interval_seconds=scheduler_interval_seconds,
-            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-            record_error=state.record_error,
-        ),
-    )
-    app = create_app(
-        status_provider=pipeline.status,
-        queries=queries,
-        publisher=publisher,
-        api_config=WebApiConfig(
-            default_top_n=settings.api.default_top_n,
-            maximum_top_n=settings.api.maximum_top_n,
-            heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
-        ),
-    )
-    return ApplicationSystem(
-        settings,
-        strategy,
-        watchlist,
-        app,
-        supervisor,
-        pipeline,
-        repository,
-        publisher,
-        published_snapshots,
-        state,
-        market_cache,
-        history_pool,
-        source_lanes,
+        )
+        for group in watchlist.groups
     )
 
 

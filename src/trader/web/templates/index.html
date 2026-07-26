@@ -6,13 +6,16 @@
     <meta name="color-scheme" content="dark" />
     <title>A股策略看板</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css', v='22') }}" />
-    <script defer src="{{ url_for('static', filename='render.js', v='13') }}"></script>
-    <script defer src="{{ url_for('static', filename='selection.js', v='3') }}"></script>
-    <script defer src="{{ url_for('static', filename='long_watchlist_data.js', v='6') }}"></script>
-    <script defer src="{{ url_for('static', filename='long_groups.js', v='6') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard_formatters.js', v='2') }}"></script>
-    <script defer src="{{ url_for('static', filename='dashboard.js', v='26') }}"></script>
+    <link rel="stylesheet" href="{{ web_asset('dashboard_base.css') }}" />
+    <link rel="stylesheet" href="{{ web_asset('dashboard_components.css') }}" />
+    <link rel="stylesheet" href="{{ web_asset('dashboard_responsive.css') }}" />
+    <script defer src="{{ web_asset('render.js') }}"></script>
+    <script defer src="{{ web_asset('selection.js') }}"></script>
+    <script defer src="{{ web_asset('long_watchlist_data.js') }}"></script>
+    <script defer src="{{ web_asset('long_groups.js') }}"></script>
+    <script defer src="{{ web_asset('dashboard_formatters.js') }}"></script>
+    <script defer src="{{ web_asset('dashboard_patches.js') }}"></script>
+    <script defer src="{{ web_asset('dashboard.js') }}"></script>
   </head>
   <body>
     <header class="app-header">

@@ -412,7 +412,7 @@ def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypa
         ),
         (
             lambda raw: raw["market_data"]["cache_policy"].update({"policy_version": "unknown"}),
-            "policy_version must be market_cache_v17_p1_p6",
+            "policy_version must be market_cache_p1_p6",
         ),
         (
             lambda raw: raw["market_data"]["cache_policy"].update({"estimator_version": "unknown"}),

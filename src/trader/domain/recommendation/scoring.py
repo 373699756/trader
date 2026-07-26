@@ -38,7 +38,7 @@ from trader.domain.recommendation.scoring_calculations import (
 )
 from trader.domain.recommendation.strategies.composition import LocalScoreResult, compose
 
-BOARD_SCHEMA_VERSION = "board_cross_section_v18_score_first"
+BOARD_SCHEMA_VERSION = "board_cross_section_score_first"
 
 
 @dataclass(frozen=True)

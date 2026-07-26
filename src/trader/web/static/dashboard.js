@@ -26,6 +26,8 @@
   const selection = window.TraderSelection;
   const longGroups = window.TraderLongGroups;
   const formatters = window.TraderDashboardFormatters;
+  const patchDependencyMissing = !window.TraderDashboardPatches;
+  const patches = window.TraderDashboardPatches || fallbackDashboardPatches();
   const patchToPaintSamples = [];
   const diagnostics = {
     recommendationRequests: 0,
@@ -41,6 +43,9 @@
     browserErrors: [],
     runtimeDiagnostics: [],
   };
+  if (patchDependencyMissing) {
+    diagnostics.browserErrors.push("dependency_missing:TraderDashboardPatches");
+  }
   window.TraderDashboardDiagnostics = Object.freeze({
     snapshot: () => ({
       ...diagnostics,
@@ -195,7 +200,7 @@
       if (state.payload !== payload) {
         const previous = state.payload;
         state.payload = payload;
-        state.projectionVersion = projectionVersion(payload);
+        state.projectionVersion = patches.projectionVersion(payload);
         if (["overlay", "history_overlay"].includes(reason) && patchLiveRows(previous, payload)) {
           const first = payload.items && payload.items[0];
           els.dataSource.textContent = first && first.source ? window.TraderRender.sourceLabel(first.source) : "-";
@@ -306,7 +311,7 @@
 
   function renderPayload(payload) {
     payload = longGroups.displayPayload(payload);
-    state.projectionVersion = projectionVersion(payload);
+    state.projectionVersion = patches.projectionVersion(payload);
     const items = Array.isArray(payload.items) ? payload.items : [], historical = payload.historical === true;
     setLongControls(payload.strategy === "long" && !historical);
     setLongLayout(payload.strategy === "long" && payload.status === "ready" && !historical);
@@ -345,7 +350,7 @@
         ? "当前门槛下没有历史推荐结果"
         : payload.strategy === "long"
           ? longGroups.emptyMessage(payload, state.longScope)
-          : emptyRecommendationMessage(payload);
+          : patches.emptyRecommendationMessage(payload);
       renderTableState(emptyMessage, window.TraderRender.tableColumnCount(payload));
     } else {
       els.tableBody.innerHTML = window.TraderRender.tableRows(recommendations, payload);
@@ -583,8 +588,8 @@
   }
 
   function applyRecommendationPatch(patch) {
-    const currentVersion = state.projectionVersion || projectionVersion(state.payload);
-    const decision = recommendationPatchDecision(patch, state.payload, currentVersion, state.strategy, state.view);
+    const currentVersion = state.projectionVersion || patches.projectionVersion(state.payload);
+    const decision = patches.recommendationPatchDecision(patch, state.payload, currentVersion, state.strategy, state.view);
     if (decision === "ignore_late_draft") return false;
     if (decision !== "apply") {
       requestRecommendationResync(decision);
@@ -594,8 +599,8 @@
     const removed = new Set([...(patch.removed_codes || []), ...(patch.removals || [])]);
     const merged = patch.replace === true
       ? patch.upserts
-      : mergePatchItems(current.items, patch.upserts, removed);
-    if (!topKValid(merged, patch.strategy)) {
+      : patches.mergePatchItems(current.items, patch.upserts, removed);
+    if (!patches.topKValid(merged, patch.strategy)) {
       requestRecommendationResync("topk_mismatch");
       return false;
     }
@@ -623,7 +628,7 @@
       items: merged,
       error: null,
     };
-    state.projectionVersion = projectionVersion(state.payload);
+    state.projectionVersion = patches.projectionVersion(state.payload);
     const key = recommendationKey(state.strategy, state.date, state.view);
     state.payloads.set(key, state.payload);
     if (typeof patch.etag === "string" && patch.etag && patch.view === state.view) {
@@ -636,7 +641,7 @@
 
   function applyOverlayPatch(patch) {
     if (state.date) return false;
-    const decision = overlayPatchDecision(patch, state.payload, state.projectionVersion, state.strategy);
+    const decision = patches.overlayPatchDecision(patch, state.payload, state.projectionVersion, state.strategy);
     if (decision !== "apply") {
       requestRecommendationResync(decision);
       return false;
@@ -660,92 +665,6 @@
     return true;
   }
 
-  function patchVersionValid(patch) {
-    return Boolean(patch && patch.patch_schema_version === 2 && patch.schema_version === 2);
-  }
-
-  function recommendationPatchDecision(patch, payload, currentVersion, strategy, view) {
-    if (!patchVersionValid(patch) || !Array.isArray(patch.upserts)
-      || !Array.isArray(patch.removed_codes) || !Array.isArray(patch.removals || [])) return "schema_mismatch";
-    if (!patch.projection_version || patch.snapshot_id !== patch.projection_version
-      || patch.strategy !== strategy || !["live", "official"].includes(patch.view)
-      || patch.view !== (patch.frozen ? "official" : "live")) return "identity_mismatch";
-    const expectedDate = payload && (payload.current_trade_date || payload.trade_date);
-    if (expectedDate && patch.trade_date !== expectedDate) return "identity_mismatch";
-    if (["current", "official"].includes(view) && payload && payload.frozen === true && patch.frozen !== true) {
-      return "ignore_late_draft";
-    }
-    const baseVersion = patch.base_projection_version || patch.base_snapshot_id || "";
-    if (baseVersion && baseVersion !== currentVersion) return "base_mismatch";
-    if (!baseVersion && patch.replace !== true && payload && payload.status !== "not_ready") return "base_mismatch";
-    if (!patchItemsValid(patch.upserts, patch.removed_codes, patch.removals || [])) return "topk_mismatch";
-    return "apply";
-  }
-
-  function overlayPatchDecision(patch, payload, currentVersion, strategy) {
-    if (!patchVersionValid(patch) || !Array.isArray(patch.quotes)) return "schema_mismatch";
-    if (!payload || patch.strategy !== strategy || patch.trade_date !== payload.trade_date) return "identity_mismatch";
-    const incomingProjection = patch.projection_version || patch.snapshot_id || "";
-    if (!incomingProjection || incomingProjection !== currentVersion || patch.snapshot_id !== payload.snapshot_id) {
-      return "overlay_projection_mismatch";
-    }
-    if (!patch.quotes.every((quote) => quote && typeof quote.code === "string" && quote.code)) {
-      return "schema_mismatch";
-    }
-    return "apply";
-  }
-
-  function projectionVersion(payload) {
-    if (!payload) return "";
-    return payload.projection_version || payload.snapshot_id || "";
-  }
-
-  function emptyRecommendationMessage(payload) {
-    const diagnostics = payload && payload.selection_diagnostics || {};
-    const maximum = Number(diagnostics.maximum_final_score), floor = Number(diagnostics.selection_floor);
-    if (diagnostics.empty_reason === "score_below_observation_floor" && diagnostics.maximum_final_score != null
-      && diagnostics.selection_floor != null && Number.isFinite(maximum) && Number.isFinite(floor)) {
-      return `最高评分 ${maximum.toFixed(2)}，低于观察门槛 ${floor.toFixed(2)}，本轮不荐股`;
-    }
-    if (diagnostics.empty_reason === "no_scored_candidates") return "本轮没有可评分候选";
-    if (diagnostics.empty_reason === "risk_or_execution_blocked") return "候选达到评分门槛，但被风险或执行条件拦截";
-    if (diagnostics.empty_reason === "selection_limits") return "候选达到门槛，但未通过最终集中度限制";
-    return "当前没有达到正式推荐条件的股票";
-  }
-  function mergePatchItems(existingItems, upserts, removed) {
-    const byCode = new Map((existingItems || []).map((item) => [item.code, item]));
-    for (const code of removed) byCode.delete(code);
-    for (const item of upserts) {
-      if (item && item.code) byCode.set(item.code, item);
-    }
-    return Array.from(byCode.values()).sort((left, right) => {
-      const leftRank = Number(left.rank);
-      const rightRank = Number(right.rank);
-      if (Number.isFinite(leftRank) && Number.isFinite(rightRank) && leftRank !== rightRank) return leftRank - rightRank;
-      return String(left.code || "").localeCompare(String(right.code || ""));
-    });
-  }
-
-  function patchItemsValid(upserts, removedCodes, removals) {
-    const codes = upserts.map((item) => item && item.code);
-    const removed = [...removedCodes, ...removals];
-    return codes.every((code) => typeof code === "string" && code)
-      && removed.every((code) => typeof code === "string" && code)
-      && new Set(codes).size === codes.length
-      && !codes.some((code) => removed.includes(code));
-  }
-
-  function topKValid(items, strategy) {
-    const effectiveStrategy = strategy || state.strategy;
-    if (!Array.isArray(items) || (effectiveStrategy !== "long" && items.length > 18)) return false;
-    const codes = items.map((item) => item && item.code);
-    const ranks = items.map((item) => Number(item && item.rank));
-    return codes.every((code) => typeof code === "string" && code)
-      && new Set(codes).size === codes.length
-      && ranks.every((rank) => Number.isInteger(rank) && rank > 0)
-      && new Set(ranks).size === ranks.length;
-  }
-
   function requestRecommendationResync(reason) {
     diagnostics.resyncRequests += 1;
     diagnostics.resyncReasons[reason] = (diagnostics.resyncReasons[reason] || 0) + 1;
@@ -767,6 +686,19 @@
     diagnostics.browserErrors.push(`${kind}:${String(detail || "unknown").slice(0, 300)}`);
     if (diagnostics.browserErrors.length > 20) diagnostics.browserErrors.shift();
   }
+
+  function fallbackDashboardPatches() {
+    return Object.freeze({
+      emptyRecommendationMessage: () => "当前没有达到正式推荐条件的股票",
+      mergePatchItems: (items) => items || [],
+      overlayPatchDecision: () => "dependency_missing",
+      patchVersionValid: () => false,
+      projectionVersion: (payload) => payload && (payload.projection_version || payload.snapshot_id) || "",
+      recommendationPatchDecision: () => "dependency_missing",
+      topKValid: () => false,
+    });
+  }
+
   function rowIdentity(payload, code) {
     return [payload.strategy, payload.trade_date, payload.view, code].map((value) => String(value || "")).join(":");
   }

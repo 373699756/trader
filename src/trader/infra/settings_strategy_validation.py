@@ -57,7 +57,7 @@ def _validate_fusion(settings: StrategySettings) -> None:
         raise ConfigurationError("fusion weights must sum to 1.0")
     if abs(settings.fusion.local_weight - 0.68) > 1e-9 or abs(settings.fusion.deepseek_weight - 0.32) > 1e-9:
         raise ConfigurationError("fusion weights are fixed at 0.68 and 0.32")
-    if settings.fusion.version != "fusion_v2_local68_deepseek32":
+    if settings.fusion.version != "fusion_local68_deepseek32":
         raise ConfigurationError("unsupported fusion version")
     if settings.fusion.score_decimals != 2:
         raise ConfigurationError("fusion score_decimals must be 2")
@@ -70,7 +70,7 @@ def _validate_fusion(settings: StrategySettings) -> None:
 def _validate_selection(settings: StrategySettings) -> None:
     if settings.selection.default_top_k > settings.selection.maximum_top_k:
         raise ConfigurationError("default_top_k cannot exceed maximum_top_k")
-    if settings.board_policy_version != "board_policy_v18_score_first_2026_07":
+    if settings.board_policy_version != "board_policy_score_first_2026_07":
         raise ConfigurationError("unsupported board policy version")
     if settings.selection.maximum_board_fraction != 0.6:
         raise ConfigurationError("maximum board fraction is fixed at 0.6")

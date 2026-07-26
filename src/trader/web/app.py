@@ -7,6 +7,7 @@ from flask import Flask
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.web.routes import StatusProvider, WebApiConfig, WebServices, register_routes
+from trader.web.static_assets import web_asset
 
 
 def create_app(
@@ -17,6 +18,7 @@ def create_app(
     api_config: WebApiConfig | None = None,
 ) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
+    app.add_template_global(web_asset, "web_asset")
     register_routes(
         app,
         WebServices(

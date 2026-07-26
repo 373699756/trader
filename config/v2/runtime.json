@@ -103,7 +103,7 @@
     },
     "cache_policy": {
       "schema_version": 6,
-      "policy_version": "market_cache_v17_p1_p6",
+      "policy_version": "market_cache_p1_p6",
       "datasets": {
         "full_market_quotes": {
           "refresh_ttl_seconds": null,

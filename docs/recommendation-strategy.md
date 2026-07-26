@@ -1,10 +1,10 @@
 # 荐股策略文档
 
-版本：v2（活动策略 `strategy_v20_review28_2026_07`）
+版本：v2（活动策略 `strategy_review28_2026_07`）
 
-引擎：`engine_v20_review28_2026_07`
+引擎：`engine_review28_2026_07`
 
-融合：`fusion_v2_local68_deepseek32`
+融合：`fusion_local68_deepseek32`
 
 状态：today、tomorrow、d25 活动生产契约；long 当前观察契约
 

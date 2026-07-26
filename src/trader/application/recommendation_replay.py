@@ -26,7 +26,7 @@ V16_REPLAY_ALGORITHM_VERSION = "engine_v16_board_scoring_ttd25_2026_07"
 V17_REPLAY_ALGORITHM_VERSION = "engine_v17_downside_guard_ttd25_2026_07"
 V18_REPLAY_ALGORITHM_VERSION = "engine_v18_score_first_risk_history_2026_07"
 V19_REPLAY_ALGORITHM_VERSION = "engine_v19_bounded_review_2026_07"
-REPLAY_ALGORITHM_VERSION = "engine_v20_review28_2026_07"
+REPLAY_ALGORITHM_VERSION = "engine_review28_2026_07"
 _SUPPORTED_REPLAY_ALGORITHMS = frozenset(
     {
         LEGACY_REPLAY_ALGORITHM_VERSION,

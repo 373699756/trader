@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "watchlist_version": "long_watchlist_v7_document_merge_2026_07",
+  "watchlist_version": "long_watchlist_document_merge_2026_07",
   "items": [
     {"code": "688127", "name": "蓝特光学", "industry": "先进光刻/精密光学", "target_price": null},
     {"code": "002222", "name": "福晶科技", "industry": "先进光刻/精密光学", "target_price": null},

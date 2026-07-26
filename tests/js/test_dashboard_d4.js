@@ -10,20 +10,11 @@ const selectionPath = path.join(path.dirname(dashboardPath), "selection.js");
 const renderPath = path.join(path.dirname(dashboardPath), "render.js");
 const longGroupsPath = path.join(path.dirname(dashboardPath), "long_groups.js");
 const formattersPath = path.join(path.dirname(dashboardPath), "dashboard_formatters.js");
+const patchesPath = path.join(path.dirname(dashboardPath), "dashboard_patches.js");
 let source = fs.readFileSync(dashboardPath, "utf8");
 const suffix = "\n})();";
 source = source.trimEnd();
 assert(source.endsWith(suffix), "dashboard.js must retain its IIFE boundary");
-source = `${source.slice(0, -suffix.length)}
-  window.__dashboardD4 = {
-    emptyRecommendationMessage,
-    mergePatchItems,
-    overlayPatchDecision,
-    patchVersionValid,
-    recommendationPatchDecision,
-    topKValid,
-  };
-})();`;
 
 const sandbox = {
   URLSearchParams,
@@ -42,10 +33,23 @@ vm.runInNewContext(fs.readFileSync(renderPath, "utf8"), sandbox, { filename: ren
 vm.runInNewContext(fs.readFileSync(selectionPath, "utf8"), sandbox, { filename: selectionPath });
 vm.runInNewContext(fs.readFileSync(longGroupsPath, "utf8"), sandbox, { filename: longGroupsPath });
 vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), sandbox, { filename: formattersPath });
+vm.runInNewContext(fs.readFileSync(patchesPath, "utf8"), sandbox, { filename: patchesPath });
 vm.runInNewContext(source, sandbox, { filename: dashboardPath });
+const missingPatchSandbox = {
+  URLSearchParams,
+  console,
+  document: { addEventListener() {}, createElement() { return {}; } },
+  window: { addEventListener() {} },
+};
+vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), missingPatchSandbox, { filename: formattersPath });
+vm.runInNewContext(source, missingPatchSandbox, { filename: dashboardPath });
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(missingPatchSandbox.window.TraderDashboardDiagnostics.snapshot().browserErrors)),
+  ["dependency_missing:TraderDashboardPatches"],
+);
 const state = {
   ...sandbox.window.TraderSelection,
-  ...sandbox.window.__dashboardD4,
+  ...sandbox.window.TraderDashboardPatches,
   latencySummary: sandbox.window.TraderDashboardFormatters.latencySummary,
   longTable: sandbox.window.TraderRender.longTable,
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
