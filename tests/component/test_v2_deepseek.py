@@ -17,8 +17,8 @@ from trader.domain.market.models import (
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import ReviewOutcome
 from trader.domain.review.rules import Rating
-from trader.infra.deepseek.budget import SCHEMA_VERSION, DeepSeekBudgetStore
-from trader.infra.deepseek.budget_batch_store import BudgetBatchRequest
+from trader.infra.deepseek.budget import SCHEMA_VERSION, DeepSeekBudgetLedger
+from trader.infra.deepseek.budget_batch_ledger import BudgetBatchRequest
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.challenger import (
     ChallengerDimensionVerdict,
@@ -363,14 +363,14 @@ def test_budget_initialize_repair_schema_version_if_missing_or_invalid(tmp_path)
         connection.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         connection.execute("INSERT INTO schema_meta(key, value) VALUES ('schema_version', 'N/A')")
 
-    store = DeepSeekBudgetStore(
+    ledger = DeepSeekBudgetLedger(
         database_path,
         daily_hard_limit=2,
         strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0},
         stage_limits={"today_main": 2},
     )
-    store.initialize()
+    ledger.initialize()
 
     with sqlite3.connect(database_path) as connection:
         version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
@@ -382,14 +382,14 @@ def test_budget_initialize_repair_schema_version_if_missing_or_invalid(tmp_path)
 def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
     database_path = tmp_path / "fresh.sqlite3"
 
-    store = DeepSeekBudgetStore(
+    ledger = DeepSeekBudgetLedger(
         database_path,
         daily_hard_limit=2,
         strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0},
         stage_limits={"today_main": 2},
     )
-    store.initialize()
+    ledger.initialize()
 
     with sqlite3.connect(database_path) as connection:
         version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
@@ -399,16 +399,16 @@ def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
 
 
 def test_budget_connection_context_closes_after_success_and_failure(tmp_path) -> None:
-    store = _budget(tmp_path / "runtime.sqlite3")
+    ledger = _budget(tmp_path / "runtime.sqlite3")
 
-    with store._connect() as successful_connection:
+    with ledger._connect() as successful_connection:
         assert successful_connection.execute("SELECT 1").fetchone() == (1,)
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         successful_connection.execute("SELECT 1")
 
     with pytest.raises(RuntimeError, match="forced failure"):
-        with store._connect() as failed_connection:
+        with ledger._connect() as failed_connection:
             raise RuntimeError("forced failure")
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
@@ -443,7 +443,7 @@ def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, 
     budget_status = response.get_json()["dependencies"]["deepseek"]["budget"]
     assert budget_status == {
         "available": False,
-        "error": "budget_store_unavailable",
+        "error": "budget_ledger_unavailable",
     }
 
 
@@ -477,20 +477,20 @@ def test_http_timeout_is_bounded_to_one_retry() -> None:
 
 
 def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
-    store = DeepSeekBudgetStore(
+    ledger = DeepSeekBudgetLedger(
         tmp_path / "deepseek.sqlite3",
         daily_hard_limit=3,
         strategy_limits={"today": 2, "tomorrow": 1, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0, "tomorrow_afternoon": 0},
         stage_limits={"today_main": 2, "tomorrow_afternoon": 1},
     )
-    store.initialize()
+    ledger.initialize()
     barrier = threading.Barrier(5)
     allowed: list[bool] = []
 
     def reserve() -> None:
         barrier.wait()
-        result = store.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+        result = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
         allowed.append(result.allowed)
 
     threads = [threading.Thread(target=reserve) for _ in range(5)]
@@ -500,29 +500,29 @@ def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
         thread.join()
 
     assert sum(allowed) == 2
-    summary = store.summary(NOW.date().isoformat())
+    summary = ledger.summary(NOW.date().isoformat())
     assert summary["used"] == 2
     assert summary["by_status"] == {"reserved": 2}
     assert summary["call_status"] == {"reserved": 2, "abandoned": 0, "failed": 0, "success": 0}
-    assert store.abandon_reserved() == 2
-    abandoned = store.summary(NOW.date().isoformat())
+    assert ledger.abandon_reserved() == 2
+    abandoned = ledger.summary(NOW.date().isoformat())
     assert abandoned["by_status"] == {"abandoned": 2}
     assert abandoned["call_status"] == {"reserved": 0, "abandoned": 2, "failed": 0, "success": 0}
 
 
 def test_budget_supports_shared_and_explicit_emergency_buckets(tmp_path) -> None:
-    store = DeepSeekBudgetStore(
+    ledger = DeepSeekBudgetLedger(
         tmp_path / "deepseek.sqlite3",
         daily_hard_limit=3,
         strategy_limits={"today": 1, "tomorrow": 0, "d25": 0, "shared_preheat": 1, "emergency": 1},
         stage_targets={"shared_preheat": 0, "today_main": 0, "emergency": 0},
         stage_limits={"shared_preheat": 1, "today_main": 1, "emergency": 1},
     )
-    store.initialize()
+    ledger.initialize()
 
-    shared = store.reserve(Strategy.TODAY, phase="warmup", requested_at=NOW, bucket="shared_preheat")
-    normal = store.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
-    emergency = store.reserve(
+    shared = ledger.reserve(Strategy.TODAY, phase="warmup", requested_at=NOW, bucket="shared_preheat")
+    normal = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+    emergency = ledger.reserve(
         Strategy.TODAY,
         phase="final_review",
         requested_at=NOW,
@@ -533,7 +533,7 @@ def test_budget_supports_shared_and_explicit_emergency_buckets(tmp_path) -> None
     assert (shared.allowed, shared.bucket) == (True, "shared_preheat")
     assert (normal.allowed, normal.bucket) == (True, "today")
     assert (emergency.allowed, emergency.bucket) == (True, "emergency")
-    assert store.summary(NOW.date().isoformat())["by_bucket"] == {
+    assert ledger.summary(NOW.date().isoformat())["by_bucket"] == {
         "emergency": 1,
         "shared_preheat": 1,
         "today": 1,
@@ -542,10 +542,10 @@ def test_budget_supports_shared_and_explicit_emergency_buckets(tmp_path) -> None
 
 def test_call_audit_replaces_raw_failure_text_with_bounded_category(tmp_path) -> None:
     database_path = tmp_path / "runtime.sqlite3"
-    store = _budget(database_path)
-    reservation = store.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+    ledger = _budget(database_path)
+    reservation = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
 
-    store.finish(
+    ledger.finish(
         reservation.reservation_id,
         status="failed",
         error="sensitive upstream response must not persist",
@@ -599,7 +599,7 @@ def test_long_review_is_empty_and_does_not_reuse_deepseek_raw_cache(tmp_path) ->
         )
 
     database_path = tmp_path / "runtime.sqlite3"
-    budget = DeepSeekBudgetStore(
+    budget = DeepSeekBudgetLedger(
         database_path,
         daily_hard_limit=1,
         strategy_limits={"today": 0, "tomorrow": 0, "d25": 1, "shared_preheat": 0, "emergency": 0},
@@ -904,18 +904,18 @@ def test_partial_batch_keeps_valid_candidate_and_rejects_missing_result(tmp_path
 
 
 def test_budget_enforces_stage_limit_independently_from_strategy_limit(tmp_path) -> None:
-    store = DeepSeekBudgetStore(
+    ledger = DeepSeekBudgetLedger(
         tmp_path / "runtime.sqlite3",
         daily_hard_limit=2,
         strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_observe": 0, "today_main": 0},
         stage_limits={"today_observe": 1, "today_main": 1},
     )
-    store.initialize()
+    ledger.initialize()
 
-    observe = store.reserve(Strategy.TODAY, phase="today_observe", requested_at=NOW)
-    observe_exhausted = store.reserve(Strategy.TODAY, phase="today_observe", requested_at=NOW)
-    main = store.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+    observe = ledger.reserve(Strategy.TODAY, phase="today_observe", requested_at=NOW)
+    observe_exhausted = ledger.reserve(Strategy.TODAY, phase="today_observe", requested_at=NOW)
+    main = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
 
     assert observe.allowed is True
     assert (observe_exhausted.allowed, observe_exhausted.reason) == (False, "stage_limit")
@@ -923,31 +923,31 @@ def test_budget_enforces_stage_limit_independently_from_strategy_limit(tmp_path)
 
 
 def test_emergency_requires_exhausted_normal_bucket_and_registered_trigger(tmp_path) -> None:
-    store = DeepSeekBudgetStore(
+    ledger = DeepSeekBudgetLedger(
         tmp_path / "runtime.sqlite3",
         daily_hard_limit=2,
         strategy_limits={"today": 1, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 1},
         stage_targets={"today_main": 0, "emergency": 0},
         stage_limits={"today_main": 1, "emergency": 1},
     )
-    store.initialize()
+    ledger.initialize()
 
-    too_early = store.reserve(
+    too_early = ledger.reserve(
         Strategy.TODAY,
         phase="final_review",
         requested_at=NOW,
         emergency=True,
         emergency_reason="freeze_boundary_change",
     )
-    normal = store.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
-    invalid = store.reserve(
+    normal = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+    invalid = ledger.reserve(
         Strategy.TODAY,
         phase="final_review",
         requested_at=NOW,
         emergency=True,
         emergency_reason="manual_override",
     )
-    emergency = store.reserve(
+    emergency = ledger.reserve(
         Strategy.TODAY,
         phase="final_review",
         requested_at=NOW,
@@ -959,15 +959,15 @@ def test_emergency_requires_exhausted_normal_bucket_and_registered_trigger(tmp_p
     assert normal.allowed is True
     assert (invalid.allowed, invalid.reason) == (False, "invalid_emergency_reason")
     assert emergency.allowed is True
-    summary = store.summary(NOW.date().isoformat())
+    summary = ledger.summary(NOW.date().isoformat())
     assert summary["by_bucket"] == {"emergency": 1, "today": 1}
     assert summary["by_strategy"] == {"today": 2}
 
 
 def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
     database_path = tmp_path / "runtime.sqlite3"
-    store = _budget(database_path)
-    batch_id = store.begin_batch(
+    ledger = _budget(database_path)
+    batch_id = ledger.begin_batch(
         BudgetBatchRequest(
             strategy=Strategy.TODAY,
             phase="today_main",
@@ -978,7 +978,7 @@ def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
             candidate_codes=("600001",),
         )
     )
-    reservation = store.reserve(
+    reservation = ledger.reserve(
         Strategy.TODAY,
         phase="today_main",
         requested_at=NOW,
@@ -986,7 +986,7 @@ def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
     )
 
     assert reservation.allowed is True
-    assert store.recover_incomplete(NOW + timedelta(minutes=2)) == 2
+    assert ledger.recover_incomplete(NOW + timedelta(minutes=2)) == 2
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT status FROM deepseek_call_reservations").fetchone() == ("abandoned",)
         assert connection.execute("SELECT status FROM deepseek_review_batches").fetchone() == ("abandoned",)
@@ -1170,16 +1170,16 @@ class MutableClock:
         self._value = value
 
 
-def _budget(database_path) -> DeepSeekBudgetStore:
-    store = DeepSeekBudgetStore(
+def _budget(database_path) -> DeepSeekBudgetLedger:
+    ledger = DeepSeekBudgetLedger(
         database_path,
         daily_hard_limit=2,
         strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"today_main": 0},
         stage_limits={"today_main": 2},
     )
-    store.initialize()
-    return store
+    ledger.initialize()
+    return ledger
 
 
 def _settings() -> DeepSeekSettings:

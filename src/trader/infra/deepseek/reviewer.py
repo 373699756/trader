@@ -19,8 +19,8 @@ from trader.domain.review.models import (
     ReviewOutcome,
 )
 from trader.infra.deepseek.base_client import DeepSeekClientBase, DeepSeekHttpResult
-from trader.infra.deepseek.budget import DeepSeekBudgetStore
-from trader.infra.deepseek.budget_batch_store import BudgetBatchCompletion, BudgetBatchRequest
+from trader.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion, BudgetBatchRequest
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.reviewer_context import ReviewerContext
 from trader.infra.deepseek.reviewer_requests import ReviewerRequestExecutor
@@ -122,7 +122,7 @@ class DeepSeekReviewer:
     def __init__(
         self,
         settings: DeepSeekSettings,
-        budget: DeepSeekBudgetStore,
+        budget: DeepSeekBudgetLedger,
         client: DeepSeekClientBase,
         cache: ReviewCache,
         **options: Unpack[ReviewerOptions],

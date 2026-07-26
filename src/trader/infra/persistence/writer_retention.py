@@ -58,7 +58,7 @@ def archive_trade_date(
                 """,
                 (manifest["snapshot_id"],),
             ).fetchall()
-        archive_relative = archive.store(
+        archive_relative = archive.write_bundle(
             snapshot_row=dict(manifest),
             snapshot_payload=source.read_bytes(),
             overlay_row=dict(overlay) if overlay is not None else None,

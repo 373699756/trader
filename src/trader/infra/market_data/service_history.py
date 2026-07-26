@@ -41,7 +41,7 @@ _HISTORY_SOURCE_LANE = "history"
 
 
 @dataclass(frozen=True)
-class HistoryStoreStatus:
+class HistoryCacheStatus:
     entries: int
     raw_rows: int
     profile_entries: int
@@ -69,7 +69,7 @@ class _HistoryLoadState:
     pending_entries: dict[str, _HistoryEntry]
 
 
-class HistoryStoreOptions(TypedDict):
+class HistoryCacheOptions(TypedDict):
     history_worker_pool: BoundedExecutor | None
     workers: int
     ttl_seconds: float
@@ -77,12 +77,12 @@ class HistoryStoreOptions(TypedDict):
     monotonic: Callable[[], float]
 
 
-class HistoryStore:
+class HistoryCache:
     def __init__(
         self,
         history_client: DailyHistoryClient,
         runner: MarketTaskRunner,
-        **options: Unpack[HistoryStoreOptions],
+        **options: Unpack[HistoryCacheOptions],
     ) -> None:
         self._history_client = history_client
         self._runner = runner
@@ -453,9 +453,9 @@ class HistoryStore:
                 summaries[code] = build_history_context(bars)
         return summaries
 
-    def status(self) -> HistoryStoreStatus:
+    def status(self) -> HistoryCacheStatus:
         with self._lock:
-            return HistoryStoreStatus(
+            return HistoryCacheStatus(
                 entries=len(self._history),
                 raw_rows=sum(len(entry.bars) for entry in self._history.values()),
                 profile_entries=sum(entry.context is not None for entry in self._history.values()),

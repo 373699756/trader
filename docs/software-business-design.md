@@ -88,14 +88,14 @@ entrypoints / web / infra -> application -> domain
 - `entrypoints`：参数、进程生命周期和退出码。
 - `bootstrap.py`：唯一组合根，显式创建客户端并注入依赖；禁止全局服务定位器。
 
-行情适配器固定采用组合：`MarketSourceCoordinator`、`QuoteStore`、
-`HistoryStore`/`HistoryWarmup`、
+行情适配器固定采用组合：`MarketSourceCoordinator`、`QuoteCache`、
+`HistoryCache`/`HistoryWarmup`、
 `ResearchLoader`、`IntradayLoader` 和 `ReferenceLoader` 分别拥有自己的有类型状态、锁和
 资源依赖；类之间不得通过 mixin、共享状态基类、`Any` 属性或隐式模板方法取得能力。
 `bootstrap.py` 显式装配这些组件，最外层 `MarketFeatureService` 只协调与转发行情、
 候选、报价、研究、参考、元数据和结果端口，不保存组件业务状态。DeepSeek 固定按 HTTP、
 schema、预算批次、预算汇总、缓存、请求执行、状态和复核编排拆分；
-`DeepSeekReviewer`、`DeepSeekBudgetStore` 只组合这些组件。快照仓库只负责冻结、检查点、
+`DeepSeekReviewer`、`DeepSeekBudgetLedger` 只组合这些组件。快照仓库只负责冻结、检查点、
 收盘 overlay 和结果结算，不持久化流水线事件或实时来源健康。
 
 `create_app()` 必须无线程、无网络、无数据库和无文件写入副作用。HTTP 请求不得抓取
@@ -446,7 +446,7 @@ P6 -> SSE 内部入队 100ms、SSE 接收到浏览器下一帧绘制 100ms、权
 
 ### 7.3 P3-P6 公共接缝
 
-`youhua_contract_base_v1` 是已发布的公共接缝版本，不再表示阶段施工或代理分工。schema、
+`delivery_contract_base_v1` 是已发布的公共接缝版本，不再表示阶段施工或代理分工。schema、
 版本、公共 port/event、配置、publisher 和组合根只能在各自活动模块中保留一套定义；
 P1-P3、DeepSeek 和 P6/Web 的内部实现不得分叉公共身份或泄漏基础设施类型。
 

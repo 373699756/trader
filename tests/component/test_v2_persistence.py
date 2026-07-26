@@ -274,7 +274,7 @@ def test_outcome_audit_is_idempotent_without_changing_frozen_snapshot(tmp_path) 
     assert snapshot_sha256(frozen_path.read_bytes()) == frozen_digest
 
 
-def test_recommendation_store_keeps_twenty_dates_and_archives_older_outcome_backlog(tmp_path) -> None:
+def test_recommendation_archive_keeps_twenty_dates_and_archives_older_outcome_backlog(tmp_path) -> None:
     repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
     repository.initialize()
     start = date(2026, 6, 1)

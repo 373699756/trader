@@ -26,7 +26,7 @@ _TRANSIENT_EMPTY_SELECTION_FILTERS = frozenset(
 )
 
 
-def store_candidate_selection(
+def remember_candidate_selection(
     pipeline: RecommendationPipeline,
     market_features: Sequence[FeatureSnapshot],
     candidates: tuple[FeatureSnapshot, ...],

@@ -19,7 +19,7 @@ from werkzeug.serving import make_server
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.performance.youhua_d4_browser_fixture import build_app  # noqa: E402
+from tests.performance.delivery_d4_browser_fixture import build_app  # noqa: E402
 from trader.infra.settings import load_runtime_settings  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))

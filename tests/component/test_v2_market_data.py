@@ -50,10 +50,10 @@ from trader.infra.market_data.history_seed import (
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
 from trader.infra.market_data.service import MarketFeatureDependencies, MarketFeatureService
-from trader.infra.market_data.service_candidates import QuoteStore, QuoteStoreDependencies
+from trader.infra.market_data.service_candidates import QuoteCache, QuoteCacheDependencies
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.infra.market_data.service_history import HistoryStore
+from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
@@ -106,7 +106,7 @@ def _service(
         schema_version=kwargs.pop("schema_version", "market-v15"),
         wall_clock=wall_clock,
     )
-    history = HistoryStore(
+    history = HistoryCache(
         history_client,
         runner,
         history_worker_pool=kwargs.pop("history_worker_pool", None),
@@ -151,8 +151,8 @@ def _service(
         capacity=intraday_capacity,
         monotonic=monotonic,
     )
-    quotes = QuoteStore(
-        QuoteStoreDependencies(gateway, feature_builder, history, references),
+    quotes = QuoteCache(
+        QuoteCacheDependencies(gateway, feature_builder, history, references),
         market_ttl_seconds=kwargs.pop("market_ttl_seconds", 30),
         candidate_capacity=intraday_capacity,
         monotonic=monotonic,
@@ -337,7 +337,7 @@ def test_history_fallback_uses_eastmoney_only_when_tencent_is_insufficient() -> 
     assert fallback.calls == ["600001"]
 
 
-def test_history_store_fetches_sixty_one_bars_but_retains_only_twenty_raw_rows() -> None:
+def test_history_cache_fetches_sixty_one_bars_but_retains_only_twenty_raw_rows() -> None:
     bars = (
         DailyBar(
             trade_date="2026-04-30",

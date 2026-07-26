@@ -46,7 +46,7 @@ from trader.application.pipeline_market_tasks import (
 from trader.application.pipeline_workers import (
     data_future,
     persist,
-    store_candidate_selection,
+    remember_candidate_selection,
     submit_required,
     worker_status,
 )
@@ -708,7 +708,7 @@ __all__ = [
     "process_event_on_workers",
     "process_schedule_on_workers",
     "review_deadline",
-    "store_candidate_selection",
+    "remember_candidate_selection",
     "strategies_for_phase",
     "submit_required",
     "worker_status",

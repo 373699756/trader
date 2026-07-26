@@ -21,7 +21,7 @@ from trader.domain.market.tail import MinuteBar
 from trader.infra.market_data.features import StandardizedFeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar
-from trader.infra.market_data.service_history import HistoryStore
+from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_support import _quote_version
 from trader.infra.market_data.service_tushare import ReferenceLoader
 
@@ -31,7 +31,7 @@ _AUXILIARY_ACTION_RESTRICTIONS = frozenset(
 
 
 @dataclass(frozen=True)
-class QuoteStoreStatus:
+class QuoteCacheStatus:
     market_features: tuple[FeatureSnapshot, ...]
     candidate_quotes: tuple[MarketQuote, ...]
     market_feature_rows: int
@@ -40,10 +40,10 @@ class QuoteStoreStatus:
 
 
 @dataclass(frozen=True)
-class QuoteStoreDependencies:
+class QuoteCacheDependencies:
     gateway: MarketDataGateway
     feature_builder: StandardizedFeatureBuilder
-    history: HistoryStore
+    history: HistoryCache
     references: ReferenceLoader
 
 
@@ -60,10 +60,10 @@ class _CandidateFeatureOptions(_CandidateFeatureRequiredOptions, _CandidateFeatu
     pass
 
 
-class QuoteStore:
+class QuoteCache:
     def __init__(
         self,
-        dependencies: QuoteStoreDependencies,
+        dependencies: QuoteCacheDependencies,
         *,
         market_ttl_seconds: float,
         candidate_capacity: int,
@@ -207,9 +207,9 @@ class QuoteStore:
             )
         return projected
 
-    def status(self) -> QuoteStoreStatus:
+    def status(self) -> QuoteCacheStatus:
         with self._lock:
-            return QuoteStoreStatus(
+            return QuoteCacheStatus(
                 market_features=self._market_features,
                 candidate_quotes=tuple(self._candidate_quotes.values()),
                 market_feature_rows=len(self._market_features),
@@ -249,4 +249,4 @@ def _apply_action_restrictions(
     )
 
 
-__all__ = ["QuoteStore", "QuoteStoreStatus", "_apply_action_restrictions"]
+__all__ = ["QuoteCache", "QuoteCacheStatus", "_apply_action_restrictions"]

@@ -12,7 +12,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING
 
 from trader.application.candidate_features import bind_strategy_input_version, read_strategy_features
-from trader.application.pipeline_workers import data_future, persist, store_candidate_selection, submit_required
+from trader.application.pipeline_workers import data_future, persist, remember_candidate_selection, submit_required
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.recommendation_support import _snapshot_id
 from trader.application.schedule import shanghai_now, trade_date_at
@@ -227,7 +227,7 @@ def _rebuild_from_close(
             validation_at,
             max_age,
         )
-    store_candidate_selection(pipeline, market_features, candidates, reasons, details)
+    remember_candidate_selection(pipeline, market_features, candidates, reasons, details)
 
     prepared: list[RecommendationSnapshot] = []
     codes = tuple(feature.quote.code for feature in candidates)

@@ -298,10 +298,10 @@ def test_restart_does_not_restore_a_frozen_replacement_rejected_by_p6(
         now=lambda: now,
     )
     first.initialize()
-    stored = replace(first.run_once(now)[0], frozen=True)
-    repository.freeze(stored)
+    persisted = replace(first.run_once(now)[0], frozen=True)
+    repository.freeze(persisted)
     published = PublishedSnapshotIndex(repository)
-    assert published.publish(replace(stored, snapshot_id="already-pinned")) is True
+    assert published.publish(replace(persisted, snapshot_id="already-pinned")) is True
     state = RuntimeState()
     restarted = build_pipeline(
         StaticMarketData((application_feature_factory("600001", now),)),
@@ -323,7 +323,7 @@ def test_restart_does_not_restore_a_frozen_replacement_rejected_by_p6(
     restarted.initialize()
 
     assert state.latest(Strategy.TODAY) is None
-    assert state.is_frozen(Strategy.TODAY, stored.trade_date) is False
+    assert state.is_frozen(Strategy.TODAY, persisted.trade_date) is False
     assert published.latest(Strategy.TODAY).snapshot_id == "already-pinned"
     assert state.snapshot()["counters"]["p6_snapshot_rejections"] == 1
 
@@ -3223,14 +3223,14 @@ class MemoryRepository:
             event.data_version,
         )
         with self._event_lock:
-            for stored in self.events:
+            for persisted in self.events:
                 stored_identity = (
-                    stored.trade_date,
-                    stored.phase,
-                    stored.strategy,
-                    stored.event_type,
-                    stored.subject_key,
-                    stored.data_version,
+                    persisted.trade_date,
+                    persisted.phase,
+                    persisted.strategy,
+                    persisted.event_type,
+                    persisted.subject_key,
+                    persisted.data_version,
                 )
                 if stored_identity == identity:
                     return False

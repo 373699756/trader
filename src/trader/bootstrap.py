@@ -36,7 +36,7 @@ from trader.domain.recommendation.fusion import FusionPolicy
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import RiskRule
 from trader.infra.cache import BoundedLruCache
-from trader.infra.deepseek.budget import DeepSeekBudgetStore
+from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.factory import create_deepseek_client
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
@@ -49,10 +49,10 @@ from trader.infra.market_data.history_seed import (
     FallbackHistoryClient,
 )
 from trader.infra.market_data.service import MarketFeatureDependencies, MarketFeatureService
-from trader.infra.market_data.service_candidates import QuoteStore, QuoteStoreDependencies
+from trader.infra.market_data.service_candidates import QuoteCache, QuoteCacheDependencies
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.infra.market_data.service_history import HistoryStore
+from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
@@ -228,7 +228,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         schema_version="market_snapshot_v15",
         wall_clock=now,
     )
-    history_store = HistoryStore(
+    history_cache = HistoryCache(
         history_client,
         runner,
         history_worker_pool=history_pool,
@@ -237,9 +237,9 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         capacity=settings.market_data.cache_policy.datasets["daily_history"].capacity,
         monotonic=time.monotonic,
     )
-    references = ReferenceLoader(gateway, history_store, runner, tushare_client, monotonic=time.monotonic)
+    references = ReferenceLoader(gateway, history_cache, runner, tushare_client, monotonic=time.monotonic)
     warmup = HistoryWarmup(
-        history_store,
+        history_cache,
         references,
         runner,
         batch_size=30,
@@ -266,16 +266,16 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         capacity=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
         monotonic=time.monotonic,
     )
-    quote_store = QuoteStore(
-        QuoteStoreDependencies(gateway, feature_builder, history_store, references),
+    quote_cache = QuoteCache(
+        QuoteCacheDependencies(gateway, feature_builder, history_cache, references),
         market_ttl_seconds=min(cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
         candidate_capacity=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
         monotonic=time.monotonic,
     )
     market_health = MarketDataHealth(
         MarketDataHealthDependencies(
-            quote_store,
-            history_store,
+            quote_cache,
+            history_cache,
             warmup,
             research,
             intraday_loader,
@@ -285,8 +285,8 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     )
     market_data = MarketFeatureService(
         MarketFeatureDependencies(
-            quote_store,
-            history_store,
+            quote_cache,
+            history_cache,
             warmup,
             research,
             intraday_loader,
@@ -303,7 +303,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         config_version=effective_config_version,
         write_lock=runtime_database_lock,
     )
-    budget = DeepSeekBudgetStore(
+    budget = DeepSeekBudgetLedger(
         settings.runtime_dir / "runtime.sqlite3",
         daily_hard_limit=settings.deepseek.daily_hard_limit,
         strategy_limits=settings.deepseek.strategy_limits,

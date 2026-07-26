@@ -1,4 +1,4 @@
-"""Versioned file archive for recommendation snapshots outside the active 20-day store."""
+"""Versioned file archive for recommendation snapshots outside the active 20-day archive."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class RecommendationArchive:
         self._runtime_dir = runtime_dir
         self.root = runtime_dir / "archive" / ARCHIVE_SCHEMA
 
-    def store(
+    def write_bundle(
         self,
         *,
         snapshot_row: JsonRow,

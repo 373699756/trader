@@ -141,7 +141,7 @@ class BoundedLruCache(Generic[_T]):
             estimated_bytes,
             estimated_bytes,
         )
-        return self._store(identity, entry)
+        return self._insert_entry(identity, entry)
 
     def put_negative(self, identity: CacheIdentity, *, error_code: str) -> bool:
         normalized = error_code.strip()
@@ -171,7 +171,7 @@ class BoundedLruCache(Generic[_T]):
             else:
                 estimated_bytes = self._estimate_entry(identity, None, None, None, normalized)
                 entry = CacheEntry(None, None, None, normalized, now, now, estimated_bytes, estimated_bytes)
-            return self._store(identity, entry)
+            return self._insert_entry(identity, entry)
 
     def coalesce(self, identity: CacheIdentity, loader: Callable[[], _T]) -> _T:
         with self._lock:
@@ -293,7 +293,7 @@ class BoundedLruCache(Generic[_T]):
         with self._lock:
             return len(self._inflight)
 
-    def _store(self, identity: CacheIdentity, entry: CacheEntry[_T]) -> bool:
+    def _insert_entry(self, identity: CacheIdentity, entry: CacheEntry[_T]) -> bool:
         with self._lock:
             if self._stopped:
                 return False

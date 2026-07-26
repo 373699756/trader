@@ -11,7 +11,7 @@ from datetime import datetime
 
 from trader.application.source_lanes import SourceRequestSupersededError
 from trader.infra.market_data.service_execution import MarketTaskRunner
-from trader.infra.market_data.service_history import HistoryStore
+from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_support import _normalize_codes, _source_batch_identity
 from trader.infra.market_data.service_tushare import ReferenceLoader
 
@@ -36,7 +36,7 @@ class HistoryWarmupStatus:
 class HistoryWarmup:
     def __init__(
         self,
-        history: HistoryStore,
+        history: HistoryCache,
         references: ReferenceLoader,
         runner: MarketTaskRunner,
         *,

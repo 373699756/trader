@@ -218,13 +218,13 @@ def _cache_probe(
         started = time.perf_counter()
         cold_market = cache.get(market_identity)
         cold_candidate = cache.get(candidate_identity)
-        market_stored = cache.put(
+        market_cached = cache.put(
             market_identity,
             tuple(market_observations),
             data_version=f"eastmoney-fixture-v{index}",
             source_time=observed_at,
         )
-        candidate_stored = cache.put(
+        candidate_cached = cache.put(
             candidate_identity,
             tuple(candidate_observations),
             data_version=f"tencent-fixture-v{index}",
@@ -244,8 +244,8 @@ def _cache_probe(
                 None if hot_market is None else hot_market.state,
                 None if hot_candidate is None else hot_candidate.state,
             )
-        if not market_stored or not candidate_stored:
-            raise ValueError("cache could not store the fixed v15 workload")
+        if not market_cached or not candidate_cached:
+            raise ValueError("cache could not retain the fixed v15 workload")
         if index >= rounds.warmup:
             cold_samples.append(cold_ms)
             hot_samples.append(hot_ms)

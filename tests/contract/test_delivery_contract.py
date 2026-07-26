@@ -39,19 +39,19 @@ def test_docs_keep_two_authorities_active_plans_and_delivery_reports() -> None:
         "recommendation-strategy.md",
         "reports/a-share-long-industry-research-2026-07-24.md",
         "reports/chokepoint-watchlist-document-split-2026-07-25.md",
+        "reports/delivery-a1-baseline.md",
+        "reports/delivery-a2-public-skeleton.md",
+        "reports/delivery-a3-integration.md",
+        "reports/delivery-a4-acceptance.md",
+        "reports/delivery-a5-final-review.md",
+        "reports/delivery-d1-p6-web.md",
+        "reports/delivery-g1-contract-base.md",
+        "reports/delivery-g2-gate-review.md",
+        "reports/delivery-g3-gate-review.md",
+        "reports/delivery-g4-gate-review.md",
+        "reports/delivery-g5-final-gate.md",
         "reports/long-watchlist-changes-2026-07-25.md",
         "reports/solid-state-watchlist-merge-2026-07-25.md",
-        "reports/youhua-a1-baseline.md",
-        "reports/youhua-a2-public-skeleton.md",
-        "reports/youhua-a3-integration.md",
-        "reports/youhua-a4-acceptance.md",
-        "reports/youhua-a5-final-review.md",
-        "reports/youhua-d1-p6-web.md",
-        "reports/youhua-g1-contract-base.md",
-        "reports/youhua-g2-gate-review.md",
-        "reports/youhua-g3-gate-review.md",
-        "reports/youhua-g4-gate-review.md",
-        "reports/youhua-g5-final-gate.md",
         "software-business-design.md",
         "strage.md",
         "times.md",
@@ -61,7 +61,7 @@ def test_docs_keep_two_authorities_active_plans_and_delivery_reports() -> None:
     strage = (docs_root / "strage.md").read_text(encoding="utf-8")
     times = (docs_root / "times.md").read_text(encoding="utf-8")
     question = (docs_root / "queston.md").read_text(encoding="utf-8")
-    report = (docs_root / "reports/youhua-a1-baseline.md").read_text(encoding="utf-8")
+    report = (docs_root / "reports/delivery-a1-baseline.md").read_text(encoding="utf-8")
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
@@ -75,19 +75,19 @@ def test_docs_keep_two_authorities_active_plans_and_delivery_reports() -> None:
     assert "recommendation-strategy.md" in times
     assert "A1.x 已完成本地基线采集与契约冻结" in report
     assert "G1 发布" in report
-    assert "A2 public skeleton is available" in (docs_root / "reports/youhua-a2-public-skeleton.md").read_text(
+    assert "A2 public skeleton is available" in (docs_root / "reports/delivery-a2-public-skeleton.md").read_text(
         encoding="utf-8"
     )
-    assert "A3 integration handoff is available" in (docs_root / "reports/youhua-a3-integration.md").read_text(
+    assert "A3 integration handoff is available" in (docs_root / "reports/delivery-a3-integration.md").read_text(
         encoding="utf-8"
     )
-    assert "A4.1-A4.6" in (docs_root / "reports/youhua-a4-acceptance.md").read_text(encoding="utf-8")
-    assert "A5.1-A5.5" in (docs_root / "reports/youhua-a5-final-review.md").read_text(encoding="utf-8")
-    assert "G2 已发布" in (docs_root / "reports/youhua-g2-gate-review.md").read_text(encoding="utf-8")
-    assert "G3 已发布" in (docs_root / "reports/youhua-g3-gate-review.md").read_text(encoding="utf-8")
-    assert "G4 已发布" in (docs_root / "reports/youhua-g4-gate-review.md").read_text(encoding="utf-8")
-    assert "G5 已发布" in (docs_root / "reports/youhua-g5-final-gate.md").read_text(encoding="utf-8")
-    for retired_plan in ("plan.md", "plan_c.md", "plan_sudu.md", "plan_youhua.md"):
+    assert "A4.1-A4.6" in (docs_root / "reports/delivery-a4-acceptance.md").read_text(encoding="utf-8")
+    assert "A5.1-A5.5" in (docs_root / "reports/delivery-a5-final-review.md").read_text(encoding="utf-8")
+    assert "G2 已发布" in (docs_root / "reports/delivery-g2-gate-review.md").read_text(encoding="utf-8")
+    assert "G3 已发布" in (docs_root / "reports/delivery-g3-gate-review.md").read_text(encoding="utf-8")
+    assert "G4 已发布" in (docs_root / "reports/delivery-g4-gate-review.md").read_text(encoding="utf-8")
+    assert "G5 已发布" in (docs_root / "reports/delivery-g5-final-gate.md").read_text(encoding="utf-8")
+    for retired_plan in ("plan.md", "plan_c.md", "plan_sudu.md", "plan_delivery.md"):
         assert not (docs_root / retired_plan).exists()
     assert "docs/need.md" not in design
     assert "docs/hi.md" not in design

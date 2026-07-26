@@ -16,10 +16,10 @@ from trader.domain.market.models import (
     MarketQuote,
 )
 from trader.domain.outcome.models import OutcomeBar
-from trader.infra.market_data.service_candidates import QuoteStore
+from trader.infra.market_data.service_candidates import QuoteCache
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_health import MarketDataHealth
-from trader.infra.market_data.service_history import HistoryStore
+from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
@@ -29,8 +29,8 @@ from trader.infra.market_data.service_tushare import ReferenceLoader
 
 @dataclass(frozen=True)
 class MarketFeatureDependencies:
-    quotes: QuoteStore
-    history: HistoryStore
+    quotes: QuoteCache
+    history: HistoryCache
     warmup: HistoryWarmup
     research: ResearchLoader
     intraday: IntradayLoader

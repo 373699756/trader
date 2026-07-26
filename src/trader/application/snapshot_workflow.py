@@ -17,8 +17,8 @@ from trader.application.pipeline_market_tasks import _refresh_intraday_tail_befo
 from trader.application.pipeline_stages import (
     maximum_age_seconds,
     persist,
+    remember_candidate_selection,
     review_deadline,
-    store_candidate_selection,
     strategies_for_phase,
 )
 from trader.application.pipeline_workers import submit_required_urgent
@@ -370,7 +370,7 @@ def refresh_candidates(
         trade_date=trade_date_at(now).isoformat(),
         phase=phase.value,
     )
-    store_candidate_selection(pipeline, market_features, candidates, reasons, details)
+    remember_candidate_selection(pipeline, market_features, candidates, reasons, details)
 
 
 def score_strategy(

@@ -14,7 +14,7 @@ from trader.application.cadence import PipelineTask
 from trader.application.events import EventDeadlineExpiredError
 from trader.application.pipeline_workers import (
     data_future,
-    store_candidate_selection,
+    remember_candidate_selection,
     submit_required,
     urgent_data_future,
 )
@@ -230,7 +230,7 @@ def _refresh_candidates_on_workers(
         "candidate_preparation",
         (time.perf_counter() - preparation_started) * 1000.0,
     )
-    store_candidate_selection(pipeline, market_features, candidates, reasons, details)
+    remember_candidate_selection(pipeline, market_features, candidates, reasons, details)
 
 
 def _short_strategies_for_phase(phase: MarketPhase) -> tuple[Strategy, ...]:

@@ -324,14 +324,14 @@ def test_cache_rejects_one_entry_larger_than_its_group_byte_limit() -> None:
     cache = BoundedLruCache(_policy(group_bytes=512))
     identity = _identity("600001")
 
-    stored = cache.put(
+    cached = cache.put(
         identity,
         {"payload": "x" * 1024},
         data_version="v1",
         source_time=NOW,
     )
 
-    assert stored is False
+    assert cached is False
     status = cache.status()["daily_history"]["eastmoney"]
     assert status["entries"] == 0
     assert status["load_error"] == 1

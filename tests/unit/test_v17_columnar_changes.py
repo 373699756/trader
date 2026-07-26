@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from polars.exceptions import ColumnNotFoundError
 
-from trader.application.youhua_test_doubles import P4ConsumerStub
+from trader.application.delivery_test_doubles import P4ConsumerStub
 from trader.domain.market.models import Board, CanonicalMarketSnapshot, Evidence, FeatureSnapshot, MarketQuote
 from trader.domain.market.research import ResearchObservation
 from trader.infra.market_data.columnar import (

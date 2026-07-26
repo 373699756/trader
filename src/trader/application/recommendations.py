@@ -154,7 +154,7 @@ def _merge_epoch_for_features(features: Sequence[FeatureSnapshot], data_version:
 
     Market adapters may already bind a canonical merge epoch.  When they do
     not, the input versions and codes are hashed so all three board lanes see
-    the same immutable identity without consulting an external clock or store.
+    the same immutable identity without consulting an external clock or repository.
     """
 
     epochs = {feature.merge_epoch for feature in features if feature.merge_epoch}

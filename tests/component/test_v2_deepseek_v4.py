@@ -17,7 +17,7 @@ from trader.domain.review.models import (
     ReviewCandidateContext,
     ReviewOutcome,
 )
-from trader.infra.deepseek.budget import DeepSeekBudgetStore
+from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.challenger import parse_challenger_reviews
 from trader.infra.deepseek.client import DeepSeekHttpClient
@@ -267,9 +267,9 @@ def test_challenger_schema_rejects_non_string_text_fields(field: str, value: obj
 
 
 def test_budget_enforces_challenger_limit_inside_strategy_bucket(tmp_path) -> None:
-    store = _budget(tmp_path / "runtime.sqlite3", hard_limit=2, challenger_limit=1)
+    ledger = _budget(tmp_path / "runtime.sqlite3", hard_limit=2, challenger_limit=1)
 
-    first = store.reserve(
+    first = ledger.reserve(
         Strategy.TODAY,
         phase="today_main",
         requested_at=NOW,
@@ -277,7 +277,7 @@ def test_budget_enforces_challenger_limit_inside_strategy_bucket(tmp_path) -> No
         requested_model="deepseek-v4-pro",
         reasoning_effort="high",
     )
-    second = store.reserve(
+    second = ledger.reserve(
         Strategy.TODAY,
         phase="today_main",
         requested_at=NOW,
@@ -288,7 +288,7 @@ def test_budget_enforces_challenger_limit_inside_strategy_bucket(tmp_path) -> No
 
     assert first.allowed is True
     assert (second.allowed, second.reason) == (False, "challenger_limit")
-    assert store.summary(NOW.date().isoformat())["by_model_role"] == {"primary": 0, "challenger": 1}
+    assert ledger.summary(NOW.date().isoformat())["by_model_role"] == {"primary": 0, "challenger": 1}
 
 
 def _reviewer(
@@ -334,8 +334,8 @@ def _reviewer(
     )
 
 
-def _budget(path, *, hard_limit: int, challenger_limit: int) -> DeepSeekBudgetStore:
-    store = DeepSeekBudgetStore(
+def _budget(path, *, hard_limit: int, challenger_limit: int) -> DeepSeekBudgetLedger:
+    ledger = DeepSeekBudgetLedger(
         path,
         daily_hard_limit=hard_limit,
         strategy_limits={
@@ -349,8 +349,8 @@ def _budget(path, *, hard_limit: int, challenger_limit: int) -> DeepSeekBudgetSt
         stage_limits={"today_main": hard_limit},
         challenger_limits={"today": challenger_limit, "tomorrow": 0, "d25": 0},
     )
-    store.initialize()
-    return store
+    ledger.initialize()
+    return ledger
 
 
 def _candidate() -> FeatureSnapshot:

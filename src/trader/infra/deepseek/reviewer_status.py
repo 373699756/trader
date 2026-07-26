@@ -13,7 +13,7 @@ from trader.application.ports.types import JsonInput, JsonObject, freeze_json_ob
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import ReviewOutcome
 from trader.infra.deepseek.base_client import DeepSeekHttpResult
-from trader.infra.deepseek.budget_batch_store import BudgetBatchCompletion
+from trader.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
 from trader.infra.deepseek.reviewer_context import ReviewerContext
 from trader.infra.deepseek.reviewer_support import _physical_call_acceptance
 
@@ -81,7 +81,7 @@ class ReviewerStatusTracker:
         except (OSError, sqlite3.Error):
             budget = {
                 "available": False,
-                "error": "budget_store_unavailable",
+                "error": "budget_ledger_unavailable",
             }
         with self._status_lock:
             batch_status = self._last_batch_status

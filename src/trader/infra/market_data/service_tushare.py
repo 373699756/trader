@@ -20,7 +20,7 @@ from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.service_execution import MarketTaskRunner
-from trader.infra.market_data.service_history import HistoryStore
+from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_support import _normalize_codes, _source_batch_identity
 from trader.infra.market_data.tushare import TushareClient
 
@@ -46,14 +46,14 @@ class ReferenceLoader:
     def __init__(
         self,
         gateway: MarketDataGateway,
-        history: HistoryStore,
+        history: HistoryCache,
         runner: MarketTaskRunner,
         client: TushareClient | None,
         *,
         monotonic: Callable[[], float],
     ) -> None:
         self._gateway = gateway
-        self._history_store = history
+        self._history_cache = history
         self._runner = runner
         self._client = client
         self._monotonic = monotonic
@@ -91,14 +91,14 @@ class ReferenceLoader:
         if not normalized:
             return
         if lanes.owns_current_thread("history"):
-            self._history_store.load(normalized, force=force)
+            self._history_cache.load(normalized, force=force)
         else:
             history_identity = _source_batch_identity("daily_history", normalized, observed_at, force=force)
             history_future = lanes.submit(
                 "history",
                 history_identity,
                 observed_at,
-                self._history_store.load,
+                self._history_cache.load,
                 normalized,
                 force=force,
             )
@@ -113,7 +113,7 @@ class ReferenceLoader:
     ) -> None:
         normalized = _normalize_codes(codes)
         self._refresh_tushare_reference_data(normalized, observed_at, force=force)
-        self._history_store.load(normalized, force=force)
+        self._history_cache.load(normalized, force=force)
 
     def _refresh_tushare_reference_data(
         self,
@@ -360,7 +360,7 @@ class ReferenceLoader:
             applied_observations.append(observation)
         if not grouped:
             return
-        self._history_store.apply_source_bars(grouped, source="tushare")
+        self._history_cache.apply_source_bars(grouped, source="tushare")
         with self._lock:
             self._record_tushare_version_locked("daily_history", applied_observations)
 

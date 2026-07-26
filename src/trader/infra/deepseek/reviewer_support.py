@@ -21,7 +21,7 @@ from trader.domain.review.models import (
     RiskFact,
 )
 from trader.infra.deepseek.base_client import DeepSeekClientBase, DeepSeekHttpResult
-from trader.infra.deepseek.budget import DeepSeekBudgetStore
+from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.schema import (
     build_review_manifest_hash,
 )
@@ -62,7 +62,7 @@ class _PhysicalCallOptions(TypedDict):
 
 @dataclass
 class _ReservationTracker:
-    budget: DeepSeekBudgetStore
+    budget: DeepSeekBudgetLedger
     strategy: Strategy
     phase: str
     deadline: datetime

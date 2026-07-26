@@ -17,10 +17,10 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.domain.recommendation.models import Strategy
-from trader.infra.deepseek.budget_batch_store import (
+from trader.infra.deepseek.budget_batch_ledger import (
     BudgetBatchCompletion,
+    BudgetBatchLedger,
     BudgetBatchRequest,
-    BudgetBatchStore,
 )
 from trader.infra.deepseek.budget_reporting import BudgetReportingConfig, BudgetSummaryReader
 from trader.infra.deepseek.budget_support import (
@@ -59,19 +59,19 @@ class BudgetReservation:
     stage: str = ""
 
 
-class _BudgetStoreRequiredOptions(TypedDict):
+class _BudgetLedgerRequiredOptions(TypedDict):
     daily_hard_limit: int
     strategy_limits: Mapping[str, int]
     stage_targets: Mapping[str, int]
     stage_limits: Mapping[str, int]
 
 
-class _BudgetStoreOptionalOptions(TypedDict, total=False):
+class _BudgetLedgerOptionalOptions(TypedDict, total=False):
     challenger_limits: Mapping[str, int] | None
     write_lock: AbstractContextManager[object] | None
 
 
-class BudgetStoreOptions(_BudgetStoreRequiredOptions, _BudgetStoreOptionalOptions):
+class BudgetLedgerOptions(_BudgetLedgerRequiredOptions, _BudgetLedgerOptionalOptions):
     pass
 
 
@@ -133,11 +133,11 @@ class _ReservationContext:
     stage: str
 
 
-class DeepSeekBudgetStore:
+class DeepSeekBudgetLedger:
     def __init__(
         self,
         database_path: Path,
-        **options: Unpack[BudgetStoreOptions],
+        **options: Unpack[BudgetLedgerOptions],
     ) -> None:
         daily_hard_limit = options["daily_hard_limit"]
         strategy_limits = options["strategy_limits"]
@@ -168,7 +168,7 @@ class DeepSeekBudgetStore:
         self._daily_target = sum(stage_targets.values())
         self._write_lock = write_lock or threading.Lock()
         self._initialized = False
-        self._batches = BudgetBatchStore(self._connect)
+        self._batches = BudgetBatchLedger(self._connect)
         self._reporting = BudgetSummaryReader(
             self._connect,
             lambda: self._initialized,
@@ -608,4 +608,4 @@ def _begin_immediate(connection: sqlite3.Connection) -> None:
             time.sleep(_BEGIN_IMMEDIATE_RETRY_SECONDS)
 
 
-__all__ = ["SCHEMA_VERSION", "BudgetReservation", "DeepSeekBudgetStore"]
+__all__ = ["SCHEMA_VERSION", "BudgetReservation", "DeepSeekBudgetLedger"]

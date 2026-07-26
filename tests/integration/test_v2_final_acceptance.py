@@ -20,7 +20,7 @@ from trader.domain.review.models import (
     ReviewOutcome,
 )
 from trader.entrypoints.cli import main as cli_main
-from trader.infra.deepseek.budget import DeepSeekBudgetStore
+from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.client import DeepSeekHttpClient
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
@@ -206,7 +206,7 @@ def test_configured_deepseek_candidate_makes_physical_call_and_status_reports_qu
     runtime_dir = tmp_path / "runtime"
     repository = SnapshotRepository(runtime_dir, config_version="acceptance-v2")
     repository.initialize()
-    budget = DeepSeekBudgetStore(
+    budget = DeepSeekBudgetLedger(
         runtime_dir / "runtime.sqlite3",
         daily_hard_limit=2,
         strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},

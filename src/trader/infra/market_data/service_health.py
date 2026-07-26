@@ -10,8 +10,8 @@ from typing import cast
 
 from trader.application.ports.market import MarketSnapshotMetadata
 from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
-from trader.infra.market_data.service_candidates import QuoteStore
-from trader.infra.market_data.service_history import HistoryStore
+from trader.infra.market_data.service_candidates import QuoteCache
+from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
@@ -21,8 +21,8 @@ from trader.infra.market_data.service_tushare import ReferenceLoader
 
 @dataclass(frozen=True)
 class MarketDataHealthDependencies:
-    quotes: QuoteStore
-    history: HistoryStore
+    quotes: QuoteCache
+    history: HistoryCache
     warmup: HistoryWarmup
     research: ResearchLoader
     intraday: IntradayLoader

@@ -217,8 +217,8 @@ def test_market_data_service_uses_typed_composition_without_mixins() -> None:
     assert not (market_data / "service_state.py").exists()
     assert not {name for name in component_classes if name.endswith("Mixin")}
     assert {
-        "QuoteStore",
-        "HistoryStore",
+        "QuoteCache",
+        "HistoryCache",
         "HistoryWarmup",
         "ResearchLoader",
         "IntradayLoader",
@@ -257,7 +257,7 @@ def test_infrastructure_orchestrators_use_typed_composition_without_mixins() -> 
     for path, class_name in (
         (market_data / "gateway.py", "MarketDataGateway"),
         (deepseek / "reviewer.py", "DeepSeekReviewer"),
-        (deepseek / "budget.py", "DeepSeekBudgetStore"),
+        (deepseek / "budget.py", "DeepSeekBudgetLedger"),
     ):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         class_node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)

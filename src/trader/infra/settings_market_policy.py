@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from trader.application.cache import CacheDatasetPolicy, CacheGroupPolicy, CachePolicy
-from trader.application.ports.youhua import LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES
+from trader.application.ports.delivery import LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES
 from trader.infra.settings_models import (
     PerformanceBudgetSettings,
     PerformanceMemorySettings,
