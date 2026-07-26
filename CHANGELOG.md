@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增仓库内可复用 Chrome/CDP 桌面看板验证脚本
+  `tests/performance/run_chrome_dashboard.py`，替代每次在 `/tmp` 临时重写的检查脚本。脚本基于
+  离线 D4 fixture 启动 Flask 应用和 headless Chrome，固定覆盖 1280x720、1440x900、
+  1920x1080 三档桌面视口、静态资源修订号、浏览器错误、SSE patch 应用数和
+  patch-to-paint P95，并输出稳定 JSON 报告；新增契约测试确保该入口持续保存在
+  `tests/performance`。
 - 新增前端静态资源治理入口 `web_asset()` 和统一 `WEB_ASSET_REVISION`，页面 CSS/JS 资源统一
   使用同一个 `rev` 修订号；新增版本治理契约测试，禁止活动业务身份继续使用
   `strategy_v20`、`engine_v20`、`board_policy_v18` 这类施工编号。
@@ -65,6 +71,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户指出浏览器检查验证脚本每次临时写入、重复创建，浪费且不可复用。现在验证入口成为
+  项目测试资产，并把 `websocket-client` 纳入 dev 依赖；后续排查“快照状态”和桌面布局时可直接
+  执行同一脚本，不再依赖一次性 `/tmp/trader_cdp*` 脚本。
 - 用户要求 Review 全工程 JS、代码框架、结构、文件、类、函数、设计和划分是否仍有优化空间，
   并要求执行计划；随后反馈“快照状态 Cannot read properties of undefined (reading
   'projectionVersion')”，并要求优先清理乱七八糟的 V 几版本命名。现状判断：核心分层依赖
@@ -372,6 +381,16 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批验证脚本持久化已通过：`ruff format --check
+  tests/performance/run_chrome_dashboard.py tests/contract/test_project_records.py pyproject.toml`、
+  `ruff check tests/performance/run_chrome_dashboard.py tests/contract/test_project_records.py`、
+  `pytest -q
+  tests/contract/test_project_records.py::test_chrome_dashboard_gate_is_persisted_under_tests`，以及
+  `.venv/bin/python tests/performance/run_chrome_dashboard.py --output
+  /tmp/trader-chrome-dashboard.json`。Chrome 报告显示 `passed=true`、三档桌面视口无横向溢出、
+  `browser_errors=[]`、24 个 patch 均应用、`patch_to_paint.p95_ms=15` 且预算为 100ms。完整
+  `make format-check`、`make lint`、`make type-check`、`make test` 和 `make package` 通过；
+  仓库外安装 wheel 后，`trader-cli --help` 可执行，并确认模板、CSS、JavaScript 和 SVG 资源完整。
 - 本批 targeted 验证通过：`node --check src/trader/web/static/dashboard.js`、
   `node --check src/trader/web/static/dashboard_patches.js`、
   `node tests/js/test_dashboard_d4.js src/trader/web/static/dashboard.js`、
@@ -598,6 +617,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除对一次性 `/tmp/trader_cdp*` 浏览器验证脚本的流程依赖；本批没有删除产品代码、业务测试、
+  冻结记录或运行数据。
 - 移除二次命名审查中确认的旧可见诊断码、旧前端 DOM id 和旧内部函数名；旧字符串不再作为
   当前仓库契约或前端选择器保留。
 
@@ -622,6 +643,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 持久化 Chrome 验证脚本仍依赖本机安装 Chrome/Chromium、允许打开本地 DevTools socket，并且
+  需要 dev 依赖 `websocket-client`；无浏览器或权限受限环境只能运行普通单元/契约测试，不能替代
+  桌面真实渲染验收。该脚本当前覆盖 Chrome/CDP，Firefox/geckodriver 验收仍需使用既有发布环境
+  流程补跑。
 - 静态资源缺失时的前端兜底只保证完整快照可继续显示并触发 resync；若用户仍运行旧进程或旧
   wheel，需要重启到本提交后才能获得统一 `rev` 模板和新 `dashboard_patches.js`。Firefox/
   geckodriver 在当前环境不可用，官方 Firefox 浏览器性能脚本仍需在具备该依赖的发布环境补跑；

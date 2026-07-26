@@ -28,6 +28,18 @@ def test_each_pipeline_documents_user_problem_and_change_summary() -> None:
         assert "CHANGELOG.md" in contract
 
 
+def test_chrome_dashboard_gate_is_persisted_under_tests() -> None:
+    script = (PROJECT_ROOT / "tests" / "performance" / "run_chrome_dashboard.py").read_text(encoding="utf-8")
+
+    assert 'REPORT_SCHEMA = "chrome-dashboard-performance-v1"' in script
+    assert "VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))" in script
+    assert "pipeline_d4_browser_fixture" in script
+    assert "WEB_ASSET_REVISION" in script
+    assert "patchToPaint" in script
+    assert "browserErrors" in script
+    assert "/tmp/trader_cdp" not in script
+
+
 def test_docs_keep_two_authorities_active_plans_and_pipeline_reports() -> None:
     docs_root = PROJECT_ROOT / "docs"
     documents = sorted(path.relative_to(docs_root).as_posix() for path in docs_root.rglob("*") if path.is_file())
