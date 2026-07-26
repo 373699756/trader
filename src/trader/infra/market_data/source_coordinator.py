@@ -28,7 +28,7 @@ from trader.domain.market.models import (
     MarketQuote,
 )
 from trader.infra.market_data.eastmoney import EastmoneyClient
-from trader.infra.market_data.gateway_support import (
+from trader.infra.market_data.gateway_runtime import (
     _before_deadline,
     _cache_error_code,
     _elapsed,

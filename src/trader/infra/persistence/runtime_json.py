@@ -1,4 +1,4 @@
-"""Shared atomic JSON persistence helpers."""
+"""Shared atomic JSON persistence functions."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def atomic_write_json(path: Path, payload: object) -> None:
     """Write a JSON payload atomically.
 
     A sibling of the existing private atomic writer used by snapshot persistence,
-    this helper is intentionally small and reusable for cache-like persistence.
+    this function is intentionally small and reusable for cache-like persistence.
     """
 
     text = json.dumps(

@@ -1,4 +1,4 @@
-"""Typed long-watchlist group metadata for delivery."""
+"""Typed long-watchlist group metadata for pipeline."""
 
 from __future__ import annotations
 

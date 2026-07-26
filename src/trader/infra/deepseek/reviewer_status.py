@@ -15,7 +15,7 @@ from trader.domain.review.models import ReviewOutcome
 from trader.infra.deepseek.base_client import DeepSeekHttpResult
 from trader.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
 from trader.infra.deepseek.reviewer_context import ReviewerContext
-from trader.infra.deepseek.reviewer_support import _physical_call_acceptance
+from trader.infra.deepseek.reviewer_selection import _physical_call_acceptance
 
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
 

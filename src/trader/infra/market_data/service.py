@@ -16,6 +16,7 @@ from trader.domain.market.models import (
     MarketQuote,
 )
 from trader.domain.outcome.models import OutcomeBar
+from trader.infra.market_data.market_cache_identity import _history_preload_codes, _normalize_codes
 from trader.infra.market_data.service_candidates import QuoteCache
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_health import MarketDataHealth
@@ -23,7 +24,6 @@ from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
-from trader.infra.market_data.service_support import _history_preload_codes, _normalize_codes
 from trader.infra.market_data.service_tushare import ReferenceLoader
 
 

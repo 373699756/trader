@@ -24,8 +24,7 @@ from trader.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion, Bud
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.reviewer_context import ReviewerContext
 from trader.infra.deepseek.reviewer_requests import ReviewerRequestExecutor
-from trader.infra.deepseek.reviewer_status import ReviewerStatusTracker
-from trader.infra.deepseek.reviewer_support import (
+from trader.infra.deepseek.reviewer_selection import (
     _aggregate_batch_status,
     _annotate_review,
     _automatic_emergency_reason,
@@ -37,6 +36,7 @@ from trader.infra.deepseek.reviewer_support import (
     _thinking_mode,
     _unique_candidates,
 )
+from trader.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.infra.deepseek.schema import (
     RAW_FACTS_CACHE_GENERATION,
     review_cache_key,

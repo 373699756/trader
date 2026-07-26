@@ -1,4 +1,4 @@
-"""Shared bounded execution and deadline helpers for market-data services."""
+"""Shared bounded execution and deadline functions for market-data services."""
 
 from __future__ import annotations
 

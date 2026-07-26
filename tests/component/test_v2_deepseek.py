@@ -510,7 +510,7 @@ def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
     assert abandoned["call_status"] == {"reserved": 0, "abandoned": 2, "failed": 0, "success": 0}
 
 
-def test_budget_supports_shared_and_explicit_emergency_buckets(tmp_path) -> None:
+def test_budget_audits_shared_and_explicit_emergency_buckets(tmp_path) -> None:
     ledger = DeepSeekBudgetLedger(
         tmp_path / "deepseek.sqlite3",
         daily_hard_limit=3,

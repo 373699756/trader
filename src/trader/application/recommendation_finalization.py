@@ -15,18 +15,18 @@ from trader.application.long_groups import LongGroupDefinition, long_groups_meta
 from trader.application.policy import RecommendationPolicy
 from trader.application.policy import SelectionPolicy as AppSelectionPolicy
 from trader.application.ports.reviews import DeepSeekReviewPort
-from trader.application.recommendation_replay import (
-    REPLAY_ALGORITHM_VERSION,
-    REPLAY_SCHEMA_VERSION,
-    V15_REPLAY_ALGORITHM_VERSION,
-)
-from trader.application.recommendation_support import (
+from trader.application.recommendation_policy_codec import (
     _freeze_policy,
     _fusion_mode,
     _preselection_replay_feature,
     _review_contexts_for_candidates,
     _selection_diagnostics,
     _snapshot_id,
+)
+from trader.application.recommendation_replay import (
+    REPLAY_ALGORITHM_VERSION,
+    REPLAY_SCHEMA_VERSION,
+    V15_REPLAY_ALGORITHM_VERSION,
 )
 from trader.domain.market.models import (
     Board,

@@ -1,4 +1,4 @@
-"""Read-only recommendation queries for delivery adapters."""
+"""Read-only recommendation queries for pipeline adapters."""
 
 from __future__ import annotations
 
@@ -149,7 +149,7 @@ class RecommendationQueries:
             overlay = None
         return SnapshotLookup(
             "ready",
-            _delivery_snapshot(snapshot),
+            _pipeline_snapshot(snapshot),
             False,
             overlay=overlay,
             current_trade_date=current_date,
@@ -214,7 +214,7 @@ def _raw_close_fallback_snapshot(
     return archive.load_frozen(snapshot.strategy, snapshot.trade_date) or snapshot
 
 
-def _delivery_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
+def _pipeline_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
     if not snapshot.filter_details and snapshot.replay_input is None:
         return snapshot
     return replace(snapshot, filter_details=(), replay_input=None)

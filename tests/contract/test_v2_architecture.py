@@ -54,7 +54,7 @@ def test_domain_is_partitioned_by_business_capability_without_legacy_paths() -> 
     capability_packages = {"market", "recommendation", "review", "outcome"}
     retired_modules = {
         "board_scoring.py",
-        "board_scoring_support.py",
+        "board_scoring_calculations.py",
         "downside.py",
         "factors.py",
         "filters.py",

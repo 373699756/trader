@@ -1,4 +1,4 @@
-"""SQLite schema and connection helpers for the v2 runtime database."""
+"""SQLite schema and connection primitives for the v2 runtime database."""
 
 from __future__ import annotations
 

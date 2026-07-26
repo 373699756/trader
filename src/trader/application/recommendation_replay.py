@@ -7,7 +7,7 @@ from dataclasses import replace
 from typing import Any, cast
 
 from trader.application.policy import RecommendationPolicy
-from trader.application.recommendation_support import (
+from trader.application.recommendation_policy_codec import (
     _business_projection,
     _RecordedReviewPort,
     _restore_policy,

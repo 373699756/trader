@@ -37,7 +37,7 @@ from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.strategies import score_strategy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data import gateway as gateway_module
-from trader.infra.market_data import tushare_support as tushare_support_module
+from trader.infra.market_data import tushare_records as tushare_records_module
 from trader.infra.market_data.akshare import AkshareResearchClient
 from trader.infra.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailableError
 from trader.infra.market_data.eastmoney import EastmoneyClient
@@ -47,6 +47,7 @@ from trader.infra.market_data.history import DailyBar, HistoryAdjustmentError, P
 from trader.infra.market_data.history_seed import (
     FallbackHistoryClient,
 )
+from trader.infra.market_data.market_cache_identity import _history_preload_codes
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
 from trader.infra.market_data.service import MarketFeatureDependencies, MarketFeatureService
@@ -57,7 +58,6 @@ from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
-from trader.infra.market_data.service_support import _history_preload_codes
 from trader.infra.market_data.service_tushare import ReferenceLoader, ReferenceLoadRequest
 from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.tencent import TencentClient
@@ -2040,8 +2040,8 @@ def test_tushare_default_daily_transport_uses_direct_https_without_environment_p
 
     session = FakeSession()
     module = type("FakeTushareModule", (), {"pro_api": staticmethod(lambda _token, timeout: object())})()
-    monkeypatch.setattr(tushare_support_module.requests, "Session", lambda: session)
-    monkeypatch.setattr(tushare_support_module.importlib, "import_module", lambda _name: module)
+    monkeypatch.setattr(tushare_records_module.requests, "Session", lambda: session)
+    monkeypatch.setattr(tushare_records_module.importlib, "import_module", lambda _name: module)
     client = TushareClient(token="secret-token", points=120, timeout_seconds=8, wall_clock=lambda: NOW)
 
     observations = client.fetch_daily_history(

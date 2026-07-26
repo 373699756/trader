@@ -54,8 +54,8 @@ class PublishedSnapshotIndex:
                 loaded_dates += 1
                 loaded_views += len(accepted)
                 with self._lock:
-                    for delivery in accepted:
-                        self._resident[(delivery.strategy, trade_date)] = delivery
+                    for view_snapshot in accepted:
+                        self._resident[(view_snapshot.strategy, trade_date)] = view_snapshot
         for strategy in self._HISTORICAL_STRATEGIES:
             strategy_dates = tuple(
                 trade_date for trade_date in sorted(date_sets[strategy], reverse=True) if trade_date in resident_dates
@@ -80,25 +80,25 @@ class PublishedSnapshotIndex:
         return {"resident_dates_preloaded": loaded_dates, "historical_views_preloaded": loaded_views}
 
     def publish(self, snapshot: RecommendationSnapshot) -> bool:
-        delivery = _delivery_snapshot(snapshot)
+        view_snapshot = _view_snapshot(snapshot)
         with self._lock:
-            if not self._fits(delivery):
+            if not self._fits(view_snapshot):
                 self._counters["rejected_oversize_views"] += 1
                 raise ValueError("P6 view exceeds the configured per-view byte limit")
-            current = self._current.get(delivery.strategy)
-            if current is not None and delivery.trade_date < current.trade_date:
-                self._record_committed_locked(snapshot, delivery)
+            current = self._current.get(view_snapshot.strategy)
+            if current is not None and view_snapshot.trade_date < current.trade_date:
+                self._record_committed_locked(snapshot, view_snapshot)
                 return False
-            if not self._accept_current_locked(delivery):
+            if not self._accept_current_locked(view_snapshot):
                 return False
             self._counters["published"] += 1
-            self._record_committed_locked(snapshot, delivery)
+            self._record_committed_locked(snapshot, view_snapshot)
             return True
 
     def _record_committed_locked(
         self,
         snapshot: RecommendationSnapshot,
-        delivery: RecommendationSnapshot,
+        view_snapshot: RecommendationSnapshot,
     ) -> None:
         if not snapshot.frozen or snapshot.strategy not in self._HISTORICAL_STRATEGIES:
             return
@@ -117,7 +117,7 @@ class PublishedSnapshotIndex:
                 trade_date for trade_date in self._dates[strategy] if trade_date in allowed_dates
             )
         if snapshot.trade_date in allowed_dates:
-            self._resident[key] = delivery
+            self._resident[key] = view_snapshot
         for resident_key in tuple(self._resident):
             if resident_key[1] not in allowed_dates:
                 self._resident.pop(resident_key, None)
@@ -125,22 +125,22 @@ class PublishedSnapshotIndex:
             if overlay_key[0] in self._HISTORICAL_STRATEGIES and overlay_key[1] not in allowed_dates:
                 self._overlays.pop(overlay_key, None)
 
-    def _accept_current_locked(self, delivery: RecommendationSnapshot) -> bool:
-        current = self._current.get(delivery.strategy)
-        if current is None or delivery.trade_date > current.trade_date:
-            self._current[delivery.strategy] = delivery
-            self._discard_mismatched_overlay(delivery)
+    def _accept_current_locked(self, view_snapshot: RecommendationSnapshot) -> bool:
+        current = self._current.get(view_snapshot.strategy)
+        if current is None or view_snapshot.trade_date > current.trade_date:
+            self._current[view_snapshot.strategy] = view_snapshot
+            self._discard_mismatched_overlay(view_snapshot)
             return True
-        if delivery.trade_date < current.trade_date:
+        if view_snapshot.trade_date < current.trade_date:
             return False
         if not current.frozen:
-            self._current[delivery.strategy] = delivery
-            self._discard_mismatched_overlay(delivery)
+            self._current[view_snapshot.strategy] = view_snapshot
+            self._discard_mismatched_overlay(view_snapshot)
             return True
-        if not delivery.frozen:
+        if not view_snapshot.frozen:
             self._counters["rejected_late_drafts"] += 1
             return False
-        if current.snapshot_id != delivery.snapshot_id or current != delivery:
+        if current.snapshot_id != view_snapshot.snapshot_id or current != view_snapshot:
             self._counters["rejected_frozen_replacements"] += 1
             return False
         return True
@@ -203,9 +203,9 @@ class PublishedSnapshotIndex:
     ) -> tuple[RecommendationSnapshot, ...]:
         accepted: list[RecommendationSnapshot] = []
         for snapshot in snapshots:
-            delivery = _delivery_snapshot(snapshot)
-            if self._fits(delivery):
-                accepted.append(delivery)
+            view_snapshot = _view_snapshot(snapshot)
+            if self._fits(view_snapshot):
+                accepted.append(view_snapshot)
             else:
                 with self._lock:
                     self._counters["rejected_oversize_views"] += 1
@@ -224,7 +224,7 @@ class PublishedSnapshotIndex:
         return len(canonical_json_bytes(snapshot)) <= self._maximum_view_bytes
 
 
-def _delivery_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
+def _view_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
     recommendations = tuple(
         replace(
             item,
@@ -246,20 +246,20 @@ def _delivery_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapsh
         recommendations=recommendations,
         filter_reasons={},
         filter_details=(),
-        metadata=_delivery_metadata(snapshot.metadata),
+        metadata=_view_metadata(snapshot.metadata),
         replay_input=None,
     )
 
 
-def _delivery_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
-    delivery: dict[str, object] = {}
+def _view_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
+    view_metadata: dict[str, object] = {}
     diagnostics = metadata.get("selection_diagnostics")
     if isinstance(diagnostics, Mapping):
-        delivery["selection_diagnostics"] = dict(diagnostics)
+        view_metadata["selection_diagnostics"] = dict(diagnostics)
     long_groups = metadata.get("long_groups")
     if isinstance(long_groups, (tuple, list)):
-        delivery["long_groups"] = [dict(group) for group in long_groups if isinstance(group, Mapping)]
-    return delivery
+        view_metadata["long_groups"] = [dict(group) for group in long_groups if isinstance(group, Mapping)]
+    return view_metadata
 
 
 __all__ = ["PublishedSnapshotIndex"]

@@ -139,7 +139,7 @@ def test_published_index_replaces_current_draft_without_archive_write() -> None:
     assert index.status()["published"] == 2
 
 
-def test_published_index_preserves_selection_diagnostics_in_delivery_views() -> None:
+def test_published_index_preserves_selection_diagnostics_in_pipeline_views() -> None:
     diagnostics = {
         "scored_candidate_count": 220,
         "actionable_candidate_count": 2,
@@ -168,16 +168,16 @@ def test_published_index_preserves_selection_diagnostics_in_delivery_views() -> 
     published = PublishedSnapshotIndex(_Archive(()))
     published.publish(snapshot)
 
-    for delivery in (
+    for pipeline in (
         initialized.latest(Strategy.TOMORROW),
         initialized.load_frozen(Strategy.TOMORROW, snapshot.trade_date),
         published.latest(Strategy.TOMORROW),
     ):
-        assert delivery is not None
-        assert delivery.metadata == {"selection_diagnostics": diagnostics}
+        assert pipeline is not None
+        assert pipeline.metadata == {"selection_diagnostics": diagnostics}
 
 
-def test_published_index_preserves_long_groups_in_delivery_views() -> None:
+def test_published_index_preserves_long_groups_in_pipeline_views() -> None:
     long_groups = (
         {
             "name": "低价潜力股",
@@ -197,10 +197,10 @@ def test_published_index_preserves_long_groups_in_delivery_views() -> None:
     published = PublishedSnapshotIndex(_Archive(()))
     published.publish(snapshot)
 
-    delivery = published.latest(Strategy.LONG)
+    pipeline = published.latest(Strategy.LONG)
 
-    assert delivery is not None
-    assert delivery.metadata == {"long_groups": [dict(long_groups[0])]}
+    assert pipeline is not None
+    assert pipeline.metadata == {"long_groups": [dict(long_groups[0])]}
 
 
 def test_published_index_does_not_replace_current_pin_with_older_frozen_history() -> None:

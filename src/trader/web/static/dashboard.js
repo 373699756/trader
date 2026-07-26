@@ -25,7 +25,7 @@
   const PATCH_LATENCY_SAMPLE_CAPACITY = 256;
   const selection = window.TraderSelection;
   const longGroups = window.TraderLongGroups;
-  const utils = window.TraderDashboardUtils;
+  const formatters = window.TraderDashboardFormatters;
   const patchToPaintSamples = [];
   const diagnostics = {
     recommendationRequests: 0,
@@ -47,7 +47,7 @@
       resyncReasons: { ...diagnostics.resyncReasons },
       browserErrors: [...diagnostics.browserErrors],
       runtimeDiagnostics: [...diagnostics.runtimeDiagnostics],
-      patchToPaint: utils.latencySummary(patchToPaintSamples),
+      patchToPaint: formatters.latencySummary(patchToPaintSamples),
     }),
   });
   window.addEventListener("error", (event) => recordBrowserError("error", event.message));
@@ -252,7 +252,7 @@
         throw error;
       }
       diagnostics.recommendationFullResponses += 1;
-      diagnostics.fullResponseBytes += utils.utf8Bytes(JSON.stringify(payload));
+      diagnostics.fullResponseBytes += formatters.utf8Bytes(JSON.stringify(payload));
       if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
       if (!cacheIdentityValid(payload, strategy, selectedDate, view)) throw new Error("推荐快照身份不匹配");
       const etag = response.headers.get("ETag");
@@ -485,7 +485,7 @@
       const running = Boolean(payload.runtime_started);
       els.runtimeStatus.textContent = running ? "运行中" : payload.status === "not_ready" ? "未就绪" : "已停止";
       els.runtimeDot.dataset.state = running ? "ok" : payload.last_error ? "error" : "warn";
-      els.marketPhase.textContent = utils.phaseLabel(payload.phase || "closed");
+      els.marketPhase.textContent = formatters.phaseLabel(payload.phase || "closed");
       const rawLastError = payload.last_error || "";
       els.lastError.textContent = window.TraderRender.statusErrorLabel(rawLastError);
       window.TraderRender.rememberDiagnostic(diagnostics.runtimeDiagnostics, rawLastError);
@@ -548,7 +548,7 @@
     stream.addEventListener("recommendation_patch", (event) => {
       const receivedAt = performance.now();
       rememberEvent(event);
-      diagnostics.incrementalSseBytes += utils.utf8Bytes(event.data || "");
+      diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
       let patch = null;
       try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
       if (
@@ -560,7 +560,7 @@
     stream.addEventListener("overlay_patch", (event) => {
       const receivedAt = performance.now();
       rememberEvent(event);
-      diagnostics.incrementalSseBytes += utils.utf8Bytes(event.data || "");
+      diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
       let patch = null;
       try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
       if ((!patch || !patch.strategy || patch.strategy === state.strategy) && applyOverlayPatch(patch)) {
@@ -626,7 +626,7 @@
     const key = recommendationKey(state.strategy, state.date, state.view);
     state.payloads.set(key, state.payload);
     if (typeof patch.etag === "string" && patch.etag && patch.view === state.view) {
-      state.etags.set(key, utils.quotedEtag(patch.etag));
+      state.etags.set(key, formatters.quotedEtag(patch.etag));
     }
     diagnostics.recommendationPatchesApplied += 1;
     renderPayload(state.payload);

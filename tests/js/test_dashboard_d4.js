@@ -9,7 +9,7 @@ const path = require("path");
 const selectionPath = path.join(path.dirname(dashboardPath), "selection.js");
 const renderPath = path.join(path.dirname(dashboardPath), "render.js");
 const longGroupsPath = path.join(path.dirname(dashboardPath), "long_groups.js");
-const utilsPath = path.join(path.dirname(dashboardPath), "dashboard_utils.js");
+const formattersPath = path.join(path.dirname(dashboardPath), "dashboard_formatters.js");
 let source = fs.readFileSync(dashboardPath, "utf8");
 const suffix = "\n})();";
 source = source.trimEnd();
@@ -41,12 +41,12 @@ const sandbox = {
 vm.runInNewContext(fs.readFileSync(renderPath, "utf8"), sandbox, { filename: renderPath });
 vm.runInNewContext(fs.readFileSync(selectionPath, "utf8"), sandbox, { filename: selectionPath });
 vm.runInNewContext(fs.readFileSync(longGroupsPath, "utf8"), sandbox, { filename: longGroupsPath });
-vm.runInNewContext(fs.readFileSync(utilsPath, "utf8"), sandbox, { filename: utilsPath });
+vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), sandbox, { filename: formattersPath });
 vm.runInNewContext(source, sandbox, { filename: dashboardPath });
 const state = {
   ...sandbox.window.TraderSelection,
   ...sandbox.window.__dashboardD4,
-  latencySummary: sandbox.window.TraderDashboardUtils.latencySummary,
+  latencySummary: sandbox.window.TraderDashboardFormatters.latencySummary,
   longTable: sandbox.window.TraderRender.longTable,
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
   tableColumnCount: sandbox.window.TraderRender.tableColumnCount,

@@ -39,7 +39,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     page = response.get_data(as_text=True)
     dashboard = client.get("/static/dashboard.js").get_data(as_text=True)
     selection = client.get("/static/selection.js").get_data(as_text=True)
-    dashboard_utils = client.get("/static/dashboard_utils.js").get_data(as_text=True)
+    dashboard_formatters = client.get("/static/dashboard_formatters.js").get_data(as_text=True)
 
     assert response.status_code == 200
     assert "A股策略看板" in page
@@ -50,7 +50,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "/static/selection.js?v=3" in page
     assert "/static/long_watchlist_data.js?v=6" in page
     assert "/static/long_groups.js?v=6" in page
-    assert "/static/dashboard_utils.js?v=2" in page
+    assert "/static/dashboard_formatters.js?v=2" in page
     assert "/static/dashboard.js?v=26" in page
     assert 'id="currentViewStatus"' not in page
     assert 'class="current-view-status"' not in page
@@ -113,9 +113,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'query.set("view", view)' in dashboard
     assert "recommendationSummary" in selection
     assert "HISTORY_REFRESH_MS = 3000" in dashboard
-    assert 'close_fallback: "收盘恢复中"' in dashboard_utils
-    assert 'continuous: "连续交易"' in dashboard_utils
-    assert 'unavailable: "暂不可用"' in dashboard_utils
+    assert 'close_fallback: "收盘恢复中"' in dashboard_formatters
+    assert 'continuous: "连续交易"' in dashboard_formatters
+    assert 'unavailable: "暂不可用"' in dashboard_formatters
     assert "sourceLabel(market.active_source)" in dashboard
     assert "sourceLabel(firstVisible.source)" in dashboard
     assert "sourceLabel(first.source)" in dashboard
@@ -157,9 +157,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     long_watchlist_response = client.get("/static/long_watchlist_data.js")
     assert long_watchlist_response.status_code == 200
     assert "TraderLongWatchlistData" in long_watchlist_response.get_data(as_text=True)
-    utils_response = client.get("/static/dashboard_utils.js")
-    assert utils_response.status_code == 200
-    assert "window.TraderDashboardUtils" in utils_response.get_data(as_text=True)
+    formatters_response = client.get("/static/dashboard_formatters.js")
+    assert formatters_response.status_code == 200
+    assert "window.TraderDashboardFormatters" in formatters_response.get_data(as_text=True)
     renderer_response = client.get("/static/render.js")
     renderer = renderer_response.get_data(as_text=True)
     assert renderer_response.status_code == 200

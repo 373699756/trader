@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.application.source_lanes import SourceRequestSupersededError
+from trader.infra.market_data.market_cache_identity import _normalize_codes, _source_batch_identity
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_history import HistoryCache
-from trader.infra.market_data.service_support import _normalize_codes, _source_batch_identity
 from trader.infra.market_data.service_tushare import ReferenceLoader
 
 _LOGGER = logging.getLogger(__name__)

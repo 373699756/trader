@@ -11,7 +11,7 @@ import polars as pl
 from polars.datatypes import DataType, DataTypeClass
 
 from trader.application.cache import canonical_json_bytes
-from trader.application.ports import delivery as public_delivery
+from trader.application.ports import pipeline_contracts
 from trader.domain.market.models import CanonicalMarketSnapshot, FeatureSnapshot, MarketQuote
 from trader.domain.market.research import ResearchObservation
 
@@ -79,12 +79,12 @@ class MarketChangeSet:
     def has_full_invalidation(self) -> bool:
         return self.full_invalidation_reason is not None
 
-    def to_public(self) -> public_delivery.MarketChangeSet:
+    def to_public(self) -> pipeline_contracts.MarketChangeSet:
         inserted_codes = () if self.overlay_only else self.inserted_codes
         updated_codes = () if self.overlay_only else self.updated_codes
         removed_codes = () if self.overlay_only else self.removed_codes
-        return public_delivery.MarketChangeSet(
-            schema_version=public_delivery.MARKET_CHANGE_SET_VERSION,
+        return pipeline_contracts.MarketChangeSet(
+            schema_version=pipeline_contracts.MARKET_CHANGE_SET_VERSION,
             merge_epoch=self.merge_epoch,
             previous_merge_epoch=self.previous_merge_epoch,
             inserted_codes=inserted_codes,
@@ -217,9 +217,9 @@ class ColumnarFeatureBatch:
         features: tuple[FeatureSnapshot, ...],
         change_set: MarketChangeSet,
         options: FeatureEnvelopeOptions,
-    ) -> public_delivery.FeatureSnapshotEnvelope:
-        return public_delivery.FeatureSnapshotEnvelope(
-            schema_version=public_delivery.P3_P4_SCHEMA_VERSION,
+    ) -> pipeline_contracts.FeatureSnapshotEnvelope:
+        return pipeline_contracts.FeatureSnapshotEnvelope(
+            schema_version=pipeline_contracts.P3_P4_SCHEMA_VERSION,
             snapshot_version=options.snapshot_version or self.identity.digest,
             feature_snapshot_version=options.feature_snapshot_version or self.identity.schema_version,
             trade_date=options.trade_date,

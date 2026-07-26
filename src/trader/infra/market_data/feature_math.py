@@ -1,4 +1,4 @@
-"""Pure feature math and structured evidence helpers."""
+"""Pure feature math and structured evidence functions."""
 
 from __future__ import annotations
 

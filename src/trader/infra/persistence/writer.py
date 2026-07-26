@@ -24,14 +24,7 @@ from trader.domain.recommendation.models import (
     Strategy,
 )
 from trader.infra.persistence.recommendation_archive import RecommendationArchive
-from trader.infra.persistence.snapshots import (
-    SNAPSHOT_SCHEMA_VERSION,
-    snapshot_bytes,
-    snapshot_sha256,
-)
-from trader.infra.persistence.sqlite import connect, connection_scope, initialize_database
-from trader.infra.persistence.writer_retention import archive_trade_date
-from trader.infra.persistence.writer_utils import (
+from trader.infra.persistence.snapshot_files import (
     SnapshotConflictError,
     _anchor_json,
     _atomic_create_immutable,
@@ -43,6 +36,13 @@ from trader.infra.persistence.writer_utils import (
     _read_snapshot,
     _verified_manifest_snapshot,
 )
+from trader.infra.persistence.snapshots import (
+    SNAPSHOT_SCHEMA_VERSION,
+    snapshot_bytes,
+    snapshot_sha256,
+)
+from trader.infra.persistence.sqlite import connect, connection_scope, initialize_database
+from trader.infra.persistence.writer_retention import archive_trade_date
 
 FaultInjector = Callable[[str], None]
 

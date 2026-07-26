@@ -11,7 +11,7 @@ from datetime import datetime
 
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import DeepSeekReview
-from trader.infra.deepseek.budget_support import _require_aware, _sync_call_audit
+from trader.infra.deepseek.budget_audit import _require_aware, _sync_call_audit
 
 _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})
 _CANDIDATE_TERMINALS = frozenset({"applied", "abstain", "rejected", "late"})

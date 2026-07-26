@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 from trader.application.cache import canonical_json_bytes
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.tushare_support import (
+from trader.infra.market_data.tushare_records import (
     _calendar_observation,
     _calendar_ranges,
     _data_version,

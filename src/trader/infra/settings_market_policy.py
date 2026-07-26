@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from trader.application.cache import CacheDatasetPolicy, CacheGroupPolicy, CachePolicy
-from trader.application.ports.delivery import LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES
+from trader.application.ports.pipeline_contracts import LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES
 from trader.infra.settings_models import (
     PerformanceBudgetSettings,
     PerformanceMemorySettings,
@@ -190,8 +190,8 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
             False,
         ),
         "deepseek_seen_codes": (600.0, 600.0, None, None, 60.0, 6000, "p5_review", False),
-        "published_recommendation_view": (86400.0, 86400.0, None, None, 60.0, 72, "p6_delivery", False),
-        "published_date_index": (86400.0, 86400.0, None, None, 60.0, 3, "p6_delivery", False),
+        "published_recommendation_view": (86400.0, 86400.0, None, None, 60.0, 72, "p6_projection", False),
+        "published_date_index": (86400.0, 86400.0, None, None, 60.0, 3, "p6_projection", False),
     }
     for name, expected in expected_policies.items():
         policy = datasets[name]
@@ -216,7 +216,7 @@ def _parse_cache_groups(groups_raw: Mapping[str, object]) -> dict[str, CacheGrou
         "p3_features": 24 * 1024 * 1024,
         "p4_local_scoring": 16 * 1024 * 1024,
         "p5_review": 12 * 1024 * 1024,
-        "p6_delivery": 12 * 1024 * 1024,
+        "p6_projection": 12 * 1024 * 1024,
     }
     if groups_raw != expected_groups:
         raise ConfigurationError("cache_policy.groups must match the fixed 128/56/24/16/12/12 MiB allocation")
@@ -270,7 +270,7 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         "board_ready_to_draft": 500.0,
         "quote_to_draft": 5000.0,
         "deepseek_to_hybrid": 1000.0,
-        "sse_delivery": 100.0,
+        "sse_publish": 100.0,
         "browser_patch_to_paint": 100.0,
         "snapshot_api": 200.0,
         "etag_api": 50.0,

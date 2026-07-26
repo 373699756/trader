@@ -18,7 +18,7 @@ from trader.domain.recommendation.models import (
     BoardStrategyPolicy,
     Strategy,
 )
-from trader.domain.recommendation.scoring_support import (
+from trader.domain.recommendation.scoring_calculations import (
     MAX_FALLBACK_SESSIONS,
     MIN_BOARD_SAMPLE,
     _base_reliability,

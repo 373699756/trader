@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from trader.application.candidate_features import bind_strategy_input_version, read_strategy_features
 from trader.application.pipeline_workers import data_future, persist, remember_candidate_selection, submit_required
 from trader.application.ports.market import MarketDataUnavailableError
-from trader.application.recommendation_support import _snapshot_id
+from trader.application.recommendation_policy_codec import _snapshot_id
 from trader.application.schedule import shanghai_now, trade_date_at
 from trader.application.snapshot_publication import admit_snapshot_to_p6
 from trader.domain.market.models import (
@@ -30,7 +30,7 @@ from trader.domain.recommendation.models import (
     RecommendationSnapshot,
     Strategy,
 )
-from trader.domain.recommendation.scoring_support import MIN_BOARD_SAMPLE, reliability_fields
+from trader.domain.recommendation.scoring_calculations import MIN_BOARD_SAMPLE, reliability_fields
 
 if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline

@@ -56,14 +56,19 @@ All notable changes to this project are documented here.
 
 ### Changed
 
-- 用户要求 Review 全工程命名，明确指出 `delivery` 前身阶段代号和旧泛称命名需要全部优化，
-  并追问是否还有“又臭又长”的命名。原因已确认：历史阶段代号已进入活动公共端口、测试、
-  fixture 和报告路径；旧泛称后缀在行情缓存、历史缓存和 DeepSeek 预算账本中职责不够具体。
-  现在活动代码、测试、fixture、报告路径和权威文档统一改用业务命名：`delivery` 表示发布/
-  交付公共契约，`QuoteCache`、`HistoryCache` 表示进程内行情与历史缓存，
-  `DeepSeekBudgetLedger`、`BudgetBatchLedger` 表示预算账本，候选选择记录函数改为
-  `remember_candidate_selection`，推荐归档写入接口改为 `write_bundle`。测试中的超长旧阶段
-  命名同步迁移到 `delivery`；其它长测试名保留描述性语义，不做无收益缩写。
+- 用户要求继续 Review 全工程命名，明确把旧英文阶段词、拼音旧词和缓存泛称全部清掉，
+  并追问是否还有“又臭又长”、不专业或不通俗的命名。现状已确认：旧阶段词仍散落在活动公共
+  契约、P6/SSE 发布补丁、Web envelope、测试、fixture、报告路径和性能指标名中；多个
+  `support`/`utils` 后缀模块只说明“辅助”，没有说明实际职责。现在活动代码、测试、fixture、
+  报告路径、配置和权威文档统一改用具体业务名：公共契约为 `pipeline_contracts`/
+  `PipelineContractError`/`pipeline_schema_versions`，P6/SSE 发布补丁为 `projection_patch`，
+  Web 快照上下文为 `SnapshotViewContext`，前端格式化资源为 `dashboard_formatters.js`，
+  行情、DeepSeek、持久化和评分边界分别改为 `market_cache_identity`、`gateway_runtime`、
+  `tushare_records`、`budget_audit`、`reviewer_selection`、`snapshot_files`、
+  `recommendation_policy_codec` 和 `scoring_calculations`。指标分组同步改为 `p6_projection`
+  与 `sse_publish`。描述性测试名保留，协议词 `schema_version`/`data_version`、状态词
+  `supported`/`unsupported`、恢复语义 `restore/restored`、标准 Fetch 值 `cache: "no-store"` 和
+  Python 标准库 `contextmanager` 保留。
 
 - 用户要求把最近两次提交后的卡脖子行业按扫描文档更新，并把当前龙头股合并到扫描文档正式
   名单对应的股票列表里，用横线分隔，避免 tab 页太多。原因是扫描报告已产出正式名单，但活动
@@ -327,14 +332,17 @@ All notable changes to this project are documented here.
 
 ### Verification
 
-- 命名清理验证：旧阶段代号扫描无文本命中；旧泛称扫描的剩余命中仅为
-  `restore/restored` 恢复语义和 Web Fetch 标准 `no-store` 缓存指令。定向契约测试
-  `tests/contract/test_v2_architecture.py tests/contract/test_delivery_contract.py
-  tests/contract/test_delivery_contract_base.py tests/contract/test_delivery_a2_public_skeleton.py`
-  通过；受影响组件测试
+- 命名清理验证：活动代码、测试、配置、报告路径和权威文档扫描无旧英文阶段词、拼音旧词、
+  旧前端格式化资源名、旧契约类名或旧导入路径命中；文件名扫描无
+  `*support*.py`、`*utils*.py`、`*helper*.py`、`*manager*.py`、`*processor*.py` 泛称命名。
+  剩余 `support`/缓存相关文本均为协议状态、标准库/浏览器标准、恢复语义或历史归档说明，
+  不是本批需要改名的项目自有 API。定向契约测试
+  `tests/contract/test_v2_architecture.py tests/contract/test_project_records.py
+  tests/contract/test_pipeline_contract_base.py tests/contract/test_pipeline_contract_a2_public_skeleton.py
+  tests/contract/test_v2_app_factory.py` 通过；受影响组件测试
   `tests/component/test_v2_market_data.py tests/component/test_v2_deepseek.py
-  tests/component/test_v2_deepseek_v4.py tests/component/test_delivery_deepseek_c2.py
-  tests/component/test_delivery_deepseek_c3.py tests/component/test_delivery_deepseek_c4.py`
+  tests/component/test_v2_deepseek_v4.py tests/component/test_pipeline_deepseek_c2.py
+  tests/component/test_pipeline_deepseek_c3.py tests/component/test_pipeline_deepseek_c4.py`
   通过；`make format-check`、`make lint`、`make type-check`、`make test` 和 `make package`
   均通过。仓库外 `/tmp` 目标目录安装 wheel 后，导入来源指向安装目录，entry point 元数据为
   `trader.entrypoints.cli:main`，CLI 模块 `--help`、模板、CSS、JavaScript 和 SVG 资源读取通过。
@@ -398,7 +406,7 @@ All notable changes to this project are documented here.
 - 本批完整 `make format-check`、`make lint`、`make type-check`、`make test` 和
   `make package` 通过；`make test` 仅保留既有 DeepSeek 测试模型名 RuntimeWarning。
   仓库外用 `pip --prefix /tmp/trader-wheel-long-check-prefix` 安装 wheel 后，`trader-cli --help`
-  可执行，且可读取 `index.html`、CSS、`dashboard.js`、`dashboard_utils.js`、`long_groups.js`、
+  可执行，且可读取 `index.html`、CSS、`dashboard.js`、`dashboard_formatters.js`、`long_groups.js`、
   `render.js`、`selection.js` 和 SVG 资源。Headless Chrome 在 1280x720、1440x900、
   1920x1080 三档截图成功，DevTools 指标均为 `scrollWidth == clientWidth`、有正文且无
   页面级横向溢出。
@@ -504,8 +512,8 @@ All notable changes to this project are documented here.
   `/api/recommendations/today?view=current` 和
   `/api/recommendations/tomorrow?view=current` 返回 `ready`、`phase=close_fallback` 且含
   items；`/api/recommendations/d25?view=current` 因研究字段缺失继续按契约返回 `not_ready`。
-- 通过：`tests/component/test_delivery_deepseek_c4.py::test_c4_global_168_limit_is_atomic_under_concurrent_reservations`、
-  `tests/component/test_v2_deepseek.py` 和 `tests/component/test_delivery_deepseek_c4.py`。
+- 通过：`tests/component/test_pipeline_deepseek_c4.py::test_c4_global_168_limit_is_atomic_under_concurrent_reservations`、
+  `tests/component/test_v2_deepseek.py` 和 `tests/component/test_pipeline_deepseek_c4.py`。
 - 通过：本批 `make format-check`、`make lint`、`make type-check`、`make test`、`make package`；
   仓库外安装 `dist/trader_research_dashboard-0.2.0-py3-none-any.whl` 后，可导入 `trader`，
   可执行 `trader-cli --help`，并可读取 `index.html`、`dashboard.css`、`dashboard.js` 和 SVG 资源。
@@ -532,9 +540,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
-- 移除活动产品和仓库文档中的历史阶段代号命名，以及项目自有类名、函数名、变量名、
-  模块名和错误码中的旧泛称命名。保留 `restore/restored` 的“恢复”业务语义和前端
-  Fetch 标准缓存值 `cache: "no-store"`，它们不属于本批命名债务。
+- 移除活动产品、测试、fixture、报告路径和权威文档中的旧英文阶段词命名，以及项目自有类名、
+  函数名、变量名、模块名、静态资源名、指标名和错误码中的旧泛称命名。保留
+  `restore/restored` 的“恢复”业务语义、协议状态和前端 Fetch 标准缓存值
+  `cache: "no-store"`，它们不属于本批命名债务。
 
 - 删除旧 long 本地评分策略实现和导出，包括 `score_long`、`LONG_COMPONENT_WEIGHTS`、
   `score_strategy(Strategy.LONG, ...)` 的旧五维评分入口，以及 long 在
@@ -552,12 +561,12 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 本批是破坏性命名迁移：旧 Python 导入路径、旧 schema 字符串、旧 fixture 路径和旧错误码
-  文本不再作为当前仓库契约保留。真实运行数据若仍含旧字符串，需按完整旧 release 读取或
-  另建迁移任务；本批不改变 Web API、CLI、数据库表结构、推荐公式、冻结规则或 DeepSeek
-  预算数值。`restore/restored` 与 `cache: "no-store"` 因语义准确或标准要求保留。
-  宿主 `python3 -m venv` 因缺少 ensurepip 不能创建全新隔离 venv，本批用仓库外 `--target`
-  安装验证 wheel 内容和 CLI 模块入口。
+- 本批是破坏性命名迁移：旧 Python 导入路径、旧 schema 字符串、旧 fixture/报告路径、旧前端
+  静态资源文件名、旧指标键和旧错误码文本不再作为当前仓库契约保留。真实运行数据、外部脚本
+  或监控看板若仍依赖旧名称，需按完整旧 release 读取或另建迁移任务；本批不改变数据库表结构、
+  推荐公式、冻结规则、CLI 入口或 DeepSeek 预算数值。`restore/restored` 与
+  `cache: "no-store"` 因语义准确或标准要求保留。宿主 `python3 -m venv` 因缺少 ensurepip 不能
+  创建全新隔离 venv，本批用仓库外 `--target` 安装验证 wheel 内容和 CLI 模块入口。
 
 - 脑机接口仍处于早期产业阶段，本批只纳入公告证据和质量门槛均可核验的 2 只股票；年报中的
   研发、注册证或产品布局不能证明形成规模收入。AI 算力、液冷和数据中心电源拆分是固定研究
@@ -647,7 +656,7 @@ All notable changes to this project are documented here.
   本地处理分离计时、状态 API 聚合诊断，以及读取统一预算的 Firefox/geckodriver
   patch-to-paint 与三档桌面验收 runner；不改变候选、评分、风险、融合或排名策略。
 
-- 用户要求把 `plan_c.md`、`plan_sudu.md` 和 `plan_delivery.md` 中仍有效的策略归并到两份
+- 用户要求把 `plan_c.md`、`plan_sudu.md` 和 `plan_pipeline.md` 中仍有效的策略归并到两份
   权威文档后删除，并补充确认已被其他文档取代的 `plan.md` 可直接删除。软件权威契约新增
   provider 三段式、列式类型/dtype 边界、dirty 路由矩阵、P1-P6/DeepSeek/SSE 观测指标和
   长期公共接缝说明；策略权威契约新增 V4 事实映射、证据质量收缩、复核优先级、
@@ -667,24 +676,24 @@ All notable changes to this project are documented here.
   Web 决策轨迹及收益晋级门禁。
 
 - 用户继续未完成的任务 A；本批按下一完整章节发布 G5 最终共同门禁，新增
-  `docs/reports/delivery-g5-final-gate.md` 和对应失败优先交付契约。报告逐项确认 B5/C5/D5
+  `docs/reports/pipeline-g5-final-gate.md` 和对应失败优先交付契约。报告逐项确认 B5/C5/D5
   均签字通过、A4/A5 仍满足全部门禁、文档/代码/测试/配置一致，并明确本批完成后
-  `docs/plan_delivery.md` 全部闭合，不进入其他计划章节。
+  `docs/plan_pipeline.md` 全部闭合，不进入其他计划章节。
 
 - 用户继续未完成的任务 A；本批完成 A5.1-A5.5 最终交付审查，新增
-  `docs/reports/delivery-a5-final-review.md`，收齐 B5/C5/D5 的
+  `docs/reports/pipeline-a5-final-review.md`，收齐 B5/C5/D5 的
   `PASS / ready_for_gate=yes` 签字并归档完整 diff 审查、提交映射和剩余外部风险。权威设计
   补记 384 MiB 迁移硬上限、`387,186,688` 字节实测峰值、峰值并存场景、纯 columnar
   `254,447,616` 字节结束 RSS，以及未来是否收紧上限必须另立决策；本批不发布 G5。
 
 - 用户继续未完成的任务 D；本批完成 D5.1-D5.2 最终差异审查，并在
-  `docs/reports/delivery-d1-p6-web.md` 第 12 节向 A 提交 `PASS / ready_for_gate=yes`
+  `docs/reports/pipeline-d1-p6-web.md` 第 12 节向 A 提交 `PASS / ready_for_gate=yes`
   签字。审查覆盖 P6 current/resident/cold、P6-first 公共接线、持久化分流、SSE、DOM
   四元身份和 ETag resync；新增主动 resync schema 与游标分类竞态回归，不进入 G5。
 
 - 用户继续未完成的任务 A；本批按下一完整章节复核 A4/B4/C4/D4 的阶段 4 交接证据，
   确认 D4 留给 A 的 P6 接纳原子性事项已由 A4-F04 关闭，并新增
-  `docs/reports/delivery-g4-gate-review.md` 发布 G4。用户可观察行为不变：不修改推荐、
+  `docs/reports/pipeline-g4-gate-review.md` 发布 G4。用户可观察行为不变：不修改推荐、
   冻结、API 或页面逻辑，不进入 A5。
 
 - 用户继续未完成的任务 B；本批完成 B5.1-B5.2 终审签字，新增 B5 行情、三板评分和
@@ -698,58 +707,58 @@ All notable changes to this project are documented here.
 
 - 用户要求继续未完成的任务 D；现状确认 G3 已发布而 D4 尚未执行。新增 D4 P6/SSE/API
   固定 18 行性能回归、可执行的 Node 浏览器状态机契约、离线真实页面/SSE 桌面夹具，并在
-  `docs/reports/delivery-d1-p6-web.md` 第 11 节形成 D4.1-D4.4 标准交接包；本批不提前执行 D5。
+  `docs/reports/pipeline-d1-p6-web.md` 第 11 节形成 D4.1-D4.4 标准交接包；本批不提前执行 D5。
 
 - 用户要求继续未完成的 Codex A 任务；A 完成 A4.1-A4.6 全量验收与问题闭环。新增
-  `docs/reports/delivery-a4-acceptance.md`、固定 v17 `perf-check` manifest 和同进程 A4 内存 runner，
+  `docs/reports/pipeline-a4-acceptance.md`、固定 v17 `perf-check` manifest 和同进程 A4 内存 runner，
   汇总 B4/C4/D4 handoff、关闭 Polars scalar fallback 与 P6 发布原子性两项失败，并覆盖六个
   P1-P6 字节池近上限、双 epoch/双路径、DeepSeek 最大批次、P6 冷读和慢客户端并存场景；
   A4 标记 `ready_for_gate=yes`，本批不发布 G4、不进入 A5。
 
 - 用户再次发送“继续”后，A 按阶段 3 共同门禁复核当前 B3/C3/D3 交接状态。新增
-  `docs/reports/delivery-g3-gate-review.md`，记录 A3 handoff 已发布且 B3/C3/D3 标准
+  `docs/reports/pipeline-g3-gate-review.md`，记录 A3 handoff 已发布且 B3/C3/D3 标准
   `ready_for_gate=yes` 报告均已到达；A 因此发布 G3，但不启动 A4、不创建 PR/tag/release。
   同批纳入 B3 fixture、C3 raw facts cache identity 修复与测试、D3 P6/Web 差量 patch 修复与报告。
 
-- 用户再次发送“继续”后，A 按 `docs/plan_delivery.md` 执行 A3.1-A3.7。新增
-  `docs/reports/delivery-a3-integration.md`，记录 B2 列式 P1-P3/change set、C2 DeepSeek V4
+- 用户再次发送“继续”后，A 按 `docs/plan_pipeline.md` 执行 A3.1-A3.7。新增
+  `docs/reports/pipeline-a3-integration.md`，记录 B2 列式 P1-P3/change set、C2 DeepSeek V4
   facts/预算/long 隔离、D2 P6/SSE/Web 增量补丁已按 B -> C -> D 纳入 A 集成工作树；同时
   明确本批只发布 A3 集成 handoff，G3 仍等待 B3/C3/D3 基于本集成提交完成专业复验。
 
 - 用户再次发送“继续”后，A 复核 B2 最新交接报告，确认 B2 已补齐
   `ready_for_gate=yes`、A2 public envelope 适配、component/type-check/性能证据；A 因此发布
-  G2。`docs/reports/delivery-g2-gate-review.md` 新增 2026-07-23 再复核与 G2 发布记录，
+  G2。`docs/reports/pipeline-g2-gate-review.md` 新增 2026-07-23 再复核与 G2 发布记录，
   明确 A2/B2/C2/D2 均已具备阶段 2 门禁证据，但本批不启动 A3。
 
 - 用户再次发送“继续”后，A 复核阶段 2 门禁新状态：C2 报告已补齐标准
   `ready_for_gate: yes` 字段，但 B2 仍为 `ready_for_gate=no`，因此仍不发布 G2、不进入 A3。
-  `docs/reports/delivery-g2-gate-review.md` 增加 2026-07-23 复核记录，更新 C2 状态和当前唯一
+  `docs/reports/pipeline-g2-gate-review.md` 增加 2026-07-23 复核记录，更新 C2 状态和当前唯一
   阻塞项。
 
 - 用户发送“继续”后，A 按阶段 2 共同门禁复核当前 B2/C2/D2 交接材料，但因 B2 自报
   `ready_for_gate=no` 且 C2 未使用标准 `ready_for_gate` 字段，未发布 G2、不进入 A3。新增
-  `docs/reports/delivery-g2-gate-review.md`，记录三方报告路径、base、gate 状态、阻塞原因和
+  `docs/reports/pipeline-g2-gate-review.md`，记录三方报告路径、base、gate 状态、阻塞原因和
   后续等待条件；同时纳入 B2/C2 报告与 B2 性能 fixture，保留 D2 追加报告。
 
-- 用户发送“继续”后，A 按 `docs/plan_delivery.md` 执行 A2.1-A2.5。新增
-  `src/trader/application/ports/delivery.py`，集中提供
-  `delivery_contract_base_v1` 下的 P3/P4 `MarketChangeSet`、P4/P5 高价值复核 manifest、
+- 用户发送“继续”后，A 按 `docs/plan_pipeline.md` 执行 A2.1-A2.5。新增
+  `src/trader/application/ports/pipeline.py`，集中提供
+  `pipeline_contracts_v1` 下的 P3/P4 `MarketChangeSet`、P4/P5 高价值复核 manifest、
   DeepSeek V4 facts、P6 projection/overlay event、resync reason 和 248/384 MiB 内存契约；
-  新增 `src/trader/application/delivery_test_doubles.py`，为 B/C/D 单域开发提供只记录身份和
+  新增 `src/trader/application/pipeline_contract_doubles.py`，为 B/C/D 单域开发提供只记录身份和
   计数的 P4 consumer、review input、projection/overlay producer 替身；新增
-  `docs/reports/delivery-a2-public-skeleton.md` 作为 A2 交接报告。
+  `docs/reports/pipeline-a2-public-skeleton.md` 作为 A2 交接报告。
 
 - 用户发送“继续”后，A 复核当前工作树中新到达的 B1/C1/D1 阶段 1 报告，并发布 G1。新增
-  `docs/reports/delivery-g1-contract-base.md`，固定
+  `docs/reports/pipeline-g1-contract-base.md`，固定
   `CONTRACT_BASE=45bd2fab992d36eb873b7c448fbd9739f0cad43c`、三方 `ready_for_gate=yes`
   状态、唯一 owner/schema 清单、接口申请归并结果和 A2/B2/C2/D2/G2 合并顺序；同时纳入
   B1/C1/D1 交接报告文件，便于阶段 2 从同一公共契约基线开始。
 
-- 用户指定本任务为 Codex A，并要求严格按 `docs/plan_delivery.md` 先完成 A1.x，等待 B1/C1/D1
+- 用户指定本任务为 Codex A，并要求严格按 `docs/plan_pipeline.md` 先完成 A1.x，等待 B1/C1/D1
   报告后再发布 `CONTRACT_BASE` 和 G1。新增 A1 基线报告
-  `docs/reports/delivery-a1-baseline.md`，记录当前 `HEAD/upstream`、owner 范围、质量/
+  `docs/reports/pipeline-a1-baseline.md`，记录当前 `HEAD/upstream`、owner 范围、质量/
   测试/package/性能/Web 三档基线、已知既有失败、B/C/D 报告等待状态和 G1 未发布状态。
-  新增契约测试固定 delivery 双层内存口径、公共接缝版本、owner 归属和 G1 等待条件。
+  新增契约测试固定 pipeline 双层内存口径、公共接缝版本、owner 归属和 G1 等待条件。
 
 - 用户继续执行全工程重构计划 2.5 整节。新增 cache schema v6 的 P1-P6 六池、Polars
   `ColumnarQuoteBatch` 与 `MarketChangeSet`、内存式 `PublishedSnapshotIndex`、20 个完整
@@ -1245,7 +1254,7 @@ All notable changes to this project are documented here.
   结果；同一 trace 的重复终态不会重复计数，服务端状态不泄漏关联身份。
 
 - 修正文档治理仍把已经闭合的 `plan.md`、`plan_c.md`、`plan_sudu.md` 和
-  `plan_delivery.md` 当作活动计划的问题，并补齐此前仅在实现/测试中存在的 V4 本地映射和
+  `plan_pipeline.md` 当作活动计划的问题，并补齐此前仅在实现/测试中存在的 V4 本地映射和
   P1-P3 列式增量约束。
   同时明确排除旧计划中与生产配置冲突的“至少 3 维/覆盖 0.60”“today 全部 11:18
   截止”和“long 硬桶 0”等拟议值，避免删除计划时把过期设想误升格为生产规则。
@@ -1488,7 +1497,7 @@ All notable changes to this project are documented here.
   `perf-check` 命令和报告入口，不增加网络调用、线程或 `create_app()` 副作用。
 
 - 删除过时的 `docs/plan.md`，以及已完成归并的 `docs/plan_c.md`、
-  `docs/plan_sudu.md` 和 `docs/plan_delivery.md`；文档交付契约以失败测试防止已删除计划
+  `docs/plan_sudu.md` 和 `docs/plan_pipeline.md`；文档交付契约以失败测试防止已删除计划
   重新成为并行真相源。
 
 - 移除 Web 单文件中的状态、推荐、事件和 SSE 具体实现，以及严格 Ruff 的非零债务基线；
@@ -1502,7 +1511,7 @@ All notable changes to this project are documented here.
   收益门禁通过前删除 v17 或把影子结果展示为实际收益。
 
 - G5 未移除产品能力、策略、数据源、API、历史、配置、迁移、测试或资源；仅结束
-  `plan_delivery` 的未发布状态。后续工程、收益验证和外部运行风险没有被删除或伪装成完成。
+  `plan_pipeline` 的未发布状态。后续工程、收益验证和外部运行风险没有被删除或伪装成完成。
 
 - A5 未移除产品、策略、数据源、冻结历史、公共 API、配置项、迁移或桌面资源；移除的是
   P6 两项新增复杂度债务和 C5 raw facts identity 中无关的策略/板块/merge-epoch 分裂因子。
@@ -1730,7 +1739,7 @@ All notable changes to this project are documented here.
   `27.22%`；标准化/两源合并/统一快照 wall P95 为 `134.059/586.035/1130.823ms`，
   100 tick 逻辑缓存 `29,661,328B`、分配增长 `0.0%`、峰值 RSS `288,051,200B`，均在门禁内。
   B 域定向单元 `48` 项、行情组件 `122` 项、Ruff、mypy 和严格债务基线均通过；完整证据见
-  `tests/fixtures/market_data/delivery_b4/report_to_a.md`。
+  `tests/fixtures/market_data/pipeline_b4/report_to_a.md`。
 
 - D4 固定门禁记录 P6→SSE 入队 P95 `4.357ms`、权威 SSE 年龄 `0.000s`、当前/驻留/ETag/日期/状态
   API P95 `2.382/1.808/0.797/1.352/1.758ms`；单股 patch `1,133B` 对完整响应 `10,952B`，节省
@@ -1751,35 +1760,35 @@ All notable changes to this project are documented here.
 
 - G3 门禁复核批次验证：读取阶段 3 计划、A3/B3/C3/D3 报告，确认四方均已提交
   `ready_for_gate=yes` 交接证据并发布 G3；定向契约测试
-  `tests/contract/test_delivery_contract.py tests/contract/test_delivery_contract_base.py tests/component/test_delivery_deepseek_c3.py`
+  `tests/contract/test_project_records.py tests/contract/test_pipeline_contract_base.py tests/component/test_pipeline_deepseek_c3.py`
   覆盖 G3 发布状态、docs 报告白名单和 C3 raw facts 缓存复验。`make format-check`、`make lint`、
   `make type-check`、`make test` 和 `make package` 通过，生成物已清理。
   仓库外 wheel 安装到 `/tmp/trader-wheel-g3` 后可导入 `trader`、读取 Web 模板/静态资源，
   并可执行 `trader.entrypoints.cli --help`。
 
 - A3 集成批次验证：定向集成测试
-  `tests/unit/test_v17_columnar_changes.py tests/unit/test_v17_columnar_provider_adapter.py tests/unit/test_v2_market_data_normalize.py tests/unit/test_v2_market_data_merge.py tests/unit/test_v2_market_data_router.py tests/unit/application/test_candidate_features.py tests/unit/test_v2_deepseek_base.py tests/component/test_v2_deepseek.py tests/component/test_v2_deepseek_v4.py tests/component/test_delivery_deepseek_c2.py tests/unit/application/test_published_snapshots.py tests/unit/application/test_publisher.py tests/contract/test_v2_web_api.py tests/contract/test_v2_app_factory.py tests/contract/test_delivery_a2_public_skeleton.py tests/contract/test_delivery_contract_base.py`
+  `tests/unit/test_v17_columnar_changes.py tests/unit/test_v17_columnar_provider_adapter.py tests/unit/test_v2_market_data_normalize.py tests/unit/test_v2_market_data_merge.py tests/unit/test_v2_market_data_router.py tests/unit/application/test_candidate_features.py tests/unit/test_v2_deepseek_base.py tests/component/test_v2_deepseek.py tests/component/test_v2_deepseek_v4.py tests/component/test_pipeline_deepseek_c2.py tests/unit/application/test_published_snapshots.py tests/unit/application/test_publisher.py tests/contract/test_v2_web_api.py tests/contract/test_v2_app_factory.py tests/contract/test_pipeline_contract_a2_public_skeleton.py tests/contract/test_pipeline_contract_base.py`
   通过 183 项；`make format-check`、`make lint`、`make type-check`、`make test`、
   `make package` 和 `git diff --check` 均通过。仓库外 wheel 安装到 `/tmp/trader-wheel-a3`
   后可导入 `trader`、读取 Web 模板/静态资源，并可执行 `trader.entrypoints.cli --help`。
 
 - G2 发布批次验证：仅读取 B2/C2/D2 报告和 B2 fixture，确认 A2/B2/C2/D2 均为
   `ready_for_gate=yes`；定向契约测试
-  `tests/contract/test_delivery_contract.py tests/contract/test_delivery_contract_base.py` 通过 8 项，
+  `tests/contract/test_project_records.py tests/contract/test_pipeline_contract_base.py` 通过 8 项，
   `git diff --check` 通过。
 
 - 2026-07-23 G2 复核批次验证：仅读取 B2/C2/D2 报告，确认 C2 标准字段已补齐、B2 仍为
   `ready_for_gate=no`；定向契约测试
-  `tests/contract/test_delivery_contract.py tests/contract/test_delivery_contract_base.py` 通过 8 项，
+  `tests/contract/test_project_records.py tests/contract/test_pipeline_contract_base.py` 通过 8 项，
   `git diff --check` 通过。
 
 - G2 门禁复核批次验证：仅读取 B2、C2、D2 交接报告和 fixture 路径，未执行 B/C/D 内部算法；
-  定向文档契约测试 `tests/contract/test_delivery_contract.py tests/contract/test_delivery_contract_base.py`
+  定向文档契约测试 `tests/contract/test_project_records.py tests/contract/test_pipeline_contract_base.py`
   通过 8 项，`git diff --check` 通过。当前判定证据是 B2 报告明确 `ready_for_gate=no`、
   C2 报告缺少标准字段、D2 报告 `ready_for_gate yes`，因此共同门禁不满足。
 
 - A2 公共骨架批次验证：定向契约与配置测试
-  `tests/contract/test_delivery_a2_public_skeleton.py tests/contract/test_v2_architecture.py tests/unit/test_v2_settings.py`
+  `tests/contract/test_pipeline_contract_a2_public_skeleton.py tests/contract/test_v2_architecture.py tests/unit/test_v2_settings.py`
   通过；扩展文档契约后 5 个定向文件共 71 项通过，覆盖公共 schema/version、long 零复核、
   DeepSeek V4 facts 证据边界、P6
   projection/overlay CAS、HTTP/DeepSeek 零副作用替身、248 MiB 逻辑缓存拒绝和 384 MiB
@@ -1791,7 +1800,7 @@ All notable changes to this project are documented here.
 
 - G1 发布批次验证：复核 B1、C1、D1 三份标准报告均包含 `ready_for_gate=yes`；确认
   `HEAD == @{upstream}` 后发布 `CONTRACT_BASE`。`make format-check`、定向契约测试
-  `tests/contract/test_delivery_contract.py tests/contract/test_delivery_contract_base.py`、
+  `tests/contract/test_project_records.py tests/contract/test_pipeline_contract_base.py`、
   `git diff --check` 和 `make package` 通过；`make type-check` 通过。全局 `make lint`
   仍失败于既有严格债务计数漂移，全局 `make test` 仍失败 5 项，失败面与 A1 记录一致。
 
@@ -1800,7 +1809,7 @@ All notable changes to this project are documented here.
   构建依赖联网失败，提升权限后通过。离线 `perf-check --suite all`、v15 market-data
   runner、v16 board-scoring runner 均通过，且无外部网络调用。1280x720、1440x900 和
   1920x1080 无头 Chrome 截图非白屏；无运行态页面显示 `not_ready`，SSE 因未注入
-  publisher 返回 503。完整证据见 `docs/reports/delivery-a1-baseline.md`。
+  publisher 返回 503。完整证据见 `docs/reports/pipeline-a1-baseline.md`。
 
 - 本批新增严格配置、列式 dirty set、P6 完整日期预热、日期 single-flight、检查点
   hash/consume、SQLite schema v8、SSE patch 和慢客户端自动回归。首轮 145 个相关用例
@@ -1808,7 +1817,7 @@ All notable changes to this project are documented here.
   与桌面门禁结果在本批提交前继续更新。
 
 - 2.4 的 659 项完整 pytest（验收时暂时隔离并随后原样恢复与本批无关的未跟踪
-  `docs/plan_delivery.md`）、213 文件 Ruff format、Ruff lint/严格债务、154 个源码文件
+  `docs/plan_pipeline.md`）、213 文件 Ruff format、Ruff lint/严格债务、154 个源码文件
   mypy、源码/架构 AST、`create_app()` 无副作用、固定融合向量 83.40、预算并发、冻结恢复、
   SSE 游标/慢客户端、哈希一致性和 `make package` 均通过；PLR0913 从 58 降至 55，活动
   Python 单文件均小于 800 行。固定性能负载通过：v15 为 5500 行行情/360 候选且三个 P95
@@ -2109,14 +2118,14 @@ All notable changes to this project are documented here.
 
 - Polars 只改变基础设施层批次与变更集合，不改变领域评分、68/32 融合、风险、动作、排名
   或冻结哈希；性能通过也不代表荐股收益提高。真实供应商、真实 DeepSeek 和真实交易日仍受
-  外部网络与数据质量影响。未跟踪的 `docs/plan_delivery.md` 属于用户既有文件，本批保留且不
+  外部网络与数据质量影响。未跟踪的 `docs/plan_pipeline.md` 属于用户既有文件，本批保留且不
   提交；若其继续违反三份非权威计划的文档治理契约，完整测试需隔离该文件后证明本批。
 
 - 本批未调用真实外部行情或 DeepSeek 服务，供应商权限、实时限流和网络退化仍由现有超时、
   熔断、负缓存及降级契约承担；Tushare 是否支持明确 qfq 输出取决于运行时 SDK 能力，不支持
   时生产链固定使用腾讯 qfq，raw 只保留审计用途。2.5 应用编排重构仍是下一独立章节；本批
   性能门禁只能证明确定性固定负载不退化，不能证明实际荐股收益提升。并发新增且未跟踪的
-  `docs/plan_delivery.md` 不属于本批提交，并会在本地触发现有“仅 5 份活动文档”契约；其归档或
+  `docs/plan_pipeline.md` 不属于本批提交，并会在本地触发现有“仅 5 份活动文档”契约；其归档或
   纳入文档治理须由所属独立批次处理。
 
 - `plan_sudu.md` 仅为待实施计划；活动代码尚未引入 Polars、`MarketChangeSet`、P6 热索引

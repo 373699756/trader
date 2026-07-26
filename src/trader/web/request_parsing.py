@@ -1,4 +1,4 @@
-"""Pure parsing helpers for the read-only HTTP boundary."""
+"""Pure parsers for the read-only HTTP boundary."""
 
 from __future__ import annotations
 

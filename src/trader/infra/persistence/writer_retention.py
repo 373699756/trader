@@ -6,8 +6,8 @@ from pathlib import Path
 
 from trader.domain.recommendation.models import Strategy
 from trader.infra.persistence.recommendation_archive import RecommendationArchive
+from trader.infra.persistence.snapshot_files import SnapshotConflictError, _matches_hash
 from trader.infra.persistence.sqlite import connection_scope
-from trader.infra.persistence.writer_utils import SnapshotConflictError, _matches_hash
 
 
 def archive_trade_date(

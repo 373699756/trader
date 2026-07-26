@@ -342,7 +342,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 72,
-          "group": "p6_delivery",
+          "group": "p6_projection",
           "persisted": false
         },
         "published_date_index": {
@@ -352,7 +352,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 3,
-          "group": "p6_delivery",
+          "group": "p6_projection",
           "persisted": false
         }
       },
@@ -362,7 +362,7 @@
         "p3_features": 25165824,
         "p4_local_scoring": 16777216,
         "p5_review": 12582912,
-        "p6_delivery": 12582912
+        "p6_projection": 12582912
       },
       "total_bytes": 260046848,
       "runtime_reserve_bytes": 8388608,
@@ -393,7 +393,7 @@
       "board_ready_to_draft": 500,
       "quote_to_draft": 5000,
       "deepseek_to_hybrid": 1000,
-      "sse_delivery": 100,
+      "sse_publish": 100,
       "browser_patch_to_paint": 100,
       "snapshot_api": 200,
       "etag_api": 50,

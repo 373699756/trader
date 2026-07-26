@@ -1,4 +1,4 @@
-"""Worker submission, persistence and status helpers for pipeline stages."""
+"""Worker submission, persistence and status functions for pipeline stages."""
 
 from __future__ import annotations
 

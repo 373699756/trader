@@ -1,4 +1,4 @@
-"""Pure parsing helpers for the AKShare-compatible adapter."""
+"""Pure parsers for the AKShare-compatible adapter."""
 
 from __future__ import annotations
 

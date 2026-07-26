@@ -778,7 +778,7 @@ def test_current_query_reads_snapshot_and_overlay_from_runtime_index(
     assert persisted.overlay_calls == 0
 
 
-def test_historical_snapshots_are_preloaded_once_as_compact_delivery_views(
+def test_historical_snapshots_are_preloaded_once_as_compact_pipeline_views(
     recommendation_policy,
     application_feature_factory,
 ) -> None:

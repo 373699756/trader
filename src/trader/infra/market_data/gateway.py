@@ -35,7 +35,7 @@ from trader.domain.market.models import (
 )
 from trader.infra.market_data.columnar import ColumnarQuoteBatch, MarketChangeSet, market_changes
 from trader.infra.market_data.eastmoney import EastmoneyClient
-from trader.infra.market_data.gateway_support import (
+from trader.infra.market_data.gateway_runtime import (
     _cache_error_code,
     _canonical_health,
     _CircuitState,

@@ -26,13 +26,13 @@ from trader.infra.market_data.history import (
     require_qfq_history,
 )
 from trader.infra.market_data.history_seed import DailyHistoryClient
-from trader.infra.market_data.service_execution import MarketTaskRunner
-from trader.infra.market_data.service_models import _HistoryEntry
-from trader.infra.market_data.service_support import (
+from trader.infra.market_data.market_cache_identity import (
     _add_action_restriction,
     _history_version,
     _source_batch_identity,
 )
+from trader.infra.market_data.service_execution import MarketTaskRunner
+from trader.infra.market_data.service_models import _HistoryEntry
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

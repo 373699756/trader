@@ -18,10 +18,10 @@ from trader.application.long_groups import LongGroupDefinition
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.recommendation_finalization import PreparedSnapshot, RecommendationFinalizationMixin
+from trader.application.recommendation_policy_codec import _select_review_candidates
 from trader.application.recommendation_replay import (
     RecommendationReplayMixin,
 )
-from trader.application.recommendation_support import _select_review_candidates
 from trader.domain.market.models import (
     Board,
     FeatureSnapshot,

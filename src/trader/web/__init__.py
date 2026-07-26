@@ -1,4 +1,4 @@
-"""Flask delivery adapter."""
+"""Flask pipeline adapter."""
 
 from trader.web.app import create_app
 

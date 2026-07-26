@@ -28,8 +28,7 @@ from trader.infra.deepseek.challenger import (
     parse_challenger_reviews,
 )
 from trader.infra.deepseek.reviewer_context import ReviewerContext
-from trader.infra.deepseek.reviewer_status import ReviewerStatusTracker
-from trader.infra.deepseek.reviewer_support import (
+from trader.infra.deepseek.reviewer_selection import (
     _automatic_emergency_reason,
     _challenger_deadline,
     _challenger_failure_status,
@@ -41,6 +40,7 @@ from trader.infra.deepseek.reviewer_support import (
     _thinking_mode,
     _usage_integer,
 )
+from trader.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.infra.deepseek.schema import (
     RAW_FACTS_CACHE_GENERATION,
     DeepSeekSchemaError,

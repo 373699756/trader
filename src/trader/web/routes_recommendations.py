@@ -14,7 +14,7 @@ from trader.web.request_parsing import (
 )
 from trader.web.route_services import WebServices
 from trader.web.serializers import (
-    SnapshotDeliveryContext,
+    SnapshotViewContext,
     empty_snapshot_envelope,
     serialize_error,
     serialize_recommendation_dates,
@@ -102,7 +102,7 @@ def _snapshot_response(parsed: RecommendationRequest, lookup: SnapshotLookup) ->
         snapshot_envelope(
             snapshot,
             top_n=parsed.top_n,
-            delivery=SnapshotDeliveryContext(
+            view_context=SnapshotViewContext(
                 overlay=lookup.overlay,
                 requested_date=parsed.trade_date,
                 current_trade_date=lookup.current_trade_date,

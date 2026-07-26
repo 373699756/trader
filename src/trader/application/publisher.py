@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from trader.application.delivery_patch import overlay_patch, snapshot_patch
+from trader.application.projection_patch import overlay_patch, snapshot_patch
 from trader.domain.recommendation.models import (
     LiveOverlay,
     RecommendationSnapshot,

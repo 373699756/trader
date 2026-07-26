@@ -1,4 +1,4 @@
-"""Versioned JSON envelopes for recommendation delivery."""
+"""Versioned JSON envelopes for recommendation pipeline."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ API_SCHEMA_VERSION = "v3"
 
 
 @dataclass(frozen=True)
-class SnapshotDeliveryContext:
+class SnapshotViewContext:
     overlay: LiveOverlay | None = None
     requested_date: str | None = None
     current_trade_date: str | None = None
@@ -34,10 +34,10 @@ def snapshot_envelope(
     snapshot: RecommendationSnapshot,
     *,
     top_n: int,
-    delivery: SnapshotDeliveryContext | None = None,
+    view_context: SnapshotViewContext | None = None,
 ) -> dict[str, object]:
     """Project a domain snapshot into the compact dashboard contract."""
-    context = delivery or SnapshotDeliveryContext()
+    context = view_context or SnapshotViewContext()
     live_quotes = (
         context.overlay.quotes
         if context.overlay is not None and context.overlay.snapshot_id == snapshot.snapshot_id
@@ -306,7 +306,7 @@ def _anchor_to_now(anchor_price: float | None, current_price: float | None) -> f
 
 __all__ = [
     "API_SCHEMA_VERSION",
-    "SnapshotDeliveryContext",
+    "SnapshotViewContext",
     "empty_snapshot_envelope",
     "error_envelope",
     "snapshot_envelope",

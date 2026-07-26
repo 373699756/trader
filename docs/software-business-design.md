@@ -326,7 +326,7 @@ P1-P6 逻辑缓存池固定为 248 MiB：
 | P3 | 硬过滤、候选特征、板内横截面、竞争组 | 24 MiB | epoch |
 | P4 | 九组板块评分、板块批次、全局本地草稿 | 16 MiB | epoch |
 | P5 | DeepSeek 主审、挑战者和策略分类结果 | 12 MiB | epoch |
-| P6 | 当前 TopK、最近 20 日历史投影、日期索引和 overlay 身份 | 12 MiB | delivery |
+| P6 | 当前 TopK、最近 20 日历史投影、日期索引和 overlay 身份 | 12 MiB | pipeline |
 
 P6 固定最多 64 个视图：当前四策略 4 个、最近 20 个交易日最多三策略 60 个；单视图
 规范 JSON 不超过 160 KiB。任一池满只影响本池新写入，不得
@@ -358,7 +358,7 @@ Polars 估算 `1,282,816` 字节。以上是 Python 3.14.4、固定离线 fixtur
 
 缓存身份固定包含数据集、来源、主体、请求指纹、交易日、阶段、来源契约版本、配置
 版本和 schema。请求指纹为排序后的非敏感参数规范 JSON SHA-256。TTL 条目必须有
-TTL、动作年龄、负缓存和容量；epoch 条目只命中完全相同身份；delivery 条目声明驻留
+TTL、动作年龄、负缓存和容量；epoch 条目只命中完全相同身份；pipeline 条目声明驻留
 交易日、冷槽、current pin 和单项字节上限。
 
 ### 7.2 v17 P1-P6 活动实现
@@ -446,7 +446,7 @@ P6 -> SSE 内部入队 100ms、SSE 接收到浏览器下一帧绘制 100ms、权
 
 ### 7.3 P3-P6 公共接缝
 
-`delivery_contract_base_v1` 是已发布的公共接缝版本，不再表示阶段施工或代理分工。schema、
+`pipeline_contracts_v1` 是已发布的公共接缝版本，不再表示阶段施工或代理分工。schema、
 版本、公共 port/event、配置、publisher 和组合根只能在各自活动模块中保留一套定义；
 P1-P3、DeepSeek 和 P6/Web 的内部实现不得分叉公共身份或泄漏基础设施类型。
 

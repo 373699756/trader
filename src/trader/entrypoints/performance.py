@@ -62,7 +62,7 @@ _SUITE_METRICS = {
         "three_board_wall_clock",
         "global_selection",
     ),
-    "api-sse": ("sse_delivery", "snapshot_api", "etag_api", "dates_api", "status_api"),
+    "api-sse": ("sse_publish", "snapshot_api", "etag_api", "dates_api", "status_api"),
     "end-to-end": ("board_ready_to_draft", "quote_to_draft", "deepseek_to_hybrid"),
 }
 
@@ -173,7 +173,7 @@ def _operations(
         "board_ready_to_draft": "trader.application.recommendations.RecommendationEngine.prepare_snapshot",
         "quote_to_draft": "trader.application.recommendations.RecommendationEngine.prepare_snapshot",
         "deepseek_to_hybrid": "trader.application.recommendations.RecommendationEngine.finalize_snapshot",
-        "sse_delivery": "trader.application.publisher.SnapshotPublisher.publish_overlay",
+        "sse_publish": "trader.application.publisher.SnapshotPublisher.publish_overlay",
         "snapshot_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
         "etag_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
         "dates_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
@@ -555,7 +555,7 @@ def _api_sse_operations() -> dict[str, Callable[[], object]]:
         )
 
     return {
-        "sse_delivery": publish_overlay,
+        "sse_publish": publish_overlay,
         "snapshot_api": lambda: client.get(current_path),
         "etag_api": lambda: client.get(current_path, headers={"If-None-Match": etag}),
         "dates_api": lambda: client.get("/api/recommendation-dates?strategy=today"),

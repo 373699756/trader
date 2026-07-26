@@ -21,8 +21,8 @@ from trader.domain.market.tail import MinuteBar
 from trader.infra.market_data.features import StandardizedFeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar
+from trader.infra.market_data.market_cache_identity import _quote_version
 from trader.infra.market_data.service_history import HistoryCache
-from trader.infra.market_data.service_support import _quote_version
 from trader.infra.market_data.service_tushare import ReferenceLoader
 
 _AUXILIARY_ACTION_RESTRICTIONS = frozenset(

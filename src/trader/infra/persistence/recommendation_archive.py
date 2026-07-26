@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TypeAlias
 
-from trader.infra.persistence.writer_utils import _atomic_create_immutable
+from trader.infra.persistence.snapshot_files import _atomic_create_immutable
 
 JsonRow: TypeAlias = Mapping[str, object]
 ARCHIVE_SCHEMA = "recommendations-v1"

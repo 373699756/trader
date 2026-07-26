@@ -21,9 +21,7 @@ from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.workers import BorrowExecutorOptions, WorkerExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.market.research import ResearchObservation
 from trader.infra.market_data.akshare import AkshareResearchClient
-from trader.infra.market_data.service_execution import MarketTaskRunner
-from trader.infra.market_data.service_models import _ResearchEntry
-from trader.infra.market_data.service_support import (
+from trader.infra.market_data.market_cache_identity import (
     _add_action_restriction,
     _degraded_research_observation,
     _deserialize_research_observation,
@@ -34,6 +32,8 @@ from trader.infra.market_data.service_support import (
     _serialize_research_observation,
     _source_batch_identity,
 )
+from trader.infra.market_data.service_execution import MarketTaskRunner
+from trader.infra.market_data.service_models import _ResearchEntry
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 
 _P = ParamSpec("_P")
