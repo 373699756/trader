@@ -552,7 +552,7 @@ def test_gateway_columnar_projection_failure_preserves_scalar_market_and_marks_d
     health = gateway.health()
     assert [(item.code, item.price, item.source) for item in fetched] == [(quote.code, quote.price, "sina")]
     assert snapshot is not None
-    assert "columnar_projection_failed:scalar_fallback" in snapshot.degraded_reasons
+    assert "columnar_projection_failed" in snapshot.degraded_reasons
     assert health["merge_epoch"] == snapshot.merge_epoch
     assert health["market_changes"]["merge_epoch"] == snapshot.merge_epoch
     assert health["market_changes"]["inserted"] == 1

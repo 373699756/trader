@@ -77,6 +77,6 @@ ready_for_gate: `yes`
 ## B4.4 Memory and B-Owned Fixes
 
 - The 100 tick retained market/columnar workload remains below the 248 MiB logical cache and 384 MiB process peak RSS limits, with no measured retained-allocation growth.
-- A4-F01 now catches Polars/columnar projection construction failures, commits the valid scalar canonical market, emits a full-invalidation change set and records `columnar_projection_failed:scalar_fallback`; the exact injected component regression passes.
-- The eligible merge path separately records `columnar_merge_failed:scalar_fallback` when Polars winner projection fails; malformed/partial data continues to use silent scalar eligibility fallback without treating valid input degradation as a provider failure.
+- A4-F01 now catches Polars/columnar projection construction failures, commits the valid scalar canonical market, emits a full-invalidation change set and records `columnar_projection_failed`; the exact injected component regression passes.
+- The eligible merge path separately records `columnar_merge_failed` when Polars winner projection fails; malformed/partial data continues to use silent scalar eligibility fallback without treating valid input degradation as a provider failure.
 - The other B-owned failure was the scalar complete-market normalization/merge/canonicalization hot path. The narrow columnar normalization/projection and streaming canonical epoch hash fix that failure without changing public behavior.

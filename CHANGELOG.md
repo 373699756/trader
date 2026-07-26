@@ -56,6 +56,16 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户再次要求 Review 全工程命名，选择“严格全改”，要求继续处理不专业、不简单通俗的残留。
+  本批确认源码和文件名已无新的拼音旧词、旧阶段词或 `support/utils/helper/manager/processor`
+  泛称文件名；剩余可优化项集中在暴露实现细节的诊断码和前端长期区域命名。现在收盘补算
+  观察门槛原因码改为 `close_fallback_observe_floor`，列式投影和合并降级码改为
+  `columnar_projection_failed`/`columnar_merge_failed`，不再把 `scalar_fallback` 实现细节暴露
+  给 API、测试和归档。长期页左侧区域改为 `long-sidebar`，内部 JS 绑定改为
+  `longSidebar`、`longTitle`、`longMeta` 和 `resultLayout`。保留项包括 `service_*` 行情子服务
+  分层、精确财务/风险业务字段、描述性测试名、协议版本词、恢复语义和浏览器标准
+  `cache: "no-store"`。
+
 - 用户要求继续 Review 全工程命名，明确把旧英文阶段词、拼音旧词和缓存泛称全部清掉，
   并追问是否还有“又臭又长”、不专业或不通俗的命名。现状已确认：旧阶段词仍散落在活动公共
   契约、P6/SSE 发布补丁、Web envelope、测试、fixture、报告路径和性能指标名中；多个
@@ -147,7 +157,7 @@ All notable changes to this project are documented here.
   `long_groups`，避免长连接或 P6 发布后丢失二级 tab 数据。
 - 用户反馈“长期页面没变，左侧没有行业栏，右侧也没有股票信息”。确认此前实现只把长期
   分组渲染为表格上方横向 tab，且静态资源版本未覆盖左侧布局诉求；现在长期策略渲染时
-  切换为固定宽度左侧 `longGroupBar` + 自适应铺满右侧 `recommendationTable` 双列布局。
+  切换为固定宽度左侧 `long-sidebar` + 自适应铺满右侧 `recommendationTable` 双列布局。
   右侧长期专用表只展示排名、股票、最新价、今日涨跌、成交/换手、总市值和行情时间，
   不再混入短线评分列；长期请求不再发送通用 `top_n=18`，从而让 `低价潜力股` 的 26 只
   固定股票可以完整显示。`dashboard.css` 内部导入的组件 CSS 同步带版本号，避免 Chrome
@@ -181,7 +191,7 @@ All notable changes to this project are documented here.
 - `close_fallback` 的短线 TopK 现在增加只限收盘补算的空池恢复：today/tomorrow/d25 仍先按
   正常动作阈值和 5 分观察窗口选择；若本地候选非空但正式/观察池都为空，则按原集中度规则
   发布最多 8 个无 veto 的本地候选为 `observe`，追加
-  `close_fallback_observation_floor_relaxed`，不生成 `executable`，不改盘中普通快照。
+  `close_fallback_observe_floor`，不生成 `executable`，不改盘中普通快照。
   Web 查询层对已落盘的旧空 `close_fallback` 冻结快照执行只读 replay 投影，保留冻结文件不变。
 
 - Web 当前视图的可见行规则现在区分盘中和收盘补算：today/tomorrow/d25 盘中仍只展示
@@ -332,6 +342,11 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 二次命名清理验证：严格扫描确认活动代码、测试、配置、报告路径和 `CHANGELOG.md` 不再包含
+  旧收盘补算观察原因码、旧列式投影/合并降级码、旧列式投影函数名或旧长期区域驼峰 DOM id。
+  本批 targeted 测试覆盖推荐原因码、Web API、长期页结构、应用工厂、行情降级和列式合并；
+  完整门禁和仓库外 wheel 安装验收记录见本批最终提交说明。
+
 - 命名清理验证：活动代码、测试、配置、报告路径和权威文档扫描无旧英文阶段词、拼音旧词、
   旧前端格式化资源名、旧契约类名或旧导入路径命中；文件名扫描无
   `*support*.py`、`*utils*.py`、`*helper*.py`、`*manager*.py`、`*processor*.py` 泛称命名。
@@ -478,7 +493,7 @@ All notable changes to this project are documented here.
   `RecommendationQueries.current_recommendation()` 只读 replay 返回 `ready close_fallback frozen`
   且 7 行 observe，降级原因为
   `main/star:board_data_reliability_below_threshold`、
-  `close_fallback_observation_floor_relaxed`、`deepseek_incomplete` 和
+  `close_fallback_observe_floor`、`deepseek_incomplete` 和
   `d25_structured_research_incomplete`。
 
 - 通过：`tests/contract/test_v17_recommendation_sections.py`、
@@ -540,6 +555,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除二次命名审查中确认的旧可见诊断码、旧前端 DOM id 和旧内部函数名；旧字符串不再作为
+  当前仓库契约或前端选择器保留。
+
 - 移除活动产品、测试、fixture、报告路径和权威文档中的旧英文阶段词命名，以及项目自有类名、
   函数名、变量名、模块名、静态资源名、指标名和错误码中的旧泛称命名。保留
   `restore/restored` 的“恢复”业务语义、协议状态和前端 Fetch 标准缓存值
@@ -560,6 +578,11 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 本批按用户选择执行严格破坏性改名：依赖旧降级原因码、旧 metadata key 或旧 DOM id 的外部
+  脚本、浏览器自动化和历史断言需要同步更新；本批不提供兼容 alias。真实运行中已落盘的旧
+  metadata 仍可能包含旧原因码，只能按旧 release 解读或另建迁移任务。本批不改变推荐公式、
+  数据库表结构、冻结规则、CLI 入口、DeepSeek 预算或行情采集行为。
 
 - 本批是破坏性命名迁移：旧 Python 导入路径、旧 schema 字符串、旧 fixture/报告路径、旧前端
   静态资源文件名、旧指标键和旧错误码文本不再作为当前仓库契约保留。真实运行数据、外部脚本
@@ -1292,8 +1315,8 @@ All notable changes to this project are documented here.
 
 - A4-F01（Polars 构造失败会阻断有效标量行情）已修复：行情/候选提交在列式批次构造抛出
   `PolarsError`、`RuntimeError`、`TypeError` 或 `ValueError` 时保留 scalar snapshot，生成完整
-  invalidation change set，并记录 `columnar_projection_failed:scalar_fallback`；列式合并自身
-  失败也记录 `columnar_merge_failed:scalar_fallback`。新增精确注入回归覆盖返回值、health epoch、
+  invalidation change set，并记录 `columnar_projection_failed`；列式合并自身
+  失败也记录 `columnar_merge_failed`。新增精确注入回归覆盖返回值、health epoch、
   dirty count 和降级原因。
 
 - A4-F04（P6 拒绝后 RuntimeState/session/checkpoint/SSE 仍可能前进）已修复：公共 pipeline

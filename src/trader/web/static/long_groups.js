@@ -78,14 +78,14 @@
   }
 
   function renderBar(els, state, payload) {
-    if (!els.longGroupBar) return;
+    if (!els.longSidebar) return;
     const isLong = payload && payload.strategy === "long";
-    els.longGroupBar.hidden = !isLong;
+    els.longSidebar.hidden = !isLong;
     if (els.longStockHeader) els.longStockHeader.hidden = !isLong;
     if (!isLong) return;
     const scope = categories.includes(state.longScope) ? state.longScope : "chokepoint";
     state.longScope = scope;
-    if (els.longPanelTitle) els.longPanelTitle.textContent = scopeLabel(scope);
+    if (els.longTitle) els.longTitle.textContent = scopeLabel(scope);
     els.longScopeTabs.querySelectorAll("button[data-scope]").forEach((button) => {
       const active = button.dataset.scope === scope;
       button.classList.toggle("is-active", active);
@@ -99,7 +99,7 @@
       state.longGroup = namedGroup ? namedGroup.key : state.longGroup;
     }
     els.longIndustryTabs.innerHTML = scopedGroups.map((group) => industryButton(group, state.longGroup)).join("");
-    if (els.longPanelMeta) els.longPanelMeta.textContent = `${scopedGroups.length} 个分组`;
+    if (els.longMeta) els.longMeta.textContent = `${scopedGroups.length} 个分组`;
     const activeGroup = scopedGroups.find((group) => group.key === state.longGroup);
     if (els.longStockContext) els.longStockContext.textContent = activeGroup ? activeGroup.name : scopeLabel(scope);
   }

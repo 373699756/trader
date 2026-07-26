@@ -163,7 +163,7 @@ def test_columnar_merge_failure_uses_scalar_projection_and_marks_degraded(monkey
     snapshot = merge_market_observations((sina, eastmoney), observed_at=NOW)
 
     assert snapshot.quotes[0].price == 10.0
-    assert "columnar_merge_failed:scalar_fallback" in snapshot.degraded_reasons
+    assert "columnar_merge_failed" in snapshot.degraded_reasons
 
 
 def test_columnar_normalization_matches_scalar_quote_observation() -> None:

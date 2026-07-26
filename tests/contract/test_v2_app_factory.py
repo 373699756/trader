@@ -69,8 +69,8 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'class="runtime-error runtime-message"' in page
     assert 'class="runtime-messages"' in page
     assert 'id="noticeText"' in page
-    assert 'id="recommendationLayout"' in page
-    assert 'id="longGroupBar"' in page
+    assert 'id="recommendation-layout"' in page
+    assert 'id="long-sidebar"' in page
     assert page.index('class="runtime-messages"') < page.index('class="control-band"')
     assert page.index('class="summary-band"') < page.index('class="control-band"') < page.index('class="table-region"')
     assert 'id="tableTitle"' not in page
@@ -127,7 +127,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "最高评分" in page
     assert "模型复核" in page
     assert "数据状态" in page
-    assert 'id="longPanelTitle">卡脖子行业<' in page
+    assert 'id="long-panel-title">卡脖子行业<' in page
     assert 'id="longStockHeader"' in page
     assert ">重点股票行情<" in page
     stylesheet_response = client.get("/static/dashboard.css")

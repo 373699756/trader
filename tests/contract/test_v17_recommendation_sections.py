@@ -12,17 +12,17 @@ def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
     selection = (ROOT / "src/trader/web/static/selection.js").read_text(encoding="utf-8")
 
     assert 'id="recommendationTable"' in template
-    assert 'id="recommendationLayout"' in template
-    assert 'id="longGroupBar"' in template
+    assert 'id="recommendation-layout"' in template
+    assert 'id="long-sidebar"' in template
     assert 'id="longScopeTabs"' in template
-    assert 'id="longPanelTitle"' in template
+    assert 'id="long-panel-title"' in template
     assert 'id="longIndustryTabs"' in template
     assert 'id="longStockHeader"' in template
     description_end = template.index("</p>", template.index('id="strategyDescription"'))
     strategy_choice_end = template.index("</div>", description_end)
     assert description_end < template.index('id="longScopeTabs"') < strategy_choice_end
-    assert template.index('id="longScopeTabs"') < template.index('id="recommendationLayout"')
-    assert template.index('id="longGroupBar"') < template.index('id="longStockHeader"')
+    assert template.index('id="longScopeTabs"') < template.index('id="recommendation-layout"')
+    assert template.index('id="long-sidebar"') < template.index('id="longStockHeader"')
     assert 'data-scope="low_price_potential"' in template
     assert "selection.js', v='3'" in template
     assert 'id="tableTitle"' not in template
@@ -71,7 +71,7 @@ def test_long_dashboard_uses_left_group_sidebar() -> None:
     assert "gap: 12px" in components
     assert "padding: 12px" in components
     assert "table.is-long-table" in components
-    assert ".long-group-bar" in components
+    assert ".long-sidebar" in components
     assert "flex-direction: column" in components
     assert ".long-stock-header" in components
     assert ".long-panel-heading::before" in components

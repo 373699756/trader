@@ -87,7 +87,7 @@ _LEGACY_STRUCTURED_RISK_FIELDS = (
     "unlock_risk",
 )
 _CLOSE_FALLBACK_OBSERVE_TOP_K = 8
-_CLOSE_FALLBACK_OBSERVATION_FLOOR_REASON = "close_fallback_observation_floor_relaxed"
+_CLOSE_FALLBACK_OBSERVE_REASON = "close_fallback_observe_floor"
 
 
 @dataclass(frozen=True)
@@ -173,7 +173,7 @@ class _MergeReviewedOptions(_MergeRequiredOptions, _MergeReviewedOptionalOptions
 class _SelectionResult:
     selected: tuple[Recommendation, ...]
     skips: tuple[SelectionSkip, ...]
-    close_fallback_floor_relaxed: bool = False
+    close_fallback_observe_floor: bool = False
 
 
 @dataclass(frozen=True)
@@ -254,7 +254,7 @@ def _select_short_recommendations(
     return _SelectionResult(
         fallback,
         (*skips, *fallback_skips),
-        close_fallback_floor_relaxed=bool(fallback),
+        close_fallback_observe_floor=bool(fallback),
     )
 
 
@@ -367,8 +367,8 @@ class RecommendationFinalizationMixin:
         )
         snapshot_id = _snapshot_id(strategy, prepared.trade_date, phase, identity_data_version, now)
         degraded_reasons: list[str] = list(prepared.board_degraded_reasons)
-        if selection.close_fallback_floor_relaxed:
-            degraded_reasons.append(_CLOSE_FALLBACK_OBSERVATION_FLOOR_REASON)
+        if selection.close_fallback_observe_floor:
+            degraded_reasons.append(_CLOSE_FALLBACK_OBSERVE_REASON)
         if strategy is not Strategy.LONG and fusion_mode is FusionMode.LOCAL_DEGRADED:
             degraded_reasons.append(
                 "deepseek_pending"
@@ -477,9 +477,7 @@ class RecommendationFinalizationMixin:
                     if strategy is Strategy.LONG
                     else {}
                 ),
-                **(
-                    {"close_fallback_observation_floor_relaxed": True} if selection.close_fallback_floor_relaxed else {}
-                ),
+                **({"close_fallback_observe_floor": True} if selection.close_fallback_observe_floor else {}),
                 **(
                     {
                         "tail_data_covered_count": tail_covered_count,

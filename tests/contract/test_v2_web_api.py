@@ -687,7 +687,7 @@ def test_current_view_replays_empty_close_fallback_snapshot_from_archive(
     assert payload["frozen"] is True
     assert [item["code"] for item in payload["items"]] == ["600001"]
     assert payload["items"][0]["action"] == "observe"
-    assert "close_fallback_observation_floor_relaxed" in payload["degraded_reasons"]
+    assert "close_fallback_observe_floor" in payload["degraded_reasons"]
 
 
 def test_explicit_historical_query_returns_previous_trade_date_snapshot(

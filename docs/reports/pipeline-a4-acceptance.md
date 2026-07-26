@@ -42,7 +42,7 @@ B/D 在 A4 执行期间分别完成独立提交并推送；A 保留其提交历�
 | --- | --- |
 | owner | Codex B |
 | 状态 | closed |
-| 修复 | 列式投影或合并抛出 Polars/运行时类型异常时保留有效 scalar canonical snapshot，生成完整 invalidation change set，并记录 `columnar_projection_failed:scalar_fallback` 或 `columnar_merge_failed:scalar_fallback` |
+| 修复 | 列式投影或合并抛出 Polars/运行时类型异常时保留有效 scalar canonical snapshot，生成完整 invalidation change set，并记录 `columnar_projection_failed` 或 `columnar_merge_failed` |
 | 复验 | 两个精确失败注入、48 项 B 定向单元、122 项行情组件、B4 runner 与完整测试通过 |
 
 ### A4-F04：P6 拒绝后的公开身份原子性

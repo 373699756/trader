@@ -102,7 +102,7 @@ def _merge_valid_observations(
             columnar = None
             context = replace(
                 context,
-                degraded_reasons=tuple(sorted({*context.degraded_reasons, "columnar_merge_failed:scalar_fallback"})),
+                degraded_reasons=tuple(sorted({*context.degraded_reasons, "columnar_merge_failed"})),
             )
         if columnar is not None:
             merge_epoch = columnar_merge_epoch(context.observed_at, columnar, context.missing_reasons)

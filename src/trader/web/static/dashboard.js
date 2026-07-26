@@ -60,9 +60,10 @@
       "scoreTime", "budgetStatus", "headerFreeze", "lastError",
       "refreshButton", "dateSelect", "strategyDescription", "recommendationCount", "executableCount", "filteredCount", "dataSource",
       "topScore", "modelReview", "dataQuality", "notice", "noticeText", "recommendationTable", "tableColumns", "tableHead", "tableBody",
-      "recommendationLayout", "longGroupBar", "longScopeTabs", "longPanelTitle", "longPanelMeta", "longIndustryTabs", "longStockHeader", "longStockContext",
+      "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
     ]) els[id] = document.getElementById(id);
+    Object.assign(els, { resultLayout: document.getElementById("recommendation-layout"), longSidebar: document.getElementById("long-sidebar"), longTitle: document.getElementById("long-panel-title"), longMeta: document.getElementById("long-panel-meta") });
     document.querySelectorAll(".strategy-tab").forEach((button) => {
       button.addEventListener("click", () => selectStrategy(button.dataset.strategy));
     });
@@ -367,7 +368,7 @@
   function renderTableState(message, columns) {
     els.tableBody.innerHTML = `<tr><td class="table-state" colspan="${columns || 9}">${window.TraderRender.escapeHtml(message)}</td></tr>`;
   }
-  function setLongLayout(enabled) { if (els.recommendationLayout) els.recommendationLayout.classList.toggle("is-long", Boolean(enabled)); }
+  function setLongLayout(enabled) { if (els.resultLayout) els.resultLayout.classList.toggle("is-long", Boolean(enabled)); }
   function setLongControls(enabled) { if (els.longScopeTabs) els.longScopeTabs.hidden = !enabled; }
   function renderLoadingState() {
     els.recommendationCount.textContent = "-";
@@ -389,7 +390,7 @@
     const definition = window.TraderRender.currentTable();
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
-    if (els.longGroupBar) els.longGroupBar.hidden = true;
+    if (els.longSidebar) els.longSidebar.hidden = true;
     renderTableState("正在读取推荐快照");
     setNotice("正在读取推荐快照", "idle");
   }
@@ -413,7 +414,7 @@
     els.recommendationTable.classList.remove("is-long-table");
     setLongControls(false);
     setLongLayout(false);
-    if (els.longGroupBar) els.longGroupBar.hidden = true;
+    if (els.longSidebar) els.longSidebar.hidden = true;
     const definition = window.TraderRender.historyTable();
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;

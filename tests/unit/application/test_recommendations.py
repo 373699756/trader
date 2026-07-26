@@ -192,8 +192,8 @@ def test_close_fallback_observes_local_candidates_below_observation_floor(
     recommendation = snapshot.recommendations[0]
     assert recommendation.action is RecommendationAction.OBSERVE
     assert recommendation.action_reason == "close_fallback_observe_only:below_score_threshold"
-    assert "close_fallback_observation_floor_relaxed" in snapshot.degraded_reasons
-    assert snapshot.metadata["close_fallback_observation_floor_relaxed"] is True
+    assert "close_fallback_observe_floor" in snapshot.degraded_reasons
+    assert snapshot.metadata["close_fallback_observe_floor"] is True
 
 
 def test_snapshot_reports_deepseek_skip_when_board_reliability_blocks_all_candidates(

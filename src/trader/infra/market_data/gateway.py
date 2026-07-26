@@ -239,7 +239,7 @@ class MarketDataGateway:
             with self._state_lock:
                 latest = self._latest_snapshot
             commit_snapshot = _preserve_newer_quotes(snapshot, latest)
-            commit_snapshot, columnar = _columnar_projection_or_scalar_fallback(
+            commit_snapshot, columnar = _try_columnar_snapshot(
                 commit_snapshot,
                 config_version=self._config_version,
                 schema_version=self._schema_version,
@@ -419,7 +419,7 @@ class MarketDataGateway:
         self._remember_observations_locked(observations, completed_at)
         previous = self._latest_snapshot
         commit_snapshot = overlay_canonical_snapshot(previous, snapshot)
-        commit_snapshot, columnar = _columnar_projection_or_scalar_fallback(
+        commit_snapshot, columnar = _try_columnar_snapshot(
             commit_snapshot,
             config_version=self._config_version,
             schema_version=self._schema_version,
@@ -636,7 +636,7 @@ class MarketDataGateway:
             state.last_error = "circuit_open"
 
 
-def _columnar_projection_or_scalar_fallback(
+def _try_columnar_snapshot(
     snapshot: CanonicalMarketSnapshot,
     *,
     config_version: str,
@@ -651,7 +651,7 @@ def _columnar_projection_or_scalar_fallback(
     except (PolarsError, RuntimeError, TypeError, ValueError):
         degraded = replace(
             snapshot,
-            degraded_reasons=tuple(sorted({*snapshot.degraded_reasons, "columnar_projection_failed:scalar_fallback"})),
+            degraded_reasons=tuple(sorted({*snapshot.degraded_reasons, "columnar_projection_failed"})),
         )
         return degraded, None
     return snapshot, columnar
