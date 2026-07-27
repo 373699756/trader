@@ -106,8 +106,7 @@ class RecommendationQueries:
         )
 
     def current_recommendation(self, strategy: Strategy) -> SnapshotLookup:
-        current_date = trade_date_at(self._now()).isoformat()
-        return self._current_lookup(strategy, current_date, self._snapshots.latest(strategy))
+        return self.recommendation(strategy)
 
     def _historical_current_quotes(
         self,
@@ -140,7 +139,11 @@ class RecommendationQueries:
         current_date: str,
         snapshot: RecommendationSnapshot | None,
     ) -> SnapshotLookup:
-        if snapshot is None or snapshot.trade_date != current_date:
+        if (
+            snapshot is None
+            or snapshot.trade_date != current_date
+            or (strategy is Strategy.TODAY and snapshot.phase == "close_fallback" and snapshot.frozen)
+        ):
             return SnapshotLookup("not_ready", None, False, current_trade_date=current_date)
         snapshot = self._recover_empty_close_fallback(snapshot)
         assert snapshot is not None

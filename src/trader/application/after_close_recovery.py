@@ -36,7 +36,8 @@ if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline
     from trader.application.recommendation_finalization import PreparedSnapshot
 
-_SHORT_STRATEGIES = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+_FORMAL_STRATEGIES = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+_AFTER_CLOSE_RECOVERY_STRATEGIES = (Strategy.TOMORROW, Strategy.D25)
 _MINIMUM_CLOSE_TIME = time(14, 59)
 
 
@@ -100,13 +101,13 @@ def recover_after_close_snapshots(
 
 def _restore_existing(pipeline: RecommendationPipeline, trade_date: str) -> tuple[Strategy, ...]:
     missing: list[Strategy] = []
-    for strategy in _SHORT_STRATEGIES:
+    for strategy in _FORMAL_STRATEGIES:
         snapshot = pipeline._repository.load_frozen(strategy, trade_date)
         if snapshot is None:
-            missing.append(strategy)
+            if strategy in _AFTER_CLOSE_RECOVERY_STRATEGIES:
+                missing.append(strategy)
             continue
         if not admit_snapshot_to_p6(pipeline, snapshot):
-            missing.append(strategy)
             continue
         pipeline._frozen_keys.add((strategy, trade_date))
         pipeline._state.restore_snapshot(snapshot)

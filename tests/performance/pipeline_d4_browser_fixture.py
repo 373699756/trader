@@ -46,7 +46,7 @@ def _feature(code: str, observed_at: datetime, *, industry: str) -> FeatureSnaps
 
 
 def build_app() -> Flask:
-    observed_at = datetime.now(SHANGHAI).replace(microsecond=0)
+    observed_at = datetime.now(SHANGHAI).replace(hour=10, minute=0, second=0, microsecond=0)
     archive = _Archive()
     index = PublishedSnapshotIndex(archive)
     publisher = SnapshotPublisher(history_size=64, client_queue_size=8)

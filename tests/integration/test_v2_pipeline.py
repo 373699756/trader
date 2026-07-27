@@ -112,6 +112,12 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     assert morning_freeze[-1].frozen is True
     assert morning_freeze[-1].config_version == "config-v2"
     assert morning_freeze[-1].metadata["freeze_anchor"]["600001"]["age_seconds"] == 10.0
+    persisted_today = repository.load_frozen(Strategy.TODAY, "2026-07-16")
+    assert persisted_today == morning_freeze[-1]
+
+    clock.set(datetime.fromisoformat("2026-07-16T11:30:00+08:00"))
+    pipeline.run_once(clock.now())
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") == persisted_today
 
     clock.set(datetime.fromisoformat("2026-07-16T14:30:00+08:00"))
     afternoon = pipeline.run_once(clock.now())
@@ -419,11 +425,12 @@ def test_after_close_persists_current_run_p6_with_closing_prices(
     recovered = pipeline.run_once(clock.now())
 
     assert {snapshot.strategy for snapshot in recovered} == {
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
-    for strategy, source in before.items():
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is None
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
+        source = before[strategy]
         assert source is not None
         frozen = repository.load_frozen(strategy, "2026-07-16")
         assert frozen is not None
@@ -471,10 +478,10 @@ def test_after_close_cold_start_rebuilds_missing_strategies_locally(
     recovered = pipeline.run_once(clock.now())
 
     assert {snapshot.strategy for snapshot in recovered} == {
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is None
     assert market_data.market_force_requests == [True]
     for snapshot in recovered:
         assert snapshot.frozen is True
@@ -493,6 +500,8 @@ def test_after_close_cold_start_rebuilds_missing_strategies_locally(
     assert lookup.status == "ready"
     assert lookup.snapshot is not None
     assert lookup.snapshot.phase == "close_fallback"
+    assert queries.recommendation(Strategy.TODAY).status == "not_ready"
+    assert pipeline._after_close_completed_date == "2026-07-16"
 
 
 def test_after_close_cold_start_builds_long_current_snapshot(
@@ -568,14 +577,15 @@ def test_after_close_p6_rejection_keeps_formal_records_without_publication(
 
     assert pipeline.run_once(clock.now()) == ()
 
-    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is None
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
         formal = repository.load_frozen(strategy, "2026-07-16")
         assert formal is not None
         assert formal.phase == "close_fallback"
         assert state.latest(strategy) is None
         assert state.is_frozen(strategy, "2026-07-16") is False
     assert publisher.last_sequence() == 0
-    assert state.snapshot()["counters"]["p6_snapshot_rejections"] >= 3
+    assert state.snapshot()["counters"]["p6_snapshot_rejections"] >= 2
 
 
 def test_after_close_cold_start_prefers_existing_database_records(
@@ -629,12 +639,57 @@ def test_after_close_cold_start_prefers_existing_database_records(
     assert second_market.market_force_requests == []
     assert all(
         second_state.latest(strategy) == repository.load_frozen(strategy, "2026-07-16")
-        for strategy in (
-            Strategy.TODAY,
-            Strategy.TOMORROW,
-            Strategy.D25,
-        )
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
     )
+    assert second_state.latest(Strategy.TODAY) is None
+
+
+def test_after_close_treats_formal_empty_snapshot_as_present(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    repository = MemoryRepository()
+    engine = RecommendationEngine(recommendation_policy)
+    empty = engine.build_snapshot(
+        Strategy.TOMORROW,
+        (),
+        now=clock.now(),
+        phase="afternoon",
+        trade_date="2026-07-16",
+        data_version="formal-empty-v1",
+        review_port=None,
+        review_deadline=clock.now(),
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    empty = replace(empty, frozen=True, config_version="config-v2")
+    repository.frozen[(Strategy.TOMORROW, empty.trade_date)] = empty
+    market_data = ClosingPriceMarketData(_three_board_features(application_feature_factory, clock.now()))
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        engine,
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    pipeline.initialize()
+
+    recovered = pipeline.run_once(clock.now())
+
+    assert [snapshot.strategy for snapshot in recovered] == [Strategy.D25]
+    assert repository.load_frozen(Strategy.TOMORROW, empty.trade_date) == empty
+    assert repository.load_frozen(Strategy.TOMORROW, empty.trade_date).recommendations == ()
+    assert repository.load_frozen(Strategy.TODAY, empty.trade_date) is None
 
 
 def test_after_close_cold_start_rebuilds_only_missing_strategy(
@@ -661,9 +716,7 @@ def test_after_close_cold_start_rebuilds_only_missing_strategy(
     )
     first.initialize()
     first.run_once(clock.now())
-    preserved = {
-        strategy: repository.load_frozen(strategy, "2026-07-16") for strategy in (Strategy.TODAY, Strategy.TOMORROW)
-    }
+    preserved = repository.load_frozen(Strategy.TOMORROW, "2026-07-16")
     repository.frozen.pop((Strategy.D25, "2026-07-16"))
 
     second_market = ClosingPriceMarketData(features)
@@ -689,9 +742,8 @@ def test_after_close_cold_start_rebuilds_only_missing_strategy(
     assert [snapshot.strategy for snapshot in recovered] == [Strategy.D25]
     assert second_market.market_force_requests == [True]
     assert repository.load_frozen(Strategy.D25, "2026-07-16") is not None
-    assert {
-        strategy: repository.load_frozen(strategy, "2026-07-16") for strategy in (Strategy.TODAY, Strategy.TOMORROW)
-    } == preserved
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is None
+    assert repository.load_frozen(Strategy.TOMORROW, "2026-07-16") == preserved
 
 
 def test_after_close_does_not_persist_partial_market_rebuild(
@@ -726,10 +778,10 @@ def test_after_close_does_not_persist_partial_market_rebuild(
     clock.set(datetime.fromisoformat("2026-07-16T15:05:03+08:00"))
     recovered = pipeline.run_once(clock.now())
     assert {snapshot.strategy for snapshot in recovered} == {
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is None
 
 
 def test_after_close_waits_for_complete_historical_board_population(
@@ -773,7 +825,6 @@ def test_after_close_waits_for_complete_historical_board_population(
     recovered = pipeline.run_once(clock.now())
 
     assert {snapshot.strategy for snapshot in recovered} == {
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
@@ -785,13 +836,11 @@ def test_after_close_waits_for_complete_historical_board_population(
     )
     assert market_data.market_force_requests == [True, True]
     assert all(
-        repository.load_frozen(strategy, "2026-07-16") is not None
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        repository.load_frozen(strategy, "2026-07-16") is not None for strategy in (Strategy.TOMORROW, Strategy.D25)
     )
     current = RecommendationQueries(state, now=clock.now).current_recommendation(Strategy.TODAY)
-    assert current.status == "ready"
-    assert current.snapshot is not None
-    assert current.snapshot.phase == "close_fallback"
+    assert current.status == "not_ready"
+    assert current.snapshot is None
 
 
 def test_after_close_accepts_quotes_received_after_request_started(
@@ -822,10 +871,10 @@ def test_after_close_accepts_quotes_received_after_request_started(
     recovered = pipeline.run_once(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
 
     assert {snapshot.strategy for snapshot in recovered} == {
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is None
     assert all(snapshot.recommendations for snapshot in recovered)
 
 
@@ -857,11 +906,10 @@ def test_after_close_rebuild_reads_cached_candidate_features(
     recovered = pipeline.run_once(clock.now())
 
     assert {snapshot.strategy for snapshot in recovered} == {
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
-    assert market_data.cached_candidate_reads == 3
+    assert market_data.cached_candidate_reads == 2
 
 
 def test_after_close_retry_reuses_complete_cached_close_market(
@@ -902,12 +950,11 @@ def test_after_close_retry_reuses_complete_cached_close_market(
     recovered = pipeline.run_once(clock.now())
 
     assert {snapshot.strategy for snapshot in recovered} == {
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
     assert market_data.market_fetch_attempts == 0
-    assert market_data.cached_candidate_reads == 3
+    assert market_data.cached_candidate_reads == 2
     assert pipeline.status()["counters"]["after_close_market_cache_hits"] == 1
     assert "close_quotes:market_fetch" in pipeline.status()["dependencies"]["latency_waterfall"]["stages"]
 
@@ -944,11 +991,10 @@ def test_after_close_commits_ready_strategies_when_d25_research_is_missing(
     recovered = pipeline.run_once(clock.now())
 
     assert {snapshot.strategy for snapshot in recovered} == {
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
-    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is not None
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is None
     assert repository.load_frozen(Strategy.TOMORROW, "2026-07-16") is not None
     d25 = repository.load_frozen(Strategy.D25, "2026-07-16")
     assert d25 is not None
@@ -990,14 +1036,13 @@ def test_after_close_publishes_unreliable_board_features_as_degraded_observe(
     recovered = pipeline.run_once(clock.now())
 
     assert {snapshot.strategy for snapshot in recovered} == {
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     }
     assert all(
-        repository.load_frozen(strategy, "2026-07-16") is not None
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        repository.load_frozen(strategy, "2026-07-16") is not None for strategy in (Strategy.TOMORROW, Strategy.D25)
     )
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is None
     d25 = next(snapshot for snapshot in recovered if snapshot.strategy is Strategy.D25)
     assert any("board_data_reliability_below_threshold" in reason for reason in d25.degraded_reasons)
     assert all(item.action.value == "observe" for item in d25.recommendations)
@@ -1275,6 +1320,57 @@ def test_frozen_topk_uses_recoverable_overlay_and_keeps_close_value(
     assert repository.overlays[(strategy, "2026-07-16")].version == closing.version
 
 
+def test_existing_closing_overlay_is_an_idempotent_success_not_a_runtime_error(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    close_at = datetime.fromisoformat("2026-07-16T15:00:00+08:00")
+    feature = application_feature_factory("600001", close_at - timedelta(seconds=10))
+    source = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TODAY,
+        (feature,),
+        now=feature.observed_at,
+        phase="today_main",
+        trade_date="2026-07-16",
+        data_version="freeze-v1",
+        review_port=None,
+        review_deadline=close_at,
+        max_age_seconds=30.0,
+        filtered_count=0,
+        filter_reasons={},
+    )
+    assert source.recommendations
+    frozen = replace(source, frozen=True, published_at=close_at, config_version="config-v2")
+    repository = IdempotentClosingOverlayRepository()
+    repository.frozen[(Strategy.TODAY, frozen.trade_date)] = frozen
+    repository.published[Strategy.TODAY] = frozen
+    state = RuntimeState()
+    market_data = DegradingCandidateMarketData((application_feature_factory("600001", close_at),))
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=4, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: close_at,
+    )
+    pipeline.initialize()
+
+    refresh_live_overlays(pipeline, close_at, MarketPhase.AFTER_CLOSE)
+
+    closing = repository.overlays[(Strategy.TODAY, frozen.trade_date)]
+    assert closing.closing is True
+    assert state.load_live_overlay(Strategy.TODAY, frozen.trade_date) == closing
+    assert "closing overlay persistence failed" not in pipeline.status()["last_error"]
+
+
 def test_topk_overlay_lane_updates_while_main_market_event_is_blocked(
     recommendation_policy,
     application_feature_factory,
@@ -1417,7 +1513,7 @@ def test_initialize_restores_frozen_gate(recommendation_policy, application_feat
     assert repository.published == {}
 
 
-def test_initialize_catches_up_pre_cutoff_today_snapshot_after_missed_window(
+def test_initialize_does_not_catch_up_today_after_missed_freeze_boundary(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -1461,12 +1557,8 @@ def test_initialize_catches_up_pre_cutoff_today_snapshot_after_missed_window(
 
     recovery = restarted.initialize()
 
-    frozen = repository.frozen[(Strategy.TODAY, "2026-07-16")]
-    assert isinstance(frozen, RecommendationSnapshot)
-    assert recovery["catchup_frozen"] == 1
-    assert frozen.frozen is True
-    assert frozen.published_at.hour == 11
-    assert frozen.published_at.minute == 20
+    assert recovery["catchup_frozen"] == 0
+    assert repository.load_frozen(Strategy.TODAY, "2026-07-16") is None
 
 
 def test_initialize_skips_today_freeze_when_no_pre_cutoff_snapshot(
@@ -3324,6 +3416,13 @@ class MemoryRepository:
                     event, status=status, retry_count=retry_count, error=error, payload=payload
                 )
                 return True
+        return False
+
+
+class IdempotentClosingOverlayRepository(MemoryRepository):
+    def save_live_overlay(self, overlay: LiveOverlay) -> bool:
+        self.write_threads.append(threading.current_thread().name)
+        self.overlays[(overlay.strategy, overlay.trade_date)] = overlay
         return False
 
 

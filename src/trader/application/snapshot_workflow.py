@@ -339,13 +339,14 @@ def _publish_overlay_update(
         quotes=quotes,
         closing=phase is MarketPhase.AFTER_CLOSE and updated_codes == set(target.codes),
     )
-    if (
-        overlay.closing
-        and target.snapshot.frozen
-        and not persist(pipeline, pipeline._snapshot_writer.save_live_overlay, overlay)
-    ):
-        pipeline._state.record_error(f"{target.strategy.value} closing overlay persistence failed")
-        return
+    if overlay.closing and target.snapshot.frozen:
+        saved = persist(pipeline, pipeline._snapshot_writer.save_live_overlay, overlay)
+        if not saved:
+            existing = pipeline._repository.load_live_overlay(target.strategy, target.snapshot.trade_date)
+            if existing is None or existing.snapshot_id != target.snapshot.snapshot_id or not existing.closing:
+                pipeline._state.record_error(f"{target.strategy.value} closing overlay persistence failed")
+                return
+            overlay = existing
     pipeline._live_overlays[(target.strategy, target.snapshot.trade_date)] = overlay
     pipeline._state.publish_overlay(overlay)
     pipeline._published_snapshots.publish_overlay(overlay)

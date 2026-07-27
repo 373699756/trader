@@ -4,6 +4,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
+import pytest
+
 from trader.application.ports.snapshots import RecoverySummary
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
@@ -398,7 +400,7 @@ def test_status_includes_route_health_details() -> None:
     assert route["attempted_vendors"][0]["status"] == "skipped"
 
 
-def test_official_query_prefers_freeze_and_current_view_keeps_same_day_draft_after_cutoff(
+def test_official_and_current_queries_require_freeze_after_today_cutoff(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -428,12 +430,36 @@ def test_official_query_prefers_freeze_and_current_view_keeps_same_day_draft_aft
     missing_client = missing_app.test_client()
     official = missing_client.get("/api/recommendations/today").get_json()
     current = missing_client.get("/api/recommendations/today?view=current").get_json()
-    assert current["status"] == "ready"
-    assert current["snapshot_id"] == draft.snapshot_id
-    assert current["view"] == "live"
-    assert current["frozen"] is False
+    assert current["status"] == "not_ready"
+    assert current["items"] == []
     assert official["status"] == "not_ready"
     assert official["items"] == []
+
+
+def test_legacy_today_close_fallback_is_historical_only(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    fallback = replace(
+        _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY),
+        snapshot_id="legacy-today-close",
+        phase="close_fallback",
+        frozen=True,
+        published_at=NOW.replace(hour=15, minute=5),
+    )
+    repository = MemoryReadRepository(
+        latest={Strategy.TODAY: fallback},
+        frozen={(Strategy.TODAY, fallback.trade_date): fallback},
+    )
+    app, _publisher = _app(repository, now=NOW.replace(hour=15, minute=10))
+    client = app.test_client()
+
+    assert client.get("/api/recommendations/today").get_json()["status"] == "not_ready"
+    assert client.get("/api/recommendations/today?view=current").get_json()["status"] == "not_ready"
+    historical = client.get(f"/api/recommendations/today?date={fallback.trade_date}").get_json()
+    assert historical["status"] == "ready"
+    assert historical["historical"] is True
+    assert historical["phase"] == "close_fallback"
 
 
 def test_frozen_current_queries_keep_tomorrow_and_d25_isolated(
@@ -468,6 +494,22 @@ def test_frozen_current_queries_keep_tomorrow_and_d25_isolated(
     assert d25_payload["strategy"] == "d25"
     assert set(tomorrow_payload["items"][0]["scores"]) == RECOMMENDATION_SCORE_KEYS
     assert set(d25_payload["items"][0]["scores"]) == RECOMMENDATION_SCORE_KEYS
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_current_query_requires_freeze_after_afternoon_cutoff(
+    recommendation_policy,
+    application_feature_factory,
+    strategy: Strategy,
+) -> None:
+    draft = _snapshot(recommendation_policy, application_feature_factory, strategy)
+    repository = MemoryReadRepository(latest={strategy: draft})
+    app, _publisher = _app(repository, now=NOW.replace(hour=14, minute=55))
+
+    payload = app.test_client().get(f"/api/recommendations/{strategy.value}?view=current").get_json()
+
+    assert payload["status"] == "not_ready"
+    assert payload["items"] == []
 
 
 def test_frozen_current_response_applies_overlay_without_changing_anchor_or_snapshot_id(
@@ -643,7 +685,7 @@ def test_previous_trade_date_is_not_reused_for_current_recommendations(
     assert payload["degraded_reasons"] == ["snapshot_not_ready"]
 
 
-def test_explicit_live_view_keeps_same_day_draft_visible_after_freeze_cutoff(
+def test_only_explicit_live_diagnostic_keeps_draft_visible_after_freeze_cutoff(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -662,8 +704,8 @@ def test_explicit_live_view_keeps_same_day_draft_visible_after_freeze_cutoff(
     live = client.get("/api/recommendations/tomorrow?view=live")
 
     assert current.status_code == 200
-    assert current.get_json()["view"] == "live"
-    assert current.get_json()["snapshot_id"] == draft.snapshot_id
+    assert current.get_json()["status"] == "not_ready"
+    assert current.get_json()["items"] == []
     assert official.get_json()["status"] == "not_ready"
     assert live.status_code == 200
     payload = live.get_json()

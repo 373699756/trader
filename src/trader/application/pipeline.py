@@ -6,7 +6,7 @@ import logging
 import threading
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from uuid import uuid4
 
 from trader.application.cadence import (
@@ -249,6 +249,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         trade_day = trade_date_at(now)
         trade_day_iso = trade_day.isoformat()
         freeze_targets = freeze_due_at(now, is_trading_day=self._calendar.is_trading_day(trade_day))
+        if shanghai_now(now).time().replace(tzinfo=None) > time(11, 20):
+            freeze_targets = tuple(target for target in freeze_targets if target != Strategy.TODAY.value)
         if freeze_targets:
             freeze_targets = tuple(
                 target

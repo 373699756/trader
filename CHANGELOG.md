@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 仓库级约束、两份权威文档和荐股冻结/恢复回归场景统一覆盖 today 11:20 当场持久化、11:30 身份不变、错过
+  11:20 后启动不追补、15:00 热运行/冷启动只恢复 tomorrow/d25、正式空结果不重算、
+  冻结后 `view=current` 不泄露草稿，以及旧 today `close_fallback` 仅可按历史日期审计。
 - 用户要求在长期页每个具体行业/赛道 tab 后直接看到该组股票的平均涨跌情况。左侧子 tab
   现在显示组内有效实时行情的当日涨跌幅等权平均值，并在可访问名称和悬停说明中给出
   “有效行情数/分组总数”；顶部三个长期大类按钮保持原样。
@@ -98,6 +101,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 行情来源职责保持“东方财富/新浪全市场、腾讯候选与 TopK 定向刷新”。现场调查确认本次
+  东方财富连接被远端关闭后新浪兜底成功，并非新浪 SDK 整体失败；腾讯定向批次缺失个别代码
+  时继续使用规范快照中的新浪全市场报价或最近有效值，不强制把所有定向刷新切换到较慢的
+  新浪全市场请求。静态资源 revision 更新为 `freeze-recovery-boundary-2026-07-27`。
+- 冻结与盘后恢复职责按策略分离：today 只允许在持续运行的 11:20 边界冻结并立即写库，
+  11:30 仅作入库验收；若进程错过边界则当日保持 `not_ready`。tomorrow/d25 上午仍正常
+  生成，14:50 冻结，正式记录缺失时才允许在 15:00 后从本进程 P6 或完整收盘行情恢复。
 - 长期行业均值随现有完整快照、SSE overlay 和重同步重绘即时更新，不新增后端接口或浏览器
   行情请求；静态资源 revision 升级为 `long-group-average-2026-07-27`，避免旧脚本和样式缓存
   继续显示只有行业名称与股票数量的 tab。
@@ -326,6 +336,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复盘后恢复把 today 与 tomorrow/d25 统一视为可补算策略，导致错过 11:20 后仍在
+  15:00 生成“今早推荐”的契约错误；today 缺失不再让盘后恢复无限重试，历史遗留的同日
+  today `close_fallback` 也不会进入当前/正式视图。修复 `view=current` 绕过冻结判断而在
+  11:20/14:50 后展示残留草稿的问题；显式 `view=live` 仅保留诊断兼容。
+- 修复 closing overlay 已由并发/重试成功固化时，仓储幂等返回 `False` 被上层误记为
+  `closing overlay persistence failed` 的假错误；真正缺失 closing 记录或冲突仍保留错误诊断。
 - 修复长期页只能逐个切换行业并查看股票明细、无法从 tab 快速比较行业整体涨跌方向的观察
   盲区。均值只计算有限数值行情，缺行情不再可能被误作 0%，真实 0% 正常计入；整组无有效
   行情显示 `--`，避免把数据缺失伪装成行业平盘。
@@ -474,6 +490,14 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批失败先行回归覆盖 today 正常 11:20 当场入库与 11:30 身份不变、错过边界不追补、
+  15:00 热运行/冷启动只恢复 tomorrow/d25、正式空结果保持、冻结后 current/live 隔离、
+  历史 today fallback 隔离、腾讯定向部分返回时新浪全市场逐股保底，以及 closing overlay
+  幂等固化不误报。`make format-check`、`make lint`、`make type-check`、完整 `make test`
+  和 `make package` 通过；仓库外 wheel 通过包导入、`trader-cli --help`、绝对配置校验、
+  14 项模板/CSS/JavaScript/SVG 资源读取和 `pip check`。Firefox 在 1280x720、
+  1440x900、1920x1080 三档均无页面级横向溢出或浏览器错误，patch-to-paint P95 为
+  12ms（预算 100ms）。
 - 本批失败先行 JS 与 Web 契约已覆盖正负混合等权平均、真实 0%、`null`/空值/非有限值排除、
   非本组股票排除、整组无行情、同组行情二次重绘由正转负、两位小数、涨跌颜色、覆盖数说明
   和原股票数量保留；实现后
@@ -813,6 +837,13 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 外部行情供应商仍可能超时、断连或只返回部分代码；系统只能按已验证优先级使用新浪等
+  全市场兜底或最近有效快照，并显式标记降级，不能保证每轮都有新成交。当前正在运行的旧
+  进程必须重启后才会加载新的 Web 静态 revision 和 closing overlay 误报修复；本批不改变
+  候选、评分、动作门槛、DeepSeek 预算或冻结不可覆盖规则。
+- 全新虚拟环境复制全部第三方依赖时触发宿主 `/tmp` 磁盘配额；项目 wheel 的隔离构建成功，
+  随后在仓库外环境复用当前已锁定运行依赖完成导入、CLI、配置、14 项资源与 `pip check`。
+  因此未发现包内容或依赖声明错误，但本机本批没有留下“一份全新复制的完整依赖环境”证据。
 - 行业均值反映外部行情快照中的当日涨跌幅，不是股票加入观察池后的累计收益，也不代表
   推荐评分或买卖信号。行情源超时、陈旧或部分缺失时均值只能基于当前有效子集计算，页面
   通过有效数/总数披露覆盖范围；本批不改变既有降级和最近有效快照策略。

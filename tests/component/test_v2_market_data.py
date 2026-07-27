@@ -529,6 +529,30 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert "eastmoney:source_failed" in gateway.canonical_snapshot().degraded_reasons
 
 
+def test_targeted_partial_result_keeps_sina_full_market_quote_for_missing_code() -> None:
+    sina_first = replace(_quote("600001"), source="sina", data_version="sina-full-v1")
+    sina_second = replace(_quote("600002"), source="sina", data_version="sina-full-v1")
+    tencent_first = replace(_quote("600001"), source="tencent", data_version="tencent-targeted-v1")
+    gateway = MarketDataGateway(
+        FailingMarketClient(),
+        StaticMarketClient((sina_first, sina_second)),
+        StaticTencentClient((tencent_first,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=1,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+
+    gateway.fetch_market(observed_at=NOW)
+    fetched = gateway.fetch_candidates(("600001", "600002"), observed_at=NOW)
+
+    assert {item.code: item.source for item in fetched} == {
+        "600001": "tencent",
+        "600002": "sina",
+    }
+    assert gateway.health()["route"]["used_vendor"] == "sina"
+
+
 def test_gateway_columnar_projection_failure_preserves_scalar_market_and_marks_degraded(monkeypatch) -> None:
     quote = replace(_quote(), source="sina")
     gateway = MarketDataGateway(
