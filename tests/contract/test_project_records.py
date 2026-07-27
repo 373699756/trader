@@ -31,6 +31,7 @@ def test_each_pipeline_documents_user_problem_and_change_summary() -> None:
 
 def test_chrome_dashboard_gate_is_persisted_under_tests() -> None:
     script = (PROJECT_ROOT / "tests" / "performance" / "run_chrome_dashboard.py").read_text(encoding="utf-8")
+    firefox_script = (PROJECT_ROOT / "tests" / "performance" / "run_t1_browser.py").read_text(encoding="utf-8")
 
     assert 'REPORT_SCHEMA = "chrome-dashboard-performance-v1"' in script
     assert "VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))" in script
@@ -38,6 +39,14 @@ def test_chrome_dashboard_gate_is_persisted_under_tests() -> None:
     assert "WEB_ASSET_REVISION" in script
     assert "patchToPaint" in script
     assert "browserErrors" in script
+    assert '"long_viewports"' in script
+    assert ".long-industry-average" in script
+    assert "+20.00%" in script
+    assert "-20.00%" in script
+    assert '"long_viewports"' in firefox_script
+    assert ".long-industry-average" in firefox_script
+    assert "+20.00%" in firefox_script
+    assert "-20.00%" in firefox_script
     assert "/tmp/trader_cdp" not in script
 
 

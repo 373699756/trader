@@ -58,8 +58,10 @@ const state = {
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
   tableColumnCount: sandbox.window.TraderRender.tableColumnCount,
   tableRows: sandbox.window.TraderRender.tableRows,
+  longGroupAveragePct: sandbox.window.TraderLongGroups.groupAveragePct,
   longGroupDisplayPayload: sandbox.window.TraderLongGroups.displayPayload,
   longGroupNormalized: sandbox.window.TraderLongGroups.normalized,
+  longGroupRenderBar: sandbox.window.TraderLongGroups.renderBar,
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
@@ -375,6 +377,71 @@ const longItems = [
   { code: "600003", rank: 13 },
   { code: "600004", rank: 14 },
 ];
+const longAverage = state.longGroupAveragePct(longPayload.long_groups[0], [
+  { code: "600001", pct_change: 1.2 },
+  { code: "600002", pct_change: -0.4 },
+  { code: "600003", pct_change: null },
+  { code: "600004", pct_change: 99 },
+]);
+assert.ok(Math.abs(longAverage.average - 0.4) < 1e-12);
+assert.strictEqual(longAverage.validCount, 2);
+assert.strictEqual(longAverage.totalCount, 3);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.longGroupAveragePct(longPayload.long_groups[1], [
+    { code: "600004", pct_change: null },
+    { code: "600002", pct_change: "" },
+  ]))),
+  { average: null, validCount: 0, totalCount: 2 },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.longGroupAveragePct(longPayload.long_groups[2], [
+    { code: "600003", pct_change: 0 },
+    { code: "600001", pct_change: Number.NaN },
+  ]))),
+  { average: 0, validCount: 1, totalCount: 2 },
+);
+const longTabElements = {
+  longSidebar: { hidden: true },
+  longStockHeader: { hidden: true },
+  longTitle: { textContent: "" },
+  longScopeTabs: { querySelectorAll() { return []; } },
+  longIndustryTabs: { innerHTML: "" },
+  longMeta: { textContent: "" },
+  longStockContext: { textContent: "" },
+};
+const longTabState = { longScope: "chokepoint", longGroup: "" };
+state.longGroupRenderBar(longTabElements, longTabState, {
+  ...longPayload,
+  items: [
+    { code: "600001", pct_change: 1.2 },
+    { code: "600002", pct_change: -0.4 },
+    { code: "600003", pct_change: null },
+  ],
+});
+assert.match(longTabElements.longIndustryTabs.innerHTML, /半导体设备/);
+assert.match(longTabElements.longIndustryTabs.innerHTML, /long-industry-average positive/);
+assert.match(longTabElements.longIndustryTabs.innerHTML, /\+0\.40%/);
+assert.match(longTabElements.longIndustryTabs.innerHTML, /有效行情 2\/3 只/);
+assert.match(longTabElements.longIndustryTabs.innerHTML, />3 只<\/b>/);
+state.longGroupRenderBar(longTabElements, longTabState, {
+  ...longPayload,
+  items: [
+    { code: "600001", pct_change: -1 },
+    { code: "600002", pct_change: -2 },
+    { code: "600003", pct_change: null },
+  ],
+});
+assert.match(longTabElements.longIndustryTabs.innerHTML, /long-industry-average negative/);
+assert.match(longTabElements.longIndustryTabs.innerHTML, /-1\.50%/);
+longTabState.longScope = "future_growth";
+longTabState.longGroup = "";
+state.longGroupRenderBar(longTabElements, longTabState, {
+  ...longPayload,
+  items: [{ code: "600004", pct_change: null }],
+});
+assert.match(longTabElements.longIndustryTabs.innerHTML, /long-industry-average is-unavailable/);
+assert.match(longTabElements.longIndustryTabs.innerHTML, />--<\/em>/);
+assert.match(longTabElements.longIndustryTabs.innerHTML, /有效行情 0\/2 只/);
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.longGroupNormalized(longPayload, "chokepoint"))),
   [

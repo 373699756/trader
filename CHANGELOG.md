@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求在长期页每个具体行业/赛道 tab 后直接看到该组股票的平均涨跌情况。左侧子 tab
+  现在显示组内有效实时行情的当日涨跌幅等权平均值，并在可访问名称和悬停说明中给出
+  “有效行情数/分组总数”；顶部三个长期大类按钮保持原样。
 - 用户要求把 11:20 后的今早正式推荐展示为可持续跟踪的冻结锚点。推荐 Web envelope 与
   SSE 推荐 patch 新增兼容字段 `anchor_source_time`，记录每只股票冻结时实际接受的带时区
   报价时间；同日冻结 today 新增专用单表和详情展示，同时给出 11:20 锚点价、锚点时涨跌、
@@ -95,6 +98,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 长期行业均值随现有完整快照、SSE overlay 和重同步重绘即时更新，不新增后端接口或浏览器
+  行情请求；静态资源 revision 升级为 `long-group-average-2026-07-27`，避免旧脚本和样式缓存
+  继续显示只有行业名称与股票数量的 tab。
 - 同日正式冻结的 today 仍只展示 `executable` 名单，名单、排名、评分和动作保持不可变，
   但 11:20-15:00 继续消费既有 TopK overlay，15:00 后保留 closing overlay 至下一交易日；
   页面状态改为明确说明冻结决策与最新可用行情的边界。静态资源 revision 升级为
@@ -320,6 +326,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复长期页只能逐个切换行业并查看股票明细、无法从 tab 快速比较行业整体涨跌方向的观察
+  盲区。均值只计算有限数值行情，缺行情不再可能被误作 0%，真实 0% 正常计入；整组无有效
+  行情显示 `--`，避免把数据缺失伪装成行业平盘。
 - 修复用户看到 11:20 后今早页面仍像普通当前推荐、无法判断行情是否继续更新的问题。调查
   确认后台一直为冻结快照发布实时 overlay，缺口在 Web 将同日冻结 today 继续路由到普通
   九列表格，导致已有锚点字段和锚点至今变化未被渲染。现在专用七列表和详情同时展示稳定
@@ -465,6 +474,18 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批失败先行 JS 与 Web 契约已覆盖正负混合等权平均、真实 0%、`null`/空值/非有限值排除、
+  非本组股票排除、整组无行情、同组行情二次重绘由正转负、两位小数、涨跌颜色、覆盖数说明
+  和原股票数量保留；实现后
+  Node 状态契约及长期侧栏/文档定向契约通过。最终 `make format-check`、`make lint`、
+  `make type-check`、完整 853 项 `make test` 和 `make package` 全部通过；隔离构建首次因
+  沙箱阻止本机 pip 代理失败，获准后原命令成功。全新无系统包 wheel 环境通过 `pip check`、
+  包导入、`trader-cli --help` 和 13 项模板/CSS/JavaScript/SVG 资源读取。Firefox 实机在
+  1280x720、1440x900、1920x1080 均渲染 33 个当前大类行业 tab，左右面板同顶同高，
+  `+20.00%`/`-20.00%` 长度样本与数量无覆盖且无页面级横向溢出；浏览器错误为 0，25 个
+  patch 全部应用、无 resync，patch-to-paint P95 为 29ms（预算 100ms）。当前主机没有
+  Chrome/Chromium，持久化 Chrome 门禁已同步扩展长期视图，但本批真实浏览器证据来自同属
+  目标范围的 Firefox。
 - 本批新增失败先行 API、SSE、JS 与 Overlay 集成回归，覆盖实际锚点报价时间稳定、午后
   当前行情变化、today/tomorrow 冻结 Overlay、来源失败保留上一有效值、15:00 closing
   持久化，以及历史/其他策略/`close_fallback`/下一交易日身份隔离。`make format-check`、
@@ -751,6 +772,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除长期行业子 tab 只显示行业名称和股票数量、没有组内行情方向摘要的旧呈现；未删除或
+  调整长期名单、分组、股票顺序、行情字段、后端 API、评分和冻结逻辑。
 - 本批未删除冻结记录、推荐字段、历史视图、观察项、评分逻辑或数据库结构；只替换同日正式
   冻结 today 的当前页面呈现方式。
 - 长期观察池配置及其打包静态资源不再包含 20 处退役
@@ -790,6 +813,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 行业均值反映外部行情快照中的当日涨跌幅，不是股票加入观察池后的累计收益，也不代表
+  推荐评分或买卖信号。行情源超时、陈旧或部分缺失时均值只能基于当前有效子集计算，页面
+  通过有效数/总数披露覆盖范围；本批不改变既有降级和最近有效快照策略。
 - 实际锚点报价允许早于 11:20 最多既有冻结接受窗口，因此页面同时显示“11:20 锚点”业务
   边界和逐股实际时间，不把两者伪装成同一时刻。外部行情源失败时只能保留最近有效报价并
   标记降级，不能承诺每秒都有新成交；本批不改变候选、评分、门槛、冻结或收益表现。真实

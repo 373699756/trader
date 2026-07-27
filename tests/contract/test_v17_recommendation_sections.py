@@ -81,11 +81,15 @@ def test_long_dashboard_uses_left_group_sidebar() -> None:
     assert ".long-panel-heading::before" in components
     assert ".long-stock-header::before" in components
     assert ".is-long-table tbody tr:hover" in components
+    assert ".long-industry-label" in components
+    assert ".long-industry-average" in components
+    assert ".long-industry-average.is-unavailable" in components
 
 
 def test_long_scope_controls_follow_the_long_strategy_description() -> None:
     template = (ROOT / "src/trader/web/templates/index.html").read_text(encoding="utf-8")
     long_groups = (ROOT / "src/trader/web/static/long_groups.js").read_text(encoding="utf-8")
+    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     description_end = template.index("</p>", template.index('id="strategyDescription"'))
     scope_start = template.index('id="longScopeTabs"')
@@ -99,6 +103,11 @@ def test_long_scope_controls_follow_the_long_strategy_description() -> None:
     assert "long_section_divider" in render
     assert "has-long-section-divider" in render
     assert "els.longScopeTabs.hidden = !isLong" not in long_groups
+    assert "groupAveragePct" in long_groups
+    assert "long-industry-average" in long_groups
+    assert "有效行情" in long_groups
+    assert "有效行情股票的当日涨跌幅等权算术平均值" in design
+    assert "整组没有有效行情时显示 `--`" in design
 
 
 def test_packaged_long_watchlist_matches_runtime_configuration() -> None:

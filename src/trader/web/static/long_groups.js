@@ -98,18 +98,54 @@
       const namedGroup = scopedGroups.find((group) => group.name === state.longGroup);
       state.longGroup = namedGroup ? namedGroup.key : state.longGroup;
     }
-    els.longIndustryTabs.innerHTML = scopedGroups.map((group) => industryButton(group, state.longGroup)).join("");
+    els.longIndustryTabs.innerHTML = scopedGroups
+      .map((group) => industryButton(group, state.longGroup, payload.items))
+      .join("");
     if (els.longMeta) els.longMeta.textContent = `${scopedGroups.length} 个分组`;
     const activeGroup = scopedGroups.find((group) => group.key === state.longGroup);
     if (els.longStockContext) els.longStockContext.textContent = activeGroup ? activeGroup.name : scopeLabel(scope);
   }
 
-  function industryButton(group, activeGroup) {
+  function groupAveragePct(group, items) {
+    const codes = Array.isArray(group && group.codes) ? group.codes : [];
+    const byCode = new Map(
+      (Array.isArray(items) ? items : [])
+        .filter((item) => item && typeof item.code === "string")
+        .map((item) => [item.code, item]),
+    );
+    let sum = 0;
+    let validCount = 0;
+    codes.forEach((code) => {
+      const item = byCode.get(code);
+      const value = item && item.pct_change;
+      if (value === null || value === undefined || (typeof value === "string" && value.trim() === "")) return;
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) return;
+      sum += parsed;
+      validCount += 1;
+    });
+    return {
+      average: validCount > 0 ? sum / validCount : null,
+      validCount,
+      totalCount: codes.length,
+    };
+  }
+
+  function industryButton(group, activeGroup, items) {
     const active = group.key === activeGroup;
     const name = window.TraderRender.escapeHtml(group.name);
     const key = window.TraderRender.escapeHtml(group.key);
+    const average = groupAveragePct(group, items);
+    const change = average.average === null
+      ? { text: "--", className: "is-unavailable" }
+      : window.TraderRender.pct(average.average);
+    const changeText = window.TraderRender.escapeHtml(change.text);
+    const averageClass = `long-industry-average${change.className ? ` ${change.className}` : ""}`;
+    const description = window.TraderRender.escapeHtml(
+      `${group.name}，平均涨跌幅 ${change.text}，有效行情 ${average.validCount}/${average.totalCount} 只`,
+    );
     const className = `long-industry-tab${active ? " is-active" : ""}`;
-    return `<button class="${className}" type="button" role="tab" aria-selected="${active ? "true" : "false"}" data-group="${key}"><span>${name}</span><b>${group.codes.length} 只</b></button>`;
+    return `<button class="${className}" type="button" role="tab" aria-label="${description}" title="${description}" aria-selected="${active ? "true" : "false"}" data-group="${key}"><span class="long-industry-label"><span class="long-industry-name">${name}</span><em class="${averageClass}">${changeText}</em></span><b>${group.codes.length} 只</b></button>`;
   }
 
   function visibleRecommendations(payload, recommendations, scope, groupName) {
@@ -177,6 +213,7 @@
   window.TraderLongGroups = Object.freeze({
     displayPayload,
     emptyMessage,
+    groupAveragePct,
     normalized,
     renderBar,
     scopeLabel,

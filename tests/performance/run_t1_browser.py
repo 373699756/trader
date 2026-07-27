@@ -171,6 +171,60 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
                 "};",
             )
             viewport_results.append({"requested": [width, height], **layout})
+        _execute(
+            base,
+            "document.querySelector('button[data-strategy=\"long\"]').click();return true;",
+        )
+        _wait_script(
+            base,
+            "return Boolean(!document.querySelector('.long-sidebar').hidden"
+            " && document.querySelectorAll('.long-industry-average').length>=2);",
+        )
+        _execute(
+            base,
+            "const samples=document.querySelectorAll('.long-industry-average');"
+            "samples[0].textContent='+20.00%';"
+            "samples[0].className='long-industry-average positive';"
+            "samples[1].textContent='-20.00%';"
+            "samples[1].className='long-industry-average negative';"
+            "return true;",
+        )
+        long_viewport_results = []
+        for width, height in VIEWPORTS:
+            _request_json(
+                f"{base}/window/rect",
+                method="POST",
+                payload={"width": width, "height": height, "x": 0, "y": 0},
+            )
+            time.sleep(0.1)
+            layout = _execute(
+                base,
+                "const sidebar=document.querySelector('.long-sidebar');"
+                "const tableRegion=document.querySelector('.table-region');"
+                "const tabs=Array.from(document.querySelectorAll('.long-industry-tab'));"
+                "const averages=Array.from(document.querySelectorAll('.long-industry-average'));"
+                "return {"
+                "width:window.innerWidth,"
+                "height:window.innerHeight,"
+                "overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth,"
+                "body:Boolean(document.body&&document.body.getBoundingClientRect().height>0),"
+                "longSidebarVisible:Boolean(sidebar&&!sidebar.hidden),"
+                "longAverageCount:averages.length,"
+                "panelsAligned:sidebar.getBoundingClientRect().top===tableRegion.getBoundingClientRect().top"
+                "&&sidebar.getBoundingClientRect().height===tableRegion.getBoundingClientRect().height,"
+                "tabsNoOverflow:Boolean(sidebar.scrollWidth<=sidebar.clientWidth"
+                "&&tabs.length&&tabs.every((tab)=>{"
+                "const average=tab.querySelector('.long-industry-average');"
+                "const count=tab.querySelector('b');"
+                "if(!average||!count)return false;"
+                "const tabBox=tab.getBoundingClientRect();"
+                "const averageBox=average.getBoundingClientRect();"
+                "const countBox=count.getBoundingClientRect();"
+                "return averageBox.right<=countBox.left&&countBox.right<=tabBox.right;})),"
+                "browserErrors:window.TraderDashboardDiagnostics.snapshot().browserErrors"
+                "};",
+            )
+            long_viewport_results.append({"requested": [width, height], **layout})
         patch = diagnostics.get("patchToPaint") if isinstance(diagnostics, dict) else None
         p95 = patch.get("p95_ms") if isinstance(patch, dict) else None
         passed = (
@@ -195,6 +249,17 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
                 and item.get("controlsTouchTable") is True
                 for item in viewport_results
             )
+            and all(
+                item.get("body") is True
+                and item.get("overflow") is False
+                and item.get("longSidebarVisible") is True
+                and isinstance(item.get("longAverageCount"), int)
+                and item.get("longAverageCount", 0) > 0
+                and item.get("panelsAligned") is True
+                and item.get("tabsNoOverflow") is True
+                and item.get("browserErrors") == []
+                for item in long_viewport_results
+            )
         )
         return {
             "schema_version": "t1-browser-performance-v1",
@@ -206,6 +271,7 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
             "browser_errors": diagnostics.get("browserErrors"),
             "frozen_today_anchor_view": anchor_view,
             "viewports": viewport_results,
+            "long_viewports": long_viewport_results,
             "network_calls": 0,
         }
     finally:

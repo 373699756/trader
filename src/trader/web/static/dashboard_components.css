@@ -126,10 +126,33 @@
   gap: 8px;
 }
 
-.long-industry-tab span {
+.long-industry-label {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.long-industry-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.long-industry-average {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.long-industry-average.is-unavailable {
+  color: var(--muted);
 }
 
 .long-industry-tab b {

@@ -111,6 +111,8 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
             diagnostics = _evaluate(cdp, "window.TraderDashboardDiagnostics.snapshot();")
             scripts = _evaluate(cdp, "Array.from(document.scripts).map((script)=>script.src);")
             viewport_results = [_check_viewport(cdp, width, height) for width, height in VIEWPORTS]
+            _switch_to_long(cdp)
+            long_viewport_results = [_check_long_viewport(cdp, width, height) for width, height in VIEWPORTS]
             patch = diagnostics.get("patchToPaint") if isinstance(diagnostics, dict) else None
             p95 = patch.get("p95_ms") if isinstance(patch, dict) else None
             passed = (
@@ -120,6 +122,7 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
                 and _scripts_use_current_revision(scripts)
                 and diagnostics.get("browserErrors") == []
                 and all(_viewport_passed(item) for item in viewport_results)
+                and all(_long_viewport_passed(item) for item in long_viewport_results)
             )
             return {
                 "schema_version": REPORT_SCHEMA,
@@ -131,6 +134,7 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
                 "browser_errors": diagnostics.get("browserErrors"),
                 "scripts": scripts,
                 "viewports": viewport_results,
+                "long_viewports": long_viewport_results,
                 "network_calls": 0,
             }
     finally:
@@ -184,6 +188,25 @@ def _check_viewport(cdp: _CdpSession, width: int, height: int) -> dict[str, Any]
     return {"requested": [width, height], **layout}
 
 
+def _check_long_viewport(cdp: _CdpSession, width: int, height: int) -> dict[str, Any]:
+    result = _check_viewport(cdp, width, height)
+    long_layout = _evaluate(
+        cdp,
+        "(()=>{const sidebar=document.querySelector('.long-sidebar');"
+        "const tabs=Array.from(document.querySelectorAll('.long-industry-tab'));"
+        "const averages=Array.from(document.querySelectorAll('.long-industry-average'));"
+        "return {longSidebarVisible:Boolean(sidebar&&!sidebar.hidden),"
+        "longAverageCount:averages.length,"
+        "longTabsNoOverflow:Boolean(sidebar&&sidebar.scrollWidth<=sidebar.clientWidth"
+        "&&tabs.length&&tabs.every((tab)=>{const average=tab.querySelector('.long-industry-average');"
+        "const count=tab.querySelector('b');if(!average||!count)return false;"
+        "const tabBox=tab.getBoundingClientRect(),averageBox=average.getBoundingClientRect(),"
+        "countBox=count.getBoundingClientRect();"
+        "return averageBox.right<=countBox.left&&countBox.right<=tabBox.right;}))};})()",
+    )
+    return {**result, **long_layout}
+
+
 def _viewport_passed(item: dict[str, Any]) -> bool:
     return bool(
         item.get("body")
@@ -195,10 +218,41 @@ def _viewport_passed(item: dict[str, Any]) -> bool:
     )
 
 
+def _long_viewport_passed(item: dict[str, Any]) -> bool:
+    return bool(
+        _viewport_passed(item)
+        and item.get("longSidebarVisible")
+        and item.get("longAverageCount")
+        and item.get("longTabsNoOverflow")
+    )
+
+
 def _scripts_use_current_revision(scripts: object) -> bool:
     if not isinstance(scripts, list) or not scripts:
         return False
     return all(isinstance(item, str) and f"?rev={WEB_ASSET_REVISION}" in item for item in scripts)
+
+
+def _switch_to_long(cdp: _CdpSession) -> None:
+    _evaluate(cdp, "document.querySelector('button[data-strategy=\"long\"]').click();")
+    _wait_condition(
+        lambda: (
+            _evaluate(
+                cdp,
+                "Boolean(!document.querySelector('.long-sidebar').hidden"
+                "&&document.querySelectorAll('.long-industry-average').length>=2)",
+            )
+            is True
+        ),
+        "dashboard did not render the long industry tabs",
+    )
+    _evaluate(
+        cdp,
+        "(()=>{const samples=document.querySelectorAll('.long-industry-average');"
+        "samples[0].textContent='+20.00%';samples[0].className='long-industry-average positive';"
+        "samples[1].textContent='-20.00%';samples[1].className='long-industry-average negative';"
+        "return true;})()",
+    )
 
 
 def _wait_page_ready(cdp: _CdpSession) -> None:
