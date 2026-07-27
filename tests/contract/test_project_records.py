@@ -112,6 +112,63 @@ def test_authoritative_docs_match_active_runtime_identities() -> None:
     assert strategy_config["strategy_version"] in strategy
 
 
+def test_authoritative_docs_match_active_scoring_and_runtime_behavior() -> None:
+    runtime = json.loads((PROJECT_ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    strategy_config = json.loads((PROJECT_ROOT / "config/v2/strategy.json").read_text(encoding="utf-8"))
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+
+    filters = _section(PROJECT_ROOT / "docs/recommendation-strategy.md", "## 4.", "## 5.")
+    scoring = _section(PROJECT_ROOT / "docs/recommendation-strategy.md", "## 7.", "## 8.")
+    fusion = _section(PROJECT_ROOT / "docs/recommendation-strategy.md", "## 12.", "## 13.")
+    selection = _section(PROJECT_ROOT / "docs/recommendation-strategy.md", "## 13.", "## 14.")
+    timeline = _section(PROJECT_ROOT / "docs/software-business-design.md", "## 5.", "## 6.")
+    cadence = _section(PROJECT_ROOT / "docs/software-business-design.md", "### 6.2", "### 6.3")
+    persistence = _section(PROJECT_ROOT / "docs/software-business-design.md", "## 8.", "## 9.")
+    web = _section(PROJECT_ROOT / "docs/software-business-design.md", "## 9.", "## 10.")
+    cache_limits = _section(PROJECT_ROOT / "docs/software-business-design.md", "### 7.1", "### 7.2")
+    observability = _section(PROJECT_ROOT / "docs/software-business-design.md", "## 11.", "## 12.")
+
+    assert "必需阻断" in filters
+    assert "可选告警/观察限制" in filters
+    assert "board_classification_conflict" in filters
+    assert "missing_listing_age_sessions" in filters
+
+    assert "relative_strength_3d" in scoring
+    assert "不过热不再是活动正向组件" in scoring
+    assert "旧通用 d25 评分函数" in scoring
+
+    assert "未应用有效 hybrid 时" in fusion
+    assert "final_score = local_score" in fusion
+    assert "单一数组" in selection
+    assert "盘中当前视图只显示 `executable`" in selection
+    assert "Web 必须分栏展示" not in selection
+
+    fallback_reason = "close_fallback_observe_floor"
+    retired_fallback_reason = "close_fallback_observation_floor_relaxed"
+    assert fallback_reason in strategy
+    assert fallback_reason in design
+    assert retired_fallback_reason not in strategy
+    assert retired_fallback_reason not in design
+
+    midday_topk = runtime["pipeline"]["cadence_seconds"]["topk_quotes"]["midday"]
+    assert f"{midday_topk} 秒 TopK" in timeline
+    assert "| 午间 | 10秒 | 10秒 | 10秒 |" in cadence
+    assert "每板最多 120 只、三板合计最多 360 只" in cadence
+
+    assert strategy_config["selection"]["minimum_board_reliability"] == 0.85
+    assert "板块人口不足" in persistence
+    assert "板块可靠度不足只降为观察" in persistence
+    assert "收盘补算和历史视图 显示 API 返回的全部项" in " ".join(web.split())
+
+    p6_capacity = runtime["market_data"]["cache_policy"]["datasets"]["published_recommendation_view"]["capacity"]
+    assert f"published_recommendation_view.capacity={p6_capacity}" in cache_limits
+    assert "`4 + 20 * 3 = 64`" in cache_limits
+    assert "活动 `/api/status` 只承诺代码已经聚合的运行事实" in observability
+    assert "不承诺尚未实现的平均批次大小" in observability
+    assert "`trader-cli perf-check` 及发布验收报告提供" in observability
+
+
 def _section(path: Path, start: str, end: str) -> str:
     content = path.read_text(encoding="utf-8")
     return content.split(start, 1)[1].split(end, 1)[0]

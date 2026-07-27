@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增权威文档反向一致性契约测试，直接读取活动 `runtime.json` 和 `strategy.json`，固定校验
+  盘中/午间调度、板内候选容量、板块可靠度、P6 缓存与驻留视图上限、当前/历史展示、
+  收盘补算原因码及在线可观测性边界，避免实现变化后文档继续保留旧口径。
 - 荐股策略权威文档新增“待验证收益路线”，把原收益复核提案按当前实现状态收敛为明确的
   非生产路线：完整点时决策轨迹、连续形态分、覆盖率向 50 分收缩、候选乐观上界、热度
   组合观察和配对 bootstrap 均标记为尚未实现，并固定 60 个有效交易日、300 条有效配对、
@@ -77,6 +80,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求根据工程代码实际情况逐条反向核对两份权威文档。核对活动过滤器、板块评分、
+  融合、选择、冻结恢复、调度、P6、状态 API 和前端渲染后，文档现按生产路径记录：
+  必需阻断与可选观察限制的真实原因码；today 的 `relative_strength_3d` 和 d25 活动五维；
+  未应用 hybrid 时最终分等于本地分；每板最多 120、三板最多 360；午间全市场、候选和
+  TopK 均为 10 秒；盘中当前视图只显示正式推荐，收盘补算与历史显示完整 API 结果。
+  本批只纠正文档和文档契约测试，不改变生产公式、阈值、调度、冻结、API 或 Web 行为。
 - 用户要求把 `celue.md`、`hi.md` 和 `queston.md` 根据当前工程实际合并进两份权威文档。
   核对配置、选择函数、流水线、历史预热、尾盘加载、Web schema 和回归测试后，确认生产
   实现是每策略每次投影最多 28 只送审、每日 168 次物理请求、`versioned_dag`、local 先于
@@ -281,6 +290,15 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正文档与活动实现不一致或表述过宽的问题：旧文档漏写 today 活动评分中的三日相对强度，
+  把旧通用 d25 “不过热”组件写成活动路径，把可选主数据告警写成统一硬过滤，把
+  收盘补算写成退役的 `close_fallback_observation_floor_relaxed` 而非活动
+  `close_fallback_observe_floor`，并要求 Web 分栏展示实际只在历史/补算返回的观察项。
+  同步澄清板块人口不足才阻断收盘固化、可靠度不足只降为观察，以及
+  `PublishedSnapshotIndex` 的 64 个驻留视图与共享缓存 72 条预留容量互不替代。
+- 修正文档把性能命令和浏览器验收采集项误写成 `/api/status` 在线承诺的问题。在线状态现
+  只记录代码真实暴露的聚合延迟、缓存、周期、worker、P6、publisher、DeepSeek 最近批次及
+  预算统计；RSS/USS、列式字节、patch 传输和浏览器应用时间明确归入离线性能或桌面验收证据。
 - 修正权威文档仍把活动结果审计描述为旧 v18、把收益晋级指向外部计划文件，以及无法从
   当前文档直接判断 24/28 支送审上限和收益变体是否上线的问题。现在权威文本明确区分
   “代码已实施”“旧阶段值已取代”和“尚未实现”，并由契约测试确保三份来源记录退役后
@@ -398,6 +416,16 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批权威文档反向一致性定向契约测试及过滤、三板评分、融合、调度、P6、Web API
+  相关 127 项回归全部通过；`make format-check`、`make lint`、`make type-check` 和完整
+  `make test` 通过，仅保留既有未知 DeepSeek fixture 模型告警。`make package` 首次因沙箱
+  禁止隔离构建访问本机代理失败，获准后成功生成 sdist/wheel；仓库外全依赖虚拟环境确认
+  `trader` 从 wheel 路径导入、`trader-cli --help`、`validate-config`、模板、CSS、JavaScript、
+  SVG 和 `pip check` 全部通过。
+- 宿主没有 Chrome/Chromium，持久化 Chrome runner 按预期报告缺少浏览器；Firefox/
+  geckodriver 使用同一离线 fixture 完成 1280x720、1440x900、1920x1080 三档布局验收，
+  24 个 patch 全部应用、零 resync、零浏览器错误、无页面级横向溢出。首轮图形栈冷启动
+  patch-to-paint P95 为 833ms，稳定态复跑为 25ms 并通过 100ms 门禁。
 - 本批文档归并契约测试通过，额外读取活动 `runtime.json` 与 `strategy.json`，确认权威文档
   对应 `versioned_dag`、168 次物理硬上限、`strategy_review28_2026_07` 和 28 只送审上限。
   `make format-check`、`make lint`、`make type-check` 和完整 `make test` 通过；全量测试仅有
@@ -644,6 +672,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除两份权威文档中已经被活动代码取代的口径：旧收盘补算原因码、盘中强制正式/观察分栏、
+  d25 活动“不过热”组件、低可靠度一律阻断收盘固化，以及在线状态必须暴露尚未实现性能
+  明细的要求；没有删除生产代码、配置、测试数据、冻结记录或运行数据。
 - 删除已完成归并的 `docs/celue.md`、`docs/hi.md` 和 `docs/queston.md`，并纳入用户在本批
   开始前已经删除的 `docs/strage.md`、`docs/times.md`。五份实施计划、问题记录、旧阶段参数
   和未实施提案不再与两份权威文档形成并行真相源；历史用户问题、修改与验证记录继续保留
@@ -674,6 +705,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批以当前活动代码、配置和测试为真相源纠正文档，没有改变运行行为。供应商真实覆盖、
+  DeepSeek 外部响应、真实交易日冻结恢复和收益效果仍受既有外部条件约束；宿主没有
+  Chrome/Chromium，故桌面证据来自同属目标范围的 Firefox，且其首轮冷启动渲染时延仍有
+  明显波动，尽管稳定态复跑已通过 100ms 门禁。
 - 当前宿主未安装 Chrome/Chromium，因此本批实际桌面证据来自同属目标范围的 Firefox。
   Firefox 首次冷启动运行布局全部通过，但 patch-to-paint P95 为 124ms，超过 100ms；随后
   两次相同固定 runner 为 55ms 和 21ms 并通过。该波动未由本批文档变更引入，但说明宿主
