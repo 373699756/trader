@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求修复四项不值得大规模重构、但会持续增加维护风险的小问题。新增
+  `scripts/generate_long_watchlist_asset.py`，以 `config/v2/long_watchlist.json` 为唯一来源
+  确定性生成打包的 `long_watchlist_data.js`；新增 `make long-watchlist-check` 并接入
+  `make lint`，配置变更后若忘记同步静态资源会直接失败，而不再依赖人工复制。
 - 根据用户指出最近一周反复出现的“交易时段无荐股”和“15:00 后重启无荐股”，复盘
   2026-07-21 至 2026-07-27 的行情陈旧、历史预热阻塞、事件饥饿、收盘恢复、P6/Web
   选态和冷启动修复，在权威设计文档固化五时段、热运行/冷启动、四策略和真实服务验收
@@ -87,6 +91,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 长期观察池 20 处暴露退役 `stock_analyzer/...` 实现路径的来源文字统一改为稳定业务描述
+  “历史卡脖子行业龙头名单复核”；股票、顺序、分组、研究属性和运行策略均未改变。软件
+  业务设计同步明确 JSON 唯一来源、确定性生成入口和常规 lint 门禁。
 - 板内评分改为“全市场只构建横截面总体、每板最多 120 只新鲜候选投影后评分”，候选报价
   版本只失效候选批次和逐股分数，不再把约 5500 只全市场股票重复执行九组候选/本地评分后
   再与候选代码求交集。候选定向报价提交同步改为有界增量 `MarketChangeSet` 和代码索引
@@ -305,6 +312,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 快照原语 `_review_mapping()` 原先经 `snapshot_items` 间接取得实际定义在
+  `snapshot_review_items` 的 `_review_from_dict`，形成隐藏依赖；现在保留避免循环导入所需
+  的局部导入，但直接依赖真实所有者模块。`pyproject.toml` 的 Ruff 注释同时从不存在的
+  `make lint-strict` 修正为实际严格检查入口 `make lint`。
 - 修复用户反馈的“今早无荐股、长期股票实时信息不显示”。根因分别是评分阶段把全市场总体
   当成候选集合重复计算，慢于 3 秒 cadence 并在最后按候选代码过滤成空；输入完成触发与
   周期评分重复排队，旧评分大量过期；long 约 435 KiB 的当前投影超过所有策略共用的
@@ -441,6 +452,14 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批失败先行契约分别复现隐藏编解码依赖、20 处旧来源路径、缺失生成器和错误 Ruff 命令；
+  修复后架构、长期观察池、工程记录契约及完整持久化组件共 51 项通过，生成器连续
+  `--check` 字节一致，直接导入 smoke test 未触发循环导入。最终 `make format-check`、
+  `make lint`、`make type-check`、完整 848 项 `make test` 和 `make package` 全部通过；
+  package 首次仅因沙箱禁止连接本机 pip 代理失败，获准后原命令成功。仓库外 wheel 从安装
+  路径导入并通过 CLI、配置、14 项模板/静态资源及 `pip check`；Firefox/geckodriver 在
+  1280x720、1440x900、1920x1080 均无横向溢出或浏览器错误，24 个 patch 全部应用、
+  resync 为 0、patch-to-paint P95 为 21ms。
 - 新增并通过事件 latest-wins、versioned DAG 禁止周期评分、总体/候选评分分离、long P6
   独立上限与超限诊断、定向行情增量 change set、Web 时段文案回归；定向提交固定 5500 行
   总体/120 行报价连续 5 次实测最大 87.10ms。最终 `make format-check`、`make lint`、
@@ -708,6 +727,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 长期观察池配置及其打包静态资源不再包含 20 处退役
+  `stock_analyzer/scoring_core/theme_scores.py` 内部路径或旧常量名。
 - 移除生产 `versioned_dag` 中与输入完成触发重复的周期评分提交；保留 `serialized`
   兼容模式和原 cadence 配置，未删除评分公式、候选门槛、风险门、冻结或回退能力。
 - 移除两份权威文档中已经被活动代码取代的口径：旧收盘补算原因码、盘中强制正式/观察分栏、
@@ -743,6 +764,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批没有调整长期观察池股票、评分、行情、Web 布局或冻结行为；稳定来源文字只保留业务级
+  追溯，不等价于新增外部研究证据。生成器不会自动改写配置，维护者仍需明确更新 JSON，
+  但未同步静态 JS 会被 `make long-watchlist-check`、`make lint` 和契约测试阻断。
 - 本次真实服务在 11:20 后启动，因此 today 按冻结不可变规则保持同日 `not_ready`，不能
   用迟到评分伪造上午结果；上午热运行行为由完整交易日集成回归覆盖，下一真实交易日上午
   仍须按永久可用性矩阵观察。d25 本次不是链路未就绪，而是完成 220 只评分后最高 68.63

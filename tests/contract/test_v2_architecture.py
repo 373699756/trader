@@ -174,6 +174,13 @@ def test_snapshot_workflow_module_uses_specific_responsibility_name() -> None:
     assert not (application / "snapshot_lifecycle.py").exists()
 
 
+def test_snapshot_primitives_import_review_decoder_from_its_owner() -> None:
+    primitives = (SOURCE_ROOT / "infra" / "persistence" / "snapshot_primitives.py").read_text(encoding="utf-8")
+
+    assert "from trader.infra.persistence.snapshot_review_items import _review_from_dict" in primitives
+    assert "from trader.infra.persistence.snapshot_items import _review_from_dict" not in primitives
+
+
 def test_bootstrap_is_the_only_composition_root() -> None:
     assert not (SOURCE_ROOT / "infra" / "container.py").exists()
 

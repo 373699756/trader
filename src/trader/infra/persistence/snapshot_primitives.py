@@ -112,7 +112,7 @@ def _risk_rule_mapping(raw: Mapping[str, object]) -> dict[str, RiskRule]:
 
 
 def _review_mapping(raw: Mapping[str, object]) -> dict[str, DeepSeekReview]:
-    from trader.infra.persistence.snapshot_items import _review_from_dict
+    from trader.infra.persistence.snapshot_review_items import _review_from_dict
 
     result: dict[str, DeepSeekReview] = {}
     for key, value in raw.items():

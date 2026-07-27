@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -100,11 +102,13 @@ def test_long_scope_controls_follow_the_long_strategy_description() -> None:
 
 
 def test_packaged_long_watchlist_matches_runtime_configuration() -> None:
-    config = json.loads((ROOT / "config/v2/long_watchlist.json").read_text(encoding="utf-8"))
+    config_source = (ROOT / "config/v2/long_watchlist.json").read_text(encoding="utf-8")
+    config = json.loads(config_source)
     source = (ROOT / "src/trader/web/static/long_watchlist_data.js").read_text(encoding="utf-8").strip()
     prefix = '(function(){"use strict";window.TraderLongWatchlistData=Object.freeze('
     suffix = ");})();"
 
+    assert "stock_analyzer/" not in config_source
     assert source.startswith(prefix)
     assert source.rstrip().endswith(suffix)
     packaged = json.loads(source[len(prefix) : -len(suffix)])
@@ -113,3 +117,15 @@ def test_packaged_long_watchlist_matches_runtime_configuration() -> None:
     grouped_codes = [code for group in config["groups"] for code in group["codes"]]
     assert len(grouped_codes) == len(set(grouped_codes))
     assert set(grouped_codes) == {item["code"] for item in config["items"]}
+
+
+def test_packaged_long_watchlist_is_deterministically_generated() -> None:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/generate_long_watchlist_asset.py"), "--check"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr

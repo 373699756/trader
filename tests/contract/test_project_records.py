@@ -112,6 +112,13 @@ def test_authoritative_docs_match_active_runtime_identities() -> None:
     assert strategy_config["strategy_version"] in strategy
 
 
+def test_ruff_guidance_names_the_active_lint_command() -> None:
+    pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "make lint-strict" not in pyproject
+    assert "strict rule set in `make lint`" in pyproject
+
+
 def test_recommendation_availability_regression_matrix_is_permanent() -> None:
     matrix = _section(PROJECT_ROOT / "docs/software-business-design.md", "### 13.1", "## 14.")
 
