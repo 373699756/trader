@@ -22,17 +22,20 @@ class PublishedSnapshotIndex:
         *,
         resident_days: int = 20,
         maximum_view_bytes: int = 160 * 1024,
+        maximum_long_view_bytes: int = 512 * 1024,
     ) -> None:
-        if resident_days < 1 or maximum_view_bytes < 1:
+        if resident_days < 1 or maximum_view_bytes < 1 or maximum_long_view_bytes < 1:
             raise ValueError("published snapshot index limits must be positive")
         self._archive = archive
         self._resident_days = resident_days
         self._maximum_view_bytes = maximum_view_bytes
+        self._maximum_long_view_bytes = maximum_long_view_bytes
         self._lock = threading.RLock()
         self._current: dict[Strategy, RecommendationSnapshot] = {}
         self._resident: dict[tuple[Strategy, str], RecommendationSnapshot] = {}
         self._dates: dict[Strategy, tuple[str, ...]] = {strategy: () for strategy in self._HISTORICAL_STRATEGIES}
         self._overlays: dict[tuple[Strategy, str], LiveOverlay] = {}
+        self._last_oversize_rejection: dict[str, object] | None = None
         self._counters: dict[str, int] = {
             "published": 0,
             "resident_hits": 0,
@@ -82,9 +85,19 @@ class PublishedSnapshotIndex:
     def publish(self, snapshot: RecommendationSnapshot) -> bool:
         view_snapshot = _view_snapshot(snapshot)
         with self._lock:
-            if not self._fits(view_snapshot):
+            actual_bytes = len(canonical_json_bytes(view_snapshot))
+            limit_bytes = self._limit_for(view_snapshot.strategy)
+            if actual_bytes > limit_bytes:
                 self._counters["rejected_oversize_views"] += 1
-                raise ValueError("P6 view exceeds the configured per-view byte limit")
+                self._last_oversize_rejection = {
+                    "strategy": view_snapshot.strategy.value,
+                    "actual_bytes": actual_bytes,
+                    "limit_bytes": limit_bytes,
+                }
+                raise ValueError(
+                    f"{view_snapshot.strategy.value} P6 view exceeds byte limit: "
+                    f"actual={actual_bytes}, limit={limit_bytes}"
+                )
             current = self._current.get(view_snapshot.strategy)
             if current is not None and view_snapshot.trade_date < current.trade_date:
                 self._record_committed_locked(snapshot, view_snapshot)
@@ -181,6 +194,15 @@ class PublishedSnapshotIndex:
                 "resident_views": len(self._resident),
                 "maximum_views": 4 + self._resident_days * 3,
                 "maximum_view_bytes": self._maximum_view_bytes,
+                "maximum_view_bytes_by_strategy": {
+                    Strategy.TODAY.value: self._maximum_view_bytes,
+                    Strategy.TOMORROW.value: self._maximum_view_bytes,
+                    Strategy.D25.value: self._maximum_view_bytes,
+                    Strategy.LONG.value: self._maximum_long_view_bytes,
+                },
+                "last_oversize_rejection": (
+                    dict(self._last_oversize_rejection) if self._last_oversize_rejection is not None else None
+                ),
                 **self._counters,
             }
 
@@ -209,6 +231,11 @@ class PublishedSnapshotIndex:
             else:
                 with self._lock:
                     self._counters["rejected_oversize_views"] += 1
+                    self._last_oversize_rejection = {
+                        "strategy": view_snapshot.strategy.value,
+                        "actual_bytes": len(canonical_json_bytes(view_snapshot)),
+                        "limit_bytes": self._limit_for(view_snapshot.strategy),
+                    }
         return tuple(accepted)
 
     def _discard_mismatched_overlay(self, snapshot: RecommendationSnapshot) -> None:
@@ -221,7 +248,10 @@ class PublishedSnapshotIndex:
             self._overlays.pop(key, None)
 
     def _fits(self, snapshot: RecommendationSnapshot) -> bool:
-        return len(canonical_json_bytes(snapshot)) <= self._maximum_view_bytes
+        return len(canonical_json_bytes(snapshot)) <= self._limit_for(snapshot.strategy)
+
+    def _limit_for(self, strategy: Strategy) -> int:
+        return self._maximum_long_view_bytes if strategy is Strategy.LONG else self._maximum_view_bytes
 
 
 def _view_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapshot:

@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 根据用户指出最近一周反复出现的“交易时段无荐股”和“15:00 后重启无荐股”，复盘
+  2026-07-21 至 2026-07-27 的行情陈旧、历史预热阻塞、事件饥饿、收盘恢复、P6/Web
+  选态和冷启动修复，在权威设计文档固化五时段、热运行/冷启动、四策略和真实服务验收
+  矩阵，并增加契约测试，后续相关改动不得只验证单个时点或 fixture。
+- `/api/status` 的 P6 状态新增按策略字节上限和最近一次超限的策略、实际字节数、限制字节数；
+  Web 新增“午后开始增强模型复核”的中文降级说明，避免上午 tomorrow/d25 本地草稿把
+  内部状态码直接显示给用户。
 - 新增权威文档反向一致性契约测试，直接读取活动 `runtime.json` 和 `strategy.json`，固定校验
   盘中/午间调度、板内候选容量、板块可靠度、P6 缓存与驻留视图上限、当前/历史展示、
   收盘补算原因码及在线可观测性边界，避免实现变化后文档继续保留旧口径。
@@ -80,6 +87,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 板内评分改为“全市场只构建横截面总体、每板最多 120 只新鲜候选投影后评分”，候选报价
+  版本只失效候选批次和逐股分数，不再把约 5500 只全市场股票重复执行九组候选/本地评分后
+  再与候选代码求交集。候选定向报价提交同步改为有界增量 `MarketChangeSet` 和代码索引
+  更新，不再在状态锁内重建完整列式批次；完整全市场刷新仍重建规范基线。
+- P6 保持 today/tomorrow/d25 每视图 160 KiB，long 当前固定研究池使用独立 512 KiB 上限；
+  long 仍不冻结、不写推荐历史，最大 64 个驻留视图和 12 MiB P6 总池不变。
+- Web 静态资源 revision 升级为 `recommendation-availability-2026-07-27`，确保服务重启后
+  浏览器不继续命中 7 月 26 日的 dashboard/render 缓存。
 - 用户要求根据工程代码实际情况逐条反向核对两份权威文档。核对活动过滤器、板块评分、
   融合、选择、冻结恢复、调度、P6、状态 API 和前端渲染后，文档现按生产路径记录：
   必需阻断与可选观察限制的真实原因码；today 的 `relative_strength_3d` 和 d25 活动五维；
@@ -290,6 +305,16 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复用户反馈的“今早无荐股、长期股票实时信息不显示”。根因分别是评分阶段把全市场总体
+  当成候选集合重复计算，慢于 3 秒 cadence 并在最后按候选代码过滤成空；输入完成触发与
+  周期评分重复排队，旧评分大量过期；long 约 435 KiB 的当前投影超过所有策略共用的
+  160 KiB 上限而被 P6 拒绝。现在 versioned DAG 只由已完成输入触发评分，尚未开始的旧
+  评分采用 latest-wins；候选与总体分离，long 使用仍有界的独立上限，超限错误包含实际值
+  与限制值。进一步核对用户业务要求后，确认 tomorrow/d25 上午无数据不是预期行为：阶段
+  路由和动作门此前只允许 afternoon/final 阶段。现在 09:30-11:20 同步生成两策略本地草稿，
+  13:00 后再增加尾盘分钟数据与 DeepSeek 增强复核；仍不把上一交易日冒充当前。
+  若服务在 11:20-13:00 冷启动且上午草稿缺失，tomorrow、d25 和 long 允许各补一次本地
+  当前快照，已有同日快照后停止午间重复评分，增强复核仍不会提前到 13:00 前。
 - 修正文档与活动实现不一致或表述过宽的问题：旧文档漏写 today 活动评分中的三日相对强度，
   把旧通用 d25 “不过热”组件写成活动路径，把可选主数据告警写成统一硬过滤，把
   收盘补算写成退役的 `close_fallback_observation_floor_relaxed` 而非活动
@@ -416,6 +441,17 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 新增并通过事件 latest-wins、versioned DAG 禁止周期评分、总体/候选评分分离、long P6
+  独立上限与超限诊断、定向行情增量 change set、Web 时段文案回归；定向提交固定 5500 行
+  总体/120 行报价连续 5 次实测最大 87.10ms。最终 `make format-check`、`make lint`、
+  `make type-check`、完整 848 项 `make test` 和 `make package` 全部通过；仓库外最终 wheel
+  从安装路径导入，CLI、配置、9 项模板/静态资源和 `pip check` 通过。固定离线性能 16 项
+  最终全部通过，定向覆盖 P95 96.57ms、外部网络调用 0、100 tick 分配增长 0%。
+- 最终 Firefox/geckodriver 在 1280x720、1440x900、1920x1080 三档均无横向溢出或浏览器
+  错误，24 次 patch 全部应用、resync 为 0、patch-to-paint P95 33ms。真实旧服务曾占用
+  78.3% CPU；停止旧进程并以最终代码两次冷启动后，`2026-07-27` 午间 API 实际发布
+  tomorrow 1 只、d25 ready 合法空集、long 212 只，long 返回 Sina 实时价、涨跌、来源和
+  时间；P6 四个 current 槽、long 512 KiB 上限均生效，首页 10 项资源均使用新 revision。
 - 本批权威文档反向一致性定向契约测试及过滤、三板评分、融合、调度、P6、Web API
   相关 127 项回归全部通过；`make format-check`、`make lint`、`make type-check` 和完整
   `make test` 通过，仅保留既有未知 DeepSeek fixture 模型告警。`make package` 首次因沙箱
@@ -672,6 +708,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除生产 `versioned_dag` 中与输入完成触发重复的周期评分提交；保留 `serialized`
+  兼容模式和原 cadence 配置，未删除评分公式、候选门槛、风险门、冻结或回退能力。
 - 移除两份权威文档中已经被活动代码取代的口径：旧收盘补算原因码、盘中强制正式/观察分栏、
   d25 活动“不过热”组件、低可靠度一律阻断收盘固化，以及在线状态必须暴露尚未实现性能
   明细的要求；没有删除生产代码、配置、测试数据、冻结记录或运行数据。
@@ -705,6 +743,14 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本次真实服务在 11:20 后启动，因此 today 按冻结不可变规则保持同日 `not_ready`，不能
+  用迟到评分伪造上午结果；上午热运行行为由完整交易日集成回归覆盖，下一真实交易日上午
+  仍须按永久可用性矩阵观察。d25 本次不是链路未就绪，而是完成 220 只评分后最高 68.63
+  低于 71.00 观察门槛的 ready 空集；这类合法空结果不会为增加数量而放宽。
+- 外部行情源仍可能超时、熔断或返回不完整历史；本批消除本地重复全市场评分、旧评分堆积和
+  long P6 容量误拒绝，但不承诺供应商持续达到 cadence，也不放宽 100 只板内总体、0.85
+  可靠度、硬过滤、动作或冻结门槛。健康数据下没有股票达到观察门槛时仍允许真实空结果；
+  已经开始执行的旧版本评分不会被强制中断，最终由 snapshot/freeze CAS 拒绝迟到发布。
 - 本批以当前活动代码、配置和测试为真相源纠正文档，没有改变运行行为。供应商真实覆盖、
   DeepSeek 外部响应、真实交易日冻结恢复和收益效果仍受既有外部条件约束；宿主没有
   Chrome/Chromium，故桌面证据来自同属目标范围的 Firefox，且其首轮冷启动渲染时延仍有

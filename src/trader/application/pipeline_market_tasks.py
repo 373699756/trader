@@ -240,7 +240,7 @@ def _short_strategies_for_phase(phase: MarketPhase) -> tuple[Strategy, ...]:
         MarketPhase.TODAY_MAIN,
         MarketPhase.TODAY_LATE,
     }:
-        return (Strategy.TODAY,)
+        return (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
     if phase in {MarketPhase.AFTERNOON, MarketPhase.FINAL_REVIEW, MarketPhase.FINAL_QUOTE}:
         return (Strategy.TOMORROW, Strategy.D25)
     return (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)

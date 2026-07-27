@@ -272,7 +272,7 @@ def test_configured_deepseek_candidate_makes_physical_call_and_status_reports_qu
         "physical_attempts_last_batch": 1,
         "zero_call_reason": "",
     }
-    assert market_status["topk_quote_age"]["sample_count"] == 1
+    assert market_status["topk_quote_age"]["sample_count"] == 3
     assert market_status["topk_quote_age"]["p95_seconds"] == 11.0
     assert market_status["topk_quote_age"]["meets_target"] is False
 

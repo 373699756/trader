@@ -29,6 +29,7 @@ from trader.domain.recommendation.scoring import (
     board_candidate_score,
     build_board_cross_section,
     candidate_fields,
+    project_board_policy,
     score_board_strategy,
 )
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
@@ -37,10 +38,20 @@ ScoreOne = Callable[[Strategy, FeatureSnapshot, BoardStrategyPolicy, LocalScoreR
 
 
 @dataclass(frozen=True)
+class BoardScoringPlan:
+    strategy: Strategy
+    candidates: Sequence[FeatureSnapshot]
+    policies: Mapping[Board, BoardStrategyPolicy]
+    context: ScoringCacheContext
+    population_features: Sequence[FeatureSnapshot] | None = None
+
+
+@dataclass(frozen=True)
 class _BoardScoreRequest:
     strategy: Strategy
     board: Board
     features: Sequence[FeatureSnapshot]
+    population_features: Sequence[FeatureSnapshot]
     policy: BoardStrategyPolicy
     context: ScoringCacheContext
     score_one: ScoreOne
@@ -198,21 +209,34 @@ class BoardScoringCoordinator:
 
     def score(
         self,
-        strategy: Strategy,
-        features: Sequence[FeatureSnapshot],
-        policies: Mapping[Board, BoardStrategyPolicy],
-        context: ScoringCacheContext,
+        plan: BoardScoringPlan,
         score_one: ScoreOne,
     ) -> tuple[BoardScoreBatch, ...]:
+        strategy = plan.strategy
+        features = plan.candidates
+        policies = plan.policies
+        context = plan.context
         if set(policies) != set(self._lanes):
             raise ValueError("board scoring requires exactly three board policies")
         grouped = {board: tuple(item for item in features if item.quote.board is board) for board in self._lanes}
+        population = features if plan.population_features is None else plan.population_features
+        grouped_population = {
+            board: tuple(item for item in population if item.quote.board is board) for board in self._lanes
+        }
         with self._lock:
             running = self._running
         if not running:
             return tuple(
                 self._score_board(
-                    _BoardScoreRequest(strategy, board, grouped[board], policies[board], context, score_one)
+                    _BoardScoreRequest(
+                        strategy,
+                        board,
+                        grouped[board],
+                        grouped_population[board],
+                        policies[board],
+                        context,
+                        score_one,
+                    )
                 )
                 for board in self._lanes
             )
@@ -226,6 +250,7 @@ class BoardScoringCoordinator:
                         strategy,
                         board,
                         grouped[board],
+                        grouped_population[board],
                         policies[board],
                         context,
                         score_one,
@@ -263,6 +288,7 @@ class BoardScoringCoordinator:
         strategy = request.strategy
         board = request.board
         features = request.features
+        population_features = request.population_features
         policy = request.policy
         context = request.context
         score_one = request.score_one
@@ -278,8 +304,8 @@ class BoardScoringCoordinator:
                 policy.version,
             )
         try:
-            cross_section = self._cross_section(board, features, context)
-            enriched = apply_board_policy(cross_section, strategy, policy)
+            cross_section = self._cross_section(board, population_features, context)
+            enriched = project_board_policy(cross_section, strategy, policy, features)
             selected = (
                 self._cache.candidate_batch(
                     policy,
@@ -425,4 +451,4 @@ def _nearest_rank(values: Sequence[float], probability: float) -> float:
     return ordered[max(0, min(len(ordered) - 1, math.ceil(len(ordered) * probability) - 1))]
 
 
-__all__ = ["BoardScoringCoordinator", "ScoreOne"]
+__all__ = ["BoardScoringCoordinator", "BoardScoringPlan", "ScoreOne"]

@@ -95,6 +95,7 @@
     board_population_insufficient: "板块有效样本不足",
     deepseek_skipped_no_eligible_candidates: "没有符合模型复核条件的候选",
     deepseek_incomplete: "模型复核结果不完整",
+    deepseek_deferred_until_afternoon: "午后开始增强模型复核",
     close_fallback_observe_floor: "收盘补算已放宽观察展示门槛",
     deepseek_pending: "模型复核进行中",
     tomorrow_tail_data_incomplete: "尾盘量价数据不完整",

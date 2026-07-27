@@ -20,6 +20,7 @@ from trader.application.events import (
 from trader.application.pipeline_submission import (
     _after_close_retry_delay,
     _scheduled_task_deadline,
+    _scheduled_task_enabled,
     _scheduled_task_priority,
 )
 from trader.application.schedule import MarketPhase
@@ -50,6 +51,12 @@ def test_after_close_scheduler_wakes_for_recorded_retry_instead_of_default_delay
     assert _after_close_retry_delay(30.0, utc_now, retry_at=None, inflight=True) == 1.0
     assert _after_close_retry_delay(30.0, utc_now, retry_at=utc_now + timedelta(seconds=3), inflight=False) == 3.0
     assert _after_close_retry_delay(30.0, utc_now, retry_at=utc_now - timedelta(seconds=1), inflight=False) == 0.05
+
+
+def test_versioned_dag_scores_only_from_completed_input_events() -> None:
+    assert _scheduled_task_enabled("versioned_dag", PipelineTask.SCORE) is False
+    assert _scheduled_task_enabled("versioned_dag", PipelineTask.CANDIDATE_QUOTES) is True
+    assert _scheduled_task_enabled("serialized", PipelineTask.SCORE) is True
 
 
 def test_queue_reserves_capacity_for_risk_and_freeze(utc_now) -> None:
@@ -103,6 +110,33 @@ def test_queue_reports_superseded_event_identities(utc_now) -> None:
 
     assert event_queue.put_with_superseded(old) == (True, ())
     assert event_queue.put_with_superseded(newer) == (True, (old.event_id,))
+
+
+def test_latest_wins_event_replaces_older_pending_version_before_queue_is_full(utc_now) -> None:
+    event_queue = BoundedEventQueue(maximum_size=4, reserved_priority_size=1)
+    old = _event(
+        utc_now,
+        EventPriority.RISK,
+        "market",
+        data_version="candidate-v1",
+        latest_wins=True,
+    )
+    newer = _event(
+        utc_now + timedelta(seconds=1),
+        EventPriority.RISK,
+        "market",
+        data_version="candidate-v2",
+        latest_wins=True,
+    )
+
+    assert event_queue.put_with_superseded(old) == (True, ())
+    assert event_queue.put_with_superseded(newer) == (True, (old.event_id,))
+
+    received = event_queue.get()
+    assert received is not None
+    assert received.event_id == newer.event_id
+    assert event_queue.empty() is True
+    assert event_queue.status()["merged_count"] == 1
 
 
 def test_full_queue_replaces_older_quote_version_for_same_subject(utc_now) -> None:
@@ -338,7 +372,7 @@ def test_repeated_coalescing_keeps_physical_heap_bounded(utc_now) -> None:
     assert event_queue.get().event_id == latest.event_id
 
 
-def _event(at, priority, subject, *, data_version="v1"):
+def _event(at, priority, subject, *, data_version="v1", latest_wins=False):
     return new_event(
         "quote",
         subject_key=subject,
@@ -349,4 +383,5 @@ def _event(at, priority, subject, *, data_version="v1"):
         data_version=data_version,
         config_version="c1",
         created_at=at,
+        latest_wins=latest_wins,
     )

@@ -7,14 +7,20 @@ from zoneinfo import ZoneInfo
 
 from trader.application.board_scoring import (
     BoardScoringCoordinator,
+    BoardScoringPlan,
     _all_candidates_below_reliability,
 )
 from trader.application.board_scoring_cache import ScoringCacheContext
-from trader.domain.market.models import Board
+from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.models import (
     BoardStrategyPolicy,
+    FusionMode,
+    Recommendation,
+    RecommendationAction,
+    ScoreBreakdown,
     Strategy,
 )
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -53,10 +59,12 @@ def test_coordinator_owns_three_single_worker_lanes_and_preserves_epoch(applicat
     coordinator.start()
     try:
         batches = coordinator.score(
-            Strategy.TODAY,
-            features,
-            {board: _policy(board) for board in (Board.MAIN, Board.CHINEXT, Board.STAR)},
-            ScoringCacheContext("2026-07-16", "today_main", "epoch-1", "data-1", NOW),
+            BoardScoringPlan(
+                Strategy.TODAY,
+                features,
+                {board: _policy(board) for board in (Board.MAIN, Board.CHINEXT, Board.STAR)},
+                ScoringCacheContext("2026-07-16", "today_main", "epoch-1", "data-1", NOW),
+            ),
             lambda *_args: (_ for _ in ()).throw(AssertionError("quality gate should keep the tiny fixture empty")),
         )
         status = coordinator.status()
@@ -83,3 +91,75 @@ def test_board_reliability_degrades_only_when_every_ranked_candidate_is_below_th
 
     assert _all_candidates_below_reliability(mixed, 0.85) is False
     assert _all_candidates_below_reliability(unreliable, 0.85) is True
+
+
+def test_coordinator_builds_population_context_but_scores_only_fresh_candidates(
+    application_feature_factory,
+) -> None:
+    population = tuple(
+        replace(
+            application_feature_factory(f"600{index:03d}", NOW),
+            quote=replace(
+                application_feature_factory(f"600{index:03d}", NOW).quote,
+                board=Board.MAIN,
+                data_version="population-v1",
+            ),
+        )
+        for index in range(60)
+    )
+    candidate = replace(
+        population[7],
+        quote=replace(population[7].quote, price=99.0, data_version="candidate-v2"),
+    )
+    policies = {
+        board: replace(_policy(board), candidate_min_score=0.0) for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
+    }
+    scored_codes: list[str] = []
+
+    def score_one(
+        strategy: Strategy,
+        feature: FeatureSnapshot,
+        _policy_value: BoardStrategyPolicy,
+        local: LocalScoreResult,
+    ) -> Recommendation:
+        scored_codes.append(feature.quote.code)
+        score = ScoreBreakdown(
+            components=local.components,
+            base_score=local.base_score,
+            local_risk_penalty=0.0,
+            local_score=local.base_score,
+            deepseek_score=None,
+            confidence_coverage=0.0,
+            deepseek_risk_penalty=0.0,
+            final_score=local.base_score,
+            fusion_mode=FusionMode.LOCAL_DEGRADED,
+            fusion_applied=False,
+        )
+        return Recommendation(
+            strategy,
+            feature,
+            score,
+            (),
+            (),
+            None,
+            RecommendationAction.OBSERVE,
+            "test",
+            False,
+        )
+
+    batches = BoardScoringCoordinator().score(
+        BoardScoringPlan(
+            Strategy.TODAY,
+            (candidate,),
+            policies,
+            ScoringCacheContext("2026-07-16", "today_main", "population-epoch", "population-v1", NOW),
+            population,
+        ),
+        score_one,
+    )
+
+    main = next(batch for batch in batches if batch.board is Board.MAIN)
+    assert scored_codes == [candidate.quote.code]
+    assert tuple(item.features.quote.code for item in main.recommendations) == (candidate.quote.code,)
+    assert main.recommendations[0].features.quote.price == 99.0
+    assert main.recommendations[0].features.quote.data_version == "candidate-v2"

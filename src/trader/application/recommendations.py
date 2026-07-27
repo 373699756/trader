@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.board_scoring import BoardScoringCoordinator
+from trader.application.board_scoring import BoardScoringCoordinator, BoardScoringPlan
 from trader.application.board_scoring_cache import ScoringCacheContext
 from trader.application.cache import request_fingerprint
 from trader.application.long_groups import LongGroupDefinition
@@ -550,20 +550,22 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
                 )
                 or normalized_eligible
             )
-            candidate_codes = {feature.quote.code for feature in normalized_eligible}
+            population_epoch = _merge_epoch_for_features(population_features, options["data_version"])
             context = self._scoring_context(
                 population_features,
                 now=now,
                 trade_date=options["trade_date"],
                 phase=options["phase"],
-                data_version=options["data_version"],
-                merge_epoch=_merge_epoch_for_features(population_features, options["data_version"]),
+                merge_epoch=population_epoch,
             )
             board_batches = self._board_scoring.score(
-                strategy,
-                population_features,
-                policies,
-                context,
+                BoardScoringPlan(
+                    strategy,
+                    normalized_eligible,
+                    policies,
+                    context,
+                    population_features,
+                ),
                 lambda scored_strategy, feature, policy, local_score: self._local_candidate_with_policy(
                     scored_strategy,
                     feature,
@@ -571,15 +573,6 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
                     policy,
                     local_score,
                 ),
-            )
-            board_batches = tuple(
-                replace(
-                    batch,
-                    recommendations=tuple(
-                        item for item in batch.recommendations if item.features.quote.code in candidate_codes
-                    ),
-                )
-                for batch in board_batches
             )
             board_scoring_complete, board_degraded_reasons = _board_batch_status(board_batches, context.merge_epoch)
             local_candidates = tuple(item for batch in board_batches for item in batch.recommendations)

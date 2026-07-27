@@ -311,6 +311,69 @@ def market_changes(
     )
 
 
+def targeted_market_changes(
+    previous: CanonicalMarketSnapshot | None,
+    current: CanonicalMarketSnapshot,
+    codes: Iterable[str],
+) -> MarketChangeSet:
+    """Describe a bounded quote overlay without rebuilding the full columnar batch."""
+
+    selected = set(codes)
+    old = {} if previous is None else {quote.code: quote for quote in previous.quotes if quote.code in selected}
+    new = {quote.code: quote for quote in current.quotes if quote.code in selected}
+    inserted = tuple(sorted(set(new).difference(old)))
+    removed = tuple(sorted(set(old).difference(new)))
+    shared_changes = {
+        code: tuple(field for field in _FIELD_FAMILIES if getattr(old[code], field) != getattr(new[code], field))
+        for code in set(old).intersection(new)
+    }
+    updated = tuple(sorted(code for code, fields in shared_changes.items() if fields))
+    dirty_codes = tuple(sorted((*inserted, *updated, *removed)))
+    dirty_families: set[str] = set()
+    risk_changed: list[str] = []
+    for code in dirty_codes:
+        before = old.get(code)
+        after = new.get(code)
+        if before is None or after is None:
+            dirty_families.update(_FIELD_FAMILIES.values())
+            risk_changed.append(code)
+            continue
+        changed_risk = False
+        for field in shared_changes[code]:
+            family = _FIELD_FAMILIES[field]
+            dirty_families.add(family)
+            changed_risk = changed_risk or family == "risk"
+        if changed_risk:
+            risk_changed.append(code)
+    dimensions = tuple((*old.values(), *new.values()))
+    families = tuple(sorted(dirty_families))
+    content_hash = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "previous_merge_epoch": None if previous is None else previous.merge_epoch,
+                "merge_epoch": current.merge_epoch,
+                "quotes": tuple(new[code] for code in sorted(new)),
+            }
+        )
+    ).hexdigest()
+    return MarketChangeSet(
+        merge_epoch=current.merge_epoch,
+        inserted_codes=inserted,
+        updated_codes=updated,
+        removed_codes=removed,
+        previous_merge_epoch=None if previous is None else previous.merge_epoch,
+        dirty_boards=tuple(sorted({quote.board.value for quote in dimensions if quote.code in dirty_codes})),
+        dirty_industries=tuple(
+            sorted({quote.industry for quote in dimensions if quote.code in dirty_codes and quote.industry})
+        ),
+        dirty_field_families=families,
+        evidence_manifest_hash=_EMPTY_MANIFEST_HASH,
+        risk_changed_codes=tuple(sorted(risk_changed)),
+        overlay_only=_overlay_only(families),
+        content_hash=content_hash,
+    )
+
+
 _QUOTE_SCHEMA: dict[str, DataTypeClass | DataType] = {
     "code": pl.String,
     "name": pl.String,
@@ -536,4 +599,5 @@ __all__ = [
     "FeatureEnvelopeOptions",
     "MarketChangeSet",
     "market_changes",
+    "targeted_market_changes",
 ]

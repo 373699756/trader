@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from trader.application.board_scoring import BoardScoringCoordinator
+from trader.application.board_scoring import BoardScoringCoordinator, BoardScoringPlan
 from trader.application.board_scoring_cache import ScoringCacheContext
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
@@ -37,7 +37,7 @@ from trader.domain.recommendation.ranking import SelectionPolicy, select_top_k
 from trader.domain.recommendation.scoring import score_board_strategy
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.entrypoints.performance_recommendations import recommendation_operations
-from trader.infra.market_data.columnar import ColumnarQuoteBatch, market_changes
+from trader.infra.market_data.columnar import ColumnarQuoteBatch, targeted_market_changes
 from trader.infra.market_data.merge import (
     merge_market_observations,
     observation_from_quote,
@@ -239,11 +239,6 @@ def _market_data_operations(
         observation_from_quote(quote, source="sina", observed_at=observed_at) for quote in sina_quotes
     )
     base_snapshot = merge_market_observations((*east_observations, *sina_observations), observed_at=observed_at)
-    base_batch = ColumnarQuoteBatch.from_snapshot(
-        base_snapshot,
-        config_version="performance-v1",
-        schema_version="market-snapshot-v15",
-    )
     targeted_rows = rows[:candidate_rows]
     tencent_quotes = normalize_source("tencent", 1.0002, targeted_rows)
     tencent_observations = tuple(
@@ -275,12 +270,7 @@ def _market_data_operations(
             targeted_codes=targeted_codes,
         )
         committed = overlay_canonical_snapshot(base_snapshot, targeted)
-        batch = ColumnarQuoteBatch.from_snapshot(
-            committed,
-            config_version="performance-v1",
-            schema_version="market-snapshot-v15",
-        )
-        return market_changes(base_batch, batch)
+        return targeted_market_changes(base_snapshot, committed, targeted_codes)
 
     return {
         "market_normalization": normalize,
@@ -346,10 +336,7 @@ def _board_scoring_operations(config_path: Path) -> dict[str, Callable[[], objec
 
     def score_strategy(strategy: Strategy) -> tuple[Recommendation, ...]:
         batches = coordinator.score(
-            strategy,
-            all_features,
-            policies[strategy],
-            context,
+            BoardScoringPlan(strategy, all_features, policies[strategy], context),
             _score_fixture_recommendation,
         )
         return tuple(item for batch in batches for item in batch.recommendations)

@@ -18,6 +18,7 @@ from trader.application.pipeline_review_updates import (
     ScoringContext,
     publish_pending_hybrid,
     publish_prepared_snapshots,
+    review_enabled_for_strategy_phase,
     schedule_async_reviews,
 )
 from trader.application.ports.market import MarketDataUnavailableError
@@ -293,6 +294,7 @@ def _submit_triggered_score(
             config_version=source_event.config_version,
             created_at=completed_at,
             deadline=completed_at + timedelta(seconds=_TRIGGERED_SCORE_QUEUE_BUDGET_SECONDS),
+            latest_wins=True,
             payload={
                 "schedule_task": PipelineTask.SCORE.value,
                 "trigger_event_type": source_event.event_type,
@@ -433,7 +435,10 @@ def _score_strategies_on_workers(
     measure_deepseek = (
         pipeline._reviews is not None
         and context.phase not in {MarketPhase.DEEPSEEK_CUTOFF, MarketPhase.FINAL_QUOTE}
-        and any(prepared.review_eligible for prepared in prepared_snapshots if prepared.strategy is not Strategy.LONG)
+        and any(
+            prepared.review_eligible and review_enabled_for_strategy_phase(prepared.strategy, context.phase)
+            for prepared in prepared_snapshots
+        )
     )
     deepseek_started = time.perf_counter()
     review_results = _review_prepared_snapshots(pipeline, context, prepared_snapshots)
@@ -484,6 +489,8 @@ def _strategy_inputs(
     inputs: list[_StrategyInput] = []
     feature_reader = read_strategy_features if use_cached_data else fetch_strategy_features
     for strategy in strategies_for_phase(context.phase):
+        if not strategy_requires_scoring(pipeline, strategy, context.phase, context.trade_date):
+            continue
         if (strategy, context.trade_date) in pipeline._frozen_keys or pipeline._state.is_frozen(
             strategy,
             context.trade_date,
@@ -631,7 +638,10 @@ def _review_prepared_snapshots(
     if review_enabled and pipeline._reviews is not None:
         review_futures: dict[Strategy, Future[Mapping[str, DeepSeekReview]]] = {}
         for prepared in prepared_snapshots:
-            if prepared.strategy is Strategy.LONG or not prepared.review_eligible:
+            if not prepared.review_eligible or not review_enabled_for_strategy_phase(
+                prepared.strategy,
+                context.phase,
+            ):
                 continue
             review_futures[prepared.strategy] = submit_required(
                 pipeline,
@@ -665,10 +675,24 @@ def strategies_for_phase(phase: MarketPhase) -> tuple[Strategy, ...]:
     if phase is MarketPhase.WARMUP:
         return (Strategy.LONG,)
     if phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
-        return (Strategy.TODAY, Strategy.LONG)
+        return (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25, Strategy.LONG)
+    if phase is MarketPhase.MIDDAY:
+        return (Strategy.TOMORROW, Strategy.D25, Strategy.LONG)
     if phase in {MarketPhase.AFTERNOON, MarketPhase.FINAL_REVIEW, MarketPhase.FINAL_QUOTE}:
         return (Strategy.TOMORROW, Strategy.D25, Strategy.LONG)
     return ()
+
+
+def strategy_requires_scoring(
+    pipeline: RecommendationPipeline,
+    strategy: Strategy,
+    phase: MarketPhase,
+    trade_date: str,
+) -> bool:
+    if phase is not MarketPhase.MIDDAY:
+        return True
+    current = pipeline._state.latest(strategy)
+    return current is None or current.trade_date != trade_date
 
 
 def maximum_age_seconds(phase: MarketPhase, strategy: Strategy | None = None) -> float:
@@ -709,6 +733,7 @@ __all__ = [
     "process_schedule_on_workers",
     "review_deadline",
     "remember_candidate_selection",
+    "strategy_requires_scoring",
     "strategies_for_phase",
     "submit_required",
     "worker_status",

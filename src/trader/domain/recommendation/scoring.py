@@ -295,6 +295,40 @@ def apply_board_policy(
     return tuple(result)
 
 
+def project_board_policy(
+    cross_section: BoardCrossSection,
+    strategy: Strategy,
+    policy: BoardStrategyPolicy,
+    features: Sequence[FeatureSnapshot],
+) -> tuple[FeatureSnapshot, ...]:
+    """Normalize a bounded fresh candidate set against an existing board population."""
+
+    if policy.strategy is not strategy or policy.board is not cross_section.board:
+        raise ValueError("board policy does not match cross-section")
+    ordered = tuple(
+        sorted(
+            (item for item in features if item.quote.board is cross_section.board),
+            key=lambda item: item.quote.code,
+        )
+    )
+    normalized, _normalization = _normalize_features(
+        ordered,
+        cross_section.reference_values,
+        cross_section.population.population_version,
+    )
+    request = BoardCrossSectionRequest(
+        features=ordered,
+        board=cross_section.board,
+        merge_epoch=cross_section.merge_epoch,
+        trade_date=cross_section.trade_date,
+        phase=cross_section.phase,
+        data_version=cross_section.data_version,
+        schema_version=cross_section.schema_version,
+    )
+    enriched = _enrich_features(normalized, cross_section.population, request)
+    return apply_board_policy(replace(cross_section, features=enriched), strategy, policy)
+
+
 def enrich_board_features(
     strategy: Strategy,
     policy: BoardStrategyPolicy,
@@ -421,6 +455,7 @@ __all__ = [
     "build_board_cross_section",
     "candidate_fields",
     "enrich_board_features",
+    "project_board_policy",
     "score_board_strategy",
     "supported_weight",
 ]

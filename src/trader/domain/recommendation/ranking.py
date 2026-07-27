@@ -31,8 +31,30 @@ CORE_FIELDS = (
 
 _EXECUTION_PHASES = {
     Strategy.TODAY: frozenset({"today_main", "today_late", "close_fallback"}),
-    Strategy.TOMORROW: frozenset({"afternoon", "final_review", "final_quote", "close_fallback"}),
-    Strategy.D25: frozenset({"afternoon", "final_review", "final_quote", "close_fallback"}),
+    Strategy.TOMORROW: frozenset(
+        {
+            "today_observe",
+            "today_main",
+            "today_late",
+            "midday",
+            "afternoon",
+            "final_review",
+            "final_quote",
+            "close_fallback",
+        }
+    ),
+    Strategy.D25: frozenset(
+        {
+            "today_observe",
+            "today_main",
+            "today_late",
+            "midday",
+            "afternoon",
+            "final_review",
+            "final_quote",
+            "close_fallback",
+        }
+    ),
 }
 
 

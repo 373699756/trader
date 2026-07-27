@@ -89,6 +89,9 @@ class PipelineSubmissionMixin(PipelineState):
             tasks.append(ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, now, phase))
         for task in tasks:
             self._state.increment(f"cadence_{task.task.value}_planned")
+            if not _scheduled_task_enabled(self._decision_execution_mode, task.task):
+                self._state.increment(f"cadence_{task.task.value}_skipped_input_driven")
+                continue
             if not self._candidate_codes and task.task not in {
                 PipelineTask.FULL_MARKET,
                 PipelineTask.REFERENCE_DATA,
@@ -171,6 +174,13 @@ class PipelineSubmissionMixin(PipelineState):
         accepted, superseded_ids = self._queue.put_with_superseded(event)
         for event_id in superseded_ids:
             self._latency.finish(event_id, outcome="superseded")
+            self._event_audit.compare_and_set_event(
+                event_id,
+                expected_status=EventStatus.PENDING,
+                status=EventStatus.FAILED,
+                retry_count=0,
+                error="superseded by a newer pending input version",
+            )
         if accepted:
             self._state.increment("events_submitted")
         else:
@@ -205,6 +215,10 @@ def _scheduled_task_priority(task: PipelineTask) -> EventPriority:
         PipelineTask.MARKET_NEWS: EventPriority.LONG,
         PipelineTask.REFERENCE_DATA: EventPriority.LONG,
     }[task]
+
+
+def _scheduled_task_enabled(decision_execution_mode: str, task: PipelineTask) -> bool:
+    return decision_execution_mode != "versioned_dag" or task is not PipelineTask.SCORE
 
 
 def _scheduled_task_deadline(scheduled: ScheduledPipelineTask) -> datetime | None:

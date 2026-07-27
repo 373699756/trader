@@ -19,6 +19,7 @@ from trader.domain.recommendation.ranking import (
     SelectionPolicy,
     action_for,
     candidate_score,
+    minimum_selection_score,
     select_top_k,
     select_top_k_with_audit,
 )
@@ -38,6 +39,29 @@ CANDIDATE_WEIGHTS = {
 
 def test_candidate_score_is_bounded(feature_factory) -> None:
     assert 0.0 <= candidate_score(feature_factory(), CANDIDATE_WEIGHTS) <= 100.0
+
+
+def test_tomorrow_and_d25_have_morning_draft_selection_floors() -> None:
+    thresholds = {"tomorrow": 78.0, "d25": 76.0}
+
+    assert (
+        minimum_selection_score(
+            Strategy.TOMORROW,
+            thresholds,
+            phase="today_main",
+            observation_margin=5.0,
+        )
+        == 73.0
+    )
+    assert (
+        minimum_selection_score(
+            Strategy.D25,
+            thresholds,
+            phase="midday",
+            observation_margin=5.0,
+        )
+        == 71.0
+    )
 
 
 def test_top_k_enforces_industry_cap_and_stable_tie_break(feature_factory) -> None:
@@ -130,7 +154,7 @@ def test_top_k_does_not_lower_minimum_score_to_fill(feature_factory) -> None:
         (Strategy.TODAY, "today_late", 76.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
         (Strategy.TOMORROW, "afternoon", 72.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
         (Strategy.D25, "final_quote", 70.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
-        (Strategy.TOMORROW, "today_main", 100.0, RecommendationAction.UNAVAILABLE, "outside_execution_window"),
+        (Strategy.TOMORROW, "today_main", 100.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
         (Strategy.TOMORROW, "afternoon", 66.99, RecommendationAction.UNAVAILABLE, "below_score_threshold"),
     ),
 )

@@ -60,6 +60,18 @@ const state = {
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage("tomorrow", "today_main"))),
+  { message: "当前暂无可用荐股数据", notice: "等待策略数据更新" },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage("d25", "afternoon"))),
+  { message: "当前暂无可用荐股数据", notice: "等待策略数据更新" },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage("long", "today_main"))),
+  { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照" },
+);
 assert.strictEqual(
   state.emptyRecommendationMessage({
     selection_diagnostics: {

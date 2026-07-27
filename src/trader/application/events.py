@@ -163,6 +163,7 @@ class PipelineEvent:
     created_at: datetime
     deadline: datetime | None = None
     retry_count: int = 0
+    latest_wins: bool = False
     payload: JsonObject = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
@@ -223,6 +224,7 @@ class EventSpec:
     config_version: str
     created_at: datetime
     deadline: datetime | None = None
+    latest_wins: bool = False
     payload: Mapping[str, JsonInput] | None = None
 
 
@@ -239,6 +241,7 @@ def new_event(spec: EventSpec) -> PipelineEvent:
         config_version=spec.config_version,
         created_at=spec.created_at,
         deadline=spec.deadline,
+        latest_wins=spec.latest_wins,
         payload=freeze_json_object(spec.payload or {}),
     )
 
@@ -264,16 +267,13 @@ class BoundedEventQueue:
             if self._closed:
                 self._rejected_count += 1
                 return False, ()
-            existing = self._events.get(event.idempotency_key)
-            if existing is not None:
-                if event.created_at <= existing.created_at:
-                    self._merged_count += 1
-                    return True, (event.event_id,)
-                self._events[event.idempotency_key] = event
-                self._merged_count += 1
-                self._push_locked(event)
-                self._condition.notify()
-                return True, (existing.event_id,)
+            if (merged := self._merge_same_identity_locked(event)) is not None:
+                return merged
+
+            if event.latest_wins:
+                replaced, superseded = self._replace_older_subject_locked(event, latest_wins_only=True)
+                if replaced:
+                    return True, superseded
 
             is_reserved = event.priority <= EventPriority.RISK
             normal_capacity = max(1, self._maximum_size - self._reserved_priority_size)
@@ -290,6 +290,22 @@ class BoundedEventQueue:
             self._push_locked(event)
             self._condition.notify()
             return True, ()
+
+    def _merge_same_identity_locked(
+        self,
+        event: PipelineEvent,
+    ) -> tuple[bool, tuple[str, ...]] | None:
+        existing = self._events.get(event.idempotency_key)
+        if existing is None:
+            return None
+        if event.created_at <= existing.created_at:
+            self._merged_count += 1
+            return True, (event.event_id,)
+        self._events[event.idempotency_key] = event
+        self._merged_count += 1
+        self._push_locked(event)
+        self._condition.notify()
+        return True, (existing.event_id,)
 
     def get(self, timeout_seconds: float | None = None) -> PipelineEvent | None:
         with self._condition:
@@ -343,12 +359,19 @@ class BoundedEventQueue:
             ]
             heapq.heapify(self._heap)
 
-    def _replace_older_subject_locked(self, event: PipelineEvent) -> tuple[bool, tuple[str, ...]]:
+    def _replace_older_subject_locked(
+        self,
+        event: PipelineEvent,
+        *,
+        latest_wins_only: bool = False,
+    ) -> tuple[bool, tuple[str, ...]]:
         coalescing_key = _coalescing_key(event)
         matches = tuple(
             (key, queued)
             for key, queued in self._events.items()
-            if queued.priority > EventPriority.RISK and _coalescing_key(queued) == coalescing_key
+            if (latest_wins_only or queued.priority > EventPriority.RISK)
+            and (not latest_wins_only or queued.latest_wins)
+            and _coalescing_key(queued) == coalescing_key
         )
         if matches:
             newest = max((*[queued for _key, queued in matches], event), key=lambda queued: queued.created_at)

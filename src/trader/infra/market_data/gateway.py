@@ -33,7 +33,12 @@ from trader.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )
-from trader.infra.market_data.columnar import ColumnarQuoteBatch, MarketChangeSet, market_changes
+from trader.infra.market_data.columnar import (
+    ColumnarQuoteBatch,
+    MarketChangeSet,
+    market_changes,
+    targeted_market_changes,
+)
 from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.gateway_runtime import (
     _cache_error_code,
@@ -419,18 +424,15 @@ class MarketDataGateway:
         self._remember_observations_locked(observations, completed_at)
         previous = self._latest_snapshot
         commit_snapshot = overlay_canonical_snapshot(previous, snapshot)
-        commit_snapshot, columnar = _try_columnar_snapshot(
-            commit_snapshot,
-            config_version=self._config_version,
-            schema_version=self._schema_version,
-        )
+        selected_codes = set(codes)
         self._latest_snapshot = commit_snapshot
-        if columnar is None:
-            self._latest_changes = _columnar_failure_changes(previous, commit_snapshot)
+        self._latest_changes = targeted_market_changes(previous, commit_snapshot, codes)
+        if previous is None:
+            self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
         else:
-            self._latest_changes = market_changes(self._latest_batch, columnar)
-            self._latest_batch = columnar
-        self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
+            for quote in commit_snapshot.quotes:
+                if quote.code in selected_codes:
+                    self._latest_by_code[quote.code] = quote
         self._merge_count += 1
         self._conflict_count += len(snapshot.conflicts)
         self.record_local_latency(

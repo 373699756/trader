@@ -82,11 +82,17 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     pipeline.initialize()
 
     today = pipeline.run_once(clock.now())
-    assert [snapshot.strategy for snapshot in today] == [Strategy.TODAY, Strategy.LONG]
+    assert [snapshot.strategy for snapshot in today] == [
+        Strategy.TODAY,
+        Strategy.TOMORROW,
+        Strategy.D25,
+        Strategy.LONG,
+    ]
     assert today[0].fusion_mode.value == "local_degraded"
     assert today[0].metadata["projection_stage"] == "local"
-    assert today[1].phase == "today_main"
-    assert today[1].metadata["projection_stage"] == "local"
+    assert "deepseek_deferred_until_afternoon" in today[1].degraded_reasons
+    assert today[-1].phase == "today_main"
+    assert today[-1].metadata["projection_stage"] == "local"
     latency = pipeline.status()["dependencies"]["latency_waterfall"]
     assert latency["planned_count"] == 1
     assert latency["completed_count"] == 1
@@ -125,6 +131,49 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     assert pipeline.run_once(clock.now()) == ()
     assert len(repository.frozen) == 3
     assert state.latest(Strategy.LONG).frozen is False
+
+
+def test_midday_cold_start_recovers_current_drafts_once_without_today_or_review(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T11:30:00+08:00")
+    features = tuple(
+        application_feature_factory(f"60000{index}", now, industry="工业" if index < 4 else "银行")
+        for index in range(1, 7)
+    )
+    repository = MemoryRepository()
+    state = RuntimeState()
+    pipeline = build_pipeline(
+        StaticMarketData(features),
+        TradingDayCalendar(),
+        None,
+        repository,
+        InMemoryEventLedger(),
+        SnapshotPublisher(history_size=16, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=16,
+        priority_queue_size=4,
+        now=lambda: now,
+        long_codes=("600001", "600002"),
+    )
+    pipeline.initialize()
+
+    recovered = pipeline.run_once(now)
+
+    assert [snapshot.strategy for snapshot in recovered] == [
+        Strategy.TOMORROW,
+        Strategy.D25,
+        Strategy.LONG,
+    ]
+    assert state.latest(Strategy.TODAY) is None
+    assert all(snapshot.phase == "midday" for snapshot in recovered)
+    assert all(snapshot.metadata["projection_stage"] == "local" for snapshot in recovered)
+    assert "deepseek_deferred_until_afternoon" in recovered[0].degraded_reasons
+    assert pipeline.run_once(now) == ()
 
 
 @pytest.mark.parametrize(
@@ -218,7 +267,7 @@ def test_p6_rejection_preserves_previous_publication_state(
     assert publisher.last_sequence() == 0
     assert repository.checkpoints == {}
     assert pipeline._session_snapshot_ids == set()
-    assert status["counters"]["p6_snapshot_rejections"] == 1
+    assert status["counters"]["p6_snapshot_rejections"] == 3
     assert status["strategy_degraded_reasons"]["today"] == ("p6_snapshot_rejected",)
 
 
@@ -1345,7 +1394,8 @@ def test_initialize_restores_frozen_gate(recommendation_policy, application_feat
 
     pipeline.initialize()
 
-    assert pipeline.run_once(now) == ()
+    morning = pipeline.run_once(now)
+    assert {snapshot.strategy for snapshot in morning} == {Strategy.TOMORROW, Strategy.D25}
     assert repository.published == {}
 
 
@@ -1647,14 +1697,14 @@ def test_market_data_unavailability_preserves_candidates_and_records_degradation
         now=clock.now,
     )
     pipeline.initialize()
-    assert len(pipeline.run_once(clock.now())) == 1
+    assert len(pipeline.run_once(clock.now())) == 3
 
     market_data.market_unavailable = True
     clock.set(datetime.fromisoformat("2026-07-16T10:00:10+08:00"))
     degraded = pipeline.run_once(clock.now())
 
-    assert len(degraded) == 1
-    assert degraded[0].recommendations
+    assert len(degraded) == 3
+    assert all(snapshot.recommendations for snapshot in degraded)
     status = pipeline.status()
     assert status["counters"]["market_refresh_failures"] == 1
     assert status["last_error"] == "market data degraded during today_main: all full-market sources failed"

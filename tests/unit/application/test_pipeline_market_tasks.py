@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
 from trader.application import pipeline_market_tasks
+from trader.application.pipeline_stages import strategies_for_phase, strategy_requires_scoring
 from trader.application.schedule import MarketPhase
+from trader.domain.recommendation.models import Strategy
 
 
 def test_realtime_candidate_quote_event_does_not_wait_for_intraday_history(monkeypatch, utc_now) -> None:
@@ -53,3 +55,44 @@ def test_realtime_candidate_quote_event_refreshes_long_codes_in_same_request(mon
 
     assert requested_codes == [("600001", "688012", "300346")]
     assert tuple(feature.quote.code for feature in pipeline._candidate_features) == ("600001",)
+
+
+def test_pre_afternoon_candidate_and_scoring_phases_include_tomorrow_and_d25() -> None:
+    expected = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+
+    assert pipeline_market_tasks._short_strategies_for_phase(MarketPhase.TODAY_MAIN) == expected
+    assert strategies_for_phase(MarketPhase.TODAY_MAIN) == (*expected, Strategy.LONG)
+    assert strategies_for_phase(MarketPhase.MIDDAY) == (
+        Strategy.TOMORROW,
+        Strategy.D25,
+        Strategy.LONG,
+    )
+    assert strategies_for_phase(MarketPhase.AFTERNOON) == (
+        Strategy.TOMORROW,
+        Strategy.D25,
+        Strategy.LONG,
+    )
+
+
+def test_midday_scoring_only_recovers_a_missing_current_trade_date() -> None:
+    state = SimpleNamespace(latest=lambda _strategy: SimpleNamespace(trade_date="2026-07-27"))
+    pipeline = SimpleNamespace(_state=state)
+
+    assert not strategy_requires_scoring(
+        pipeline,
+        Strategy.TOMORROW,
+        MarketPhase.MIDDAY,
+        "2026-07-27",
+    )
+    assert strategy_requires_scoring(
+        pipeline,
+        Strategy.TOMORROW,
+        MarketPhase.MIDDAY,
+        "2026-07-28",
+    )
+    assert strategy_requires_scoring(
+        pipeline,
+        Strategy.TOMORROW,
+        MarketPhase.AFTERNOON,
+        "2026-07-27",
+    )

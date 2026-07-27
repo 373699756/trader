@@ -96,9 +96,27 @@ def schedule_async_reviews(
     local_by_strategy = {snapshot.strategy: snapshot for snapshot in local_snapshots}
     for prepared in prepared_snapshots:
         base = local_by_strategy.get(prepared.strategy)
-        if prepared.strategy is Strategy.LONG or not prepared.review_eligible or base is None:
+        if (
+            prepared.strategy is Strategy.LONG
+            or not prepared.review_eligible
+            or base is None
+            or not review_enabled_for_strategy_phase(prepared.strategy, context.phase)
+        ):
             continue
         _offer_async_review(pipeline, _PendingReview(prepared, base.snapshot_id))
+
+
+def _review_deferred_until_afternoon(strategy: Strategy, phase: MarketPhase) -> bool:
+    return strategy in {Strategy.TOMORROW, Strategy.D25} and phase in {
+        MarketPhase.TODAY_OBSERVE,
+        MarketPhase.TODAY_MAIN,
+        MarketPhase.TODAY_LATE,
+        MarketPhase.MIDDAY,
+    }
+
+
+def review_enabled_for_strategy_phase(strategy: Strategy, phase: MarketPhase) -> bool:
+    return strategy is not Strategy.LONG and not _review_deferred_until_afternoon(strategy, phase)
 
 
 def _offer_async_review(

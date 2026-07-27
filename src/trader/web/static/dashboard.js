@@ -338,11 +338,9 @@
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
     if (payload.status === "not_ready") {
-      const message = payload.strategy === "long"
-        ? "长期策略当前尚无可用数据"
-        : "当前暂无可用荐股数据";
-      renderTableState(message, window.TraderRender.tableColumnCount(payload));
-      setNotice(payload.strategy === "long" ? "长期策略只展示当前研究快照" : "等待策略数据更新", "idle");
+      const notReady = patches.notReadyMessage(payload.strategy);
+      renderTableState(notReady.message, window.TraderRender.tableColumnCount(payload));
+      setNotice(notReady.notice, "idle");
       return;
     }
     if (recommendations.length === 0) {
@@ -691,6 +689,9 @@
     return Object.freeze({
       emptyRecommendationMessage: () => "当前没有达到正式推荐条件的股票",
       mergePatchItems: (items) => items || [],
+      notReadyMessage: (strategy) => strategy === "long"
+        ? { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照" }
+        : { message: "当前暂无可用荐股数据", notice: "等待策略数据更新" },
       overlayPatchDecision: () => "dependency_missing",
       patchVersionValid: () => false,
       projectionVersion: (payload) => payload && (payload.projection_version || payload.snapshot_id) || "",

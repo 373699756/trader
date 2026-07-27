@@ -196,6 +196,14 @@ def overlay_canonical_snapshot(
     degraded_reasons = set(base.degraded_reasons)
     if overlay_codes:
         degraded_reasons.update(overlay.degraded_reasons)
+    merge_epoch = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "component_merge_epochs": tuple(sorted((base.merge_epoch, overlay.merge_epoch))),
+                "observed_at": max(base.observed_at, overlay.observed_at),
+            }
+        )
+    ).hexdigest()[:24]
     return _canonical_snapshot(
         observed_at=max(base.observed_at, overlay.observed_at),
         quotes=tuple(quotes[code] for code in sorted(quotes)),
@@ -204,6 +212,7 @@ def overlay_canonical_snapshot(
         conflicts=tuple(sorted(conflicts)),
         missing_reasons=missing,
         degraded_reasons=tuple(sorted(degraded_reasons)),
+        merge_epoch=merge_epoch,
     )
 
 

@@ -21,7 +21,7 @@ def admit_snapshot_to_p6(
     try:
         accepted = pipeline._published_snapshots.publish(snapshot)
     except ValueError as exc:
-        _record_rejection(pipeline, snapshot, type(exc).__name__)
+        _record_rejection(pipeline, snapshot, str(exc))
         return False
     if accepted is False:
         _record_rejection(pipeline, snapshot, "not_current")

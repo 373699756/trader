@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING
 from trader.application.after_close_recovery import recover_after_close_snapshots
 from trader.application.candidate_features import fetch_strategy_features
 from trader.application.pipeline_market_tasks import _refresh_intraday_tail_before_score
+from trader.application.pipeline_review_updates import review_enabled_for_strategy_phase
 from trader.application.pipeline_stages import (
     maximum_age_seconds,
     persist,
     remember_candidate_selection,
     review_deadline,
     strategies_for_phase,
+    strategy_requires_scoring,
 )
 from trader.application.pipeline_workers import submit_required_urgent
 from trader.application.ports.market import MarketDataUnavailableError
@@ -63,6 +65,7 @@ def process_schedule(
         MarketPhase.TODAY_OBSERVE,
         MarketPhase.TODAY_MAIN,
         MarketPhase.TODAY_LATE,
+        MarketPhase.MIDDAY,
         MarketPhase.AFTERNOON,
         MarketPhase.FINAL_REVIEW,
         MarketPhase.FINAL_QUOTE,
@@ -77,6 +80,8 @@ def process_schedule(
     _refresh_intraday_tail_before_score(pipeline, now, phase, on_workers=False)
 
     for strategy in strategies_for_phase(phase):
+        if not strategy_requires_scoring(pipeline, strategy, phase, trade_date):
+            continue
         if (strategy, trade_date) in pipeline._frozen_keys or pipeline._state.is_frozen(strategy, trade_date):
             continue
         snapshot = score_strategy(pipeline, strategy, now, phase, trade_date)
@@ -423,7 +428,11 @@ def score_strategy(
     )
     if not _publish_live_snapshot(pipeline, local_snapshot, now):
         return None
-    reviews = _review_local_snapshot(pipeline, prepared, review_port)
+    reviews = _review_local_snapshot(
+        pipeline,
+        prepared,
+        review_port if review_enabled_for_strategy_phase(strategy, phase) else None,
+    )
     snapshot = local_snapshot
     if reviews:
         hybrid_snapshot = _decorate_live_snapshot(

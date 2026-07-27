@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from trader.application.board_scoring import BoardScoringCoordinator
+from trader.application.board_scoring import BoardScoringCoordinator, BoardScoringPlan
 from trader.application.board_scoring_cache import ScoringCacheContext
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import (
@@ -234,15 +234,17 @@ def _measure(runtime_path: Path, fixture_path: Path) -> dict[str, Any]:
                     if (board_policy := policy.board_policy(active_strategy, board)) is not None
                 }
                 batches = coordinator.score(
-                    active_strategy,
-                    all_features,
-                    policies,
-                    ScoringCacheContext(
-                        "2026-07-16",
-                        "afternoon",
-                        f"fixture-epoch-{round_index}",
-                        "fixture-v16",
-                        NOW,
+                    BoardScoringPlan(
+                        active_strategy,
+                        all_features,
+                        policies,
+                        ScoringCacheContext(
+                            "2026-07-16",
+                            "afternoon",
+                            f"fixture-epoch-{round_index}",
+                            "fixture-v16",
+                            NOW,
+                        ),
                     ),
                     _recommendation,
                 )

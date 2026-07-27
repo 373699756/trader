@@ -16,6 +16,7 @@ from trader.infra.market_data.columnar import (
     ColumnarResearchBatch,
     FeatureEnvelopeOptions,
     market_changes,
+    targeted_market_changes,
 )
 
 NOW = datetime(2026, 7, 22, 6, 49, 50, tzinfo=timezone.utc)
@@ -133,6 +134,35 @@ def test_columnar_change_set_reports_dimensions_field_families_and_risk_changes(
     assert changes.overlay_only is False
     assert changes.full_invalidation_reason is None
     assert changes.content_hash == current.identity.content_hash
+
+
+def test_targeted_market_changes_projects_only_requested_overlay_codes() -> None:
+    previous = _snapshot(
+        "epoch-1",
+        (
+            _quote("600001", 10.0, "v1", industry="工业"),
+            _quote("600002", 20.0, "v1", industry="医药"),
+        ),
+    )
+    current = _snapshot(
+        "epoch-2",
+        (
+            replace(_quote("600001", 11.0, "v2", industry="工业"), amount=1_200_000.0),
+            _quote("600002", 20.0, "v1", industry="医药"),
+        ),
+    )
+
+    changes = targeted_market_changes(previous, current, ("600001",))
+
+    assert changes.updated_codes == ("600001",)
+    assert changes.inserted_codes == ()
+    assert changes.removed_codes == ()
+    assert changes.dirty_boards == ("main",)
+    assert changes.dirty_industries == ("工业",)
+    assert changes.dirty_field_families == ("quote_identity", "quote_liquidity", "quote_price")
+    assert changes.risk_changed_codes == ()
+    assert changes.overlay_only is True
+    assert len(changes.content_hash) == 64
 
 
 def test_columnar_membership_and_dimension_changes_dirty_old_and_new_cross_sections() -> None:

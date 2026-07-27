@@ -112,6 +112,21 @@ def test_authoritative_docs_match_active_runtime_identities() -> None:
     assert strategy_config["strategy_version"] in strategy
 
 
+def test_recommendation_availability_regression_matrix_is_permanent() -> None:
+    matrix = _section(PROJECT_ROOT / "docs/software-business-design.md", "### 13.1", "## 14.")
+
+    for boundary in ("09:30-11:20", "11:20-13:00", "13:00-14:50", "14:50-15:00", "15:00 后"):
+        assert boundary in matrix
+    for strategy in ("today", "tomorrow", "d25", "long"):
+        assert strategy in matrix
+    for state in ("ready", "`not_ready`", "`close_fallback`"):
+        assert state in matrix
+    assert "热运行" in matrix
+    assert "冷启动" in matrix
+    assert "重启真实" in matrix
+    assert "未替换旧进程" in matrix
+
+
 def test_authoritative_docs_match_active_scoring_and_runtime_behavior() -> None:
     runtime = json.loads((PROJECT_ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
     strategy_config = json.loads((PROJECT_ROOT / "config/v2/strategy.json").read_text(encoding="utf-8"))

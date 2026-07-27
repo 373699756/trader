@@ -54,6 +54,19 @@
     return "当前没有达到正式推荐条件的股票";
   }
 
+  function notReadyMessage(strategy) {
+    if (strategy === "long") {
+      return {
+        message: "长期策略当前尚无可用数据",
+        notice: "长期策略只展示当前研究快照",
+      };
+    }
+    return {
+      message: "当前暂无可用荐股数据",
+      notice: "等待策略数据更新",
+    };
+  }
+
   function mergePatchItems(existingItems, upserts, removed) {
     const byCode = new Map((existingItems || []).map((item) => [item.code, item]));
     for (const code of removed) byCode.delete(code);
@@ -90,6 +103,7 @@
   window.TraderDashboardPatches = Object.freeze({
     emptyRecommendationMessage,
     mergePatchItems,
+    notReadyMessage,
     overlayPatchDecision,
     patchVersionValid,
     projectionVersion,

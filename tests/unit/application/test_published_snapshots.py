@@ -272,3 +272,35 @@ def test_published_index_raises_when_current_view_exceeds_p6_limit() -> None:
 
     assert index.latest(Strategy.TODAY) is None
     assert index.status()["rejected_oversize_views"] == 1
+
+
+def test_published_index_uses_larger_bounded_limit_for_long_current_view() -> None:
+    large_group = {
+        "name": "长期观察",
+        "category": "chokepoint",
+        "codes": ["600001"],
+        "count": 1,
+        "source": "x" * (200 * 1024),
+    }
+    metadata = {"long_groups": (large_group,)}
+    long_snapshot = replace(
+        _snapshot(Strategy.LONG, "2026-07-22"),
+        frozen=False,
+        metadata=metadata,
+    )
+    today_snapshot = replace(_snapshot(Strategy.TODAY, "2026-07-22"), metadata=metadata)
+    index = PublishedSnapshotIndex(_Archive(()))
+
+    assert index.publish(long_snapshot) is True
+    with pytest.raises(ValueError, match=r"today P6 view .* limit=163840"):
+        index.publish(today_snapshot)
+
+    status = index.status()
+    assert status["maximum_view_bytes_by_strategy"] == {
+        "today": 160 * 1024,
+        "tomorrow": 160 * 1024,
+        "d25": 160 * 1024,
+        "long": 512 * 1024,
+    }
+    assert status["last_oversize_rejection"]["strategy"] == "today"
+    assert status["last_oversize_rejection"]["limit_bytes"] == 160 * 1024
