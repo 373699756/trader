@@ -205,6 +205,7 @@ def test_publisher_emits_incremental_snapshot_patch_after_base_snapshot(
     incremental_upserts = cast(list[Mapping[str, object]], incremental_patch["upserts"])
     assert initial_patch["replace"] is True
     assert [item["code"] for item in initial_upserts] == ["600001", "600002"]
+    assert initial_upserts[0]["anchor_source_time"] == unchanged.features.quote.source_time.isoformat()
     assert incremental_patch["replace"] is False
     assert incremental_patch["base_projection_version"] == "today-base"
     assert incremental_patch["projection_version"] == "today-next"

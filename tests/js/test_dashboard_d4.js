@@ -51,6 +51,9 @@ const state = {
   ...sandbox.window.TraderSelection,
   ...sandbox.window.TraderDashboardPatches,
   latencySummary: sandbox.window.TraderDashboardFormatters.latencySummary,
+  drawer: sandbox.window.TraderRender.drawer,
+  frozenTodayTable: sandbox.window.TraderRender.frozenTodayTable,
+  isFrozenTodayView: sandbox.window.TraderRender.isFrozenTodayView,
   longTable: sandbox.window.TraderRender.longTable,
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
   tableColumnCount: sandbox.window.TraderRender.tableColumnCount,
@@ -97,6 +100,52 @@ assert.strictEqual(
   "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
 );
 assert.strictEqual(state.tableColumnCount({ strategy: "long", historical: false }), 7);
+const frozenToday = {
+  strategy: "today",
+  trade_date: "2026-07-23",
+  current_trade_date: "2026-07-23",
+  historical: false,
+  frozen: true,
+  degraded_reasons: [],
+  fusion_mode: "local_degraded",
+};
+assert.strictEqual(state.isFrozenTodayView(frozenToday), true);
+assert.strictEqual(state.isFrozenTodayView({ ...frozenToday, historical: true }), false);
+assert.strictEqual(state.isFrozenTodayView({ ...frozenToday, strategy: "tomorrow" }), false);
+assert.strictEqual(state.isFrozenTodayView({ ...frozenToday, phase: "close_fallback" }), false);
+assert.strictEqual(state.isFrozenTodayView({ ...frozenToday, current_trade_date: "2026-07-24" }), false);
+assert.strictEqual(state.tableColumnCount(frozenToday), 7);
+assert.strictEqual(
+  state.frozenTodayTable().head,
+  "<tr><th>排名</th><th>股票</th><th>11:20锚点价</th><th>锚点时涨跌</th><th>当前价</th><th>当前涨跌</th><th>锚点至今</th></tr>",
+);
+const frozenTodayItem = {
+  rank: 1,
+  code: "600001",
+  name: "锚点股票",
+  industry: "测试行业",
+  anchor_price: 10,
+  anchor_source_time: "2026-07-23T11:19:50+08:00",
+  anchor_daily_return_pct: 2,
+  price: 11,
+  pct_change: 4.5,
+  anchor_to_now_pct: 10,
+  source: "tencent",
+  source_time: "2026-07-23T13:30:00+08:00",
+  scores: { local_score: 80, final_score: 80 },
+  action: "executable",
+  action_reason: "score_threshold_met",
+  risks: [],
+};
+const frozenTodayRows = state.tableRows([frozenTodayItem], frozenToday);
+assert.match(frozenTodayRows, /11:19:50/);
+assert.match(frozenTodayRows, />11\.00</);
+assert.match(frozenTodayRows, /\+10\.00%/);
+const frozenTodayDrawer = state.drawer(frozenTodayItem, frozenToday);
+assert.match(frozenTodayDrawer, /实际锚点时间/);
+assert.match(frozenTodayDrawer, /11:19:50/);
+assert.match(frozenTodayDrawer, /当前价/);
+assert.match(frozenTodayDrawer, /锚点至今/);
 assert.strictEqual(state.sourceLabel("unavailable"), "行情暂不可用");
 assert.strictEqual(state.sourceLabel("long_watchlist"), "长期观察名单");
 assert.strictEqual(state.sourceLabel("tencent"), "腾讯行情");

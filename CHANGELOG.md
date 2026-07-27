@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求把 11:20 后的今早正式推荐展示为可持续跟踪的冻结锚点。推荐 Web envelope 与
+  SSE 推荐 patch 新增兼容字段 `anchor_source_time`，记录每只股票冻结时实际接受的带时区
+  报价时间；同日冻结 today 新增专用单表和详情展示，同时给出 11:20 锚点价、锚点时涨跌、
+  当前价、当前涨跌和锚点至今涨跌。
 - 用户要求修复四项不值得大规模重构、但会持续增加维护风险的小问题。新增
   `scripts/generate_long_watchlist_asset.py`，以 `config/v2/long_watchlist.json` 为唯一来源
   确定性生成打包的 `long_watchlist_data.js`；新增 `make long-watchlist-check` 并接入
@@ -91,6 +95,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 同日正式冻结的 today 仍只展示 `executable` 名单，名单、排名、评分和动作保持不可变，
+  但 11:20-15:00 继续消费既有 TopK overlay，15:00 后保留 closing overlay 至下一交易日；
+  页面状态改为明确说明冻结决策与最新可用行情的边界。静态资源 revision 升级为
+  `today-freeze-anchor-2026-07-27`，避免浏览器继续使用缺少锚点视图的旧脚本和样式。
 - 长期观察池 20 处暴露退役 `stock_analyzer/...` 实现路径的来源文字统一改为稳定业务描述
   “历史卡脖子行业龙头名单复核”；股票、顺序、分组、研究属性和运行策略均未改变。软件
   业务设计同步明确 JSON 唯一来源、确定性生成入口和常规 lint 门禁。
@@ -312,6 +320,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复用户看到 11:20 后今早页面仍像普通当前推荐、无法判断行情是否继续更新的问题。调查
+  确认后台一直为冻结快照发布实时 overlay，缺口在 Web 将同日冻结 today 继续路由到普通
+  九列表格，导致已有锚点字段和锚点至今变化未被渲染。现在专用七列表和详情同时展示稳定
+  锚点与变化中的当前行情；`close_fallback`、显式历史和其他策略不会误进入该模式，新交易日
+  仍由查询身份拒绝上一日快照。
 - 快照原语 `_review_mapping()` 原先经 `snapshot_items` 间接取得实际定义在
   `snapshot_review_items` 的 `_review_from_dict`，形成隐藏依赖；现在保留避免循环导入所需
   的局部导入，但直接依赖真实所有者模块。`pyproject.toml` 的 Ruff 注释同时从不存在的
@@ -452,6 +465,17 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批新增失败先行 API、SSE、JS 与 Overlay 集成回归，覆盖实际锚点报价时间稳定、午后
+  当前行情变化、today/tomorrow 冻结 Overlay、来源失败保留上一有效值、15:00 closing
+  持久化，以及历史/其他策略/`close_fallback`/下一交易日身份隔离。`make format-check`、
+  `make lint`、`make type-check`、完整 `make test` 与 `make package` 通过；隔离构建首次因
+  沙箱禁止访问本机 pip 代理失败，获准后原命令成功。仓库外全依赖 wheel 环境通过导入、
+  `validate-config`、14 项模板/静态资源和 `pip check`。Firefox/geckodriver 实际渲染确认
+  11:20 锚点表、实际 11:19:50 报价时间、13.20 当前价和 +10.00% 锚点变化，三档桌面均
+  无页面横向溢出或浏览器错误，25 个推荐 patch 全部应用、resync 为 0、patch-to-paint
+  P95 为 26ms。最终代码重启真实服务后，首页 10 项资源均使用新 revision；冷启动约
+  20 秒后历史预热完成 356/360，tomorrow 同日 ready 1 只、d25 同日 ready 合法空集、long
+  同日 ready 212 只，today 没有使用上一交易日结果。
 - 本批失败先行契约分别复现隐藏编解码依赖、20 处旧来源路径、缺失生成器和错误 Ruff 命令；
   修复后架构、长期观察池、工程记录契约及完整持久化组件共 51 项通过，生成器连续
   `--check` 字节一致，直接导入 smoke test 未触发循环导入。最终 `make format-check`、
@@ -727,6 +751,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除冻结记录、推荐字段、历史视图、观察项、评分逻辑或数据库结构；只替换同日正式
+  冻结 today 的当前页面呈现方式。
 - 长期观察池配置及其打包静态资源不再包含 20 处退役
   `stock_analyzer/scoring_core/theme_scores.py` 内部路径或旧常量名。
 - 移除生产 `versioned_dag` 中与输入完成触发重复的周期评分提交；保留 `serialized`
@@ -764,6 +790,12 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 实际锚点报价允许早于 11:20 最多既有冻结接受窗口，因此页面同时显示“11:20 锚点”业务
+  边界和逐股实际时间，不把两者伪装成同一时刻。外部行情源失败时只能保留最近有效报价并
+  标记降级，不能承诺每秒都有新成交；本批不改变候选、评分、门槛、冻结或收益表现。真实
+  验收在 14:31 重启，当天不存在可恢复的 11:20 pre-cutoff 正式 today，因此该接口按冻结
+  不可伪造规则保持同日 `not_ready`；真实交易日锚点展示仍需在下一次上午持续运行并完成
+  11:20 冻结后观察，本批的锚点与 Overlay 行为由确定性集成和真实 Firefox fixture 验证。
 - 本批没有调整长期观察池股票、评分、行情、Web 布局或冻结行为；稳定来源文字只保留业务级
   追溯，不等价于新增外部研究证据。生成器不会自动改写配置，维护者仍需明确更新 JSON，
   但未同步静态 JS 会被 `make long-watchlist-check`、`make lint` 和契约测试阻断。

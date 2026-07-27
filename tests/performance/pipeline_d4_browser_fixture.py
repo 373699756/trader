@@ -12,7 +12,8 @@ from tests.performance.test_pipeline_d4_web import _Archive, _snapshot
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher, encode_sse
 from trader.application.queries import RecommendationQueries
-from trader.domain.market.models import FeatureSnapshot, MarketQuote
+from trader.domain.market.models import FeatureSnapshot, LiveQuote, MarketQuote
+from trader.domain.recommendation.models import LiveOverlay
 from trader.web import create_app
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -118,6 +119,70 @@ def build_app() -> Flask:
     def publish_fixture_resync():
         event = publisher.resync("base_mismatch")
         return jsonify({"sequence": event.sequence, "reason": "base_mismatch"})
+
+    @app.post("/__d4/freeze-today")
+    def publish_frozen_today():
+        with lock:
+            anchor_at = observed_at.replace(hour=11, minute=19, second=50)
+            frozen_at = observed_at.replace(hour=11, minute=20, second=0)
+            current_at = observed_at.replace(hour=13, minute=30, second=0)
+            source = _snapshot("d4-browser-frozen", _feature)
+            anchored = tuple(
+                replace(
+                    item,
+                    features=replace(
+                        item.features,
+                        quote=replace(
+                            item.features.quote,
+                            source_time=anchor_at,
+                            received_time=anchor_at,
+                            data_version=f"anchor:{item.features.quote.code}",
+                        ),
+                    ),
+                )
+                for item in source.recommendations
+            )
+            snapshot = replace(
+                source,
+                trade_date=observed_at.date().isoformat(),
+                phase="today_freeze",
+                published_at=frozen_at,
+                recommendations=anchored,
+                frozen=True,
+            )
+            overlay = LiveOverlay(
+                snapshot_id=snapshot.snapshot_id,
+                strategy=snapshot.strategy,
+                trade_date=snapshot.trade_date,
+                version="d4-browser-live-overlay",
+                observed_at=current_at,
+                quotes={
+                    item.features.quote.code: LiveQuote(
+                        code=item.features.quote.code,
+                        price=13.2,
+                        pct_change=5.5,
+                        source="tencent",
+                        source_time=current_at,
+                        received_time=current_at,
+                        data_version=f"overlay:{item.features.quote.code}",
+                    )
+                    for item in snapshot.recommendations
+                },
+            )
+            index.publish(snapshot)
+            snapshot_event = publisher.publish(snapshot)
+            assert snapshot_event is not None
+            index.publish_overlay(overlay)
+            overlay_event = publisher.publish_overlay(overlay)
+            assert overlay_event is not None
+            state["snapshot_id"] = snapshot.snapshot_id
+        return jsonify(
+            {
+                "snapshot_id": snapshot.snapshot_id,
+                "snapshot_sequence": snapshot_event.sequence,
+                "overlay_sequence": overlay_event.sequence,
+            }
+        )
 
     return app
 

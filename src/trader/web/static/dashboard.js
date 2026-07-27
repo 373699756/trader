@@ -313,6 +313,7 @@
     payload = longGroups.displayPayload(payload);
     state.projectionVersion = patches.projectionVersion(payload);
     const items = Array.isArray(payload.items) ? payload.items : [], historical = payload.historical === true;
+    const frozenToday = window.TraderRender.isFrozenTodayView(payload);
     setLongControls(payload.strategy === "long" && !historical);
     setLongLayout(payload.strategy === "long" && payload.status === "ready" && !historical);
     longGroups.renderBar(els, state, payload.status === "ready" ? payload : null);
@@ -334,6 +335,7 @@
     els.dataQuality.title = summary.dataQualityTitle;
     const definition = window.TraderRender.tableDefinition(payload);
     els.recommendationTable.classList.toggle("is-history", historical);
+    els.recommendationTable.classList.toggle("is-anchor-table", frozenToday);
     els.recommendationTable.classList.toggle("is-long-table", payload.strategy === "long" && !historical);
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
@@ -353,12 +355,21 @@
     } else {
       els.tableBody.innerHTML = window.TraderRender.tableRows(recommendations, payload);
     }
-    if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
+    if (payload.stale && frozenToday) {
+      setNotice("11:20 已冻结 · 名单与评分不变 · 行情已过期，当前报价仅供观察", "warn");
+    }
+    else if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
     else if (payload.phase === "close_fallback") {
       const degraded = (payload.degraded_reasons || []).length
         ? ` · 降级：${window.TraderRender.reasonLabels(payload.degraded_reasons).join("、")}`
         : "";
       setNotice(`已冻结 · 收盘补算 · ${window.TraderRender.formatDateTime(payload.published_at)}${degraded}`, degraded ? "warn" : "ok");
+    }
+    else if (frozenToday) {
+      const degraded = (payload.degraded_reasons || []).length
+        ? ` · 降级：${window.TraderRender.reasonLabels(payload.degraded_reasons).join("、")}`
+        : "";
+      setNotice(`11:20 已冻结 · 名单与评分不变 · 行情按最新可用报价展示${degraded}`, degraded ? "warn" : "ok");
     }
     else if ((payload.degraded_reasons || []).length) setNotice(`降级：${window.TraderRender.reasonLabels(payload.degraded_reasons).join("、")}`, "warn");
     else if (payload.frozen) setNotice(`已冻结于 ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
@@ -387,6 +398,7 @@
     els.quoteTime.textContent = "-";
     els.quoteAge.textContent = "-";
     els.recommendationTable.classList.remove("is-history");
+    els.recommendationTable.classList.remove("is-anchor-table");
     els.recommendationTable.classList.remove("is-long-table");
     setLongControls(state.strategy === "long");
     setLongLayout(false);
@@ -414,6 +426,7 @@
     els.quoteTime.textContent = "-";
     els.quoteAge.textContent = "-";
     els.recommendationTable.classList.add("is-history");
+    els.recommendationTable.classList.remove("is-anchor-table");
     els.recommendationTable.classList.remove("is-long-table");
     setLongControls(false);
     setLongLayout(false);

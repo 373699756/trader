@@ -65,6 +65,7 @@ RECOMMENDATION_ITEM_KEYS = {
     "source_time",
     "quote_data_version",
     "anchor_price",
+    "anchor_source_time",
     "anchor_daily_return_pct",
     "anchor_to_now_pct",
     "action",
@@ -201,6 +202,7 @@ def test_recommendations_exclude_internal_missing_features_and_evidence(
     assert "missing_reasons" not in item
     assert "evidence" not in item
     assert item["anchor_to_now_pct"] is None
+    assert item["anchor_source_time"] == recommendation.features.quote.source_time.isoformat()
 
 
 def test_recommendation_response_excludes_internal_board_and_merge_fields(
@@ -513,6 +515,71 @@ def test_frozen_current_response_applies_overlay_without_changing_anchor_or_snap
     cached = client.get("/api/recommendations/tomorrow", headers={"If-None-Match": response.headers["ETag"]})
     assert cached.status_code == 304
     assert cached.headers["ETag"] == response.headers["ETag"]
+
+
+def test_frozen_today_current_response_keeps_actual_anchor_time_while_overlay_moves(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    anchor_at = NOW.replace(hour=11, minute=19, second=50)
+    frozen_at = NOW.replace(hour=11, minute=20)
+    source = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
+    first = source.recommendations[0]
+    anchored_quote = replace(
+        first.features.quote,
+        price=10.0,
+        pct_change=2.0,
+        source_time=anchor_at,
+        received_time=anchor_at,
+        data_version="anchor-v1",
+    )
+    frozen = replace(
+        source,
+        snapshot_id="frozen-today-anchor",
+        published_at=frozen_at,
+        frozen=True,
+        recommendations=(
+            replace(first, features=replace(first.features, quote=anchored_quote)),
+            *source.recommendations[1:],
+        ),
+    )
+    live_at = NOW.replace(hour=13, minute=30)
+    overlay = LiveOverlay(
+        snapshot_id=frozen.snapshot_id,
+        strategy=frozen.strategy,
+        trade_date=frozen.trade_date,
+        version="today-overlay-v2",
+        observed_at=live_at,
+        quotes={
+            "600001": LiveQuote(
+                code="600001",
+                price=11.0,
+                pct_change=4.5,
+                source="tencent",
+                source_time=live_at,
+                received_time=live_at,
+                data_version="live-v2",
+            )
+        },
+    )
+    repository = MemoryReadRepository(
+        frozen={(Strategy.TODAY, frozen.trade_date): frozen},
+        overlays={(Strategy.TODAY, frozen.trade_date): overlay},
+    )
+
+    payload = _app(repository, now=live_at)[0].test_client().get("/api/recommendations/today").get_json()
+    item = payload["items"][0]
+
+    assert payload["historical"] is False
+    assert payload["current_trade_date"] == frozen.trade_date
+    assert payload["frozen"] is True
+    assert item["anchor_price"] == 10.0
+    assert item["anchor_source_time"] == anchor_at.isoformat()
+    assert item["anchor_daily_return_pct"] == 2.0
+    assert item["price"] == 11.0
+    assert item["pct_change"] == 4.5
+    assert item["source_time"] == live_at.isoformat()
+    assert item["anchor_to_now_pct"] == 10.0
 
 
 def test_live_draft_response_uses_matching_topk_overlay_and_overlay_etag(

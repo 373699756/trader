@@ -275,6 +275,10 @@ table.is-history {
   min-width: 760px;
 }
 
+table.is-anchor-table {
+  min-width: 900px;
+}
+
 th,
 td {
   height: 48px;

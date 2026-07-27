@@ -247,6 +247,7 @@ def _recommendation(
         "source_time": displayed_source_time.isoformat() if displayed_source_time is not None else None,
         "quote_data_version": displayed_data_version,
         "anchor_price": quote.price,
+        "anchor_source_time": quote.source_time.isoformat(),
         "anchor_daily_return_pct": quote.pct_change,
         "anchor_to_now_pct": _anchor_to_now(quote.price, live_quote.price) if live_quote is not None else None,
         "action": item.action.value,

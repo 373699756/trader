@@ -115,6 +115,29 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
             base,
             "return window.TraderDashboardDiagnostics.snapshot().patchToPaint.sample_count >= 20;",
         )
+        _request_json(f"http://127.0.0.1:{app_port}/__d4/freeze-today", method="POST", payload={})
+        _wait_script(
+            base,
+            "const table = document.getElementById('recommendationTable');"
+            "const head = document.getElementById('tableHead');"
+            "const body = document.getElementById('tableBody');"
+            "const notice = document.getElementById('noticeText');"
+            "return table.classList.contains('is-anchor-table')"
+            " && head.textContent.includes('11:20锚点价')"
+            " && body.textContent.includes('实际 11:19:50')"
+            " && body.textContent.includes('13.20')"
+            " && body.textContent.includes('+10.00%')"
+            " && notice.textContent.includes('名单与评分不变');",
+        )
+        anchor_view = _execute(
+            base,
+            "return {"
+            "active: document.getElementById('recommendationTable').classList.contains('is-anchor-table'),"
+            "head: document.getElementById('tableHead').textContent,"
+            "firstRow: document.querySelector('#tableBody tr[data-code]').textContent,"
+            "notice: document.getElementById('noticeText').textContent"
+            "};",
+        )
         diagnostics = _execute(base, "return window.TraderDashboardDiagnostics.snapshot();")
         _execute(
             base,
@@ -154,6 +177,13 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
             isinstance(p95, (int, float))
             and not isinstance(p95, bool)
             and p95 <= budget_p95_ms
+            and isinstance(anchor_view, dict)
+            and anchor_view.get("active") is True
+            and "11:20锚点价" in str(anchor_view.get("head"))
+            and "实际 11:19:50" in str(anchor_view.get("firstRow"))
+            and "13.20" in str(anchor_view.get("firstRow"))
+            and "+10.00%" in str(anchor_view.get("firstRow"))
+            and "名单与评分不变" in str(anchor_view.get("notice"))
             and all(
                 item.get("body") is True
                 and item.get("overflow") is False
@@ -174,6 +204,7 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
             "patches_applied": diagnostics.get("recommendationPatchesApplied"),
             "resync_requests": diagnostics.get("resyncRequests"),
             "browser_errors": diagnostics.get("browserErrors"),
+            "frozen_today_anchor_view": anchor_view,
             "viewports": viewport_results,
             "network_calls": 0,
         }

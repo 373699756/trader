@@ -118,6 +118,7 @@ def _recommendation(item: Recommendation) -> dict[str, object]:
         "source_time": quote.source_time.isoformat(),
         "quote_data_version": quote.data_version,
         "anchor_price": quote.price,
+        "anchor_source_time": quote.source_time.isoformat(),
         "anchor_daily_return_pct": quote.pct_change,
         "anchor_to_now_pct": None,
         "action": item.action.value,

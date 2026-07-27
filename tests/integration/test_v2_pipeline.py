@@ -31,7 +31,11 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import MarketPhase
-from trader.application.snapshot_workflow import freeze_available_snapshots, refresh_candidates
+from trader.application.snapshot_workflow import (
+    freeze_available_snapshots,
+    refresh_candidates,
+    refresh_live_overlays,
+)
 from trader.application.source_lanes import SourceRequestSupersededError
 from trader.application.status import RuntimeState
 from trader.bootstrap import _recommendation_policy
@@ -1193,15 +1197,23 @@ def test_freeze_p6_rejection_keeps_formal_record_without_advancing_runtime(
     assert publisher.last_sequence() == 0
 
 
+@pytest.mark.parametrize(
+    ("strategy", "frozen_at"),
+    (
+        (Strategy.TODAY, datetime.fromisoformat("2026-07-16T11:20:00+08:00")),
+        (Strategy.TOMORROW, datetime.fromisoformat("2026-07-16T14:50:00+08:00")),
+    ),
+)
 def test_frozen_topk_uses_recoverable_overlay_and_keeps_close_value(
     recommendation_policy,
     application_feature_factory,
+    strategy: Strategy,
+    frozen_at: datetime,
 ) -> None:
-    frozen_at = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
     quote_at = frozen_at - timedelta(seconds=10)
     repository = MemoryRepository()
     state = RuntimeState()
-    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+    source = RecommendationEngine(recommendation_policy).build_snapshot(
         Strategy.TOMORROW,
         (application_feature_factory("600001", quote_at),),
         now=quote_at,
@@ -1214,9 +1226,15 @@ def test_frozen_topk_uses_recoverable_overlay_and_keeps_close_value(
         filtered_count=0,
         filter_reasons={},
     )
+    snapshot = replace(
+        source,
+        strategy=strategy,
+        recommendations=tuple(replace(item, strategy=strategy) for item in source.recommendations),
+    )
+    assert snapshot.recommendations
     frozen = replace(snapshot, frozen=True, published_at=frozen_at, config_version="config-v2")
-    repository.frozen[(Strategy.TOMORROW, frozen.trade_date)] = frozen
-    repository.published[Strategy.TOMORROW] = frozen
+    repository.frozen[(strategy, frozen.trade_date)] = frozen
+    repository.published[strategy] = frozen
     clock = MutableClock(frozen_at + timedelta(seconds=10))
     market_data = DegradingCandidateMarketData((application_feature_factory("600001", clock.now()),))
     pipeline = build_pipeline(
@@ -1236,25 +1254,25 @@ def test_frozen_topk_uses_recoverable_overlay_and_keeps_close_value(
     )
     pipeline.initialize()
 
-    assert pipeline.run_once(clock.now()) == ()
-    overlay = state.load_live_overlay(Strategy.TOMORROW, "2026-07-16")
+    refresh_live_overlays(pipeline, clock.now(), MarketPhase.MIDDAY)
+    overlay = state.load_live_overlay(strategy, "2026-07-16")
     assert isinstance(overlay, LiveOverlay)
     assert overlay.snapshot_id == frozen.snapshot_id
     assert overlay.closing is False
-    assert (Strategy.TOMORROW, "2026-07-16") not in repository.overlays
+    assert (strategy, "2026-07-16") not in repository.overlays
     market_data.candidate_unavailable = True
     clock.set(datetime.fromisoformat("2026-07-16T14:50:20+08:00"))
-    pipeline.run_once(clock.now())
-    assert state.load_live_overlay(Strategy.TOMORROW, "2026-07-16").version == overlay.version
+    refresh_live_overlays(pipeline, clock.now(), MarketPhase.FROZEN)
+    assert state.load_live_overlay(strategy, "2026-07-16").version == overlay.version
     market_data.candidate_unavailable = False
     clock.set(datetime.fromisoformat("2026-07-16T15:00:00+08:00"))
-    pipeline.run_once(clock.now())
-    closing = repository.overlays[(Strategy.TOMORROW, "2026-07-16")]
+    refresh_live_overlays(pipeline, clock.now(), MarketPhase.AFTER_CLOSE)
+    closing = repository.overlays[(strategy, "2026-07-16")]
     assert closing.closing is True
-    assert state.load_live_overlay(Strategy.TOMORROW, "2026-07-16") == closing
+    assert state.load_live_overlay(strategy, "2026-07-16") == closing
     clock.set(datetime.fromisoformat("2026-07-16T15:01:00+08:00"))
-    pipeline.run_once(clock.now())
-    assert repository.overlays[(Strategy.TOMORROW, "2026-07-16")].version == closing.version
+    refresh_live_overlays(pipeline, clock.now(), MarketPhase.AFTER_CLOSE)
+    assert repository.overlays[(strategy, "2026-07-16")].version == closing.version
 
 
 def test_topk_overlay_lane_updates_while_main_market_event_is_blocked(

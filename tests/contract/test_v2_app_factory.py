@@ -134,6 +134,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "sourceLabel(firstVisible.source)" in dashboard
     assert "sourceLabel(first.source)" in dashboard
     assert 'payload.phase === "close_fallback"' in dashboard
+    assert "11:20 已冻结 · 名单与评分不变 · 行情已过期" in dashboard
     assert "实时草稿" not in dashboard
     assert "实时数据" in dashboard
     assert "流水线已启动，当前策略尚无可用快照" not in dashboard
