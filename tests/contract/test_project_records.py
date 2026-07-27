@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -40,15 +41,11 @@ def test_chrome_dashboard_gate_is_persisted_under_tests() -> None:
     assert "/tmp/trader_cdp" not in script
 
 
-def test_docs_keep_two_authorities_active_plans_and_pipeline_reports() -> None:
+def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     docs_root = PROJECT_ROOT / "docs"
     documents = sorted(path.relative_to(docs_root).as_posix() for path in docs_root.rglob("*") if path.is_file())
 
-    assert documents == [
-        "celue.md",
-        "hi.md",
-        "queston.md",
-        "recommendation-strategy.md",
+    expected_reports = {
         "reports/a-share-long-industry-research-2026-07-24.md",
         "reports/chokepoint-watchlist-document-split-2026-07-25.md",
         "reports/long-watchlist-changes-2026-07-25.md",
@@ -64,27 +61,23 @@ def test_docs_keep_two_authorities_active_plans_and_pipeline_reports() -> None:
         "reports/pipeline-g4-gate-review.md",
         "reports/pipeline-g5-final-gate.md",
         "reports/solid-state-watchlist-merge-2026-07-25.md",
+    }
+    assert set(documents) == {
+        "recommendation-strategy.md",
         "software-business-design.md",
-        "strage.md",
-        "times.md",
-    ]
+        *expected_reports,
+    }
 
     design = (docs_root / "software-business-design.md").read_text(encoding="utf-8")
-    strage = (docs_root / "strage.md").read_text(encoding="utf-8")
-    times = (docs_root / "times.md").read_text(encoding="utf-8")
-    question = (docs_root / "queston.md").read_text(encoding="utf-8")
     report = (docs_root / "reports/pipeline-a1-baseline.md").read_text(encoding="utf-8")
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
-    assert "Review" in question
-    assert "实施任务" in question
-    assert "非权威执行计划" in strage
-    assert "software-business-design.md" in strage
-    assert "recommendation-strategy.md" in strage
-    assert "非权威执行计划" in times
-    assert "software-business-design.md" in times
-    assert "recommendation-strategy.md" in times
+    assert "已实施实时与降级基线" in design
+    assert "待验证收益路线" in strategy
+    assert "docs/celue.md" not in design
+    assert "docs/hi.md" not in design
+    assert "docs/queston.md" not in design
     assert "A1.x 已完成本地基线采集与契约冻结" in report
     assert "G1 发布" in report
     assert "A2 public skeleton is available" in (docs_root / "reports/pipeline-a2-public-skeleton.md").read_text(
@@ -102,7 +95,21 @@ def test_docs_keep_two_authorities_active_plans_and_pipeline_reports() -> None:
     for retired_plan in ("plan.md", "plan_c.md", "plan_sudu.md", "plan_pipeline.md"):
         assert not (docs_root / retired_plan).exists()
     assert "docs/need.md" not in design
-    assert "docs/hi.md" not in design
+
+
+def test_authoritative_docs_match_active_runtime_identities() -> None:
+    runtime = json.loads((PROJECT_ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    strategy_config = json.loads((PROJECT_ROOT / "config/v2/strategy.json").read_text(encoding="utf-8"))
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+
+    assert runtime["pipeline"]["decision_execution_mode"] == "versioned_dag"
+    assert "`versioned_dag`" in design
+    assert runtime["deepseek"]["daily_hard_limit"] == 168
+    assert "全局硬上限 168" in strategy
+    assert strategy_config["selection"]["review_candidate_limit"] == 28
+    assert "最多 28 只" in design
+    assert strategy_config["strategy_version"] in strategy
 
 
 def _section(path: Path, start: str, end: str) -> str:

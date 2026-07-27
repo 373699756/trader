@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 荐股策略权威文档新增“待验证收益路线”，把原收益复核提案按当前实现状态收敛为明确的
+  非生产路线：完整点时决策轨迹、连续形态分、覆盖率向 50 分收缩、候选乐观上界、热度
+  组合观察和配对 bootstrap 均标记为尚未实现，并固定 60 个有效交易日、300 条有效配对、
+  95% 置信下界、严重回撤、99% 候选召回及 20bp/50bp/100bp 成本门禁。软件业务设计文档
+  新增“已实施实时与降级基线”，集中说明 versioned DAG、本地先发布、异步复核、独立
+  TopK overlay、收盘缓存、历史退避、三板尾盘轮询和选择诊断的当前边界。
 - 新增仓库内可复用 Chrome/CDP 桌面看板验证脚本
   `tests/performance/run_chrome_dashboard.py`，替代每次在 `/tmp` 临时重写的检查脚本。脚本基于
   离线 D4 fixture 启动 Flask 应用和 headless Chrome，固定覆盖 1280x720、1440x900、
@@ -71,6 +77,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把 `celue.md`、`hi.md` 和 `queston.md` 根据当前工程实际合并进两份权威文档。
+  核对配置、选择函数、流水线、历史预热、尾盘加载、Web schema 和回归测试后，确认生产
+  实现是每策略每次投影最多 28 只送审、每日 168 次物理请求、`versioned_dag`、local 先于
+  hybrid 发布、逐股 60/120/240/480/900 秒退避、三板稳定轮询及七字段选择诊断；故障修复
+  初稿中的 24 只上限已被后续实现取代。三份来源文档不再作为并行状态源，已实现内容归入
+  软件业务设计，未实施的收益建议归入荐股策略“待验证”章节；本批不修改生产代码、配置、
+  策略公式、门槛、预算、冻结或 API 行为。
 - 用户指出浏览器检查验证脚本每次临时写入、重复创建，浪费且不可复用。现在验证入口成为
   项目测试资产，并把 `websocket-client` 纳入 dev 依赖；后续排查“快照状态”和桌面布局时可直接
   执行同一脚本，不再依赖一次性 `/tmp/trader_cdp*` 脚本。
@@ -268,6 +281,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正权威文档仍把活动结果审计描述为旧 v18、把收益晋级指向外部计划文件，以及无法从
+  当前文档直接判断 24/28 支送审上限和收益变体是否上线的问题。现在权威文本明确区分
+  “代码已实施”“旧阶段值已取代”和“尚未实现”，并由契约测试确保三份来源记录退役后
+  两份权威文档仍完整承载相应事实。
 - 修复快照状态区域可能显示 `Cannot read properties of undefined (reading 'projectionVersion')`
   的前端启动错误。根因是拆分后的 `dashboard_patches.js` 被主 `dashboard.js` 作为硬依赖使用，
   当浏览器缓存、模板版本或静态资源加载出现不一致时，`window.TraderDashboardPatches` 可能缺失。
@@ -381,6 +398,16 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批文档归并契约测试通过，额外读取活动 `runtime.json` 与 `strategy.json`，确认权威文档
+  对应 `versioned_dag`、168 次物理硬上限、`strategy_review28_2026_07` 和 28 只送审上限。
+  `make format-check`、`make lint`、`make type-check` 和完整 `make test` 通过；全量测试仅有
+  既有未知 DeepSeek fixture 模型告警。`make package` 首次因沙箱禁止隔离构建访问本机代理
+  失败，在获准联网后以同一命令成功构建 sdist/wheel。仓库外 `/tmp` 安装确认 `trader`
+  从隔离目录导入，`trader-cli --help`、`validate-config`、模板、CSS、JavaScript、SVG 和
+  `pip check` 均通过。宿主没有 Chrome/Chromium；Firefox/geckodriver 固定 runner 连续两次
+  通过 1280x720、1440x900、1920x1080 三档桌面验收，24 个 patch 全部应用、零 resync、
+  零浏览器错误、无页面级横向溢出，patch-to-paint P95 分别为 55ms 和 21ms，低于 100ms
+  预算。
 - 本批验证脚本持久化已通过：`ruff format --check
   tests/performance/run_chrome_dashboard.py tests/contract/test_project_records.py pyproject.toml`、
   `ruff check tests/performance/run_chrome_dashboard.py tests/contract/test_project_records.py`、
@@ -617,6 +644,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除已完成归并的 `docs/celue.md`、`docs/hi.md` 和 `docs/queston.md`，并纳入用户在本批
+  开始前已经删除的 `docs/strage.md`、`docs/times.md`。五份实施计划、问题记录、旧阶段参数
+  和未实施提案不再与两份权威文档形成并行真相源；历史用户问题、修改与验证记录继续保留
+  在本文件。
 - 移除对一次性 `/tmp/trader_cdp*` 浏览器验证脚本的流程依赖；本批没有删除产品代码、业务测试、
   冻结记录或运行数据。
 - 移除二次命名审查中确认的旧可见诊断码、旧前端 DOM id 和旧内部函数名；旧字符串不再作为
@@ -643,6 +674,13 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 当前宿主未安装 Chrome/Chromium，因此本批实际桌面证据来自同属目标范围的 Firefox。
+  Firefox 首次冷启动运行布局全部通过，但 patch-to-paint P95 为 124ms，超过 100ms；随后
+  两次相同固定 runner 为 55ms 和 21ms 并通过。该波动未由本批文档变更引入，但说明宿主
+  图形栈冷启动时延仍需在发布环境持续观察。
+- 本批是文档治理变更，不新增收益挑战者或运行时功能。待验证收益路线仍缺真实前瞻交易日、
+  有效配对样本、候选召回审计和成本压力证据，未达到荐股策略第 15.1 节门禁前不得描述为
+  收益改善；外部供应商时延和数据覆盖风险仍按现有显式降级策略处理。
 - 持久化 Chrome 验证脚本仍依赖本机安装 Chrome/Chromium、允许打开本地 DevTools socket，并且
   需要 dev 依赖 `websocket-client`；无浏览器或权限受限环境只能运行普通单元/契约测试，不能替代
   桌面真实渲染验收。该脚本当前覆盖 Chrome/CDP，Firefox/geckodriver 验收仍需使用既有发布环境

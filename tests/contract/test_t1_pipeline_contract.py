@@ -5,17 +5,16 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_realtime_plan_marks_only_t1_complete_and_keeps_strategy_plan_inactive() -> None:
-    realtime_plan = (PROJECT_ROOT / "docs" / "times.md").read_text(encoding="utf-8")
-    strategy_plan = (PROJECT_ROOT / "docs" / "strage.md").read_text(encoding="utf-8")
-    authority = (PROJECT_ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
+def test_authorities_separate_implemented_realtime_work_from_inactive_strategy_research() -> None:
+    design = (PROJECT_ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
 
-    assert "T1 已于 2026-07-23 完成，T2-T5 尚未实施" in realtime_plan
-    assert "T1 实施记录" in realtime_plan
-    assert "不执行 `docs/strage.md` 中的策略计划" in realtime_plan
-    assert "不表示活动策略" in strategy_plan
-    assert "`docs/strage.md` 只记录尚未获准实施的收益优化批次" in authority
-    assert "`docs/times.md` 按 T1-T5 记录实时" in authority
+    assert "已实施实时与降级基线" in design
+    assert "versioned_dag" in design
+    assert "28 只" in design
+    assert "待验证收益路线" in strategy
+    assert "不改变当前生产策略" in strategy
+    assert "尚未实现" in strategy
 
 
 def test_t1_authority_fixes_real_production_and_browser_budgets() -> None:
