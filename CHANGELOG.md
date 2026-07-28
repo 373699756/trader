@@ -6,6 +6,17 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续完成 tomorrow v2 重构的下一整节，并明确当前决策不能采用持久化仓储式
+  抽象。本批新增纯内存 `CurrentDecisionIndex`：local/hybrid 只能通过显式
+  `expected_current_version` CAS 发布，hybrid 必须引用当前 local 父版本；并发竞争只允许
+  一个胜者，旧交易日、旧 sequence、同 sequence 冲突、父版本错配和冻结封口后的迟到结果
+  均拒绝。
+- 新增 tomorrow v2 14:50 决策检查点与不可变正式冻结领域契约、应用协调器和独立
+  `tomorrow-v2` JSON/SQLite manifest repository。冻结按“索引原子封口、正式记录持久化、
+  最后切换 frozen 指针”的顺序执行，失败保留同一候选供幂等重试；重启只恢复 30 秒边界内
+  且匹配当前配置/策略/融合身份的检查点。15:00 后同日正式记录缺失时可固化当前 P6 决策，
+  或接受已经由完整官方收盘行情生成的 local 冷启动重建；锚点必须与实际入选代码完全一致。
+
 - 新增 tomorrow v2 旁路 DeepSeek 融合链：同一数据快照先生成不可变 local
   `DecisionEpoch`，再仅对合法结构化复核子集生成引用 local 父版本的 hybrid
   `DecisionEpoch`。epoch 绑定实际生效的 market/candidate/research 版本、待审集合、
@@ -134,6 +145,12 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- tomorrow v2 冻结选择现明确以 `observed_at <= 14:50` 的最新已接纳完整决策为准：
+  deadline 前已接纳 hybrid 则冻结 hybrid，否则冻结 local，不等待迟到模型。检查点、正式
+  冻结和收盘恢复均绑定规范 SHA-256；同日不同正式内容冲突，损坏文件或 manifest 不进入
+  当前索引。冷启动收盘补算额外验证所有决策条目确实来自 15:00 后官方收盘特征，禁止只给
+  最终入选股换收盘标签而沿用旧评分输入。
 
 - tomorrow v2 复核响应改为合法子集逐股接纳：已返回的 `applied/abstain` 可参与固定
   68/32，缺失、拒绝或迟到股票保持本地分并标记 `deepseek_incomplete`；无可审候选、
@@ -404,6 +421,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 tomorrow v2 目标设计中尚缺“当前决策如何并发换版、14:50 如何封口、持久化失败
+  如何重试、重启如何恢复、15:00 后如何避免伪收盘重建”的系统空白。此前仅有
+  `DecisionEpoch` 生成能力，没有可执行的单提交者、正式记录提交顺序或独立恢复边界；本批
+  通过 CAS、封口状态、运行身份校验、不可变文件和唯一交易日 manifest 将这些行为变成
+  可验证契约，且没有接回旧 P6、旧运行库或 HTTP 请求路径。
+
 - 修复 tomorrow v2 旁路组装未消费 `ResearchEpoch`，会让真实 V4 facts 缺少 point-in-time
   manifest 并频繁 abstain，也会漏掉当日新增官方公司风险的问题；研究历史不完整时现在
   只允许新增风险并标记覆盖不足，不能清除昨日已确认事实。另区分
@@ -589,6 +612,17 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- `tests/unit/domain/test_tomorrow_freeze.py` 覆盖 30 秒检查点、14:50 边界、入选锚点、收盘
+  原因和未来价格拒绝；`test_current_decisions.py` 覆盖 CAS、并发单胜者、父版本与冻结后
+  拒绝；`test_tomorrow_freezing.py` 覆盖先持久化后切索引、失败同版本重试、重启恢复、
+  运行身份不匹配、15:00 恢复和伪收盘重建拒绝；独立 repository 测试覆盖检查点消费、
+  local/hybrid 往返、幂等、同日冲突、上海时区恢复与损坏文件 fail-closed。
+  `make format-check`、`make lint` 和 `make type-check` 通过，严格复杂度债务为零；仅由基线
+  加本批文件组成的隔离树完整 `make test` 通过。`make package` 通过，仓库外 wheel 可导入
+  新模块、执行 `trader-cli --help` 并读取模板、CSS、JavaScript 和图标。真实 headless
+  Firefox 在 1280x720、1440x900、1920x1080 三档均无浏览器错误、页面横向溢出、面板错位
+  或文本覆盖，26 个样本的 patch-to-paint P95 为 17ms，低于 100ms 门禁。
 
 - 本批失败先行测试先因 tomorrow v2 融合模块、DecisionEpoch 和明确的复核不可用异常尚不
   存在而停止；实现后，ResearchEpoch 风险/evidence 注入、28 只待审上限、合法子集、
@@ -950,6 +984,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批没有删除旧生产代码、运行数据或 Web 资源；按用户边界未引入当前决策的持久化仓储
+  抽象，也未实现原始行情 120 交易日/20GB 压缩保留代码。后者继续只存在于权威文档。
+
 - 移除 tomorrow v2 融合边界接受池外 review、让低可靠/observe/veto 候选消耗 DeepSeek，
   或在没有任一合法结果时创建 hybrid 决策的能力；当前生产 P1-P6 和旧冻结数据未删除。
 - 移除 `CandidateFeatureRow` 对任意数值因子键的开放写入能力；实时覆盖现在仅限登记的
@@ -1002,23 +1039,15 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 本批仍是旁路纯计算与应用编排，尚未在组合根接入真实 v2 采集/复核 worker，也未实现
-  `CurrentDecisionIndex`、14:50 冻结、v2 API/SSE/Web、事件持久化、影子收益验收或生产
-  切换。现有 DeepSeek 适配器的真实供应商延迟、证据覆盖和候选应用率仍需后续影子运行
-  验证；固定公式和工程门禁不构成收益保证。
-- 本批只完成 tomorrow v2 的旁路 epoch 组装与确定性本地选择，尚未把真实采集器接入
-  `CandidateFeatureRow`，也未实现 DeepSeek 融合、`DecisionEpoch`、`CurrentDecisionIndex`、
-  14:50 冻结、v2 API/SSE/Web、影子对照或生产切换。工程门禁只能证明过滤、评分、稳定性和
-  审计契约，不能证明实际收益提高；收益仍须按权威文档的点时样本外与前向影子门禁验证。
-- 新数据平面尚未连接真实来源；旁路过滤评分虽已实现，但尚未接入 DeepSeek、
-  `CurrentDecisionIndex`、v2 API/SSE 或 Web，因此当前生产实时性和收益行为没有变化。
-  120 日压缩分区与 20GB 上限只有文档
-  契约；压缩格式、原子写入、磁盘满降级和清理顺序仍须后续独立交付。旁路 epoch 也尚未
-  取得真实交易日供应商延迟、全市场覆盖率和长运行内存证据。
-- 当前虽已实现旁路内存数据平面，仍未实现 `CurrentDecisionIndex`、v2 API/SSE 或原子
-  切换；生产继续运行现有 v1/P1-P6 链路，因此用户此前观察到的每日链路不稳定不能据此
-  视为已修复。公开数据源响应速度和数据完整性不受本地控制，36/66 只是 DeepSeek 资源
-  边界，不能保证推荐数量或收益；收益改动必须在后续批次取得样本外与前向影子证据。
+- 本批决策索引、冻结协调和 v2 repository 仍为旁路能力，按章节边界未接
+  `bootstrap.py`、旧 P6、API、SSE 或 Web；浏览器继续读取既有生产链，下一整节才处理
+  v2 API/SSE/Web。因此本批门禁只能证明冻结一致性和恢复正确性，不能证明真实交易日行情
+  覆盖、端到端 1-15 秒时延或荐股收益提高。外部数据、DeepSeek 与真实前瞻收益仍须在后续
+  影子验收和切换章节留证；压缩原始行情的 120 交易日/20GB 磁盘治理仍未实现。工作树中
+  用户并行修改的 `tests/unit/application/test_outcome_settlement.py` 未纳入本批，其新增
+  断言与当前结算契约不一致，导致主工作树完整测试单项失败；隔离本批后的完整测试全绿，
+  该用户文件保持原样且不会暂存或提交。
+
 - 当前运行中的服务进程仍加载旧代码，必须重启后才会使用按策略隔离的评分通道和紧凑缓存。
   外部行情、历史预热或候选质量不足仍可能合法产生空推荐；本批只消除跨策略覆盖和缓存
   序列化超时，不放宽候选门槛，也不承诺推荐数量或投资收益。离线基准不能替代真实交易日

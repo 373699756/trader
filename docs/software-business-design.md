@@ -199,6 +199,34 @@ candidate/research、配置、策略、融合、阶段、待审集合、逐股�
 事件流、持久化、生产影子或切换；这些属于
 后续同级章节。
 
+### 2.5 tomorrow v2 决策索引与冻结交付边界
+
+tomorrow v2 使用应用层 `CurrentDecisionIndex` 作为单提交者，禁止为当前指针
+引入持久化式仓储抽象。索引只持有当前不可变 `DecisionEpoch`、冻结封口和已提交
+`TomorrowDecisionFreeze` 引用；local/hybrid 发布必须携带调用方实际读取的
+`expected_current_version`，通过 compare-and-set 后才能替换当前指针。hybrid 还必须引用
+当前 local 父版本；旧交易日、旧 sequence、同 sequence 不同内容、父版本错配和冻结后更新
+全部拒绝。索引不读取网络、配置、文件或数据库。
+
+14:49:20（含）至 14:50（不含）可为距边界不超过 30 秒的当前决策写
+`TomorrowFreezeCheckpoint`。14:50 冻结先在索引内原子封口并确定唯一候选，再持久化不可变
+JSON 和 SQLite manifest，最后才把索引切换为 frozen；写入失败时保持原决策和同一封口候选，
+只允许幂等重试相同版本。持续运行优先冻结索引中不晚于边界的最新决策；重启恢复仅允许
+tomorrow 使用同日、同配置、哈希有效、尚未消费且边界年龄不超过 30 秒的检查点。已存在的
+同日正式记录优先恢复，任何迟到行情或 hybrid 都不能覆盖。
+
+`TomorrowDecisionFreeze` 单独保存实际入选代码的冻结/收盘锚点，锚点不改变
+`DecisionEpoch` 中的股票、分数、风险、动作和排名。15:00 后仅在同日正式记录不存在且没有
+待重试的 14:50 封口时允许创建一次 `close_fallback`：运行中路径只能固化当前索引决策，
+冷启动路径只接受调用方已经用完整同日收盘数据生成的 local 决策；两者都必须提供与入选
+代码完全一致的正价格收盘锚点，并标记 `close_fallback`、`official_close`，local 决策再
+标记 `local_only`。本用例不抓行情、不评分、不调用 DeepSeek。
+
+冻结 repository 使用独立 v2 表和目录，通过临时文件、flush、fsync、原子替换、SHA-256
+和唯一交易日 manifest 提供检查点、正式冻结、冲突拒绝与恢复；损坏或半提交文件不得进入
+索引。原始行情 120 交易日/20GB 压缩归档仍只保留文档，不在本批实现。本阶段继续旁路，
+不接 `bootstrap.py`、旧 P6、旧运行库、API、SSE 或 Web；这些属于后续同级章节。
+
 ## 3. 架构与代码边界
 
 活动产品代码只能位于 `src/trader`，固定依赖方向为：

@@ -201,6 +201,32 @@ def test_tomorrow_deepseek_fusion_boundary_is_explicit() -> None:
         assert statement in strategy
 
 
+def test_tomorrow_decision_index_and_freeze_boundary_is_explicit() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    source = PROJECT_ROOT / "src/trader"
+
+    for statement in (
+        "tomorrow v2 决策索引与冻结交付边界",
+        "`CurrentDecisionIndex`",
+        "禁止为当前指针\n引入持久化式仓储抽象",
+        "`expected_current_version`",
+        "最后才把索引切换为 frozen",
+        "本用例不抓行情、不评分、不调用 DeepSeek",
+        "不接 `bootstrap.py`、旧 P6、旧运行库、API、SSE 或 Web",
+    ):
+        assert statement in design
+    for statement in (
+        "tomorrow v2 冻结选择与锚点",
+        "`observed_at <= 14:50`",
+        "冻结 local",
+        "`selected=true`",
+        "冷启动收盘补算只能提交 local",
+    ):
+        assert statement in strategy
+    assert not (source / "application" / "current_decision_store.py").exists()
+
+
 def test_ruff_guidance_names_the_active_lint_command() -> None:
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
