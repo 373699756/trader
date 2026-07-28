@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增 tomorrow v2 目标契约与仓库级反向测试：固定不可变 `DailyFeaturePack`、
+  `MarketEpoch`、`CandidateQuoteEpoch`、`ResearchEpoch`、`DecisionEpoch` 和
+  `CurrentDecisionIndex`，并定义只读 v2 API、SSE、内部 5/1/10/15 秒 P95 验收及
+  并行影子后原子切换边界。测试同时禁止目标契约重新引入用户否决的
+  `CurrentDecisionStore`。
 - 新增 DeepSeek 持久化健康门：连续 2 个传输失败、连续 2 个 schema 失败或最近 5 个完成批次
   候选应用率低于 40% 时，在共享 SQLite 总账中熔断 15 分钟；冷却后只允许一个最多 2 股的
   原子半开探针，11:15/14:43 后不再半开，连续 3 个合法恢复批次且滚动应用率达到 60% 后
@@ -108,6 +113,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户指出冷启动历史预热、三策略异步评分和 P1-P6 都是后续实现机制，不应反向成为最终
+  产品需求。本批把权威目标重置为 tomorrow 唯一最高优先级生产决策链，固定 0-10 只、
+  14:50 冻结、DeepSeek 继续参与融合以及 tomorrow 独占正常目标 36/硬上限 66；当前
+  v1 API、`versioned_dag` 和既有 21/38 活动预算在原子切换前仍保持生产事实，本批不改变
+  运行行为。
 - 用户反馈明日页出现“本轮没有可评分候选”。调查确认页面准确展示了旧空快照，后台新一轮
   today/tomorrow/d25 同时评分时却共用每板唯一待处理槽，后提交策略会覆盖 tomorrow；
   同时完整板块横截面与逐股结果被反复 JSON 序列化用于缓存估算，使评分超过 15 秒 deadline。
@@ -360,6 +370,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正文档把冷启动预热、三策略调度和缓存阶段当成终极需求、导致实时链路设计继续围绕
+  既有架构打补丁的问题。目标态现在只保留点时输入、准确过滤、14:50 不可变冻结、只读
+  Web 和真实降级等业务不变量，并明确提高收益须经不少于 250 个交易日样本外回放及连续
+  20 个交易日前向影子验证，不能作为收益保证。
 - 修复 tomorrow 待处理板块任务被同轮 d25 覆盖后，三个板均以 `RuntimeError` 降级并长期
   保留早先空快照的问题；同策略新 epoch 仍只替换本策略旧待处理任务，不会跨策略清空。
   修复持续 tomorrow 输入可能饿死 d25/today 的边界，并统一候选预选与正式评分对行情
@@ -524,6 +538,12 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批先新增 tomorrow v2 文档契约测试并观察到缺少目标定义时按预期失败；补齐两份权威
+  文档后，定向用例和 `tests/contract/test_project_records.py` 全部通过。
+  `make format-check`、`make lint`、`make type-check` 和 `make package` 通过；仅叠加本批
+  diff 的干净副本完整 `make test` 通过。共享工作树完整测试只受任务开始前已有的 outcome
+  settlement 新断言阻塞，本批未修改该文件。仓库外 wheel 完成全依赖安装，可导入
+  `trader`、执行 `trader-cli --help`，并读取模板、CSS、JavaScript 和图标资源。
 - 本批失败先行测试覆盖跨策略待处理隔离、tomorrow 首轮优先、公平轮转、同策略
   latest-wins、紧凑横截面缓存、候选代码缓存回投和规范 `merge_epoch`；板块评分、缓存、
   推荐单元测试及完整 `tests/integration/test_v2_pipeline.py` 通过。生产形态离线基准使用
@@ -849,6 +869,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从 tomorrow v2 目标契约中移除“必须沿用冷启动历史预热、三策略异步评分、P1-P6、
+  `versioned_dag` 或 store 对象”的假设；这些当前实现仍原样保留，待并行影子通过后才
+  随完整 release 原子切换，本批未删除生产代码、运行数据或兼容 API。
 - 移除长期行业子 tab 只显示行业名称和股票数量、没有组内行情方向摘要的旧呈现；未删除或
   调整长期名单、分组、股票顺序、行情字段、后端 API、评分和冻结逻辑。
 - 本批未删除冻结记录、推荐字段、历史视图、观察项、评分逻辑或数据库结构；只替换同日正式
@@ -890,6 +913,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批只完成契约重置，没有实现 `CurrentDecisionIndex`、新数据平面、v2 API/SSE 或原子
+  切换；生产仍运行现有 v1/P1-P6 链路，因此用户此前观察到的每日链路不稳定不能据此视为
+  已修复。公开数据源响应速度和数据完整性不受本地控制，36/66 只是 DeepSeek 资源边界，
+  不能保证推荐数量或收益；收益改动必须在后续批次取得样本外与前向影子证据。
 - 当前运行中的服务进程仍加载旧代码，必须重启后才会使用按策略隔离的评分通道和紧凑缓存。
   外部行情、历史预热或候选质量不足仍可能合法产生空推荐；本批只消除跨策略覆盖和缓存
   序列化超时，不放宽候选门槛，也不承诺推荐数量或投资收益。离线基准不能替代真实交易日

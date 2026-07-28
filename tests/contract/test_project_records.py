@@ -121,6 +121,54 @@ def test_authoritative_docs_match_active_runtime_identities() -> None:
     assert strategy_config["strategy_version"] in strategy
 
 
+def test_authoritative_docs_define_the_tomorrow_first_rebuild_contract() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+
+    for statement in (
+        "tomorrow 是唯一最高优先级生产决策链",
+        "DailyFeaturePack",
+        "MarketEpoch",
+        "CandidateQuoteEpoch",
+        "ResearchEpoch",
+        "DecisionEpoch",
+        "CurrentDecisionIndex",
+        "GET /api/v2/tomorrow/current",
+        "GET /api/v2/tomorrow/history?date=YYYY-MM-DD",
+        "GET /api/v2/status",
+        "GET /api/v2/events",
+        "已接收行情到本地预览提交 P95 不超过 5 秒",
+        "本地预览到浏览器完成渲染 P95 不超过 1 秒",
+        "全市场决策数据年龄 P95 不超过 10 秒",
+        "DeepSeek 融合结果在本地预览后 P95 不超过 15 秒",
+    ):
+        assert statement in design
+    assert "CurrentDecisionStore" not in design
+    assert "冷启动历史预热、三策略异步评分、P1-P6" in design
+    assert "不是产品目标或不可变业务需求" in design
+
+    for statement in (
+        "允许 0 到 10 只",
+        "14:50 锚点至下一交易日收盘",
+        "20bp、50bp、100bp",
+        "不少于 250 个交易日",
+        "连续 20 个交易日",
+        "至少 100 个可配对候选",
+        "DeepSeek 继续参与融合分",
+        "tomorrow 独占正常目标 36、硬上限 66",
+    ):
+        assert statement in strategy
+    assert "CurrentDecisionStore" not in strategy
+
+
+def test_tomorrow_rebuild_contract_is_explicitly_pre_cutover() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+
+    assert "并行影子后原子切换" in design
+    assert "目标契约不表示 v2 API 或新决策链已经进入活动生产" in design
+    assert "旧 release 和旧运行库保持完整只读回退" in design
+
+
 def test_ruff_guidance_names_the_active_lint_command() -> None:
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
