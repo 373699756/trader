@@ -6,6 +6,17 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户发送“继续”，要求按迁移顺序完成下一整节。现状确认 tomorrow v2 已有决策索引和
+  正式冻结，但没有从该索引到浏览器的独立只读链，旧 `/api/*` 和旧首页仍只能读取旧 P6。
+  本批新增应用层 `TomorrowDecisionQueries`、匹配决策身份的纯内存报价 overlay 索引、
+  `/api/v2/tomorrow/current`、精确日期正式历史、状态 API、ETag，以及有界
+  `TomorrowDecisionEventStream`。当前响应按排名最多返回 10 项，历史只读取请求日期的
+  不可变正式冻结，不从 HTTP 抓行情、评分、调用 DeepSeek 或现场补算。
+- 新增并行 `/v2/tomorrow` 桌面工作台和独立 CSS/JavaScript。页面展示当前/历史决策、
+  数据年龄、冻结、模型预算、降级、核心报价/分数/动作与选中项详情；正常 SSE 在线时
+  overlay 只更新匹配 projection 的报价，不轮询完整 current。新增离线 Firefox 验收
+  fixture 与 `tests/performance/run_tomorrow_v2_browser.py`，固定验证三档桌面分辨率、
+  页面溢出/区域重叠、浏览器错误、截图非空和 overlay 零完整 GET。
 - 用户要求继续完成 tomorrow v2 重构的下一整节，并明确当前决策不能采用持久化仓储式
   抽象。本批新增纯内存 `CurrentDecisionIndex`：local/hybrid 只能通过显式
   `expected_current_version` CAS 发布，hybrid 必须引用当前 local 父版本；并发竞争只允许
@@ -146,6 +157,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `CurrentDecisionIndex` 新增同锁读取 decision/frozen 的原子只读快照，避免冻结提交瞬间
+  查询分别读取两个指针形成撕裂视图；冻结端口拆出仅含 `load_frozen` 的
+  `TomorrowDecisionFreezeReader`，使 Web 查询在类型边界上不持有冻结写能力。
+- `create_app()` 新增可选注入的 tomorrow v2 查询与事件流，但默认构造仍无线程、无网络、
+  无数据库和无文件写入副作用；`bootstrap.py`、旧首页、旧 `/api/*`、旧 P6 和旧运行库
+  保持不变，静态资源修订号更新为本批 v2 读模型版本。
 - tomorrow v2 冻结选择现明确以 `observed_at <= 14:50` 的最新已接纳完整决策为准：
   deadline 前已接纳 hybrid 则冻结 hybrid，否则冻结 local，不等待迟到模型。检查点、正式
   冻结和收盘恢复均绑定规范 SHA-256；同日不同正式内容冲突，损坏文件或 manifest 不进入
@@ -421,6 +438,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复新 Web 链缺失导致已形成的 tomorrow v2 决策无法被独立预览的问题；修复 overlay
+  可能跨决策套用、旧 overlay 阻碍新决策报价接纳、旧交易日决策冒充当前以及冻结
+  decision/frozen 分离读取的竞态。overlay 现在发布前校验当前决策身份，决策换代后使用
+  新 CAS 身份接纳，查询再次按 projection 匹配，不一致时保持完整决策并要求 resync。
+- SSE 显式区分无游标、游标超前、过期、不连续和慢客户端：无游标在订阅锁内从当前序列
+  开始，显式游标才回放；每客户端队列有界，队列满只隔离该客户端而不阻塞 publisher。
+  decision 事件只携带完整身份，overlay 只携带报价字段，浏览器遇到 schema、projection
+  或身份不匹配时通过 ETag 完整重读。
 - 修复 tomorrow v2 目标设计中尚缺“当前决策如何并发换版、14:50 如何封口、持久化失败
   如何重试、重启如何恢复、15:00 后如何避免伪收盘重建”的系统空白。此前仅有
   `DecisionEpoch` 生成能力，没有可执行的单提交者、正式记录提交顺序或独立恢复边界；本批
@@ -613,6 +638,17 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- tomorrow v2 定向门禁通过：应用查询、overlay CAS、历史正式只读、状态年龄/预算、SSE
+  单调序列/游标恢复/身份不匹配/慢客户端、HTTP ETag/304、无注入 503、应用工厂副作用和
+  架构契约共 67 项测试通过；隔离用户已有结算测试修改后，全仓 961 项测试、格式检查、
+  零债务严格 Lint 与全包 mypy 通过。主工作树全测仅该用户文件的既有断言失败。
+- `tests/performance/run_tomorrow_v2_browser.py --output /tmp/tomorrow-v2-browser.json`
+  使用 headless Firefox/geckodriver 通过。1280x720、1440x900、1920x1080 分别渲染
+  6 行决策，截图约 118KB、131KB、138KB；三档均无页面级横向溢出、区域重叠或浏览器
+  错误。SSE 把首行报价更新为 13.37 后，完整 current GET 计数保持 1。
+- 隔离源码通过 `make package` 构建 wheel/sdist；仓库外 `--target` 安装确认实际导入路径
+  来自 wheel，`pip check` 无破损依赖，`trader-cli --help` 可执行，且 v2 模板、CSS、
+  JavaScript、Lucide 图标和 Flask 静态路由均可读取。
 - `tests/unit/domain/test_tomorrow_freeze.py` 覆盖 30 秒检查点、14:50 边界、入选锚点、收盘
   原因和未来价格拒绝；`test_current_decisions.py` 覆盖 CAS、并发单胜者、父版本与冻结后
   拒绝；`test_tomorrow_freezing.py` 覆盖先持久化后切索引、失败同版本重试、重启恢复、
@@ -984,6 +1020,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- v2 页面移除对旧 `RecommendationQueries`、旧 `SnapshotPublisher` 和旧 Web envelope
+  的隐式依赖；移除 SSE 正常在线时的完整 current 周期轮询。未删除旧生产路由、资源或
+  运行数据，生产切换仍留给后续影子验收整节。
 - 本批没有删除旧生产代码、运行数据或 Web 资源；按用户边界未引入当前决策的持久化仓储
   抽象，也未实现原始行情 120 交易日/20GB 压缩保留代码。后者继续只存在于权威文档。
 
@@ -1039,11 +1078,18 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 本批决策索引、冻结协调和 v2 repository 仍为旁路能力，按章节边界未接
-  `bootstrap.py`、旧 P6、API、SSE 或 Web；浏览器继续读取既有生产链，下一整节才处理
-  v2 API/SSE/Web。因此本批门禁只能证明冻结一致性和恢复正确性，不能证明真实交易日行情
-  覆盖、端到端 1-15 秒时延或荐股收益提高。外部数据、DeepSeek 与真实前瞻收益仍须在后续
-  影子验收和切换章节留证；压缩原始行情的 120 交易日/20GB 磁盘治理仍未实现。工作树中
+- 本批只完成并行旁路的 v2 API/SSE/Web，没有在 `bootstrap.py` 切换 tomorrow 生产读写
+  指针，也没有修改旧首页，因此真实生产进程默认仍返回 v2 `not_ready`。下一整节必须用
+  同一规范输入完成新旧影子比较、真实交易日数据年龄/冻结身份/收益样本验收后才能原子
+  切换；不得把本批离线 fixture 的 6 行结果当成收益证据。
+- 浏览器门禁使用产品支持范围内的 Firefox；宿主未提供 Chrome/Chromium，本批没有新增
+  Chrome 实测证据。测试未调用真实行情供应商或 DeepSeek，也不能证明未来收益；外部来源
+  失败时仍会保留最近有效决策并显式降级。
+- 上一批决策索引、冻结协调和 v2 repository 当时尚未接 API/SSE/Web；本批已补齐并行
+  只读展示链，但仍未接 `bootstrap.py`、旧 P6 或生产读写指针。因此现有门禁可以证明冻结
+  到旁路 Web 的身份与展示一致性，仍不能证明真实交易日行情覆盖、端到端 1-15 秒时延或
+  荐股收益提高。外部数据、DeepSeek 与真实前瞻收益仍须在后续影子验收和切换章节留证；
+  压缩原始行情的 120 交易日/20GB 磁盘治理仍未实现。工作树中
   用户并行修改的 `tests/unit/application/test_outcome_settlement.py` 未纳入本批，其新增
   断言与当前结算契约不一致，导致主工作树完整测试单项失败；隔离本批后的完整测试全绿，
   该用户文件保持原样且不会暂存或提交。

@@ -227,6 +227,46 @@ tomorrow 使用同日、同配置、哈希有效、尚未消费且边界年龄�
 索引。原始行情 120 交易日/20GB 压缩归档仍只保留文档，不在本批实现。本阶段继续旁路，
 不接 `bootstrap.py`、旧 P6、旧运行库、API、SSE 或 Web；这些属于后续同级章节。
 
+### 2.6 tomorrow v2 API/SSE/Web 交付边界
+
+tomorrow v2 当前读取链固定为 `CurrentDecisionIndex -> TomorrowDecisionQueries -> /api/v2
+-> SSE -> Web`。应用层查询一次读取完整不可变决策，并只叠加
+`projection_version == decision.version` 的内存报价 overlay；不匹配、迟到或旧交易日
+overlay 不得进入响应。当前接口只返回同一上海交易日的最新决策和按最终排名排序的最多
+10 项，历史接口只调用冻结 repository 精确读取请求日期的正式记录，不读取当前索引、
+不抓行情、不评分、不调用 DeepSeek，也不现场补算旧规则。repository 不可用时返回带受控
+降级原因的 `not_ready`，不得回退到其他日期或当前草稿。
+
+新增并行只读入口：
+
+- `GET /v2/tomorrow`
+- `GET /api/v2/tomorrow/current`
+- `GET /api/v2/tomorrow/history?date=YYYY-MM-DD`
+- `GET /api/v2/status`
+- `GET /api/v2/events`
+
+当前和历史响应使用完整 `tomorrow_decision_view_v2`，绑定 decision、market、candidate
+feature、research、quote、config、strategy、fusion、freeze 和 schema 身份，携带发布/
+冻结状态、数据年龄、覆盖与过滤计数、受控降级原因、锚点、核心分数、动作、精简风险和
+模型复核终态；不可用数值返回 `null`。ETag 同时绑定决策、冻结和 overlay 版本，
+`If-None-Match` 命中返回 304。状态接口只聚合注入的内存运行遥测、当前身份、来源接收/
+源时间年龄、阶段延迟、DeepSeek 物理预算和最近受控失败，不读取数据库、文件或网络。
+
+独立 `TomorrowDecisionEventStream` 使用单调序列、有界历史、有界每客户端队列和最多 32 个
+订阅者。decision 事件只发布完整决策身份，quote overlay 事件只携带匹配当前决策的价格、
+涨跌、来源、来源时间、报价版本和年龄。无游标连接从打开时当前序列开始；显式
+`Last-Event-ID` 或 `cursor` 才回放。游标超前、过期、不连续，schema/base/identity
+不匹配和慢客户端统一发送 schema v2 `resync_required`，浏览器随后用 ETag 重新读取
+current。publisher 不等待客户端消费；队列满立即隔离该订阅者。SSE 正常时页面不持续
+轮询完整决策，断线后才以 30 秒低频恢复。
+
+新桌面页是明日决策的实际工作台，不是迁移说明页；固定展示当前/历史日期、运行与推送
+状态、数据年龄、预算、降级原因、最多 10 行决策和选中项详情，并保留“仅供研究，不构成
+投资建议”。内部英文原因码必须映射为中文兜底。1280x720、1440x900、1920x1080 下不得
+白屏、重叠、页面级横向溢出或明显布局跳动。该页和 v2 路由在本阶段保持并行旁路，
+`bootstrap.py`、旧首页、旧 `/api/*`、旧 P6 和旧运行库仍不切换；影子验收与生产读写
+指针切换属于下一同级章节。
+
 ## 3. 架构与代码边界
 
 活动产品代码只能位于 `src/trader`，固定依赖方向为：

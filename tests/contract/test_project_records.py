@@ -29,6 +29,21 @@ def test_each_pipeline_documents_user_problem_and_change_summary() -> None:
         assert "CHANGELOG.md" in contract
 
 
+def test_tomorrow_v2_api_sse_web_delivery_contract_is_recorded() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+
+    assert "### 2.6 tomorrow v2 API/SSE/Web 交付边界" in design
+    assert "CurrentDecisionIndex -> TomorrowDecisionQueries -> /api/v2" in design
+    assert "`GET /api/v2/tomorrow/current`" in design
+    assert "`GET /api/v2/tomorrow/history?date=YYYY-MM-DD`" in design
+    assert "publisher 不等待客户端消费" in design
+    assert "`bootstrap.py`" in design
+    runner = PROJECT_ROOT / "tests/performance/run_tomorrow_v2_browser.py"
+    script = runner.read_text(encoding="utf-8")
+    assert "VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))" in script
+    assert "overlay_without_full_get" in script
+
+
 def test_chrome_dashboard_gate_is_persisted_under_tests() -> None:
     script = (PROJECT_ROOT / "tests" / "performance" / "run_chrome_dashboard.py").read_text(encoding="utf-8")
     firefox_script = (PROJECT_ROOT / "tests" / "performance" / "run_t1_browser.py").read_text(encoding="utf-8")

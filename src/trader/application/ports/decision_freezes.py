@@ -23,6 +23,10 @@ class DecisionFreezeUnavailableError(DecisionFreezeError):
     """Persistence is unavailable or a stored manifest cannot be verified."""
 
 
+class TomorrowDecisionFreezeReader(Protocol):
+    def load_frozen(self, trade_date: date) -> TomorrowDecisionFreeze | None: ...
+
+
 class TomorrowDecisionFreezePort(Protocol):
     def save_checkpoint(self, checkpoint: TomorrowFreezeCheckpoint) -> None: ...
 
@@ -45,4 +49,5 @@ __all__ = [
     "DecisionFreezeError",
     "DecisionFreezeUnavailableError",
     "TomorrowDecisionFreezePort",
+    "TomorrowDecisionFreezeReader",
 ]

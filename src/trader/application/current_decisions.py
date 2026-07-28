@@ -25,6 +25,12 @@ class DecisionSealResult:
     source: Literal["current", "fallback", "explicit"] | None = None
 
 
+@dataclass(frozen=True)
+class CurrentDecisionSnapshot:
+    decision: DecisionEpoch | None
+    frozen: TomorrowDecisionFreeze | None
+
+
 class CurrentDecisionIndex:
     """In-memory CAS index; durable ownership remains in the repository."""
 
@@ -61,6 +67,10 @@ class CurrentDecisionIndex:
     def frozen(self) -> TomorrowDecisionFreeze | None:
         with self._lock:
             return self._frozen
+
+    def snapshot(self) -> CurrentDecisionSnapshot:
+        with self._lock:
+            return CurrentDecisionSnapshot(self._current, self._frozen)
 
     def is_sealed(self, trade_date: date) -> bool:
         with self._lock:
@@ -194,6 +204,7 @@ def _same_day_rejection(
 
 
 __all__ = [
+    "CurrentDecisionSnapshot",
     "CurrentDecisionIndex",
     "DecisionPublishResult",
     "DecisionSealResult",

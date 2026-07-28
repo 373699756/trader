@@ -27,6 +27,8 @@ def test_current_decision_index_requires_expected_version_cas() -> None:
     assert stale_cas.reason == "cas_mismatch"
     assert accepted.accepted is True
     assert index.latest() == second
+    assert index.snapshot().decision == second
+    assert index.snapshot().frozen is None
 
 
 def test_current_decision_index_allows_only_one_concurrent_cas_winner() -> None:
