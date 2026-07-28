@@ -109,14 +109,33 @@
 行情；`MarketEpoch` 是一次可审计的全市场决策输入；`CandidateQuoteEpoch` 只更新候选和
 已发布股票的高频报价；`ResearchEpoch` 保存经过 schema 和证据校验的结构化研究事实；
 `DecisionEpoch` 保存 local 或 hybrid 的完整决策身份。每个 epoch 都绑定交易日、上海
-时区观察点、上游版本、配置/规则/策略/schema 版本和规范内容哈希，已发布对象不可原地
-修改。
+时区观察点、上游版本、规范内容哈希，以及按其职责适用的配置、规则、策略和 schema
+版本，已发布对象不可原地修改。
 
 硬过滤、候选预选、本地评分和稳定选择必须是一次确定性管道。过滤结果使用
 `pass`、`observe_only`、`reject` 三态并保留逐股原因；缺失关键行情、证券身份或点时
 证据不得静默降级为通过。`CurrentDecisionIndex` 只保存每个视图最后一个已提交的不可变
 决策引用，并通过单提交者 compare-and-set 保证旧行情、迟到 DeepSeek 和失败批次不能
 覆盖更新结果。Web 只读取该索引和报价 overlay，不参与采集、过滤、评分或持久化。
+
+### 2.2 tomorrow v2 数据平面交付边界
+
+数据平面先以旁路能力交付，不接管当前生产 P1-P6。`DailyFeaturePack`、
+`MarketEpoch`、`CandidateQuoteEpoch` 和 `ResearchEpoch` 都是深层不可变对象：代码有序
+且唯一，业务时间为 `Asia/Shanghai`，内容哈希由规范载荷确定，来源版本、上游版本、
+缺失和降级原因属于身份的一部分。非有限核心数值、未来事实、无时区时间和同 sequence
+不同内容必须在发布前拒绝。
+
+进程内实时数据平面按交易日和单调 sequence 原子接纳 epoch。`MarketEpoch` 必须引用当前
+`DailyFeaturePack`，`CandidateQuoteEpoch` 必须引用当前 `MarketEpoch`；新 feature pack
+尚未形成匹配 market epoch 时，读取方继续获得上一组完整一致视图，不能看到新旧拼接。
+每个通道只保留有界数量的最近 epoch，旧 epoch、父版本不匹配和迟到结果不得覆盖当前
+指针。来源失败只更新结构化失败状态并保留最近有效 epoch；后续成功发布原子清除对应失败。
+
+长期审计的目标约束为：压缩数据按交易日分区，默认保留 120 个交易日并设置 20GB 磁盘上限。
+本阶段只保留文档契约，不实现磁盘归档、清理或容量驱逐代码，也不新增相关运行目录、
+配置项、后台线程或外部依赖。实现该能力前必须另立交付批次，先确定压缩格式、原子提交、
+校验、清理顺序、磁盘满降级和旧 release 只读边界。
 
 ## 3. 架构与代码边界
 

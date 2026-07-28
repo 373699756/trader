@@ -169,6 +169,16 @@ def test_tomorrow_rebuild_contract_is_explicitly_pre_cutover() -> None:
     assert "旧 release 和旧运行库保持完整只读回退" in design
 
 
+def test_tomorrow_data_plane_retention_is_documented_but_not_implemented() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    source = PROJECT_ROOT / "src" / "trader"
+
+    assert "压缩数据按交易日分区，默认保留 120 个交易日并设置 20GB 磁盘上限" in design
+    assert "本阶段只保留文档契约，不实现磁盘归档、清理或容量驱逐代码" in design
+    assert not (source / "infra" / "market_data" / "compressed_partitions.py").exists()
+    assert not (source / "infra" / "persistence" / "market_epoch_archive.py").exists()
+
+
 def test_ruff_guidance_names_the_active_lint_command() -> None:
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 

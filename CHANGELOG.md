@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增 tomorrow v2 旁路数据平面：`DailyFeaturePack`、`MarketEpoch`、
+  `CandidateQuoteEpoch` 和 `ResearchEpoch` 使用上海时区、规范 SHA-256、配置/来源/
+  上游版本和深层不可变载荷；`RealtimeDataPlane` 通过单锁原子发布、父版本校验、
+  单调 sequence、并发 highest-wins 和每通道有界内存历史提供一致只读快照。
 - 新增 tomorrow v2 目标契约与仓库级反向测试：固定不可变 `DailyFeaturePack`、
   `MarketEpoch`、`CandidateQuoteEpoch`、`ResearchEpoch`、`DecisionEpoch` 和
   `CurrentDecisionIndex`，并定义只读 v2 API、SSE、内部 5/1/10/15 秒 P95 验收及
@@ -113,6 +117,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 按用户要求从已推送基线新建 `feature/tomorrow-v2` 开发分支，数据平面保持旁路，不接管
+  当前 P1-P6、Web 或冻结路径。权威文档保留“压缩数据按交易日分区、默认 120 个交易日、
+  20GB 上限”的目标，但本批明确不实现磁盘归档、清理、容量驱逐、运行目录或配置。
 - 用户指出冷启动历史预热、三策略异步评分和 P1-P6 都是后续实现机制，不应反向成为最终
   产品需求。本批把权威目标重置为 tomorrow 唯一最高优先级生产决策链，固定 0-10 只、
   14:50 冻结、DeepSeek 继续参与融合以及 tomorrow 独占正常目标 36/硬上限 66；当前
@@ -370,6 +377,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 数据平面现在在原子发布前拒绝无上海时区、未来事实、非有限数值、空全市场批次、空来源
+  身份、报价接收早于来源时间、同 sequence 不同内容、父 epoch 或配置不匹配等输入；
+  来源失败只记录有界结构化原因并保留最近有效一致视图，不会用失败或半更新状态清空数据。
 - 修正文档把冷启动预热、三策略调度和缓存阶段当成终极需求、导致实时链路设计继续围绕
   既有架构打补丁的问题。目标态现在只保留点时输入、准确过滤、14:50 不可变冻结、只读
   Web 和真实降级等业务不变量，并明确提高收益须经不少于 250 个交易日样本外回放及连续
@@ -538,6 +548,13 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批失败先行测试先因 epoch 模块不存在而停止；实现后，数据 epoch、原子数据平面及项目
+  记录定向测试全部通过。`make format-check`、`make lint`、`make type-check` 和
+  `make package` 通过，严格结构债务保持零；仅叠加本批 diff 的干净副本完整 `make test`
+  通过。共享工作树全测只受任务开始前已有的 outcome settlement 用户断言阻塞，本批未
+  修改该文件。仓库外 wheel 可导入新增模块、执行 `trader-cli --help` 并读取模板、CSS、
+  JavaScript 和图标。Firefox 三档桌面布局、浏览器错误和溢出门禁通过，稳定复跑
+  patch-to-paint P95 为 67ms；首次冷启动为 150ms，未放宽 100ms 预算。
 - 本批先新增 tomorrow v2 文档契约测试并观察到缺少目标定义时按预期失败；补齐两份权威
   文档后，定向用例和 `tests/contract/test_project_records.py` 全部通过。
   `make format-check`、`make lint`、`make type-check` 和 `make package` 通过；仅叠加本批
@@ -869,6 +886,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未新增或删除磁盘归档实现；契约测试明确阻止提前加入
+  `compressed_partitions.py` 或 `market_epoch_archive.py`。现有 v1/P1-P6、运行库、缓存、
+  API、Web 和冻结代码均保持原样，完整旧 release 回退不受影响。
 - 从 tomorrow v2 目标契约中移除“必须沿用冷启动历史预热、三策略异步评分、P1-P6、
   `versioned_dag` 或 store 对象”的假设；这些当前实现仍原样保留，待并行影子通过后才
   随完整 release 原子切换，本批未删除生产代码、运行数据或兼容 API。
@@ -913,10 +933,14 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 本批只完成契约重置，没有实现 `CurrentDecisionIndex`、新数据平面、v2 API/SSE 或原子
-  切换；生产仍运行现有 v1/P1-P6 链路，因此用户此前观察到的每日链路不稳定不能据此视为
-  已修复。公开数据源响应速度和数据完整性不受本地控制，36/66 只是 DeepSeek 资源边界，
-  不能保证推荐数量或收益；收益改动必须在后续批次取得样本外与前向影子证据。
+- 新数据平面尚未连接真实来源、过滤评分、DeepSeek、`CurrentDecisionIndex`、v2 API/SSE
+  或 Web，因此当前生产实时性和收益行为没有变化。120 日压缩分区与 20GB 上限只有文档
+  契约；压缩格式、原子写入、磁盘满降级和清理顺序仍须后续独立交付。旁路 epoch 也尚未
+  取得真实交易日供应商延迟、全市场覆盖率和长运行内存证据。
+- 当前虽已实现旁路内存数据平面，仍未实现 `CurrentDecisionIndex`、v2 API/SSE 或原子
+  切换；生产继续运行现有 v1/P1-P6 链路，因此用户此前观察到的每日链路不稳定不能据此
+  视为已修复。公开数据源响应速度和数据完整性不受本地控制，36/66 只是 DeepSeek 资源
+  边界，不能保证推荐数量或收益；收益改动必须在后续批次取得样本外与前向影子证据。
 - 当前运行中的服务进程仍加载旧代码，必须重启后才会使用按策略隔离的评分通道和紧凑缓存。
   外部行情、历史预热或候选质量不足仍可能合法产生空推荐；本批只消除跨策略覆盖和缓存
   序列化超时，不放宽候选门槛，也不承诺推荐数量或投资收益。离线基准不能替代真实交易日
