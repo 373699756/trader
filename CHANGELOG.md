@@ -6,6 +6,16 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续下一完整迁移章节，并澄清影子运行不是下载历史 60 日数据，要求该下载先在文档
+  明确暂停。本批新增 tomorrow v2 生产旁路影子：`ShadowObservingSnapshotIndex` 只在旧
+  P6 成功接纳后把同一份不可变点时 `replay_input` 交给独立单线程 latest-wins worker，
+  生成 local、复用既有结构化 facts 的可选 hybrid、独立冻结、SSE 和 v2 Web 投影。影子
+  不持有行情、历史或 DeepSeek 网络端口，不增加物理模型请求，也不写旧运行库。
+- 新增有界 `TomorrowCutoverGate`，按交易日和 baseline/input 身份去重记录选择代码、过滤
+  原因、行情接收到 local 可见时延、决策年龄、冻结代码、处理错误、资源状态和 DeepSeek
+  请求增量。至少 100 个成功样本、一个含匹配冻结的完整交易日、零错误/额外请求/一致性
+  偏差以及 5 秒/10 秒 P95 全部通过时才报告 `eligible`；状态只供 `/api/v2/status` 观察，
+  不自动切换或降低门槛。
 - 用户发送“继续”，要求按迁移顺序完成下一整节。现状确认 tomorrow v2 已有决策索引和
   正式冻结，但没有从该索引到浏览器的独立只读链，旧 `/api/*` 和旧首页仍只能读取旧 P6。
   本批新增应用层 `TomorrowDecisionQueries`、匹配决策身份的纯内存报价 overlay 索引、
@@ -157,6 +167,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `bootstrap.py` 现在显式装配独立 v2 决策索引、报价 overlay、冻结 repository、事件流、
+  查询、门禁和影子 worker；`build_system()` 仍不启动线程或创建目录，`ApplicationSystem`
+  统一启动和有界停止影子线程。旧 today/d25/long、旧 tomorrow P6、旧首页和
+  `/api/recommendations/tomorrow` 继续作为正式口径，尚未执行生产读写指针切换。
+- 权威设计文档新增第 2.7 节，明确历史 60 个交易日下载/回填暂停，不属于影子运行，不得
+  阻塞启动、local 预览、采样或切换资格；当前影子只消费活动流水线已经取得的点时特征，
+  缺失历史继续按权威过滤规则返回观察、合法空集或 `not_ready`。
 - `CurrentDecisionIndex` 新增同锁读取 decision/frozen 的原子只读快照，避免冻结提交瞬间
   查询分别读取两个指针形成撕裂视图；冻结端口拆出仅含 `load_frozen` 的
   `TomorrowDecisionFreezeReader`，使 Web 查询在类型边界上不持有冻结写能力。
@@ -438,6 +455,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 v2 组件已完成但真实组合根始终未注入查询和运行数据、导致生产进程
+  `/api/v2/tomorrow/current` 只能长期 `not_ready` 且无法量化新旧链路差异的问题。当前
+  接受的 tomorrow P6 会异步形成可观察 v2 current；冻结成功后额外发布同身份事件，使 Web
+  不必等下一次完整刷新才能看到 frozen 状态。重复 baseline 不再虚增门禁样本，失败样本也
+  不再被错误计入“100 个成功样本”；跨午夜处理的失败证据继续归属原快照交易日，不会污染
+  次日样本。
 - 修复新 Web 链缺失导致已形成的 tomorrow v2 决策无法被独立预览的问题；修复 overlay
   可能跨决策套用、旧 overlay 阻碍新决策报价接纳、旧交易日决策冒充当前以及冻结
   decision/frozen 分离读取的竞态。overlay 现在发布前校验当前决策身份，决策换代后使用
@@ -638,6 +661,21 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- tomorrow v2 影子定向回归覆盖门禁全部 blocker、成功样本分母、baseline/input 去重、
+  跨午夜交易日归属、latest-wins、线程有界停止、无历史/DeepSeek 外部端口、点时 epoch
+  投影、组合根无副作用、current/history/SSE、14:50 独立冻结和不一致时拒绝切换；相关
+  42 项测试和定向 mypy 通过。
+- `make format-check`、`make lint`、`make type-check` 通过，293 个受检文件格式正确、
+  严格重构债务为零、198 个源码模块 mypy 无问题。主工作树完整测试仅被用户已有
+  `test_outcome_settlement.py` 新断言阻断；从已推送基线叠加本批文件且保留该测试基线版本
+  的隔离树完整 971 项 pytest 通过，本批未修改或暂存用户文件。
+- `make package` 成功生成 sdist 和 `py3-none-any` wheel；首次构建仅因沙箱禁止连接本机
+  `127.0.0.1:7897` 代理失败，获准后原命令通过。最终 wheel 从仓库外 prefix 导入包和新增
+  影子模块，实际 `trader-cli --help` 可执行，8 项模板/CSS/JavaScript/SVG 资源可读，活动
+  锁定依赖环境 `pip check` 无破损依赖。
+- 真实 headless Firefox/geckodriver 在 1280x720、1440x900、1920x1080 分别渲染 6 行，
+  截图 116973/130449/137328 字节；三档均无白屏、横向溢出、区块重叠或浏览器错误。SSE
+  overlay 更新后完整 current GET 计数保持 1。
 - tomorrow v2 定向门禁通过：应用查询、overlay CAS、历史正式只读、状态年龄/预算、SSE
   单调序列/游标恢复/身份不匹配/慢客户端、HTTP ETag/304、无注入 503、应用工厂副作用和
   架构契约共 67 项测试通过；隔离用户已有结算测试修改后，全仓 961 项测试、格式检查、
@@ -1020,6 +1058,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 影子运行和工程切换门禁的活动范围明确移除“批量下载/回填历史 60 个交易日”前置步骤；
+  本批没有删除既有历史特征字段、缓存或用户运行数据，后续恢复下载必须另立独立交付批次。
 - v2 页面移除对旧 `RecommendationQueries`、旧 `SnapshotPublisher` 和旧 Web envelope
   的隐式依赖；移除 SSE 正常在线时的完整 current 周期轮询。未删除旧生产路由、资源或
   运行数据，生产切换仍留给后续影子验收整节。
@@ -1078,18 +1118,23 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 本批只完成并行旁路的 v2 API/SSE/Web，没有在 `bootstrap.py` 切换 tomorrow 生产读写
-  指针，也没有修改旧首页，因此真实生产进程默认仍返回 v2 `not_ready`。下一整节必须用
-  同一规范输入完成新旧影子比较、真实交易日数据年龄/冻结身份/收益样本验收后才能原子
-  切换；不得把本批离线 fixture 的 6 行结果当成收益证据。
+- 本批已把 v2 影子接入真实组合根，但没有切换 tomorrow 生产读写指针。首次启动后只有旧
+  P6 成功接纳包含点时 `replay_input` 的同日 tomorrow 快照，v2 current 才会从
+  `not_ready` 变为旁路结果；真实完整交易日尚未形成 100 个成功样本、匹配冻结和 5/10 秒
+  P95 证据，因此门禁预期保持 `eligible=false`。固定 fixture 只能证明机制，不能冒充真实
+  交易日性能或收益证据。
+- 历史 60 个交易日批量下载/回填按用户要求暂停；影子复用当前输入已有历史，历史不足会
+  依法减少候选或返回合法空集，不会后台补抓。该暂停可能降低早期影子覆盖率，但不能通过
+  伪造历史或放宽过滤解决。工程同版本影子也不替代策略文档要求的 250 日样本外回放、20 日
+  挑战者前向影子和收益晋级门禁。
 - 浏览器门禁使用产品支持范围内的 Firefox；宿主未提供 Chrome/Chromium，本批没有新增
   Chrome 实测证据。测试未调用真实行情供应商或 DeepSeek，也不能证明未来收益；外部来源
   失败时仍会保留最近有效决策并显式降级。
-- 上一批决策索引、冻结协调和 v2 repository 当时尚未接 API/SSE/Web；本批已补齐并行
-  只读展示链，但仍未接 `bootstrap.py`、旧 P6 或生产读写指针。因此现有门禁可以证明冻结
-  到旁路 Web 的身份与展示一致性，仍不能证明真实交易日行情覆盖、端到端 1-15 秒时延或
-  荐股收益提高。外部数据、DeepSeek 与真实前瞻收益仍须在后续影子验收和切换章节留证；
-  压缩原始行情的 120 交易日/20GB 磁盘治理仍未实现。工作树中
+- 决策索引、冻结协调、v2 repository、API/SSE/Web 和组合根影子现已连通，但旧 P6 仍是
+  影子输入来源且生产读写指针未切换。因此仓库门禁可以证明冻结到旁路 Web 的身份与展示
+  一致性，仍不能证明真实交易日行情覆盖、端到端 1-15 秒时延或荐股收益提高。外部数据、
+  DeepSeek 与真实前瞻收益仍须在真实影子观察和后续显式切换批次留证；压缩原始行情的
+  120 交易日/20GB 磁盘治理仍未实现。工作树中
   用户并行修改的 `tests/unit/application/test_outcome_settlement.py` 未纳入本批，其新增
   断言与当前结算契约不一致，导致主工作树完整测试单项失败；隔离本批后的完整测试全绿，
   该用户文件保持原样且不会暂存或提交。

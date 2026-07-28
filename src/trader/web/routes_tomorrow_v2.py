@@ -77,12 +77,13 @@ def _tomorrow_history(services: WebServices) -> RouteResponse:
 def _tomorrow_status(services: WebServices) -> RouteResponse:
     if services.tomorrow_queries is None or services.tomorrow_events is None:
         return _not_ready()
-    return jsonify(
-        serialize_tomorrow_status(
-            services.tomorrow_queries.status(),
-            services.tomorrow_events.status(),
-        )
+    payload = serialize_tomorrow_status(
+        services.tomorrow_queries.status(),
+        services.tomorrow_events.status(),
     )
+    if services.tomorrow_cutover_status is not None:
+        payload["shadow"] = dict(services.tomorrow_cutover_status())
+    return jsonify(payload)
 
 
 def _tomorrow_events(services: WebServices) -> RouteResponse:

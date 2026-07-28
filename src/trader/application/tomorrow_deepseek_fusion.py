@@ -98,7 +98,7 @@ class TomorrowDeepSeekFusionUseCase:
         )
         if snapshot.market is None:
             raise RuntimeError("selection returned without a market epoch")
-        decision_policy = _decision_policy(self._policy)
+        decision_policy = tomorrow_decision_policy(self._policy)
         review_candidates = select_tomorrow_review_candidates(selection, decision_policy)
         review_codes = tuple(item.code for item in review_candidates)
         candidate_version = _effective_epoch_version(
@@ -179,7 +179,7 @@ class TomorrowDeepSeekFusionUseCase:
         identity_error = _review_identity_error(returned, set(review_codes), manifest_hashes)
         if identity_error:
             return TomorrowDeepSeekFusionResult(context.local, None, review_codes, identity_error)
-        normalized = _normalize_review_times(returned, request.review_deadline)
+        normalized = normalize_tomorrow_review_times(returned, request.review_deadline)
         if normalized is None:
             return TomorrowDeepSeekFusionResult(
                 context.local,
@@ -230,7 +230,7 @@ class TomorrowDeepSeekFusionUseCase:
         )
 
 
-def _decision_policy(policy: RecommendationPolicy) -> TomorrowDecisionPolicy:
+def tomorrow_decision_policy(policy: RecommendationPolicy) -> TomorrowDecisionPolicy:
     return TomorrowDecisionPolicy(
         dimension_weights=policy.dimension_weights[Strategy.TOMORROW],
         risk_rules=policy.risk_rules,
@@ -270,7 +270,7 @@ def _review_identity_error(
     return ""
 
 
-def _normalize_review_times(
+def normalize_tomorrow_review_times(
     reviews: Mapping[str, DeepSeekReview],
     deadline: datetime,
 ) -> dict[str, DeepSeekReview] | None:
@@ -305,6 +305,8 @@ def _require_shanghai_time(value: datetime, name: str) -> None:
 
 
 __all__ = [
+    "normalize_tomorrow_review_times",
+    "tomorrow_decision_policy",
     "TomorrowDeepSeekFusionRequest",
     "TomorrowDeepSeekFusionResult",
     "TomorrowDeepSeekFusionUseCase",

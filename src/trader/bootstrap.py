@@ -8,12 +8,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from flask import Flask
 
 from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import BoardScoringCache
 from trader.application.cadence import CadencePolicy, PipelineTask
+from trader.application.current_decisions import CurrentDecisionIndex
 from trader.application.events import InMemoryEventLedger
 from trader.application.latency import LatencyWaterfall
 from trader.application.long_groups import LongGroupDefinition, LongGroupSectionDefinition, LongWatchItemDefinition
@@ -30,6 +32,16 @@ from trader.application.recommendations import RecommendationEngine
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.source_lanes import SourceLaneRegistry
 from trader.application.status import RuntimeState
+from trader.application.tomorrow_events import TomorrowDecisionEventStream
+from trader.application.tomorrow_freezing import DecisionRuntimeIdentity, TomorrowFreezeCoordinator
+from trader.application.tomorrow_shadow import TomorrowCutoverGate
+from trader.application.tomorrow_shadow_runtime import (
+    ShadowObservingSnapshotIndex,
+    TomorrowShadowDependencies,
+    TomorrowShadowRuntime,
+    TomorrowShadowWorker,
+)
+from trader.application.tomorrow_views import TomorrowDecisionQueries, TomorrowQuoteOverlayIndex
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import Board
 from trader.domain.recommendation.filters import HardFilterPolicy
@@ -63,6 +75,7 @@ from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
+from trader.infra.persistence.tomorrow_decision_freezes import TomorrowDecisionFreezeRepository
 from trader.infra.persistence.writer import SnapshotRepository
 from trader.infra.settings import (
     LongWatchlist,
@@ -73,7 +86,10 @@ from trader.infra.settings import (
     load_strategy_settings,
 )
 from trader.web import create_app
+from trader.web.route_services import TomorrowWebServices
 from trader.web.routes import WebApiConfig
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
@@ -91,24 +107,45 @@ class ApplicationSystem:
     market_cache: BoundedLruCache[object]
     history_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry
+    tomorrow_shadow_worker: TomorrowShadowWorker | None = None
+    tomorrow_shadow_runtime: TomorrowShadowRuntime | None = None
 
     def start(self) -> bool:
-        history_started = self.history_pool.start()
+        shadow_started = self.tomorrow_shadow_worker.start() if self.tomorrow_shadow_worker is not None else False
+        history_started = False
         try:
+            history_started = self.history_pool.start()
             started = self.supervisor.start()
         except BaseException:
             if history_started:
                 self.history_pool.stop(wait=True, cancel_futures=True)
+            if shadow_started and self.tomorrow_shadow_worker is not None:
+                self.tomorrow_shadow_worker.stop(
+                    wait=True,
+                    timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds,
+                )
             raise
         if not started and history_started:
             self.history_pool.stop(wait=True, cancel_futures=True)
+        if not started and shadow_started and self.tomorrow_shadow_worker is not None:
+            self.tomorrow_shadow_worker.stop(
+                wait=True,
+                timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds,
+            )
         return started
 
     def stop(self) -> None:
+        if self.tomorrow_shadow_worker is not None:
+            self.tomorrow_shadow_worker.stop(wait=False)
         self.source_lanes.stop(wait=False)
         self.supervisor.stop()
         self.source_lanes.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
         self.history_pool.stop(wait=True, cancel_futures=True)
+        if self.tomorrow_shadow_worker is not None:
+            self.tomorrow_shadow_worker.stop(
+                wait=True,
+                timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds,
+            )
         self.market_cache.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
 
 
@@ -145,7 +182,13 @@ class _PublicationContext:
     state: RuntimeState
     publisher: SnapshotPublisher
     published_snapshots: PublishedSnapshotIndex
+    pipeline_snapshots: ShadowObservingSnapshotIndex
     recommendation_engine: RecommendationEngine
+    tomorrow_repository: TomorrowDecisionFreezeRepository
+    tomorrow_runtime: TomorrowShadowRuntime
+    tomorrow_worker: TomorrowShadowWorker
+    tomorrow_queries: TomorrowDecisionQueries
+    tomorrow_events: TomorrowDecisionEventStream
 
 
 @dataclass(frozen=True)
@@ -185,6 +228,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         RuntimeSupervisorConfig(
             now=now,
             initializers=(
+                publication.tomorrow_repository.initialize,
                 pipeline.initialize,
                 publication.published_snapshots.initialize,
                 persistence.budget.initialize,
@@ -199,6 +243,11 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         status_provider=pipeline.status,
         queries=queries,
         publisher=publication.publisher,
+        tomorrow=TomorrowWebServices(
+            publication.tomorrow_queries,
+            publication.tomorrow_events,
+            publication.tomorrow_runtime.status,
+        ),
         api_config=WebApiConfig(
             default_top_n=settings.api.default_top_n,
             maximum_top_n=settings.api.maximum_top_n,
@@ -219,6 +268,8 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         workers.market_cache,
         workers.history_pool,
         workers.source_lanes,
+        publication.tomorrow_worker,
+        publication.tomorrow_runtime,
     )
 
 
@@ -479,7 +530,62 @@ def _build_publication(
     )
     published_snapshots = PublishedSnapshotIndex(repository)
     recommendation_engine = _build_recommendation_engine(context, calendar)
-    return _PublicationContext(state, publisher, published_snapshots, recommendation_engine)
+    tomorrow_repository = TomorrowDecisionFreezeRepository(settings.runtime_dir)
+    tomorrow_decisions = CurrentDecisionIndex()
+    tomorrow_quotes = TomorrowQuoteOverlayIndex(tomorrow_decisions)
+    tomorrow_events = TomorrowDecisionEventStream(
+        history_size=settings.api.sse_history_size,
+        client_queue_size=settings.api.sse_client_queue_size,
+        subscriber_limit=settings.api.sse_max_clients,
+    )
+    clock = _ShanghaiClock(context.now)
+    tomorrow_queries = TomorrowDecisionQueries(
+        tomorrow_decisions,
+        tomorrow_repository,
+        clock,
+        quotes=tomorrow_quotes,
+    )
+    tomorrow_gate = TomorrowCutoverGate()
+    tomorrow_freezer = TomorrowFreezeCoordinator(
+        tomorrow_decisions,
+        tomorrow_repository,
+        clock,
+        runtime_identity=DecisionRuntimeIdentity(
+            context.effective_config_version,
+            context.strategy.strategy_version,
+            context.strategy.fusion.version,
+        ),
+    )
+    tomorrow_runtime = TomorrowShadowRuntime(
+        _recommendation_policy(context.strategy),
+        TomorrowShadowDependencies(
+            tomorrow_decisions,
+            tomorrow_quotes,
+            tomorrow_events,
+            tomorrow_queries,
+            tomorrow_freezer,
+            tomorrow_gate,
+            clock,
+        ),
+    )
+    tomorrow_worker = TomorrowShadowWorker(tomorrow_runtime)
+    pipeline_snapshots = ShadowObservingSnapshotIndex(
+        published_snapshots,
+        tomorrow_worker,
+        tomorrow_runtime,
+    )
+    return _PublicationContext(
+        state,
+        publisher,
+        published_snapshots,
+        pipeline_snapshots,
+        recommendation_engine,
+        tomorrow_repository,
+        tomorrow_runtime,
+        tomorrow_worker,
+        tomorrow_queries,
+        tomorrow_events,
+    )
 
 
 def _build_recommendation_engine(context: _BuildContext, calendar: ChinaTradingCalendar) -> RecommendationEngine:
@@ -520,7 +626,7 @@ def _build_pipeline(
             publisher=publication.publisher,
             engine=publication.recommendation_engine,
             state=publication.state,
-            published_snapshots=publication.published_snapshots,
+            published_snapshots=publication.pipeline_snapshots,
             now=context.now,
             outcome_settlement=OutcomeSettlementService(
                 adapters.market_data,
@@ -643,6 +749,14 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@dataclass(frozen=True)
+class _ShanghaiClock:
+    value: Callable[[], datetime]
+
+    def now(self) -> datetime:
+        return self.value().astimezone(SHANGHAI)
 
 
 __all__ = ["ApplicationSystem", "build_system"]

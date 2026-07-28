@@ -6,14 +6,34 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from tests.pipeline_factory import build_pipeline
+from trader.application.current_decisions import CurrentDecisionIndex
 from trader.application.publisher import SnapshotPublisher
+from trader.application.recommendation_policy_codec import _freeze_policy
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
+from trader.application.tomorrow_events import TomorrowDecisionEventStream
+from trader.application.tomorrow_freezing import DecisionRuntimeIdentity, TomorrowFreezeCoordinator
+from trader.application.tomorrow_shadow import TomorrowCutoverGate, TomorrowCutoverPolicy
+from trader.application.tomorrow_shadow_projection import project_tomorrow_snapshot
+from trader.application.tomorrow_shadow_runtime import (
+    TomorrowShadowDependencies,
+    TomorrowShadowRuntime,
+)
+from trader.application.tomorrow_views import TomorrowDecisionQueries, TomorrowQuoteOverlayIndex
+from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.models import (
+    FusionMode,
+    RecommendationReplayInput,
+    RecommendationSnapshot,
+    Strategy,
+)
+from trader.infra.persistence.tomorrow_decision_freezes import TomorrowDecisionFreezeRepository
 from trader.infra.persistence.writer import SnapshotRepository
+from trader.infra.settings import load_strategy_settings
 
 TRADE_DATE = "2026-07-16"
 TIMELINE = (
@@ -26,6 +46,8 @@ TIMELINE = (
     "2026-07-16T14:50:00+08:00",
     "2026-07-16T15:00:00+08:00",
 )
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def test_recorded_full_day_shadow_is_deterministic_and_freezes_real_repository(
@@ -44,6 +66,102 @@ def test_recorded_full_day_shadow_is_deterministic_and_freezes_real_repository(
     )
     assert first["published_strategies"] == ()
     assert all(record_count > 0 for record_count in first["record_counts"])
+
+
+def test_tomorrow_v2_shadow_reaches_web_and_freeze_gate_without_history_download(
+    tmp_path,
+    application_feature_factory,
+) -> None:
+    observed_at = datetime.fromisoformat("2026-07-28T14:49:58+08:00").astimezone(SHANGHAI)
+    now = datetime.fromisoformat("2026-07-28T14:50:01+08:00").astimezone(SHANGHAI)
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    features = tuple(
+        application_feature_factory(code, observed_at)
+        for code in ("600001", "600002", "300001", "300002", "688001", "688002")
+    )
+    replay = RecommendationReplayInput(
+        schema_version="recommendation_replay_v4",
+        algorithm_version="v16_board_scoring_v2",
+        policy=_freeze_policy(policy),
+        evaluated_at=observed_at,
+        market_features=features,
+        requested_codes=tuple(item.quote.code for item in features),
+        candidate_features=features,
+        reviews={},
+        preselect_max_age_seconds=10.0,
+        score_max_age_seconds=10.0,
+        candidate_pool_size=120,
+    )
+    baseline = RecommendationSnapshot(
+        snapshot_id="legacy:tomorrow:freeze",
+        strategy=Strategy.TOMORROW,
+        trade_date="2026-07-28",
+        phase="final_review",
+        data_version="legacy-input:freeze",
+        strategy_version=policy.strategy_version,
+        fusion_version=policy.fusion_version,
+        fusion_mode=FusionMode.LOCAL_DEGRADED,
+        published_at=now,
+        recommendations=(),
+        filtered_count=0,
+        filter_reasons={},
+        config_version="runtime:test",
+        replay_input=replay,
+    )
+    projected = project_tomorrow_snapshot(baseline, policy, decision_sequence=0)
+    baseline = replace(
+        baseline,
+        frozen=True,
+        filter_reasons=projected.local.filter_reason_counts,
+    )
+    repository = TomorrowDecisionFreezeRepository(tmp_path)
+    repository.initialize()
+    decisions = CurrentDecisionIndex()
+    quotes = TomorrowQuoteOverlayIndex(decisions)
+    events = TomorrowDecisionEventStream()
+    clock = FixedClock(now)
+    queries = TomorrowDecisionQueries(decisions, repository, clock, quotes=quotes)
+    gate = TomorrowCutoverGate(TomorrowCutoverPolicy(minimum_samples=1, minimum_trade_days=1))
+    freezer = TomorrowFreezeCoordinator(
+        decisions,
+        repository,
+        clock,
+        runtime_identity=DecisionRuntimeIdentity(
+            "runtime:test",
+            policy.strategy_version,
+            policy.fusion_version,
+        ),
+    )
+    runtime = TomorrowShadowRuntime(
+        policy,
+        TomorrowShadowDependencies(
+            decisions,
+            quotes,
+            events,
+            queries,
+            freezer,
+            gate,
+            clock,
+        ),
+    )
+
+    assert runtime.process(baseline) is True, runtime.status()
+
+    current = queries.current()
+    historical = queries.history(now.date())
+    assert current.status == "ready"
+    assert current.frozen is True
+    assert historical.status == "ready"
+    assert events.last_sequence() == 2
+    status = runtime.status()
+    assert status["processed"] == 1
+    assert status["failed"] == 0
+    assert status["cutover_gate"]["eligible"] is False
+    assert status["cutover_gate"]["blockers"] == (
+        "matching_freeze_missing",
+        "selected_codes_mismatch",
+    )
+    assert status["cutover_gate"]["deepseek_request_delta"] == 0
 
 
 def _run_shadow(runtime_dir: Path, recommendation_policy, application_feature_factory) -> dict[str, object]:
@@ -105,6 +223,14 @@ class TradingDayCalendar:
     @staticmethod
     def is_trading_day(_day) -> bool:
         return True
+
+
+class FixedClock:
+    def __init__(self, value: datetime) -> None:
+        self._value = value
+
+    def now(self) -> datetime:
+        return self._value
 
 
 class StaticMarketData:

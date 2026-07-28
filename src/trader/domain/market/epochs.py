@@ -23,7 +23,7 @@ RESEARCH_EPOCH_SCHEMA_VERSION = "research_epoch_v1"
 
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _REASON_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
-_CANDIDATE_REALTIME_FEATURES = frozenset(
+CANDIDATE_REALTIME_FEATURES = frozenset(
     {
         "breakout_deviation_pct",
         "capacity_score",
@@ -194,7 +194,7 @@ class CandidateFeatureRow:
         _require_code(self.code)
         normalized_values = dict(sorted(self.values.items()))
         declared_fields = set(normalized_values).union(self.missing_fields, self.missing_reasons)
-        unsupported = sorted(declared_fields.difference(_CANDIDATE_REALTIME_FEATURES))
+        unsupported = sorted(declared_fields.difference(CANDIDATE_REALTIME_FEATURES))
         if unsupported:
             raise ValueError(f"candidate feature rows contain unsupported realtime fields: {','.join(unsupported)}")
         for name, value in normalized_values.items():
@@ -494,6 +494,7 @@ def _canonicalize(value: object) -> _CanonicalValue:
 
 __all__ = [
     "CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION",
+    "CANDIDATE_REALTIME_FEATURES",
     "DAILY_FEATURE_PACK_SCHEMA_VERSION",
     "MARKET_EPOCH_SCHEMA_VERSION",
     "RESEARCH_EPOCH_SCHEMA_VERSION",

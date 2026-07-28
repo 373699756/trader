@@ -182,6 +182,10 @@ def test_tomorrow_rebuild_contract_is_explicitly_pre_cutover() -> None:
     assert "并行影子后原子切换" in design
     assert "目标契约不表示 v2 API 或新决策链已经进入活动生产" in design
     assert "旧 release 和旧运行库保持完整只读回退" in design
+    assert "tomorrow v2 影子运行与切换门禁交付边界" in design
+    assert "下载或回填历史 60 个交易日数据”在本阶段明确暂停" in design
+    assert "不得成为启动、" in design
+    assert "门禁不得自动" in design
 
 
 def test_tomorrow_data_plane_retention_is_documented_but_not_implemented() -> None:

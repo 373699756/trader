@@ -34,6 +34,7 @@ def create_app(
             publisher=publisher,
             tomorrow_queries=tomorrow.queries if tomorrow is not None else None,
             tomorrow_events=tomorrow.events if tomorrow is not None else None,
+            tomorrow_cutover_status=tomorrow.cutover_status if tomorrow is not None else None,
             config=api_config or WebApiConfig(),
         ),
     )

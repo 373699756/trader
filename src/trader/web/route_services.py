@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from trader.application.publisher import SnapshotPublisher
@@ -24,6 +24,7 @@ class WebApiConfig:
 class TomorrowWebServices:
     queries: TomorrowDecisionQueries
     events: TomorrowDecisionEventStream
+    cutover_status: Callable[[], Mapping[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class WebServices:
     publisher: SnapshotPublisher | None = None
     tomorrow_queries: TomorrowDecisionQueries | None = None
     tomorrow_events: TomorrowDecisionEventStream | None = None
+    tomorrow_cutover_status: Callable[[], Mapping[str, object]] | None = None
     config: WebApiConfig = WebApiConfig()
 
 
