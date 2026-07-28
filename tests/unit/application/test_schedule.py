@@ -4,7 +4,14 @@ from datetime import datetime
 
 import pytest
 
-from trader.application.schedule import SHANGHAI, MarketPhase, decision_at, freeze_due_at, phase_at
+from trader.application.schedule import (
+    SHANGHAI,
+    MarketPhase,
+    decision_at,
+    freeze_due_at,
+    phase_at,
+    seconds_until_next_schedule_boundary,
+)
 
 
 @pytest.mark.parametrize(
@@ -47,3 +54,11 @@ def test_freeze_due_survives_a_missed_exact_window() -> None:
     assert freeze_due_at(midday, is_trading_day=True) == ("today",)
     assert freeze_due_at(after_freeze, is_trading_day=True) == ("today", "tomorrow", "d25")
     assert freeze_due_at(after_freeze, is_trading_day=False) == ()
+
+
+def test_scheduler_wakes_at_deepseek_submission_cutoffs() -> None:
+    before_today_cutoff = datetime(2026, 7, 16, 11, 17, 59, tzinfo=SHANGHAI)
+    before_afternoon_cutoff = datetime(2026, 7, 16, 14, 45, 59, tzinfo=SHANGHAI)
+
+    assert seconds_until_next_schedule_boundary(before_today_cutoff, maximum_seconds=60) == 1
+    assert seconds_until_next_schedule_boundary(before_afternoon_cutoff, maximum_seconds=60) == 1

@@ -35,6 +35,8 @@ class BudgetSummaryReader:
         self._daily_target = config.daily_target
         self._stage_targets = dict(config.stage_targets)
         self._stage_limits = dict(config.stage_limits)
+        self._normal_limit = sum(limit for stage, limit in self._stage_limits.items() if stage != "emergency")
+        self._planned_limit = sum(self._stage_limits.values())
 
     def summary(self, day: str) -> dict[str, object]:
         if not self._initialized():
@@ -43,6 +45,11 @@ class BudgetSummaryReader:
                 "remaining": self._daily_hard_limit,
                 "target": self._daily_target,
                 "target_met": False,
+                "normal_limit": self._normal_limit,
+                "normal_used": 0,
+                "normal_remaining": self._normal_limit,
+                "planned_limit": self._planned_limit,
+                "planned_remaining": self._planned_limit,
                 "by_bucket": {},
                 "by_strategy": {},
                 "by_stage": {},
@@ -107,6 +114,7 @@ class BudgetSummaryReader:
             if str(bucket) in {item.value for item in Strategy} or str(bucket) == "emergency":
                 by_strategy[str(strategy)] = by_strategy.get(str(strategy), 0) + amount
         used = sum(by_bucket.values())
+        normal_used = used - by_bucket.get("emergency", 0)
         by_stage = {
             stage: {
                 "used": by_stage_count.get(stage, 0),
@@ -127,6 +135,11 @@ class BudgetSummaryReader:
             "remaining": max(0, self._daily_hard_limit - used),
             "target": self._daily_target,
             "target_met": target_met,
+            "normal_limit": self._normal_limit,
+            "normal_used": normal_used,
+            "normal_remaining": max(0, self._normal_limit - normal_used),
+            "planned_limit": self._planned_limit,
+            "planned_remaining": max(0, self._planned_limit - used),
             "by_bucket": by_bucket,
             "by_strategy": by_strategy,
             "by_stage": by_stage,

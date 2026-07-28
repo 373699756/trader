@@ -94,7 +94,7 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     ]
     assert today[0].fusion_mode.value == "local_degraded"
     assert today[0].metadata["projection_stage"] == "local"
-    assert "deepseek_deferred_until_afternoon" in today[1].degraded_reasons
+    assert "deepseek_pending" in today[1].degraded_reasons
     assert today[-1].phase == "today_main"
     assert today[-1].metadata["projection_stage"] == "local"
     latency = pipeline.status()["dependencies"]["latency_waterfall"]
@@ -182,7 +182,7 @@ def test_midday_cold_start_recovers_current_drafts_once_without_today_or_review(
     assert state.latest(Strategy.TODAY) is None
     assert all(snapshot.phase == "midday" for snapshot in recovered)
     assert all(snapshot.metadata["projection_stage"] == "local" for snapshot in recovered)
-    assert "deepseek_deferred_until_afternoon" in recovered[0].degraded_reasons
+    assert "deepseek_pending" in recovered[0].degraded_reasons
     assert pipeline.run_once(now) == ()
 
 
@@ -2618,7 +2618,7 @@ def test_versioned_dag_publishes_hybrid_only_through_main_commit_worker(
         pipeline.stop(timeout_seconds=2.0)
 
     assert engine.finalize_threads[-1] == "trader-merge"
-    assert pipeline.status()["counters"]["hybrid_results_queued"] == 1
+    assert pipeline.status()["counters"]["hybrid_results_queued"] == 3
     hybrid_record = next(item for item in repository.events if item.event_type == "hybrid_ready")
     assert hybrid_record.deadline == hybrid_record.created_at + timedelta(seconds=38)
 

@@ -222,7 +222,7 @@ def test_active_version_labels_are_readable_and_governed() -> None:
     )
 
     assert active_labels == (
-        "strategy_review28_2026_07",
+        "strategy_review29_2026_07",
         "board_policy_score_first_2026_07",
         "fusion_local68_deepseek32",
         "market_cache_p1_p6",

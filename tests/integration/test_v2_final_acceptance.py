@@ -267,11 +267,12 @@ def test_configured_deepseek_candidate_makes_physical_call_and_status_reports_qu
     assert snapshots
     assert calls == 1
     assert deepseek_status["physical_call_acceptance"] == {
-        "applicable": True,
-        "passed": True,
-        "physical_attempts_last_batch": 1,
-        "zero_call_reason": "",
+        "applicable": False,
+        "passed": None,
+        "physical_attempts_last_batch": 0,
+        "zero_call_reason": "all_candidates_cached",
     }
+    assert deepseek_status["budget"]["used"] == 1
     assert market_status["topk_quote_age"]["sample_count"] == 3
     assert market_status["topk_quote_age"]["p95_seconds"] == 11.0
     assert market_status["topk_quote_age"]["meets_target"] is False

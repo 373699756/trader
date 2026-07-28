@@ -196,7 +196,7 @@ def test_c3_long_late_hard_limit_and_all_fail_remain_degraded_not_blocking(tmp_p
     assert long == {}
     assert first[candidate.quote.code].outcome is ReviewOutcome.APPLIED
     assert second["600002"].outcome is ReviewOutcome.REJECTED
-    assert second["600002"].error == "budget_exhausted"
+    assert second["600002"].error == "daily_hard_limit"
     assert calls == 1
     assert budget.summary(NOW.date().isoformat())["used"] == 1
 
@@ -225,8 +225,8 @@ def test_c3_long_late_hard_limit_and_all_fail_remain_degraded_not_blocking(tmp_p
 
     assert failed[candidate.quote.code].outcome is ReviewOutcome.REJECTED
     assert failed[candidate.quote.code].error == "http_500"
-    assert failed_calls == 2
-    assert failed_budget.summary(NOW.date().isoformat())["used"] == 2
+    assert failed_calls == 1
+    assert failed_budget.summary(NOW.date().isoformat())["used"] == 1
 
 
 def _reviewer(

@@ -1,6 +1,6 @@
 {
   "schema_version": 12,
-  "strategy_version": "strategy_review28_2026_07",
+  "strategy_version": "strategy_review29_2026_07",
   "board_policy_version": "board_policy_score_first_2026_07",
   "fusion": {
     "version": "fusion_local68_deepseek32",

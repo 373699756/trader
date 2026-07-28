@@ -73,12 +73,15 @@ class _ReservationTracker:
     model_role: str
     requested_model: str
     reasoning_effort: str
+    reservation_deadline: datetime | None = None
+    candidate_count: int = 0
     reservation_ids: list[str] = field(default_factory=list)
     failure_reason: str = ""
 
     def reserve(self) -> bool:
         requested_at = _in_deadline_timezone(self.now(), self.deadline)
-        if requested_at >= self.deadline:
+        reservation_deadline = self.reservation_deadline or self.deadline
+        if requested_at >= reservation_deadline:
             self.failure_reason = "deadline_reached"
             return False
         reservation = self.budget.reserve(
@@ -92,10 +95,11 @@ class _ReservationTracker:
             model_role=self.model_role,
             requested_model=self.requested_model,
             reasoning_effort=self.reasoning_effort,
+            candidate_count=self.candidate_count,
         )
         if (
             not reservation.allowed
-            and reservation.reason in {"bucket_limit", "soft_bucket_limit"}
+            and reservation.reason == "bucket_limit"
             and self.planned_bucket == self.strategy.value
             and self.emergency_reason
         ):
@@ -109,6 +113,7 @@ class _ReservationTracker:
                 model_role=self.model_role,
                 requested_model=self.requested_model,
                 reasoning_effort=self.reasoning_effort,
+                candidate_count=self.candidate_count,
             )
         self.failure_reason = reservation.reason
         if reservation.allowed:
@@ -289,10 +294,9 @@ def _challenger_failure_status(
         return "late"
     if reservation_error in {
         "challenger_limit",
-        "challenger_soft_limit",
+        "challenger_daily_limit",
         "daily_hard_limit",
         "bucket_limit",
-        "soft_bucket_limit",
         "stage_limit",
     }:
         return "budget_exhausted"
@@ -345,11 +349,15 @@ def _in_deadline_timezone(value: datetime, deadline: datetime) -> datetime:
     return value.astimezone(deadline.tzinfo)
 
 
-def _challenger_deadline(strategy: Strategy, deadline: datetime) -> datetime:
-    if strategy is not Strategy.TODAY:
-        return deadline
+def _submission_deadline(_strategy: Strategy, deadline: datetime) -> datetime:
     local = deadline.astimezone(ZoneInfo("Asia/Shanghai"))
-    cutoff = local.replace(hour=11, minute=18, second=0, microsecond=0).astimezone(deadline.tzinfo)
+    if (local.hour, local.minute, local.second) == (11, 20, 0):
+        cutoff = local.replace(hour=11, minute=18, second=0, microsecond=0)
+    elif (local.hour, local.minute, local.second) == (14, 48, 0):
+        cutoff = local.replace(hour=14, minute=46, second=0, microsecond=0)
+    else:
+        return deadline
+    cutoff = cutoff.astimezone(deadline.tzinfo)
     return min(deadline, cutoff)
 
 
@@ -374,7 +382,14 @@ def _physical_call_acceptance(
         reason = "no_eligible_candidates"
     elif cache_hits >= candidate_count:
         reason = "all_candidates_cached"
-    elif last_error in {"budget_exhausted", "bucket_limit", "stage_limit", "daily_hard_limit"}:
+    elif last_error in {
+        "budget_exhausted",
+        "bucket_limit",
+        "stage_limit",
+        "daily_hard_limit",
+        "challenger_daily_limit",
+        "circuit_open",
+    }:
         reason = last_error
     elif last_error == "deadline_reached":
         reason = "deadline_reached"

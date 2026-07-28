@@ -109,17 +109,24 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.performance_budgets.data_age_p95_seconds["full_market_main"] == 10
     assert runtime.deepseek.daily_hard_limit == 168
     assert runtime.deepseek.strategy_limits == {
-        "today": 68,
-        "tomorrow": 45,
-        "d25": 35,
-        "shared_preheat": 15,
+        "today": 8,
+        "tomorrow": 38,
+        "d25": 16,
+        "shared_preheat": 4,
         "emergency": 5,
     }
-    assert sum(runtime.deepseek.strategy_limits.values()) == 168
-    assert sum(runtime.deepseek.stage_targets.values()) == 146
+    assert sum(runtime.deepseek.strategy_limits.values()) == 71
+    assert sum(runtime.deepseek.stage_targets.values()) == 36
+    assert sum(runtime.deepseek.stage_limits.values()) == 71
+    assert sum(limit for stage, limit in runtime.deepseek.stage_limits.items() if stage != "emergency") == 66
+    assert runtime.deepseek.timeout_seconds == 20
+    assert runtime.deepseek.batch_size == 4
     assert runtime.deepseek.model == "deepseek-v4-flash"
     assert runtime.deepseek.challenger_model == "deepseek-v4-pro"
-    assert runtime.deepseek.challenger_limits == {"today": 6, "tomorrow": 6, "d25": 5}
+    assert runtime.deepseek.challenger_limits == {"today": 0, "tomorrow": 2, "d25": 0}
+    assert runtime.deepseek.challenger_daily_limit == 2
+    assert runtime.deepseek.adaptive.cooldown_seconds == 900
+    assert runtime.deepseek.adaptive.minimum_application_ratio == pytest.approx(0.4)
     assert strategy.hard_filters.blacklist_codes == ()
     assert strategy.hard_filters.structured_risk_thresholds == {
         "major_shareholder_reduction": 0.0,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -30,6 +31,7 @@ from trader.infra.deepseek.challenger import (
 )
 from trader.infra.deepseek.client import DeepSeekHttpClient
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
+from trader.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.infra.deepseek.schema import classify_review, parse_reviews
 from trader.infra.settings import DeepSeekSettings
@@ -41,28 +43,20 @@ def test_c4_budget_enforces_normal_pro_and_emergency_daily_envelopes(tmp_path: P
     budget = _production_budget(tmp_path / "runtime.sqlite3")
 
     normal = (
-        _reserve_many(budget, Strategy.TODAY, "today_main", 22)
-        + _reserve_many(budget, Strategy.TOMORROW, "afternoon", 14)
-        + _reserve_many(budget, Strategy.D25, "afternoon", 12)
-        + _reserve_many(
-            budget,
-            Strategy.TODAY,
-            "warmup",
-            10,
-            bucket="shared_preheat",
-        )
+        _reserve_many(budget, Strategy.TODAY, "today_main", 5)
+        + _reserve_many(budget, Strategy.TODAY, "today_late", 3)
+        + _reserve_many(budget, Strategy.TOMORROW, "today_main", 10)
+        + _reserve_many(budget, Strategy.TOMORROW, "afternoon", 16)
+        + _reserve_many(budget, Strategy.TOMORROW, "final_review", 10)
+        + _reserve_many(budget, Strategy.D25, "today_main", 4)
+        + _reserve_many(budget, Strategy.D25, "afternoon", 8)
+        + _reserve_many(budget, Strategy.D25, "final_review", 4)
+        + _reserve_many(budget, Strategy.TODAY, "warmup", 4, bucket="shared_preheat")
     )
     assert all(item.allowed for item in normal)
-    assert len(normal) == 58
-    assert budget.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW).reason == "soft_bucket_limit"
+    assert len(normal) == 64
 
     challengers = _reserve_many(
-        budget,
-        Strategy.TODAY,
-        "today_main",
-        6,
-        model_role="challenger",
-    ) + _reserve_many(
         budget,
         Strategy.TOMORROW,
         "afternoon",
@@ -71,39 +65,30 @@ def test_c4_budget_enforces_normal_pro_and_emergency_daily_envelopes(tmp_path: P
     )
     assert all(item.allowed for item in challengers)
     assert len(normal) + len(challengers) == 66
-    assert (
-        budget.reserve(
-            Strategy.TOMORROW,
-            phase="afternoon",
-            requested_at=NOW,
-            model_role="challenger",
-        ).reason
-        == "challenger_soft_limit"
-    )
 
     emergencies = _reserve_many(
         budget,
-        Strategy.TODAY,
-        "today_main",
+        Strategy.TOMORROW,
+        "final_review",
         5,
         emergency=True,
-        emergency_reason="new_high_risk",
+        emergency_reason="freeze_boundary_change",
     )
     assert all(item.allowed for item in emergencies)
     assert len(normal) + len(challengers) + len(emergencies) == 71
     assert (
         budget.reserve(
-            Strategy.TODAY,
-            phase="today_main",
+            Strategy.TOMORROW,
+            phase="final_review",
             requested_at=NOW,
             emergency=True,
-            emergency_reason="new_high_risk",
+            emergency_reason="freeze_boundary_change",
         ).reason
         == "bucket_limit"
     )
     summary = budget.summary(NOW.date().isoformat())
     assert summary["used"] == 71
-    assert summary["by_model_role"] == {"primary": 63, "challenger": 8}
+    assert summary["by_model_role"] == {"primary": 69, "challenger": 2}
 
 
 def test_c4_global_168_limit_is_atomic_under_concurrent_reservations(tmp_path: Path) -> None:
@@ -225,7 +210,7 @@ def test_c4_rumors_duplicate_events_and_pro_cannot_relax_local_guards() -> None:
     assert assess_downside(guarded, Strategy.TODAY).status == "observe"
 
 
-def test_c4_retry_failure_schema_repair_and_cache_count_physical_calls(tmp_path: Path) -> None:
+def test_c4_transport_failure_schema_repair_and_cache_count_physical_calls(tmp_path: Path) -> None:
     candidate = _candidate()
     retry_responses = iter((_Response({}, status_code=429), _ok_response((candidate.quote.code,))))
     retry_reviewer, retry_budget = _reviewer(
@@ -233,14 +218,24 @@ def test_c4_retry_failure_schema_repair_and_cache_count_physical_calls(tmp_path:
         post=lambda *_args, **_kwargs: next(retry_responses),
     )
 
-    retried = retry_reviewer.review(
+    failed = retry_reviewer.review(
         Strategy.TODAY,
         (candidate,),
         phase="today_main",
         deadline=NOW + timedelta(minutes=1),
     )
 
-    assert retried[candidate.quote.code].outcome is ReviewOutcome.APPLIED
+    assert failed[candidate.quote.code].outcome is ReviewOutcome.REJECTED
+    assert retry_budget.summary(NOW.date().isoformat())["used"] == 1
+
+    recovered = retry_reviewer.review(
+        Strategy.TODAY,
+        (candidate,),
+        phase="today_main",
+        deadline=NOW + timedelta(minutes=1),
+    )
+
+    assert recovered[candidate.quote.code].outcome is ReviewOutcome.APPLIED
     retry_summary = retry_budget.summary(NOW.date().isoformat())
     assert retry_summary["used"] == 2
     assert retry_summary["call_status"] == {"reserved": 0, "abandoned": 0, "failed": 1, "success": 1}
@@ -288,12 +283,13 @@ def test_c4_retry_failure_schema_repair_and_cache_count_physical_calls(tmp_path:
     assert cache_budget.summary(NOW.date().isoformat())["used"] == 1
 
 
-def test_c4_reviewer_enters_emergency_only_after_normal_soft_limit(tmp_path: Path) -> None:
+def test_c4_reviewer_enters_emergency_only_after_normal_bucket_limit(tmp_path: Path) -> None:
     reviewer, budget = _reviewer(
         tmp_path / "emergency.sqlite3",
         post=lambda *_args, **_kwargs: _ok_response(("600099",)),
     )
-    assert all(item.allowed for item in _reserve_many(budget, Strategy.TODAY, "today_main", 22))
+    assert all(item.allowed for item in _reserve_many(budget, Strategy.TODAY, "today_main", 5))
+    assert all(item.allowed for item in _reserve_many(budget, Strategy.TODAY, "today_late", 3))
     blocked_candidate = _candidate(code="600098")
     blocked = reviewer.review(
         Strategy.TODAY,
@@ -301,10 +297,10 @@ def test_c4_reviewer_enters_emergency_only_after_normal_soft_limit(tmp_path: Pat
         phase="today_main",
         deadline=NOW + timedelta(minutes=1),
     )
-    assert blocked[blocked_candidate.quote.code].error == "budget_exhausted"
+    assert blocked[blocked_candidate.quote.code].error == "bucket_limit"
     acceptance = reviewer.status()["physical_call_acceptance"]
     assert isinstance(acceptance, Mapping)
-    assert acceptance["zero_call_reason"] == "budget_exhausted"
+    assert acceptance["zero_call_reason"] == "bucket_limit"
     candidate = _candidate(
         code="600099",
         external_risk_facts=(
@@ -330,8 +326,8 @@ def test_c4_reviewer_enters_emergency_only_after_normal_soft_limit(tmp_path: Pat
 
     assert result[candidate.quote.code].outcome is ReviewOutcome.APPLIED
     summary = budget.summary(NOW.date().isoformat())
-    assert summary["used"] == 23
-    assert summary["by_bucket"] == {"today": 22, "emergency": 1}
+    assert summary["used"] == 9
+    assert summary["by_bucket"] == {"today": 8, "emergency": 1}
 
 
 def test_c4_emergency_reason_does_not_leak_to_later_ordinary_batch(tmp_path: Path) -> None:
@@ -353,7 +349,8 @@ def test_c4_emergency_reason_does_not_leak_to_later_ordinary_batch(tmp_path: Pat
         return _ok_response(codes)
 
     reviewer, budget = _reviewer(tmp_path / "emergency-scope.sqlite3", post=post)
-    assert all(item.allowed for item in _reserve_many(budget, Strategy.TODAY, "today_main", 21))
+    assert all(item.allowed for item in _reserve_many(budget, Strategy.TODAY, "today_main", 5))
+    assert all(item.allowed for item in _reserve_many(budget, Strategy.TODAY, "today_late", 3))
     high_risk = _candidate(
         code="600100",
         external_risk_facts=(
@@ -380,12 +377,13 @@ def test_c4_emergency_reason_does_not_leak_to_later_ordinary_batch(tmp_path: Pat
 
     assert calls == 1
     assert results[high_risk.quote.code].outcome is ReviewOutcome.APPLIED
-    assert all(results[candidate.quote.code].outcome is ReviewOutcome.APPLIED for candidate in ordinary[:-1])
-    assert results[ordinary[-1].quote.code].error == "budget_exhausted"
-    assert budget.summary(NOW.date().isoformat())["by_bucket"] == {"today": 22}
+    assert all(results[candidate.quote.code].outcome is ReviewOutcome.APPLIED for candidate in ordinary[:3])
+    assert all(candidate.quote.code in results for candidate in ordinary)
+    assert all(results[candidate.quote.code].error == "bucket_limit" for candidate in ordinary[3:])
+    assert budget.summary(NOW.date().isoformat())["by_bucket"] == {"today": 8, "emergency": 1}
 
 
-def test_c4_challenger_global_soft_exhaustion_is_classified_as_budget_exhausted(tmp_path: Path) -> None:
+def test_c4_challenger_daily_exhaustion_is_classified_as_budget_exhausted(tmp_path: Path) -> None:
     calls = 0
 
     def post(*_args: Any, **_kwargs: Any) -> _Response:
@@ -396,14 +394,10 @@ def test_c4_challenger_global_soft_exhaustion_is_classified_as_budget_exhausted(
     reviewer, budget = _reviewer(
         tmp_path / "challenger.sqlite3",
         post=post,
-        challenger_limits={"today": 6, "tomorrow": 6, "d25": 5},
+        challenger_limits={"today": 0, "tomorrow": 2, "d25": 0},
     )
     assert all(
-        item.allowed
-        for item in (
-            *_reserve_many(budget, Strategy.TODAY, "today_main", 6, model_role="challenger"),
-            *_reserve_many(budget, Strategy.D25, "afternoon", 2, model_role="challenger"),
-        )
+        item.allowed for item in (*_reserve_many(budget, Strategy.TOMORROW, "afternoon", 2, model_role="challenger"),)
     )
     candidate = _candidate(code="600097")
     result = reviewer.review(
@@ -424,7 +418,7 @@ def test_c4_challenger_global_soft_exhaustion_is_classified_as_budget_exhausted(
     assert result[candidate.quote.code].outcome is ReviewOutcome.APPLIED
     assert result[candidate.quote.code].challenger_status == "budget_exhausted"
     assert calls == 1
-    assert budget.summary(NOW.date().isoformat())["by_model_role"] == {"primary": 1, "challenger": 8}
+    assert budget.summary(NOW.date().isoformat())["by_model_role"] == {"primary": 1, "challenger": 2}
 
 
 def test_c4_deepseek_result_republication_p95_is_within_one_second() -> None:
@@ -458,6 +452,268 @@ def test_c4_deepseek_result_republication_p95_is_within_one_second() -> None:
     assert p95 <= 1.0
 
 
+def test_c4_health_gate_opens_after_two_transport_failures(tmp_path: Path) -> None:
+    calls = 0
+
+    def failed_post(*_args: Any, **_kwargs: Any) -> _Response:
+        nonlocal calls
+        calls += 1
+        return _Response({}, status_code=503)
+
+    reviewer, budget = _reviewer(tmp_path / "health.sqlite3", post=failed_post)
+    for code in ("600201", "600202"):
+        result = reviewer.review(
+            Strategy.TOMORROW,
+            (_candidate(code=code),),
+            phase="afternoon",
+            deadline=NOW + timedelta(minutes=1),
+        )
+        assert result[code].outcome is ReviewOutcome.REJECTED
+
+    blocked = reviewer.review(
+        Strategy.TOMORROW,
+        (_candidate(code="600203"),),
+        phase="afternoon",
+        deadline=NOW + timedelta(minutes=1),
+    )
+
+    assert blocked["600203"].error == "circuit_open"
+    assert calls == 2
+    assert budget.summary(NOW.date().isoformat())["health"] == {
+        "mode": "open",
+        "open_until": (NOW + timedelta(minutes=15)).isoformat(),
+        "recovery_successes": 0,
+        "reason": "consecutive_transport_failures",
+    }
+
+
+def test_c4_health_gate_persists_and_requires_three_valid_recovery_batches(tmp_path: Path) -> None:
+    database_path = tmp_path / "health-recovery.sqlite3"
+    current = [datetime(2026, 7, 16, 13, 30, tzinfo=timezone(timedelta(hours=8)))]
+    failed, _budget = _reviewer(
+        database_path,
+        post=lambda *_args, **_kwargs: _Response({}, status_code=503),
+        now=lambda: current[0],
+    )
+    for code in ("600211", "600212"):
+        failed.review(
+            Strategy.TOMORROW,
+            (_candidate(code=code),),
+            phase="afternoon",
+            deadline=current[0] + timedelta(minutes=1),
+        )
+
+    current[0] += timedelta(minutes=15)
+    response_codes = iter(("600213", "600214", "600215"))
+    recovered, recovered_budget = _reviewer(
+        database_path,
+        post=lambda *_args, **_kwargs: _ok_response((next(response_codes),)),
+        now=lambda: current[0],
+    )
+
+    for recovery_count, code in enumerate(("600213", "600214", "600215"), start=1):
+        result = recovered.review(
+            Strategy.TOMORROW,
+            (_candidate(code=code),),
+            phase="afternoon",
+            deadline=current[0] + timedelta(minutes=1),
+        )
+        assert result[code].outcome is ReviewOutcome.APPLIED
+        health = recovered_budget.summary(current[0].date().isoformat())["health"]
+        assert isinstance(health, Mapping)
+        assert health["mode"] == ("closed" if recovery_count == 3 else "recovering")
+        assert health["recovery_successes"] == (0 if recovery_count == 3 else recovery_count)
+
+
+def test_c4_health_gate_does_not_half_open_after_afternoon_cutoff(tmp_path: Path) -> None:
+    current = [datetime(2026, 7, 16, 14, 28, tzinfo=timezone(timedelta(hours=8)))]
+    calls = 0
+
+    def failed_post(*_args: Any, **_kwargs: Any) -> _Response:
+        nonlocal calls
+        calls += 1
+        return _Response({}, status_code=503)
+
+    reviewer, budget = _reviewer(
+        tmp_path / "health-cutoff.sqlite3",
+        post=failed_post,
+        now=lambda: current[0],
+    )
+    for code in ("600221", "600222"):
+        reviewer.review(
+            Strategy.TOMORROW,
+            (_candidate(code=code),),
+            phase="afternoon",
+            deadline=current[0] + timedelta(minutes=1),
+        )
+
+    current[0] += timedelta(minutes=15)
+    blocked = reviewer.review(
+        Strategy.TOMORROW,
+        (_candidate(code="600223"),),
+        phase="afternoon",
+        deadline=current[0] + timedelta(minutes=1),
+    )
+
+    assert blocked["600223"].error == "circuit_open"
+    assert calls == 2
+    assert budget.summary(current[0].date().isoformat())["health"]["mode"] == "open"
+
+
+def test_c4_health_gate_allows_only_one_concurrent_half_open_probe(tmp_path: Path) -> None:
+    current = [datetime(2026, 7, 16, 13, 30, tzinfo=timezone(timedelta(hours=8)))]
+    reviewer, _budget = _reviewer(
+        tmp_path / "health-probe.sqlite3",
+        post=lambda *_args, **_kwargs: _Response({}, status_code=503),
+        now=lambda: current[0],
+    )
+    for code in ("600231", "600232"):
+        reviewer.review(
+            Strategy.TOMORROW,
+            (_candidate(code=code),),
+            phase="afternoon",
+            deadline=current[0] + timedelta(minutes=1),
+        )
+
+    current[0] += timedelta(minutes=15)
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def delayed_post(*_args: Any, **_kwargs: Any) -> _Response:
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(timeout=2.0)
+        return _ok_response(("600233",))
+
+    probe_reviewer, probe_budget = _reviewer(
+        tmp_path / "health-probe.sqlite3",
+        post=delayed_post,
+        now=lambda: current[0],
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            probe_reviewer.review,
+            Strategy.TOMORROW,
+            (_candidate(code="600233"),),
+            phase="afternoon",
+            deadline=current[0] + timedelta(minutes=1),
+        )
+        assert started.wait(timeout=1.0)
+        second = executor.submit(
+            probe_reviewer.review,
+            Strategy.TOMORROW,
+            (_candidate(code="600234"),),
+            phase="afternoon",
+            deadline=current[0] + timedelta(minutes=1),
+        )
+        second_result = second.result()
+        release.set()
+        first_result = first.result()
+
+    assert first_result["600233"].outcome is ReviewOutcome.APPLIED
+    assert second_result["600234"].error == "circuit_open"
+    assert calls == 1
+    assert probe_budget.summary(current[0].date().isoformat())["health"]["mode"] == "recovering"
+
+
+def test_c4_submission_cutoffs_reject_new_today_and_tomorrow_calls(tmp_path: Path) -> None:
+    for strategy, now, phase, deadline in (
+        (
+            Strategy.TODAY,
+            datetime(2026, 7, 16, 11, 18, tzinfo=timezone(timedelta(hours=8))),
+            "today_late",
+            datetime(2026, 7, 16, 11, 20, tzinfo=timezone(timedelta(hours=8))),
+        ),
+        (
+            Strategy.TOMORROW,
+            datetime(2026, 7, 16, 11, 18, tzinfo=timezone(timedelta(hours=8))),
+            "today_late",
+            datetime(2026, 7, 16, 11, 20, tzinfo=timezone(timedelta(hours=8))),
+        ),
+        (
+            Strategy.TOMORROW,
+            datetime(2026, 7, 16, 14, 46, tzinfo=timezone(timedelta(hours=8))),
+            "final_review",
+            datetime(2026, 7, 16, 14, 48, tzinfo=timezone(timedelta(hours=8))),
+        ),
+    ):
+        reviewer, budget = _reviewer(
+            tmp_path / f"{strategy.value}-cutoff.sqlite3",
+            post=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not call")),
+            now=lambda now=now: now,
+        )
+
+        result = reviewer.review(strategy, (_candidate(),), phase=phase, deadline=deadline)
+
+        assert result["600001"].error == "deadline_reached"
+        assert budget.summary(now.date().isoformat())["used"] == 0
+
+
+def test_c4_inflight_result_after_submission_cutoff_is_accepted_before_deadline(tmp_path: Path) -> None:
+    current = [datetime(2026, 7, 16, 11, 17, 59, tzinfo=timezone(timedelta(hours=8)))]
+    deadline = datetime(2026, 7, 16, 11, 20, tzinfo=timezone(timedelta(hours=8)))
+
+    def post(*_args: Any, **_kwargs: Any) -> _Response:
+        current[0] = datetime(2026, 7, 16, 11, 19, tzinfo=timezone(timedelta(hours=8)))
+        return _ok_response(("600001",))
+
+    reviewer, budget = _reviewer(
+        tmp_path / "inflight.sqlite3",
+        post=post,
+        now=lambda: current[0],
+    )
+
+    result = reviewer.review(
+        Strategy.TOMORROW,
+        (_candidate(),),
+        phase="today_late",
+        deadline=deadline,
+    )
+
+    assert result["600001"].outcome is ReviewOutcome.APPLIED
+    assert budget.summary(current[0].date().isoformat())["used"] == 1
+
+
+def test_c4_concurrent_cross_strategy_reviews_singleflight_raw_facts(tmp_path: Path) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def delayed_post(*_args: Any, **_kwargs: Any) -> _Response:
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(timeout=2.0)
+        return _ok_response(("600001",))
+
+    reviewer, budget = _reviewer(tmp_path / "singleflight.sqlite3", post=delayed_post)
+    candidate = _candidate()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        today = executor.submit(
+            reviewer.review,
+            Strategy.TODAY,
+            (candidate,),
+            phase="today_main",
+            deadline=NOW + timedelta(minutes=1),
+        )
+        assert started.wait(timeout=1.0)
+        tomorrow = executor.submit(
+            reviewer.review,
+            Strategy.TOMORROW,
+            (candidate,),
+            phase="today_main",
+            deadline=NOW + timedelta(minutes=1),
+        )
+        release.set()
+        results = (today.result(), tomorrow.result())
+
+    assert calls == 1
+    assert budget.summary(NOW.date().isoformat())["used"] == 1
+    assert all(result[candidate.quote.code].outcome is ReviewOutcome.APPLIED for result in results)
+
+
 def _reserve_many(
     budget: DeepSeekBudgetLedger,
     strategy: Strategy,
@@ -488,27 +744,46 @@ def _production_budget(path: Path) -> DeepSeekBudgetLedger:
         path,
         daily_hard_limit=168,
         strategy_limits={
-            "today": 68,
-            "tomorrow": 45,
-            "d25": 35,
-            "shared_preheat": 15,
+            "today": 8,
+            "tomorrow": 38,
+            "d25": 16,
+            "shared_preheat": 4,
             "emergency": 5,
         },
         stage_targets={
+            "tomorrow_morning": 0,
             "today_main": 0,
+            "today_late": 0,
             "tomorrow_afternoon": 0,
+            "tomorrow_final": 0,
+            "d25_morning": 0,
             "d25_afternoon": 0,
+            "d25_final": 0,
             "shared_preheat": 0,
             "emergency": 0,
         },
         stage_limits={
-            "today_main": 68,
-            "tomorrow_afternoon": 45,
-            "d25_afternoon": 35,
-            "shared_preheat": 15,
+            "today_main": 5,
+            "today_late": 3,
+            "tomorrow_morning": 10,
+            "tomorrow_afternoon": 18,
+            "tomorrow_final": 10,
+            "d25_morning": 4,
+            "d25_afternoon": 8,
+            "d25_final": 4,
+            "shared_preheat": 4,
             "emergency": 5,
         },
-        challenger_limits={"today": 6, "tomorrow": 6, "d25": 5},
+        challenger_limits={"today": 0, "tomorrow": 2, "d25": 0},
+        challenger_daily_limit=2,
+        health_policy=DeepSeekHealthPolicy(
+            consecutive_failure_limit=2,
+            rolling_window=5,
+            minimum_application_ratio=0.4,
+            healthy_application_ratio=0.6,
+            healthy_batch_count=3,
+            cooldown_seconds=900,
+        ),
     )
     budget.initialize()
     return budget
@@ -533,6 +808,7 @@ def _reviewer(
     *,
     post: Any,
     challenger_limits: dict[str, int] | None = None,
+    now: Any = None,
 ) -> tuple[DeepSeekReviewer, DeepSeekBudgetLedger]:
     budget = _production_budget(path)
     weights = {
@@ -548,29 +824,40 @@ def _reviewer(
         model="deepseek-v4-flash",
         challenger_model="deepseek-v4-pro",
         challenger_limits=challenger_limits or {"today": 0, "tomorrow": 0, "d25": 0},
+        challenger_daily_limit=2,
         timeout_seconds=1.0,
-        batch_size=8,
+        batch_size=4,
         max_tokens=256,
         daily_hard_limit=168,
         strategy_limits={
-            "today": 68,
-            "tomorrow": 45,
-            "d25": 35,
-            "shared_preheat": 15,
+            "today": 8,
+            "tomorrow": 38,
+            "d25": 16,
+            "shared_preheat": 4,
             "emergency": 5,
         },
         stage_targets={
+            "tomorrow_morning": 0,
             "today_main": 0,
+            "today_late": 0,
             "tomorrow_afternoon": 0,
+            "tomorrow_final": 0,
+            "d25_morning": 0,
             "d25_afternoon": 0,
+            "d25_final": 0,
             "shared_preheat": 0,
             "emergency": 0,
         },
         stage_limits={
-            "today_main": 68,
-            "tomorrow_afternoon": 45,
-            "d25_afternoon": 35,
-            "shared_preheat": 15,
+            "today_main": 5,
+            "today_late": 3,
+            "tomorrow_morning": 10,
+            "tomorrow_afternoon": 18,
+            "tomorrow_final": 10,
+            "d25_morning": 4,
+            "d25_afternoon": 8,
+            "d25_final": 4,
+            "shared_preheat": 4,
             "emergency": 5,
         },
         api_key="secret",
@@ -584,7 +871,7 @@ def _reviewer(
         strategy_version="c4",
         confidence_coverage_min=0.5,
         minimum_known_dimensions=2,
-        now=lambda: NOW,
+        now=now or (lambda: NOW),
     )
     return reviewer, budget
 

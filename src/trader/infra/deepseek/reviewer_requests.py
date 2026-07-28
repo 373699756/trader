@@ -30,13 +30,13 @@ from trader.infra.deepseek.challenger import (
 from trader.infra.deepseek.reviewer_context import ReviewerContext
 from trader.infra.deepseek.reviewer_selection import (
     _automatic_emergency_reason,
-    _challenger_deadline,
     _challenger_failure_status,
     _combine_results,
     _in_deadline_timezone,
     _mark_challenger_unavailable,
     _ReservationTracker,
     _select_challenger_candidates,
+    _submission_deadline,
     _thinking_mode,
     _usage_integer,
 )
@@ -99,12 +99,12 @@ class ReviewerRequestExecutor:
         selected = selected[: call_limit * challenger_batch_size]
         if not selected:
             return 0
-        challenger_deadline = _challenger_deadline(strategy, deadline)
+        submission_deadline = _submission_deadline(strategy, deadline)
         tracker = _ReservationTracker(
             budget=self._budget,
             strategy=strategy,
             phase=phase,
-            deadline=challenger_deadline,
+            deadline=deadline,
             now=self._now,
             planned_bucket=planned_bucket,
             batch_id=batch_id,
@@ -112,22 +112,24 @@ class ReviewerRequestExecutor:
             model_role="challenger",
             requested_model=self._settings.challenger_model,
             reasoning_effort="high",
+            reservation_deadline=submission_deadline,
         )
         attempts = 0
         for start in range(0, len(selected), challenger_batch_size):
             candidate_batch = selected[start : start + challenger_batch_size]
+            tracker.candidate_count = len(candidate_batch)
             tracker.emergency_reason = emergency_reason or _automatic_emergency_reason(candidate_batch, phase)
-            completed_at = _in_deadline_timezone(self._now(), challenger_deadline)
-            if completed_at >= challenger_deadline:
+            completed_at = _in_deadline_timezone(self._now(), deadline)
+            if completed_at >= deadline:
                 _mark_challenger_unavailable(results, candidate_batch, "late")
                 continue
             primary = {candidate.quote.code: results[candidate.quote.code] for candidate in candidate_batch}
             parsed, response, error = self._request_challenger(candidate_batch, primary, tracker)
             attempts += response.attempts
             self._status.record_attempt_status(response)
-            completed_at = _in_deadline_timezone(self._now(), challenger_deadline)
+            completed_at = _in_deadline_timezone(self._now(), deadline)
             if parsed is None:
-                status = _challenger_failure_status(error, tracker.failure_reason, completed_at, challenger_deadline)
+                status = _challenger_failure_status(error, tracker.failure_reason, completed_at, deadline)
                 _mark_challenger_unavailable(results, candidate_batch, status)
                 continue
             for candidate in candidate_batch:
@@ -222,7 +224,7 @@ class ReviewerRequestExecutor:
             timeout_seconds=self._settings.timeout_seconds,
             max_tokens=self._settings.max_tokens,
             reserve_attempt=tracker.reserve,
-            maximum_attempts=2,
+            maximum_attempts=1,
         )
         self._finish_attempts(tracker.reservation_ids[first_offset:], response)
         completed_at = _in_deadline_timezone(self._now(), tracker.deadline)
@@ -269,7 +271,7 @@ class ReviewerRequestExecutor:
             timeout_seconds=self._settings.timeout_seconds,
             max_tokens=self._settings.max_tokens,
             reserve_attempt=tracker.reserve,
-            maximum_attempts=2,
+            maximum_attempts=1,
         )
         self._finish_attempts(tracker.reservation_ids[first_offset:], response)
         completed_at = _in_deadline_timezone(self._now(), tracker.deadline)

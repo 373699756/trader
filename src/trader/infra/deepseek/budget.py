@@ -31,19 +31,12 @@ from trader.infra.deepseek.budget_batch_ledger import (
     BudgetBatchRequest,
 )
 from trader.infra.deepseek.budget_reporting import BudgetReportingConfig, BudgetSummaryReader
+from trader.infra.deepseek.health_gate import DeepSeekHealthGate, DeepSeekHealthPolicy
 
 _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})
 _CALL_TERMINALS = frozenset({"success", "failed", "abandoned"})
 _CANDIDATE_TERMINALS = frozenset({"applied", "abstain", "rejected", "late"})
 _EMERGENCY_REASONS = frozenset({"new_high_risk", "freeze_boundary_change"})
-_SOFT_BUCKET_LIMITS = {
-    "today": 22,
-    "tomorrow": 14,
-    "d25": 12,
-    "shared_preheat": 10,
-    "emergency": 5,
-}
-_CHALLENGER_SOFT_LIMIT = 8
 _BEGIN_IMMEDIATE_TIMEOUT_SECONDS = 15.0
 _BEGIN_IMMEDIATE_RETRY_SECONDS = 0.02
 
@@ -68,6 +61,8 @@ class _BudgetLedgerRequiredOptions(TypedDict):
 
 class _BudgetLedgerOptionalOptions(TypedDict, total=False):
     challenger_limits: Mapping[str, int] | None
+    challenger_daily_limit: int
+    health_policy: DeepSeekHealthPolicy | None
     write_lock: AbstractContextManager[object] | None
 
 
@@ -88,6 +83,7 @@ class _ReserveOptionalOptions(TypedDict, total=False):
     model_role: str
     requested_model: str
     reasoning_effort: str
+    candidate_count: int
 
 
 class ReserveOptions(_ReserveRequiredOptions, _ReserveOptionalOptions):
@@ -131,6 +127,7 @@ class _ReservationContext:
     requested_model: str
     reasoning_effort: str
     stage: str
+    candidate_count: int
 
 
 class DeepSeekBudgetLedger:
@@ -144,31 +141,31 @@ class DeepSeekBudgetLedger:
         stage_targets = options["stage_targets"]
         stage_limits = options["stage_limits"]
         challenger_limits = options.get("challenger_limits")
+        challenger_daily_limit = options.get(
+            "challenger_daily_limit",
+            min(8, sum((challenger_limits or {}).values())),
+        )
+        health_policy = options.get("health_policy")
         write_lock = options.get("write_lock")
-        if not 0 <= daily_hard_limit <= 168:
-            raise ValueError("daily hard limit must be between 0 and 168")
-        if sum(strategy_limits.values()) != daily_hard_limit:
-            raise ValueError("strategy limits must sum to daily hard limit")
-        if set(stage_targets) != set(stage_limits):
-            raise ValueError("stage targets and limits must contain the same stages")
-        if any(stage_targets[name] > stage_limits[name] for name in stage_targets):
-            raise ValueError("stage targets cannot exceed stage limits")
-        if sum(stage_targets.values()) > daily_hard_limit or sum(stage_limits.values()) != daily_hard_limit:
-            raise ValueError("stage targets must fit and stage limits must equal the daily hard limit")
+        _validate_budget_envelopes(
+            daily_hard_limit,
+            strategy_limits,
+            stage_targets,
+            stage_limits,
+        )
         self._path = database_path
         self._daily_hard_limit = daily_hard_limit
         self._limits = dict(strategy_limits)
         self._stage_targets = dict(stage_targets)
         self._stage_limits = dict(stage_limits)
         self._challenger_limits = dict(challenger_limits or {})
-        if "long" in self._challenger_limits:
-            raise ValueError("challenger limits must not define long")
-        if any(value < 0 for value in self._challenger_limits.values()):
-            raise ValueError("challenger limits cannot be negative")
+        self._challenger_daily_limit = challenger_daily_limit
+        _validate_challenger_envelope(self._challenger_limits, challenger_daily_limit)
         self._daily_target = sum(stage_targets.values())
         self._write_lock = write_lock or threading.Lock()
         self._initialized = False
         self._batches = BudgetBatchLedger(self._connect)
+        self._health = DeepSeekHealthGate(self._connect, health_policy) if health_policy is not None else None
         self._reporting = BudgetSummaryReader(
             self._connect,
             lambda: self._initialized,
@@ -187,6 +184,8 @@ class DeepSeekBudgetLedger:
     def finish_batch(self, completion: BudgetBatchCompletion) -> None:
         with self._write_lock:
             self._batches.finish_batch(completion)
+            if self._health is not None:
+                self._health.record_completion(completion)
 
     def set_batch_cache_hits(self, batch_id: str, count: int) -> None:
         with self._write_lock:
@@ -197,7 +196,10 @@ class DeepSeekBudgetLedger:
             return self._batches.fail_running_batch(batch_id, completed_at=completed_at, error=error)
 
     def summary(self, day: str) -> dict[str, object]:
-        return self._reporting.summary(day)
+        summary = self._reporting.summary(day)
+        if self._health is not None and self._initialized:
+            summary["health"] = self._health.summary(day)
+        return summary
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -321,6 +323,8 @@ class DeepSeekBudgetLedger:
                 _ensure_column(connection, "deepseek_call_reservations", column, declaration)
                 _ensure_column(connection, "deepseek_calls", column, declaration)
             _ensure_column(connection, "deepseek_calls", "total_tokens", "INTEGER NOT NULL DEFAULT 0")
+            if self._health is not None:
+                self._health.initialize(connection)
             self._ensure_schema_version(connection)
         self._initialized = True
 
@@ -362,11 +366,13 @@ class DeepSeekBudgetLedger:
         bucket = "emergency" if options.get("emergency", False) else (options.get("bucket") or strategy.value)
         model_role = options.get("model_role", "primary")
         emergency_reason = options.get("emergency_reason", "")
+        candidate_count = options.get("candidate_count", 0)
         stage = _stage_key(strategy, options["phase"], bucket)
         checks = (
             (strategy.value not in self._limits and bucket in {strategy.value, "emergency"}, "unknown_strategy"),
             (bucket not in self._limits, "unknown_bucket"),
             (model_role not in {"primary", "challenger"}, "invalid_model_role"),
+            (candidate_count < 0, "invalid_candidate_count"),
             (stage not in self._stage_limits, "unknown_stage"),
             (bucket == "emergency" and emergency_reason not in _EMERGENCY_REASONS, "invalid_emergency_reason"),
         )
@@ -387,6 +393,7 @@ class DeepSeekBudgetLedger:
                 options.get("requested_model", ""),
                 options.get("reasoning_effort", ""),
                 stage,
+                candidate_count,
             ),
             None,
         )
@@ -400,29 +407,30 @@ class DeepSeekBudgetLedger:
     def _primary_limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
         trade_date = context.trade_date
         bucket = context.bucket
+        if self._health is not None:
+            health_rejection = self._health.reservation_rejection(
+                connection,
+                trade_date=trade_date,
+                requested_at=context.requested_at,
+                batch_id=context.batch_id,
+                candidate_count=context.candidate_count,
+            )
+            if health_rejection:
+                return health_rejection
         if _count(connection, "trade_date = ?", (trade_date,)) >= self._daily_hard_limit:
             return "daily_hard_limit"
         if _count(connection, "trade_date = ? AND bucket = ?", (trade_date, bucket)) >= self._limits[bucket]:
             return "bucket_limit"
-        soft_limit = _SOFT_BUCKET_LIMITS.get(bucket)
-        if context.model_role == "primary" and soft_limit is not None:
-            used = _count(
-                connection,
-                "trade_date = ? AND bucket = ? AND model_role = 'primary'",
-                (trade_date, bucket),
-            )
-            if used >= soft_limit:
-                return "soft_bucket_limit"
         return self._stage_limit_rejection(connection, context)
 
     def _stage_limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
         if context.bucket == "emergency":
             normal_used = _count(
                 connection,
-                "trade_date = ? AND bucket = ? AND model_role = 'primary'",
+                "trade_date = ? AND bucket = ?",
                 (context.trade_date, context.strategy.value),
             )
-            normal_limit = min(self._limits[context.strategy.value], _SOFT_BUCKET_LIMITS[context.strategy.value])
+            normal_limit = self._limits[context.strategy.value]
             return "normal_budget_available" if normal_used < normal_limit else ""
         stage_used = _count(
             connection,
@@ -432,19 +440,19 @@ class DeepSeekBudgetLedger:
         return "stage_limit" if stage_used >= self._stage_limits[context.stage] else ""
 
     def _challenger_limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
-        challenger_total = _count(
-            connection,
-            "trade_date = ? AND model_role = 'challenger'",
-            (context.trade_date,),
-        )
-        if challenger_total >= _CHALLENGER_SOFT_LIMIT:
-            return "challenger_soft_limit"
         challenger_used = _count(
             connection,
             "trade_date = ? AND strategy = ? AND model_role = 'challenger'",
             (context.trade_date, context.strategy.value),
         )
-        return "challenger_limit" if challenger_used >= self._challenger_limits.get(context.strategy.value, 0) else ""
+        if challenger_used >= self._challenger_limits.get(context.strategy.value, 0):
+            return "challenger_limit"
+        challenger_total = _count(
+            connection,
+            "trade_date = ? AND model_role = 'challenger'",
+            (context.trade_date,),
+        )
+        return "challenger_daily_limit" if challenger_total >= self._challenger_daily_limit else ""
 
     @staticmethod
     def _insert_reservation(
@@ -606,6 +614,37 @@ def _begin_immediate(connection: sqlite3.Connection) -> None:
             if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
                 raise
             time.sleep(_BEGIN_IMMEDIATE_RETRY_SECONDS)
+
+
+def _validate_budget_envelopes(
+    daily_hard_limit: int,
+    strategy_limits: Mapping[str, int],
+    stage_targets: Mapping[str, int],
+    stage_limits: Mapping[str, int],
+) -> None:
+    if not 0 <= daily_hard_limit <= 168:
+        raise ValueError("daily hard limit must be between 0 and 168")
+    if sum(strategy_limits.values()) > daily_hard_limit:
+        raise ValueError("strategy limits cannot exceed the daily hard limit")
+    if set(stage_targets) != set(stage_limits):
+        raise ValueError("stage targets and limits must contain the same stages")
+    if any(stage_targets[name] > stage_limits[name] for name in stage_targets):
+        raise ValueError("stage targets cannot exceed stage limits")
+    if sum(stage_targets.values()) > sum(stage_limits.values()):
+        raise ValueError("stage targets must fit within stage limits")
+    if sum(stage_limits.values()) > sum(strategy_limits.values()):
+        raise ValueError("stage limits cannot exceed strategy limits")
+
+
+def _validate_challenger_envelope(challenger_limits: Mapping[str, int], daily_limit: int) -> None:
+    if "long" in challenger_limits:
+        raise ValueError("challenger limits must not define long")
+    if any(value < 0 for value in challenger_limits.values()):
+        raise ValueError("challenger limits cannot be negative")
+    if daily_limit < 0:
+        raise ValueError("challenger daily limit cannot be negative")
+    if sum(challenger_limits.values()) < daily_limit:
+        raise ValueError("challenger strategy limits must cover the daily limit")
 
 
 __all__ = ["SCHEMA_VERSION", "BudgetReservation", "DeepSeekBudgetLedger"]

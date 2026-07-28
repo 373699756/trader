@@ -67,6 +67,8 @@ class ReviewCache:
         self._config_version = config_version
         self._seen_capacity = max(1, seen_capacity)
         self._lock = threading.Lock()
+        self._raw_condition = threading.Condition(self._lock)
+        self._raw_inflight: set[str] = set()
         self._raw_entries: OrderedDict[str, _RawCacheEntry] = OrderedDict()
         self._fusion_entries: OrderedDict[str, _FusionCacheEntry] = OrderedDict()
         self._seen_codes: OrderedDict[str, None] = OrderedDict()
@@ -136,6 +138,26 @@ class ReviewCache:
             self._raw_entries.move_to_end(key)
             while len(self._raw_entries) > self._maximum_entries:
                 self._raw_entries.popitem(last=False)
+
+    def claim_raw(self, key: str) -> bool:
+        with self._raw_condition:
+            if key in self._raw_inflight:
+                return False
+            self._raw_inflight.add(key)
+            return True
+
+    def wait_raw(self, key: str, timeout_seconds: float) -> bool:
+        with self._raw_condition:
+            return self._raw_condition.wait_for(
+                lambda: key not in self._raw_inflight,
+                timeout=max(0.0, timeout_seconds),
+            )
+
+    def release_raw(self, key: str) -> None:
+        with self._raw_condition:
+            if key in self._raw_inflight:
+                self._raw_inflight.remove(key)
+                self._raw_condition.notify_all()
 
     def get_fusion(self, key: str) -> DeepSeekReview | None:
         if self._shared_cache is not None:

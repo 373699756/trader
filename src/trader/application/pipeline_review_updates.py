@@ -106,17 +106,13 @@ def schedule_async_reviews(
         _offer_async_review(pipeline, _PendingReview(prepared, base.snapshot_id))
 
 
-def _review_deferred_until_afternoon(strategy: Strategy, phase: MarketPhase) -> bool:
-    return strategy in {Strategy.TOMORROW, Strategy.D25} and phase in {
-        MarketPhase.TODAY_OBSERVE,
-        MarketPhase.TODAY_MAIN,
-        MarketPhase.TODAY_LATE,
-        MarketPhase.MIDDAY,
-    }
-
-
 def review_enabled_for_strategy_phase(strategy: Strategy, phase: MarketPhase) -> bool:
-    return strategy is not Strategy.LONG and not _review_deferred_until_afternoon(strategy, phase)
+    return strategy is not Strategy.LONG and phase not in {
+        MarketPhase.TODAY_OBSERVE,
+        MarketPhase.MIDDAY,
+        MarketPhase.DEEPSEEK_CUTOFF,
+        MarketPhase.FINAL_QUOTE,
+    }
 
 
 def _offer_async_review(

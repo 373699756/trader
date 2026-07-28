@@ -705,7 +705,7 @@ def test_reviewer_reports_missing_api_key_without_physical_call(tmp_path) -> Non
         ).fetchone() == ("skipped", 0, "api_key_missing")
 
 
-def test_reviewer_records_each_retry_attempt_independently(tmp_path) -> None:
+def test_reviewer_does_not_retry_transport_failures(tmp_path) -> None:
     candidate = _candidate_with_evidence()
     content = json.dumps(_valid_payload(candidate.quote.code), ensure_ascii=False)
     responses = iter(
@@ -735,7 +735,7 @@ def test_reviewer_records_each_retry_attempt_independently(tmp_path) -> None:
         deadline=NOW + timedelta(minutes=1),
     )
 
-    assert result[candidate.quote.code].outcome is ReviewOutcome.APPLIED
+    assert result[candidate.quote.code].outcome is ReviewOutcome.REJECTED
     with sqlite3.connect(database_path) as connection:
         attempts = connection.execute(
             "SELECT status, http_status, token_count FROM deepseek_call_reservations ORDER BY rowid"
@@ -743,14 +743,14 @@ def test_reviewer_records_each_retry_attempt_independently(tmp_path) -> None:
         audit = connection.execute(
             "SELECT outcome, http_status, total_tokens, error_code FROM deepseek_calls ORDER BY requested_at"
         ).fetchall()
-    assert attempts == [("failed", 429, 0), ("success", 200, 12)]
-    assert audit == [("failed", 429, 0, "http_429"), ("success", 200, 12, "")]
+    assert attempts == [("failed", 429, 0)]
+    assert audit == [("failed", 429, 0, "http_429")]
     summary = budget.summary(NOW.date().isoformat())
     assert summary["http_429_count"] == 1
-    assert summary["token_count"] == 12
+    assert summary["token_count"] == 0
 
 
-def test_reviewer_does_not_reserve_retry_at_or_after_deadline(tmp_path) -> None:
+def test_reviewer_does_not_schedule_transport_retry_before_deadline(tmp_path) -> None:
     candidate = _candidate_with_evidence()
     deadline = NOW + timedelta(seconds=1)
     clock = MutableClock(NOW)
@@ -775,7 +775,7 @@ def test_reviewer_does_not_reserve_retry_at_or_after_deadline(tmp_path) -> None:
         deadline=deadline,
     )
 
-    assert result[candidate.quote.code].outcome is ReviewOutcome.LATE
+    assert result[candidate.quote.code].outcome is ReviewOutcome.REJECTED
     assert budget.summary(NOW.date().isoformat())["used"] == 1
     assert budget.summary(NOW.date().isoformat())["timeout_count"] == 1
     assert reviewer.status()["last_batch_status"] == "failed"

@@ -473,7 +473,7 @@ def _preheat_reviews(
             pipeline,
             pipeline._deepseek_pool,
             pipeline._reviews.preheat,
-            pipeline._candidate_features,
+            pipeline._candidate_features[:2],
             phase=context.phase.value,
             deadline=shanghai_now(context.now).replace(hour=9, minute=30, second=0, microsecond=0),
         )

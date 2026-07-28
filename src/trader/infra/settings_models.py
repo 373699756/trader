@@ -91,6 +91,16 @@ class PerformanceBudgetSettings:
 
 
 @dataclass(frozen=True)
+class DeepSeekAdaptiveSettings:
+    consecutive_failure_limit: int = 2
+    rolling_window: int = 5
+    minimum_application_ratio: float = 0.4
+    healthy_application_ratio: float = 0.6
+    healthy_batch_count: int = 3
+    cooldown_seconds: int = 900
+
+
+@dataclass(frozen=True)
 class DeepSeekSettings:
     enabled: bool
     base_url: str
@@ -105,6 +115,8 @@ class DeepSeekSettings:
     stage_targets: Mapping[str, int]
     stage_limits: Mapping[str, int]
     api_key: str = field(default="", repr=False)
+    challenger_daily_limit: int = 8
+    adaptive: DeepSeekAdaptiveSettings = field(default_factory=DeepSeekAdaptiveSettings)
 
 
 @dataclass(frozen=True)

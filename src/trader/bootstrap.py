@@ -40,6 +40,7 @@ from trader.infra.cache import BoundedLruCache
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.factory import create_deepseek_client
+from trader.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.infra.market_data.akshare import AkshareResearchClient
 from trader.infra.market_data.calendar import ChinaTradingCalendar
@@ -428,6 +429,15 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
         stage_targets=settings.deepseek.stage_targets,
         stage_limits=settings.deepseek.stage_limits,
         challenger_limits=settings.deepseek.challenger_limits,
+        challenger_daily_limit=settings.deepseek.challenger_daily_limit,
+        health_policy=DeepSeekHealthPolicy(
+            consecutive_failure_limit=settings.deepseek.adaptive.consecutive_failure_limit,
+            rolling_window=settings.deepseek.adaptive.rolling_window,
+            minimum_application_ratio=settings.deepseek.adaptive.minimum_application_ratio,
+            healthy_application_ratio=settings.deepseek.adaptive.healthy_application_ratio,
+            healthy_batch_count=settings.deepseek.adaptive.healthy_batch_count,
+            cooldown_seconds=settings.deepseek.adaptive.cooldown_seconds,
+        ),
         write_lock=runtime_database_lock,
     )
     return _PersistenceContext(repository, budget)

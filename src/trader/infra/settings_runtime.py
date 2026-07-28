@@ -14,6 +14,7 @@ from trader.infra.settings_market_policy import (
 )
 from trader.infra.settings_models import (
     ApiSettings,
+    DeepSeekAdaptiveSettings,
     DeepSeekSettings,
     MarketDataSettings,
     PipelineSettings,
@@ -93,6 +94,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     market_raw = _mapping(raw, "market_data")
     performance_raw = _mapping(raw, "performance_budgets")
     deepseek_raw = _mapping(raw, "deepseek")
+    deepseek_adaptive_raw = _mapping(deepseek_raw, "adaptive")
     api_raw = _mapping(raw, "api")
     _require_exact_keys(
         server_raw,
@@ -139,6 +141,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             "model",
             "challenger_model",
             "challenger_limits",
+            "challenger_daily_limit",
             "timeout_seconds",
             "batch_size",
             "max_tokens",
@@ -146,8 +149,21 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             "strategy_limits",
             "stage_targets",
             "stage_limits",
+            "adaptive",
         },
         "deepseek",
+    )
+    _require_exact_keys(
+        deepseek_adaptive_raw,
+        {
+            "consecutive_failure_limit",
+            "rolling_window",
+            "minimum_application_ratio",
+            "healthy_application_ratio",
+            "healthy_batch_count",
+            "cooldown_seconds",
+        },
+        "deepseek.adaptive",
     )
     _require_exact_keys(
         api_raw,
@@ -220,6 +236,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             model=_text(deepseek_raw, "model"),
             challenger_model=_text(deepseek_raw, "challenger_model"),
             challenger_limits=_integer_mapping(deepseek_raw, "challenger_limits", minimum=0),
+            challenger_daily_limit=_integer(deepseek_raw, "challenger_daily_limit", minimum=0),
             timeout_seconds=_number(deepseek_raw, "timeout_seconds", minimum=0.1),
             batch_size=_integer(deepseek_raw, "batch_size", minimum=1, maximum=8),
             max_tokens=_integer(deepseek_raw, "max_tokens", minimum=64),
@@ -228,6 +245,28 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             stage_targets=_integer_mapping(deepseek_raw, "stage_targets", minimum=0),
             stage_limits=_integer_mapping(deepseek_raw, "stage_limits", minimum=0),
             api_key=_load_deepseek_api_key(project_root),
+            adaptive=DeepSeekAdaptiveSettings(
+                consecutive_failure_limit=_integer(
+                    deepseek_adaptive_raw,
+                    "consecutive_failure_limit",
+                    minimum=1,
+                ),
+                rolling_window=_integer(deepseek_adaptive_raw, "rolling_window", minimum=1),
+                minimum_application_ratio=_number(
+                    deepseek_adaptive_raw,
+                    "minimum_application_ratio",
+                    minimum=0.0,
+                    maximum=1.0,
+                ),
+                healthy_application_ratio=_number(
+                    deepseek_adaptive_raw,
+                    "healthy_application_ratio",
+                    minimum=0.0,
+                    maximum=1.0,
+                ),
+                healthy_batch_count=_integer(deepseek_adaptive_raw, "healthy_batch_count", minimum=1),
+                cooldown_seconds=_integer(deepseek_adaptive_raw, "cooldown_seconds", minimum=1),
+            ),
         ),
         api=ApiSettings(
             default_top_n=_integer(api_raw, "default_top_n", minimum=0),
@@ -337,57 +376,88 @@ def _validate_pipeline_runtime(settings: RuntimeSettings) -> None:
 
 
 def _validate_deepseek_runtime(settings: RuntimeSettings) -> None:
-    if sum(settings.deepseek.strategy_limits.values()) != settings.deepseek.daily_hard_limit:
-        raise ConfigurationError("DeepSeek strategy limits must sum to the daily hard limit")
+    _validate_deepseek_identity(settings.deepseek)
+    _validate_deepseek_allocation(settings.deepseek)
+    _validate_deepseek_adaptive(settings.deepseek)
+
+
+def _validate_deepseek_identity(deepseek: DeepSeekSettings) -> None:
+    if deepseek.daily_hard_limit != 168:
+        raise ConfigurationError("DeepSeek daily hard limit must remain fixed at 168")
+    if deepseek.base_url != "https://api.deepseek.com":
+        raise ConfigurationError("DeepSeek base_url must use the official https://api.deepseek.com endpoint")
+    if deepseek.model != "deepseek-v4-flash":
+        raise ConfigurationError("DeepSeek primary model must be deepseek-v4-flash")
+    if deepseek.challenger_model != "deepseek-v4-pro":
+        raise ConfigurationError("DeepSeek challenger model must be deepseek-v4-pro")
+    expected_challenger_limits = {"today": 0, "tomorrow": 2, "d25": 0}
+    if dict(deepseek.challenger_limits) != expected_challenger_limits:
+        raise ConfigurationError("DeepSeek challenger limits must match the section 11 allocation")
+    if deepseek.challenger_daily_limit != 2:
+        raise ConfigurationError("DeepSeek challenger daily limit must remain fixed at 2")
+    if deepseek.batch_size != 4:
+        raise ConfigurationError("DeepSeek primary batch size must remain fixed at 4")
+    if deepseek.timeout_seconds != 20.0:
+        raise ConfigurationError("DeepSeek timeout must remain fixed at 20 seconds")
+
+
+def _validate_deepseek_allocation(deepseek: DeepSeekSettings) -> None:
     required_buckets = {"today", "tomorrow", "d25", "shared_preheat", "emergency"}
-    if set(settings.deepseek.strategy_limits) != required_buckets:
+    if set(deepseek.strategy_limits) != required_buckets:
         raise ConfigurationError(
             "DeepSeek strategy limits must define today, tomorrow, d25, shared_preheat and emergency"
         )
     expected_strategy_limits = {
-        "today": 68,
-        "tomorrow": 45,
-        "d25": 35,
-        "shared_preheat": 15,
+        "today": 8,
+        "tomorrow": 38,
+        "d25": 16,
+        "shared_preheat": 4,
         "emergency": 5,
     }
-    if dict(settings.deepseek.strategy_limits) != expected_strategy_limits:
-        raise ConfigurationError("DeepSeek strategy limits must match the section 16 allocation")
-    if settings.deepseek.base_url != "https://api.deepseek.com":
-        raise ConfigurationError("DeepSeek base_url must use the official https://api.deepseek.com endpoint")
-    if settings.deepseek.model != "deepseek-v4-flash":
-        raise ConfigurationError("DeepSeek primary model must be deepseek-v4-flash")
-    if settings.deepseek.challenger_model != "deepseek-v4-pro":
-        raise ConfigurationError("DeepSeek challenger model must be deepseek-v4-pro")
-    expected_challenger_limits = {"today": 6, "tomorrow": 6, "d25": 5}
-    if dict(settings.deepseek.challenger_limits) != expected_challenger_limits:
-        raise ConfigurationError("DeepSeek challenger limits must match the section 16 allocation")
+    if dict(deepseek.strategy_limits) != expected_strategy_limits:
+        raise ConfigurationError("DeepSeek strategy limits must match the section 11 allocation")
     expected_stage_targets = {
-        "shared_preheat": 15,
-        "today_observe": 14,
-        "today_main": 40,
-        "today_late": 12,
-        "tomorrow_afternoon": 21,
-        "tomorrow_final": 14,
-        "d25_afternoon": 19,
-        "d25_final": 11,
+        "shared_preheat": 2,
+        "today_main": 3,
+        "today_late": 2,
+        "tomorrow_morning": 6,
+        "tomorrow_afternoon": 10,
+        "tomorrow_final": 5,
+        "d25_morning": 2,
+        "d25_afternoon": 4,
+        "d25_final": 2,
         "emergency": 0,
     }
     expected_stage_limits = {
-        "shared_preheat": 15,
-        "today_observe": 15,
-        "today_main": 40,
-        "today_late": 13,
-        "tomorrow_afternoon": 25,
-        "tomorrow_final": 20,
-        "d25_afternoon": 22,
-        "d25_final": 13,
+        "shared_preheat": 4,
+        "today_main": 5,
+        "today_late": 3,
+        "tomorrow_morning": 10,
+        "tomorrow_afternoon": 18,
+        "tomorrow_final": 10,
+        "d25_morning": 4,
+        "d25_afternoon": 8,
+        "d25_final": 4,
         "emergency": 5,
     }
-    if dict(settings.deepseek.stage_targets) != expected_stage_targets:
-        raise ConfigurationError("DeepSeek stage targets must match the section 16 allocation")
-    if dict(settings.deepseek.stage_limits) != expected_stage_limits:
-        raise ConfigurationError("DeepSeek stage limits must match the section 16 allocation")
+    if dict(deepseek.stage_targets) != expected_stage_targets:
+        raise ConfigurationError("DeepSeek stage targets must match the section 11 allocation")
+    if dict(deepseek.stage_limits) != expected_stage_limits:
+        raise ConfigurationError("DeepSeek stage limits must match the section 11 allocation")
+    if sum(deepseek.stage_targets.values()) != 36:
+        raise ConfigurationError("DeepSeek normal stage targets must total 36")
+    if sum(value for key, value in deepseek.stage_limits.items() if key != "emergency") != 66:
+        raise ConfigurationError("DeepSeek normal stage limits must total 66")
+    if sum(deepseek.stage_limits.values()) != sum(deepseek.strategy_limits.values()):
+        raise ConfigurationError("DeepSeek stage and strategy envelopes must match")
+
+
+def _validate_deepseek_adaptive(deepseek: DeepSeekSettings) -> None:
+    adaptive = deepseek.adaptive
+    if adaptive.healthy_application_ratio < adaptive.minimum_application_ratio:
+        raise ConfigurationError("DeepSeek healthy application ratio must not be below the minimum ratio")
+    if adaptive.healthy_batch_count > adaptive.rolling_window:
+        raise ConfigurationError("DeepSeek healthy batch count must fit the rolling window")
 
 
 def _nested_positive_number_mapping(

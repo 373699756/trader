@@ -9,6 +9,7 @@ from trader.domain.market.models import Evidence, FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import ReviewOutcome
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.infra.deepseek.budget_audit import _stage_key
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.client import DeepSeekHttpClient
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
@@ -359,13 +360,95 @@ def test_prompt_evidence_router_normalizes_timezones_and_keeps_earliest_receipt(
     assert tuple(item.evidence_id for item in routed.evidence) == ("earlier",)
 
 
-def test_budget_enforces_c2_soft_bucket_limits(tmp_path) -> None:
+def test_budget_has_no_hidden_soft_bucket_limit(tmp_path) -> None:
     budget = _budget(tmp_path / "runtime.sqlite3", hard_limit=168)
 
     reservations = [budget.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW) for _ in range(23)]
 
-    assert sum(item.allowed for item in reservations) == 22
-    assert (reservations[-1].allowed, reservations[-1].reason) == (False, "soft_bucket_limit")
+    assert sum(item.allowed for item in reservations) == 23
+
+
+def test_tomorrow_priority_envelope_allows_66_normal_and_5_emergency_calls(tmp_path) -> None:
+    budget = DeepSeekBudgetLedger(
+        tmp_path / "runtime.sqlite3",
+        daily_hard_limit=168,
+        strategy_limits={
+            "today": 8,
+            "tomorrow": 38,
+            "d25": 16,
+            "shared_preheat": 4,
+            "emergency": 5,
+        },
+        stage_targets={
+            "shared_preheat": 2,
+            "today_main": 3,
+            "today_late": 2,
+            "tomorrow_morning": 6,
+            "tomorrow_afternoon": 10,
+            "tomorrow_final": 5,
+            "d25_morning": 2,
+            "d25_afternoon": 4,
+            "d25_final": 2,
+            "emergency": 0,
+        },
+        stage_limits={
+            "shared_preheat": 4,
+            "today_main": 5,
+            "today_late": 3,
+            "tomorrow_morning": 10,
+            "tomorrow_afternoon": 18,
+            "tomorrow_final": 10,
+            "d25_morning": 4,
+            "d25_afternoon": 8,
+            "d25_final": 4,
+            "emergency": 5,
+        },
+        challenger_limits={"today": 0, "tomorrow": 2, "d25": 0},
+        challenger_daily_limit=2,
+    )
+    budget.initialize()
+
+    normal = (
+        tuple(
+            budget.reserve(Strategy.TODAY, phase="warmup", requested_at=NOW, bucket="shared_preheat") for _ in range(4)
+        )
+        + tuple(budget.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW) for _ in range(5))
+        + tuple(budget.reserve(Strategy.TODAY, phase="today_late", requested_at=NOW) for _ in range(3))
+        + tuple(budget.reserve(Strategy.TOMORROW, phase="today_main", requested_at=NOW) for _ in range(10))
+        + tuple(budget.reserve(Strategy.TOMORROW, phase="afternoon", requested_at=NOW) for _ in range(18))
+        + tuple(budget.reserve(Strategy.TOMORROW, phase="final_review", requested_at=NOW) for _ in range(10))
+        + tuple(budget.reserve(Strategy.D25, phase="today_main", requested_at=NOW) for _ in range(4))
+        + tuple(budget.reserve(Strategy.D25, phase="afternoon", requested_at=NOW) for _ in range(8))
+        + tuple(budget.reserve(Strategy.D25, phase="final_review", requested_at=NOW) for _ in range(4))
+    )
+    emergencies = tuple(
+        budget.reserve(
+            Strategy.TOMORROW,
+            phase="final_review",
+            requested_at=NOW,
+            emergency=True,
+            emergency_reason="freeze_boundary_change",
+        )
+        for _ in range(5)
+    )
+
+    assert len(normal) == 66
+    assert all(item.allowed for item in normal)
+    assert all(item.allowed for item in emergencies)
+    summary = budget.summary(NOW.date().isoformat())
+    assert summary["used"] == 71
+    assert summary["target"] == 36
+    assert summary["normal_limit"] == 66
+    assert summary["normal_used"] == 66
+    assert summary["planned_limit"] == 71
+    assert budget.reserve(Strategy.TOMORROW, phase="afternoon", requested_at=NOW).reason == "bucket_limit"
+
+
+def test_morning_phases_use_tomorrow_and_d25_morning_stage_budgets() -> None:
+    assert _stage_key(Strategy.TOMORROW, "today_observe", "tomorrow") == "tomorrow_morning"
+    assert _stage_key(Strategy.TOMORROW, "today_main", "tomorrow") == "tomorrow_morning"
+    assert _stage_key(Strategy.TOMORROW, "today_late", "tomorrow") == "tomorrow_morning"
+    assert _stage_key(Strategy.D25, "today_main", "d25") == "d25_morning"
 
 
 def _reviewer(budget: DeepSeekBudgetLedger, *, post) -> DeepSeekReviewer:

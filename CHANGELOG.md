@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增 DeepSeek 持久化健康门：连续 2 个传输失败、连续 2 个 schema 失败或最近 5 个完成批次
+  候选应用率低于 40% 时，在共享 SQLite 总账中熔断 15 分钟；冷却后只允许一个最多 2 股的
+  原子半开探针，11:15/14:43 后不再半开，连续 3 个合法恢复批次且滚动应用率达到 60% 后
+  才关闭健康门。健康状态随进程重启保留，并通过预算状态摘要只读暴露。
+- 新增跨 today/tomorrow/d25 的原始 DeepSeek facts single-flight。同股、同证据和同模型身份
+  的并发复核只由一个 owner 发起物理 HTTP，其余策略等待缓存结果后执行各自的本地分类与融合，
+  避免上午重点审 tomorrow 时重复消耗预算。
 - 仓库级约束、两份权威文档和荐股冻结/恢复回归场景统一覆盖 today 11:20 当场持久化、11:30 身份不变、错过
   11:20 后启动不追补、15:00 热运行/冷启动只恢复 tomorrow/d25、正式空结果不重算、
   冻结后 `view=current` 不泄露草稿，以及旧 today `close_fallback` 仅可按历史日期审计。
@@ -101,6 +108,15 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把 DeepSeek 常规目标/硬上限调整为 36/66，并把预算重点从 today 转向 tomorrow。
+  现状原因是旧配置仍为 146 次阶段目标、168 次策略桶并给 today 预留 68 次，而 tomorrow
+  上午只生成本地草稿，不能落实用户指定的明日荐股优先级。运行配置现固定 shared `2/4`、
+  today `5/8`、tomorrow `21/38`、d25 `8/16`，另设 `0/5` emergency；正常目标 36、正常
+  硬上限 66、计划最坏 71，168 只保留为不可突破的全局灾难保护线。
+- tomorrow/d25 从 09:36 开始复用上午模型 facts，09:30-09:36 与午休不新增请求；Flash
+  主审固定最多 4 股，预热/健康 canary 最多 2 股，Pro 全日最多 2 次且全部保留给 tomorrow。
+  today 在 11:18、tomorrow/d25 在 14:46 停止提交，已提交请求仍分别可在 11:20/14:48 前
+  接纳；调度器新增两个停止提交唤醒点，冻结 CAS 与 11:20/14:50 正式记录不可覆盖规则不变。
 - 行情来源职责保持“东方财富/新浪全市场、腾讯候选与 TopK 定向刷新”。现场调查确认本次
   东方财富连接被远端关闭后新浪兜底成功，并非新浪 SDK 整体失败；腾讯定向批次缺失个别代码
   时继续使用规范快照中的新浪全市场报价或最近有效值，不强制把所有定向刷新切换到较慢的
@@ -336,6 +352,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 DeepSeek 传输失败仍会立即执行一次 HTTP 重试、使单次复核放大预算和尾延迟的问题；
+  连接失败、429、5xx 和超时现在直接本地降级，只有 HTTP 200 且严格 schema 非法时允许一次
+  结构修复，所有真实请求仍先原子计数。修复 tomorrow/d25 上午固定显示
+  `deepseek_deferred_until_afternoon` 的旧行为，上午本地快照统一标记为可继续增强的
+  `deepseek_pending`。
 - 修复盘后恢复把 today 与 tomorrow/d25 统一视为可补算策略，导致错过 11:20 后仍在
   15:00 生成“今早推荐”的契约错误；today 缺失不再让盘后恢复无限重试，历史遗留的同日
   today `close_fallback` 也不会进入当前/正式视图。修复 `view=current` 绕过冻结判断而在
@@ -490,6 +511,16 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批新增预算分配、上午路由、停止提交截止、在途接纳、无传输重试、单次 schema 修复、
+  emergency 条件、Pro 全日 2 次、跨策略 single-flight，以及健康门连续失败、跨重启恢复、
+  14:43 后禁止半开和并发单探针回归。`make format-check`、`make lint`（严格复杂度债务为零）、
+  `make type-check` 通过；从当前 `HEAD` 叠加仅本任务暂存 diff 的仓库外副本执行无排除
+  `make test` 全部通过。共享工作树中的完整测试另受任务开始前未暂存的 outcome settlement
+  测试阻塞，该文件未修改、未暂存且不属于本批。隔离 `make package` 成功，仓库外 wheel
+  通过包导入、CLI、活动配置和 14 项 Web 资源读取。
+  Firefox/geckodriver 在 1280x720、1440x900、1920x1080 均无页面级横向溢出或浏览器错误，
+  25 个 patch 全部应用、无 resync，patch-to-paint P95 为 19ms（预算 100ms）。宿主未安装
+  Chrome/Chromium，故 Chrome 专用 CDP runner 未执行；本批未修改 Web 资源。
 - 本批失败先行回归覆盖 today 正常 11:20 当场入库与 11:30 身份不变、错过边界不追补、
   15:00 热运行/冷启动只恢复 tomorrow/d25、正式空结果保持、冻结后 current/live 隔离、
   历史 today fallback 隔离、腾讯定向部分返回时新浪全市场逐股保底，以及 closing overlay
@@ -837,6 +868,11 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批调整的是调用资源、时段、降级和重复请求控制，不改变固定 68/32 融合公式、风险映射、
+  候选门槛、动作门、排序或冻结规则，也不构成收益保证。36 是健康且有合格候选时的停止目标，
+  不是必须耗完的配额；缓存命中、候选不足、健康熔断或外部服务失败都会使实际调用低于目标。
+  V4 模型可用性、真实交易日响应质量与推荐收益仍需使用受保护密钥和至少 60 个有效交易日的
+  点时样本外评估，不能由 mock 回归或预算增加推断。
 - 外部行情供应商仍可能超时、断连或只返回部分代码；系统只能按已验证优先级使用新浪等
   全市场兜底或最近有效快照，并显式标记降级，不能保证每轮都有新成交。当前正在运行的旧
   进程必须重启后才会加载新的 Web 静态 revision 和 closing overlay 误报修复；本批不改变
