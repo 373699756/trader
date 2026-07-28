@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.domain.market.epochs import (
+    CandidateFeatureRow,
     CandidateQuoteEpoch,
     DailyFeaturePack,
     DailyFeatureRow,
@@ -203,13 +204,23 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
                 source_time=OBSERVED_AT,
                 received_time=RECEIVED_AT,
                 data_version="candidate-v1",
+                cross_source_deviation_pct=0.2,
+                cross_source_verified=True,
+            ),
+        ),
+        feature_rows=(
+            CandidateFeatureRow(
+                code="600001",
+                values={"tail_return_30m": 72.0, "entry_quality": 68.0},
             ),
         ),
         source_versions={"tencent": "candidate-v1"},
     )
 
     assert market.daily_feature_pack_version == pack.version
+    assert market.market_regime == "neutral"
     assert candidate.market_epoch_version == market.version
+    assert candidate.feature_rows[0].values["tail_return_30m"] == 72.0
     assert len(market.content_hash) == 64
     assert len(candidate.content_hash) == 64
     assert market.degraded_reasons == ("sina_timeout",)
@@ -224,6 +235,56 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
             daily_feature_pack_version=pack.version,
             quotes=(_market_quote(price=nan),),
             source_versions={"eastmoney": "market-v2"},
+        )
+
+    with pytest.raises(ValueError, match="candidate quote codes"):
+        CandidateQuoteEpoch(
+            trade_date=market.trade_date,
+            sequence=2,
+            observed_at=OBSERVED_AT,
+            received_at=RECEIVED_AT,
+            config_version="runtime-v2",
+            market_epoch_version=market.version,
+            quotes=candidate.quotes,
+            feature_rows=(CandidateFeatureRow(code="600002", values={"entry_quality": 60.0}),),
+            source_versions={"tencent": "candidate-v2"},
+        )
+
+    with pytest.raises(ValueError, match="unsupported realtime fields"):
+        CandidateFeatureRow(
+            code="600001",
+            values={"financial_deterioration": 0.0},
+        )
+
+    with pytest.raises(ValueError, match="unsupported realtime fields"):
+        CandidateFeatureRow(
+            code="600001",
+            values={"entry_quality": 60.0},
+            missing_fields=("financial_deterioration",),
+        )
+
+    with pytest.raises(ValueError, match="cross-source deviation"):
+        CandidateQuoteEpoch(
+            trade_date=market.trade_date,
+            sequence=2,
+            observed_at=OBSERVED_AT,
+            received_at=RECEIVED_AT,
+            config_version="runtime-v2",
+            market_epoch_version=market.version,
+            quotes=(replace(candidate.quotes[0], cross_source_deviation_pct=None),),
+            source_versions={"tencent": "candidate-v2"},
+        )
+
+    with pytest.raises(ValueError, match="must be cross-source verified"):
+        CandidateQuoteEpoch(
+            trade_date=market.trade_date,
+            sequence=2,
+            observed_at=OBSERVED_AT,
+            received_at=RECEIVED_AT,
+            config_version="runtime-v2",
+            market_epoch_version=market.version,
+            quotes=(replace(candidate.quotes[0], cross_source_verified=False),),
+            source_versions={"tencent": "candidate-v2"},
         )
 
 

@@ -98,6 +98,8 @@ def _candidate(market: MarketEpoch, sequence: int) -> CandidateQuoteEpoch:
                 source_time=observed_at,
                 received_time=observed_at + timedelta(milliseconds=100),
                 data_version=f"candidate-{sequence}",
+                cross_source_deviation_pct=0.2,
+                cross_source_verified=True,
             ),
         ),
         source_versions={"tencent": f"candidate-{sequence}"},

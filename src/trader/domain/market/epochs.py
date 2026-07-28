@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import date, datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Protocol, TypeAlias
+from typing import Literal, Protocol, TypeAlias
 
 from trader.domain.market.models import LiveQuote, MarketQuote
 from trader.domain.market.research import ResearchObservation
@@ -23,6 +23,26 @@ RESEARCH_EPOCH_SCHEMA_VERSION = "research_epoch_v1"
 
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _REASON_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
+_CANDIDATE_REALTIME_FEATURES = frozenset(
+    {
+        "breakout_deviation_pct",
+        "capacity_score",
+        "close_location",
+        "entry_quality",
+        "intraday_reversal",
+        "limit_distance_safety",
+        "liquidity_contraction",
+        "moderate_amplitude",
+        "price_executability",
+        "short_term_overheat",
+        "tail_return_30m",
+        "tail_return_30m_pct",
+        "tail_volume_ratio",
+        "tail_volume_ratio_raw",
+        "trend_breakdown",
+        "volume_to_5d_average",
+    }
+)
 _CanonicalValue: TypeAlias = str | int | float | bool | None | list["_CanonicalValue"] | dict[str, "_CanonicalValue"]
 
 
@@ -122,6 +142,7 @@ class MarketEpoch:
     daily_feature_pack_version: str
     quotes: tuple[MarketQuote, ...]
     source_versions: Mapping[str, str]
+    market_regime: Literal["risk_on", "neutral", "risk_off"] = "neutral"
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = MARKET_EPOCH_SCHEMA_VERSION
     content_hash: str = field(init=False)
@@ -136,6 +157,8 @@ class MarketEpoch:
         _require_unique_codes(tuple(quote.code for quote in quotes), "market quotes")
         for quote in quotes:
             _validate_market_quote(quote, self.observed_at, self.received_at)
+        if self.market_regime not in {"risk_on", "neutral", "risk_off"}:
+            raise ValueError("market epoch market_regime is invalid")
         sources = _freeze_source_versions(self.source_versions)
         degraded = _sorted_unique_reason_codes(self.degraded_reasons, "degraded_reasons")
         payload_hash = _content_hash(
@@ -149,6 +172,7 @@ class MarketEpoch:
                 "daily_feature_pack_version": self.daily_feature_pack_version,
                 "quotes": quotes,
                 "source_versions": sources,
+                "market_regime": self.market_regime,
                 "degraded_reasons": degraded,
             }
         )
@@ -157,6 +181,32 @@ class MarketEpoch:
         object.__setattr__(self, "degraded_reasons", degraded)
         object.__setattr__(self, "content_hash", payload_hash)
         object.__setattr__(self, "version", _version("market", self.trade_date, self.sequence, payload_hash))
+
+
+@dataclass(frozen=True)
+class CandidateFeatureRow:
+    code: str
+    values: Mapping[str, float | None]
+    missing_fields: tuple[str, ...] = ()
+    missing_reasons: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:
+        _require_code(self.code)
+        normalized_values = dict(sorted(self.values.items()))
+        declared_fields = set(normalized_values).union(self.missing_fields, self.missing_reasons)
+        unsupported = sorted(declared_fields.difference(_CANDIDATE_REALTIME_FEATURES))
+        if unsupported:
+            raise ValueError(f"candidate feature rows contain unsupported realtime fields: {','.join(unsupported)}")
+        for name, value in normalized_values.items():
+            _require_text(name, "candidate feature name")
+            _require_finite(value, f"candidate feature {name}")
+        normalized_missing = _sorted_unique_text(self.missing_fields, "candidate missing_fields")
+        normalized_reasons = dict(sorted(self.missing_reasons.items()))
+        if any(not key.strip() or not value.strip() for key, value in normalized_reasons.items()):
+            raise ValueError("candidate missing reasons must contain non-empty keys and values")
+        object.__setattr__(self, "values", MappingProxyType(normalized_values))
+        object.__setattr__(self, "missing_fields", normalized_missing)
+        object.__setattr__(self, "missing_reasons", MappingProxyType(normalized_reasons))
 
 
 @dataclass(frozen=True)
@@ -169,6 +219,7 @@ class CandidateQuoteEpoch:
     market_epoch_version: str
     quotes: tuple[LiveQuote, ...]
     source_versions: Mapping[str, str]
+    feature_rows: tuple[CandidateFeatureRow, ...] = ()
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION
     content_hash: str = field(init=False)
@@ -181,6 +232,11 @@ class CandidateQuoteEpoch:
         _require_unique_codes(tuple(quote.code for quote in quotes), "candidate quotes")
         for quote in quotes:
             _validate_live_quote(quote, self.observed_at, self.received_at)
+        feature_rows = tuple(sorted(self.feature_rows, key=lambda row: row.code))
+        _require_unique_codes(tuple(row.code for row in feature_rows), "candidate feature rows")
+        quote_codes = {quote.code for quote in quotes}
+        if any(row.code not in quote_codes for row in feature_rows):
+            raise ValueError("candidate feature rows must reference candidate quote codes")
         sources = _freeze_source_versions(self.source_versions)
         degraded = _sorted_unique_reason_codes(self.degraded_reasons, "degraded_reasons")
         payload_hash = _content_hash(
@@ -193,11 +249,13 @@ class CandidateQuoteEpoch:
                 "config_version": self.config_version,
                 "market_epoch_version": self.market_epoch_version,
                 "quotes": quotes,
+                "feature_rows": feature_rows,
                 "source_versions": sources,
                 "degraded_reasons": degraded,
             }
         )
         object.__setattr__(self, "quotes", quotes)
+        object.__setattr__(self, "feature_rows", feature_rows)
         object.__setattr__(self, "source_versions", sources)
         object.__setattr__(self, "degraded_reasons", degraded)
         object.__setattr__(self, "content_hash", payload_hash)
@@ -287,6 +345,11 @@ def _validate_live_quote(quote: LiveQuote, observed_at: datetime, received_at: d
         raise ValueError("candidate quote cannot be from the future")
     _require_finite(quote.price, "candidate quote price")
     _require_finite(quote.pct_change, "candidate quote pct_change")
+    deviation = quote.cross_source_deviation_pct
+    if deviation is None or not math.isfinite(deviation) or deviation < 0.0:
+        raise ValueError("candidate quote cross-source deviation must be finite and non-negative")
+    if not quote.cross_source_verified or deviation > 0.5:
+        raise ValueError("candidate quote must be cross-source verified with deviation <= 0.5")
 
 
 def _validate_research_observation(
@@ -434,6 +497,7 @@ __all__ = [
     "DAILY_FEATURE_PACK_SCHEMA_VERSION",
     "MARKET_EPOCH_SCHEMA_VERSION",
     "RESEARCH_EPOCH_SCHEMA_VERSION",
+    "CandidateFeatureRow",
     "CandidateQuoteEpoch",
     "DailyFeaturePack",
     "DailyFeatureRow",

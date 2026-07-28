@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增 tomorrow v2 旁路确定性本地选择：只读用例从一组一致数据 epoch 组装
+  `FeatureSnapshot`，纯领域管道统一执行三态硬过滤、三板横截面、每板最多 120 只预选、
+  tomorrow 六组件评分、本地风险单次扣分、稳定 Top10 和每行业最多 2 只，并为逐股过滤、
+  缺失、候选、风险、排名与跳过原因保留紧凑审计。观察候选与正式选择分离，真实无通过
+  候选时返回空结果，不降阈值补数。
+- `CandidateQuoteEpoch` 新增有界 `CandidateFeatureRow`，让 14:20 后形成的尾盘结构和
+  入场质量进入规范哈希并覆盖昨日基线；`MarketEpoch.market_regime` 同样进入当日身份。
+  候选报价新增本轮跨源偏差与复核状态，epoch 只接受有限、非负、`<=0.50%` 且已复核的
+  定向价格。
 - 新增 tomorrow v2 旁路数据平面：`DailyFeaturePack`、`MarketEpoch`、
   `CandidateQuoteEpoch` 和 `ResearchEpoch` 使用上海时区、规范 SHA-256、配置/来源/
   上游版本和深层不可变载荷；`RealtimeDataPlane` 通过单锁原子发布、父版本校验、
@@ -117,6 +126,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- tomorrow v2 的数据到本地选择边界现明确区分昨日基线、全市场当前报价和候选实时特征：
+  组装缺少一致父 epoch、交易日不匹配或候选代码不属于父市场时返回 `not_ready`；候选价
+  更新会同步保守扩展 high/low，避免产生价格超出 OHLC 的伪硬过滤。当前生产 P1-P6、
+  DeepSeek、冻结、API 和 Web 读写路径保持不变。
 - 按用户要求从已推送基线新建 `feature/tomorrow-v2` 开发分支，数据平面保持旁路，不接管
   当前 P1-P6、Web 或冻结路径。权威文档保留“压缩数据按交易日分区、默认 120 个交易日、
   20GB 上限”的目标，但本批明确不实现磁盘归档、清理、容量驱逐、运行目录或配置。
@@ -377,6 +390,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 tomorrow v2 初版设计中两个会降低过滤准确性的缺口：当日尾盘/入场字段不再被迫
+  从 `data_as_of < trade_date` 的日基线读取而退化为中性 50；候选实时特征不再接受任意
+  因子键，因而不能用高频来源覆盖财务恶化、严重公司风险或证券身份。另补齐低于本地门槛、
+  核心缺失、候选分不足、板内容量、行业集中度和 TopK 的独立诊断，避免都显示成无可评分
+  候选。候选单股来源时间早于父市场同股报价时，定向价格及其依赖该价格的实时特征整组忽略，
+  不再让迟到批次覆盖更新行情。
 - 数据平面现在在原子发布前拒绝无上海时区、未来事实、非有限数值、空全市场批次、空来源
   身份、报价接收早于来源时间、同 sequence 不同内容、父 epoch 或配置不匹配等输入；
   来源失败只记录有界结构化原因并保留最近有效一致视图，不会用失败或半更新状态清空数据。
@@ -548,6 +567,16 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批失败先行测试先因 tomorrow 领域/应用模块和候选实时特征行不存在而停止；实现及多轮
+  Review 修复后，epoch、原子数据平面、三态过滤、板内评分、融合、本地选择和已发布快照
+  定向回归通过。`make format-check`、`make lint`、182 个源码文件的 `make type-check` 和
+  `make package` 通过；共享工作树完整测试只失败于任务开始前用户已有的 outcome settlement
+  新断言，本批未修改或暂存该文件，仅叠加本批 diff 的干净副本完整 `make test` 通过。
+  仓库外 Python 3.14 环境安装最终 wheel 和全部依赖后，`pip check`、新模块导入、
+  `trader-cli --help` 以及模板、CSS、JavaScript、SVG 资源读取通过。headless Firefox 在
+  1280x720、1440x900、1920x1080 三档桌面均无白屏、页面级横向溢出或浏览器错误，
+  patch-to-paint P95 为 54ms，低于 100ms 门槛；本机未安装 Chrome，故使用产品范围内的
+  Firefox 完成发布布局门禁。
 - 本批失败先行测试先因 epoch 模块不存在而停止；实现后，数据 epoch、原子数据平面及项目
   记录定向测试全部通过。`make format-check`、`make lint`、`make type-check` 和
   `make package` 通过，严格结构债务保持零；仅叠加本批 diff 的干净副本完整 `make test`
@@ -886,6 +915,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 `CandidateFeatureRow` 对任意数值因子键的开放写入能力；实时覆盖现在仅限登记的
+  尾盘、入场、执行质量和日内结构风险字段，结构化财务、公司风险、证券身份和历史基线
+  只能由其各自权威 epoch 更新。
 - 本批未新增或删除磁盘归档实现；契约测试明确阻止提前加入
   `compressed_partitions.py` 或 `market_epoch_archive.py`。现有 v1/P1-P6、运行库、缓存、
   API、Web 和冻结代码均保持原样，完整旧 release 回退不受影响。
@@ -933,8 +965,13 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 新数据平面尚未连接真实来源、过滤评分、DeepSeek、`CurrentDecisionIndex`、v2 API/SSE
-  或 Web，因此当前生产实时性和收益行为没有变化。120 日压缩分区与 20GB 上限只有文档
+- 本批只完成 tomorrow v2 的旁路 epoch 组装与确定性本地选择，尚未把真实采集器接入
+  `CandidateFeatureRow`，也未实现 DeepSeek 融合、`DecisionEpoch`、`CurrentDecisionIndex`、
+  14:50 冻结、v2 API/SSE/Web、影子对照或生产切换。工程门禁只能证明过滤、评分、稳定性和
+  审计契约，不能证明实际收益提高；收益仍须按权威文档的点时样本外与前向影子门禁验证。
+- 新数据平面尚未连接真实来源；旁路过滤评分虽已实现，但尚未接入 DeepSeek、
+  `CurrentDecisionIndex`、v2 API/SSE 或 Web，因此当前生产实时性和收益行为没有变化。
+  120 日压缩分区与 20GB 上限只有文档
   契约；压缩格式、原子写入、磁盘满降级和清理顺序仍须后续独立交付。旁路 epoch 也尚未
   取得真实交易日供应商延迟、全市场覆盖率和长运行内存证据。
 - 当前虽已实现旁路内存数据平面，仍未实现 `CurrentDecisionIndex`、v2 API/SSE 或原子

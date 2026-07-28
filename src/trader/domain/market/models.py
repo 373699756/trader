@@ -102,6 +102,8 @@ class LiveQuote:
     source_time: datetime
     received_time: datetime
     data_version: str
+    cross_source_deviation_pct: float | None = None
+    cross_source_verified: bool = False
 
     def __post_init__(self) -> None:
         for value in (self.source_time, self.received_time):
