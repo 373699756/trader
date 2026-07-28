@@ -2,17 +2,22 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from threading import Event
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from trader.application.board_scoring import (
     BoardScoringCoordinator,
     BoardScoringPlan,
     _all_candidates_below_reliability,
+    _LatestBoardLane,
 )
 from trader.application.board_scoring_cache import ScoringCacheContext
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.models import (
+    BoardScoreBatch,
     BoardStrategyPolicy,
     FusionMode,
     Recommendation,
@@ -74,9 +79,153 @@ def test_coordinator_owns_three_single_worker_lanes_and_preserves_epoch(applicat
     assert {batch.board for batch in batches} == {Board.MAIN, Board.CHINEXT, Board.STAR}
     assert {batch.merge_epoch for batch in batches} == {"epoch-1"}
     assert all(batch.status == "empty" for batch in batches)
-    assert all(lane["workers"] == 1 and lane["queue_capacity"] == 1 for lane in status.values())
+    assert all(lane["workers"] == 1 and lane["queue_capacity"] == 3 for lane in status.values())
     assert all(lane["queue_wait_samples"] == 1 for lane in status.values())
     assert all(float(lane["queue_wait_p95_ms"]) >= 0.0 for lane in status.values())
+
+
+def test_board_lane_keeps_pending_strategies_isolated_and_prioritizes_tomorrow() -> None:
+    lane = _LatestBoardLane("board-lane-regression")
+    active_started = Event()
+    release_active = Event()
+    execution_order: list[Strategy] = []
+
+    def batch(strategy: Strategy) -> BoardScoreBatch:
+        execution_order.append(strategy)
+        return BoardScoreBatch(
+            Board.MAIN,
+            strategy,
+            "epoch-1",
+            f"policy-{strategy.value}",
+            "empty",
+            (),
+            (),
+            "v16",
+        )
+
+    def active() -> BoardScoreBatch:
+        active_started.set()
+        assert release_active.wait(timeout=2.0)
+        return batch(Strategy.TODAY)
+
+    lane.start()
+    try:
+        today = lane.submit(Strategy.TODAY, active)
+        assert active_started.wait(timeout=2.0)
+        d25 = lane.submit(Strategy.D25, lambda: batch(Strategy.D25))
+        tomorrow = lane.submit(Strategy.TOMORROW, lambda: batch(Strategy.TOMORROW))
+        release_active.set()
+
+        assert today.result(timeout=2.0).strategy is Strategy.TODAY
+        assert tomorrow.result(timeout=2.0).strategy is Strategy.TOMORROW
+        assert d25.result(timeout=2.0).strategy is Strategy.D25
+        status = lane.status()
+    finally:
+        release_active.set()
+        lane.stop()
+
+    assert execution_order == [Strategy.TODAY, Strategy.TOMORROW, Strategy.D25]
+    assert status["superseded_count"] == 0
+    assert status["pending"] == 0
+
+
+def test_board_lane_supersedes_only_an_older_pending_epoch_of_the_same_strategy() -> None:
+    lane = _LatestBoardLane("board-lane-latest-wins")
+    active_started = Event()
+    release_active = Event()
+
+    def batch(strategy: Strategy, epoch: str) -> BoardScoreBatch:
+        return BoardScoreBatch(
+            Board.MAIN,
+            strategy,
+            epoch,
+            f"policy-{strategy.value}",
+            "empty",
+            (),
+            (),
+            "v16",
+        )
+
+    def active() -> BoardScoreBatch:
+        active_started.set()
+        assert release_active.wait(timeout=2.0)
+        return batch(Strategy.TODAY, "active")
+
+    lane.start()
+    try:
+        today = lane.submit(Strategy.TODAY, active)
+        assert active_started.wait(timeout=2.0)
+        stale = lane.submit(Strategy.TOMORROW, lambda: batch(Strategy.TOMORROW, "stale"))
+        latest = lane.submit(Strategy.TOMORROW, lambda: batch(Strategy.TOMORROW, "latest"))
+        release_active.set()
+
+        with pytest.raises(RuntimeError, match="superseded"):
+            stale.result(timeout=2.0)
+        assert today.result(timeout=2.0).merge_epoch == "active"
+        assert latest.result(timeout=2.0).merge_epoch == "latest"
+        status = lane.status()
+    finally:
+        release_active.set()
+        lane.stop()
+
+    assert status["superseded_count"] == 1
+
+
+def test_board_lane_priority_cycle_does_not_starve_other_strategies() -> None:
+    lane = _LatestBoardLane("board-lane-fairness")
+    today_started = Event()
+    release_today = Event()
+    tomorrow_started = Event()
+    release_tomorrow = Event()
+    execution_order: list[str] = []
+
+    def batch(strategy: Strategy, epoch: str) -> BoardScoreBatch:
+        execution_order.append(epoch)
+        return BoardScoreBatch(
+            Board.MAIN,
+            strategy,
+            epoch,
+            f"policy-{strategy.value}",
+            "empty",
+            (),
+            (),
+            "v16",
+        )
+
+    def active_today() -> BoardScoreBatch:
+        today_started.set()
+        assert release_today.wait(timeout=2.0)
+        return batch(Strategy.TODAY, "today")
+
+    def first_tomorrow() -> BoardScoreBatch:
+        tomorrow_started.set()
+        assert release_tomorrow.wait(timeout=2.0)
+        return batch(Strategy.TOMORROW, "tomorrow-1")
+
+    lane.start()
+    try:
+        today = lane.submit(Strategy.TODAY, active_today)
+        assert today_started.wait(timeout=2.0)
+        d25 = lane.submit(Strategy.D25, lambda: batch(Strategy.D25, "d25"))
+        tomorrow = lane.submit(Strategy.TOMORROW, first_tomorrow)
+        release_today.set()
+        assert tomorrow_started.wait(timeout=2.0)
+        next_tomorrow = lane.submit(
+            Strategy.TOMORROW,
+            lambda: batch(Strategy.TOMORROW, "tomorrow-2"),
+        )
+        release_tomorrow.set()
+
+        assert today.result(timeout=2.0).merge_epoch == "today"
+        assert tomorrow.result(timeout=2.0).merge_epoch == "tomorrow-1"
+        assert d25.result(timeout=2.0).merge_epoch == "d25"
+        assert next_tomorrow.result(timeout=2.0).merge_epoch == "tomorrow-2"
+    finally:
+        release_today.set()
+        release_tomorrow.set()
+        lane.stop()
+
+    assert execution_order == ["today", "tomorrow-1", "d25", "tomorrow-2"]
 
 
 def test_board_reliability_degrades_only_when_every_ranked_candidate_is_below_threshold() -> None:

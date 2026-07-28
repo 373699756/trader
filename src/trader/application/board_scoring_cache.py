@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import TypeVar, cast
 
@@ -13,7 +12,6 @@ from trader.application.cache import (
     CacheIdentity,
     CacheIdentitySpec,
     build_cache_identity,
-    request_fingerprint,
 )
 from trader.domain.market.models import (
     Board,
@@ -27,7 +25,6 @@ from trader.domain.recommendation.scoring import (
     BoardCrossSectionRequest,
     build_board_cross_section,
 )
-from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 _T = TypeVar("_T")
 SessionDistance = Callable[[str, str], int | None]
@@ -72,8 +69,6 @@ class BoardScoringCache:
         features: Sequence[FeatureSnapshot],
         context: ScoringCacheContext,
     ) -> BoardCrossSection:
-        competition_groups, competition_group_version = self._competition_groups(board, features, context)
-        feature_version = _feature_version(features)
         identity = self._identity(
             "board_cross_section",
             source="board-scoring",
@@ -82,15 +77,13 @@ class BoardScoringCache:
             request={
                 "merge_epoch": context.merge_epoch,
                 "data_version": context.data_version,
-                "feature_version": feature_version,
-                "competition_group_version": competition_group_version,
-                "codes": tuple(item.quote.code for item in features),
             },
         )
         cached = self._value(identity, BoardCrossSection)
         if cached is not None:
             return cached
 
+        competition_groups, _competition_group_version = self._competition_groups(board, features, context)
         latest_identity = self._latest_cross_section_identity(board)
         fallback = self._value(latest_identity, BoardCrossSection)
         fallback_age = (
@@ -116,16 +109,17 @@ class BoardScoringCache:
             )
 
         cross_section = cast(BoardCrossSection, self._cache.coalesce(identity, load))
+        compact = replace(cross_section, features=(), normalization={})
         self._cache.put(
             identity,
-            cross_section,
+            compact,
             data_version=cross_section.population.population_version,
             source_time=context.observed_at,
         )
         if cross_section.population.sample_size >= MIN_BOARD_SAMPLE and cross_section.population.status == "current":
             self._cache.put(
                 latest_identity,
-                cross_section,
+                compact,
                 data_version=f"{context.trade_date}:{cross_section.population.population_version}",
                 source_time=context.observed_at,
             )
@@ -155,44 +149,18 @@ class BoardScoringCache:
                         }
                     )
                 ),
-                "feature_version": _feature_version(features),
                 "codes": tuple(item.quote.code for item in features),
             },
         )
         cached = self._value(identity, tuple)
-        if cached is not None and all(isinstance(item, FeatureSnapshot) for item in cached):
-            return cast(tuple[FeatureSnapshot, ...], cached)
-        result = cast(tuple[FeatureSnapshot, ...], self._cache.coalesce(identity, loader))
-        self._cache.put(identity, result, data_version=context.merge_epoch, source_time=context.observed_at)
-        return result
-
-    def local_score(
-        self,
-        policy: BoardStrategyPolicy,
-        context: ScoringCacheContext,
-        feature: FeatureSnapshot,
-        loader: Callable[[], LocalScoreResult],
-    ) -> LocalScoreResult:
-        identity = self._policy_identity(
-            "local_score",
-            policy,
-            context,
-            subject_key=feature.quote.code,
-            request={
-                "merge_epoch": context.merge_epoch,
-                "policy_id": policy.policy_id,
-                "board_population": (
-                    feature.board_population.population_version if feature.board_population is not None else "missing"
-                ),
-                "quote_version": feature.quote.data_version,
-                "feature_version": _feature_version((feature,)),
-            },
-        )
-        cached = self._value(identity, LocalScoreResult)
-        if cached is not None:
-            return cached
-        result = cast(LocalScoreResult, self._cache.coalesce(identity, loader))
-        self._cache.put(identity, result, data_version=context.merge_epoch, source_time=context.observed_at)
+        by_code = {feature.quote.code: feature for feature in features}
+        if cached is not None and all(isinstance(item, str) for item in cached):
+            cached_codes = cast(tuple[str, ...], cached)
+            if all(code in by_code for code in cached_codes):
+                return tuple(by_code[code] for code in cached_codes)
+        result = loader()
+        result_codes = tuple(feature.quote.code for feature in result)
+        self._cache.put(identity, result_codes, data_version=context.merge_epoch, source_time=context.observed_at)
         return result
 
     def _competition_groups(
@@ -201,11 +169,7 @@ class BoardScoringCache:
         features: Sequence[FeatureSnapshot],
         context: ScoringCacheContext,
     ) -> tuple[Mapping[str, tuple[str, str, str]], str]:
-        industry_material = tuple(
-            (item.quote.code, item.quote.industry.strip(), item.quote.data_version)
-            for item in sorted(features, key=lambda feature: feature.quote.code)
-        )
-        industry_version = request_fingerprint({"industry": industry_material})[:24]
+        industry_version = context.merge_epoch
         manual_group_version = "manual:none:v1"
         composite_version = f"industry:{industry_version}+{manual_group_version}"
         identity = build_cache_identity(
@@ -214,6 +178,7 @@ class BoardScoringCache:
                 source=f"board-scoring:{board.value}",
                 subject_key="competition-groups",
                 request={
+                    "board": board.value,
                     "industry_version": industry_version,
                     "manual_group_version": manual_group_version,
                 },
@@ -331,51 +296,6 @@ def _weekday_session_distance(start: str, end: str) -> int | None:
             count += 1
         current += timedelta(days=1)
     return count
-
-
-def _feature_version(features: Sequence[FeatureSnapshot]) -> str:
-    material = tuple(
-        (
-            item.quote.code,
-            item.quote.data_version,
-            item.quote.industry,
-            item.quote.board.value,
-            item.quote.source_time,
-            item.quote.received_time,
-            tuple(
-                _cache_number(value)
-                for value in (
-                    item.quote.price,
-                    item.quote.previous_close,
-                    item.quote.open_price,
-                    item.quote.high,
-                    item.quote.low,
-                    item.quote.pct_change,
-                    item.quote.change_5m,
-                    item.quote.speed,
-                    item.quote.volume_ratio,
-                    item.quote.turnover_rate,
-                    item.quote.amount,
-                    item.quote.amplitude,
-                    item.quote.market_cap,
-                )
-            ),
-            item.quote.execution_restrictions,
-            tuple((name, _cache_number(value)) for name, value in sorted(item.values.items())),
-        )
-        for item in sorted(features, key=lambda feature: feature.quote.code)
-    )
-    return request_fingerprint({"features": material})[:24]
-
-
-def _cache_number(value: float | None) -> float | None:
-    if value is None:
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return parsed if math.isfinite(parsed) else None
 
 
 __all__ = ["BoardScoringCache", "ScoringCacheContext", "SessionDistance"]

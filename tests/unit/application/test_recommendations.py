@@ -437,6 +437,25 @@ def test_preselection_uses_receipt_freshness_before_targeted_quote_confirmation(
     assert "stale_quote" not in reasons
 
 
+def test_scoring_context_reuses_the_canonical_population_epoch(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    feature = replace(
+        application_feature_factory("600001", now),
+        merge_epoch="canonical-population-epoch",
+    )
+
+    context = RecommendationEngine(recommendation_policy)._scoring_context(
+        (feature,),
+        now=now,
+        phase="today_main",
+    )
+
+    assert context.merge_epoch == "canonical-population-epoch"
+
+
 def test_market_data_execution_restriction_downgrades_action_without_changing_score(
     recommendation_policy,
     application_feature_factory,

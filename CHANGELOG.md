@@ -108,6 +108,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户反馈明日页出现“本轮没有可评分候选”。调查确认页面准确展示了旧空快照，后台新一轮
+  today/tomorrow/d25 同时评分时却共用每板唯一待处理槽，后提交策略会覆盖 tomorrow；
+  同时完整板块横截面与逐股结果被反复 JSON 序列化用于缓存估算，使评分超过 15 秒 deadline。
+  三板通道现按 `strategy + board` 保留各策略最新 epoch，并按
+  `tomorrow -> d25 -> today` 公平轮转；横截面缓存只保留总体参数和参考分布，正式评分仅
+  投影最多 360 个候选并直接执行纯本地公式，失去用途的 `local_score` 缓存配置和方法
+  同步移除，运行配置身份提升为 `runtime_v23_tomorrow_scoring_2026_07_28`。评分、风险、
+  动作、TopK、DeepSeek 和冻结规则均未改变。
 - 用户要求把 DeepSeek 常规目标/硬上限调整为 36/66，并把预算重点从 today 转向 tomorrow。
   现状原因是旧配置仍为 146 次阶段目标、168 次策略桶并给 today 预留 68 次，而 tomorrow
   上午只生成本地草稿，不能落实用户指定的明日荐股优先级。运行配置现固定 shared `2/4`、
@@ -352,6 +360,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 tomorrow 待处理板块任务被同轮 d25 覆盖后，三个板均以 `RuntimeError` 降级并长期
+  保留早先空快照的问题；同策略新 epoch 仍只替换本策略旧待处理任务，不会跨策略清空。
+  修复持续 tomorrow 输入可能饿死 d25/today 的边界，并统一候选预选与正式评分对行情
+  `merge_epoch` 的使用。5,500 行、三板、三策略并发基准从约 30.3 秒降至约 4.3 秒，
+  低于 15 秒评分发布期限。
 - 修复 DeepSeek 传输失败仍会立即执行一次 HTTP 重试、使单次复核放大预算和尾延迟的问题；
   连接失败、429、5xx 和超时现在直接本地降级，只有 HTTP 200 且严格 schema 非法时允许一次
   结构修复，所有真实请求仍先原子计数。修复 tomorrow/d25 上午固定显示
@@ -511,6 +524,15 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批失败先行测试覆盖跨策略待处理隔离、tomorrow 首轮优先、公平轮转、同策略
+  latest-wins、紧凑横截面缓存、候选代码缓存回投和规范 `merge_epoch`；板块评分、缓存、
+  推荐单元测试及完整 `tests/integration/test_v2_pipeline.py` 通过。生产形态离线基准使用
+  5,500 行总体、每板最多 120 候选和三个并发策略，三板批次均完整，评分墙钟约 4.3 秒。
+  `make format-check`、`make lint`、`make type-check` 通过；仅叠加本批 diff 的仓库外副本
+  完整 `make test` 通过。共享工作树测试仅受任务开始前未暂存的 outcome settlement 测试
+  阻塞，该文件未修改且不属于本批。`make package` 成功，仓库外 wheel 通过导入、CLI、
+  绝对配置、14 项 Web 资源和 `pip check`。Firefox/geckodriver 三档桌面视口无页面横向
+  溢出或浏览器错误，25 个 patch 全部应用且无 resync，patch-to-paint P95 为 47ms。
 - 本批新增预算分配、上午路由、停止提交截止、在途接纳、无传输重试、单次 schema 修复、
   emergency 条件、Pro 全日 2 次、跨策略 single-flight，以及健康门连续失败、跨重启恢复、
   14:43 后禁止半开和并发单探针回归。`make format-check`、`make lint`（严格复杂度债务为零）、
@@ -868,6 +890,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 当前运行中的服务进程仍加载旧代码，必须重启后才会使用按策略隔离的评分通道和紧凑缓存。
+  外部行情、历史预热或候选质量不足仍可能合法产生空推荐；本批只消除跨策略覆盖和缓存
+  序列化超时，不放宽候选门槛，也不承诺推荐数量或投资收益。离线基准不能替代真实交易日
+  对行情来源延迟、候选覆盖和最终收益的持续观测。
 - 本批调整的是调用资源、时段、降级和重复请求控制，不改变固定 68/32 融合公式、风险映射、
   候选门槛、动作门、排序或冻结规则，也不构成收益保证。36 是健康且有合格候选时的停止目标，
   不是必须耗完的配额；缓存命中、候选不足、健康熔断或外部服务失败都会使实际调用低于目标。

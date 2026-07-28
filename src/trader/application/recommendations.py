@@ -326,8 +326,12 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
             for feature in sorted(features, key=lambda item: item.quote.code)
         )
         resolved_data_version = data_version or request_fingerprint({"features": material})[:24]
+        feature_epochs = {feature.merge_epoch for feature in features if feature.merge_epoch}
+        canonical_epoch = next(iter(feature_epochs)) if len(feature_epochs) == 1 else None
         resolved_epoch = (
-            merge_epoch or request_fingerprint({"data_version": resolved_data_version, "features": material})[:24]
+            merge_epoch
+            or canonical_epoch
+            or request_fingerprint({"data_version": resolved_data_version, "features": material})[:24]
         )
         return ScoringCacheContext(
             trade_date=trade_date or now.date().isoformat(),

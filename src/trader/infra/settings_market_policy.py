@@ -82,7 +82,6 @@ def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, Cache
         "hard_filter_batch",
         "board_cross_section",
         "candidate_preselection",
-        "local_score",
         "board_score_batch",
         "global_local_draft",
         "competition_group_mapping",
@@ -165,7 +164,6 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
         "hard_filter_batch": (86400.0, 86400.0, None, None, 60.0, 24, "p3_features", False),
         "board_cross_section": (86400.0, 86400.0, None, None, 60.0, 24, "p3_features", False),
         "candidate_preselection": (86400.0, 86400.0, None, None, 60.0, 4, "p3_features", False),
-        "local_score": (86400.0, 86400.0, None, None, 60.0, 1080, "p4_local_scoring", False),
         "board_score_batch": (86400.0, 86400.0, None, None, 60.0, 24, "p4_local_scoring", False),
         "global_local_draft": (86400.0, 86400.0, None, None, 60.0, 4, "p4_local_scoring", False),
         "competition_group_mapping": (

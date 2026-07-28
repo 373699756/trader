@@ -35,6 +35,7 @@ from trader.domain.recommendation.scoring import (
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 ScoreOne = Callable[[Strategy, FeatureSnapshot, BoardStrategyPolicy, LocalScoreResult], Recommendation]
+_PENDING_STRATEGY_ORDER = (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
 
 
 @dataclass(frozen=True)
@@ -58,13 +59,17 @@ class _BoardScoreRequest:
 
 
 class _LatestBoardLane:
-    """One active task plus one replaceable pending task."""
+    """One active task plus one latest pending task per strategy."""
 
     def __init__(self, name: str) -> None:
         self._executor = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix=name)
         self._lock = threading.Lock()
         self._accepting = False
-        self._pending: tuple[Callable[[], BoardScoreBatch], Future[BoardScoreBatch]] | None = None
+        self._pending: dict[
+            Strategy,
+            tuple[Callable[[], BoardScoreBatch], Future[BoardScoreBatch]],
+        ] = {}
+        self._last_started_strategy: Strategy | None = None
         self._superseded_count = 0
         self._queue_wait_ms: deque[float] = deque(maxlen=256)
 
@@ -73,7 +78,11 @@ class _LatestBoardLane:
         with self._lock:
             self._accepting = True
 
-    def submit(self, operation: Callable[[], BoardScoreBatch]) -> Future[BoardScoreBatch]:
+    def submit(
+        self,
+        strategy: Strategy,
+        operation: Callable[[], BoardScoreBatch],
+    ) -> Future[BoardScoreBatch]:
         submitted_at = time.perf_counter()
 
         def run_timed() -> BoardScoreBatch:
@@ -91,22 +100,24 @@ class _LatestBoardLane:
             submitted = self._executor.submit(run_timed)
             if submitted is None:
                 proxy: Future[BoardScoreBatch] = Future()
-                previous = self._pending
-                self._pending = (run_timed, proxy)
+                previous = self._pending.get(strategy)
+                self._pending[strategy] = (run_timed, proxy)
                 if previous is not None and not previous[1].done():
                     self._superseded_count += 1
                     previous[1].set_exception(RuntimeError("board scoring request superseded by a newer epoch"))
                 return proxy
+            self._last_started_strategy = strategy
         submitted.add_done_callback(self._drain_pending)
         return submitted
 
     def stop(self) -> None:
         with self._lock:
             self._accepting = False
-            pending = self._pending
-            self._pending = None
-        if pending is not None and not pending[1].done():
-            pending[1].set_exception(RuntimeError("board scoring lane stopped before pending task started"))
+            pending = tuple(self._pending.values())
+            self._pending.clear()
+        for _operation, proxy in pending:
+            if not proxy.done():
+                proxy.set_exception(RuntimeError("board scoring lane stopped before pending task started"))
         self._executor.stop(wait=True, cancel_futures=True)
 
     def status(self) -> Mapping[str, int | float | bool]:
@@ -116,8 +127,9 @@ class _LatestBoardLane:
             return {
                 **{name: value for name, value in status.items() if isinstance(value, (int, bool))},
                 "workers": 1,
-                "queue_capacity": 1,
-                "pending": self._pending is not None,
+                "queue_capacity": len(_PENDING_STRATEGY_ORDER),
+                "pending": bool(self._pending),
+                "pending_count": len(self._pending),
                 "superseded_count": self._superseded_count,
                 "queue_wait_samples": len(waits),
                 "queue_wait_p50_ms": _nearest_rank(waits, 0.50),
@@ -129,17 +141,39 @@ class _LatestBoardLane:
         submitted: Future[BoardScoreBatch] | None = None
         proxy: Future[BoardScoreBatch] | None = None
         with self._lock:
-            if not self._accepting or self._pending is None:
+            if not self._accepting or not self._pending:
                 return
-            operation, proxy = self._pending
-            self._pending = None
+            strategy = min(
+                self._pending,
+                key=lambda pending_strategy: _pending_strategy_priority(
+                    pending_strategy,
+                    self._last_started_strategy,
+                ),
+            )
+            operation, proxy = self._pending.pop(strategy)
             submitted = self._executor.submit(operation)
             if submitted is None:
                 if not proxy.done():
                     proxy.set_exception(RuntimeError("board scoring lane could not start pending task"))
                 return
+            self._last_started_strategy = strategy
         submitted.add_done_callback(self._drain_pending)
         submitted.add_done_callback(lambda future: _copy_future(future, proxy))
+
+
+def _pending_strategy_priority(
+    strategy: Strategy,
+    last_started: Strategy | None,
+) -> tuple[int, str]:
+    if strategy not in _PENDING_STRATEGY_ORDER:
+        return (len(_PENDING_STRATEGY_ORDER), strategy.value)
+    start = (
+        0
+        if last_started not in _PENDING_STRATEGY_ORDER
+        else (_PENDING_STRATEGY_ORDER.index(last_started) + 1) % len(_PENDING_STRATEGY_ORDER)
+    )
+    order = (*_PENDING_STRATEGY_ORDER[start:], *_PENDING_STRATEGY_ORDER[:start])
+    return (order.index(strategy), strategy.value)
 
 
 class BoardScoringCoordinator:
@@ -198,7 +232,11 @@ class BoardScoringCoordinator:
         if limit < 0 or limit > 120:
             raise ValueError("board candidate limit must be between 0 and 120")
         cross_section = self._cross_section(policy.board, features, context)
-        enriched = apply_board_policy(cross_section, strategy, policy)
+        enriched = (
+            apply_board_policy(cross_section, strategy, policy)
+            if cross_section.features
+            else project_board_policy(cross_section, strategy, policy, features)
+        )
 
         def loader() -> tuple[FeatureSnapshot, ...]:
             return _select_candidates(enriched, strategy, policy, limit=120)
@@ -257,7 +295,7 @@ class BoardScoringCoordinator:
                     )
                 )
 
-            futures[board] = lane.submit(score_lane)
+            futures[board] = lane.submit(strategy, score_lane)
         batches: list[BoardScoreBatch] = []
         for board in self._lanes:
             try:
@@ -306,16 +344,7 @@ class BoardScoringCoordinator:
         try:
             cross_section = self._cross_section(board, population_features, context)
             enriched = project_board_policy(cross_section, strategy, policy, features)
-            selected = (
-                self._cache.candidate_batch(
-                    policy,
-                    context,
-                    enriched,
-                    lambda: _select_candidates(enriched, strategy, policy, limit=120),
-                )
-                if self._cache is not None
-                else _select_candidates(enriched, strategy, policy, limit=120)
-            )
+            selected = _select_candidates(enriched, strategy, policy, limit=120)
             if not selected:
                 return BoardScoreBatch(
                     board,
@@ -330,18 +359,7 @@ class BoardScoringCoordinator:
                 )
             recommendations: list[Recommendation] = []
             for item in selected:
-
-                def load_local_score(
-                    item: FeatureSnapshot = item,
-                    policy: BoardStrategyPolicy = policy,
-                ) -> LocalScoreResult:
-                    return score_board_strategy(item, policy)
-
-                local_score = (
-                    self._cache.local_score(policy, context, item, load_local_score)
-                    if self._cache is not None
-                    else score_board_strategy(item, policy)
-                )
+                local_score = score_board_strategy(item, policy)
                 recommendations.append(score_one(strategy, item, policy, local_score))
             ordered = sorted(
                 recommendations,

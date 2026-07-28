@@ -1,6 +1,6 @@
 {
   "schema_version": 6,
-  "config_version": "runtime_v22_tomorrow_deepseek_2026_07_28",
+  "config_version": "runtime_v23_tomorrow_scoring_2026_07_28",
   "runtime_dir": ".runtime/v17",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -213,16 +213,6 @@
           "negative_ttl_seconds": 60,
           "capacity": 4,
           "group": "p3_features",
-          "persisted": false
-        },
-        "local_score": {
-          "refresh_ttl_seconds": 86400,
-          "action_max_age_seconds": 86400,
-          "cadence_task": null,
-          "action_max_age_multiplier": null,
-          "negative_ttl_seconds": 60,
-          "capacity": 1080,
-          "group": "p4_local_scoring",
           "persisted": false
         },
         "competition_group_mapping": {
