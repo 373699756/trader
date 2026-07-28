@@ -10,6 +10,10 @@ from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import DeepSeekReview, ReviewCandidateContext
 
 
+class DeepSeekReviewUnavailableError(RuntimeError):
+    """The review boundary failed before returning controlled per-candidate outcomes."""
+
+
 class DeepSeekReviewPort(Protocol):
     def review(
         self,
@@ -26,3 +30,7 @@ class DeepSeekReviewPort(Protocol):
     ) -> Mapping[str, DeepSeekReview]: ...
 
     def status(self) -> JsonObject: ...
+
+
+class TomorrowDeepSeekReviewPort(DeepSeekReviewPort, Protocol):
+    def evidence_manifest_hash(self, candidate: FeatureSnapshot) -> str: ...

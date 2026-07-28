@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+from trader.application.ports.reviews import DeepSeekReviewUnavailableError
 from trader.application.ports.types import JsonObject
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import Strategy
@@ -40,6 +41,7 @@ from trader.infra.deepseek.reviewer_selection import (
 from trader.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.infra.deepseek.schema import (
     RAW_FACTS_CACHE_GENERATION,
+    build_review_manifest_hash,
     review_cache_key,
 )
 from trader.infra.settings import DeepSeekSettings
@@ -166,7 +168,12 @@ class DeepSeekReviewer:
         deadline: datetime,
         contexts: Mapping[str, ReviewCandidateContext] | None = None,
     ) -> Mapping[str, DeepSeekReview]:
-        return self._review(strategy, candidates, phase=phase, deadline=deadline, contexts=contexts)
+        try:
+            return self._review(strategy, candidates, phase=phase, deadline=deadline, contexts=contexts)
+        except DeepSeekReviewUnavailableError:
+            raise
+        except Exception as exc:
+            raise DeepSeekReviewUnavailableError("DeepSeek review boundary is unavailable") from exc
 
     def preheat(
         self,
@@ -591,6 +598,9 @@ class DeepSeekReviewer:
 
     def status(self) -> JsonObject:
         return self._status.status()
+
+    def evidence_manifest_hash(self, candidate: FeatureSnapshot) -> str:
+        return build_review_manifest_hash(candidate)
 
 
 __all__ = ["DeepSeekReviewer"]

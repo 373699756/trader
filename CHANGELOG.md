@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增 tomorrow v2 旁路 DeepSeek 融合链：同一数据快照先生成不可变 local
+  `DecisionEpoch`，再仅对合法结构化复核子集生成引用 local 父版本的 hybrid
+  `DecisionEpoch`。epoch 绑定实际生效的 market/candidate/research 版本、待审集合、
+  特征、风险、模型审计、动作、排名、降级原因和规范哈希；完整条目限于全局最多 360 只
+  已评分候选，其余全市场过滤保留聚合诊断，避免复制约 5500 行特征。
+- 新增当前规范行情与有效候选尾盘的确定性 point-in-time evidence，并把匹配
+  `ResearchEpoch` 的点时 evidence 和最新结构化公司风险注入 tomorrow 特征；纯函数从
+  `pass`、无 veto 候选中按高风险、动作边界、TopK 边界、证据冲突和本地排名稳定选择
+  最多 28 只待审/保护集合。
 - 新增 tomorrow v2 旁路确定性本地选择：只读用例从一组一致数据 epoch 组装
   `FeatureSnapshot`，纯领域管道统一执行三态硬过滤、三板横截面、每板最多 120 只预选、
   tomorrow 六组件评分、本地风险单次扣分、稳定 Top10 和每行业最多 2 只，并为逐股过滤、
@@ -126,6 +135,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- tomorrow v2 复核响应改为合法子集逐股接纳：已返回的 `applied/abstain` 可参与固定
+  68/32，缺失、拒绝或迟到股票保持本地分并标记 `deepseek_incomplete`；无可审候选、
+  传输失败、deadline、全迟到和代码错配均保留 local，不制造伪 hybrid。融合后正式池
+  最多 10 只、观察池最多 8 只，分别执行最终分/本地分/代码排序、单板 60% 和行业 2 只
+  上限。
 - tomorrow v2 的数据到本地选择边界现明确区分昨日基线、全市场当前报价和候选实时特征：
   组装缺少一致父 epoch、交易日不匹配或候选代码不属于父市场时返回 `not_ready`；候选价
   更新会同步保守扩展 high/low，避免产生价格超出 OHLC 的伪硬过滤。当前生产 P1-P6、
@@ -390,6 +404,15 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 tomorrow v2 旁路组装未消费 `ResearchEpoch`，会让真实 V4 facts 缺少 point-in-time
+  manifest 并频繁 abstain，也会漏掉当日新增官方公司风险的问题；研究历史不完整时现在
+  只允许新增风险并标记覆盖不足，不能清除昨日已确认事实。另区分
+  `deepseek_skipped_no_eligible_candidates` 与真实 incomplete，避免未发生请求却误报模型
+  失败。融合前现在还核对当前 evidence manifest 哈希并把供应商 UTC 完成时间规范为上海
+  时区，防止旧证据缓存或错误时区结果进入新决策；适配器内部异常统一转换为受控不可用，
+  避免数据库或协议异常越过应用降级边界。`abstain` 只保留审计、不能映射模型风险或
+  veto，仅含拒绝/迟到结果也不能创建伪 hybrid；晚于决策时点的风险事实会被拒绝。固定
+  行业和板块集中度同样不能被运行配置放宽。
 - 修复 tomorrow v2 初版设计中两个会降低过滤准确性的缺口：当日尾盘/入场字段不再被迫
   从 `data_as_of < trade_date` 的日基线读取而退化为中性 50；候选实时特征不再接受任意
   因子键，因而不能用高频来源覆盖财务恶化、严重公司风险或证券身份。另补齐低于本地门槛、
@@ -567,6 +590,18 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批失败先行测试先因 tomorrow v2 融合模块、DecisionEpoch 和明确的复核不可用异常尚不
+  存在而停止；实现后，ResearchEpoch 风险/evidence 注入、28 只待审上限、合法子集、
+  代码错配、传输失败、迟到隔离、固定 `83.40`、风险单次扣分、动作双池、板块/行业集中度
+  和哈希确定性定向测试通过。固定 360 条已评分候选连续构建 25 次的 DecisionEpoch
+  P50/P95/最大耗时为 59.217/73.829/74.414ms，低于 100ms 稳定选择门槛。
+  `make format-check`、零严格债务的 `make lint`、184 个源码文件的 `make type-check`、
+  sdist/wheel 构建均通过；基线加本批 diff、排除用户既有未提交结算测试修改的干净临时
+  工作树全量 pytest 通过。原工作树全量测试唯一失败为既有
+  `test_outcome_settlement.py` 对无基准结算数量的未提交断言变化，本批未修改或暂存该文件。
+  最终 wheel 在仓库外安装全部依赖后通过 `pip check`、新模块导入、`trader-cli` 和四类
+  Web 资源读取；Firefox 在 1280x720、1440x900、1920x1080 均无白屏、横向溢出或浏览器
+  错误，补丁到绘制 P95 为 47ms。
 - 本批失败先行测试先因 tomorrow 领域/应用模块和候选实时特征行不存在而停止；实现及多轮
   Review 修复后，epoch、原子数据平面、三态过滤、板内评分、融合、本地选择和已发布快照
   定向回归通过。`make format-check`、`make lint`、182 个源码文件的 `make type-check` 和
@@ -915,6 +950,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 tomorrow v2 融合边界接受池外 review、让低可靠/observe/veto 候选消耗 DeepSeek，
+  或在没有任一合法结果时创建 hybrid 决策的能力；当前生产 P1-P6 和旧冻结数据未删除。
 - 移除 `CandidateFeatureRow` 对任意数值因子键的开放写入能力；实时覆盖现在仅限登记的
   尾盘、入场、执行质量和日内结构风险字段，结构化财务、公司风险、证券身份和历史基线
   只能由其各自权威 epoch 更新。
@@ -965,6 +1002,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批仍是旁路纯计算与应用编排，尚未在组合根接入真实 v2 采集/复核 worker，也未实现
+  `CurrentDecisionIndex`、14:50 冻结、v2 API/SSE/Web、事件持久化、影子收益验收或生产
+  切换。现有 DeepSeek 适配器的真实供应商延迟、证据覆盖和候选应用率仍需后续影子运行
+  验证；固定公式和工程门禁不构成收益保证。
 - 本批只完成 tomorrow v2 的旁路 epoch 组装与确定性本地选择，尚未把真实采集器接入
   `CandidateFeatureRow`，也未实现 DeepSeek 融合、`DecisionEpoch`、`CurrentDecisionIndex`、
   14:50 冻结、v2 API/SSE/Web、影子对照或生产切换。工程门禁只能证明过滤、评分、稳定性和

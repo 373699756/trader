@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import requests
 
+from trader.application.ports.reviews import DeepSeekReviewUnavailableError
 from trader.domain.market.models import (
     Evidence,
     FeatureSnapshot,
@@ -41,6 +42,34 @@ from trader.infra.settings import DeepSeekSettings
 from trader.web import create_app
 
 NOW = datetime(2026, 7, 16, 6, 30, tzinfo=timezone.utc)
+
+
+def test_reviewer_translates_internal_failure_to_controlled_unavailable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    reviewer = DeepSeekReviewer(
+        _settings(),
+        _budget(tmp_path / "runtime.sqlite3"),
+        DeepSeekHttpClient(post=lambda *_args, **_kwargs: None, sleep=lambda _seconds: None),
+        ReviewCache(),
+        **_reviewer_policy(),
+    )
+
+    def fail(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database unavailable")
+
+    monkeypatch.setattr(reviewer, "_review", fail)
+
+    with pytest.raises(DeepSeekReviewUnavailableError) as captured:
+        reviewer.review(
+            Strategy.TOMORROW,
+            (_candidate_with_evidence(),),
+            phase="tomorrow",
+            deadline=NOW + timedelta(minutes=1),
+        )
+
+    assert isinstance(captured.value.__cause__, sqlite3.OperationalError)
 
 
 def test_schema_accepts_valid_dimensions_and_risk_fact() -> None:

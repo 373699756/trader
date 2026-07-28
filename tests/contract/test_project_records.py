@@ -179,6 +179,28 @@ def test_tomorrow_data_plane_retention_is_documented_but_not_implemented() -> No
     assert not (source / "infra" / "persistence" / "market_epoch_archive.py").exists()
 
 
+def test_tomorrow_deepseek_fusion_boundary_is_explicit() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+
+    for statement in (
+        "tomorrow v2 DeepSeek 融合交付边界",
+        "同一只读快照",
+        "local `DecisionEpoch`",
+        "hybrid `DecisionEpoch`",
+        "不实现 `CurrentDecisionIndex`、冻结、v2 API/SSE/Web",
+    ):
+        assert statement in design
+    for statement in (
+        "最多 28 只",
+        "`deepseek_skipped_no_eligible_candidates`",
+        "合法子集",
+        "固定 68/32",
+        "正式池最多 10 只、观察池最多 8 只",
+    ):
+        assert statement in strategy
+
+
 def test_ruff_guidance_names_the_active_lint_command() -> None:
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 

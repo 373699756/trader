@@ -170,6 +170,35 @@
 跳过原因。本阶段仍是旁路纯计算，不实现 DeepSeek、融合 `DecisionEpoch`、决策索引、冻结、
 v2 API/SSE/Web 或生产切换，也不从 HTTP 请求触发该用例。
 
+### 2.4 tomorrow v2 DeepSeek 融合交付边界
+
+旁路融合用例只读取一次数据平面快照，并在同一只读快照上完成本地选择、待审投影和决策
+身份组装，禁止在 DeepSeek 返回后重新读取另一批行情。当前规范行情形成
+`structured_point_in_time` evidence；仅当候选批次不早于父市场同股报价时，才形成
+`intraday_tail` evidence；匹配交易日和配置版本的 `ResearchEpoch` 提供点时研究 evidence
+和最新结构化公司风险。研究历史不完整时只能新增风险或标记覆盖不足，不得把昨日已确认的
+风险事实清零。
+
+同一个纯函数从 `pass`、无 veto 且已有本地分的候选中生成最多 28 只待审与保护集合，优先级
+依次为新高风险、距 tomorrow 动作门槛 5 分以内、TopK 边界前后 2 名、证据冲突、本地排名
+和代码。`observe_only`、`reject`、未评分和 veto 候选不得进入 DeepSeek。无可审候选时不
+调用复核端口；代码错配、传输失败、deadline、迟到、拒绝或空响应均保留已生成的 local
+决策；`applied/abstain` 还必须与当前候选 evidence manifest 哈希一致。合法子集可以逐股
+形成降级 hybrid 决策，缺失股票保持本地分。
+
+本地结果先生成不可变 local `DecisionEpoch`；存在至少一个合法 `applied/abstain` 结果时，
+再生成引用 local 父版本的 hybrid `DecisionEpoch`。epoch 绑定 market、实际生效的
+candidate/research、配置、策略、融合、阶段、待审集合、逐股特征、风险、模型审计、动作、
+排名、降级原因和规范 SHA-256。融合后重新按正式池最多 10 只、观察池最多 8 只分别执行
+最终分/本地分/代码稳定排序、单板最多 60% 和单行业最多 2 只；无可用 hybrid 时不制造第二
+版本。epoch 只保存每板最多 120 只、全局最多 360 只已评分候选的完整条目；全市场过滤只
+保留总数、拒绝数、未评分数和结构化原因计数，避免复制约 5500 行完整特征。
+
+本阶段复用已存在且符合 `DeepSeekReviewPort` 的预算、缓存、schema、证据和双模型适配器，
+但保持旁路，不在 `bootstrap.py` 接线，也不改变现有 P1-P6。当前批不实现 `CurrentDecisionIndex`、冻结、v2 API/SSE/Web、
+事件流、持久化、生产影子或切换；这些属于
+后续同级章节。
+
 ## 3. 架构与代码边界
 
 活动产品代码只能位于 `src/trader`，固定依赖方向为：

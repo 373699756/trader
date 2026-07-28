@@ -18,8 +18,14 @@ from trader.domain.market.epochs import (
     DailyFeaturePack,
     DailyFeatureRow,
     MarketEpoch,
+    ResearchEpoch,
 )
-from trader.domain.market.models import Board, LiveQuote, MarketQuote
+from trader.domain.market.models import Board, Evidence, LiveQuote, MarketQuote
+from trader.domain.market.research import (
+    CorporateRiskCategory,
+    CorporateRiskFact,
+    ResearchObservation,
+)
 from trader.domain.recommendation.models import Strategy
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -220,6 +226,15 @@ def test_use_case_refuses_to_score_without_a_coherent_market_epoch(recommendatio
     with pytest.raises(TomorrowSelectionNotReadyError, match="market_epoch_from_future"):
         current_use_case.execute(evaluated_at=NOW - timedelta(seconds=1), max_age_seconds=60.0)
 
+    assert snapshot.market is not None
+    future_received_market = replace(snapshot.market, received_at=NOW + timedelta(seconds=1))
+    future_received = replace(snapshot, market=future_received_market, candidate_quotes=None)
+    with pytest.raises(TomorrowSelectionNotReadyError, match="market_epoch_from_future"):
+        TomorrowSelectionUseCase(_Reader(future_received), _policy(recommendation_policy)).execute(
+            evaluated_at=NOW,
+            max_age_seconds=60.0,
+        )
+
 
 def test_feature_assembly_does_not_let_late_candidate_price_replace_newer_market_price() -> None:
     snapshot = _data_snapshot()
@@ -236,3 +251,50 @@ def test_feature_assembly_does_not_let_late_candidate_price_replace_newer_market
     assert assembled[0].values["tail_return_30m"] == 70.0
     assert snapshot.market is not None
     assert assembled[0].merge_epoch == snapshot.market.version
+
+
+def test_feature_assembly_applies_coherent_research_evidence_and_current_corporate_risk() -> None:
+    snapshot = _data_snapshot()
+    evidence = Evidence(
+        evidence_id="official-risk",
+        evidence_type="regulatory_filing",
+        title="监管立案公告",
+        source="exchange",
+        published_at=NOW - timedelta(hours=1),
+        received_at=NOW - timedelta(minutes=30),
+        data_version="research-1",
+    )
+    research = ResearchEpoch(
+        trade_date=NOW.date(),
+        sequence=1,
+        observed_at=NOW,
+        received_at=NOW,
+        config_version="runtime-v2",
+        observations={
+            "600001": ResearchObservation(
+                corporate_risk_facts=(
+                    CorporateRiskFact(
+                        category=CorporateRiskCategory.OFFICIAL_INVESTIGATION,
+                        announced_at=NOW - timedelta(hours=1),
+                        evidence_id=evidence.evidence_id,
+                        source="exchange_disclosure",
+                    ),
+                ),
+                corporate_risk_history_complete=True,
+                corporate_risk_registry_version="risk-1",
+                evidence=(evidence,),
+            )
+        },
+        source_versions={"exchange": "research-1"},
+    )
+
+    assembled = assemble_tomorrow_features(replace(snapshot, research=research))
+
+    assert assembled[0].values["official_investigation_history"] == 1.0
+    assert assembled[0].values["corporate_risk_history_unavailable"] == 0.0
+    assert evidence in assembled[0].evidence
+    assert {item.evidence_type for item in assembled[0].evidence} == {
+        "structured_point_in_time",
+        "intraday_tail",
+        "regulatory_filing",
+    }

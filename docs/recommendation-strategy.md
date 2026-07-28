@@ -482,6 +482,26 @@ confidence_coverage = sum(raw_confidence_i * w_i)
 挑战者不能放宽硬过滤；冲突时只可维持或更保守。模型提出的风险必须经 schema、证据
 引用和本地规则映射后才形成 `deepseek_risk_penalty`。
 
+### 10.1 tomorrow v2 待审与复核终态
+
+tomorrow v2 在同一只读快照上为每只候选建立证据 manifest：当前规范行情固定贡献一条
+`structured_point_in_time`，不早于父市场同股报价的候选批次可再贡献一条
+`intraday_tail`，其余财务、监管、公告和新闻证据只来自匹配的 `ResearchEpoch`。未来证据、
+过旧候选尾盘、交易日或配置错配研究均不得进入 manifest。最新研究历史不完整时不能清除
+昨日已确认风险。
+
+待审与保护集合由同一个确定性函数产生，只接受 `pass`、无 veto 且已有本地分的候选，固定
+最多 28 只；优先级为新高风险、距 78 分门槛 5 分以内、TopK 边界前后 2 名、证据冲突、
+本地分/候选分和代码。`observe_only`、`reject`、低可靠、未评分或 veto 候选不得消耗
+DeepSeek。集合为空时标记 `deepseek_skipped_no_eligible_candidates`，不能标记
+`deepseek_incomplete`，也不能发起物理请求。
+
+响应可以只返回请求集合的合法子集：`applied/abstain` 逐股接纳，缺失、拒绝或迟到股票保持
+本地分，整批标记 `deepseek_incomplete`。返回池外代码或 key/code 不一致时整批拒绝；
+合法结果的 evidence manifest 哈希与当前候选不一致时同样整批拒绝。传输失败、deadline
+已到、全迟到或没有任一合法结果时只保留 local 决策，不创建伪 hybrid。
+挑战者状态、评级、自由文本和置信度不得改变待审集合、融合、动作或排序。
+
 ## 11. DeepSeek 全局预算与缓存
 
 Flash 主审生产批次固定 4 只股票、健康 canary 固定 2 只，Pro 挑战者每次最多 4 只。
@@ -577,6 +597,21 @@ DeepSeek。复核结果随后只对未冻结的同日草稿生成 `projection_st
 today 使用 today_late 门槛，tomorrow/d25 使用各自正常门槛；已有正式记录冻结后动作
 不可改变。
 旧动作和旧阈值只供带旧策略/引擎/schema 身份的冻结回放，不得成为活动默认值。
+
+### 12.1 tomorrow v2 local/hybrid DecisionEpoch
+
+tomorrow v2 本地选择完成后先生成 local `DecisionEpoch`，其 `final_score=local_score`；
+存在至少一个合法 `applied/abstain` 结果时，再生成引用 local 父版本的 hybrid
+`DecisionEpoch`。逐股只对合法 review 执行固定 68/32 和本地证据规则映射的模型风险；
+缺失、拒绝、迟到和池外 review 不改变本地分，也不能创建模型 penalty 或 veto。固定向量
+仍必须为 `83.40`，本地风险只扣一次。epoch 完整条目固定只覆盖每板最多 120 只、全局最多
+360 只已评分候选；其余全市场过滤结果以总数和原因计数保存。
+
+融合后动作固定为：`pass` 且无 veto、最终分不低于 78 为 `executable`；不低于 73 为
+`observe`；`observe_only` 且无 veto 保持观察；`reject`、未评分、低于观察线或任一 veto
+为 `unavailable`。正式池最多 10 只、观察池最多 8 只，两池分别按最终分、本地分、代码稳定
+排序，并分别执行单板最多 `ceil(pool_limit * 60%)`、单行业/`unknown` 最多 2 只。被容量、
+板块或行业约束跳过的候选保留原动作和独立原因，不从池外补数。
 
 ## 13. TopK 与集中度
 
