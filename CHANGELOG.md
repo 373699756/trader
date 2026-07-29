@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户在 v28 重启后要求继续未完成任务。只读现场状态确认规范行情
+  `observed_at=2026-07-29T05:27:04+00:00`，v2 已接收 16 份原生输入，却因
+  `decision risk observed_at must use Asia/Shanghai` 累计 35 次失败且
+  `native_processed=0`。本批新增第 2.12 节原生输入时间规范化契约和独立 failure-first
+  回归，覆盖 UTC/上海同一绝对时刻、候选本地/外部风险、证据以及未来点时拒绝。
+
 - 用户在上一批指出完整交易日证据尚未具备后重新启动服务并要求继续。真实 v27 重启确认
   新配置和证据 SQLite 已加载，但旧 P6 恢复的上一交易日 frozen tomorrow 快照被影子
   worker 当作当天 baseline，形成
@@ -209,6 +215,12 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- tomorrow v2 原生输入现在按上海时区校验全部全市场/候选点时数据，并在进入本地风险推导
+  前深层规范化最多 360 条候选特征、报价、证据和外部风险事实；约 5500 行全市场人口继续
+  在 v2 worker 组装规范 market epoch 时转换，输入哈希中的时间也统一规范化，避免在 v1
+  提交前增加全人口深拷贝。活动运行身份提升为
+  `runtime_v29_tomorrow_risk_timezone_2026_07_29`。
 
 - tomorrow 工程切换门禁在存在完整交易日后，只评估观测时间最新的一个完整日；SQLite
   仍保留最近 4096 条跨日审计，并额外报告 `retained_sample_count` 与
@@ -528,6 +540,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复规范行情使用 UTC 表示同一时刻时，候选特征生成的本地风险事实仍携带 UTC
+  `observed_at`，导致 v2 已完成评分却无法构造 `DecisionEpoch`、原生输入持续失败的问题。
+  转换使用 `astimezone` 保持绝对时刻；仅时区表示不同的输入现在得到相同输入哈希、相同
+  决策版本和相同分数，未来或无时区风险/证据仍 fail-closed，v1 正式链不受影响。
+
 - 修复午间/跨日重启时，恢复的上一交易日 tomorrow 正式快照在当天 v2 current 尚未形成
   时被误记为影子处理错误的问题。较早交易日 baseline 现在在投影、CAS 和证据写入前按
   注入上海时钟受控跳过；未来日期、非法日期和同日真实投影异常仍失败，不会被跳过规则
@@ -761,6 +778,27 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- failure-first 回归在修改前稳定复现现场
+  `ValueError: decision risk observed_at must use Asia/Shanghai`，并证明未来风险事实此前
+  未在原生输入边界拒绝；实现后，UTC/上海输入哈希与 `DecisionEpoch` 版本一致，风险事实
+  均为上海时区，未来风险和证据均拒绝。tomorrow 原生输入、同批选择、融合、冻结、当前
+  索引、证据持久化和 v2 Web 定向回归共 81 项通过，定向 Ruff 与 mypy 通过。
+- 5500 条全市场、360 条候选的固定构造负载在 Review 初版全人口深拷贝时约
+  430.8ms；收窄为“全人口规范身份/校验、候选深层转换”后为 131.6ms，且相关决策哈希完全
+  一致。该数据用于防止本批时区修复扩大 v1 前置时间，不代表真实行情或收益结果。
+- `make format-check`、`make lint`、严格重构债务零基线和 202 个源码文件 mypy 通过。
+  全仓收集 1012 项，只有用户开始前已有的 benchmark-unavailable settlement 新断言失败；
+  仅排除该断言后其余 1011 项通过。`make package` 首次仅因沙箱禁止访问本机 pip 代理失败，
+  获准后成功生成 sdist/wheel；仓库外 Python 3.14 从 wheel 路径导入包、执行 CLI/绝对配置
+  v29 校验并读取 8 项模板、CSS、JavaScript 和 SVG 资源。Firefox 在 1280x720、
+  1440x900、1920x1080 分别生成 116775、130158、136482 字节截图，无白屏、横向溢出、
+  面板重叠或浏览器错误，overlay 更新未增加完整 current GET。
+- 固定 5500×360 离线 `perf-check --suite all` 两次均保持零网络、零相对失败、100 tick
+  分配增长 0%；第一次 13/16 项绝对指标通过，第二次 14/16 项通过。未被本批修改的
+  `market_merge`/`targeted_overlay_commit` 在复跑中约为 670.0/121.3ms，仍高于
+  600/100ms 旧门槛；`canonical_snapshot` 从首轮 904.5ms 波动到复跑 853.4ms 并通过，
+  本批没有放宽门槛或把部分通过写成全性能门禁通过。
 
 - 第 2.11 节定向回归覆盖上一交易日 frozen baseline 受控跳过、未来日期继续失败、旧不完整
   日错误与最新完整日隔离，以及 SQLite 离线报告保留 3 条跨日审计但只用最新完整日 2 条
@@ -1228,6 +1266,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批移除的是原生候选风险事实保留非上海时区表示的隐式行为；未删除或改写评分公式、
+  风险规则、DeepSeek facts、冻结/证据记录、旧 release、v1 正式链或用户运行数据，也未
+  执行 production tomorrow 读写指针切换。
+
 - 本批未删除或重写任何证据数据库、冻结记录、评分规则、DeepSeek facts、旧 release 或
   用户运行数据；生产 tomorrow 读写指针仍未切换。
 
@@ -1303,6 +1345,18 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 本批修复工程时区边界，不提高或调参候选、评分、融合、动作与排名，因此不能证明荐股
+  收益提升。v28 午后运行已错过 10:00 前样本且其旧失败证据保持不可变；v29 仍须在下一
+  完整交易日 10:00 前启动并持续到 14:50，重新取得至少 100 个成功样本、匹配冻结、
+  100% v1/v2 一致和 5/10 秒 P95，再由离线 CLI 复核。生产 tomorrow 指针继续保持 v1。
+- 主工作树仍有用户开始前的
+  `tests/unit/application/test_outcome_settlement.py` 未提交修改；本批不修改、不暂存该
+  文件，完整测试若仍只因此断言失败必须单独如实报告，不能混入本批提交。
+- 固定性能复跑仍有两个与本批原生输入时区路径无调用关系的既有行情算子超出绝对门槛：
+  `market_merge≈670.0ms > 600ms`、`targeted_overlay_commit≈121.3ms > 100ms`；
+  零相对失败、零网络和其余 14 项通过。该宿主敏感波动继续作为发布残余风险，不能在本批
+  顺带重构旧行情合并或放宽预算。
 
 - 2026-07-29 12:31 的 v27 午间重启已经错过不晚于 10:00 的完整日窗口；现场产生的一条
   旧日恢复失败仍作为不可变审计保存在证据库中。v28 修复只能保证下一完整交易日按独立

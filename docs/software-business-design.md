@@ -398,6 +398,27 @@ v2 决策审计中，但不得与 v1 的全市场硬过滤计数混为一个门�
 生产读写指针。修复后的 v28 仍须从不晚于 10:00 的真实成功样本连续运行至 14:50 匹配冻结，
 再由离线 CLI 复核；当前午后重启不能成为合格完整日。
 
+### 2.12 tomorrow v2 原生输入时间规范化交付边界
+
+真实 v28 运行发现，规范行情的 `observed_at` 可以用 UTC 表示同一个绝对时刻，而
+tomorrow v2 `DecisionEpoch` 要求所有风险事实使用 `Asia/Shanghai`。原生输入此前只转换
+顶层 `evaluated_at`，候选特征触发本地风险后仍携带 UTC `observed_at`，导致本地评分已经
+完成却在决策校验阶段失败，表现为 `native_processed=0` 和
+`decision risk observed_at must use Asia/Shanghai`。
+
+`TomorrowNativeInput` 作为应用层点时边界必须按 `Asia/Shanghai` 校验全市场与候选特征的
+`FeatureSnapshot.observed_at`、报价 source/received 时间、证据 published/received 时间
+以及外部风险事实 `observed_at`，并把会直接进入本地风险推导的候选特征深层转换为上海
+时区。全市场人口继续在 v2 worker 组装规范 market epoch 时转换，禁止为了时区表示在主
+评分线程深拷贝约 5500 行人口；输入哈希中的全部时间则必须先规范化。转换必须使用
+`astimezone` 保持绝对时刻，禁止通过替换 `tzinfo` 改写时刻；同一业务输入仅时区表示不同
+时必须得到相同规范输入哈希。规范化后任一特征、报价、证据或风险事实晚于
+`evaluated_at` 仍须在 worker 外拒绝，不能用时区转换掩盖未来数据。
+
+本节不改变候选、评分、风险规则、风险扣分、融合、动作、排名、DeepSeek 预算、冻结时间
+或 v1 正式路径。v2 输入失败继续只降级影子链，不阻塞 v1、本地只读 Web 或实时行情；
+修复后的运行身份提升为 v29，并须重新积累第 2.7、2.9、2.11 节要求的真实完整交易日证据。
+
 ## 3. 架构与代码边界
 
 活动产品代码只能位于 `src/trader`，固定依赖方向为：

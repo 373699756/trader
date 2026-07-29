@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -33,7 +33,7 @@ class TomorrowNativeInput:
         evaluated_at = _shanghai(self.evaluated_at)
         market_features = tuple(self.market_features)
         requested_codes = tuple(self.requested_codes)
-        candidate_features = tuple(self.candidate_features)
+        candidate_features = tuple(_normalize_feature_times(feature) for feature in self.candidate_features)
         _validate_identity_and_limits(self, evaluated_at)
         _validate_code_sets(market_features, requested_codes, candidate_features)
         _validate_feature_times((*market_features, *candidate_features), evaluated_at)
@@ -90,6 +90,38 @@ def _validate_feature_times(
             or _shanghai(feature.quote.received_time) > evaluated_at
         ):
             raise ValueError("tomorrow native input cannot contain future features")
+        if any(
+            _shanghai(evidence.published_at) > evaluated_at
+            or (evidence.received_at is not None and _shanghai(evidence.received_at) > evaluated_at)
+            for evidence in feature.evidence
+        ):
+            raise ValueError("tomorrow native input cannot contain future evidence")
+        if any(_shanghai(fact.observed_at) > evaluated_at for fact in feature.external_risk_facts):
+            raise ValueError("tomorrow native input cannot contain future risk facts")
+
+
+def _normalize_feature_times(feature: FeatureSnapshot) -> FeatureSnapshot:
+    quote = replace(
+        feature.quote,
+        source_time=_shanghai(feature.quote.source_time),
+        received_time=_shanghai(feature.quote.received_time),
+    )
+    evidence = tuple(
+        replace(
+            item,
+            published_at=_shanghai(item.published_at),
+            received_at=_shanghai(item.received_at) if item.received_at is not None else None,
+        )
+        for item in feature.evidence
+    )
+    risk_facts = tuple(replace(fact, observed_at=_shanghai(fact.observed_at)) for fact in feature.external_risk_facts)
+    return replace(
+        feature,
+        quote=quote,
+        observed_at=_shanghai(feature.observed_at),
+        evidence=evidence,
+        external_risk_facts=risk_facts,
+    )
 
 
 def _unique_codes(features: tuple[FeatureSnapshot, ...], label: str) -> set[str]:
@@ -127,10 +159,10 @@ def _feature_identity(feature: FeatureSnapshot) -> tuple[object, ...]:
     return (
         quote.code,
         quote.data_version,
-        quote.source_time,
-        quote.received_time,
-        feature.observed_at,
-        feature.merge_epoch or request_fingerprint({"feature": feature}),
+        _shanghai(quote.source_time),
+        _shanghai(quote.received_time),
+        _shanghai(feature.observed_at),
+        feature.merge_epoch or request_fingerprint({"feature": _normalize_feature_times(feature)}),
         feature.history_days,
         tuple(sorted(feature.missing_fields)),
         tuple(sorted(feature.missing_reasons.items())),
