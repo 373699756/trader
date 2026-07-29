@@ -204,8 +204,8 @@ def test_final_action_pools_apply_stable_board_and_industry_limits() -> None:
     selected = tuple(item for item in epoch.entries if item.selected)
     executable = tuple(item for item in selected if item.action is RecommendationAction.EXECUTABLE)
 
-    assert len(executable) == 10
-    assert sum(item.features.quote.board is Board.MAIN for item in executable) <= 6
+    assert len(executable) == 6
+    assert sum(item.features.quote.board is Board.MAIN for item in executable) <= 4
     assert sum(item.features.quote.industry == "concentrated" for item in executable) <= 2
     assert tuple(item.rank for item in selected) == tuple(range(1, len(selected) + 1))
     assert tuple(item.code for item in executable) == tuple(
@@ -307,8 +307,8 @@ def _policy() -> TomorrowDecisionPolicy:
         executable_threshold=78.0,
         observation_margin=5.0,
         review_candidate_limit=28,
-        top_k=10,
-        observation_limit=8,
+        top_k=6,
+        observation_limit=6,
         maximum_per_industry=2,
         maximum_board_fraction=0.60,
     )

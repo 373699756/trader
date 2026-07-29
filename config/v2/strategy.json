@@ -1,6 +1,6 @@
 {
   "schema_version": 12,
-  "strategy_version": "strategy_review29_2026_07",
+  "strategy_version": "strategy_review30_top6_observe6_2026_07",
   "board_policy_version": "board_policy_score_first_2026_07",
   "fusion": {
     "version": "fusion_local68_deepseek32",
@@ -14,8 +14,8 @@
     "rounding": "ROUND_HALF_UP"
   },
   "selection": {
-    "default_top_k": 10,
-    "maximum_top_k": 18,
+    "default_top_k": 6,
+    "maximum_top_k": 12,
     "maximum_per_industry": 2,
     "maximum_board_fraction": 0.6,
     "competition_group_limits": {},

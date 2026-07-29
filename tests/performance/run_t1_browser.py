@@ -127,6 +127,9 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
             " && body.textContent.includes('实际 11:19:50')"
             " && body.textContent.includes('13.20')"
             " && body.textContent.includes('+10.00%')"
+            " && !document.getElementById('observationPool').hidden"
+            " && document.getElementById('observationHead').textContent.includes('观察原因')"
+            " && document.querySelectorAll('#observationBody tr[data-code]').length===6"
             " && notice.textContent.includes('名单与评分不变');",
         )
         anchor_view = _execute(
@@ -167,7 +170,11 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
                 "runtimeMessageScrollable: Array.from(document.querySelectorAll('.runtime-message b')).map((item) => item.scrollHeight > item.clientHeight),"
                 "messagesAboveControls: document.querySelector('.runtime-messages').getBoundingClientRect().bottom <= document.querySelector('.control-band').getBoundingClientRect().top,"
                 "summaryTouchesControls: document.querySelector('.summary-band').getBoundingClientRect().bottom === document.querySelector('.control-band').getBoundingClientRect().top,"
-                "controlsTouchTable: document.querySelector('.control-band').getBoundingClientRect().bottom === document.querySelector('.table-region').getBoundingClientRect().top"
+                "controlsTouchTable: document.querySelector('.control-band').getBoundingClientRect().bottom === document.querySelector('.table-region').getBoundingClientRect().top,"
+                "observationVisible: !document.getElementById('observationPool').hidden,"
+                "observationRows: document.querySelectorAll('#observationBody tr[data-code]').length,"
+                "observationTableContained: document.getElementById('observationTable').getBoundingClientRect().width"
+                "<=document.querySelector('#observationPool .table-scroll').scrollWidth"
                 "};",
             )
             viewport_results.append({"requested": [width, height], **layout})
@@ -247,6 +254,9 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
                 and item.get("messagesAboveControls") is True
                 and item.get("summaryTouchesControls") is True
                 and item.get("controlsTouchTable") is True
+                and item.get("observationVisible") is True
+                and item.get("observationRows") == 6
+                and item.get("observationTableContained") is True
                 for item in viewport_results
             )
             and all(

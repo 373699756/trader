@@ -63,8 +63,9 @@
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
       "scoreTime", "budgetStatus", "headerFreeze", "lastError",
-      "refreshButton", "dateSelect", "strategyDescription", "recommendationCount", "executableCount", "filteredCount", "dataSource",
+      "refreshButton", "dateSelect", "strategyDescription", "recommendationCount", "observationCount", "filteredCount", "dataSource",
       "topScore", "modelReview", "dataQuality", "notice", "noticeText", "recommendationTable", "tableColumns", "tableHead", "tableBody",
+      "observationPool", "observationPoolMeta", "observationTable", "observationColumns", "observationHead", "observationBody",
       "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
     ]) els[id] = document.getElementById(id);
@@ -91,9 +92,11 @@
       loadRecommendations("date");
     });
     els.refreshButton.addEventListener("click", () => loadRecommendations("manual"));
-    els.tableBody.addEventListener("click", selectRow);
-    els.tableBody.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") selectRow(event);
+    [els.tableBody, els.observationBody].forEach((body) => {
+      body.addEventListener("click", selectRow);
+      body.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") selectRow(event);
+      });
     });
     els.drawerClose.addEventListener("click", closeDrawer);
     els.drawerBackdrop.addEventListener("click", closeDrawer);
@@ -234,7 +237,7 @@
     const pending = state.inflight.get(key);
     if (pending) return pending;
     const request = (async () => {
-      const query = new URLSearchParams(strategy === "long" ? {} : { top_n: "18" });
+      const query = new URLSearchParams(strategy === "long" ? {} : { top_n: state.date ? "18" : "12" });
       if (selectedDate) query.set("date", selectedDate);
       else query.set("view", view);
       const headers = {};
@@ -323,12 +326,30 @@
       state.longScope,
       state.longGroup,
     );
-    els.recommendationCount.textContent = String(recommendations.length);
-    els.executableCount.textContent = String(recommendations.filter((item) => item.action === "executable").length);
+    const observations = selection.observationRecommendations(payload);
+    const currentShort = historical !== true
+      && payload.strategy !== "long"
+      && payload.phase !== "close_fallback";
+    const showObservationPool = payload.status === "ready" && currentShort;
+    els.observationPool.hidden = !showObservationPool;
+    els.recommendationCount.textContent = String(items.filter((item) => item.action === "executable").length);
+    els.observationCount.textContent = String(items.filter((item) => item.action === "observe").length);
+    const observationLimit = Number(payload.selection_diagnostics && payload.selection_diagnostics.observation_limit);
+    const observationFloorValue = payload.selection_diagnostics && payload.selection_diagnostics.observation_floor;
+    const executableThresholdValue = payload.selection_diagnostics && payload.selection_diagnostics.executable_threshold;
+    const observationFloor = observationFloorValue == null ? Number.NaN : Number(observationFloorValue);
+    const executableThreshold = executableThresholdValue == null ? Number.NaN : Number(executableThresholdValue);
+    const limitText = `${observations.length} / ${Number.isInteger(observationLimit) && observationLimit > 0 ? observationLimit : 6}`;
+    els.observationPoolMeta.textContent = Number.isFinite(observationFloor)
+      ? `${limitText} · 门槛 ${observationFloor.toFixed(2)}`
+      : limitText;
+    els.observationPoolMeta.title = Number.isFinite(observationFloor) && Number.isFinite(executableThreshold)
+      ? `观察门槛 = 正式门槛 ${executableThreshold.toFixed(2)} - 观察余量 ${(executableThreshold - observationFloor).toFixed(2)}`
+      : "";
     els.filteredCount.textContent = String(payload.filtered_count || 0);
     const firstVisible = recommendations[0] || items[0];
     els.dataSource.textContent = firstVisible && firstVisible.source ? window.TraderRender.sourceLabel(firstVisible.source) : "-";
-    const summary = selection.recommendationSummary(payload, recommendations);
+    const summary = selection.recommendationSummary(payload, items);
     els.topScore.textContent = summary.topScore;
     els.modelReview.textContent = summary.modelReview;
     els.dataQuality.textContent = summary.dataQuality;
@@ -339,8 +360,16 @@
     els.recommendationTable.classList.toggle("is-long-table", payload.strategy === "long" && !historical);
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
+    if (showObservationPool) {
+      const observationDefinition = window.TraderRender.observationTableDefinition(payload);
+      els.observationTable.classList.toggle("is-anchor-table", frozenToday);
+      els.observationColumns.innerHTML = observationDefinition.columns;
+      els.observationHead.innerHTML = observationDefinition.head;
+    } else {
+      els.observationTable.classList.remove("is-anchor-table");
+    }
     if (payload.status === "not_ready") {
-      const notReady = patches.notReadyMessage(payload.strategy);
+      const notReady = patches.notReadyMessage(payload);
       renderTableState(notReady.message, window.TraderRender.tableColumnCount(payload));
       setNotice(notReady.notice, "idle");
       return;
@@ -350,43 +379,34 @@
         ? "当前门槛下没有历史推荐结果"
         : payload.strategy === "long"
           ? longGroups.emptyMessage(payload, state.longScope)
-          : patches.emptyRecommendationMessage(payload);
+          : patches.emptyRecommendationMessage(payload, observations.length);
       renderTableState(emptyMessage, window.TraderRender.tableColumnCount(payload));
     } else {
       els.tableBody.innerHTML = window.TraderRender.tableRows(recommendations, payload);
     }
-    if (payload.stale && frozenToday) {
-      setNotice("11:20 已冻结 · 名单与评分不变 · 行情已过期，当前报价仅供观察", "warn");
+    if (showObservationPool) {
+      if (observations.length) {
+        els.observationBody.innerHTML = window.TraderRender.observationTableRows(observations, payload);
+      } else {
+        const message = recommendations.length
+          ? "本轮无观察项；入选股票均为正式推荐"
+          : patches.emptyRecommendationMessage(payload, 0);
+        renderTableState(message, window.TraderRender.observationTableColumnCount(payload), els.observationBody);
+      }
     }
-    else if (payload.stale) setNotice("行情已过期，当前结果仅供观察", "warn");
-    else if (payload.phase === "close_fallback") {
-      const degraded = (payload.degraded_reasons || []).length
-        ? ` · 降级：${window.TraderRender.reasonLabels(payload.degraded_reasons).join("、")}`
-        : "";
-      setNotice(`已冻结 · 收盘补算 · ${window.TraderRender.formatDateTime(payload.published_at)}${degraded}`, degraded ? "warn" : "ok");
-    }
-    else if (frozenToday) {
-      const degraded = (payload.degraded_reasons || []).length
-        ? ` · 降级：${window.TraderRender.reasonLabels(payload.degraded_reasons).join("、")}`
-        : "";
-      setNotice(`11:20 已冻结 · 名单与评分不变 · 行情按最新可用报价展示${degraded}`, degraded ? "warn" : "ok");
-    }
-    else if ((payload.degraded_reasons || []).length) setNotice(`降级：${window.TraderRender.reasonLabels(payload.degraded_reasons).join("、")}`, "warn");
-    else if (payload.frozen) setNotice(`已冻结于 ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
-    else if (payload.strategy === "long") setNotice(`当前快照 · ${window.TraderRender.formatDateTime(payload.published_at)}`, "ok");
-    else if (payload.view === "live") setNotice(`实时数据 · ${window.TraderRender.formatDateTime(payload.published_at)} · 未冻结，结果可能变化`, "warn");
-    else setNotice(`快照 ${window.TraderRender.formatDateTime(payload.published_at)} · ${window.TraderRender.fusionModeLabel(payload.fusion_mode)}`, "ok");
+    const notice = patches.snapshotNotice(payload);
+    setNotice(notice.message, notice.level);
     stampRowIdentities(payload);
     updateQuoteAge();
   }
-  function renderTableState(message, columns) {
-    els.tableBody.innerHTML = `<tr><td class="table-state" colspan="${columns || 9}">${window.TraderRender.escapeHtml(message)}</td></tr>`;
+  function renderTableState(message, columns, body) {
+    (body || els.tableBody).innerHTML = `<tr><td class="table-state" colspan="${columns || 9}">${window.TraderRender.escapeHtml(message)}</td></tr>`;
   }
   function setLongLayout(enabled) { if (els.resultLayout) els.resultLayout.classList.toggle("is-long", Boolean(enabled)); }
   function setLongControls(enabled) { if (els.longScopeTabs) els.longScopeTabs.hidden = !enabled; }
   function renderLoadingState() {
     els.recommendationCount.textContent = "-";
-    els.executableCount.textContent = "-";
+    els.observationCount.textContent = "-";
     els.filteredCount.textContent = "-";
     els.dataSource.textContent = "-";
     els.topScore.textContent = "-";
@@ -400,6 +420,7 @@
     els.recommendationTable.classList.remove("is-history");
     els.recommendationTable.classList.remove("is-anchor-table");
     els.recommendationTable.classList.remove("is-long-table");
+    els.observationPool.hidden = true;
     setLongControls(state.strategy === "long");
     setLongLayout(false);
     const definition = window.TraderRender.currentTable();
@@ -414,7 +435,7 @@
     state.payload = null;
     state.projectionVersion = "";
     els.recommendationCount.textContent = "0";
-    els.executableCount.textContent = "0";
+    els.observationCount.textContent = "0";
     els.filteredCount.textContent = "-";
     els.dataSource.textContent = "-";
     els.topScore.textContent = "-";
@@ -428,6 +449,7 @@
     els.recommendationTable.classList.add("is-history");
     els.recommendationTable.classList.remove("is-anchor-table");
     els.recommendationTable.classList.remove("is-long-table");
+    els.observationPool.hidden = true;
     setLongControls(false);
     setLongLayout(false);
     if (els.longSidebar) els.longSidebar.hidden = true;
@@ -472,7 +494,7 @@
 
   function setNotice(message, level) {
     els.noticeText.textContent = message;
-    els.notice.dataset.level = level || "idle";
+    els.notice.dataset.level = level === "warning" ? "warn" : level || "idle";
   }
 
   function selectRow(event) {
@@ -514,7 +536,9 @@
       const market = payload.dependencies && payload.dependencies.market_data;
       els.quoteSource.textContent = market && market.active_source ? window.TraderRender.sourceLabel(market.active_source) : "-";
       const score = state.payload && state.payload.published_at;
-      els.scoreTime.textContent = score ? window.TraderRender.formatTime(score) : "-";
+      els.scoreTime.textContent = state.payload && state.payload.score_status === "not_applicable"
+        ? "不适用"
+        : score ? window.TraderRender.formatTime(score) : "-";
       els.headerFreeze.textContent = state.payload
         ? state.payload.status === "not_ready" ? "未就绪" : state.payload.frozen ? "已冻结" : "未冻结"
         : "-";
@@ -635,6 +659,7 @@
       degraded_reasons: patch.degraded_reasons || [],
       filtered_count: patch.filtered_count,
       selection_diagnostics: patch.selection_diagnostics || {},
+      readiness_reason: null,
       long_groups: Array.isArray(patch.long_groups) ? patch.long_groups : current.long_groups || [],
       items: merged,
       error: null,
@@ -702,13 +727,14 @@
     return Object.freeze({
       emptyRecommendationMessage: () => "当前没有达到正式推荐条件的股票",
       mergePatchItems: (items) => items || [],
-      notReadyMessage: (strategy) => strategy === "long"
+      notReadyMessage: (payload) => payload && payload.strategy === "long"
         ? { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照" }
         : { message: "当前暂无可用荐股数据", notice: "等待策略数据更新" },
       overlayPatchDecision: () => "dependency_missing",
       patchVersionValid: () => false,
       projectionVersion: (payload) => payload && (payload.projection_version || payload.snapshot_id) || "",
       recommendationPatchDecision: () => "dependency_missing",
+      snapshotNotice: (payload) => ({ message: payload && payload.status === "not_ready" ? "等待策略数据更新" : "快照状态不可用", level: "idle" }),
       topKValid: () => false,
     });
   }
@@ -720,6 +746,9 @@
   function stampRowIdentities(payload) {
     if (!payload || !Array.isArray(payload.items)) return;
     els.tableBody.querySelectorAll("tr[data-code]").forEach((row) => {
+      row.dataset.rowIdentity = rowIdentity(payload, row.dataset.code);
+    });
+    els.observationBody.querySelectorAll("tr[data-code]").forEach((row) => {
       row.dataset.rowIdentity = rowIdentity(payload, row.dataset.code);
     });
   }

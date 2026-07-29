@@ -52,6 +52,7 @@ const state = {
   ...sandbox.window.TraderDashboardPatches,
   latencySummary: sandbox.window.TraderDashboardFormatters.latencySummary,
   drawer: sandbox.window.TraderRender.drawer,
+  frozenTodayObservationTable: sandbox.window.TraderRender.frozenTodayObservationTable,
   frozenTodayTable: sandbox.window.TraderRender.frozenTodayTable,
   isFrozenTodayView: sandbox.window.TraderRender.isFrozenTodayView,
   longTable: sandbox.window.TraderRender.longTable,
@@ -66,32 +67,65 @@ const state = {
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.notReadyMessage("tomorrow", "today_main"))),
-  { message: "当前暂无可用荐股数据", notice: "等待策略数据更新" },
+  JSON.parse(JSON.stringify(state.notReadyMessage({
+    strategy: "tomorrow",
+    readiness_reason: "snapshot_not_published",
+  }))),
+  { message: "明日策略当前快照尚未发布", notice: "当前策略快照尚未形成，等待本地评分发布" },
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.notReadyMessage("d25", "afternoon"))),
-  { message: "当前暂无可用荐股数据", notice: "等待策略数据更新" },
+  JSON.parse(JSON.stringify(state.notReadyMessage({
+    strategy: "d25",
+    readiness_reason: "afternoon_freeze_pending",
+  }))),
+  { message: "14:50 正式快照尚未形成", notice: "冻结流程尚未完成；不会展示上一交易日结果" },
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.notReadyMessage("long", "today_main"))),
+  JSON.parse(JSON.stringify(state.notReadyMessage({
+    strategy: "d25",
+    readiness_reason: "afternoon_close_recovery_pending",
+  }))),
+  { message: "14:50 正式快照缺失", notice: "正在等待允许的收盘恢复；不会展示上一交易日结果" },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage({
+    strategy: "long",
+    readiness_reason: "long_snapshot_not_ready",
+  }))),
   { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照" },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage({
+    strategy: "today",
+    readiness_reason: "today_freeze_missed",
+  }))),
+  { message: "11:20 前未形成正式快照", notice: "按冻结规则今日不补算，当前无推荐" },
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({
     selection_diagnostics: {
       empty_reason: "score_below_observation_floor",
       maximum_final_score: 64.5,
-      selection_floor: 65,
+      observation_floor: 65,
+      executable_threshold: 70,
     },
   }),
-  "最高评分 64.50，低于观察门槛 65.00，本轮不荐股",
+  "最高评分 64.50，低于观察门槛 65.00（正式门槛 70.00），本轮无正式推荐和观察项",
+);
+assert.strictEqual(
+  state.emptyRecommendationMessage({
+    selection_diagnostics: {
+      empty_reason: "risk_or_execution_blocked",
+      blocked_reason_counts: { "corporate_risk_history_unavailable": 1 },
+    },
+  }),
+  "达到观察门槛的候选均不可执行：公司风险历史暂不可核验（1只）",
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({
     selection_diagnostics: { empty_reason: "risk_or_execution_blocked" },
-  }),
-  "候选达到评分门槛，但被风险或执行条件拦截",
+  }, 2),
+  "本轮无正式推荐；2只进入观察池，具体原因见下表",
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.latencySummary([10, 20, 30]))),
@@ -121,6 +155,10 @@ assert.strictEqual(
   state.frozenTodayTable().head,
   "<tr><th>排名</th><th>股票</th><th>11:20锚点价</th><th>锚点时涨跌</th><th>当前价</th><th>当前涨跌</th><th>锚点至今</th></tr>",
 );
+assert.strictEqual(
+  state.frozenTodayObservationTable().head,
+  "<tr><th>排名</th><th>股票</th><th>11:20锚点价</th><th>锚点时涨跌</th><th>当前价</th><th>当前涨跌</th><th>锚点至今</th><th>最终分</th><th>观察原因</th></tr>",
+);
 const frozenTodayItem = {
   rank: 1,
   code: "600001",
@@ -148,6 +186,18 @@ assert.match(frozenTodayDrawer, /实际锚点时间/);
 assert.match(frozenTodayDrawer, /11:19:50/);
 assert.match(frozenTodayDrawer, /当前价/);
 assert.match(frozenTodayDrawer, /锚点至今/);
+const longDrawer = state.drawer(
+  {
+    ...frozenTodayItem,
+    action: "observe",
+    action_reason: "fixed_long_watchlist",
+  },
+  { strategy: "long", historical: false, degraded_reasons: [] },
+);
+assert.match(longDrawer, /观察结论/);
+assert.match(longDrawer, /核心行情/);
+assert.doesNotMatch(longDrawer, /最终评分/);
+assert.doesNotMatch(longDrawer, /评分与风险/);
 assert.strictEqual(state.sourceLabel("unavailable"), "行情暂不可用");
 assert.strictEqual(state.sourceLabel("long_watchlist"), "长期观察名单");
 assert.strictEqual(state.sourceLabel("tencent"), "腾讯行情");
@@ -284,13 +334,48 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(merged)),
   [{ code: "600003", rank: 1 }, { code: "600001", rank: 2 }],
 );
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.mergePatchItems(
+    [{ code: "600010", rank: 1, action: "observe" }],
+    [{ code: "600011", rank: 2, action: "executable" }],
+    new Set(),
+  ))),
+  [
+    { code: "600011", rank: 2, action: "executable" },
+    { code: "600010", rank: 1, action: "observe" },
+  ],
+);
 assert.strictEqual(state.topKValid(merged), true);
 assert.strictEqual(
   state.topKValid(Array.from({ length: 26 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "long"),
   true,
 );
 assert.strictEqual(
-  state.topKValid(Array.from({ length: 19 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "today"),
+  state.topKValid(Array.from({ length: 13 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "today"),
+  false,
+);
+assert.strictEqual(
+  state.topKValid(Array.from({ length: 12 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "today"),
+  true,
+);
+const splitPoolItems = [
+  ...Array.from({ length: 6 }, (_value, index) => ({
+    code: String(600100 + index),
+    rank: index + 1,
+    action: "executable",
+  })),
+  ...Array.from({ length: 6 }, (_value, index) => ({
+    code: String(600200 + index),
+    rank: index + 1,
+    action: "observe",
+  })),
+];
+assert.strictEqual(state.topKValid(splitPoolItems, "today"), true);
+assert.strictEqual(
+  state.topKValid([
+    ...splitPoolItems,
+    { code: "600999", rank: 7, action: "executable" },
+  ], "today"),
   false,
 );
 assert.strictEqual(state.topKValid([{ code: "600001", rank: 1 }, { code: "600002", rank: 1 }]), false);
@@ -351,6 +436,76 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.visibleRecommendations({ strategy: "today", historical: true, items: mixedItems }))),
   mixedItems,
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.observationRecommendations({ strategy: "today", historical: false, items: mixedItems }))),
+  [{ code: "600002", action: "observe" }],
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.observationRecommendations({ strategy: "today", historical: true, items: mixedItems }))),
+  [],
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.snapshotNotice({
+    status: "ready",
+    strategy: "today",
+    frozen: true,
+    phase: "today_main",
+    fusion_mode: "local_degraded",
+    degraded_reasons: [
+      "main:board_data_reliability_below_threshold",
+      "deepseek_pending",
+    ],
+  }))),
+  {
+    level: "warning",
+    message: "11:20 已冻结 · 名单与评分不变 · 行情按最新可用报价展示 · 冻结时降级：主板板块数据可靠度不足、模型复核未在冻结前完成（已按本地评分固化）",
+  },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.snapshotNotice({
+    status: "ready",
+    strategy: "tomorrow",
+    historical: false,
+    frozen: true,
+    phase: "close_fallback",
+    published_at: "2026-07-22T15:01:00+08:00",
+    degraded_reasons: [],
+  }))),
+  {
+    level: "ok",
+    message: "已冻结 · 收盘补算 · 仅本地评分 · 2026/7/22 15:01:00",
+  },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.snapshotNotice({
+    status: "ready",
+    strategy: "long",
+    historical: false,
+    frozen: false,
+    phase: "long_current",
+    published_at: "2026-07-22T15:01:00+08:00",
+    degraded_reasons: [],
+  }))),
+  {
+    level: "ok",
+    message: "长期实时数据 · 不评分、不冻结 · 2026/7/22 15:01:00",
+  },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.snapshotNotice({
+    status: "ready",
+    strategy: "tomorrow",
+    historical: true,
+    trade_date: "2026-07-22",
+    frozen: true,
+    phase: "afternoon",
+    degraded_reasons: [],
+  }))),
+  {
+    level: "ok",
+    message: "历史快照 2026-07-22 · 名单与评分为当日冻结结果 · 行情按最新可用报价展示",
+  },
 );
 const longPayload = {
   strategy: "long",
@@ -494,6 +649,23 @@ assert.deepStrictEqual(
   {
     topScore: "83.40",
     modelReview: "1 / 2",
+    dataQuality: "正常",
+    dataQualityTitle: "",
+  },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.recommendationSummary(
+    {
+      status: "ready",
+      score_status: "not_applicable",
+      stale: false,
+      degraded_reasons: [],
+    },
+    [{ scores: { final_score: 0 }, review: null }],
+  ))),
+  {
+    topScore: "-",
+    modelReview: "-",
     dataQuality: "正常",
     dataQualityTitle: "",
   },

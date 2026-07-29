@@ -238,7 +238,10 @@ def tomorrow_decision_policy(policy: RecommendationPolicy) -> TomorrowDecisionPo
         observation_margin=policy.selection.observation_margin,
         review_candidate_limit=min(policy.selection.review_candidate_limit, 28),
         top_k=min(policy.selection.default_top_k, 10),
-        observation_limit=8,
+        observation_limit=min(
+            max(0, policy.selection.maximum_top_k - policy.selection.default_top_k),
+            8,
+        ),
         maximum_per_industry=policy.selection.maximum_per_industry,
         maximum_board_fraction=min(policy.selection.maximum_board_fraction, 0.60),
         fusion=policy.fusion,

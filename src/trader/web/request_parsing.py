@@ -8,6 +8,8 @@ from datetime import date
 from trader.domain.recommendation.models import Strategy
 from trader.web.route_services import WebApiConfig
 
+_LEGACY_HISTORY_MAXIMUM_TOP_N = 18
+
 
 @dataclass(frozen=True)
 class RequestFailure:
@@ -33,7 +35,8 @@ def parse_recommendation_request(
     config: WebApiConfig,
 ) -> RecommendationRequest | RequestFailure:
     strategy = parse_strategy(strategy_name)
-    parsed_top_n = bounded_integer(top_n, config.default_top_n)
+    default_top_n = _LEGACY_HISTORY_MAXIMUM_TOP_N if trade_date is not None else config.default_top_n
+    parsed_top_n = bounded_integer(top_n, default_top_n)
     failure = _recommendation_failure(strategy, parsed_top_n, trade_date, view, config)
     if failure is not None:
         return failure
@@ -69,10 +72,11 @@ def _recommendation_failure(
     failure: RequestFailure | None = None
     if strategy is None:
         failure = RequestFailure("invalid_strategy", "strategy must be today, tomorrow, d25 or long")
-    elif top_n is None or top_n > config.maximum_top_n:
+    elif top_n is None or top_n > _maximum_top_n(config, trade_date):
+        maximum = _maximum_top_n(config, trade_date)
         failure = RequestFailure(
             "invalid_top_n",
-            f"top_n must be an integer from 0 to {config.maximum_top_n}",
+            f"top_n must be an integer from 0 to {maximum}",
         )
     elif trade_date is not None and not _valid_date(trade_date):
         failure = RequestFailure("invalid_date", "date must use YYYY-MM-DD")
@@ -81,6 +85,10 @@ def _recommendation_failure(
     elif trade_date is not None and view == "live":
         failure = RequestFailure("invalid_view", "live view cannot be combined with a historical date")
     return failure
+
+
+def _maximum_top_n(config: WebApiConfig, trade_date: str | None) -> int:
+    return _LEGACY_HISTORY_MAXIMUM_TOP_N if trade_date is not None else config.maximum_top_n
 
 
 def _valid_date(raw: str) -> bool:

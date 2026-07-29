@@ -43,7 +43,8 @@ class _Archive:
 
 
 def _recommendation(feature: FeatureSnapshot, rank: int, *, strategy: Strategy) -> Recommendation:
-    action = RecommendationAction.EXECUTABLE if rank <= 10 else RecommendationAction.OBSERVE
+    action = RecommendationAction.EXECUTABLE if rank <= 6 else RecommendationAction.OBSERVE
+    pool_rank = rank if action is RecommendationAction.EXECUTABLE else rank - 6
     return Recommendation(
         strategy=strategy,
         features=feature,
@@ -65,7 +66,7 @@ def _recommendation(feature: FeatureSnapshot, rank: int, *, strategy: Strategy) 
         action=action,
         action_reason="threshold_met" if action is RecommendationAction.EXECUTABLE else "near_threshold",
         veto=False,
-        rank=rank,
+        rank=pool_rank,
     )
 
 
@@ -82,7 +83,7 @@ def _snapshot(
             index,
             strategy=strategy,
         )
-        for index in range(1, 19)
+        for index in range(1, 13)
     )
     if changed_price is not None:
         first = recommendations[0]
@@ -179,7 +180,7 @@ def test_d4_p6_sse_api_and_transfer_budgets(application_feature_factory) -> None
         publisher=publisher,
     )
     client = app.test_client()
-    current_path = "/api/recommendations/today?view=current&top_n=18"
+    current_path = "/api/recommendations/today?view=current&top_n=12"
     resident_path = f"/api/recommendations/today?date={resident_date}&top_n=18"
     current = client.get(current_path)
     etag = current.headers["ETag"]

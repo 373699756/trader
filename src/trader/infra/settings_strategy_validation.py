@@ -70,6 +70,8 @@ def _validate_fusion(settings: StrategySettings) -> None:
 def _validate_selection(settings: StrategySettings) -> None:
     if settings.selection.default_top_k > settings.selection.maximum_top_k:
         raise ConfigurationError("default_top_k cannot exceed maximum_top_k")
+    if settings.selection.default_top_k != 6 or settings.selection.maximum_top_k != 12:
+        raise ConfigurationError("active selection limits are fixed at 6 formal and 6 observation")
     if settings.board_policy_version != "board_policy_score_first_2026_07":
         raise ConfigurationError("unsupported board policy version")
     if settings.selection.maximum_board_fraction != 0.6:

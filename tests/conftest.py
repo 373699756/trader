@@ -27,8 +27,8 @@ def recommendation_policy() -> RecommendationPolicy:
         fusion_version="fusion-v2",
         fusion=FusionPolicy(),
         selection=SelectionPolicy(
-            default_top_k=10,
-            maximum_top_k=18,
+            default_top_k=6,
+            maximum_top_k=12,
             maximum_per_industry=2,
             observation_margin=5.0,
             thresholds={"today_main": 70.0, "today_late": 76.0, "tomorrow": 72.0, "d25": 70.0},

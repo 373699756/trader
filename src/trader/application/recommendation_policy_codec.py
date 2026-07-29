@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
@@ -20,6 +21,7 @@ from trader.domain.recommendation.models import (
     Recommendation,
     RecommendationAction,
     RecommendationSnapshot,
+    SelectionSkip,
     Strategy,
 )
 from trader.domain.recommendation.ranking import CORE_FIELDS
@@ -53,13 +55,24 @@ _NON_ALGORITHM_METADATA_KEYS = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class _SelectionDiagnosticsContext:
+    minimum_score: float | None
+    strategy: Strategy
+    phase: str
+    selection: SelectionPolicy
+    selection_skips: tuple[SelectionSkip, ...]
+
+
 def _selection_diagnostics(
     merged: Sequence[Recommendation],
     selected: Sequence[Recommendation],
-    minimum_score: float | None,
-    strategy: Strategy,
-    phase: str,
+    context: _SelectionDiagnosticsContext,
 ) -> dict[str, object]:
+    minimum_score = context.minimum_score
+    strategy = context.strategy
+    phase = context.phase
+    selection = context.selection
     score_qualified = (
         tuple(item for item in merged if minimum_score is not None and item.score.final_score >= minimum_score)
         if minimum_score is not None
@@ -71,6 +84,19 @@ def _selection_diagnostics(
     qualified_actionable = tuple(
         item for item in actionable if minimum_score is not None and item.score.final_score >= minimum_score
     )
+    selection_applies = strategy is not Strategy.LONG
+    selected_executable = tuple(
+        item for item in selected if selection_applies and item.action is RecommendationAction.EXECUTABLE
+    )
+    selected_observation = tuple(
+        item for item in selected if selection_applies and item.action is RecommendationAction.OBSERVE
+    )
+    blocked_reasons = Counter(
+        item.action_reason or "unspecified"
+        for item in score_qualified
+        if item.action is not RecommendationAction.EXECUTABLE
+    )
+    skip_reasons = Counter(skip.reason for skip in context.selection_skips)
     visible_selected = (
         tuple(selected)
         if strategy is Strategy.LONG or phase == "close_fallback"
@@ -91,14 +117,44 @@ def _selection_diagnostics(
     else:
         empty_reason = "selection_limits"
     return {
-        "scored_candidate_count": len(merged),
-        "actionable_candidate_count": len(actionable),
-        "score_qualified_count": len(score_qualified),
+        "scored_candidate_count": len(merged) if selection_applies else 0,
+        "actionable_candidate_count": len(actionable) if selection_applies else 0,
+        "score_qualified_count": len(score_qualified) if selection_applies else 0,
         "selection_floor": minimum_score,
-        "maximum_local_score": max((item.score.local_score for item in merged), default=None),
-        "maximum_final_score": max((item.score.final_score for item in merged), default=None),
+        "executable_threshold": _executable_threshold(strategy, phase, selection),
+        "observation_floor": minimum_score,
+        "executable_limit": selection.default_top_k if selection_applies else 0,
+        "observation_limit": _observation_limit(selection) if selection_applies else 0,
+        "selected_executable_count": len(selected_executable),
+        "selected_observation_count": len(selected_observation),
+        "blocked_reason_counts": dict(sorted(blocked_reasons.items())),
+        "selection_skip_reason_counts": dict(sorted(skip_reasons.items())),
+        "maximum_local_score": (
+            max((item.score.local_score for item in merged), default=None) if selection_applies else None
+        ),
+        "maximum_final_score": (
+            max((item.score.final_score for item in merged), default=None) if selection_applies else None
+        ),
         "empty_reason": empty_reason,
     }
+
+
+def _observation_limit(selection: SelectionPolicy) -> int:
+    return max(0, selection.maximum_top_k - selection.default_top_k)
+
+
+def _executable_threshold(
+    strategy: Strategy,
+    phase: str,
+    selection: SelectionPolicy,
+) -> float | None:
+    if strategy is Strategy.LONG or (strategy is Strategy.TODAY and phase == "today_observe"):
+        return None
+    if strategy is Strategy.TODAY:
+        key = "today_late" if phase in {"today_late", "close_fallback"} else "today_main"
+    else:
+        key = strategy.value
+    return selection.thresholds.get(key)
 
 
 def _fusion_mode(

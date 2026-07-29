@@ -163,7 +163,7 @@ def test_authoritative_docs_define_the_tomorrow_first_rebuild_contract() -> None
     assert "不是产品目标或不可变业务需求" in design
 
     for statement in (
-        "允许 0 到 10 只",
+        "允许 0 到 6 只",
         "14:50 锚点至下一交易日收盘",
         "20bp、50bp、100bp",
         "不少于 250 个交易日",
@@ -248,7 +248,7 @@ def test_tomorrow_deepseek_fusion_boundary_is_explicit() -> None:
         "`deepseek_skipped_no_eligible_candidates`",
         "合法子集",
         "固定 68/32",
-        "正式池最多 10 只、观察池最多 8 只",
+        "正式池最多 6 只、观察池最多 6 只",
     ):
         assert statement in strategy
 
@@ -330,8 +330,8 @@ def test_authoritative_docs_match_active_scoring_and_runtime_behavior() -> None:
     assert "未应用有效 hybrid 时" in fusion
     assert "final_score = local_score" in fusion
     assert "单一数组" in selection
-    assert "盘中当前视图只显示 `executable`" in selection
-    assert "Web 必须分栏展示" not in selection
+    assert "拆成正式推荐" in selection
+    assert "独立观察池表" in selection
 
     fallback_reason = "close_fallback_observe_floor"
     retired_fallback_reason = "close_fallback_observation_floor_relaxed"

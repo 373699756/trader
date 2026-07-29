@@ -50,6 +50,7 @@ RECOMMENDATION_ENVELOPE_KEYS = {
     "degraded_reasons",
     "filtered_count",
     "selection_diagnostics",
+    "readiness_reason",
     "long_groups",
     "items",
     "error",
@@ -103,6 +104,7 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
     assert payload["fusion_mode"] == "local_degraded"
     assert payload["score_status"] == "scored"
     assert payload["requested_date"] is None
+    assert payload["readiness_reason"] is None
     assert payload["current_trade_date"] == "2026-07-16"
     assert payload["historical"] is False
     assert payload["view"] == "official"
@@ -111,6 +113,14 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
         "actionable_candidate_count",
         "score_qualified_count",
         "selection_floor",
+        "executable_threshold",
+        "observation_floor",
+        "executable_limit",
+        "observation_limit",
+        "selected_executable_count",
+        "selected_observation_count",
+        "blocked_reason_counts",
+        "selection_skip_reason_counts",
         "maximum_local_score",
         "maximum_final_score",
         "empty_reason",
@@ -154,6 +164,12 @@ def test_long_response_exposes_fixed_groups_and_ignores_top_n(
     payload = _app(repository)[0].test_client().get("/api/recommendations/long?top_n=1").get_json()
 
     assert payload["score_status"] == "not_applicable"
+    assert payload["selection_diagnostics"]["executable_limit"] == 0
+    assert payload["selection_diagnostics"]["observation_limit"] == 0
+    assert payload["selection_diagnostics"]["selected_executable_count"] == 0
+    assert payload["selection_diagnostics"]["selected_observation_count"] == 0
+    assert payload["selection_diagnostics"]["scored_candidate_count"] == 0
+    assert payload["selection_diagnostics"]["maximum_final_score"] is None
     assert len(payload["items"]) == 3
     assert payload["items"][0]["action"] == "observe"
     assert payload["items"][0]["action_reason"] == "fixed_long_watchlist"
@@ -257,9 +273,68 @@ def test_recommendation_validation_and_empty_current(recommendation_policy, appl
     assert invalid_strategy.status_code == 400
     assert invalid_strategy.get_json()["schema_version"] == "v3"
     assert set(invalid_strategy.get_json()) == RECOMMENDATION_ENVELOPE_KEYS
-    assert client.get("/api/recommendations/today?top_n=19").status_code == 400
+    assert client.get("/api/recommendations/today?top_n=13").status_code == 400
     assert client.get("/api/recommendations/today?top_n=01").status_code == 400
     assert client.get("/api/recommendations/today?date=2026-02-30").status_code == 400
+
+
+def test_not_ready_response_exposes_precise_lifecycle_reason() -> None:
+    cases = (
+        (Strategy.TODAY, NOW, "snapshot_not_published"),
+        (Strategy.TODAY, NOW.replace(hour=11, minute=21), "today_freeze_missed"),
+        (Strategy.TOMORROW, NOW.replace(hour=14, minute=51), "afternoon_freeze_pending"),
+        (Strategy.D25, NOW.replace(hour=14, minute=51), "afternoon_freeze_pending"),
+        (Strategy.TOMORROW, NOW.replace(hour=15, minute=1), "afternoon_close_recovery_pending"),
+        (Strategy.D25, NOW.replace(hour=15, minute=1), "afternoon_close_recovery_pending"),
+        (Strategy.LONG, NOW, "long_snapshot_not_ready"),
+    )
+
+    for strategy, now, expected in cases:
+        payload = (
+            _app(MemoryReadRepository(), now=now)[0]
+            .test_client()
+            .get(f"/api/recommendations/{strategy.value}?view=current")
+            .get_json()
+        )
+        assert payload["status"] == "not_ready"
+        assert payload["readiness_reason"] == expected
+
+
+def test_explicit_history_keeps_legacy_eighteen_item_snapshot(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    source = _snapshot(recommendation_policy, application_feature_factory, Strategy.TODAY)
+    template = source.recommendations[0]
+    recommendations = tuple(
+        replace(
+            template,
+            features=application_feature_factory(
+                f"60{index:04d}",
+                NOW,
+                industry=f"行业{index}",
+            ),
+            action=RecommendationAction.EXECUTABLE if index <= 10 else RecommendationAction.OBSERVE,
+            action_reason="score_threshold_met" if index <= 10 else "legacy_observation",
+            rank=index,
+        )
+        for index in range(1, 19)
+    )
+    historical = replace(
+        source,
+        snapshot_id="legacy-eighteen",
+        trade_date="2026-07-15",
+        frozen=True,
+        recommendations=recommendations,
+    )
+    repository = MemoryReadRepository(frozen={(Strategy.TODAY, historical.trade_date): historical})
+
+    response = _app(repository)[0].test_client().get("/api/recommendations/today?date=2026-07-15")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["historical"] is True
+    assert len(payload["items"]) == 18
 
 
 def test_recommendation_response_only_exposes_deepseek_review_outcome_and_error(

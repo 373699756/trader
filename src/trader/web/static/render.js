@@ -217,6 +217,23 @@
     };
   }
 
+  function frozenTodayObservationTable() {
+    return {
+      columns: [
+        '<col style="width:56px">',
+        '<col style="width:168px">',
+        '<col style="width:142px">',
+        '<col style="width:126px">',
+        '<col style="width:108px">',
+        '<col style="width:118px">',
+        '<col style="width:126px">',
+        '<col style="width:96px">',
+        '<col style="width:220px">',
+      ].join(""),
+      head: "<tr><th>排名</th><th>股票</th><th>11:20锚点价</th><th>锚点时涨跌</th><th>当前价</th><th>当前涨跌</th><th>锚点至今</th><th>最终分</th><th>观察原因</th></tr>",
+    };
+  }
+
   function rows(items, historical) {
     if (!Array.isArray(items) || items.length === 0) return "";
     return items.map((item) => row(item, historical)).join("");
@@ -316,6 +333,20 @@
     return 9;
   }
 
+  function observationTableDefinition(snapshot) {
+    return isFrozenTodayView(snapshot) ? frozenTodayObservationTable() : currentTable();
+  }
+
+  function observationTableRows(items, snapshot) {
+    if (!Array.isArray(items) || items.length === 0) return "";
+    if (isFrozenTodayView(snapshot)) return items.map(frozenTodayObservationRow).join("");
+    return items.map(currentRow).join("");
+  }
+
+  function observationTableColumnCount() {
+    return 9;
+  }
+
   function frozenTodayRow(item) {
     const anchorChange = pct(item.anchor_daily_return_pct);
     const currentChange = pct(item.pct_change);
@@ -329,6 +360,25 @@
       <td>${number(item.price, 2)}</td>
       <td class="${currentChange.className}">${currentChange.text}</td>
       <td class="${anchorToNow.className}">${anchorToNow.text}</td>
+    </tr>`;
+  }
+
+  function frozenTodayObservationRow(item) {
+    const anchorChange = pct(item.anchor_daily_return_pct);
+    const currentChange = pct(item.pct_change);
+    const anchorToNow = pct(item.anchor_to_now_pct);
+    const anchorTime = hasValue(item.anchor_source_time) ? formatTime(item.anchor_source_time) : "-";
+    const scores = item.scores || {};
+    return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
+      <td>${number(item.rank, 0)}</td>
+      <td>${stock(item)}</td>
+      <td>${number(item.anchor_price, 2)}<span class="stock-code">实际 ${escapeHtml(anchorTime)}</span></td>
+      <td class="${anchorChange.className}">${anchorChange.text}</td>
+      <td>${number(item.price, 2)}</td>
+      <td class="${currentChange.className}">${currentChange.text}</td>
+      <td class="${anchorToNow.className}">${anchorToNow.text}</td>
+      <td>${number(scores.final_score, 2)}</td>
+      <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
   }
 
@@ -350,17 +400,24 @@
     const scores = item.scores || {};
     const historical = snapshot.historical === true;
     const frozenToday = isFrozenTodayView(snapshot);
+    const long = snapshot.strategy === "long";
     const action = String(item.action || "unavailable");
     const downside = item.downside || null;
-    const conclusion = [
-      detailGrid([
+    const conclusionValues = long
+      ? [
+        ["观察状态", ACTION_LABELS[action] || "观察"],
+        ["当前序号", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 项` : null],
+      ]
+      : [
         ["推荐动作", ACTION_LABELS[action] || "动作状态未知"],
         ["最终评分", valueNumber(scores.final_score, 2)],
         ["当前排名", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 名` : null],
         ["入场形态", SETUP_LABELS[item.setup_type] || "形态信息暂不可用"],
         ["下行保护", downside ? (downside.status === "pass" ? "通过" : "转观察") : null],
-      ]),
-      `<div class="detail-reason"><span>推荐原因</span><strong>${escapeHtml(actionReason(item.action_reason))}</strong></div>`,
+      ];
+    const conclusion = [
+      detailGrid(conclusionValues),
+      `<div class="detail-reason"><span>${long ? "观察依据" : "推荐原因"}</span><strong>${escapeHtml(actionReason(item.action_reason))}</strong></div>`,
     ].join("");
 
     const marketValues = frozenToday
@@ -398,6 +455,12 @@
     if (requiredMarket.some((value) => !hasValue(value))) marketNotes.push(note("部分核心行情暂缺", "warn"));
     if (Array.isArray(snapshot.degraded_reasons) && snapshot.degraded_reasons.length > 0) {
       marketNotes.push(note(`数据降级：${reasonLabels(snapshot.degraded_reasons).join("、")}`, "warn"));
+    }
+    if (long) {
+      return [
+        section("观察结论", conclusion),
+        section("核心行情", detailGrid(marketValues) + marketNotes.join("")),
+      ].join("");
     }
 
     const scoreValues = [
@@ -460,7 +523,12 @@
     const reason = String(value || "");
     if (ACTION_REASON_LABELS[reason]) return ACTION_REASON_LABELS[reason];
     if (reason.startsWith("market_data_observe_only:")) return "行情或交易规则受限，仅供观察";
-    if (reason.startsWith("downside_guard:")) return "触发下行保护，仅进入观察池";
+    if (reason.startsWith("downside_guard:")) {
+      const reasons = reason.slice("downside_guard:".length)
+        .split(",")
+        .map((item) => DOWNSIDE_REASON_LABELS[item] || "下行保护条件触发");
+      return `下行保护：${reasons.join("、")}，仅供观察`;
+    }
     return reason ? "推荐条件暂未满足" : "暂无补充说明";
   }
 
@@ -561,11 +629,13 @@
   }
 
   window.TraderRender = {
+    actionReason,
     currentTable,
     drawer,
     escapeHtml,
     formatDateTime,
     formatTime,
+    frozenTodayObservationTable,
     frozenTodayTable,
     historyTable,
     isFrozenTodayView,
@@ -573,6 +643,9 @@
     fusionModeLabel,
     rememberDiagnostic,
     number,
+    observationTableColumnCount,
+    observationTableDefinition,
+    observationTableRows,
     pct,
     reasonLabel,
     reasonLabels,

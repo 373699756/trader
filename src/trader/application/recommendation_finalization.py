@@ -20,6 +20,7 @@ from trader.application.recommendation_policy_codec import (
     _fusion_mode,
     _review_contexts_for_candidates,
     _selection_diagnostics,
+    _SelectionDiagnosticsContext,
     _snapshot_id,
     preselection_replay_feature,
 )
@@ -86,7 +87,6 @@ _LEGACY_STRUCTURED_RISK_FIELDS = (
     "shareholder_reduction_level",
     "unlock_risk",
 )
-_CLOSE_FALLBACK_OBSERVE_TOP_K = 8
 _CLOSE_FALLBACK_OBSERVE_REASON = "close_fallback_observe_floor"
 
 
@@ -233,7 +233,7 @@ def _select_short_recommendations(
         (item for item in merged if item.action is RecommendationAction.OBSERVE),
         _ranking_policy(
             selection,
-            top_k=_CLOSE_FALLBACK_OBSERVE_TOP_K,
+            top_k=_observation_top_k(selection),
             minimum_final_score=minimum_score,
             enforce_competition_group_limits=enforce_competition_group_limits,
         ),
@@ -246,7 +246,7 @@ def _select_short_recommendations(
         _close_fallback_observe_pool(merged),
         _ranking_policy(
             selection,
-            top_k=_CLOSE_FALLBACK_OBSERVE_TOP_K,
+            top_k=_observation_top_k(selection),
             minimum_final_score=0.0,
             enforce_competition_group_limits=enforce_competition_group_limits,
         ),
@@ -256,6 +256,10 @@ def _select_short_recommendations(
         (*skips, *fallback_skips),
         close_fallback_observe_floor=bool(fallback),
     )
+
+
+def _observation_top_k(selection: AppSelectionPolicy) -> int:
+    return max(0, selection.maximum_top_k - selection.default_top_k)
 
 
 def _ranking_policy(
@@ -468,9 +472,13 @@ class RecommendationFinalizationMixin:
                 "selection_diagnostics": _selection_diagnostics(
                     merged,
                     selected,
-                    minimum_score,
-                    strategy,
-                    phase,
+                    _SelectionDiagnosticsContext(
+                        minimum_score=minimum_score,
+                        strategy=strategy,
+                        phase=phase,
+                        selection=self._policy.selection,
+                        selection_skips=selection_skips,
+                    ),
                 ),
                 **(
                     {"long_groups": long_groups_metadata(prepared.long_groups, selected)}

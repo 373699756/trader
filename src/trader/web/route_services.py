@@ -15,8 +15,8 @@ StatusProvider = Callable[[], dict[str, object]]
 
 @dataclass(frozen=True)
 class WebApiConfig:
-    default_top_n: int = 10
-    maximum_top_n: int = 18
+    default_top_n: int = 12
+    maximum_top_n: int = 12
     heartbeat_seconds: float = 15.0
 
 

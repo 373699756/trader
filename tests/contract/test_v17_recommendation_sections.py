@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
+def test_dashboard_separates_current_formal_and_observation_tables() -> None:
     template = (ROOT / "src/trader/web/templates/index.html").read_text(encoding="utf-8")
     dashboard = (ROOT / "src/trader/web/static/dashboard.js").read_text(encoding="utf-8")
     patches = (ROOT / "src/trader/web/static/dashboard_patches.js").read_text(encoding="utf-8")
@@ -30,8 +30,10 @@ def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
     assert "web_asset('selection.js')" in template
     assert "?v=" not in template
     assert 'id="tableTitle"' not in template
-    assert 'id="watchTable"' not in template
-    assert "观察列表" not in template
+    assert 'id="observationTable"' in template
+    assert 'id="observationPool"' in template
+    assert 'id="observationCount"' in template
+    assert "不可执行，仅供观察" in template
     assert "最高评分" in patches
     assert "低于观察门槛" in patches
     assert "当前没有达到正式推荐条件的股票" in patches
@@ -40,14 +42,19 @@ def test_dashboard_shows_only_the_primary_recommendation_table() -> None:
     assert "当前策略尚未发布快照" not in dashboard
     assert "visibleRecommendations(payload)" in dashboard
     assert 'item.action === "executable"' in selection
+    assert "observationRecommendations(payload)" in dashboard
+    assert "observation_floor" in dashboard
+    assert "观察门槛 = 正式门槛" in dashboard
+    assert 'item.action === "observe"' in selection
     assert 'payload.strategy === "long"' in dashboard
     assert 'setLongControls(nextStrategy === "long")' in dashboard
     assert 'setLongControls(state.strategy === "long")' in dashboard
     assert "els.longScopeTabs.hidden = !enabled" in dashboard
-    assert 'new URLSearchParams(strategy === "long" ? {} : { top_n: "18" })' in dashboard
+    assert 'state.date ? "18" : "12"' in dashboard
     assert "tableDefinition(payload)" in dashboard
     assert 'payload.phase === "close_fallback"' in selection
-    assert 'items.filter((item) => item.action === "observe")' not in dashboard
+    assert "observationPool.hidden" in dashboard
+    assert 'score_status === "not_applicable"' in dashboard
 
 
 def test_web_schema_exposes_additive_downside_projection() -> None:

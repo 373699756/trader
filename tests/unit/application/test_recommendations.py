@@ -254,9 +254,9 @@ def test_formal_and_watch_pools_have_independent_topk_capacity(
 ) -> None:
     now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
     features = []
-    for index in range(18):
+    for index in range(12):
         feature = application_feature_factory(f"600{index:03d}", now, industry=f"行业{index}")
-        if index >= 10:
+        if index >= 6:
             feature = replace(feature, values={**feature.values, "trend_breakdown": 1.0})
         features.append(feature)
 
@@ -275,9 +275,14 @@ def test_formal_and_watch_pools_have_independent_topk_capacity(
         filter_details=(),
     )
 
-    assert len(snapshot.recommendations) == 18
-    assert sum(item.action is RecommendationAction.EXECUTABLE for item in snapshot.recommendations) == 10
-    assert sum(item.action is RecommendationAction.OBSERVE for item in snapshot.recommendations) == 8
+    assert len(snapshot.recommendations) == 12
+    assert sum(item.action is RecommendationAction.EXECUTABLE for item in snapshot.recommendations) == 6
+    assert sum(item.action is RecommendationAction.OBSERVE for item in snapshot.recommendations) == 6
+    diagnostics = snapshot.metadata["selection_diagnostics"]
+    assert diagnostics["executable_limit"] == 6
+    assert diagnostics["observation_limit"] == 6
+    assert diagnostics["selected_executable_count"] == 6
+    assert diagnostics["selected_observation_count"] == 6
 
 
 def test_formal_and_watch_pools_apply_industry_limit_independently(
@@ -335,7 +340,9 @@ def test_observe_only_snapshot_reports_why_formal_recommendations_are_empty(
     )
 
     assert snapshot.recommendations[0].action is RecommendationAction.OBSERVE
-    assert snapshot.metadata["selection_diagnostics"]["empty_reason"] == "risk_or_execution_blocked"
+    diagnostics = snapshot.metadata["selection_diagnostics"]
+    assert diagnostics["empty_reason"] == "risk_or_execution_blocked"
+    assert diagnostics["blocked_reason_counts"] == {"downside_guard:trend_breakdown": 1}
 
 
 def test_local_and_hybrid_projections_have_distinct_snapshot_identity(

@@ -8,6 +8,54 @@
   min-width: 0;
 }
 
+.observation-pool {
+  margin: 12px 18px 18px;
+  overflow: hidden;
+  border: 1px solid #6d5a2d;
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.observation-pool[hidden] {
+  display: none;
+}
+
+.observation-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #6d5a2d;
+  background: #272315;
+}
+
+.observation-heading span {
+  display: block;
+  color: #d7b96d;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.observation-heading h2 {
+  margin: 2px 0 0;
+  color: #f1dfad;
+  font-size: 15px;
+  line-height: 20px;
+}
+
+.observation-heading > b {
+  color: #d7b96d;
+  font-size: 12px;
+}
+
+#observationTable tbody tr:hover,
+#observationTable tbody tr:focus {
+  background: #242216;
+  box-shadow: inset 3px 0 0 #b28b32;
+}
+
 .recommendation-layout.is-long {
   display: grid;
   grid-template-columns: 236px minmax(0, 1fr);

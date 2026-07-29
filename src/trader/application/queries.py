@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, time
 
 from trader.application.ports.market import QuoteReaderPort
 from trader.application.ports.snapshots import PublishedSnapshotReadPort, SnapshotReaderPort
@@ -26,6 +26,7 @@ class SnapshotLookup:
     overlay: LiveOverlay | None = None
     current_trade_date: str | None = None
     current_quotes: Mapping[str, LiveQuote] | None = None
+    readiness_reason: str | None = None
 
     @property
     def etag(self) -> str | None:
@@ -86,6 +87,7 @@ class RecommendationQueries:
                         None,
                         False,
                         current_trade_date=current_date.isoformat(),
+                        readiness_reason=_readiness_reason(strategy, now),
                     )
                 return self._current_lookup(strategy, current_date.isoformat(), latest)
             snapshot = self._snapshots.latest(strategy)
@@ -144,7 +146,13 @@ class RecommendationQueries:
             or snapshot.trade_date != current_date
             or (strategy is Strategy.TODAY and snapshot.phase == "close_fallback" and snapshot.frozen)
         ):
-            return SnapshotLookup("not_ready", None, False, current_trade_date=current_date)
+            return SnapshotLookup(
+                "not_ready",
+                None,
+                False,
+                current_trade_date=current_date,
+                readiness_reason=_readiness_reason(strategy, self._now()),
+            )
         snapshot = self._recover_empty_close_fallback(snapshot)
         assert snapshot is not None
         overlay = self._snapshots.load_live_overlay(strategy, snapshot.trade_date)
@@ -196,6 +204,18 @@ def _snapshot_quotes(snapshot: RecommendationSnapshot) -> dict[str, LiveQuote]:
         )
         for recommendation in snapshot.recommendations
     }
+
+
+def _readiness_reason(strategy: Strategy, now: datetime) -> str:
+    if strategy is Strategy.LONG:
+        return "long_snapshot_not_ready"
+    if strategy.value not in freeze_due_at(now, is_trading_day=True):
+        return "snapshot_not_published"
+    if strategy is Strategy.TODAY:
+        return "today_freeze_missed"
+    if shanghai_now(now).time().replace(tzinfo=None) >= time(15, 0):
+        return "afternoon_close_recovery_pending"
+    return "afternoon_freeze_pending"
 
 
 def _needs_close_fallback_replay(snapshot: RecommendationSnapshot | None) -> bool:

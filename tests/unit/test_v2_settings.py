@@ -25,6 +25,9 @@ def test_v2_configuration_contract_is_valid() -> None:
 
     assert runtime.schema_version == 7
     assert strategy.schema_version == 12
+    assert runtime.config_version == "runtime_v31_top6_observe6_diagnostics_2026_07_29"
+    assert runtime.api.default_top_n == 12
+    assert runtime.api.maximum_top_n == 12
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v17"
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.pipeline.market_workers == 5
@@ -160,6 +163,8 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.d25_signal.risk_off_factor == 0.92
     assert strategy.d25_signal.overheat_linear_end_factor == 0.85
     assert strategy.selection.review_candidate_limit == 28
+    assert strategy.selection.default_top_k == 6
+    assert strategy.selection.maximum_top_k == 12
     assert set(strategy.local_strategy_weights) == {"today", "tomorrow", "d25"}
     assert set(strategy.dimension_weights) == {"today", "tomorrow", "d25"}
     assert strategy.long_research.financial_max_age_days == 550

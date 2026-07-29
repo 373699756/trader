@@ -56,7 +56,15 @@ def create_recommendation_blueprint(services: WebServices) -> Blueprint:
 
 def _recommendation_response(parsed: RecommendationRequest, queries: RecommendationQueries | None) -> RouteResponse:
     if queries is None:
-        return jsonify(empty_snapshot_envelope(parsed.strategy.value, parsed.trade_date, view=parsed.view))
+        reason = "long_snapshot_not_ready" if parsed.strategy is Strategy.LONG else "snapshot_not_published"
+        return jsonify(
+            empty_snapshot_envelope(
+                parsed.strategy.value,
+                parsed.trade_date,
+                view=parsed.view,
+                readiness_reason=reason,
+            )
+        )
     if parsed.strategy is Strategy.LONG and parsed.trade_date is not None and parsed.trade_date != queries.today():
         return _failure_response(
             RequestFailure("long_history_unsupported", "long only supports the current trade date"),
@@ -81,6 +89,7 @@ def _recommendation_response(parsed: RecommendationRequest, queries: Recommendat
                 parsed.trade_date,
                 current_trade_date=lookup.current_trade_date,
                 view=parsed.view,
+                readiness_reason=lookup.readiness_reason,
             )
         )
     return _snapshot_response(parsed, lookup)

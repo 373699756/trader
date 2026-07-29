@@ -71,6 +71,7 @@ def snapshot_envelope(
         "degraded_reasons": list(snapshot.degraded_reasons),
         "filtered_count": snapshot.filtered_count,
         "selection_diagnostics": _selection_diagnostics(snapshot.metadata),
+        "readiness_reason": None,
         "long_groups": _long_groups(snapshot.metadata, recommendations) if snapshot.strategy is Strategy.LONG else [],
         "items": [
             _recommendation(
@@ -90,6 +91,7 @@ def empty_snapshot_envelope(
     *,
     current_trade_date: str | None = None,
     view: str = "official",
+    readiness_reason: str | None = None,
 ) -> dict[str, object]:
     return {
         "schema_version": API_SCHEMA_VERSION,
@@ -111,6 +113,7 @@ def empty_snapshot_envelope(
         "degraded_reasons": ["snapshot_not_ready"],
         "filtered_count": 0,
         "selection_diagnostics": _selection_diagnostics({}),
+        "readiness_reason": readiness_reason,
         "long_groups": [],
         "items": [],
         "error": None,
@@ -125,10 +128,24 @@ def _selection_diagnostics(metadata: Mapping[str, object]) -> dict[str, object]:
         "actionable_candidate_count": values.get("actionable_candidate_count", 0),
         "score_qualified_count": values.get("score_qualified_count", 0),
         "selection_floor": values.get("selection_floor"),
+        "executable_threshold": values.get("executable_threshold"),
+        "observation_floor": values.get("observation_floor"),
+        "executable_limit": values.get("executable_limit", 0),
+        "observation_limit": values.get("observation_limit", 0),
+        "selected_executable_count": values.get("selected_executable_count", 0),
+        "selected_observation_count": values.get("selected_observation_count", 0),
+        "blocked_reason_counts": _count_mapping(values.get("blocked_reason_counts")),
+        "selection_skip_reason_counts": _count_mapping(values.get("selection_skip_reason_counts")),
         "maximum_local_score": values.get("maximum_local_score"),
         "maximum_final_score": values.get("maximum_final_score"),
         "empty_reason": values.get("empty_reason", "diagnostics_unavailable"),
     }
+
+
+def _count_mapping(raw: object) -> dict[str, int]:
+    if not isinstance(raw, Mapping):
+        return {}
+    return {key: value for key, value in raw.items() if isinstance(key, str) and isinstance(value, int) and value >= 0}
 
 
 def _long_groups(
@@ -211,6 +228,7 @@ def error_envelope(
         "degraded_reasons": [],
         "filtered_count": 0,
         "selection_diagnostics": _selection_diagnostics({}),
+        "readiness_reason": None,
         "long_groups": [],
         "items": [],
         "error": {

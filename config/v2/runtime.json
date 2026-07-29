@@ -1,6 +1,6 @@
 {
   "schema_version": 7,
-  "config_version": "runtime_v30_tomorrow_native_direct_projection_2026_07_29",
+  "config_version": "runtime_v31_top6_observe6_diagnostics_2026_07_29",
   "runtime_dir": ".runtime/v17",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -471,8 +471,8 @@
     }
   },
   "api": {
-    "default_top_n": 10,
-    "maximum_top_n": 18,
+    "default_top_n": 12,
+    "maximum_top_n": 12,
     "sse_history_size": 256,
     "sse_client_queue_size": 16,
     "sse_max_clients": 32

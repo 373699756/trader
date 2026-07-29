@@ -51,8 +51,8 @@
 
     <main class="workspace">
       <section class="summary-band" aria-label="推荐摘要">
-        <div class="summary-item"><span>推荐数</span><strong id="recommendationCount">-</strong></div>
-        <div class="summary-item"><span>可执行</span><strong id="executableCount">-</strong></div>
+        <div class="summary-item"><span>正式推荐</span><strong id="recommendationCount">-</strong></div>
+        <div class="summary-item"><span>观察池</span><strong id="observationCount">-</strong></div>
         <div class="summary-item"><span>过滤数</span><strong id="filteredCount">-</strong></div>
         <div class="summary-item"><span>行情源</span><strong id="dataSource">-</strong></div>
         <div class="summary-item"><span>最高评分</span><strong id="topScore">-</strong></div>
@@ -115,6 +115,25 @@
             </table>
           </div>
         </section>
+      </section>
+
+      <section id="observationPool" class="observation-pool" aria-label="观察池" hidden>
+        <header class="observation-heading">
+          <div>
+            <span>观察池</span>
+            <h2>不可执行，仅供观察</h2>
+          </div>
+          <b id="observationPoolMeta">0 / 6</b>
+        </header>
+        <div class="table-scroll">
+          <table id="observationTable">
+            <colgroup id="observationColumns"></colgroup>
+            <thead id="observationHead"></thead>
+            <tbody id="observationBody">
+              <tr><td class="table-state" colspan="9">加载中</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
     </main>

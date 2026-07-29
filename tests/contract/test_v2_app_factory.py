@@ -72,8 +72,9 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert 'id="routeHealth"' not in page
     assert 'id="strategyVersion"' not in page
     assert 'id="freezeStatus"' not in page
-    assert 'id="watchTable"' not in page
-    assert "观察列表" not in page
+    assert 'id="observationTable"' in page
+    assert 'id="observationPool"' in page
+    assert "不可执行，仅供观察" in page
     assert 'data-view="live"' not in page
     assert "正式当前" not in page
     assert "临时实时" not in page
@@ -91,7 +92,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "resolveStrategyDate" in dashboard
     assert "renderMissingHistoricalDate" in dashboard
     assert "selectedDateAvailability" in dashboard
-    assert 'new URLSearchParams(strategy === "long" ? {} : { top_n: "18" })' in dashboard
+    assert 'state.date ? "18" : "12"' in dashboard
     assert "setLongLayout" in dashboard
     assert 'payload.strategy === "long" && payload.status === "ready" && !historical' in dashboard
     assert "tableDefinition(payload)" in dashboard
@@ -133,10 +134,11 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "sourceLabel(market.active_source)" in dashboard
     assert "sourceLabel(firstVisible.source)" in dashboard
     assert "sourceLabel(first.source)" in dashboard
-    assert 'payload.phase === "close_fallback"' in dashboard
-    assert "11:20 已冻结 · 名单与评分不变 · 行情已过期" in dashboard
+    assert 'payload.phase === "close_fallback"' in dashboard_patches
+    assert "11:20 已冻结 · 名单与评分不变" in dashboard_patches
+    assert "行情已过期，当前报价仅供观察" in dashboard_patches
     assert "实时草稿" not in dashboard
-    assert "实时数据" in dashboard
+    assert "实时快照" in dashboard_patches
     assert "流水线已启动，当前策略尚无可用快照" not in dashboard
     assert "当前策略尚未发布快照" not in dashboard
     assert "最高评分" in page
@@ -222,7 +224,7 @@ def test_active_version_labels_are_readable_and_governed() -> None:
     )
 
     assert active_labels == (
-        "strategy_review29_2026_07",
+        "strategy_review30_top6_observe6_2026_07",
         "board_policy_score_first_2026_07",
         "fusion_local68_deepseek32",
         "market_cache_p1_p6",

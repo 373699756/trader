@@ -72,5 +72,5 @@ def _frozen_snapshot(engine, policy, feature_factory, now: datetime, selected_co
         preselect_max_age_seconds=20.0,
         candidate_pool_size=120,
     )
-    assert policy.selection.default_top_k == 10
+    assert policy.selection.default_top_k == 6
     return replace(snapshot, frozen=True)

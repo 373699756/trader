@@ -23,6 +23,11 @@
     grid-template-columns: repeat(3, minmax(100px, 1fr));
   }
 
+  .observation-pool {
+    margin-right: 12px;
+    margin-left: 12px;
+  }
+
 }
 
 @media (max-width: 620px) {

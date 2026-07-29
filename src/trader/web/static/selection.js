@@ -50,7 +50,23 @@
     return items.filter((item) => item.action === "executable");
   }
 
+  function observationRecommendations(payload) {
+    const items = payload && Array.isArray(payload.items) ? payload.items : [];
+    if (!isCurrentShortView(payload)) return [];
+    return items.filter((item) => item.action === "observe");
+  }
+
+  function isCurrentShortView(payload) {
+    return Boolean(
+      payload
+      && payload.historical !== true
+      && payload.strategy !== "long"
+      && payload.phase !== "close_fallback"
+    );
+  }
+
   function recommendationSummary(payload, recommendations) {
+    const scoringApplicable = !payload || payload.score_status !== "not_applicable";
     const scores = recommendations
       .map((item) => item && item.scores ? item.scores.final_score : null)
       .filter((value) => typeof value === "number" && Number.isFinite(value));
@@ -64,8 +80,8 @@
           ? `降级 · ${degradedReasons.length}项`
           : "正常";
     return {
-      topScore: scores.length ? Math.max(...scores).toFixed(2) : "-",
-      modelReview: recommendations.length ? `${reviewed} / ${recommendations.length}` : "-",
+      topScore: scoringApplicable && scores.length ? Math.max(...scores).toFixed(2) : "-",
+      modelReview: scoringApplicable && recommendations.length ? `${reviewed} / ${recommendations.length}` : "-",
       dataQuality,
       dataQualityTitle: window.TraderRender.reasonLabels(degradedReasons).join("、"),
     };
@@ -90,6 +106,7 @@
     descriptions,
     isSnapshotNotFound,
     markDateAvailability,
+    observationRecommendations,
     recommendationSummary,
     renderDateOptions,
     resolveStrategyDate,

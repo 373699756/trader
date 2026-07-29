@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求重新增加独立观察池，并明确每策略正式推荐最多 6 只、观察最多 6 只、当前接口
+  合计最多 12 只。本批新增当前 today/tomorrow/d25 的第二张观察池表，逐股显示实时行情、
+  最终分与直接观察原因；today 冻结后观察池同步切换为 11:20 锚点跟踪。观察池标题显示
+  实际门槛和容量，悬停明确“观察门槛 = 正式门槛 - 观察余量”。API 新增执行/观察门槛、
+  两池容量与入选数、逐股阻断原因计数、集中度跳过原因计数及受控
+  `readiness_reason`。
+
 - 用户要求修复本次工程 Review 的四项发现。本批把 `tomorrow_native_projection` 接入正式
   `perf-check end-to-end/all`，固定使用 5500 行全市场特征、三板各 120 候选、1 次预热和
   5 次采样，P95 预算为 5 秒；新增 v1/v2 三板同批决策对照，覆盖入选顺序、本地分、动作、
@@ -226,6 +233,13 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- 活动新策略从正式 10 + 观察 8 收敛为正式 6 + 观察 6，当前推荐 API 默认和硬上限统一为
+  12，tomorrow 原生 local/hybrid 决策与收盘观察恢复使用同一 6+6 容量。显式历史查询
+  默认和兼容上限仍为 18，旧策略冻结的 10+8 记录不重排、不重算、不截断；long 继续只
+  发布当前实时数据，不评分、不冻结、不写推荐历史，摘要、状态和详情不再把兼容用的 0 分
+  字段显示成真实评分。73 分观察线明确记录为 78 分正式门槛减 5 分观察余量，不再表述为
+  已经证明的收益最优参数。
 
 - 统一行情 merge epoch 改为绑定排序后的已接受观测代码、来源、点时、版本、载荷哈希、
   缺失原因和定向范围；最终规范快照哈希仍覆盖完整输出。固定性能 runner 的 360 行定向
@@ -561,6 +575,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户反馈 11:20 后今早没有推荐却显示“候选达到评分门槛，但被风险或执行拦截”，同时
+  tomorrow/d25 和冻结状态也使用同类泛化提示。原因是主表过滤掉 `observe`，而旧诊断只
+  提供聚合空结果码，页面又把快照生命周期、逐股动作阻断和模型复核状态混在同一文案。
+  现在主表无正式项但有观察项时直接指向观察池；无观察项时显示最高分与两条门槛，或列出
+  真实阻断/集中度原因。未就绪区分尚未发布、today 错过 11:20、14:50-15:00 冻结收口、
+  15:00 后收盘恢复及 long 无当前数据；冻结后的 `deepseek_pending` 改为“冻结前未完成，
+  已按本地评分固化”，不再误报仍在修改正式结果。
+
 - 修复当前交易日基准行情缺失时结算服务过早返回、导致已到期个股连毛收益和
   `benchmark_missing` 状态也不落库的问题；现在只跳过基准及净超额，仍保存个股毛收益。
 - 修复盘中请求超时取消回归依赖 10ms 线程调度、偶发在首个 I/O 尚未退出时开始下一轮的
@@ -814,6 +836,14 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 本批通过 `make format-check`、`make lint`、`make type-check`、`make test` 和
+  `make package`；全仓 pytest 覆盖架构 AST、`create_app()` 无副作用、固定融合结果
+  83.40、预算并发、SSE 游标/慢客户端、冻结恢复与哈希一致性。仓库外安装构建 wheel 后
+  已从外部 `site-packages` 导入 `trader`、执行 `trader-cli --help` 与
+  `validate-config`，并读取模板、三份 CSS、四份本批 JavaScript 和图标共 9 项资源。
+  离线 Firefox/Geckodriver 桌面门禁在 1280x720、1440x900、1920x1080 均通过，正式表和
+  6 行观察池可见、无页面级横向溢出、无浏览器错误，SSE patch-to-paint P95 为 44ms。
 
 - 结算领域/应用 8 项、持久化 outcome 2 项通过；盘中取消重试回归连续 12 次通过；三板
   v1/v2 语义回归通过。`perf-check market-data` 连续三轮全部通过，P95 分别为
@@ -1328,6 +1358,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除活动当前接口的 18 条默认容量、前端 18 条 SSE TopK 接纳，以及会掩盖真实原因的
+  “候选达到评分门槛，但被风险或执行条件拦截”“等待策略数据更新”等泛化主提示；移除冻结
+  快照把 `deepseek_pending` 继续表述为“模型复核进行中”的错误语义。
+
 - 移除基准缺失时阻断全部个股结算的早退，以及行情 merge epoch 对完整投影报价的重复
   JSON 编码和已无生产调用的旧列式 epoch helper；未删除结算目标、基准历史、行情快照、
   评分、冻结或运行数据。
@@ -1416,6 +1450,12 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 观察线 73 仍是当前策略参数 `78 - 5`，没有足够样本外证据证明它能产生最高收益；任何
+  门槛调整仍需按权威策略文档完成预登记收益、成本和稳定性门禁。当前机器没有 Chrome/
+  Chromium，因此本批真实桌面验收使用产品范围内的稳定版 Firefox；Chrome/Edge 的 CSS
+  兼容由相同标准 Web API、静态契约和后续具备浏览器环境时的门禁继续覆盖。旧冻结记录仅
+  在显式历史视图完整返回最多 18 条，当前接口始终遵守新的 12 条上限。
 
 - 本批只修复 tomorrow v2 影子工程时延和证据语义，没有调整选股、评分、融合、动作或
   排名，因而不能宣称荐股收益已经提高。v30 午后启动仍无法补齐不晚于 10:00 的真实成功
