@@ -98,6 +98,7 @@ class TomorrowShadowRuntime:
         self._native_superseded = 0
         self._baseline_fallbacks = 0
         self._baseline_superseded = 0
+        self._baseline_stale_trade_date_skipped = 0
         self._failed = 0
         self._skipped_sealed = 0
         self._last_error = ""
@@ -154,6 +155,21 @@ class TomorrowShadowRuntime:
 
     def process(self, snapshot: RecommendationSnapshot) -> bool:
         started = time.perf_counter()
+        try:
+            snapshot_trade_date = date.fromisoformat(snapshot.trade_date)
+            current_trade_date = _clock_now(self._clock).date()
+            if snapshot_trade_date > current_trade_date:
+                raise ValueError("tomorrow shadow baseline trade date is in the future")
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._record_failure(snapshot, exc, started)
+            return False
+        if snapshot_trade_date < current_trade_date:
+            with self._lock:
+                self._baseline_stale_trade_date_skipped += 1
+            return True
+        return self._process_current_baseline(snapshot, started)
+
+    def _process_current_baseline(self, snapshot: RecommendationSnapshot, started: float) -> bool:
         try:
             native_input = native_input_from_snapshot(snapshot)
             with self._lock:
@@ -340,6 +356,7 @@ class TomorrowShadowRuntime:
                 "native_superseded": self._native_superseded,
                 "baseline_fallbacks": self._baseline_fallbacks,
                 "baseline_superseded": self._baseline_superseded,
+                "baseline_stale_trade_date_skipped": self._baseline_stale_trade_date_skipped,
                 "failed": self._failed,
                 "skipped_sealed": self._skipped_sealed,
                 "last_error": self._last_error,

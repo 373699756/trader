@@ -60,6 +60,37 @@ def test_evidence_repository_rejects_tampered_payload(tmp_path) -> None:
         repository.load_recent()
 
 
+def test_evidence_report_retains_incomplete_day_but_evaluates_latest_complete_day(tmp_path) -> None:
+    repository = TomorrowShadowEvidenceRepository(tmp_path, maximum_samples=4)
+    repository.initialize()
+    incomplete_day = TRADE_DATE.replace(day=27)
+    repository.record(
+        replace(
+            _observation("old-failure", datetime(2026, 7, 27, 12, 0, tzinfo=SHANGHAI)),
+            trade_date=incomplete_day,
+            processing_error="startup_stale_baseline",
+        )
+    )
+    repository.record(_observation("morning", datetime(2026, 7, 28, 9, 40, tzinfo=SHANGHAI)))
+    repository.record(
+        _observation(
+            "freeze",
+            datetime(2026, 7, 28, 14, 50, tzinfo=SHANGHAI),
+            frozen=True,
+        )
+    )
+
+    report = repository.build_report(TomorrowCutoverPolicy(minimum_samples=2, minimum_trade_days=1, maximum_samples=4))
+
+    assert report["observation_count"] == 3
+    assert report["trade_dates"] == ["2026-07-27", "2026-07-28"]
+    assert report["cutover_status"]["evaluation_trade_date"] == "2026-07-28"
+    assert report["cutover_status"]["retained_sample_count"] == 3
+    assert report["cutover_status"]["sample_count"] == 2
+    assert report["cutover_status"]["processing_error_count"] == 0
+    assert report["cutover_status"]["eligible"] is True
+
+
 def test_evidence_repository_read_does_not_create_missing_database(tmp_path) -> None:
     repository = TomorrowShadowEvidenceRepository(tmp_path)
 

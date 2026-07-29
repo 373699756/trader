@@ -241,27 +241,27 @@ def test_cutover_gate_retains_latest_observation_times_when_input_is_out_of_orde
     assert status.selection_agreement_ratio == 1.0
 
 
-def test_shadow_failure_keeps_snapshot_trade_date_after_midnight() -> None:
-    next_day = datetime(2026, 7, 29, 0, 1, tzinfo=SHANGHAI)
+def test_shadow_failure_keeps_future_snapshot_trade_date(application_feature_factory) -> None:
+    previous_day = datetime(2026, 7, 27, 23, 59, tzinfo=SHANGHAI)
     gate = TomorrowCutoverGate(TomorrowCutoverPolicy(minimum_samples=1, minimum_trade_days=1))
+    decisions = Mock(latest=Mock(return_value=None))
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
     runtime = TomorrowShadowRuntime(
-        Mock(),
+        policy,
         TomorrowShadowDependencies(
-            Mock(latest=Mock(return_value=None)),
+            decisions,
             Mock(),
             Mock(),
             Mock(),
             Mock(),
             gate,
-            Mock(now=Mock(return_value=next_day)),
+            Mock(now=Mock(return_value=previous_day)),
         ),
     )
-    snapshot = _shadow_snapshot_mock("cross-midnight")
-    snapshot.trade_date = TRADE_DATE.isoformat()
-    snapshot.published_at = OBSERVED_AT
-    snapshot.replay_input = None
+    snapshot = _baseline_snapshot(policy, application_feature_factory)
 
     assert runtime.process(snapshot) is False
+    decisions.publish.assert_not_called()
 
     status = gate.status()
     assert status.sample_count == 1
@@ -273,6 +273,82 @@ def test_shadow_failure_keeps_snapshot_trade_date_after_midnight() -> None:
         "matching_freeze_missing",
         "processing_errors_present",
     )
+
+
+def test_shadow_skips_restored_previous_trade_day_without_recording_failure(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    gate = TomorrowCutoverGate(TomorrowCutoverPolicy(minimum_samples=1, minimum_trade_days=1))
+    runtime = TomorrowShadowRuntime(
+        policy,
+        TomorrowShadowDependencies(
+            Mock(latest=Mock(return_value=None)),
+            Mock(),
+            Mock(),
+            Mock(),
+            Mock(),
+            gate,
+            Mock(now=Mock(return_value=datetime(2026, 7, 29, 12, 30, tzinfo=SHANGHAI))),
+        ),
+    )
+    restored = replace(
+        _baseline_snapshot(policy, application_feature_factory),
+        frozen=True,
+    )
+
+    assert runtime.process(restored) is True
+
+    status = runtime.status()
+    assert status["baseline_stale_trade_date_skipped"] == 1
+    assert status["failed"] == 0
+    assert status["last_error"] == ""
+    assert status["cutover_gate"]["retained_sample_count"] == 0
+    assert status["cutover_gate"]["sample_count"] == 0
+    assert status["cutover_gate"]["processing_error_count"] == 0
+
+
+def test_cutover_gate_evaluates_latest_complete_day_without_cross_day_contamination() -> None:
+    gate = TomorrowCutoverGate(
+        TomorrowCutoverPolicy(
+            minimum_samples=2,
+            minimum_trade_days=1,
+        )
+    )
+    incomplete_day = TRADE_DATE - timedelta(days=1)
+    gate.record(
+        replace(
+            _observation(
+                sequence=1,
+                observed_at=datetime(2026, 7, 27, 12, 0, tzinfo=SHANGHAI),
+            ),
+            trade_date=incomplete_day,
+            processing_error="startup_stale_baseline",
+        )
+    )
+    gate.record(
+        _observation(
+            sequence=2,
+            observed_at=datetime(2026, 7, 28, 9, 30, tzinfo=SHANGHAI),
+        )
+    )
+    gate.record(
+        _observation(
+            sequence=3,
+            observed_at=datetime(2026, 7, 28, 14, 50, tzinfo=SHANGHAI),
+            frozen=True,
+        )
+    )
+
+    status = gate.status()
+    assert status.eligible is True
+    assert status.evaluation_trade_date == TRADE_DATE.isoformat()
+    assert status.retained_sample_count == 3
+    assert status.sample_count == 2
+    assert status.successful_sample_count == 2
+    assert status.trade_day_count == 1
+    assert status.complete_trade_day_count == 1
+    assert status.processing_error_count == 0
 
 
 def test_shadow_projection_reuses_replay_input_without_an_external_port(

@@ -99,10 +99,12 @@ class TomorrowShadowObservation:
 class TomorrowCutoverStatus:
     eligible: bool
     blockers: tuple[str, ...]
+    retained_sample_count: int
     sample_count: int
     successful_sample_count: int
     trade_day_count: int
     complete_trade_day_count: int
+    evaluation_trade_date: str | None
     selection_agreement_ratio: float | None
     filter_agreement_ratio: float | None
     local_publish_p95_seconds: float | None
@@ -188,8 +190,10 @@ def _cutover_status(
     *,
     evidence_failure_count: int = 0,
 ) -> TomorrowCutoverStatus:
-    sample_count = len(samples)
-    successful = tuple(item for item in samples if not item.processing_error)
+    retained_sample_count = len(samples)
+    evaluation_samples, evaluation_trade_date = _evaluation_window(policy, samples)
+    sample_count = len(evaluation_samples)
+    successful = tuple(item for item in evaluation_samples if not item.processing_error)
     successful_sample_count = len(successful)
     trade_day_count = len({item.trade_date for item in successful})
     complete_trade_day_count = _complete_trade_day_count(policy, successful)
@@ -197,13 +201,13 @@ def _cutover_status(
     filter_ratio = _ratio(successful, "filter_reasons_match")
     local_p95 = _nearest_rank_p95(tuple(item.local_publish_seconds for item in successful))
     age_p95 = _nearest_rank_p95(tuple(item.decision_age_seconds for item in successful))
-    processing_errors = sum(bool(item.processing_error) for item in samples)
-    deepseek_delta = sum(item.deepseek_request_delta for item in samples)
+    processing_errors = sum(bool(item.processing_error) for item in evaluation_samples)
+    deepseek_delta = sum(item.deepseek_request_delta for item in evaluation_samples)
     matching_freezes = sum(
         item.baseline_frozen and item.v2_frozen and item.freeze_codes_match and bool(item.freeze_content_hash)
         for item in successful
     )
-    resource_failures = sum(not item.resource_limits_passed for item in samples)
+    resource_failures = sum(not item.resource_limits_passed for item in evaluation_samples)
     blocker_conditions = (
         (successful_sample_count < policy.minimum_samples, "insufficient_samples"),
         (complete_trade_day_count < policy.minimum_trade_days, "incomplete_trade_day"),
@@ -227,10 +231,12 @@ def _cutover_status(
     return TomorrowCutoverStatus(
         eligible=not blockers,
         blockers=blockers,
+        retained_sample_count=retained_sample_count,
         sample_count=sample_count,
         successful_sample_count=successful_sample_count,
         trade_day_count=trade_day_count,
         complete_trade_day_count=complete_trade_day_count,
+        evaluation_trade_date=evaluation_trade_date.isoformat() if evaluation_trade_date is not None else None,
         selection_agreement_ratio=selection_ratio,
         filter_agreement_ratio=filter_ratio,
         local_publish_p95_seconds=local_p95,
@@ -243,12 +249,31 @@ def _cutover_status(
     )
 
 
+def _evaluation_window(
+    policy: TomorrowCutoverPolicy,
+    samples: tuple[TomorrowShadowObservation, ...],
+) -> tuple[tuple[TomorrowShadowObservation, ...], date | None]:
+    successful = tuple(item for item in samples if not item.processing_error)
+    complete_dates = _complete_trade_dates(policy, successful)
+    if not complete_dates:
+        return samples, None
+    latest_complete = max(complete_dates)
+    return tuple(item for item in samples if item.trade_date == latest_complete), latest_complete
+
+
 def _complete_trade_day_count(
     policy: TomorrowCutoverPolicy,
     samples: tuple[TomorrowShadowObservation, ...],
 ) -> int:
-    trade_dates = {item.trade_date for item in samples}
-    complete = 0
+    return len(_complete_trade_dates(policy, samples))
+
+
+def _complete_trade_dates(
+    policy: TomorrowCutoverPolicy,
+    samples: tuple[TomorrowShadowObservation, ...],
+) -> tuple[date, ...]:
+    complete: list[date] = []
+    trade_dates = sorted({item.trade_date for item in samples})
     for trade_date in trade_dates:
         day = tuple(item for item in samples if item.trade_date == trade_date)
         has_opening = any(
@@ -264,8 +289,9 @@ def _complete_trade_day_count(
             and bool(item.freeze_content_hash)
             for item in day
         )
-        complete += has_opening and has_freeze
-    return complete
+        if has_opening and has_freeze:
+            complete.append(trade_date)
+    return tuple(complete)
 
 
 def _ratio(samples: tuple[TomorrowShadowObservation, ...], field: str) -> float | None:

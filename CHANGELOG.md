@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户在上一批指出完整交易日证据尚未具备后重新启动服务并要求继续。真实 v27 重启确认
+  新配置和证据 SQLite 已加载，但旧 P6 恢复的上一交易日 frozen tomorrow 快照被影子
+  worker 当作当天 baseline，形成
+  `RuntimeError:tomorrow shadow query did not expose the accepted decision` 和一条永久
+  `processing_error`。本批新增第 2.11 节“跨日启动与证据窗口隔离”契约、独立
+  `baseline_stale_trade_date_skipped` 计数，以及进程内与持久化跨日回归。
+
 - 用户再次发送“继续”，要求在保证评分正确的前提下继续压缩 tomorrow v2 总耗时并提高
   数据实时性。真实只读状态复核发现旧进程累计 142 条 baseline，但仅 97 条成功，
   45 条处理失败，选择一致率约 16.5%、过滤一致率为 0，且最新 local 停留数分钟；本批
@@ -202,6 +209,12 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- tomorrow 工程切换门禁在存在完整交易日后，只评估观测时间最新的一个完整日；SQLite
+  仍保留最近 4096 条跨日审计，并额外报告 `retained_sample_count` 与
+  `evaluation_trade_date`。较早或较晚的不完整日不能污染或补足完整日的 100 样本、错误、
+  一致率和 P95，更新的完整日形成后会原子取代旧评估窗口。活动运行身份提升为
+  `runtime_v28_tomorrow_cross_day_evidence_2026_07_29`。
 
 - tomorrow 评分候选完成后现在重新读取一次注入时钟，并将不跨交易日的完成水位、同一份
   不可变全市场人口和候选集合同时交给 v2 原生输入与 v1 `prepare_snapshot`；配置身份更新为
@@ -515,6 +528,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复午间/跨日重启时，恢复的上一交易日 tomorrow 正式快照在当天 v2 current 尚未形成
+  时被误记为影子处理错误的问题。较早交易日 baseline 现在在投影、CAS 和证据写入前按
+  注入上海时钟受控跳过；未来日期、非法日期和同日真实投影异常仍失败，不会被跳过规则
+  隐藏。已持久化的旧失败证据不删除、不改写，也不会被转换为成功样本。
+
 - 修复候选 I/O 在评分轮次开始后完成时，原生边界仍使用旧轮次时间而把合法本轮特征误判
   为 future、造成 `tomorrow_native_inputs_failed` 且 v2 current 长时间不更新的问题。
   同时修复 v2 用候选增强字段覆盖全市场人口并从约 5500 股重新选候选、把候选差异混入
@@ -743,6 +761,20 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 第 2.11 节定向回归覆盖上一交易日 frozen baseline 受控跳过、未来日期继续失败、旧不完整
+  日错误与最新完整日隔离，以及 SQLite 离线报告保留 3 条跨日审计但只用最新完整日 2 条
+  样本得到 eligible；相关 application/infra/component/integration 共 30 项通过，定向
+  Ruff 与 mypy 通过。
+- `make format-check`、`make lint`（严格重构债务为零）和 202 个源码文件 mypy 通过；
+  全仓收集 1010 项，除用户开始前已有的 benchmark-unavailable settlement 新断言外统一
+  1009 项通过。架构 AST、`create_app()` 无副作用、固定融合 83.40、SSE 游标/慢客户端、
+  冻结恢复和持久化哈希专项 81 项通过。sdist/wheel 构建成功，仓库外 wheel 完成包来源、
+  CLI、v28 配置、8 项模板/静态资源和依赖完整性验收；Firefox 三档桌面无白屏、溢出、
+  重叠或浏览器错误，overlay 未增加完整 current GET。
+- 固定性能的 board-scoring、api-sse 和 end-to-end 三套分别通过，100 tick 内存增长为
+  0、网络调用为 0；全量/market-data 在运行中服务持续占用约半个 CPU 核时复跑仍有下述
+  旧行情算子绝对预算波动，因此未把性能总门禁写成通过。
 
 - failure-first 回归先稳定复现完成时间误判、全市场重新评分、过滤审计口径混用和重复
   baseline 冲突；实现后，同一非空 100 股生产策略批次的 v1/v2 入选代码、本地分和硬过滤
@@ -1196,6 +1228,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除或重写任何证据数据库、冻结记录、评分规则、DeepSeek facts、旧 release 或
+  用户运行数据；生产 tomorrow 读写指针仍未切换。
+
 - 移除 tomorrow v2 影子从全市场重新生成评分候选、候选字段覆盖人口字段，以及把完整 v2
   审计原因直接当作 v1 硬过滤比较事实的隐式行为；未删除数据源、评分公式、风险规则、
   DeepSeek 预算、冻结记录、v1 正式读写链或旧 release，也未执行生产指针切换。
@@ -1268,6 +1303,17 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 2026-07-29 12:31 的 v27 午间重启已经错过不晚于 10:00 的完整日窗口；现场产生的一条
+  旧日恢复失败仍作为不可变审计保存在证据库中。v28 修复只能保证下一完整交易日按独立
+  窗口评估，不能追补今天早盘或证明真实收益；仍须在下一交易日 10:00 前启动并持续至
+  14:50，取得至少 100 条成功样本、匹配冻结和 5/10 秒 P95 后，才能另立批次复核并切换。
+- 本批未改动的 `market_merge` 在固定全量/market-data 多次复跑中为约
+  602.2-653.7ms，高于 600ms 预算；`targeted_overlay_commit` 部分轮次为
+  104.9-122.1ms，高于 100ms，`canonical_snapshot` 有一轮为 906.5ms，高于 900ms。
+  同时运行的本地服务持续占用约 52% 单核等效 CPU，其他三套性能、相对回归、网络和内存
+  均通过；这些结果必须保留为未通过的外部宿主负载风险，不能在跨日证据章节顺带改写旧
+  行情算子或放宽预算。
 
 - 当前 5000 端口仍运行上一构建，未重启到 v27；本批没有在 11:20 后中断用户正在使用的
   本地服务。当天又缺少不晚于 10:00 的持久化成功观测，因此即使现在重启也不能形成第
