@@ -49,8 +49,6 @@ class OutcomeSettlementService:
         benchmark = _equal_weight_benchmark(local.date().isoformat(), market_features)
         if benchmark is not None:
             self._writer.record_benchmark_return(benchmark, observed_at=now)
-        else:
-            return SettlementResult(0, 0, 0, False)
         targets = tuple(self._targets.pending_outcome_targets(limit=self._target_limit))
         if not targets:
             return SettlementResult(0, 0, 0, benchmark is not None)

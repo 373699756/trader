@@ -97,6 +97,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.performance_budgets.latency_p95_ms["market_merge"] == 600
     assert runtime.performance_budgets.latency_p95_ms["canonical_snapshot"] == 900
     assert runtime.performance_budgets.latency_p95_ms["targeted_overlay_commit"] == 100
+    assert runtime.performance_budgets.latency_p95_ms["tomorrow_native_projection"] == 5000
     assert runtime.performance_budgets.latency_p95_ms["browser_patch_to_paint"] == 100
     assert runtime.performance_budgets.memory.cache_logical_bytes == 260046848
     assert runtime.performance_budgets.memory.process_peak_rss_bytes == 402653184

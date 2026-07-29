@@ -268,6 +268,7 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         "board_ready_to_draft": 500.0,
         "quote_to_draft": 5000.0,
         "deepseek_to_hybrid": 1000.0,
+        "tomorrow_native_projection": 5000.0,
         "sse_publish": 100.0,
         "browser_patch_to_paint": 100.0,
         "snapshot_api": 200.0,

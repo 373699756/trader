@@ -8,7 +8,9 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from trader.application.ports.tomorrow import TomorrowNativeInput
 from trader.application.recommendations import PreparedSnapshot, RecommendationEngine
+from trader.application.tomorrow_shadow_projection import project_tomorrow_input
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import Board, FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.models import Strategy
@@ -69,6 +71,48 @@ def recommendation_operations(config_path: Path) -> Mapping[str, Callable[[], ob
         "quote_to_draft": lambda: prepare(changed),
         "deepseek_to_hybrid": finalize_substitutes,
     }
+
+
+def tomorrow_projection_operation(config_path: Path) -> Callable[[], object]:
+    runtime = load_runtime_settings(config_path)
+    settings = load_strategy_settings(runtime.strategy_config_path)
+    policy = _recommendation_policy(settings)
+    now = datetime(2026, 7, 23, 14, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    features = tuple(_tomorrow_market_feature(index, now) for index in range(5500))
+    candidates = (*features[:120], *features[2500:2620], *features[4000:4120])
+    native_input = TomorrowNativeInput(
+        trade_date=now.date(),
+        phase="afternoon",
+        data_version="performance-data-v1",
+        config_version=runtime.config_version,
+        evaluated_at=now,
+        market_features=features,
+        requested_codes=tuple(feature.quote.code for feature in candidates),
+        candidate_features=candidates,
+        preselect_max_age_seconds=30.0,
+        score_max_age_seconds=30.0,
+        candidate_pool_size=360,
+    )
+    return lambda: project_tomorrow_input(native_input, policy, decision_sequence=4)
+
+
+def _tomorrow_market_feature(index: int, observed_at: datetime) -> FeatureSnapshot:
+    if index < 2500:
+        board, code = Board.MAIN, f"{600000 + index:06d}"
+    elif index < 4000:
+        board, code = Board.CHINEXT, f"{300000 + index - 2500:06d}"
+    else:
+        board, code = Board.STAR, f"{688000 + index - 4000:06d}"
+    feature = _feature(board, index % 120, observed_at)
+    return replace(
+        feature,
+        quote=replace(
+            feature.quote,
+            code=code,
+            name=f"fixture-{code}",
+            data_version=f"performance-data-v1:{code}",
+        ),
+    )
 
 
 def _reviews(
@@ -180,4 +224,4 @@ def _feature(board: Board, index: int, observed_at: datetime) -> FeatureSnapshot
     return FeatureSnapshot(quote, values, observed_at, 60, merge_epoch="performance-epoch")
 
 
-__all__ = ["recommendation_operations"]
+__all__ = ["recommendation_operations", "tomorrow_projection_operation"]

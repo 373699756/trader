@@ -14,7 +14,7 @@ import tracemalloc
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 from zoneinfo import ZoneInfo
 
 from trader.application.board_scoring import BoardScoringCoordinator, BoardScoringPlan
@@ -36,7 +36,10 @@ from trader.domain.recommendation.models import (
 from trader.domain.recommendation.ranking import SelectionPolicy, select_top_k
 from trader.domain.recommendation.scoring import score_board_strategy
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
-from trader.entrypoints.performance_recommendations import recommendation_operations
+from trader.entrypoints.performance_recommendations import (
+    recommendation_operations,
+    tomorrow_projection_operation,
+)
 from trader.infra.market_data.columnar import ColumnarQuoteBatch, targeted_market_changes
 from trader.infra.market_data.merge import (
     merge_market_observations,
@@ -63,7 +66,12 @@ _SUITE_METRICS = {
         "global_selection",
     ),
     "api-sse": ("sse_publish", "snapshot_api", "etag_api", "dates_api", "status_api"),
-    "end-to-end": ("board_ready_to_draft", "quote_to_draft", "deepseek_to_hybrid"),
+    "end-to-end": (
+        "board_ready_to_draft",
+        "quote_to_draft",
+        "deepseek_to_hybrid",
+        "tomorrow_native_projection",
+    ),
 }
 
 
@@ -173,6 +181,7 @@ def _operations(
         "board_ready_to_draft": "trader.application.recommendations.RecommendationEngine.prepare_snapshot",
         "quote_to_draft": "trader.application.recommendations.RecommendationEngine.prepare_snapshot",
         "deepseek_to_hybrid": "trader.application.recommendations.RecommendationEngine.finalize_snapshot",
+        "tomorrow_native_projection": ("trader.application.tomorrow_shadow_projection.project_tomorrow_input"),
         "sse_publish": "trader.application.publisher.SnapshotPublisher.publish_overlay",
         "snapshot_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
         "etag_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
@@ -187,6 +196,7 @@ def _operations(
         operations.update(_board_scoring_operations(config_path))
     if any(name in _SUITE_METRICS["end-to-end"] for name in metric_names):
         operations.update(recommendation_operations(config_path))
+        operations["tomorrow_native_projection"] = tomorrow_projection_operation(config_path)
     missing = set(metric_names).difference(operations)
     if missing:
         raise RuntimeError(f"production performance operations are missing: {sorted(missing)}")
@@ -203,15 +213,16 @@ def _market_data_operations(
         source: str, price_multiplier: float, selected: Sequence[Mapping[str, object]]
     ) -> tuple[MarketQuote, ...]:
         def normalizer(row: Mapping[str, object], received_at: datetime) -> MarketQuote:
+            price = cast(float, row["price"])
             return build_market_quote(
                 MarketQuoteInput(
                     code=str(row["code"]),
                     name=f"fixture-{row['code']}",
-                    price=float(str(row["price"])) * price_multiplier,
-                    previous_close=float(str(row["price"])),
-                    open_price=float(str(row["price"])),
-                    high=float(str(row["price"])) * price_multiplier,
-                    low=float(str(row["price"])),
+                    price=price * price_multiplier,
+                    previous_close=price,
+                    open_price=price,
+                    high=price * price_multiplier,
+                    low=price,
                     pct_change=(price_multiplier - 1.0) * 100.0,
                     change_5m=0.5,
                     speed=0.2,
@@ -245,16 +256,22 @@ def _market_data_operations(
         observation_from_quote(quote, source="tencent", observed_at=observed_at) for quote in tencent_quotes
     )
     targeted_codes = tuple(quote.code for quote in tencent_quotes)
+    combined_observations = (*east_observations, *sina_observations)
+    targeted_snapshot = merge_market_observations(
+        tencent_observations,
+        observed_at=observed_at,
+        targeted_codes=targeted_codes,
+    )
 
     def normalize() -> object:
         return normalize_source("eastmoney", 1.0, rows)
 
     def merge() -> object:
-        return merge_market_observations((*east_observations, *sina_observations), observed_at=observed_at)
+        return merge_market_observations(combined_observations, observed_at=observed_at)
 
     def canonical() -> object:
         snapshot = merge_market_observations(
-            (*east_observations, *sina_observations),
+            combined_observations,
             observed_at=observed_at,
         )
         return ColumnarQuoteBatch.from_snapshot(
@@ -264,12 +281,7 @@ def _market_data_operations(
         )
 
     def targeted_commit() -> object:
-        targeted = merge_market_observations(
-            (*tencent_observations,),
-            observed_at=observed_at,
-            targeted_codes=targeted_codes,
-        )
-        committed = overlay_canonical_snapshot(base_snapshot, targeted)
+        committed = overlay_canonical_snapshot(base_snapshot, targeted_snapshot)
         return targeted_market_changes(base_snapshot, committed, targeted_codes)
 
     return {

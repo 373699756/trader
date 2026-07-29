@@ -5,7 +5,9 @@ from unittest.mock import Mock
 
 import pytest
 
+from trader.domain.market.models import Board
 from trader.entrypoints import performance as performance_module
+from trader.entrypoints import performance_recommendations as recommendation_performance
 from trader.entrypoints.performance import run_performance_check
 from trader.infra.settings import load_runtime_settings
 
@@ -26,6 +28,24 @@ def test_market_normalization_metric_calls_production_normalizer(monkeypatch: py
     operations["market_normalization"]()
 
     assert normalizer.call_count == setup_call_count + 1
+
+
+def test_tomorrow_projection_metric_uses_fixed_full_market_and_three_board_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    projection = object()
+    project = Mock(return_value=projection)
+    monkeypatch.setattr(recommendation_performance, "project_tomorrow_input", project)
+    operation = recommendation_performance.tomorrow_projection_operation(RUNTIME_CONFIG)
+
+    assert operation() is projection
+    native_input = project.call_args.args[0]
+    assert len(native_input.market_features) == 5500
+    assert len(native_input.candidate_features) == 360
+    assert {
+        board: sum(feature.quote.board is board for feature in native_input.candidate_features)
+        for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
+    } == {Board.MAIN: 120, Board.CHINEXT: 120, Board.STAR: 120}
 
 
 def test_perf_check_uses_production_api_and_sse_paths() -> None:

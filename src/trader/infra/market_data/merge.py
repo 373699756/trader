@@ -20,7 +20,6 @@ from trader.domain.market.models import (
 )
 from trader.infra.market_data.columnar_merge import (
     ColumnarMergeError,
-    columnar_merge_epoch,
     try_merge_complete_realtime,
 )
 from trader.infra.market_data.merge_quote import (
@@ -95,6 +94,7 @@ def _merge_valid_observations(
     valid: Sequence[SourceObservation],
     context: _MergeContext,
 ) -> CanonicalMarketSnapshot:
+    merge_epoch = _observation_merge_epoch(valid, context)
     if not context.targeted_codes:
         try:
             columnar = try_merge_complete_realtime(valid)
@@ -105,7 +105,6 @@ def _merge_valid_observations(
                 degraded_reasons=tuple(sorted({*context.degraded_reasons, "columnar_merge_failed"})),
             )
         if columnar is not None:
-            merge_epoch = columnar_merge_epoch(context.observed_at, columnar, context.missing_reasons)
             return _canonical_snapshot(
                 observed_at=context.observed_at,
                 quotes=columnar.quotes,
@@ -161,7 +160,45 @@ def _merge_valid_observations(
         conflicts=tuple(sorted(conflicts)),
         missing_reasons=context.missing_reasons,
         degraded_reasons=context.degraded_reasons,
+        merge_epoch=merge_epoch,
     )
+
+
+def _observation_merge_epoch(
+    observations: Sequence[SourceObservation],
+    context: _MergeContext,
+) -> str:
+    """Identify the immutable accepted inputs without re-encoding projected quotes."""
+
+    identities = tuple(
+        (
+            observation.subject_key,
+            source_name(observation.source),
+            observation.source_time.isoformat(),
+            observation.received_at.isoformat(),
+            observation.effective_at.isoformat(),
+            observation.data_version,
+            observation.payload_hash,
+        )
+        for observation in sorted(
+            observations,
+            key=lambda item: (
+                item.subject_key,
+                source_name(item.source),
+                observation_order(item),
+            ),
+        )
+    )
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "accepted_observations": identities,
+                "missing_reasons": context.missing_reasons,
+                "observed_at": context.observed_at,
+                "targeted_codes": tuple(sorted(context.targeted_codes)),
+            }
+        )
+    ).hexdigest()[:24]
 
 
 def overlay_canonical_snapshot(

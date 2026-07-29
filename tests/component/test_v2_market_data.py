@@ -3922,7 +3922,7 @@ def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh() ->
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
-        intraday_batch_timeout_seconds=0.01,
+        intraday_batch_timeout_seconds=0.1,
     )
 
     first_refresh = threading.Thread(
@@ -3934,6 +3934,8 @@ def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh() ->
         assert intraday.started.wait(1.0)
         first_refresh.join(1.0)
         assert not first_refresh.is_alive()
+        intraday.release.set()
+        assert intraday.finished.wait(1.0)
         service.refresh_intraday_tail(("600001", "600002"), AFTERNOON)
     finally:
         intraday.release.set()
@@ -4971,12 +4973,14 @@ class BlockingIntradayClient:
     def __init__(self) -> None:
         self.release = threading.Event()
         self.started = threading.Event()
+        self.finished = threading.Event()
         self.calls = []
 
     def fetch_intraday_minutes(self, code, *, now):
         self.calls.append(code)
         self.started.set()
         self.release.wait(2.0)
+        self.finished.set()
         return _tail_minute_bars()
 
 

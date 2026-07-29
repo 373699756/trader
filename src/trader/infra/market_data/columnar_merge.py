@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Protocol, cast
+from typing import cast
 
 import polars as pl
 
@@ -196,54 +196,6 @@ def _normalize_complete_realtime_rows(
             )
         )
     return tuple(observations)
-
-
-def columnar_merge_epoch(
-    observed_at: datetime,
-    projection: ColumnarMarketProjection,
-    missing_reasons: dict[str, str],
-) -> str:
-    """Hash the canonical projection while reusing repeated source templates."""
-
-    digest = hashlib.sha256()
-    digest.update(b'{"conflicts":')
-    digest.update(canonical_json_bytes(projection.conflicts))
-    digest.update(b',"field_sources":')
-    _update_field_sources_hash(digest, projection.field_sources)
-    digest.update(b',"missing_reasons":')
-    digest.update(canonical_json_bytes(missing_reasons))
-    digest.update(b',"observed_at":')
-    digest.update(canonical_json_bytes(observed_at))
-    digest.update(b',"quotes":')
-    digest.update(canonical_json_bytes(projection.quotes))
-    digest.update(b',"source_versions":')
-    digest.update(canonical_json_bytes(projection.source_versions))
-    digest.update(b"}")
-    return digest.hexdigest()[:24]
-
-
-def _update_field_sources_hash(
-    digest: AnyHash,
-    field_sources: dict[str, dict[str, str]],
-) -> None:
-    digest.update(b"{")
-    encoded_templates: dict[tuple[tuple[str, str], ...], bytes] = {}
-    for index, code in enumerate(sorted(field_sources)):
-        if index:
-            digest.update(b",")
-        digest.update(canonical_json_bytes(code))
-        digest.update(b":")
-        template_key = tuple(sorted(field_sources[code].items()))
-        encoded = encoded_templates.get(template_key)
-        if encoded is None:
-            encoded = canonical_json_bytes(field_sources[code])
-            encoded_templates[template_key] = encoded
-        digest.update(encoded)
-    digest.update(b"}")
-
-
-class AnyHash(Protocol):
-    def update(self, value: bytes, /) -> object: ...
 
 
 def try_merge_complete_realtime(
@@ -497,7 +449,6 @@ __all__ = [
     "ColumnarMarketProjection",
     "ColumnarMergeError",
     "CompleteRealtimeNormalization",
-    "columnar_merge_epoch",
     "try_merge_complete_realtime",
     "try_normalize_complete_realtime_rows",
 ]

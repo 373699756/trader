@@ -26,6 +26,7 @@ from trader.application.tomorrow_shadow_runtime import (
     TomorrowShadowWorker,
 )
 from trader.bootstrap import _recommendation_policy
+from trader.domain.market.models import Board
 from trader.domain.recommendation.models import (
     FusionMode,
     RecommendationReplayInput,
@@ -447,7 +448,7 @@ def test_shadow_projection_separates_hard_filter_comparison_from_v2_audit(
     assert "board_data_reliability_below_threshold" in projection.local.filter_reason_counts
 
 
-def test_native_projection_matches_v1_selection_and_hard_filters_for_same_candidate_batch(
+def test_native_projection_matches_v1_three_board_decisions_for_same_candidate_batch(
     application_feature_factory,
 ) -> None:
     configured = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
@@ -460,14 +461,19 @@ def test_native_projection_matches_v1_selection_and_hard_filters_for_same_candid
     )
     engine = RecommendationEngine(policy)
     market_features = tuple(
-        application_feature_factory(f"600{index:03d}", OBSERVED_AT, industry=f"industry-{index}")
-        for index in range(100)
+        application_feature_factory(
+            f"{prefix}{index:03d}",
+            OBSERVED_AT,
+            industry=f"industry-{index}",
+        )
+        for prefix in ("600", "300", "688")
+        for index in range(120)
     )
     candidates, reasons, details = engine.preselect(
         market_features,
         now=OBSERVED_AT,
         max_age_seconds=30.0,
-        limit=120,
+        limit=360,
         strategies=(Strategy.TOMORROW,),
         trade_date=TRADE_DATE.isoformat(),
         phase="afternoon",
@@ -489,7 +495,7 @@ def test_native_projection_matches_v1_selection_and_hard_filters_for_same_candid
         market_features=market_features,
         requested_codes=tuple(item.quote.code for item in candidates),
         preselect_max_age_seconds=30.0,
-        candidate_pool_size=120,
+        candidate_pool_size=360,
     )
     baseline = replace(
         engine.finalize_snapshot(prepared, {}, projection_stage="local"),
@@ -503,11 +509,30 @@ def test_native_projection_matches_v1_selection_and_hard_filters_for_same_candid
     )
 
     assert baseline.recommendations
-    assert tuple(item.features.quote.code for item in baseline.recommendations) == tuple(
-        item.code for item in projection.local.entries if item.selected
-    )
-    assert {item.features.quote.code: item.score.local_score for item in baseline.recommendations} == {
-        item.code: item.score.local_score for item in projection.local.entries if item.selected
+    assert {item.quote.board for item in candidates} == {Board.MAIN, Board.CHINEXT, Board.STAR}
+    baseline_selected = {item.features.quote.code: item for item in baseline.recommendations}
+    native_selected = {item.code: item for item in projection.local.entries if item.selected}
+    assert tuple(baseline_selected) == tuple(native_selected)
+    assert {
+        code: (
+            item.score.local_score,
+            item.action,
+            item.action_reason,
+            item.rank,
+            item.veto,
+            item.local_risk_facts,
+        )
+        for code, item in baseline_selected.items()
+    } == {
+        code: (
+            item.score.local_score,
+            item.action,
+            item.action_reason,
+            item.rank,
+            item.veto,
+            item.local_risk_facts,
+        )
+        for code, item in native_selected.items()
     }
     assert dict(baseline.filter_reasons) == dict(projection.hard_filter_reason_counts)
 

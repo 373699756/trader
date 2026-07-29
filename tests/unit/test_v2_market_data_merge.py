@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from trader.application.cache import canonical_json_bytes
 from trader.domain.market.models import CanonicalMarketSnapshot
 from trader.infra.market_data import columnar_merge as columnar_merge_module
 from trader.infra.market_data.columnar_merge import (
     CompleteRealtimeNormalization,
-    columnar_merge_epoch,
     try_merge_complete_realtime,
     try_normalize_complete_realtime_rows,
 )
@@ -77,8 +74,8 @@ def test_merge_is_deterministic_and_prefers_eastmoney_at_equal_time() -> None:
     assert first.field_sources["600001"]["price"] == "eastmoney"
     assert first.quotes[0].cross_source_deviation_pct == 0.4
     assert snapshot_payload_hash(first) == snapshot_payload_hash(second)
-    assert snapshot_payload_hash(first) == "269afe7618c3fa25b252792ffce1703da8eab97ab3a3b45614b47b9a6fae6ed9"
-    assert first.merge_epoch == "a48cc036aab1cad6abfc1ea7"
+    assert snapshot_payload_hash(first) == "699c38b1541c1e7c7cf45b5c446a33b40d235cef286e50df57ae3c0d1fd4415d"
+    assert first.merge_epoch == "a1f95495f9d9af4f3986e4aa"
 
 
 def test_complete_realtime_columnar_projection_matches_scalar_field_merge() -> None:
@@ -122,16 +119,6 @@ def test_complete_realtime_columnar_projection_matches_scalar_field_merge() -> N
     assert projection.field_sources == {"600001": expected_sources}
     assert projection.source_versions == {"eastmoney": "eastmoney-v1", "sina": "sina-v1"}
     assert projection.conflicts == tuple(sorted(expected_conflicts))
-    canonical_projection = {
-        "observed_at": NOW,
-        "quotes": projection.quotes,
-        "field_sources": projection.field_sources,
-        "source_versions": projection.source_versions,
-        "conflicts": projection.conflicts,
-        "missing_reasons": {},
-    }
-    expected_epoch = hashlib.sha256(canonical_json_bytes(canonical_projection)).hexdigest()[:24]
-    assert columnar_merge_epoch(NOW, projection, {}) == expected_epoch
     assert try_merge_complete_realtime((eastmoney, replace(sina, fields={"price": 10.04}))) is None
     assert try_merge_complete_realtime((replace(eastmoney, fields={**complete_fields, "price": "10.0"}), sina)) is None
     assert try_merge_complete_realtime((eastmoney, replace(sina, status="failed", error_code="offline"))) is None

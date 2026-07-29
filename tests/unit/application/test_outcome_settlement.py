@@ -86,3 +86,30 @@ def test_settlement_skips_horizons_that_are_not_due(application_feature_factory)
 
     assert result.completed_count == 0
     assert repository.saved == ()
+
+
+def test_settlement_records_due_stock_outcome_when_benchmark_is_unavailable(
+    application_feature_factory,
+) -> None:
+    repository = _Repository()
+    repository.benchmark_returns_after = lambda _date, *, limit: ()
+    service = OutcomeSettlementService(
+        _History(),
+        repository,
+        repository,
+        session_distance=lambda start, end: (date.fromisoformat(end) - date.fromisoformat(start)).days,
+    )
+    stale = application_feature_factory(
+        "600001",
+        datetime(2026, 7, 21, 14, 59, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    result = service.settle(NOW, (stale,))
+
+    assert result.benchmark_recorded is False
+    assert result.target_count == 1
+    assert result.outcome_count == 1
+    assert repository.saved[0].status == "benchmark_missing"
+    assert repository.saved[0].benchmark_return_pct is None
+    assert repository.saved[0].net_excess_return_pct is None
+    assert repository.saved[0].gross_return_pct == pytest.approx(2.0)
