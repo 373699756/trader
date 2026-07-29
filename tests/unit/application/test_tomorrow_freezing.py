@@ -85,6 +85,37 @@ def test_checkpoint_then_scheduled_freeze_persists_before_index_commit() -> None
     assert repository.checkpoint is None
 
 
+def test_checkpoint_and_freeze_keep_only_formal_tomorrow_entries() -> None:
+    clock = _Clock(BOUNDARY - timedelta(seconds=10))
+    index = CurrentDecisionIndex()
+    repository = _Repository()
+    evaluations = (
+        _evaluation(1, local_score=90.0),
+        _evaluation(2, local_score=74.0),
+    )
+    decision = build_tomorrow_decision_epoch(
+        replace(
+            _request(_selection(evaluations)),
+            sequence=1,
+            observed_at=clock.current,
+        )
+    )
+    index.publish(decision, expected_current_version=None)
+    coordinator = _coordinator(index, repository, clock)
+
+    checkpoint = coordinator.capture_checkpoint()
+    assert checkpoint.status == "checkpoint_saved"
+    assert repository.checkpoint is not None
+    assert [item.code for item in repository.checkpoint.decision.entries] == ["600001"]
+
+    clock.current = BOUNDARY
+    frozen = coordinator.freeze_scheduled()
+    assert frozen.status == "frozen"
+    assert frozen.frozen is not None
+    assert [item.code for item in frozen.frozen.decision.entries] == ["600001"]
+    assert [anchor.code for anchor in frozen.frozen.anchors] == ["600001"]
+
+
 def test_persistence_failure_keeps_sealed_decision_and_retries_same_freeze() -> None:
     clock = _Clock(BOUNDARY)
     index = CurrentDecisionIndex()

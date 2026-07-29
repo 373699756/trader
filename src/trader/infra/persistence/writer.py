@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
+from trader.application.official_records import official_snapshot
 from trader.application.ports.snapshots import RecoverySummary
 from trader.domain.outcome.models import (
     BenchmarkReturn,
@@ -23,7 +24,7 @@ from trader.domain.recommendation.models import (
     RecommendationSnapshot,
     Strategy,
 )
-from trader.infra.persistence.recommendation_archive import RecommendationArchive
+from trader.infra.persistence.recommendation_archive import RecommendationArchive, verify_bundle
 from trader.infra.persistence.snapshot_files import (
     SnapshotConflictError,
     _anchor_json,
@@ -71,10 +72,57 @@ class SnapshotRepository:
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._quarantine_dir.mkdir(parents=True, exist_ok=True)
         initialize_database(self._database_path)
+        self._backfill_recommendation_actions()
+
+    def _backfill_recommendation_actions(self) -> None:
+        with connection_scope(self._database_path) as connection:
+            active = connection.execute(
+                """
+                SELECT DISTINCT f.snapshot_id, f.relative_path, f.sha256
+                FROM frozen_snapshots AS f
+                JOIN recommendations AS r ON r.snapshot_id = f.snapshot_id
+                WHERE f.status = 'committed' AND r.action = 'legacy_unknown'
+                """
+            ).fetchall()
+            backlog = connection.execute(
+                """
+                SELECT DISTINCT snapshot_id, archive_relative_path
+                FROM outcome_backlog WHERE action = 'legacy_unknown'
+                """
+            ).fetchall()
+        for row in active:
+            snapshot = self._load_verified_snapshot(str(row["relative_path"]), str(row["sha256"]))
+            if snapshot is not None:
+                self._record_snapshot_actions(snapshot)
+        for row in backlog:
+            bundle = self._runtime_dir / str(row["archive_relative_path"])
+            try:
+                verify_bundle(bundle)
+                snapshot = _read_snapshot(bundle / "snapshot.json")
+            except (OSError, ValueError, TypeError):
+                continue
+            self._record_snapshot_actions(snapshot, backlog=True)
+
+    def _record_snapshot_actions(
+        self,
+        snapshot: RecommendationSnapshot,
+        *,
+        backlog: bool = False,
+    ) -> None:
+        table = "outcome_backlog" if backlog else "recommendations"
+        with connection_scope(self._database_path) as connection:
+            connection.executemany(
+                f"UPDATE {table} SET action = ? WHERE snapshot_id = ? AND stock_code = ?",  # noqa: S608
+                (
+                    (item.action.value, snapshot.snapshot_id, item.features.quote.code)
+                    for item in snapshot.recommendations
+                ),
+            )
 
     def freeze(self, snapshot: RecommendationSnapshot) -> None:
         if snapshot.strategy is Strategy.LONG:
             raise ValueError("long watch snapshots are never frozen")
+        snapshot = official_snapshot(snapshot)
         if snapshot.config_version and snapshot.config_version != self._config_version:
             raise ValueError("snapshot config version does not match repository config version")
         frozen = replace(snapshot, frozen=True, config_version=self._config_version)
@@ -119,6 +167,7 @@ class SnapshotRepository:
             raise ValueError("checkpoint boundary must be timezone-aware")
         if snapshot.strategy is Strategy.LONG or snapshot.trade_date != boundary_at.date().isoformat():
             raise ValueError("checkpoint identity does not match its freeze boundary")
+        snapshot = official_snapshot(snapshot)
         if snapshot.config_version != self._config_version:
             raise ValueError("checkpoint config version does not match repository config version")
         age = (boundary_at - snapshot.published_at).total_seconds()
@@ -219,7 +268,8 @@ class SnapshotRepository:
             ).fetchone()
         if row is None:
             return None
-        return self._load_verified_snapshot(str(row["relative_path"]), str(row["sha256"]))
+        snapshot = self._load_verified_snapshot(str(row["relative_path"]), str(row["sha256"]))
+        return official_snapshot(snapshot) if snapshot is not None else None
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
         if strategy is Strategy.LONG:
@@ -246,7 +296,8 @@ class SnapshotRepository:
                        r.anchor_price, r.atr20_pct
                 FROM recommendations AS r
                 JOIN frozen_snapshots AS f ON f.snapshot_id = r.snapshot_id
-                WHERE f.status = 'committed' AND r.atr20_pct IS NOT NULL AND r.atr20_pct > 0
+                WHERE f.status = 'committed' AND r.action = 'executable'
+                  AND r.atr20_pct IS NOT NULL AND r.atr20_pct > 0
                 ORDER BY r.recommend_date, r.strategy, r.rank, r.stock_code
                 """
             ).fetchall()
@@ -260,6 +311,7 @@ class SnapshotRepository:
                 """
                 SELECT snapshot_id, strategy, recommend_date, stock_code, anchor_price, atr20_pct
                 FROM outcome_backlog
+                WHERE action = 'executable'
                 ORDER BY recommend_date, strategy, stock_code
                 """
             ).fetchall()
@@ -390,13 +442,6 @@ class SnapshotRepository:
         )
 
     def save_live_overlay(self, overlay: LiveOverlay) -> bool:
-        payload = json.dumps(
-            _overlay_to_dict(overlay),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
         with self._lock, connection_scope(self._database_path) as connection:
             manifest = connection.execute(
                 "SELECT snapshot_id FROM frozen_snapshots WHERE strategy = ? AND recommend_date = ? AND status = 'committed'",
@@ -405,6 +450,24 @@ class SnapshotRepository:
             authorized = manifest is not None and str(manifest["snapshot_id"]) == overlay.snapshot_id
             if not authorized:
                 raise SnapshotConflictError("closing overlay must reference a committed snapshot")
+            official_codes = {
+                str(row["stock_code"])
+                for row in connection.execute(
+                    "SELECT stock_code FROM recommendations WHERE snapshot_id = ? AND action = 'executable'",
+                    (overlay.snapshot_id,),
+                ).fetchall()
+            }
+            overlay = replace(
+                overlay,
+                quotes={code: quote for code, quote in overlay.quotes.items() if code in official_codes},
+            )
+            payload = json.dumps(
+                _overlay_to_dict(overlay),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
             existing = connection.execute(
                 "SELECT snapshot_id, observed_at, closing FROM live_overlays WHERE strategy = ? AND recommend_date = ?",
                 (overlay.strategy.value, overlay.trade_date),
@@ -636,8 +699,8 @@ class SnapshotRepository:
                     strategy, recommend_date, stock_code, rank, anchor_price,
                     anchor_daily_return_pct, board, board_policy_id, board_rank,
                     board_data_reliability, competition_group_id, selection_skip_reason,
-                    merge_epoch, atr20_pct, snapshot_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    merge_epoch, atr20_pct, action, snapshot_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snapshot.strategy.value,
@@ -654,6 +717,7 @@ class SnapshotRepository:
                     recommendation.selection_skip_reason,
                     recommendation.features.merge_epoch,
                     recommendation.features.optional_value("atr20_pct"),
+                    recommendation.action.value,
                     snapshot.snapshot_id,
                 ),
             )

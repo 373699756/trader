@@ -9,6 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import cast
 
+from trader.application.official_records import official_checkpoint, official_freeze
 from trader.application.ports.decision_freezes import (
     DecisionFreezeConflictError,
     DecisionFreezeUnavailableError,
@@ -70,6 +71,7 @@ class TomorrowDecisionFreezeRepository:
                 )
 
     def save_checkpoint(self, checkpoint: TomorrowFreezeCheckpoint) -> None:
+        checkpoint = official_checkpoint(checkpoint)
         payload = checkpoint_bytes(checkpoint)
         digest = _sha256(payload)
         relative = Path("checkpoints") / checkpoint.trade_date.isoformat() / f"{checkpoint.version}.json"
@@ -176,6 +178,7 @@ class TomorrowDecisionFreezeRepository:
                 raise DecisionFreezeUnavailableError("checkpoint consumption failed") from exc
 
     def commit_freeze(self, frozen: TomorrowDecisionFreeze) -> None:
+        frozen = official_freeze(frozen)
         payload = freeze_bytes(frozen)
         digest = _sha256(payload)
         relative = Path("freezes") / frozen.trade_date.isoformat() / f"{frozen.version}.json"
@@ -227,7 +230,7 @@ class TomorrowDecisionFreezeRepository:
                 raise DecisionFreezeUnavailableError("freeze verification failed") from exc
             if frozen.version != row[0] or frozen.content_hash != row[1]:
                 raise DecisionFreezeUnavailableError("freeze manifest verification failed")
-            return frozen
+            return official_freeze(frozen)
 
     def _freeze_manifest(self, trade_date: date) -> sqlite3.Row | None:
         try:

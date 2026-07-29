@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from trader.domain.market.models import LiveQuote
 from trader.domain.recommendation.models import (
     LiveOverlay,
     Recommendation,
+    RecommendationAction,
     RecommendationSnapshot,
     Strategy,
 )
@@ -46,9 +47,12 @@ def snapshot_envelope(
     displayed_quotes = (
         context.current_quotes if context.historical and context.current_quotes is not None else live_quotes
     )
-    recommendations = (
-        snapshot.recommendations if snapshot.strategy is Strategy.LONG else snapshot.recommendations[:top_n]
+    eligible = tuple(
+        item
+        for item in snapshot.recommendations
+        if not snapshot.frozen or item.action is RecommendationAction.EXECUTABLE
     )
+    recommendations = eligible if snapshot.strategy is Strategy.LONG else eligible[:top_n]
     return {
         "schema_version": API_SCHEMA_VERSION,
         "status": "ready",
@@ -70,7 +74,11 @@ def snapshot_envelope(
         "frozen": snapshot.frozen,
         "degraded_reasons": list(snapshot.degraded_reasons),
         "filtered_count": snapshot.filtered_count,
-        "selection_diagnostics": _selection_diagnostics(snapshot.metadata),
+        "selection_diagnostics": _selection_diagnostics(
+            snapshot.metadata,
+            observations_available=not snapshot.frozen,
+            recommendations=eligible,
+        ),
         "readiness_reason": None,
         "long_groups": _long_groups(snapshot.metadata, recommendations) if snapshot.strategy is Strategy.LONG else [],
         "items": [
@@ -120,25 +128,48 @@ def empty_snapshot_envelope(
     }
 
 
-def _selection_diagnostics(metadata: Mapping[str, object]) -> dict[str, object]:
+def _selection_diagnostics(
+    metadata: Mapping[str, object],
+    *,
+    observations_available: bool = True,
+    recommendations: Sequence[Recommendation] = (),
+) -> dict[str, object]:
     raw = metadata.get("selection_diagnostics")
     values = raw if isinstance(raw, Mapping) else {}
+    if observations_available:
+        scored_candidate_count = values.get("scored_candidate_count", 0)
+        actionable_candidate_count = values.get("actionable_candidate_count", 0)
+        score_qualified_count = values.get("score_qualified_count", 0)
+        selected_executable_count = values.get("selected_executable_count", 0)
+        maximum_local_score = values.get("maximum_local_score")
+        maximum_final_score = values.get("maximum_final_score")
+        empty_reason = values.get("empty_reason", "diagnostics_unavailable")
+    else:
+        scored_candidate_count = len(recommendations)
+        actionable_candidate_count = len(recommendations)
+        score_qualified_count = len(recommendations)
+        selected_executable_count = len(recommendations)
+        maximum_local_score = max((item.score.local_score for item in recommendations), default=None)
+        maximum_final_score = max((item.score.final_score for item in recommendations), default=None)
+        empty_reason = None if recommendations else "no_formal_recommendations_at_freeze"
     return {
-        "scored_candidate_count": values.get("scored_candidate_count", 0),
-        "actionable_candidate_count": values.get("actionable_candidate_count", 0),
-        "score_qualified_count": values.get("score_qualified_count", 0),
+        "scored_candidate_count": scored_candidate_count,
+        "actionable_candidate_count": actionable_candidate_count,
+        "score_qualified_count": score_qualified_count,
         "selection_floor": values.get("selection_floor"),
         "executable_threshold": values.get("executable_threshold"),
-        "observation_floor": values.get("observation_floor"),
+        "observation_floor": values.get("observation_floor") if observations_available else None,
         "executable_limit": values.get("executable_limit", 0),
-        "observation_limit": values.get("observation_limit", 0),
-        "selected_executable_count": values.get("selected_executable_count", 0),
-        "selected_observation_count": values.get("selected_observation_count", 0),
-        "blocked_reason_counts": _count_mapping(values.get("blocked_reason_counts")),
-        "selection_skip_reason_counts": _count_mapping(values.get("selection_skip_reason_counts")),
-        "maximum_local_score": values.get("maximum_local_score"),
-        "maximum_final_score": values.get("maximum_final_score"),
-        "empty_reason": values.get("empty_reason", "diagnostics_unavailable"),
+        "observation_limit": values.get("observation_limit", 0) if observations_available else 0,
+        "selected_executable_count": selected_executable_count,
+        "selected_observation_count": values.get("selected_observation_count", 0) if observations_available else 0,
+        "blocked_reason_counts": _count_mapping(values.get("blocked_reason_counts")) if observations_available else {},
+        "selection_skip_reason_counts": _count_mapping(values.get("selection_skip_reason_counts"))
+        if observations_available
+        else {},
+        "maximum_local_score": maximum_local_score,
+        "maximum_final_score": maximum_final_score,
+        "empty_reason": empty_reason,
     }
 
 

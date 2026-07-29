@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Any, cast
 
+from trader.application.official_records import OFFICIAL_REPLAY_ALGORITHM_VERSION
 from trader.application.policy import RecommendationPolicy
 from trader.application.recommendation_policy_codec import (
     _business_projection,
@@ -36,6 +37,7 @@ _SUPPORTED_REPLAY_ALGORITHMS = frozenset(
         V18_REPLAY_ALGORITHM_VERSION,
         V19_REPLAY_ALGORITHM_VERSION,
         REPLAY_ALGORITHM_VERSION,
+        OFFICIAL_REPLAY_ALGORITHM_VERSION,
     }
 )
 
@@ -43,6 +45,9 @@ _SUPPORTED_REPLAY_ALGORITHMS = frozenset(
 class RecommendationReplayMixin:
     def replay(self: Any, snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
         replay_input = _validated_replay_input(snapshot)
+        if replay_input.algorithm_version == OFFICIAL_REPLAY_ALGORITHM_VERSION:
+            _validate_official_replay(snapshot, replay_input)
+            return snapshot
         replay_engine = cast(Any, type(self))(
             _replay_policy(replay_input),
             hard_filter_function=(
@@ -146,6 +151,8 @@ class RecommendationReplayMixin:
         replay_input = snapshot.replay_input
         if replay_input is None:
             raise ValueError("snapshot does not contain replay input")
+        if replay_input.algorithm_version == OFFICIAL_REPLAY_ALGORITHM_VERSION:
+            return snapshot.recommendations
         engine = cast(Callable[..., Any], cls)(
             _replay_policy(replay_input),
             hard_filter_function=(
@@ -230,16 +237,43 @@ def _validated_replay_input(snapshot: RecommendationSnapshot) -> RecommendationR
         raise ValueError("snapshot replay schema is unsupported")
     if replay_input.algorithm_version not in _SUPPORTED_REPLAY_ALGORITHMS:
         raise ValueError("snapshot replay algorithm is unsupported")
-    if not replay_input.market_features:
+    if not replay_input.market_features and replay_input.algorithm_version != OFFICIAL_REPLAY_ALGORITHM_VERSION:
         raise ValueError("snapshot replay input does not contain the frozen market universe")
-    if replay_input.candidate_pool_size < 1:
+    if replay_input.candidate_pool_size < 1 and replay_input.algorithm_version != OFFICIAL_REPLAY_ALGORITHM_VERSION:
         raise ValueError("snapshot replay input has an invalid candidate pool size")
     return replay_input
 
 
+def _validate_official_replay(
+    snapshot: RecommendationSnapshot,
+    replay_input: RecommendationReplayInput,
+) -> None:
+    codes = tuple(item.features.quote.code for item in snapshot.recommendations)
+    code_set = frozenset(codes)
+    if any(item.action.value != "executable" for item in snapshot.recommendations):
+        raise ValueError("official frozen replay contains a non-executable recommendation")
+    if tuple(replay_input.requested_codes) != tuple(item.quote.code for item in replay_input.candidate_features):
+        raise ValueError("official frozen replay candidate identity is inconsistent")
+    if frozenset(replay_input.requested_codes) != code_set:
+        raise ValueError("official frozen replay does not cover every formal recommendation")
+    identity_sets = (
+        frozenset(replay_input.requested_codes),
+        frozenset(item.quote.code for item in replay_input.market_features),
+        frozenset(replay_input.reviews),
+        frozenset(replay_input.target_prices),
+        frozenset(item.features.quote.code for batch in replay_input.board_batches for item in batch.recommendations),
+    )
+    if any(not identities.issubset(code_set) for identities in identity_sets):
+        raise ValueError("official frozen replay contains a non-formal stock identity")
+
+
 def _replay_policy(replay_input: RecommendationReplayInput) -> RecommendationPolicy:
     policy = _restore_policy(replay_input.policy)
-    if replay_input.algorithm_version in {V19_REPLAY_ALGORITHM_VERSION, REPLAY_ALGORITHM_VERSION}:
+    if replay_input.algorithm_version in {
+        V19_REPLAY_ALGORITHM_VERSION,
+        REPLAY_ALGORITHM_VERSION,
+        OFFICIAL_REPLAY_ALGORITHM_VERSION,
+    }:
         return policy
     return replace(policy, selection=replace(policy.selection, review_candidate_limit=0))
 

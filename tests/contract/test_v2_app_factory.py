@@ -92,7 +92,7 @@ def test_dashboard_uses_packaged_v2_assets() -> None:
     assert "resolveStrategyDate" in dashboard
     assert "renderMissingHistoricalDate" in dashboard
     assert "selectedDateAvailability" in dashboard
-    assert 'state.date ? "18" : "12"' in dashboard
+    assert '{ top_n: "12" }' in dashboard
     assert "setLongLayout" in dashboard
     assert 'payload.strategy === "long" && payload.status === "ready" && !historical' in dashboard
     assert "tableDefinition(payload)" in dashboard

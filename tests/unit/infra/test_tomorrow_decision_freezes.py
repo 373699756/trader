@@ -69,6 +69,35 @@ def test_formal_freeze_round_trip_is_idempotent_and_rejects_same_day_conflict(
         repository.commit_freeze(conflict)
 
 
+def test_repository_projects_checkpoint_and_freeze_to_formal_entries(tmp_path: Path) -> None:
+    repository = TomorrowDecisionFreezeRepository(tmp_path)
+    repository.initialize()
+    evaluations = (
+        _evaluation(1, local_score=90.0),
+        _evaluation(2, local_score=74.0),
+    )
+    decision = build_tomorrow_decision_epoch(
+        replace(
+            _request(_selection(evaluations)),
+            sequence=1,
+            observed_at=BOUNDARY - timedelta(seconds=10),
+        )
+    )
+    checkpoint = TomorrowFreezeCheckpoint(decision=decision, boundary_at=BOUNDARY)
+    frozen = _freeze(decision)
+
+    repository.save_checkpoint(checkpoint)
+    repository.commit_freeze(frozen)
+
+    loaded_checkpoint = repository.load_checkpoint(decision.trade_date)
+    loaded_frozen = repository.load_frozen(decision.trade_date)
+    assert loaded_checkpoint is not None
+    assert [item.code for item in loaded_checkpoint.decision.entries] == ["600001"]
+    assert loaded_frozen is not None
+    assert [item.code for item in loaded_frozen.decision.entries] == ["600001"]
+    assert [anchor.code for anchor in loaded_frozen.anchors] == ["600001"]
+
+
 def test_corrupt_formal_file_fails_closed_with_typed_unavailable_error(
     tmp_path: Path,
 ) -> None:

@@ -44,25 +44,37 @@
 
   function visibleRecommendations(payload) {
     const items = payload && Array.isArray(payload.items) ? payload.items : [];
-    if (payload && (payload.historical === true || payload.strategy === "long" || payload.phase === "close_fallback")) {
-      return items;
-    }
+    if (payload && payload.strategy === "long") return items;
     return items.filter((item) => item.action === "executable");
   }
 
-  function observationRecommendations(payload) {
+  function observationRecommendations(payload, runtimePhase) {
     const items = payload && Array.isArray(payload.items) ? payload.items : [];
-    if (!isCurrentShortView(payload)) return [];
+    if (observationDisplayState(payload, runtimePhase) !== "open") return [];
     return items.filter((item) => item.action === "observe");
   }
 
-  function isCurrentShortView(payload) {
-    return Boolean(
-      payload
-      && payload.historical !== true
-      && payload.strategy !== "long"
-      && payload.phase !== "close_fallback"
-    );
+  function observationDisplayState(payload, runtimePhase) {
+    if (!payload) return "unavailable";
+    if (payload.strategy === "long") return "not_applicable";
+    if (payload.historical === true) return "hidden_history";
+    if (payload.status !== "ready") return "unavailable";
+    if (payload.frozen === true) return "closed_frozen";
+    if (typeof runtimePhase !== "string" || !runtimePhase) return "unknown";
+    const morningPhases = new Set([
+      "today_observe",
+      "today_main",
+      "today_late",
+    ]);
+    if (payload.strategy === "today") return morningPhases.has(runtimePhase) ? "open" : "closed_market";
+    const afternoonPhases = new Set([
+      "midday",
+      "afternoon",
+      "final_review",
+      "deepseek_cutoff",
+      "final_quote",
+    ]);
+    return morningPhases.has(runtimePhase) || afternoonPhases.has(runtimePhase) ? "open" : "closed_market";
   }
 
   function recommendationSummary(payload, recommendations) {
@@ -107,6 +119,7 @@
     isSnapshotNotFound,
     markDateAvailability,
     observationRecommendations,
+    observationDisplayState,
     recommendationSummary,
     renderDateOptions,
     resolveStrategyDate,

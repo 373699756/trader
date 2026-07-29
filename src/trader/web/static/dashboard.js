@@ -17,6 +17,7 @@
     requestSequence: 0,
     selectionSequence: 0,
     selectedDateAvailability: "available",
+    runtimePhase: "",
     longScope: "chokepoint",
     longGroup: "",
   };
@@ -237,7 +238,7 @@
     const pending = state.inflight.get(key);
     if (pending) return pending;
     const request = (async () => {
-      const query = new URLSearchParams(strategy === "long" ? {} : { top_n: state.date ? "18" : "12" });
+      const query = new URLSearchParams(strategy === "long" ? {} : { top_n: "12" });
       if (selectedDate) query.set("date", selectedDate);
       else query.set("view", view);
       const headers = {};
@@ -326,14 +327,16 @@
       state.longScope,
       state.longGroup,
     );
-    const observations = selection.observationRecommendations(payload);
-    const currentShort = historical !== true
-      && payload.strategy !== "long"
-      && payload.phase !== "close_fallback";
-    const showObservationPool = payload.status === "ready" && currentShort;
+    const observationState = selection.observationDisplayState(payload, state.runtimePhase);
+    const observations = selection.observationRecommendations(payload, state.runtimePhase);
+    const showObservationPool = observationState === "open";
     els.observationPool.hidden = !showObservationPool;
     els.recommendationCount.textContent = String(items.filter((item) => item.action === "executable").length);
-    els.observationCount.textContent = String(items.filter((item) => item.action === "observe").length);
+    els.observationCount.textContent = observationSummary(
+      payload,
+      observationState,
+      items.filter((item) => item.action === "observe").length,
+    );
     const observationLimit = Number(payload.selection_diagnostics && payload.selection_diagnostics.observation_limit);
     const observationFloorValue = payload.selection_diagnostics && payload.selection_diagnostics.observation_floor;
     const executableThresholdValue = payload.selection_diagnostics && payload.selection_diagnostics.executable_threshold;
@@ -367,6 +370,9 @@
       els.observationHead.innerHTML = observationDefinition.head;
     } else {
       els.observationTable.classList.remove("is-anchor-table");
+      els.observationColumns.innerHTML = "";
+      els.observationHead.innerHTML = "";
+      els.observationBody.innerHTML = "";
     }
     if (payload.status === "not_ready") {
       const notReady = patches.notReadyMessage(payload);
@@ -379,7 +385,9 @@
         ? "当前门槛下没有历史推荐结果"
         : payload.strategy === "long"
           ? longGroups.emptyMessage(payload, state.longScope)
-          : patches.emptyRecommendationMessage(payload, observations.length);
+          : payload.frozen
+            ? patches.frozenEmptyMessage(payload)
+            : patches.emptyRecommendationMessage(payload, observations.length);
       renderTableState(emptyMessage, window.TraderRender.tableColumnCount(payload));
     } else {
       els.tableBody.innerHTML = window.TraderRender.tableRows(recommendations, payload);
@@ -403,6 +411,13 @@
     (body || els.tableBody).innerHTML = `<tr><td class="table-state" colspan="${columns || 9}">${window.TraderRender.escapeHtml(message)}</td></tr>`;
   }
   function setLongLayout(enabled) { if (els.resultLayout) els.resultLayout.classList.toggle("is-long", Boolean(enabled)); }
+  function observationSummary(payload, observationState, count) {
+    if (payload && payload.strategy === "long") return String(count);
+    if (observationState === "open") return String(count);
+    if (observationState === "hidden_history") return "不保存";
+    if (observationState === "unknown") return "状态未知";
+    return "已关闭";
+  }
   function setLongControls(enabled) { if (els.longScopeTabs) els.longScopeTabs.hidden = !enabled; }
   function renderLoadingState() {
     els.recommendationCount.textContent = "-";
@@ -522,6 +537,8 @@
       const response = await fetch("/api/status", { cache: "no-store" });
       const payload = await response.json();
       const running = Boolean(payload.runtime_started);
+      const previousPhase = state.runtimePhase;
+      state.runtimePhase = typeof payload.phase === "string" ? payload.phase : "";
       els.runtimeStatus.textContent = running ? "运行中" : payload.status === "not_ready" ? "未就绪" : "已停止";
       els.runtimeDot.dataset.state = running ? "ok" : payload.last_error ? "error" : "warn";
       els.marketPhase.textContent = formatters.phaseLabel(payload.phase || "closed");
@@ -543,6 +560,7 @@
         ? state.payload.status === "not_ready" ? "未就绪" : state.payload.frozen ? "已冻结" : "未冻结"
         : "-";
       reconcileRecommendationIdentity(payload);
+      if (previousPhase !== state.runtimePhase && state.payload) renderPayload(state.payload);
       updateQuoteAge();
     } catch (_error) {
       els.runtimeStatus.textContent = "状态不可用";
@@ -726,6 +744,7 @@
   function fallbackDashboardPatches() {
     return Object.freeze({
       emptyRecommendationMessage: () => "当前没有达到正式推荐条件的股票",
+      frozenEmptyMessage: () => "正式冻结结果为空；观察池已关闭且未保存",
       mergePatchItems: (items) => items || [],
       notReadyMessage: (payload) => payload && payload.strategy === "long"
         ? { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照" }

@@ -309,7 +309,7 @@ def test_not_ready_response_exposes_precise_lifecycle_reason() -> None:
         assert payload["readiness_reason"] == expected
 
 
-def test_explicit_history_keeps_legacy_eighteen_item_snapshot(
+def test_explicit_history_hides_legacy_observation_items_without_rewriting_snapshot(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -343,7 +343,10 @@ def test_explicit_history_keeps_legacy_eighteen_item_snapshot(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["historical"] is True
-    assert len(payload["items"]) == 18
+    assert len(payload["items"]) == 10
+    assert {item["action"] for item in payload["items"]} == {"executable"}
+    assert payload["selection_diagnostics"]["observation_limit"] == 0
+    assert payload["selection_diagnostics"]["selected_observation_count"] == 0
 
 
 def test_recommendation_response_only_exposes_deepseek_review_outcome_and_error(
@@ -835,7 +838,7 @@ def test_explicit_current_view_resolves_frozen_snapshot_to_official(
     assert payload["frozen"] is True
 
 
-def test_current_view_replays_empty_close_fallback_snapshot_from_archive(
+def test_current_view_keeps_empty_close_fallback_without_replaying_observations(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
@@ -881,9 +884,8 @@ def test_current_view_replays_empty_close_fallback_snapshot_from_archive(
     assert payload["status"] == "ready"
     assert payload["view"] == "official"
     assert payload["frozen"] is True
-    assert [item["code"] for item in payload["items"]] == ["600001"]
-    assert payload["items"][0]["action"] == "observe"
-    assert "close_fallback_observe_floor" in payload["degraded_reasons"]
+    assert payload["items"] == []
+    assert payload["selection_diagnostics"]["selected_observation_count"] == 0
 
 
 def test_explicit_historical_query_returns_previous_trade_date_snapshot(

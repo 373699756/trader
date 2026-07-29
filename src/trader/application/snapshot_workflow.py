@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from trader.application.after_close_recovery import recover_after_close_snapshots
 from trader.application.candidate_features import fetch_strategy_features
 from trader.application.long_quotes import refresh_long_quotes
+from trader.application.official_records import official_snapshot
 from trader.application.pipeline_market_tasks import _refresh_intraday_tail_before_score
 from trader.application.pipeline_review_updates import review_enabled_for_strategy_phase
 from trader.application.pipeline_stages import (
@@ -142,6 +143,7 @@ def _prepare_frozen_snapshot(
         pipeline._state.record_error(f"{strategy.value} freeze unavailable: {error}")
         return None
     assert current is not None
+    current = official_snapshot(current)
     maximum_age = 20.0 if strategy is Strategy.TODAY else 30.0
     anchors, invalid_quotes = _freeze_anchors(current, boundary, maximum_age)
     if invalid_quotes:
@@ -588,7 +590,7 @@ def save_checkpoint_if_due(
             persist(
                 pipeline,
                 pipeline._snapshot_writer.save_checkpoint,
-                snapshot,
+                official_snapshot(snapshot),
                 boundary_at=boundary,
             )
         except Exception as exc:

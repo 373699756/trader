@@ -136,6 +136,23 @@ def test_authoritative_docs_match_active_runtime_identities() -> None:
     assert strategy_config["strategy_version"] in strategy
 
 
+def test_authoritative_docs_define_ephemeral_observation_lifecycle() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+
+    for contract in (design, strategy):
+        assert "09:30" in contract
+        assert "11:20" in contract
+        assert "14:50" in contract
+        assert "纯内存" in contract
+        assert "不展示" in contract
+        assert "`executable`" in contract
+        assert "`close_fallback`" in contract
+    assert "不可变空记录" in design
+    assert "不得用观察项补位" in design
+    assert "回测" in design
+
+
 def test_authoritative_docs_define_the_tomorrow_first_rebuild_contract() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
@@ -333,12 +350,14 @@ def test_authoritative_docs_match_active_scoring_and_runtime_behavior() -> None:
     assert "拆成正式推荐" in selection
     assert "独立观察池表" in selection
 
-    fallback_reason = "close_fallback_observe_floor"
-    retired_fallback_reason = "close_fallback_observation_floor_relaxed"
-    assert fallback_reason in strategy
-    assert fallback_reason in design
-    assert retired_fallback_reason not in strategy
-    assert retired_fallback_reason not in design
+    retired_fallback_reasons = (
+        "close_fallback_observe_floor",
+        "close_fallback_observation_floor_relaxed",
+    )
+    assert "close_fallback_observe_floor" not in strategy
+    assert "close_fallback_observe_floor" not in design
+    assert all(reason not in strategy for reason in retired_fallback_reasons)
+    assert all(reason not in design for reason in retired_fallback_reasons)
 
     midday_topk = runtime["pipeline"]["cadence_seconds"]["topk_quotes"]["midday"]
     assert f"{midday_topk} 秒 TopK" in timeline
@@ -347,8 +366,8 @@ def test_authoritative_docs_match_active_scoring_and_runtime_behavior() -> None:
 
     assert strategy_config["selection"]["minimum_board_reliability"] == 0.85
     assert "板块人口不足" in persistence
-    assert "板块可靠度不足只降为观察" in persistence
-    assert "收盘补算和历史视图 显示 API 返回的全部项" in " ".join(web.split())
+    assert "没有正式推荐时仍创建" in persistence
+    assert "冻结当前、`close_fallback` 和显式历史只返回最多 6 项" in " ".join(web.split())
 
     p6_capacity = runtime["market_data"]["cache_policy"]["datasets"]["published_recommendation_view"]["capacity"]
     assert f"published_recommendation_view.capacity={p6_capacity}" in cache_limits

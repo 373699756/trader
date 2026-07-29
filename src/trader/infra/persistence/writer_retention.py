@@ -78,9 +78,11 @@ def archive_trade_date(
                 row["anchor_price"],
                 row["atr20_pct"],
                 archive_relative.as_posix(),
+                row["action"],
             )
             for row in recommendations
-            if row["atr20_pct"] is not None
+            if row["action"] == "executable"
+            and row["atr20_pct"] is not None
             and float(row["atr20_pct"]) > 0
             and not all((str(row["stock_code"]), horizon) in complete for horizon in required)
         )
@@ -114,8 +116,8 @@ def _remove_archived_snapshot(
             """
             INSERT OR REPLACE INTO outcome_backlog(
                 snapshot_id, strategy, recommend_date, stock_code,
-                anchor_price, atr20_pct, archive_relative_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                anchor_price, atr20_pct, archive_relative_path, action
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             pending,
         )

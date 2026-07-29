@@ -1,6 +1,6 @@
 {
   "schema_version": 7,
-  "config_version": "runtime_v32_company_research_coordination_2026_07_29",
+  "config_version": "runtime_v33_ephemeral_observation_official_only_2026_07_29",
   "runtime_dir": ".runtime/v17",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",

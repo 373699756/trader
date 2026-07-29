@@ -217,23 +217,6 @@
     };
   }
 
-  function frozenTodayObservationTable() {
-    return {
-      columns: [
-        '<col style="width:56px">',
-        '<col style="width:168px">',
-        '<col style="width:142px">',
-        '<col style="width:126px">',
-        '<col style="width:108px">',
-        '<col style="width:118px">',
-        '<col style="width:126px">',
-        '<col style="width:96px">',
-        '<col style="width:220px">',
-      ].join(""),
-      head: "<tr><th>排名</th><th>股票</th><th>11:20锚点价</th><th>锚点时涨跌</th><th>当前价</th><th>当前涨跌</th><th>锚点至今</th><th>最终分</th><th>观察原因</th></tr>",
-    };
-  }
-
   function rows(items, historical) {
     if (!Array.isArray(items) || items.length === 0) return "";
     return items.map((item) => row(item, historical)).join("");
@@ -333,13 +316,12 @@
     return 9;
   }
 
-  function observationTableDefinition(snapshot) {
-    return isFrozenTodayView(snapshot) ? frozenTodayObservationTable() : currentTable();
+  function observationTableDefinition(_snapshot) {
+    return currentTable();
   }
 
-  function observationTableRows(items, snapshot) {
+  function observationTableRows(items, _snapshot) {
     if (!Array.isArray(items) || items.length === 0) return "";
-    if (isFrozenTodayView(snapshot)) return items.map(frozenTodayObservationRow).join("");
     return items.map(currentRow).join("");
   }
 
@@ -360,25 +342,6 @@
       <td>${number(item.price, 2)}</td>
       <td class="${currentChange.className}">${currentChange.text}</td>
       <td class="${anchorToNow.className}">${anchorToNow.text}</td>
-    </tr>`;
-  }
-
-  function frozenTodayObservationRow(item) {
-    const anchorChange = pct(item.anchor_daily_return_pct);
-    const currentChange = pct(item.pct_change);
-    const anchorToNow = pct(item.anchor_to_now_pct);
-    const anchorTime = hasValue(item.anchor_source_time) ? formatTime(item.anchor_source_time) : "-";
-    const scores = item.scores || {};
-    return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
-      <td>${number(item.rank, 0)}</td>
-      <td>${stock(item)}</td>
-      <td>${number(item.anchor_price, 2)}<span class="stock-code">实际 ${escapeHtml(anchorTime)}</span></td>
-      <td class="${anchorChange.className}">${anchorChange.text}</td>
-      <td>${number(item.price, 2)}</td>
-      <td class="${currentChange.className}">${currentChange.text}</td>
-      <td class="${anchorToNow.className}">${anchorToNow.text}</td>
-      <td>${number(scores.final_score, 2)}</td>
-      <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
   }
 
@@ -661,7 +624,6 @@
     escapeHtml,
     formatDateTime,
     formatTime,
-    frozenTodayObservationTable,
     frozenTodayTable,
     historyTable,
     isFrozenTodayView,

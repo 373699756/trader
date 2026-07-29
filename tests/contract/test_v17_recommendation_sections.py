@@ -42,7 +42,8 @@ def test_dashboard_separates_current_formal_and_observation_tables() -> None:
     assert "当前策略尚未发布快照" not in dashboard
     assert "visibleRecommendations(payload)" in dashboard
     assert 'item.action === "executable"' in selection
-    assert "observationRecommendations(payload)" in dashboard
+    assert "observationRecommendations(payload, state.runtimePhase)" in dashboard
+    assert "observationDisplayState(payload, state.runtimePhase)" in dashboard
     assert "observation_floor" in dashboard
     assert "观察门槛 = 正式门槛" in dashboard
     assert 'item.action === "observe"' in selection
@@ -50,9 +51,10 @@ def test_dashboard_separates_current_formal_and_observation_tables() -> None:
     assert 'setLongControls(nextStrategy === "long")' in dashboard
     assert 'setLongControls(state.strategy === "long")' in dashboard
     assert "els.longScopeTabs.hidden = !enabled" in dashboard
-    assert 'state.date ? "18" : "12"' in dashboard
+    assert '{ top_n: "12" }' in dashboard
     assert "tableDefinition(payload)" in dashboard
-    assert 'payload.phase === "close_fallback"' in selection
+    assert "payload.frozen === true" in selection
+    assert 'payload.strategy === "today"' in selection
     assert "observationPool.hidden" in dashboard
     assert 'score_status === "not_applicable"' in dashboard
 

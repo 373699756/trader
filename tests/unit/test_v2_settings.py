@@ -25,7 +25,7 @@ def test_v2_configuration_contract_is_valid() -> None:
 
     assert runtime.schema_version == 7
     assert strategy.schema_version == 12
-    assert runtime.config_version == "runtime_v32_company_research_coordination_2026_07_29"
+    assert runtime.config_version == "runtime_v33_ephemeral_observation_official_only_2026_07_29"
     assert runtime.api.default_top_n == 12
     assert runtime.api.maximum_top_n == 12
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v17"

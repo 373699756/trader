@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
+from trader.application.official_records import official_decision
 from trader.domain.recommendation.tomorrow_freeze import TomorrowDecisionFreeze
 from trader.domain.recommendation.tomorrow_fusion import DecisionEpoch
 
@@ -94,13 +95,13 @@ class CurrentDecisionIndex:
                 return DecisionSealResult(False, "different_boundary")
             current = self._current
             if current is not None and current.trade_date == boundary_at.date() and current.observed_at <= boundary_at:
-                return self._seal(current, boundary_at, "current")
+                return self._seal(official_decision(current), boundary_at, "current")
             if (
                 fallback_decision is not None
                 and fallback_decision.trade_date == boundary_at.date()
                 and fallback_decision.observed_at <= boundary_at
             ):
-                return self._seal(fallback_decision, boundary_at, "fallback")
+                return self._seal(official_decision(fallback_decision), boundary_at, "fallback")
             return DecisionSealResult(False, "no_eligible_decision")
 
     def seal_close_fallback(
@@ -119,7 +120,7 @@ class CurrentDecisionIndex:
                         self._sealed_source,
                     )
                 return DecisionSealResult(False, "freeze_sealed")
-            return self._seal(decision, boundary_at, "explicit")
+            return self._seal(official_decision(decision), boundary_at, "explicit")
 
     def commit_frozen(self, frozen: TomorrowDecisionFreeze) -> bool:
         with self._lock:

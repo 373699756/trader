@@ -173,7 +173,9 @@ def test_tomorrow_v2_shadow_reaches_web_and_freeze_gate_without_history_download
     assert status["native_coalesced"] == 1
     assert status["native_superseded"] == 0
     assert status["baseline_fallbacks"] == 0
-    assert current.decision_version == native_current.decision_version
+    assert current.decision_version == historical.decision_version
+    assert current.decision_version != native_current.decision_version
+    assert all(item.action == "executable" for item in current.items)
     assert status["failed"] == 0
     assert status["cutover_gate"]["eligible"] is False
     assert status["cutover_gate"]["blockers"] == ("incomplete_trade_day",)

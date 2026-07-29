@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from trader.application.official_records import official_snapshot
 from trader.application.ports.snapshots import RecoverySummary
 from trader.domain.market.models import (
     Board,
@@ -65,6 +66,87 @@ def test_snapshot_round_trip_preserves_frozen_input() -> None:
     assert restored.recommendations[0].features.values["tail_volume_ratio_raw"] == 1.5
     payload.pop("filter_details")
     assert snapshot_from_dict(payload).filter_details == ()
+
+
+def test_official_projection_removes_observation_identity_before_persistence(tmp_path) -> None:
+    base = _snapshot()
+    executable = base.recommendations[0]
+    observed_quote = replace(executable.features.quote, code="600002", name="临时观察")
+    observation = replace(
+        executable,
+        features=replace(executable.features, quote=observed_quote),
+        action=RecommendationAction.OBSERVE,
+        action_reason="below_executable_threshold",
+        rank=1,
+    )
+    mixed = replace(
+        base,
+        recommendations=(executable, observation),
+        frozen=True,
+        degraded_reasons=(*base.degraded_reasons, "close_fallback_observe_floor"),
+        metadata={
+            **base.metadata,
+            "close_fallback_observe_floor": True,
+            "close_anchors": {"600001": {"price": 10.0}, "600002": {"price": 10.0}},
+            "field_sources": {"600001": {"price": "eastmoney"}, "600002": {"price": "tencent"}},
+            "freeze_anchor": {"600001": {"price": 10.0}, "600002": {"price": 10.0}},
+            "market_conflicts": ("price:eastmoney:tencent:600001", "price:eastmoney:tencent:600002"),
+            "market_missing_reasons": {
+                "600001.speed": "unavailable",
+                "600002.speed": "unavailable",
+            },
+            "candidate_count": 2,
+            "reviewed_count": 1,
+            "selection_skips": [{"stock_code": "600002", "global_rank": 7}],
+        },
+    )
+    projected = official_snapshot(mixed)
+
+    payload = snapshot_bytes(projected)
+    assert tuple(item.features.quote.code for item in projected.recommendations) == ("600001",)
+    assert b"600002" not in payload
+    assert b'"action":"observe"' not in payload
+    assert b"close_fallback_observe_floor" not in payload
+    diagnostics = projected.metadata["selection_diagnostics"]
+    assert diagnostics["selected_executable_count"] == 1
+    assert diagnostics["selected_observation_count"] == 0
+    assert diagnostics["maximum_final_score"] == executable.score.final_score
+    assert projected.metadata["candidate_count"] == 1
+    assert projected.metadata["reviewed_count"] == 0
+    assert projected.metadata["selection_skips"] == []
+
+    repository = SnapshotRepository(tmp_path, config_version="runtime-v2")
+    repository.initialize()
+    repository.freeze(mixed)
+    stored = repository.load_frozen(Strategy.TOMORROW, projected.trade_date)
+
+    assert stored is not None
+    assert tuple(item.features.quote.code for item in stored.recommendations) == ("600001",)
+    assert [target.stock_code for target in repository.pending_outcome_targets(limit=10)] == ["600001"]
+    overlay = LiveOverlay(
+        snapshot_id=mixed.snapshot_id,
+        strategy=mixed.strategy,
+        trade_date=mixed.trade_date,
+        version="official-overlay",
+        observed_at=NOW,
+        closing=True,
+        quotes={
+            code: LiveQuote(
+                code=code,
+                price=10.0,
+                pct_change=0.0,
+                source="test",
+                source_time=NOW,
+                received_time=NOW,
+                data_version="quote-v1",
+            )
+            for code in ("600001", "600002")
+        },
+    )
+    repository.save_live_overlay(overlay)
+    stored_overlay = repository.load_live_overlay(mixed.strategy, mixed.trade_date)
+    assert stored_overlay is not None
+    assert tuple(stored_overlay.quotes) == ("600001",)
 
 
 def test_snapshot_round_trip_preserves_v15_board_and_merge_metadata() -> None:
@@ -235,7 +317,11 @@ def test_checkpoint_is_hash_verified_and_consumed_once(tmp_path) -> None:
 
     repository.save_checkpoint(snapshot, boundary_at=boundary)
 
-    assert repository.load_checkpoint(Strategy.TOMORROW, snapshot.trade_date, boundary_at=boundary) == snapshot
+    assert repository.load_checkpoint(
+        Strategy.TOMORROW,
+        snapshot.trade_date,
+        boundary_at=boundary,
+    ) == official_snapshot(snapshot)
     repository.consume_checkpoint(Strategy.TOMORROW, snapshot.trade_date, boundary_at=boundary)
     assert repository.load_checkpoint(Strategy.TOMORROW, snapshot.trade_date, boundary_at=boundary) is None
 

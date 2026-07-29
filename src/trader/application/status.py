@@ -8,6 +8,8 @@ from datetime import datetime
 
 from trader.domain.recommendation.models import (
     LiveOverlay,
+    Recommendation,
+    RecommendationAction,
     RecommendationSnapshot,
     Strategy,
 )
@@ -138,6 +140,14 @@ class RuntimeState:
 
     def snapshot(self, dependencies: Mapping[str, object] | None = None) -> dict[str, object]:
         with self._lock:
+
+            def visible(snapshot: RecommendationSnapshot) -> tuple[Recommendation, ...]:
+                return tuple(
+                    item
+                    for item in snapshot.recommendations
+                    if not snapshot.frozen or item.action is RecommendationAction.EXECUTABLE
+                )
+
             return {
                 "schema_version": "v2",
                 "status": "running" if self._started else "stopped",
@@ -150,9 +160,13 @@ class RuntimeState:
                         "snapshot_id": snapshot.snapshot_id,
                         "published_at": snapshot.published_at.isoformat(),
                         "fusion_mode": snapshot.fusion_mode.value,
-                        "recommendation_count": len(snapshot.recommendations),
-                        "executable_count": sum(item.action.value == "executable" for item in snapshot.recommendations),
-                        "observation_count": sum(item.action.value == "observe" for item in snapshot.recommendations),
+                        "recommendation_count": len(visible(snapshot)),
+                        "executable_count": sum(
+                            item.action is RecommendationAction.EXECUTABLE for item in visible(snapshot)
+                        ),
+                        "observation_count": sum(
+                            item.action is RecommendationAction.OBSERVE for item in visible(snapshot)
+                        ),
                         "frozen": snapshot.frozen,
                         "stale": snapshot.stale,
                         "phase": snapshot.phase,
@@ -164,8 +178,8 @@ class RuntimeState:
                         "filtered_count": snapshot.filtered_count,
                         "filter_reasons": dict(snapshot.filter_reasons),
                         "score_latency_ms": self._strategy_latency_ms.get(strategy),
-                        "topk_count": len(snapshot.recommendations),
-                        "veto_count": sum(item.veto for item in snapshot.recommendations),
+                        "topk_count": len(visible(snapshot)),
+                        "veto_count": sum(item.veto for item in visible(snapshot)),
                         "freeze_anchor": snapshot.metadata.get("freeze_anchor", {}),
                         "runtime_degraded_reasons": self._strategy_degraded_reasons.get(strategy, ()),
                     }

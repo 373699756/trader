@@ -127,9 +127,9 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
             " && body.textContent.includes('实际 11:19:50')"
             " && body.textContent.includes('13.20')"
             " && body.textContent.includes('+10.00%')"
-            " && !document.getElementById('observationPool').hidden"
-            " && document.getElementById('observationHead').textContent.includes('观察原因')"
-            " && document.querySelectorAll('#observationBody tr[data-code]').length===6"
+            " && document.getElementById('observationPool').hidden"
+            " && document.getElementById('observationCount').textContent==='已关闭'"
+            " && document.querySelectorAll('#observationBody tr[data-code]').length===0"
             " && notice.textContent.includes('名单与评分不变');",
         )
         anchor_view = _execute(
@@ -254,8 +254,8 @@ def _run(budget_p95_ms: float) -> dict[str, Any]:
                 and item.get("messagesAboveControls") is True
                 and item.get("summaryTouchesControls") is True
                 and item.get("controlsTouchTable") is True
-                and item.get("observationVisible") is True
-                and item.get("observationRows") == 6
+                and item.get("observationVisible") is False
+                and item.get("observationRows") == 0
                 and item.get("observationTableContained") is True
                 for item in viewport_results
             )

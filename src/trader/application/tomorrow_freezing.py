@@ -8,6 +8,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.application.current_decisions import CurrentDecisionIndex
+from trader.application.official_records import official_decision
 from trader.application.ports.clock import Clock
 from trader.application.ports.decision_freezes import (
     DecisionFreezeError,
@@ -83,7 +84,7 @@ class TomorrowFreezeCoordinator:
         if not self._runtime_identity.matches(decision):
             return FreezeOperationResult("runtime_identity_mismatch")
         try:
-            checkpoint = TomorrowFreezeCheckpoint(decision=decision, boundary_at=boundary)
+            checkpoint = TomorrowFreezeCheckpoint(decision=official_decision(decision), boundary_at=boundary)
         except ValueError:
             return FreezeOperationResult("no_eligible_decision")
         try:
@@ -125,11 +126,12 @@ class TomorrowFreezeCoordinator:
                 checkpoint_identity_mismatch=checkpoint_identity_mismatch,
             )
         freeze_kind: FreezeKind = "checkpoint_recovery" if seal.source == "fallback" else "scheduled"
+        official = official_decision(seal.decision)
         frozen = TomorrowDecisionFreeze(
-            decision=seal.decision,
+            decision=official,
             frozen_at=boundary,
             freeze_kind=freeze_kind,
-            anchors=build_decision_anchors(seal.decision),
+            anchors=build_decision_anchors(official),
             checkpoint_version=checkpoint.version if freeze_kind == "checkpoint_recovery" and checkpoint else None,
             degraded_reasons=("checkpoint_unavailable",) if checkpoint_unavailable else (),
         )
@@ -168,11 +170,13 @@ class TomorrowFreezeCoordinator:
         reasons = ["close_fallback", "official_close"]
         if decision.projection_stage == "local":
             reasons.append("local_only")
+        official = official_decision(decision)
+        official_codes = {item.code for item in official.entries}
         frozen = TomorrowDecisionFreeze(
-            decision=decision,
+            decision=official,
             frozen_at=frozen_at,
             freeze_kind="close_fallback",
-            anchors=closing_anchors,
+            anchors=tuple(anchor for anchor in closing_anchors if anchor.code in official_codes),
             degraded_reasons=tuple(reasons),
         )
         return self._commit(frozen)

@@ -8,7 +8,12 @@ from dataclasses import replace
 
 from trader.application.cache import canonical_json_bytes
 from trader.application.ports.snapshots import SnapshotReaderPort
-from trader.domain.recommendation.models import LiveOverlay, RecommendationSnapshot, Strategy
+from trader.domain.recommendation.models import (
+    LiveOverlay,
+    RecommendationAction,
+    RecommendationSnapshot,
+    Strategy,
+)
 
 
 class PublishedSnapshotIndex:
@@ -270,6 +275,7 @@ def _view_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
             ),
         )
         for item in snapshot.recommendations
+        if not snapshot.frozen or item.action is RecommendationAction.EXECUTABLE
     )
     return replace(
         snapshot,

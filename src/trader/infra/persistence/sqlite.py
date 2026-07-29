@@ -77,6 +77,7 @@ def initialize_database(database_path: Path) -> None:
                 selection_skip_reason TEXT NOT NULL DEFAULT '',
                 merge_epoch TEXT NOT NULL DEFAULT '',
                 atr20_pct REAL,
+                action TEXT NOT NULL DEFAULT 'legacy_unknown',
                 snapshot_id TEXT NOT NULL REFERENCES frozen_snapshots(snapshot_id),
                 PRIMARY KEY(strategy, recommend_date, stock_code)
             );
@@ -150,6 +151,7 @@ def initialize_database(database_path: Path) -> None:
                 anchor_price REAL NOT NULL,
                 atr20_pct REAL NOT NULL,
                 archive_relative_path TEXT NOT NULL,
+                action TEXT NOT NULL DEFAULT 'legacy_unknown',
                 PRIMARY KEY(snapshot_id, stock_code)
             );
             """
@@ -169,6 +171,8 @@ def initialize_database(database_path: Path) -> None:
         _ensure_column(connection, "recommendations", "selection_skip_reason", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "recommendations", "merge_epoch", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "recommendations", "atr20_pct", "REAL")
+        _ensure_column(connection, "recommendations", "action", "TEXT NOT NULL DEFAULT 'legacy_unknown'")
+        _ensure_column(connection, "outcome_backlog", "action", "TEXT NOT NULL DEFAULT 'legacy_unknown'")
         apply_migrations(connection)
         if _current_schema_version(connection) < SCHEMA_VERSION:
             connection.execute(

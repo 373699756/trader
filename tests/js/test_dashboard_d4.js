@@ -52,7 +52,6 @@ const state = {
   ...sandbox.window.TraderDashboardPatches,
   latencySummary: sandbox.window.TraderDashboardFormatters.latencySummary,
   drawer: sandbox.window.TraderRender.drawer,
-  frozenTodayObservationTable: sandbox.window.TraderRender.frozenTodayObservationTable,
   frozenTodayTable: sandbox.window.TraderRender.frozenTodayTable,
   isFrozenTodayView: sandbox.window.TraderRender.isFrozenTodayView,
   longTable: sandbox.window.TraderRender.longTable,
@@ -66,6 +65,39 @@ const state = {
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+const liveShort = {
+  status: "ready",
+  strategy: "tomorrow",
+  historical: false,
+  frozen: false,
+  items: [
+    { code: "600001", action: "executable" },
+    { code: "600002", action: "observe" },
+  ],
+};
+assert.strictEqual(state.observationDisplayState(liveShort, "warmup"), "closed_market");
+assert.strictEqual(state.observationDisplayState(liveShort, "today_main"), "open");
+assert.strictEqual(state.observationDisplayState(liveShort, "midday"), "open");
+assert.strictEqual(state.observationDisplayState(liveShort, "final_review"), "open");
+assert.strictEqual(state.observationDisplayState(liveShort, "after_close"), "closed_market");
+assert.strictEqual(state.observationDisplayState({ ...liveShort, strategy: "today" }, "today_late"), "open");
+assert.strictEqual(state.observationDisplayState({ ...liveShort, strategy: "today" }, "midday"), "closed_market");
+assert.strictEqual(state.observationDisplayState({ ...liveShort, strategy: "today" }, "afternoon"), "closed_market");
+assert.strictEqual(state.observationDisplayState({ ...liveShort, frozen: true }, "today_main"), "closed_frozen");
+assert.strictEqual(state.observationDisplayState({ ...liveShort, historical: true }, "midday"), "hidden_history");
+assert.strictEqual(
+  state.observationDisplayState({ ...liveShort, status: "not_ready", historical: true }, "midday"),
+  "hidden_history",
+);
+assert.strictEqual(state.observationDisplayState(liveShort, ""), "unknown");
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.observationRecommendations(liveShort, "midday"))),
+  [{ code: "600002", action: "observe" }],
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.observationRecommendations(liveShort, "after_close"))),
+  [],
+);
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.notReadyMessage({
     strategy: "tomorrow",
@@ -154,10 +186,6 @@ assert.strictEqual(state.tableColumnCount(frozenToday), 7);
 assert.strictEqual(
   state.frozenTodayTable().head,
   "<tr><th>排名</th><th>股票</th><th>11:20锚点价</th><th>锚点时涨跌</th><th>当前价</th><th>当前涨跌</th><th>锚点至今</th></tr>",
-);
-assert.strictEqual(
-  state.frozenTodayObservationTable().head,
-  "<tr><th>排名</th><th>股票</th><th>11:20锚点价</th><th>锚点时涨跌</th><th>当前价</th><th>当前涨跌</th><th>锚点至今</th><th>最终分</th><th>观察原因</th></tr>",
 );
 const frozenTodayItem = {
   rank: 1,
@@ -435,10 +463,12 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.visibleRecommendations({ strategy: "today", historical: true, items: mixedItems }))),
-  mixedItems,
+  [{ code: "600001", action: "executable" }],
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.observationRecommendations({ strategy: "today", historical: false, items: mixedItems }))),
+  JSON.parse(JSON.stringify(
+    state.observationRecommendations({ status: "ready", strategy: "today", historical: false, items: mixedItems }, "today_main"),
+  )),
   [{ code: "600002", action: "observe" }],
 );
 assert.deepStrictEqual(

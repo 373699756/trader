@@ -12,6 +12,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING
 
 from trader.application.candidate_features import bind_strategy_input_version, read_strategy_features
+from trader.application.official_records import official_snapshot
 from trader.application.pipeline_workers import data_future, persist, remember_candidate_selection, submit_required
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.recommendation_policy_codec import _snapshot_id
@@ -133,10 +134,11 @@ def _persist_runtime_results(
             pipeline._state.record_error(f"{strategy.value} close recovery waiting for complete P6 closing quotes")
             continue
         fallback = _runtime_close_snapshot(source, close_by_code, now, pipeline._config_version)
-        if not _commit_fallback(pipeline, fallback):
+        committed = _commit_fallback(pipeline, fallback)
+        if committed is None:
             continue
-        _save_closing_overlay(pipeline, fallback, close_by_code, now)
-        published.append(fallback)
+        _save_closing_overlay(pipeline, committed, close_by_code, now)
+        published.append(committed)
     return tuple(published)
 
 
@@ -267,11 +269,17 @@ def _rebuild_from_close(
     committed: list[RecommendationSnapshot] = []
     with _close_stage(pipeline, "commit"):
         for snapshot in prepared:
-            if not _commit_fallback(pipeline, snapshot):
+            committed_snapshot = _commit_fallback(pipeline, snapshot)
+            if committed_snapshot is None:
                 continue
-            close_by_code = {item.features.quote.code: item.features for item in snapshot.recommendations}
-            _save_closing_overlay(pipeline, snapshot, close_by_code, snapshot.published_at)
-            committed.append(snapshot)
+            close_by_code = {item.features.quote.code: item.features for item in committed_snapshot.recommendations}
+            _save_closing_overlay(
+                pipeline,
+                committed_snapshot,
+                close_by_code,
+                committed_snapshot.published_at,
+            )
+            committed.append(committed_snapshot)
     return tuple(committed)
 
 
@@ -525,17 +533,21 @@ def _preselect_close(
     )
 
 
-def _commit_fallback(pipeline: RecommendationPipeline, snapshot: RecommendationSnapshot) -> bool:
+def _commit_fallback(
+    pipeline: RecommendationPipeline,
+    snapshot: RecommendationSnapshot,
+) -> RecommendationSnapshot | None:
     if pipeline._repository.load_frozen(snapshot.strategy, snapshot.trade_date) is not None:
-        return False
+        return None
+    snapshot = official_snapshot(snapshot)
     persist(pipeline, pipeline._snapshot_writer.freeze, snapshot)
     if not admit_snapshot_to_p6(pipeline, snapshot):
-        return False
+        return None
     pipeline._frozen_keys.add((snapshot.strategy, snapshot.trade_date))
     pipeline._state.mark_frozen(snapshot)
     pipeline._publisher.publish(snapshot)
     pipeline._state.increment("after_close_recommendations_recovered")
-    return True
+    return snapshot
 
 
 def _save_closing_overlay(
@@ -544,6 +556,7 @@ def _save_closing_overlay(
     close_by_code: Mapping[str, FeatureSnapshot],
     now: datetime,
 ) -> None:
+    snapshot = official_snapshot(snapshot)
     selected_codes = {item.features.quote.code for item in snapshot.recommendations}
     quotes = {
         code: LiveQuote(

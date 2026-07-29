@@ -73,6 +73,12 @@
     return "当前没有达到正式推荐条件的股票";
   }
 
+  function frozenEmptyMessage(payload) {
+    return payload && payload.phase === "close_fallback"
+      ? "收盘补算未产生正式推荐；观察池已关闭且未保存"
+      : "正式冻结结果为空；观察池已关闭且未保存";
+  }
+
   function reasonCountSummary(values) {
     if (!values || typeof values !== "object") return "";
     return Object.entries(values)
@@ -269,6 +275,7 @@
 
   window.TraderDashboardPatches = Object.freeze({
     emptyRecommendationMessage,
+    frozenEmptyMessage,
     mergePatchItems,
     notReadyMessage,
     overlayPatchDecision,
