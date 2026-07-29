@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户再次发送“继续”，要求在保证评分正确的前提下继续压缩 tomorrow v2 总耗时并提高
+  数据实时性。真实只读状态复核发现旧进程累计 142 条 baseline，但仅 97 条成功，
+  45 条处理失败，选择一致率约 16.5%、过滤一致率为 0，且最新 local 停留数分钟；本批
+  新增第 2.10 节“影子同批输入收敛”契约和非空同策略对照回归，逐项固定 v1/v2 入选代码、
+  本地分及同语义硬过滤计数必须相等，不能把固定 fixture 或旧失败样本转换为切换证据。
+
 - 用户再次发送“继续”，要求在评分正确前提下继续压缩流水线总耗时并提高数据实时性。现状
   复核确认第 2.7 节要求先保存真实完整交易日证据再由独立批次复核，而当前
   `TomorrowCutoverGate` 只有进程内 deque，重启即丢失样本，无法安全进入生产指针切换。
@@ -196,6 +202,12 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- tomorrow 评分候选完成后现在重新读取一次注入时钟，并将不跨交易日的完成水位、同一份
+  不可变全市场人口和候选集合同时交给 v2 原生输入与 v1 `prepare_snapshot`；配置身份更新为
+  `runtime_v27_tomorrow_shadow_convergence_2026_07_29`。v2 只从显式
+  `candidate_features` 评分和排名，全市场特征仅提供硬过滤、板内横截面和聚合审计；
+  观察候选继续使用既有 78/73 分动作线，低于 73 分不再因 `observe_only` 绕过观察线。
 
 - 工程门禁的“完整交易日”由简单日期去重收紧为同日同时具备不晚于 10:00 的成功观测，
   以及不早于 14:50、v1/v2 冻结代码一致且带可恢复 SHA-256 内容哈希的成功观测；运行配置
@@ -503,6 +515,16 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复候选 I/O 在评分轮次开始后完成时，原生边界仍使用旧轮次时间而把合法本轮特征误判
+  为 future、造成 `tomorrow_native_inputs_failed` 且 v2 current 长时间不更新的问题。
+  同时修复 v2 用候选增强字段覆盖全市场人口并从约 5500 股重新选候选、把候选差异混入
+  评分一致性的问题；硬过滤门禁现在只比较拒绝事实，不再把可选告警、候选分/缺失、风险、
+  动作和集中度跳过原因错误地与 v1 全市场过滤计数比较。
+- 修复同一原生 local 已升级 hybrid 后，重复 local baseline 会被当成“当前决策不匹配”，
+  以及第二个不同 hybrid 触发同 sequence 冲突并写入处理失败样本的问题。重复 local 只
+  比较已经发布过的 local，不降级当前 hybrid；同输入的后到替代 hybrid 计
+  `baseline_superseded`，不覆盖决策、不重复评分也不污染切换样本。
+
 - 修复影子门禁只把“某日期出现过成功样本”当作“完整交易日”、且进程重启丢失全部证据仍
   可能重新累计并误报资格的问题。恢复后的内存窗口与持久层使用相同幂等身份和容量；
   跨日迟到失败仍可留证但不计入完整交易日；非法冻结哈希、同身份同时间冲突、载荷或
@@ -721,6 +743,20 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- failure-first 回归先稳定复现完成时间误判、全市场重新评分、过滤审计口径混用和重复
+  baseline 冲突；实现后，同一非空 100 股生产策略批次的 v1/v2 入选代码、本地分和硬过滤
+  计数逐项相等，观察线 72.99/73.00 边界、重复 local/hybrid、原生先投递及 v1 降级隔离
+  均通过。`make format-check`、`make lint`、`make type-check` 通过，严格复杂度债务为零，
+  202 个源码模块 mypy 无问题；全仓 1007 项中仅任务开始前用户已有的 outcome settlement
+  新断言失败，排除该单一断言后的 1006 项通过。
+- 固定 5500×360 离线 `perf-check --suite all` 零网络、零绝对或相对失败：
+  `market_merge`/`canonical_snapshot`/`targeted_overlay_commit` P95 分别约
+  526/661/88ms，三策略板评分约 323ms，100 tick 内存门禁通过。`make package` 在获准访问
+  构建依赖后成功生成 sdist/wheel；仓库外 Python 3.14 环境从 wheel 导入包、执行 CLI 与
+  绝对配置校验、读取 8 项模板/CSS/JavaScript/SVG 资源并通过 `pip check`。Firefox 在
+  1280x720、1440x900、1920x1080 下分别生成 116490/129966/137499 字节截图，无白屏、
+  横向溢出、面板重叠或浏览器错误，overlay 更新未增加完整 current GET。
 
 - 本批 failure-first 用例先因证据 repository 尚不存在而按预期停止；实现后证据规范往返、
   较新身份替换、哈希篡改拒绝、缺库只读失败、完整交易日、持久化失败 blocker、启动恢复
@@ -1160,6 +1196,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 tomorrow v2 影子从全市场重新生成评分候选、候选字段覆盖人口字段，以及把完整 v2
+  审计原因直接当作 v1 硬过滤比较事实的隐式行为；未删除数据源、评分公式、风险规则、
+  DeepSeek 预算、冻结记录、v1 正式读写链或旧 release，也未执行生产指针切换。
+
 - 移除 `insufficient_trade_days` 仅按成功样本日期数判断门禁的宽松语义，统一改为可验证的
   `incomplete_trade_day`；未移除任何活动荐股能力、实时数据来源或回退链。
 
@@ -1228,6 +1268,17 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 当前 5000 端口仍运行上一构建，未重启到 v27；本批没有在 11:20 后中断用户正在使用的
+  本地服务。当天又缺少不晚于 10:00 的持久化成功观测，因此即使现在重启也不能形成第
+  2.9 节完整交易日证据；必须在后续真实完整交易日重新累计至少 100 条成功样本、14:50
+  匹配冻结及 5/10 秒 P95 后再复核，旧 97 成功/45 失败样本不得沿用或改写。生产 tomorrow
+  指针和收益路线均未切换，收益提高仍无真实前向证据。
+- 主工作树仍保留用户开始前新增的
+  `test_settlement_records_due_stock_outcome_when_benchmark_is_unavailable`，当前实现返回
+  `outcome_count=0` 而该断言要求 1；本批未修改、未暂存该文件。宿主没有 Chrome/Chromium，
+  主看板 Chrome runner 无法启动，但同一发布要求允许的 Firefox tomorrow v2 三档真实渲染
+  已通过；Chrome 专属复核仍是外部环境风险。
 
 - 固定离线性能门禁本批两次复跑仍有三个旧行情算子绝对 P95 超限；虽然本批 diff 不触及
   这些实现、相对回归为零且新增证据写入发生在独立影子 worker 的决策/冻结之后，但按发布

@@ -190,6 +190,8 @@ class TomorrowShadowRuntime:
                     return True
                 local_publish_seconds = native_record.local_publish_seconds
             effective = self._publish_effective_projection(projection)
+            if effective is None:
+                return True
             if snapshot.frozen:
                 freeze_result = self._freezer.freeze_scheduled()
                 if freeze_result.status in {"frozen", "already_frozen"}:
@@ -208,7 +210,7 @@ class TomorrowShadowRuntime:
                 decision_schema_version=effective.schema_version,
                 parent_decision_version=effective.parent_decision_version or "",
                 selected_codes_match=_selected_codes(snapshot) == _selected_codes(effective),
-                filter_reasons_match=dict(snapshot.filter_reasons) == dict(effective.filter_reason_counts),
+                filter_reasons_match=dict(snapshot.filter_reasons) == dict(projection.hard_filter_reason_counts),
                 local_publish_seconds=local_publish_seconds,
                 decision_age_seconds=max(0.0, (now - projection.received_at).total_seconds()),
                 processing_seconds=max(0.0, time.perf_counter() - started),
@@ -258,7 +260,10 @@ class TomorrowShadowRuntime:
             (local_published_at - projection.received_at).total_seconds(),
         )
 
-    def _publish_effective_projection(self, projection: TomorrowShadowProjection) -> DecisionEpoch:
+    def _publish_effective_projection(
+        self,
+        projection: TomorrowShadowProjection,
+    ) -> DecisionEpoch | None:
         local = projection.local
         hybrid = projection.hybrid
         current = self._decisions.latest()
@@ -271,6 +276,12 @@ class TomorrowShadowRuntime:
                 return hybrid
         if hybrid is not None and current.version == hybrid.version:
             return hybrid
+        if current.projection_stage == "hybrid" and current.parent_decision_version == local.version:
+            if hybrid is None:
+                return local
+            with self._lock:
+                self._baseline_superseded += 1
+            return None
         if current.version != local.version:
             raise RuntimeError("tomorrow baseline does not match the current native decision")
         return local

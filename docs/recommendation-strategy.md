@@ -613,8 +613,8 @@ tomorrow v2 本地选择完成后先生成 local `DecisionEpoch`，其 `final_sc
 360 只已评分候选；其余全市场过滤结果以总数和原因计数保存。
 
 融合后动作固定为：`pass` 且无 veto、最终分不低于 78 为 `executable`；不低于 73 为
-`observe`；`observe_only` 且无 veto 保持观察；`reject`、未评分、低于观察线或任一 veto
-为 `unavailable`。正式池最多 10 只、观察池最多 8 只，两池分别按最终分、本地分、代码稳定
+`observe`；`observe_only` 且无 veto、同时达到观察线时保持观察；`reject`、未评分、
+低于观察线或任一 veto 为 `unavailable`。正式池最多 10 只、观察池最多 8 只，两池分别按最终分、本地分、代码稳定
 排序，并分别执行单板最多 `ceil(pool_limit * 60%)`、单行业/`unknown` 最多 2 只。被容量、
 板块或行业约束跳过的候选保留原动作和独立原因，不从池外补数。
 

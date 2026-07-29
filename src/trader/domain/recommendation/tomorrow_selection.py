@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -20,6 +21,7 @@ from trader.domain.recommendation.scoring import (
     board_candidate_score,
     build_board_cross_section,
     candidate_fields,
+    project_board_policy,
     score_board_strategy,
 )
 from trader.domain.review.models import RiskFact, RiskRule
@@ -91,6 +93,7 @@ class TomorrowSelectionRequest:
     data_version: str
     merge_epoch: str
     policy: TomorrowSelectionPolicy
+    candidate_features: Sequence[FeatureSnapshot] | None = None
     fallbacks: Mapping[Board, BoardCrossSectionFallback] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
@@ -106,13 +109,38 @@ class TomorrowSelectionRequest:
             raise ValueError("tomorrow selection features must contain unique codes")
         if any(item.observed_at > self.evaluated_at for item in features):
             raise ValueError("tomorrow selection cannot use future features")
+        candidate_features = _validated_candidate_features(
+            self.candidate_features,
+            population_codes=set(codes),
+            evaluated_at=self.evaluated_at,
+        )
         fallbacks = dict(self.fallbacks)
         if any(
             board not in _SUPPORTED_BOARDS or item.cross_section.board is not board for board, item in fallbacks.items()
         ):
             raise ValueError("tomorrow fallbacks must match a supported board")
         object.__setattr__(self, "features", features)
+        object.__setattr__(self, "candidate_features", candidate_features)
         object.__setattr__(self, "fallbacks", MappingProxyType(fallbacks))
+
+
+def _validated_candidate_features(
+    values: Sequence[FeatureSnapshot] | None,
+    *,
+    population_codes: set[str],
+    evaluated_at: datetime,
+) -> tuple[FeatureSnapshot, ...] | None:
+    if values is None:
+        return None
+    candidates = tuple(values)
+    codes = tuple(item.quote.code for item in candidates)
+    if len(codes) != len(set(codes)):
+        raise ValueError("tomorrow selection candidates must contain unique codes")
+    if not set(codes).issubset(population_codes):
+        raise ValueError("tomorrow selection candidates must belong to the population")
+    if any(item.observed_at > evaluated_at for item in candidates):
+        raise ValueError("tomorrow selection cannot use future candidates")
+    return candidates
 
 
 @dataclass(frozen=True)
@@ -148,27 +176,45 @@ class TomorrowSelectionResult:
     observations: tuple[TomorrowStockEvaluation, ...]
     selected: tuple[TomorrowStockEvaluation, ...]
     population_versions: Mapping[Board, str]
+    hard_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "population_versions", MappingProxyType(dict(self.population_versions)))
+        object.__setattr__(
+            self,
+            "hard_filter_reason_counts",
+            MappingProxyType(dict(self.hard_filter_reason_counts)),
+        )
 
 
 def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResult:
-    evaluations = _filter_features(request)
+    population_evaluations = _filter_features(request.features, request)
+    evaluations = dict(population_evaluations)
+    candidate_evaluations = (
+        population_evaluations
+        if request.candidate_features is None
+        else _filter_features(request.candidate_features, request)
+    )
+    evaluations.update(candidate_evaluations)
     population_versions: dict[Board, str] = {}
     scored_codes: list[str] = []
     for board in _SUPPORTED_BOARDS:
-        allowed = tuple(
+        population = tuple(
             item.features
-            for item in evaluations.values()
+            for item in population_evaluations.values()
             if item.disposition is not TomorrowDisposition.REJECT and item.features.quote.board is board
         )
-        if not allowed:
+        candidates = tuple(
+            item.features
+            for item in candidate_evaluations.values()
+            if item.disposition is not TomorrowDisposition.REJECT and item.features.quote.board is board
+        )
+        if not population:
             continue
         fallback = request.fallbacks.get(board)
         cross_section = build_board_cross_section(
             BoardCrossSectionRequest(
-                features=allowed,
+                features=population,
                 board=board,
                 merge_epoch=request.merge_epoch,
                 trade_date=request.trade_date,
@@ -180,7 +226,11 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
         )
         population_versions[board] = cross_section.population.population_version
         policy = request.policy.board_policies[board]
-        enriched = apply_board_policy(cross_section, Strategy.TOMORROW, policy)
+        enriched = (
+            apply_board_policy(cross_section, Strategy.TOMORROW, policy)
+            if request.candidate_features is None
+            else project_board_policy(cross_section, Strategy.TOMORROW, policy, candidates)
+        )
         scored_codes.extend(_score_board_candidates(enriched, policy, request, evaluations))
 
     _rank_local_candidates(scored_codes, evaluations)
@@ -194,12 +244,29 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
     )
     observations = tuple(item for item in scored if item.disposition is TomorrowDisposition.OBSERVE_ONLY)
     selected = tuple(evaluations[code] for code in selected_codes)
-    return TomorrowSelectionResult(ordered_evaluations, scored, observations, selected, population_versions)
+    hard_filter_reason_counts: Counter[str] = Counter(
+        reason.code for item in population_evaluations.values() for reason in item.filter_reasons
+    )
+    if request.candidate_features is not None:
+        hard_filter_reason_counts.update(
+            reason.code for item in candidate_evaluations.values() for reason in item.filter_reasons
+        )
+    return TomorrowSelectionResult(
+        ordered_evaluations,
+        scored,
+        observations,
+        selected,
+        population_versions,
+        dict(sorted(hard_filter_reason_counts.items())),
+    )
 
 
-def _filter_features(request: TomorrowSelectionRequest) -> dict[str, TomorrowStockEvaluation]:
+def _filter_features(
+    features: Sequence[FeatureSnapshot],
+    request: TomorrowSelectionRequest,
+) -> dict[str, TomorrowStockEvaluation]:
     result: dict[str, TomorrowStockEvaluation] = {}
-    for feature in sorted(request.features, key=lambda item: item.quote.code):
+    for feature in sorted(features, key=lambda item: item.quote.code):
         filtered = hard_filter(
             feature,
             request.evaluated_at,

@@ -9,6 +9,7 @@ from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 from trader.application.recommendation_policy_codec import _freeze_policy
+from trader.application.recommendations import RecommendationEngine
 from trader.application.tomorrow_shadow import (
     TomorrowCutoverGate,
     TomorrowCutoverPolicy,
@@ -345,6 +346,171 @@ def test_native_input_projects_same_local_identity_before_v1_snapshot(
     assert native.local.version == mirrored.local.version
     assert native.input_version == mirrored.input_version
     assert native.hybrid is None
+
+
+def test_shadow_projection_separates_hard_filter_comparison_from_v2_audit(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+    first = baseline.replay_input.market_features[0]
+    market_features = (
+        replace(first, quote=replace(first.quote, is_st=True)),
+        *baseline.replay_input.market_features[1:],
+    )
+    native_input = replace(
+        native_input_from_snapshot(baseline),
+        market_features=market_features,
+        candidate_features=market_features[1:],
+    )
+
+    projection = project_tomorrow_input(native_input, policy, decision_sequence=4)
+
+    assert projection.hard_filter_reason_counts["st_or_delisting"] == 1
+    assert "board_data_reliability_below_threshold" not in projection.hard_filter_reason_counts
+    assert "board_data_reliability_below_threshold" in projection.local.filter_reason_counts
+
+
+def test_native_projection_matches_v1_selection_and_hard_filters_for_same_candidate_batch(
+    application_feature_factory,
+) -> None:
+    configured = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    policy = replace(
+        configured,
+        selection=replace(
+            configured.selection,
+            thresholds={**configured.selection.thresholds, "tomorrow": 0.0},
+        ),
+    )
+    engine = RecommendationEngine(policy)
+    market_features = tuple(
+        application_feature_factory(f"600{index:03d}", OBSERVED_AT, industry=f"industry-{index}")
+        for index in range(100)
+    )
+    candidates, reasons, details = engine.preselect(
+        market_features,
+        now=OBSERVED_AT,
+        max_age_seconds=30.0,
+        limit=120,
+        strategies=(Strategy.TOMORROW,),
+        trade_date=TRADE_DATE.isoformat(),
+        phase="afternoon",
+    )
+    prepared = engine.prepare_snapshot(
+        Strategy.TOMORROW,
+        candidates,
+        now=OBSERVED_AT,
+        phase="afternoon",
+        trade_date=TRADE_DATE.isoformat(),
+        data_version="candidate-data:shared",
+        review_deadline=OBSERVED_AT,
+        max_age_seconds=30.0,
+        filtered_count=len({item.stock_code for item in details}),
+        filter_reasons=reasons,
+        filter_details=details,
+        target_prices=None,
+        long_groups=(),
+        market_features=market_features,
+        requested_codes=tuple(item.quote.code for item in candidates),
+        preselect_max_age_seconds=30.0,
+        candidate_pool_size=120,
+    )
+    baseline = replace(
+        engine.finalize_snapshot(prepared, {}, projection_stage="local"),
+        config_version="runtime:test",
+    )
+
+    projection = project_tomorrow_input(
+        native_input_from_snapshot(baseline),
+        policy,
+        decision_sequence=4,
+    )
+
+    assert baseline.recommendations
+    assert tuple(item.features.quote.code for item in baseline.recommendations) == tuple(
+        item.code for item in projection.local.entries if item.selected
+    )
+    assert {item.features.quote.code: item.score.local_score for item in baseline.recommendations} == {
+        item.code: item.score.local_score for item in projection.local.entries if item.selected
+    }
+    assert dict(baseline.filter_reasons) == dict(projection.hard_filter_reason_counts)
+
+
+def test_repeated_local_baseline_does_not_downgrade_or_fail_current_hybrid(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    projection = project_tomorrow_input(
+        native_input_from_snapshot(_baseline_snapshot(policy, application_feature_factory)),
+        policy,
+        decision_sequence=4,
+    )
+    current_hybrid = replace(
+        projection.local,
+        sequence=5,
+        projection_stage="hybrid",
+        parent_decision_version=projection.local.version,
+    )
+    decisions = Mock()
+    decisions.latest.return_value = current_hybrid
+    runtime = TomorrowShadowRuntime(
+        policy,
+        TomorrowShadowDependencies(
+            decisions,
+            Mock(),
+            Mock(),
+            Mock(),
+            Mock(),
+            Mock(),
+            Mock(),
+        ),
+    )
+
+    effective = runtime._publish_effective_projection(projection)
+
+    assert effective == projection.local
+    decisions.publish.assert_not_called()
+    assert runtime._baseline_superseded == 0
+
+
+def test_second_distinct_hybrid_for_same_local_is_superseded_without_failure(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    local_projection = project_tomorrow_input(
+        native_input_from_snapshot(_baseline_snapshot(policy, application_feature_factory)),
+        policy,
+        decision_sequence=4,
+    )
+    current_hybrid = replace(
+        local_projection.local,
+        sequence=5,
+        projection_stage="hybrid",
+        parent_decision_version=local_projection.local.version,
+        degraded_reasons=("deepseek_incomplete",),
+    )
+    later_hybrid = replace(current_hybrid, degraded_reasons=())
+    decisions = Mock()
+    decisions.latest.return_value = current_hybrid
+    runtime = TomorrowShadowRuntime(
+        policy,
+        TomorrowShadowDependencies(
+            decisions,
+            Mock(),
+            Mock(),
+            Mock(),
+            Mock(),
+            Mock(),
+            Mock(),
+        ),
+    )
+
+    effective = runtime._publish_effective_projection(replace(local_projection, hybrid=later_hybrid))
+
+    assert effective is None
+    decisions.publish.assert_not_called()
+    assert runtime._baseline_superseded == 1
+    assert runtime._failed == 0
 
 
 def test_native_input_identity_does_not_change_with_snapshot_or_reviews(

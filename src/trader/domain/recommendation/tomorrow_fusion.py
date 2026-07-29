@@ -477,13 +477,13 @@ def _action_for(
         return RecommendationAction.UNAVAILABLE, evaluation.selection_skip_reason or "not_scored"
     if veto:
         return RecommendationAction.UNAVAILABLE, "risk_veto"
+    if score.final_score < policy.executable_threshold - policy.observation_margin:
+        return RecommendationAction.UNAVAILABLE, "below_score_threshold"
     if evaluation.disposition is TomorrowDisposition.OBSERVE_ONLY:
         return RecommendationAction.OBSERVE, "filter_observe_only"
     if score.final_score >= policy.executable_threshold:
         return RecommendationAction.EXECUTABLE, "score_threshold_met"
-    if score.final_score >= policy.executable_threshold - policy.observation_margin:
-        return RecommendationAction.OBSERVE, "near_score_threshold"
-    return RecommendationAction.UNAVAILABLE, "below_score_threshold"
+    return RecommendationAction.OBSERVE, "near_score_threshold"
 
 
 def _select_action_pools(

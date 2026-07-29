@@ -217,6 +217,28 @@ def test_final_action_pools_apply_stable_board_and_industry_limits() -> None:
     )
 
 
+def test_observe_only_candidate_still_requires_the_observation_score_floor() -> None:
+    below = _evaluation(
+        1,
+        local_score=72.99,
+        disposition=TomorrowDisposition.OBSERVE_ONLY,
+    )
+    eligible = _evaluation(
+        2,
+        local_score=73.0,
+        disposition=TomorrowDisposition.OBSERVE_ONLY,
+    )
+
+    epoch = build_tomorrow_decision_epoch(_request(_selection((below, eligible))))
+    by_code = {item.code: item for item in epoch.entries}
+
+    assert by_code["600001"].action is RecommendationAction.UNAVAILABLE
+    assert by_code["600001"].action_reason == "below_score_threshold"
+    assert by_code["600001"].selected is False
+    assert by_code["600002"].action is RecommendationAction.OBSERVE
+    assert by_code["600002"].selected is True
+
+
 def test_decision_epoch_hash_is_stable_and_rejects_review_outside_protection_set() -> None:
     evaluations = tuple(_evaluation(index, local_score=90.0 - index) for index in range(3))
     selection = _selection(evaluations)

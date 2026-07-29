@@ -115,7 +115,7 @@ def test_tomorrow_v2_shadow_reaches_web_and_freeze_gate_without_history_download
     baseline = replace(
         baseline,
         frozen=True,
-        filter_reasons=projected.local.filter_reason_counts,
+        filter_reasons=projected.hard_filter_reason_counts,
     )
     repository = TomorrowDecisionFreezeRepository(tmp_path)
     repository.initialize()
@@ -176,11 +176,7 @@ def test_tomorrow_v2_shadow_reaches_web_and_freeze_gate_without_history_download
     assert current.decision_version == native_current.decision_version
     assert status["failed"] == 0
     assert status["cutover_gate"]["eligible"] is False
-    assert status["cutover_gate"]["blockers"] == (
-        "incomplete_trade_day",
-        "matching_freeze_missing",
-        "selected_codes_mismatch",
-    )
+    assert status["cutover_gate"]["blockers"] == ("incomplete_trade_day",)
     assert status["cutover_gate"]["deepseek_request_delta"] == 0
 
 

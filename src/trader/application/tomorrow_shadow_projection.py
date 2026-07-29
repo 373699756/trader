@@ -46,6 +46,7 @@ class TomorrowShadowProjection:
     received_at: datetime
     local: DecisionEpoch
     hybrid: DecisionEpoch | None
+    hard_filter_reason_counts: Mapping[str, int]
 
     @property
     def effective(self) -> DecisionEpoch:
@@ -89,6 +90,8 @@ def project_tomorrow_input(
             evaluated_at=evaluated_at,
             max_age_seconds=native_input.score_max_age_seconds,
             phase=native_input.phase,
+            candidate_features=native_input.candidate_features,
+            normalize_discovery_source_time=True,
         ),
     )
     market = plane.market
@@ -155,6 +158,7 @@ def project_tomorrow_input(
         received_at=market.received_at,
         local=local,
         hybrid=hybrid,
+        hard_filter_reason_counts=selection.hard_filter_reason_counts,
     )
 
 
@@ -190,7 +194,6 @@ def _data_plane_snapshot(
     if not market_features:
         raise ValueError("tomorrow shadow replay input has no market features")
     features_by_code = dict(market_features)
-    features_by_code.update(candidate_features)
     trade_date = native_input.trade_date
     daily = DailyFeaturePack(
         trade_date=trade_date,

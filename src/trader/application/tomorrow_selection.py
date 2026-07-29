@@ -35,6 +35,8 @@ class TomorrowSelectionOptions:
     max_age_seconds: float
     phase: str = "tomorrow"
     fallbacks: Mapping[Board, BoardCrossSectionFallback] | None = None
+    candidate_features: tuple[FeatureSnapshot, ...] | None = None
+    normalize_discovery_source_time: bool = False
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,17 @@ def select_tomorrow_snapshot(
         hard_filter=policy.hard_filter,
     )
     features = assemble_tomorrow_features(snapshot)
+    if options.normalize_discovery_source_time:
+        features = tuple(
+            replace(
+                feature,
+                quote=replace(
+                    feature.quote,
+                    source_time=min(evaluated_at, feature.quote.received_time),
+                ),
+            )
+            for feature in features
+        )
     merge_epochs = {feature.merge_epoch for feature in features}
     if len(merge_epochs) != 1:
         raise TomorrowSelectionNotReadyError("feature_merge_epoch_mismatch")
@@ -137,6 +150,7 @@ def select_tomorrow_snapshot(
             data_version=snapshot.market.content_hash,
             merge_epoch=next(iter(merge_epochs)),
             policy=selection_policy,
+            candidate_features=options.candidate_features,
             fallbacks=options.fallbacks or {},
         )
     )

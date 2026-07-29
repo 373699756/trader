@@ -186,6 +186,29 @@ def test_tomorrow_selection_records_local_threshold_exclusion(application_featur
     } == {"local_score_below_minimum"}
 
 
+def test_tomorrow_selection_uses_full_population_but_scores_only_explicit_candidates(
+    application_feature_factory,
+) -> None:
+    population = _features(application_feature_factory, count=100)
+    candidate = replace(
+        population[-1],
+        values={**population[-1].values, "tail_return_30m": 99.0},
+        merge_epoch="candidate:explicit",
+    )
+    request = replace(
+        _request(population, _selection_policy()),
+        candidate_features=(candidate,),
+    )
+
+    result = select_tomorrow(request)
+
+    assert len(result.evaluations) == 100
+    assert tuple(item.code for item in result.scored_candidates) == (candidate.quote.code,)
+    assert result.scored_candidates[0].features.values["tail_return_30m"] == 99.0
+    assert result.scored_candidates[0].features.merge_epoch == request.merge_epoch
+    assert result.population_versions
+
+
 def test_tomorrow_selection_rejects_feature_observed_after_evaluation(application_feature_factory) -> None:
     feature = replace(
         _features(application_feature_factory, count=1)[0],
