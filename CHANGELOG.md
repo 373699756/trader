@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户在重新启动后继续未完成任务，要求在评分结果正确前提下进一步合并/拆分并行事件，
+  使荐股收益、总耗时和数据实时性达到当前安全边界内最优。v29 真实样本确认时区失败已消除，
+  但 8 条新样本过滤一致率仍为 0，原生投影单次处理约 7 至 10 秒，5/10 秒证据还把更早的
+  行情年龄计入本地流水线。本批新增第 2.13/12.3 节原生直投影、同语义过滤证据和批次就绪
+  时延契约，以及独立 failure-first 回归。
+
 - 用户在 v28 重启后要求继续未完成任务。只读现场状态确认规范行情
   `observed_at=2026-07-29T05:27:04+00:00`，v2 已接收 16 份原生输入，却因
   `decision risk observed_at must use Asia/Shanghai` 累计 35 次失败且
@@ -215,6 +221,12 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- tomorrow v2 影子现在直接从深层不可变 `TomorrowNativeInput` 选择，不再合成并拆解
+  daily/market/candidate epoch；常规数据平面仍沿用真实 epoch 组装。全市场人口继续只用于
+  硬过滤和板内横截面，显式候选才进入评分；审计 epoch 身份由规范输入哈希稳定派生，
+  local/decision age 从候选批次完成的 `evaluated_at` 起算。活动身份提升为
+  `runtime_v30_tomorrow_native_direct_projection_2026_07_29`。
 
 - tomorrow v2 原生输入现在按上海时区校验全部全市场/候选点时数据，并在进入本地风险推导
   前深层规范化最多 360 条候选特征、报价、证据和外部风险事实；约 5500 行全市场人口继续
@@ -540,6 +552,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 v1 的非硬拒绝诊断 `history_warming` 被直接拿来与 v2 真实硬过滤计数比较，导致
+  真实历史预热期间过滤一致率恒为 0 的问题。门禁现在只从 v1 侧剔除该已知诊断别名，其余
+  新增、缺失或计数不同的原因继续严格阻断；入选代码仍按排名顺序比较，没有降为集合比较。
+- 修复 tomorrow 原生输入已完成点时校验和哈希后，worker 又复制约 5500 行构造三类合成
+  epoch、立即拆回特征，重复全量校验/哈希并推高发布时延的问题。该删除不改变候选、本地
+  分、风险事实、动作、排名、DeepSeek、冻结或 v1 正式读写路径。
+
 - 修复规范行情使用 UTC 表示同一时刻时，候选特征生成的本地风险事实仍携带 UTC
   `observed_at`，导致 v2 已完成评分却无法构造 `DecisionEpoch`、原生输入持续失败的问题。
   转换使用 `astimezone` 保持绝对时刻；仅时区表示不同的输入现在得到相同输入哈希、相同
@@ -778,6 +797,22 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- failure-first 回归先因缺少同语义过滤比较入口而在收集阶段失败；实现后，原生输入哈希
+  派生的 market/candidate 审计身份、批次就绪水位、只剔除 v1 `history_warming`、真实
+  原因/计数差异继续失败均通过。5500 条全市场、360 条候选的固定直投影三次为
+  1.942/1.766/1.512 秒，最大值低于 5 秒且三次决策版本一致；该负载只验证工程耗时和
+  确定性，不代表真实收益。
+- `make format-check`、`make lint`、严格重构债务零基线和 202 个源码文件 mypy 通过；
+  全仓收集 1014 项，除用户开始前已有的 benchmark-unavailable settlement 断言外其余
+  1013 项通过。架构 AST、`create_app()` 无副作用、固定融合 83.40、SSE、冻结与证据哈希
+  专项 62 项通过。sdist/wheel 构建成功，仓库外 Python 3.14 安装 wheel 后完成包来源、
+  `trader-cli`、v30 绝对配置、8 项模板/静态资源和依赖完整性验收。
+- Firefox 在 1280x720、1440x900、1920x1080 分别生成
+  116739/130080/137523 字节截图，无白屏、横向溢出、面板重叠或浏览器错误，overlay 更新
+  未增加完整 current GET。固定 5500×360 全性能保持零网络、零相对失败和 100 tick 分配
+  增长 0%；14/16 项绝对指标通过，未修改的 `market_merge` 和
+  `targeted_overlay_commit` 仍有下述宿主敏感超限。
 
 - failure-first 回归在修改前稳定复现现场
   `ValueError: decision risk observed_at must use Asia/Shanghai`，并证明未来风险事实此前
@@ -1266,6 +1301,11 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 tomorrow v2 影子专用的 `DailyFeaturePack`、`MarketEpoch` 和
+  `CandidateQuoteEpoch` 合成后立即拆解的往返，以及把行情 source/received age 当作本地
+  批次排队/计算时延的隐式语义；没有删除真实数据平面 epoch、评分/风险/冻结实现、历史或
+  证据数据，也未执行 production tomorrow 指针切换。
+
 - 本批移除的是原生候选风险事实保留非上海时区表示的隐式行为；未删除或改写评分公式、
   风险规则、DeepSeek facts、冻结/证据记录、旧 release、v1 正式链或用户运行数据，也未
   执行 production tomorrow 读写指针切换。
@@ -1345,6 +1385,18 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 本批只修复 tomorrow v2 影子工程时延和证据语义，没有调整选股、评分、融合、动作或
+  排名，因而不能宣称荐股收益已经提高。v30 午后启动仍无法补齐不晚于 10:00 的真实成功
+  样本；须在下一完整交易日重新取得至少 100 条成功样本、100% 有序选股/硬过滤一致、
+  5/10 秒 P95 和 14:50 匹配冻结，再由离线 CLI 独立复核后才可讨论生产切换。
+- 主工作树仍有用户开始前的
+  `tests/unit/application/test_outcome_settlement.py` 未提交修改；本批不修改、不暂存该
+  文件，完整测试结果会单独排除并如实报告该既有断言。
+- 固定性能中与本批直投影无调用关系的 `market_merge=890.4ms > 600ms` 和
+  `targeted_overlay_commit=118.1ms > 100ms` 仍超出绝对预算；其余 14 项、相对回归、
+  网络调用和内存增长通过。本批不顺带改写旧行情算子或放宽预算，需在停止运行中服务和
+  宿主负载稳定后继续复核。
 
 - 本批修复工程时区边界，不提高或调参候选、评分、融合、动作与排名，因此不能证明荐股
   收益提升。v28 午后运行已错过 10:00 前样本且其旧失败证据保持不可变；v29 仍须在下一

@@ -42,6 +42,7 @@ from trader.domain.recommendation.models import LiveOverlay, RecommendationSnaps
 from trader.domain.recommendation.tomorrow_fusion import DecisionEpoch
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+_BASELINE_NON_HARD_FILTER_DIAGNOSTICS = frozenset({"history_warming"})
 
 
 class TomorrowShadowProcessor(Protocol):
@@ -226,7 +227,10 @@ class TomorrowShadowRuntime:
                 decision_schema_version=effective.schema_version,
                 parent_decision_version=effective.parent_decision_version or "",
                 selected_codes_match=_selected_codes(snapshot) == _selected_codes(effective),
-                filter_reasons_match=dict(snapshot.filter_reasons) == dict(projection.hard_filter_reason_counts),
+                filter_reasons_match=_same_hard_filter_reasons(
+                    snapshot.filter_reasons,
+                    projection.hard_filter_reason_counts,
+                ),
                 local_publish_seconds=local_publish_seconds,
                 decision_age_seconds=max(0.0, (now - projection.received_at).total_seconds()),
                 processing_seconds=max(0.0, time.perf_counter() - started),
@@ -590,6 +594,16 @@ def _selected_codes(snapshot: RecommendationSnapshot | DecisionEpoch) -> tuple[s
         selected = sorted((item for item in snapshot.entries if item.selected), key=lambda item: item.rank)
         return tuple(item.code for item in selected)
     return tuple(item.features.quote.code for item in snapshot.recommendations)
+
+
+def _same_hard_filter_reasons(
+    baseline_reasons: Mapping[str, int],
+    native_reasons: Mapping[str, int],
+) -> bool:
+    canonical_baseline = {
+        code: count for code, count in baseline_reasons.items() if code not in _BASELINE_NON_HARD_FILTER_DIAGNOSTICS
+    }
+    return canonical_baseline == dict(native_reasons)
 
 
 def _clock_now(clock: Clock) -> datetime:

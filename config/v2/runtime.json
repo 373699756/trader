@@ -1,6 +1,6 @@
 {
   "schema_version": 7,
-  "config_version": "runtime_v29_tomorrow_risk_timezone_2026_07_29",
+  "config_version": "runtime_v30_tomorrow_native_direct_projection_2026_07_29",
   "runtime_dir": ".runtime/v17",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",

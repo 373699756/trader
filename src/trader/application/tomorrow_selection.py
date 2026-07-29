@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.market import MarketDataPlaneSnapshot, RealtimeDataPlaneReaderPort
@@ -37,6 +37,13 @@ class TomorrowSelectionOptions:
     fallbacks: Mapping[Board, BoardCrossSectionFallback] | None = None
     candidate_features: tuple[FeatureSnapshot, ...] | None = None
     normalize_discovery_source_time: bool = False
+
+
+@dataclass(frozen=True)
+class TomorrowSelectionIdentity:
+    trade_date: date
+    data_version: str
+    merge_epoch: str
 
 
 @dataclass(frozen=True)
@@ -109,26 +116,38 @@ def select_tomorrow_snapshot(
         epoch_times.extend((snapshot.research.observed_at, snapshot.research.received_at))
     if max(epoch_times) > evaluated_at:
         raise TomorrowSelectionNotReadyError("market_epoch_from_future")
-    board_policies = {
-        board: board_policy
-        for board in _SUPPORTED_BOARDS
-        if (board_policy := policy.board_policy(Strategy.TOMORROW, board)) is not None
-    }
-    threshold = policy.selection.thresholds.get("tomorrow", 0.0)
-    selection_policy = TomorrowSelectionPolicy(
-        board_policies=board_policies,
-        risk_rules=policy.risk_rules,
-        max_age_seconds=options.max_age_seconds,
-        local_risk_cap=policy.fusion.local_risk_cap,
-        candidate_limit_per_board=120,
-        top_k=min(policy.selection.default_top_k, 10),
-        maximum_per_industry=policy.selection.maximum_per_industry,
-        minimum_local_score=max(0.0, threshold - policy.selection.observation_margin),
-        hard_filter=policy.hard_filter,
-    )
     features = assemble_tomorrow_features(snapshot)
+    merge_epochs = {feature.merge_epoch for feature in features}
+    if len(merge_epochs) != 1:
+        raise TomorrowSelectionNotReadyError("feature_merge_epoch_mismatch")
+    return select_tomorrow_features(
+        features,
+        policy,
+        options,
+        TomorrowSelectionIdentity(
+            trade_date=snapshot.market.trade_date,
+            data_version=snapshot.market.content_hash,
+            merge_epoch=next(iter(merge_epochs)),
+        ),
+    )
+
+
+def select_tomorrow_features(
+    features: Sequence[FeatureSnapshot],
+    policy: RecommendationPolicy,
+    options: TomorrowSelectionOptions,
+    identity: TomorrowSelectionIdentity,
+) -> TomorrowSelectionResult:
+    """Select tomorrow candidates from an already coherent point-in-time population."""
+
+    evaluated_at = options.evaluated_at
+    population = tuple(features)
+    if evaluated_at.date() != identity.trade_date:
+        raise TomorrowSelectionNotReadyError("market_epoch_trade_date_mismatch")
+    if not population:
+        raise TomorrowSelectionNotReadyError("coherent_market_epoch_unavailable")
     if options.normalize_discovery_source_time:
-        features = tuple(
+        population = tuple(
             replace(
                 feature,
                 quote=replace(
@@ -136,23 +155,43 @@ def select_tomorrow_snapshot(
                     source_time=min(evaluated_at, feature.quote.received_time),
                 ),
             )
-            for feature in features
+            for feature in population
         )
-    merge_epochs = {feature.merge_epoch for feature in features}
-    if len(merge_epochs) != 1:
-        raise TomorrowSelectionNotReadyError("feature_merge_epoch_mismatch")
     return select_tomorrow(
         TomorrowSelectionRequest(
-            features=features,
+            features=population,
             evaluated_at=evaluated_at,
-            trade_date=snapshot.market.trade_date.isoformat(),
+            trade_date=identity.trade_date.isoformat(),
             phase=options.phase,
-            data_version=snapshot.market.content_hash,
-            merge_epoch=next(iter(merge_epochs)),
-            policy=selection_policy,
+            data_version=identity.data_version,
+            merge_epoch=identity.merge_epoch,
+            policy=_selection_policy(policy, options.max_age_seconds),
             candidate_features=options.candidate_features,
             fallbacks=options.fallbacks or {},
         )
+    )
+
+
+def _selection_policy(
+    policy: RecommendationPolicy,
+    max_age_seconds: float,
+) -> TomorrowSelectionPolicy:
+    board_policies = {
+        board: board_policy
+        for board in _SUPPORTED_BOARDS
+        if (board_policy := policy.board_policy(Strategy.TOMORROW, board)) is not None
+    }
+    threshold = policy.selection.thresholds.get("tomorrow", 0.0)
+    return TomorrowSelectionPolicy(
+        board_policies=board_policies,
+        risk_rules=policy.risk_rules,
+        max_age_seconds=max_age_seconds,
+        local_risk_cap=policy.fusion.local_risk_cap,
+        candidate_limit_per_board=120,
+        top_k=min(policy.selection.default_top_k, 10),
+        maximum_per_industry=policy.selection.maximum_per_industry,
+        minimum_local_score=max(0.0, threshold - policy.selection.observation_margin),
+        hard_filter=policy.hard_filter,
     )
 
 

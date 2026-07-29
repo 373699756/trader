@@ -630,6 +630,23 @@ tomorrow v2 原生输入接受任意带时区、且不晚于本次评估时间�
 整份 v2 原生输入，不得通过改写时区、截断时间或忽略事实继续评分。无时区时间同样拒绝。
 DeepSeek review 继续在既有 schema、证据和截止校验后独立规范化，不受本节影响。
 
+### 12.3 tomorrow v2 原生直投影与一致性比较
+
+影子原生路径直接从深层不可变的 `TomorrowNativeInput.market_features` 建立全市场选择人口，
+不得先合成再拆解 daily/market/candidate epoch。全市场人口仍逐项应用
+`preselection_replay_feature`，并只把发现行情的 source time 规范到不晚于批次评估水位；
+显式 `candidate_features` 是唯一可评分集合。共享选择函数必须与常规数据平面路径使用同一
+`TomorrowSelectionPolicy`、硬过滤、板内横截面、风险推导、动作和稳定排名实现。
+
+原生决策的 market/candidate epoch 字段是从规范输入哈希稳定派生的审计身份，不代表重新
+物化的数据平面 epoch。相同规范输入、策略和 sequence 必须得到相同本地决策版本；直投影
+前后候选代码、local score、风险事实、动作、排名和硬拒绝计数必须完全一致。
+
+影子门禁比较 v1/v2 硬过滤计数时，仅从 v1 剔除非硬拒绝诊断 `history_warming`，然后按
+原因名称和计数严格比较；不得忽略其他额外、缺失或计数不同的原因。选股结果按正式排名
+后的代码元组严格比较，顺序变化仍是不一致。发布和决策年龄从原生批次
+`evaluated_at` 起算，行情自身的新鲜度继续由点时过滤和特征审计约束。
+
 ## 13. TopK 与集中度
 
 today、tomorrow、d25 各自在主板、创业板和科创板三个草稿合并后全局稳定选择；全体共
