@@ -76,6 +76,10 @@ from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
 from trader.infra.persistence.tomorrow_decision_freezes import TomorrowDecisionFreezeRepository
+from trader.infra.persistence.tomorrow_shadow_evidence import (
+    TomorrowShadowEvidenceRepository,
+    TomorrowShadowEvidenceUnavailableError,
+)
 from trader.infra.persistence.writer import SnapshotRepository
 from trader.infra.settings import (
     LongWatchlist,
@@ -185,6 +189,8 @@ class _PublicationContext:
     pipeline_snapshots: ShadowObservingSnapshotIndex
     recommendation_engine: RecommendationEngine
     tomorrow_repository: TomorrowDecisionFreezeRepository
+    tomorrow_evidence: TomorrowShadowEvidenceRepository
+    tomorrow_gate: TomorrowCutoverGate
     tomorrow_runtime: TomorrowShadowRuntime
     tomorrow_worker: TomorrowShadowWorker
     tomorrow_queries: TomorrowDecisionQueries
@@ -229,6 +235,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             now=now,
             initializers=(
                 publication.tomorrow_repository.initialize,
+                lambda: _initialize_tomorrow_evidence(publication),
                 pipeline.initialize,
                 publication.published_snapshots.initialize,
                 persistence.budget.initialize,
@@ -531,6 +538,7 @@ def _build_publication(
     published_snapshots = PublishedSnapshotIndex(repository)
     recommendation_engine = _build_recommendation_engine(context, calendar)
     tomorrow_repository = TomorrowDecisionFreezeRepository(settings.runtime_dir)
+    tomorrow_evidence = TomorrowShadowEvidenceRepository(settings.runtime_dir)
     tomorrow_decisions = CurrentDecisionIndex()
     tomorrow_quotes = TomorrowQuoteOverlayIndex(tomorrow_decisions)
     tomorrow_events = TomorrowDecisionEventStream(
@@ -545,7 +553,7 @@ def _build_publication(
         clock,
         quotes=tomorrow_quotes,
     )
-    tomorrow_gate = TomorrowCutoverGate()
+    tomorrow_gate = TomorrowCutoverGate(evidence=tomorrow_evidence)
     tomorrow_freezer = TomorrowFreezeCoordinator(
         tomorrow_decisions,
         tomorrow_repository,
@@ -581,11 +589,21 @@ def _build_publication(
         pipeline_snapshots,
         recommendation_engine,
         tomorrow_repository,
+        tomorrow_evidence,
+        tomorrow_gate,
         tomorrow_runtime,
         tomorrow_worker,
         tomorrow_queries,
         tomorrow_events,
     )
+
+
+def _initialize_tomorrow_evidence(publication: _PublicationContext) -> None:
+    try:
+        publication.tomorrow_evidence.initialize()
+        publication.tomorrow_gate.restore(publication.tomorrow_evidence.load_recent())
+    except TomorrowShadowEvidenceUnavailableError:
+        publication.tomorrow_gate.mark_evidence_failure()
 
 
 def _build_recommendation_engine(context: _BuildContext, calendar: ChinaTradingCalendar) -> RecommendationEngine:

@@ -6,6 +6,18 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户再次发送“继续”，要求在评分正确前提下继续压缩流水线总耗时并提高数据实时性。现状
+  复核确认第 2.7 节要求先保存真实完整交易日证据再由独立批次复核，而当前
+  `TomorrowCutoverGate` 只有进程内 deque，重启即丢失样本，无法安全进入生产指针切换。
+  本批新增独立 `tomorrow-v2/tomorrow-shadow-evidence.sqlite3`：按交易日、baseline 和
+  原生输入幂等保存最近 4096 条规范观测，绑定 decision、配置、策略、融合、schema、
+  父决策、三段时延、一致性、资源、DeepSeek 增量和冻结内容哈希，并以 SHA-256 校验；
+  SQLite 锁等待上限为 50ms，失败时优先保住实时决策并阻断切换资格。
+- 新增启动恢复和只读 `trader-cli tomorrow-cutover-evidence` 离线复核。CLI 验证每条载荷
+  哈希、manifest 身份和领域约束，输出窗口摘要、工程门禁及整组 `evidence_hash`；
+  `--require-eligible` 可把任一 blocker 映射为非零退出码。证据初始化、恢复或写入失败
+  只增加 `evidence_persistence_failed`，不阻塞本地决策、冻结、SSE 或只读 Web。
+
 - 用户发送“继续”，要求在评分正确和实时性不退化的前提下继续压缩流水线总耗时。现状审查
   确认上一版 tomorrow v2 影子必须等 v1 完成 `prepare_snapshot`、DeepSeek 合并和 P6
   接纳后才开始 local，因而测得的 v2 时延包含整段 v1 串行前置。本批新增深层不可变
@@ -184,6 +196,11 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- 工程门禁的“完整交易日”由简单日期去重收紧为同日同时具备不晚于 10:00 的成功观测，
+  以及不早于 14:50、v1/v2 冻结代码一致且带可恢复 SHA-256 内容哈希的成功观测；运行配置
+  身份提升为 `runtime_v26_tomorrow_evidence_2026_07_29`。固定 68/32 融合、候选、评分、
+  风险、动作、排名和生产读写指针均未改变。
 
 - tomorrow v2 输入身份改为只绑定交易日、phase、上海时区评估时间、配置/数据版本、
   全市场/候选特征身份、请求代码和年龄/容量边界，不再包含后到的 v1 snapshot ID 或 review
@@ -486,6 +503,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复影子门禁只把“某日期出现过成功样本”当作“完整交易日”、且进程重启丢失全部证据仍
+  可能重新累计并误报资格的问题。恢复后的内存窗口与持久层使用相同幂等身份和容量；
+  跨日迟到失败仍可留证但不计入完整交易日；非法冻结哈希、同身份同时间冲突、载荷或
+  manifest 篡改均拒绝进入离线合格报告。
+
 - 修复 tomorrow v2 工程影子被 v1 全部评分和 P6 串行阻塞、无法独立达到 local 实时性目标
   的结构性问题。原生输入投递失败现在只记录 `tomorrow_native_inputs_failed` 并继续提交
   v1；重复输入不会重复评分或产生新 SSE 决策身份；无 `merge_epoch` 的兼容输入按实际特征
@@ -699,6 +721,24 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 本批 failure-first 用例先因证据 repository 尚不存在而按预期停止；实现后证据规范往返、
+  较新身份替换、哈希篡改拒绝、缺库只读失败、完整交易日、持久化失败 blocker、启动恢复
+  降级和 CLI 退出码定向回归通过。`make format-check`、`make lint`、`make type-check`
+  全部通过，严格重构债务为零、202 个源码模块 mypy 无问题。共享工作树 `make test` 只失败
+  于任务开始前用户已有的 outcome settlement 新断言；排除该断言后全仓通过，且从已推送
+  基线叠加仅本批文件的隔离树完整 999 项 pytest 全绿。
+- `make package` 首次仅因沙箱禁止访问本机 pip 代理失败，获准后成功生成 sdist/wheel。
+  仓库外 Python 3.14 环境安装最终 wheel 及全部声明依赖后，`pip check`、新证据模块导入、
+  `trader-cli --help`、绝对配置校验和 8 项模板/CSS/JavaScript/SVG 资源读取通过。
+  Firefox/geckodriver 在 1280x720、1440x900、1920x1080 分别生成
+  117396/130623/138132 字节截图，均无白屏、横向溢出、面板重叠或浏览器错误，SSE overlay
+  更新仍保持完整 current GET 为 1。
+- 固定 5500×360 离线 `perf-check --suite all` 两次均保持零网络和零相对回归，但在宿主
+  load average 约 2.7 时，未被本批修改且不经过证据 repository 的 `market_merge`、
+  `canonical_snapshot`、`targeted_overlay_commit` P95 分别约为 670-690ms、
+  966-973ms、123-131ms，高于 600/900/100ms 绝对门槛；其余 13 项绝对指标和 100 tick
+  内存门禁通过。本批没有修改这些旧算子或放宽预算，失败保留为发布残余风险。
 
 - 本批 failure-first 测试先确认原生输入 API 缺失；实现后目标单元、契约、启动态流水线和
   v2 冻结集成回归通过，证明原生输入在 v1 `prepare_snapshot` 提交前送达、投递失败不阻塞
@@ -1120,6 +1160,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 `insufficient_trade_days` 仅按成功样本日期数判断门禁的宽松语义，统一改为可验证的
+  `incomplete_trade_day`；未移除任何活动荐股能力、实时数据来源或回退链。
+
 - 移除 tomorrow v2 local 对“v1 已完成评分并成功发布 snapshot”的正常路径前置依赖；保留
   snapshot 投影仅作为升级过渡 fallback 和 baseline 对照，不删除 v1 正式实现，也不执行
   生产读写指针切换。
@@ -1185,6 +1228,17 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 固定离线性能门禁本批两次复跑仍有三个旧行情算子绝对 P95 超限；虽然本批 diff 不触及
+  这些实现、相对回归为零且新增证据写入发生在独立影子 worker 的决策/冻结之后，但按发布
+  规则仍不能把本批宣称为“全部性能门禁通过”。需要在宿主负载稳定后复核；若仍稳定超限，
+  应另立性能优化批次定位，不能在本证据章节顺带改写行情算子或预算。
+
+- 当前仓库和本机没有真实交易日形成的持久化证据，因此新增数据库/CLI只能证明保存、恢复、
+  篡改检测和工程门禁机制，不能证明样本来源真实、服务整日连续或荐股收益提高；固定 fixture
+  仍不得作为切换依据。本批不切换 tomorrow 生产读写指针，后续须运行至少一个完整交易日、
+  保存至少 100 个成功样本并由独立批次复核。用户预存的 outcome settlement 单测修改继续
+  保持未暂存、未改动。
 
 - 当前环境没有运行中的本地服务或 `.runtime/v17/tomorrow-v2` 真实交易日证据，因此尚未
   获得第 2.7 节要求的至少 100 个成功样本、完整 14:50 匹配冻结、零错误/额外 DeepSeek

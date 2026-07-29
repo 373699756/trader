@@ -177,6 +177,7 @@ def test_tomorrow_v2_shadow_reaches_web_and_freeze_gate_without_history_download
     assert status["failed"] == 0
     assert status["cutover_gate"]["eligible"] is False
     assert status["cutover_gate"]["blockers"] == (
+        "incomplete_trade_day",
         "matching_freeze_missing",
         "selected_codes_mismatch",
     )

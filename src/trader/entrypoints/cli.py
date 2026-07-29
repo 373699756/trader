@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from typing import cast
 
 from trader.application.recommendations import RecommendationEngine
 from trader.application.threshold_report import build_threshold_report
@@ -14,6 +15,10 @@ from trader.entrypoints.performance import run_performance_check, write_report
 from trader.infra.persistence.migration import migrate_v17_archive
 from trader.infra.persistence.recommendation_archive import export_bundle, list_bundles, verify_bundle
 from trader.infra.persistence.snapshots import snapshot_from_dict
+from trader.infra.persistence.tomorrow_shadow_evidence import (
+    TomorrowShadowEvidenceRepository,
+    TomorrowShadowEvidenceUnavailableError,
+)
 from trader.infra.settings import load_long_watchlist, load_runtime_settings, load_strategy_settings
 
 
@@ -61,6 +66,15 @@ def build_parser() -> argparse.ArgumentParser:
     archive_export = archive_commands.add_parser("export", help="Export a verified recommendation bundle.")
     _add_archive_identity_arguments(archive_export, required=True)
     archive_export.add_argument("--output", required=True, help="Absolute export directory.")
+    evidence = subparsers.add_parser(
+        "tomorrow-cutover-evidence",
+        help="Verify and summarize durable tomorrow v2 shadow evidence.",
+    )
+    evidence.add_argument(
+        "--require-eligible",
+        action="store_true",
+        help="Return nonzero unless every engineering cutover gate passes.",
+    )
     return parser
 
 
@@ -69,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     direct_handler = {
         "validate-config": _run_validate_config,
         "recommendation-archive": _run_recommendation_archive,
+        "tomorrow-cutover-evidence": _run_tomorrow_cutover_evidence,
     }.get(args.command)
     if direct_handler is not None:
         return direct_handler(args)
@@ -148,6 +163,19 @@ def _run_validate_config(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _run_tomorrow_cutover_evidence(args: argparse.Namespace) -> int:
+    config_path = _absolute_config_path(args.config)
+    runtime = load_runtime_settings(config_path)
+    repository = TomorrowShadowEvidenceRepository(runtime.runtime_dir)
+    try:
+        report = repository.build_report()
+    except TomorrowShadowEvidenceUnavailableError as exc:
+        raise SystemExit(f"tomorrow cutover evidence verification failed: {exc}") from exc
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    status = cast(dict[str, object], report["cutover_status"])
+    return 0 if not args.require_eligible or status["eligible"] is True else 1
 
 
 def _run_recommendation_archive(args: argparse.Namespace) -> int:

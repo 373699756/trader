@@ -49,11 +49,27 @@ def test_cutover_gate_requires_real_samples_and_matching_freeze() -> None:
         )
     )
 
-    gate.record(_observation(sequence=1, frozen=False))
+    gate.record(
+        _observation(
+            sequence=1,
+            observed_at=datetime(2026, 7, 28, 9, 40, tzinfo=SHANGHAI),
+            frozen=False,
+        )
+    )
     assert gate.status().eligible is False
-    assert gate.status().blockers == ("insufficient_samples", "matching_freeze_missing")
+    assert gate.status().blockers == (
+        "insufficient_samples",
+        "incomplete_trade_day",
+        "matching_freeze_missing",
+    )
 
-    gate.record(_observation(sequence=2, frozen=True))
+    gate.record(
+        _observation(
+            sequence=2,
+            observed_at=datetime(2026, 7, 28, 14, 50, tzinfo=SHANGHAI),
+            frozen=True,
+        )
+    )
 
     status = gate.status()
     assert status.eligible is True
@@ -61,6 +77,7 @@ def test_cutover_gate_requires_real_samples_and_matching_freeze() -> None:
     assert status.sample_count == 2
     assert status.successful_sample_count == 2
     assert status.trade_day_count == 1
+    assert status.complete_trade_day_count == 1
     assert status.selection_agreement_ratio == 1.0
     assert status.filter_agreement_ratio == 1.0
     assert status.local_publish_p95_seconds == 0.8
@@ -76,22 +93,29 @@ def test_cutover_gate_reports_every_failed_engineering_condition() -> None:
             baseline_snapshot_id="legacy:1",
             decision_version="decision:1",
             input_version="input:1",
+            config_version="runtime:test",
+            strategy_version="strategy:test",
+            fusion_version="fusion:test",
+            decision_schema_version="decision_epoch_v1",
+            parent_decision_version="",
             selected_codes_match=False,
             filter_reasons_match=False,
             local_publish_seconds=5.001,
             decision_age_seconds=10.001,
+            processing_seconds=0.1,
             deepseek_request_delta=1,
             resource_limits_passed=False,
             baseline_frozen=True,
             v2_frozen=False,
             freeze_codes_match=False,
+            freeze_content_hash="",
             processing_error="selection_failed",
         )
     )
 
     assert gate.status().blockers == (
         "insufficient_samples",
-        "insufficient_trade_days",
+        "incomplete_trade_day",
         "deepseek_request_delta_nonzero",
         "matching_freeze_missing",
         "processing_errors_present",
@@ -107,9 +131,26 @@ def test_cutover_gate_keeps_only_bounded_recent_samples() -> None:
             maximum_samples=2,
         )
     )
-    gate.record(_observation(sequence=1, selected_codes_match=False))
-    gate.record(_observation(sequence=2))
-    gate.record(_observation(sequence=3, frozen=True))
+    gate.record(
+        _observation(
+            sequence=1,
+            observed_at=datetime(2026, 7, 28, 9, 30, tzinfo=SHANGHAI),
+            selected_codes_match=False,
+        )
+    )
+    gate.record(
+        _observation(
+            sequence=2,
+            observed_at=datetime(2026, 7, 28, 9, 40, tzinfo=SHANGHAI),
+        )
+    )
+    gate.record(
+        _observation(
+            sequence=3,
+            observed_at=datetime(2026, 7, 28, 14, 50, tzinfo=SHANGHAI),
+            frozen=True,
+        )
+    )
 
     status = gate.status()
     assert status.sample_count == 2
@@ -128,7 +169,75 @@ def test_cutover_gate_does_not_count_repeated_baseline_input() -> None:
     assert status.sample_count == 1
     assert status.successful_sample_count == 1
     assert status.eligible is False
-    assert status.blockers == ("insufficient_samples",)
+    assert status.blockers == ("insufficient_samples", "incomplete_trade_day")
+
+
+def test_cutover_gate_blocks_when_durable_evidence_write_fails() -> None:
+    evidence = Mock()
+    evidence.record.side_effect = OSError("disk unavailable")
+    gate = TomorrowCutoverGate(
+        TomorrowCutoverPolicy(minimum_samples=1, minimum_trade_days=1),
+        evidence=evidence,
+    )
+
+    gate.record(
+        _observation(
+            sequence=1,
+            observed_at=datetime(2026, 7, 28, 9, 40, tzinfo=SHANGHAI),
+        )
+    )
+
+    status = gate.status()
+    assert status.sample_count == 1
+    assert status.evidence_failure_count == 1
+    assert "evidence_persistence_failed" in status.blockers
+
+
+def test_cutover_gate_rejects_same_time_identity_conflict() -> None:
+    gate = TomorrowCutoverGate(TomorrowCutoverPolicy(minimum_samples=1, minimum_trade_days=1))
+    original = _observation(sequence=1)
+
+    gate.record(original)
+    gate.record(replace(original, selected_codes_match=False))
+
+    status = gate.status()
+    assert status.sample_count == 1
+    assert status.selection_agreement_ratio == 1.0
+    assert status.evidence_failure_count == 1
+    assert "evidence_persistence_failed" in status.blockers
+
+
+def test_cutover_gate_retains_latest_observation_times_when_input_is_out_of_order() -> None:
+    gate = TomorrowCutoverGate(
+        TomorrowCutoverPolicy(
+            minimum_samples=2,
+            minimum_trade_days=1,
+            maximum_samples=2,
+        )
+    )
+    gate.record(
+        _observation(
+            sequence=2,
+            observed_at=datetime(2026, 7, 28, 10, 30, tzinfo=SHANGHAI),
+        )
+    )
+    gate.record(
+        _observation(
+            sequence=3,
+            observed_at=datetime(2026, 7, 28, 14, 30, tzinfo=SHANGHAI),
+        )
+    )
+    gate.record(
+        _observation(
+            sequence=1,
+            observed_at=datetime(2026, 7, 28, 9, 30, tzinfo=SHANGHAI),
+            selected_codes_match=False,
+        )
+    )
+
+    status = gate.status()
+    assert status.sample_count == 2
+    assert status.selection_agreement_ratio == 1.0
 
 
 def test_shadow_failure_keeps_snapshot_trade_date_after_midnight() -> None:
@@ -159,7 +268,7 @@ def test_shadow_failure_keeps_snapshot_trade_date_after_midnight() -> None:
     assert status.processing_error_count == 1
     assert status.blockers == (
         "insufficient_samples",
-        "insufficient_trade_days",
+        "incomplete_trade_day",
         "matching_freeze_missing",
         "processing_errors_present",
     )
@@ -402,24 +511,32 @@ def _baseline_snapshot(policy, application_feature_factory) -> RecommendationSna
 def _observation(
     *,
     sequence: int,
+    observed_at: datetime | None = None,
     frozen: bool = False,
     selected_codes_match: bool = True,
 ) -> TomorrowShadowObservation:
     return TomorrowShadowObservation(
         trade_date=TRADE_DATE,
-        observed_at=OBSERVED_AT + timedelta(seconds=sequence),
+        observed_at=observed_at or OBSERVED_AT + timedelta(seconds=sequence),
         baseline_snapshot_id=f"legacy:{sequence}",
         decision_version=f"decision:{sequence}",
         input_version=f"input:{sequence}",
+        config_version="runtime:test",
+        strategy_version="strategy:test",
+        fusion_version="fusion:test",
+        decision_schema_version="decision_epoch_v1",
+        parent_decision_version="",
         selected_codes_match=selected_codes_match,
         filter_reasons_match=True,
         local_publish_seconds=0.8,
         decision_age_seconds=2.0,
+        processing_seconds=0.1,
         deepseek_request_delta=0,
         resource_limits_passed=True,
         baseline_frozen=frozen,
         v2_frozen=frozen,
         freeze_codes_match=frozen,
+        freeze_content_hash="a" * 64 if frozen else "",
     )
 
 

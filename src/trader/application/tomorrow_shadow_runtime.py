@@ -202,10 +202,16 @@ class TomorrowShadowRuntime:
                 baseline_snapshot_id=snapshot.snapshot_id,
                 decision_version=effective.version,
                 input_version=projection.input_version,
+                config_version=effective.config_version,
+                strategy_version=effective.strategy_version,
+                fusion_version=effective.fusion_version,
+                decision_schema_version=effective.schema_version,
+                parent_decision_version=effective.parent_decision_version or "",
                 selected_codes_match=_selected_codes(snapshot) == _selected_codes(effective),
                 filter_reasons_match=dict(snapshot.filter_reasons) == dict(effective.filter_reason_counts),
                 local_publish_seconds=local_publish_seconds,
                 decision_age_seconds=max(0.0, (now - projection.received_at).total_seconds()),
+                processing_seconds=max(0.0, time.perf_counter() - started),
                 deepseek_request_delta=0,
                 resource_limits_passed=True,
                 baseline_frozen=snapshot.frozen,
@@ -214,6 +220,9 @@ class TomorrowShadowRuntime:
                     frozen is not None
                     and frozen.trade_date == effective.trade_date
                     and _selected_codes(snapshot) == _selected_codes(frozen.decision)
+                ),
+                freeze_content_hash=(
+                    frozen.content_hash if frozen is not None and frozen.trade_date == effective.trade_date else ""
                 ),
             )
             self._gate.record(observation)
@@ -369,16 +378,23 @@ class TomorrowShadowRuntime:
                 observed_at=now,
                 baseline_snapshot_id=snapshot.snapshot_id,
                 decision_version="unavailable",
-                input_version=snapshot.data_version or "unavailable",
+                input_version=_snapshot_text(snapshot, "data_version"),
+                config_version=_snapshot_text(snapshot, "config_version"),
+                strategy_version=_snapshot_text(snapshot, "strategy_version"),
+                fusion_version=_snapshot_text(snapshot, "fusion_version"),
+                decision_schema_version="unavailable",
+                parent_decision_version="",
                 selected_codes_match=False,
                 filter_reasons_match=False,
                 local_publish_seconds=max(0.0, time.perf_counter() - started),
                 decision_age_seconds=0.0,
+                processing_seconds=max(0.0, time.perf_counter() - started),
                 deepseek_request_delta=0,
                 resource_limits_passed=True,
                 baseline_frozen=snapshot.frozen,
                 v2_frozen=False,
                 freeze_codes_match=False,
+                freeze_content_hash="",
                 processing_error="shadow_projection_failed",
             )
         )
@@ -557,6 +573,11 @@ def _snapshot_trade_date(snapshot: RecommendationSnapshot) -> date:
         return date.fromisoformat(snapshot.trade_date)
     except ValueError:
         return _shanghai(snapshot.published_at).date()
+
+
+def _snapshot_text(snapshot: RecommendationSnapshot, field: str) -> str:
+    value = getattr(snapshot, field, "")
+    return value if isinstance(value, str) and value.strip() else "unavailable"
 
 
 def _shanghai(value: datetime) -> datetime:

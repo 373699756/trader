@@ -8,7 +8,8 @@ from unittest.mock import Mock
 import pytest
 
 from trader.application.tomorrow_shadow_runtime import ShadowObservingSnapshotIndex
-from trader.bootstrap import ApplicationSystem, build_system
+from trader.bootstrap import ApplicationSystem, _initialize_tomorrow_evidence, build_system
+from trader.infra.persistence.tomorrow_shadow_evidence import TomorrowShadowEvidenceUnavailableError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -75,6 +76,15 @@ def test_shadow_runtime_has_no_history_download_or_external_review_calls() -> No
     assert ".review(" not in source
     assert "DeepSeekReviewPort" not in source
     assert "MarketDataProvider" not in source
+
+
+def test_evidence_recovery_failure_blocks_cutover_without_blocking_startup() -> None:
+    publication = Mock()
+    publication.tomorrow_evidence.initialize.side_effect = TomorrowShadowEvidenceUnavailableError("corrupt")
+
+    _initialize_tomorrow_evidence(publication)
+
+    publication.tomorrow_gate.mark_evidence_failure.assert_called_once_with()
 
 
 def test_duplicate_system_start_does_not_stop_running_history_pool() -> None:

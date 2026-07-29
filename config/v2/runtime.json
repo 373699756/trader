@@ -1,6 +1,6 @@
 {
   "schema_version": 7,
-  "config_version": "runtime_v25_tomorrow_native_2026_07_29",
+  "config_version": "runtime_v26_tomorrow_evidence_2026_07_29",
   "runtime_dir": ".runtime/v17",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",

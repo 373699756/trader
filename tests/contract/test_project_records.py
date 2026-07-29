@@ -204,6 +204,23 @@ def test_tomorrow_native_pipeline_contract_runs_before_v1_scoring() -> None:
         assert statement in design
 
 
+def test_tomorrow_cutover_evidence_contract_is_durable_and_pre_cutover() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+
+    for statement in (
+        "tomorrow v2 切换证据持久化与离线复核交付边界",
+        "tomorrow-shadow-evidence.sqlite3",
+        "最近 4096 条",
+        "`evidence_persistence_failed`",
+        "`incomplete_trade_day`",
+        "`trader-cli tomorrow-cutover-evidence`",
+        "`--require-eligible`",
+        "不能自行证明样本来自真实完整交易日",
+        "本节不执行生产读写指针切换",
+    ):
+        assert statement in design
+
+
 def test_tomorrow_data_plane_retention_is_documented_but_not_implemented() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     source = PROJECT_ROOT / "src" / "trader"
