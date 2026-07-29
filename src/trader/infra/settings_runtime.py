@@ -84,8 +84,8 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         "runtime",
     )
     schema_version = _integer(raw, "schema_version", minimum=1)
-    if schema_version not in {5, 6}:
-        raise ConfigurationError("runtime schema_version must be 5 or 6")
+    if schema_version not in {5, 6, 7}:
+        raise ConfigurationError("runtime schema_version must be 5, 6, or 7")
 
     config_dir = path.parent
     project_root = _infer_project_root(config_dir)
@@ -183,6 +183,15 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     strategy_config_path = _resolve_config_path(config_dir, _text(raw, "strategy_config"))
     long_watchlist_path = _resolve_config_path(config_dir, _text(raw, "long_watchlist"))
 
+    cadence_seconds = _nested_positive_number_mapping(
+        pipeline_raw,
+        "cadence_seconds",
+    )
+    if schema_version < 7 and "long_quotes" not in cadence_seconds:
+        topk_cadence = cadence_seconds.get("topk_quotes")
+        if topk_cadence is not None:
+            cadence_seconds["long_quotes"] = dict(topk_cadence)
+
     settings = RuntimeSettings(
         schema_version=schema_version,
         config_version=_text(raw, "config_version"),
@@ -207,7 +216,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             deepseek_workers=_integer(pipeline_raw, "deepseek_workers", minimum=1),
             decision_execution_mode=_decision_execution_mode(pipeline_raw.get("decision_execution_mode", "serialized")),
             shutdown_timeout_seconds=_number(pipeline_raw, "shutdown_timeout_seconds", minimum=0.1),
-            cadence_seconds=_nested_positive_number_mapping(pipeline_raw, "cadence_seconds"),
+            cadence_seconds=cadence_seconds,
             publish_heartbeat_seconds=_integer(pipeline_raw, "publish_heartbeat_seconds", minimum=1),
         ),
         market_data=MarketDataSettings(
@@ -501,6 +510,15 @@ def _validate_cadence_settings(cadence: Mapping[str, Mapping[str, float]]) -> No
             "final_window": 1.0,
         },
         "topk_quotes": {
+            "warmup": 1.0,
+            "today_main": 1.0,
+            "today_late": 1.0,
+            "midday": 10.0,
+            "afternoon": 1.0,
+            "final_review": 1.0,
+            "final_window": 1.0,
+        },
+        "long_quotes": {
             "warmup": 1.0,
             "today_main": 1.0,
             "today_late": 1.0,

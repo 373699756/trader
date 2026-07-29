@@ -66,6 +66,7 @@ class SourceObservationRequest:
     force: bool
     deadline: datetime | None
     minimum_rows: int
+    bypass_cache: bool = False
 
 
 @dataclass(frozen=True)
@@ -285,7 +286,7 @@ class MarketSourceCoordinator:
                 "normalization",
                 _elapsed(normalization_started, self._monotonic()),
             )
-            if self._cache is not None:
+            if self._cache is not None and not request.bypass_cache:
                 source_time = max(observation.source_time for observation in observations)
                 data_version = max(observation.data_version for observation in observations)
                 self._cache.put(identity, observations, data_version=data_version, source_time=source_time)
@@ -293,7 +294,7 @@ class MarketSourceCoordinator:
             self._telemetry.record_source_time(source, max(observation.source_time for observation in observations))
             return observations
 
-        if self._cache is not None and not request.force:
+        if self._cache is not None and not request.force and not request.bypass_cache:
             cached = self._cached_source_observations(identity, request)
             if cached is not None:
                 return cached
@@ -301,11 +302,15 @@ class MarketSourceCoordinator:
         try:
             return (
                 cast(tuple[SourceObservation, ...], self._cache.coalesce(identity, load))
-                if self._cache is not None
+                if self._cache is not None and not request.bypass_cache
                 else load()
             )
         except Exception as exc:
-            if self._cache is not None and _before_deadline(self._wall_clock(), request.deadline):
+            if (
+                self._cache is not None
+                and not request.bypass_cache
+                and _before_deadline(self._wall_clock(), request.deadline)
+            ):
                 self._cache.put_negative(identity, error_code=_cache_error_code(exc))
             raise
 

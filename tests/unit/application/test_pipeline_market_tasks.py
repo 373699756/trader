@@ -1,8 +1,11 @@
 from types import SimpleNamespace
 
+import pytest
+
 from trader.application import pipeline_market_tasks
 from trader.application.pipeline_stages import strategies_for_phase, strategy_requires_scoring
 from trader.application.schedule import MarketPhase
+from trader.application.snapshot_workflow import score_strategy
 from trader.domain.recommendation.models import Strategy
 
 
@@ -31,7 +34,7 @@ def test_realtime_candidate_quote_event_does_not_wait_for_intraday_history(monke
     assert slow_calls == []
 
 
-def test_realtime_candidate_quote_event_refreshes_long_codes_in_same_request(monkeypatch, utc_now) -> None:
+def test_realtime_candidate_quote_event_excludes_long_codes(monkeypatch, utc_now) -> None:
     pipeline = SimpleNamespace(
         _candidate_codes=("600001",),
         _long_codes=("688012", "300346"),
@@ -53,24 +56,42 @@ def test_realtime_candidate_quote_event_refreshes_long_codes_in_same_request(mon
         deadline=None,
     )
 
-    assert requested_codes == [("600001", "688012", "300346")]
+    assert requested_codes == [("600001",)]
     assert tuple(feature.quote.code for feature in pipeline._candidate_features) == ("600001",)
+
+
+def test_candidate_research_and_reference_inputs_exclude_long_codes() -> None:
+    pipeline = SimpleNamespace(
+        _candidate_codes=("600001",),
+        _long_codes=("688012", "300346"),
+    )
+
+    assert pipeline_market_tasks._active_codes(pipeline) == ("600001",)
+
+
+def test_long_cannot_enter_strategy_scoring(utc_now) -> None:
+    with pytest.raises(ValueError, match="quote projection lane"):
+        score_strategy(
+            SimpleNamespace(),
+            Strategy.LONG,
+            utc_now,
+            MarketPhase.AFTERNOON,
+            "2026-07-16",
+        )
 
 
 def test_pre_afternoon_candidate_and_scoring_phases_include_tomorrow_and_d25() -> None:
     expected = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
 
     assert pipeline_market_tasks._short_strategies_for_phase(MarketPhase.TODAY_MAIN) == expected
-    assert strategies_for_phase(MarketPhase.TODAY_MAIN) == (*expected, Strategy.LONG)
+    assert strategies_for_phase(MarketPhase.TODAY_MAIN) == expected
     assert strategies_for_phase(MarketPhase.MIDDAY) == (
         Strategy.TOMORROW,
         Strategy.D25,
-        Strategy.LONG,
     )
     assert strategies_for_phase(MarketPhase.AFTERNOON) == (
         Strategy.TOMORROW,
         Strategy.D25,
-        Strategy.LONG,
     )
 
 

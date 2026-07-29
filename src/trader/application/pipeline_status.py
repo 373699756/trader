@@ -10,7 +10,7 @@ from trader.application.cadence import PipelineTask, freshness_level
 from trader.application.pipeline_state import PipelineState
 from trader.application.pipeline_workers import worker_status
 from trader.application.schedule import MarketPhase
-from trader.application.snapshot_workflow import topk_quote_age
+from trader.application.snapshot_workflow import long_quote_age, topk_quote_age
 from trader.domain.recommendation.models import Strategy
 
 if TYPE_CHECKING:
@@ -40,6 +40,11 @@ class PipelineStatusMixin(PipelineState):
             self._live_overlays,
             measured_at,
             target_seconds=topk_target,
+        )
+        market_data["long_quote_age"] = long_quote_age(
+            self._state,
+            measured_at,
+            target_seconds=10.0 if phase is MarketPhase.MIDDAY else 1.0,
         )
         market_data["freshness"] = self._freshness_status(
             market_data,
@@ -85,6 +90,7 @@ class PipelineStatusMixin(PipelineState):
             "full_market": (PipelineTask.FULL_MARKET, market_data.get("market_quote_age")),
             "candidate_quotes": (PipelineTask.CANDIDATE_QUOTES, market_data.get("candidate_quote_age")),
             "topk_quotes": (PipelineTask.TOPK_QUOTES, market_data.get("topk_quote_age")),
+            "long_quotes": (PipelineTask.LONG_QUOTES, market_data.get("long_quote_age")),
         }
         result: dict[str, object] = {}
         for name, (task, raw_summary) in categories.items():

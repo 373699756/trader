@@ -157,6 +157,10 @@ class QuoteReaderPort(Protocol):
         self, codes: Sequence[str], observed_at: datetime, *, force: bool = False, deadline: datetime | None = None
     ) -> Sequence[FeatureSnapshot]: ...
 
+    def refresh_long_quotes(
+        self, codes: Sequence[str], observed_at: datetime, *, force: bool = False, deadline: datetime | None = None
+    ) -> Sequence[FeatureSnapshot]: ...
+
     def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]: ...
 
 

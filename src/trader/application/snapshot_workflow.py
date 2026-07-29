@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from trader.application.after_close_recovery import recover_after_close_snapshots
 from trader.application.candidate_features import fetch_strategy_features
+from trader.application.long_quotes import refresh_long_quotes
 from trader.application.pipeline_market_tasks import _refresh_intraday_tail_before_score
 from trader.application.pipeline_review_updates import review_enabled_for_strategy_phase
 from trader.application.pipeline_stages import (
@@ -87,6 +88,7 @@ def process_schedule(
         snapshot = score_strategy(pipeline, strategy, now, phase, trade_date)
         if snapshot is not None:
             snapshots.append(snapshot)
+    snapshots.extend(refresh_long_quotes(pipeline, now, phase))
 
     snapshots.extend(freeze_available_snapshots(pipeline, now, freeze_strategies))
     if phase is MarketPhase.AFTER_CLOSE:
@@ -259,6 +261,8 @@ def _active_overlay_targets(
 ) -> tuple[_OverlayTarget, ...]:
     active: list[_OverlayTarget] = []
     for strategy in Strategy:
+        if strategy is Strategy.LONG:
+            continue
         snapshot = pipeline._state.latest(strategy)
         if snapshot is None or snapshot.trade_date != trade_date:
             continue
@@ -386,8 +390,10 @@ def score_strategy(
     phase: MarketPhase,
     trade_date: str,
 ) -> RecommendationSnapshot | None:
+    if strategy is Strategy.LONG:
+        raise ValueError("long uses the quote projection lane and cannot enter strategy scoring")
     scoring_started = time.perf_counter()
-    codes = pipeline._long_codes if strategy is Strategy.LONG else pipeline._candidate_codes
+    codes = pipeline._candidate_codes
     if not codes:
         return None
     features, data_version = fetch_strategy_features(pipeline._candidate_data, strategy, codes, now)
@@ -395,7 +401,6 @@ def score_strategy(
         return None
     deadline = review_deadline(now, phase)
     review_port = pipeline._reviews if phase not in {MarketPhase.DEEPSEEK_CUTOFF, MarketPhase.FINAL_QUOTE} else None
-    is_long = strategy is Strategy.LONG
     prepared = pipeline._engine.prepare_snapshot(
         strategy,
         features,
@@ -405,11 +410,11 @@ def score_strategy(
         data_version=data_version,
         review_deadline=deadline,
         max_age_seconds=maximum_age_seconds(phase, strategy),
-        filtered_count=0 if is_long else pipeline._filtered_count,
-        filter_reasons={} if is_long else pipeline._filter_reasons,
-        filter_details=() if is_long else pipeline._filter_details,
-        target_prices=pipeline._long_target_prices if strategy is Strategy.LONG else None,
-        long_groups=pipeline._long_groups if is_long else (),
+        filtered_count=pipeline._filtered_count,
+        filter_reasons=pipeline._filter_reasons,
+        filter_details=pipeline._filter_details,
+        target_prices=None,
+        long_groups=(),
         market_features=pipeline._market_features,
         requested_codes=codes,
         preselect_max_age_seconds=maximum_age_seconds(phase),
@@ -515,6 +520,8 @@ def topk_quote_age(
     active_ages: list[float] = []
     excluded_frozen: list[str] = []
     for strategy in Strategy:
+        if strategy is Strategy.LONG:
+            continue
         snapshot = state.latest(strategy)
         if snapshot is None:
             continue
@@ -533,6 +540,29 @@ def topk_quote_age(
         **_age_summary(active_ages, target_seconds=target_seconds),
         "per_strategy": per_strategy,
         "excluded_frozen_strategies": sorted(excluded_frozen),
+        "measured_at": now.isoformat(),
+    }
+
+
+def long_quote_age(
+    state: RuntimeState,
+    now: datetime,
+    *,
+    target_seconds: float = 10.0,
+) -> Mapping[str, object]:
+    snapshot = state.latest(Strategy.LONG)
+    ages = (
+        [
+            item.features.quote.age_seconds(now)
+            for item in snapshot.recommendations
+            if item.features.quote.price is not None
+        ]
+        if snapshot is not None
+        else []
+    )
+    return {
+        "target_seconds": target_seconds,
+        **_age_summary(ages, target_seconds=target_seconds),
         "measured_at": now.isoformat(),
     }
 
@@ -604,6 +634,7 @@ __all__ = [
     "freeze_available_snapshots",
     "process_schedule",
     "refresh_live_overlays",
+    "long_quote_age",
     "save_checkpoint_if_due",
     "topk_quote_age",
 ]

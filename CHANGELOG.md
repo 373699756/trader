@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户明确要求 `long` 当前不需要评分，只需要最高实时性的固定池行情。本批新增
+  `LongQuoteProjectionService` 与独立 `long_quotes` latest-wins 通道：按配置顺序直接把
+  腾讯定向报价投影为 `observe` 当前快照，评分兼容字段固定为 0，并通过
+  `score_status=not_applicable` 明确表示“不适用评分”。部分代码失败时保留同交易日最近
+  有效报价或显式缺失占位，不自动换股、不缩短名单。
+- 新增 Long 独立 worker、独立队列年龄/新鲜度状态、独立 `tencent_long` 熔断与生产
+  cadence：交易活动阶段每 1 秒、午间每 10 秒、15:00 最后刷新一次。新通道绕过共享行情
+  缓存，确保每个到期周期直接请求实时报价；慢或失败的 Long 请求不能占用候选腾讯通道、
+  tomorrow 事件合并或策略评分容量。
 - 用户继续下一完整迁移章节，并澄清影子运行不是下载历史 60 日数据，要求该下载先在文档
   明确暂停。本批新增 tomorrow v2 生产旁路影子：`ShadowObservingSnapshotIndex` 只在旧
   P6 成功接纳后把同一份不可变点时 `replay_input` 交给独立单线程 latest-wins worker，
@@ -167,6 +176,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `long` 从候选代码、新闻、风险、参考数据、历史特征、共享 TopK overlay、三策略评分和
+  收盘补算链中拆出；当前快照只保留报价字段、固定分组和行情来源/时间，不再进入
+  `RecommendationEngine.prepare_snapshot/finalize_snapshot`。Long 仍不冻结、不写推荐
+  历史或结算，全部荐股策略的评分、融合、排名和冻结规则保持不变。
+- runtime schema 升至 v7 并加入显式 `long_quotes` cadence；v5/v6 旧配置缺少该项时沿用
+  同 phase 的 `topk_quotes` cadence，v5 的串行执行模式兼容行为保持不变。推荐 API 新增
+  `score_status`，三类荐股为 `scored`、未就绪荐股为 `not_ready`、Long 为
+  `not_applicable`。
 - `bootstrap.py` 现在显式装配独立 v2 决策索引、报价 overlay、冻结 repository、事件流、
   查询、门禁和影子 worker；`build_system()` 仍不启动线程或创建目录，`ApplicationSystem`
   统一启动和有界停止影子线程。旧 today/d25/long、旧 tomorrow P6、旧首页和
@@ -455,6 +472,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 Long 虽然最终分固定为 0，运行时仍经过统一准备/评分/finalize，并混入候选代码和
+  共享 TopK 行情，造成无意义历史/研究工作以及与荐股流水线竞争资源的问题。进一步修复
+  仅增加应用 worker 仍会共用底层腾讯 lane、熔断和缓存的问题：Long 现在拥有独立物理
+  熔断身份并绕过共享缓存；其失败不会打开候选腾讯熔断，候选评分也不会等待慢 Long 请求。
 - 修复 v2 组件已完成但真实组合根始终未注入查询和运行数据、导致生产进程
   `/api/v2/tomorrow/current` 只能长期 `not_ready` 且无法量化新旧链路差异的问题。当前
   接受的 tomorrow P6 会异步形成可观察 v2 current；冻结成功后额外发布同身份事件，使 Web
@@ -661,6 +682,18 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- Long 定向单元/组件/集成回归覆盖固定顺序、无评分语义、部分报价沿用、共享 TopK 排除、
+  独立 latest-wins worker、慢 Long 不阻塞 D25、Long 熔断不打开候选熔断、生产缓存启用
+  时仍逐周期物理刷新，以及 v5/v6 cadence 兼容迁移。`make format-check`、`make lint` 和
+  `make type-check` 通过，严格重构债务为零；排除用户既有未提交结算测试文件的全仓测试
+  通过，该文件原有两项测试也单独通过。完整 `make test` 唯一失败为该文件新增断言。
+- `make package` 在获准访问本机 pip 代理后成功生成 sdist 和 `py3-none-any` wheel；仓库外
+  Python 3.14 全依赖环境通过 `pip check`，实际从 wheel 路径导入 `trader` 和 Long 新模块，
+  `trader-cli --help` 可执行，模板、CSS、JavaScript 与 SVG 资源可读。
+- headless Firefox/geckodriver 在 1280x720、1440x900、1920x1080 三档均无白屏、页面级
+  横向溢出或浏览器错误，Long 侧栏可见、tab 无溢出且左右面板对齐；稳定复跑 25 个 SSE
+  patch 全部应用、零 resync，patch-to-paint P95 为 16ms，低于 100ms 门禁。首次浏览器
+  冷启动运行布局同样通过，但 P95 为 435ms，稳定复跑后恢复。
 - tomorrow v2 影子定向回归覆盖门禁全部 blocker、成功样本分母、baseline/input 去重、
   跨午夜交易日归属、latest-wins、线程有界停止、无历史/DeepSeek 外部端口、点时 epoch
   投影、组合根无副作用、current/history/SSE、14:50 独立冻结和不一致时拒绝切换；相关
@@ -1058,6 +1091,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 Long 的通用策略 worker、评分 fallback、收盘 prepare/finalize 重建和共享行情
+  overlay；Long 不再产生 DeepSeek 请求、冻结检查点、正式推荐历史或结果结算。保留 Web
+  envelope 中的零分字段仅为现有前端兼容，不代表投资判断。
 - 影子运行和工程切换门禁的活动范围明确移除“批量下载/回填历史 60 个交易日”前置步骤；
   本批没有删除既有历史特征字段、缓存或用户运行数据，后续恢复下载必须另立独立交付批次。
 - v2 页面移除对旧 `RecommendationQueries`、旧 `SnapshotPublisher` 和旧 Web envelope
@@ -1118,6 +1154,13 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批使用固定行情 fixture、并发阻塞回归和离线浏览器验证机制与隔离性，未在真实交易日
+  调用外部腾讯行情，因此供应商实际 1 秒吞吐、网络抖动和真实数据年龄仍需运行观测；
+  Long 是固定研究观察池且无评分，本批不构成收益承诺。下一流水线优化章节未在本批顺带
+  实施，需等待用户下一次“继续”。
+- 主工作树完整测试仍被任务开始前用户已有、未提交的 benchmark-unavailable settlement
+  新断言阻塞；该文件未修改、未暂存且不属于本批。除该新用例外，全仓测试和该文件原有
+  用例均通过。
 - 本批已把 v2 影子接入真实组合根，但没有切换 tomorrow 生产读写指针。首次启动后只有旧
   P6 成功接纳包含点时 `replay_input` 的同日 tomorrow 快照，v2 current 才会从
   `not_ready` 变为旁路结果；真实完整交易日尚未形成 100 个成功样本、匹配冻结和 5/10 秒

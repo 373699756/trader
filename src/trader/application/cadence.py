@@ -34,6 +34,7 @@ class PipelineTask(str, Enum):
     FULL_MARKET = "full_market"
     CANDIDATE_QUOTES = "candidate_quotes"
     TOPK_QUOTES = "topk_quotes"
+    LONG_QUOTES = "long_quotes"
     SCORE = "score"
     INDUSTRY_HEAT = "industry_heat"
     MARKET_NEWS = "market_news"
@@ -52,6 +53,7 @@ def task_execution_budget_seconds(task: PipelineTask) -> float | None:
         PipelineTask.FULL_MARKET: 20.0,
         PipelineTask.CANDIDATE_QUOTES: 3.0,
         PipelineTask.TOPK_QUOTES: 3.0,
+        PipelineTask.LONG_QUOTES: 3.0,
         PipelineTask.SCORE: 15.0,
         PipelineTask.INDUSTRY_HEAT: 20.0,
         PipelineTask.MARKET_NEWS: 8.0,
@@ -70,6 +72,7 @@ PERIODIC_TASKS = (
     PipelineTask.FULL_MARKET,
     PipelineTask.CANDIDATE_QUOTES,
     PipelineTask.TOPK_QUOTES,
+    PipelineTask.LONG_QUOTES,
     PipelineTask.SCORE,
     PipelineTask.INDUSTRY_HEAT,
     PipelineTask.MARKET_NEWS,
@@ -295,6 +298,7 @@ def _point_tasks(
         return (ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, ("tomorrow", "d25")),)
     return (
         ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, at, phase),
+        ScheduledPipelineTask(PipelineTask.LONG_QUOTES, at, phase),
         ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, at, phase),
     )
 

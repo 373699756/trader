@@ -89,6 +89,7 @@ def test_periodic_tasks_skip_missed_cycles_instead_of_bursting_catchup_work() ->
     assert all(count <= 1 for count in counts.values())
     assert counts[PipelineTask.CANDIDATE_QUOTES] == 1
     assert counts[PipelineTask.TOPK_QUOTES] == 1
+    assert counts[PipelineTask.LONG_QUOTES] == 1
 
 
 def test_first_tick_after_warmup_still_initializes_reference_data_once() -> None:
@@ -122,6 +123,7 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
             PipelineTask.FULL_MARKET: 3530,
             PipelineTask.CANDIDATE_QUOTES: 10940,
             PipelineTask.TOPK_QUOTES: 15300,
+            PipelineTask.LONG_QUOTES: 15301,
             PipelineTask.SCORE: 3410,
             PipelineTask.INDUSTRY_HEAT: 226,
             PipelineTask.MARKET_NEWS: 226,
@@ -141,6 +143,7 @@ def _policy() -> CadencePolicy:
             "full_market": {"today_main": 30, "midday": 60, "final_window": 30},
             "candidate_quotes": {"today_main": 5, "midday": 60, "final_window": 2},
             "topk_quotes": {"today_main": 3, "midday": 60, "final_window": 3},
+            "long_quotes": {"today_main": 3, "midday": 60, "final_window": 3},
             "score": {"today_main": 10},
             "industry_heat": {"today_main": 60},
             "market_news": {"today_main": 60},

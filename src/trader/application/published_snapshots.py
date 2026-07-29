@@ -289,6 +289,9 @@ def _view_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
     long_groups = metadata.get("long_groups")
     if isinstance(long_groups, (tuple, list)):
         view_metadata["long_groups"] = [dict(group) for group in long_groups if isinstance(group, Mapping)]
+    score_status = metadata.get("score_status")
+    if isinstance(score_status, str):
+        view_metadata["score_status"] = score_status
     return view_metadata
 
 

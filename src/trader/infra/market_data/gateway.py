@@ -8,7 +8,7 @@ import time
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, TypedDict
 from uuid import uuid4
@@ -95,6 +95,16 @@ class _GatewayOptions(_GatewayRequiredOptions, _GatewayOptionalOptions):
     pass
 
 
+@dataclass(frozen=True)
+class _TargetQuoteRequest:
+    codes: Sequence[str]
+    requested_at: datetime
+    force: bool
+    deadline: datetime | None
+    isolated: bool = False
+    dataset: str = "candidate_quotes"
+
+
 class MarketDataGateway:
     def __init__(
         self,
@@ -120,6 +130,10 @@ class MarketDataGateway:
                 "tencent": "tencent-component-v1",
             }
         )
+        self._source_contract_versions.setdefault(
+            "tencent_long",
+            self._source_contract_versions.get("tencent", "tencent-component-v1"),
+        )
         self._config_version = options.get("config_version", "component-default")
         self._schema_version = options.get("schema_version", "market-v15")
         self._monotonic = options.get("monotonic", time.monotonic)
@@ -128,7 +142,12 @@ class MarketDataGateway:
         self._market_flight: _SingleFlight[Sequence[MarketQuote]] = _SingleFlight()
         self._candidate_fetch_lock = threading.Lock()
         self._state_lock = threading.Lock()
-        self._states = {"eastmoney": _CircuitState(), "sina": _CircuitState(), "tencent": _CircuitState()}
+        self._states = {
+            "eastmoney": _CircuitState(),
+            "sina": _CircuitState(),
+            "tencent": _CircuitState(),
+            "tencent_long": _CircuitState(),
+        }
         self._latest_by_code: dict[str, MarketQuote] = {}
         self._latest_observations: dict[str, dict[str, SourceObservation]] = {}
         self._reference_observations: dict[str, SourceObservation] = {}
@@ -285,10 +304,10 @@ class MarketDataGateway:
         self._latency.enter(trace_id)
         try:
             if self._source_lanes is not None:
-                result = self._fetch_candidates_once(codes, requested_at, force=force, deadline=deadline)
+                result = self._fetch_candidates_once(_TargetQuoteRequest(codes, requested_at, force, deadline))
             else:
                 with self._candidate_fetch_lock:
-                    result = self._fetch_candidates_once(codes, requested_at, force=force, deadline=deadline)
+                    result = self._fetch_candidates_once(_TargetQuoteRequest(codes, requested_at, force, deadline))
         except MarketDataDeadlineExceededError:
             self._latency.finish(trace_id, outcome="timeout")
             raise
@@ -301,21 +320,53 @@ class MarketDataGateway:
         self._latency.finish(trace_id, outcome="success")
         return result
 
-    def _fetch_candidates_once(
+    def fetch_long_quotes(
         self,
         codes: Sequence[str],
-        requested_at: datetime,
         *,
-        force: bool,
-        deadline: datetime | None,
+        observed_at: datetime | None = None,
+        force: bool = False,
+        deadline: datetime | None = None,
     ) -> Sequence[MarketQuote]:
+        """Fetch the long watchlist on its caller-owned isolated worker."""
+
+        if not codes:
+            return ()
+        requested_at = observed_at or self._wall_clock()
+        trace_id = _cycle_trace_id("long_quotes", requested_at, codes)
+        self._latency.plan(trace_id, "long_quotes")
+        self._latency.enter(trace_id)
+        try:
+            result = self._fetch_candidates_once(
+                _TargetQuoteRequest(codes, requested_at, force, deadline, isolated=True, dataset="long_quotes")
+            )
+        except MarketDataDeadlineExceededError:
+            self._latency.finish(trace_id, outcome="timeout")
+            raise
+        except BaseException:
+            self._latency.finish(trace_id, outcome="failed")
+            raise
+        self._latency.finish(trace_id, outcome="success")
+        return result
+
+    def _fetch_candidates_once(
+        self,
+        request: _TargetQuoteRequest,
+    ) -> Sequence[MarketQuote]:
+        codes = request.codes
+        requested_at = request.requested_at
+        force = request.force
+        deadline = request.deadline
+        isolated = request.isolated
+        dataset = request.dataset
+        physical_source = "tencent_long" if isolated else "tencent"
         normalized_codes = tuple(sorted(set(codes)))
         try:
-            if self._source_lanes is None:
+            if self._source_lanes is None or isolated:
                 observations = self._sources.fetch_source_observations(
                     SourceObservationRequest(
-                        "tencent",
-                        "candidate_quotes",
+                        physical_source,
+                        dataset,
                         ",".join(normalized_codes),
                         {"codes": normalized_codes, "fields": ["realtime_quote"]},
                         lambda: self._tencent.fetch_quotes(normalized_codes),
@@ -323,16 +374,17 @@ class MarketDataGateway:
                         force,
                         deadline,
                         1,
+                        isolated,
                     )
                 )
             else:
-                request = {"codes": normalized_codes, "fields": ["realtime_quote"]}
+                quote_request = {"codes": normalized_codes, "fields": ["realtime_quote"]}
                 identity = self._sources.lane_identity(
                     SourceLaneIdentityRequest(
-                        "candidate_quotes",
+                        dataset,
                         "tencent",
                         ",".join(normalized_codes),
-                        request,
+                        quote_request,
                         requested_at,
                         force,
                         deadline,
@@ -345,9 +397,9 @@ class MarketDataGateway:
                     self._sources.fetch_source_observations,
                     SourceObservationRequest(
                         "tencent",
-                        "candidate_quotes",
+                        dataset,
                         ",".join(normalized_codes),
-                        request,
+                        quote_request,
                         lambda: self._tencent.fetch_quotes(normalized_codes),
                         requested_at,
                         force,

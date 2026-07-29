@@ -188,6 +188,39 @@ class MarketFeatureService:
             action_restrictions=action_restrictions,
         )
 
+    def refresh_long_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        normalized = _normalize_codes(codes)
+        if not normalized:
+            return ()
+        quotes = tuple(
+            self.quotes.gateway.fetch_long_quotes(
+                normalized,
+                observed_at=observed_at,
+                force=force,
+                deadline=deadline,
+            )
+        )
+        return tuple(
+            FeatureSnapshot(
+                quote=quote,
+                values={},
+                observed_at=observed_at,
+                missing_fields=tuple(
+                    field
+                    for field in ("price", "pct_change", "amount", "turnover_rate", "market_cap")
+                    if getattr(quote, field) is None
+                ),
+            )
+            for quote in quotes
+        )
+
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
         quotes = self.quotes.market_quotes()
         if not quotes:

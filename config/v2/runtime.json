@@ -1,6 +1,6 @@
 {
-  "schema_version": 6,
-  "config_version": "runtime_v23_tomorrow_scoring_2026_07_28",
+  "schema_version": 7,
+  "config_version": "runtime_v24_long_quotes_2026_07_29",
   "runtime_dir": ".runtime/v17",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -39,6 +39,15 @@
         "final_window": 1
       },
       "topk_quotes": {
+        "warmup": 1,
+        "today_main": 1,
+        "today_late": 1,
+        "midday": 10,
+        "afternoon": 1,
+        "final_review": 1,
+        "final_window": 1
+      },
+      "long_quotes": {
         "warmup": 1,
         "today_main": 1,
         "today_late": 1,

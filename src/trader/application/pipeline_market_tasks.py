@@ -146,7 +146,7 @@ def _refresh_intraday_tail_before_score(
 
 
 def _active_codes(pipeline: RecommendationPipeline) -> tuple[str, ...]:
-    return tuple(dict.fromkeys((*pipeline._candidate_codes, *pipeline._long_codes)))
+    return tuple(pipeline._candidate_codes)
 
 
 def _run_market_data_task(

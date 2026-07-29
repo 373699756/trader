@@ -74,3 +74,4 @@ class PipelineState:
 
     _freshness_status: Callable[..., Mapping[str, object]]
     _submit_overlay_event: Callable[[PipelineEvent], bool]
+    _submit_long_quote_event: Callable[[PipelineEvent], bool]

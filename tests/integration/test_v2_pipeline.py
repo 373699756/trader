@@ -96,7 +96,8 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     assert today[0].metadata["projection_stage"] == "local"
     assert "deepseek_pending" in today[1].degraded_reasons
     assert today[-1].phase == "today_main"
-    assert today[-1].metadata["projection_stage"] == "local"
+    assert today[-1].metadata["projection_stage"] == "current_quotes"
+    assert today[-1].metadata["score_status"] == "not_applicable"
     latency = pipeline.status()["dependencies"]["latency_waterfall"]
     assert latency["planned_count"] == 1
     assert latency["completed_count"] == 1
@@ -122,15 +123,20 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     clock.set(datetime.fromisoformat("2026-07-16T14:30:00+08:00"))
     afternoon = pipeline.run_once(clock.now())
     assert {snapshot.strategy for snapshot in afternoon} == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
-    assert market_data.candidate_tail_requests[-3:] == [True, False, False]
+    assert market_data.candidate_tail_requests[-2:] == [True, False]
     assert market_data.tail_refreshes[-1] == tuple(feature.quote.code for feature in features)
 
     clock.set(datetime.fromisoformat("2026-07-16T14:49:50+08:00"))
     pipeline.run_once(clock.now())
     clock.set(datetime.fromisoformat("2026-07-16T14:50:00+08:00"))
     afternoon_freeze = pipeline.run_once(clock.now())
-    assert {snapshot.strategy for snapshot in afternoon_freeze} == {Strategy.TOMORROW, Strategy.D25}
-    assert all(snapshot.frozen for snapshot in afternoon_freeze)
+    assert {snapshot.strategy for snapshot in afternoon_freeze} == {
+        Strategy.TOMORROW,
+        Strategy.D25,
+        Strategy.LONG,
+    }
+    assert all(snapshot.frozen for snapshot in afternoon_freeze if snapshot.strategy is not Strategy.LONG)
+    assert next(snapshot for snapshot in afternoon_freeze if snapshot.strategy is Strategy.LONG).frozen is False
     assert repository.frozen.keys() == {
         (Strategy.TODAY, "2026-07-16"),
         (Strategy.TOMORROW, "2026-07-16"),
@@ -138,7 +144,8 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     }
 
     clock.set(datetime.fromisoformat("2026-07-16T14:50:30+08:00"))
-    assert pipeline.run_once(clock.now()) == ()
+    post_freeze = pipeline.run_once(clock.now())
+    assert [snapshot.strategy for snapshot in post_freeze] == [Strategy.LONG]
     assert len(repository.frozen) == 3
     assert state.latest(Strategy.LONG).frozen is False
 
@@ -181,9 +188,11 @@ def test_midday_cold_start_recovers_current_drafts_once_without_today_or_review(
     ]
     assert state.latest(Strategy.TODAY) is None
     assert all(snapshot.phase == "midday" for snapshot in recovered)
-    assert all(snapshot.metadata["projection_stage"] == "local" for snapshot in recovered)
+    assert all(snapshot.metadata["projection_stage"] == "local" for snapshot in recovered[:-1])
+    assert recovered[-1].metadata["projection_stage"] == "current_quotes"
     assert "deepseek_pending" in recovered[0].degraded_reasons
-    assert pipeline.run_once(now) == ()
+    refreshed = pipeline.run_once(now)
+    assert [snapshot.strategy for snapshot in refreshed] == [Strategy.LONG]
 
 
 @pytest.mark.parametrize(
@@ -546,7 +555,7 @@ def test_after_close_cold_start_builds_long_current_snapshot(
     }
     assert all(item.features.quote.price == 20.0 for item in long_snapshot.recommendations)
     assert repository.load_frozen(Strategy.LONG, "2026-07-16") is None
-    assert state.snapshot()["counters"]["after_close_long_recovered"] == 1
+    assert state.snapshot()["counters"]["long_quote_snapshots_published"] == 1
 
 
 def test_after_close_p6_rejection_keeps_formal_records_without_publication(
@@ -2012,6 +2021,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     reviewer = ThreadRecordingReviewer()
     engine = ThreadRecordingEngine(recommendation_policy)
     market_data = StaticMarketData(features)
+    state = RuntimeState()
     pipeline = build_pipeline(
         market_data,
         TradingDayCalendar(),
@@ -2020,7 +2030,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
         InMemoryEventLedger(),
         SnapshotPublisher(history_size=8, client_queue_size=2),
         engine,
-        RuntimeState(),
+        state,
         config_version="config-v2",
         candidate_pool_size=120,
         event_queue_size=16,
@@ -2036,23 +2046,25 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert pipeline.start() is True
     try:
         assert pipeline.submit_tick(now) is True
+        assert pipeline._submit_scheduled_task(
+            ScheduledPipelineTask(PipelineTask.LONG_QUOTES, now, MarketPhase.AFTERNOON)
+        )
         _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+        _wait_until(lambda: state.latest(Strategy.LONG) is not None)
         running_status = pipeline.status()
         running_thread_names = [thread.name for thread in threading.enumerate()]
     finally:
         pipeline.stop(timeout_seconds=2.0)
 
-    assert market_data.fetch_threads and all(name.startswith("trader-data") for name in market_data.fetch_threads)
+    assert market_data.fetch_threads
+    assert any(name.startswith("trader-data") for name in market_data.fetch_threads)
+    assert any(name.startswith("trader-long-quotes") for name in market_data.fetch_threads)
     assert engine.preselect_threads and all(name.startswith("trader-normalize") for name in engine.preselect_threads)
     assert {strategy for strategy, _name in engine.prepare_threads} == {
         Strategy.TOMORROW,
         Strategy.D25,
-        Strategy.LONG,
     }
-    assert all(
-        name.startswith("trader-strategy") for strategy, name in engine.prepare_threads if strategy is not Strategy.LONG
-    )
-    assert all(name.startswith("trader-long") for strategy, name in engine.prepare_threads if strategy is Strategy.LONG)
+    assert all(name.startswith("trader-strategy") for _strategy, name in engine.prepare_threads)
     assert reviewer.review_threads and all(name.startswith("trader-deepseek") for name in reviewer.review_threads)
     assert engine.finalize_threads and all(name == "trader-merge" for name in engine.finalize_threads)
     assert repository.write_threads == []
@@ -2062,7 +2074,8 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert pools["normalization"]["workers"] == 2
     assert pools["strategy"]["workers"] == 3
     assert pools["deepseek"]["workers"] == 4
-    assert pools["long"]["workers"] == 1
+    assert pools["long_quotes"]["workers"] == 1
+    assert pools["long_quote_lane"]["source"] == "long-quotes"
     assert pools["merge"]["workers"] == 1
     assert pools["merge"]["queue_capacity"] == 16
     assert pools["merge"]["submitted_count"] == 1
@@ -2070,7 +2083,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert pools["merge"]["running"] is True
     assert pools["persistence"]["workers"] == 1
     assert "persistent_audit" not in running_status["dependencies"]
-    for strategy in ("tomorrow", "d25", "long"):
+    for strategy in ("tomorrow", "d25"):
         strategy_status = running_status["strategies"][strategy]
         assert strategy_status["candidate_count"] >= strategy_status["topk_count"]
         assert strategy_status["score_latency_ms"] is not None
@@ -2082,9 +2095,51 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert sum(name.startswith("trader-normalize") for name in running_thread_names) == 2
     assert sum(name.startswith("trader-strategy") for name in running_thread_names) == 3
     assert sum(name.startswith("trader-deepseek") for name in running_thread_names) == 4
-    assert sum(name.startswith("trader-long") for name in running_thread_names) == 1
+    assert sum(name.startswith("trader-long-quotes") for name in running_thread_names) == 1
     assert sum(name.startswith("trader-persistence") for name in running_thread_names) == 1
     assert running_thread_names.count("trader-merge") == 1
+    assert not any(thread.name.startswith("trader-") for thread in threading.enumerate())
+
+
+def test_slow_long_quote_lane_does_not_block_short_strategy_pipeline(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
+    market_data = BlockingLongMarketData((application_feature_factory("600001", now),))
+    state = RuntimeState()
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        MemoryRepository(),
+        InMemoryEventLedger(),
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=16,
+        priority_queue_size=4,
+        now=lambda: now,
+        long_codes=("600001",),
+    )
+    pipeline.initialize()
+    pipeline.start()
+    try:
+        assert pipeline._submit_scheduled_task(
+            ScheduledPipelineTask(PipelineTask.LONG_QUOTES, now, MarketPhase.AFTERNOON)
+        )
+        assert market_data.long_started.wait(1.0)
+        assert pipeline.submit_tick(now) is True
+        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+        assert state.latest(Strategy.D25) is not None
+        assert state.latest(Strategy.LONG) is None
+    finally:
+        market_data.release_long.set()
+        pipeline.stop(timeout_seconds=2.0)
+
+    assert state.latest(Strategy.LONG) is not None
     assert not any(thread.name.startswith("trader-") for thread in threading.enumerate())
 
 
@@ -2328,6 +2383,7 @@ def test_current_quote_recovery_populates_market_view_without_scoring(
                 "full_market": {"today_main": 5},
                 "candidate_quotes": {"today_main": 1},
                 "topk_quotes": {"today_main": 1},
+                "long_quotes": {"today_main": 1},
                 "score": {"today_main": 3},
                 "industry_heat": {"today_main": 60},
                 "market_news": {"today_main": 60},
@@ -2687,7 +2743,11 @@ def test_one_strategy_data_failure_does_not_block_other_snapshots(
     pipeline.start()
     try:
         assert pipeline.submit_tick(now) is True
+        assert pipeline._submit_scheduled_task(
+            ScheduledPipelineTask(PipelineTask.LONG_QUOTES, now, MarketPhase.AFTERNOON)
+        )
         _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+        _wait_until(lambda: state.latest(Strategy.LONG) is not None)
     finally:
         pipeline.stop(timeout_seconds=2.0)
 
@@ -2858,6 +2918,16 @@ class StaticMarketData:
         requested = set(codes)
         return tuple(_at_time(feature, observed_at) for feature in self._features if feature.quote.code in requested)
 
+    def refresh_long_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        return self.refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline)
+
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
         return tuple(_at_time(feature, observed_at) for feature in self._features)
 
@@ -2911,6 +2981,26 @@ class StaticMarketData:
     @staticmethod
     def health() -> Mapping[str, object]:
         return {"status": "ok"}
+
+
+class BlockingLongMarketData(StaticMarketData):
+    def __init__(self, features: Sequence[FeatureSnapshot]) -> None:
+        super().__init__(features)
+        self.long_started = threading.Event()
+        self.release_long = threading.Event()
+
+    def refresh_long_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        self.long_started.set()
+        if not self.release_long.wait(5.0):
+            raise RuntimeError("long quote test release timed out")
+        return super().refresh_long_quotes(codes, observed_at, force=force, deadline=deadline)
 
 
 class ClosingPriceMarketData(StaticMarketData):

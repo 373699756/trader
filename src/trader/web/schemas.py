@@ -63,6 +63,9 @@ def snapshot_envelope(
         "published_at": snapshot.published_at.isoformat(),
         "strategy_version": snapshot.strategy_version,
         "fusion_mode": snapshot.fusion_mode.value,
+        "score_status": str(snapshot.metadata.get("score_status", "not_applicable"))
+        if snapshot.strategy is Strategy.LONG
+        else "scored",
         "stale": snapshot.stale,
         "frozen": snapshot.frozen,
         "degraded_reasons": list(snapshot.degraded_reasons),
@@ -102,6 +105,7 @@ def empty_snapshot_envelope(
         "published_at": None,
         "strategy_version": None,
         "fusion_mode": "local_degraded",
+        "score_status": "not_applicable" if strategy == Strategy.LONG.value else "not_ready",
         "stale": True,
         "frozen": False,
         "degraded_reasons": ["snapshot_not_ready"],
@@ -201,6 +205,7 @@ def error_envelope(
         "published_at": None,
         "strategy_version": None,
         "fusion_mode": None,
+        "score_status": None,
         "stale": True,
         "frozen": False,
         "degraded_reasons": [],

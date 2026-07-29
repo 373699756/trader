@@ -99,6 +99,7 @@ class PipelineSubmissionMixin(PipelineState):
                 PipelineTask.DEEPSEEK_CUTOFF,
                 PipelineTask.CLOSE_QUOTES,
                 PipelineTask.CURRENT_QUOTES,
+                PipelineTask.LONG_QUOTES,
             }:
                 self._state.increment(f"cadence_{task.task.value}_skipped_cold")
                 continue
@@ -116,7 +117,7 @@ class PipelineSubmissionMixin(PipelineState):
 
     def _submit_scheduled_task(self, scheduled: ScheduledPipelineTask) -> bool:
         task = scheduled.task
-        track_inflight = task is not PipelineTask.TOPK_QUOTES
+        track_inflight = task not in {PipelineTask.TOPK_QUOTES, PipelineTask.LONG_QUOTES}
         if track_inflight:
             with self._cadence_lock:
                 if task in self._scheduled_inflight:
@@ -145,7 +146,12 @@ class PipelineSubmissionMixin(PipelineState):
                 },
             )
         )
-        accepted = self._submit_overlay_event(event) if task is PipelineTask.TOPK_QUOTES else self.submit_event(event)
+        if task is PipelineTask.TOPK_QUOTES:
+            accepted = self._submit_overlay_event(event)
+        elif task is PipelineTask.LONG_QUOTES:
+            accepted = self._submit_long_quote_event(event)
+        else:
+            accepted = self.submit_event(event)
         if not accepted:
             if track_inflight:
                 with self._cadence_lock:
@@ -205,7 +211,12 @@ def _scheduled_task_priority(task: PipelineTask) -> EventPriority:
         PipelineTask.FINAL_CANDIDATE_QUOTES,
     }:
         return EventPriority.MARKET_QUOTES
-    if task in {PipelineTask.TOPK_QUOTES, PipelineTask.CLOSE_QUOTES, PipelineTask.CURRENT_QUOTES}:
+    if task in {
+        PipelineTask.TOPK_QUOTES,
+        PipelineTask.LONG_QUOTES,
+        PipelineTask.CLOSE_QUOTES,
+        PipelineTask.CURRENT_QUOTES,
+    }:
         return EventPriority.LIVE_QUOTES
     return {
         PipelineTask.FREEZE: EventPriority.FREEZE,

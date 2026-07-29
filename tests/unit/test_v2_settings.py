@@ -23,7 +23,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert runtime.schema_version == 6
+    assert runtime.schema_version == 7
     assert strategy.schema_version == 12
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v17"
     assert runtime.market_data.research_timeout_seconds == 8
@@ -241,6 +241,7 @@ def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -
     raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     raw["schema_version"] = 5
     del raw["pipeline"]["decision_execution_mode"]
+    del raw["pipeline"]["cadence_seconds"]["long_quotes"]
     changed_path = tmp_path / "runtime.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
@@ -248,6 +249,20 @@ def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -
 
     assert runtime.schema_version == 5
     assert runtime.pipeline.decision_execution_mode == "serialized"
+    assert runtime.pipeline.cadence_seconds["long_quotes"] == (runtime.pipeline.cadence_seconds["topk_quotes"])
+
+
+def test_runtime_schema_v6_inherits_long_quote_cadence(tmp_path) -> None:
+    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw["schema_version"] = 6
+    del raw["pipeline"]["cadence_seconds"]["long_quotes"]
+    changed_path = tmp_path / "runtime-v6.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    runtime = load_runtime_settings(changed_path)
+
+    assert runtime.schema_version == 6
+    assert runtime.pipeline.cadence_seconds["long_quotes"] == (runtime.pipeline.cadence_seconds["topk_quotes"])
 
 
 def test_long_watchlist_group_limits_are_enforced(tmp_path) -> None:

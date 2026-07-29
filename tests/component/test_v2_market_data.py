@@ -553,6 +553,57 @@ def test_targeted_partial_result_keeps_sina_full_market_quote_for_missing_code()
     assert gateway.health()["route"]["used_vendor"] == "sina"
 
 
+def test_long_quote_circuit_does_not_open_candidate_quote_circuit() -> None:
+    quote = replace(_quote("600001"), source="tencent", data_version="tencent-targeted-v1")
+    tencent = FailFirstTencentClient((quote,))
+    gateway = MarketDataGateway(
+        FailingMarketClient(),
+        StaticMarketClient((quote,)),
+        tencent,
+        minimum_market_rows=1,
+        circuit_breaker_failures=1,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+
+    assert gateway.fetch_long_quotes(("600001",), observed_at=NOW) == ()
+    fetched = gateway.fetch_candidates(("600001",), observed_at=NOW)
+
+    assert fetched[0].code == "600001"
+    health = gateway.health()["sources"]
+    assert health["tencent_long"]["circuit_open"] is True
+    assert health["tencent"]["circuit_open"] is False
+
+
+def test_long_quotes_bypass_shared_cache_for_each_realtime_refresh() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        wall_clock=lambda: NOW,
+    )
+    quote = replace(_quote("600001"), source="tencent", data_version="tencent-targeted-v1")
+    gateway = MarketDataGateway(
+        FailingMarketClient(),
+        StaticMarketClient((quote,)),
+        StaticTencentClient((quote,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        wall_clock=lambda: NOW,
+    )
+
+    first = gateway.fetch_long_quotes(("600001",), observed_at=NOW)
+    second = gateway.fetch_long_quotes(("600001",), observed_at=NOW)
+
+    assert first[0].code == "600001"
+    assert second[0].code == "600001"
+    assert "long_quotes" not in cache.status()
+
+
 def test_gateway_columnar_projection_failure_preserves_scalar_market_and_marks_degraded(monkeypatch) -> None:
     quote = replace(_quote(), source="sina")
     gateway = MarketDataGateway(
@@ -4729,6 +4780,18 @@ class BlockingTencentClient(StaticTencentClient):
 
     def fetch_quotes(self, codes):
         self.release.wait(1.0)
+        return super().fetch_quotes(codes)
+
+
+class FailFirstTencentClient(StaticTencentClient):
+    def __init__(self, quotes) -> None:
+        super().__init__(quotes)
+        self.calls = 0
+
+    def fetch_quotes(self, codes):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("long quote failure")
         return super().fetch_quotes(codes)
 
 

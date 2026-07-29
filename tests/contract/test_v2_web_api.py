@@ -44,6 +44,7 @@ RECOMMENDATION_ENVELOPE_KEYS = {
     "published_at",
     "strategy_version",
     "fusion_mode",
+    "score_status",
     "stale",
     "frozen",
     "degraded_reasons",
@@ -100,6 +101,7 @@ def test_current_recommendations_support_top_zero_and_etag(recommendation_policy
     assert set(payload) == RECOMMENDATION_ENVELOPE_KEYS
     assert payload["items"] == []
     assert payload["fusion_mode"] == "local_degraded"
+    assert payload["score_status"] == "scored"
     assert payload["requested_date"] is None
     assert payload["current_trade_date"] == "2026-07-16"
     assert payload["historical"] is False
@@ -151,6 +153,7 @@ def test_long_response_exposes_fixed_groups_and_ignores_top_n(
     repository = MemoryReadRepository(latest={Strategy.LONG: snapshot})
     payload = _app(repository)[0].test_client().get("/api/recommendations/long?top_n=1").get_json()
 
+    assert payload["score_status"] == "not_applicable"
     assert len(payload["items"]) == 3
     assert payload["items"][0]["action"] == "observe"
     assert payload["items"][0]["action_reason"] == "fixed_long_watchlist"
