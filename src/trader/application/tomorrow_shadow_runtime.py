@@ -18,13 +18,19 @@ from trader.application.ports.snapshots import (
     PublishedSnapshotWritePort,
     SnapshotStatusValue,
 )
+from trader.application.ports.tomorrow import TomorrowNativeInput, TomorrowNativeInputPort
 from trader.application.tomorrow_events import TomorrowDecisionEventStream
 from trader.application.tomorrow_freezing import TomorrowFreezeCoordinator
 from trader.application.tomorrow_shadow import (
     TomorrowCutoverGate,
     TomorrowShadowObservation,
 )
-from trader.application.tomorrow_shadow_projection import project_tomorrow_snapshot
+from trader.application.tomorrow_shadow_projection import (
+    TomorrowShadowProjection,
+    native_input_from_snapshot,
+    project_tomorrow_input,
+    project_tomorrow_snapshot,
+)
 from trader.application.tomorrow_views import (
     TomorrowDecisionQueries,
     TomorrowLiveQuote,
@@ -40,6 +46,8 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 class TomorrowShadowProcessor(Protocol):
     def process(self, snapshot: RecommendationSnapshot) -> bool: ...
+
+    def process_native(self, native_input: TomorrowNativeInput) -> bool: ...
 
 
 class _PublishedSnapshotIndex(PublishedSnapshotReadPort, PublishedSnapshotWritePort, Protocol):
@@ -57,8 +65,16 @@ class TomorrowShadowDependencies:
     clock: Clock
 
 
+@dataclass(frozen=True)
+class _NativeProjectionRecord:
+    native_input: TomorrowNativeInput
+    sequence: int
+    local_version: str
+    local_publish_seconds: float
+
+
 class TomorrowShadowRuntime:
-    """Projects one already-built v1 snapshot without owning external I/O."""
+    """Publishes native v2 input and later observes the matching v1 baseline."""
 
     def __init__(
         self,
@@ -74,20 +90,38 @@ class TomorrowShadowRuntime:
         self._gate = dependencies.gate
         self._clock = dependencies.clock
         self._lock = threading.RLock()
+        self._native_records: dict[str, _NativeProjectionRecord] = {}
         self._decision_sequence = 0
         self._processed = 0
+        self._native_processed = 0
+        self._native_coalesced = 0
+        self._native_superseded = 0
+        self._baseline_fallbacks = 0
+        self._baseline_superseded = 0
         self._failed = 0
         self._skipped_sealed = 0
         self._last_error = ""
         self._last_pipeline_latency_ms: float | None = None
         self._last_publish_latency_ms: float | None = None
 
-    def process(self, snapshot: RecommendationSnapshot) -> bool:
+    def process_native(self, native_input: TomorrowNativeInput) -> bool:
         started = time.perf_counter()
+        with self._lock:
+            if native_input.input_version in self._native_records:
+                self._native_coalesced += 1
+                return True
+            current = self._decisions.latest()
+            if (
+                current is not None
+                and current.trade_date == native_input.trade_date
+                and current.observed_at > native_input.evaluated_at
+            ):
+                self._native_superseded += 1
+                return True
         sequence = self._next_sequence()
         try:
-            projection = project_tomorrow_snapshot(
-                snapshot,
+            projection = project_tomorrow_input(
+                native_input,
                 self._policy,
                 decision_sequence=sequence,
             )
@@ -95,14 +129,67 @@ class TomorrowShadowRuntime:
                 with self._lock:
                     self._skipped_sealed += 1
                 return True
-            local_published_at = _clock_now(self._clock)
-            local_publish_seconds = max(
-                0.0,
-                (local_published_at - projection.received_at).total_seconds(),
+            published_at = _clock_now(self._clock)
+            record = _NativeProjectionRecord(
+                native_input,
+                sequence,
+                projection.local.version,
+                max(0.0, (published_at - projection.received_at).total_seconds()),
             )
-            effective = projection.local
-            if projection.hybrid is not None and self._publish_decision(projection.hybrid):
-                effective = projection.hybrid
+            with self._lock:
+                self._native_records.pop(projection.input_version, None)
+                self._native_records[projection.input_version] = record
+                while len(self._native_records) > 64:
+                    self._native_records.pop(next(iter(self._native_records)))
+                self._native_processed += 1
+                self._last_pipeline_latency_ms = (time.perf_counter() - started) * 1000.0
+                self._last_error = ""
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            with self._lock:
+                self._failed += 1
+                self._last_error = f"{type(exc).__name__}:{str(exc)[:240]}"
+                self._last_pipeline_latency_ms = (time.perf_counter() - started) * 1000.0
+            return False
+        return True
+
+    def process(self, snapshot: RecommendationSnapshot) -> bool:
+        started = time.perf_counter()
+        try:
+            native_input = native_input_from_snapshot(snapshot)
+            with self._lock:
+                native_record = self._native_records.get(native_input.input_version)
+            if native_record is None:
+                current = self._decisions.latest()
+                if (
+                    current is not None
+                    and current.trade_date == native_input.trade_date
+                    and current.observed_at > native_input.evaluated_at
+                ):
+                    with self._lock:
+                        self._baseline_superseded += 1
+                    return True
+                projection, local_publish_seconds = self._fallback_projection(snapshot)
+                if projection is None:
+                    return True
+            else:
+                projection = project_tomorrow_input(
+                    native_record.native_input,
+                    self._policy,
+                    decision_sequence=native_record.sequence,
+                    reviews=snapshot.replay_input.reviews if snapshot.replay_input is not None else {},
+                )
+                if projection.local.version != native_record.local_version:
+                    raise RuntimeError("tomorrow native local identity changed before baseline observation")
+                current = self._decisions.latest()
+                if current is None or (
+                    current.version not in {projection.local.version, getattr(projection.hybrid, "version", "")}
+                    and current.sequence > native_record.sequence
+                ):
+                    with self._lock:
+                        self._baseline_superseded += 1
+                    return True
+                local_publish_seconds = native_record.local_publish_seconds
+            effective = self._publish_effective_projection(projection)
             if snapshot.frozen:
                 freeze_result = self._freezer.freeze_scheduled()
                 if freeze_result.status in {"frozen", "already_frozen"}:
@@ -139,6 +226,45 @@ class TomorrowShadowRuntime:
             self._last_pipeline_latency_ms = elapsed_ms
             self._last_error = ""
         return True
+
+    def _fallback_projection(
+        self,
+        snapshot: RecommendationSnapshot,
+    ) -> tuple[TomorrowShadowProjection | None, float]:
+        sequence = self._next_sequence()
+        projection = project_tomorrow_snapshot(
+            snapshot,
+            self._policy,
+            decision_sequence=sequence,
+        )
+        if not self._publish_decision(projection.local):
+            with self._lock:
+                self._skipped_sealed += 1
+            return None, 0.0
+        local_published_at = _clock_now(self._clock)
+        with self._lock:
+            self._baseline_fallbacks += 1
+        return projection, max(
+            0.0,
+            (local_published_at - projection.received_at).total_seconds(),
+        )
+
+    def _publish_effective_projection(self, projection: TomorrowShadowProjection) -> DecisionEpoch:
+        local = projection.local
+        hybrid = projection.hybrid
+        current = self._decisions.latest()
+        if current is None:
+            if not self._publish_decision(local):
+                return local
+            current = local
+        if current.version == local.version and hybrid is not None:
+            if self._publish_decision(hybrid):
+                return hybrid
+        if hybrid is not None and current.version == hybrid.version:
+            return hybrid
+        if current.version != local.version:
+            raise RuntimeError("tomorrow baseline does not match the current native decision")
+        return local
 
     def publish_overlay(self, overlay: LiveOverlay) -> bool:
         if overlay.strategy is not Strategy.TOMORROW:
@@ -189,6 +315,11 @@ class TomorrowShadowRuntime:
         with self._lock:
             runtime = {
                 "processed": self._processed,
+                "native_processed": self._native_processed,
+                "native_coalesced": self._native_coalesced,
+                "native_superseded": self._native_superseded,
+                "baseline_fallbacks": self._baseline_fallbacks,
+                "baseline_superseded": self._baseline_superseded,
                 "failed": self._failed,
                 "skipped_sealed": self._skipped_sealed,
                 "last_error": self._last_error,
@@ -256,7 +387,7 @@ class TomorrowShadowRuntime:
             self._last_error = reason
 
 
-class TomorrowShadowWorker:
+class TomorrowShadowWorker(TomorrowNativeInputPort):
     """One stoppable latest-wins worker; it never blocks v1 publication."""
 
     def __init__(
@@ -269,9 +400,11 @@ class TomorrowShadowWorker:
         self._thread_name = thread_name
         self._condition = threading.Condition()
         self._thread: threading.Thread | None = None
-        self._pending: RecommendationSnapshot | None = None
+        self._pending: RecommendationSnapshot | TomorrowNativeInput | None = None
         self._stopping = False
         self._offered = 0
+        self._native_offered = 0
+        self._baseline_offered = 0
         self._replaced = 0
         self._completed = 0
         self._failed = 0
@@ -293,13 +426,28 @@ class TomorrowShadowWorker:
     def offer(self, snapshot: RecommendationSnapshot) -> bool:
         if snapshot.strategy is not Strategy.TOMORROW or snapshot.replay_input is None:
             return False
+        return self._offer(snapshot, native=False)
+
+    def offer_native(self, native_input: TomorrowNativeInput) -> bool:
+        return self._offer(native_input, native=True)
+
+    def _offer(
+        self,
+        payload: RecommendationSnapshot | TomorrowNativeInput,
+        *,
+        native: bool,
+    ) -> bool:
         with self._condition:
             if self._stopping:
                 return False
             self._offered += 1
+            if native:
+                self._native_offered += 1
+            else:
+                self._baseline_offered += 1
             if self._pending is not None:
                 self._replaced += 1
-            self._pending = snapshot
+            self._pending = payload
             self._condition.notify()
             return True
 
@@ -318,6 +466,8 @@ class TomorrowShadowWorker:
                 "running": self._thread is not None and self._thread.is_alive(),
                 "pending": self._pending is not None,
                 "offered": self._offered,
+                "native_offered": self._native_offered,
+                "baseline_offered": self._baseline_offered,
                 "replaced": self._replaced,
                 "completed": self._completed,
                 "failed": self._failed,
@@ -331,12 +481,16 @@ class TomorrowShadowWorker:
                 self._condition.wait_for(lambda: self._stopping or self._pending is not None)
                 if self._stopping:
                     return
-                snapshot = self._pending
+                payload = self._pending
                 self._pending = None
-            if snapshot is None:
+            if payload is None:
                 continue
             try:
-                completed = self._processor.process(snapshot)
+                completed = (
+                    self._processor.process_native(payload)
+                    if isinstance(payload, TomorrowNativeInput)
+                    else self._processor.process(payload)
+                )
             except Exception as exc:
                 completed = False
                 worker_error = f"worker_exception:{type(exc).__name__}"

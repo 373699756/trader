@@ -23,6 +23,7 @@ from trader.application.pipeline_review_updates import (
     schedule_async_reviews,
 )
 from trader.application.ports.market import MarketDataUnavailableError
+from trader.application.ports.tomorrow import TomorrowNativeInput
 from trader.application.recommendations import PreparedSnapshot
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
 from trader.domain.market.models import FeatureSnapshot
@@ -537,6 +538,14 @@ def _prepare_strategy_futures(
             continue
         if not features:
             continue
+        if strategy is Strategy.TOMORROW:
+            _offer_tomorrow_native_input(
+                pipeline,
+                context,
+                requested_codes,
+                tuple(features),
+                data_version,
+            )
         prepared_futures.append(
             (
                 strategy,
@@ -565,6 +574,38 @@ def _prepare_strategy_futures(
             )
         )
     return prepared_futures
+
+
+def _offer_tomorrow_native_input(
+    pipeline: RecommendationPipeline,
+    context: ScoringContext,
+    requested_codes: Sequence[str],
+    features: tuple[FeatureSnapshot, ...],
+    data_version: str,
+) -> None:
+    sink = pipeline._tomorrow_native_inputs
+    if sink is None or not pipeline._market_features:
+        return
+    try:
+        native_input = TomorrowNativeInput(
+            trade_date=trade_date_at(context.now),
+            phase=context.phase.value,
+            data_version=data_version,
+            config_version=pipeline._config_version,
+            evaluated_at=context.now,
+            market_features=pipeline._market_features,
+            requested_codes=tuple(requested_codes),
+            candidate_features=features,
+            preselect_max_age_seconds=maximum_age_seconds(context.phase),
+            score_max_age_seconds=maximum_age_seconds(context.phase, Strategy.TOMORROW),
+            candidate_pool_size=pipeline._candidate_pool_size,
+        )
+        accepted = sink.offer_native(native_input)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        pipeline._state.increment("tomorrow_native_inputs_failed")
+        pipeline._state.record_error(f"tomorrow native input degraded: {type(exc).__name__}")
+        return
+    pipeline._state.increment("tomorrow_native_inputs_offered" if accepted else "tomorrow_native_inputs_rejected")
 
 
 def _resolve_prepared_snapshots(

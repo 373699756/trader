@@ -50,7 +50,9 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert system.market_cache.status() == {}
     assert isinstance(system.pipeline._published_snapshots, ShadowObservingSnapshotIndex)
     assert system.tomorrow_shadow_worker is not None
+    assert system.pipeline._tomorrow_native_inputs is system.tomorrow_shadow_worker
     assert system.tomorrow_shadow_worker.status()["running"] is False
+    assert system.tomorrow_shadow_worker.status()["native_offered"] == 0
     assert system.tomorrow_shadow_runtime is not None
     shadow_status = system.tomorrow_shadow_runtime.status()
     assert shadow_status["processed"] == 0

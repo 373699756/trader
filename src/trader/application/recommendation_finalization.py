@@ -18,10 +18,10 @@ from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.recommendation_policy_codec import (
     _freeze_policy,
     _fusion_mode,
-    _preselection_replay_feature,
     _review_contexts_for_candidates,
     _selection_diagnostics,
     _snapshot_id,
+    preselection_replay_feature,
 )
 from trader.application.recommendation_replay import (
     REPLAY_ALGORITHM_VERSION,
@@ -503,7 +503,7 @@ class RecommendationFinalizationMixin:
                 ),
                 policy=_freeze_policy(self._policy),
                 evaluated_at=now,
-                market_features=tuple(_preselection_replay_feature(feature) for feature in prepared.market_features),
+                market_features=tuple(preselection_replay_feature(feature) for feature in prepared.market_features),
                 requested_codes=prepared.requested_codes or tuple(feature.quote.code for feature in prepared.features),
                 candidate_features=prepared.features,
                 reviews=dict(reviews),

@@ -17,7 +17,10 @@ from trader.application.status import RuntimeState
 from trader.application.tomorrow_events import TomorrowDecisionEventStream
 from trader.application.tomorrow_freezing import DecisionRuntimeIdentity, TomorrowFreezeCoordinator
 from trader.application.tomorrow_shadow import TomorrowCutoverGate, TomorrowCutoverPolicy
-from trader.application.tomorrow_shadow_projection import project_tomorrow_snapshot
+from trader.application.tomorrow_shadow_projection import (
+    native_input_from_snapshot,
+    project_tomorrow_snapshot,
+)
 from trader.application.tomorrow_shadow_runtime import (
     TomorrowShadowDependencies,
     TomorrowShadowRuntime,
@@ -145,6 +148,17 @@ def test_tomorrow_v2_shadow_reaches_web_and_freeze_gate_without_history_download
         ),
     )
 
+    native_input = native_input_from_snapshot(baseline)
+    assert runtime.process_native(native_input) is True, runtime.status()
+    native_current = queries.current()
+    assert native_current.status == "ready"
+    assert native_current.frozen is False
+    assert events.last_sequence() == 1
+
+    assert runtime.process_native(native_input) is True, runtime.status()
+    assert queries.current().decision_version == native_current.decision_version
+    assert events.last_sequence() == 1
+
     assert runtime.process(baseline) is True, runtime.status()
 
     current = queries.current()
@@ -155,6 +169,11 @@ def test_tomorrow_v2_shadow_reaches_web_and_freeze_gate_without_history_download
     assert events.last_sequence() == 2
     status = runtime.status()
     assert status["processed"] == 1
+    assert status["native_processed"] == 1
+    assert status["native_coalesced"] == 1
+    assert status["native_superseded"] == 0
+    assert status["baseline_fallbacks"] == 0
+    assert current.decision_version == native_current.decision_version
     assert status["failed"] == 0
     assert status["cutover_gate"]["eligible"] is False
     assert status["cutover_gate"]["blockers"] == (

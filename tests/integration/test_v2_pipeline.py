@@ -26,6 +26,7 @@ from trader.application.events import (
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.ports.snapshots import RecoverySummary
+from trader.application.ports.tomorrow import TomorrowNativeInput
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
@@ -38,6 +39,11 @@ from trader.application.snapshot_workflow import (
 )
 from trader.application.source_lanes import SourceRequestSupersededError
 from trader.application.status import RuntimeState
+from trader.application.tomorrow_shadow_projection import (
+    native_input_from_snapshot,
+    project_tomorrow_input,
+    project_tomorrow_snapshot,
+)
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
@@ -49,6 +55,8 @@ from trader.domain.review.models import DeepSeekReview, DimensionAssessment, Rev
 from trader.infra.persistence.snapshots import snapshot_from_dict, snapshot_to_dict
 from trader.infra.settings import load_strategy_settings
 from trader.web.schemas import snapshot_envelope
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def new_event(event_type: str, **values) -> PipelineEvent:
@@ -2022,6 +2030,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     engine = ThreadRecordingEngine(recommendation_policy)
     market_data = StaticMarketData(features)
     state = RuntimeState()
+    tomorrow_native_inputs = RecordingTomorrowNativeInputSink()
     pipeline = build_pipeline(
         market_data,
         TradingDayCalendar(),
@@ -2041,6 +2050,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
         deepseek_workers=4,
         now=lambda: now,
         long_codes=("600001",),
+        tomorrow_native_inputs=tomorrow_native_inputs,
     )
     pipeline.initialize()
     assert pipeline.start() is True
@@ -2051,6 +2061,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
         )
         _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
         _wait_until(lambda: state.latest(Strategy.LONG) is not None)
+        tomorrow_snapshot = state.latest(Strategy.TOMORROW)
         running_status = pipeline.status()
         running_thread_names = [thread.name for thread in threading.enumerate()]
     finally:
@@ -2069,6 +2080,24 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert engine.finalize_threads and all(name == "trader-merge" for name in engine.finalize_threads)
     assert repository.write_threads == []
     assert repository.events == []
+    assert tomorrow_snapshot is not None
+    assert tomorrow_snapshot.replay_input is not None
+    assert len(tomorrow_native_inputs.inputs) == 1
+    assert tomorrow_native_inputs.inputs[0].input_version == native_input_from_snapshot(tomorrow_snapshot).input_version
+    tomorrow_v2_policy = _recommendation_policy(
+        load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json")
+    )
+    native_projection = project_tomorrow_input(
+        tomorrow_native_inputs.inputs[0],
+        tomorrow_v2_policy,
+        decision_sequence=2,
+    )
+    baseline_projection = project_tomorrow_snapshot(
+        tomorrow_snapshot,
+        tomorrow_v2_policy,
+        decision_sequence=2,
+    )
+    assert native_projection.local.version == baseline_projection.local.version
     pools = running_status["dependencies"]["worker_pools"]
     assert pools["data"]["workers"] == 2
     assert pools["normalization"]["workers"] == 2
@@ -3704,6 +3733,15 @@ class ThreadRecordingEngine(RecommendationEngine):
     def finalize_snapshot(self, *args, **kwargs):
         self.finalize_threads.append(threading.current_thread().name)
         return super().finalize_snapshot(*args, **kwargs)
+
+
+class RecordingTomorrowNativeInputSink:
+    def __init__(self) -> None:
+        self.inputs: list[TomorrowNativeInput] = []
+
+    def offer_native(self, native_input: TomorrowNativeInput) -> bool:
+        self.inputs.append(native_input)
+        return True
 
 
 class BlockingFreezeRepository(MemoryRepository):

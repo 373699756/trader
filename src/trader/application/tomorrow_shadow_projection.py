@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -14,6 +12,8 @@ from zoneinfo import ZoneInfo
 
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.market import MarketDataPlaneSnapshot
+from trader.application.ports.tomorrow import TomorrowNativeInput
+from trader.application.recommendation_policy_codec import preselection_replay_feature
 from trader.application.tomorrow_deepseek_fusion import (
     normalize_tomorrow_review_times,
     tomorrow_decision_policy,
@@ -63,17 +63,32 @@ def project_tomorrow_snapshot(
     replay = snapshot.replay_input
     if replay is None:
         raise ValueError("tomorrow shadow projection requires point-in-time replay input")
+    return project_tomorrow_input(
+        native_input_from_snapshot(snapshot),
+        policy,
+        decision_sequence=decision_sequence,
+        reviews=replay.reviews,
+    )
+
+
+def project_tomorrow_input(
+    native_input: TomorrowNativeInput,
+    policy: RecommendationPolicy,
+    *,
+    decision_sequence: int,
+    reviews: Mapping[str, DeepSeekReview] | None = None,
+) -> TomorrowShadowProjection:
     if decision_sequence < 0:
         raise ValueError("tomorrow shadow decision sequence cannot be negative")
-    evaluated_at = _shanghai(replay.evaluated_at)
-    plane = _data_plane_snapshot(snapshot, evaluated_at)
+    evaluated_at = _shanghai(native_input.evaluated_at)
+    plane = _data_plane_snapshot(native_input)
     selection = select_tomorrow_snapshot(
         plane,
         policy,
         TomorrowSelectionOptions(
             evaluated_at=evaluated_at,
-            max_age_seconds=replay.score_max_age_seconds,
-            phase=snapshot.phase,
+            max_age_seconds=native_input.score_max_age_seconds,
+            phase=native_input.phase,
         ),
     )
     market = plane.market
@@ -108,7 +123,7 @@ def project_tomorrow_snapshot(
         )
     )
     normalized = normalize_tomorrow_review_times(
-        {code: review for code, review in replay.reviews.items() if code in set(review_codes)},
+        {code: review for code, review in (reviews or {}).items() if code in set(review_codes)},
         evaluated_at,
     )
     usable = _usable_reviews(normalized or {})
@@ -136,33 +151,53 @@ def project_tomorrow_snapshot(
             )
         )
     return TomorrowShadowProjection(
-        input_version=_input_version(snapshot),
+        input_version=native_input.input_version,
         received_at=market.received_at,
         local=local,
         hybrid=hybrid,
     )
 
 
-def _data_plane_snapshot(
-    snapshot: RecommendationSnapshot,
-    evaluated_at: datetime,
-) -> MarketDataPlaneSnapshot:
+def native_input_from_snapshot(snapshot: RecommendationSnapshot) -> TomorrowNativeInput:
+    if snapshot.strategy is not Strategy.TOMORROW:
+        raise ValueError("tomorrow native input requires a tomorrow snapshot")
     replay = snapshot.replay_input
     if replay is None:
-        raise ValueError("tomorrow shadow replay input is unavailable")
-    market_features = _unique_features(replay.market_features or replay.candidate_features)
-    candidate_features = _unique_features(replay.candidate_features)
+        raise ValueError("tomorrow native input requires point-in-time replay input")
+    return TomorrowNativeInput(
+        trade_date=date.fromisoformat(snapshot.trade_date),
+        phase=snapshot.phase,
+        data_version=snapshot.data_version,
+        config_version=snapshot.config_version,
+        evaluated_at=replay.evaluated_at,
+        market_features=replay.market_features,
+        requested_codes=replay.requested_codes,
+        candidate_features=replay.candidate_features,
+        preselect_max_age_seconds=replay.preselect_max_age_seconds,
+        score_max_age_seconds=replay.score_max_age_seconds,
+        candidate_pool_size=replay.candidate_pool_size,
+    )
+
+
+def _data_plane_snapshot(
+    native_input: TomorrowNativeInput,
+) -> MarketDataPlaneSnapshot:
+    evaluated_at = native_input.evaluated_at
+    market_features = _unique_features(
+        tuple(preselection_replay_feature(feature) for feature in native_input.market_features)
+    )
+    candidate_features = _unique_features(native_input.candidate_features)
     if not market_features:
         raise ValueError("tomorrow shadow replay input has no market features")
     features_by_code = dict(market_features)
     features_by_code.update(candidate_features)
-    trade_date = date.fromisoformat(snapshot.trade_date)
+    trade_date = native_input.trade_date
     daily = DailyFeaturePack(
         trade_date=trade_date,
         sequence=0,
         observed_at=evaluated_at,
         received_at=evaluated_at,
-        config_version=snapshot.config_version,
+        config_version=native_input.config_version,
         rows=tuple(_daily_row(feature, trade_date) for feature in features_by_code.values()),
         source_versions=_source_versions(tuple(market_features.values())),
     )
@@ -176,17 +211,17 @@ def _data_plane_snapshot(
         sequence=0,
         observed_at=market_observed_at,
         received_at=market_received_at,
-        config_version=snapshot.config_version,
+        config_version=native_input.config_version,
         daily_feature_pack_version=daily.version,
         quotes=quotes,
         source_versions=_source_versions(tuple(market_features.values())),
         market_regime=_market_regime(tuple(market_features.values())),
-        degraded_reasons=_structured_reasons(snapshot.degraded_reasons),
+        degraded_reasons=(),
     )
     candidate = _candidate_epoch(
         tuple(candidate_features.values()),
         market,
-        snapshot.config_version,
+        native_input.config_version,
         evaluated_at,
     )
     return MarketDataPlaneSnapshot(
@@ -322,38 +357,15 @@ def _usable_reviews(reviews: Mapping[str, DeepSeekReview]) -> dict[str, DeepSeek
     }
 
 
-def _structured_reasons(reasons: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            reason
-            for reason in set(reasons)
-            if reason
-            and len(reason) <= 64
-            and all(character.islower() or character.isdigit() or character == "_" for character in reason)
-        )
-    )
-
-
-def _input_version(snapshot: RecommendationSnapshot) -> str:
-    replay = snapshot.replay_input
-    if replay is None:
-        raise ValueError("tomorrow shadow replay input is unavailable")
-    material = {
-        "snapshot_id": snapshot.snapshot_id,
-        "data_version": snapshot.data_version,
-        "evaluated_at": replay.evaluated_at.isoformat(),
-        "market": [(item.quote.code, item.quote.data_version) for item in replay.market_features],
-        "candidates": [(item.quote.code, item.quote.data_version) for item in replay.candidate_features],
-        "reviews": sorted(replay.reviews),
-    }
-    encoded = json.dumps(material, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
-    return f"shadow-input:{hashlib.sha256(encoded).hexdigest()[:24]}"
-
-
 def _shanghai(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("tomorrow shadow input time must be timezone-aware")
     return value.astimezone(SHANGHAI)
 
 
-__all__ = ["TomorrowShadowProjection", "project_tomorrow_snapshot"]
+__all__ = [
+    "TomorrowShadowProjection",
+    "native_input_from_snapshot",
+    "project_tomorrow_input",
+    "project_tomorrow_snapshot",
+]

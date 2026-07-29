@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock
@@ -13,7 +14,11 @@ from trader.application.tomorrow_shadow import (
     TomorrowCutoverPolicy,
     TomorrowShadowObservation,
 )
-from trader.application.tomorrow_shadow_projection import project_tomorrow_snapshot
+from trader.application.tomorrow_shadow_projection import (
+    native_input_from_snapshot,
+    project_tomorrow_input,
+    project_tomorrow_snapshot,
+)
 from trader.application.tomorrow_shadow_runtime import (
     TomorrowShadowDependencies,
     TomorrowShadowRuntime,
@@ -208,7 +213,87 @@ def test_shadow_projection_reuses_replay_input_without_an_external_port(
     assert projection.local.projection_stage == "local"
     assert projection.local.trade_date == TRADE_DATE
     assert projection.hybrid is None
-    assert projection.input_version.startswith("shadow-input:")
+    assert projection.input_version.startswith("native-input:")
+
+
+def test_native_input_projects_same_local_identity_before_v1_snapshot(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+    native_input = native_input_from_snapshot(baseline)
+
+    native = project_tomorrow_input(native_input, policy, decision_sequence=4)
+    mirrored = project_tomorrow_snapshot(
+        replace(
+            baseline,
+            snapshot_id="legacy:tomorrow:later",
+        ),
+        policy,
+        decision_sequence=4,
+    )
+
+    assert native.local.version == mirrored.local.version
+    assert native.input_version == mirrored.input_version
+    assert native.hybrid is None
+
+
+def test_native_input_identity_does_not_change_with_snapshot_or_reviews(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+    first = native_input_from_snapshot(baseline)
+    second = native_input_from_snapshot(
+        replace(
+            baseline,
+            snapshot_id="legacy:tomorrow:hybrid",
+            replay_input=replace(baseline.replay_input, reviews={}),
+        )
+    )
+
+    assert first.input_version == second.input_version
+
+
+def test_native_input_identity_is_canonical_across_feature_order(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    native_input = native_input_from_snapshot(_baseline_snapshot(policy, application_feature_factory))
+
+    reordered = replace(
+        native_input,
+        market_features=tuple(reversed(native_input.market_features)),
+        requested_codes=tuple(reversed(native_input.requested_codes)),
+        candidate_features=tuple(reversed(native_input.candidate_features)),
+    )
+
+    assert reordered.input_version == native_input.input_version
+
+
+def test_native_input_identity_tracks_feature_content_without_merge_epoch(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+    first = native_input_from_snapshot(baseline)
+    changed_feature = replace(
+        first.candidate_features[0],
+        values={**first.candidate_features[0].values, "trend_score": 99.0},
+        merge_epoch="",
+    )
+    unchanged_identity_feature = replace(first.candidate_features[0], merge_epoch="")
+
+    changed = replace(
+        first,
+        candidate_features=(changed_feature, *first.candidate_features[1:]),
+    )
+    unchanged = replace(
+        first,
+        candidate_features=(unchanged_identity_feature, *first.candidate_features[1:]),
+    )
+
+    assert changed.input_version != unchanged.input_version
 
 
 def test_shadow_worker_is_latest_wins_and_stops_cleanly() -> None:
@@ -246,12 +331,72 @@ def test_shadow_worker_is_latest_wins_and_stops_cleanly() -> None:
         "running": False,
         "pending": False,
         "offered": 3,
+        "native_offered": 0,
+        "baseline_offered": 3,
         "replaced": 1,
         "completed": 2,
         "failed": 0,
         "last_error": "",
         "capacity": 1,
     }
+
+
+def test_shadow_worker_dispatches_native_input_without_waiting_for_baseline(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    native_input = native_input_from_snapshot(_baseline_snapshot(policy, application_feature_factory))
+    processor = Mock()
+    processor.process_native.return_value = True
+    worker = TomorrowShadowWorker(processor)
+
+    assert worker.start() is True
+    assert worker.offer_native(native_input) is True
+    deadline = time.monotonic() + 2.0
+    while worker.status()["completed"] != 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    worker.stop(wait=True, timeout_seconds=1.0)
+
+    processor.process_native.assert_called_once_with(native_input)
+    processor.process.assert_not_called()
+    assert worker.status()["native_offered"] == 1
+    assert worker.status()["baseline_offered"] == 0
+
+
+def _baseline_snapshot(policy, application_feature_factory) -> RecommendationSnapshot:
+    features = tuple(
+        application_feature_factory(code, OBSERVED_AT)
+        for code in ("600001", "600002", "300001", "300002", "688001", "688002")
+    )
+    replay = RecommendationReplayInput(
+        schema_version="recommendation_replay_v4",
+        algorithm_version="v16_board_scoring_v2",
+        policy=_freeze_policy(policy),
+        evaluated_at=OBSERVED_AT,
+        market_features=features,
+        requested_codes=tuple(item.quote.code for item in features),
+        candidate_features=features,
+        reviews={},
+        preselect_max_age_seconds=10.0,
+        score_max_age_seconds=10.0,
+        candidate_pool_size=120,
+    )
+    return RecommendationSnapshot(
+        snapshot_id="legacy:tomorrow:native",
+        strategy=Strategy.TOMORROW,
+        trade_date=TRADE_DATE.isoformat(),
+        phase="afternoon",
+        data_version="legacy-input:native",
+        strategy_version=policy.strategy_version,
+        fusion_version=policy.fusion_version,
+        fusion_mode=FusionMode.LOCAL_DEGRADED,
+        published_at=OBSERVED_AT,
+        recommendations=(),
+        filtered_count=0,
+        filter_reasons={},
+        config_version="runtime:test",
+        replay_input=replay,
+    )
 
 
 def _observation(

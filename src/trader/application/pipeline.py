@@ -94,6 +94,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             groups=options.long_groups,
         )
         self._outcome_settlement = dependencies.outcome_settlement
+        self._tomorrow_native_inputs = dependencies.tomorrow_native_inputs
         self._latency = dependencies.latency or LatencyWaterfall()
         self._market_data_manages_workers = options.market_data_manages_workers
         self._cadence = CadencePlanner(options.cadence_policy) if options.cadence_policy is not None else None

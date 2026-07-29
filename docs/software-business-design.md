@@ -300,6 +300,33 @@ local 预览、门禁采样或切换资格的前置条件；影子只能消费�
 改变。切换前 v2 页面可以用于旁路观察，但旧首页和 `/api/recommendations/tomorrow` 仍是
 正式口径。
 
+### 2.8 tomorrow v2 原生输入驱动流水线交付边界
+
+工程影子完成后，v2 local 不再等待 v1 tomorrow `RecommendationSnapshot` 已经评分并被
+P6 接纳才开始。活动流水线在同一批 tomorrow 候选特征、全市场点时特征和数据版本完成后，
+必须先形成深层不可变 `TomorrowNativeInput` 并以非阻塞方式提交给 v2 单 worker，再把同批
+输入提交给 v1 `RecommendationEngine.prepare_snapshot`。v2 与 v1 评分从该接缝并行，
+today、d25、long 和 v1 正式发布/冻结顺序不变。
+
+原生输入固定绑定交易日、phase、上海时区评估时间、全市场/候选特征、请求代码、行情年龄
+上限、候选容量、数据/配置版本和规范输入哈希；不得持有行情、历史或 DeepSeek 外部端口。
+输入哈希只描述同一份点时业务输入，不包含后到的 v1 snapshot ID 或已校验 review 集合，
+因此 local/hybrid v1 投影可以稳定关联同一个原生 local。无全市场特征、未来时间、重复
+代码、交易日错配或非法容量的输入必须在 worker 外拒绝，不能阻塞 v1。
+
+v2 仍使用单工作线程和单 latest-wins 待处理槽。原生输入先到时立即生成并 CAS 发布 local；
+同输入的 v1 P6 后到时只执行三项工作：比较 v1/v2 选择和过滤事实、用 v1 已校验且属于同一
+evidence manifest 的 reviews 生成引用该 local 的可选 hybrid、在 v1 正式冻结后触发 v2
+冻结协调器。已经发布的同输入 local 不得重复评分或换身份；旧 baseline 被更新原生输入
+超越时只计 superseded，不得覆盖当前 v2 决策或污染切换样本。若进程升级期间缺少对应原生
+输入记录，允许继续使用既有 snapshot 投影作为受控兼容 fallback，但必须单独计数。
+
+原生 worker 排队、替换、成功、失败、fallback、superseded，以及从 market
+`received_at` 到 local 可见的时延必须独立可观察。worker 阻塞、停止或 v2 投影失败时，
+v1 tomorrow 本地评分、P6、冻结和只读 Web 必须继续；v2 不新增 DeepSeek 物理请求、不写旧
+运行库。该章节只消除工程影子的 v1 评分串行前置依赖，不执行生产读写指针切换；第 2.7 节
+真实完整交易日门禁仍是后续切换的必要条件。
+
 ## 3. 架构与代码边界
 
 活动产品代码只能位于 `src/trader`，固定依赖方向为：

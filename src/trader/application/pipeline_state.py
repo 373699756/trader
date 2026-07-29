@@ -25,6 +25,7 @@ from trader.application.ports.snapshots import (
     SnapshotReaderPort,
     SnapshotWriterPort,
 )
+from trader.application.ports.tomorrow import TomorrowNativeInputPort
 from trader.application.publisher import SnapshotPublisher
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
@@ -55,6 +56,7 @@ class PipelineState:
     _snapshot_writer: SnapshotWriterPort
     _published_snapshots: PublishedSnapshotWritePort
     _reviews: DeepSeekReviewPort | None
+    _tomorrow_native_inputs: TomorrowNativeInputPort | None
     _live_overlays: dict[tuple[Strategy, str], LiveOverlay]
     _scheduled_inflight: set[PipelineTask]
     _session_snapshot_ids: set[str]

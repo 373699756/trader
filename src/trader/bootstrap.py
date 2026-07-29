@@ -635,6 +635,7 @@ def _build_pipeline(
                 session_distance=adapters.calendar.session_distance,
             ),
             latency=context.latency,
+            tomorrow_native_inputs=publication.tomorrow_worker,
         ),
         PipelineOptions(
             config_version=context.effective_config_version,

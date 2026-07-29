@@ -16,6 +16,7 @@ from trader.application.ports.market import MarketDataPorts
 from trader.application.ports.outcomes import OutcomeSettlementPort
 from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.ports.snapshots import PublishedSnapshotWritePort, SnapshotPorts
+from trader.application.ports.tomorrow import TomorrowNativeInputPort
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
@@ -36,6 +37,7 @@ class PipelineDependencies:
     reviews: DeepSeekReviewPort | None = None
     outcome_settlement: OutcomeSettlementPort | None = None
     latency: LatencyWaterfall | None = None
+    tomorrow_native_inputs: TomorrowNativeInputPort | None = None
 
 
 @dataclass(frozen=True)

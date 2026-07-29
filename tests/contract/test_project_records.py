@@ -188,6 +188,22 @@ def test_tomorrow_rebuild_contract_is_explicitly_pre_cutover() -> None:
     assert "门禁不得自动" in design
 
 
+def test_tomorrow_native_pipeline_contract_runs_before_v1_scoring() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+
+    for statement in (
+        "tomorrow v2 原生输入驱动流水线交付边界",
+        "`TomorrowNativeInput`",
+        "再把同批",
+        "`RecommendationEngine.prepare_snapshot`",
+        "单 latest-wins 待处理槽",
+        "不包含后到的 v1 snapshot ID 或已校验 review 集合",
+        "已经发布的同输入 local 不得重复评分或换身份",
+        "不执行生产读写指针切换",
+    ):
+        assert statement in design
+
+
 def test_tomorrow_data_plane_retention_is_documented_but_not_implemented() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     source = PROJECT_ROOT / "src" / "trader"

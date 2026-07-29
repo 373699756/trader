@@ -352,7 +352,7 @@ def _restore_policy(policy: FrozenReplayPolicy) -> RecommendationPolicy:
     )
 
 
-def _preselection_replay_feature(feature: FeatureSnapshot) -> FeatureSnapshot:
+def preselection_replay_feature(feature: FeatureSnapshot) -> FeatureSnapshot:
     return replace(
         feature,
         values={name: feature.values.get(name) for name in dict.fromkeys(_PRESELECTION_VALUE_FIELDS)},

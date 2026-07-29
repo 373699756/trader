@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户发送“继续”，要求在评分正确和实时性不退化的前提下继续压缩流水线总耗时。现状审查
+  确认上一版 tomorrow v2 影子必须等 v1 完成 `prepare_snapshot`、DeepSeek 合并和 P6
+  接纳后才开始 local，因而测得的 v2 时延包含整段 v1 串行前置。本批新增深层不可变
+  `TomorrowNativeInput` 和显式应用端口：同批全市场/候选点时数据完成后先非阻塞投递给
+  单线程 latest-wins v2 worker，再提交 v1 策略评分；v2 local 与 v1 评分由此并行。
+- 新增原生输入/baseline 关联记录和独立可观测计数。相同输入只发布一次 local，后到 v1
+  snapshot 只用于一致性门禁、经校验 review 的可选 hybrid 和正式冻结；重启过渡期缺少
+  原生记录时保留受控 snapshot fallback，旧 baseline 或旧原生输入只计 superseded，
+  不覆盖更新决策。
 - 用户明确要求 `long` 当前不需要评分，只需要最高实时性的固定池行情。本批新增
   `LongQuoteProjectionService` 与独立 `long_quotes` latest-wins 通道：按配置顺序直接把
   腾讯定向报价投影为 `observe` 当前快照，评分兼容字段固定为 0，并通过
@@ -176,6 +185,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- tomorrow v2 输入身份改为只绑定交易日、phase、上海时区评估时间、配置/数据版本、
+  全市场/候选特征身份、请求代码和年龄/容量边界，不再包含后到的 v1 snapshot ID 或 review
+  集合。全市场回放裁剪在 v2 worker 内执行，避免在 v1 提交前重复复制约 5500 行特征；
+  v1 正式 P6、旧 API/首页、冻结和 DeepSeek 预算均未切换，runtime 身份更新为
+  `runtime_v25_tomorrow_native_2026_07_29`。
 - `long` 从候选代码、新闻、风险、参考数据、历史特征、共享 TopK overlay、三策略评分和
   收盘补算链中拆出；当前快照只保留报价字段、固定分组和行情来源/时间，不再进入
   `RecommendationEngine.prepare_snapshot/finalize_snapshot`。Long 仍不冻结、不写推荐
@@ -472,6 +486,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 tomorrow v2 工程影子被 v1 全部评分和 P6 串行阻塞、无法独立达到 local 实时性目标
+  的结构性问题。原生输入投递失败现在只记录 `tomorrow_native_inputs_failed` 并继续提交
+  v1；重复输入不会重复评分或产生新 SSE 决策身份；无 `merge_epoch` 的兼容输入按实际特征
+  内容生成哈希，防止同 quote 版本下的内容变化被误判为同一输入。
 - 修复 Long 虽然最终分固定为 0，运行时仍经过统一准备/评分/finalize，并混入候选代码和
   共享 TopK 行情，造成无意义历史/研究工作以及与荐股流水线竞争资源的问题。进一步修复
   仅增加应用 worker 仍会共用底层腾讯 lane、熔断和缓存的问题：Long 现在拥有独立物理
@@ -682,6 +700,17 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批 failure-first 测试先确认原生输入 API 缺失；实现后目标单元、契约、启动态流水线和
+  v2 冻结集成回归通过，证明原生输入在 v1 `prepare_snapshot` 提交前送达、投递失败不阻塞
+  v1、同输入不重复发布，且原生 local 与稍后 v1 replay local 的输入哈希和决策版本一致。
+  `make format-check`、`make lint`、`make type-check` 已通过；完整 `make test` 仅命中本批
+  开始前已有且未纳入提交的用户修改
+  `test_settlement_records_due_stock_outcome_when_benchmark_is_unavailable`，排除该单测后的其余
+  完整测试集通过。`make package` 成功生成 sdist/wheel；干净仓库外 Python 3.14 环境从
+  wheel 导入 `trader` 和 `TomorrowNativeInput`，CLI/绝对配置校验、8 项模板/CSS/JS/SVG
+  资源及 `pip check` 通过。固定 5500×360 离线 `perf-check --suite all` 的全部绝对指标、
+  相对回归和零网络门禁通过；headless Firefox 三档桌面均无白屏、溢出、重叠或浏览器错误，
+  overlay 更新不触发完整 current GET；最终提交和上游一致性由本批 Git 提交元数据核对。
 - Long 定向单元/组件/集成回归覆盖固定顺序、无评分语义、部分报价沿用、共享 TopK 排除、
   独立 latest-wins worker、慢 Long 不阻塞 D25、Long 熔断不打开候选熔断、生产缓存启用
   时仍逐周期物理刷新，以及 v5/v6 cadence 兼容迁移。`make format-check`、`make lint` 和
@@ -1091,6 +1120,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 tomorrow v2 local 对“v1 已完成评分并成功发布 snapshot”的正常路径前置依赖；保留
+  snapshot 投影仅作为升级过渡 fallback 和 baseline 对照，不删除 v1 正式实现，也不执行
+  生产读写指针切换。
 - 移除 Long 的通用策略 worker、评分 fallback、收盘 prepare/finalize 重建和共享行情
   overlay；Long 不再产生 DeepSeek 请求、冻结检查点、正式推荐历史或结果结算。保留 Web
   envelope 中的零分字段仅为现有前端兼容，不代表投资判断。
@@ -1154,6 +1186,16 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 当前环境没有运行中的本地服务或 `.runtime/v17/tomorrow-v2` 真实交易日证据，因此尚未
+  获得第 2.7 节要求的至少 100 个成功样本、完整 14:50 匹配冻结、零错误/额外 DeepSeek
+  请求及 5 秒/10 秒 P95；fixture 不能替代该证据，本批不切换旧首页、旧 API、P6 或正式
+  冻结指针。另有用户预存的 outcome settlement 单测修改仍失败且保持未暂存、未改动，
+  需要由其所属独立批次处理。
+- 同一离线性能套件本批曾完整通过，随后在宿主 load average 约 2.4-2.8 时的连续复跑中，
+  未被本批修改、也不经过 tomorrow 原生输入路径的 `market_merge` 和
+  `targeted_overlay_commit` P95 分别出现约 22-125ms、19-40ms 超限，另一次
+  `canonical_snapshot` 超限约 43ms；相对回归、网络调用和其余指标保持通过。该波动需要在
+  宿主负载稳定后复核，不能据此宣称已提升这些旧市场算子的性能。
 - 本批使用固定行情 fixture、并发阻塞回归和离线浏览器验证机制与隔离性，未在真实交易日
   调用外部腾讯行情，因此供应商实际 1 秒吞吐、网络抖动和真实数据年龄仍需运行观测；
   Long 是固定研究观察池且无评分，本批不构成收益承诺。下一流水线优化章节未在本批顺带
