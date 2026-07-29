@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -67,7 +68,16 @@ def test_chrome_dashboard_gate_is_persisted_under_tests() -> None:
 
 def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     docs_root = PROJECT_ROOT / "docs"
-    documents = sorted(path.relative_to(docs_root).as_posix() for path in docs_root.rglob("*") if path.is_file())
+    documents = tuple(
+        line.removeprefix("docs/")
+        for line in subprocess.run(
+            ["git", "ls-files", "docs"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
 
     expected_reports = {
         "reports/a-share-long-industry-research-2026-07-24.md",
@@ -88,15 +98,22 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     }
     assert set(documents) == {
         "recommendation-strategy.md",
+        "score.md",
         "software-business-design.md",
         *expected_reports,
     }
 
     design = (docs_root / "software-business-design.md").read_text(encoding="utf-8")
     report = (docs_root / "reports/pipeline-a1-baseline.md").read_text(encoding="utf-8")
+    score_plan = (docs_root / "score.md").read_text(encoding="utf-8")
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
+    assert "状态：待执行、非生产契约" in score_plan
+    assert "`docs/recommendation-strategy.md`" in score_plan
+    assert "不自行切换活动策略" in score_plan
+    assert "最多为 60 个不同交易日" in score_plan
+    assert "硬过滤失败股票不保存" in score_plan
     assert "已实施实时与降级基线" in design
     assert "待验证收益路线" in strategy
     assert "docs/celue.md" not in design
