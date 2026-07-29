@@ -72,11 +72,13 @@ class PipelineSubmissionMixin(PipelineState):
         is_trading_day = self._calendar.is_trading_day(trade_day)
         planner = self._cadence
         if planner is None:
+            self._offer_company_research(now)
             self.submit_tick(now)
             return 1.0
-        batch = planner.plan(now, is_trading_day=is_trading_day)
         phase = decision_at(now, is_trading_day=is_trading_day).phase
         self._state.record_tick(phase.value, now)
+        self._offer_company_research(now)
+        batch = planner.plan(now, is_trading_day=is_trading_day)
         tasks = list(batch.tasks)
         trade_date = trade_day.isoformat()
         retry_due = self._after_close_retry_at is None or now >= self._after_close_retry_at

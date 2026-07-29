@@ -24,7 +24,7 @@ from trader.application.events import (
     new_event as create_event,
 )
 from trader.application.pipeline import RecommendationPipeline
-from trader.application.ports.market import MarketDataUnavailableError
+from trader.application.ports.market import MarketDataUnavailableError, ResearchRefreshResult
 from trader.application.ports.snapshots import RecoverySummary
 from trader.application.ports.tomorrow import TomorrowNativeInput
 from trader.application.published_snapshots import PublishedSnapshotIndex
@@ -470,7 +470,7 @@ def test_after_close_cold_start_rebuilds_missing_strategies_locally(
     recommendation_policy,
     application_feature_factory,
 ) -> None:
-    clock = MutableClock(datetime.fromisoformat("2026-07-16T15:05:00+08:00"))
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T19:30:00+08:00"))
     features = _three_board_features(application_feature_factory, clock.now())
     repository = MemoryRepository()
     market_data = ClosingPriceMarketData(features)
@@ -519,6 +519,41 @@ def test_after_close_cold_start_rebuilds_missing_strategies_locally(
     assert lookup.snapshot.phase == "close_fallback"
     assert queries.recommendation(Strategy.TODAY).status == "not_ready"
     assert pipeline._after_close_completed_date == "2026-07-16"
+
+
+def test_after_close_arbitrary_start_still_dispatches_company_research(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T19:30:00+08:00")
+    market_data = StaticMarketData((application_feature_factory("600001", now),))
+    repository = MemoryRepository()
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+    pipeline._candidate_codes = ("600001",)
+    pipeline.initialize()
+    assert pipeline.start() is True
+    try:
+        assert pipeline.submit_due(now) == 1.0
+        _wait_until(lambda: pipeline.status()["counters"].get("company_research_batches") == 1)
+        status = pipeline.status()
+        assert status["dependencies"]["company_research"]["completed_batches"] == 1
+        assert status["counters"]["company_research_completed_codes"] == 1
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
 
 
 def test_after_close_cold_start_builds_long_current_snapshot(
@@ -2976,8 +3011,18 @@ class StaticMarketData:
         observed_at: datetime,
         *,
         deadline: datetime | None = None,
-    ) -> None:
-        del codes, observed_at, deadline
+    ) -> ResearchRefreshResult:
+        del deadline
+        requested = tuple(codes)
+        return ResearchRefreshResult(
+            requested_codes=requested,
+            completed_codes=requested,
+            changed_codes=requested,
+            covered_codes=requested,
+            data_version=f"test-research:{observed_at.isoformat()}",
+            started_at=observed_at,
+            completed_at=observed_at,
+        )
 
     @staticmethod
     def refresh_reference_data(

@@ -90,6 +90,8 @@ def test_evidence_recovery_failure_blocks_cutover_without_blocking_startup() -> 
 def test_duplicate_system_start_does_not_stop_running_history_pool() -> None:
     history_pool = Mock()
     history_pool.start.side_effect = (True, False)
+    research_pool = Mock()
+    research_pool.start.side_effect = (True, False)
     supervisor = Mock()
     supervisor.start.side_effect = (True, False)
     system = ApplicationSystem(
@@ -105,17 +107,21 @@ def test_duplicate_system_start_does_not_stop_running_history_pool() -> None:
         state=Mock(),
         market_cache=Mock(),
         history_pool=history_pool,
+        research_pool=research_pool,
         source_lanes=Mock(),
     )
 
     assert system.start() is True
     assert system.start() is False
     history_pool.stop.assert_not_called()
+    research_pool.stop.assert_not_called()
 
 
 def test_system_start_failure_stops_shadow_worker_with_shutdown_budget() -> None:
     history_pool = Mock()
     history_pool.start.return_value = True
+    research_pool = Mock()
+    research_pool.start.return_value = True
     supervisor = Mock()
     supervisor.start.side_effect = RuntimeError("initializer failed")
     shadow_worker = Mock()
@@ -135,6 +141,7 @@ def test_system_start_failure_stops_shadow_worker_with_shutdown_budget() -> None
         state=Mock(),
         market_cache=Mock(),
         history_pool=history_pool,
+        research_pool=research_pool,
         source_lanes=Mock(),
         tomorrow_shadow_worker=shadow_worker,
     )
@@ -143,4 +150,5 @@ def test_system_start_failure_stops_shadow_worker_with_shutdown_budget() -> None
         system.start()
 
     history_pool.stop.assert_called_once_with(wait=True, cancel_futures=True)
+    research_pool.stop.assert_called_once_with(wait=True, cancel_futures=True)
     shadow_worker.stop.assert_called_once_with(wait=True, timeout_seconds=7.0)

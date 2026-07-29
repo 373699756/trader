@@ -293,8 +293,27 @@ def _recommendation(
             "deepseek_risk_penalty": score.deepseek_risk_penalty,
             "final_score": score.final_score,
         },
+        "research": _research_summary(item),
         "risks": _risk_summaries((*item.local_risk_facts, *item.deepseek_risk_facts)),
         "review": _review_summary(item.review),
+    }
+
+
+def _research_summary(item: Recommendation) -> dict[str, object]:
+    features = item.features
+    components = {
+        "financial": features.optional_value("financial_deterioration") is not None,
+        "announcements": features.optional_value("corporate_risk_history_unavailable") == 0.0,
+        "pledge": features.optional_value("pledge_risk") is not None,
+        "unlock": features.optional_value("unlock_risk") is not None,
+    }
+    covered = sum(components.values())
+    status = "verified" if covered == len(components) else "partial" if covered else "unavailable"
+    return {
+        "status": status,
+        "covered_components": covered,
+        "total_components": len(components),
+        "components": components,
     }
 
 

@@ -41,7 +41,7 @@ from trader.infra.market_data.akshare_parsing import (
     _summary_number,
     _validate_code,
 )
-from trader.infra.persistence.runtime_json import RuntimeJsonWriter, atomic_write_json
+from trader.infra.persistence.runtime_json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -87,6 +87,12 @@ GetFunction = Callable[..., HttpResponse]
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _SOURCE_EXCEPTIONS = (OSError, RuntimeError, ValueError, requests.RequestException)
+_COMPONENT_TTLS = {
+    "financial": timedelta(hours=6),
+    "announcement": timedelta(minutes=10),
+    "pledge": timedelta(hours=6),
+    "unlock": timedelta(hours=6),
+}
 
 
 class _AkshareOptions(TypedDict, total=False):
@@ -199,8 +205,12 @@ class AkshareResearchClient:
         observed_at: datetime,
         policy: LongResearchPolicy,
     ) -> tuple[FinancialReport | None, tuple[Evidence, ...]]:
-        payload = self._financial_payload(code)
-        self._cache_payload("financial", code, observed_at, payload)
+        payload = self._component_payload(
+            "financial",
+            code,
+            observed_at,
+            lambda: self._financial_payload(code),
+        )
         candidates: list[FinancialReport] = []
         for row in _result_rows(payload):
             report_date = _parse_date(row.get("REPORT_DATE"))
@@ -279,22 +289,26 @@ class AkshareResearchClient:
         bool,
         str,
     ]:
-        payload = self._request_json(
-            "https://np-anotice-stock.eastmoney.com/api/security/ann",
-            params={
-                "sr": "-1",
-                "page_size": "10000",
-                "page_index": "1",
-                "ann_type": "A",
-                "client_source": "web",
-                "f_node": "0",
-                "s_node": "0",
-                "stock_list": code,
-                "begin_time": "1990-01-01",
-                "end_time": observed_at.date().isoformat(),
-            },
+        payload = self._component_payload(
+            "announcement",
+            code,
+            observed_at,
+            lambda: self._request_json(
+                "https://np-anotice-stock.eastmoney.com/api/security/ann",
+                params={
+                    "sr": "-1",
+                    "page_size": "10000",
+                    "page_index": "1",
+                    "ann_type": "A",
+                    "client_source": "web",
+                    "f_node": "0",
+                    "s_node": "0",
+                    "stock_list": code,
+                    "begin_time": "1990-01-01",
+                    "end_time": observed_at.date().isoformat(),
+                },
+            ),
         )
-        self._cache_payload("announcement", code, observed_at, payload)
         rows = _announcement_rows(payload)
         cutoff = observed_at - timedelta(days=policy.announcement_lookback_days)
         version = _payload_version("eastmoney-announcement", payload)
@@ -389,22 +403,26 @@ class AkshareResearchClient:
         code: str,
         observed_at: datetime,
     ) -> tuple[float, tuple[Evidence, ...]]:
-        payload = self._request_json(
-            "https://datacenter-web.eastmoney.com/api/data/v1/get",
-            params={
-                "sortColumns": "NOTICE_DATE",
-                "sortTypes": "-1",
-                "pageSize": "200",
-                "pageNumber": "1",
-                "reportName": "RPTA_APP_ACCUMDETAILS",
-                "columns": "ALL",
-                "quoteColumns": "",
-                "source": "WEB",
-                "client": "WEB",
-                "filter": f'(SECURITY_CODE="{code}")',
-            },
+        payload = self._component_payload(
+            "pledge",
+            code,
+            observed_at,
+            lambda: self._request_json(
+                "https://datacenter-web.eastmoney.com/api/data/v1/get",
+                params={
+                    "sortColumns": "NOTICE_DATE",
+                    "sortTypes": "-1",
+                    "pageSize": "200",
+                    "pageNumber": "1",
+                    "reportName": "RPTA_APP_ACCUMDETAILS",
+                    "columns": "ALL",
+                    "quoteColumns": "",
+                    "source": "WEB",
+                    "client": "WEB",
+                    "filter": f'(SECURITY_CODE="{code}")',
+                },
+            ),
         )
-        self._cache_payload("pledge", code, observed_at, payload)
         rows = _result_rows(payload)
         eligible: list[tuple[datetime, float]] = []
         invalid_eligible_row = False
@@ -443,25 +461,29 @@ class AkshareResearchClient:
         observed_at: datetime,
         policy: LongResearchPolicy,
     ) -> tuple[float, tuple[Evidence, ...]]:
-        payload = self._request_json(
-            "https://datacenter-web.eastmoney.com/api/data/v1/get",
-            params={
-                "sortColumns": "FREE_DATE",
-                "sortTypes": "-1",
-                "pageSize": "200",
-                "pageNumber": "1",
-                "reportName": "RPT_LIFT_STAGE",
-                "columns": (
-                    "SECURITY_CODE,SECURITY_NAME_ABBR,FREE_DATE,CURRENT_FREE_SHARES,ABLE_FREE_SHARES,"
-                    "LIFT_MARKET_CAP,FREE_RATIO,NEW,B20_ADJCHRATE,A20_ADJCHRATE,FREE_SHARES_TYPE,"
-                    "TOTAL_RATIO,NON_FREE_SHARES,BATCH_HOLDER_NUM"
-                ),
-                "source": "WEB",
-                "client": "WEB",
-                "filter": f'(SECURITY_CODE="{code}")',
-            },
+        payload = self._component_payload(
+            "unlock",
+            code,
+            observed_at,
+            lambda: self._request_json(
+                "https://datacenter-web.eastmoney.com/api/data/v1/get",
+                params={
+                    "sortColumns": "FREE_DATE",
+                    "sortTypes": "-1",
+                    "pageSize": "200",
+                    "pageNumber": "1",
+                    "reportName": "RPT_LIFT_STAGE",
+                    "columns": (
+                        "SECURITY_CODE,SECURITY_NAME_ABBR,FREE_DATE,CURRENT_FREE_SHARES,ABLE_FREE_SHARES,"
+                        "LIFT_MARKET_CAP,FREE_RATIO,NEW,B20_ADJCHRATE,A20_ADJCHRATE,FREE_SHARES_TYPE,"
+                        "TOTAL_RATIO,NON_FREE_SHARES,BATCH_HOLDER_NUM"
+                    ),
+                    "source": "WEB",
+                    "client": "WEB",
+                    "filter": f'(SECURITY_CODE="{code}")',
+                },
+            ),
         )
-        self._cache_payload("unlock", code, observed_at, payload)
         end_date = observed_at.date() + timedelta(days=policy.unlock_forward_days)
         total_ratio = 0.0
         invalid_window_row = False
@@ -521,6 +543,45 @@ class AkshareResearchClient:
     def _ensure_running(self) -> None:
         if self._cancel_requested():
             raise RuntimeError("akshare source lane stopped")
+
+    def _component_payload(
+        self,
+        source: str,
+        code: str,
+        observed_at: datetime,
+        fetch: Callable[[], Mapping[str, object]],
+    ) -> Mapping[str, object]:
+        cached = self._read_cached_payload(source, code, observed_at)
+        if cached is not None:
+            return cached
+        payload = fetch()
+        self._cache_payload(source, code, observed_at, payload)
+        return payload
+
+    def _read_cached_payload(
+        self,
+        source: str,
+        code: str,
+        observed_at: datetime,
+    ) -> Mapping[str, object] | None:
+        if self._evidence_cache_dir is None:
+            return None
+        target = self._evidence_cache_dir / "raw" / source / f"{code}.json"
+        try:
+            raw = atomic_read_json(target)
+            if not isinstance(raw, Mapping):
+                return None
+            cached_at_raw = raw.get("observed_at")
+            payload = raw.get("payload")
+            if not isinstance(cached_at_raw, str) or not isinstance(payload, Mapping):
+                return None
+            cached_at = datetime.fromisoformat(cached_at_raw)
+            age = observed_at - cached_at
+            if age < timedelta(0) or age > _COMPONENT_TTLS[source]:
+                return None
+            return dict(payload)
+        except (KeyError, OSError, TypeError, ValueError):
+            return None
 
     def _cache_payload(self, source: str, code: str, observed_at: datetime, payload: object) -> None:
         if self._evidence_cache_dir is None:

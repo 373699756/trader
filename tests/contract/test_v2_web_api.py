@@ -77,6 +77,7 @@ RECOMMENDATION_ITEM_KEYS = {
     "setup_type",
     "downside",
     "scores",
+    "research",
     "risks",
     "review",
 }
@@ -85,6 +86,12 @@ RECOMMENDATION_SCORE_KEYS = {
     "deepseek_score",
     "deepseek_risk_penalty",
     "final_score",
+}
+RECOMMENDATION_RESEARCH_KEYS = {
+    "status",
+    "covered_components",
+    "total_components",
+    "components",
 }
 
 
@@ -218,6 +225,8 @@ def test_recommendations_exclude_internal_missing_features_and_evidence(
 
     assert set(item) == RECOMMENDATION_ITEM_KEYS
     assert set(item["scores"]) == RECOMMENDATION_SCORE_KEYS
+    assert set(item["research"]) == RECOMMENDATION_RESEARCH_KEYS
+    assert set(item["research"]["components"]) == {"financial", "announcements", "pledge", "unlock"}
     assert "features" not in item
     assert "missing_fields" not in item
     assert "missing_reasons" not in item

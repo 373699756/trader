@@ -1,6 +1,6 @@
 {
   "schema_version": 7,
-  "config_version": "runtime_v31_top6_observe6_diagnostics_2026_07_29",
+  "config_version": "runtime_v32_company_research_coordination_2026_07_29",
   "runtime_dir": ".runtime/v17",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -102,7 +102,7 @@
       "sina": "sina_quote_v15",
       "tencent": "tencent_quote_v15",
       "tushare": "tushare_sdk_v17_120_point_daily",
-      "akshare": "akshare_research_v15"
+      "akshare": "akshare_research_v16_component_cache"
     },
     "tushare": {
       "enabled": true,

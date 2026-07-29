@@ -84,22 +84,6 @@ def _refresh_market_news_on_workers(
     )
 
 
-def _refresh_stock_risk_on_workers(
-    pipeline: RecommendationPipeline,
-    now: datetime,
-    deadline: datetime | None,
-) -> None:
-    codes = _active_codes(pipeline)
-    if codes:
-        _run_market_data_task(
-            pipeline,
-            pipeline._research.refresh_stock_risk,
-            codes,
-            now,
-            deadline=deadline,
-        )
-
-
 def _refresh_reference_data_on_workers(
     pipeline: RecommendationPipeline,
     now: datetime,

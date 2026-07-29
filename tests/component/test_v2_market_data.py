@@ -4240,7 +4240,7 @@ def test_research_cache_expired_calls_research_client(tmp_path) -> None:
     assert any(item.evidence_id == "fresh-news" for item in result[0].evidence)
 
 
-def test_akshare_structured_research_is_point_in_time_and_builds_real_long_inputs() -> None:
+def test_akshare_structured_research_is_point_in_time_and_builds_real_long_inputs(tmp_path) -> None:
     financial_payload = {
         "version": "financial-v1",
         "result": {
@@ -4336,11 +4336,15 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
             return FakeResponse(unlock_payload)
         raise AssertionError(f"unexpected research URL: {url}")
 
-    observation = AkshareResearchClient(
+    client = AkshareResearchClient(
         timeout_seconds=8,
         get=get,
         long_research_policy=LONG_POLICY,
-    ).fetch_snapshot("600001", observed_at=AFTERNOON)
+        evidence_cache_dir=tmp_path,
+    )
+    observation = client.fetch_snapshot("600001", observed_at=AFTERNOON)
+    repeated = client.fetch_snapshot("600001", observed_at=AFTERNOON + timedelta(minutes=1))
+    client.fetch_snapshot("600001", observed_at=AFTERNOON + timedelta(minutes=11))
     feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
         (replace(_quote(), price=20.0),),
         {"600001": _history_bars()},
@@ -4353,6 +4357,9 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     assert len(observation.announcements) == 22
     assert observation.pledge_ratio_pct == pytest.approx(15.0)
     assert observation.unlock_ratio_pct == pytest.approx(6.0)
+    assert repeated.financial == observation.financial
+    assert len(calls) == 5
+    assert "api/security/ann" in calls[-1][0]
     assert feature.values["value_score"] == pytest.approx(92.8571428571)
     assert feature.values["growth_score"] == pytest.approx(70.0)
     assert feature.values["quality_score"] == pytest.approx(67.5)
@@ -4585,7 +4592,68 @@ def test_stock_risk_refresh_reuses_successful_ten_minute_cache() -> None:
     assert research.snapshot_calls == 1
 
 
-def test_stock_risk_batch_deadline_is_controlled_and_discards_late_result() -> None:
+def test_stock_risk_refresh_reports_only_real_research_version_changes() -> None:
+    monotonic = [0.0]
+    wall_clock = [NOW]
+    observation = ResearchObservation(
+        announcements_available=True,
+        corporate_risk_history_complete=True,
+        pledge_ratio_pct=0.0,
+        unlock_ratio_pct=0.0,
+    )
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=StaticStructuredResearchClient((), observation),
+        research_workers=1,
+        research_ttl_seconds=60,
+        monotonic=lambda: monotonic[0],
+        wall_clock=lambda: wall_clock[0],
+    )
+
+    first = service.refresh_stock_risk(("600001",), NOW)
+    monotonic[0] = 61.0
+    wall_clock[0] = NOW + timedelta(seconds=61)
+    unchanged = service.refresh_stock_risk(("600001",), wall_clock[0])
+
+    assert first.changed_codes == ("600001",)
+    assert unchanged.completed_codes == ("600001",)
+    assert unchanged.changed_codes == ()
+
+
+def test_stock_risk_batch_deadline_keeps_completed_codes_and_defers_late_codes() -> None:
+    research = PartiallyBlockingStructuredResearchClient()
+    observed_at = datetime.now(timezone.utc)
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        research_client=research,
+        research_workers=2,
+        wall_clock=lambda: datetime.now(timezone.utc),
+    )
+    release_timer = threading.Timer(0.6, research.release.set)
+    release_timer.start()
+
+    try:
+        result = service.refresh_stock_risk(
+            ("600001", "600002"),
+            observed_at,
+            deadline=observed_at + timedelta(seconds=0.1),
+        )
+    finally:
+        research.release.set()
+        release_timer.cancel()
+
+    assert result.completed_codes == ("600001",)
+    assert result.deferred_codes == ("600002",)
+    assert result.deadline_reached is True
+    assert ("600001", True) in service.research.entries()
+    assert ("600002", True) not in service.research.entries()
+
+
+def test_stock_risk_batch_deadline_discards_only_late_result() -> None:
     research = BlockingStructuredResearchClient()
     observed_at = datetime.now(timezone.utc)
     service = _service(
@@ -4600,16 +4668,18 @@ def test_stock_risk_batch_deadline_is_controlled_and_discards_late_result() -> N
     release_timer.start()
 
     try:
-        with pytest.raises(MarketDataDeadlineExceededError, match="deadline"):
-            service.refresh_stock_risk(
-                ("600001",),
-                observed_at,
-                deadline=observed_at + timedelta(seconds=0.01),
-            )
+        result = service.refresh_stock_risk(
+            ("600001",),
+            observed_at,
+            deadline=observed_at + timedelta(seconds=0.01),
+        )
     finally:
         research.release.set()
         release_timer.cancel()
 
+    assert result.completed_codes == ()
+    assert result.deferred_codes == ("600001",)
+    assert result.deadline_reached is True
     assert service.health()["research_last_error"] == "research_batch_deadline"
     assert service.research.entries() == {}
 
@@ -4943,6 +5013,22 @@ class BlockingStructuredResearchClient:
     def fetch_snapshot(self, _code, *, observed_at):
         self.release.wait(2.0)
         return ResearchObservation(announcements_available=True)
+
+
+class PartiallyBlockingStructuredResearchClient:
+    def __init__(self) -> None:
+        self.release = threading.Event()
+
+    def fetch_snapshot(self, code, *, observed_at):
+        if code == "600002":
+            self.release.wait(2.0)
+        return ResearchObservation(
+            announcements_available=True,
+            corporate_risk_history_complete=True,
+            corporate_risk_registry_version=f"registry:{code}",
+            pledge_ratio_pct=0.0,
+            unlock_ratio_pct=0.0,
+        )
 
 
 class StaticIntradayClient:

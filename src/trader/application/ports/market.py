@@ -27,6 +27,76 @@ class MarketDataDeadlineExceededError(MarketDataUnavailableError):
     """A deadline-bound market-data operation exhausted its budget."""
 
 
+@dataclass(frozen=True)
+class ResearchRefreshResult:
+    requested_codes: tuple[str, ...] = ()
+    completed_codes: tuple[str, ...] = ()
+    changed_codes: tuple[str, ...] = ()
+    partial_codes: tuple[str, ...] = ()
+    failed_codes: tuple[str, ...] = ()
+    deferred_codes: tuple[str, ...] = ()
+    covered_codes: tuple[str, ...] = ()
+    data_version: str = ""
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    deadline_reached: bool = False
+
+    def __post_init__(self) -> None:
+        groups = _research_result_code_groups(self)
+        _validate_research_result_codes(groups)
+        _validate_research_result_outcomes(self, groups)
+        _validate_research_result_times(self)
+
+
+def _research_result_code_groups(result: ResearchRefreshResult) -> tuple[tuple[str, ...], ...]:
+    return (
+        result.requested_codes,
+        result.completed_codes,
+        result.changed_codes,
+        result.partial_codes,
+        result.failed_codes,
+        result.deferred_codes,
+        result.covered_codes,
+    )
+
+
+def _validate_research_result_codes(groups: tuple[tuple[str, ...], ...]) -> None:
+    if any(
+        len(group) != len(set(group)) or any(len(code) != 6 or not code.isdigit() for code in group) for group in groups
+    ):
+        raise ValueError("research refresh codes must be unique normalized six-digit codes")
+
+
+def _validate_research_result_outcomes(
+    result: ResearchRefreshResult,
+    groups: tuple[tuple[str, ...], ...],
+) -> None:
+    requested = set(result.requested_codes)
+    if any(not set(group) <= requested for group in groups[1:]):
+        raise ValueError("research refresh outcomes must be subsets of requested codes")
+    completed = set(result.completed_codes)
+    failed = set(result.failed_codes)
+    deferred = set(result.deferred_codes)
+    if completed & failed or completed & deferred or failed & deferred:
+        raise ValueError("research refresh terminal outcome groups must not overlap")
+    if not set(result.changed_codes) <= completed:
+        raise ValueError("research refresh changed codes must be completed")
+    if not set(result.partial_codes) <= completed or not set(result.covered_codes) <= completed:
+        raise ValueError("research refresh coverage groups must be completed")
+    if set(result.partial_codes) & set(result.covered_codes):
+        raise ValueError("research refresh partial and covered groups must not overlap")
+
+
+def _validate_research_result_times(result: ResearchRefreshResult) -> None:
+    if (result.started_at is None) != (result.completed_at is None):
+        raise ValueError("research refresh timestamps must be provided together")
+    for value in (result.started_at, result.completed_at):
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("research refresh timestamps must be timezone-aware")
+    if result.started_at is not None and result.completed_at is not None and result.completed_at < result.started_at:
+        raise ValueError("research refresh completion cannot precede start")
+
+
 class DataPlaneChannel(str, Enum):
     DAILY_FEATURES = "daily_features"
     MARKET = "market"
@@ -173,7 +243,7 @@ class ResearchReaderPort(Protocol):
 
     def refresh_stock_risk(
         self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None
-    ) -> None: ...
+    ) -> ResearchRefreshResult: ...
 
 
 class ReferenceDataPort(Protocol):

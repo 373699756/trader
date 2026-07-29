@@ -8,7 +8,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from flask import Flask
 
@@ -81,6 +80,7 @@ from trader.infra.persistence.tomorrow_shadow_evidence import (
     TomorrowShadowEvidenceUnavailableError,
 )
 from trader.infra.persistence.writer import SnapshotRepository
+from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.settings import (
     LongWatchlist,
     RuntimeSettings,
@@ -92,8 +92,6 @@ from trader.infra.settings import (
 from trader.web import create_app
 from trader.web.route_services import TomorrowWebServices
 from trader.web.routes import WebApiConfig
-
-SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
@@ -110,6 +108,7 @@ class ApplicationSystem:
     state: RuntimeState
     market_cache: BoundedLruCache[object]
     history_pool: BoundedExecutor
+    research_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry
     tomorrow_shadow_worker: TomorrowShadowWorker | None = None
     tomorrow_shadow_runtime: TomorrowShadowRuntime | None = None
@@ -117,10 +116,14 @@ class ApplicationSystem:
     def start(self) -> bool:
         shadow_started = self.tomorrow_shadow_worker.start() if self.tomorrow_shadow_worker is not None else False
         history_started = False
+        research_started = False
         try:
             history_started = self.history_pool.start()
+            research_started = self.research_pool.start()
             started = self.supervisor.start()
         except BaseException:
+            if research_started:
+                self.research_pool.stop(wait=True, cancel_futures=True)
             if history_started:
                 self.history_pool.stop(wait=True, cancel_futures=True)
             if shadow_started and self.tomorrow_shadow_worker is not None:
@@ -131,6 +134,8 @@ class ApplicationSystem:
             raise
         if not started and history_started:
             self.history_pool.stop(wait=True, cancel_futures=True)
+        if not started and research_started:
+            self.research_pool.stop(wait=True, cancel_futures=True)
         if not started and shadow_started and self.tomorrow_shadow_worker is not None:
             self.tomorrow_shadow_worker.stop(
                 wait=True,
@@ -145,22 +150,13 @@ class ApplicationSystem:
         self.supervisor.stop()
         self.source_lanes.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
         self.history_pool.stop(wait=True, cancel_futures=True)
+        self.research_pool.stop(wait=True, cancel_futures=True)
         if self.tomorrow_shadow_worker is not None:
             self.tomorrow_shadow_worker.stop(
                 wait=True,
                 timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds,
             )
         self.market_cache.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
-
-
-@dataclass(frozen=True)
-class _WorkerContext:
-    data_pool: BoundedExecutor
-    history_pool: BoundedExecutor
-    persistence_pool: BoundedExecutor
-    source_lanes: SourceLaneRegistry
-    json_writer: RuntimeJsonWriter
-    market_cache: BoundedLruCache[object]
 
 
 @dataclass(frozen=True)
@@ -172,7 +168,7 @@ class _BuildContext:
     now: Callable[[], datetime]
     latency: LatencyWaterfall
     cadence_policy: CadencePolicy
-    workers: _WorkerContext
+    workers: RuntimeWorkerResources
 
 
 @dataclass(frozen=True)
@@ -274,13 +270,14 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         publication.state,
         workers.market_cache,
         workers.history_pool,
+        workers.research_pool,
         workers.source_lanes,
         publication.tomorrow_worker,
         publication.tomorrow_runtime,
     )
 
 
-def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) -> _WorkerContext:
+def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) -> RuntimeWorkerResources:
     urgent_worker_count = 1 if settings.pipeline.market_workers > 1 else 0
     data_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers + urgent_worker_count,
@@ -294,6 +291,11 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         queue_capacity=settings.market_data.candidate_pool_size,
         thread_name_prefix="history-data",
     )
+    research_pool = BoundedExecutor(
+        worker_count=settings.pipeline.market_workers,
+        queue_capacity=settings.market_data.candidate_pool_size,
+        thread_name_prefix="research-data",
+    )
     persistence_pool = BoundedExecutor(
         worker_count=1,
         queue_capacity=max(1, settings.pipeline.event_queue_size),
@@ -305,7 +307,15 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         cadence_seconds=settings.pipeline.cadence_seconds,
         wall_clock=_utc_now,
     )
-    return _WorkerContext(data_pool, history_pool, persistence_pool, source_lanes, json_writer, market_cache)
+    return RuntimeWorkerResources(
+        data_pool,
+        history_pool,
+        research_pool,
+        persistence_pool,
+        source_lanes,
+        json_writer,
+        market_cache,
+    )
 
 
 def _build_market_data(context: _BuildContext) -> MarketFeatureService:
@@ -381,7 +391,7 @@ def _build_market_data(context: _BuildContext) -> MarketFeatureService:
         long_research_policy=strategy.long_research,
         evidence_cache_dir=evidence_cache_dir,
         json_writer=workers.json_writer,
-        cancel_requested=lambda: source_lanes.is_stopped("akshare"),
+        cancel_requested=lambda: not workers.research_pool.is_running(),
     )
     tushare_client = TushareClient(
         token=settings.market_data.tushare.token if settings.market_data.tushare.enabled else "",
@@ -395,6 +405,15 @@ def _build_market_data(context: _BuildContext) -> MarketFeatureService:
     runner = MarketTaskRunner(
         worker_pool=data_pool,
         source_lanes=source_lanes,
+        cache=market_cache,
+        source_contract_versions=settings.market_data.source_contract_versions,
+        config_version=settings.config_version,
+        schema_version="market_snapshot_v15",
+        wall_clock=now,
+    )
+    research_runner = MarketTaskRunner(
+        worker_pool=workers.research_pool,
+        source_lanes=None,
         cache=market_cache,
         source_contract_versions=settings.market_data.source_contract_versions,
         config_version=settings.config_version,
@@ -420,7 +439,7 @@ def _build_market_data(context: _BuildContext) -> MarketFeatureService:
     )
     research = ResearchLoader(
         research_client,
-        runner,
+        research_runner,
         workers=settings.pipeline.market_workers,
         ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
         circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
@@ -546,7 +565,7 @@ def _build_publication(
         client_queue_size=settings.api.sse_client_queue_size,
         subscriber_limit=settings.api.sse_max_clients,
     )
-    clock = _ShanghaiClock(context.now)
+    clock = ShanghaiClock(context.now)
     tomorrow_queries = TomorrowDecisionQueries(
         tomorrow_decisions,
         tomorrow_repository,
@@ -768,14 +787,6 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-@dataclass(frozen=True)
-class _ShanghaiClock:
-    value: Callable[[], datetime]
-
-    def now(self) -> datetime:
-        return self.value().astimezone(SHANGHAI)
 
 
 __all__ = ["ApplicationSystem", "build_system"]

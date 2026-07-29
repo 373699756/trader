@@ -169,7 +169,7 @@
         '<col style="width:96px">',
         '<col style="width:190px">',
       ].join(""),
-      head: "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>本地 / 模型 / 扣分 / 最终</th><th>动作</th><th>原因</th></tr>",
+      head: "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>本地 / 模型 / 模型扣分 / 最终</th><th>动作</th><th>原因</th></tr>",
     };
   }
 
@@ -258,10 +258,10 @@
     const action = String(item.action || "unavailable");
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
     const deepseek = scores.deepseek_score == null ? "未复核" : number(scores.deepseek_score, 2);
-    const deepseekPenalty = scores.deepseek_score == null ? "未复核" : number(scores.deepseek_risk_penalty, 2);
+    const deepseekPenalty = number(scores.deepseek_risk_penalty, 2);
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
-      <td>${stock(item)}</td>
+      <td>${stock(item)}<span class="stock-code">${escapeHtml(researchStatus(item.research))}</span></td>
       <td>${number(item.price, 2)}</td>
       <td class="${change.className}">${change.text}</td>
       <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
@@ -474,6 +474,20 @@
     if (Array.isArray(item.risks) && item.risks.length > 0) {
       scoreParts.push('<h4 class="detail-subtitle">实际风险</h4>', riskList(item.risks));
     }
+    const research = item.research || {};
+    const researchComponents = research.components || {};
+    const researchParts = [
+      detailGrid([
+        ["总体状态", researchStatus(research)],
+        ["财务数据", researchComponentStatus(researchComponents.financial)],
+        ["公司公告 / 减持", researchComponentStatus(researchComponents.announcements)],
+        ["股权质押", researchComponentStatus(researchComponents.pledge)],
+        ["限售解禁", researchComponentStatus(researchComponents.unlock)],
+      ]),
+    ];
+    if (research.status !== "verified") {
+      researchParts.push(note("未获取的研究项不会猜测为无风险；已确认风险仍保留，动作按降级规则处理。", "warn"));
+    }
     if (downside) {
       scoreParts.push(
         '<h4 class="detail-subtitle">下行保护</h4>',
@@ -491,6 +505,7 @@
     return [
       section("推荐结论", conclusion),
       section("核心行情", detailGrid(marketValues) + marketNotes.join("")),
+      section("公司风险研究", researchParts.join("")),
       section("评分与风险", scoreParts.join("")),
     ].join("");
   }
@@ -545,6 +560,17 @@
       || ["timeout", "request_error", "request_failed", "empty_response", "invalid_response"].includes(error)
     ) return "调用失败：已回退本地评分";
     return "拒绝：响应未通过结构化校验";
+  }
+
+  function researchStatus(research) {
+    const status = research && research.status;
+    if (status === "verified") return "风险研究：已核";
+    if (status === "partial") return "风险研究：部分";
+    return "风险研究：未获取";
+  }
+
+  function researchComponentStatus(covered) {
+    return covered === true ? "已获取" : "未获取";
   }
 
   function reasonLabel(value) {

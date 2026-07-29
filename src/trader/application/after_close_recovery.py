@@ -229,6 +229,14 @@ def _rebuild_from_close(
 
     prepared: list[RecommendationSnapshot] = []
     codes = tuple(feature.quote.code for feature in candidates)
+    if codes and pipeline._offer_company_research(validation_at, codes):
+        wait_seconds = 40.0
+        if deadline is not None:
+            wait_seconds = min(
+                wait_seconds,
+                max(0.0, (deadline - shanghai_now(pipeline._now())).total_seconds()),
+            )
+        pipeline._await_company_research(wait_seconds)
     for strategy in strategies:
         try:
             with _close_stage(pipeline, f"strategy:{strategy.value}"):

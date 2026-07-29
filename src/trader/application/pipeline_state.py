@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 
 from trader.application.cadence import CadencePlanner, PipelineTask
@@ -27,6 +27,7 @@ from trader.application.ports.snapshots import (
 )
 from trader.application.ports.tomorrow import TomorrowNativeInputPort
 from trader.application.publisher import SnapshotPublisher
+from trader.application.research_coordination import ResearchCoordinator
 from trader.application.status import RuntimeState
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import FeatureSnapshot
@@ -73,7 +74,15 @@ class PipelineState:
     _persistence_pool: BoundedExecutor
     _latency: LatencyWaterfall
     _decision_execution_mode: str
+    _research_coordinator: ResearchCoordinator
 
     _freshness_status: Callable[..., Mapping[str, object]]
     _submit_overlay_event: Callable[[PipelineEvent], bool]
     _submit_long_quote_event: Callable[[PipelineEvent], bool]
+
+    def _offer_company_research(
+        self,
+        observed_at: datetime,
+        codes: Sequence[str] | None = None,
+    ) -> bool:
+        raise NotImplementedError

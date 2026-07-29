@@ -68,6 +68,7 @@ class PipelineStatusMixin(PipelineState):
         dependencies = {
             "decision_execution_mode": self._decision_execution_mode,
             "market_data": market_data,
+            "company_research": dict(self._research_coordinator.status()),
             "deepseek": deepseek_status,
             "event_queue": self._queue.status(),
             "worker_pools": worker_status(cast("RecommendationPipeline", self)),

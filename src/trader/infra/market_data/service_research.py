@@ -34,28 +34,15 @@ from trader.infra.market_data.market_cache_identity import (
 )
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_models import _ResearchEntry
+from trader.infra.market_data.service_research_models import (
+    ResearchLoaderStatus,
+    ResearchLoadReport,
+    research_component_coverage,
+)
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
-
-
-@dataclass(frozen=True)
-class ResearchLoaderStatus:
-    entries: int
-    success_count: int
-    error_count: int
-    planned_count: int
-    timeout_count: int
-    consecutive_failures: int
-    circuit_open: bool
-    latencies_ms: tuple[float, ...]
-    latest_source_time: datetime | None
-    last_error: str
-    out_of_order_count: int
-    corporate_risk_covered_count: int
-    corporate_risk_fact_count: int
-    corporate_risk_registry_versions: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -255,6 +242,17 @@ class ResearchLoader:
         observed_at: datetime,
         **options: Unpack[_ResearchLoadOptions],
     ) -> Mapping[str, ResearchObservation]:
+        report = self.load_report(codes, observed_at, **options)
+        if report.deadline_reached and report.deferred_codes:
+            raise MarketDataDeadlineExceededError("research preload exceeded its batch deadline")
+        return report.observations
+
+    def load_report(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        **options: Unpack[_ResearchLoadOptions],
+    ) -> ResearchLoadReport:
         request = _ResearchLoadRequest(
             tuple(codes),
             observed_at,
@@ -264,8 +262,11 @@ class ResearchLoader:
             options.get("action_restrictions"),
         )
         if self._client is None:
-            return {}
-        self._runner.ensure_before_deadline(request.deadline)
+            return ResearchLoadReport({})
+        try:
+            self._runner.ensure_before_deadline(request.deadline)
+        except MarketDataDeadlineExceededError:
+            return self._deadline_report(request)
         source_lanes = self._runner.source_lanes
         if source_lanes is not None and not source_lanes.owns_current_thread("akshare"):
             return self._load_via_source_lane(request)
@@ -274,7 +275,7 @@ class ResearchLoader:
     def _load_via_source_lane(
         self,
         request: _ResearchLoadRequest,
-    ) -> Mapping[str, ResearchObservation]:
+    ) -> ResearchLoadReport:
         source_lanes = self._runner.source_lanes
         assert source_lanes is not None
         identity = _source_batch_identity(
@@ -289,7 +290,7 @@ class ResearchLoader:
             "akshare",
             identity,
             request.observed_at,
-            self.load,
+            self.load_report,
             request.codes,
             request.observed_at,
             include_structured=request.include_structured,
@@ -302,20 +303,28 @@ class ResearchLoader:
         remaining = max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
         try:
             lane_result = lane_future.result(timeout=remaining)
-        except FutureTimeoutError as exc:
+        except FutureTimeoutError:
             lane_future.cancel()
             with self._lock:
                 self._error_count += 1
                 self._timeout_count += 1
                 self._last_error = "research_batch_deadline"
-            raise MarketDataDeadlineExceededError("research source lane exceeded its batch deadline") from exc
-        self._runner.ensure_before_deadline(request.deadline)
+            return self._deadline_report(request)
+        try:
+            self._runner.ensure_before_deadline(request.deadline)
+        except MarketDataDeadlineExceededError:
+            return ResearchLoadReport(
+                lane_result.observations,
+                changed_codes=lane_result.changed_codes,
+                deferred_codes=lane_result.deferred_codes,
+                deadline_reached=True,
+            )
         return lane_result
 
     def _load_local(
         self,
         request: _ResearchLoadRequest,
-    ) -> Mapping[str, ResearchObservation]:
+    ) -> ResearchLoadReport:
         now = self._monotonic()
         wall_now = self._runner.wall_clock()
         result = (
@@ -331,17 +340,45 @@ class ResearchLoader:
             )
         )
         state = _ResearchLoadState(request, result, {}, wall_now)
-        self._load_previous_research(state, now)
+        try:
+            self._load_previous_research(state, now)
+        except MarketDataDeadlineExceededError:
+            return self._deadline_report(request, result)
         self._mark_loaded_research_actionability(state)
         missing = [code for code in request.codes if request.force or code not in result]
         if not missing:
-            self._runner.ensure_before_deadline(request.deadline)
-            return result
+            return ResearchLoadReport(result)
         with self._lock:
             self._planned_count += len(missing)
-        self._fetch_missing_research(state, missing)
+        changed, deferred = self._fetch_missing_research(state, missing)
         self._trim_research_entries(request)
-        return result
+        return ResearchLoadReport(
+            result,
+            changed_codes=changed,
+            deferred_codes=deferred,
+            deadline_reached=bool(deferred),
+        )
+
+    def _deadline_report(
+        self,
+        request: _ResearchLoadRequest,
+        observations: Mapping[str, ResearchObservation] | None = None,
+    ) -> ResearchLoadReport:
+        available = dict(observations or {})
+        if not available:
+            available.update(
+                self.cached(
+                    request.codes,
+                    include_structured=request.include_structured,
+                    action_restrictions=request.action_restrictions,
+                )
+            )
+        deferred = tuple(code for code in request.codes if code not in available)
+        with self._lock:
+            self._error_count += len(deferred) or 1
+            self._timeout_count += len(deferred) or 1
+            self._last_error = "research_batch_deadline"
+        return ResearchLoadReport(available, deferred_codes=deferred, deadline_reached=True)
 
     def _load_previous_research(self, state: _ResearchLoadState, now: float) -> None:
         request = state.request
@@ -383,7 +420,7 @@ class ResearchLoader:
         self,
         state: _ResearchLoadState,
         missing: Sequence[str],
-    ) -> None:
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         request = state.request
         source_lanes = self._runner.source_lanes
         with borrow_executor(
@@ -403,17 +440,23 @@ class ResearchLoader:
                 else max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
             )
             completed, pending = wait(futures, timeout=timeout)
-            if pending:
+            completed_code_set = {futures[future] for future in completed}
+            completed_codes = tuple(code for code in missing if code in completed_code_set)
+            completed_by_code = {futures[future]: future for future in completed}
+            changed_codes: list[str] = []
+            for code in completed_codes:
+                future = completed_by_code[code]
+                if self._consume_research_future(state, futures[future], future, started_at[future]):
+                    changed_codes.append(code)
+            deferred = tuple(code for code in missing if code not in completed_by_code)
+            if deferred:
                 for future in pending:
                     future.cancel()
                 with self._lock:
-                    self._error_count += len(pending)
-                    self._timeout_count += len(pending)
+                    self._error_count += len(deferred)
+                    self._timeout_count += len(deferred)
                     self._last_error = "research_batch_deadline"
-                raise MarketDataDeadlineExceededError("research preload exceeded its batch deadline")
-            self._runner.ensure_before_deadline(request.deadline)
-            for future in completed:
-                self._consume_research_future(state, futures[future], future, started_at[future])
+            return tuple(changed_codes), deferred
 
     def _submit_research(
         self,
@@ -447,12 +490,11 @@ class ResearchLoader:
         code: str,
         future: Future[ResearchObservation],
         started_at: float,
-    ) -> None:
+    ) -> bool:
         request = state.request
         old_entry = state.previous.get(code)
         latency_ms = max(0.0, (self._monotonic() - started_at) * 1000.0)
         observation, ttl = self._resolve_research_result(future, old_entry, latency_ms)
-        self._runner.ensure_before_deadline(request.deadline)
         state.result[code] = observation
         self._mark_research_actionability(
             _ResearchActionScope(
@@ -463,17 +505,14 @@ class ResearchLoader:
             ),
             observation,
         )
-        self._runner.ensure_before_deadline(request.deadline)
         self._update_research_memory_cache(code, request.include_structured, observation, request.observed_at)
-        self._runner.ensure_before_deadline(request.deadline)
         self._write_research_cache(code, request.include_structured, observation, ttl, state.wall_now)
-        self._runner.ensure_before_deadline(request.deadline)
         with self._lock:
-            self._runner.ensure_before_deadline(request.deadline)
             self._entries[(code, request.include_structured)] = _ResearchEntry(
                 observation,
                 self._monotonic() + ttl,
             )
+        return old_entry is None or _research_data_version(old_entry.observation) != _research_data_version(observation)
 
     def _resolve_research_result(
         self,
@@ -696,7 +735,8 @@ class ResearchLoader:
 
     def status(self) -> ResearchLoaderStatus:
         with self._lock:
-            observations = tuple(entry.observation for entry in self._entries.values())
+            observations = tuple(entry.observation for (code, structured), entry in self._entries.items() if structured)
+            coverage = tuple(research_component_coverage(observation) for observation in observations)
             return ResearchLoaderStatus(
                 entries=len(self._entries),
                 success_count=self._success_count,
@@ -722,6 +762,13 @@ class ResearchLoader:
                         }
                     )
                 ),
+                verified_count=sum(all(item) for item in coverage),
+                partial_count=sum(any(item) and not all(item) for item in coverage),
+                unavailable_count=sum(not any(item) for item in coverage),
+                financial_covered_count=sum(item[0] for item in coverage),
+                announcements_covered_count=sum(item[1] for item in coverage),
+                pledge_covered_count=sum(item[2] for item in coverage),
+                unlock_covered_count=sum(item[3] for item in coverage),
             )
 
     def entries(self) -> Mapping[tuple[str, bool], _ResearchEntry]:
@@ -733,4 +780,4 @@ class ResearchLoader:
         return self._client
 
 
-__all__ = ["ResearchLoader", "ResearchLoaderStatus"]
+__all__ = ["ResearchLoader"]

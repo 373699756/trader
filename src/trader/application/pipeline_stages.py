@@ -43,7 +43,6 @@ from trader.application.pipeline_market_tasks import (
     _refresh_intraday_tail_before_score,
     _refresh_market_news_on_workers,
     _refresh_reference_data_on_workers,
-    _refresh_stock_risk_on_workers,
     _run_market_data_task,
 )
 from trader.application.pipeline_workers import (
@@ -289,9 +288,7 @@ def _handle_stock_risk(
     phase: MarketPhase,
     event: PipelineEvent,
 ) -> tuple[RecommendationSnapshot, ...]:
-    _refresh_stock_risk_on_workers(pipeline, now, event.deadline)
-    if pipeline._decision_execution_mode == "versioned_dag":
-        _submit_triggered_score(pipeline, event)
+    pipeline._offer_company_research(now)
     return ()
 
 
