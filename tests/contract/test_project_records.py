@@ -97,6 +97,7 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
         "reports/solid-state-watchlist-merge-2026-07-25.md",
     }
     assert set(documents) == {
+        "V2.md",
         "recommendation-strategy.md",
         "score.md",
         "software-business-design.md",
@@ -107,12 +108,17 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     design = (docs_root / "software-business-design.md").read_text(encoding="utf-8")
     report = (docs_root / "reports/pipeline-a1-baseline.md").read_text(encoding="utf-8")
     score_plan = (docs_root / "score.md").read_text(encoding="utf-8")
+    v2_plan = (docs_root / "V2.md").read_text(encoding="utf-8")
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
     assert "状态：待执行、非生产契约" in score_plan
     assert "`docs/recommendation-strategy.md`" in score_plan
     assert "不自行切换活动策略" in score_plan
+    assert "状态：待执行、非生产契约" in v2_plan
+    assert "`docs/software-business-design.md`" in v2_plan
+    assert "`docs/recommendation-strategy.md`" in v2_plan
+    assert "`docs/V2.md` 是用户明确保留的 V2 唯一产品迁移草案" in design
     assert "最多为 60 个不同交易日" in score_plan
     assert "硬过滤失败股票不保存" in score_plan
     assert "已实施实时与降级基线" in design
