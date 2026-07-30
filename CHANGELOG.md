@@ -6,6 +6,26 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 本批完成 `P5：历史特征仓库和 BaoStock 校验` 章节收口：`HistoryCache` 增加
+  `history_data_plane` 注入与恢复方法 `recover_from_data_plane()`，重放 61 日完整样本窗口并修复
+  20 日内存保留上下文；`ReferenceLoader` 在刷新后持久化 `security_master` 与交易日历游标。
+
+- 本批把 `P6：公司风险登记簿和 CNInfo 增量链` 启动。`ResearchLoader` 增加风险组件
+  分组件状态持久化与恢复，支持 structured news 下对财务/公告/质押/解禁等关键组件的 `known_clear`、
+  `known_risk`、`unknown`、`stale` 回填；`bootstrap_data_plane` 恢复链路加入研究恢复分支，且 news
+  流程不写入 risk evidence。该里程碑实现了风险组件持久化与恢复，但 `CNInfo` 历史分批回填、
+  公告唯一键、增量游标及交易所公告交叉校验仍未完成，按下一完整章节继续。
+
+- 本批 P4 交付（`docs/V2_plan.md`）完成“证券主数据和交易日历”运行闭环：新增
+  `src/trader/application/ports/data_plane.py`、`src/trader/infra/persistence/data_plane_sqlite.py`、
+  `src/trader/infra/persistence/data_plane.py` 与 `ReferenceLoader` 数据平面恢复与持久化接入；
+  同步新增回归测试 `tests/unit/infra/test_data_plane.py`、`tests/unit/test_data_plane_migration.py`、
+  `tests/component/test_v2_market_data.py`、`tests/contract/test_v2_bootstrap.py`。
+
+- 本批继续 `V2_plan` 未完成章节：完成 P3 持久化、迁移和恢复骨架，新增
+  `src/trader/application/ports/data_plane.py`、`src/trader/infra/persistence/data_plane_sqlite.py`、
+  `src/trader/infra/persistence/data_plane.py`。
+
 - P2 章开始落地字段级质量模型：新增 `src/trader/domain/market/quality.py`（字段级质量/血缘域模型）、
   `src/trader/infra/market_data/field_quality.py`（字段白名单、同源更新、跨源优先级、冲突与降级状态的
   纯函数选择器）以及回归测试 `tests/unit/test_v2_market_data_field_quality.py`。
@@ -312,6 +332,21 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- `docs/V2_plan.md` 的 P5 章节状态更新为“已完成”，并补充本批 `2026-07-30` 交付项：
+  历史特征恢复、交易日历游标恢复及持久化失效隔离。
+
+- `docs/V2_plan.md` 的 P6 章节状态从“未开始”更新为“进行中”；新增本批交付说明：
+  `ResearchLoader` 风险组件状态恢复与持久化、启动初始化研究恢复链路、新闻与结构化风险持久化边界。
+- `docs/V2_plan.md` 的 P6 章节在 `2026-07-30` 增补第一里程碑结论：已将风险组件持久化纳入
+  可追溯交付边界，并明确本批未完成 `CNInfo` 增量链与公告交叉校验的依赖条件。
+
+- `bootstrap.py` 与 `service_tushare.py` 完成 P4 数据平面接入：`MarketFeatureService` 的
+  `ReferenceLoader` 由启动时可恢复的 `DataPlaneRepository` 提供最近有效主数据与交易日历；
+  启动恢复异常仅记录警告、不阻塞应用。
+
+- `docs/V2_plan.md` 的 P3 章节状态从“未开始”更新为“已完成”；补充本批 `2026-07-30` 交付项，
+  明确数据平面仓储端口、版本化 SQLite schema 与 staged/committed 恢复流程边界。
 
 - P2 章从“未开始”更新为“已完成”；`docs/V2.md` 与 `docs/V2_plan.md` 的批次状态、产能边界与未开始
   章节计数保持一致，`tests/contract/test_project_records.py` 与 `tests/contract/test_v2_source_capability.py`
@@ -727,6 +762,23 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 `ReferenceLoader._refresh_tushare_reference_data` 在 `listing_dates` 为空时未定义
+  `valuation_observations/financial_observations` 导致的 `UnboundLocalError`，并保留回放
+  行为的幂等输出。
+
+- 修复 `ResearchLoader` 风险组件恢复覆盖中的两个边界问题：修正状态读取时的无效载荷处理，
+  并修复持久化记录构造中的重复字段问题，避免写入失败导致组件覆盖链路中断；`status()` 改为
+  结构化样本的组件覆盖计数。
+- 固定 P5 历史特征恢复与写入降级行为：`HistoryCache` 与 `ReferenceLoader`
+  在数据平面不可用时仅记录告警并继续返回已可用历史/行情；单条恢复记录反序列化失败则
+  跳过，不使单券历史加载或启动恢复失败。
+- 修复 `DataPlaneRepository._load_records` 的 `ORDER BY` 使用未定义字段列表函数导致 `NameError`
+  的恢复路径中断问题，保障启动恢复与 cursor 读取的稳定性。
+
+- P3 数据平面恢复路径修复：`DataPlaneRepository._load` 与 `_recover_staged_row`
+  不再因单条 `committed` 损坏记录抛异常导致批处理中断；改为按条隔离为
+  `quarantined` 并写入恢复审计，保留最近有效快照可读性与可追溯性。
+
 - 修复 `PLR0913`（函数参数过多）引起的重构质量闸门告警：`field_quality._apply_new_selection`
   改为状态容器参数版本，`scripts/check_refactor_quality.py` 重新回归零诊断；`make type-check` 也通过。
 
@@ -1060,6 +1112,32 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 本批专项验证：`./.venv/bin/pytest -q tests/component/test_v2_market_data.py tests/contract/test_v2_bootstrap.py tests/contract/test_project_records.py tests/unit/infra/test_data_plane.py tests/unit/test_data_plane_migration.py`
+  全部通过；`./.venv/bin/ruff check` 与 `./.venv/bin/mypy` 对新增/修改模块全部通过。
+
+- 本批专项回归新增：
+  `tests/component/test_v2_market_data.py::test_research_loader_recover_from_data_plane_overrides_component_statuses`
+  、`tests/component/test_v2_market_data.py::test_news_research_does_not_persist_risk_components`
+  、`tests/component/test_v2_market_data.py::test_research_data_plane_persistence_unavailable_does_not_block_research_load`
+  与 `tests/contract/test_v2_bootstrap.py::test_reference_data_plane_recovery_initializes_data_plane_and_loader`
+  等。
+
+- P4 交付本地验证：执行
+  `pytest -q tests/unit/infra/test_data_plane.py tests/unit/test_data_plane_migration.py tests/component/test_v2_market_data.py tests/contract/test_v2_bootstrap.py tests/contract/test_project_records.py`
+  全部通过。
+- 本批专项复核：`tests/contract/test_v2_bootstrap.py` 覆盖启动初始化顺序与非阻塞恢复；
+  `tests/component/test_v2_market_data.py` 覆盖 `ReferenceLoader` 恢复回放与数据源不可用隔离；
+  `tests/contract/test_project_records.py` 覆盖未开始章节计数与文档计数一致性。
+
+- 本批新增并复核：`tests/component/test_v2_market_data.py::test_research_loader_recover_from_data_plane_overrides_component_statuses`、
+  `tests/component/test_v2_market_data.py::test_news_research_does_not_persist_risk_components` 与
+  `tests/component/test_v2_market_data.py::test_research_data_plane_persistence_unavailable_does_not_block_research_load`，
+  验证了 P6 第一期风险组件持久化、news 非持久化及持久化降级行为；`make format-check`、
+  `make lint`、`make type-check`、`make test`、`make package` 在本批已全部通过。
+
+- 本批新增 `tests/unit/test_data_plane_migration.py` 与 `tests/unit/infra/test_data_plane.py`（8 项）
+  全部通过；`./.venv/bin/ruff check`、`./.venv/bin/mypy`（覆盖本批新增 5 个文件）也全部通过。
 
 - 本批验证范围：`tests/unit/test_v2_market_data_field_quality.py`（11 项）、`tests/contract/test_v2_source_capability.py`、
   `tests/contract/test_project_records.py` 与 `tests/unit/test_v2_market_data_merge.py`（含旧 merge 兼容回归）；
@@ -1799,6 +1877,21 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- P5 仍有边界未完成：BaoStock 对历史完整性与价格一致性未接入正式评估链，`history_data_plane`
+  回放依赖 `tushare`/历史缓存窗口可用性；若无数据源与持久化可达性，历史加载将降级为可用来源回退而不阻断。
+
+- `P6` 仅完成了风险状态的分组件持久化与启动恢复，`CNInfo` 正式历史回灌、组件证据唯一键治理及
+  风险刷新调度优先级仍未完成；失败时依旧依赖 `DeepSeek` 之外的本地规则与现有降级策略。
+
+- P4 交付仍保留边界：本批不切换 production today/tomorrow/d25 读写指针，
+  也不包含交易所官方主数据、交易所公告或风险证据链的完整实现；后续章节(P5/P6/P7)
+  仍需接入并验证更多来源与生产化回放路径。
+
+- P3 目前仅完成持久化底座和恢复测试回归，未接入生产 `bootstrap.py` 依赖图；到现有
+  读取链路前仍需由后续批次实现具体仓储读取、写入点时机和回写策略，避免提前扩大面。
+- 该批为本地 SQLite 持久化能力建立最小闭环，未做旧运行库/历史数据库的并行写迁移测试；
+  旧 `.runtime` 数据库读写仍采用已有路径验证，P3 的新仓储需在后续迁移批次完成线上接入评估。
 
 - 本批 `make test` 仍有 2 项既有失败（`test_graceful_shutdown` 超时关闭与 `RuntimeSupervisor` 线程清理）
   与本批字段质量改动无关；`make package` 在当前沙箱环境下受网络代理限制而失败，需要获得可访问

@@ -314,7 +314,7 @@ schema。
 
 ## 9. P3：V2 持久化、迁移和恢复骨架
 
-状态：未开始，依赖 P2
+状态：已完成，依赖 P2
 
 ### 目标
 
@@ -338,9 +338,42 @@ schema。
 - `create_app()` 仍不打开数据库或写文件。
 - V2 数据不会写入旧运行库；旧库只读回退可验证。
 
+### 2026-07-30 交付完成
+
+- 新增应用层数据平面端口与记录：
+  - `src/trader/application/ports/data_plane.py`
+    - 新增 `DataPlaneRecord` 与 `SecurityMasterRecord` / `HistoricalFeatureRecord` /
+      `RiskEvidenceRecord` / `SourceCursorRecord`。
+    - 新增仓储端口、冲突/不可用异常与恢复汇总值。
+- 新增 `infra/persistence` 数据平面骨架与迁移：
+  - `src/trader/infra/persistence/data_plane_sqlite.py`：带版本号、`schema_meta`
+    与 8 套表的初始化 SQL。
+  - `src/trader/infra/persistence/data_plane.py`：实现四族表的幂等写入、
+    staged->committed 写入路径、单条恢复、损坏记录隔离与审计。
+- 新增回归：`tests/unit/test_data_plane_migration.py` 覆盖 schema 初始化、
+  旧库升级、无效版本修复；`tests/unit/infra/test_data_plane.py` 覆盖读写闭环、
+  formal 冲突、损坏提交隔离与回收恢复。
+- 本批本地验收已完成：数据平面新增/恢复路径的单元测试均通过；当前实现暂未接入
+  `bootstrap.py` 与现有生产读写指针，遵循“先建底座后接入”原则。
+
 ## 10. P4：证券主数据和交易日历
 
-状态：未开始，依赖 P3
+状态：已完成，依赖 P3
+
+### 2026-07-30 交付完成
+
+- 通过 P3 已建立的数据平面仓储，`ReferenceLoader` 已接入 `DataPlaneRepository`：
+  - 每日按 `security_master` 与 `trading_calendar` 拉取结果写入 `v2-data.sqlite3` 最近有效区；
+  - 启动恢复时先初始化数据平面，再恢复近似快照至行情引用层，缺失或不可用时仅降级；
+  - 关键异常（含数据库不可用）不阻塞启动。
+- 本批回归：
+  - `tests/unit/infra/test_data_plane.py`、`tests/unit/test_data_plane_migration.py` 覆盖数据平面读写、
+    recovery 与 staged→committed 流程；
+  - `tests/component/test_v2_market_data.py` 新增 `ReferenceLoader` 重放恢复与
+    `DataPlaneUnavailableError` 隔离回归；
+  - `tests/contract/test_v2_bootstrap.py` 补充启动初始化器异常隔离回归。
+- 状态边界：本批不实现交易所官方适配器或官方级交易所/交易所来源校验，仍以现有
+  Tushare 回灌主数据为本节最小闭环；官方来源、停复牌、正式身份校验继续留待后续批次实现。
 
 ### 目标
 
@@ -365,7 +398,21 @@ schema。
 
 ## 11. P5：历史特征仓库和 BaoStock 校验
 
-状态：未开始，依赖 P3-P4
+状态：已完成，依赖 P3-P4
+
+### 2026-07-30 交付完成
+
+- 历史特征加载从 `HistoryCache` 改为持久化优先：启动与 on-demand 加载会优先从
+  `DataPlaneRepository` `historical_feature_recent` 还原 20 条近效内存窗口，并在存在
+  61 条样本上下文时恢复统计上下文与趋势向量完整性，冷启动失败回退到可用上游行情。
+- `ReferenceLoader` 每次 Tushare 刷新后将 `security_master` 与交易日历游标持久化到
+  数据平面，启动时恢复最新快照与游标；恢复失败仅记录告警，不阻塞启动与 local。
+- 历史特征新增序列化写入与版本校验：`history_data_plane` 成功时把每条历史 K 线
+  （至多 61 天）写入数据平面；写失败不影响 `history.load` 返回与当天评分（降级策略）。
+- 本批回归新增并稳定：`tests/component/test_v2_market_data.py`（`HistoryCache.recover_from_data_plane`
+  与持久化失效隔离）、`tests/contract/test_v2_bootstrap.py`（启动恢复顺序与失败隔离）、
+  以及数据平面回归（`tests/unit/infra/test_data_plane.py`、`tests/unit/test_data_plane_migration.py`）
+  覆盖历史与仓储恢复边界。
 
 ### 目标
 
@@ -391,7 +438,30 @@ schema。
 
 ## 12. P6：公司风险登记簿和 CNInfo 增量链
 
-状态：未开始，依赖 P3-P4
+状态：进行中（第一里程碑：风险组件持久化），依赖 P3-P4
+
+### 2026-07-30 进行中（第一里程碑）
+
+- 为 `ResearchLoader` 新增风险组件持久化与恢复链路：新增 `risk-component:*` 风险证据落盘，
+  支持 `known_clear`、`known_risk`、`unknown`、`stale` 四态覆盖的财务/公告/质押/解禁等组件状态回填；
+  支持启动时从 `DataPlaneRepository` 恢复单券分组件状态并用于 `status()` 覆盖/汇总。
+- `bootstrap_data_plane` 初始化链路升级为恢复研究状态：`DataPlaneRepository` 初始化后依次恢复
+  `ReferenceLoader`、`HistoryCache`、`ResearchLoader`，并保持任何阶段数据平面异常仅告警不阻塞启动。
+- `MarketFeatureService` 的研究构建器补齐 `DataPlaneRepository` 注入，结构化新闻请求才写入风险组件；
+  news 模式不落库，DataPlane 写入失败仍继续本地评分与刷新。
+- 回归新增：`tests/component/test_v2_market_data.py` 增加研究恢复覆盖重建、news 模式非持久化、写入不可用降级回归；
+  `tests/contract/test_v2_bootstrap.py` 覆盖启动初始化链路回放与失败不阻塞场景。
+- 本批未完成项：
+  - 未开始 `CNInfo` 历史分批回填、公告唯一键与增量游标持久化。
+  - 未完成交易所公告交叉校验链，AKShare 仍只作为公共底层适配器入口。
+  - 未完成风险组件按公告/处罚/诉讼/停复牌等完整边界的全量组件扩充。
+
+### 本批里程碑结论
+
+- 本里程碑已将风险证据状态从“每次运行临时计算”转为“持久化、可恢复、可审计”的结构化状态，
+  并保证 DataPlane 写入退化不阻塞冷启动和发布。
+- `P7` 继续依赖本章完成；本章进入“继续进行中：CNInfo 增量链”状态，不能在未完成第 3~4 步
+  前推进到下一批生产读写切换。
 
 ### 目标
 
