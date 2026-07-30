@@ -8,7 +8,12 @@ from unittest.mock import Mock
 import pytest
 
 from trader.application.tomorrow_shadow_runtime import ShadowObservingSnapshotIndex
-from trader.bootstrap import ApplicationSystem, _initialize_tomorrow_evidence, build_system
+from trader.bootstrap import (
+    ApplicationSystem,
+    _initialize_reference_data_plane,
+    _initialize_tomorrow_evidence,
+    build_system,
+)
 from trader.infra.persistence.tomorrow_shadow_evidence import TomorrowShadowEvidenceUnavailableError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -85,6 +90,34 @@ def test_evidence_recovery_failure_blocks_cutover_without_blocking_startup() -> 
     _initialize_tomorrow_evidence(publication)
 
     publication.tomorrow_gate.mark_evidence_failure.assert_called_once_with()
+
+
+def test_reference_data_plane_recovery_initializes_data_plane_and_loader() -> None:
+    market_data = Mock()
+    market_data.history = Mock()
+    market_data.research = Mock()
+    data_plane = Mock()
+
+    _initialize_reference_data_plane(market_data, data_plane)
+
+    data_plane.initialize.assert_called_once_with()
+    assert market_data.references.recover.call_count == 1
+    assert market_data.history.recover_from_data_plane.call_count == 1
+    assert market_data.research.recover_from_data_plane.call_count == 1
+
+
+def test_reference_data_plane_recovery_fails_openly_without_blocking_startup() -> None:
+    market_data = Mock()
+    data_plane = Mock()
+    market_data.research = Mock()
+    market_data.references.recover.side_effect = RuntimeError("recover failed")
+    data_plane.initialize.side_effect = RuntimeError("db unavailable")
+
+    _initialize_reference_data_plane(market_data, data_plane)
+
+    data_plane.initialize.assert_called_once_with()
+    market_data.references.recover.assert_not_called()
+    market_data.research.recover_from_data_plane.assert_not_called()
 
 
 def test_duplicate_system_start_does_not_stop_running_history_pool() -> None:

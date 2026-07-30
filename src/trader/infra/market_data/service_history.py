@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import logging
+import math
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, as_completed, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import date, datetime, time
-from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar, cast
+from typing import TYPE_CHECKING, ParamSpec, Protocol, TypedDict, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.application.cache import CacheIdentity
+from trader.application.ports.data_plane import DataPlaneUnavailableError, HistoricalFeatureRecord
 from trader.application.ports.market import MarketDataDeadlineExceededError
+from trader.application.ports.types import JsonObject
 from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.history import (
@@ -38,6 +42,18 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _HISTORY_SOURCE_LANE = "history"
+_HISTORY_CACHE_RETENTION_DAYS = 20
+_HISTORY_CACHE_LOOKBACK_DAYS = 61
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class _HistoryDataPlane(Protocol):
+    def save_historical_feature_recent(self, record: HistoricalFeatureRecord) -> None: ...
+
+    def load_historical_feature_recent_records(
+        self, codes: Sequence[str] | None = None
+    ) -> tuple[HistoricalFeatureRecord, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -67,6 +83,7 @@ class _HistoryLoadState:
     previous: dict[str, _HistoryEntry]
     cache_observed_at: datetime | None
     pending_entries: dict[str, _HistoryEntry]
+    pending_full_entries: dict[str, tuple[DailyBar, ...]]
 
 
 class HistoryCacheOptions(TypedDict):
@@ -74,6 +91,7 @@ class HistoryCacheOptions(TypedDict):
     workers: int
     ttl_seconds: float
     capacity: int
+    history_data_plane: _HistoryDataPlane | None
     monotonic: Callable[[], float]
 
 
@@ -91,6 +109,7 @@ class HistoryCache:
         self._history_ttl_seconds = max(60.0, options["ttl_seconds"])
         self._history_cache_limit = max(1, options["capacity"])
         self._monotonic = options["monotonic"]
+        self._history_data_plane = options["history_data_plane"]
         self._lock = threading.Lock()
         self._history: dict[str, _HistoryEntry] = {}
         self._history_error_count = 0
@@ -171,7 +190,7 @@ class HistoryCache:
         if not missing:
             self._runner.ensure_before_deadline(request.deadline)
             return result
-        state = _HistoryLoadState(request, result, previous, cache_observed_at, {})
+        state = _HistoryLoadState(request, result, previous, cache_observed_at, {}, {})
         self._fetch_missing_history(state, missing)
         self._mark_non_actionable_history(state)
         return result
@@ -238,7 +257,7 @@ class HistoryCache:
             old_entry = self._history.get(code) or state.previous.get(code)
         used_fallback = False
         try:
-            bars = tuple(sorted(future.result(), key=lambda item: item.trade_date))[-61:]
+            bars = tuple(sorted(future.result(), key=lambda item: item.trade_date))[-_HISTORY_CACHE_LOOKBACK_DAYS:]
         except Exception:
             bars = ()
             with self._lock:
@@ -257,7 +276,11 @@ class HistoryCache:
             bars = old_entry.bars
             used_fallback = True
         context = old_entry.context if used_fallback and old_entry is not None else build_history_context(bars)
-        retained = bars[-20:]
+        retained = bars[-_HISTORY_CACHE_RETENTION_DAYS:]
+        if used_fallback:
+            state.pending_full_entries.pop(code, None)
+        else:
+            state.pending_full_entries[code] = bars
         state.result[code] = retained
         self._cache_history_result(state, code, retained, used_fallback)
         state.pending_entries[code] = _HistoryEntry(
@@ -290,6 +313,7 @@ class HistoryCache:
 
     def _commit_history_entries(self, state: _HistoryLoadState) -> None:
         self._runner.ensure_before_deadline(state.request.deadline)
+        persist_candidates: list[tuple[str, tuple[DailyBar, ...], _HistoryEntry]] = []
         with self._lock:
             self._runner.ensure_before_deadline(state.request.deadline)
             for code, incoming in tuple(state.pending_entries.items()):
@@ -303,8 +327,16 @@ class HistoryCache:
                         self._history_out_of_order_count += 1
                     state.pending_entries[code] = current
                     state.result[code] = current.bars
+                    state.pending_full_entries.pop(code, None)
             self._history.update(state.pending_entries)
             self.trim(set(state.request.codes))
+            for code, incoming in state.pending_entries.items():
+                full_bars = state.pending_full_entries.get(code)
+                if full_bars:
+                    persist_candidates.append((code, full_bars, incoming))
+            state.pending_full_entries.clear()
+        for code, bars, entry in persist_candidates:
+            self._persist_history_bars(code, bars, entry.context, entry.expires_at, entry.source)
 
     def _mark_non_actionable_history(self, state: _HistoryLoadState) -> None:
         cache = self._runner.cache
@@ -432,22 +464,100 @@ class HistoryCache:
         source: str,
     ) -> None:
         expires_at = self._monotonic() + self._history_ttl_seconds
+        persist_candidates: list[tuple[str, tuple[DailyBar, ...], _HistoryEntry]] = []
         with self._lock:
             for code, bars in bars_by_code.items():
-                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-61:]
+                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-_HISTORY_CACHE_LOOKBACK_DAYS:]
                 if not ordered or any(bar.adjustment is not PriceAdjustment.QFQ for bar in ordered):
                     if ordered:
                         self._history_error_count += 1
                     continue
                 current = self._history.get(code)
                 if current is None or not current.bars or ordered[-1].trade_date > current.bars[-1].trade_date:
-                    self._history[code] = _HistoryEntry(
-                        ordered[-20:],
+                    entry = _HistoryEntry(
+                        ordered[-_HISTORY_CACHE_RETENTION_DAYS:],
                         expires_at,
                         source=source,
                         context=build_history_context(ordered),
                     )
+                    self._history[code] = entry
+                    persist_candidates.append((code, ordered, entry))
             self.trim(set(bars_by_code))
+        for code, bars, entry in persist_candidates:
+            self._persist_history_bars(code, bars, entry.context, entry.expires_at, source)
+
+    def recover_from_data_plane(self) -> None:
+        data_plane = self._history_data_plane
+        if data_plane is None:
+            return
+        try:
+            records = data_plane.load_historical_feature_recent_records()
+        except DataPlaneUnavailableError:
+            _LOGGER.warning("history data plane unavailable during recovery")
+            return
+        except Exception as exc:
+            _LOGGER.warning("history recovery read failed: %s", type(exc).__name__)
+            return
+
+        grouped: dict[str, dict[str, DailyBar]] = {}
+        for record in records:
+            try:
+                bar = _deserialize_daily_bar(record.payload)
+            except Exception as exc:
+                _LOGGER.warning(
+                    "history payload invalid for %s on %s: %s", record.code, record.trade_date, type(exc).__name__
+                )
+                continue
+            grouped.setdefault(record.code, {})[bar.trade_date] = bar
+        if not grouped:
+            return
+        expires_at = self._monotonic() + self._history_ttl_seconds
+        with self._lock:
+            for code, by_trade_date in grouped.items():
+                ordered = tuple(sorted(by_trade_date.values(), key=lambda item: item.trade_date))
+                if not ordered:
+                    continue
+                retained = ordered[-_HISTORY_CACHE_RETENTION_DAYS:]
+                full = ordered[-_HISTORY_CACHE_LOOKBACK_DAYS:]
+                self._history[code] = _HistoryEntry(
+                    bars=retained,
+                    expires_at=expires_at,
+                    source=retained[-1].source if retained else "eastmoney",
+                    context=build_history_context(full),
+                )
+            self.trim(set(grouped))
+
+    def _persist_history_bars(
+        self,
+        code: str,
+        bars: tuple[DailyBar, ...],
+        _context: HistoryContext | None,
+        _expires_at: float,
+        source: str,
+    ) -> None:
+        del _context
+        del _expires_at
+        data_plane = self._history_data_plane
+        if data_plane is None:
+            return
+        observed_at = self._runner.wall_clock()
+        for bar in bars:
+            try:
+                data_plane.save_historical_feature_recent(
+                    HistoricalFeatureRecord(
+                        code=code,
+                        trade_date=bar.trade_date,
+                        observed_at=observed_at,
+                        source_time=_history_source_time((bar,)),
+                        source=source,
+                        data_version=_history_version(bars),
+                        payload=_serialize_daily_bar(bar),
+                    )
+                )
+            except DataPlaneUnavailableError:
+                _LOGGER.warning("history persistence unavailable for %s", code)
+            except Exception:
+                _LOGGER.exception("history persistence failed for %s", code)
 
     def summaries(
         self,
@@ -510,6 +620,81 @@ class HistoryCache:
             )
             for code, bars in histories.items()
         }
+
+
+def _serialize_daily_bar(bar: DailyBar) -> JsonObject:
+    return {
+        "trade_date": bar.trade_date,
+        "open_price": bar.open_price,
+        "close": bar.close,
+        "high": bar.high,
+        "low": bar.low,
+        "volume": bar.volume,
+        "amount": bar.amount,
+        "pct_change": bar.pct_change,
+        "turnover_rate": bar.turnover_rate,
+        "adjustment": bar.adjustment.value,
+        "source": bar.source,
+    }
+
+
+def _deserialize_daily_bar(payload: JsonObject) -> DailyBar:
+    trade_date = _require_string(payload, "trade_date")
+    open_price = _require_float(payload, "open_price")
+    close = _require_float(payload, "close")
+    high = _require_float(payload, "high")
+    low = _require_float(payload, "low")
+    volume = _require_float(payload, "volume")
+    amount = _require_float(payload, "amount")
+    pct_change = _require_float(payload, "pct_change")
+    turnover_rate = _require_float_or_none(payload, "turnover_rate")
+    if not isinstance(payload.get("adjustment"), str):
+        raise TypeError("adjustment must be a string")
+    if payload["adjustment"] not in {PriceAdjustment.QFQ.value, PriceAdjustment.RAW.value}:
+        raise ValueError("adjustment must be qfq/raw")
+    source = _require_string(payload, "source")
+    return DailyBar(
+        trade_date=trade_date,
+        open_price=open_price,
+        close=close,
+        high=high,
+        low=low,
+        volume=volume,
+        amount=amount,
+        pct_change=pct_change,
+        turnover_rate=turnover_rate,
+        adjustment=PriceAdjustment(payload["adjustment"]),
+        source=source,
+    )
+
+
+def _require_string(payload: JsonObject, key: str) -> str:
+    raw = payload.get(key)
+    if not isinstance(raw, str) or not raw:
+        raise TypeError(f"{key} must be a non-empty string")
+    return raw
+
+
+def _require_float(payload: JsonObject, key: str) -> float:
+    raw = payload.get(key)
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        raise TypeError(f"{key} must be a finite number")
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError(f"{key} must be finite")
+    return value
+
+
+def _require_float_or_none(payload: JsonObject, key: str) -> float | None:
+    raw = payload.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        raise TypeError(f"{key} must be a number or null")
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError(f"{key} must be finite")
+    return value
 
 
 def _history_source_time(bars: Sequence[DailyBar]) -> datetime:

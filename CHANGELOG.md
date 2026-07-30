@@ -10,11 +10,12 @@ All notable changes to this project are documented here.
   `history_data_plane` 注入与恢复方法 `recover_from_data_plane()`，重放 61 日完整样本窗口并修复
   20 日内存保留上下文；`ReferenceLoader` 在刷新后持久化 `security_master` 与交易日历游标。
 
-- 本批把 `P6：公司风险登记簿和 CNInfo 增量链` 启动。`ResearchLoader` 增加风险组件
-  分组件状态持久化与恢复，支持 structured news 下对财务/公告/质押/解禁等关键组件的 `known_clear`、
-  `known_risk`、`unknown`、`stale` 回填；`bootstrap_data_plane` 恢复链路加入研究恢复分支，且 news
-  流程不写入 risk evidence。该里程碑实现了风险组件持久化与恢复，但 `CNInfo` 历史分批回填、
-  公告唯一键、增量游标及交易所公告交叉校验仍未完成，按下一完整章节继续。
+- 用户要求继续 `V2_plan.md` 未完成任务。本批完成 `P6：公司风险登记簿和 CNInfo 增量链`：
+  `ResearchLoader` 增加风险组件持久化与恢复，`bootstrap_data_plane` 恢复链路加入研究恢复分支；
+  新增 CNInfo 离线增量登记簿模块，按公告唯一键去重并持久化 `cninfo-announcement:*`、
+  `cninfo-risk-component:*` 和 `cninfo.announcements:{code}` 游标。空增量、重复页、单组件失败或
+  DataPlane 写入失败都不会清空既有风险事实；CNInfo 恢复出的公告风险事实可进入结构化
+  `ResearchObservation`，但交易所公告交叉校验仍固定为 `pending`，不宣称交易所级复核完成。
 
 - 本批 P4 交付（`docs/V2_plan.md`）完成“证券主数据和交易日历”运行闭环：新增
   `src/trader/application/ports/data_plane.py`、`src/trader/infra/persistence/data_plane_sqlite.py`、
@@ -1113,6 +1114,15 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批 P6 完整验证：`make format-check`、`make lint`、`make type-check`、`make test` 均通过；
+  `make package` 首次在沙箱内因 setuptools 代理访问受限失败，提升权限后通过。P6 定向回归
+  `tests/unit/infra/test_cninfo_incremental.py`、三项 `tests/component/test_v2_market_data.py`
+  研究数据平面用例、`tests/contract/test_v2_source_capability.py` 与两项
+  `tests/contract/test_v2_bootstrap.py` 启动恢复用例共 12 项通过。仓库外 wheel
+  `--target --no-deps` 安装后，已在 `/tmp` 工作目录验证 `trader` 可导入、8 项 Web 模板/静态资源
+  可读取、`trader.entrypoints.cli --help` 可执行；完整带依赖临时安装因上游包 hash mismatch
+  停止，未作为产品行为失败处理。
+
 - 本批专项验证：`./.venv/bin/pytest -q tests/component/test_v2_market_data.py tests/contract/test_v2_bootstrap.py tests/contract/test_project_records.py tests/unit/infra/test_data_plane.py tests/unit/test_data_plane_migration.py`
   全部通过；`./.venv/bin/ruff check` 与 `./.venv/bin/mypy` 对新增/修改模块全部通过。
 
@@ -1878,11 +1888,12 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- P6 仍保留外部准入风险：CNInfo 当前是离线增量登记簿和数据平面写入边界，未接入真实生产
+  调度、行情路由或交易所公告交叉校验；`exchange_cross_check_status=pending` 不能解释为交易所级
+  复核完成。仓库外完整带依赖安装遇到第三方包 hash mismatch，需要后续在干净包索引环境复验。
+
 - P5 仍有边界未完成：BaoStock 对历史完整性与价格一致性未接入正式评估链，`history_data_plane`
   回放依赖 `tushare`/历史缓存窗口可用性；若无数据源与持久化可达性，历史加载将降级为可用来源回退而不阻断。
-
-- `P6` 仅完成了风险状态的分组件持久化与启动恢复，`CNInfo` 正式历史回灌、组件证据唯一键治理及
-  风险刷新调度优先级仍未完成；失败时依旧依赖 `DeepSeek` 之外的本地规则与现有降级策略。
 
 - P4 交付仍保留边界：本批不切换 production today/tomorrow/d25 读写指针，
   也不包含交易所官方主数据、交易所公告或风险证据链的完整实现；后续章节(P5/P6/P7)

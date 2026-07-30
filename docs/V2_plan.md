@@ -17,7 +17,7 @@
 | 评审维度 | 结论 | 主要依据 | 修正 |
 | --- | --- | --- | --- |
 | V2-only 最终目标 | 靠谱 | 活动代码已限定在 `src/trader`，旧 release 可承担完整回退 | 保留目标，不再把已删除的旧包当作待迁移对象 |
-| 免费源分工 | 有条件靠谱 | 东财/新浪/腾讯/Tushare/AKShare 已有活动适配器；交易所、巨潮、BaoStock、mootdx 尚未实现 | 先做能力探测和规范 fixture，再决定是否进入正式路由 |
+| 免费源分工 | 有条件靠谱 | 东财/新浪/腾讯/Tushare/AKShare 已有活动适配器；CNInfo 已有离线增量登记簿；交易所、BaoStock、mootdx 尚未实现 | 先做能力探测和规范 fixture，再决定是否进入正式路由 |
 | 字段级合并 | 靠谱且应前置 | 当前实时缓存多数不持久化，来源降级可能放大身份和历史缺失 | 先固定字段契约、质量状态和合并真值表，再接新来源 |
 | 持久化底座 | 必要 | 当前 `daily_history`、`history_summary`、`security_master_calendar` 等缓存配置仍为非持久化 | 先建 schema、迁移和恢复，再做大规模回填 |
 | 风险登记簿 | 必要 | 现有研究缓存不能替代公告历史基线和分组件状态 | 独立建设，不在冻结窗口临时补抓 |
@@ -57,7 +57,7 @@
 ### 2.3 尚未完成
 
 - 交易所官方证券主数据适配器和持久化仓库。
-- 巨潮资讯公告历史基线、增量游标和分组件风险登记簿。
+- 交易所公告正式交叉校验链。
 - BaoStock 历史校验适配器。
 - 通达信/mootdx 影子探测和正式 fallback 准入证据。
 - tomorrow 的生产读写指针原子切换。
@@ -253,7 +253,7 @@ schema。
 
 - 建立 `SourceCapability` 清单并按生产准入等级归档。
 - `eastmoney/sina/tencent/akshare/tushare`：继续使用，不变更其当前准入身份。
-- 交易所官方、巨潮资讯、通达信/mootdx、BaoStock：**继续拒绝**。
+- 交易所官方、巨潮资讯、通达信/mootdx、BaoStock：**P1 当批继续拒绝**。
 - 拒绝原因统一写入：
   1. 无离线 fixture 与边界 case（正常/空页/重复页/字段缺失/限流）
   2. 无独立入网能力探测脚本（含时序与分页异常注入）
@@ -438,9 +438,9 @@ schema。
 
 ## 12. P6：公司风险登记簿和 CNInfo 增量链
 
-状态：进行中（第一里程碑：风险组件持久化），依赖 P3-P4
+状态：已完成，依赖 P3-P4
 
-### 2026-07-30 进行中（第一里程碑）
+### 2026-07-30 交付完成
 
 - 为 `ResearchLoader` 新增风险组件持久化与恢复链路：新增 `risk-component:*` 风险证据落盘，
   支持 `known_clear`、`known_risk`、`unknown`、`stale` 四态覆盖的财务/公告/质押/解禁等组件状态回填；
@@ -451,17 +451,18 @@ schema。
   news 模式不落库，DataPlane 写入失败仍继续本地评分与刷新。
 - 回归新增：`tests/component/test_v2_market_data.py` 增加研究恢复覆盖重建、news 模式非持久化、写入不可用降级回归；
   `tests/contract/test_v2_bootstrap.py` 覆盖启动初始化链路回放与失败不阻塞场景。
-- 本批未完成项：
-  - 未开始 `CNInfo` 历史分批回填、公告唯一键与增量游标持久化。
-  - 未完成交易所公告交叉校验链，AKShare 仍只作为公共底层适配器入口。
-  - 未完成风险组件按公告/处罚/诉讼/停复牌等完整边界的全量组件扩充。
-
-### 本批里程碑结论
-
-- 本里程碑已将风险证据状态从“每次运行临时计算”转为“持久化、可恢复、可审计”的结构化状态，
-  并保证 DataPlane 写入退化不阻塞冷启动和发布。
-- `P7` 继续依赖本章完成；本章进入“继续进行中：CNInfo 增量链”状态，不能在未完成第 3~4 步
-  前推进到下一批生产读写切换。
+- 新增 `src/trader/infra/market_data/cninfo.py`：提供 CNInfo 公告增量同步器、公告唯一键解析、
+  重复页去重、空增量不清零、`cninfo.announcements:{code}` 游标、`cninfo-announcement:*`
+  风险证据和 `cninfo-risk-component:*` 分组件状态写入。
+- `ResearchLoader.recover_from_data_plane()` 现在可从 CNInfo 公告证据恢复结构化
+  `ResearchObservation`、公司风险事实和注册表版本；AKShare 风险组件与 CNInfo 组件按
+  `known_risk > known_clear > stale > unknown` 合并，避免后到空增量覆盖旧风险。
+- `tests/unit/infra/test_cninfo_incremental.py` 覆盖 CNInfo 去重、游标、空增量不清零和恢复到
+  结构化研究缓存；`tests/contract/test_v2_source_capability.py` 更新为允许 CNInfo 离线模块
+  存在但禁止其接入 `bootstrap.py`、行情路由和生产 source contract。
+- 交易所公告交叉校验尚未作为正式来源接入，CNInfo 证据固定记录
+  `exchange_cross_check_status=pending`；P7 可继续消费 P6 的风险登记簿，但不得把 pending
+  解释为交易所级复核完成。
 
 ### 目标
 

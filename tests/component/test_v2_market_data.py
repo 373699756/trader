@@ -8,11 +8,20 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 import requests
 
 from trader.application.latency import LatencyWaterfall
+from trader.application.ports.data_plane import (
+    DataPlaneRecoverySummary,
+    DataPlaneUnavailableError,
+    HistoricalFeatureRecord,
+    RiskEvidenceRecord,
+    SecurityMasterRecord,
+    SourceCursorRecord,
+)
 from trader.application.ports.market import (
     MarketDataDeadlineExceededError,
     MarketDataFailedError,
@@ -58,13 +67,20 @@ from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
-from trader.infra.market_data.service_tushare import ReferenceLoader, ReferenceLoadRequest
+from trader.infra.market_data.service_research_models import RESEARCH_COMPONENT_IDS
+from trader.infra.market_data.service_tushare import (
+    ReferenceLoader,
+    ReferenceLoadRequest,
+    _ReferenceLoadOptions,
+)
 from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
+from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 AFTERNOON = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
 NEWS_POLICY = NewsSignalPolicy(
     lookback_hours=72.0,
@@ -90,6 +106,7 @@ def _service(
     gateway: Any,
     history_client: Any,
     feature_builder: Any,
+    data_plane: DataPlaneRepository | None = None,
     **kwargs: Any,
 ) -> MarketFeatureService:
     monotonic = kwargs.pop("monotonic", time.monotonic)
@@ -113,6 +130,7 @@ def _service(
         workers=kwargs.pop("history_workers", 6),
         ttl_seconds=kwargs.pop("history_ttl_seconds", 21_600),
         capacity=kwargs.pop("history_cache_limit", 360),
+        history_data_plane=data_plane,
         monotonic=monotonic,
     )
     references = ReferenceLoader(
@@ -120,6 +138,7 @@ def _service(
         history,
         runner,
         kwargs.pop("tushare_client", None),
+        data_plane=data_plane,
         monotonic=monotonic,
     )
     warmup = HistoryWarmup(
@@ -132,6 +151,7 @@ def _service(
     research = ResearchLoader(
         kwargs.pop("research_client", None),
         runner,
+        data_plane=data_plane,
         workers=kwargs.pop("research_workers", 4),
         ttl_seconds=kwargs.pop("research_ttl_seconds", 600),
         circuit_breaker_failures=kwargs.pop("research_circuit_breaker_failures", 3),
@@ -1070,6 +1090,298 @@ def test_history_activity_does_not_block_realtime_eastmoney_lane() -> None:
         release_history.set()
         lanes.stop(wait=True, timeout_seconds=1.0)
         pool.stop(wait=True, cancel_futures=True)
+
+
+def test_reference_loader_recover_restores_security_master_and_calendar_cursor(tmp_path: Path) -> None:
+    class CapturingGateway(StaticGateway):
+        def __init__(self) -> None:
+            super().__init__(())
+            self.reference_observations: list[tuple[SourceObservation, ...]] = []
+
+        def update_reference_observations(self, observations) -> None:
+            self.reference_observations.append(tuple(observations))
+
+    observed_at = datetime(2026, 7, 16, 9, 30, tzinfo=_SHANGHAI)
+    source_time = observed_at.replace(minute=29)
+    data_plane = DataPlaneRepository(tmp_path)
+    data_plane.save_security_master_recent(
+        SecurityMasterRecord(
+            code="600001",
+            observed_at=observed_at,
+            source_time=source_time,
+            source="tushare",
+            data_version="tushare-calendar-v1",
+            payload={"board": "main", "listing_date": "2026-01-02"},
+            payload_hash="",
+            schema_version="v2_data_plane_v1",
+        )
+    )
+    data_plane.save_source_cursor_recent(
+        SourceCursorRecord(
+            cursor_name="tushare.trading_calendar",
+            cursor_value="2026-07-15",
+            observed_at=observed_at,
+            source_time=source_time,
+            source="tushare",
+            data_version="tushare-calendar-v1",
+            payload={"count": 2, "end_date": "2026-07-16"},
+            payload_hash="",
+            schema_version="v2_data_plane_v1",
+        )
+    )
+    gateway = CapturingGateway()
+    service = _service(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        wall_clock=lambda: NOW,
+    )
+
+    assert service.references.recover() == DataPlaneRecoverySummary()
+    assert gateway.reference_observations != []
+    assert gateway.reference_observations[0][0].subject_key == "600001"
+    assert service.references._next_calendar_start(date(2026, 7, 10)) == date(2026, 7, 15)
+    assert service.references._next_calendar_start(date(2026, 7, 20)) == date(2026, 7, 20)
+
+
+def test_reference_loader_recover_isolation_of_unavailable_data_plane() -> None:
+    class UnavailableDataPlane:
+        @staticmethod
+        def recover() -> DataPlaneRecoverySummary:
+            raise DataPlaneUnavailableError("unavailable")
+
+        @staticmethod
+        def load_security_master_recent_records(codes: list[str] | None = None) -> tuple[SecurityMasterRecord, ...]:
+            raise AssertionError("must not read records when recovery fails")
+
+        @staticmethod
+        def load_source_cursor_recent_records(
+            cursor_names: list[str] | None = None,
+        ) -> tuple[SourceCursorRecord, ...]:
+            raise AssertionError("must not read cursor rows when recovery fails")
+
+    gateway = StaticGateway((_quote(),))
+    service = _service(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=UnavailableDataPlane(),
+        wall_clock=lambda: NOW,
+    )
+
+    summary = service.references.recover()
+    assert summary == DataPlaneRecoverySummary()
+
+
+def test_history_cache_recover_from_data_plane_restores_context_and_window(tmp_path: Path) -> None:
+    observed_at = datetime(2026, 7, 16, 15, 0, tzinfo=_SHANGHAI)
+    source_time = observed_at - timedelta(minutes=1)
+    data_plane = DataPlaneRepository(tmp_path)
+    bars = _history_bars()
+    for bar in bars:
+        data_plane.save_historical_feature_recent(
+            HistoricalFeatureRecord(
+                code="600001",
+                trade_date=bar.trade_date,
+                observed_at=observed_at,
+                source_time=source_time,
+                source="fixture",
+                data_version="fixture-v1",
+                payload={
+                    "trade_date": bar.trade_date,
+                    "open_price": bar.open_price,
+                    "close": bar.close,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "volume": bar.volume,
+                    "amount": bar.amount,
+                    "pct_change": bar.pct_change,
+                    "turnover_rate": bar.turnover_rate,
+                    "adjustment": bar.adjustment.value,
+                    "source": bar.source,
+                },
+                schema_version="v2_data_plane_v1",
+                payload_hash="",
+            )
+        )
+
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        wall_clock=lambda: NOW,
+    )
+    service.history.recover_from_data_plane()
+    entry = service.history.entries()["600001"]
+
+    assert len(entry.bars) == 20
+    assert entry.context is not None
+    assert entry.context.sample_count == len(bars)
+    assert entry.context.sample_count == 60
+    assert entry.context.latest_trade_date == bars[-1].trade_date
+
+    restored = service.history.load(("600001",))
+    assert restored["600001"] == entry.bars
+
+
+def test_history_cache_persistence_unavailable_does_not_block_history_load() -> None:
+    class UnavailableHistoryDataPlane:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def save_historical_feature_recent(self, _record) -> None:
+            self.calls += 1
+            raise DataPlaneUnavailableError("unavailable")
+
+    data_plane = UnavailableHistoryDataPlane()
+    bars = _history_bars()[-20:]
+    service = _service(
+        StaticGateway((_quote(),)),
+        CountingHistoryClient(bars),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        wall_clock=lambda: NOW,
+    )
+    loaded = service.history.load(("600001",))
+
+    assert list(loaded["600001"])[-1].trade_date == bars[-1].trade_date
+    assert len(loaded["600001"]) == 20
+    assert data_plane.calls > 0
+
+
+def test_research_loader_recover_from_data_plane_overrides_component_statuses(tmp_path: Path) -> None:
+    observed_at = datetime(2026, 7, 16, 14, 50, tzinfo=_SHANGHAI)
+    source_time = observed_at.replace(minute=49)
+    observation = ResearchObservation(
+        financial=FinancialReport(
+            report_date=date(2026, 2, 28),
+            published_at=datetime.fromisoformat("2026-02-28T15:00:00+08:00"),
+            basic_eps=1.0,
+            book_value_per_share=2.0,
+            revenue_growth_pct=5.0,
+            net_profit_growth_pct=3.0,
+            core_profit_growth_pct=1.0,
+            roe_pct=2.0,
+            parent_net_profit=10.0,
+            core_net_profit=8.0,
+        ),
+        announcements_available=True,
+        corporate_risk_history_complete=True,
+        pledge_ratio_pct=0.5,
+        unlock_ratio_pct=0.5,
+    )
+    data_plane = DataPlaneRepository(tmp_path)
+
+    for component, status in zip(
+        RESEARCH_COMPONENT_IDS,
+        (
+            "known_risk",
+            "unknown",
+            "unknown",
+            "known_clear",
+            "stale",
+            "known_risk",
+            "unknown",
+            "known_clear",
+        ),
+        strict=True,
+    ):
+        data_plane.save_risk_evidence_recent(
+            RiskEvidenceRecord(
+                code="600001",
+                observed_at=observed_at,
+                source_time=source_time,
+                source="akshare",
+                data_version="akshare-research:v1",
+                payload={"status": status},
+                evidence_id=f"risk-component:{component}",
+                schema_version="v2_data_plane_v1",
+            )
+        )
+
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        research_client=StaticStructuredResearchClient((), observation),
+        research_workers=1,
+        wall_clock=lambda: observed_at,
+    )
+    service.research.recover_from_data_plane()
+    service.refresh_stock_risk(("600001",), observed_at)
+    status = service.research.status()
+
+    assert status.unavailable_count == 0
+    assert status.partial_count == 1
+    assert status.verified_count == 0
+    assert status.financial_covered_count == 1
+    assert status.announcements_covered_count == 0
+    assert status.pledge_covered_count == 0
+    assert status.unlock_covered_count == 1
+
+
+def test_news_research_does_not_persist_risk_components() -> None:
+    class CountingRiskDataPlane:
+        def __init__(self) -> None:
+            self.save_calls = 0
+
+        def load_risk_evidence_recent_records(self, codes: list[str] | None = None) -> tuple[RiskEvidenceRecord, ...]:
+            return ()
+
+        def save_risk_evidence_recent(self, _record: RiskEvidenceRecord) -> None:
+            self.save_calls += 1
+
+    data_plane = CountingRiskDataPlane()
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        research_client=StaticResearchClient(()),
+        research_workers=1,
+        wall_clock=lambda: NOW,
+    )
+
+    service.fetch_candidate_features(("600001",), NOW, include_structured_research=False)
+
+    assert data_plane.save_calls == 0
+
+
+def test_research_data_plane_persistence_unavailable_does_not_block_research_load() -> None:
+    class FailingRiskSaveDataPlane:
+        def __init__(self) -> None:
+            self.recovered = False
+
+        def load_risk_evidence_recent_records(self, codes: list[str] | None = None) -> tuple[RiskEvidenceRecord, ...]:
+            return ()
+
+        def save_risk_evidence_recent(self, _record: RiskEvidenceRecord) -> None:
+            raise DataPlaneUnavailableError("unavailable")
+
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=FailingRiskSaveDataPlane(),
+        research_client=StaticStructuredResearchClient(
+            (),
+            ResearchObservation(
+                announcements_available=True,
+                pledge_ratio_pct=0.0,
+                unlock_ratio_pct=0.0,
+            ),
+        ),
+        research_workers=1,
+        wall_clock=lambda: NOW,
+    )
+
+    result = service.refresh_stock_risk(("600001",), NOW)
+
+    assert result.completed_codes == ("600001",)
+    assert ("600001", True) in service.research.entries()
 
 
 def test_dedicated_history_workers_do_not_consume_realtime_source_workers() -> None:
@@ -2589,11 +2901,13 @@ def test_tushare_negative_refresh_marks_preserved_reference_data_degraded() -> N
         "security_master_calendar",
         "security_master",
         request,
-        NOW,
-        client.fetch_security_master,
-        (NOW,),
-        False,
-        {},
+        _ReferenceLoadOptions(
+            observed_at=NOW,
+            function=client.fetch_security_master,
+            args=(NOW,),
+            force=False,
+            kwargs={},
+        ),
     )
     first = service.references.load(reference_request)
     pro.fail = True
@@ -2773,6 +3087,7 @@ def test_history_cache_reuses_actionable_refresh_due_value_with_degradation() ->
         workers=1,
         ttl_seconds=21_600,
         capacity=360,
+        history_data_plane=None,
         monotonic=monotonic,
     )
     bars = tuple(

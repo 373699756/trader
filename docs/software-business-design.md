@@ -804,6 +804,13 @@ DeepSeek 以单次 timeout、物理预算预留、提交 deadline 和 schema 终
 状态 API 至少暴露覆盖证券数、事实数和版本集合。注册表不可用或覆盖未完成时，本地评分和
 P6 发布继续，未被已确认事实阻断的受影响证券只能观察，并显示
 `corporate_risk_history_unavailable`。
+CNInfo 增量链作为公司风险登记簿的独立数据平面写入者，按 `cninfo.announcements:{code}`
+保存来源游标，按公告 ID 保存 `cninfo-announcement:*` 风险证据，并按组件保存
+`cninfo-risk-component:*` 四态覆盖状态。该链路不进入 `MarketSourceCoordinator`、
+`MarketDataGateway` 或 `source_contract_versions`，不参与行情路由、冻结触发或 HTTP 只读
+请求；同步失败、DataPlane 写入失败、空页或重复页都不得清空既有风险事实。交易所公告交叉
+校验尚未作为正式来源接入时，CNInfo 证据保留 `exchange_cross_check_status=pending`，
+只作为结构化官方披露风险事实和覆盖降级依据。
 结构化研究按分项复用原子原始载荷：财务、质押和解禁缓存 6 小时，公告缓存 10 分钟；
 整只股票的已解析研究观察缓存 10 分钟。刷新只请求已到期分项，任一分项失败时保留该分项
 最近有效观察及原始点时，其他已完成分项照常入缓存。状态 API 同时暴露研究批次运行/待处理、

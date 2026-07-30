@@ -10,16 +10,23 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
-from typing import TypeVar, cast
+from typing import Protocol, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 from trader.application.cache import CacheIdentity, CacheIdentitySpec, build_cache_identity, canonical_json_bytes
+from trader.application.ports.data_plane import (
+    DataPlaneRecoverySummary,
+    DataPlaneUnavailableError,
+    SecurityMasterRecord,
+    SourceCursorRecord,
+)
+from trader.application.ports.types import JsonObject, JsonValue
 from trader.application.schedule import shanghai_now
 from trader.application.source_lanes import SourceRequestSupersededError
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.market_cache_identity import _normalize_codes, _source_batch_identity
-from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.tushare import TushareClient
@@ -28,6 +35,25 @@ _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DAY_END = time(23, 59, 59)
+_TUSHARE_SOURCE = "tushare"
+_TRADING_CALENDAR_CURSOR_NAME = "tushare.trading_calendar"
+
+
+class _ReferenceDataPlane(Protocol):
+    def recover(self) -> DataPlaneRecoverySummary: ...
+
+    def save_security_master_recent(self, record: SecurityMasterRecord) -> None: ...
+
+    def save_source_cursor_recent(self, record: SourceCursorRecord) -> None: ...
+
+    def load_security_master_recent_records(
+        self, codes: Sequence[str] | None = None
+    ) -> tuple[SecurityMasterRecord, ...]: ...
+
+    def load_source_cursor_recent_records(
+        self,
+        cursor_names: Sequence[str] | None = None,
+    ) -> tuple[SourceCursorRecord, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -35,6 +61,16 @@ class ReferenceLoadRequest:
     dataset: str
     subject_key: str
     request: Mapping[str, object]
+    options: _ReferenceLoadOptions
+    force: bool = False
+
+    def __post_init__(self) -> None:
+        if self.force != self.options.force:
+            object.__setattr__(self, "options", replace(self.options, force=self.force))
+
+
+@dataclass(frozen=True)
+class _ReferenceLoadOptions:
     observed_at: datetime
     function: Callable[..., Sequence[SourceObservation]]
     args: tuple[object, ...]
@@ -43,24 +79,27 @@ class ReferenceLoadRequest:
 
 
 class ReferenceLoader:
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         gateway: MarketDataGateway,
         history: HistoryCache,
         runner: MarketTaskRunner,
         client: TushareClient | None,
         *,
+        data_plane: _ReferenceDataPlane | None = None,
         monotonic: Callable[[], float],
     ) -> None:
         self._gateway = gateway
         self._history_cache = history
         self._runner = runner
         self._client = client
+        self._data_plane = data_plane
         self._monotonic = monotonic
         self._lock = threading.Lock()
         self._reference_fields: dict[str, dict[str, float]] = {}
         self._reference_versions: dict[str, str] = {}
         self._reference_version_order: dict[str, tuple[datetime, datetime, str]] = {}
+        self._trading_calendar_cursor: str | None = None
 
     def schedule_reference_data(
         self,
@@ -122,7 +161,10 @@ class ReferenceLoader:
         *,
         force: bool,
     ) -> None:
+        masters: tuple[SourceObservation, ...] = ()
+        calendars: tuple[SourceObservation, ...] = ()
         tushare_history: tuple[SourceObservation, ...] = ()
+        calendar_start_date = observed_at.date()
         if self._client is not None:
             if not self._client.supports("security_master"):
                 if normalized and self._client.supports("forward_adjusted_daily"):
@@ -134,11 +176,13 @@ class ReferenceLoader:
                     "security_master_calendar",
                     "security_master",
                     {"dataset": "security_master", "market": "ashare"},
-                    observed_at,
-                    self._client.fetch_security_master,
-                    (observed_at,),
-                    force,
-                    {},
+                    _ReferenceLoadOptions(
+                        observed_at=observed_at,
+                        function=self._client.fetch_security_master,
+                        args=(observed_at,),
+                        force=force,
+                        kwargs={},
+                    ),
                 )
             )
             listing_dates = tuple(
@@ -148,6 +192,8 @@ class ReferenceLoader:
                 and isinstance(raw := observation.fields.get("listing_date"), str)
                 and (parsed := _parse_date(raw)) is not None
             )
+            if listing_dates:
+                calendar_start_date = self._next_calendar_start(min(listing_dates))
             calendars = (
                 self.load(
                     ReferenceLoadRequest(
@@ -155,20 +201,24 @@ class ReferenceLoader:
                         "trading_calendar",
                         {
                             "dataset": "trading_calendar",
-                            "start_date": min(listing_dates).isoformat(),
+                            "start_date": calendar_start_date.isoformat(),
                             "end_date": shanghai_now(observed_at).date().isoformat(),
                         },
-                        observed_at,
-                        self._client.fetch_trading_calendar,
-                        (min(listing_dates), shanghai_now(observed_at).date(), observed_at),
-                        force,
-                        {},
+                        _ReferenceLoadOptions(
+                            observed_at=observed_at,
+                            function=self._client.fetch_trading_calendar,
+                            args=(min(listing_dates), shanghai_now(observed_at).date(), observed_at),
+                            force=force,
+                            kwargs={},
+                        ),
                     )
                 )
                 if listing_dates
                 else ()
             )
             self._gateway.update_reference_observations((*calendars, *masters))
+            valuation_observations: tuple[SourceObservation, ...] = ()
+            financial_observations: tuple[SourceObservation, ...] = ()
             if normalized:
                 valuation_trade_date = _latest_effective_trade_date(calendars, observed_at)
                 if self._client.supports("forward_adjusted_daily"):
@@ -183,11 +233,13 @@ class ReferenceLoader:
                                 "codes": normalized,
                                 "trade_date": valuation_trade_date.isoformat(),
                             },
-                            observed_at,
-                            self._client.fetch_daily_valuations,
-                            (normalized, valuation_trade_date, observed_at),
-                            force,
-                            {},
+                            _ReferenceLoadOptions(
+                                observed_at=observed_at,
+                                function=self._client.fetch_daily_valuations,
+                                args=(normalized, valuation_trade_date, observed_at),
+                                force=force,
+                                kwargs={},
+                            ),
                         )
                     )
                     if valuation_trade_date is not None
@@ -198,16 +250,149 @@ class ReferenceLoader:
                         "daily_valuation_financials",
                         "financial_indicators:" + ",".join(normalized),
                         {"dataset": "financial_indicators", "codes": normalized},
-                        observed_at,
-                        self._client.fetch_financial_indicators,
-                        (normalized, observed_at),
-                        force,
-                        {},
+                        _ReferenceLoadOptions(
+                            observed_at=observed_at,
+                            function=self._client.fetch_financial_indicators,
+                            args=(normalized, observed_at),
+                            force=force,
+                            kwargs={},
+                        ),
                     )
                 )
-                self.apply_fields("valuation", valuation_observations)
-                self.apply_fields("financial", financial_observations)
+            self.apply_fields("valuation", valuation_observations)
+            self.apply_fields("financial", financial_observations)
         self.apply_history(tushare_history)
+        self._persist_reference_data(observed_at, masters=masters, calendars=calendars)
+
+    def recover(self) -> DataPlaneRecoverySummary:
+        if self._data_plane is None:
+            return DataPlaneRecoverySummary()
+        try:
+            summary = self._data_plane.recover()
+        except DataPlaneUnavailableError:
+            _LOGGER.warning("reference data plane unavailable during recovery")
+            return DataPlaneRecoverySummary()
+        try:
+            self._restore_from_data_plane()
+        except DataPlaneUnavailableError:
+            _LOGGER.warning("reference data plane unavailable when restoring")
+            return DataPlaneRecoverySummary()
+        except Exception as exc:
+            _LOGGER.warning("reference data recovery failed: %s", type(exc).__name__)
+            return DataPlaneRecoverySummary()
+        return summary
+
+    def _restore_from_data_plane(self) -> None:
+        if self._data_plane is None:
+            return
+        masters = self._data_plane.load_security_master_recent_records()
+        if masters:
+            self._gateway.update_reference_observations(
+                tuple(self._to_reference_observation(record) for record in masters)
+            )
+        cursors = self._data_plane.load_source_cursor_recent_records(cursor_names=(_TRADING_CALENDAR_CURSOR_NAME,))
+        if cursors:
+            self._trading_calendar_cursor = cursors[-1].cursor_value
+
+    def _next_calendar_start(self, listing_min: date) -> date:
+        cursor = self._trading_calendar_cursor
+        if cursor is None:
+            return listing_min
+        parsed = _parse_date(cursor)
+        if parsed is None:
+            self._trading_calendar_cursor = None
+            return listing_min
+        return max(listing_min, parsed)
+
+    def _persist_reference_data(
+        self,
+        observed_at: datetime,
+        *,
+        masters: tuple[SourceObservation, ...],
+        calendars: tuple[SourceObservation, ...],
+    ) -> None:
+        if self._data_plane is None:
+            return
+        for master in masters:
+            if master.status != "success":
+                continue
+            try:
+                self._data_plane.save_security_master_recent(
+                    SecurityMasterRecord(
+                        code=master.subject_key,
+                        observed_at=observed_at,
+                        source_time=master.source_time,
+                        source=_TUSHARE_SOURCE,
+                        data_version=master.data_version,
+                        payload=dict(master.fields),
+                    )
+                )
+            except DataPlaneUnavailableError:
+                _LOGGER.warning("security master persistence unavailable")
+            except Exception:
+                _LOGGER.exception("security master persistence failed")
+        if calendars:
+            cursor_value = _trading_calendar_cursor_from_observations(calendars)
+            if cursor_value is not None:
+                try:
+                    latest_source_time = max(obs.source_time for obs in calendars)
+                    calendar_dates = sorted(
+                        {
+                            parsed
+                            for obs in calendars
+                            for parsed in (
+                                _parse_date(obs.subject_key),
+                                _parse_date(str(obs.fields["calendar_date"]))
+                                if isinstance(obs.fields.get("calendar_date"), str)
+                                else None,
+                            )
+                            if parsed is not None
+                        }
+                    )
+                    source_data_version = max(
+                        calendars,
+                        key=lambda obs: (obs.source_time, obs.received_at, obs.data_version),
+                    ).data_version
+                    start_date = calendar_dates[0] if calendar_dates else None
+                    end_date = calendar_dates[-1] if calendar_dates else None
+                    payload: dict[str, JsonValue] = {
+                        "start_date": start_date.isoformat() if start_date is not None else calendars[0].subject_key,
+                        "end_date": end_date.isoformat() if end_date is not None else calendars[-1].subject_key,
+                        "count": len(calendars),
+                    }
+                    self._data_plane.save_source_cursor_recent(
+                        SourceCursorRecord(
+                            cursor_name=_TRADING_CALENDAR_CURSOR_NAME,
+                            cursor_value=cursor_value,
+                            observed_at=observed_at,
+                            source_time=latest_source_time,
+                            source=_TUSHARE_SOURCE,
+                            data_version=source_data_version,
+                            payload=_to_json_object(payload),
+                        )
+                    )
+                    self._trading_calendar_cursor = cursor_value
+                except DataPlaneUnavailableError:
+                    _LOGGER.warning("trading calendar cursor persistence unavailable")
+                except Exception:
+                    _LOGGER.exception("trading calendar cursor persistence failed")
+
+    def _to_reference_observation(self, record: SecurityMasterRecord) -> SourceObservation:
+        fields = _source_fields_for_observation(record.payload)
+        return SourceObservation(
+            source=record.source,
+            subject_key=record.code,
+            observed_at=record.observed_at,
+            source_time=record.source_time,
+            received_at=record.observed_at,
+            effective_at=record.observed_at,
+            data_version=record.data_version,
+            fields=fields,
+            missing_reasons={},
+            payload_hash=record.payload_hash or hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+            status="success",
+            error_code=None,
+        )
 
     def load(
         self,
@@ -221,7 +406,7 @@ class ReferenceLoader:
                 source="tushare",
                 subject_key=request.subject_key,
                 request=request.request,
-                trade_date=shanghai_now(request.observed_at).date().isoformat(),
+                trade_date=shanghai_now(request.options.observed_at).date().isoformat(),
                 phase="all_day",
                 source_contract_version=self._runner.source_contract_versions.get("tushare", "tushare-component-v1"),
                 config_version=self._runner.config_version,
@@ -234,21 +419,21 @@ class ReferenceLoader:
             lane_identity = _source_batch_identity(
                 request.dataset,
                 (request.subject_key,),
-                request.observed_at,
+                request.options.observed_at,
                 request=request.request,
-                force=request.force,
+                force=request.options.force,
             )
             observations = tuple(
                 self._runner.run_source_task(
                     "tushare",
                     lane_identity,
-                    request.observed_at,
-                    request.function,
-                    *request.args,
-                    **request.kwargs,
+                    request.options.observed_at,
+                    request.options.function,
+                    *request.options.args,
+                    **request.options.kwargs,
                 )
             )
-            completed_at = max(request.observed_at, self._runner.wall_clock())
+            completed_at = max(request.options.observed_at, self._runner.wall_clock())
             cacheable = tuple(
                 item
                 for item in observations
@@ -274,7 +459,7 @@ class ReferenceLoader:
                     cache.put_negative(identity, error_code=error_code)
             return cacheable
 
-        if cache is not None and not request.force:
+        if cache is not None and not request.options.force:
             cached = self._cached_reference(identity, request, load)
             if cached is not None:
                 return cached
@@ -342,10 +527,10 @@ class ReferenceLoader:
 
         def refresh() -> tuple[SourceObservation, ...]:
             return self.load(
-                replace(request, force=True),
+                replace(request, options=replace(request.options, force=True)),
             )
 
-        lanes.submit("tushare", refresh_identity, request.observed_at, refresh)
+        lanes.submit("tushare", refresh_identity, request.options.observed_at, refresh)
 
     def apply_history(self, observations: Sequence[SourceObservation]) -> None:
         grouped: dict[str, list[DailyBar]] = {}
@@ -438,11 +623,13 @@ class ReferenceLoader:
                     "end_date": trade_date.isoformat(),
                     "adjust": adjust,
                 },
-                observed_at,
-                loader,
-                (normalized, start_date, trade_date, observed_at),
-                force,
-                {},
+                _ReferenceLoadOptions(
+                    observed_at=observed_at,
+                    function=loader,
+                    args=(normalized, start_date, trade_date, observed_at),
+                    force=force,
+                    kwargs={},
+                ),
             )
         )
 
@@ -478,6 +665,48 @@ def _parse_date(value: str) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _trading_calendar_cursor_from_observations(calendars: Sequence[SourceObservation]) -> str | None:
+    dates: list[date] = []
+    for observation in calendars:
+        raw = observation.subject_key
+        parsed = _parse_date(raw)
+        calendar_date = observation.fields.get("calendar_date")
+        if parsed is None and isinstance(calendar_date, str):
+            parsed = _parse_date(calendar_date)
+        if parsed is not None:
+            dates.append(parsed)
+    if not dates:
+        return None
+    return max(dates).isoformat()
+
+
+def _to_json_object(
+    value: Mapping[str, JsonValue] | Mapping[str, int | float | bool | str | None] | object,
+) -> JsonObject:
+    if isinstance(value, Mapping):
+        return cast(JsonObject, dict(value))
+    raise TypeError("payload must be a mapping")
+
+
+def _source_fields_for_observation(payload: Mapping[str, JsonValue]) -> dict[str, JsonScalar]:
+    fields: dict[str, JsonScalar] = {}
+    for key, value in payload.items():
+        if isinstance(value, str):
+            fields[key] = value
+            continue
+        if value is None or isinstance(value, bool):
+            fields[key] = value
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            fields[key] = float(value)
+            continue
+        if isinstance(value, float):
+            fields[key] = value if math.isfinite(value) else math.nan
+            continue
+        fields[key] = str(value)
+    return fields
 
 
 def _latest_effective_trade_date(

@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask
@@ -53,6 +53,8 @@ from trader.application.tomorrow_views import (
 )
 from trader.application.trading_session import TradingSessionTracker
 from trader.application.workers import BoundedExecutor
+from trader.bootstrap_clock import utc_now as _utc_now
+from trader.bootstrap_data_plane import _initialize_reference_data_plane, initialize_tomorrow_evidence
 from trader.domain.market.models import Board
 from trader.domain.recommendation.filters import HardFilterPolicy
 from trader.domain.recommendation.fusion import FusionPolicy
@@ -84,12 +86,10 @@ from trader.infra.market_data.service_tushare import ReferenceLoader
 from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
+from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
 from trader.infra.persistence.tomorrow_decision_freezes import TomorrowDecisionFreezeRepository
-from trader.infra.persistence.tomorrow_shadow_evidence import (
-    TomorrowShadowEvidenceRepository,
-    TomorrowShadowEvidenceUnavailableError,
-)
+from trader.infra.persistence.tomorrow_shadow_evidence import TomorrowShadowEvidenceRepository
 from trader.infra.persistence.writer import SnapshotRepository
 from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.settings import (
@@ -163,6 +163,7 @@ class _BuildContext:
 @dataclass(frozen=True)
 class _PersistenceContext:
     repository: SnapshotRepository
+    data_plane: DataPlaneRepository
     budget: DeepSeekBudgetLedger
 
 
@@ -201,9 +202,9 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     context = _BuildContext(
         settings, strategy, watchlist, effective_config_version, now, latency, cadence_policy, workers
     )
-    market_data = _build_market_data(context)
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     persistence = _build_persistence(context)
+    market_data = _build_market_data(context, persistence.data_plane)
     reviewer = _build_reviewer(context, persistence.budget)
     publication = _build_publication(context, calendar, persistence.repository)
     trading_session = TradingSessionTracker(now())
@@ -222,7 +223,8 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             now=now,
             initializers=(
                 publication.tomorrow_repository.initialize,
-                lambda: _initialize_tomorrow_evidence(publication),
+                lambda: initialize_tomorrow_evidence(publication.tomorrow_evidence, publication.tomorrow_gate),
+                lambda: _initialize_reference_data_plane(market_data, persistence.data_plane),
                 pipeline.initialize,
                 publication.published_snapshots.initialize,
                 persistence.budget.initialize,
@@ -309,7 +311,7 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
     )
 
 
-def _build_market_data(context: _BuildContext) -> MarketFeatureService:
+def _build_market_data(context: _BuildContext, data_plane: DataPlaneRepository) -> MarketFeatureService:
     settings = context.settings
     strategy = context.strategy
     workers = context.workers
@@ -419,9 +421,17 @@ def _build_market_data(context: _BuildContext) -> MarketFeatureService:
         workers=settings.pipeline.market_workers,
         ttl_seconds=_fixed_cache_ttl(settings, "daily_history"),
         capacity=settings.market_data.cache_policy.datasets["daily_history"].capacity,
+        history_data_plane=data_plane,
         monotonic=time.monotonic,
     )
-    references = ReferenceLoader(gateway, history_cache, runner, tushare_client, monotonic=time.monotonic)
+    references = ReferenceLoader(
+        gateway,
+        history_cache,
+        runner,
+        tushare_client,
+        data_plane=data_plane,
+        monotonic=time.monotonic,
+    )
     warmup = HistoryWarmup(
         history_cache,
         references,
@@ -432,6 +442,7 @@ def _build_market_data(context: _BuildContext) -> MarketFeatureService:
     research = ResearchLoader(
         research_client,
         research_runner,
+        data_plane=data_plane,
         workers=settings.pipeline.market_workers,
         ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
         circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
@@ -491,6 +502,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
         config_version=context.effective_config_version,
         write_lock=runtime_database_lock,
     )
+    data_plane = DataPlaneRepository(settings.runtime_dir)
     budget = DeepSeekBudgetLedger(
         settings.runtime_dir / "runtime.sqlite3",
         daily_hard_limit=settings.deepseek.daily_hard_limit,
@@ -509,7 +521,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
         ),
         write_lock=runtime_database_lock,
     )
-    return _PersistenceContext(repository, budget)
+    return _PersistenceContext(repository, data_plane, budget)
 
 
 def _build_reviewer(context: _BuildContext, budget: DeepSeekBudgetLedger) -> DeepSeekReviewer:
@@ -615,11 +627,7 @@ def _build_publication(
 
 
 def _initialize_tomorrow_evidence(publication: _PublicationContext) -> None:
-    try:
-        publication.tomorrow_evidence.initialize()
-        publication.tomorrow_gate.restore(publication.tomorrow_evidence.load_recent())
-    except TomorrowShadowEvidenceUnavailableError:
-        publication.tomorrow_gate.mark_evidence_failure()
+    initialize_tomorrow_evidence(publication.tomorrow_evidence, publication.tomorrow_gate)
 
 
 def _build_recommendation_engine(context: _BuildContext, calendar: ChinaTradingCalendar) -> RecommendationEngine:
@@ -712,13 +720,6 @@ def _long_groups(watchlist: LongWatchlist) -> tuple[LongGroupDefinition, ...]:
     )
 
 
-def _fixed_cache_ttl(settings: RuntimeSettings, dataset: str) -> float:
-    value = settings.market_data.cache_policy.datasets[dataset].refresh_ttl_seconds
-    if value is None:
-        raise ValueError(f"cache dataset {dataset} does not define a fixed TTL")
-    return value
-
-
 def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
     return RecommendationPolicy(
         strategy_version=settings.strategy_version,
@@ -784,8 +785,11 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
     )
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+def _fixed_cache_ttl(settings: RuntimeSettings, dataset: str) -> float:
+    value = settings.market_data.cache_policy.datasets[dataset].refresh_ttl_seconds
+    if value is None:
+        raise ValueError(f"cache dataset {dataset} does not define a fixed TTL")
+    return value
 
 
 __all__ = ["ApplicationSystem", "build_system"]

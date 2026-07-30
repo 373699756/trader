@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
@@ -34,15 +35,28 @@ from trader.infra.market_data.market_cache_identity import (
 )
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_models import _ResearchEntry
+from trader.infra.market_data.service_research_data_plane import (
+    _ResearchDataPlane as _ResearchDataPlaneProtocol,
+)
+from trader.infra.market_data.service_research_data_plane import (
+    loader_status as _loader_status_from_plane,
+)
+from trader.infra.market_data.service_research_data_plane import (
+    persist_research_component_statuses as _persist_research_component_statuses_from_plane,
+)
+from trader.infra.market_data.service_research_data_plane import (
+    recover_research_component_statuses as _recover_research_component_statuses_from_plane,
+)
 from trader.infra.market_data.service_research_models import (
+    ResearchComponentStatus,
     ResearchLoaderStatus,
     ResearchLoadReport,
-    research_component_coverage,
 )
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -101,10 +115,13 @@ class ResearchLoader:
         self,
         client: AkshareResearchClient | None,
         runner: MarketTaskRunner,
+        *,
+        data_plane: _ResearchDataPlaneProtocol | None = None,
         **options: Unpack[ResearchLoaderOptions],
     ) -> None:
         self._client = client
         self._runner = runner
+        self._data_plane = data_plane
         self._workers = max(1, options["workers"])
         self._ttl_seconds = max(60.0, options["ttl_seconds"])
         self._failure_limit = max(1, options["circuit_breaker_failures"])
@@ -126,6 +143,7 @@ class ResearchLoader:
         self._open_until = 0.0
         self._half_open_probe = False
         self._out_of_order_count = 0
+        self._component_statuses: dict[str, dict[str, ResearchComponentStatus]] = {}
 
     def cached(
         self,
@@ -404,6 +422,12 @@ class ResearchLoader:
                 state.result[code] = cached.observation
                 state.previous[code] = cached
 
+    def recover_from_data_plane(self) -> None:
+        data_plane = self._data_plane
+        if data_plane is None:
+            return
+        _recover_research_component_statuses_from_plane(self, data_plane)
+
     def _mark_loaded_research_actionability(self, state: _ResearchLoadState) -> None:
         for code, observation in state.result.items():
             self._mark_research_actionability(
@@ -496,6 +520,15 @@ class ResearchLoader:
         latency_ms = max(0.0, (self._monotonic() - started_at) * 1000.0)
         observation, ttl = self._resolve_research_result(future, old_entry, latency_ms)
         state.result[code] = observation
+        if request.include_structured:
+            if self._data_plane is not None:
+                _persist_research_component_statuses_from_plane(
+                    self,
+                    self._data_plane,
+                    code,
+                    request.observed_at,
+                    observation,
+                )
         self._mark_research_actionability(
             _ResearchActionScope(
                 code,
@@ -734,42 +767,7 @@ class ResearchLoader:
                 self._open_until = self._monotonic() + self._breaker_seconds
 
     def status(self) -> ResearchLoaderStatus:
-        with self._lock:
-            observations = tuple(entry.observation for (code, structured), entry in self._entries.items() if structured)
-            coverage = tuple(research_component_coverage(observation) for observation in observations)
-            return ResearchLoaderStatus(
-                entries=len(self._entries),
-                success_count=self._success_count,
-                error_count=self._error_count,
-                planned_count=self._planned_count,
-                timeout_count=self._timeout_count,
-                consecutive_failures=self._consecutive_failures,
-                circuit_open=self._open_until > self._monotonic(),
-                latencies_ms=tuple(self._latencies_ms),
-                latest_source_time=self._latest_source_time,
-                last_error=self._last_error,
-                out_of_order_count=self._out_of_order_count,
-                corporate_risk_covered_count=sum(
-                    observation.corporate_risk_history_complete for observation in observations
-                ),
-                corporate_risk_fact_count=sum(len(observation.corporate_risk_facts) for observation in observations),
-                corporate_risk_registry_versions=tuple(
-                    sorted(
-                        {
-                            observation.corporate_risk_registry_version
-                            for observation in observations
-                            if observation.corporate_risk_registry_version
-                        }
-                    )
-                ),
-                verified_count=sum(all(item) for item in coverage),
-                partial_count=sum(any(item) and not all(item) for item in coverage),
-                unavailable_count=sum(not any(item) for item in coverage),
-                financial_covered_count=sum(item[0] for item in coverage),
-                announcements_covered_count=sum(item[1] for item in coverage),
-                pledge_covered_count=sum(item[2] for item in coverage),
-                unlock_covered_count=sum(item[3] for item in coverage),
-            )
+        return _loader_status_from_plane(self)
 
     def entries(self) -> Mapping[tuple[str, bool], _ResearchEntry]:
         with self._lock:
