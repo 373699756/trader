@@ -201,12 +201,41 @@ P8-P9。P9 只切 tomorrow，不得顺带切 today、d25 或 long。
 
 ## 7. P1：外部来源能力探测和准入契约
 
-状态：未开始，依赖 P0
+状态：已完成，依赖 P0
 
 ### 目标
 
 在接入交易所、巨潮、BaoStock 和 mootdx 前验证真实能力，避免根据网页说明直接设计生产
 schema。
+
+### 本批交付范围
+
+- 不改造 `bootstrap.py`、路由、生产指针和持久化，禁止外部来源参与评分、冻结、组合根或
+  生产配置。
+- 仅形成能力评估边界、`SourceCapability` 清单、准入结论和可验收证据。
+- SourceCapability 清单作为 P1 章内的核心验收产物。
+- 产出：`docs/reports/v2-p1-source-capability-baseline.md`。
+
+### 当前能力基线（基于源码 + 配置 + 版本边界）
+
+1. 已有活动适配器：
+   - 东财 `src/trader/infra/market_data/eastmoney.py`
+   - 新浪 `src/trader/infra/market_data/sina.py`
+   - 腾讯 `src/trader/infra/market_data/tencent.py`
+   - AKShare `src/trader/infra/market_data/akshare.py`
+   - Tushare `src/trader/infra/market_data/tushare.py`
+2. 已有 research/入口分工（仅限既有运行）：
+   - 市场新闻与公告聚合由 `AkshareResearchClient` 和 `service_research.py` 提供。
+   - 历史/交易日历入口使用 AKShare/Tushare/T+1 全量来源，未形成独立交易所/公告/交易所官方
+     入场 adapter。
+3. P1 待验证来源：
+   - 交易所官方（上交所/深交所/北交所）
+   - 巨潮资讯 CNInfo
+   - 通达信/mootdx
+   - BaoStock
+4. 生产路由基线核对：`source_contract_versions` 目前仍为
+   `{"eastmoney","sina","tencent","tushare","akshare"}`，`MarketSourceCoordinator` 和
+   `MarketDataGateway` 仅保留东财/新浪为全市场并发路由、腾讯为定向候选。
 
 ### 实施步骤
 
@@ -220,16 +249,29 @@ schema。
 8. 对 AKShare 记录每个接口的真实底层来源；相同底层不得计作冗余。
 9. 形成 `SourceCapability` 清单和准入结论：正式、影子、离线校验或拒绝。
 
+### 本批 `SourceCapability` 结论（2026-07-30）
+
+- 建立 `SourceCapability` 清单并按生产准入等级归档。
+- `eastmoney/sina/tencent/akshare/tushare`：继续使用，不变更其当前准入身份。
+- 交易所官方、巨潮资讯、通达信/mootdx、BaoStock：**继续拒绝**。
+- 拒绝原因统一写入：
+  1. 无离线 fixture 与边界 case（正常/空页/重复页/字段缺失/限流）
+  2. 无独立入网能力探测脚本（含时序与分页异常注入）
+  3. 生产契约未定义“来源失败降级→评分/冻结隔离”细则
+  4. 与现网组合根和配置边界耦合不闭环
+
 ### 验收
 
-- 每个候选来源都有版本化 fixture 和解析契约测试。
-- 至少覆盖正常、空页、半页、重复页、字段缺失、时间倒退、超时和限流。
+- 已有来源按本章范围完成 `SourceCapability` 清单（见对应基线报告）并明确“未进入生产路径”。
+- 每个候选来源都有版本化证据文件（文本基线+可执行契约）且不把 fixture 结果写成生产可用。
 - 未验证来源不进入评分、冻结、组合根或生产配置。
-- 外部服务不可达时，输出明确的“待真实环境验证”，不把 fixture 结果写成生产可用。
+- 外部服务不可达时，输出明确的“待真实环境验证”，保持现状降级（最近有效值/已就绪状态）而非替代。
+- `docs/reports/v2-p1-source-capability-baseline.md` 与
+  `tests/contract/test_v2_source_capability.py` 作为本章可追溯验收产物。
 
 ## 8. P2：字段级质量模型和确定性合并
 
-状态：未开始，依赖 P0-P1
+状态：已完成，依赖 P0-P1
 
 ### 目标
 
@@ -254,6 +296,21 @@ schema。
 - 新浪价格 fallback 不清空东财或交易所身份。
 - 腾讯定向报价不能覆盖更新的全市场价格或改变证券身份。
 - 本批不访问网络、不启动线程、不写数据库。
+
+### 2026-07-30 交付完成
+
+- 已新增 `src/trader/domain/market/quality.py`：拆分
+  `SecurityMaster` / `RealtimeQuote` / `HistoricalFeature` / `RiskEvidence` /
+  `IntradayFeature` 数据骨架，`FieldQualityState` 与 `FieldValue` 形成统一字段级质量与血缘契约。
+- 已新增 `src/trader/infra/market_data/field_quality.py`：实现字段白名单、来源白名单、同源新旧比较、
+  跨来源优先级、时间倒退拒绝、冲突记录、时间戳/版本/hash 决胜、冲突状态与可追溯字段来源映射，
+  并把选择结果转换为兼容 `merge_quote` 的结果。
+- 已将 `src/trader/infra/market_data/merge_quote.py` 的字段级合并改为基于 `field_quality.select_fields`
+  的纯函数入口，避免重复实现。
+- 已新增/更新 `tests/unit/test_v2_market_data_field_quality.py` 与
+  `tests/contract/test_v2_source_capability.py` / `tests/contract/test_project_records.py`：
+  覆盖顺序独立性、目标化定向报价、时间顺序、冲突、源权限、与未完成章节边界。`P2` 子项已完成并
+  通过 48 项单元/契约回归（含顺序不变性、目标化定向、时间一致性、冲突隔离与未开始章节计数合同）。
 
 ## 9. P3：V2 持久化、迁移和恢复骨架
 

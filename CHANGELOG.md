@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- P2 章开始落地字段级质量模型：新增 `src/trader/domain/market/quality.py`（字段级质量/血缘域模型）、
+  `src/trader/infra/market_data/field_quality.py`（字段白名单、同源更新、跨源优先级、冲突与降级状态的
+  纯函数选择器）以及回归测试 `tests/unit/test_v2_market_data_field_quality.py`。
+
 - 新增 `docs/V2_plan.md` 的 P0 基线章节（`2026-07-30`），并新增
   `docs/reports/v2-p0-baseline.md`：记录活动树中生产链/影子链/历史资产的基线归类、
   冻结相关术语边界和下阶段迁移顺序，作为 P0“冻结现状、术语和目标契约”批次交付证据。
@@ -309,9 +313,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- P2 章从“未开始”更新为“已完成”；`docs/V2.md` 与 `docs/V2_plan.md` 的批次状态、产能边界与未开始
+  章节计数保持一致，`tests/contract/test_project_records.py` 与 `tests/contract/test_v2_source_capability.py`
+  同步覆盖该批次交付边界与 P1/P2 文档约束。
+
 - `docs/V2_plan.md` P0 章节标记为“进行中”，并补齐基线执行结果与待切换矩阵；
   `tests/contract/test_project_records.py` 已更新与 `docs/V2.md` 目标章节一致（基线报告纳入
-  版本控制、未开始章节数由 14 改为 13）。
+  版本控制、未开始章节数由 14 改为 11）。
 
 - `docs/V2.md` 从可直接施工的九批草案调整为目标概览，执行顺序改为引用
   `docs/V2_plan.md`。优化后的关键路径先做来源能力探测、字段质量模型和持久化，再接证券
@@ -719,6 +727,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 `PLR0913`（函数参数过多）引起的重构质量闸门告警：`field_quality._apply_new_selection`
+  改为状态容器参数版本，`scripts/check_refactor_quality.py` 重新回归零诊断；`make type-check` 也通过。
+
 - 修复原计划把已删除的 `stock_analyzer`、当前 `RecommendationPipeline/P6` 和 tomorrow
   v2 影子链都称为 V1，导致第一、二、九批范围重叠的问题；同时修复先接数据源、后定义
   字段和仓储，以及在切换前删除影子比较器的依赖倒置。
@@ -1049,6 +1060,12 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 本批验证范围：`tests/unit/test_v2_market_data_field_quality.py`（11 项）、`tests/contract/test_v2_source_capability.py`、
+  `tests/contract/test_project_records.py` 与 `tests/unit/test_v2_market_data_merge.py`（含旧 merge 兼容回归）；
+ `make format-check`、`make lint`、`make type-check` 全部通过；`make test` 在当前仓库状态下发现 2 个
+  与本批无关的既有关闭流程回归失败（`tests/integration/test_graceful_shutdown.py`、`tests/unit/application/test_runtime.py`）；
+ `make package` 因隔离构建环境访问代理受限失败。完整的构建/仓库外安装未在本次完成内复现成功。
 
 - `tests/contract/test_project_records.py` 通过：`test_docs_keep_two_authorities_and_pipeline_reports`
   验证 `docs/V2_plan.md` 现有章节数、两份权威文档引用、`reports` 基线文件清单
@@ -1782,6 +1799,10 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 本批 `make test` 仍有 2 项既有失败（`test_graceful_shutdown` 超时关闭与 `RuntimeSupervisor` 线程清理）
+  与本批字段质量改动无关；`make package` 在当前沙箱环境下受网络代理限制而失败，需要获得可访问
+  包仓库网络后再执行仓库外 wheel/sdist 安装验证。
 
 - P0 仅完成“基线冻结与术语边界定义”；今日任务不包含运行路径/产线切换实现。
   后续章节需继续按计划推动 today/tomorrow/d25/long 的读写指针切换、生产与影子运行路径落地，

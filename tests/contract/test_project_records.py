@@ -95,6 +95,7 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
         "reports/pipeline-g3-gate-review.md",
         "reports/pipeline-g4-gate-review.md",
         "reports/pipeline-g5-final-gate.md",
+        "reports/v2-p1-source-capability-baseline.md",
         "reports/solid-state-watchlist-merge-2026-07-25.md",
     }
     assert set(documents) == {
@@ -126,7 +127,7 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     assert "`docs/V2.md`" in v2_execution_plan
     assert "`docs/software-business-design.md`" in v2_execution_plan
     assert "`docs/recommendation-strategy.md`" in v2_execution_plan
-    assert v2_execution_plan.count("状态：未开始") == 13
+    assert v2_execution_plan.count("状态：未开始") == 11
     assert "## 6. P0：冻结现状、术语和目标契约" in v2_execution_plan
     assert "## 19. P13：旧生产链删除、发布和计划退役" in v2_execution_plan
     assert "`docs/V2.md` 是用户明确保留的 V2 唯一产品目标概览" in design

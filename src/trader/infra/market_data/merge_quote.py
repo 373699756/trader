@@ -14,33 +14,15 @@ from trader.domain.market.models import (
     MarketQuote,
 )
 from trader.domain.recommendation.filters import board_for_code
+from trader.infra.market_data.field_quality import (
+    REALTIME_SOURCES as _REALTIME_SOURCES,
+)
+from trader.infra.market_data.field_quality import (
+    select_fields as select_quote_fields,
+)
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 
-_REALTIME_SOURCES = frozenset({"eastmoney", "sina", "tencent"})
 _BOARD_SOURCES = frozenset({"tushare", "akshare", "eastmoney", "sina", "tencent"})
-_REALTIME_FIELDS = frozenset(
-    {
-        "name",
-        "price",
-        "previous_close",
-        "open_price",
-        "high",
-        "low",
-        "pct_change",
-        "change_5m",
-        "speed",
-        "volume_ratio",
-        "turnover_rate",
-        "amount",
-        "amplitude",
-        "market_cap",
-        "is_st",
-        "is_suspended",
-        "is_one_price_limit",
-        "is_blacklisted",
-        "has_major_regulatory_risk",
-    }
-)
 _BOARD_FIELDS = frozenset(
     {
         "board",
@@ -116,47 +98,12 @@ def _select_fields(
     *,
     targeted: bool,
 ) -> tuple[dict[str, JsonScalar], dict[str, str], dict[str, SourceObservation]]:
-    values: dict[str, JsonScalar] = {}
-    sources: dict[str, str] = {}
-    selected_observations: dict[str, SourceObservation] = {}
-    selected_orders: dict[str, tuple[datetime, datetime, int, str, str]] = {}
-    for observation in observations:
-        normalized_source = source_name(observation.source)
-        allows_realtime = normalized_source in _REALTIME_SOURCES
-        allows_board = normalized_source in _BOARD_SOURCES
-        priority = _SOURCE_PRIORITY.get(normalized_source, 0)
-        standard_order = (
-            observation.source_time,
-            observation.received_at,
-            priority,
-            observation.data_version,
-            observation.payload_hash,
-        )
-        realtime_order = (
-            observation.source_time,
-            observation.received_at,
-            0 if normalized_source == "tencent" and not targeted else priority,
-            observation.data_version,
-            observation.payload_hash,
-        )
-        realtime_order_differs = normalized_source == "tencent" and not targeted
-        for field, value in observation.fields.items():
-            if value is None:
-                continue
-            if not allows_realtime and field in _REALTIME_FIELDS:
-                continue
-            if not allows_board and field in _BOARD_FIELDS:
-                continue
-            order = realtime_order if realtime_order_differs and field in _REALTIME_FIELDS else standard_order
-            if field not in selected_orders or order > selected_orders[field]:
-                selected_orders[field] = order
-                selected_observations[field] = observation
-    for field in sorted(selected_observations):
-        selected = selected_observations[field]
-        values[field] = selected.fields[field]
-        source = source_name(selected.source)
-        sources[field] = source
-    return values, sources, selected_observations
+    selection = select_quote_fields(observations, targeted=targeted)
+    return (
+        dict(selection.values),
+        dict(selection.sources),
+        dict(selection.selected_observations),
+    )
 
 
 def _realtime_prices(
