@@ -58,6 +58,31 @@
 - 按交易日分块的配对 bootstrap 和多重检验校正。
 - 权重、风险扣分和 78 分门槛的样本证据。
 
+### 2.3 UZI-Skill 开源路径与研究借鉴
+
+本轮只引入研究层思想，不改变现有主链源与主公式：
+
+- 开源路径（本地检索）：`/home/cp/Public/github_trade/UZI-Skill`
+- 建议优先关注文件：
+  - [`docs/DATA-PROVIDERS.md`](/home/cp/Public/github_trade/UZI-Skill/docs/DATA-PROVIDERS.md)
+  - [`skills/deep-analysis/references/task2-dimension-scoring.md`](/home/cp/Public/github_trade/UZI-Skill/skills/deep-analysis/references/task2-dimension-scoring.md)
+  - [`skills/deep-analysis/scripts/lib/pipeline/score_fns.py`](/home/cp/Public/github_trade/UZI-Skill/skills/deep-analysis/scripts/lib/pipeline/score_fns.py)
+  - [`skills/deep-analysis/scripts/lib/pipeline/score.py`](/home/cp/Public/github_trade/UZI-Skill/skills/deep-analysis/scripts/lib/pipeline/score.py)
+
+可借鉴点（仅用于 P4 挑战者）:
+
+1. **多源研究备份思路**：不替换当前 eastmoney+sina+tushare 生产链路，仅将 UZI 的
+   provider 思想用于研究侧补齐字段；失败必须降级，不阻塞正式评分。
+2. **19 维结构化思路映射**：将研究侧财报、资金面、龙虎榜、研报、行业、治理、舆情等指标
+   映射为“观察约束/一致性特征”，不直接参与硬编码权重主公式。
+3. **评审一致性约束**：借鉴 panel/consensus 的风格分歧抑制，生成 `consensus_stability`
+   标记，仅用于观察降级或风险披露，不替代 78 分动作门。
+4. **风险事件优先级**：把可验证结构化风险信号置于分数解释层，和现有风险 veto 一致，避免把
+   主观文本当事实。
+
+该部分目标是“提高收益时不提高故障面”：只允许在不变更本地权重、融合公式和硬过滤的前提
+下，使用额外观察信号提高决策质量分离度。
+
 现有工程影子只证明实现是否等价，不是收益挑战者；现有正式结果结算只覆盖真正冻结的
 `executable` 推荐，不能直接用于评价观察线或候选漏选。
 
@@ -197,15 +222,30 @@
    的股票参与每板竞争；生产 50 分、30% 和 Top120 规则在晋级前保持不变。
 4. `heat_weak_structure`：普通高热度只有同时出现弱收盘、冲高回落或回撤结构时才降为观察；
    一字板和现有重大风险不放宽。
-5. `combined_v1`：同时启用上述四项。
+5. `combined_v1`：同时启用上述四项，并新增以下研究侧一致性约束：
+   - 引入 UZI 风格共识的 `consensus_stability` 概念（仅观察/风险告警入口），用于发现
+     形态分数高但观点分歧大的样本；
+   - 在不影响硬过滤/冻结/动作门槛前提下，记录“分歧-收益”对照。
 
 五个版本都必须：
 
-- 保持现有本地权重不变。
-- 保持固定 68/32 融合公式和 `ROUND_HALF_UP` 不变。
-- 复用生产已经取得的 DeepSeek facts，不新增物理请求。
-- 保持硬过滤、冻结时点、TopK 容量和正式记录边界不变。
-- 只写独立研究证据，不改变当前推荐、P6、SSE、Web 或正式历史。
+ - 保持现有本地权重不变。
+ - 保持固定 68/32 融合公式和 `ROUND_HALF_UP` 不变。
+ - 复用生产已经取得的 DeepSeek facts，不新增物理请求。
+ - 保持硬过滤、冻结时点、TopK 容量和正式记录边界不变。
+ - 只写独立研究证据，不改变当前推荐、P6、SSE、Web 或正式历史。
+
+## 10. 预期的“收益提升优先级”与评估口径
+
+在本次计划的统计门禁不变前提下，收益改进优先按以下顺序验证：
+
+1. 候选 TopK 召回边界不降低的前提下，是否降低高分样本中的错误可执行率（观察比例提升）；
+2. `combined_v1` 在 20bp/50bp/100bp 三档成本下的超额收益差是否通过同一多重检验；
+3. 分歧高样本中是否出现更明显的前向回撤特征；
+4. 在不改 fusion 配方的情况下，是否减少“高分-低质”的样本占比。
+
+当 `combined_v1` 通过后，再评估是否单独抽离出最优子集形成第二轮稳定变体；该过程必须保
+持本文件与 `docs/recommendation-strategy.md` 的边界同步。
 
 ## 6. 指标和统计门禁
 
