@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求 Review `docs/V2.md` 的计划可靠性并把可执行步骤写入 `docs/V2_plan.md`。本批
+  新增非生产执行计划：基于当前代码区分已删除旧包、当前生产链和 tomorrow v2 影子链，
+  给出 P0-P13 的依赖图、逐批目标、文件边界、实施步骤、验收条件、统一交付流程和量化口径。
+
 - 用户要求把 `docs/V2.md` 的数据源按新计划合并并删除重复内容。本批新增一张唯一的免费
   数据源职责表，统一记录九类来源的固定职责、主备路由、执行方式和降级边界，并集中保留
   官方参考入口、字段级合并规则、接入顺序与准入校验；同时新增“待执行、非生产契约”
@@ -300,6 +304,11 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- `docs/V2.md` 从可直接施工的九批草案调整为目标概览，执行顺序改为引用
+  `docs/V2_plan.md`。优化后的关键路径先做来源能力探测、字段质量模型和持久化，再接证券
+  主数据、历史和风险来源；随后续建 tomorrow 独立运行时并原子切换，最后依次迁移
+  today、d25、long 和统一 Web，避免重复建设已完成的 tomorrow v2 组件。
 
 - `docs/V2.md` 后续章节现在只引用“免费数据源的固定职责”，不再分别维护推荐表、逐源说明、
   最终组合和独立接入顺序。中英文来源名称、实时/离线边界和主备关系已收敛到同一处；
@@ -702,6 +711,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复原计划把已删除的 `stock_analyzer`、当前 `RecommendationPipeline/P6` 和 tomorrow
+  v2 影子链都称为 V1，导致第一、二、九批范围重叠的问题；同时修复先接数据源、后定义
+  字段和仓储，以及在切换前删除影子比较器的依赖倒置。
+
 - 修复 `docs/V2.md` 同一数据源职责在四处重复、容易产生口径漂移的问题。合并后明确
   AKShare 是适配器而非独立容灾源，BaoStock 和 Tushare 120 积分只承担历史校验，
   通达信/mootdx 必须先影子实测，且任何行情 fallback 都不能整行覆盖证券主数据。
@@ -1028,6 +1041,14 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 本批 Review 以当前组合根、路由、运行配置、市场适配器、tomorrow v2 影子/证据实现、
+  权威迁移状态和相关契约/集成测试为依据；确认活动树无 `stock_analyzer` 导入，
+  `/v2/tomorrow` 仍为并行入口，交易所、巨潮、BaoStock 和 mootdx 适配器尚未实现。
+  文档治理定向测试 19 项通过；`make format-check`、`make lint`、`make type-check`、
+  完整 `make test` 和 `make package` 均通过。仓库外安装 wheel 后可导入 `trader`、执行
+  `trader-cli --help`、读取 8 项模板/静态资源且 `pip check` 无断裂依赖；本批无 UI
+  或运行行为变化，桌面浏览器实机验收不适用。
 
 - 文档 Review 已逐项核对合并前的数据源、主备路由、字段级合并约束、接入顺序和来源链接，
   确认九类来源均保留且只在新方案第二节定义一次。文档治理契约测试同步覆盖 `V2.md`
@@ -1633,6 +1654,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 `docs/V2.md` 中把九个高层能力组直接当作“继续”施工顺序的定义；未删除任何目标
+  能力、活动代码、路由、配置、历史解码器或运行数据。
+
 - 移除 `docs/V2.md` 开头重复的“推荐的数据源”、五段逐源说明、“V2 推荐的最终组合”和
   独立“接入顺序”。未移除任何计划中的数据源、降级路径、参考链接或实施要求。
 
@@ -1746,6 +1770,10 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 本批只评审并拆解计划，不实现 P0-P13，也不证明交易所、巨潮、BaoStock 或 mootdx 在
+  当前网络环境可长期稳定使用。tomorrow v2 仍未切生产指针；P0 还需固定最终 runtime
+  schema、历史解码器保留期、旧 API 弃用窗口和真实交易日发布证据要求。
 
 - `docs/V2.md` 仍是迁移计划而非产品、策略或依赖权威；实际行为继续以两份权威文档和
   `pyproject.toml` 为准。本批只整理文档，不实现或联网验证交易所、巨潮、BaoStock、
