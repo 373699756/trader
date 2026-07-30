@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 
 from trader.application.cadence import PipelineTask, ScheduledPipelineTask, task_execution_budget_seconds
@@ -15,16 +17,28 @@ from trader.application.schedule import (
     shanghai_now,
     trade_date_at,
 )
+from trader.application.trading_session import TradingSessionStatus, TradingSessionTracker
+from trader.domain.recommendation.models import Strategy
 
 
 class PipelineSubmissionMixin(PipelineState):
+    _candidate_features: tuple[object, ...]
+    _filter_reasons: Mapping[str, int]
+    _filter_details: tuple[object, ...]
+    _filtered_count: int
+    _pending_hybrid_lock: threading.Lock
+    _pending_hybrids: dict[str, object]
+    _async_review_lock: threading.Lock
+    _async_review_pending: dict[Strategy, object]
+
     def submit_tick(self, at: datetime | None = None) -> bool:
         with self._lifecycle_lock:
             if self._stopped or (self._worker is not None and not self._accepting):
                 return False
         now = at or self._now()
+        session = self._refresh_trading_session(now)
         trade_day = trade_date_at(now)
-        is_trading_day = self._calendar.is_trading_day(trade_day)
+        is_trading_day = session.is_trading_day is True
         decision = decision_at(now, is_trading_day=is_trading_day)
         self._state.record_tick(decision.phase.value, now)
         if decision.phase is MarketPhase.CLOSED:
@@ -61,6 +75,8 @@ class PipelineSubmissionMixin(PipelineState):
                 payload={
                     "freeze_strategies": list(decision.freeze_strategies),
                     "schedule_point": schedule_point.value if schedule_point is not None else "",
+                    "session_generation": session.generation,
+                    "session_trade_date": session.trade_date,
                 },
             )
         )
@@ -68,16 +84,19 @@ class PipelineSubmissionMixin(PipelineState):
 
     def submit_due(self, at: datetime | None = None) -> float:
         now = at or self._now()
+        session = self._refresh_trading_session(now)
         trade_day = trade_date_at(now)
-        is_trading_day = self._calendar.is_trading_day(trade_day)
+        is_trading_day = session.is_trading_day is True
         planner = self._cadence
         if planner is None:
-            self._offer_company_research(now)
+            if is_trading_day:
+                self._offer_company_research(now)
             self.submit_tick(now)
             return 1.0
         phase = decision_at(now, is_trading_day=is_trading_day).phase
         self._state.record_tick(phase.value, now)
-        self._offer_company_research(now)
+        if is_trading_day:
+            self._offer_company_research(now)
         batch = planner.plan(now, is_trading_day=is_trading_day)
         tasks = list(batch.tasks)
         trade_date = trade_day.isoformat()
@@ -86,6 +105,7 @@ class PipelineSubmissionMixin(PipelineState):
             phase is MarketPhase.AFTER_CLOSE
             and self._after_close_completed_date != trade_date
             and retry_due
+            and not planner.has_active_afternoon_freeze(trade_date)
             and all(item.task is not PipelineTask.CLOSE_QUOTES for item in tasks)
         ):
             tasks.append(ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, now, phase))
@@ -145,6 +165,9 @@ class PipelineSubmissionMixin(PipelineState):
                 payload={
                     "freeze_strategies": list(scheduled.freeze_strategies),
                     "schedule_task": task.value,
+                    "schedule_point": scheduled.schedule_point.value if scheduled.schedule_point is not None else "",
+                    "session_generation": self._current_session_status().generation,
+                    "session_trade_date": self._current_session_status().trade_date,
                 },
             )
         )
@@ -154,6 +177,9 @@ class PipelineSubmissionMixin(PipelineState):
             accepted = self._submit_long_quote_event(event)
         else:
             accepted = self.submit_event(event)
+        planner = self._cadence
+        if planner is not None:
+            planner.record_submission(scheduled, accepted=accepted, at=scheduled.scheduled_at)
         if not accepted:
             if track_inflight:
                 with self._cadence_lock:
@@ -161,6 +187,45 @@ class PipelineSubmissionMixin(PipelineState):
         else:
             self._state.increment(f"cadence_{task.value}_submitted")
         return accepted
+
+    def _refresh_trading_session(self, at: datetime) -> TradingSessionStatus:
+        tracker = getattr(self, "_trading_session", None)
+        if not isinstance(tracker, TradingSessionTracker):
+            tracker = self._new_trading_session(at)
+        return tracker.refresh(at, self._calendar.is_trading_day)
+
+    def _current_session_status(self) -> TradingSessionStatus:
+        tracker = getattr(self, "_trading_session", None)
+        if not isinstance(tracker, TradingSessionTracker):
+            tracker = self._new_trading_session(self._now())
+        return tracker.status()
+
+    def _new_trading_session(self, at: datetime) -> TradingSessionTracker:
+        tracker = TradingSessionTracker(at)
+        tracker.add_rotation_hook(self._handle_session_rotation)
+        self._trading_session = tracker
+        return tracker
+
+    def _handle_session_rotation(self, status: TradingSessionStatus) -> None:
+        if self._cadence is not None:
+            self._cadence.rotate_session(
+                status.evaluated_at,
+                reason=status.discontinuity_reason or "session_rotated",
+            )
+        self._candidate_codes = ()
+        self._candidate_features = ()
+        self._market_features = ()
+        self._filter_reasons = {}
+        self._filter_details = ()
+        self._filtered_count = 0
+        self._live_overlays = {key: overlay for key, overlay in self._live_overlays.items() if overlay.closing}
+        with self._pending_hybrid_lock:
+            self._pending_hybrids.clear()
+        with self._async_review_lock:
+            self._async_review_pending.clear()
+        with self._cadence_lock:
+            self._scheduled_inflight.intersection_update({PipelineTask.FREEZE})
+        self._session_snapshot_ids.clear()
 
     def submit_event(self, event: PipelineEvent) -> bool:
         with self._lifecycle_lock:

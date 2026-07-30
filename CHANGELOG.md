@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求把 `start_stop.md` 相关修改完整提交。本批新增交易 session tracker、不可变
+  `FreezeAttempt`、调度点生命周期和进程级 `ShutdownDeadline`：状态 API 加法暴露
+  calendar、session generation、调度点和冻结重试；联合测试覆盖冷启动时间矩阵、日历
+  离线、时钟跳变、同对象重试、进程信号、队列 drain 及两套冻结仓储 kill point。
+
 - 用户指出收益挑战者要求 250 个严格点时交易日过重，并要求只保留硬过滤后的逐股研究数据。
   本批把 `docs/score.md` 重构为非生产实施计划：评价窗口最多 60 个交易日，固定为最多
   40 日历史点时回放加 20 日连续前向影子；全市场只临时使用硬过滤最小输入，硬拒绝股票仅
@@ -261,6 +266,15 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- 启动调度现在区分冷启动和持续运行迟到 tick：today 在 11:20 边界及以后启动永久
+  `missed`，tomorrow/d25 只在 14:50（含）至 15:00（不含）恢复有效检查点，15:00 起
+  只进入收盘恢复。交易日历无可靠结果时 fail closed 且不阻塞只读 Web；跨日、回拨、
+  wall/monotonic 偏差和休眠跳跃轮换 session generation 并拒绝旧结果。
+- 第一次 Ctrl+C、SIGTERM 或 Windows SIGBREAK 现在为 Web、scheduler、流水线、来源、
+  研究、shadow、缓存和 executor 创建同一个 30 秒绝对总期限；普通任务取消，已接纳的
+  freeze/risk 优先排空。第二次信号立即强制退出，期限到达以脱敏 report 和退出码 2
+  终止；关闭浏览器仍不会停止本地服务。
 
 - 观察池由“冻结后继续展示并进入历史”改为纯盘中内存投影；冻结边界起立即关闭，旧不可变
   文件不破坏性重写，但所有活动读取只投影其中的正式推荐。显式历史请求统一使用
@@ -618,6 +632,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复晚启动追补 today、14:50 后补发 cutoff/最终报价、任务入队前即被标记完成，以及
+  队列拒绝、SQLite/JSON 暂时失败或 P6 拒绝后不再重试的问题。冻结现在只重试同一
+  official-only 对象、ID、规范载荷和 SHA-256，pending afternoon attempt 会阻止不同的
+  close fallback 抢占。
+- 修复关闭 timeout 按组件重复累计、超时后无界 join、普通事件关闭时仍被排空、第二次
+  信号不能强退，以及 staged manifest 在任意 kill point 后可能永久占用交易日的问题。
+  恢复会完成同一载荷、清理未提交占位或对 committed 损坏 fail closed。
+
 - 修复冻结、`close_fallback` 和历史仍可能把已丢弃观察项解释成“达到评分门槛但被风险或
   执行拦截”的问题。正式空记录现在使用独立冻结空状态，观察诊断计数、门槛、逐股原因和
   最高分只按正式项重建；收盘补算返回、P6、状态、SSE、overlay 与磁盘统一使用同一个
@@ -901,6 +923,20 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 生命周期专项联合回归：
+  `tests/integration/test_start_stop_integration.py`、
+  `test_startup_scheduling.py`、`test_graceful_shutdown.py` 和
+  `tests/component/test_freeze_crash_recovery.py` 共 67 项通过；包含 SIGINT/SIGTERM
+  子进程、第二信号、绝对期限和持久化 kill-point 场景。
+- 最终 `make format-check` 覆盖 318 个文件，Ruff 与严格重构债务均为零诊断，mypy
+  211 个活动源码文件和完整 1113 项 pytest 通过；架构、`create_app()` 无副作用、
+  83.40 融合向量、预算并发、SSE 游标/慢客户端及冻结恢复/哈希契约均包含在全量门禁。
+  sdist/wheel 构建成功，最终 wheel 在仓库外全新虚拟环境安装全部声明依赖后
+  `pip check` 无破损，从 `site-packages` 导入 `trader`，`trader-cli --help`、
+  `validate-config` 及模板、CSS、JavaScript、SVG 共 17 项资源通过。主看板、long 看板和
+  tomorrow v2 在真实 headless Firefox 的 1280x720、1440x900、1920x1080 三档均通过，
+  无页面级横向溢出或浏览器错误，tomorrow overlay 未触发额外完整 current GET。
 
 - 本批新增/更新组件、契约、集成、原生 tomorrow 冻结和 JavaScript 状态机回归，覆盖
   观察代码及逐股元数据不进入文件、checkpoint/freeze/overlay 双层投影、旧冻结读取过滤、
@@ -1442,6 +1478,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除只读查询对空 `close_fallback` 的现场 replay/评分，以及关闭期限到达后的无界
+  worker join；重启不新增候选、观察池、历史预热、review、backoff、breaker 或 session
+  持久化文件。
+
 - 移除观察项在冻结检查点、正式/收盘补算 JSON、SQLite 推荐明细、closing overlay、归档
   backlog、收益结算和历史 API 中的持久化身份；移除冻结 today 的观察池锚点跟踪、盘后
   `close_fallback` 观察补位和只读重放生成观察项的兼容行为。未删除或改写旧不可变文件，
@@ -1539,6 +1579,11 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- Windows `SIGBREAK` 已有平台分支和可注入信号测试，但当前 Linux 验收环境不能完成
+  Windows 实机任务管理器、第二信号和无残留进程检查；发布到 Windows 前仍需一次实机
+  外部验收。强制结束、断电、第二次信号及 30 秒期限强退属于异常终止，只承诺正式冻结
+  的持久化恢复一致性，不承诺保留纯内存观察和预热状态。
 
 - 观察池不落盘后不能用于冻结后回测、收益结算或离线优化 73 分观察线；73 仍只是正式门槛
   78 减 5 分观察余量，不是已验证收益最优值。旧不可变文件仍可能物理包含历史观察项，但

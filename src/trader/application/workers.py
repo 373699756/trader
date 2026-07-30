@@ -8,7 +8,9 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import ParamSpec, Protocol, TypeVar
+from typing import ParamSpec, Protocol, TypeVar, cast
+
+from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -57,7 +59,7 @@ class BoundedExecutor:
             if self._urgent_worker_count
             else None
         )
-        self._lock = threading.Lock()
+        self._lock = threading.Condition(threading.RLock())
         self._executor: ThreadPoolExecutor | None = None
         self._urgent_executor: ThreadPoolExecutor | None = None
         self._running = False
@@ -71,6 +73,7 @@ class BoundedExecutor:
         self._urgent_inflight = 0
         self._normal_active_count = 0
         self._worker_idents: set[int] = set()
+        self._futures: set[Future[object]] = set()
 
     def start(self) -> bool:
         with self._lock:
@@ -171,20 +174,63 @@ class BoundedExecutor:
                     self._urgent_inflight -= 1
                 slots.release()
                 raise
+            self._futures.add(cast(Future[object], future))
         future.add_done_callback(partial(self._complete, urgent=use_urgent_lane))
         return future
 
-    def stop(self, *, wait: bool = True, cancel_futures: bool = False) -> None:
+    def stop(
+        self,
+        *,
+        wait: bool = True,
+        cancel_futures: bool = False,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownStep:
         with self._lock:
             if not self._running:
-                return
+                completed = self._inflight == 0
+                return ShutdownStep(
+                    name=self._thread_name_prefix,
+                    completed=completed,
+                    timed_out=not completed and deadline is not None and deadline.expired,
+                )
             self._running = False
             executor = self._executor
             urgent_executor = self._urgent_executor
+            futures = tuple(self._futures)
+        cancelled = sum(future.cancel() for future in futures) if cancel_futures else 0
+        if deadline is None:
+            if executor is not None:
+                executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+            if urgent_executor is not None:
+                urgent_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+            with self._lock:
+                completed = self._inflight == 0
+            return ShutdownStep(
+                name=self._thread_name_prefix,
+                completed=completed,
+                timed_out=False,
+                cancelled_count=cancelled,
+            )
+        if wait:
+            with self._lock:
+                while self._inflight:
+                    remaining = deadline.remaining_seconds()
+                    if remaining <= 0.0:
+                        break
+                    self._lock.wait(remaining)
+        with self._lock:
+            completed = self._inflight == 0
         if executor is not None:
-            executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+            executor.shutdown(wait=completed, cancel_futures=True)
         if urgent_executor is not None:
-            urgent_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+            urgent_executor.shutdown(wait=completed, cancel_futures=True)
+        return ShutdownStep(
+            name=self._thread_name_prefix,
+            completed=completed,
+            timed_out=wait and not completed and deadline.expired,
+            cancelled_count=cancelled,
+            detail="inflight workers remain at shutdown deadline" if not completed else "",
+        )
 
     def status(self) -> dict[str, object]:
         with self._lock:
@@ -220,13 +266,15 @@ class BoundedExecutor:
     def worker_count(self) -> int:
         return self._worker_count
 
-    def _complete(self, _future: Future[_T], *, urgent: bool) -> None:
+    def _complete(self, future: Future[_T], *, urgent: bool) -> None:
         with self._lock:
+            self._futures.discard(cast(Future[object], future))
             self._completed_count += 1
             self._inflight -= 1
             if urgent:
                 self._urgent_completed_count += 1
                 self._urgent_inflight -= 1
+            self._lock.notify_all()
         slots = self._urgent_slots if urgent else self._normal_slots
         if slots is not None:
             slots.release()

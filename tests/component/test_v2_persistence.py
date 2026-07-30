@@ -502,7 +502,7 @@ def test_committed_freeze_is_immediately_readable_without_draft_pointer(tmp_path
     assert latest.frozen is True
 
 
-def test_recovery_quarantines_hash_mismatch(tmp_path) -> None:
+def test_recovery_rebuilds_staged_hash_mismatch_from_sealed_payload(tmp_path) -> None:
     def crash(stage: str) -> None:
         if stage == "frozen_file_created":
             raise SimulatedCrash
@@ -516,10 +516,17 @@ def test_recovery_quarantines_hash_mismatch(tmp_path) -> None:
 
     result = SnapshotRepository(tmp_path, config_version="runtime-v2").recover()
 
-    assert result.quarantined == 1
+    assert result.recovered == 1
+    assert result.quarantined == 0
     with connect(tmp_path / "runtime.sqlite3") as connection:
         status = connection.execute("SELECT status FROM frozen_snapshots").fetchone()[0]
-    assert status == "quarantined"
+    assert status == "committed"
+    recovered = SnapshotRepository(tmp_path, config_version="runtime-v2").load_frozen(
+        Strategy.TOMORROW,
+        "2026-07-16",
+    )
+    assert recovered is not None
+    assert recovered.snapshot_id == "snapshot-1"
 
 
 def test_recovery_quarantines_committed_hash_mismatch_and_restores_previous_freeze(tmp_path) -> None:

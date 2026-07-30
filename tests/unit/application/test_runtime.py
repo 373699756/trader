@@ -7,6 +7,7 @@ import pytest
 
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.schedule import SHANGHAI
+from trader.application.shutdown import ShutdownDeadline
 
 
 def test_supervisor_initializes_starts_ticks_and_stops() -> None:
@@ -54,14 +55,12 @@ def test_supervisor_does_not_restart_after_shutdown() -> None:
         supervisor.start()
 
 
-def test_supervisor_waits_for_blocked_scheduler_before_returning() -> None:
+def test_supervisor_does_not_wait_without_bound_after_blocked_scheduler() -> None:
     pipeline = BlockingTickPipeline()
     errors: list[str] = []
-    shutdown_timed_out = threading.Event()
 
     def record_error(error: str) -> None:
         errors.append(error)
-        shutdown_timed_out.set()
 
     supervisor = RuntimeSupervisor(
         pipeline,
@@ -75,21 +74,20 @@ def test_supervisor_waits_for_blocked_scheduler_before_returning() -> None:
     )
     assert supervisor.start() is True
     assert pipeline.tick_started.wait(timeout=1.0)
-    stopper = threading.Thread(target=supervisor.stop, name="test-supervisor-stop")
 
     try:
-        stopper.start()
-        assert shutdown_timed_out.wait(timeout=1.0)
-        assert stopper.is_alive()
+        deadline = ShutdownDeadline.start(0.05)
+        report = supervisor.stop(deadline)
+
+        assert report.completed is False
+        assert report.steps[0].name == "scheduler"
+        assert report.steps[0].timed_out is True
         assert errors == ["scheduler shutdown exceeded timeout"]
     finally:
         pipeline.allow_tick.set()
-        stopper.join(timeout=1.0)
-        supervisor.stop()
+        supervisor.stop(ShutdownDeadline.start(1.0))
 
-    assert not stopper.is_alive()
     assert pipeline.stopped == 1
-    assert "trader-scheduler" not in {thread.name for thread in threading.enumerate()}
 
 
 def test_supervisor_scheduler_start_interruption_stops_started_pipeline(monkeypatch) -> None:
@@ -105,9 +103,11 @@ def test_supervisor_scheduler_start_interruption_stops_started_pipeline(monkeypa
     )
 
     def interrupt_scheduler_start(thread: threading.Thread) -> None:
-        assert thread.name == "trader-scheduler"
-        raise KeyboardInterrupt
+        if thread.name == "trader-scheduler":
+            raise KeyboardInterrupt
+        original_start(thread)
 
+    original_start = threading.Thread.start
     monkeypatch.setattr(threading.Thread, "start", interrupt_scheduler_start)
 
     with pytest.raises(KeyboardInterrupt):

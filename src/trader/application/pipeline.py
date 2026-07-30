@@ -6,12 +6,13 @@ import logging
 import threading
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from trader.application.cadence import (
     CadencePlanner,
     PipelineTask,
+    SchedulePointResult,
 )
 from trader.application.events import (
     BoundedEventQueue,
@@ -32,11 +33,13 @@ from trader.application.ports.market import MarketDataDeadlineExceededError, Res
 from trader.application.research_coordination import ResearchCoordinator
 from trader.application.schedule import (
     MarketPhase,
+    SchedulePoint,
     decision_at,
-    freeze_due_at,
     shanghai_now,
+    startup_freeze_strategies,
     trade_date_at,
 )
+from trader.application.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.application.snapshot_publication import admit_snapshot_to_p6
 from trader.application.snapshot_workflow import (
     freeze_available_snapshots,
@@ -44,6 +47,7 @@ from trader.application.snapshot_workflow import (
     refresh_live_overlays,
 )
 from trader.application.source_lanes import LatestRequestLane, SourceRequestSupersededError
+from trader.application.trading_session import TradingSessionStatus, TradingSessionTracker
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
@@ -91,6 +95,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._options_decision_execution_mode = options.decision_execution_mode
         self._candidate_pool_size = options.candidate_pool_size
         self._now = dependencies.now
+        self._trading_session = dependencies.trading_session or TradingSessionTracker(self._now())
+        self._trading_session.add_rotation_hook(self._handle_session_rotation)
         self._long_projection = LongQuoteProjectionService(
             codes=options.long_codes,
             items=options.long_items,
@@ -100,7 +106,11 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._tomorrow_native_inputs = dependencies.tomorrow_native_inputs
         self._latency = dependencies.latency or LatencyWaterfall()
         self._market_data_manages_workers = options.market_data_manages_workers
-        self._cadence = CadencePlanner(options.cadence_policy) if options.cadence_policy is not None else None
+        self._cadence = (
+            CadencePlanner(options.cadence_policy, started_at=self._now())
+            if options.cadence_policy is not None
+            else None
+        )
 
     def _configure_workers(
         self,
@@ -265,9 +275,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         now = self._now()
         trade_day = trade_date_at(now)
         trade_day_iso = trade_day.isoformat()
-        freeze_targets = freeze_due_at(now, is_trading_day=self._calendar.is_trading_day(trade_day))
-        if shanghai_now(now).time().replace(tzinfo=None) > time(11, 20):
-            freeze_targets = tuple(target for target in freeze_targets if target != Strategy.TODAY.value)
+        session = self._refresh_trading_session(now)
+        freeze_targets = startup_freeze_strategies(now, is_trading_day=session.is_trading_day is True)
         if freeze_targets:
             freeze_targets = tuple(
                 target
@@ -279,6 +288,22 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 )
             )
         return self._freeze_available_snapshots(now, freeze_targets)
+
+    def session_status(self) -> TradingSessionStatus:
+        return self._trading_session.status()
+
+    def observe_clock(
+        self,
+        wall_at: datetime,
+        *,
+        monotonic_seconds: float,
+        planned_interval_seconds: float,
+    ) -> TradingSessionStatus:
+        return self._trading_session.observe_clock(
+            wall_at,
+            monotonic_seconds=monotonic_seconds,
+            planned_interval_seconds=planned_interval_seconds,
+        )
 
     def start(self) -> bool:
         with self._lifecycle_lock:
@@ -318,32 +343,50 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             self._state.mark_started(True)
             return True
 
-    def stop(self, timeout_seconds: float = 15.0) -> None:
+    def stop(
+        self,
+        timeout_seconds: float = 15.0,
+        *,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownReport:
+        deadline = deadline or ShutdownDeadline.start(timeout_seconds)
         with self._lifecycle_lock:
             if self._stopped:
-                return
+                return ShutdownReport.from_steps(deadline, ())
             self._accepting = False
             self._stopped = True
             self._stop_event.set()
-            self._queue.close()
+            queue_result = self._queue.close(ledger=self._event_audit)
             worker = self._worker
         if worker is not None and worker is not threading.current_thread():
-            worker.join(max(0.0, timeout_seconds))
-            if worker.is_alive():
-                self._state.record_error("pipeline shutdown exceeded timeout while draining events")
-                worker.join()
-        self._overlay_lane.stop(wait=True, timeout_seconds=max(0.0, timeout_seconds))
-        self._long_quote_lane.stop(wait=True, timeout_seconds=max(0.0, timeout_seconds))
-        self._research_coordinator.stop(
-            wait=True,
-            timeout_seconds=max(0.0, timeout_seconds),
-        )
+            worker.join(deadline.remaining_seconds())
+        merge_completed = worker is None or not worker.is_alive()
+        if not merge_completed:
+            self._state.record_error("pipeline shutdown exceeded deadline while draining priority events")
+        steps = [
+            ShutdownStep(
+                name="event-queue",
+                completed=True,
+                timed_out=False,
+                cancelled_count=len(queue_result.cancelled_event_ids),
+            ),
+            ShutdownStep(
+                name="merge",
+                completed=merge_completed,
+                timed_out=not merge_completed and deadline.expired,
+                detail="priority events remain inflight" if not merge_completed else "",
+            ),
+            self._overlay_lane.stop(wait=True, deadline=deadline),
+            self._long_quote_lane.stop(wait=True, deadline=deadline),
+            self._research_coordinator.stop(wait=True, deadline=deadline),
+        ]
         for pool in self._compute_pools:
-            pool.stop()
-        self._engine.stop()
-        self._persistence_pool.stop()
+            steps.append(pool.stop(wait=True, cancel_futures=True, deadline=deadline))
+        steps.extend(self._engine.stop(deadline=deadline))
+        steps.append(self._persistence_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
         self._persistence_running = False
         self._state.mark_started(False)
+        return ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
 
     def _company_research_codes(self, observed_at: datetime) -> tuple[str, ...]:
         trade_date = trade_date_at(observed_at).isoformat()
@@ -380,9 +423,10 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         if self._decision_execution_mode != "versioned_dag" or not result.changed_codes:
             return
         completed_at = result.completed_at or self._now()
+        session = self._refresh_trading_session(completed_at)
         phase = decision_at(
             completed_at,
-            is_trading_day=self._calendar.is_trading_day(trade_date_at(completed_at)),
+            is_trading_day=session.is_trading_day is True,
         ).phase
         if phase is MarketPhase.CLOSED:
             return
@@ -402,6 +446,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
                 payload={
                     "schedule_task": PipelineTask.SCORE.value,
                     "trigger_event_type": PipelineTask.STOCK_RISK.value,
+                    "session_generation": session.generation,
+                    "session_trade_date": session.trade_date,
                 },
             )
         )
@@ -415,8 +461,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._latency.plan(correlation_id, "run_once")
         self._latency.enter(correlation_id)
         try:
-            trade_day = trade_date_at(at)
-            is_trading_day = self._calendar.is_trading_day(trade_day)
+            session = self._refresh_trading_session(at)
+            is_trading_day = session.is_trading_day is True
             decision = decision_at(at, is_trading_day=is_trading_day)
             self._state.record_tick(decision.phase.value, at)
             if decision.phase is MarketPhase.CLOSED:
@@ -451,6 +497,9 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
 
     def _process_event(self, event: PipelineEvent) -> None:
         self._latency.enter(event.event_id)
+        if not self._event_matches_session(event):
+            self._reject_stale_session_event(event)
+            return
         if event.priority > EventPriority.RISK and not self._event_audit.reserve_event(
             event.audit_record(status=EventStatus.PENDING)
         ):
@@ -469,6 +518,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._ensure_event_deadline(event, "before")
         process_event_on_workers(self, event)
         self._ensure_event_deadline(event, "during")
+        self._record_schedule_result(event, SchedulePointResult.COMPLETED)
         if not self._event_audit.compare_and_set_event(
             event.event_id,
             expected_status=EventStatus.RUNNING,
@@ -500,6 +550,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         except Exception:
             _LOGGER.exception("pipeline event expiration state could not be recorded in memory")
         self._state.increment("events_expired")
+        self._record_schedule_result(event, SchedulePointResult.RETRY)
         self._latency.finish(event.event_id, outcome="timeout")
 
     def _fail_event(self, event: PipelineEvent, error: Exception) -> None:
@@ -516,7 +567,48 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
             _LOGGER.exception("pipeline event failure state could not be recorded in memory")
         self._state.increment("events_failed")
         self._state.record_error(str(error))
+        self._record_schedule_result(event, SchedulePointResult.RETRY)
         self._latency.finish(event.event_id, outcome="failed")
+
+    def _event_matches_session(self, event: PipelineEvent) -> bool:
+        generation = event.payload.get("session_generation")
+        trade_date = event.payload.get("session_trade_date")
+        if not isinstance(generation, int) or isinstance(generation, bool) or not isinstance(trade_date, str):
+            return True
+        return self._trading_session.accepts(generation, trade_date)
+
+    def _reject_stale_session_event(self, event: PipelineEvent) -> None:
+        if event.priority <= EventPriority.RISK:
+            self._event_audit.compare_and_set_event(
+                event.event_id,
+                expected_status=EventStatus.PENDING,
+                status=EventStatus.FAILED,
+                retry_count=event.retry_count,
+                error="stale_session_generation",
+            )
+        self._state.increment("events_stale_session_rejected")
+        self._record_schedule_result(event, SchedulePointResult.RETRY)
+        self._latency.finish(event.event_id, outcome="superseded")
+
+    def _record_schedule_result(self, event: PipelineEvent, result: SchedulePointResult) -> None:
+        planner = self._cadence
+        raw_point = event.payload.get("schedule_point")
+        if planner is None or not isinstance(raw_point, str) or not raw_point:
+            return
+        try:
+            point = SchedulePoint(raw_point)
+        except ValueError:
+            return
+        if point in {SchedulePoint.TODAY_FREEZE, SchedulePoint.AFTERNOON_FREEZE}:
+            if result is SchedulePointResult.COMPLETED:
+                return
+            raw_strategies = event.payload.get("freeze_strategies")
+            strategies = tuple(str(value) for value in raw_strategies) if isinstance(raw_strategies, tuple) else ()
+            for strategy in strategies:
+                planner.record_point_result(event.trade_date, point, strategy, result, at=self._now())
+            return
+        strategy = "today" if point is SchedulePoint.TODAY_CHECKPOINT else "-"
+        planner.record_point_result(event.trade_date, point, strategy, result, at=self._now())
 
     def _finish_event(self, event: PipelineEvent) -> None:
         task_raw = event.payload.get("schedule_task")

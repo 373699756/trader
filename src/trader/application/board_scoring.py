@@ -11,6 +11,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, replace
 
 from trader.application.board_scoring_cache import BoardScoringCache, ScoringCacheContext
+from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import (
     Board,
@@ -110,7 +111,7 @@ class _LatestBoardLane:
         submitted.add_done_callback(self._drain_pending)
         return submitted
 
-    def stop(self) -> None:
+    def stop(self, *, deadline: ShutdownDeadline | None = None) -> ShutdownStep:
         with self._lock:
             self._accepting = False
             pending = tuple(self._pending.values())
@@ -118,7 +119,7 @@ class _LatestBoardLane:
         for _operation, proxy in pending:
             if not proxy.done():
                 proxy.set_exception(RuntimeError("board scoring lane stopped before pending task started"))
-        self._executor.stop(wait=True, cancel_futures=True)
+        return self._executor.stop(wait=True, cancel_futures=True, deadline=deadline)
 
     def status(self) -> Mapping[str, int | float | bool]:
         status = self._executor.status()
@@ -202,13 +203,12 @@ class BoardScoringCoordinator:
                 raise
             self._running = True
 
-    def stop(self) -> None:
+    def stop(self, *, deadline: ShutdownDeadline | None = None) -> tuple[ShutdownStep, ...]:
         with self._lock:
             if not self._running:
-                return
+                return ()
             self._running = False
-        for lane in self._lanes.values():
-            lane.stop()
+        return tuple(lane.stop(deadline=deadline) for lane in self._lanes.values())
 
     def enrich(
         self,

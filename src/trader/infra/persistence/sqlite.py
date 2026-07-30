@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def connect(database_path: Path) -> sqlite3.Connection:
@@ -59,7 +59,18 @@ def initialize_database(database_path: Path) -> None:
                 status TEXT NOT NULL CHECK(status IN ('staged', 'committed', 'quarantined')),
                 error TEXT NOT NULL DEFAULT '',
                 anchor_json TEXT NOT NULL DEFAULT '{}',
+                recovery_payload BLOB,
+                recovery_sha256 TEXT NOT NULL DEFAULT '',
                 UNIQUE(strategy, recommend_date)
+            );
+
+            CREATE TABLE IF NOT EXISTS freeze_quarantine_audit(
+                audit_key TEXT PRIMARY KEY,
+                snapshot_id TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                recommend_date TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                reason TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS recommendations(
@@ -281,6 +292,18 @@ MIGRATIONS: dict[int, list[str]] = {
             atr20_pct REAL NOT NULL,
             archive_relative_path TEXT NOT NULL,
             PRIMARY KEY(snapshot_id, stock_code)
+        )""",
+    ],
+    10: [
+        "ALTER TABLE frozen_snapshots ADD COLUMN recovery_payload BLOB",
+        "ALTER TABLE frozen_snapshots ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
+        """CREATE TABLE IF NOT EXISTS freeze_quarantine_audit(
+            audit_key TEXT PRIMARY KEY,
+            snapshot_id TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            recommend_date TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            reason TEXT NOT NULL
         )""",
     ],
 }

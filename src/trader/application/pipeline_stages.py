@@ -202,7 +202,11 @@ def _overlay_event_for_close(
             config_version=event.config_version,
             created_at=observed_at,
             deadline=observed_at + timedelta(seconds=task_execution_budget_seconds(PipelineTask.TOPK_QUOTES) or 3.0),
-            payload={"overlay_trigger": PipelineTask.CLOSE_QUOTES.value},
+            payload={
+                "overlay_trigger": PipelineTask.CLOSE_QUOTES.value,
+                "session_generation": event.payload.get("session_generation"),
+                "session_trade_date": event.payload.get("session_trade_date"),
+            },
         )
     )
 
@@ -316,6 +320,8 @@ def _submit_triggered_score(
             payload={
                 "schedule_task": PipelineTask.SCORE.value,
                 "trigger_event_type": source_event.event_type,
+                "session_generation": source_event.payload.get("session_generation"),
+                "session_trade_date": source_event.payload.get("session_trade_date"),
             },
         )
     )

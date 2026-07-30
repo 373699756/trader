@@ -149,6 +149,10 @@ def test_system_start_failure_stops_shadow_worker_with_shutdown_budget() -> None
     with pytest.raises(RuntimeError, match="initializer failed"):
         system.start()
 
-    history_pool.stop.assert_called_once_with(wait=True, cancel_futures=True)
-    research_pool.stop.assert_called_once_with(wait=True, cancel_futures=True)
-    shadow_worker.stop.assert_called_once_with(wait=True, timeout_seconds=7.0)
+    history_deadline = history_pool.stop.call_args.kwargs["deadline"]
+    assert history_deadline is research_pool.stop.call_args.kwargs["deadline"]
+    assert history_deadline is shadow_worker.stop.call_args.kwargs["deadline"]
+    assert history_deadline.timeout_seconds == 7.0
+    history_pool.stop.assert_called_once_with(wait=True, cancel_futures=True, deadline=history_deadline)
+    research_pool.stop.assert_called_once_with(wait=True, cancel_futures=True, deadline=history_deadline)
+    shadow_worker.stop.assert_called_once_with(wait=True, deadline=history_deadline)

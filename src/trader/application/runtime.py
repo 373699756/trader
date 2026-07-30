@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
 from trader.application.schedule import MarketPhase, phase_at, seconds_until_next_schedule_boundary
+from trader.application.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,7 +20,12 @@ _LOGGER = logging.getLogger(__name__)
 class ScheduledPipeline(Protocol):
     def start(self) -> bool: ...
 
-    def stop(self, timeout_seconds: float = 15.0) -> None: ...
+    def stop(
+        self,
+        timeout_seconds: float = 15.0,
+        *,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownReport: ...
 
     def submit_tick(self, at: datetime | None = None) -> bool: ...
 
@@ -30,6 +38,7 @@ class RuntimeSupervisorConfig:
     initializers: Sequence[Callable[[], object]]
     interval_seconds: Callable[[datetime], float]
     shutdown_timeout_seconds: float
+    monotonic: Callable[[], float] = time.monotonic
     record_error: Callable[[str], None] | None = None
 
 
@@ -44,6 +53,7 @@ class RuntimeSupervisor:
         self._initializers = tuple(config.initializers)
         self._interval_seconds = config.interval_seconds
         self._shutdown_timeout_seconds = max(0.1, config.shutdown_timeout_seconds)
+        self._monotonic = config.monotonic
         self._record_error = config.record_error or (lambda _error: None)
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -51,6 +61,7 @@ class RuntimeSupervisor:
         self._initialized = False
         self._pipeline_started = False
         self._stopped = False
+        self._shutdown_report: ShutdownReport | None = None
 
     def start(self) -> bool:
         with self._lock:
@@ -71,35 +82,99 @@ class RuntimeSupervisor:
             try:
                 scheduler.start()
             except BaseException:
-                self._pipeline.stop(self._shutdown_timeout_seconds)
+                self._stop_pipeline(ShutdownDeadline.start(self._shutdown_timeout_seconds))
                 self._pipeline_started = False
                 self._scheduler = None
                 raise
             return True
 
-    def stop(self) -> None:
+    def stop(self, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
+        deadline = deadline or ShutdownDeadline.start(self._shutdown_timeout_seconds)
         with self._lock:
             if self._stopped:
-                return
+                return self._shutdown_report or ShutdownReport.from_steps(deadline, ())
             self._stopped = True
             self._stop_event.set()
             scheduler = self._scheduler
         if scheduler is not None and scheduler is not threading.current_thread():
-            scheduler.join(self._shutdown_timeout_seconds)
+            scheduler.join(deadline.remaining_seconds())
             scheduler_timed_out = scheduler.is_alive()
         else:
             scheduler_timed_out = False
+        scheduler_step = ShutdownStep(
+            name="scheduler",
+            completed=not scheduler_timed_out,
+            timed_out=scheduler_timed_out,
+            detail="scheduler shutdown exceeded timeout" if scheduler_timed_out else "",
+        )
+        pipeline_step = ShutdownStep(name="pipeline", completed=True, timed_out=False)
         if self._pipeline_started:
-            self._pipeline.stop(self._shutdown_timeout_seconds)
+            pipeline_step = self._stop_pipeline(deadline)
             self._pipeline_started = False
         if scheduler_timed_out and scheduler is not None:
             self._record_error("scheduler shutdown exceeded timeout")
-            scheduler.join()
+        report = ShutdownReport.from_steps(deadline, (scheduler_step, pipeline_step))
+        with self._lock:
+            self._shutdown_report = report
+        return report
+
+    def _stop_pipeline(self, deadline: ShutdownDeadline) -> ShutdownStep:
+        completed = threading.Event()
+        error: list[BaseException] = []
+        result: list[object] = []
+
+        def stop_pipeline() -> None:
+            try:
+                stop_method = self._pipeline.stop
+                if "deadline" in inspect.signature(stop_method).parameters:
+                    result.append(stop_method(deadline=deadline))
+                else:
+                    result.append(stop_method(deadline.remaining_seconds()))
+            except BaseException as exc:
+                error.append(exc)
+            finally:
+                completed.set()
+
+        stopper = threading.Thread(
+            target=stop_pipeline,
+            name="trader-pipeline-stop",
+            daemon=True,
+        )
+        stopper.start()
+        finished = completed.wait(deadline.remaining_seconds())
+        detail = ""
+        if error:
+            detail = f"pipeline shutdown failed:{type(error[0]).__name__}"
+            self._record_error(detail)
+        elif not finished:
+            detail = "pipeline shutdown exceeded timeout"
+            self._record_error(detail)
+        pipeline_completed = finished and not error
+        pipeline_timed_out = not finished
+        if finished and not error and result and isinstance(result[0], ShutdownReport):
+            pipeline_completed = result[0].completed
+            pipeline_timed_out = result[0].forced or any(step.timed_out for step in result[0].steps)
+            if not pipeline_completed:
+                detail = "pipeline reported incomplete shutdown"
+        return ShutdownStep(
+            name="pipeline",
+            completed=pipeline_completed,
+            timed_out=pipeline_timed_out,
+            detail=detail,
+        )
 
     def _scheduler_loop(self) -> None:
+        planned_interval = max(0.05, self._interval_seconds(self._now()))
         while not self._stop_event.is_set():
             now = self._now()
             try:
+                observe_clock = getattr(self._pipeline, "observe_clock", None)
+                if callable(observe_clock):
+                    observe_clock(
+                        now,
+                        monotonic_seconds=self._monotonic(),
+                        planned_interval_seconds=planned_interval,
+                    )
                 submit_due = getattr(self._pipeline, "submit_due", None)
                 if callable(submit_due):
                     interval = float(submit_due(now))
@@ -110,7 +185,8 @@ class RuntimeSupervisor:
                 _LOGGER.exception("runtime schedule tick failed")
                 self._record_error(str(exc))
                 interval = self._interval_seconds(self._now())
-            self._stop_event.wait(max(0.05, interval))
+            planned_interval = max(0.05, interval)
+            self._stop_event.wait(planned_interval)
 
 
 def scheduler_interval_seconds(at: datetime) -> float:

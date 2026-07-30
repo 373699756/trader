@@ -29,6 +29,7 @@ from trader.application.ports.tomorrow import TomorrowNativeInputPort
 from trader.application.publisher import SnapshotPublisher
 from trader.application.research_coordination import ResearchCoordinator
 from trader.application.status import RuntimeState
+from trader.application.trading_session import TradingSessionTracker
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
@@ -75,6 +76,7 @@ class PipelineState:
     _latency: LatencyWaterfall
     _decision_execution_mode: str
     _research_coordinator: ResearchCoordinator
+    _trading_session: TradingSessionTracker
 
     _freshness_status: Callable[..., Mapping[str, object]]
     _submit_overlay_event: Callable[[PipelineEvent], bool]

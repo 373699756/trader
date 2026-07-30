@@ -7,10 +7,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
 from trader.application.cadence import PipelineTask, freshness_level
+from trader.application.freeze_attempts import FreezeAttemptStore
 from trader.application.pipeline_state import PipelineState
 from trader.application.pipeline_workers import worker_status
+from trader.application.quote_freshness import long_quote_age, topk_quote_age
 from trader.application.schedule import MarketPhase
-from trader.application.snapshot_workflow import long_quote_age, topk_quote_age
+from trader.application.trading_session import TradingSessionTracker
 from trader.domain.recommendation.models import Strategy
 
 if TYPE_CHECKING:
@@ -65,6 +67,18 @@ class PipelineStatusMixin(PipelineState):
             if (snapshot := self._state.latest(strategy)) is not None
             for item in snapshot.recommendations
         )
+        session_tracker = getattr(self, "_trading_session", None)
+        session_status: Mapping[str, object] = (
+            session_tracker.snapshot()
+            if isinstance(session_tracker, TradingSessionTracker)
+            else {"calendar_state": "unknown"}
+        )
+        freeze_attempts = getattr(self, "_freeze_attempts", None)
+        freeze_retry_status: Mapping[str, object] = (
+            freeze_attempts.status()
+            if isinstance(freeze_attempts, FreezeAttemptStore)
+            else {"attempts": 0, "active": 0, "completed": 0, "missed": 0, "retry_wait": 0}
+        )
         dependencies = {
             "decision_execution_mode": self._decision_execution_mode,
             "market_data": market_data,
@@ -73,6 +87,8 @@ class PipelineStatusMixin(PipelineState):
             "event_queue": self._queue.status(),
             "worker_pools": worker_status(cast("RecommendationPipeline", self)),
             "cadence": cadence_status,
+            "trading_session": session_status,
+            "freeze_attempts": freeze_retry_status,
             "publisher": self._publisher.status(),
             "published_snapshots": dict(self._published_snapshots.status()),
             "latency_waterfall": dict(self._latency.status()),

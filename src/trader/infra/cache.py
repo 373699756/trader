@@ -21,6 +21,7 @@ from trader.application.cache import (
     canonical_json_bytes,
     freeze_cache_value,
 )
+from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 
 _T = TypeVar("_T")
 
@@ -268,15 +269,29 @@ class BoundedLruCache(Generic[_T]):
                 }
             return result
 
-    def stop(self, *, wait: bool = True, timeout_seconds: float | None = None) -> None:
-        deadline = None if timeout_seconds is None else time.monotonic() + max(0.0, timeout_seconds)
+    def stop(
+        self,
+        *,
+        wait: bool = True,
+        timeout_seconds: float | None = None,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownStep:
+        expires_at = (
+            None if timeout_seconds is None or deadline is not None else time.monotonic() + max(0.0, timeout_seconds)
+        )
         with self._condition:
             self._stopped = True
             while wait and self._inflight:
-                if deadline is None:
+                if deadline is not None:
+                    remaining = deadline.remaining_seconds()
+                    if remaining <= 0.0:
+                        break
+                    self._condition.wait(remaining)
+                    continue
+                if expires_at is None:
                     self._condition.wait()
                     continue
-                remaining = deadline - time.monotonic()
+                remaining = expires_at - time.monotonic()
                 if remaining <= 0:
                     break
                 self._condition.wait(remaining)
@@ -287,6 +302,14 @@ class BoundedLruCache(Generic[_T]):
                 if not future.done():
                     future.set_exception(RuntimeError("cache stopped during load"))
             self._condition.notify_all()
+            completed = not remaining_futures
+        return ShutdownStep(
+            name="market-cache",
+            completed=completed,
+            timed_out=not completed and deadline is not None and deadline.expired,
+            cancelled_count=len(remaining_futures),
+            detail="cache loads remained inflight" if not completed else "",
+        )
 
     @property
     def inflight_count(self) -> int:

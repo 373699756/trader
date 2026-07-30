@@ -46,6 +46,17 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 
 兼容旧用法的 `HOST` 和 `PORT` 会在启动脚本边界映射为 `TRADER_HOST` 和 `TRADER_PORT`。应用内部只读取 v2 环境变量。
 
+## 关闭与重启
+
+在运行服务的终端按一次 Ctrl+C 会开始安全关闭，Web、冻结任务和后台资源共享一个最长
+30 秒的总期限；不是每个组件分别等待 30 秒。关闭期间再次按 Ctrl+C 会立即强制退出。
+Linux/macOS 的正常 `SIGTERM` 和 Windows `SIGBREAK` 使用相同规则。关闭浏览器不会停止
+服务。
+
+正常重启会重新预热行情、候选、观察池和研究/review 等纯内存状态；正式推荐、合法检查点、
+预算、证据、收盘 overlay 和结算记录按持久化契约恢复。强制结束进程或断电属于异常终止，
+正式冻结会在下次启动时按 manifest、恢复载荷和 SHA-256 校验恢复或 fail closed。
+
 ## 手动安装
 
 ```bash

@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING
+from enum import Enum
+from typing import TYPE_CHECKING, Protocol, cast
 
 from trader.application.after_close_recovery import recover_after_close_snapshots
+from trader.application.cadence import SchedulePointResult
 from trader.application.candidate_features import fetch_strategy_features
+from trader.application.freeze_attempts import FreezeAttempt, FreezeAttemptKey, FreezeAttemptStore
 from trader.application.long_quotes import refresh_long_quotes
 from trader.application.official_records import official_snapshot
 from trader.application.pipeline_market_tasks import _refresh_intraday_tail_before_score
@@ -29,9 +31,8 @@ from trader.application.pipeline_workers import submit_required_urgent
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.recommendation_finalization import PreparedSnapshot
-from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
+from trader.application.schedule import MarketPhase, SchedulePoint, shanghai_now, trade_date_at
 from trader.application.snapshot_publication import admit_snapshot_to_p6
-from trader.application.status import RuntimeState
 from trader.domain.market.models import LiveQuote, MarketQuote
 from trader.domain.recommendation.models import (
     LiveOverlay,
@@ -52,6 +53,16 @@ class _OverlayTarget:
     snapshot: RecommendationSnapshot
     codes: tuple[str, ...]
     existing: LiveOverlay | None
+
+
+class _FreezeCommitOutcome(str, Enum):
+    COMMITTED = "committed"
+    RETRY = "retry"
+    CONFLICT = "conflict"
+
+
+class _FreezeAttemptOwner(Protocol):
+    _freeze_attempts: FreezeAttemptStore
 
 
 def process_schedule(
@@ -108,21 +119,132 @@ def freeze_available_snapshots(
 ) -> tuple[RecommendationSnapshot, ...]:
     snapshots: list[RecommendationSnapshot] = []
     trade_date = trade_date_at(now).isoformat()
+    attempts = _freeze_attempt_store(pipeline)
     for raw_strategy in freeze_strategies:
         strategy = Strategy(raw_strategy)
-        key = (strategy, trade_date)
-        if key in pipeline._frozen_keys or pipeline._state.is_frozen(strategy, trade_date):
+        if _restore_or_retry_frozen(pipeline, attempts, strategy, trade_date, now):
             continue
-
-        if _restore_existing_frozen(pipeline, strategy, trade_date):
+        attempt = _ensure_freeze_attempt(pipeline, attempts, strategy, trade_date, now)
+        if attempt is None:
             continue
-
-        prepared = _prepare_frozen_snapshot(pipeline, strategy, trade_date, now)
-        if prepared is None:
-            continue
-        frozen, boundary = prepared
-        snapshots.extend(_commit_frozen_snapshot(pipeline, frozen, key, boundary))
+        committed = _commit_freeze_attempt(pipeline, attempts, now, attempt)
+        snapshots.extend(committed)
     return tuple(snapshots)
+
+
+def _restore_or_retry_frozen(
+    pipeline: RecommendationPipeline,
+    attempts: FreezeAttemptStore,
+    strategy: Strategy,
+    trade_date: str,
+    now: datetime,
+) -> bool:
+    key = FreezeAttemptKey(strategy.value, trade_date)
+    if (strategy, trade_date) in pipeline._frozen_keys or pipeline._state.is_frozen(strategy, trade_date):
+        attempts.mark_completed(key)
+        _record_freeze_result(pipeline, strategy, trade_date, SchedulePointResult.COMPLETED, now)
+        return True
+    restored = _restore_existing_frozen(pipeline, strategy, trade_date)
+    if restored is True:
+        attempts.mark_completed(key)
+        _record_freeze_result(pipeline, strategy, trade_date, SchedulePointResult.COMPLETED, now)
+        return True
+    if restored is None:
+        return False
+    if attempts.get(key) is None:
+        _seal_retryable_snapshot(pipeline, attempts, strategy, trade_date, now)
+    _retry_freeze_attempt(pipeline, attempts, strategy, trade_date, now)
+    return True
+
+
+def _seal_retryable_snapshot(
+    pipeline: RecommendationPipeline,
+    attempts: FreezeAttemptStore,
+    strategy: Strategy,
+    trade_date: str,
+    now: datetime,
+) -> None:
+    try:
+        prepared = _prepare_frozen_snapshot(pipeline, strategy, trade_date, now)
+    except (OSError, RuntimeError, ValueError) as exc:
+        pipeline._state.record_error(f"{strategy.value} freeze preparation degraded: {type(exc).__name__}")
+        return
+    if prepared is not None:
+        frozen, boundary = prepared
+        attempts.seal_snapshot(
+            strategy=strategy.value,
+            trade_date=trade_date,
+            boundary_at=boundary,
+            frozen_snapshot=frozen,
+        )
+
+
+def _ensure_freeze_attempt(
+    pipeline: RecommendationPipeline,
+    attempts: FreezeAttemptStore,
+    strategy: Strategy,
+    trade_date: str,
+    now: datetime,
+) -> FreezeAttempt | None:
+    key = FreezeAttemptKey(strategy.value, trade_date)
+    attempt = attempts.get(key)
+    if attempt is not None:
+        return attempt
+    try:
+        prepared = _prepare_frozen_snapshot(pipeline, strategy, trade_date, now)
+    except (OSError, RuntimeError, ValueError) as exc:
+        pipeline._state.record_error(f"{strategy.value} freeze preparation degraded: {type(exc).__name__}")
+        _record_freeze_result(pipeline, strategy, trade_date, SchedulePointResult.RETRY, now)
+        return None
+    if prepared is None:
+        attempts.mark_missed(key)
+        _record_freeze_result(pipeline, strategy, trade_date, SchedulePointResult.MISSED, now)
+        return None
+    frozen, boundary = prepared
+    try:
+        return attempts.seal_snapshot(
+            strategy=strategy.value,
+            trade_date=trade_date,
+            boundary_at=boundary,
+            frozen_snapshot=frozen,
+        )
+    except ValueError:
+        pipeline._state.record_error(f"{strategy.value} freeze conflict: sealed object changed")
+        attempts.mark_missed(key)
+        _record_freeze_result(pipeline, strategy, trade_date, SchedulePointResult.MISSED, now)
+        return None
+
+
+def _commit_freeze_attempt(
+    pipeline: RecommendationPipeline,
+    attempts: FreezeAttemptStore,
+    now: datetime,
+    attempt: FreezeAttempt,
+) -> tuple[RecommendationSnapshot, ...]:
+    strategy = Strategy(attempt.strategy)
+    trade_date = attempt.trade_date
+    sealed_snapshot = attempt.frozen_snapshot
+    if not isinstance(sealed_snapshot, RecommendationSnapshot):
+        pipeline._state.record_error(f"{strategy.value} freeze attempt contains an invalid snapshot")
+        attempts.mark_missed(attempt.key)
+        _record_freeze_result(pipeline, strategy, trade_date, SchedulePointResult.MISSED, now)
+        return ()
+    commit_outcome, committed = _commit_frozen_snapshot(
+        pipeline,
+        sealed_snapshot,
+        (strategy, trade_date),
+        attempt.boundary_at,
+    )
+    if commit_outcome is _FreezeCommitOutcome.RETRY:
+        _retry_freeze_attempt(pipeline, attempts, strategy, trade_date, now)
+        return ()
+    if commit_outcome is _FreezeCommitOutcome.CONFLICT:
+        attempts.mark_missed(attempt.key)
+        _record_freeze_result(pipeline, strategy, trade_date, SchedulePointResult.MISSED, now)
+        return ()
+    attempts.mark_completed(attempt.key)
+    _record_freeze_result(pipeline, strategy, trade_date, SchedulePointResult.COMPLETED, now)
+    return committed
 
 
 def _prepare_frozen_snapshot(
@@ -202,14 +324,23 @@ def _restore_existing_frozen(
     pipeline: RecommendationPipeline,
     strategy: Strategy,
     trade_date: str,
-) -> bool:
-    if trade_date not in pipeline._repository.recommendation_dates(strategy):
+) -> bool | None:
+    try:
+        if trade_date not in pipeline._repository.recommendation_dates(strategy):
+            return None
+        existing = pipeline._repository.load_frozen(strategy, trade_date)
+    except (OSError, RuntimeError, ValueError) as exc:
+        pipeline._state.record_error(f"{strategy.value} frozen record recovery degraded: {type(exc).__name__}")
         return False
-    existing = pipeline._repository.load_frozen(strategy, trade_date)
-    if existing is not None and admit_snapshot_to_p6(pipeline, existing):
+    if existing is None:
+        pipeline._state.record_error(f"{strategy.value} frozen manifest exists without a readable snapshot")
+        return False
+    if admit_snapshot_to_p6(pipeline, existing):
         pipeline._state.restore_snapshot(existing)
         pipeline._state.restore_frozen(strategy, trade_date)
-    return True
+        pipeline._frozen_keys.add((strategy, trade_date))
+        return True
+    return False
 
 
 def _commit_frozen_snapshot(
@@ -217,10 +348,22 @@ def _commit_frozen_snapshot(
     frozen: RecommendationSnapshot,
     key: tuple[Strategy, str],
     boundary: datetime,
-) -> tuple[RecommendationSnapshot, ...]:
-    persist(pipeline, pipeline._snapshot_writer.freeze, frozen)
+) -> tuple[_FreezeCommitOutcome, tuple[RecommendationSnapshot, ...]]:
+    try:
+        persist(pipeline, pipeline._snapshot_writer.freeze, frozen)
+    except AssertionError as exc:
+        pipeline._state.record_error(f"{frozen.strategy.value} freeze conflict: {str(exc)[:350]}")
+        return _FreezeCommitOutcome.CONFLICT, ()
+    except TypeError as exc:
+        pipeline._state.record_error(f"{frozen.strategy.value} freeze serialization invalid: {str(exc)[:350]}")
+        return _FreezeCommitOutcome.CONFLICT, ()
+    except (OSError, RuntimeError, ValueError) as exc:
+        pipeline._state.increment("freeze_persistence_retryable")
+        pipeline._state.record_error(f"{frozen.strategy.value} freeze persistence degraded: {type(exc).__name__}")
+        return _FreezeCommitOutcome.RETRY, ()
     if not admit_snapshot_to_p6(pipeline, frozen):
-        return ()
+        pipeline._state.increment("freeze_p6_retryable")
+        return _FreezeCommitOutcome.RETRY, ()
     pipeline._state.mark_frozen(frozen)
     pipeline._publisher.publish(frozen)
     pipeline._frozen_keys.add(key)
@@ -235,7 +378,48 @@ def _commit_frozen_snapshot(
     except Exception as exc:
         pipeline._state.increment("checkpoint_consume_failures")
         pipeline._state.record_error(f"{frozen.strategy.value} checkpoint cleanup degraded: {type(exc).__name__}")
-    return (frozen,)
+    return _FreezeCommitOutcome.COMMITTED, (frozen,)
+
+
+def _freeze_attempt_store(pipeline: RecommendationPipeline) -> FreezeAttemptStore:
+    current = getattr(pipeline, "_freeze_attempts", None)
+    if isinstance(current, FreezeAttemptStore):
+        return current
+    created = FreezeAttemptStore()
+    cast(_FreezeAttemptOwner, pipeline)._freeze_attempts = created
+    return created
+
+
+def _retry_freeze_attempt(
+    pipeline: RecommendationPipeline,
+    attempts: FreezeAttemptStore,
+    strategy: Strategy,
+    trade_date: str,
+    now: datetime,
+) -> None:
+    key = FreezeAttemptKey(strategy.value, trade_date)
+    if attempts.get(key) is not None:
+        attempts.retry(key, at=now)
+    _record_freeze_result(pipeline, strategy, trade_date, SchedulePointResult.RETRY, now)
+
+
+def _record_freeze_result(
+    pipeline: RecommendationPipeline,
+    strategy: Strategy,
+    trade_date: str,
+    result: SchedulePointResult,
+    at: datetime,
+) -> None:
+    planner = pipeline._cadence
+    if planner is None:
+        return
+    planner.record_point_result(
+        trade_date,
+        SchedulePoint.TODAY_FREEZE if strategy is Strategy.TODAY else SchedulePoint.AFTERNOON_FREEZE,
+        strategy.value,
+        result,
+        at=at,
+    )
 
 
 def refresh_live_overlays(
@@ -511,64 +695,6 @@ def _publish_live_snapshot(
     return True
 
 
-def topk_quote_age(
-    state: RuntimeState,
-    overlays: Mapping[tuple[Strategy, str], LiveOverlay],
-    now: datetime,
-    *,
-    target_seconds: float = 10.0,
-) -> Mapping[str, object]:
-    per_strategy: dict[str, object] = {}
-    active_ages: list[float] = []
-    excluded_frozen: list[str] = []
-    for strategy in Strategy:
-        if strategy is Strategy.LONG:
-            continue
-        snapshot = state.latest(strategy)
-        if snapshot is None:
-            continue
-        overlay = overlays.get((strategy, snapshot.trade_date))
-        if overlay is not None and overlay.snapshot_id == snapshot.snapshot_id:
-            ages = [quote.age_seconds(now) for quote in overlay.quotes.values()]
-        elif snapshot.frozen:
-            excluded_frozen.append(strategy.value)
-            continue
-        else:
-            ages = [item.features.quote.age_seconds(now) for item in snapshot.recommendations]
-        active_ages.extend(ages)
-        per_strategy[strategy.value] = _age_summary(ages)
-    return {
-        "target_seconds": target_seconds,
-        **_age_summary(active_ages, target_seconds=target_seconds),
-        "per_strategy": per_strategy,
-        "excluded_frozen_strategies": sorted(excluded_frozen),
-        "measured_at": now.isoformat(),
-    }
-
-
-def long_quote_age(
-    state: RuntimeState,
-    now: datetime,
-    *,
-    target_seconds: float = 10.0,
-) -> Mapping[str, object]:
-    snapshot = state.latest(Strategy.LONG)
-    ages = (
-        [
-            item.features.quote.age_seconds(now)
-            for item in snapshot.recommendations
-            if item.features.quote.price is not None
-        ]
-        if snapshot is not None
-        else []
-    )
-    return {
-        "target_seconds": target_seconds,
-        **_age_summary(ages, target_seconds=target_seconds),
-        "measured_at": now.isoformat(),
-    }
-
-
 def _freeze_boundary(now: datetime, strategy: Strategy) -> datetime:
     local = shanghai_now(now)
     if strategy is Strategy.TODAY:
@@ -609,34 +735,9 @@ def _overlay_version(snapshot_id: str, observed_at: datetime, quotes: Mapping[st
     return hashlib.sha256("|".join(values).encode("utf-8")).hexdigest()[:24]
 
 
-def _age_summary(ages: Sequence[float], *, target_seconds: float = 10.0) -> dict[str, object]:
-    if not ages:
-        return {
-            "sample_count": 0,
-            "p50_seconds": None,
-            "p95_seconds": None,
-            "maximum_seconds": None,
-            "meets_target": None,
-        }
-    ordered = sorted(max(0.0, float(age)) for age in ages)
-    p50_index = max(0, math.ceil(len(ordered) * 0.50) - 1)
-    p95_index = max(0, math.ceil(len(ordered) * 0.95) - 1)
-    p50 = round(ordered[p50_index], 3)
-    p95 = round(ordered[p95_index], 3)
-    return {
-        "sample_count": len(ordered),
-        "p50_seconds": p50,
-        "p95_seconds": p95,
-        "maximum_seconds": round(ordered[-1], 3),
-        "meets_target": p95 <= target_seconds,
-    }
-
-
 __all__ = [
     "freeze_available_snapshots",
     "process_schedule",
     "refresh_live_overlays",
-    "long_quote_age",
     "save_checkpoint_if_due",
-    "topk_quote_age",
 ]

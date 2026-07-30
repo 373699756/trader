@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import ParamSpec, TypeVar, cast
 
 from trader.application.latency import LatencyWaterfall
+from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.workers import BoundedExecutor
 
 _P = ParamSpec("_P")
@@ -187,24 +188,42 @@ class LatestRequestLane:
         if not future.done():
             future.set_exception(SourceRequestSupersededError(f"{self._source} source request was superseded"))
 
-    def stop(self, *, wait: bool = True, timeout_seconds: float | None = None) -> None:
-        deadline = None if timeout_seconds is None else time.monotonic() + max(0.0, timeout_seconds)
+    def stop(
+        self,
+        *,
+        wait: bool = True,
+        timeout_seconds: float | None = None,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownStep:
+        effective_deadline = deadline
+        if effective_deadline is None and timeout_seconds is not None:
+            effective_deadline = ShutdownDeadline.start(timeout_seconds)
+        cancelled = 0
         with self._condition:
             self._stopped = True
             if self._pending is not None:
                 if not self._pending.future.done():
                     self._pending.future.set_exception(RuntimeError(f"{self._source} source lane stopped"))
+                    cancelled += 1
                 self._pending = None
             if self._running is not None and self._active_thread_ident is None and self._runner_future is not None:
-                self._runner_future.cancel()
+                cancelled += int(self._runner_future.cancel())
             while wait and self._running is not None:
-                if deadline is None:
+                if effective_deadline is None:
                     self._condition.wait()
                     continue
-                remaining = deadline - time.monotonic()
+                remaining = effective_deadline.remaining_seconds()
                 if remaining <= 0:
                     break
                 self._condition.wait(remaining)
+            completed = self._running is None
+        return ShutdownStep(
+            name=f"source:{self._source}",
+            completed=completed,
+            timed_out=wait and not completed and effective_deadline is not None and effective_deadline.expired,
+            cancelled_count=cancelled,
+            detail="source request remains inflight" if not completed else "",
+        )
 
     def owns_current_thread(self) -> bool:
         with self._condition:
@@ -325,13 +344,25 @@ class SourceLaneRegistry:
     def is_stopped(self, source: str) -> bool:
         return self._lane(source).is_stopped()
 
-    def stop(self, *, wait: bool = True, timeout_seconds: float | None = None) -> None:
-        started = time.monotonic()
+    def stop(
+        self,
+        *,
+        wait: bool = True,
+        timeout_seconds: float | None = None,
+        deadline: ShutdownDeadline | None = None,
+    ) -> tuple[ShutdownStep, ...]:
+        effective_deadline = deadline
+        if effective_deadline is None and timeout_seconds is not None:
+            effective_deadline = ShutdownDeadline.start(timeout_seconds)
+        steps: list[ShutdownStep] = []
         for lane in self._lanes.values():
-            remaining = None
-            if timeout_seconds is not None:
-                remaining = max(0.0, timeout_seconds - (time.monotonic() - started))
-            lane.stop(wait=wait, timeout_seconds=remaining)
+            steps.append(
+                lane.stop(
+                    wait=wait,
+                    deadline=effective_deadline,
+                )
+            )
+        return tuple(steps)
 
     def status(self) -> dict[str, dict[str, object]]:
         return {source: lane.status() for source, lane in self._lanes.items()}

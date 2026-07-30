@@ -29,8 +29,14 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import CloseFallbackReplay, RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
+from trader.application.shutdown import ShutdownDeadline, ShutdownReport
 from trader.application.source_lanes import SourceLaneRegistry
 from trader.application.status import RuntimeState
+from trader.application.system_lifecycle import (
+    SystemLifecycleResources,
+    start_application_resources,
+    stop_application_resources,
+)
 from trader.application.tomorrow_events import TomorrowDecisionEventStream
 from trader.application.tomorrow_freezing import DecisionRuntimeIdentity, TomorrowFreezeCoordinator
 from trader.application.tomorrow_shadow import TomorrowCutoverGate
@@ -41,6 +47,7 @@ from trader.application.tomorrow_shadow_runtime import (
     TomorrowShadowWorker,
 )
 from trader.application.tomorrow_views import TomorrowDecisionQueries, TomorrowQuoteOverlayIndex
+from trader.application.trading_session import TradingSessionTracker
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import Board
 from trader.domain.recommendation.filters import HardFilterPolicy
@@ -113,50 +120,28 @@ class ApplicationSystem:
     tomorrow_shadow_worker: TomorrowShadowWorker | None = None
     tomorrow_shadow_runtime: TomorrowShadowRuntime | None = None
 
-    def start(self) -> bool:
-        shadow_started = self.tomorrow_shadow_worker.start() if self.tomorrow_shadow_worker is not None else False
-        history_started = False
-        research_started = False
-        try:
-            history_started = self.history_pool.start()
-            research_started = self.research_pool.start()
-            started = self.supervisor.start()
-        except BaseException:
-            if research_started:
-                self.research_pool.stop(wait=True, cancel_futures=True)
-            if history_started:
-                self.history_pool.stop(wait=True, cancel_futures=True)
-            if shadow_started and self.tomorrow_shadow_worker is not None:
-                self.tomorrow_shadow_worker.stop(
-                    wait=True,
-                    timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds,
-                )
-            raise
-        if not started and history_started:
-            self.history_pool.stop(wait=True, cancel_futures=True)
-        if not started and research_started:
-            self.research_pool.stop(wait=True, cancel_futures=True)
-        if not started and shadow_started and self.tomorrow_shadow_worker is not None:
-            self.tomorrow_shadow_worker.stop(
-                wait=True,
-                timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds,
-            )
-        return started
+    def _lifecycle_resources(self) -> SystemLifecycleResources:
+        return SystemLifecycleResources(
+            self.supervisor,
+            self.source_lanes,
+            self.history_pool,
+            self.research_pool,
+            self.tomorrow_shadow_worker,
+            self.market_cache,
+        )
 
-    def stop(self) -> None:
-        if self.tomorrow_shadow_worker is not None:
-            self.tomorrow_shadow_worker.stop(wait=False)
-        self.source_lanes.stop(wait=False)
-        self.supervisor.stop()
-        self.source_lanes.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
-        self.history_pool.stop(wait=True, cancel_futures=True)
-        self.research_pool.stop(wait=True, cancel_futures=True)
-        if self.tomorrow_shadow_worker is not None:
-            self.tomorrow_shadow_worker.stop(
-                wait=True,
-                timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds,
-            )
-        self.market_cache.stop(wait=True, timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds)
+    def start(self) -> bool:
+        return start_application_resources(
+            self._lifecycle_resources(),
+            timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds,
+        )
+
+    def stop(self, *, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
+        shared_deadline = deadline or ShutdownDeadline.start(self.settings.pipeline.shutdown_timeout_seconds)
+        return stop_application_resources(
+            self._lifecycle_resources(),
+            deadline=shared_deadline,
+        )
 
 
 @dataclass(frozen=True)
@@ -217,13 +202,15 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     persistence = _build_persistence(context)
     reviewer = _build_reviewer(context, persistence.budget)
     publication = _build_publication(context, calendar, persistence.repository)
+    trading_session = TradingSessionTracker(now())
     adapters = _PipelineAdapters(market_data, calendar, reviewer)
-    pipeline = _build_pipeline(context, adapters, persistence, publication)
+    pipeline = _build_pipeline(context, adapters, persistence, publication, trading_session)
     queries = RecommendationQueries(
         publication.published_snapshots,
         now=now,
         current_quote_reader=market_data,
         close_fallback_replay=CloseFallbackReplay(persistence.repository, publication.recommendation_engine),
+        session_status=pipeline.session_status,
     )
     supervisor = RuntimeSupervisor(
         pipeline,
@@ -643,6 +630,7 @@ def _build_pipeline(
     adapters: _PipelineAdapters,
     persistence: _PersistenceContext,
     publication: _PublicationContext,
+    trading_session: TradingSessionTracker,
 ) -> RecommendationPipeline:
     settings = context.settings
     return RecommendationPipeline(
@@ -673,6 +661,7 @@ def _build_pipeline(
             ),
             latency=context.latency,
             tomorrow_native_inputs=publication.tomorrow_worker,
+            trading_session=trading_session,
         ),
         PipelineOptions(
             config_version=context.effective_config_version,

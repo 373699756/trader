@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
 import threading
 from collections.abc import Callable, Mapping, Sequence
@@ -32,9 +31,15 @@ from trader.infra.persistence.snapshot_files import (
     _atomic_replace,
     _manifest_snapshot_error,
     _matches_hash,
+    _move_staged_file_to_quarantine,
+    _outcome_to_row,
     _overlay_from_dict,
     _overlay_to_dict,
+    _quarantine_snapshot_orphans,
     _read_snapshot,
+    _recover_checkpoints,
+    _safe_runtime_path,
+    _snapshot_from_recovery,
     _verified_manifest_snapshot,
 )
 from trader.infra.persistence.snapshots import (
@@ -46,6 +51,7 @@ from trader.infra.persistence.sqlite import connect, connection_scope, initializ
 from trader.infra.persistence.writer_retention import archive_trade_date
 
 FaultInjector = Callable[[str], None]
+_MAX_RECOVERY_PAYLOAD_BYTES = 8 * 1024 * 1024
 
 
 class SnapshotRepository:
@@ -127,13 +133,21 @@ class SnapshotRepository:
             raise ValueError("snapshot config version does not match repository config version")
         frozen = replace(snapshot, frozen=True, config_version=self._config_version)
         payload = snapshot_bytes(frozen)
+        if len(payload) > _MAX_RECOVERY_PAYLOAD_BYTES:
+            raise ValueError("frozen recovery payload exceeds the bounded persistence limit")
         digest = snapshot_sha256(payload)
         relative_path = Path("frozen") / frozen.strategy.value / frozen.trade_date / f"{frozen.snapshot_id}.json"
         target = self._runtime_dir / relative_path
         with self._lock:
-            self._stage_manifest(frozen, relative_path, digest)
+            self._stage_manifest(frozen, relative_path, digest, payload)
             self._fault_injector("manifest_staged")
-            _atomic_create_immutable(target, payload, expected_sha256=digest)
+            self._fault_injector("payload_staged")
+            _atomic_create_immutable(
+                target,
+                payload,
+                expected_sha256=digest,
+                fault_injector=self._fault_injector,
+            )
             self._fault_injector("frozen_file_created")
             self._commit_manifest(frozen)
             self._fault_injector("manifest_committed")
@@ -523,87 +537,68 @@ class SnapshotRepository:
                 "SELECT * FROM frozen_snapshots WHERE status = 'staged' ORDER BY frozen_at"
             ).fetchall()
             for row in staged:
-                target = self._runtime_dir / str(row["relative_path"])
-                snapshot, error = _verified_manifest_snapshot(row, target)
-                if snapshot is not None:
-                    self._commit_manifest(snapshot, connection=connection)
-                    recovered += 1
+                target = _safe_runtime_path(self._runtime_dir, str(row["relative_path"]))
+                if target is None:
+                    snapshot, error = None, "relative_path_invalid"
                 else:
-                    self._quarantine_manifest(connection, row, target, error)
-                    quarantined += 1
+                    snapshot, error = _verified_manifest_snapshot(row, target)
+                if snapshot is None:
+                    snapshot, recovery_error = _snapshot_from_recovery(
+                        row,
+                        maximum_payload_bytes=_MAX_RECOVERY_PAYLOAD_BYTES,
+                    )
+                    error = recovery_error or error
+                    if snapshot is not None and target is not None:
+                        try:
+                            _move_staged_file_to_quarantine(self._quarantine_dir, row, target)
+                            payload = bytes(row["recovery_payload"])
+                            _atomic_create_immutable(target, payload, expected_sha256=str(row["sha256"]))
+                        except (OSError, SnapshotConflictError):
+                            continue
+                if snapshot is None:
+                    quarantined += self._release_staged_manifest(connection, row, target, error)
+                    continue
+                self._commit_manifest(snapshot, connection=connection)
+                recovered += 1
             committed = connection.execute(
                 "SELECT * FROM frozen_snapshots WHERE status = 'committed' ORDER BY frozen_at"
             ).fetchall()
             for row in committed:
-                target = self._runtime_dir / str(row["relative_path"])
-                snapshot, error = _verified_manifest_snapshot(row, target)
+                target = _safe_runtime_path(self._runtime_dir, str(row["relative_path"]))
+                if target is None:
+                    snapshot, error = None, "relative_path_invalid"
+                else:
+                    snapshot, error = _verified_manifest_snapshot(row, target)
                 if snapshot is None:
-                    self._quarantine_manifest(connection, row, target, error)
-                    quarantined += 1
-            quarantined += self._recover_checkpoints(connection)
+                    connection.execute(
+                        "UPDATE frozen_snapshots SET error = ? WHERE snapshot_id = ? AND status = 'committed'",
+                        (error, row["snapshot_id"]),
+                    )
+                    quarantined += self._record_quarantine_audit(connection, row, error)
+            quarantined += _recover_checkpoints(
+                connection,
+                runtime_dir=self._runtime_dir,
+                quarantine_dir=self._quarantine_dir,
+                config_version=self._config_version,
+            )
             known_paths = {
                 str(row["relative_path"])
                 for row in connection.execute("SELECT relative_path FROM frozen_snapshots").fetchall()
             }
-            orphaned = self._quarantine_orphans(known_paths)
+            orphaned = _quarantine_snapshot_orphans(
+                self._frozen_dir,
+                self._runtime_dir,
+                self._quarantine_dir,
+                known_paths,
+            )
         return RecoverySummary(recovered=recovered, quarantined=quarantined, orphaned=orphaned)
-
-    def _recover_checkpoints(self, connection: sqlite3.Connection) -> int:
-        quarantined = 0
-        rows = connection.execute("SELECT * FROM freeze_checkpoints WHERE status='ready'").fetchall()
-        for row in rows:
-            committed = connection.execute(
-                """
-                SELECT 1 FROM frozen_snapshots
-                WHERE strategy=? AND recommend_date=? AND status='committed'
-                """,
-                (row["strategy"], row["trade_date"]),
-            ).fetchone()
-            if committed is not None:
-                connection.execute(
-                    """
-                    UPDATE freeze_checkpoints SET status='consumed', consumed_at=boundary_at
-                    WHERE strategy=? AND trade_date=? AND boundary_at=?
-                    """,
-                    (row["strategy"], row["trade_date"], row["boundary_at"]),
-                )
-                continue
-            target = self._runtime_dir / str(row["relative_path"])
-            snapshot = self._load_verified_snapshot(str(row["relative_path"]), str(row["sha256"]))
-            try:
-                boundary = datetime.fromisoformat(str(row["boundary_at"]))
-                observed = datetime.fromisoformat(str(row["observed_at"]))
-                age = (boundary - observed).total_seconds()
-            except (TypeError, ValueError):
-                age = -1.0
-            valid = (
-                snapshot is not None
-                and snapshot.strategy.value == str(row["strategy"])
-                and snapshot.trade_date == str(row["trade_date"])
-                and snapshot.config_version == self._config_version
-                and 0 <= age <= 30
-            )
-            if valid:
-                continue
-            connection.execute(
-                """
-                UPDATE freeze_checkpoints SET status='quarantined'
-                WHERE strategy=? AND trade_date=? AND boundary_at=?
-                """,
-                (row["strategy"], row["trade_date"], row["boundary_at"]),
-            )
-            if target.exists():
-                destination = self._quarantine_dir / "checkpoints" / Path(str(row["relative_path"]))
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(target), str(destination))
-            quarantined += 1
-        return quarantined
 
     def _stage_manifest(
         self,
         snapshot: RecommendationSnapshot,
         relative_path: Path,
         digest: str,
+        payload: bytes,
     ) -> None:
         with connection_scope(self._database_path) as connection:
             existing = connection.execute(
@@ -616,6 +611,15 @@ class SnapshotRepository:
                         raise SnapshotConflictError(
                             f"{snapshot.strategy.value} {snapshot.trade_date} has a quarantined freeze"
                         )
+                    if existing["status"] == "staged":
+                        connection.execute(
+                            """
+                            UPDATE frozen_snapshots
+                            SET recovery_payload = ?, recovery_sha256 = ?, error = ''
+                            WHERE snapshot_id = ? AND status = 'staged'
+                            """,
+                            (payload, digest, snapshot.snapshot_id),
+                        )
                     return
                 raise SnapshotConflictError(f"{snapshot.strategy.value} {snapshot.trade_date} is already frozen")
             connection.execute(
@@ -623,8 +627,8 @@ class SnapshotRepository:
                 INSERT INTO frozen_snapshots(
                     snapshot_id, strategy, recommend_date, frozen_at, fusion_version,
                     strategy_version, config_version, schema_version, data_version, relative_path,
-                    sha256, record_count, status, anchor_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', ?)
+                    sha256, record_count, status, anchor_json, recovery_payload, recovery_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', ?, ?, ?)
                 """,
                 (
                     snapshot.snapshot_id,
@@ -640,6 +644,8 @@ class SnapshotRepository:
                     digest,
                     len(snapshot.recommendations),
                     _anchor_json(snapshot),
+                    payload,
+                    digest,
                 ),
             )
 
@@ -667,7 +673,11 @@ class SnapshotRepository:
             database.execute("DELETE FROM recommendations WHERE snapshot_id = ?", (snapshot.snapshot_id,))
             self._insert_recommendations(database, snapshot)
             changed = database.execute(
-                "UPDATE frozen_snapshots SET status = 'committed', error = '' WHERE snapshot_id = ? AND status = 'staged'",
+                """
+                UPDATE frozen_snapshots
+                SET status = 'committed', error = '', recovery_payload = NULL, recovery_sha256 = ''
+                WHERE snapshot_id = ? AND status = 'staged'
+                """,
                 (snapshot.snapshot_id,),
             ).rowcount
             if (manifest_status == "staged" and changed != 1) or (manifest_status == "committed" and changed != 0):
@@ -723,63 +733,52 @@ class SnapshotRepository:
             )
 
     def _load_verified_snapshot(self, relative_path: str, expected_sha256: str) -> RecommendationSnapshot | None:
-        target = self._runtime_dir / relative_path
+        target = _safe_runtime_path(self._runtime_dir, relative_path)
+        if target is None:
+            return None
         if not _matches_hash(target, expected_sha256):
             return None
         return _read_snapshot(target)
 
-    def _quarantine_manifest(
+    def _release_staged_manifest(
         self,
         connection: sqlite3.Connection,
         row: Mapping[str, object],
-        target: Path,
+        target: Path | None,
         error: str,
-    ) -> None:
+    ) -> int:
+        if target is not None and target.exists():
+            _move_staged_file_to_quarantine(self._quarantine_dir, row, target)
+        recorded = self._record_quarantine_audit(connection, row, error)
+        connection.execute("DELETE FROM recommendations WHERE snapshot_id = ?", (row["snapshot_id"],))
         connection.execute(
-            "UPDATE frozen_snapshots SET status = 'quarantined', error = ? WHERE snapshot_id = ?",
-            (error, row["snapshot_id"]),
+            "DELETE FROM frozen_snapshots WHERE snapshot_id = ? AND status = 'staged'",
+            (row["snapshot_id"],),
         )
-        if target.exists():
-            relative = Path(str(row["relative_path"]))
-            destination = self._quarantine_dir / "manifests" / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(target), str(destination))
+        return recorded
 
-    def _quarantine_orphans(self, known_paths: set[str]) -> int:
-        count = 0
-        for path in self._frozen_dir.rglob("*.json"):
-            relative = path.relative_to(self._runtime_dir).as_posix()
-            if relative in known_paths:
-                continue
-            destination = self._quarantine_dir / "orphans" / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(path), str(destination))
-            count += 1
-        return count
-
-
-def _outcome_to_row(item: RecommendationOutcome) -> dict[str, object]:
-    return {
-        "snapshot_id": item.snapshot_id,
-        "strategy": item.strategy.value,
-        "recommend_date": item.recommend_date,
-        "stock_code": item.stock_code,
-        "horizon": item.horizon,
-        "status": item.status,
-        "settled_at": item.settled_at.isoformat(),
-        "anchor_price": item.anchor_price,
-        "atr20_pct": item.atr20_pct,
-        "minimum_low": item.minimum_low,
-        "end_close": item.end_close,
-        "gross_return_pct": item.gross_return_pct,
-        "benchmark_return_pct": item.benchmark_return_pct,
-        "net_excess_return_pct": item.net_excess_return_pct,
-        "mae_pct": item.mae_pct,
-        "mae_atr": item.mae_atr,
-        "severe_drawdown": None if item.severe_drawdown is None else int(item.severe_drawdown),
-        "quality_reason": item.quality_reason,
-        "version": item.version,
-    }
+    def _record_quarantine_audit(
+        self,
+        connection: sqlite3.Connection,
+        row: Mapping[str, object],
+        error: str,
+    ) -> int:
+        audit_key = f"{row['snapshot_id']}:{error}"
+        return connection.execute(
+            """
+            INSERT OR IGNORE INTO freeze_quarantine_audit(
+                audit_key, snapshot_id, strategy, recommend_date, relative_path, reason
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audit_key,
+                row["snapshot_id"],
+                row["strategy"],
+                row["recommend_date"],
+                row["relative_path"],
+                error[:240],
+            ),
+        ).rowcount
 
 
 __all__ = ["SnapshotConflictError", "SnapshotRepository"]

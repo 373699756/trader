@@ -22,6 +22,7 @@ from trader.application.recommendation_policy_codec import _select_review_candid
 from trader.application.recommendation_replay import (
     RecommendationReplayMixin,
 )
+from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.domain.market.models import (
     Board,
     FeatureSnapshot,
@@ -182,8 +183,8 @@ class RecommendationEngine(RecommendationFinalizationMixin, RecommendationReplay
     def start(self) -> None:
         self._board_scoring.start()
 
-    def stop(self) -> None:
-        self._board_scoring.stop()
+    def stop(self, *, deadline: ShutdownDeadline | None = None) -> tuple[ShutdownStep, ...]:
+        return self._board_scoring.stop(deadline=deadline)
 
     def board_scoring_status(self) -> Mapping[str, Mapping[str, int | float | bool]]:
         return self._board_scoring.status()

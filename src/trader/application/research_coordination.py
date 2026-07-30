@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from trader.application.ports.market import ResearchReaderPort, ResearchRefreshResult
+from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.workers import BoundedExecutor
 
 
@@ -64,26 +65,44 @@ class ResearchCoordinator:
             self._started = True
             return True
 
-    def stop(self, *, wait: bool, timeout_seconds: float | None = None) -> None:
-        deadline = None if timeout_seconds is None else self._monotonic() + max(0.0, timeout_seconds)
+    def stop(
+        self,
+        *,
+        wait: bool,
+        timeout_seconds: float | None = None,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownStep:
+        effective_deadline = deadline
+        if effective_deadline is None and timeout_seconds is not None:
+            effective_deadline = ShutdownDeadline.start(timeout_seconds, monotonic=self._monotonic)
         with self._condition:
-            if self._stopping:
-                return
             self._stopping = True
             self._pending.clear()
             while wait and self._runner_active:
-                if deadline is None:
+                if effective_deadline is None:
                     self._condition.wait()
                     continue
-                remaining = deadline - self._monotonic()
+                remaining = effective_deadline.remaining_seconds()
                 if remaining <= 0.0:
                     break
                 self._condition.wait(remaining)
             drained = not self._runner_active
-        self._executor.stop(wait=wait and drained, cancel_futures=True)
+        executor_step = self._executor.stop(
+            wait=wait and drained,
+            cancel_futures=True,
+            deadline=effective_deadline,
+        )
         with self._condition:
             self._started = False
             self._condition.notify_all()
+        completed = drained and executor_step.completed
+        return ShutdownStep(
+            name="research",
+            completed=completed,
+            timed_out=not completed and effective_deadline is not None and effective_deadline.expired,
+            cancelled_count=executor_step.cancelled_count,
+            detail="research batch remains inflight" if not completed else "",
+        )
 
     def offer(self, codes: Sequence[str], observed_at: datetime) -> bool:
         normalized = tuple(dict.fromkeys(code for code in codes if len(code) == 6 and code.isdigit()))

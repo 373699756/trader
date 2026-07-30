@@ -10,6 +10,7 @@ from trader.application.ports.market import QuoteReaderPort
 from trader.application.ports.snapshots import PublishedSnapshotReadPort, SnapshotReaderPort
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import freeze_due_at, shanghai_now, trade_date_at
+from trader.application.trading_session import CalendarState, TradingSessionStatus
 from trader.domain.market.models import LiveQuote
 from trader.domain.recommendation.models import (
     LiveOverlay,
@@ -52,11 +53,13 @@ class RecommendationQueries:
         now: Callable[[], datetime],
         current_quote_reader: QuoteReaderPort | None = None,
         close_fallback_replay: CloseFallbackReplay | None = None,
+        session_status: Callable[[], TradingSessionStatus] | None = None,
     ) -> None:
         self._snapshots = snapshots
         self._now = now
         self._current_quote_reader = current_quote_reader
         self._close_fallback_replay = close_fallback_replay
+        self._session_status = session_status
 
     def initialize(self) -> Mapping[str, int]:
         return {"historical_views_preloaded": 0}
@@ -87,7 +90,7 @@ class RecommendationQueries:
                         None,
                         False,
                         current_trade_date=current_date.isoformat(),
-                        readiness_reason=_readiness_reason(strategy, now),
+                        readiness_reason=self._readiness_reason(strategy, now),
                     )
                 return self._current_lookup(strategy, current_date.isoformat(), latest)
             snapshot = self._snapshots.latest(strategy)
@@ -151,7 +154,7 @@ class RecommendationQueries:
                 None,
                 False,
                 current_trade_date=current_date,
-                readiness_reason=_readiness_reason(strategy, self._now()),
+                readiness_reason=self._readiness_reason(strategy, self._now()),
             )
         snapshot = self._recover_empty_close_fallback(snapshot)
         assert snapshot is not None
@@ -170,19 +173,24 @@ class RecommendationQueries:
         self,
         snapshot: RecommendationSnapshot | None,
     ) -> RecommendationSnapshot | None:
-        if not _needs_close_fallback_replay(snapshot) or self._close_fallback_replay is None:
-            return snapshot
-        assert snapshot is not None
-        raw_snapshot = _raw_close_fallback_snapshot(snapshot, self._close_fallback_replay.archive)
-        if raw_snapshot.replay_input is None:
-            return snapshot
-        try:
-            recovered = self._close_fallback_replay.engine.replay(raw_snapshot)
-        except (RuntimeError, ValueError):
-            return snapshot
-        if not recovered.recommendations:
-            return snapshot
-        return replace(recovered, frozen=raw_snapshot.frozen, config_version=raw_snapshot.config_version)
+        # Keep the legacy constructor argument additive for composition
+        # compatibility. Read-only HTTP paths must never replay or score.
+        return snapshot
+
+    def _readiness_reason(self, strategy: Strategy, now: datetime) -> str:
+        if self._session_status is None:
+            return _readiness_reason(strategy, now)
+        session = self._session_status()
+        if session.calendar_state is CalendarState.UNAVAILABLE:
+            return "calendar_unavailable"
+        if session.is_trading_day is False:
+            return "market_closed"
+        local_time = shanghai_now(now).time().replace(tzinfo=None)
+        if session.is_trading_day is True and local_time < time(9, 15):
+            return "before_market_open"
+        if session.is_trading_day is True and local_time >= time(15, 0) and strategy is not Strategy.LONG:
+            return "official_record_missing"
+        return _readiness_reason(strategy, now)
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:
         return self._snapshots.recommendation_dates(strategy)
@@ -216,25 +224,6 @@ def _readiness_reason(strategy: Strategy, now: datetime) -> str:
     if shanghai_now(now).time().replace(tzinfo=None) >= time(15, 0):
         return "afternoon_close_recovery_pending"
     return "afternoon_freeze_pending"
-
-
-def _needs_close_fallback_replay(snapshot: RecommendationSnapshot | None) -> bool:
-    return (
-        snapshot is not None
-        and snapshot.strategy is not Strategy.LONG
-        and snapshot.phase == "close_fallback"
-        and snapshot.frozen
-        and not snapshot.recommendations
-    )
-
-
-def _raw_close_fallback_snapshot(
-    snapshot: RecommendationSnapshot,
-    archive: SnapshotReaderPort,
-) -> RecommendationSnapshot:
-    if snapshot.replay_input is not None:
-        return snapshot
-    return archive.load_frozen(snapshot.strategy, snapshot.trade_date) or snapshot
 
 
 def _pipeline_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapshot:

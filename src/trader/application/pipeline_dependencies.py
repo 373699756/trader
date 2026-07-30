@@ -20,6 +20,7 @@ from trader.application.ports.tomorrow import TomorrowNativeInputPort
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
+from trader.application.trading_session import TradingSessionTracker
 from trader.application.workers import BoundedExecutor
 
 
@@ -38,6 +39,7 @@ class PipelineDependencies:
     outcome_settlement: OutcomeSettlementPort | None = None
     latency: LatencyWaterfall | None = None
     tomorrow_native_inputs: TomorrowNativeInputPort | None = None
+    trading_session: TradingSessionTracker | None = None
 
 
 @dataclass(frozen=True)

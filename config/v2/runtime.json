@@ -19,7 +19,7 @@
     "strategy_workers": 3,
     "deepseek_workers": 4,
     "decision_execution_mode": "versioned_dag",
-    "shutdown_timeout_seconds": 15,
+    "shutdown_timeout_seconds": 30,
     "cadence_seconds": {
       "full_market": {
         "warmup": 10,

@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
+import sqlite3
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
 from trader.domain.market.models import LiveQuote
+from trader.domain.outcome.models import RecommendationOutcome
 from trader.domain.recommendation.models import (
     LiveOverlay,
     RecommendationSnapshot,
@@ -38,6 +41,7 @@ def _atomic_replace(target: Path, payload: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_name, target)
+        _fsync_directory(target.parent)
     except Exception:
         try:
             os.unlink(temporary_name)
@@ -155,7 +159,14 @@ def _overlay_from_dict(raw: Mapping[str, object]) -> LiveOverlay:
     )
 
 
-def _atomic_create_immutable(target: Path, payload: bytes, *, expected_sha256: str) -> None:
+def _atomic_create_immutable(
+    target: Path,
+    payload: bytes,
+    *,
+    expected_sha256: str,
+    fault_injector: FaultInjector | None = None,
+) -> None:
+    inject = fault_injector or (lambda _stage: None)
     if target.exists():
         if _matches_hash(target, expected_sha256):
             return
@@ -167,14 +178,26 @@ def _atomic_create_immutable(target: Path, payload: bytes, *, expected_sha256: s
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        inject("json_temporary_fsynced")
         os.link(temporary_name, target)
+        inject("json_created")
         os.unlink(temporary_name)
+        _fsync_directory(target.parent)
+        inject("directory_fsynced")
     except Exception:
         try:
             os.unlink(temporary_name)
         except FileNotFoundError:
             pass
         raise
+
+
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _matches_hash(path: Path, expected_sha256: str) -> bool:
@@ -190,6 +213,171 @@ def _read_snapshot(path: Path) -> RecommendationSnapshot:
     if not isinstance(raw, dict):
         raise ValueError("snapshot root must be an object")
     return snapshot_from_dict(raw)
+
+
+def _safe_runtime_path(runtime_dir: Path, relative_path: str) -> Path | None:
+    relative = Path(relative_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    try:
+        root = runtime_dir.resolve()
+        target = (root / relative).resolve(strict=False)
+        target.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return target
+
+
+def _snapshot_from_recovery(
+    row: Mapping[str, object],
+    *,
+    maximum_payload_bytes: int,
+) -> tuple[RecommendationSnapshot | None, str]:
+    raw = row["recovery_payload"]
+    payload = bytes(raw) if isinstance(raw, (bytes, bytearray, memoryview)) else b""
+    if not payload or len(payload) > maximum_payload_bytes:
+        return None, "recovery_payload_missing_or_oversized"
+    digest = snapshot_sha256(payload)
+    if digest != str(row["recovery_sha256"]) or digest != str(row["sha256"]):
+        return None, "recovery_payload_hash_mismatch"
+    try:
+        decoded = json.loads(payload)
+        if not isinstance(decoded, dict):
+            raise ValueError("snapshot payload root must be an object")
+        snapshot = snapshot_from_dict(decoded)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None, "recovery_payload_invalid"
+    error = _manifest_snapshot_error(row, snapshot)
+    return (snapshot, "") if not error else (None, f"recovery_{error}")
+
+
+def _move_staged_file_to_quarantine(
+    quarantine_dir: Path,
+    row: Mapping[str, object],
+    target: Path,
+) -> None:
+    if not target.exists():
+        return
+    relative = Path(str(row["relative_path"]))
+    destination = quarantine_dir / "recovery" / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        destination = destination.with_name(f"{destination.stem}-{row['snapshot_id']}{destination.suffix}")
+    source_parent = target.parent
+    shutil.move(str(target), str(destination))
+    _fsync_directory(source_parent)
+    _fsync_directory(destination.parent)
+
+
+def _recover_checkpoints(
+    connection: sqlite3.Connection,
+    *,
+    runtime_dir: Path,
+    quarantine_dir: Path,
+    config_version: str,
+) -> int:
+    quarantined = 0
+    rows = connection.execute("SELECT * FROM freeze_checkpoints WHERE status='ready'").fetchall()
+    for row in rows:
+        committed = connection.execute(
+            """
+            SELECT 1 FROM frozen_snapshots
+            WHERE strategy=? AND recommend_date=? AND status='committed'
+            """,
+            (row["strategy"], row["trade_date"]),
+        ).fetchone()
+        if committed is not None:
+            connection.execute(
+                """
+                UPDATE freeze_checkpoints SET status='consumed', consumed_at=boundary_at
+                WHERE strategy=? AND trade_date=? AND boundary_at=?
+                """,
+                (row["strategy"], row["trade_date"], row["boundary_at"]),
+            )
+            continue
+        target = _safe_runtime_path(runtime_dir, str(row["relative_path"]))
+        snapshot = None
+        if target is not None and _matches_hash(target, str(row["sha256"])):
+            try:
+                snapshot = _read_snapshot(target)
+            except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+                snapshot = None
+        try:
+            boundary = datetime.fromisoformat(str(row["boundary_at"]))
+            observed = datetime.fromisoformat(str(row["observed_at"]))
+            age = (boundary - observed).total_seconds()
+        except (TypeError, ValueError):
+            age = -1.0
+        valid = (
+            snapshot is not None
+            and snapshot.strategy.value == str(row["strategy"])
+            and snapshot.trade_date == str(row["trade_date"])
+            and snapshot.config_version == config_version
+            and 0 <= age <= 30
+        )
+        if valid:
+            continue
+        connection.execute(
+            """
+            UPDATE freeze_checkpoints SET status='quarantined'
+            WHERE strategy=? AND trade_date=? AND boundary_at=?
+            """,
+            (row["strategy"], row["trade_date"], row["boundary_at"]),
+        )
+        if target is not None and target.exists():
+            destination = quarantine_dir / "checkpoints" / Path(str(row["relative_path"]))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source_parent = target.parent
+            shutil.move(str(target), str(destination))
+            _fsync_directory(source_parent)
+            _fsync_directory(destination.parent)
+        quarantined += 1
+    return quarantined
+
+
+def _quarantine_snapshot_orphans(
+    frozen_dir: Path,
+    runtime_dir: Path,
+    quarantine_dir: Path,
+    known_paths: set[str],
+) -> int:
+    count = 0
+    for path in frozen_dir.rglob("*.json"):
+        relative = path.relative_to(runtime_dir).as_posix()
+        if relative in known_paths:
+            continue
+        destination = quarantine_dir / "orphans" / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source_parent = path.parent
+        shutil.move(str(path), str(destination))
+        _fsync_directory(source_parent)
+        _fsync_directory(destination.parent)
+        count += 1
+    return count
+
+
+def _outcome_to_row(item: RecommendationOutcome) -> dict[str, object]:
+    return {
+        "snapshot_id": item.snapshot_id,
+        "strategy": item.strategy.value,
+        "recommend_date": item.recommend_date,
+        "stock_code": item.stock_code,
+        "horizon": item.horizon,
+        "status": item.status,
+        "settled_at": item.settled_at.isoformat(),
+        "anchor_price": item.anchor_price,
+        "atr20_pct": item.atr20_pct,
+        "minimum_low": item.minimum_low,
+        "end_close": item.end_close,
+        "gross_return_pct": item.gross_return_pct,
+        "benchmark_return_pct": item.benchmark_return_pct,
+        "net_excess_return_pct": item.net_excess_return_pct,
+        "mae_pct": item.mae_pct,
+        "mae_atr": item.mae_atr,
+        "severe_drawdown": None if item.severe_drawdown is None else int(item.severe_drawdown),
+        "quality_reason": item.quality_reason,
+        "version": item.version,
+    }
 
 
 def _non_negative_integer(value: object) -> int:

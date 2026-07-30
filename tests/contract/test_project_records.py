@@ -100,6 +100,7 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
         "recommendation-strategy.md",
         "score.md",
         "software-business-design.md",
+        "start_stop.md",
         *expected_reports,
     }
 
@@ -168,6 +169,25 @@ def test_authoritative_docs_define_ephemeral_observation_lifecycle() -> None:
     assert "不可变空记录" in design
     assert "不得用观察项补位" in design
     assert "回测" in design
+
+
+def test_authoritative_docs_define_startup_and_shutdown_lifecycle() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+    for statement in (
+        "ShutdownDeadline",
+        "30 秒",
+        "第二次关闭信号",
+        "calendar_unavailable",
+        "session generation",
+        "1/2/5/10/30 秒",
+    ):
+        assert statement in design
+    for statement in ("14:50（含）至 15:00（不含）", "FreezeAttempt", "相同对象"):
+        assert statement in strategy
+    assert "关闭浏览器不会停止" in readme
 
 
 def test_authoritative_docs_define_the_tomorrow_first_rebuild_contract() -> None:

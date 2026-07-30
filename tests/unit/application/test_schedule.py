@@ -11,6 +11,7 @@ from trader.application.schedule import (
     freeze_due_at,
     phase_at,
     seconds_until_next_schedule_boundary,
+    startup_freeze_strategies,
 )
 
 
@@ -62,3 +63,22 @@ def test_scheduler_wakes_at_deepseek_submission_cutoffs() -> None:
 
     assert seconds_until_next_schedule_boundary(before_today_cutoff, maximum_seconds=60) == 1
     assert seconds_until_next_schedule_boundary(before_afternoon_cutoff, maximum_seconds=60) == 1
+
+
+@pytest.mark.parametrize(
+    ("clock", "expected"),
+    (
+        ("11:19:59", ()),
+        ("11:20:00", ()),
+        ("14:49:59", ()),
+        ("14:50:00", ("tomorrow", "d25")),
+        ("14:59:59", ("tomorrow", "d25")),
+        ("15:00:00", ()),
+        ("19:30:00", ()),
+    ),
+)
+def test_cold_start_freeze_recovery_never_includes_today(clock: str, expected: tuple[str, ...]) -> None:
+    started_at = datetime.fromisoformat(f"2026-07-16T{clock}").replace(tzinfo=SHANGHAI)
+
+    assert startup_freeze_strategies(started_at, is_trading_day=True) == expected
+    assert startup_freeze_strategies(started_at, is_trading_day=False) == ()

@@ -45,6 +45,8 @@ class _PendingHybrid:
 class _PendingReview:
     prepared: PreparedSnapshot
     base_snapshot_id: str
+    session_generation: int
+    session_trade_date: str
 
 
 def publish_pending_hybrid(
@@ -103,7 +105,11 @@ def schedule_async_reviews(
             or not review_enabled_for_strategy_phase(prepared.strategy, context.phase)
         ):
             continue
-        _offer_async_review(pipeline, _PendingReview(prepared, base.snapshot_id))
+        session = pipeline._current_session_status()
+        _offer_async_review(
+            pipeline,
+            _PendingReview(prepared, base.snapshot_id, session.generation, session.trade_date),
+        )
 
 
 def review_enabled_for_strategy_phase(strategy: Strategy, phase: MarketPhase) -> bool:
@@ -246,6 +252,8 @@ def _queue_hybrid_completion(
             payload={
                 "review_token": token,
                 "base_snapshot_id": pending_review.base_snapshot_id,
+                "session_generation": pending_review.session_generation,
+                "session_trade_date": pending_review.session_trade_date,
             },
         )
     )

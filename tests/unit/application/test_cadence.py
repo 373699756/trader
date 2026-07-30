@@ -11,17 +11,29 @@ from trader.application.cadence import (
     CadencePlanner,
     CadencePolicy,
     PipelineTask,
+    SchedulePointLifecycle,
+    SchedulePointResult,
     freshness_level,
     task_execution_budget_seconds,
 )
-from trader.application.schedule import SHANGHAI
+from trader.application.schedule import SHANGHAI, SchedulePoint
 
 
 def test_delayed_scheduler_tick_catches_up_mandatory_freeze_point_once() -> None:
-    planner = CadencePlanner(_policy())
+    planner = CadencePlanner(
+        _policy(),
+        started_at=datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI),
+    )
     delayed = datetime(2026, 7, 16, 11, 20, 1, tzinfo=SHANGHAI)
 
     first = planner.plan(delayed, is_trading_day=True)
+    freeze = next(task for task in first.tasks if task.task is PipelineTask.FREEZE)
+    planner.record_submission(freeze, accepted=True, at=delayed)
+    planner.record_results(
+        freeze,
+        {"today": SchedulePointResult.COMPLETED},
+        at=delayed,
+    )
     second = planner.plan(delayed + timedelta(seconds=1), is_trading_day=True)
 
     freezes = [task for task in first.tasks if task.task is PipelineTask.FREEZE]
@@ -30,17 +42,66 @@ def test_delayed_scheduler_tick_catches_up_mandatory_freeze_point_once() -> None
     assert not [task for task in second.tasks if task.task is PipelineTask.FREEZE]
 
 
-def test_restart_after_afternoon_cutoff_combines_due_freezes_without_losing_strategy() -> None:
-    planner = CadencePlanner(_policy())
+def test_restart_after_afternoon_cutoff_only_attempts_checkpoint_eligible_strategies() -> None:
     restarted = datetime(2026, 7, 16, 14, 50, 1, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=restarted)
 
     batch = planner.plan(restarted, is_trading_day=True)
 
     freezes = [task for task in batch.tasks if task.task is PipelineTask.FREEZE]
     assert len(freezes) == 1
-    assert freezes[0].freeze_strategies == ("today", "tomorrow", "d25")
-    assert PipelineTask.DEEPSEEK_CUTOFF in {task.task for task in batch.tasks}
+    assert freezes[0].freeze_strategies == ("tomorrow", "d25")
+    assert PipelineTask.DEEPSEEK_CUTOFF not in {task.task for task in batch.tasks}
     assert PipelineTask.FINAL_CANDIDATE_QUOTES not in {task.task for task in batch.tasks}
+    status = planner.status()
+    assert status["schedule_points"]["2026-07-16:today_freeze:today"]["lifecycle"] == "missed"
+    assert status["schedule_points"]["2026-07-16:deepseek_cutoff:-"]["lifecycle"] == "missed"
+
+
+def test_cold_start_at_today_boundary_marks_today_missed() -> None:
+    started_at = datetime(2026, 7, 16, 11, 20, 0, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=started_at)
+
+    batch = planner.plan(started_at, is_trading_day=True)
+
+    assert not [task for task in batch.tasks if task.task is PipelineTask.FREEZE]
+    assert (
+        planner.schedule_point_lifecycle("2026-07-16", SchedulePoint.TODAY_FREEZE, "today")
+        is SchedulePointLifecycle.MISSED
+    )
+
+
+def test_rejected_freeze_submission_returns_to_pending_and_can_be_submitted_again() -> None:
+    started_at = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
+    boundary = datetime(2026, 7, 16, 11, 20, 0, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=started_at)
+
+    first = next(task for task in planner.plan(boundary, is_trading_day=True).tasks if task.task is PipelineTask.FREEZE)
+    planner.record_submission(first, accepted=False, at=boundary)
+    second = next(
+        task
+        for task in planner.plan(boundary + timedelta(milliseconds=50), is_trading_day=True).tasks
+        if task.task is PipelineTask.FREEZE
+    )
+
+    assert second.freeze_strategies == ("today",)
+
+
+def test_retry_wait_uses_fixed_backoff_and_keeps_point_incomplete() -> None:
+    started_at = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
+    boundary = datetime(2026, 7, 16, 11, 20, 0, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=started_at)
+    freeze = next(
+        task for task in planner.plan(boundary, is_trading_day=True).tasks if task.task is PipelineTask.FREEZE
+    )
+    planner.record_submission(freeze, accepted=True, at=boundary)
+    planner.record_results(freeze, {"today": SchedulePointResult.RETRY}, at=boundary)
+
+    early = planner.plan(boundary + timedelta(milliseconds=999), is_trading_day=True)
+    due = planner.plan(boundary + timedelta(seconds=1), is_trading_day=True)
+
+    assert not [task for task in early.tasks if task.task is PipelineTask.FREEZE]
+    assert next(task for task in due.tasks if task.task is PipelineTask.FREEZE).freeze_strategies == ("today",)
 
 
 @pytest.mark.parametrize(
@@ -51,7 +112,7 @@ def test_restart_after_afternoon_cutoff_combines_due_freezes_without_losing_stra
     ),
 )
 def test_restart_after_freeze_recovers_current_quote_index_once(restarted) -> None:
-    planner = CadencePlanner(_policy())
+    planner = CadencePlanner(_policy(), started_at=restarted)
 
     first = planner.plan(restarted, is_trading_day=True)
     second = planner.plan(restarted + timedelta(seconds=1), is_trading_day=True)
@@ -61,7 +122,10 @@ def test_restart_after_freeze_recovers_current_quote_index_once(restarted) -> No
 
 
 def test_missed_final_candidate_refresh_is_not_replayed_after_freeze_boundary() -> None:
-    planner = CadencePlanner(_policy())
+    planner = CadencePlanner(
+        _policy(),
+        started_at=datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI),
+    )
 
     before_freeze = planner.plan(datetime(2026, 7, 16, 14, 49, 51, tzinfo=SHANGHAI), is_trading_day=True)
     after_freeze = planner.plan(datetime(2026, 7, 16, 14, 50, 1, tzinfo=SHANGHAI), is_trading_day=True)
@@ -79,8 +143,8 @@ def test_freshness_level_uses_strict_two_and_three_cycle_boundaries() -> None:
 
 
 def test_periodic_tasks_skip_missed_cycles_instead_of_bursting_catchup_work() -> None:
-    planner = CadencePlanner(_policy())
     first_tick = datetime(2026, 7, 16, 9, 30, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=first_tick)
 
     planner.plan(first_tick, is_trading_day=True)
     delayed = planner.plan(first_tick + timedelta(minutes=1), is_trading_day=True)
@@ -93,8 +157,8 @@ def test_periodic_tasks_skip_missed_cycles_instead_of_bursting_catchup_work() ->
 
 
 def test_first_tick_after_warmup_still_initializes_reference_data_once() -> None:
-    planner = CadencePlanner(_policy())
     late_start = datetime(2026, 7, 16, 9, 45, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=late_start)
 
     first = planner.plan(late_start, is_trading_day=True)
     second = planner.plan(late_start + timedelta(seconds=1), is_trading_day=True)
@@ -109,13 +173,25 @@ def test_close_quotes_budget_allows_slow_close_source_and_local_rebuild() -> Non
 
 def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
     raw = json.loads((Path(__file__).parents[3] / "config" / "v2" / "runtime.json").read_text(encoding="utf-8"))
-    planner = CadencePlanner(CadencePolicy.from_seconds(raw["pipeline"]["cadence_seconds"]))
     current = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
+    planner = CadencePlanner(
+        CadencePolicy.from_seconds(raw["pipeline"]["cadence_seconds"]),
+        started_at=current,
+    )
     closing = current.replace(hour=15, minute=0)
     counts: Counter[PipelineTask] = Counter()
 
     while current <= closing:
-        counts.update(item.task for item in planner.plan(current, is_trading_day=True).tasks)
+        batch = planner.plan(current, is_trading_day=True)
+        counts.update(item.task for item in batch.tasks)
+        for task in batch.tasks:
+            if task.schedule_point is None:
+                continue
+            planner.record_submission(task, accepted=True, at=current)
+            results = {strategy: SchedulePointResult.COMPLETED for strategy in (task.freeze_strategies or ("-",))}
+            if task.schedule_point is SchedulePoint.TODAY_CHECKPOINT:
+                results = {"today": SchedulePointResult.COMPLETED}
+            planner.record_results(task, results, at=current)
         current += timedelta(seconds=1)
 
     assert counts == Counter(

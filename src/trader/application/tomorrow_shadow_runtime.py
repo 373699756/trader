@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import Protocol
@@ -19,6 +19,7 @@ from trader.application.ports.snapshots import (
     SnapshotStatusValue,
 )
 from trader.application.ports.tomorrow import TomorrowNativeInput, TomorrowNativeInputPort
+from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.tomorrow_events import TomorrowDecisionEventStream
 from trader.application.tomorrow_freezing import TomorrowFreezeCoordinator
 from trader.application.tomorrow_shadow import (
@@ -102,6 +103,8 @@ class TomorrowShadowRuntime:
         self._baseline_stale_trade_date_skipped = 0
         self._failed = 0
         self._skipped_sealed = 0
+        self._freeze_retry_pending = False
+        self._freeze_retry_attempts = 0
         self._last_error = ""
         self._last_pipeline_latency_ms: float | None = None
         self._last_publish_latency_ms: float | None = None
@@ -172,50 +175,92 @@ class TomorrowShadowRuntime:
 
     def _process_current_baseline(self, snapshot: RecommendationSnapshot, started: float) -> bool:
         try:
-            native_input = native_input_from_snapshot(snapshot)
-            with self._lock:
-                native_record = self._native_records.get(native_input.input_version)
-            if native_record is None:
-                current = self._decisions.latest()
-                if (
-                    current is not None
-                    and current.trade_date == native_input.trade_date
-                    and current.observed_at > native_input.evaluated_at
-                ):
-                    with self._lock:
-                        self._baseline_superseded += 1
-                    return True
-                projection, local_publish_seconds = self._fallback_projection(snapshot)
-                if projection is None:
-                    return True
-            else:
-                projection = project_tomorrow_input(
-                    native_record.native_input,
-                    self._policy,
-                    decision_sequence=native_record.sequence,
-                    reviews=snapshot.replay_input.reviews if snapshot.replay_input is not None else {},
-                )
-                if projection.local.version != native_record.local_version:
-                    raise RuntimeError("tomorrow native local identity changed before baseline observation")
-                current = self._decisions.latest()
-                if current is None or (
-                    current.version not in {projection.local.version, getattr(projection.hybrid, "version", "")}
-                    and current.sequence > native_record.sequence
-                ):
-                    with self._lock:
-                        self._baseline_superseded += 1
-                    return True
-                local_publish_seconds = native_record.local_publish_seconds
+            projection, local_publish_seconds = self._resolve_baseline_projection(snapshot)
+            if projection is None:
+                return True
             effective = self._publish_effective_projection(projection)
             if effective is None:
                 return True
-            if snapshot.frozen:
-                freeze_result = self._freezer.freeze_scheduled()
-                if freeze_result.status in {"frozen", "already_frozen"}:
-                    self._events.publish_decision(self._queries.current())
-            now = _clock_now(self._clock)
-            frozen = self._decisions.frozen()
-            observation = TomorrowShadowObservation(
+            self._freeze_baseline(snapshot)
+            self._record_baseline_observation(
+                snapshot,
+                projection,
+                effective,
+                local_publish_seconds=local_publish_seconds,
+                started=started,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._record_failure(snapshot, exc, started)
+            return False
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        with self._lock:
+            self._processed += 1
+            self._last_pipeline_latency_ms = elapsed_ms
+            self._last_error = ""
+        return True
+
+    def _resolve_baseline_projection(
+        self,
+        snapshot: RecommendationSnapshot,
+    ) -> tuple[TomorrowShadowProjection | None, float]:
+        native_input = native_input_from_snapshot(snapshot)
+        with self._lock:
+            native_record = self._native_records.get(native_input.input_version)
+        if native_record is None:
+            current = self._decisions.latest()
+            if (
+                current is not None
+                and current.trade_date == native_input.trade_date
+                and current.observed_at > native_input.evaluated_at
+            ):
+                with self._lock:
+                    self._baseline_superseded += 1
+                return None, 0.0
+            return self._fallback_projection(snapshot)
+        projection = project_tomorrow_input(
+            native_record.native_input,
+            self._policy,
+            decision_sequence=native_record.sequence,
+            reviews=snapshot.replay_input.reviews if snapshot.replay_input is not None else {},
+        )
+        if projection.local.version != native_record.local_version:
+            raise RuntimeError("tomorrow native local identity changed before baseline observation")
+        current = self._decisions.latest()
+        versions = {projection.local.version, getattr(projection.hybrid, "version", "")}
+        if current is None or (current.version not in versions and current.sequence > native_record.sequence):
+            with self._lock:
+                self._baseline_superseded += 1
+            return None, 0.0
+        return projection, native_record.local_publish_seconds
+
+    def _freeze_baseline(self, snapshot: RecommendationSnapshot) -> None:
+        if not snapshot.frozen:
+            return
+        freeze_result = self._freezer.freeze_scheduled()
+        if freeze_result.status in {"frozen", "already_frozen"}:
+            self._events.publish_decision(self._queries.current())
+            pending = False
+        elif freeze_result.status == "persistence_failed":
+            pending = True
+        else:
+            return
+        with self._lock:
+            self._freeze_retry_pending = pending
+
+    def _record_baseline_observation(
+        self,
+        snapshot: RecommendationSnapshot,
+        projection: TomorrowShadowProjection,
+        effective: DecisionEpoch,
+        *,
+        local_publish_seconds: float,
+        started: float,
+    ) -> None:
+        now = _clock_now(self._clock)
+        frozen = self._decisions.frozen()
+        same_freeze = frozen is not None and frozen.trade_date == effective.trade_date
+        self._gate.record(
+            TomorrowShadowObservation(
                 trade_date=effective.trade_date,
                 observed_at=now,
                 baseline_snapshot_id=snapshot.snapshot_id,
@@ -237,26 +282,13 @@ class TomorrowShadowRuntime:
                 deepseek_request_delta=0,
                 resource_limits_passed=True,
                 baseline_frozen=snapshot.frozen,
-                v2_frozen=frozen is not None and frozen.trade_date == effective.trade_date,
+                v2_frozen=same_freeze,
                 freeze_codes_match=(
-                    frozen is not None
-                    and frozen.trade_date == effective.trade_date
-                    and _selected_codes(snapshot) == _selected_codes(frozen.decision)
+                    same_freeze and frozen is not None and _selected_codes(snapshot) == _selected_codes(frozen.decision)
                 ),
-                freeze_content_hash=(
-                    frozen.content_hash if frozen is not None and frozen.trade_date == effective.trade_date else ""
-                ),
+                freeze_content_hash=frozen.content_hash if same_freeze and frozen is not None else "",
             )
-            self._gate.record(observation)
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            self._record_failure(snapshot, exc, started)
-            return False
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        with self._lock:
-            self._processed += 1
-            self._last_pipeline_latency_ms = elapsed_ms
-            self._last_error = ""
-        return True
+        )
 
     def _fallback_projection(
         self,
@@ -363,11 +395,34 @@ class TomorrowShadowRuntime:
                 "baseline_stale_trade_date_skipped": self._baseline_stale_trade_date_skipped,
                 "failed": self._failed,
                 "skipped_sealed": self._skipped_sealed,
+                "freeze_retry_pending": self._freeze_retry_pending,
+                "freeze_retry_attempts": self._freeze_retry_attempts,
                 "last_error": self._last_error,
                 "pipeline_latency_ms": self._last_pipeline_latency_ms,
                 "publish_latency_ms": self._last_publish_latency_ms,
             }
         return {**runtime, "cutover_gate": asdict(self._gate.status())}
+
+    def retry_pending_freeze(self) -> bool:
+        with self._lock:
+            if not self._freeze_retry_pending:
+                return True
+            self._freeze_retry_attempts += 1
+        result = self._freezer.freeze_scheduled()
+        if result.status in {"frozen", "already_frozen"}:
+            self._events.publish_decision(self._queries.current())
+            with self._lock:
+                self._freeze_retry_pending = False
+                self._last_error = ""
+            return True
+        if result.status == "persistence_failed":
+            with self._lock:
+                self._last_error = "tomorrow_freeze_persistence_failed"
+            return False
+        with self._lock:
+            self._freeze_retry_pending = False
+            self._last_error = f"tomorrow_freeze_retry_terminal:{result.status}"
+        return True
 
     def _publish_decision(self, decision: DecisionEpoch) -> bool:
         started = time.perf_counter()
@@ -499,14 +554,32 @@ class TomorrowShadowWorker(TomorrowNativeInputPort):
             self._condition.notify()
             return True
 
-    def stop(self, *, wait: bool, timeout_seconds: float | None = None) -> None:
+    def stop(
+        self,
+        *,
+        wait: bool,
+        timeout_seconds: float | None = None,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownStep:
+        effective_deadline = deadline
+        if effective_deadline is None and timeout_seconds is not None:
+            effective_deadline = ShutdownDeadline.start(timeout_seconds)
         with self._condition:
             self._stopping = True
+            cancelled = int(self._pending is not None)
             self._pending = None
             thread = self._thread
             self._condition.notify_all()
         if wait and thread is not None:
-            thread.join(timeout_seconds)
+            thread.join(None if effective_deadline is None else effective_deadline.remaining_seconds())
+        completed = thread is None or not thread.is_alive()
+        return ShutdownStep(
+            name=self._thread_name,
+            completed=completed,
+            timed_out=wait and not completed and effective_deadline is not None and effective_deadline.expired,
+            cancelled_count=cancelled,
+            detail="shadow worker remains inflight" if not completed else "",
+        )
 
     def status(self) -> Mapping[str, object]:
         with self._condition:
@@ -551,6 +624,39 @@ class TomorrowShadowWorker(TomorrowNativeInputPort):
                 else:
                     self._failed += 1
                     self._last_error = worker_error or "shadow_processing_failed"
+            if completed:
+                self._retry_pending_freeze()
+
+    def _retry_pending_freeze(self) -> None:
+        retry = getattr(self._processor, "retry_pending_freeze", None)
+        if not callable(retry):
+            return
+        delays = (0.0, 1.0, 2.0, 5.0, 10.0, 30.0)
+        attempt = 0
+        while not self._stopping:
+            delay = delays[min(attempt, len(delays) - 1)]
+            if self._wait_for_retry(delay):
+                return
+            if self._run_freeze_retry(retry):
+                return
+            attempt += 1
+
+    def _wait_for_retry(self, delay: float) -> bool:
+        with self._condition:
+            if self._stopping:
+                return True
+            if delay > 0.0:
+                self._condition.wait(delay)
+            return self._stopping
+
+    def _run_freeze_retry(self, retry: Callable[[], object]) -> bool:
+        try:
+            return bool(retry())
+        except Exception as exc:
+            with self._condition:
+                self._failed += 1
+                self._last_error = f"freeze_retry_exception:{type(exc).__name__}"
+            return False
 
 
 class ShadowObservingSnapshotIndex(PublishedSnapshotWritePort):

@@ -142,6 +142,22 @@ def freeze_due_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
     return ()
 
 
+def startup_freeze_strategies(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
+    """Return only checkpoint-eligible freezes for initialization.
+
+    Today is deliberately absent: a process created at or after 11:20 may
+    never manufacture the missed same-day record. Afternoon checkpoints may
+    be recovered only before close fallback becomes eligible.
+    """
+
+    if not is_trading_day:
+        return ()
+    current = shanghai_now(value).time().replace(tzinfo=None)
+    if time(14, 50) <= current < time(15, 0):
+        return ("tomorrow", "d25")
+    return ()
+
+
 def schedule_point_at(value: datetime, *, is_trading_day: bool) -> SchedulePoint | None:
     if not is_trading_day:
         return None
@@ -193,5 +209,6 @@ __all__ = [
     "schedule_point_at",
     "seconds_until_next_schedule_boundary",
     "shanghai_now",
+    "startup_freeze_strategies",
     "trade_date_at",
 ]

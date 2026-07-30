@@ -4,6 +4,7 @@ import threading
 
 import pytest
 
+from trader.application.shutdown import ShutdownDeadline
 from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
 
 
@@ -239,3 +240,39 @@ def test_all_shared_pool_workers_can_borrow_without_waiting_on_their_own_queue()
         executor.stop()
 
     assert not any(thread.name.startswith("test-nested-") for thread in threading.enumerate())
+
+
+def test_executor_deadline_cancels_pending_and_never_waits_for_blocked_running_task() -> None:
+    executor = BoundedExecutor(
+        worker_count=1,
+        queue_capacity=2,
+        thread_name_prefix="test-deadline",
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked() -> None:
+        entered.set()
+        release.wait()
+
+    executor.start()
+    running = executor.submit(blocked)
+    pending = executor.submit(lambda: 42)
+    assert running is not None
+    assert pending is not None
+    assert entered.wait(timeout=1.0)
+
+    try:
+        step = executor.stop(
+            deadline=ShutdownDeadline.start(0.05),
+            cancel_futures=True,
+        )
+
+        assert step.name == "test-deadline"
+        assert step.completed is False
+        assert step.timed_out is True
+        assert step.cancelled_count == 1
+        assert pending.cancelled() is True
+    finally:
+        release.set()
+        running.result(timeout=1.0)

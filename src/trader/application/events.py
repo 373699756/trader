@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, IntEnum
 from types import MappingProxyType
+from typing import Protocol
 from uuid import uuid4
 
 from trader.application.ports.types import JsonInput, JsonObject, JsonValue, freeze_json_object, thaw_json_value
@@ -128,6 +129,10 @@ class InMemoryEventLedger:
                 self._trim_terminal_locked()
             return True
 
+    def event(self, event_id: str) -> EventAuditRecord:
+        with self._lock:
+            return self._records[event_id]
+
     def _trim_terminal_locked(self) -> None:
         while len(self._terminal) > self._terminal_capacity:
             event_id, _value = self._terminal.popitem(last=False)
@@ -228,6 +233,24 @@ class EventSpec:
     payload: Mapping[str, JsonInput] | None = None
 
 
+@dataclass(frozen=True)
+class EventQueueCloseResult:
+    cancelled_event_ids: tuple[str, ...]
+    preserved_event_ids: tuple[str, ...]
+
+
+class EventStatusWriter(Protocol):
+    def compare_and_set_event(
+        self,
+        event_id: str,
+        *,
+        expected_status: EventStatus,
+        status: EventStatus,
+        retry_count: int,
+        error: str = "",
+    ) -> bool: ...
+
+
 def new_event(spec: EventSpec) -> PipelineEvent:
     return PipelineEvent(
         event_id=uuid4().hex,
@@ -320,10 +343,34 @@ class BoundedEventQueue:
                 return event
             return None
 
-    def close(self) -> None:
+    def close(self, *, ledger: EventStatusWriter | None = None) -> EventQueueCloseResult:
         with self._condition:
             self._closed = True
+            queued = tuple(self._events.items())
+            cancelled = tuple(event for _key, event in queued if event.priority > EventPriority.RISK)
+            preserved = tuple(
+                sorted(
+                    (event for _key, event in queued if event.priority <= EventPriority.RISK),
+                    key=lambda event: (int(event.priority), event.created_at, event.event_id),
+                )
+            )
+            for key, event in queued:
+                if event.priority > EventPriority.RISK:
+                    self._events.pop(key, None)
+            if ledger is not None:
+                for event in cancelled:
+                    ledger.compare_and_set_event(
+                        event.event_id,
+                        expected_status=EventStatus.PENDING,
+                        status=EventStatus.FAILED,
+                        retry_count=event.retry_count,
+                        error="shutdown_cancelled",
+                    )
             self._condition.notify_all()
+            return EventQueueCloseResult(
+                cancelled_event_ids=tuple(event.event_id for event in cancelled),
+                preserved_event_ids=tuple(event.event_id for event in preserved),
+            )
 
     def empty(self) -> bool:
         with self._condition:
@@ -422,6 +469,7 @@ __all__ = [
     "EventAuditRecord",
     "EventDeadlineExpiredError",
     "EventPriority",
+    "EventQueueCloseResult",
     "EventSpec",
     "EventStatus",
     "InMemoryEventLedger",
