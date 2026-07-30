@@ -124,7 +124,7 @@ P8-P9。P9 只切 tomorrow，不得顺带切 today、d25 或 long。
 
 ## 6. P0：冻结现状、术语和目标契约
 
-状态：未开始
+状态：进行中
 
 ### 目标
 
@@ -150,6 +150,47 @@ P8-P9。P9 只切 tomorrow，不得顺带切 today、d25 或 long。
 5. 固定四策略迁移顺序：tomorrow、today、d25、long。
 6. 固定生产读指针、生产写指针、影子写路径和历史只读路径的组合根端口。
 7. 列出仍需保留的历史 schema/replay 解码器，防止清理时破坏已提交冻结。
+
+### 2026-07-30 基线执行结果（按本任务）
+
+- HEAD：`0d52522e65f0654f29e401c6e9728ac7f6c484c6`；`@{upstream}`：`origin/feature/tomorrow-v2`，一致。
+- Git 状态：基线扫描前工作树干净（无未提交改动）。
+- `config/v2/runtime.json`：`schema_version=8`、`runtime_dir=.runtime/v17`、`config_version=runtime_v35_tomorrow_input_quality_free_master_2026_07_30`。
+
+#### 基线清单（先前版本不应重复）
+
+1) 旧包清理边界（保留/迁移为历史只读）
+   - 活动源码树无 `stock_analyzer` 导入。
+   - 无可追踪的 `src/stock_analyzer` 代码；回退仅通过完整旧 release 进行，不在新分支保留旧业务实现。
+
+2) 当前生产链（保留运行中）
+   - 组合根：`bootstrap.py -> build_system -> ApplicationSystem`（`entrypoints/server.py`）。
+   - 当前推荐读写与冻结：`src/trader/application/{pipeline.py,recommendations.py,current_decisions.py,freeze_attempts.py,pipeline_status.py,outcome_settlement.py,published_snapshots.py}` 与 `src/trader/web/routes.py`/`routes_recommendations.py`/`routes_status.py`/`routes_events.py`。
+   - 根页面与当前 API：`src/trader/web/templates/index.html`、`dashboard.*`、`/api/recommendations/<strategy>`、`/api/status` 及现有 SSE 入口。
+   - 当前运行库：`.runtime/v17/runtime.sqlite3`，运行快照与冻结路径为 `.runtime/v17/{frozen,checkpoints,quarantine,published}`。
+
+3) tomorrow v2 影子链（已建成，不得提前切生产）
+   - 路由与视图：`/v2/tomorrow`、`/api/v2/tomorrow/current|history|status|events`。
+   - 决策/影子仓储：`application/tomorrow_*.py`、`infra/persistence/tomorrow_decision_freezes.py`、`infra/persistence/tomorrow_shadow_evidence.py`。
+   - 影子运行库：`.runtime/v17/tomorrow-v2/{tomorrow-v2.sqlite3,tomorrow-shadow-evidence.sqlite3,checkpoints,freezes,quarantine}`。
+   - `routes_tomorrow_v2.py` 与静态资源 `static/tomorrow_v2.*`、模板 `templates/tomorrow_v2.html` 已存在并联通。
+
+4) 待替代/待迁移（P1-P13 目标）
+   - `web` 根链路、`/api/status` 与 `routes_recommendations` 仍由当前生产链主导，`/v2/tomorrow` 仅并行浏览入口。
+   - `today/tomorrow/d25` 仍由当前推荐链负责当前生产写入；`long` 仍为观察投影。
+   - 交易所主数据/历史风险/历史特征/字段级合并与统一可观测数据模型仍未完整落地（见 P1-P3）。
+
+5) 历史只读与回退矩阵
+   - 仅可读历史运行库：`.runtime/v2/`（历史发布、回退快照来源）、`.runtime/backups/`（策略快照归档）、`.runtime/.stock_analyzer_jobs.sqlite3`（旧任务队列遗留库）、`.runtime/market_data.sqlite3`、`.runtime/deepseek_scheduler.sqlite3`、`.runtime/factor_snapshots.sqlite3`。
+   - 运行时不应向上述旧库写入；仅作回放、核验、回退验证。
+   - 回退路径：发布失败时按 `docs/software-business-design.md` 与 `docs/recommendation-strategy.md` 的流程，回退到完整旧 release；新链路不在同进程混写旧库。
+
+6) 术语边界固定（本批核定）
+   - 旧业务包 = 已退出活动树的 `stock_analyzer`（仅完整 release 回退）；
+   - 当前生产链 = `RecommendationPipeline` 与当前 `/api/*` 所在链；
+   - tomorrow v2 影子链 = 并行观察链（`/api/v2/*`）；
+   - V2 目标链 = today/tomorrow/d25 长期统一到统一决策平面与投影；
+   - 历史兼容解码器 = 已提交冻结/历史快照的只读重放、历史解码与 archive/迁移核验组件。
 
 ### 验收
 

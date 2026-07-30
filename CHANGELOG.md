@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增 `docs/V2_plan.md` 的 P0 基线章节（`2026-07-30`），并新增
+  `docs/reports/v2-p0-baseline.md`：记录活动树中生产链/影子链/历史资产的基线归类、
+  冻结相关术语边界和下阶段迁移顺序，作为 P0“冻结现状、术语和目标契约”批次交付证据。
+
 - 用户要求 Review `docs/V2.md` 的计划可靠性并把可执行步骤写入 `docs/V2_plan.md`。本批
   新增非生产执行计划：基于当前代码区分已删除旧包、当前生产链和 tomorrow v2 影子链，
   给出 P0-P13 的依赖图、逐批目标、文件边界、实施步骤、验收条件、统一交付流程和量化口径。
@@ -304,6 +308,10 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- `docs/V2_plan.md` P0 章节标记为“进行中”，并补齐基线执行结果与待切换矩阵；
+  `tests/contract/test_project_records.py` 已更新与 `docs/V2.md` 目标章节一致（基线报告纳入
+  版本控制、未开始章节数由 14 改为 13）。
 
 - `docs/V2.md` 从可直接施工的九批草案调整为目标概览，执行顺序改为引用
   `docs/V2_plan.md`。优化后的关键路径先做来源能力探测、字段质量模型和持久化，再接证券
@@ -1042,6 +1050,10 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `tests/contract/test_project_records.py` 通过：`test_docs_keep_two_authorities_and_pipeline_reports`
+  验证 `docs/V2_plan.md` 现有章节数、两份权威文档引用、`reports` 基线文件清单
+  （含 `reports/v2-p0-baseline.md`）和其他契约约束一致。
+
 - 本批 Review 以当前组合根、路由、运行配置、市场适配器、tomorrow v2 影子/证据实现、
   权威迁移状态和相关契约/集成测试为依据；确认活动树无 `stock_analyzer` 导入，
   `/v2/tomorrow` 仍为并行入口，交易所、巨潮、BaoStock 和 mootdx 适配器尚未实现。
@@ -1770,6 +1782,10 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- P0 仅完成“基线冻结与术语边界定义”；今日任务不包含运行路径/产线切换实现。
+  后续章节需继续按计划推动 today/tomorrow/d25/long 的读写指针切换、生产与影子运行路径落地，
+  并在切换时保留本批基线可追溯结论。
 
 - 本批只评审并拆解计划，不实现 P0-P13，也不证明交易所、巨潮、BaoStock 或 mootdx 在
   当前网络环境可长期稳定使用。tomorrow v2 仍未切生产指针；P0 还需固定最终 runtime

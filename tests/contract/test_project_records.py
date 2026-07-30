@@ -88,6 +88,7 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
         "reports/pipeline-a3-integration.md",
         "reports/pipeline-a4-acceptance.md",
         "reports/pipeline-a5-final-review.md",
+        "reports/v2-p0-baseline.md",
         "reports/pipeline-d1-p6-web.md",
         "reports/pipeline-g1-contract-base.md",
         "reports/pipeline-g2-gate-review.md",
@@ -125,7 +126,7 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     assert "`docs/V2.md`" in v2_execution_plan
     assert "`docs/software-business-design.md`" in v2_execution_plan
     assert "`docs/recommendation-strategy.md`" in v2_execution_plan
-    assert v2_execution_plan.count("状态：未开始") == 14
+    assert v2_execution_plan.count("状态：未开始") == 13
     assert "## 6. P0：冻结现状、术语和目标契约" in v2_execution_plan
     assert "## 19. P13：旧生产链删除、发布和计划退役" in v2_execution_plan
     assert "`docs/V2.md` 是用户明确保留的 V2 唯一产品目标概览" in design
