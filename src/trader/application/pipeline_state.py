@@ -29,7 +29,7 @@ from trader.application.ports.tomorrow import TomorrowNativeInputPort
 from trader.application.publisher import SnapshotPublisher
 from trader.application.research_coordination import ResearchCoordinator
 from trader.application.status import RuntimeState
-from trader.application.trading_session import TradingSessionTracker
+from trader.application.trading_session import TradingSessionStatus, TradingSessionTracker
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import (
@@ -62,6 +62,11 @@ class PipelineState:
     _live_overlays: dict[tuple[Strategy, str], LiveOverlay]
     _scheduled_inflight: set[PipelineTask]
     _session_snapshot_ids: set[str]
+    _company_research_membership_lock: threading.Lock
+    _company_research_membership_date: str
+    _company_research_membership: set[str]
+    _company_research_review_barrier: bool
+    _company_research_initial_rescore_pending: bool
     _after_close_completed_date: str
     _after_close_retry_at: datetime | None
     _after_close_retry_attempt: int
@@ -87,4 +92,16 @@ class PipelineState:
         observed_at: datetime,
         codes: Sequence[str] | None = None,
     ) -> bool:
+        raise NotImplementedError
+
+    def _offer_new_recommendation_research(self, observed_at: datetime) -> bool:
+        raise NotImplementedError
+
+    def _consume_company_research_review_barrier(self) -> bool:
+        raise NotImplementedError
+
+    def _refresh_trading_session(self, at: datetime) -> TradingSessionStatus:
+        raise NotImplementedError
+
+    def submit_event(self, event: PipelineEvent) -> bool:
         raise NotImplementedError

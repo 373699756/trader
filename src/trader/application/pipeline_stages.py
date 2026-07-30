@@ -454,6 +454,9 @@ def _score_strategies_on_workers(
         projection_stage="local",
     )
     if pipeline._decision_execution_mode == "versioned_dag":
+        if pipeline._consume_company_research_review_barrier():
+            pipeline._state.increment("async_reviews_deferred_company_research")
+            return local_snapshots
         schedule_async_reviews(pipeline, context, prepared_snapshots, local_snapshots)
         return local_snapshots
     measure_deepseek = (

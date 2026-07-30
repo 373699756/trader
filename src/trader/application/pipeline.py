@@ -18,18 +18,17 @@ from trader.application.events import (
     BoundedEventQueue,
     EventDeadlineExpiredError,
     EventPriority,
-    EventSpec,
     EventStatus,
     PipelineEvent,
-    new_event,
 )
 from trader.application.latency import LatencyWaterfall
 from trader.application.long_quotes import LongQuoteProjectionService, refresh_long_quotes
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
+from trader.application.pipeline_research import PipelineResearchMixin
 from trader.application.pipeline_stages import process_event_on_workers
 from trader.application.pipeline_status import PipelineStatusMixin
 from trader.application.pipeline_submission import PipelineSubmissionMixin
-from trader.application.ports.market import MarketDataDeadlineExceededError, ResearchRefreshResult
+from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.research_coordination import ResearchCoordinator
 from trader.application.schedule import (
     MarketPhase,
@@ -60,7 +59,7 @@ from trader.domain.recommendation.models import (
 _LOGGER = logging.getLogger(__name__)
 
 
-class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
+class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, PipelineStatusMixin):
     def __init__(
         self,
         dependencies: PipelineDependencies,
@@ -206,6 +205,11 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._live_overlays: dict[tuple[Strategy, str], LiveOverlay] = {}
         self._scheduled_inflight: set[PipelineTask] = set()
         self._session_snapshot_ids: set[str] = set()
+        self._company_research_membership_lock = threading.Lock()
+        self._company_research_membership_date = ""
+        self._company_research_membership: set[str] = set()
+        self._company_research_review_barrier = False
+        self._company_research_initial_rescore_pending = False
         self._after_close_lock = threading.Lock()
         self._outcome_settlement_lock = threading.Lock()
         self._pending_hybrid_lock = threading.Lock()
@@ -387,74 +391,6 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineStatusMixin):
         self._persistence_running = False
         self._state.mark_started(False)
         return ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
-
-    def _company_research_codes(self, observed_at: datetime) -> tuple[str, ...]:
-        trade_date = trade_date_at(observed_at).isoformat()
-        snapshot_codes = (
-            item.features.quote.code
-            for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
-            if (snapshot := self._state.latest(strategy)) is not None and snapshot.trade_date == trade_date
-            for item in snapshot.recommendations
-        )
-        return tuple(dict.fromkeys((*snapshot_codes, *self._candidate_codes)))
-
-    def _offer_company_research(
-        self,
-        observed_at: datetime,
-        codes: Sequence[str] | None = None,
-    ) -> bool:
-        selected = tuple(codes) if codes is not None else self._company_research_codes(observed_at)
-        accepted = self._research_coordinator.offer(selected, observed_at)
-        if accepted:
-            self._state.increment("company_research_offers")
-        return accepted
-
-    def _await_company_research(self, timeout_seconds: float) -> bool:
-        completed = self._research_coordinator.wait_until_idle(timeout_seconds)
-        if not completed:
-            self._state.increment("company_research_close_wait_timeouts")
-        return completed
-
-    def _on_company_research_result(self, result: ResearchRefreshResult) -> None:
-        self._state.increment("company_research_batches")
-        self._state.increment("company_research_completed_codes", len(result.completed_codes))
-        self._state.increment("company_research_deferred_codes", len(result.deferred_codes))
-        self._state.increment("company_research_failed_codes", len(result.failed_codes))
-        if self._decision_execution_mode != "versioned_dag" or not result.changed_codes:
-            return
-        completed_at = result.completed_at or self._now()
-        session = self._refresh_trading_session(completed_at)
-        phase = decision_at(
-            completed_at,
-            is_trading_day=session.is_trading_day is True,
-        ).phase
-        if phase is MarketPhase.CLOSED:
-            return
-        event = new_event(
-            EventSpec(
-                event_type=PipelineTask.SCORE.value,
-                subject_key="market",
-                trade_date=trade_date_at(completed_at).isoformat(),
-                phase=phase.value,
-                strategy=None,
-                priority=EventPriority.RISK,
-                data_version=f"stock_risk:{result.data_version}",
-                config_version=self._config_version,
-                created_at=completed_at,
-                deadline=completed_at + timedelta(seconds=38.0),
-                latest_wins=True,
-                payload={
-                    "schedule_task": PipelineTask.SCORE.value,
-                    "trigger_event_type": PipelineTask.STOCK_RISK.value,
-                    "session_generation": session.generation,
-                    "session_trade_date": session.trade_date,
-                },
-            )
-        )
-        if self.submit_event(event):
-            self._state.increment("triggered_scores_submitted")
-        else:
-            self._state.increment("triggered_scores_dropped")
 
     def run_once(self, at: datetime) -> tuple[RecommendationSnapshot, ...]:
         correlation_id = f"run-once:{uuid4().hex}"

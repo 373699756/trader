@@ -95,8 +95,6 @@ class PipelineSubmissionMixin(PipelineState):
             return 1.0
         phase = decision_at(now, is_trading_day=is_trading_day).phase
         self._state.record_tick(phase.value, now)
-        if is_trading_day:
-            self._offer_company_research(now)
         batch = planner.plan(now, is_trading_day=is_trading_day)
         tasks = list(batch.tasks)
         trade_date = trade_day.isoformat()
@@ -226,6 +224,11 @@ class PipelineSubmissionMixin(PipelineState):
         with self._cadence_lock:
             self._scheduled_inflight.intersection_update({PipelineTask.FREEZE})
         self._session_snapshot_ids.clear()
+        with self._company_research_membership_lock:
+            self._company_research_membership_date = ""
+            self._company_research_membership.clear()
+            self._company_research_review_barrier = False
+            self._company_research_initial_rescore_pending = False
 
     def submit_event(self, event: PipelineEvent) -> bool:
         with self._lifecycle_lock:

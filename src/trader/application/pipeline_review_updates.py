@@ -312,6 +312,8 @@ def publish_prepared_snapshots(
             (time.perf_counter() - sse_started) * 1000.0,
         )
         snapshots.append(snapshot)
+    if projection_stage == "local" and snapshots:
+        pipeline._offer_new_recommendation_research(context.now)
     return tuple(snapshots)
 
 

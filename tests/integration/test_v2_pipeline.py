@@ -549,9 +549,157 @@ def test_after_close_arbitrary_start_still_dispatches_company_research(
     try:
         assert pipeline.submit_due(now) == 1.0
         _wait_until(lambda: pipeline.status()["counters"].get("company_research_batches") == 1)
+        for _ in range(25):
+            assert pipeline.submit_due(now) == 1.0
         status = pipeline.status()
         assert status["dependencies"]["company_research"]["completed_batches"] == 1
+        assert status["dependencies"]["company_research"]["gated_offer_codes"] == 25
+        assert status["counters"]["company_research_offers"] == 1
         assert status["counters"]["company_research_completed_codes"] == 1
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+
+def test_cadence_scheduler_tick_does_not_offer_company_research_directly(
+    recommendation_policy,
+    application_feature_factory,
+    monkeypatch,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    market_data = StaticMarketData((application_feature_factory("600001", now),))
+    repository = MemoryRepository()
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+        cadence_policy=CadencePolicy.from_seconds(
+            {
+                "full_market": {"today_main": 5},
+                "candidate_quotes": {"today_main": 1},
+                "topk_quotes": {"today_main": 1},
+                "long_quotes": {"today_main": 1},
+                "score": {"today_main": 3},
+                "industry_heat": {"today_main": 60},
+                "market_news": {"today_main": 60},
+                "stock_risk": {"today_main": 180},
+            }
+        ),
+    )
+    offers: list[datetime] = []
+
+    def record_offer(observed_at: datetime, _codes=None) -> bool:
+        offers.append(observed_at)
+        return True
+
+    monkeypatch.setattr(pipeline, "_offer_company_research", record_offer)
+    pipeline.initialize()
+
+    pipeline.submit_due(now)
+
+    assert offers == []
+
+
+def test_new_local_recommendations_trigger_company_research_immediately(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    market_data = StaticMarketData((application_feature_factory("600001", now),))
+    repository = MemoryRepository()
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        RuntimeState(),
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        now=lambda: now,
+    )
+    pipeline.initialize()
+    assert pipeline.start() is True
+    try:
+        assert pipeline.submit_tick(now) is True
+        _wait_until(lambda: pipeline.status()["counters"].get("company_research_batches") == 1)
+        status = pipeline.status()
+        assert status["counters"]["company_research_offers"] == 1
+        assert status["counters"]["company_research_completed_codes"] == 1
+    finally:
+        pipeline.stop(timeout_seconds=2.0)
+
+
+def test_failed_initial_company_research_releases_versioned_review_barrier(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+
+    class FailedCompanyResearch(StaticMarketData):
+        @staticmethod
+        def refresh_stock_risk(
+            codes: Sequence[str],
+            observed_at: datetime,
+            *,
+            deadline: datetime | None = None,
+        ) -> ResearchRefreshResult:
+            del deadline
+            requested = tuple(codes)
+            return ResearchRefreshResult(
+                requested_codes=requested,
+                failed_codes=requested,
+                data_version="test-research:failed",
+                started_at=observed_at,
+                completed_at=observed_at,
+            )
+
+    market_data = FailedCompanyResearch((application_feature_factory("600001", now),))
+    repository = MemoryRepository()
+    state = RuntimeState()
+    pipeline = build_pipeline(
+        market_data,
+        TradingDayCalendar(),
+        FailingReviewer(),
+        repository,
+        repository,
+        SnapshotPublisher(history_size=8, client_queue_size=2),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=8,
+        priority_queue_size=2,
+        decision_execution_mode="versioned_dag",
+        now=lambda: now,
+    )
+    pipeline.initialize()
+    assert pipeline.start() is True
+    try:
+        assert pipeline.submit_tick(now) is True
+        _wait_until(
+            lambda: (
+                (latest := state.latest(Strategy.TODAY)) is not None and latest.metadata["projection_stage"] == "hybrid"
+            )
+        )
+        status = pipeline.status()
+        assert status["dependencies"]["company_research"]["short_circuited_batches"] == 1
+        assert status["counters"]["company_research_failed_codes"] == 1
+        assert status["counters"]["async_reviews_deferred_company_research"] == 1
+        assert status["counters"]["triggered_scores_submitted"] == 1
     finally:
         pipeline.stop(timeout_seconds=2.0)
 
@@ -2408,12 +2556,23 @@ def test_versioned_data_refresh_queues_score_with_its_own_budget(
     assert pipeline.start() is True
     try:
         assert pipeline.submit_event(event) is True
-        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 2)
+        _wait_until(
+            lambda: any(
+                item.event_type == "score"
+                and item.status is EventStatus.SUCCESS
+                and item.payload.get("trigger_event_type") == source_task
+                for item in repository.events
+            )
+        )
     finally:
         pipeline.stop(timeout_seconds=2.0)
 
     source_record = next(item for item in repository.events if item.event_type == source_task)
-    score_record = next(item for item in repository.events if item.event_type == "score")
+    score_record = next(
+        item
+        for item in repository.events
+        if item.event_type == "score" and item.payload.get("trigger_event_type") == source_task
+    )
     assert source_record.status is EventStatus.SUCCESS
     assert score_record.status is EventStatus.SUCCESS
     assert score_record.payload["trigger_event_type"] == source_task
@@ -2692,7 +2851,7 @@ def test_local_snapshot_is_published_before_deepseek_review_finishes(
         assert local is not None
         assert local.metadata["projection_stage"] == "local"
         assert "deepseek_pending" in local.degraded_reasons
-        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] >= 1)
         reviewer.release.set()
     finally:
         reviewer.release.set()
@@ -2729,16 +2888,19 @@ def test_versioned_dag_publishes_hybrid_only_through_main_commit_worker(
     try:
         assert pipeline.submit_tick(now) is True
         assert reviewer.started.wait(timeout=1.0)
-        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
+        _wait_until(lambda: pipeline.status()["counters"]["events_completed"] >= 1)
         assert state.latest(Strategy.TODAY).metadata["projection_stage"] == "local"
+        _wait_until(lambda: pipeline.status()["counters"].get("company_research_batches") == 1)
         reviewer.release.set()
-        _wait_until(lambda: state.latest(Strategy.TODAY).metadata["projection_stage"] == "hybrid")
+        _wait_until(lambda: pipeline.status()["counters"].get("hybrid_results_queued") == 3)
     finally:
         reviewer.release.set()
         pipeline.stop(timeout_seconds=2.0)
 
     assert engine.finalize_threads[-1] == "trader-merge"
     assert pipeline.status()["counters"]["hybrid_results_queued"] == 3
+    assert pipeline.status()["counters"]["company_research_offers"] == 1
+    assert pipeline.status()["counters"]["async_reviews_deferred_company_research"] == 1
     hybrid_record = next(item for item in repository.events if item.event_type == "hybrid_ready")
     assert hybrid_record.deadline == hybrid_record.created_at + timedelta(seconds=38)
 
