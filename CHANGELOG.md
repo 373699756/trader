@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续 `V2_plan.md` 未完成任务。本批完成 `P7：实时路由归一化和 mootdx 影子准入`：
+  生产路由保持东方财富先发、1 秒后新浪对冲、腾讯定向候选报价的既有边界；新增回归锁定
+  字段级报价合并、来源别名归一化、`mootdx_shadow` 不写生产实时字段，以及物理失败/timeout/
+  熔断跳过/source lane 淘汰的分离健康计数。腾讯价格-only 响应只能更新允许字段，不能整行清空
+  名称、上一收盘、证券身份或风险标记；通达信/mootdx 在权威准入前仍不进入组合根、生产路由、
+  评分、冻结或 Web 查询路径。
+
 - 本批完成 `P5：历史特征仓库和 BaoStock 校验` 章节收口：`HistoryCache` 增加
   `history_data_plane` 注入与恢复方法 `recover_from_data_plane()`，重放 61 日完整样本窗口并修复
   20 日内存保留上下文；`ReferenceLoader` 在刷新后持久化 `security_master` 与交易日历游标。
@@ -1114,6 +1121,10 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- P7 定向验证：`.venv/bin/pytest tests/unit/test_v2_market_data_field_quality.py tests/unit/test_v2_market_data_merge.py tests/component/test_v2_market_data.py -q`
+  通过，共覆盖 174 项字段级选择、统一行情合并、实时路由、候选报价回退和来源健康用例。首次
+  直接执行 `pytest ...` 因当前环境未安装全局 `pytest` 失败，已改用仓库 `.venv` 执行。
+
 - 本批 P6 完整验证：`make format-check`、`make lint`、`make type-check`、`make test` 均通过；
   `make package` 首次在沙箱内因 setuptools 代理访问受限失败，提升权限后通过。P6 定向回归
   `tests/unit/infra/test_cninfo_incremental.py`、三项 `tests/component/test_v2_market_data.py`
@@ -1887,6 +1898,10 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- P7 不接入真实通达信/mootdx 节点、不建立生产 fallback，也不新增生产配置；其后续准入仍依赖
+  连续真实样本、节点切换/断线、时间戳、价格、停牌和延迟对比证据。关闭 mootdx 影子能力后，
+  当前业务继续依赖最近有效统一行情与腾讯定向报价降级。
 
 - P6 仍保留外部准入风险：CNInfo 当前是离线增量登记簿和数据平面写入边界，未接入真实生产
   调度、行情路由或交易所公告交叉校验；`exchange_cross_check_status=pending` 不能解释为交易所级

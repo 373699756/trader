@@ -444,6 +444,38 @@ def test_targeted_quote_must_agree_with_a_full_market_source_to_verify_divergenc
     assert "cross_source_deviation" in quote.execution_restrictions
 
 
+def test_targeted_quote_updates_price_without_whole_row_overwrite() -> None:
+    eastmoney = replace(
+        _observation("eastmoney", price=10.0),
+        fields={
+            **_observation("eastmoney", price=10.0).fields,
+            "has_major_regulatory_risk": True,
+        },
+        payload_hash="eastmoney-full-row",
+    )
+    tencent = replace(
+        _observation("tencent", price=10.02),
+        fields={"price": 10.02},
+        payload_hash="tencent-price-only",
+    )
+
+    snapshot = merge_market_observations(
+        (eastmoney, tencent),
+        observed_at=NOW,
+        targeted_codes=("600001",),
+    )
+
+    quote = snapshot.quotes[0]
+    assert quote.source == "tencent"
+    assert quote.price == 10.02
+    assert quote.name == "测试股份"
+    assert quote.previous_close == 9.8
+    assert quote.has_major_regulatory_risk is True
+    assert snapshot.field_sources["600001"]["price"] == "tencent"
+    assert snapshot.field_sources["600001"]["name"] == "eastmoney"
+    assert snapshot.field_sources["600001"]["has_major_regulatory_risk"] == "eastmoney"
+
+
 def test_targeted_quote_just_over_half_percent_cannot_pass_with_a_larger_denominator() -> None:
     snapshot = merge_market_observations(
         (

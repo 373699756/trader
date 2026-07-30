@@ -3434,6 +3434,24 @@ def test_gateway_marks_circuit_open_vendor_as_skipped_in_route_health() -> None:
     assert health["sources"]["eastmoney"]["circuit_skipped_count"] == 1
 
 
+def test_gateway_source_health_records_superseded_without_physical_failure() -> None:
+    gateway = MarketDataGateway(
+        StaticMarketClient((_quote(),)),
+        StaticMarketClient((_quote(),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+    )
+
+    gateway.record_superseded("eastmoney")
+
+    health = gateway.health()["sources"]["eastmoney"]
+    assert health["superseded_count"] == 1
+    assert health["error_count"] == 0
+    assert health["physical_failure_count"] == 0
+
+
 def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_call() -> None:
     source = BlockingMarketClient((_quote(),))
     gateway = MarketDataGateway(
@@ -3517,6 +3535,10 @@ def test_gateway_reports_recoverable_unavailability_when_all_sources_fail() -> N
     assert health["active_source"] == "unavailable"
     assert health["sources"]["eastmoney"]["circuit_open"] is True
     assert health["sources"]["sina"]["circuit_open"] is True
+    assert health["sources"]["eastmoney"]["physical_failure_count"] == 1
+    assert health["sources"]["sina"]["physical_failure_count"] == 1
+    assert health["sources"]["eastmoney"]["timeout_count"] == 0
+    assert health["sources"]["sina"]["timeout_count"] == 0
     assert health["route"]["status"] == "failed"
     assert health["route"]["fallback_reason"] == "failed"
     assert health["route"]["used_vendor"] == "sina"
