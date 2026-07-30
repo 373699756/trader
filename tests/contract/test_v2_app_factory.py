@@ -228,7 +228,7 @@ def test_active_version_labels_are_readable_and_governed() -> None:
         "board_policy_score_first_2026_07",
         "fusion_local68_deepseek32",
         "market_cache_p1_p6",
-        "long_watchlist_document_merge_2026_07",
+        "long_watchlist_strategic_merge_2026_07",
         "engine_review28_2026_07",
     )
     assert all(not re.search(r"(^|_)v\d+($|_)", label) for label in active_labels)

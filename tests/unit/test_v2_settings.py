@@ -176,12 +176,13 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
     assert watchlist.schema_version == 2
-    assert len(watchlist.items) == 212
-    assert len(watchlist.groups) == 46
+    assert watchlist.watchlist_version == "long_watchlist_strategic_merge_2026_07"
+    assert len(watchlist.items) == 224
+    assert len(watchlist.groups) == 50
     assert max(len(group.codes) for group in watchlist.groups if group.category == "chokepoint") <= 5
     groups_by_key = {(group.category, group.name): group for group in watchlist.groups}
     chokepoint_groups = tuple(group for group in watchlist.groups if group.category == "chokepoint")
-    assert len(chokepoint_groups) == 33
+    assert len(chokepoint_groups) == 37
     document_sections = tuple(
         section
         for group in chokepoint_groups
@@ -194,9 +195,9 @@ def test_v2_configuration_contract_is_valid() -> None:
         for section in group.sections
         if section.source_section == "current_leaders"
     )
-    assert len(document_sections) == 29
+    assert len(document_sections) == 31
     assert sum(len(section.codes) for section in document_sections) == 93
-    assert len(current_leader_sections) == 24
+    assert len(current_leader_sections) == 27
     liquid = groups_by_key[("chokepoint", "液冷")]
     assert liquid.codes == ("002837", "300499", "300990")
     assert [(section.source_section, section.codes) for section in liquid.sections] == [
@@ -221,6 +222,45 @@ def test_v2_configuration_contract_is_valid() -> None:
         "601138",
         "000977",
         "000938",
+    )
+    assert ("chokepoint", "科学仪器/高端医疗设备") not in groups_by_key
+    assert ("chokepoint", "精密零部件") not in groups_by_key
+    assert groups_by_key[("chokepoint", "生命科学/高端医疗装备")].codes == (
+        "688271",
+        "300760",
+        "688114",
+        "688139",
+    )
+    assert groups_by_key[("chokepoint", "高端科学仪器")].codes == (
+        "603100",
+        "300203",
+        "688337",
+        "688112",
+        "688200",
+    )
+    assert groups_by_key[("chokepoint", "高端传感器/精密测量")].codes == (
+        "603662",
+        "688322",
+        "300007",
+        "688539",
+    )
+    assert groups_by_key[("chokepoint", "航空发动机/燃气轮机")].codes == (
+        "603308",
+        "600893",
+        "600765",
+        "000738",
+        "600391",
+    )
+    assert groups_by_key[("chokepoint", "新型电力系统/储能")].codes == (
+        "600406",
+        "300274",
+        "000400",
+        "600312",
+        "688248",
+    )
+    assert groups_by_key[("chokepoint", "可控核聚变关键材料/装备")].codes == (
+        "000969",
+        "600105",
     )
     future_growth_groups = tuple(group for group in watchlist.groups if group.category == "future_growth")
     assert len(future_growth_groups) == 8
