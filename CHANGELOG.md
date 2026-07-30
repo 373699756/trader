@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续 `V2_plan.md` 未完成任务。本批完成 `P8：tomorrow 独立生产运行时` 的计划收口：
+  `TomorrowShadowRuntime`、`TomorrowShadowWorker`、`TomorrowFreezeCoordinator`、`CurrentDecisionIndex`
+  和 `ShadowObservingSnapshotIndex` 的独立运行时边界已由现有回归证明；native input 直接从同一
+  规范输入构造，不回读当前生产 tomorrow snapshot；固定融合向量 `83.40` 与 `local_score`
+  不重复扣本地风险的契约继续保持不变。`docs/V2_plan.md` 的 P8 状态已改为已完成，并同步修正
+  `tests/contract/test_project_records.py` 的章节计数断言。
+
 - 用户要求继续 `V2_plan.md` 未完成任务。本批完成 `P7：实时路由归一化和 mootdx 影子准入`：
   生产路由保持东方财富先发、1 秒后新浪对冲、腾讯定向候选报价的既有边界；新增回归锁定
   字段级报价合并、来源别名归一化、`mootdx_shadow` 不写生产实时字段，以及物理失败/timeout/
@@ -1121,6 +1128,10 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- P8 收口验证：`.venv/bin/pytest tests/contract/test_project_records.py tests/integration/test_v2_shadow_cutover.py tests/integration/test_v2_pipeline.py::test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long tests/unit/application/test_tomorrow_native_pipeline.py tests/unit/application/test_tomorrow_fusion.py tests/unit/application/test_tomorrow_shadow.py tests/unit/application/test_tomorrow_freezing.py -q`
+  通过；复核了 native input 手递手、独立 shadow 运行时、冻结封口、重启恢复和 `83.40`
+  融合契约。  
+
 - P7 定向验证：`.venv/bin/pytest tests/unit/test_v2_market_data_field_quality.py tests/unit/test_v2_market_data_merge.py tests/component/test_v2_market_data.py -q`
   通过，共覆盖 174 项字段级选择、统一行情合并、实时路由、候选报价回退和来源健康用例。首次
   直接执行 `pytest ...` 因当前环境未安装全局 `pytest` 失败，已改用仓库 `.venv` 执行。
@@ -1898,6 +1909,9 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- P8 不新增独立生产切换指针，也不改变当前 production tomorrow 的读写治理；后续 P9 仍需在
+  真实交易日证据下完成原子切换与回退演练。
 
 - P7 不接入真实通达信/mootdx 节点、不建立生产 fallback，也不新增生产配置；其后续准入仍依赖
   连续真实样本、节点切换/断线、时间戳、价格、停牌和延迟对比证据。关闭 mootdx 影子能力后，

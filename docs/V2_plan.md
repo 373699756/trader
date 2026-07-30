@@ -524,7 +524,7 @@ schema。
 
 ## 14. P8：tomorrow 独立生产运行时
 
-状态：未开始，依赖 P7
+状态：已完成，依赖 P7
 
 ### 目标
 
@@ -550,6 +550,19 @@ schema。
 - local/hybrid 父子 CAS、迟到拒绝、冻结封口和重启恢复测试通过。
 - 固定融合向量为 83.40，`local_score` 不重复扣本地风险。
 - 本批仍不切生产指针。
+
+### 本批完成记录
+
+- 已有 `TomorrowShadowRuntime`、`TomorrowShadowWorker`、`TomorrowFreezeCoordinator`、
+  `CurrentDecisionIndex` 和 `ShadowObservingSnapshotIndex` 组成独立 tomorrow 影子运行时；
+  `tests/integration/test_v2_shadow_cutover.py` 与
+  `tests/integration/test_v2_pipeline.py::test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long`
+  已验证 native input 直接从同一规范输入构造，不回读当前生产 tomorrow snapshot。
+- `tests/unit/application/test_tomorrow_fusion.py` 已锁定固定融合向量 `83.40`，并证明
+  `local_score` 不会重复扣本地风险；`tests/unit/application/test_tomorrow_native_pipeline.py`
+  已验证 native input 的时间规范化与因子输入隔离。
+- `tests/contract/test_v2_bootstrap.py` 已验证组合根只创建 lazy 的 shadow worker / runtime，
+  读取 /API 也不触发历史下载或 DeepSeek 调用；P8 在现有实现上仅需关闭计划状态并保留回归。
 
 ## 15. P9：tomorrow 证据复核和原子切换
 
