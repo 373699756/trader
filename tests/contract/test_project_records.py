@@ -230,6 +230,23 @@ def test_authoritative_docs_define_the_tomorrow_first_rebuild_contract() -> None
     assert "CurrentDecisionStore" not in strategy
 
 
+def test_authoritative_design_defines_free_hedged_full_market_route() -> None:
+    design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+
+    for statement in (
+        "活动行情路由不得接入或自动尝试收费行情源",
+        "先提交东方财富",
+        "若东方财富失败或 1 秒仍未完成，立即提交新浪",
+        "任一来源先返回",
+        "完整有效结果就原子发布 P2",
+        "3 次熔断 30 秒",
+        "`physical_failure_count`",
+        "`circuit_skipped_count`",
+        "`superseded_count`",
+    ):
+        assert statement in design
+
+
 def test_tomorrow_rebuild_contract_is_explicitly_pre_cutover() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 

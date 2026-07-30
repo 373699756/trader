@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 from collections.abc import Callable, Mapping
 from concurrent.futures import as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, TypedDict
 
@@ -23,6 +25,14 @@ COUNT_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.ph
 QUOTE_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _REQUEST_ATTEMPTS = 2
+
+
+@dataclass(frozen=True)
+class _SinaRequest:
+    as_json: bool
+    session: requests.Session | None = None
+    deadline: datetime | None = None
+    cancel_event: threading.Event | None = None
 
 
 class _SinaRequiredOptions(TypedDict):
@@ -53,29 +63,53 @@ class SinaClient:
         self._cancel_requested = options.get("cancel_requested", lambda: False)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
 
-    def fetch_market(self, now: datetime | None = None) -> tuple[MarketQuote, ...]:
-        total_text = self._get_text(COUNT_URL, {"node": "hs_a"})
-        total_match = re.search(r"\d+", total_text)
-        if total_match is None:
-            raise RuntimeError("sina quote count was invalid")
-        total = int(total_match.group(0))
-        page_count = max(1, math.ceil(total / self._page_size))
-        pages: dict[int, list[Mapping[str, object]]] = {}
-        with borrow_executor(
-            None,
-            BorrowExecutorOptions(
-                worker_count=min(self._workers, page_count),
-                queue_capacity=page_count,
-                thread_name_prefix="sina-market",
-            ),
-        ) as pool:
-            futures = {submit_or_run_inline(pool, self._fetch_page, page): page for page in range(1, page_count + 1)}
-            for future in as_completed(futures):
-                page = futures[future]
-                payload = future.result()
-                if not isinstance(payload, list):
-                    raise RuntimeError(f"sina page {page} was not a list")
-                pages[page] = [item for item in payload if isinstance(item, dict)]
+    def fetch_market(
+        self,
+        now: datetime | None = None,
+        *,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[MarketQuote, ...]:
+        self._ensure_running(deadline, cancel_event)
+        with self._session_factory() as session:
+            total_text = self._get_text(
+                COUNT_URL,
+                {"node": "hs_a"},
+                session=session,
+                deadline=deadline,
+                cancel_event=cancel_event,
+            )
+            total_match = re.search(r"\d+", total_text)
+            if total_match is None:
+                raise RuntimeError("sina quote count was invalid")
+            total = int(total_match.group(0))
+            page_count = max(1, math.ceil(total / self._page_size))
+            pages: dict[int, list[Mapping[str, object]]] = {}
+            with borrow_executor(
+                None,
+                BorrowExecutorOptions(
+                    worker_count=min(self._workers, page_count),
+                    queue_capacity=page_count,
+                    thread_name_prefix="sina-market",
+                ),
+            ) as pool:
+                futures = {
+                    submit_or_run_inline(
+                        pool,
+                        self._fetch_page,
+                        page,
+                        session=session,
+                        deadline=deadline,
+                        cancel_event=cancel_event,
+                    ): page
+                    for page in range(1, page_count + 1)
+                }
+                for future in as_completed(futures):
+                    page = futures[future]
+                    payload = future.result()
+                    if not isinstance(payload, list):
+                        raise RuntimeError(f"sina page {page} was not a list")
+                    pages[page] = [item for item in payload if isinstance(item, dict)]
         rows: list[Mapping[str, object]] = []
         for page in range(1, page_count + 1):
             payload = pages[page]
@@ -88,7 +122,21 @@ class SinaClient:
             raise RuntimeError(f"sina quote coverage is incomplete: {len(quotes)}/{total}")
         return quotes
 
-    def _fetch_page(self, page: int) -> object:
+    def probe_market(self) -> None:
+        with self._session_factory() as session:
+            total_text = self._get_text(COUNT_URL, {"node": "hs_a"}, session=session)
+        total_match = re.search(r"\d+", total_text)
+        if total_match is None or int(total_match.group(0)) <= 0:
+            raise RuntimeError("sina recovery probe returned an invalid count")
+
+    def _fetch_page(
+        self,
+        page: int,
+        *,
+        session: requests.Session | None = None,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> object:
         return self._get_json(
             QUOTE_URL,
             {
@@ -100,24 +148,77 @@ class SinaClient:
                 "symbol": "",
                 "_s_r_a": "page",
             },
+            session=session,
+            deadline=deadline,
+            cancel_event=cancel_event,
         )
 
-    def _get_text(self, url: str, params: Mapping[str, str]) -> str:
-        value = self._request(url, params, as_json=False)
+    def _get_text(
+        self,
+        url: str,
+        params: Mapping[str, str],
+        *,
+        session: requests.Session | None = None,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
+        value = self._request(
+            url,
+            params,
+            _SinaRequest(
+                as_json=False,
+                session=session,
+                deadline=deadline,
+                cancel_event=cancel_event,
+            ),
+        )
         if not isinstance(value, str):
             raise RuntimeError("sina text response was invalid")
         return value
 
-    def _get_json(self, url: str, params: Mapping[str, str]) -> object:
-        return self._request(url, params, as_json=True)
+    def _get_json(
+        self,
+        url: str,
+        params: Mapping[str, str],
+        *,
+        session: requests.Session | None = None,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> object:
+        return self._request(
+            url,
+            params,
+            _SinaRequest(
+                as_json=True,
+                session=session,
+                deadline=deadline,
+                cancel_event=cancel_event,
+            ),
+        )
 
-    def _request(self, url: str, params: Mapping[str, str], *, as_json: bool) -> object:
+    def _request(
+        self,
+        url: str,
+        params: Mapping[str, str],
+        request: _SinaRequest,
+    ) -> object:
         last_error: Exception | None = None
         for _attempt in range(_REQUEST_ATTEMPTS):
-            self._ensure_running()
+            self._ensure_running(request.deadline, request.cancel_event)
             try:
-                with self._session_factory() as session:
-                    response = session.get(
+                if request.session is None:
+                    with self._session_factory() as request_session:
+                        response = request_session.get(
+                            url,
+                            params=dict(params),
+                            headers={"User-Agent": "Mozilla/5.0"},
+                            timeout=self._timeout_seconds,
+                            proxies=_DIRECT_PROXIES,
+                        )
+                        response.raise_for_status()
+                        result = response.json() if request.as_json else response.text
+                else:
+                    response = request.session.get(
                         url,
                         params=dict(params),
                         headers={"User-Agent": "Mozilla/5.0"},
@@ -125,17 +226,25 @@ class SinaClient:
                         proxies=_DIRECT_PROXIES,
                     )
                     response.raise_for_status()
-                    result = response.json() if as_json else response.text
+                    result = response.json() if request.as_json else response.text
             except (requests.RequestException, ValueError, OSError) as exc:
                 last_error = exc
                 continue
-            self._ensure_running()
+            self._ensure_running(request.deadline, request.cancel_event)
             return result
         raise RuntimeError(f"sina request failed after {_REQUEST_ATTEMPTS} attempts: {last_error}") from last_error
 
-    def _ensure_running(self) -> None:
+    def _ensure_running(
+        self,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         if self._cancel_requested():
             raise RuntimeError("sina source lane stopped")
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("sina hedge cancelled")
+        if deadline is not None and self._wall_clock() >= deadline:
+            raise RuntimeError("sina deadline exceeded")
 
 
 def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQuote | None:

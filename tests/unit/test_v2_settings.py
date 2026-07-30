@@ -23,13 +23,16 @@ def test_v2_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert runtime.schema_version == 7
+    assert runtime.schema_version == 8
     assert strategy.schema_version == 12
-    assert runtime.config_version == "runtime_v33_ephemeral_observation_official_only_2026_07_29"
+    assert runtime.config_version == "runtime_v34_free_market_hedged_route_2026_07_30"
     assert runtime.api.default_top_n == 12
     assert runtime.api.maximum_top_n == 12
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v17"
     assert runtime.market_data.research_timeout_seconds == 8
+    assert runtime.market_data.eastmoney_timeout_seconds == 8
+    assert runtime.market_data.sina_timeout_seconds == 8
+    assert runtime.market_data.full_market_hedge_delay_seconds == 1
     assert runtime.pipeline.market_workers == 5
     assert runtime.pipeline.decision_execution_mode == "versioned_dag"
     assert runtime.market_data.tushare.timeout_seconds == 8
@@ -104,11 +107,12 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.performance_budgets.latency_p95_ms["browser_patch_to_paint"] == 100
     assert runtime.performance_budgets.memory.cache_logical_bytes == 260046848
     assert runtime.performance_budgets.memory.process_peak_rss_bytes == 402653184
-    assert runtime.pipeline.cadence_seconds["full_market"]["today_main"] == 5
+    assert set(runtime.pipeline.cadence_seconds["full_market"].values()) == {10.0}
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["today_main"] == 1
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 1
     assert runtime.pipeline.cadence_seconds["topk_quotes"]["today_main"] == 1
     assert runtime.performance_budgets.data_age_p95_seconds["full_market_main"] == 10
+    assert runtime.market_data.circuit_breaker_seconds == 30
     assert runtime.deepseek.daily_hard_limit == 168
     assert runtime.deepseek.strategy_limits == {
         "today": 8,
@@ -246,8 +250,18 @@ def test_v2_configuration_contract_is_valid() -> None:
 def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -> None:
     raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     raw["schema_version"] = 5
+    del raw["market_data"]["sina_timeout_seconds"]
+    del raw["market_data"]["full_market_hedge_delay_seconds"]
     del raw["pipeline"]["decision_execution_mode"]
     del raw["pipeline"]["cadence_seconds"]["long_quotes"]
+    raw["pipeline"]["cadence_seconds"]["full_market"] = {
+        "warmup": 10,
+        "today_main": 5,
+        "today_late": 5,
+        "midday": 10,
+        "afternoon": 5,
+        "final_review": 3,
+    }
     changed_path = tmp_path / "runtime.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
@@ -256,12 +270,24 @@ def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -
     assert runtime.schema_version == 5
     assert runtime.pipeline.decision_execution_mode == "serialized"
     assert runtime.pipeline.cadence_seconds["long_quotes"] == (runtime.pipeline.cadence_seconds["topk_quotes"])
+    assert runtime.market_data.sina_timeout_seconds == runtime.market_data.eastmoney_timeout_seconds
+    assert runtime.market_data.full_market_hedge_delay_seconds == 1.0
 
 
 def test_runtime_schema_v6_inherits_long_quote_cadence(tmp_path) -> None:
     raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     raw["schema_version"] = 6
+    del raw["market_data"]["sina_timeout_seconds"]
+    del raw["market_data"]["full_market_hedge_delay_seconds"]
     del raw["pipeline"]["cadence_seconds"]["long_quotes"]
+    raw["pipeline"]["cadence_seconds"]["full_market"] = {
+        "warmup": 10,
+        "today_main": 5,
+        "today_late": 5,
+        "midday": 10,
+        "afternoon": 5,
+        "final_review": 3,
+    }
     changed_path = tmp_path / "runtime-v6.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
@@ -269,6 +295,40 @@ def test_runtime_schema_v6_inherits_long_quote_cadence(tmp_path) -> None:
 
     assert runtime.schema_version == 6
     assert runtime.pipeline.cadence_seconds["long_quotes"] == (runtime.pipeline.cadence_seconds["topk_quotes"])
+
+
+def test_runtime_schema_v7_preserves_legacy_full_market_route_defaults(tmp_path) -> None:
+    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw["schema_version"] = 7
+    del raw["market_data"]["sina_timeout_seconds"]
+    del raw["market_data"]["full_market_hedge_delay_seconds"]
+    raw["pipeline"]["cadence_seconds"]["full_market"] = {
+        "warmup": 10,
+        "today_main": 5,
+        "today_late": 5,
+        "midday": 10,
+        "afternoon": 5,
+        "final_review": 3,
+    }
+    changed_path = tmp_path / "runtime-v7.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    runtime = load_runtime_settings(changed_path)
+
+    assert runtime.schema_version == 7
+    assert runtime.pipeline.cadence_seconds["full_market"]["today_main"] == 5
+    assert runtime.market_data.sina_timeout_seconds == 8
+    assert runtime.market_data.full_market_hedge_delay_seconds == 1.0
+
+
+def test_runtime_schema_v8_rejects_paid_full_market_sources(tmp_path) -> None:
+    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw["market_data"]["full_market_sources"] = ["eastmoney", "paid_vendor"]
+    changed_path = tmp_path / "runtime-v8-paid.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="unknown keys"):
+        load_runtime_settings(changed_path)
 
 
 def test_long_watchlist_group_limits_are_enforced(tmp_path) -> None:

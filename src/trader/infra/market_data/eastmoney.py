@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import as_completed
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
@@ -34,6 +36,14 @@ HOSTS = ("82.push2.eastmoney.com", "push2.eastmoney.com", "7.push2.eastmoney.com
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _REQUEST_ROUNDS = 2
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+@dataclass(frozen=True)
+class _EastmoneyRequest:
+    request_rounds: int = _REQUEST_ROUNDS
+    session: requests.Session | None = None
+    deadline: datetime | None = None
+    cancel_event: threading.Event | None = None
 
 
 class _EastmoneyRequiredOptions(TypedDict):
@@ -66,23 +76,29 @@ class EastmoneyClient:
         self._cancel_requested = options.get("cancel_requested", lambda: False)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
 
-    def fetch_market(self, now: datetime | None = None) -> tuple[MarketQuote, ...]:
-        first = self._fetch_page(1)
-        data = _object_mapping(first.get("data"))
-        first_rows = _object_rows(data.get("diff"))
-        if not first_rows:
-            raise RuntimeError("eastmoney returned an empty first page")
-        total = int(to_float(data.get("total")) or len(first_rows))
-        page_count = max(1, math.ceil(total / self._page_size))
-        pages: dict[int, list[Mapping[str, object]]] = {1: first_rows}
-        if page_count > 1:
-            remaining: list[tuple[int, Mapping[str, object]]] = []
-            worker_pool = self._worker_pool
-            if worker_pool is not None and worker_pool.owns_current_thread():
-                remaining.extend((page, self._fetch_page(page)) for page in range(2, page_count + 1))
-            else:
+    def fetch_market(
+        self,
+        now: datetime | None = None,
+        *,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[MarketQuote, ...]:
+        self._ensure_running(deadline, cancel_event)
+        with self._session_factory() as session:
+            first = self._fetch_page(1, session=session, deadline=deadline, cancel_event=cancel_event)
+            data = _object_mapping(first.get("data"))
+            first_rows = _object_rows(data.get("diff"))
+            if not first_rows:
+                raise RuntimeError("eastmoney returned an empty first page")
+            total = int(to_float(data.get("total")) or len(first_rows))
+            page_count = max(1, math.ceil(total / self._page_size))
+            pages: dict[int, list[Mapping[str, object]]] = {1: first_rows}
+            if page_count > 1:
+                remaining: list[tuple[int, Mapping[str, object]]] = []
+                worker_pool = self._worker_pool
+                page_pool = None if worker_pool is not None and worker_pool.owns_current_thread() else worker_pool
                 with borrow_executor(
-                    worker_pool,
+                    page_pool,
                     BorrowExecutorOptions(
                         worker_count=min(self._workers, page_count - 1),
                         thread_name_prefix="eastmoney",
@@ -91,16 +107,22 @@ class EastmoneyClient:
                 ) as pool:
                     futures = {}
                     for page in range(2, page_count + 1):
-                        future = pool.submit(self._fetch_page, page)
+                        future = pool.submit(
+                            self._fetch_page,
+                            page,
+                            session=session,
+                            deadline=deadline,
+                            cancel_event=cancel_event,
+                        )
                         if future is None:
                             raise RuntimeError("data worker queue rejected Eastmoney page task")
                         futures[future] = page
                     remaining.extend((futures[future], future.result()) for future in as_completed(futures))
-            for page, payload in remaining:
-                rows = _object_rows(_object_mapping(payload.get("data")).get("diff"))
-                if not rows:
-                    raise RuntimeError(f"eastmoney page {page} was empty")
-                pages[page] = rows
+                for page, payload in remaining:
+                    rows = _object_rows(_object_mapping(payload.get("data")).get("diff"))
+                    if not rows:
+                        raise RuntimeError(f"eastmoney page {page} was empty")
+                    pages[page] = rows
         raw_rows = [row for page in sorted(pages) for row in pages[page]]
         received_at = now or self._wall_clock()
         quotes = normalize_quotes(raw_rows, received_at, normalizer=_quote_from_row)
@@ -155,6 +177,13 @@ class EastmoneyClient:
             )
         return tuple(bars[-days:])
 
+    def probe_market(self) -> None:
+        with self._session_factory() as session:
+            payload = self._fetch_page(1, session=session)
+        rows = _object_rows(_object_mapping(payload.get("data")).get("diff"))
+        if not rows:
+            raise RuntimeError("eastmoney recovery probe returned no rows")
+
     def fetch_intraday_minutes(self, code: str, *, now: datetime | None = None) -> tuple[MinuteBar, ...]:
         observed_at = now or self._wall_clock()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
@@ -171,7 +200,7 @@ class EastmoneyClient:
                 "iscr": "0",
                 "secid": _secid(code),
             },
-            request_rounds=1,
+            request=_EastmoneyRequest(request_rounds=1),
         )
         trends = _object_mapping(payload.get("data")).get("trends")
         if not isinstance(trends, list):
@@ -206,7 +235,14 @@ class EastmoneyClient:
             )
         return tuple(bars)
 
-    def _fetch_page(self, page: int) -> Mapping[str, object]:
+    def _fetch_page(
+        self,
+        page: int,
+        *,
+        session: requests.Session | None = None,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> Mapping[str, object]:
         return self._get(
             HOSTS,
             "/api/qt/clist/get",
@@ -222,6 +258,11 @@ class EastmoneyClient:
                 "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
                 "fields": FIELDS,
             },
+            request=_EastmoneyRequest(
+                session=session,
+                deadline=deadline,
+                cancel_event=cancel_event,
+            ),
         )
 
     def _get(
@@ -230,16 +271,28 @@ class EastmoneyClient:
         path: str,
         params: Mapping[str, str],
         *,
-        request_rounds: int = _REQUEST_ROUNDS,
+        request: _EastmoneyRequest | None = None,
     ) -> Mapping[str, object]:
+        request = request or _EastmoneyRequest()
         last_error: Exception | None = None
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
-        for _round in range(max(1, request_rounds)):
+        for _round in range(max(1, request.request_rounds)):
             for host in hosts:
-                self._ensure_running()
+                self._ensure_running(request.deadline, request.cancel_event)
                 try:
-                    with self._session_factory() as session:
-                        response = session.get(
+                    if request.session is None:
+                        with self._session_factory() as request_session:
+                            response = request_session.get(
+                                f"https://{host}{path}",
+                                params=dict(params),
+                                headers=headers,
+                                timeout=self._timeout_seconds,
+                                proxies=_DIRECT_PROXIES,
+                            )
+                            response.raise_for_status()
+                            payload = response.json()
+                    else:
+                        response = request.session.get(
                             f"https://{host}{path}",
                             params=dict(params),
                             headers=headers,
@@ -251,15 +304,23 @@ class EastmoneyClient:
                 except (requests.RequestException, ValueError, OSError) as exc:
                     last_error = exc
                     continue
-                self._ensure_running()
+                self._ensure_running(request.deadline, request.cancel_event)
                 if isinstance(payload, dict) and payload.get("data"):
                     return payload
                 last_error = RuntimeError("eastmoney returned empty data")
         raise RuntimeError(f"eastmoney request failed: {last_error}") from last_error
 
-    def _ensure_running(self) -> None:
+    def _ensure_running(
+        self,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         if self._cancel_requested():
             raise RuntimeError("eastmoney source lane stopped")
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("eastmoney hedge cancelled")
+        if deadline is not None and self._wall_clock() >= deadline:
+            raise RuntimeError("eastmoney deadline exceeded")
 
 
 def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQuote | None:

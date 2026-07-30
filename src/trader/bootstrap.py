@@ -345,7 +345,7 @@ def _build_market_data(context: _BuildContext) -> MarketFeatureService:
     gateway = MarketDataGateway(
         eastmoney,
         SinaClient(
-            timeout_seconds=settings.market_data.eastmoney_timeout_seconds,
+            timeout_seconds=settings.market_data.sina_timeout_seconds,
             cancel_requested=lambda: source_lanes.is_stopped("sina"),
             wall_clock=now,
         ),
@@ -357,6 +357,7 @@ def _build_market_data(context: _BuildContext) -> MarketFeatureService:
         minimum_market_rows=settings.market_data.minimum_market_rows,
         circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
         circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
+        full_market_hedge_delay_seconds=settings.market_data.full_market_hedge_delay_seconds,
         worker_pool=data_pool,
         source_lanes=source_lanes,
         cache=market_cache,

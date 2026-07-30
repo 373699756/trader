@@ -84,8 +84,8 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         "runtime",
     )
     schema_version = _integer(raw, "schema_version", minimum=1)
-    if schema_version not in {5, 6, 7}:
-        raise ConfigurationError("runtime schema_version must be 5, 6, or 7")
+    if schema_version not in {5, 6, 7, 8}:
+        raise ConfigurationError("runtime schema_version must be 5, 6, 7, or 8")
 
     config_dir = path.parent
     project_root = _infer_project_root(config_dir)
@@ -115,24 +115,23 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     if schema_version >= 6:
         pipeline_keys.add("decision_execution_mode")
     _require_exact_keys(pipeline_raw, pipeline_keys, "pipeline")
-    _require_exact_keys(
-        market_raw,
-        {
-            "eastmoney_timeout_seconds",
-            "candidate_timeout_seconds",
-            "history_timeout_seconds",
-            "research_timeout_seconds",
-            "minimum_market_rows",
-            "candidate_pool_size",
-            "single_flight",
-            "circuit_breaker_failures",
-            "circuit_breaker_seconds",
-            "source_contract_versions",
-            "tushare",
-            "cache_policy",
-        },
-        "market_data",
-    )
+    market_keys = {
+        "eastmoney_timeout_seconds",
+        "candidate_timeout_seconds",
+        "history_timeout_seconds",
+        "research_timeout_seconds",
+        "minimum_market_rows",
+        "candidate_pool_size",
+        "single_flight",
+        "circuit_breaker_failures",
+        "circuit_breaker_seconds",
+        "source_contract_versions",
+        "tushare",
+        "cache_policy",
+    }
+    if schema_version >= 8:
+        market_keys.update({"sina_timeout_seconds", "full_market_hedge_delay_seconds"})
+    _require_exact_keys(market_raw, market_keys, "market_data")
     _require_exact_keys(
         deepseek_raw,
         {
@@ -221,6 +220,21 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         ),
         market_data=MarketDataSettings(
             eastmoney_timeout_seconds=_number(market_raw, "eastmoney_timeout_seconds", minimum=0.1),
+            sina_timeout_seconds=(
+                _number(market_raw, "sina_timeout_seconds", minimum=0.1)
+                if schema_version >= 8
+                else _number(market_raw, "eastmoney_timeout_seconds", minimum=0.1)
+            ),
+            full_market_hedge_delay_seconds=(
+                _number(
+                    market_raw,
+                    "full_market_hedge_delay_seconds",
+                    minimum=0.05,
+                    maximum=5.0,
+                )
+                if schema_version >= 8
+                else 1.0
+            ),
             candidate_timeout_seconds=_number(market_raw, "candidate_timeout_seconds", minimum=0.1),
             history_timeout_seconds=_number(market_raw, "history_timeout_seconds", minimum=0.1),
             research_timeout_seconds=_number(
@@ -366,7 +380,10 @@ def _text_mapping(raw: Mapping[str, object], key: str) -> dict[str, str]:
 def _validate_runtime_settings(settings: RuntimeSettings) -> None:
     _validate_pipeline_runtime(settings)
     _validate_deepseek_runtime(settings)
-    _validate_cadence_settings(settings.pipeline.cadence_seconds)
+    _validate_cadence_settings(
+        settings.pipeline.cadence_seconds,
+        schema_version=settings.schema_version,
+    )
 
 
 def _validate_pipeline_runtime(settings: RuntimeSettings) -> None:
@@ -490,16 +507,32 @@ def _nested_positive_number_mapping(
     return result
 
 
-def _validate_cadence_settings(cadence: Mapping[str, Mapping[str, float]]) -> None:
-    expected = {
-        "full_market": {
+def _validate_cadence_settings(
+    cadence: Mapping[str, Mapping[str, float]],
+    *,
+    schema_version: int,
+) -> None:
+    full_market = (
+        {
+            "warmup": 10.0,
+            "today_main": 10.0,
+            "today_late": 10.0,
+            "midday": 10.0,
+            "afternoon": 10.0,
+            "final_review": 10.0,
+        }
+        if schema_version >= 8
+        else {
             "warmup": 10.0,
             "today_main": 5.0,
             "today_late": 5.0,
             "midday": 10.0,
             "afternoon": 5.0,
             "final_review": 3.0,
-        },
+        }
+    )
+    expected = {
+        "full_market": full_market,
         "candidate_quotes": {
             "warmup": 2.0,
             "today_main": 1.0,

@@ -444,17 +444,124 @@ def test_sina_full_market_pages_are_fetched_with_bounded_parallelism() -> None:
                 ]
             )
 
-    state = {"active": 0, "maximum": 0, "lock": threading.Lock()}
+    state = {"active": 0, "maximum": 0, "factory_calls": 0, "lock": threading.Lock()}
+
+    def session_factory():
+        state["factory_calls"] += 1
+        return ConcurrentSinaSession(state)
+
     client = SinaClient(
         timeout_seconds=2,
         workers=3,
-        session_factory=lambda: ConcurrentSinaSession(state),
+        session_factory=session_factory,
     )
 
     quotes = client.fetch_market(NOW)
 
     assert len(quotes) == 201
     assert state["maximum"] >= 2
+    assert state["factory_calls"] == 1
+
+
+def test_eastmoney_full_market_reuses_one_session_and_stops_before_expired_deadline() -> None:
+    session = FakeSession(
+        [
+            {
+                "data": {
+                    "total": 501,
+                    "diff": [
+                        {"f12": f"{600000 + index:06d}", "f14": "测试股份", "f124": int(NOW.timestamp())}
+                        for index in range(500)
+                    ],
+                }
+            },
+            {
+                "data": {
+                    "total": 501,
+                    "diff": [{"f12": "600500", "f14": "测试股份", "f124": int(NOW.timestamp())}],
+                }
+            },
+        ]
+    )
+    factory_calls = 0
+
+    def session_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        return session
+
+    client = EastmoneyClient(
+        timeout_seconds=2,
+        session_factory=session_factory,
+        wall_clock=lambda: NOW,
+    )
+
+    assert len(client.fetch_market(NOW, deadline=NOW + timedelta(seconds=1))) == 501
+    assert factory_calls == 1
+
+    with pytest.raises(RuntimeError, match="deadline"):
+        client.fetch_market(NOW, deadline=NOW)
+    assert factory_calls == 1
+
+
+def test_eastmoney_pages_remain_parallel_when_called_from_source_worker() -> None:
+    class ConcurrentEastmoneySession:
+        def __init__(self) -> None:
+            self.active = 0
+            self.maximum = 0
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def get(self, _url, **kwargs):
+            page = int(kwargs["params"]["pn"])
+            if page > 1:
+                with self.lock:
+                    self.active += 1
+                    self.maximum = max(self.maximum, self.active)
+                time.sleep(0.02)
+                with self.lock:
+                    self.active -= 1
+            row_count = 500 if page < 3 else 1
+            start = (page - 1) * 500
+            return FakeResponse(
+                {
+                    "data": {
+                        "total": 1001,
+                        "diff": [
+                            {
+                                "f12": f"{600000 + start + index:06d}",
+                                "f14": "测试股份",
+                                "f124": int(NOW.timestamp()),
+                            }
+                            for index in range(row_count)
+                        ],
+                    }
+                }
+            )
+
+    session = ConcurrentEastmoneySession()
+    pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="source-data")
+    client = EastmoneyClient(
+        timeout_seconds=2,
+        workers=2,
+        worker_pool=pool,
+        session_factory=lambda: session,
+    )
+    pool.start()
+    try:
+        future = pool.submit(client.fetch_market, NOW)
+        assert future is not None
+        quotes = future.result(timeout=1.0)
+    finally:
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert len(quotes) == 1001
+    assert session.maximum == 2
 
 
 def test_market_sources_retry_transient_disconnect_and_page_504() -> None:
@@ -516,7 +623,7 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert health["route"]["status"] == "success"
     assert health["route"]["degraded"] is True
     assert health["route"]["used_vendor"] == "sina"
-    assert health["route"]["fallback_reason"] is None
+    assert health["route"]["fallback_reason"] == "primary_failed"
     assert [item["name"] for item in health["route"]["attempted_vendors"]] == ["eastmoney", "sina"]
     assert health["route"]["attempted_vendors"][0]["status"] == "failed"
     assert health["route"]["attempted_vendors"][1]["status"] == "success"
@@ -997,11 +1104,9 @@ def test_dedicated_history_workers_do_not_consume_realtime_source_workers() -> N
         history_pool.stop(wait=True, cancel_futures=True)
 
 
-def test_gateway_starts_eastmoney_and_sina_together_on_shared_source_pool() -> None:
-    both_started = threading.Barrier(3)
-    release = threading.Event()
-    eastmoney = CoordinatedMarketClient((replace(_quote(), source="eastmoney"),), both_started, release)
-    sina = CoordinatedMarketClient((replace(_quote(), source="sina", price=12.01),), both_started, release)
+def test_gateway_primary_success_does_not_start_sina_hedge() -> None:
+    eastmoney = CountingMarketClient((replace(_quote(), source="eastmoney"),))
+    sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     pool.start()
     lanes = SourceLaneRegistry(pool)
@@ -1014,26 +1119,63 @@ def test_gateway_starts_eastmoney_and_sina_together_on_shared_source_pool() -> N
         circuit_breaker_seconds=60,
         worker_pool=pool,
         source_lanes=lanes,
+        full_market_hedge_delay_seconds=0.05,
         wall_clock=lambda: NOW,
     )
-    result: list[tuple[MarketQuote, ...]] = []
-    caller = threading.Thread(target=lambda: result.append(tuple(gateway.fetch_market(observed_at=NOW))))
 
     try:
-        caller.start()
-        both_started.wait(1.0)
-        assert eastmoney.thread_name.startswith("source-data")
-        assert sina.thread_name.startswith("source-data")
+        result = tuple(gateway.fetch_market(observed_at=NOW))
     finally:
-        release.set()
-        caller.join(1.0)
         lanes.stop(wait=True, timeout_seconds=1.0)
         pool.stop(wait=True, cancel_futures=True)
 
-    assert result[0][0].price == 12.0
+    assert result[0].price == 12.0
+    assert eastmoney.calls == 1
+    assert sina.calls == 0
+    assert gateway.health()["merge_count"] == 1
+    assert gateway.health()["route"]["attempted_vendors"][1]["error"] == "hedge_not_needed"
+
+
+def test_gateway_starts_sina_after_hedge_delay_and_returns_without_waiting_for_slow_primary() -> None:
+    eastmoney = BlockingMarketClient((replace(_quote(), source="eastmoney"),))
+    sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    pool.start()
+    lanes = SourceLaneRegistry(pool)
+    gateway = MarketDataGateway(
+        eastmoney,
+        sina,
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=30,
+        worker_pool=pool,
+        source_lanes=lanes,
+        full_market_hedge_delay_seconds=0.01,
+    )
+
+    started = time.monotonic()
+    try:
+        result = tuple(
+            gateway.fetch_market(
+                observed_at=datetime.now(timezone.utc),
+                deadline=datetime.now(timezone.utc) + timedelta(seconds=0.5),
+            )
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        eastmoney.release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert result[0].price == 12.01
+    assert elapsed < 0.3
     assert eastmoney.calls == 1
     assert sina.calls == 1
-    assert gateway.health()["merge_count"] == 1
+    assert gateway.health()["route"]["used_vendor"] == "sina"
+    assert gateway.health()["route"]["fallback_reason"] == "hedge_delay"
+    assert "eastmoney:hedge_delay" in gateway.canonical_snapshot().degraded_reasons
+    assert "eastmoney:source_failed" not in gateway.canonical_snapshot().degraded_reasons
 
 
 def test_full_market_source_lane_deadline_returns_before_blocked_source_io() -> None:
@@ -1140,14 +1282,13 @@ def test_gateway_full_market_cache_avoids_duplicate_physical_requests_and_report
 
     assert first == second
     assert eastmoney.calls == 1
-    assert sina.calls == 1
+    assert sina.calls == 0
     status = cache.status()["full_market_quotes"]
     assert status["eastmoney"]["hit"] == 1
-    assert status["sina"]["hit"] == 1
     assert status["eastmoney"]["entries"] == 1
 
 
-def test_source_lane_returns_due_market_cache_before_background_refresh_completes() -> None:
+def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due() -> None:
     runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
@@ -1163,12 +1304,13 @@ def test_source_lane_returns_due_market_cache_before_background_refresh_complete
         def __init__(self, source: str) -> None:
             self.source = source
             self.calls = 0
+            self.block_after_calls = 1 if source == "eastmoney" else 0
             self.refresh_started = threading.Event()
             self.release_refresh = threading.Event()
 
         def fetch_market(self):
             self.calls += 1
-            if self.calls > 1:
+            if self.calls > self.block_after_calls:
                 self.refresh_started.set()
                 assert self.release_refresh.wait(1.0)
             return (replace(_quote(), source=self.source),)
@@ -1189,6 +1331,7 @@ def test_source_lane_returns_due_market_cache_before_background_refresh_complete
         config_version=runtime.config_version,
         monotonic=monotonic,
         wall_clock=lambda: NOW,
+        full_market_hedge_delay_seconds=0.01,
     )
     pool.start()
     completed = threading.Event()
@@ -1210,7 +1353,7 @@ def test_source_lane_returns_due_market_cache_before_background_refresh_complete
         caller.start()
         assert eastmoney.refresh_started.wait(1.0)
         assert sina.refresh_started.wait(1.0)
-        assert completed.wait(0.2)
+        assert not completed.wait(0.05)
     finally:
         eastmoney.release_refresh.set()
         sina.release_refresh.set()
@@ -1223,7 +1366,7 @@ def test_source_lane_returns_due_market_cache_before_background_refresh_complete
     assert errors == []
     assert results[0][0].price == 12.0
     assert eastmoney.calls == 2
-    assert sina.calls == 2
+    assert sina.calls == 1
     assert lanes.status()["eastmoney"]["superseded_count"] == 0
     assert lanes.status()["sina"]["superseded_count"] == 0
 
@@ -1360,6 +1503,34 @@ def test_gateway_negative_refresh_keeps_failure_degradation_with_last_valid_valu
     assert "eastmoney:source_failed" in snapshot.degraded_reasons
 
 
+def test_gateway_keeps_last_valid_snapshot_when_both_free_full_market_sources_fail() -> None:
+    eastmoney = SequenceMarketClient(
+        (
+            (replace(_quote(), source="eastmoney"),),
+            RuntimeError("eastmoney offline"),
+        )
+    )
+    gateway = MarketDataGateway(
+        eastmoney,
+        FailingMarketClient(),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=30,
+        wall_clock=lambda: NOW,
+    )
+
+    baseline = tuple(gateway.fetch_market(observed_at=NOW))
+    degraded = tuple(gateway.fetch_market(observed_at=NOW, force=True))
+
+    assert degraded == baseline
+    snapshot = gateway.canonical_snapshot()
+    assert snapshot is not None
+    assert "all_sources_failed:last_valid_snapshot" in snapshot.degraded_reasons
+    assert "eastmoney:source_failed" in snapshot.degraded_reasons
+    assert "sina:source_failed" in snapshot.degraded_reasons
+
+
 def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retries() -> None:
     runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
     monotonic = MutableMonotonic()
@@ -1444,9 +1615,9 @@ def test_targeted_quote_overlay_updates_canonical_value_and_field_attribution() 
     snapshot = gateway.canonical_snapshot()
     assert snapshot is not None
     assert snapshot.quotes[0].price == 12.02
-    assert snapshot.quotes[0].speed == 0.7
+    assert snapshot.quotes[0].speed is None
     assert snapshot.field_sources["600001"]["price"] == "tencent"
-    assert snapshot.field_sources["600001"]["speed"] == "sina"
+    assert "speed" not in snapshot.field_sources["600001"]
     assert snapshot.source_versions["tencent"] == "a-tencent-v1"
 
 
@@ -1541,7 +1712,7 @@ def test_full_market_commit_preserves_candidate_overlay_published_during_merge(m
     assert snapshot.quotes[0].price == 12.2
     assert snapshot.quotes[0].source == "tencent"
     assert snapshot.source_versions["eastmoney"] == "full-v2"
-    assert snapshot.source_versions["sina"] == "full-v2"
+    assert "sina" not in snapshot.source_versions
     assert snapshot.source_versions["tencent"] == "candidate-v2"
 
 
@@ -1782,7 +1953,7 @@ def test_final_refresh_bypasses_fresh_cache_but_remains_single_flight() -> None:
 
     assert len(results) == 2
     assert eastmoney.calls == 2
-    assert sina.calls == 2
+    assert sina.calls == 0
 
 
 def test_tushare_missing_token_is_explicit_degradation_without_sdk_import() -> None:
@@ -2835,6 +3006,9 @@ def test_gateway_marks_circuit_open_vendor_as_skipped_in_route_health() -> None:
     assert health["route"]["attempted_vendors"][0]["error"] == "circuit_open"
     assert health["route"]["attempted_vendors"][1]["name"] == "sina"
     assert health["route"]["attempted_vendors"][1]["status"] == "success"
+    assert health["sources"]["eastmoney"]["error_count"] == 0
+    assert health["sources"]["eastmoney"]["physical_failure_count"] == 0
+    assert health["sources"]["eastmoney"]["circuit_skipped_count"] == 1
 
 
 def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_call() -> None:
@@ -2868,8 +3042,16 @@ def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_cal
 
 
 def test_gateway_allows_one_recovery_probe_after_circuit_timeout() -> None:
+    class ProbeSequenceMarketClient(SequenceMarketClient):
+        def __init__(self, results) -> None:
+            super().__init__(results)
+            self.probe_calls = 0
+
+        def probe_market(self) -> None:
+            self.probe_calls += 1
+
     monotonic = MutableMonotonic()
-    source = SequenceMarketClient((RuntimeError("offline"), (_quote(),)))
+    source = ProbeSequenceMarketClient((RuntimeError("offline"), (_quote(),)))
     gateway = MarketDataGateway(
         source,
         FailingMarketClient(),
@@ -2889,7 +3071,10 @@ def test_gateway_allows_one_recovery_probe_after_circuit_timeout() -> None:
     fetched = tuple(gateway.fetch_market())
     assert [(item.code, item.price, item.source) for item in fetched] == [("600001", 12.0, "eastmoney")]
     assert source.calls == 2
+    assert source.probe_calls == 1
     assert gateway.health()["sources"]["eastmoney"]["circuit_open"] is False
+    assert gateway.health()["sources"]["eastmoney"]["recovery_probe_count"] == 1
+    assert gateway.health()["sources"]["eastmoney"]["recovery_probe_success_count"] == 1
 
 
 def test_gateway_reports_recoverable_unavailability_when_all_sources_fail() -> None:

@@ -8,8 +8,11 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from hashlib import sha256
 from typing import Generic, TypeVar, cast
+from uuid import uuid4
 
+from trader.application.cache import canonical_json_bytes
 from trader.application.ports.market import MarketDataNoDataError
 from trader.domain.market.models import (
     CanonicalMarketSnapshot,
@@ -34,6 +37,11 @@ class _CircuitState:
     last_error: str = ""
     planned_count: int = 0
     timeout_count: int = 0
+    physical_failure_count: int = 0
+    circuit_skipped_count: int = 0
+    superseded_count: int = 0
+    recovery_probe_count: int = 0
+    recovery_probe_success_count: int = 0
     last_source_time: datetime | None = None
     latencies_ms: deque[float] = field(default_factory=lambda: deque(maxlen=256))
 
@@ -141,12 +149,21 @@ def _parallel_route_outcome(results: Sequence[_SourceFetch]) -> RouteOutcome:
     )
     if successes:
         vendor = "eastmoney" if any(result.name == "eastmoney" for result in successes) else successes[0].name
+        expected_skips = {"hedge_not_needed", "hedge_cancelled"}
+        degraded = any(result.status != "success" and result.error not in expected_skips for result in results)
+        fallback_reason = None
+        if vendor == "sina":
+            eastmoney = next((result for result in results if result.name == "eastmoney"), None)
+            fallback_reason = (
+                "hedge_delay" if eastmoney is not None and eastmoney.error == "hedge_inflight" else "primary_failed"
+            )
         return RouteOutcome(
             result=tuple(observation for result in successes for observation in result.observations),
             vendor=vendor,
             results=route_results,
-            degraded=len(successes) != len(results),
+            degraded=degraded,
             status="success",
+            fallback_reason=fallback_reason,
         )
     return RouteOutcome(
         result=None,
@@ -174,6 +191,8 @@ def _source_degraded_reasons(results: Sequence[_SourceFetch]) -> set[str]:
     for result in results:
         if result.status == "success":
             continue
+        if result.error in {"hedge_not_needed", "hedge_cancelled"}:
+            continue
         error = result.error.lower()
         if result.status == "no_data":
             code = "no_data"
@@ -185,6 +204,8 @@ def _source_degraded_reasons(results: Sequence[_SourceFetch]) -> set[str]:
             code = "circuit_open"
         elif result.skipped and "superseded" in error:
             code = "superseded"
+        elif result.skipped and "hedge_inflight" in error:
+            code = "hedge_delay"
         else:
             code = "source_failed"
         reasons.add(f"{result.name}:{code}")
@@ -226,6 +247,15 @@ def _strip_source(source: str, message: str) -> str:
 
 def _elapsed(started: float, finished: float) -> float:
     return max(0.0, (finished - started) * 1000.0)
+
+
+def _cycle_trace_id(kind: str, observed_at: datetime, codes: Sequence[str]) -> str:
+    payload = {
+        "kind": kind,
+        "observed_at": observed_at.isoformat(),
+        "codes": tuple(sorted(set(codes))),
+    }
+    return sha256(canonical_json_bytes(payload) + uuid4().bytes).hexdigest()[:24]
 
 
 def _before_deadline(now: datetime, deadline: datetime | None) -> bool:

@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求合并 V2 实时性与高频行情源失败改进计划，并明确只使用免费行情源。本批新增
+  `runtime` schema v8 的新浪独立 8 秒 I/O timeout、1 秒全市场对冲延迟和免费源路由
+  契约；来源状态新增物理失败、超时、熔断跳过、latest-wins 淘汰及轻量恢复探测的独立
+  计数，避免把“没有发请求”和“请求失败”混为一类。
+- 新增东财/新浪单轮 HTTP session 复用、截止/对冲取消检查和轻量半开探测。东财恢复只取
+  首个全市场页，新浪恢复只取证券计数；完整分页仅在探测成功后执行。回归覆盖东财在来源
+  worker 内仍有界并行、单轮只创建一个 session、截止后不再发页、东财快返不启动新浪、
+  东财变慢后新浪首胜立即发布，以及双源失败保留最近有效快照。
+
 - 用户要求把 `start_stop.md` 相关修改完整提交。本批新增交易 session tracker、不可变
   `FreezeAttempt`、调度点生命周期和进程级 `ShutdownDeadline`：状态 API 加法暴露
   calendar、session generation、调度点和冻结重试；联合测试覆盖冷启动时间矩阵、日历
@@ -266,6 +275,15 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- 全市场活动路由从“东财和新浪同时抓取并等待两份结果合并”改为“东财先发，1 秒后按需
+  对冲新浪，首个覆盖达标且截止前完成的免费来源立即形成 P2”。未启动的第二路取消；
+  已发出的第二路只在 20 秒总 deadline 内完成缓存和健康校验，不阻塞或迟到改写规范快照。
+  东财和新浪来源契约升级为 v16，配置身份升级为
+  `runtime_v34_free_market_hedged_route_2026_07_30`。
+- 全市场正常计划间隔统一为 10 秒；连续三次物理失败后的来源退避从 60 秒缩短为 30 秒，
+  退避结束先执行单请求轻量探测。东财与新浪单请求 timeout 分别固定 8 秒，候选/TopK
+  腾讯定向路线、20 秒全市场总截止、冻结、荐股公式和 V1/V2 生产指针均未改变。
 
 - 启动调度现在区分冷启动和持续运行迟到 tick：today 在 11:20 边界及以后启动永久
   `missed`，tomorrow/d25 只在 14:50（含）至 15:00（不含）恢复有效检查点，15:00 起
@@ -632,6 +650,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复慢新浪约 70 页分页拖住东财有效结果、导致整轮全市场超时的问题；路由不再等待第二
+  来源。修复东财从共享来源 worker 调用时退化为串行分页的问题，改为随请求关闭、最多
+  6 worker 的有界分页执行器，避免嵌套等待共享来源池。
+- 修复全市场缓存到期后先返回旧快照并后台刷新的实时性错误：用于候选发现的到期缓存不再
+  冒充本轮成功，必须等待本轮东财/新浪物理结果；只有来源失败时才显式保留最近有效规范
+  快照。修复熔断期间每次计划跳过仍累计 `error_count`/连续失败的问题，未发出的 deadline
+  跳过也不再打开熔断。
+
 - 修复晚启动追补 today、14:50 后补发 cutoff/最终报价、任务入队前即被标记完成，以及
   队列拒绝、SQLite/JSON 暂时失败或 P6 拒绝后不再重试的问题。冻结现在只重试同一
   official-only 对象、ID、规范载荷和 SHA-256，pending afternoon attempt 会阻止不同的
@@ -923,6 +949,16 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- `make format-check`、`make lint`、`make type-check`、`make test` 和 `make package` 通过；
+  全仓测试覆盖架构 AST、`create_app()` 无副作用、固定融合向量 83.40、预算并发、SSE、
+  冻结恢复、哈希一致性和本批免费全市场路由回归。隔离构建首次因沙箱禁止访问本机代理
+  失败，批准联网后成功生成 wheel 与 sdist。
+- 从仓库外将 `trader_research_dashboard-0.2.0-py3-none-any.whl` 安装到临时 target，
+  已从该安装路径导入 `trader`、执行 `trader-cli --help`，并读取首页/V2 模板、
+  dashboard CSS/JavaScript 和 SVG 图标资源。Firefox 真浏览器门禁在 1280x720、
+  1440x900、1920x1080 三档均通过：旧看板和 tomorrow V2 均无浏览器错误、页面级横向
+  溢出或面板重叠；旧看板 patch-to-paint P95 为 36ms，预算 100ms。
 
 - 生命周期专项联合回归：
   `tests/integration/test_start_stop_integration.py`、
@@ -1478,6 +1514,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除活动全市场路径对同周期东财和新浪双份响应的强制等待、强制字段回退及无条件新浪
+  全市场请求；移除 5 秒/尾盘 3 秒这种低于免费全市场分页可持续完成能力的计划频率。
+
 - 移除只读查询对空 `close_fallback` 的现场 replay/评分，以及关闭期限到达后的无界
   worker join；重启不新增候选、观察池、历史预热、review、backoff、breaker 或 session
   持久化文件。
@@ -1579,6 +1618,11 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 东方财富、新浪和腾讯均为无付费 SLA 的公开免费接口，供应商仍可能限流、改字段、关闭
+  入口或在本地网络环境中不可达；本批通过首胜对冲、8/20 秒截止、30 秒熔断、轻量探测和
+  最近有效快照控制影响，但不能保证外部可用性。单源 P95 不超过 10 秒仍需在完整交易日
+  真实网络样本中复核；在证据达标前不自动切换 V1/V2 生产指针。
 
 - Windows `SIGBREAK` 已有平台分支和可注入信号测试，但当前 Linux 验收环境不能完成
   Windows 实机任务管理器、第二信号和无残留进程检查；发布到 Windows 前仍需一次实机

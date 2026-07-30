@@ -11,7 +11,6 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, TypedDict
-from uuid import uuid4
 
 from polars.exceptions import PolarsError
 
@@ -44,6 +43,8 @@ from trader.infra.market_data.gateway_runtime import (
     _cache_error_code,
     _canonical_health,
     _CircuitState,
+    _cycle_trace_id,
+    _elapsed,
     _observation_version,
     _parallel_error_message,
     _parallel_route_outcome,
@@ -89,6 +90,7 @@ class _GatewayOptionalOptions(TypedDict, total=False):
     monotonic: Callable[[], float]
     wall_clock: Callable[[], datetime]
     latency: LatencyWaterfall
+    full_market_hedge_delay_seconds: float
 
 
 class _GatewayOptions(_GatewayRequiredOptions, _GatewayOptionalOptions):
@@ -148,6 +150,10 @@ class MarketDataGateway:
             "tencent": _CircuitState(),
             "tencent_long": _CircuitState(),
         }
+        self._recovery_probes = {
+            "eastmoney": getattr(eastmoney, "probe_market", None),
+            "sina": getattr(sina, "probe_market", None),
+        }
         self._latest_by_code: dict[str, MarketQuote] = {}
         self._latest_observations: dict[str, dict[str, SourceObservation]] = {}
         self._reference_observations: dict[str, SourceObservation] = {}
@@ -173,6 +179,7 @@ class MarketDataGateway:
                 schema_version=self._schema_version,
                 monotonic=self._monotonic,
                 wall_clock=self._wall_clock,
+                full_market_hedge_delay_seconds=options.get("full_market_hedge_delay_seconds", 1.0),
             ),
             self,
         )
@@ -253,7 +260,7 @@ class MarketDataGateway:
             observed_at=completed_at,
             previous=previous,
         )
-        self.record_local_latency("merge", _elapsed_ms(merge_started, self._monotonic()))
+        self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         snapshot = replace(
             snapshot,
             degraded_reasons=tuple(sorted({*snapshot.degraded_reasons, *_source_degraded_reasons(results)})),
@@ -284,7 +291,7 @@ class MarketDataGateway:
                 self._conflict_count += len(commit_snapshot.conflicts)
                 self.record_local_latency(
                     "canonical_commit",
-                    _elapsed_ms(commit_started, self._monotonic()),
+                    _elapsed(commit_started, self._monotonic()),
                 )
                 return tuple(self._latest_by_code.values())
 
@@ -461,7 +468,7 @@ class MarketDataGateway:
             observed_at=completed_at,
             targeted_codes=codes,
         )
-        self.record_local_latency("merge", _elapsed_ms(merge_started, self._monotonic()))
+        self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         with self._state_lock:
             return self._commit_candidate_snapshot_locked(observations, snapshot, completed_at, codes)
 
@@ -489,7 +496,7 @@ class MarketDataGateway:
         self._conflict_count += len(snapshot.conflicts)
         self.record_local_latency(
             "targeted_overlay_commit",
-            _elapsed_ms(commit_started, self._monotonic()),
+            _elapsed(commit_started, self._monotonic()),
         )
         return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
 
@@ -597,6 +604,11 @@ class MarketDataGateway:
                         "success_count": state.success_count,
                         "error_count": state.error_count,
                         "timeout_count": state.timeout_count,
+                        "physical_failure_count": state.physical_failure_count,
+                        "circuit_skipped_count": state.circuit_skipped_count,
+                        "superseded_count": state.superseded_count,
+                        "recovery_probe_count": state.recovery_probe_count,
+                        "recovery_probe_success_count": state.recovery_probe_success_count,
                         "consecutive_failures": state.failures,
                         "circuit_open": state.open_until > now,
                         "last_latency_ms": round(state.last_latency_ms, 2),
@@ -630,18 +642,19 @@ class MarketDataGateway:
         if self._is_open(source):
             self._record_skipped_open(source)
             raise MarketDataFailedError(source, "circuit_open")
+        self._probe_recovering_source(source)
         started = self._monotonic()
         try:
             quotes = tuple(fetcher())
         except MarketDataNoDataError as exc:
-            self.record_local_latency("external_source", _elapsed_ms(started, self._monotonic()))
+            self.record_local_latency("external_source", _elapsed(started, self._monotonic()))
             self._record(source, False, started, str(exc))
             raise
         except Exception as exc:
-            self.record_local_latency("external_source", _elapsed_ms(started, self._monotonic()))
+            self.record_local_latency("external_source", _elapsed(started, self._monotonic()))
             self._record(source, False, started, str(exc))
             raise MarketDataFailedError(source, str(exc)) from exc
-        self.record_local_latency("external_source", _elapsed_ms(started, self._monotonic()))
+        self.record_local_latency("external_source", _elapsed(started, self._monotonic()))
         if len(quotes) < minimum_rows:
             error = MarketDataNoDataError(f"{source}: only {len(quotes)} market rows")
             self._record(source, False, started, str(error))
@@ -652,9 +665,21 @@ class MarketDataGateway:
         self._record(source, success, started, error)
 
     def record_deadline(self, source: str) -> None:
-        self._record(source, False, self._monotonic(), "deadline")
+        self._record(source, False, self._monotonic(), "deadline", physical=False)
 
-    def _record(self, source: str, success: bool, started: float, error: str) -> None:
+    def record_superseded(self, source: str) -> None:
+        with self._state_lock:
+            self._states[source].superseded_count += 1
+
+    def _record(
+        self,
+        source: str,
+        success: bool,
+        started: float,
+        error: str,
+        *,
+        physical: bool = True,
+    ) -> None:
         elapsed_ms = (self._monotonic() - started) * 1000.0
         with self._state_lock:
             state = self._states[source]
@@ -666,11 +691,14 @@ class MarketDataGateway:
                 state.last_error = ""
                 state.open_until = 0.0
                 return
-            state.failures += 1
             state.error_count += 1
             if any(marker in error.lower() for marker in ("timeout", "timed out", "deadline", "late")):
                 state.timeout_count += 1
             state.last_error = error[:240]
+            if not physical:
+                return
+            state.failures += 1
+            state.physical_failure_count += 1
             if state.failures >= self._failure_limit:
                 state.open_until = self._monotonic() + self._breaker_seconds
 
@@ -683,10 +711,34 @@ class MarketDataGateway:
     def record_local_latency(self, stage: str, duration_ms: float) -> None:
         self._latency.record_duration(stage, duration_ms)
 
+    def _probe_recovering_source(self, source: str) -> None:
+        probe = self._recovery_probes.get(source)
+        if not callable(probe):
+            return
+        now = self._monotonic()
+        with self._state_lock:
+            state = self._states[source]
+            recovering = state.failures >= self._failure_limit and 0.0 < state.open_until <= now
+            if not recovering:
+                return
+            state.recovery_probe_count += 1
+        started = self._monotonic()
+        try:
+            probe()
+        except Exception as exc:
+            self._record(source, False, started, f"recovery_probe:{exc}")
+            raise MarketDataFailedError(source, "recovery_probe_failed") from exc
+        with self._state_lock:
+            state = self._states[source]
+            state.recovery_probe_success_count += 1
+            state.failures = 0
+            state.open_until = 0.0
+            state.last_error = ""
+
     def _record_skipped_open(self, source: str) -> None:
         with self._state_lock:
             state = self._states[source]
-            state.error_count += 1
+            state.circuit_skipped_count += 1
             state.last_error = "circuit_open"
 
 
@@ -738,16 +790,3 @@ def _columnar_failure_changes(
 
 
 __all__ = ["MarketDataGateway"]
-
-
-def _elapsed_ms(started: float, completed: float) -> float:
-    return max(0.0, (completed - started) * 1000.0)
-
-
-def _cycle_trace_id(kind: str, observed_at: datetime, codes: Sequence[str]) -> str:
-    payload = {
-        "kind": kind,
-        "observed_at": observed_at.isoformat(),
-        "codes": tuple(sorted(set(codes))),
-    }
-    return hashlib.sha256(canonical_json_bytes(payload) + uuid4().bytes).hexdigest()[:24]
