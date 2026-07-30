@@ -5,25 +5,20 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import date, datetime
-from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from trader.application.current_decisions import CurrentDecisionIndex
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.clock import Clock
 from trader.application.ports.snapshots import (
-    PublishedSnapshotReadPort,
     PublishedSnapshotWritePort,
     SnapshotStatusValue,
 )
 from trader.application.ports.tomorrow import TomorrowNativeInput, TomorrowNativeInputPort
 from trader.application.shutdown import ShutdownDeadline, ShutdownStep
-from trader.application.tomorrow_events import TomorrowDecisionEventStream
-from trader.application.tomorrow_freezing import TomorrowFreezeCoordinator
+from trader.application.tomorrow_quality import TomorrowInputQuality
 from trader.application.tomorrow_shadow import (
-    TomorrowCutoverGate,
     TomorrowShadowObservation,
 )
 from trader.application.tomorrow_shadow_projection import (
@@ -32,11 +27,15 @@ from trader.application.tomorrow_shadow_projection import (
     project_tomorrow_input,
     project_tomorrow_snapshot,
 )
+from trader.application.tomorrow_shadow_types import (
+    NativeProjectionRecord,
+    PublishedSnapshotIndexPort,
+    TomorrowShadowDependencies,
+    TomorrowShadowProcessor,
+)
 from trader.application.tomorrow_views import (
-    TomorrowDecisionQueries,
     TomorrowLiveQuote,
     TomorrowQuoteOverlay,
-    TomorrowQuoteOverlayIndex,
     TomorrowRuntimeTelemetry,
 )
 from trader.domain.recommendation.models import LiveOverlay, RecommendationSnapshot, Strategy
@@ -44,35 +43,6 @@ from trader.domain.recommendation.tomorrow_fusion import DecisionEpoch
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _BASELINE_NON_HARD_FILTER_DIAGNOSTICS = frozenset({"history_warming"})
-
-
-class TomorrowShadowProcessor(Protocol):
-    def process(self, snapshot: RecommendationSnapshot) -> bool: ...
-
-    def process_native(self, native_input: TomorrowNativeInput) -> bool: ...
-
-
-class _PublishedSnapshotIndex(PublishedSnapshotReadPort, PublishedSnapshotWritePort, Protocol):
-    pass
-
-
-@dataclass(frozen=True)
-class TomorrowShadowDependencies:
-    decisions: CurrentDecisionIndex
-    quotes: TomorrowQuoteOverlayIndex
-    events: TomorrowDecisionEventStream
-    queries: TomorrowDecisionQueries
-    freezer: TomorrowFreezeCoordinator
-    gate: TomorrowCutoverGate
-    clock: Clock
-
-
-@dataclass(frozen=True)
-class _NativeProjectionRecord:
-    native_input: TomorrowNativeInput
-    sequence: int
-    local_version: str
-    local_publish_seconds: float
 
 
 class TomorrowShadowRuntime:
@@ -92,7 +62,8 @@ class TomorrowShadowRuntime:
         self._gate = dependencies.gate
         self._clock = dependencies.clock
         self._lock = threading.RLock()
-        self._native_records: dict[str, _NativeProjectionRecord] = {}
+        self._native_records: dict[str, NativeProjectionRecord] = {}
+        self._rejected_native_inputs: dict[str, TomorrowInputQuality] = {}
         self._decision_sequence = 0
         self._processed = 0
         self._native_processed = 0
@@ -101,6 +72,12 @@ class TomorrowShadowRuntime:
         self._baseline_fallbacks = 0
         self._baseline_superseded = 0
         self._baseline_stale_trade_date_skipped = 0
+        self._baseline_invalid_input_skipped = 0
+        self._transient_invalid_empty_count = 0
+        self._last_valid_decision_retained_count = 0
+        self._cold_start_not_ready_count = 0
+        self._input_not_ready_count = 0
+        self._business_empty_published_count = 0
         self._failed = 0
         self._skipped_sealed = 0
         self._freeze_retry_pending = False
@@ -108,11 +85,15 @@ class TomorrowShadowRuntime:
         self._last_error = ""
         self._last_pipeline_latency_ms: float | None = None
         self._last_publish_latency_ms: float | None = None
+        self._last_input_quality: TomorrowInputQuality | None = None
 
     def process_native(self, native_input: TomorrowNativeInput) -> bool:
         started = time.perf_counter()
         with self._lock:
-            if native_input.input_version in self._native_records:
+            if (
+                native_input.input_version in self._native_records
+                or native_input.input_version in self._rejected_native_inputs
+            ):
                 self._native_coalesced += 1
                 return True
             current = self._decisions.latest()
@@ -130,12 +111,22 @@ class TomorrowShadowRuntime:
                 self._policy,
                 decision_sequence=sequence,
             )
+            if not projection.input_quality.publishable:
+                self._retain_after_invalid_input(
+                    projection.input_version,
+                    native_input.trade_date,
+                    projection.input_quality,
+                )
+                with self._lock:
+                    self._native_processed += 1
+                    self._last_pipeline_latency_ms = (time.perf_counter() - started) * 1000.0
+                return True
             if not self._publish_decision(projection.local):
                 with self._lock:
                     self._skipped_sealed += 1
                 return True
             published_at = _clock_now(self._clock)
-            record = _NativeProjectionRecord(
+            record = NativeProjectionRecord(
                 native_input,
                 sequence,
                 projection.local.version,
@@ -147,6 +138,9 @@ class TomorrowShadowRuntime:
                 while len(self._native_records) > 64:
                     self._native_records.pop(next(iter(self._native_records)))
                 self._native_processed += 1
+                if projection.input_quality.status == "business_empty":
+                    self._business_empty_published_count += 1
+                self._last_input_quality = projection.input_quality
                 self._last_pipeline_latency_ms = (time.perf_counter() - started) * 1000.0
                 self._last_error = ""
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -206,6 +200,11 @@ class TomorrowShadowRuntime:
         native_input = native_input_from_snapshot(snapshot)
         with self._lock:
             native_record = self._native_records.get(native_input.input_version)
+            invalid_input = native_input.input_version in self._rejected_native_inputs
+        if invalid_input:
+            with self._lock:
+                self._baseline_invalid_input_skipped += 1
+            return None, 0.0
         if native_record is None:
             current = self._decisions.latest()
             if (
@@ -300,6 +299,15 @@ class TomorrowShadowRuntime:
             self._policy,
             decision_sequence=sequence,
         )
+        if not projection.input_quality.publishable:
+            self._retain_after_invalid_input(
+                projection.input_version,
+                projection.local.trade_date,
+                projection.input_quality,
+            )
+            with self._lock:
+                self._baseline_invalid_input_skipped += 1
+            return None, 0.0
         if not self._publish_decision(projection.local):
             with self._lock:
                 self._skipped_sealed += 1
@@ -393,6 +401,12 @@ class TomorrowShadowRuntime:
                 "baseline_fallbacks": self._baseline_fallbacks,
                 "baseline_superseded": self._baseline_superseded,
                 "baseline_stale_trade_date_skipped": self._baseline_stale_trade_date_skipped,
+                "baseline_invalid_input_skipped": self._baseline_invalid_input_skipped,
+                "transient_invalid_empty_count": self._transient_invalid_empty_count,
+                "last_valid_decision_retained_count": self._last_valid_decision_retained_count,
+                "cold_start_not_ready_count": self._cold_start_not_ready_count,
+                "input_not_ready_count": self._input_not_ready_count,
+                "business_empty_published_count": self._business_empty_published_count,
                 "failed": self._failed,
                 "skipped_sealed": self._skipped_sealed,
                 "freeze_retry_pending": self._freeze_retry_pending,
@@ -400,6 +414,9 @@ class TomorrowShadowRuntime:
                 "last_error": self._last_error,
                 "pipeline_latency_ms": self._last_pipeline_latency_ms,
                 "publish_latency_ms": self._last_publish_latency_ms,
+                "last_input_quality": (
+                    self._last_input_quality.to_status() if self._last_input_quality is not None else None
+                ),
             }
         return {**runtime, "cutover_gate": asdict(self._gate.status())}
 
@@ -442,6 +459,31 @@ class TomorrowShadowRuntime:
         with self._lock:
             self._last_publish_latency_ms = (time.perf_counter() - started) * 1000.0
         return True
+
+    def _retain_after_invalid_input(
+        self,
+        input_version: str,
+        trade_date: date,
+        quality: TomorrowInputQuality,
+    ) -> None:
+        current = self._decisions.latest()
+        retained = current is not None and current.trade_date == trade_date
+        with self._lock:
+            self._rejected_native_inputs[input_version] = quality
+            while len(self._rejected_native_inputs) > 64:
+                self._rejected_native_inputs.pop(next(iter(self._rejected_native_inputs)))
+            self._last_input_quality = quality
+            if quality.status == "transient_invalid_empty":
+                self._transient_invalid_empty_count += 1
+            else:
+                self._input_not_ready_count += 1
+            if retained:
+                self._last_valid_decision_retained_count += 1
+                outcome = "last_valid_decision_retained"
+            else:
+                self._cold_start_not_ready_count += 1
+                outcome = "not_ready"
+            self._last_error = f"{quality.status}:{outcome}"
 
     def _next_sequence(self) -> int:
         with self._lock:
@@ -664,7 +706,7 @@ class ShadowObservingSnapshotIndex(PublishedSnapshotWritePort):
 
     def __init__(
         self,
-        delegate: _PublishedSnapshotIndex,
+        delegate: PublishedSnapshotIndexPort,
         worker: TomorrowShadowWorker,
         runtime: TomorrowShadowRuntime,
     ) -> None:

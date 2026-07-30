@@ -95,7 +95,7 @@ class MarketFeatureService:
             if self.runner.source_lanes is None
             else self.history.cached(
                 history_codes,
-                fresh_only=True,
+                fresh_only=False,
                 action_restrictions=action_restrictions,
             )
         )

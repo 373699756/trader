@@ -10,12 +10,10 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
-from typing import TYPE_CHECKING, TypedDict
+from typing import TypedDict
 
 from polars.exceptions import PolarsError
-
-if TYPE_CHECKING:
-    from typing_extensions import Unpack
+from typing_extensions import Unpack
 
 from trader.application.cache import BoundedCache, canonical_json_bytes
 from trader.application.latency import LatencyWaterfall
@@ -64,6 +62,7 @@ from trader.infra.market_data.merge import (
 from trader.infra.market_data.merge_quote import rejection_reason, source_name
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.router import RouteOutcome
+from trader.infra.market_data.security_references import security_reference_observations
 from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.source_coordinator import (
     MarketSourceCoordinator,
@@ -250,10 +249,12 @@ class MarketDataGateway:
                 return cached
             raise MarketDataUnavailableError("market data unavailable: " + _parallel_error_message(results))
         observations = tuple(observation for result in successes for observation in result.observations)
+        security_references = security_reference_observations(observations)
         with self._state_lock:
             previous = self._latest_snapshot
-            references = tuple(self._reference_observations.values())
             self._remember_observations_locked(observations, completed_at)
+            self._update_reference_observations_locked(security_references)
+            references = tuple(self._reference_observations.values())
         merge_started = self._monotonic()
         snapshot = merge_market_observations(
             (*observations, *references),
@@ -502,26 +503,32 @@ class MarketDataGateway:
 
     def update_reference_observations(self, observations: Sequence[SourceObservation]) -> None:
         with self._state_lock:
-            calendar_changed = False
-            for observation in observations:
-                if observation.status != "success" or observation.fields.get("is_open") is not True:
-                    continue
-                try:
-                    open_date = date.fromisoformat(observation.subject_key)
-                except ValueError:
-                    continue
-                if open_date not in self._calendar_open_dates:
-                    self._calendar_open_dates.add(open_date)
-                    calendar_changed = True
-            if calendar_changed:
-                self._calendar_open_dates_sorted = tuple(sorted(self._calendar_open_dates))
-            for observation in observations:
-                if observation.status != "success" or len(observation.subject_key) != 6:
-                    continue
-                observation = self._with_listing_sessions(observation)
-                current = self._reference_observations.get(observation.subject_key)
-                if current is None or _reference_replaces(current, observation):
-                    self._reference_observations[observation.subject_key] = observation
+            self._update_reference_observations_locked(observations)
+
+    def _update_reference_observations_locked(
+        self,
+        observations: Sequence[SourceObservation],
+    ) -> None:
+        calendar_changed = False
+        for observation in observations:
+            if observation.status != "success" or observation.fields.get("is_open") is not True:
+                continue
+            try:
+                open_date = date.fromisoformat(observation.subject_key)
+            except ValueError:
+                continue
+            if open_date not in self._calendar_open_dates:
+                self._calendar_open_dates.add(open_date)
+                calendar_changed = True
+        if calendar_changed:
+            self._calendar_open_dates_sorted = tuple(sorted(self._calendar_open_dates))
+        for observation in observations:
+            if observation.status != "success" or len(observation.subject_key) != 6:
+                continue
+            observation = self._with_listing_sessions(observation)
+            current = self._reference_observations.get(observation.subject_key)
+            if current is None or _reference_replaces(current, observation):
+                self._reference_observations[observation.subject_key] = observation
 
     def _with_listing_sessions(self, observation: SourceObservation) -> SourceObservation:
         listing_raw = observation.fields.get("listing_date")

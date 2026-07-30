@@ -203,6 +203,7 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
                     "f10": 2.0,
                     "f11": 1.0,
                     "f12": "600001",
+                    "f13": 1,
                     "f14": "测试股份",
                     "f15": 12.2,
                     "f16": 11.7,
@@ -210,6 +211,7 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
                     "f18": 11.65,
                     "f20": 30000000000,
                     "f22": 0.8,
+                    "f26": 19991110,
                     "f100": "工业",
                     "f124": int((NOW - timedelta(minutes=1)).timestamp()),
                 }
@@ -226,6 +228,11 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
     assert len(quotes) == 1
     assert quotes[0].code == "600001"
     assert quotes[0].industry == "工业"
+    assert quotes[0].board is Board.MAIN
+    assert quotes[0].board_source == "eastmoney"
+    assert quotes[0].board_reliability == "reported"
+    assert quotes[0].exchange == "SSE"
+    assert quotes[0].listing_date == date(1999, 11, 10)
     assert quotes[0].source_time == NOW - timedelta(minutes=1)
     assert quotes[0].data_version == f"eastmoney:{int(NOW.timestamp())}"
     assert history[0].amount == 100000000
@@ -1531,6 +1538,46 @@ def test_gateway_keeps_last_valid_snapshot_when_both_free_full_market_sources_fa
     assert "sina:source_failed" in snapshot.degraded_reasons
 
 
+def test_gateway_retains_free_security_master_when_realtime_source_falls_back() -> None:
+    eastmoney_quote = replace(
+        _quote(),
+        source="eastmoney",
+        board=Board.MAIN,
+        board_source="eastmoney",
+        board_reliability="reported",
+        exchange="SSE",
+        listing_date=date(1999, 11, 10),
+    )
+    second_observed_at = NOW + timedelta(seconds=1)
+    sina_quote = replace(
+        _quote(),
+        source="sina",
+        source_time=second_observed_at,
+        received_time=second_observed_at,
+        data_version="sina-v2",
+    )
+    gateway = MarketDataGateway(
+        SequenceMarketClient(((eastmoney_quote,), RuntimeError("eastmoney offline"))),
+        SequenceMarketClient(((sina_quote,),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=30,
+        wall_clock=lambda: second_observed_at,
+    )
+
+    first = tuple(gateway.fetch_market(observed_at=NOW))
+    second = tuple(gateway.fetch_market(observed_at=second_observed_at, force=True))
+
+    assert first[0].listing_date == date(1999, 11, 10)
+    assert second[0].source == "sina"
+    assert second[0].board is Board.MAIN
+    assert second[0].board_source == "eastmoney"
+    assert second[0].board_reliability == "reported"
+    assert second[0].exchange == "SSE"
+    assert second[0].listing_date == date(1999, 11, 10)
+
+
 def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retries() -> None:
     runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
     monotonic = MutableMonotonic()
@@ -2699,6 +2746,67 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
     )
     assert features[0].history_days == 60
     assert features[0].evidence[-1].evidence_id == "news-old"
+
+
+def test_history_cache_reuses_actionable_refresh_due_value_with_degradation() -> None:
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    monotonic = MutableMonotonic()
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        monotonic=monotonic,
+        wall_clock=lambda: NOW,
+    )
+    runner = MarketTaskRunner(
+        worker_pool=None,
+        source_lanes=None,
+        cache=cache,
+        source_contract_versions=runtime.market_data.source_contract_versions,
+        config_version=runtime.config_version,
+        schema_version="market-v15",
+        wall_clock=lambda: NOW,
+    )
+    history = HistoryCache(
+        CountingHistoryClient(()),
+        runner,
+        history_worker_pool=None,
+        workers=1,
+        ttl_seconds=21_600,
+        capacity=360,
+        monotonic=monotonic,
+    )
+    bars = tuple(
+        replace(
+            bar,
+            trade_date=(date(2026, 7, 15) - timedelta(days=19 - index)).isoformat(),
+        )
+        for index, bar in enumerate(_history_bars()[-20:])
+    )
+    identity = runner.cache_identity(
+        "daily_history",
+        "eastmoney",
+        "600001",
+        {"code": "600001", "days": 61, "retained_days": 20, "adjust": "qfq"},
+        NOW,
+    )
+    cache.put(
+        identity,
+        bars,
+        data_version="2026-07-15",
+        source_time=NOW - timedelta(hours=7),
+    )
+    monotonic.value = 21_601.0
+    restrictions: dict[str, set[str]] = {}
+
+    result = history.cached(
+        ("600001",),
+        fresh_only=False,
+        action_restrictions=restrictions,
+    )
+
+    assert result == {"600001": bars}
+    assert restrictions == {"600001": {"history_data_degraded"}}
+    assert history.cached(("600001",), fresh_only=True) == {}
 
 
 def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:

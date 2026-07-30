@@ -279,6 +279,10 @@ def _observation_version(observation: SourceObservation) -> tuple[datetime, date
 
 
 def _reference_replaces(current: SourceObservation, incoming: SourceObservation) -> bool:
+    current_priority = source_priority(current.source)
+    incoming_priority = source_priority(incoming.source)
+    if current_priority != incoming_priority:
+        return incoming_priority > current_priority
     current_order = (current.source_time, current.received_at, current.data_version)
     incoming_order = (incoming.source_time, incoming.received_at, incoming.data_version)
     if incoming_order != current_order:

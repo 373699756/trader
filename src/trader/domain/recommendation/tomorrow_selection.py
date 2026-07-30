@@ -177,14 +177,18 @@ class TomorrowSelectionResult:
     selected: tuple[TomorrowStockEvaluation, ...]
     population_versions: Mapping[Board, str]
     hard_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
+    population_rejected_count: int = 0
+    population_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
+        if self.population_rejected_count < 0:
+            raise ValueError("tomorrow population rejected count cannot be negative")
         object.__setattr__(self, "population_versions", MappingProxyType(dict(self.population_versions)))
-        object.__setattr__(
-            self,
+        for name in (
             "hard_filter_reason_counts",
-            MappingProxyType(dict(self.hard_filter_reason_counts)),
-        )
+            "population_filter_reason_counts",
+        ):
+            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
 
 
 def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResult:
@@ -244,9 +248,10 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
     )
     observations = tuple(item for item in scored if item.disposition is TomorrowDisposition.OBSERVE_ONLY)
     selected = tuple(evaluations[code] for code in selected_codes)
-    hard_filter_reason_counts: Counter[str] = Counter(
+    population_filter_reason_counts: Counter[str] = Counter(
         reason.code for item in population_evaluations.values() for reason in item.filter_reasons
     )
+    hard_filter_reason_counts = population_filter_reason_counts.copy()
     if request.candidate_features is not None:
         hard_filter_reason_counts.update(
             reason.code for item in candidate_evaluations.values() for reason in item.filter_reasons
@@ -258,6 +263,8 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
         selected,
         population_versions,
         dict(sorted(hard_filter_reason_counts.items())),
+        sum(item.disposition is TomorrowDisposition.REJECT for item in population_evaluations.values()),
+        dict(sorted(population_filter_reason_counts.items())),
     )
 
 
@@ -276,7 +283,7 @@ def _filter_features(
         normalized = replace(feature, quote=replace(feature.quote, board=filtered.board))
         if not filtered.allowed:
             disposition = TomorrowDisposition.REJECT
-        elif filtered.optional_flags:
+        elif filtered.optional_flags or feature.quote.execution_restrictions:
             disposition = TomorrowDisposition.OBSERVE_ONLY
         else:
             disposition = TomorrowDisposition.PASS

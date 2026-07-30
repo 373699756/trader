@@ -659,6 +659,23 @@ DeepSeek review 继续在既有 schema、证据和截止校验后独立规范化
 后的代码元组严格比较，顺序变化仍是不一致。发布和决策年龄从原生批次
 `evaluated_at` 起算，行情自身的新鲜度继续由点时过滤和特征审计约束。
 
+### 12.4 tomorrow v2 临时空集与风险覆盖作用域
+
+tomorrow v2 必须在本地 decision 生成后、CAS 前按显式候选集合判断空集性质。候选因
+`stale_quote`、`missing_liquidity_history`、`invalid_liquidity_history` 或
+`candidate_core_missing` 未能形成任何本地分时，属于输入未就绪，不是策略真实空集：
+热运行保留最近同日有效决策，冷启动返回 `not_ready`。仅当候选输入完整且零评分、零入选
+完全由 ST/退市、停牌、价格/成交额非法、涨幅过热、已确认结构化风险或候选分门槛等业务
+规则造成时，才允许发布 ready 的真实空结果。已有本地评分但因 TopK、行业/板块集中度或
+动作资格没有正式入选时仍是 ready 的非空评分结果，不归类为业务空集。
+
+全市场人口只承担硬过滤和板内横截面，不要求对 5533 只股票逐只完成公司研究。
+`structured_risk_unavailable` 和 `corporate_risk_history_unavailable` 的决策门禁只按显式
+候选判断；缺失时仍可计算本地分，但 disposition 固定为 `observe_only`，不能进入
+DeepSeek 或正式执行池。板块身份、上市日期和上市交易日龄同样只在候选作用域决定动作
+资格；没有真实免费主数据时禁止补造。过滤审计必须分别输出 population 与 candidate
+计数，聚合总数只作兼容展示，不能作为切换门禁或空集性质判断的唯一证据。
+
 ## 13. TopK 与集中度
 
 today、tomorrow、d25 各自在主板、创业板和科创板三个草稿合并后全局稳定选择；全体共

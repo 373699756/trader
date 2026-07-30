@@ -14,6 +14,10 @@ from trader.application.tomorrow_deepseek_fusion import (
     normalize_tomorrow_review_times,
     tomorrow_decision_policy,
 )
+from trader.application.tomorrow_quality import (
+    TomorrowInputQuality,
+    assess_tomorrow_input_quality,
+)
 from trader.application.tomorrow_selection import (
     TomorrowSelectionIdentity,
     TomorrowSelectionOptions,
@@ -38,6 +42,7 @@ class TomorrowShadowProjection:
     local: DecisionEpoch
     hybrid: DecisionEpoch | None
     hard_filter_reason_counts: Mapping[str, int]
+    input_quality: TomorrowInputQuality
 
     @property
     def effective(self) -> DecisionEpoch:
@@ -90,6 +95,7 @@ def project_tomorrow_input(
         ),
     )
     decision_policy = tomorrow_decision_policy(policy)
+    input_quality = assess_tomorrow_input_quality(native_input, selection)
     review_codes = tuple(item.code for item in select_tomorrow_review_candidates(selection, decision_policy))
     input_hash = native_input.input_version.removeprefix("native-input:")
     market_version = f"native-market:{input_hash}"
@@ -110,7 +116,7 @@ def project_tomorrow_input(
             projection_stage="local",
             parent_decision_version=None,
             review_candidate_codes=review_codes,
-            degraded_reasons=(),
+            degraded_reasons=input_quality.degraded_reasons,
             policy=decision_policy,
         )
     )
@@ -138,7 +144,14 @@ def project_tomorrow_input(
                 projection_stage="hybrid",
                 parent_decision_version=local.version,
                 review_candidate_codes=review_codes,
-                degraded_reasons=() if set(usable) == set(review_codes) else ("deepseek_incomplete",),
+                degraded_reasons=tuple(
+                    sorted(
+                        {
+                            *input_quality.degraded_reasons,
+                            *(() if set(usable) == set(review_codes) else ("deepseek_incomplete",)),
+                        }
+                    )
+                ),
                 policy=decision_policy,
             )
         )
@@ -148,6 +161,7 @@ def project_tomorrow_input(
         local=local,
         hybrid=hybrid,
         hard_filter_reason_counts=selection.hard_filter_reason_counts,
+        input_quality=input_quality,
     )
 
 

@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求按既定计划修复 V2 三轮连续空结果。本批新增 CAS 前原生输入质量判定：
+  分开记录全市场/显式候选数量、拒绝数、已评分数、候选临时失败、候选可选降级及结构化
+  原因。`stale_quote`、历史缺失/非法和候选核心字段缺失造成的零评分固定标记为
+  `transient_invalid_empty`；`/api/v2/status` 的 shadow 状态和顶层运行失败可直接看到
+  最近质量结论，不再从 5533 只股票的聚合总数猜测候选是否真正进入评分。
+- 新增东方财富免费全量字段 `f26` 的上市日期，以及板块、交易所低频证券主数据投影；
+  东财成功后只保留低频字段作为有界内存 reference，后续实时行情降级到新浪时继续复用，
+  且 Tushare/官方级参考源保持更高优先级。没有真实字段时仍留空，不推造上市日期。
+
 - 用户要求按“公司风险历史缺失及更严重的系统问题”优化计划开始修复。本批新增公司研究
   逐股成功冷却、60/120/240/480/900 秒失败退避和全失败批次短路状态；`/api/status`
   加法暴露冷却/退避股票数、下一次重试、门控代码数、短路批次/代码数、门控容量与淘汰数，
@@ -280,6 +289,16 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- tomorrow v2 只有输入完整的真实业务空集才允许发布。临时失效空集在热运行保留最近同日
+  有效 `DecisionEpoch` 且不发 decision SSE，冷启动保持 `not_ready`；snapshot 兼容
+  fallback 也重新执行同一接纳门禁，不能绕过原生拒绝。候选已有本地评分但带板块、风险、
+  历史或其他数据限制时继续形成观察项，不进入 DeepSeek 或可执行池。
+- 全市场历史组装在免费来源刷新暂时失败时可复用 shared cache 的最近值；刷新到期或超过
+  动作时限统一附加 `history_data_degraded` 并强制候选 `observe_only`，从未取得历史的
+  股票继续触发 `missing_liquidity_history`。运行配置升级为
+  `runtime_v35_tomorrow_input_quality_free_master_2026_07_30`，东财来源契约升级为
+  `eastmoney_quote_v17_security_master`，公式、阈值、冻结和 DeepSeek 预算不变。
 
 - 活动 cadence 计划器不再在每个 scheduler tick 提交整组公司研究，只由 `stock_risk`
   周期、新进入本地正式/观察集合的代码和收盘恢复显式触发。新进入代码仍先发布本地结果；
@@ -660,6 +679,17 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户可观察症状是 V2 连续三组为空，而 V1 每组仍有两只；V2 的 5533 行全部未评分并同时
+  报 `missing_listing_date`、`board_identity_degraded`、公司风险缺失和行情过期。确认根因
+  不是 worker 或发布线程停止，而是原生管道把全市场可选缺失与候选必需输入混成一个聚合
+  口径，并无条件用临时失效的空 decision 覆盖最近有效结果；免费全量证券主数据在实时源
+  切换时也会丢失，历史刷新到期则过早退化成硬缺失。现在候选级质量门禁阻止无效空覆盖，
+  热运行保留最近有效结果、冷启动显式未就绪，合法业务空集仍可发布；板块/上市日期跨免费
+  实时源保留，历史降级值可评分但只能观察。
+- 修复 V2 对 `execution_restrictions` 没有统一降为观察项的问题，避免超过动作时限的历史、
+  行情或研究降级候选仍进入正式执行池；修复生产 `TomorrowDecisionQueries` 未连接 shadow
+  runtime telemetry，导致输入保留原因只能在内部 shadow 字段看到、顶层状态仍像正常运行。
+
 - 用户可观察症状是公司研究批次累计异常快、失败频繁且待处理股票在来源熔断时仍被连续
   扫描。根因确认：生产 `submit_due()` 每次调度 tick 都绕过 `stock_risk` cadence 提交
   全组代码，协调器又会在首批全失败后继续排空剩余代码。现在常规 tick 不再直提研究，
@@ -965,6 +995,18 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 本批回归覆盖：有效决策后临时空输入保持同一对象且 SSE sequence 不变；冷启动临时空
+  返回 `not_ready`；原生与 baseline-only fallback 都不能发布无效空集；ST 等真实业务
+  空集仍可发布；候选风险/板块原因按显式候选而不是 5533 行人口计数。市场组件覆盖东财
+  上市日期/板块/交易所解析、东财失败转新浪仍保留低频主数据、Tushare 高优先级不被覆盖、
+  refresh-due 历史复用及动作限制。
+- 本批 `make format-check`、`make lint`、`make type-check`、完整 `pytest tests` 和
+  `make package` 通过；隔离构建在沙箱内因代理网络权限失败，批准联网后 wheel/sdist 构建
+  成功。仓库外目标目录确认从 wheel 导入 `trader`、`trader-cli --help`、
+  `validate-config` 及 8 项模板/CSS/JavaScript/SVG 资源。主看板和 V2 页面在
+  1280x720、1440x900、1920x1080 均无浏览器错误、页面级横向溢出或面板重叠；V2 SSE
+  overlay 更新未增加完整 current GET。
 
 - 公司研究调度定向回归覆盖：300 次重复意图只执行 1 批；6 只股票按每批 2 只执行时，
   首批全失败后只产生 1 个研究批次并短路剩余 4 只；60 秒后再次失败进入 120 秒退避；
@@ -1541,6 +1583,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批不删除 V1 生产指针、旧运行库、冻结记录、评分因子、阈值或免费行情 fallback；只移除
+  V2 对临时失效空 decision 的无条件发布资格，以及降级数据进入可执行池的隐式路径。
+
 - 移除活动全市场路径对同周期东财和新浪双份响应的强制等待、强制字段回退及无条件新浪
   全市场请求；移除 5 秒/尾盘 3 秒这种低于免费全市场分页可持续完成能力的计划频率。
 
@@ -1645,6 +1690,12 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 本批解决的是输入口径、无效空覆盖和免费源降级连续性，不宣称外部免费接口具备 SLA。
+  东方财富、新浪、腾讯仍可能限流、超时或改字段；当显式候选真实缺少新鲜报价或从未取得
+  历史时，系统会保留最近有效决策或保持 `not_ready`，不会补造推荐。当前运行进程必须重启
+  才会加载 v35；重启后仍需在真实交易时段重新采三组候选级质量、行情年龄和端到端时延，
+  完整交易日证据达标前不切换 V1/V2 生产指针。
 
 - 本批只闭合公司研究调度止血，不声称解决免费来源自身停机、限流、schema 变化或历史公告
   覆盖不足；公司风险历史闭合、分项来源隔离/官方免费复核以及全市场硬截止仍是后续独立

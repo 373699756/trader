@@ -449,6 +449,35 @@ worker 消费的 `evaluated_at` 水位起算，而不是从更早的行情 sourc
 本节不改变 tomorrow 的公式、阈值、风险、融合、DeepSeek 预算、冻结、生产 v1 读写指针
 或 long 实时快照路径，不执行生产切换；v30 仍须重新取得完整真实交易日证据。
 
+### 2.14 tomorrow v2 输入质量与空决策接纳边界
+
+原生投影必须在 CAS 前形成结构化输入质量结论，并分别记录全市场数量、显式候选数量、
+候选硬拒绝数、候选已评分数、候选临时失效原因和候选可选降级原因。全市场与候选原因
+必须分作用域统计，不能再用一张聚合计数表推断候选是否实际进入评分。
+
+`stale_quote`、`missing_liquidity_history`、`invalid_liquidity_history` 和
+`candidate_core_missing` 属于临时输入失效。显式候选存在但零只完成本地评分，且至少一只
+候选命中上述临时原因时，本轮状态固定为 `transient_invalid_empty`：已有同日有效
+`DecisionEpoch` 时保留原引用，只通过运行状态报告 `last_valid_decision_retained`；冷启动
+没有同日有效决策时保持 `not_ready`。这两种情况都不得发布新的空 decision、不得发送
+decision SSE、不得成为可比较的切换样本，也不得触发 snapshot 兼容 fallback 重新发布
+同一无效空集。
+
+只有输入具备显式候选且零评分完全由非临时业务硬过滤或候选分门槛造成时，才是可发布的
+合法业务空集；已有本地评分但零入选仍是 ready 的非空评分结果。`board_identity_degraded`、
+`missing_listing_date`、
+`missing_listing_age_sessions`、`structured_risk_unavailable` 和
+`corporate_risk_history_unavailable` 继续是候选作用域可选降级：允许本地评分但只能观察，
+不得伪装成全市场研究抓取失败。任何被保留或合法发布的决策都必须在 `/api/v2/status`
+明确暴露最近输入状态、作用域计数和结构化降级原因。
+
+免费数据边界保持不变。全量报价来源提供的板块、交易所和上市日期必须作为低频证券主数据
+保留并复用于后续免费来源降级轮次；没有真实来源值时继续留空，禁止根据当前日期反推上市
+日期。历史缓存允许在来源暂时失败时使用仍处于 action max age 内的最近有效值，并标记
+`history_data_degraded`；过期历史只允许形成观察项，不得进入可执行池，从未存在的历史仍
+不得评分。全量特征只有在行情、历史和特征构建全部完成后才算发布成功，原始来源成功不得
+冒充特征快照成功。
+
 ## 3. 架构与代码边界
 
 活动产品代码只能位于 `src/trader`，固定依赖方向为：

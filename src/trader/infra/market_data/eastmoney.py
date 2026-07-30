@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import as_completed
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
 
@@ -17,8 +17,9 @@ if TYPE_CHECKING:
 import requests
 
 from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
-from trader.domain.market.models import MarketQuote
+from trader.domain.market.models import Board, MarketQuote
 from trader.domain.market.tail import MinuteBar
+from trader.domain.recommendation.filters import board_for_code
 from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote, normalize_quotes, to_float
 
@@ -31,7 +32,7 @@ class JsonResponse(Protocol):
 
 SessionFactory = Callable[[], requests.Session]
 
-FIELDS = "f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f20,f21,f22,f23,f24,f25,f100,f124"
+FIELDS = "f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f20,f21,f22,f23,f24,f25,f26,f100,f124"
 HOSTS = ("82.push2.eastmoney.com", "push2.eastmoney.com", "7.push2.eastmoney.com")
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _REQUEST_ROUNDS = 2
@@ -333,6 +334,7 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
     high = to_float(row.get("f15"))
     low = to_float(row.get("f16"))
     pct_change = to_float(row.get("f3"))
+    board = board_for_code(code)
     is_one_price_limit = bool(
         price
         and high
@@ -363,11 +365,37 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
             source_time=source_time,
             received_time=received_at,
             data_version=f"eastmoney:{int(received_at.timestamp())}",
+            board=board,
+            board_source="eastmoney" if board is not Board.UNSUPPORTED else "",
+            board_reliability="reported" if board is not Board.UNSUPPORTED else "unknown",
+            exchange=_exchange(row.get("f13"), code),
+            listing_date=_listing_date(row.get("f26"), received_at),
             is_st="ST" in name.upper() or "退" in name,
             is_suspended=price is None or price <= 0,
             is_one_price_limit=is_one_price_limit,
         )
     )
+
+
+def _exchange(raw_market: object, code: str) -> str:
+    market = to_float(raw_market)
+    if market == 1.0:
+        return "SSE"
+    if market == 0.0:
+        return "SZSE"
+    return "SSE" if code.startswith(("5", "6", "9")) else "SZSE"
+
+
+def _listing_date(raw: object, received_at: datetime) -> date | None:
+    value = to_float(raw)
+    if value is None:
+        return None
+    text = f"{int(value):08d}"
+    try:
+        parsed = datetime.strptime(text, "%Y%m%d").date()
+    except ValueError:
+        return None
+    return parsed if parsed <= received_at.astimezone(_SHANGHAI).date() else None
 
 
 def _source_time(raw: object, fallback: datetime) -> datetime:

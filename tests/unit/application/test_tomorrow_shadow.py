@@ -8,8 +8,10 @@ from pathlib import Path
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
+from trader.application.current_decisions import CurrentDecisionIndex
 from trader.application.recommendation_policy_codec import _freeze_policy
 from trader.application.recommendations import RecommendationEngine
+from trader.application.tomorrow_events import TomorrowDecisionEventStream
 from trader.application.tomorrow_shadow import (
     TomorrowCutoverGate,
     TomorrowCutoverPolicy,
@@ -24,6 +26,10 @@ from trader.application.tomorrow_shadow_runtime import (
     TomorrowShadowDependencies,
     TomorrowShadowRuntime,
     TomorrowShadowWorker,
+)
+from trader.application.tomorrow_views import (
+    TomorrowDecisionQueries,
+    TomorrowQuoteOverlayIndex,
 )
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import Board
@@ -425,6 +431,173 @@ def test_native_input_projects_same_local_identity_before_v1_snapshot(
     assert native.hybrid is None
 
 
+def test_native_transient_empty_retains_last_valid_decision(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    evaluated_at = OBSERVED_AT + timedelta(seconds=31)
+    runtime, decisions, queries, events = _native_runtime(policy, evaluated_at)
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+
+    assert runtime.process_native(native_input_from_snapshot(baseline)) is True
+    retained = decisions.latest()
+    assert retained is not None
+    event_sequence = events.status().sequence
+    stale_features = tuple(
+        replace(
+            feature,
+            quote=replace(
+                feature.quote,
+                source_time=OBSERVED_AT,
+                received_time=OBSERVED_AT,
+            ),
+            observed_at=OBSERVED_AT,
+        )
+        for feature in baseline.replay_input.market_features
+    )
+    stale = replace(
+        native_input_from_snapshot(baseline),
+        evaluated_at=evaluated_at,
+        market_features=stale_features,
+        candidate_features=stale_features,
+    )
+
+    assert runtime.process_native(stale) is True
+    stale_baseline = replace(
+        baseline,
+        replay_input=replace(
+            baseline.replay_input,
+            evaluated_at=evaluated_at,
+            market_features=stale_features,
+            candidate_features=stale_features,
+        ),
+    )
+    assert runtime.process(stale_baseline) is True
+
+    status = runtime.status()
+    assert decisions.latest() is retained
+    assert events.status().sequence == event_sequence
+    assert queries.current().decision_version == retained.version
+    assert status["transient_invalid_empty_count"] == 1
+    assert status["last_valid_decision_retained_count"] == 1
+    assert status["cold_start_not_ready_count"] == 0
+    assert status["baseline_invalid_input_skipped"] == 1
+    assert status["baseline_fallbacks"] == 0
+    assert status["last_input_quality"]["status"] == "transient_invalid_empty"
+    assert status["last_input_quality"]["candidate_transient_reason_counts"] == {
+        "stale_quote": 6,
+    }
+    assert status["last_error"] == "transient_invalid_empty:last_valid_decision_retained"
+
+
+def test_native_transient_empty_cold_start_remains_not_ready(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    evaluated_at = OBSERVED_AT + timedelta(seconds=31)
+    runtime, decisions, queries, events = _native_runtime(policy, evaluated_at)
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+    stale_features = tuple(
+        replace(
+            feature,
+            quote=replace(
+                feature.quote,
+                source_time=OBSERVED_AT,
+                received_time=OBSERVED_AT,
+            ),
+            observed_at=OBSERVED_AT,
+        )
+        for feature in baseline.replay_input.market_features
+    )
+    stale = replace(
+        native_input_from_snapshot(baseline),
+        evaluated_at=evaluated_at,
+        market_features=stale_features,
+        candidate_features=stale_features,
+    )
+
+    assert runtime.process_native(stale) is True
+
+    status = runtime.status()
+    assert decisions.latest() is None
+    assert events.status().sequence == 0
+    assert queries.current().status == "not_ready"
+    assert queries.status().recent_failures == ("transient_invalid_empty:not_ready",)
+    assert status["transient_invalid_empty_count"] == 1
+    assert status["last_valid_decision_retained_count"] == 0
+    assert status["cold_start_not_ready_count"] == 1
+    assert status["last_input_quality"]["status"] == "transient_invalid_empty"
+    assert status["last_error"] == "transient_invalid_empty:not_ready"
+
+
+def test_baseline_only_transient_empty_cannot_publish_through_fallback(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    evaluated_at = OBSERVED_AT + timedelta(seconds=31)
+    runtime, decisions, queries, events = _native_runtime(policy, evaluated_at)
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+    stale_features = tuple(
+        replace(
+            feature,
+            quote=replace(
+                feature.quote,
+                source_time=OBSERVED_AT,
+                received_time=OBSERVED_AT,
+            ),
+            observed_at=OBSERVED_AT,
+        )
+        for feature in baseline.replay_input.market_features
+    )
+    stale_baseline = replace(
+        baseline,
+        replay_input=replace(
+            baseline.replay_input,
+            evaluated_at=evaluated_at,
+            market_features=stale_features,
+            candidate_features=stale_features,
+        ),
+    )
+
+    assert runtime.process(stale_baseline) is True
+
+    status = runtime.status()
+    assert decisions.latest() is None
+    assert events.status().sequence == 0
+    assert queries.current().status == "not_ready"
+    assert status["baseline_fallbacks"] == 0
+    assert status["baseline_invalid_input_skipped"] == 1
+    assert status["last_input_quality"]["status"] == "transient_invalid_empty"
+
+
+def test_native_complete_business_empty_is_publishable(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    runtime, decisions, queries, events = _native_runtime(policy, OBSERVED_AT)
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+    rejected = tuple(
+        replace(feature, quote=replace(feature.quote, is_st=True)) for feature in baseline.replay_input.market_features
+    )
+    native_input = replace(
+        native_input_from_snapshot(baseline),
+        market_features=rejected,
+        candidate_features=rejected,
+    )
+
+    assert runtime.process_native(native_input) is True
+
+    status = runtime.status()
+    assert decisions.latest() is not None
+    assert events.status().sequence == 1
+    assert queries.current().status == "ready"
+    assert queries.current().items == ()
+    assert status["business_empty_published_count"] == 1
+    assert status["last_input_quality"]["status"] == "business_empty"
+    assert status["last_input_quality"]["candidate_rejected_count"] == 6
+    assert status["last_error"] == ""
+
+
 def test_shadow_projection_separates_hard_filter_comparison_from_v2_audit(
     application_feature_factory,
 ) -> None:
@@ -446,6 +619,48 @@ def test_shadow_projection_separates_hard_filter_comparison_from_v2_audit(
     assert projection.hard_filter_reason_counts["st_or_delisting"] == 1
     assert "board_data_reliability_below_threshold" not in projection.hard_filter_reason_counts
     assert "board_data_reliability_below_threshold" in projection.local.filter_reason_counts
+
+
+def test_native_input_quality_scopes_optional_risk_to_explicit_candidates(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+    degraded = tuple(
+        replace(
+            feature,
+            quote=replace(
+                feature.quote,
+                execution_restrictions=(
+                    "board_identity_degraded",
+                    "missing_listing_age_sessions",
+                    "missing_listing_date",
+                ),
+            ),
+        )
+        for feature in baseline.replay_input.market_features
+    )
+    native_input = replace(
+        native_input_from_snapshot(baseline),
+        market_features=degraded,
+        candidate_features=degraded[:2],
+    )
+
+    projection = project_tomorrow_input(native_input, policy, decision_sequence=4)
+
+    quality = projection.input_quality
+    assert quality.population_count == 6
+    assert quality.candidate_count == 2
+    assert quality.candidate_optional_reason_counts["board_identity_degraded"] == 2
+    assert quality.candidate_optional_reason_counts["board_data_reliability_below_threshold"] == 2
+    assert quality.candidate_optional_reason_counts["missing_listing_date"] == 2
+    assert quality.candidate_optional_reason_counts["missing_listing_age_sessions"] == 2
+    assert projection.local.degraded_reasons == (
+        "board_data_reliability_below_threshold",
+        "board_identity_degraded",
+        "missing_listing_age_sessions",
+        "missing_listing_date",
+    )
 
 
 def test_native_projection_matches_v1_three_board_decisions_for_same_candidate_batch(
@@ -773,6 +988,43 @@ def _baseline_snapshot(policy, application_feature_factory) -> RecommendationSna
         config_version="runtime:test",
         replay_input=replay,
     )
+
+
+def _native_runtime(
+    policy,
+    now: datetime,
+) -> tuple[
+    TomorrowShadowRuntime,
+    CurrentDecisionIndex,
+    TomorrowDecisionQueries,
+    TomorrowDecisionEventStream,
+]:
+    decisions = CurrentDecisionIndex()
+    quotes = TomorrowQuoteOverlayIndex(decisions)
+    events = TomorrowDecisionEventStream()
+    clock = Mock(now=Mock(return_value=now))
+    runtime_holder: list[TomorrowShadowRuntime] = []
+    queries = TomorrowDecisionQueries(
+        decisions,
+        Mock(load_frozen=Mock(return_value=None)),
+        clock,
+        quotes=quotes,
+        telemetry=lambda: runtime_holder[0].telemetry(),
+    )
+    runtime = TomorrowShadowRuntime(
+        policy,
+        TomorrowShadowDependencies(
+            decisions,
+            quotes,
+            events,
+            queries,
+            Mock(),
+            TomorrowCutoverGate(TomorrowCutoverPolicy()),
+            clock,
+        ),
+    )
+    runtime_holder.append(runtime)
+    return runtime, decisions, queries, events
 
 
 def _observation(

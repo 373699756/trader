@@ -5,10 +5,10 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
-from trader.domain.market.models import MarketQuote
+from trader.domain.market.models import Board, MarketQuote
 
 
 class QuoteNormalizer(Protocol):
@@ -77,6 +77,11 @@ class MarketQuoteInput:
     source_time: datetime
     received_time: datetime
     data_version: str
+    board: Board = Board.UNSUPPORTED
+    board_source: str = ""
+    board_reliability: str = "unknown"
+    exchange: str = ""
+    listing_date: date | None = None
     is_st: bool = False
     is_suspended: bool = False
     is_one_price_limit: bool = False
@@ -130,6 +135,11 @@ def build_market_quote(values: MarketQuoteInput) -> MarketQuote:
         source_time=values.source_time,
         received_time=values.received_time,
         data_version=values.data_version,
+        board=values.board,
+        board_source=values.board_source,
+        board_reliability=values.board_reliability,
+        exchange=values.exchange,
+        listing_date=values.listing_date,
         is_st=values.is_st,
         is_suspended=values.is_suspended,
         is_one_price_limit=values.is_one_price_limit

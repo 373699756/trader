@@ -338,7 +338,7 @@ class HistoryCache:
     ) -> dict[str, tuple[DailyBar, ...]]:
         requested = tuple(codes)
         now = self._monotonic()
-        result, observed_at = self._shared_cached_history(requested, fresh_only)
+        result, observed_at, degraded_codes = self._shared_cached_history(requested, fresh_only)
         with self._lock:
             history_sources: dict[str, str] = {}
             for code in requested:
@@ -351,36 +351,49 @@ class HistoryCache:
                 cached = result.get(code)
                 if cached is None or _history_version(entry.bars) > _history_version(cached):
                     result[code] = entry.bars
-        self._mark_cached_history_actionability(result, history_sources, observed_at, action_restrictions)
+        self._mark_cached_history_actionability(
+            result,
+            history_sources,
+            observed_at,
+            degraded_codes,
+            action_restrictions,
+        )
         return result
 
     def _shared_cached_history(
         self,
         codes: Sequence[str],
         fresh_only: bool,
-    ) -> tuple[dict[str, tuple[DailyBar, ...]], datetime | None]:
+    ) -> tuple[dict[str, tuple[DailyBar, ...]], datetime | None, set[str]]:
         result: dict[str, tuple[DailyBar, ...]] = {}
+        degraded_codes: set[str] = set()
         cache = self._runner.cache
         if cache is None:
-            return result, None
+            return result, None, degraded_codes
         observed_at = self._runner.wall_clock()
         for code in codes:
-            lookup = cache.get(self._history_cache_identity(code, observed_at))
-            if (
-                lookup is not None
-                and lookup.value is not None
-                and (not fresh_only or lookup.state == "fresh" or lookup.retry_suppressed)
-            ):
-                result[code] = cast(tuple[DailyBar, ...], lookup.value)
-        return result, observed_at
+            identity = self._history_cache_identity(code, observed_at)
+            lookup = cache.get(identity)
+            if lookup is None or lookup.value is None or lookup.source_time is None:
+                continue
+            actionable = cache.is_actionable(identity, lookup.source_time)
+            if fresh_only and (not actionable or (lookup.state != "fresh" and not lookup.retry_suppressed)):
+                continue
+            result[code] = cast(tuple[DailyBar, ...], lookup.value)
+            if lookup.state != "fresh" or not actionable:
+                degraded_codes.add(code)
+        return result, observed_at, degraded_codes
 
     def _mark_cached_history_actionability(
         self,
         result: Mapping[str, tuple[DailyBar, ...]],
         history_sources: Mapping[str, str],
         observed_at: datetime | None,
+        degraded_codes: set[str],
         action_restrictions: dict[str, set[str]] | None,
     ) -> None:
+        for code in degraded_codes:
+            _add_action_restriction(action_restrictions, code, "history_data_degraded")
         cache = self._runner.cache
         if cache is not None and observed_at is not None:
             for code, bars in result.items():

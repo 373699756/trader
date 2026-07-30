@@ -135,6 +135,13 @@ def test_tomorrow_selection_keeps_filter_tristate_and_bounds_each_board(
             "volatility_20d": None,
         },
     )
+    features[3] = replace(
+        features[3],
+        quote=replace(
+            features[3].quote,
+            execution_restrictions=("history_data_degraded",),
+        ),
+    )
 
     result = select_tomorrow(_request(tuple(reversed(features)), _selection_policy()))
     by_code = {item.code: item for item in result.evaluations}
@@ -144,6 +151,7 @@ def test_tomorrow_selection_keeps_filter_tristate_and_bounds_each_board(
     assert by_code["600001"].disposition is TomorrowDisposition.OBSERVE_ONLY
     assert tuple(flag.code for flag in by_code["600001"].optional_flags) == ("cross_source_deviation",)
     assert by_code["600002"].selection_skip_reason == "candidate_core_missing"
+    assert by_code["600003"].disposition is TomorrowDisposition.OBSERVE_ONLY
     assert len(result.scored_candidates) == 120
     assert tuple(item.code for item in result.evaluations) == tuple(sorted(item.code for item in result.evaluations))
 

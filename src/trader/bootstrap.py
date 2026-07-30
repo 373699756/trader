@@ -46,7 +46,11 @@ from trader.application.tomorrow_shadow_runtime import (
     TomorrowShadowRuntime,
     TomorrowShadowWorker,
 )
-from trader.application.tomorrow_views import TomorrowDecisionQueries, TomorrowQuoteOverlayIndex
+from trader.application.tomorrow_views import (
+    TomorrowDecisionQueries,
+    TomorrowQuoteOverlayIndex,
+    TomorrowRuntimeTelemetry,
+)
 from trader.application.trading_session import TradingSessionTracker
 from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import Board
@@ -554,11 +558,15 @@ def _build_publication(
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
+    tomorrow_runtime_holder: list[TomorrowShadowRuntime] = []
     tomorrow_queries = TomorrowDecisionQueries(
         tomorrow_decisions,
         tomorrow_repository,
         clock,
         quotes=tomorrow_quotes,
+        telemetry=lambda: (
+            tomorrow_runtime_holder[0].telemetry() if tomorrow_runtime_holder else TomorrowRuntimeTelemetry()
+        ),
     )
     tomorrow_gate = TomorrowCutoverGate(evidence=tomorrow_evidence)
     tomorrow_freezer = TomorrowFreezeCoordinator(
@@ -583,6 +591,7 @@ def _build_publication(
             clock,
         ),
     )
+    tomorrow_runtime_holder.append(tomorrow_runtime)
     tomorrow_worker = TomorrowShadowWorker(tomorrow_runtime)
     pipeline_snapshots = ShadowObservingSnapshotIndex(
         published_snapshots,

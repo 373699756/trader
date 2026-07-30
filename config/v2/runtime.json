@@ -1,6 +1,6 @@
 {
   "schema_version": 8,
-  "config_version": "runtime_v34_free_market_hedged_route_2026_07_30",
+  "config_version": "runtime_v35_tomorrow_input_quality_free_master_2026_07_30",
   "runtime_dir": ".runtime/v17",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -100,7 +100,7 @@
     "circuit_breaker_failures": 3,
     "circuit_breaker_seconds": 30,
     "source_contract_versions": {
-      "eastmoney": "eastmoney_quote_v16_hedged",
+      "eastmoney": "eastmoney_quote_v17_security_master",
       "sina": "sina_quote_v16_hedged",
       "tencent": "tencent_quote_v15",
       "tushare": "tushare_sdk_v17_120_point_daily",
