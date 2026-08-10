@@ -9,6 +9,7 @@ from trader.application.current_decisions import CurrentDecisionIndex
 from trader.application.ports.clock import Clock
 from trader.application.ports.snapshots import PublishedSnapshotReadPort, PublishedSnapshotWritePort
 from trader.application.ports.tomorrow import TomorrowNativeInput
+from trader.application.ports.tomorrow_research import TomorrowResearchTraceRecorderPort
 from trader.application.tomorrow_events import TomorrowDecisionEventStream
 from trader.application.tomorrow_freezing import TomorrowFreezeCoordinator
 from trader.application.tomorrow_shadow import TomorrowCutoverGate
@@ -42,6 +43,7 @@ class TomorrowShadowDependencies:
     freezer: TomorrowFreezeCoordinator
     gate: TomorrowCutoverGate
     clock: Clock
+    research_trace: TomorrowResearchTraceRecorderPort | None = None
 
 
 @dataclass(frozen=True)

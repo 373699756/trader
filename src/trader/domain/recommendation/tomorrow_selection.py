@@ -18,6 +18,7 @@ from trader.domain.recommendation.scoring import (
     BoardCrossSection,
     BoardCrossSectionRequest,
     apply_board_policy,
+    board_candidate_components,
     board_candidate_score,
     build_board_cross_section,
     candidate_fields,
@@ -150,8 +151,11 @@ class TomorrowStockEvaluation:
     filter_reasons: tuple[FilterAudit, ...] = ()
     optional_flags: tuple[FilterAudit, ...] = ()
     candidate_missing_ratio: float | None = None
+    candidate_components: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     candidate_score: float | None = None
     candidate_rank: int = 0
+    candidate_audit_rank: int = 0
+    candidate_audit_pruning_reason: str = ""
     local_components: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     local_base_score: float | None = None
     local_risk_penalty: float | None = None
@@ -162,6 +166,7 @@ class TomorrowStockEvaluation:
     selection_skip_reason: str = ""
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "candidate_components", MappingProxyType(dict(self.candidate_components)))
         object.__setattr__(self, "local_components", MappingProxyType(dict(self.local_components)))
 
     @property
@@ -230,6 +235,11 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
         )
         population_versions[board] = cross_section.population.population_version
         policy = request.policy.board_policies[board]
+        _audit_board_population(
+            apply_board_policy(cross_section, Strategy.TOMORROW, policy),
+            policy,
+            evaluations,
+        )
         enriched = (
             apply_board_policy(cross_section, Strategy.TOMORROW, policy)
             if request.candidate_features is None
@@ -266,6 +276,39 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
         sum(item.disposition is TomorrowDisposition.REJECT for item in population_evaluations.values()),
         dict(sorted(population_filter_reason_counts.items())),
     )
+
+
+def _audit_board_population(
+    features: Sequence[FeatureSnapshot],
+    policy: BoardStrategyPolicy,
+    evaluations: dict[str, TomorrowStockEvaluation],
+) -> None:
+    ranked: list[tuple[bool, float, str]] = []
+    required_fields = candidate_fields(Strategy.TOMORROW)
+    for feature in features:
+        code = feature.quote.code
+        current = evaluations[code]
+        missing_ratio = feature.missing_ratio(required_fields)
+        components = board_candidate_components(feature, policy)
+        score = board_candidate_score(feature, policy)
+        pruning_reason = ""
+        if missing_ratio > 0.30:
+            pruning_reason = "candidate_core_missing"
+        elif score < policy.candidate_min_score:
+            pruning_reason = "candidate_score_below_minimum"
+        else:
+            ranked.append((feature.board_data_reliability < policy.minimum_reliability, score, code))
+        evaluations[code] = replace(
+            current,
+            features=feature,
+            candidate_missing_ratio=round(missing_ratio, 6),
+            candidate_components={name: round(value, 6) for name, value in components.items()},
+            candidate_score=round_score(score),
+            candidate_audit_pruning_reason=pruning_reason,
+        )
+    ranked.sort(key=lambda item: (item[0], -item[1], item[2]))
+    for rank, (_unreliable, _score, code) in enumerate(ranked, start=1):
+        evaluations[code] = replace(evaluations[code], candidate_audit_rank=rank)
 
 
 def _filter_features(
@@ -319,6 +362,9 @@ def _score_board_candidates(
             disposition=disposition,
             optional_flags=optional_flags,
             candidate_missing_ratio=round(missing_ratio, 6),
+            candidate_components={
+                name: round(value, 6) for name, value in board_candidate_components(feature, policy).items()
+            },
         )
         if missing_ratio > 0.30:
             evaluations[code] = replace(current, selection_skip_reason="candidate_core_missing")

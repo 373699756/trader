@@ -10,9 +10,9 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "状态：P0 已完成，P1 待执行；非生产契约" in score
+    assert "状态：P0-P1 已完成，P2 待执行；非生产契约" in score
     assert "P0：权威契约与预注册（已完成）" in score
-    assert "P0 已同步两份权威文档、契约测试和 `CHANGELOG.md`" in score
+    assert "P0-P1 已同步两份权威文档、契约测试和 `CHANGELOG.md`" in score
     assert "最多为 60 个不同交易日" in score
     assert "40 日历史回放加 20 日前向影子" in score
 
@@ -52,3 +52,32 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
         "不写 P6、正式冻结、普通 Web、正式历史或正式收益结算",
     ):
         assert statement in design
+
+
+def test_score_plan_p1_compact_trace_contract_is_reflected_in_authoritative_docs() -> None:
+    score = (ROOT / "docs/score.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+
+    assert "P1：紧凑决策轨迹（已完成）" in score
+    for statement in (
+        "production_local",
+        "research_shadow",
+        "合法结构化 facts",
+        "not_computed",
+        "物理 DeepSeek 请求增量恒为 0",
+        "每个 `input_version` 只保留这一条",
+        "相同输入与来源的同内容重放为 `duplicate`",
+        "不同内容为 `conflict` 且不得覆盖",
+        "不改变 P6、冻结、正式 API 或状态 API",
+    ):
+        assert statement in design
+    for statement in (
+        "候选字段缺失掩码",
+        "生产 Top120 身份",
+        "结构化模型风险代码",
+        "每个 `input_version` 只保存一条配对轨迹",
+        "不得新增 DeepSeek 物理请求",
+        "研究轨迹不参与生产排序、动作、P6、冻结、API 或收益结算",
+    ):
+        assert statement in strategy

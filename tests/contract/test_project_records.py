@@ -116,7 +116,7 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
-    assert "状态：P0 已完成，P1 待执行；非生产契约" in score_plan
+    assert "状态：P0-P1 已完成，P2 待执行；非生产契约" in score_plan
     assert "`docs/recommendation-strategy.md`" in score_plan
     assert "不自行切换活动策略" in score_plan
     assert "状态：V2-only 目标已确认" in v2_plan

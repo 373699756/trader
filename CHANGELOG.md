@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续并提交 `docs/score.md` 的下一个完整未完成章节。本批将 P1“紧凑决策轨迹”
+  状态更新为已完成、P2 待执行，并把研究轨迹的配对版本、数据裁剪、非阻塞写入、容量和
+  幂等失败语义同步到两份权威文档。候选分计算现在公开复用同一纯函数组件，并在既有板内
+  横截面上为全部硬过滤通过股票形成研究候选组件、缺失掩码、覆盖率、可靠度和审计排名；
+  生产预选、Top120、本地评分、融合、动作及排序公式不变。为维持活动源文件 800 行上限，
+  纯策略装配从组合根拆到 `bootstrap_policy.py`，`bootstrap.py` 仍是唯一对象组合根。
+
 - 用户要求产品完全切到 V2 且不保留旧版兼容。本批把目标契约重置为 V2 唯一活动链路，
   固定 `.runtime/v2`、统一决策 API/SSE、完整旧 release 回退方式和 V2-0 至 V2-11 施工顺序。
 
@@ -17,6 +24,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正提前存在的 P1 草稿仍同步写轨迹、读取不存在的 `FeatureSnapshot.industry`、允许迟到
+  内容覆盖新轨迹、哈希混入写入时钟、重复保存 native/baseline 全量输入且把研究计数加入
+  正式状态 API 的问题。当前每个 `input_version` 只保留一条不可变配对轨迹；相同内容重放
+  为 `duplicate`，不同内容为 `conflict` 且不覆盖，研究构建与写入整体进入生命周期拥有的
+  有界 executor，并在正式发布、P6 比较和冻结之后提交。队列拒绝、载荷/总容量超限与 worker
+  异常只形成脱敏研究状态，不能阻塞本地推荐。
+
 - 修正权威设计与迁移计划仍要求影子比较、生产指针和旧 API 保留的冲突；这些内容现在只
   作为待删除现状，不再授权新 release 读取旧数据库、旧快照、旧 schema 或旧 Web。
 
@@ -27,6 +41,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 P1 草稿对 native 与 baseline 两份完整候选输入的重复留存，以及正式 shadow 状态中的
+  `research_trace_*` 字段；研究状态只经独立端口读取，不改变普通 API 内容。
+
 - 移除 V2 最终产品对旧 URL、重定向、双读、双写、旧格式回放、cutover gate 和兼容窗口的
   契约要求；本批尚未删除运行代码，代码删除固定由 V2-10 独立完成。
 
@@ -34,6 +51,18 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- P1 定向契约、领域、应用、组合根、架构和影子集成回归已通过；覆盖硬拒绝代码/简称不进入
+  载荷、全体硬过滤通过股票候选审计、同输入配对、DeepSeek 请求增量 0、稳定 SHA-256、
+  duplicate/conflict、单载荷/记录/总字节上限、队列拒绝、worker 失败、本地推荐不阻塞、
+  正式状态 API 无新增字段、`build_system()` 无线程/文件副作用及源文件行数门禁。最终
+  `make format-check`、`make lint`、`make type-check`、`make test` 和 `make package` 全部通过；
+  严格 Ruff 复杂度债务为零、mypy 检查 230 个源码文件，完整 pytest 仅保留 10 条既有未知
+  测试模型名告警。仓库外安装最终 wheel 后，新增研究模块从隔离目标导入，`trader-cli
+  --help`、绝对配置 `validate-config`、9 项模板/CSS/JavaScript/SVG 资源和 `pip check` 通过。
+  离线 Headless Chrome 在 1280x720、1440x900、1920x1080 的短线与 long 视图均有正文、无
+  页面级横向溢出或浏览器错误；24 个 patch 全部应用、零 resync/外部网络调用，patch-to-paint
+  P95 为 11.7ms，低于 100ms 预算。
 
 - 新增 `tests/contract/test_v2_only_product_contract.py`，锁定 V2 唯一运行目录、唯一 API、
   V2 原生决策身份、无旧数据读取和无双链切换计划；同步更新项目记录契约的计划状态断言。
@@ -49,18 +78,23 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- P1 只提供进程内、64 MiB 总上限的紧凑研究证据；P2 的最多 40 日点时持久化、乐观上界、
+  上界保护集合和只读导出尚未实现，进程停止后不保留本批内存轨迹。P4 五个挑战者同样尚未
+  实现；当前 `research_shadow` 只复用本输入已有合法 facts，没有 facts 时保存 control 副本，
+  因此本批不宣称收益改善或策略晋级。
+
 - 本批只完成 V2-0 契约重置，活动代码仍包含旧 Pipeline、旧快照、旧 Web 和 shadow/cutover
   实现；它们必须按 V2-1 至 V2-10 逐项替代并删除，当前 release 还不是 V2-only。
 
 - 评分收益研究仍处于非生产阶段；P0 只消除了预注册歧义，没有实现 P1 决策轨迹、P2 历史
   点时数据或后续回放/统计，因此没有收益提升结论。固定前向窗口尚未发生，能否取得 20 个
   连续有效日取决于届时数据与运行连续性；任一门禁不足时继续使用当前生产策略。
-- 宿主缺少 Firefox/geckodriver；无头 Chrome 的布局验收通过，但独立 patch-to-paint 样本受
-  后台帧节流影响为 P95 3165.3ms，高于 100ms 性能预算。本批没有 Web、JavaScript、CSS 或
-  运行代码变更，故不把该额外性能测量解释为 P0 回归，也不宣称浏览器性能门禁通过；后续
-  涉及 UI/性能的批次必须在具备 Firefox 图形栈的宿主重新验证。
-
 ### Added
+
+- 新增研究专用不可变 P1 schema、独立 `TomorrowResearchTraceRecorderPort`、有界异步记录器
+  和内存存储。轨迹仅保存硬过滤拒绝的板块/原因聚合；逐股侧只包含硬过滤通过总体的候选审计、
+  已评分集合的本地组件/风险/下行保护/动作/排名、同输入 `production_local` 与
+  `research_shadow` 决策，以及配置、规则、策略、融合、schema、引擎和规范哈希身份。
 
 - 新增评分研究 P0 反向契约测试，防止后续漂移固定日期、随机身份、Holm 检验族、硬过滤后
   研究总体、五个挑战者或将研究证据误写入生产链。

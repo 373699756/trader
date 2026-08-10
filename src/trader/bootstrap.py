@@ -21,7 +21,6 @@ from trader.application.long_groups import LongGroupDefinition, LongGroupSection
 from trader.application.outcome_settlement import OutcomeSettlementService
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
-from trader.application.policy import RecommendationPolicy, SelectionPolicy
 from trader.application.ports.market import MarketDataPorts
 from trader.application.ports.snapshots import SnapshotPorts
 from trader.application.published_snapshots import PublishedSnapshotIndex
@@ -39,6 +38,7 @@ from trader.application.system_lifecycle import (
 )
 from trader.application.tomorrow_events import TomorrowDecisionEventStream
 from trader.application.tomorrow_freezing import DecisionRuntimeIdentity, TomorrowFreezeCoordinator
+from trader.application.tomorrow_research_trace import create_tomorrow_research_trace_recorder
 from trader.application.tomorrow_shadow import TomorrowCutoverGate
 from trader.application.tomorrow_shadow_runtime import (
     ShadowObservingSnapshotIndex,
@@ -55,11 +55,8 @@ from trader.application.trading_session import TradingSessionTracker
 from trader.application.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane, initialize_tomorrow_evidence
-from trader.domain.market.models import Board
-from trader.domain.recommendation.filters import HardFilterPolicy
-from trader.domain.recommendation.fusion import FusionPolicy
+from trader.bootstrap_policy import _recommendation_policy
 from trader.domain.recommendation.models import Strategy
-from trader.domain.review.models import RiskRule
 from trader.infra.cache import BoundedLruCache
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.cache import ReviewCache
@@ -576,6 +573,7 @@ def _build_publication(
     )
     clock = ShanghaiClock(context.now)
     tomorrow_runtime_holder: list[TomorrowShadowRuntime] = []
+    tomorrow_research_trace = create_tomorrow_research_trace_recorder(context.workers.research_pool)
     tomorrow_queries = TomorrowDecisionQueries(
         tomorrow_decisions,
         tomorrow_repository,
@@ -606,6 +604,7 @@ def _build_publication(
             tomorrow_freezer,
             tomorrow_gate,
             clock,
+            tomorrow_research_trace,
         ),
     )
     tomorrow_runtime_holder.append(tomorrow_runtime)
@@ -722,71 +721,6 @@ def _long_groups(watchlist: LongWatchlist) -> tuple[LongGroupDefinition, ...]:
             ),
         )
         for group in watchlist.groups
-    )
-
-
-def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
-    return RecommendationPolicy(
-        strategy_version=settings.strategy_version,
-        fusion_version=settings.fusion.version,
-        fusion=FusionPolicy(
-            local_weight=settings.fusion.local_weight,
-            deepseek_weight=settings.fusion.deepseek_weight,
-            confidence_coverage_min=settings.fusion.confidence_coverage_min,
-            minimum_known_dimensions=settings.fusion.minimum_known_dimensions,
-            local_risk_cap=settings.fusion.local_risk_cap,
-            deepseek_risk_cap=settings.fusion.deepseek_risk_cap,
-        ),
-        selection=SelectionPolicy(
-            default_top_k=settings.selection.default_top_k,
-            maximum_top_k=settings.selection.maximum_top_k,
-            maximum_per_industry=settings.selection.maximum_per_industry,
-            observation_margin=settings.selection.observation_margin,
-            thresholds=settings.selection.thresholds,
-            maximum_board_fraction=settings.selection.maximum_board_fraction,
-            competition_group_limits={
-                Board(name): limit for name, limit in settings.selection.competition_group_limits.items()
-            },
-            candidate_min_score=settings.selection.candidate_min_score,
-            minimum_board_reliability=settings.selection.minimum_board_reliability,
-            review_candidate_limit=settings.selection.review_candidate_limit,
-        ),
-        candidate_weights=settings.candidate_weights,
-        dimension_weights={Strategy(name): weights for name, weights in settings.dimension_weights.items()},
-        local_strategy_weights={Strategy(name): weights for name, weights in settings.local_strategy_weights.items()},
-        board_policy_version=settings.board_policy_version,
-        board_candidate_weights={
-            Strategy(strategy): {Board(board): weights for board, weights in boards.items()}
-            for strategy, boards in settings.board_candidate_weights.items()
-        },
-        board_local_strategy_weights={
-            Strategy(strategy): {Board(board): weights for board, weights in boards.items()}
-            for strategy, boards in settings.board_local_strategy_weights.items()
-        },
-        risk_rules={
-            rule.risk_code: RiskRule(
-                risk_code=rule.risk_code,
-                severity=rule.severity,
-                penalty=rule.penalty,
-                minimum_confidence=rule.minimum_confidence,
-                group=rule.group,
-                evidence_ttl_hours=rule.evidence_ttl_hours,
-                veto=rule.veto,
-                allowed_evidence_types=rule.allowed_evidence_types,
-                strategies=rule.strategies,
-                trigger_factor=rule.trigger_factor,
-                trigger_operator=rule.trigger_operator,
-                trigger_thresholds=rule.trigger_thresholds,
-                combination_mode=rule.combination_mode,
-                risk_fact_id_fields=rule.risk_fact_id_fields,
-                local_trigger_enabled=rule.local_trigger_enabled,
-            )
-            for rule in settings.risk_rules
-        },
-        hard_filter=HardFilterPolicy(
-            blacklist_codes=frozenset(settings.hard_filters.blacklist_codes),
-            structured_risk_thresholds=settings.hard_filters.structured_risk_thresholds,
-        ),
     )
 
 

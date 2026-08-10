@@ -9,9 +9,17 @@ from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 from trader.application.current_decisions import CurrentDecisionIndex
+from trader.application.ports.tomorrow_research import TomorrowResearchTraceRecorderPort
 from trader.application.recommendation_policy_codec import _freeze_policy
 from trader.application.recommendations import RecommendationEngine
 from trader.application.tomorrow_events import TomorrowDecisionEventStream
+from trader.application.tomorrow_research_projection import build_tomorrow_research_trace
+from trader.application.tomorrow_research_trace import (
+    AsyncTomorrowResearchTraceRecorder,
+    InMemoryTomorrowResearchTraceStore,
+    research_trace_payload,
+)
+from trader.application.tomorrow_research_trace_types import TomorrowResearchTraceCapture
 from trader.application.tomorrow_shadow import (
     TomorrowCutoverGate,
     TomorrowCutoverPolicy,
@@ -31,6 +39,7 @@ from trader.application.tomorrow_views import (
     TomorrowDecisionQueries,
     TomorrowQuoteOverlayIndex,
 )
+from trader.application.workers import BoundedExecutor
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import Board
 from trader.domain.recommendation.models import (
@@ -621,6 +630,55 @@ def test_shadow_projection_separates_hard_filter_comparison_from_v2_audit(
     assert "board_data_reliability_below_threshold" in projection.local.filter_reason_counts
 
 
+def test_research_trace_keeps_all_hard_filter_passes_and_only_aggregates_rejections(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+    rejected_code = baseline.replay_input.market_features[0].quote.code
+    rejected_name = baseline.replay_input.market_features[0].quote.name
+    market_features = (
+        replace(
+            baseline.replay_input.market_features[0],
+            quote=replace(baseline.replay_input.market_features[0].quote, is_st=True),
+        ),
+        *baseline.replay_input.market_features[1:],
+    )
+    native_input = replace(
+        native_input_from_snapshot(baseline),
+        market_features=market_features,
+        candidate_features=market_features[1:3],
+    )
+    projection = project_tomorrow_input(native_input, policy, decision_sequence=4)
+
+    trace = build_tomorrow_research_trace(projection, baseline_snapshot_id="baseline-001")
+    payload = research_trace_payload(trace)
+
+    assert rejected_code.encode() not in payload
+    assert rejected_name.encode() not in payload
+    assert len(trace.passed_candidates) == len(market_features) - 1
+    assert sum(item.count for item in trace.hard_filter_aggregates if item.reason == "st_or_delisting") == 1
+    assert all(item.candidate_components for item in trace.passed_candidates)
+    assert sum(item.production_top120 for item in trace.passed_candidates) == 2
+    assert any(item.pruning_reason == "production_preselection_excluded" for item in trace.passed_candidates)
+    assert all(item.upper_bound_status == "not_computed" for item in trace.passed_candidates)
+    assert all(item.downside_status in {"pass", "observe"} for item in trace.production_local.candidates)
+    assert trace.production_local.variant == "production_local"
+    assert trace.research_shadow.variant == "research_shadow"
+    assert trace.deepseek_request_delta == 0
+
+    store = InMemoryTomorrowResearchTraceStore()
+    executor = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="trace-test")
+    recorder = AsyncTomorrowResearchTraceRecorder(store, executor)
+    executor.start()
+    try:
+        assert recorder.enqueue(TomorrowResearchTraceCapture(projection, "baseline-001")).status == "queued"
+    finally:
+        executor.stop(wait=True)
+    assert recorder.status().completed == 1
+    assert store.get(projection.input_version) == trace
+
+
 def test_native_input_quality_scopes_optional_risk_to_explicit_candidates(
     application_feature_factory,
 ) -> None:
@@ -993,6 +1051,7 @@ def _baseline_snapshot(policy, application_feature_factory) -> RecommendationSna
 def _native_runtime(
     policy,
     now: datetime,
+    research_trace: TomorrowResearchTraceRecorderPort | None = None,
 ) -> tuple[
     TomorrowShadowRuntime,
     CurrentDecisionIndex,
@@ -1021,10 +1080,27 @@ def _native_runtime(
             Mock(),
             TomorrowCutoverGate(TomorrowCutoverPolicy()),
             clock,
+            research_trace,
         ),
     )
     runtime_holder.append(runtime)
     return runtime, decisions, queries, events
+
+
+def test_research_trace_record_failures_do_not_block_native_path(application_feature_factory) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    failing_trace = Mock()
+    failing_trace.enqueue.side_effect = OSError("trace unavailable")
+    baseline = _baseline_snapshot(policy, application_feature_factory)
+    runtime, decisions, queries, _ = _native_runtime(policy, OBSERVED_AT, research_trace=failing_trace)
+
+    assert runtime.process_native(native_input_from_snapshot(baseline)) is True
+    assert runtime.process(baseline) is True
+
+    assert decisions.latest() is not None
+    assert queries.current().status == "ready"
+    assert runtime.status()["failed"] == 0
+    assert not any(key.startswith("research_trace_") for key in runtime.status())
 
 
 def _observation(

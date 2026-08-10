@@ -30,6 +30,7 @@ from trader.domain.recommendation.tomorrow_fusion import (
     build_tomorrow_decision_epoch,
     select_tomorrow_review_candidates,
 )
+from trader.domain.recommendation.tomorrow_selection import TomorrowSelectionResult
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -39,10 +40,14 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 class TomorrowShadowProjection:
     input_version: str
     received_at: datetime
+    phase: str
+    data_version: str
     local: DecisionEpoch
     hybrid: DecisionEpoch | None
     hard_filter_reason_counts: Mapping[str, int]
     input_quality: TomorrowInputQuality
+    selection: TomorrowSelectionResult
+    production_candidate_codes: frozenset[str]
 
     @property
     def effective(self) -> DecisionEpoch:
@@ -158,10 +163,14 @@ def project_tomorrow_input(
     return TomorrowShadowProjection(
         input_version=native_input.input_version,
         received_at=evaluated_at,
+        phase=native_input.phase,
+        data_version=native_input.data_version,
         local=local,
         hybrid=hybrid,
         hard_filter_reason_counts=selection.hard_filter_reason_counts,
         input_quality=input_quality,
+        selection=selection,
+        production_candidate_codes=frozenset(feature.quote.code for feature in native_input.candidate_features),
     )
 
 

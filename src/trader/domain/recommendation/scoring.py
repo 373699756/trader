@@ -343,6 +343,12 @@ def enrich_board_features(
 
 
 def board_candidate_score(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> float:
+    return compose(board_candidate_components(snapshot, policy), policy.candidate_weights).base_score
+
+
+def board_candidate_components(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> Mapping[str, float]:
+    """Return the exact candidate components consumed by the board policy."""
+
     if snapshot.quote.board is not policy.board or policy.strategy is Strategy.LONG:
         raise ValueError("board candidate policy does not match snapshot")
     completeness = 100.0 * (1.0 - snapshot.missing_ratio(tuple(_candidate_fields(policy.strategy))))
@@ -373,7 +379,7 @@ def board_candidate_score(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy
             "execution": _mean_known(snapshot, ("capacity_score", "moderate_amplitude", "price_executability")),
             "data_completeness": completeness,
         }
-    return compose(values, policy.candidate_weights).base_score
+    return values
 
 
 def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> LocalScoreResult:
@@ -452,6 +458,7 @@ __all__ = [
     "MIN_BOARD_SAMPLE",
     "apply_board_policy",
     "board_candidate_score",
+    "board_candidate_components",
     "build_board_cross_section",
     "candidate_fields",
     "enrich_board_features",

@@ -16,8 +16,10 @@ from trader.application.ports.snapshots import (
     SnapshotStatusValue,
 )
 from trader.application.ports.tomorrow import TomorrowNativeInput, TomorrowNativeInputPort
+from trader.application.ports.tomorrow_research import TomorrowResearchTraceRecorderPort
 from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.tomorrow_quality import TomorrowInputQuality
+from trader.application.tomorrow_research_projection import capture_tomorrow_research_trace
 from trader.application.tomorrow_shadow import (
     TomorrowShadowObservation,
 )
@@ -61,6 +63,7 @@ class TomorrowShadowRuntime:
         self._freezer = dependencies.freezer
         self._gate = dependencies.gate
         self._clock = dependencies.clock
+        self._research_trace = dependencies.research_trace
         self._lock = threading.RLock()
         self._native_records: dict[str, NativeProjectionRecord] = {}
         self._rejected_native_inputs: dict[str, TomorrowInputQuality] = {}
@@ -86,6 +89,10 @@ class TomorrowShadowRuntime:
         self._last_pipeline_latency_ms: float | None = None
         self._last_publish_latency_ms: float | None = None
         self._last_input_quality: TomorrowInputQuality | None = None
+
+    @property
+    def research_trace(self) -> TomorrowResearchTraceRecorderPort | None:
+        return self._research_trace
 
     def process_native(self, native_input: TomorrowNativeInput) -> bool:
         started = time.perf_counter()
@@ -126,11 +133,12 @@ class TomorrowShadowRuntime:
                     self._skipped_sealed += 1
                 return True
             published_at = _clock_now(self._clock)
+            local_publish_seconds = max(0.0, (published_at - projection.received_at).total_seconds())
             record = NativeProjectionRecord(
                 native_input,
                 sequence,
                 projection.local.version,
-                max(0.0, (published_at - projection.received_at).total_seconds()),
+                local_publish_seconds,
             )
             with self._lock:
                 self._native_records.pop(projection.input_version, None)
@@ -182,6 +190,11 @@ class TomorrowShadowRuntime:
                 effective,
                 local_publish_seconds=local_publish_seconds,
                 started=started,
+            )
+            capture_tomorrow_research_trace(
+                self._research_trace,
+                projection,
+                baseline_snapshot_id=snapshot.snapshot_id,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._record_failure(snapshot, exc, started)

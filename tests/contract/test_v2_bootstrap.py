@@ -61,6 +61,10 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert system.tomorrow_shadow_worker.status()["running"] is False
     assert system.tomorrow_shadow_worker.status()["native_offered"] == 0
     assert system.tomorrow_shadow_runtime is not None
+    research_trace = system.tomorrow_shadow_runtime.research_trace
+    assert research_trace is not None
+    assert research_trace.status().attempts == 0
+    assert research_trace.get("missing") is None
     shadow_status = system.tomorrow_shadow_runtime.status()
     assert shadow_status["processed"] == 0
     assert shadow_status["cutover_gate"]["eligible"] is False
@@ -68,6 +72,7 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     status_response = system.app.test_client().get("/api/v2/status")
     assert status_response.status_code == 200
     assert status_response.get_json()["shadow"]["cutover_gate"]["eligible"] is False
+    assert not any(key.startswith("research_trace_") for key in status_response.get_json()["shadow"])
 
 
 def test_shadow_runtime_has_no_history_download_or_external_review_calls() -> None:
