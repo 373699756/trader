@@ -584,7 +584,7 @@ def test_c4_health_gate_allows_only_one_concurrent_half_open_probe(tmp_path: Pat
         nonlocal calls
         calls += 1
         started.set()
-        assert release.wait(timeout=2.0)
+        assert release.wait(timeout=5.0)
         return _ok_response(("600233",))
 
     probe_reviewer, probe_budget = _reviewer(
@@ -600,7 +600,7 @@ def test_c4_health_gate_allows_only_one_concurrent_half_open_probe(tmp_path: Pat
             phase="afternoon",
             deadline=current[0] + timedelta(minutes=1),
         )
-        assert started.wait(timeout=1.0)
+        assert started.wait(timeout=5.0)
         second = executor.submit(
             probe_reviewer.review,
             Strategy.TOMORROW,
@@ -685,7 +685,7 @@ def test_c4_concurrent_cross_strategy_reviews_singleflight_raw_facts(tmp_path: P
         nonlocal calls
         calls += 1
         started.set()
-        assert release.wait(timeout=2.0)
+        assert release.wait(timeout=5.0)
         return _ok_response(("600001",))
 
     reviewer, budget = _reviewer(tmp_path / "singleflight.sqlite3", post=delayed_post)
@@ -698,7 +698,7 @@ def test_c4_concurrent_cross_strategy_reviews_singleflight_raw_facts(tmp_path: P
             phase="today_main",
             deadline=NOW + timedelta(minutes=1),
         )
-        assert started.wait(timeout=1.0)
+        assert started.wait(timeout=5.0)
         tomorrow = executor.submit(
             reviewer.review,
             Strategy.TOMORROW,

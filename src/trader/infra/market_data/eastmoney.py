@@ -147,6 +147,7 @@ class EastmoneyClient:
                 "beg": start.strftime("%Y%m%d"),
                 "end": end.strftime("%Y%m%d"),
             },
+            request=_EastmoneyRequest(request_rounds=1),
         )
         klines = _object_mapping(payload.get("data")).get("klines")
         if not isinstance(klines, list):

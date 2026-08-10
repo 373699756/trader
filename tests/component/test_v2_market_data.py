@@ -146,6 +146,7 @@ def _service(
         references,
         runner,
         batch_size=kwargs.pop("history_warmup_batch_size", 30),
+        batch_timeout_seconds=kwargs.pop("history_warmup_batch_timeout_seconds", 300.0),
         monotonic=monotonic,
     )
     research = ResearchLoader(
@@ -257,6 +258,17 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
     assert quotes[0].data_version == f"eastmoney:{int(NOW.timestamp())}"
     assert history[0].amount == 100000000
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
+
+
+def test_eastmoney_history_fallback_attempts_each_host_once() -> None:
+    session = FakeSession([requests.Timeout("slow host")] * 3)
+    client = EastmoneyClient(timeout_seconds=2, session_factory=lambda: session)
+
+    with pytest.raises(RuntimeError, match="eastmoney request failed"):
+        client.fetch_history("600001", days=90, now=NOW)
+
+    assert len(session.calls) == 3
+    assert len({call[0][0].split("/", 3)[2] for call in session.calls}) == 3
 
 
 def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
@@ -4147,6 +4159,9 @@ def test_unadjusted_tushare_history_is_not_consumed_and_warmup_uses_qfq_fallback
     assert service.health()["history_coverage_ratio"] == 1.0
     assert service.health()["history_warmup_completed_count"] == 3
     assert service.health()["history_warmup_last_source"] == "tencent"
+    assert service.health()["history_warmup_timeout_count"] == 0
+    assert service.health()["history_warmup_inflight_age_seconds"] is None
+    assert service.health()["history_warmup_batch_timeout_seconds"] == 300.0
     assert sorted(history.calls) == sorted(quote.code for quote in quotes)
     assert pro.calls == 0
 
@@ -4243,6 +4258,55 @@ def test_repeated_refresh_does_not_queue_multiple_history_warmup_batches() -> No
         release.set()
         lanes.stop(wait=True, timeout_seconds=1.0)
         pool.stop(wait=True, cancel_futures=True)
+
+
+def test_history_warmup_deadline_releases_blocked_batch_identity() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingHistory:
+        @staticmethod
+        def fetch_history(_code, *, days):
+            assert days == 61
+            started.set()
+            assert release.wait(1.0)
+            return _history_bars()
+
+    source_pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="source-data")
+    history_pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="history-data")
+    lanes = SourceLaneRegistry(source_pool)
+    service = _service(
+        StaticGateway((_quote(),)),
+        BlockingHistory(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        worker_pool=source_pool,
+        history_worker_pool=history_pool,
+        source_lanes=lanes,
+        history_warmup_batch_size=1,
+        history_warmup_batch_timeout_seconds=0.02,
+        wall_clock=lambda: datetime.now(timezone.utc),
+    )
+    source_pool.start()
+    history_pool.start()
+
+    try:
+        observed_at = datetime.now(timezone.utc)
+        service.warmup.schedule_history_warmup(("600001",), observed_at)
+        assert started.wait(1.0)
+        timeout_at = time.monotonic() + 1.0
+        while service.health()["history_warmup_timeout_count"] < 1 and time.monotonic() < timeout_at:
+            time.sleep(0.01)
+
+        health = service.health()
+        assert health["history_warmup_timeout_count"] == 1
+        assert health["history_warmup_inflight_count"] == 0
+        assert health["history_warmup_unique_failure_count"] == 1
+        assert health["history_warmup_batch_timeout_seconds"] == 0.02
+    finally:
+        release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        source_pool.stop(wait=True, cancel_futures=True)
+        history_pool.stop(wait=True, cancel_futures=True)
 
 
 def test_market_service_reloads_expired_history_and_reports_failed_coverage() -> None:

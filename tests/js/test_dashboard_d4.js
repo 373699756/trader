@@ -121,6 +121,20 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.notReadyMessage({
+    strategy: "today",
+    readiness_reason: "official_record_missing",
+  }))),
+  { message: "11:20 前未形成正式快照", notice: "按冻结规则今日不补算，当前无推荐" },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage({
+    strategy: "tomorrow",
+    readiness_reason: "official_record_missing",
+  }))),
+  { message: "14:50 正式快照缺失", notice: "正在等待允许的收盘恢复；不会展示上一交易日结果" },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage({
     strategy: "long",
     readiness_reason: "long_snapshot_not_ready",
   }))),

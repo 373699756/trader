@@ -12,6 +12,7 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import CloseFallbackReplay, RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import SHANGHAI
+from trader.application.trading_session import CalendarState, TradingSessionStatus
 from trader.domain.market.models import LiveQuote
 from trader.domain.recommendation.models import (
     FilterAudit,
@@ -306,6 +307,34 @@ def test_not_ready_response_exposes_precise_lifecycle_reason() -> None:
             .get_json()
         )
         assert payload["status"] == "not_ready"
+        assert payload["readiness_reason"] == expected
+
+
+def test_session_aware_after_close_reason_remains_strategy_specific() -> None:
+    now = NOW.replace(hour=15, minute=1)
+    session = TradingSessionStatus(
+        trade_date=now.date().isoformat(),
+        calendar_state=CalendarState.AVAILABLE,
+        is_trading_day=True,
+        phase="after_close",
+        evaluated_at=now,
+        next_retry_at=None,
+        generation=0,
+        discontinuity_reason=None,
+    )
+    cases = (
+        (Strategy.TODAY, "today_freeze_missed"),
+        (Strategy.TOMORROW, "afternoon_close_recovery_pending"),
+        (Strategy.D25, "afternoon_close_recovery_pending"),
+    )
+
+    for strategy, expected in cases:
+        payload = (
+            _app(MemoryReadRepository(), now=now, session_status=lambda: session)[0]
+            .test_client()
+            .get(f"/api/recommendations/{strategy.value}?view=current")
+            .get_json()
+        )
         assert payload["readiness_reason"] == expected
 
 
@@ -1356,6 +1385,7 @@ def _app(
     now: datetime = NOW,
     current_quotes: Mapping[str, LiveQuote] | None = None,
     close_fallback_replay: CloseFallbackReplay | None = None,
+    session_status=None,
 ):
     publisher = SnapshotPublisher(
         history_size=history_size,
@@ -1374,6 +1404,7 @@ def _app(
         now=lambda: now,
         current_quote_reader=quote_reader,
         close_fallback_replay=close_fallback_replay,
+        session_status=session_status,
     )
     app = create_app(
         lambda: {"schema_version": "v2", "status": "running", "runtime_started": True},

@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求修复荐股数据扫描发现的问题。本批为历史预热状态新增批次超时累计数、当前在途
+  年龄和生产批次截止秒数，使 30 只批次是否卡住、何时释放可从状态 API 直接判断。
+
 - 用户要求继续 `V2_plan.md` 未完成任务。本批完成 `P8：tomorrow 独立生产运行时` 的计划收口：
   `TomorrowShadowRuntime`、`TomorrowShadowWorker`、`TomorrowFreezeCoordinator`、`CurrentDecisionIndex`
   和 `ShadowObservingSnapshotIndex` 的独立运行时边界已由现有回归证明；native input 直接从同一
@@ -347,6 +350,13 @@ All notable changes to this project are documented here.
   固定池统一按“潜力赛道中的头部或弹性龙头观察标的”维护，不再使用旧 long 荐股策略。
 
 ### Changed
+
+- 历史预热现在按 30 只、5 个 worker、每只最多 4 次来源请求和 12 秒单请求 timeout 推导
+  300 秒硬截止；截止后释放逻辑在途身份、对失败代码执行既有退避，并继续轮转未尝试代码。
+  东方财富历史回退固定为三个 host 单轮尝试，确保实际最坏请求数与预算公式一致；全市场
+  请求的双轮容错保持不变。
+- 交易 session 可用且盘后仍无正式记录时，推荐 API 按策略返回 `today_freeze_missed` 或
+  `afternoon_close_recovery_pending`，Web 因而能准确说明 today 禁止补算或下午策略等待收盘恢复。
 
 - `docs/V2_plan.md` 的 P5 章节状态更新为“已完成”，并补充本批 `2026-07-30` 交付项：
   历史特征恢复、交易日历游标恢复及持久化失效隔离。
@@ -777,6 +787,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复扫描发现的两个运行问题：会话感知查询曾把盘后三策略统一压成
+  `official_record_missing`，导致 Web 只能显示泛化状态；历史预热曾没有批次 deadline，单个慢尾
+  可长期保留整批 `inflight` 且状态 API 无法显示在途年龄或超时次数。当前实现分别恢复分策略
+  生命周期原因，并为历史批次增加可观测的硬截止与回归覆盖。
+- Review 全量门禁时发现两项 DeepSeek 并发契约把线程进入 fake HTTP 的调度窗口固定为 1 秒，
+  在完整套件负载下重复超时、隔离运行则通过；测试同步与释放窗口统一放宽到 5 秒，不改变生产
+  deadline、传输 timeout、原子预算、single-flight 或半开探针行为。
+
 - 修复用户在约 17:00 冷启动后看到空的 `close_fallback` 已冻结快照：当收盘预选为空且过滤审计仍包含
   `history_warming` 或 `missing_liquidity_history` 时，不再固化空记录，保留 `not_ready` 并按现有
   3/5/10/20/30 秒退避继续等待历史数据。
@@ -1134,6 +1152,14 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 定向 Web/API、启动调度、历史预热、东财来源与 JS 提示回归通过；`make format-check`、
+  `make lint`、`make type-check`、`make test`（1174 项）和 `make package` 全部通过，严格重构债务
+  为 0。仓库外 `/tmp` target 安装 wheel 后确认从安装目录导入、`trader-cli --help` 可执行，
+  两个模板、CSS、JavaScript 和 SVG 资源均存在且非空。
+- Chrome 桌面门禁在 1280x720、1440x900、1920x1080 的当前与 long 视图均非白屏、无页面级
+  横向溢出或关键区域重叠，`browserErrors=[]`；24 个 patch-to-paint 样本 P95 为 17.8ms，低于
+  100ms 预算。首次紧接全量测试和构建的采样为 821ms，系统空闲后按相同门禁复跑通过。
 
 - 收盘恢复、推荐终结和正式投影 3 项定向回归通过；在 `HEAD` 加本任务完整 diff 的隔离副本中，
   `make format-check`、`make lint`、`make type-check`、`make test`、`make package` 全部通过，严格
@@ -1807,6 +1833,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 当前后端不再产生通用 `official_record_missing` readiness reason；前端仅保留该值作为旧版本
+  响应兼容输入，并按 strategy 映射到精确提示。未删除旧冻结记录、运行数据或历史 API 兼容能力。
+
 - 移除 `docs/V2.md` 中把九个高层能力组直接当作“继续”施工顺序的定义；未删除任何目标
   能力、活动代码、路由、配置、历史解码器或运行数据。
 
@@ -1923,6 +1952,10 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 已运行的服务必须重启后才会使用新的 readiness reason、300 秒批次截止和健康字段。批次 deadline
+  只能取消尚未开始的 worker future；已进入 HTTP 的请求仍按单次 12 秒 timeout 退出，最迟启动的
+  单只腾讯/东财回退链可能在逻辑批次释放后继续占用一个历史 worker，但不会提交 deadline 后结果。
 
 - 2026-08-10 17:28 已经写入的空冻结记录属于不可变运行数据，本批不删除或覆盖；修复阻止后续同类
   记录产生，但该历史日期仍会保留原记录，除非另行执行带审计的隔离/修复流程。

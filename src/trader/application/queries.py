@@ -189,7 +189,7 @@ class RecommendationQueries:
         if session.is_trading_day is True and local_time < time(9, 15):
             return "before_market_open"
         if session.is_trading_day is True and local_time >= time(15, 0) and strategy is not Strategy.LONG:
-            return "official_record_missing"
+            return "today_freeze_missed" if strategy is Strategy.TODAY else "afternoon_close_recovery_pending"
         return _readiness_reason(strategy, now)
 
     def recommendation_dates(self, strategy: Strategy) -> Sequence[str]:

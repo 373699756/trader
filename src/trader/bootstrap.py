@@ -432,11 +432,16 @@ def _build_market_data(context: _BuildContext, data_plane: DataPlaneRepository) 
         data_plane=data_plane,
         monotonic=time.monotonic,
     )
+    history_warmup_batch_size = 30
+    history_warmup_batch_timeout = settings.market_data.history_timeout_seconds * (
+        4 * ((history_warmup_batch_size + settings.pipeline.market_workers - 1) // settings.pipeline.market_workers) + 1
+    )
     warmup = HistoryWarmup(
         history_cache,
         references,
         runner,
-        batch_size=30,
+        batch_size=history_warmup_batch_size,
+        batch_timeout_seconds=history_warmup_batch_timeout,
         monotonic=time.monotonic,
     )
     research = ResearchLoader(

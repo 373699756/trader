@@ -274,9 +274,12 @@
   - calendar_unavailable
   - market_closed
   - before_market_open
-  - official_record_missing
+  - today_freeze_missed
+  - afternoon_freeze_pending
+  - afternoon_close_recovery_pending
 
-  保留已有 today/afternoon 原因，避免前端破坏性变更。
+  当前后端按策略返回上述 today/afternoon 原因；`official_record_missing` 仅由前端保留为旧版本
+  响应的兼容输入，不再作为当前运行时的 readiness reason。
 
   ### A5. 跨日和时钟异常
 

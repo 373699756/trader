@@ -7,8 +7,13 @@ import threading
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, TypedDict
 
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
+
+from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.source_lanes import SourceRequestSupersededError
 from trader.infra.market_data.market_cache_identity import _normalize_codes, _source_batch_identity
 from trader.infra.market_data.service_execution import MarketTaskRunner
@@ -31,6 +36,15 @@ class HistoryWarmupStatus:
     unique_failure_count: int
     next_retry_seconds: float | None
     last_source: str
+    timeout_count: int
+    inflight_age_seconds: float | None
+    batch_timeout_seconds: float
+
+
+class HistoryWarmupOptions(TypedDict):
+    batch_size: int
+    batch_timeout_seconds: float
+    monotonic: Callable[[], float]
 
 
 class HistoryWarmup:
@@ -39,15 +53,17 @@ class HistoryWarmup:
         history: HistoryCache,
         references: ReferenceLoader,
         runner: MarketTaskRunner,
-        *,
-        batch_size: int,
-        monotonic: Callable[[], float],
+        **options: Unpack[HistoryWarmupOptions],
     ) -> None:
+        batch_timeout_seconds = options["batch_timeout_seconds"]
+        if batch_timeout_seconds <= 0.0:
+            raise ValueError("history warmup batch timeout must be positive")
         self._history = history
         self._references = references
         self._runner = runner
-        self._batch_size = max(1, batch_size)
-        self._monotonic = monotonic
+        self._batch_size = max(1, options["batch_size"])
+        self._batch_timeout_seconds = float(batch_timeout_seconds)
+        self._monotonic = options["monotonic"]
         self._lock = threading.Lock()
         self._universe: tuple[str, ...] = ()
         self._inflight: set[str] = set()
@@ -56,7 +72,9 @@ class HistoryWarmup:
         self._planned_count = 0
         self._completed_count = 0
         self._failure_count = 0
+        self._timeout_count = 0
         self._last_source = ""
+        self._batch_started_at: float | None = None
 
     def schedule_history_warmup(
         self,
@@ -106,8 +124,10 @@ class HistoryWarmup:
             self._inflight.update(batch)
             self._planned_count += len(batch)
             self._last_source = source
+            self._batch_started_at = now
 
         identity = _source_batch_identity("history_warmup", batch, observed_at, source=source)
+        deadline = self._runner.wall_clock() + timedelta(seconds=self._batch_timeout_seconds)
         future: Future[object]
         if use_tushare:
             future = lanes.submit(
@@ -117,6 +137,7 @@ class HistoryWarmup:
                 self._warm_tushare_history_batch,
                 batch,
                 observed_at,
+                deadline,
             )
         else:
             future = lanes.submit(
@@ -125,6 +146,7 @@ class HistoryWarmup:
                 observed_at,
                 self._history.load,
                 batch,
+                deadline=deadline,
             )
         future.add_done_callback(lambda completed: self._finish_history_warmup(batch, completed))
 
@@ -132,8 +154,11 @@ class HistoryWarmup:
         self,
         codes: Sequence[str],
         observed_at: datetime,
+        deadline: datetime,
     ) -> None:
+        self._runner.ensure_before_deadline(deadline)
         observations = self._references.load_history_batch(codes, observed_at, force=False)
+        self._runner.ensure_before_deadline(deadline)
         self._references.apply_history(observations)
 
     def _finish_history_warmup(
@@ -142,16 +167,24 @@ class HistoryWarmup:
         future: Future[object],
     ) -> None:
         superseded = False
+        timed_out = False
         try:
             future.result()
         except SourceRequestSupersededError:
             superseded = True
+        except MarketDataDeadlineExceededError:
+            timed_out = True
+            _LOGGER.warning("history warmup batch exceeded its deadline")
         except Exception as exc:
             _LOGGER.warning("history warmup batch degraded: %s", type(exc).__name__)
         now = self._monotonic()
         entries = self._history.entries()
         with self._lock:
             self._inflight.difference_update(codes)
+            if not self._inflight:
+                self._batch_started_at = None
+            if timed_out:
+                self._timeout_count += 1
             covered_codes = {
                 code
                 for code in codes
@@ -192,6 +225,11 @@ class HistoryWarmup:
                 unique_failure_count=len(self._retry_attempts),
                 next_retry_seconds=min(deferred) if deferred else None,
                 last_source=self._last_source,
+                timeout_count=self._timeout_count,
+                inflight_age_seconds=(
+                    max(0.0, now - self._batch_started_at) if self._batch_started_at is not None else None
+                ),
+                batch_timeout_seconds=self._batch_timeout_seconds,
             )
 
 

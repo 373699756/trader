@@ -257,7 +257,7 @@ def test_pending_boundary_attempt_blocks_close_fallback_until_terminal() -> None
         ("08:30:00", True, False, "before_market_open"),
         ("10:00:00", False, False, "market_closed"),
         ("10:00:00", False, True, "calendar_unavailable"),
-        ("15:10:00", True, False, "official_record_missing"),
+        ("15:10:00", True, False, "afternoon_close_recovery_pending"),
     ),
 )
 def test_session_aware_readiness_reasons(

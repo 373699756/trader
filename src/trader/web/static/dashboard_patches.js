@@ -112,7 +112,7 @@
         notice: "长期策略只展示当前研究快照",
       };
     }
-    if (reason === "today_freeze_missed") {
+    if (reason === "today_freeze_missed" || (reason === "official_record_missing" && strategy === "today")) {
       return {
         message: "11:20 前未形成正式快照",
         notice: "按冻结规则今日不补算，当前无推荐",
@@ -124,7 +124,7 @@
         notice: "冻结流程尚未完成；不会展示上一交易日结果",
       };
     }
-    if (reason === "afternoon_close_recovery_pending") {
+    if (reason === "afternoon_close_recovery_pending" || reason === "official_record_missing") {
       return {
         message: "14:50 正式快照缺失",
         notice: "正在等待允许的收盘恢复；不会展示上一交易日结果",
