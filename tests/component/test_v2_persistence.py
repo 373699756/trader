@@ -149,6 +149,30 @@ def test_official_projection_removes_observation_identity_before_persistence(tmp
     assert tuple(stored_overlay.quotes) == ("600001",)
 
 
+def test_empty_official_projection_removes_candidate_only_degradation_reasons() -> None:
+    base = _snapshot()
+    observation = replace(
+        base.recommendations[0],
+        action=RecommendationAction.OBSERVE,
+        action_reason="below_executable_threshold",
+    )
+    projected = official_snapshot(
+        replace(
+            base,
+            phase="close_fallback",
+            recommendations=(observation,),
+            degraded_reasons=(
+                "deepseek_pending",
+                "tomorrow_tail_data_incomplete",
+                "market_source_degraded",
+            ),
+        )
+    )
+
+    assert projected.recommendations == ()
+    assert projected.degraded_reasons == ("market_source_degraded",)
+
+
 def test_snapshot_round_trip_preserves_v15_board_and_merge_metadata() -> None:
     snapshot = _snapshot()
     recommendation = snapshot.recommendations[0]

@@ -1043,6 +1043,58 @@ def test_after_close_waits_for_complete_historical_board_population(
     assert current.snapshot is None
 
 
+def test_after_close_retries_when_history_filters_empty_preselection(
+    recommendation_policy,
+    application_feature_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = MutableClock(datetime.fromisoformat("2026-07-16T17:00:00+08:00"))
+    features = _three_board_features(application_feature_factory, clock.now())
+    repository = MemoryRepository()
+    state = RuntimeState()
+    pipeline = build_pipeline(
+        ClosingPriceMarketData(features),
+        TradingDayCalendar(),
+        None,
+        repository,
+        repository,
+        SnapshotPublisher(history_size=32, client_queue_size=4),
+        RecommendationEngine(recommendation_policy),
+        state,
+        config_version="config-v2",
+        candidate_pool_size=120,
+        event_queue_size=32,
+        priority_queue_size=4,
+        now=clock.now,
+    )
+    original_preselect = pipeline._engine.preselect
+    monkeypatch.setattr(
+        pipeline._engine,
+        "preselect",
+        lambda *_args, **_kwargs: (
+            (),
+            {"history_warming": 298, "missing_liquidity_history": 300},
+            (),
+        ),
+    )
+    pipeline.initialize()
+
+    assert pipeline.run_once(clock.now()) == ()
+    assert repository.frozen == {}
+    assert pipeline._after_close_completed_date == ""
+    assert state.snapshot()["last_error"] == (
+        "after-close market recovery waiting for candidate history after preselection: "
+        "history_warming=298; missing_liquidity_history=300"
+    )
+
+    monkeypatch.setattr(pipeline._engine, "preselect", original_preselect)
+    clock.set(datetime.fromisoformat("2026-07-16T17:00:03+08:00"))
+    recovered = pipeline.run_once(clock.now())
+
+    assert {snapshot.strategy for snapshot in recovered} == {Strategy.TOMORROW, Strategy.D25}
+    assert all(snapshot.recommendations for snapshot in recovered)
+
+
 def test_after_close_accepts_quotes_received_after_request_started(
     recommendation_policy,
     application_feature_factory,

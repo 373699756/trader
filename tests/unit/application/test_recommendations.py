@@ -196,6 +196,31 @@ def test_close_fallback_observes_local_candidates_below_observation_floor(
     assert snapshot.metadata["close_fallback_observe_floor"] is True
 
 
+def test_close_fallback_local_only_does_not_report_model_review_as_pending(
+    recommendation_policy,
+    application_feature_factory,
+) -> None:
+    now = datetime.fromisoformat("2026-07-16T17:00:00+08:00")
+
+    snapshot = RecommendationEngine(recommendation_policy).build_snapshot(
+        Strategy.TOMORROW,
+        (application_feature_factory("600001", now),),
+        now=now,
+        phase="close_fallback",
+        trade_date="2026-07-16",
+        data_version="close-fallback-local-only",
+        review_port=None,
+        review_deadline=now,
+        max_age_seconds=7260.0,
+        filtered_count=0,
+        filter_reasons={},
+        filter_details=(),
+    )
+
+    assert snapshot.fusion_mode.value == "local_degraded"
+    assert not any(reason.startswith("deepseek_") for reason in snapshot.degraded_reasons)
+
+
 def test_snapshot_reports_deepseek_skip_when_board_reliability_blocks_all_candidates(
     recommendation_policy,
     application_feature_factory,

@@ -373,7 +373,7 @@ class RecommendationFinalizationMixin:
         degraded_reasons: list[str] = list(prepared.board_degraded_reasons)
         if selection.close_fallback_observe_floor:
             degraded_reasons.append(_CLOSE_FALLBACK_OBSERVE_REASON)
-        if strategy is not Strategy.LONG and fusion_mode is FusionMode.LOCAL_DEGRADED:
+        if strategy is not Strategy.LONG and phase != "close_fallback" and fusion_mode is FusionMode.LOCAL_DEGRADED:
             degraded_reasons.append(
                 "deepseek_pending"
                 if projection_stage == "local" and prepared.review_eligible

@@ -20,6 +20,15 @@ from trader.domain.review.models import ReviewOutcome
 
 OFFICIAL_REPLAY_ALGORITHM_VERSION = "engine_review31_official_only_2026_07"
 OFFICIAL_PERSISTENCE_SCOPE = "executable_only_v1"
+_EMPTY_OFFICIAL_CANDIDATE_REASONS = frozenset(
+    {
+        "deepseek_pending",
+        "deepseek_incomplete",
+        "deepseek_skipped_no_eligible_candidates",
+        "tomorrow_tail_data_incomplete",
+        "d25_structured_research_incomplete",
+    }
+)
 
 
 def official_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapshot:
@@ -62,7 +71,10 @@ def official_snapshot(snapshot: RecommendationSnapshot) -> RecommendationSnapsho
         recommendations=recommendations,
         filter_details=tuple(item for item in snapshot.filter_details if item.stock_code in codes),
         degraded_reasons=tuple(
-            reason for reason in snapshot.degraded_reasons if reason != "close_fallback_observe_floor"
+            reason
+            for reason in snapshot.degraded_reasons
+            if reason != "close_fallback_observe_floor"
+            and (recommendations or reason not in _EMPTY_OFFICIAL_CANDIDATE_REASONS)
         ),
         metadata={
             **metadata,

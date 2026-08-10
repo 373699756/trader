@@ -55,6 +55,17 @@ class _CloseSnapshotRequest:
     max_age: float
 
 
+@dataclass(frozen=True)
+class _CloseRebuildRequest:
+    strategies: Sequence[Strategy]
+    candidates: Sequence[FeatureSnapshot]
+    reasons: Mapping[str, int]
+    details: Sequence[FilterAudit]
+    market_features: Sequence[FeatureSnapshot]
+    validation_at: datetime
+    deadline: datetime | None
+
+
 def recover_after_close_snapshots(
     pipeline: RecommendationPipeline,
     now: datetime,
@@ -228,22 +239,51 @@ def _rebuild_from_close(
             max_age,
         )
     remember_candidate_selection(pipeline, market_features, candidates, reasons, details)
+    history_wait = _preselection_history_wait(candidates, reasons)
+    if history_wait:
+        pipeline._state.increment("after_close_incomplete_market")
+        pipeline._state.record_error(
+            f"after-close market recovery waiting for candidate history after preselection: {history_wait}"
+        )
+        return ()
+    return _prepare_and_commit_close_snapshots(
+        pipeline,
+        _CloseRebuildRequest(
+            strategies,
+            candidates,
+            reasons,
+            details,
+            market_features,
+            validation_at,
+            deadline,
+        ),
+    )
 
+
+def _prepare_and_commit_close_snapshots(
+    pipeline: RecommendationPipeline,
+    request: _CloseRebuildRequest,
+) -> tuple[RecommendationSnapshot, ...]:
     prepared: list[RecommendationSnapshot] = []
-    codes = tuple(feature.quote.code for feature in candidates)
-    if codes and pipeline._offer_company_research(validation_at, codes):
+    codes = tuple(feature.quote.code for feature in request.candidates)
+    if codes and pipeline._offer_company_research(request.validation_at, codes):
         wait_seconds = 40.0
-        if deadline is not None:
+        if request.deadline is not None:
             wait_seconds = min(
                 wait_seconds,
-                max(0.0, (deadline - shanghai_now(pipeline._now())).total_seconds()),
+                max(0.0, (request.deadline - shanghai_now(pipeline._now())).total_seconds()),
             )
         pipeline._await_company_research(wait_seconds)
-    for strategy in strategies:
+    for strategy in request.strategies:
         try:
             with _close_stage(pipeline, f"strategy:{strategy.value}"):
-                candidate_features, data_version = _strategy_close_features(pipeline, strategy, codes, validation_at)
-                strategy_validation_at = max(validation_at, shanghai_now(pipeline._now()))
+                candidate_features, data_version = _strategy_close_features(
+                    pipeline,
+                    strategy,
+                    codes,
+                    request.validation_at,
+                )
+                strategy_validation_at = max(request.validation_at, shanghai_now(pipeline._now()))
                 if codes and not _complete_requested_close_features(candidate_features, codes, strategy_validation_at):
                     raise MarketDataUnavailableError(f"{strategy.value} closing candidate quotes are incomplete")
                 snapshot = _build_local_close_snapshot(
@@ -252,10 +292,10 @@ def _rebuild_from_close(
                         strategy,
                         candidate_features,
                         data_version,
-                        market_features,
+                        request.market_features,
                         codes,
-                        reasons,
-                        details,
+                        request.reasons,
+                        request.details,
                         strategy_validation_at,
                         _close_max_age_seconds(strategy_validation_at),
                     ),
@@ -531,6 +571,20 @@ def _preselect_close(
         trade_date=trade_date_at(now).isoformat(),
         phase="close_fallback",
     )
+
+
+def _preselection_history_wait(
+    candidates: Sequence[FeatureSnapshot],
+    reasons: Mapping[str, int],
+) -> str:
+    if candidates:
+        return ""
+    pending = {
+        reason: count
+        for reason, count in reasons.items()
+        if reason in {"history_warming", "missing_liquidity_history"} and count > 0
+    }
+    return "; ".join(f"{reason}={pending[reason]}" for reason in sorted(pending))
 
 
 def _commit_fallback(

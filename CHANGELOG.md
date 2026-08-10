@@ -777,6 +777,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复用户在约 17:00 冷启动后看到空的 `close_fallback` 已冻结快照：当收盘预选为空且过滤审计仍包含
+  `history_warming` 或 `missing_liquidity_history` 时，不再固化空记录，保留 `not_ready` 并按现有
+  3/5/10/20/30 秒退避继续等待历史数据。
+- 修复冷启动收盘补算把预期的 `local_only` 错报为“模型复核未在冻结前完成”：
+  `close_fallback` 不再生成 `deepseek_pending`；正式投影为空时同时移除与不存在候选相关的模型、
+  tomorrow 尾盘和 d25 研究覆盖降级原因，保留真实市场/数据源降级。
+
 - 修复 `ReferenceLoader._refresh_tushare_reference_data` 在 `listing_dates` 为空时未定义
   `valuation_observations/financial_observations` 导致的 `UnboundLocalError`，并保留回放
   行为的幂等输出。
@@ -1127,6 +1134,13 @@ All notable changes to this project are documented here.
   新增延迟报价、历史样本、全市场板块、缓存候选、可靠度和冻结回归测试。
 
 ### Verification
+
+- 收盘恢复、推荐终结和正式投影 3 项定向回归通过；在 `HEAD` 加本任务完整 diff 的隔离副本中，
+  `make format-check`、`make lint`、`make type-check`、`make test`、`make package` 全部通过，严格
+  重构债务为 0；仓库外安装 wheel 后包导入、`trader-cli --help` 及模板、CSS、JavaScript、图标读取通过。
+- 当前含用户既有未提交改动的工作树中，全量门禁仍被非本任务文件阻断：
+  `tests/contract/test_project_records.py` 需要格式化，`bootstrap_builders.py` 存在 4 个 mypy 错误且超过
+  800 行，相关 `/api/v2/status` 契约有 5 项失败；本任务文件的 Ruff、mypy、定向回归和 diff check 均通过。
 
 - P8 收口验证：`.venv/bin/pytest tests/contract/test_project_records.py tests/integration/test_v2_shadow_cutover.py tests/integration/test_v2_pipeline.py::test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long tests/unit/application/test_tomorrow_native_pipeline.py tests/unit/application/test_tomorrow_fusion.py tests/unit/application/test_tomorrow_shadow.py tests/unit/application/test_tomorrow_freezing.py -q`
   通过；复核了 native input 手递手、独立 shadow 运行时、冻结封口、重启恢复和 `83.40`
@@ -1909,6 +1923,11 @@ All notable changes to this project are documented here.
   `.runtime/v17/history_cache.sqlite3` 保持原文件不动，但新代码不再创建或打开它。
 
 ### Residual Risks
+
+- 2026-08-10 17:28 已经写入的空冻结记录属于不可变运行数据，本批不删除或覆盖；修复阻止后续同类
+  记录产生，但该历史日期仍会保留原记录，除非另行执行带审计的隔离/修复流程。
+- 工作树中先于本任务存在的 bootstrap、状态路由和文档测试改动尚未闭合，仍需由其原批次修复上述
+  format/mypy/架构与状态契约失败；本任务通过隔离基线验证，未把这些改动混入修复范围。
 
 - P8 不新增独立生产切换指针，也不改变当前 production tomorrow 的读写治理；后续 P9 仍需在
   真实交易日证据下完成原子切换与回退演练。
