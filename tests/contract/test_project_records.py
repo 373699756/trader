@@ -116,7 +116,7 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
-    assert "状态：待执行、非生产契约" in score_plan
+    assert "状态：P0 已完成，P1 待执行；非生产契约" in score_plan
     assert "`docs/recommendation-strategy.md`" in score_plan
     assert "不自行切换活动策略" in score_plan
     assert "状态：V2-only 目标已确认" in v2_plan
@@ -239,13 +239,15 @@ def test_authoritative_docs_define_the_v2_native_rebuild_contract() -> None:
         "允许 0 到 6 只",
         "14:50 锚点至下一交易日收盘",
         "20bp、50bp、100bp",
-        "不少于 250 个交易日",
-        "连续 20 个交易日",
-        "至少 100 个可配对候选",
+        "总评价样本不得超过 60 个交易日",
+        "20 个连续计划交易日",
+        "前向阶段至少 100 条",
         "DeepSeek 继续参与融合分",
         "tomorrow 独占正常目标 36、硬上限 66",
     ):
         assert statement in strategy
+    assert "历史回放最多 40 个" in strategy
+    assert "前向影子固定尝试 20 个连续" in strategy
     assert "CurrentDecisionStore" not in strategy
 
 
