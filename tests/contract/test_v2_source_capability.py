@@ -14,12 +14,11 @@ SETTINGS_RUNTIME = ROOT / "src" / "trader" / "infra" / "settings_runtime.py"
 MARKET_DIR = ROOT / "src" / "trader" / "infra" / "market_data"
 
 
-def test_v2_plan_p1_is_in_scope_and_not_connected_to_prod_config() -> None:
+def test_v2_plan_keeps_source_admission_in_data_plane_scope() -> None:
     plan = PLAN.read_text(encoding="utf-8")
     report_token = "v2-p1-source-capability-baseline.md"
-    assert "## 7. P1：外部来源能力探测和准入契约" in plan
-    assert "状态：已完成，依赖 P0" in plan
-    assert "SourceCapability 清单" in plan
+    assert "## V2-1：统一 V2 数据平面" in plan
+    assert "`SourceCapability` 清单" in plan
     assert "未验证来源不进入评分、冻结、组合根或生产配置" in plan
     assert report_token in plan
     assert REPORT.exists()

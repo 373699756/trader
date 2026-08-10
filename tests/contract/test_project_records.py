@@ -119,17 +119,17 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     assert "状态：待执行、非生产契约" in score_plan
     assert "`docs/recommendation-strategy.md`" in score_plan
     assert "不自行切换活动策略" in score_plan
-    assert "状态：目标概览、非生产契约" in v2_plan
+    assert "状态：V2-only 目标已确认" in v2_plan
     assert "`docs/software-business-design.md`" in v2_plan
     assert "`docs/recommendation-strategy.md`" in v2_plan
     assert "`docs/V2_plan.md`" in v2_plan
-    assert "状态：待执行、非生产契约" in v2_execution_plan
+    assert "状态：V2-0 已完成，V2-1 待执行" in v2_execution_plan
     assert "`docs/V2.md`" in v2_execution_plan
     assert "`docs/software-business-design.md`" in v2_execution_plan
     assert "`docs/recommendation-strategy.md`" in v2_execution_plan
-    assert v2_execution_plan.count("状态：未开始") == 5
-    assert "## 6. P0：冻结现状、术语和目标契约" in v2_execution_plan
-    assert "## 19. P13：旧生产链删除、发布和计划退役" in v2_execution_plan
+    assert "## V2-0：唯一产品契约重置" in v2_execution_plan
+    assert "## V2-10：删除旧生产链" in v2_execution_plan
+    assert "## V2-11：最终验收与发布" in v2_execution_plan
     assert "`docs/V2.md` 是用户明确保留的 V2 唯一产品目标概览" in design
     assert "最多为 60 个不同交易日" in score_plan
     assert "硬过滤失败股票不保存" in score_plan
@@ -208,7 +208,7 @@ def test_authoritative_docs_define_startup_and_shutdown_lifecycle() -> None:
     assert "关闭浏览器不会停止" in readme
 
 
-def test_authoritative_docs_define_the_tomorrow_first_rebuild_contract() -> None:
+def test_authoritative_docs_define_the_v2_native_rebuild_contract() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
 
@@ -220,8 +220,9 @@ def test_authoritative_docs_define_the_tomorrow_first_rebuild_contract() -> None
         "ResearchEpoch",
         "DecisionEpoch",
         "CurrentDecisionIndex",
-        "GET /api/v2/tomorrow/current",
-        "GET /api/v2/tomorrow/history?date=YYYY-MM-DD",
+        "GET /api/v2/decisions/<strategy>/current",
+        "GET /api/v2/decisions/<strategy>/history?date=YYYY-MM-DD",
+        "GET /api/v2/decisions/<strategy>/dates",
         "GET /api/v2/status",
         "GET /api/v2/events",
         "已接收行情到本地预览提交 P95 不超过 5 秒",
@@ -232,7 +233,7 @@ def test_authoritative_docs_define_the_tomorrow_first_rebuild_contract() -> None
         assert statement in design
     assert "CurrentDecisionStore" not in design
     assert "冷启动历史预热、三策略异步评分、P1-P6" in design
-    assert "不是产品目标或不可变业务需求" in design
+    assert "不是产品目标或兼容要求" in design
 
     for statement in (
         "允许 0 到 6 只",
@@ -265,16 +266,14 @@ def test_authoritative_design_defines_free_hedged_full_market_route() -> None:
         assert statement in design
 
 
-def test_tomorrow_rebuild_contract_is_explicitly_pre_cutover() -> None:
+def test_v2_rebuild_contract_is_direct_replacement_without_legacy_runtime() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "并行影子后原子切换" in design
-    assert "目标契约不表示 v2 API 或新决策链已经进入活动生产" in design
-    assert "旧 release 和旧运行库保持完整只读回退" in design
-    assert "tomorrow v2 影子运行与切换门禁交付边界" in design
-    assert "下载或回填历史 60 个交易日数据”在本阶段明确暂停" in design
-    assert "不得成为启动、" in design
-    assert "门禁不得自动" in design
+    assert "V2 是唯一活动产品链路" in design
+    assert "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema" in design
+    assert "V2 唯一运行目录固定为 `.runtime/v2`" in design
+    assert "不得提供旧 API 别名、重定向、弃用窗口、双读或双写" in design
+    assert "旧 release 只能与其对应旧运行目录整体回退" in design
 
 
 def test_tomorrow_native_pipeline_contract_runs_before_v1_scoring() -> None:

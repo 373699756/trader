@@ -4,6 +4,36 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+### Changed
+
+- 用户要求产品完全切到 V2 且不保留旧版兼容。本批把目标契约重置为 V2 唯一活动链路，
+  固定 `.runtime/v2`、统一决策 API/SSE、完整旧 release 回退方式和 V2-0 至 V2-11 施工顺序。
+
+### Fixed
+
+- 修正权威设计与迁移计划仍要求影子比较、生产指针和旧 API 保留的冲突；这些内容现在只
+  作为待删除现状，不再授权新 release 读取旧数据库、旧快照、旧 schema 或旧 Web。
+
+### Removed
+
+- 移除 V2 最终产品对旧 URL、重定向、双读、双写、旧格式回放、cutover gate 和兼容窗口的
+  契约要求；本批尚未删除运行代码，代码删除固定由 V2-10 独立完成。
+
+### Verification
+
+- 新增 `tests/contract/test_v2_only_product_contract.py`，锁定 V2 唯一运行目录、唯一 API、
+  V2 原生决策身份、无旧数据读取和无双链切换计划；同步更新项目记录契约的计划状态断言。
+
+### Residual Risks
+
+- 本批只完成 V2-0 契约重置，活动代码仍包含旧 Pipeline、旧快照、旧 Web 和 shadow/cutover
+  实现；它们必须按 V2-1 至 V2-10 逐项替代并删除，当前 release 还不是 V2-only。
+
+### Added
+
+- 新增 V2-only 产品契约测试，防止后续重新引入旧 API 保留期、旧运行数据读取、旧 schema
+  回放或运行时生产指针。
+
 ### Added
 
 - 用户要求修复荐股数据扫描发现的问题。本批为历史预热状态新增批次超时累计数、当前在途
