@@ -49,6 +49,8 @@ def _daily_row(
         values=resolved_values,
         history_sessions=history_sessions,
         data_as_of=date(2026, 7, 27),
+        security_master_version="master-v1",
+        history_version="history-v1" if history_sessions >= 20 else "",
         field_values=daily_field_values(
             resolved_values,
             source_time=OBSERVED_AT - timedelta(days=1),
@@ -136,6 +138,19 @@ def test_daily_feature_pack_is_deeply_immutable_and_hashes_canonical_content() -
     assert first.version == second.version
     with pytest.raises(TypeError):
         first.rows[0].values["ma20"] = 1.0  # type: ignore[index]
+
+    changed_provenance = DailyFeaturePack(
+        trade_date=first.trade_date,
+        sequence=first.sequence,
+        observed_at=first.observed_at,
+        received_at=first.received_at,
+        config_version=first.config_version,
+        calendar_version=first.calendar_version,
+        rows=(replace(first.rows[0], history_version="history-v2"), first.rows[1]),
+        source_versions=first.source_versions,
+        coverage=first.coverage,
+    )
+    assert changed_provenance.content_hash != first.content_hash
 
 
 @pytest.mark.parametrize(
@@ -235,11 +250,13 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
             ),
         ),
         source_versions={"tencent": "candidate-v1"},
+        requested_codes=("600001",),
     )
 
     assert market.daily_feature_pack_version == pack.version
     assert market.market_regime == "neutral"
     assert candidate.market_epoch_version == market.version
+    assert candidate.requested_codes == ("600001",)
     assert candidate.feature_rows[0].values["tail_return_30m"] == 72.0
     assert len(market.content_hash) == 64
     assert len(candidate.content_hash) == 64
@@ -327,6 +344,20 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
             market_epoch_version=market.version,
             quotes=(unverified_candidate := replace(candidate.quotes[0], cross_source_verified=False),),
             field_values={unverified_candidate.code: candidate_field_values(unverified_candidate)},
+            source_versions={"tencent": "candidate-v2"},
+        )
+
+    with pytest.raises(ValueError, match="requested_codes"):
+        CandidateQuoteEpoch(
+            trade_date=market.trade_date,
+            sequence=2,
+            observed_at=OBSERVED_AT,
+            received_at=RECEIVED_AT,
+            config_version="runtime-v2",
+            market_epoch_version=market.version,
+            quotes=candidate.quotes,
+            field_values=candidate.field_values,
+            requested_codes=("600002",),
             source_versions={"tencent": "candidate-v2"},
         )
 

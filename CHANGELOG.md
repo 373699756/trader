@@ -10,7 +10,9 @@ All notable changes to this project are documented here.
   V2-E1“统一 V2 数据平面”：应用层只读边界统一命名为 `DataPlaneReadPort`，四类不可变
   epoch 现在把父版本、交易日历版本、逐字段来源/源时间/接收时间/质量/内容版本/载荷哈希
   纳入校验与内容身份；计划状态推进到 V2-E2。权威产品和策略文档同步锁定证券主数据 100%
-  覆盖、候选核心历史不低于 99% 及无效空输入不得覆盖最近有效快照。
+  覆盖、候选核心历史不低于 99% 及无效空输入不得覆盖最近有效快照。低频数据仓储同步覆盖
+  交易日历，recent 记录按观察时间单调更新，同观察时间异内容拒绝，formal 记录按完整元数据
+  与载荷保持幂等不可覆盖。
 
 - 用户要求把 `docs/V2_plan.md` 与 `docs/score.md` 合并为可供多个 Codex 会话同步施工的唯一
   总计划。本批把 V2 工程和评分研究统一为 `docs/implementation-plan.md` 的 V2-E/Score-R
@@ -43,6 +45,8 @@ All notable changes to this project are documented here.
 - 修正嵌套不可变 JSON 载荷写入 SQLite 时仍含 `MappingProxyType` 而不可序列化的问题；持久化
   边界现在递归 thaw 映射与序列。补充价格-only 更新不得清空名称等更丰富字段的回归，并将
   CNInfo 能力基线从过期的“完全未接入”改为仅准入离线风险登记簿的真实现状。
+- 修正旧观察、同时间冲突、无效空事实可能覆盖最近有效低频数据的问题；正式记录处于 staged
+  状态时允许同内容重试闭合，已提交同内容不重复改写，损坏或冲突内容继续隔离。
 
 - 修正两份活动计划各自维护阶段状态、共享文件边界和执行顺序，导致多会话可能在组合根、
   权威文档、Changelog 与跨 lane 接口上并发冲突的问题。总计划现在规定每波统一
@@ -150,6 +154,8 @@ All notable changes to this project are documented here.
 - 新增 `DataPlaneCoverage`、逐字段 `FieldValue` epoch 血缘门禁和 V2-E1 反向契约测试；新增
   实际交易日历集合与紧凑历史摘要的持久化/恢复回归，使同一只读快照能够证明数据身份、覆盖
   和恢复来源，而不是仅依赖游标、行数或供应商对象。
+- 新增交易日历 recent/formal SQLite 表、迁移、恢复和类型化读写端口；候选 epoch 记录本轮
+  `requested_codes`，使空响应和 99% 核心历史覆盖可按实际请求总体审计。
 
 - 新增 `docs/implementation-plan.md`，作为唯一活动施工计划，完整定义 V2-only 迁移、评分研究、
   多 Codex 并行隔离、跨 lane 事件接口、Gate、测试矩阵和逐章提交推送协议。

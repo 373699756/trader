@@ -28,7 +28,11 @@ class FieldQualityState(str, Enum):
 
 
 def _frozen_mapping(values: Mapping[str, FieldValue]) -> Mapping[str, FieldValue]:
-    return MappingProxyType(dict(values))
+    normalized = dict(sorted(values.items()))
+    for name, value in normalized.items():
+        if not name or value.name != name:
+            raise ValueError("field mapping keys must match non-empty field names")
+    return MappingProxyType(normalized)
 
 
 @dataclass(frozen=True)
@@ -95,6 +99,10 @@ class SecurityMaster:
     rule_effective_date: FieldValue | None = None
     extended: Mapping[str, FieldValue] = field(default_factory=lambda: _frozen_mapping({}))
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extended", _frozen_mapping(self.extended))
+        self.values()
+
     def values(self) -> Mapping[str, FieldValue]:
         return _frozen_mapping(
             {
@@ -142,6 +150,10 @@ class RealtimeQuote:
     has_major_regulatory_risk: FieldValue | None = None
     extended: Mapping[str, FieldValue] = field(default_factory=lambda: _frozen_mapping({}))
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extended", _frozen_mapping(self.extended))
+        self.values()
+
     def values(self) -> Mapping[str, FieldValue]:
         return _frozen_mapping(
             {
@@ -177,15 +189,24 @@ class RealtimeQuote:
 class HistoricalFeature:
     values: Mapping[str, FieldValue] = field(default_factory=lambda: _frozen_mapping({}))
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", _frozen_mapping(self.values))
+
 
 @dataclass(frozen=True)
 class IntradayFeature:
     values: Mapping[str, FieldValue] = field(default_factory=lambda: _frozen_mapping({}))
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", _frozen_mapping(self.values))
+
 
 @dataclass(frozen=True)
 class RiskEvidence:
     values: Mapping[str, FieldValue] = field(default_factory=lambda: _frozen_mapping({}))
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", _frozen_mapping(self.values))
 
 
 __all__ = [

@@ -3,11 +3,10 @@
 ## 1. 基线元信息
 
 - 仓库：`/home/c/linux/trader`
-- Git HEAD：`e81e10d`
-- 分支：`feature/tomorrow-v2`
-- `@{upstream}`：`origin/feature/tomorrow-v2`
-- 上下文：本批仅完成现统一归档为 `docs/implementation-plan.md` V2-E1 的可验证能力与准入
-  边界固化，不改造运行代码。
+- BASE_SHA：`f4062de`
+- 工程分支：`codex/v2-g1-e1`
+- 上下文：按 `docs/implementation-plan.md` V2-E1 复核来源准入，并实现统一只读端口、
+  交易日历持久化、epoch 覆盖门禁和最近有效数据保护；本批仍不新增外部来源或组合根接线。
 
 ## 2. 本批能力探测范围
 
@@ -37,24 +36,29 @@
 | AKShare | `src/trader/infra/market_data/akshare.py`、`akshare_parsing.py`、`akshare_news.py` |
   研究端口与公告/财务聚合 | 维持现状，不纳入交易所级准入 | 允许（既有） |
 | Tushare | `src/trader/infra/market_data/tushare.py`、`service_tushare.py` |
-  历史特征与研究补强能力（120 分） | 维持现状，非交易所级生产准入 | 允许（既有） |
+  120 积分未复权 `daily` 能力审计，不进入活动历史因子或评分 | 维持现状，非交易所级生产准入 | 允许（既有） |
 
 ## 4. 已形成的可验证锚点
 
 - `docs/implementation-plan.md` V2-E1 已补充“未接入来源不参与评分/冻结/生产组合根/配置”
   的硬约束。
+- `DataPlaneReadPort` 固定为一次读取不可变一致 epoch 视图；`DailyFeaturePack -> MarketEpoch ->
+  CandidateQuoteEpoch` 父子身份和 `ResearchEpoch` 同日配置约束保持内容寻址。
+- 低频仓储覆盖证券主数据、交易日历、历史摘要、风险证据和来源游标；同身份旧观察不得覆盖
+  更新记录，同观察时间不同内容按冲突拒绝，空事实不得覆盖最近有效内容。
+- 发布门禁要求潜在可执行代码证券主数据覆盖 100%，候选核心历史覆盖不低于 99%；不合格
+  epoch 保留最后一致视图并返回结构化拒绝原因。
 - `tests/contract/test_v2_source_capability.py` 增加三类契约：
   1) P1 章节状态与输出要求可追溯；
   2) `SourceCapability` 基线报告完整性；
   3) 未接入来源未出现在运行入口路由。
-- 本批不引入新的网络抓取 fixture：运行环境当前按降级契约继续使用历史离线证据。
+- 本批不引入新的网络抓取 fixture：外部来源真实性和可用性仍按降级契约视为待真实环境复核。
 
 ## 5. 本批准入结论
 
 - 仅保留已存在的五类契约来源（东财/新浪/腾讯/AKShare/Tushare）进入既定运行，且不更改其当前职责。
-- 交易所官方、通达信/mootdx、BaoStock 维持 **未准入/拒绝**；CNInfo 仅按上表准入独立
-  风险登记簿写入，
-  直到完成：
+- 交易所官方、通达信/mootdx、BaoStock 维持 **未准入/拒绝**；CNInfo 只允许独立风险登记簿
+  旁路写入，不获得行情或交易所级生产来源身份。上述来源进入相应生产职责前均须完成：
 
   - `正常 / 空页 / 半页 / 重复页 / 字段缺失 / 时间倒退 / 超时 / 限流` 的外部探测用例；
   - 字段映射、单位、时区、分页、增量游标与错误分类报告；
@@ -62,8 +66,8 @@
 
 - 本批未通过 `runtime.json`、配置或 `bootstrap.py` 向生产路径新增任何候选外部源。
 
-## 6. 后续状态附注
+## 6. 剩余风险
 
-- P6 批次已新增 CNInfo 离线增量登记簿模块，用于公告唯一键、游标和风险证据持久化；该模块
-  仍未进入行情路由、生产 source contract 或 HTTP 只读请求路径，交易所公告交叉校验继续为
-  `pending`。
+- 本批未执行真实外部网络探测，供应商字段、限流、空页和时间倒退行为仍需独立证据。
+- CNInfo 交易所公告交叉校验继续为 `pending`；不得把旁路登记簿描述为交易所级复核。
+- 组合根和生产配置属于后续 Gate 独占范围；E1 端口与仓储尚未接管运行入口。

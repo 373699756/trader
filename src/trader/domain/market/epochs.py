@@ -17,10 +17,11 @@ from trader.domain.market.models import LiveQuote, MarketQuote
 from trader.domain.market.quality import FieldQualityState, FieldValue
 from trader.domain.market.research import ResearchObservation
 
-DAILY_FEATURE_PACK_SCHEMA_VERSION = "daily_feature_pack_v1"
+DAILY_FEATURE_PACK_SCHEMA_VERSION = "daily_feature_pack_v2"
 MARKET_EPOCH_SCHEMA_VERSION = "market_epoch_v1"
-CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION = "candidate_quote_epoch_v1"
+CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION = "candidate_quote_epoch_v2"
 RESEARCH_EPOCH_SCHEMA_VERSION = "research_epoch_v1"
+CORE_HISTORY_MIN_SESSIONS = 20
 
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _REASON_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -131,6 +132,9 @@ class DailyFeatureRow:
     history_sessions: int
     data_as_of: date
     field_values: Mapping[str, FieldValue]
+    security_master_version: str = ""
+    history_version: str = ""
+    risk_component_versions: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     missing_fields: tuple[str, ...] = ()
     missing_reasons: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -138,6 +142,11 @@ class DailyFeatureRow:
         _require_code(self.code)
         if self.history_sessions < 0:
             raise ValueError("history_sessions cannot be negative")
+        if self.security_master_version:
+            _require_text(self.security_master_version, "security_master_version")
+        if self.history_version:
+            _require_text(self.history_version, "history_version")
+        risk_versions = _freeze_optional_versions(self.risk_component_versions, "risk component versions")
         normalized_values = dict(sorted(self.values.items()))
         for name, value in normalized_values.items():
             _require_text(name, "daily feature name")
@@ -150,8 +159,17 @@ class DailyFeatureRow:
         _validate_projected_field_values(normalized_values, normalized_missing, normalized_reasons, field_values)
         object.__setattr__(self, "values", MappingProxyType(normalized_values))
         object.__setattr__(self, "field_values", field_values)
+        object.__setattr__(self, "risk_component_versions", risk_versions)
         object.__setattr__(self, "missing_fields", normalized_missing)
         object.__setattr__(self, "missing_reasons", MappingProxyType(normalized_reasons))
+
+    @property
+    def has_security_master(self) -> bool:
+        return bool(self.security_master_version)
+
+    @property
+    def has_core_history(self) -> bool:
+        return bool(self.history_version) and self.history_sessions >= CORE_HISTORY_MIN_SESSIONS
 
 
 @dataclass(frozen=True)
@@ -183,9 +201,11 @@ class DailyFeaturePack:
             raise ValueError("potential executable codes must exist in daily feature rows")
         if not set(self.coverage.candidate_codes) <= row_codes:
             raise ValueError("candidate coverage codes must exist in daily feature rows")
-        history_by_code = {row.code: row.history_sessions for row in rows}
-        if any(history_by_code[code] < 20 for code in self.coverage.candidate_history_codes):
-            raise ValueError("candidate history coverage requires at least 20 sessions")
+        rows_by_code = {row.code: row for row in rows}
+        if any(not rows_by_code[code].has_security_master for code in self.coverage.security_master_codes):
+            raise ValueError("security-master coverage requires a versioned master fact")
+        if any(not rows_by_code[code].has_core_history for code in self.coverage.candidate_history_codes):
+            raise ValueError("candidate history coverage requires a versioned fact with at least 20 sessions")
         for row in rows:
             _validate_epoch_field_times(row.field_values, self.observed_at, self.received_at)
         sources = _freeze_source_versions(self.source_versions)
@@ -311,6 +331,7 @@ class CandidateQuoteEpoch:
     quotes: tuple[LiveQuote, ...]
     source_versions: Mapping[str, str]
     field_values: Mapping[str, Mapping[str, FieldValue]]
+    requested_codes: tuple[str, ...] = ()
     feature_rows: tuple[CandidateFeatureRow, ...] = ()
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION
@@ -338,6 +359,12 @@ class CandidateQuoteEpoch:
         feature_rows = tuple(sorted(self.feature_rows, key=lambda row: row.code))
         _require_unique_codes(tuple(row.code for row in feature_rows), "candidate feature rows")
         quote_codes = {quote.code for quote in quotes}
+        requested_codes = tuple(sorted(self.requested_codes or quote_codes))
+        _require_unique_codes(requested_codes, "candidate requested_codes")
+        for code in requested_codes:
+            _require_code(code)
+        if not quote_codes.issubset(requested_codes):
+            raise ValueError("candidate quotes must be a subset of requested_codes")
         if any(row.code not in quote_codes for row in feature_rows):
             raise ValueError("candidate feature rows must reference candidate quote codes")
         for row in feature_rows:
@@ -354,6 +381,7 @@ class CandidateQuoteEpoch:
                 "config_version": self.config_version,
                 "market_epoch_version": self.market_epoch_version,
                 "quotes": quotes,
+                "requested_codes": requested_codes,
                 "feature_rows": feature_rows,
                 "source_versions": sources,
                 "field_values": field_values,
@@ -361,6 +389,7 @@ class CandidateQuoteEpoch:
             }
         )
         object.__setattr__(self, "quotes", quotes)
+        object.__setattr__(self, "requested_codes", requested_codes)
         object.__setattr__(self, "feature_rows", feature_rows)
         object.__setattr__(self, "source_versions", sources)
         object.__setattr__(self, "field_values", field_values)
@@ -668,6 +697,13 @@ def _field_scalar(value: object) -> str | int | float | bool | None:
     raise TypeError(f"unsupported field lineage scalar: {type(value).__name__}")
 
 
+def _freeze_optional_versions(versions: Mapping[str, str], name: str) -> Mapping[str, str]:
+    normalized = dict(sorted(versions.items()))
+    if any(not key.strip() or not value.strip() for key, value in normalized.items()):
+        raise ValueError(f"{name} must contain non-empty keys and versions")
+    return MappingProxyType(normalized)
+
+
 def _version(prefix: str, trade_date: date, sequence: int, content_hash: str) -> str:
     return f"{prefix}:{trade_date.isoformat()}:{sequence}:{content_hash[:16]}"
 
@@ -711,6 +747,7 @@ def _canonicalize(value: object) -> _CanonicalValue:
 __all__ = [
     "CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION",
     "CANDIDATE_REALTIME_FEATURES",
+    "CORE_HISTORY_MIN_SESSIONS",
     "DAILY_FEATURE_PACK_SCHEMA_VERSION",
     "MARKET_EPOCH_SCHEMA_VERSION",
     "RESEARCH_EPOCH_SCHEMA_VERSION",

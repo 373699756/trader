@@ -205,6 +205,8 @@ def _reader(features):
             values=feature.values,
             history_sessions=60,
             data_as_of=NOW.date() - timedelta(days=1),
+            security_master_version="master-v1",
+            history_version="history-v1",
             field_values=daily_field_values(
                 feature.values,
                 source_time=NOW - timedelta(days=1),

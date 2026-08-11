@@ -12,6 +12,8 @@ GATEWAY = ROOT / "src" / "trader" / "infra" / "market_data" / "gateway.py"
 COORDINATOR = ROOT / "src" / "trader" / "infra" / "market_data" / "source_coordinator.py"
 SETTINGS_RUNTIME = ROOT / "src" / "trader" / "infra" / "settings_runtime.py"
 MARKET_DIR = ROOT / "src" / "trader" / "infra" / "market_data"
+MARKET_PORTS = ROOT / "src" / "trader" / "application" / "ports" / "market.py"
+DATA_PLANE_PORTS = ROOT / "src" / "trader" / "application" / "ports" / "data_plane.py"
 
 
 def test_v2_plan_keeps_source_admission_in_data_plane_scope() -> None:
@@ -71,3 +73,14 @@ def test_source_contract_versions_contract_expected_five_sources() -> None:
         if token.strip()
     }
     assert actual == {"eastmoney", "sina", "tencent", "tushare", "akshare"}
+
+
+def test_v2_e1_freezes_unified_read_and_persisted_calendar_ports() -> None:
+    market_tree = ast.parse(MARKET_PORTS.read_text(encoding="utf-8"))
+    data_plane_tree = ast.parse(DATA_PLANE_PORTS.read_text(encoding="utf-8"))
+    market_classes = {node.name for node in ast.walk(market_tree) if isinstance(node, ast.ClassDef)}
+    data_plane_classes = {node.name for node in ast.walk(data_plane_tree) if isinstance(node, ast.ClassDef)}
+
+    assert "DataPlaneReadPort" in market_classes
+    assert "DataPlaneCoverage" in market_classes
+    assert "TradingCalendarRecord" in data_plane_classes

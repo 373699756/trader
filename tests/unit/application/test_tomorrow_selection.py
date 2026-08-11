@@ -115,6 +115,8 @@ def _data_snapshot() -> MarketDataPlaneSnapshot:
                 values=values,
                 history_sessions=60,
                 data_as_of=date(2026, 7, 27),
+                security_master_version="master-v1",
+                history_version="history-v1",
                 field_values=daily_field_values(values, source_time=NOW - timedelta(days=1), received_time=NOW),
             ),
         ),

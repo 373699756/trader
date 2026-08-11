@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA_META_KEY = "schema_version"
 
 
@@ -188,6 +188,40 @@ def initialize_database(database_path: Path) -> None:
                 PRIMARY KEY(freeze_id, cursor_name)
             );
 
+            CREATE TABLE IF NOT EXISTS trading_calendar_recent(
+                calendar_name TEXT PRIMARY KEY,
+                observed_at TEXT NOT NULL,
+                source_time TEXT NOT NULL,
+                source TEXT NOT NULL,
+                data_version TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'committed',
+                error TEXT NOT NULL DEFAULT '',
+                recovery_payload BLOB,
+                recovery_sha256 TEXT NOT NULL DEFAULT '',
+                CHECK(status IN ('staged', 'committed', 'quarantined'))
+            );
+
+            CREATE TABLE IF NOT EXISTS trading_calendar_formal(
+                freeze_id TEXT NOT NULL,
+                calendar_name TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                source_time TEXT NOT NULL,
+                source TEXT NOT NULL,
+                data_version TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'committed',
+                error TEXT NOT NULL DEFAULT '',
+                recovery_payload BLOB,
+                recovery_sha256 TEXT NOT NULL DEFAULT '',
+                CHECK(status IN ('staged', 'committed', 'quarantined')),
+                PRIMARY KEY(freeze_id, calendar_name)
+            );
+
             CREATE TABLE IF NOT EXISTS data_plane_quarantine_audit(
                 audit_key TEXT PRIMARY KEY,
                 record_kind TEXT NOT NULL,
@@ -277,7 +311,45 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE source_cursor_formal ADD COLUMN error TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE source_cursor_formal ADD COLUMN recovery_payload BLOB",
         "ALTER TABLE source_cursor_formal ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
-    )
+    ),
+    3: (
+        """
+        CREATE TABLE IF NOT EXISTS trading_calendar_recent(
+            calendar_name TEXT PRIMARY KEY,
+            observed_at TEXT NOT NULL,
+            source_time TEXT NOT NULL,
+            source TEXT NOT NULL,
+            data_version TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'committed',
+            error TEXT NOT NULL DEFAULT '',
+            recovery_payload BLOB,
+            recovery_sha256 TEXT NOT NULL DEFAULT '',
+            CHECK(status IN ('staged', 'committed', 'quarantined'))
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS trading_calendar_formal(
+            freeze_id TEXT NOT NULL,
+            calendar_name TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            source_time TEXT NOT NULL,
+            source TEXT NOT NULL,
+            data_version TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'committed',
+            error TEXT NOT NULL DEFAULT '',
+            recovery_payload BLOB,
+            recovery_sha256 TEXT NOT NULL DEFAULT '',
+            CHECK(status IN ('staged', 'committed', 'quarantined')),
+            PRIMARY KEY(freeze_id, calendar_name)
+        )
+        """,
+    ),
 }
 
 

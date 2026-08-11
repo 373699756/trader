@@ -10,12 +10,15 @@ from trader.application.ports.data_plane import (
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
+    TradingCalendarRecord,
 )
 
 Mode: TypeAlias = Literal["recent", "formal"]
 
 
-Record: TypeAlias = SecurityMasterRecord | HistoricalFeatureRecord | RiskEvidenceRecord | SourceCursorRecord
+Record: TypeAlias = (
+    SecurityMasterRecord | HistoricalFeatureRecord | RiskEvidenceRecord | SourceCursorRecord | TradingCalendarRecord
+)
 
 
 _MAX_PAYLOAD_BYTES: Final[int] = 8 * 1024 * 1024
@@ -54,6 +57,12 @@ _PROFILES: dict[str, _Profile] = {
         recent_table="source_cursor_recent",
         formal_table="source_cursor_formal",
         identity_fields=("cursor_name",),
+    ),
+    "trading_calendar": _Profile(
+        family="trading_calendar",
+        recent_table="trading_calendar_recent",
+        formal_table="trading_calendar_formal",
+        identity_fields=("calendar_name",),
     ),
 }
 

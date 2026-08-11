@@ -166,11 +166,13 @@ def select_fields(
                 if current_value != value:
                     state.conflicts.add(f"{field}:conflict")
                     state.quality[field] = FieldQualityState.CONFLICTING
+                    conflict_count = state.field_values[field].conflict_count + 1
                     state.field_values[field] = _set_field_state(
                         field,
                         current_value,
                         state.selected_observations[field],
                         FieldQualityState.CONFLICTING,
+                        conflict_count=conflict_count,
                     )
             elif state.quality.get(field) == FieldQualityState.CONFLICTING:
                 state.quality[field] = FieldQualityState.CONFLICTING
@@ -194,6 +196,8 @@ def _apply_new_selection(
     state: _SelectionState,
 ) -> None:
     previous_quality = state.quality.get(field_name)
+    previous_field = state.field_values.get(field_name)
+    previous_conflict_count = previous_field.conflict_count if previous_field is not None else 0
     normalized_source = normalize_source(observation.source)
 
     state.selected_orders[field_name] = order
@@ -209,6 +213,7 @@ def _apply_new_selection(
         value,
         observation,
         selected_state,
+        conflict_count=previous_conflict_count,
     )
 
 
@@ -217,6 +222,8 @@ def _set_field_state(
     value: JsonScalar,
     observation: SourceObservation,
     state: FieldQualityState,
+    *,
+    conflict_count: int = 0,
 ) -> FieldValue:
     return FieldValue(
         name=field,
@@ -227,6 +234,7 @@ def _set_field_state(
         data_version=observation.data_version,
         payload_hash=observation.payload_hash,
         quality=state,
+        conflict_count=conflict_count,
     )
 
 

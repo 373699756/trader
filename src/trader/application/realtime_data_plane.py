@@ -1,7 +1,8 @@
-"""Atomic in-memory index for immutable tomorrow market-data epochs."""
+"""Atomic in-memory index for immutable V2 market-data epochs."""
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -10,12 +11,15 @@ from typing import Protocol, TypeVar
 
 from trader.application.ports.market import (
     DataPlaneChannel,
+    DataPlaneCoverage,
     DataPlaneFailure,
     MarketDataPlaneSnapshot,
 )
 from trader.domain.market.epochs import CandidateQuoteEpoch, DailyFeaturePack, MarketEpoch, ResearchEpoch
+from trader.domain.market.models import MarketQuote
 
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
+_MINIMUM_CANDIDATE_HISTORY_COVERAGE = 0.99
 
 
 class _EpochValue(Protocol):
@@ -78,6 +82,9 @@ class RealtimeDataPlane:
             rejection = _rejection_reason(self._market_current, epoch)
             if rejection is not None:
                 return _rejected(self._market_current, rejection)
+            coverage = _coverage(self._daily_current, epoch, None)
+            if coverage.security_master_covered_count != coverage.potential_executable_count:
+                return _rejected(self._market_current, "security_master_coverage_incomplete")
             previous = self._market_current
             self._market_current = epoch
             self._market_daily = self._daily_current
@@ -88,11 +95,12 @@ class RealtimeDataPlane:
 
     def publish_candidate_quotes(self, epoch: CandidateQuoteEpoch) -> EpochPublishResult:
         with self._lock:
-            if self._market_current is None or epoch.market_epoch_version != self._market_current.version:
-                return _rejected(self._candidate_current, "market_epoch_not_current")
-            if epoch.config_version != self._market_current.config_version:
-                return _rejected(self._candidate_current, "config_version_mismatch")
-            rejection = _rejection_reason(self._candidate_current, epoch)
+            rejection = _candidate_rejection_reason(
+                current=self._candidate_current,
+                market=self._market_current,
+                daily=self._market_daily,
+                incoming=epoch,
+            )
             if rejection is not None:
                 return _rejected(self._candidate_current, rejection)
             previous = self._candidate_current
@@ -140,6 +148,7 @@ class RealtimeDataPlane:
                 market=self._market_current,
                 candidate_quotes=self._candidate_current,
                 research=research,
+                coverage=_coverage(daily, self._market_current, self._candidate_current),
                 failures=self._failures,
             )
 
@@ -166,6 +175,33 @@ def _rejection_reason(current: _EpochT | None, incoming: _EpochT) -> str | None:
     return None
 
 
+def _candidate_rejection_reason(
+    *,
+    current: CandidateQuoteEpoch | None,
+    market: MarketEpoch | None,
+    daily: DailyFeaturePack | None,
+    incoming: CandidateQuoteEpoch,
+) -> str | None:
+    reason: str | None = None
+    if market is None or incoming.market_epoch_version != market.version:
+        reason = "market_epoch_not_current"
+    elif incoming.config_version != market.config_version:
+        reason = "config_version_mismatch"
+    elif (epoch_reason := _rejection_reason(current, incoming)) is not None:
+        reason = epoch_reason
+    elif incoming.requested_codes and not incoming.quotes:
+        reason = "invalid_empty_epoch"
+    elif any(code not in {quote.code for quote in market.quotes} for code in incoming.requested_codes):
+        reason = "candidate_code_not_in_market"
+    elif daily is None:
+        reason = "daily_feature_pack_not_current"
+    else:
+        history_ratio = _coverage(daily, market, incoming).candidate_core_history_ratio
+        if history_ratio is not None and history_ratio < _MINIMUM_CANDIDATE_HISTORY_COVERAGE:
+            reason = "candidate_history_coverage_insufficient"
+    return reason
+
+
 def _accepted(previous: _EpochValue | None, current: _EpochValue) -> EpochPublishResult:
     return EpochPublishResult(
         accepted=True,
@@ -189,6 +225,45 @@ def _require_shanghai_time(value: datetime) -> None:
         raise ValueError("data-plane failure time must be timezone-aware")
     if getattr(value.tzinfo, "key", None) != _SHANGHAI_TIMEZONE:
         raise ValueError("data-plane failure time must use Asia/Shanghai")
+
+
+def _coverage(
+    daily: DailyFeaturePack | None,
+    market: MarketEpoch | None,
+    candidate: CandidateQuoteEpoch | None,
+) -> DataPlaneCoverage:
+    if daily is None or market is None:
+        return DataPlaneCoverage()
+    rows = {row.code: row for row in daily.rows}
+    executable_codes = tuple(quote.code for quote in market.quotes if _is_potentially_executable(quote))
+    master_covered = sum(1 for code in executable_codes if code in rows and rows[code].has_security_master)
+    candidate_codes = candidate.requested_codes if candidate is not None else ()
+    history_covered = sum(1 for code in candidate_codes if code in rows and rows[code].has_core_history)
+    return DataPlaneCoverage(
+        potential_executable_count=len(executable_codes),
+        security_master_covered_count=master_covered,
+        candidate_count=len(candidate_codes),
+        candidate_core_history_covered_count=history_covered,
+    )
+
+
+def _is_potentially_executable(quote: MarketQuote) -> bool:
+    board = quote.board
+    price = quote.price
+    amount = quote.amount
+    return (
+        getattr(board, "value", board) in {"main", "chinext", "star"}
+        and isinstance(price, (int, float))
+        and not isinstance(price, bool)
+        and math.isfinite(float(price))
+        and float(price) > 0.0
+        and isinstance(amount, (int, float))
+        and not isinstance(amount, bool)
+        and math.isfinite(float(amount))
+        and float(amount) > 0.0
+        and not quote.is_st
+        and not quote.is_suspended
+    )
 
 
 __all__ = [
