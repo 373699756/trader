@@ -46,7 +46,7 @@ from trader.application.tomorrow_v2_freezing import (
     V2DecisionRuntimeIdentity,
 )
 from trader.application.tomorrow_v2_runtime import TomorrowV2Runtime, TomorrowV2RuntimeDependencies
-from trader.application.tomorrow_v2_views import UnifiedTomorrowDecisionQueries
+from trader.application.tomorrow_v2_views import UnifiedScoredDecisionQueries, UnifiedTomorrowDecisionQueries
 from trader.application.trading_session import TradingSessionTracker
 from trader.application.v2_research_trace import InMemoryV2ResearchTraceStore
 from trader.application.workers import BoundedExecutor
@@ -117,6 +117,7 @@ class ApplicationSystem:
     today_v2_runtime: TodayV2Runtime | None = None
     tomorrow_v2_runtime: TomorrowV2Runtime | None = None
     d25_v2_runtime: TomorrowV2Runtime | None = None
+    d25_queries: UnifiedScoredDecisionQueries | None = None
     tomorrow_index: UnifiedDecisionIndex | None = None
     tomorrow_records: SQLiteDecisionRecordRepository | None = None
     tomorrow_trace: InMemoryV2ResearchTraceStore | None = None
@@ -182,6 +183,7 @@ class _PublicationContext:
     tomorrow_runtime: TomorrowV2Runtime
     d25_runtime: TomorrowV2Runtime
     tomorrow_queries: UnifiedTomorrowDecisionQueries
+    d25_queries: UnifiedScoredDecisionQueries
     tomorrow_events: TomorrowDecisionEventStream
 
 
@@ -271,6 +273,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         today_v2_runtime=publication.today_runtime,
         tomorrow_v2_runtime=publication.tomorrow_runtime,
         d25_v2_runtime=publication.d25_runtime,
+        d25_queries=publication.d25_queries,
         tomorrow_index=publication.tomorrow_index,
         tomorrow_records=publication.tomorrow_repository,
         tomorrow_trace=publication.tomorrow_trace,
@@ -586,8 +589,8 @@ def _build_publication(
         tomorrow_repository,
         clock,
     )
+    d25_queries = UnifiedScoredDecisionQueries(tomorrow_decisions, tomorrow_repository, clock, strategy=Strategy.D25)
     tomorrow_trace = InMemoryV2ResearchTraceStore()
-
     today_observer = AsyncDecisionObserver(
         (tomorrow_trace.record,),
         capacity=max(16, settings.pipeline.event_queue_size),
@@ -687,6 +690,7 @@ def _build_publication(
         tomorrow_runtime,
         d25_runtime,
         tomorrow_queries,
+        d25_queries,
         tomorrow_events,
     )
 

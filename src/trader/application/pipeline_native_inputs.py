@@ -72,7 +72,7 @@ def offer_scored_native_input(
                     batch.score_max_age_seconds,
                     pipeline._candidate_pool_size,
                 )
-                )
+            )
         elif strategy is Strategy.D25:
             d25_sink = pipeline._d25_native_inputs
             if d25_sink is None:
@@ -89,7 +89,7 @@ def offer_scored_native_input(
                     batch.candidate_features,
                     batch.preselect_max_age_seconds,
                     batch.score_max_age_seconds,
-                    batch.candidate_pool_size,
+                    pipeline._candidate_pool_size,
                 )
             )
         else:

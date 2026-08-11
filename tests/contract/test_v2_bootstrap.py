@@ -76,6 +76,7 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert system.tomorrow_index is not None
     assert system.tomorrow_records is not None
     assert system.tomorrow_trace is not None
+    assert system.d25_queries is not None
     assert system.tomorrow_trace.status().recorded == 0
     assert system.tomorrow_trace.get("missing") is None
     status_response = system.app.test_client().get("/api/v2/status")

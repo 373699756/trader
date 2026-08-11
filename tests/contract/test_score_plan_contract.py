@@ -10,8 +10,8 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、Score-R0、Score-R1 已完成" in plan
     assert "### Score-R0：权威契约与预注册（已完成）" in plan
+    assert "下一工程章节为 V2-E7" in plan
     assert "本文是唯一活动施工计划" in plan
     assert "评价最多 60 个不同交易日" in plan
     assert "固定最多 40 日历史和 20 日连续前向" in plan

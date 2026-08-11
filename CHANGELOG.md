@@ -6,12 +6,22 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- V2-E6 新增 `D25NativeInput`、策略独占的 D25 latest-wins runtime、14:49:20 检查点、14:50
+  正式冻结、15:00 `close_fallback` 和只读 `UnifiedScoredDecisionQueries` 实例。D25 复用统一
+  纯领域选择/融合核心与正式记录仓储，但 current、sequence、observer、错误状态、事件、
+  冻结唯一键和查询均按策略隔离。
+
 - V2-E5 新增 `TodayNativeInput`、`TodayV2Runtime`、11:20 精确冻结协调器和正式记录报价
   overlay。Today 现在直接复用统一纯领域选择/融合核心生成 local/hybrid `ScoredDecision`，
   使用独立 latest-wins worker 与 observer，并与 Tomorrow 共享按策略隔离的统一索引、仓储和
   DeepSeek 预算链。
 
 ### Changed
+
+- 用户要求继续 `implementation-plan.md` 的未完成任务。同步上游后发现 V2-E6 代码提交已经
+  推送，但计划仍标记 E6 待执行，权威文档与 Changelog 未更新，且定向测试和格式门禁实际
+  失败；按未闭合批次优先规则，本批先完整 Review、修复并闭合 D25 正式接管，不进入 E7。
+  计划现推进到 V2-E6 已完成、V2-E7 为下一工程章节，评分研究下一章仍为 Score-R2。
 
 - 用户要求继续 `implementation-plan.md` 的下一个未完成任务。本批完整交付 V2-E5“Today
   正式接管”：生产 Pipeline 只为 Today 组装同批点时原生输入，不再生成旧正式 snapshot；
@@ -75,6 +85,17 @@ All notable changes to this project are documented here.
   配对移动区块 bootstrap、派生种子、Holm 检验族、五个挑战者和全部收益/回撤/召回/集中度门禁。
 
 ### Fixed
+
+- 修正 D25 原生输入组装读取不存在的 `ScoredNativeBatch.candidate_pool_size`，导致 D25 每轮在
+  进入 V2 worker 前抛出 `AttributeError`、无法形成任何 local/hybrid 决策的问题；现与
+  Today/Tomorrow 一致使用 Pipeline 已校验的候选容量。同步修正 Tomorrow 分支括号格式和
+  D25 端口导入排序、过期计划断言、组合根超 800 行门禁，以及检查点测试使用未来决策时间
+  而产生的伪失败。
+
+- 修正 E6 初稿只接入 D25 runtime、却仍无从统一索引和正式仓储读取 D25 current/history 的
+  应用层查询实例。通用只读查询现在显式绑定策略，D25 与 Tomorrow 同日 current、合法空正式
+  记录、历史和状态互不泄漏；待重试的 14:50 sealed version 会阻止 15:00 fallback 覆盖，
+  冷启动收盘补算只生成 local、模型请求增量保持 0。
 
 - 修正 Today 在 11:20 无可冻结稿或边界后启动时仍可能接纳迟到 local/hybrid、再由启动、
   checkpoint、P6 或收盘路径补造正式记录的问题。统一索引新增按策略/交易日关闭态；仅
@@ -162,6 +183,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从旧 Pipeline 的正式评分提交、P6 冻结和盘后旧链恢复集合移除 D25；迁移期 Pipeline 只形成
+  同批点时 `D25NativeInput`。旧实现文件仍按 V2-E10 保留，本批不提前删除 Long、旧 API、
+  shadow/cutover 或 Web 资源。
+
 - 从生产旧 Pipeline 的正式评分、P6 冻结和盘后恢复集合移除 Today；移除 Today 对旧
   RecommendationSnapshot、启动检查点和 `close_fallback` 的正式决策依赖。迁移期旧实现文件
   仍按 V2-E10 计划保留，本批未越界删除 D25、Long、旧 API 或 Web 资源。
@@ -199,6 +224,17 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- V2-E6 定向回归覆盖 D25 原生输入、专属 local/hybrid、父 CAS、14:49:20 检查点、14:50
+  热/冷恢复、合法正式空结果、Tomorrow/D25 同日隔离、待重试封口、15:00 冷启动 local-only
+  fallback、零 DeepSeek review、统一 current/history 查询及组合根接线。`make format-check`、
+  `make lint`、`make type-check`、`make test` 和 `make package` 全部通过；Ruff 严格复杂度债务为
+  零，mypy 检查 255 个源码文件，完整 pytest 到达 100%，仅保留 10 条既有未知 DeepSeek
+  fixture 模型警告。最终 wheel 从仓库外 `/tmp` 目标目录安装并导入，`trader-cli` console
+  entry point、模板、CSS、JavaScript 和 SVG 资源均可读取。宿主 Firefox 实际未安装且无
+  geckodriver，改用本机 Chrome 123 + CDP 对统一根页面和 Tomorrow V2 页面完成 1280x720、
+  1440x900、1920x1080 实机验收，六个视口均无白屏和页面级横向溢出；Tomorrow 面板顺序、
+  分区间隔、4 行数据和浏览器零错误同时通过。
 
 - V2-E5 回归覆盖 11:19:59/11:20:00、首次晚于边界、边界后冷启动、仓储读取/写入失败、
   同 sealed version 重试、实际模型返回越界、local/hybrid 父 CAS、观察阶段无可执行动作、
@@ -300,13 +336,18 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- V2-E6 至 V2-E11 与 Score 后续章节仍未完成；Today 的统一 current/history API、SSE 和根页面
-  按计划属于 V2-E8，本批只完成生产决策、冻结、observer 和 overlay 接管。固定输入证明状态机
+- V2-E6 已闭合，但 V2-only 总计划仍需完成 E7 Long 接管、E8 统一 API/SSE/Web、E9 唯一入口、
+  E10 旧链删除和 E11 发布验收；D25 查询当前仅作为应用层只读实例，统一公开路由属于 E8。
+  固定 fixture 证明身份、冻结与恢复状态机，不构成真实交易日外部行情连续性、DeepSeek 尾
+  延迟或收益改善证据；外部失败继续按权威契约显式降级。
+
+- V2-E7 至 V2-E11 与 Score 后续章节仍未完成；Today/D25 的统一公开 API、SSE 和根页面
+  按计划属于 V2-E8，E5 当批只完成 Today 生产决策、冻结、observer 和 overlay 接管。固定输入证明状态机
   与身份正确，不构成真实交易日行情覆盖、外部 DeepSeek 尾延迟或荐股收益改善证据；这些仍需
   后续真实运行观测，且任何外部失败继续按契约显式降级。
 
-- V2-only 总计划尚未完成：d25、long、统一根 API/SSE/Web、最终组合根与旧链删除仍属
-  E6-E10，最终发布验收属 E11；当前兼容 Tomorrow 页面从统一身份投影有限字段，完整统一
+- V2-only 总计划尚未完成：long、统一根 API/SSE/Web、最终组合根与旧链删除仍属
+  E7-E10，最终发布验收属 E11；当前兼容 Tomorrow 页面从统一身份投影有限字段，完整统一
   工作台与报价 overlay 仍由 E8 接管。旧 shadow/冻结源文件尚未物理删除，但生产组合根已无
   可达依赖。免费外部来源在真实 14:50/15:00 边界的连续运行证据仍需 E11 留档，本批测试不
   构成收益保证。

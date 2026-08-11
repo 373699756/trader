@@ -1,4 +1,4 @@
-"""Compatibility read views backed only by unified V2 Tomorrow identities."""
+"""Read views backed only by unified V2 scored-decision identities."""
 
 from __future__ import annotations
 
@@ -21,23 +21,28 @@ from trader.domain.recommendation.decision_identity import (
 from trader.domain.recommendation.models import Strategy
 
 
-class UnifiedTomorrowDecisionQueries(TomorrowDecisionQueries):
-    """Serve the transitional Tomorrow routes from the production V2 identity."""
+class UnifiedScoredDecisionQueries(TomorrowDecisionQueries):
+    """Read one scored strategy from its isolated unified V2 partition."""
 
     def __init__(
         self,
         index: UnifiedDecisionIndex,
         repository: DecisionRecordRepositoryPort,
         clock: Clock,
+        *,
+        strategy: Strategy,
     ) -> None:
+        if strategy is Strategy.LONG:
+            raise ValueError("scored decision queries do not support long")
         self._v2_index = index
         self._v2_repository = repository
         self._v2_clock = clock
+        self._strategy = strategy
 
     def current(self) -> TomorrowDecisionView:
         now = self._v2_clock.now()
-        snapshot = self._v2_index.snapshot(Strategy.TOMORROW)
-        boundary = datetime.combine(now.date(), time(14, 50), tzinfo=now.tzinfo)
+        snapshot = self._v2_index.snapshot(self._strategy)
+        boundary = _freeze_boundary(self._strategy, now)
         formal = snapshot.formal
         if now >= boundary:
             if formal is None or formal.trade_date != now.date():
@@ -51,7 +56,7 @@ class UnifiedTomorrowDecisionQueries(TomorrowDecisionQueries):
     def history(self, trade_date: date) -> TomorrowDecisionView:
         now = self._v2_clock.now()
         try:
-            record = self._v2_repository.load(Strategy.TOMORROW, trade_date)
+            record = self._v2_repository.load(self._strategy, trade_date)
         except (DecisionRecordError, OSError):
             return _not_ready(trade_date, ("history_unavailable",))
         if record is None:
@@ -60,8 +65,8 @@ class UnifiedTomorrowDecisionQueries(TomorrowDecisionQueries):
 
     def status(self) -> TomorrowStatusView:
         now = self._v2_clock.now()
-        snapshot = self._v2_index.snapshot(Strategy.TOMORROW)
-        boundary = datetime.combine(now.date(), time(14, 50), tzinfo=now.tzinfo)
+        snapshot = self._v2_index.snapshot(self._strategy)
+        boundary = _freeze_boundary(self._strategy, now)
         candidate = snapshot.formal.decision if now >= boundary and snapshot.formal is not None else snapshot.current
         decision = (
             candidate
@@ -87,6 +92,23 @@ class UnifiedTomorrowDecisionQueries(TomorrowDecisionQueries):
             deepseek_remaining=168,
             recent_failures=(),
         )
+
+
+class UnifiedTomorrowDecisionQueries(UnifiedScoredDecisionQueries):
+    """Serve transitional Tomorrow routes from the production V2 identity."""
+
+    def __init__(
+        self,
+        index: UnifiedDecisionIndex,
+        repository: DecisionRecordRepositoryPort,
+        clock: Clock,
+    ) -> None:
+        super().__init__(index, repository, clock, strategy=Strategy.TOMORROW)
+
+
+def _freeze_boundary(strategy: Strategy, now: datetime) -> datetime:
+    boundary_time = time(11, 20) if strategy is Strategy.TODAY else time(14, 50)
+    return datetime.combine(now.date(), boundary_time, tzinfo=now.tzinfo)
 
 
 def _view(
@@ -198,4 +220,4 @@ def _not_ready(trade_date: date, reasons: tuple[str, ...]) -> TomorrowDecisionVi
     )
 
 
-__all__ = ["UnifiedTomorrowDecisionQueries"]
+__all__ = ["UnifiedScoredDecisionQueries", "UnifiedTomorrowDecisionQueries"]

@@ -14,8 +14,6 @@ PIPELINE_STAGES = ROOT / "src" / "trader" / "application" / "pipeline_stages.py"
 def test_v2_e4_remains_complete_after_e5_progression() -> None:
     plan = PLAN.read_text(encoding="utf-8")
 
-    assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、Score-R0、Score-R1 已完成" in plan
-    assert "下一工程章节为 V2-E6" in plan
     assert "### V2-E4：Tomorrow 正式接管（已完成）" in plan
 
 

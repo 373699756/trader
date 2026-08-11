@@ -255,8 +255,8 @@ today、tomorrow 和 d25 的正式记录仓储按策略和交易日唯一提交�
 SHA-256 写入 SQLite staged manifest，再原子创建不可变 JSON，最后提交 manifest；同键同
 内容重放幂等，不同内容冲突失败。启动恢复使用 manifest 内有界恢复载荷补齐半提交；已提交
 文件缺失、损坏、哈希或身份不一致时移入隔离目录并 fail closed，绝不向当前索引返回不可信
-记录。V2-E4 与 V2-E5 已把 tomorrow、today 的统一核心、原生 worker、正式记录仓储、observer
-和冻结时线接入 `bootstrap.py`；d25 与 long 仍按 V2-E6 至 V2-E7 逐节接管。
+记录。V2-E4 至 V2-E6 已把 tomorrow、today、d25 的统一核心、原生 worker、正式记录仓储、
+observer 和冻结时线接入 `bootstrap.py`；long 仍按 V2-E7 单独接管。
 
 #### 独立 V2 调度与生命周期交付边界
 
@@ -611,6 +611,26 @@ Today 发布，即使当时没有可冻结稿也不得再接纳迟到 local、hy
 overlay 只替换价格、涨跌幅、来源和报价时间；不得修改正式记录中的名单、分数、风险、动作或
 排名。Pipeline 在评分前后依次驱动全部 V2 控制端口，使 11:20:00 的关闭先于同轮评分提交；
 旧 Pipeline 不再为 Today 生成正式 snapshot、P6 冻结或盘后恢复，且 HTTP 仍只执行只读查询。
+
+### 2.17 d25 v2 正式接管边界
+
+V2-E6 起，活动组合根把 `D25NativeInput` 直接送入策略独占的单运行、单 pending V2 worker。
+D25 复用统一过滤、板内 d25 专属评分、结构化风险、融合和稳定排名纯函数，但与 tomorrow
+保持独立的输入身份、sequence、worker、observer、错误状态、`UnifiedDecisionIndex` 分区、
+正式记录唯一键和只读查询实例。local 先按实际读取版本执行 CAS；合法 hybrid 只能引用仍为
+当前的同策略 local 父版本，不能读取或覆盖 tomorrow 的 current、封口、事件或正式记录。
+
+14:49:20（含）至 14:50（不含）只保存同运行身份且距边界不超过 30 秒的 D25 检查点；
+14:50 原子封口 D25 当前决策，并按 `strategy=d25 + trade_date` 唯一提交不可变正式记录。
+合法空结果与非空结果使用同一提交语义，持久化失败只允许重试相同 sealed version；同日
+tomorrow 的封口、恢复或仓储冲突不得影响 D25。热启动优先恢复同日正式记录，14:50 冷恢复
+只接受哈希有效、尚未消费且身份匹配的 D25 检查点。
+
+15:00 后仅在 D25 同日正式记录缺失且索引不存在待重试的 14:50 封口时允许创建一次
+`close_fallback`。运行中路径固化 D25 current；冷启动路径用完整同日收盘原生输入执行一次
+纯本地 d25 评分并固化 local，均绑定规范 official-close 版本且不调用 DeepSeek。已有正式
+记录、待重试封口、错误策略身份、非官方收盘版本或迟到覆盖一律拒绝。迁移期旧 Pipeline
+只负责形成同批点时原生输入，不再为 D25 生成正式 snapshot、P6 冻结或盘后旧链恢复。
 
 ## 3. 架构与代码边界
 

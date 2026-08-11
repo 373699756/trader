@@ -227,6 +227,70 @@ def test_runtime_close_recovery_keeps_current_and_trace_on_the_formal_v2_identit
         runtime.stop(wait=True, deadline=ShutdownDeadline.start(10.0))
 
 
+def test_d25_runtime_cold_close_fallback_is_local_only_and_skips_review(
+    application_feature_factory,
+    tmp_path: Path,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    close_at = EVALUATED_AT.replace(hour=15, minute=0)
+    features = tuple(
+        _verified_feature(application_feature_factory(f"600{index:03d}", close_at - timedelta(seconds=10)))
+        for index in range(100)
+    )
+    native_input = D25NativeInput(
+        trade_date=TRADE_DATE,
+        phase="close_fallback",
+        data_version="official-close-data:v1",
+        config_version="runtime-v2+strategy-v2",
+        evaluated_at=close_at,
+        market_features=features,
+        requested_codes=tuple(feature.quote.code for feature in features),
+        candidate_features=features,
+        preselect_max_age_seconds=30.0,
+        score_max_age_seconds=30.0,
+        candidate_pool_size=120,
+    )
+    clock = _Clock(close_at)
+    index = UnifiedDecisionIndex()
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    trace = InMemoryV2ResearchTraceStore()
+    observer = AsyncDecisionObserver((trace.record,), capacity=16)
+    reviewer = _DynamicReviewer(clock)
+    freezer = TomorrowV2FreezeCoordinator(
+        index,
+        repository,
+        clock,
+        runtime_identity=V2DecisionRuntimeIdentity(
+            native_input.config_version,
+            policy.strategy_version,
+            policy.fusion_version,
+        ),
+        strategy=Strategy.D25,
+    )
+    runtime = TomorrowV2Runtime(
+        policy,
+        TomorrowV2RuntimeDependencies(reviewer, index, observer, freezer, clock),
+        strategy=Strategy.D25,
+    )
+
+    runtime.start()
+    try:
+        assert runtime.offer_native(native_input)
+        assert runtime.wait_idle(10.0)
+        assert observer.wait_idle(10.0)
+
+        record = repository.load(Strategy.D25, TRADE_DATE)
+        assert record is not None and record.commit_kind == "close_fallback"
+        assert record.decision.strategy is Strategy.D25
+        assert record.decision.stage == "local"
+        assert "local_only" in record.decision.degraded_reasons
+        assert reviewer.review_count == 0
+        assert trace.get(record.decision.version) is not None
+    finally:
+        runtime.stop(wait=True, deadline=ShutdownDeadline.start(10.0))
+
+
 class _Clock:
     def __init__(self, value: datetime) -> None:
         self.value = value
@@ -238,8 +302,10 @@ class _Clock:
 class _DynamicReviewer:
     def __init__(self, clock: _Clock) -> None:
         self._clock = clock
+        self.review_count = 0
 
     def review(self, _strategy, candidates, *, phase, deadline, contexts=None):
+        self.review_count += 1
         code = candidates[0].quote.code
         review = replace(
             _review(code, 100.0),
