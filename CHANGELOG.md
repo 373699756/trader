@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把 `docs/V2_plan.md` 与 `docs/score.md` 合并为可供多个 Codex 会话同步施工的唯一
+  总计划。本批把 V2 工程和评分研究统一为 `docs/implementation-plan.md` 的 V2-E/Score-R
+  双 lane，固定协调集成会话 C、V2 工程会话 E、评分研究会话 R 的分支、worktree、文件
+  所有权、接口冻结、交接证据、G1-G14 同步 Gate 和 E 后 R 串行集成顺序；计划不改变生产
+  策略、运行配置、API、冻结或评分行为。
+
 - 用户要求继续并提交 `docs/score.md` 的下一个完整未完成章节。本批将 P1“紧凑决策轨迹”
   状态更新为已完成、P2 待执行，并把研究轨迹的配对版本、数据裁剪、非阻塞写入、容量和
   幂等失败语义同步到两份权威文档。候选分计算现在公开复用同一纯函数组件，并在既有板内
@@ -24,6 +30,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正两份活动计划各自维护阶段状态、共享文件边界和执行顺序，导致多会话可能在组合根、
+  权威文档、Changelog 与跨 lane 接口上并发冲突的问题。总计划现在规定每波统一
+  `BASE_SHA`、独立 worktree/runtime、Gate 独占文件、接口哈希与临时组合树验证；文本冲突
+  视为所有权失败并退回责任会话，不由集成会话临场拼接业务代码。
+
 - 修正提前存在的 P1 草稿仍同步写轨迹、读取不存在的 `FeatureSnapshot.industry`、允许迟到
   内容覆盖新轨迹、哈希混入写入时钟、重复保存 native/baseline 全量输入且把研究计数加入
   正式状态 API 的问题。当前每个 `input_version` 只保留一条不可变配对轨迹；相同内容重放
@@ -41,6 +52,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除已被总计划完整吸收的 `docs/V2_plan.md` 与 `docs/score.md` 活动入口，并同步产品概览、
+  权威设计、阶段报告和契约测试引用；历史 Changelog 仍保留原文件名作为当时交付证据。
+
 - 移除 P1 草稿对 native 与 baseline 两份完整候选输入的重复留存，以及正式 shadow 状态中的
   `research_trace_*` 字段；研究状态只经独立端口读取，不改变普通 API 内容。
 
@@ -51,6 +65,9 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- 总计划合并批次运行计划/项目记录/V2-only/来源准入契约测试，检查活动文档无旧计划引用，
+  并运行完整 format、Ruff、mypy、pytest、package 及仓库外 wheel 资源/CLI 验收。
 
 - P1 定向契约、领域、应用、组合根、架构和影子集成回归已通过；覆盖硬拒绝代码/简称不进入
   载荷、全体硬过滤通过股票候选审计、同输入配对、DeepSeek 请求增量 0、稳定 SHA-256、
@@ -78,6 +95,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批只统一施工治理，不实现 V2-E1 或 Score-R2，也不改变生产运行；计划能减少文件级冲突，
+  但语义冲突仍需协调会话按冻结接口、权威契约和临时组合树门禁拒绝或退回。历史报告中的
+  P0/P1 名称作为已发生批次标签保留，并映射到当前 V2-E 章节。
+
 - P1 只提供进程内、64 MiB 总上限的紧凑研究证据；P2 的最多 40 日点时持久化、乐观上界、
   上界保护集合和只读导出尚未实现，进程停止后不保留本批内存轨迹。P4 五个挑战者同样尚未
   实现；当前 `research_shadow` 只复用本输入已有合法 facts，没有 facts 时保存 control 副本，
@@ -90,6 +111,9 @@ All notable changes to this project are documented here.
   点时数据或后续回放/统计，因此没有收益提升结论。固定前向窗口尚未发生，能否取得 20 个
   连续有效日取决于届时数据与运行连续性；任一门禁不足时继续使用当前生产策略。
 ### Added
+
+- 新增 `docs/implementation-plan.md`，作为唯一活动施工计划，完整定义 V2-only 迁移、评分研究、
+  多 Codex 并行隔离、跨 lane 事件接口、Gate、测试矩阵和逐章提交推送协议。
 
 - 新增研究专用不可变 P1 schema、独立 `TomorrowResearchTraceRecorderPort`、有界异步记录器
   和内存存储。轨迹仅保存硬过滤拒绝的板块/原因聚合；逐股侧只包含硬过滤通过总体的候选审计、

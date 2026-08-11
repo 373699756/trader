@@ -6,15 +6,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> None:
-    score = (ROOT / "docs/score.md").read_text(encoding="utf-8")
+    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "状态：P0-P1 已完成，P2 待执行；非生产契约" in score
-    assert "P0：权威契约与预注册（已完成）" in score
-    assert "P0-P1 已同步两份权威文档、契约测试和 `CHANGELOG.md`" in score
-    assert "最多为 60 个不同交易日" in score
-    assert "40 日历史回放加 20 日前向影子" in score
+    assert "状态：总计划已建立；V2-E0、Score-R0、Score-R1 已完成" in plan
+    assert "### Score-R0：权威契约与预注册（已完成）" in plan
+    assert "本文是唯一活动施工计划" in plan
+    assert "评价最多 60 个不同交易日" in plan
+    assert "固定最多 40 日历史和 20 日连续前向" in plan
 
     assert "本轮 P0（评分科学化研究，非生产）已预注册以下固定边界" in strategy
     for statement in (
@@ -55,11 +55,11 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
 
 
 def test_score_plan_p1_compact_trace_contract_is_reflected_in_authoritative_docs() -> None:
-    score = (ROOT / "docs/score.md").read_text(encoding="utf-8")
+    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "P1：紧凑决策轨迹（已完成）" in score
+    assert "### Score-R1：紧凑决策轨迹（已完成）" in plan
     for statement in (
         "production_local",
         "research_shadow",

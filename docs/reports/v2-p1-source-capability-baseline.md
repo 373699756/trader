@@ -6,12 +6,14 @@
 - Git HEAD：`e81e10d`
 - 分支：`feature/tomorrow-v2`
 - `@{upstream}`：`origin/feature/tomorrow-v2`
-- 上下文：本批仅完成 `docs/V2_plan.md` 的 P1 可验证能力与准入边界固化，不改造运行代码。
+- 上下文：本批仅完成现统一归档为 `docs/implementation-plan.md` V2-E1 的可验证能力与准入
+  边界固化，不改造运行代码。
 
 ## 2. 本批能力探测范围
 
 - 只做源码、配置、运行契约的边界审查；当前未接入外部真实网络进行抓取探测。
-- 以 `docs/V2_plan.md` 的 P1 为准，限定为“接入前能力清单 + 未验证来源准入结论”。
+- 以 `docs/implementation-plan.md` 的 V2-E1 为准，限定为“接入前能力清单 + 未验证来源准入
+  结论”。
 - 目标来源：交易所官方、巨潮资讯 CNInfo、东方财富、新浪、腾讯、通达信/mootdx、BaoStock、
   AKShare、Tushare。
 
@@ -37,7 +39,8 @@
 
 ## 4. 已形成的可验证锚点
 
-- `docs/V2_plan.md` P1 已补充“未接入来源不参与评分/冻结/生产组合根/配置”的硬约束。
+- `docs/implementation-plan.md` V2-E1 已补充“未接入来源不参与评分/冻结/生产组合根/配置”
+  的硬约束。
 - `tests/contract/test_v2_source_capability.py` 增加三类契约：
   1) P1 章节状态与输出要求可追溯；
   2) `SourceCapability` 基线报告完整性；

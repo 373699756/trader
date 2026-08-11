@@ -37,14 +37,16 @@ def test_strategy_contract_requires_v2_native_decisions_and_no_legacy_replay() -
 
 def test_v2_execution_plan_has_no_compatibility_or_shadow_cutover_batch() -> None:
     overview = (ROOT / "docs/V2.md").read_text(encoding="utf-8")
-    plan = (ROOT / "docs/V2_plan.md").read_text(encoding="utf-8")
+    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
 
     assert "状态：V2-only 目标已确认" in overview
     assert "不保留旧版运行时兼容" in overview
-    assert "状态：V2-0 已完成，V2-1 待执行" in plan
-    assert "## V2-0：唯一产品契约重置" in plan
-    assert "## V2-10：删除旧生产链" in plan
-    assert "## V2-11：最终验收与发布" in plan
+    assert "状态：总计划已建立；V2-E0、Score-R0、Score-R1 已完成" in plan
+    assert "### V2-E0：唯一产品契约重置（已完成）" in plan
+    assert "### V2-E10：删除旧生产链" in plan
+    assert "### V2-E11：最终验收与发布" in plan
     assert "旧 API 的弃用窗口" not in plan
     assert "并行影子后原子切换" not in plan
     assert "历史兼容解码器" not in plan
+    assert not (ROOT / "docs/V2_plan.md").exists()
+    assert not (ROOT / "docs/score.md").exists()

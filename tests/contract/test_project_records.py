@@ -100,9 +100,8 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     }
     assert set(documents) == {
         "V2.md",
-        "V2_plan.md",
+        "implementation-plan.md",
         "recommendation-strategy.md",
-        "score.md",
         "software-business-design.md",
         "start_stop.md",
         *expected_reports,
@@ -110,29 +109,26 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
 
     design = (docs_root / "software-business-design.md").read_text(encoding="utf-8")
     report = (docs_root / "reports/pipeline-a1-baseline.md").read_text(encoding="utf-8")
-    score_plan = (docs_root / "score.md").read_text(encoding="utf-8")
+    implementation_plan = (docs_root / "implementation-plan.md").read_text(encoding="utf-8")
     v2_plan = (docs_root / "V2.md").read_text(encoding="utf-8")
-    v2_execution_plan = (docs_root / "V2_plan.md").read_text(encoding="utf-8")
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
-    assert "状态：P0-P1 已完成，P2 待执行；非生产契约" in score_plan
-    assert "`docs/recommendation-strategy.md`" in score_plan
-    assert "不自行切换活动策略" in score_plan
+    assert "状态：总计划已建立；V2-E0、Score-R0、Score-R1 已完成" in implementation_plan
+    assert "`docs/recommendation-strategy.md`" in implementation_plan
+    assert "本文是唯一活动施工计划" in implementation_plan
     assert "状态：V2-only 目标已确认" in v2_plan
     assert "`docs/software-business-design.md`" in v2_plan
     assert "`docs/recommendation-strategy.md`" in v2_plan
-    assert "`docs/V2_plan.md`" in v2_plan
-    assert "状态：V2-0 已完成，V2-1 待执行" in v2_execution_plan
-    assert "`docs/V2.md`" in v2_execution_plan
-    assert "`docs/software-business-design.md`" in v2_execution_plan
-    assert "`docs/recommendation-strategy.md`" in v2_execution_plan
-    assert "## V2-0：唯一产品契约重置" in v2_execution_plan
-    assert "## V2-10：删除旧生产链" in v2_execution_plan
-    assert "## V2-11：最终验收与发布" in v2_execution_plan
+    assert "`docs/implementation-plan.md`" in v2_plan
+    assert "`docs/software-business-design.md`" in implementation_plan
+    assert "`docs/recommendation-strategy.md`" in implementation_plan
+    assert "### V2-E0：唯一产品契约重置（已完成）" in implementation_plan
+    assert "### V2-E10：删除旧生产链" in implementation_plan
+    assert "### V2-E11：最终验收与发布" in implementation_plan
     assert "`docs/V2.md` 是用户明确保留的 V2 唯一产品目标概览" in design
-    assert "最多为 60 个不同交易日" in score_plan
-    assert "硬过滤失败股票不保存" in score_plan
+    assert "评价最多 60 个不同交易日" in implementation_plan
+    assert "研究不保存硬拒绝逐股身份" in implementation_plan
     assert "已实施实时与降级基线" in design
     assert "待验证收益路线" in strategy
     assert "docs/celue.md" not in design
@@ -152,7 +148,14 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     assert "G3 已发布" in (docs_root / "reports/pipeline-g3-gate-review.md").read_text(encoding="utf-8")
     assert "G4 已发布" in (docs_root / "reports/pipeline-g4-gate-review.md").read_text(encoding="utf-8")
     assert "G5 已发布" in (docs_root / "reports/pipeline-g5-final-gate.md").read_text(encoding="utf-8")
-    for retired_plan in ("plan.md", "plan_c.md", "plan_sudu.md", "plan_pipeline.md"):
+    for retired_plan in (
+        "V2_plan.md",
+        "score.md",
+        "plan.md",
+        "plan_c.md",
+        "plan_sudu.md",
+        "plan_pipeline.md",
+    ):
         assert not (docs_root / retired_plan).exists()
     assert "docs/need.md" not in design
 
