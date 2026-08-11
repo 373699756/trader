@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增权威文档一致性负向契约，锁定“当前迁移状态”与“最终发布契约”的区分、Today/Tomorrow/D25
+  唯一冻结边界、V2 决策类型，以及迁移流水账和已退役术语不得重新进入两份权威文档。
+
 - V2-E7 新增独立 `LongV2Runtime` 与 `LongRefreshRequest`。固定池定向行情现在由单 worker、单
   latest-wins lane 直接生成统一 `LongProjection` current；投影按 `long_watchlist.json` 顺序
   携带完整名单、唯一分组、价格、涨跌幅、成交额、换手率、总市值、来源、来源时间及
@@ -27,6 +30,10 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- 用户要求先做一次独立“权威文档去历史化与冲突清理”批次。现将两份权威文档收敛为当前
+  有效产品/策略契约：明确 V2-E0 至 E7 已交付、E8 至 E11 未交付，最终 V2-only 状态不再冒充
+  当前代码事实；逐批影子、cutover、v17/P1-P6 施工记录只由 Changelog 和报告保存。
 
 - 用户发送“继续”，要求执行总计划下一个完整未完成章节。本批仅交付 V2-E7“Long 正式接管”：
   Long 从旧 Pipeline snapshot/P6/publisher 切换到统一索引 current projection，计划推进到 E7
@@ -104,6 +111,12 @@ All notable changes to this project are documented here.
   融合、冻结、DeepSeek 预算或 Web 结果。
 
 ### Fixed
+
+- 修正权威文档内部互相冲突的冻结、发布与类型口径：Today 不再出现 11:19:50 检查点或
+  `close_fallback`，Tomorrow/D25 检查点窗口统一为 14:49:20 至 14:50；local/hybrid 统一为
+  `ScoredDecision -> UnifiedDecisionIndex`，Long 使用无评分 `LongProjection`。
+- 修正研究候选乐观上界把已确认本地风险罚分假定为 0 的问题；上界现在扣除不可消失的已知
+  风险罚分，并继续受硬过滤、关键缺失、veto、动作资格和集中度约束。
 
 - 修正 Long 名义上“不评分”但活动生产仍构造带零分 `ScoreBreakdown` 的旧
   `RecommendationSnapshot`、经过 P6/publisher 并占用 Pipeline 自有 worker 的架构冲突。
@@ -210,6 +223,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从权威文档移除已闭合的影子/cutover 章节、版本事故时间线、旧 P1-P6 公共接缝施工细节、
+  旧 API/envelope 兼容说明和重复迁移决策，避免其与 V2 最终契约形成第二套定义。
+
 - 删除旧 `application/long_quotes.py` 及其 legacy snapshot 单元测试；从 Pipeline 移除
   `trader-long-quotes` executor、旧 latest-request lane、Long P6 admission、RuntimeState 发布、
   SnapshotPublisher 推送和 `long_quote_snapshots_published` 路径。Long 不写正式记录、推荐历史、
@@ -256,6 +272,11 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- 权威文档及适用契约测试共 162 项通过；`make format-check`、`make lint`、`make type-check`
+  和 `make package` 通过，Ruff 严格复杂度债务为零，mypy 检查 256 个源码文件。最终 wheel
+  从仓库外目标目录导入，`trader-cli --help`、`validate-config`、`pip check` 及 HTML、CSS、
+  JavaScript、SVG 资源读取通过。本批不改变 Web 或布局，三档桌面视觉验收不适用。
 
 - V2-E7 定向领域、运行时、统一索引、Pipeline 集成和组合根回归覆盖完整固定顺序、分组唯一、
   全字段 current、部分失败、同日 retained、missing 占位、未来/未知报价拒绝、整体行情失败、
@@ -386,6 +407,12 @@ All notable changes to this project are documented here.
   三档桌面视觉验收不适用。
 
 ### Residual Risks
+
+- 本批只清理权威契约，不提前实现 V2-E8 至 E11，也不改变生产代码、运行配置或活动评分。
+  `continuous_entry` 的过渡宽度、`heat_weak_structure` 的准确阈值及研究零分母等机器契约仍须
+  在 Score-R4/R5 对应独立批次中预注册；当前不得据此运行收益比较或晋级。
+  4 worker 全量 pytest 到达 93% 以上且未见失败后按用户“直接 push”指令终止，因此不计为
+  完整全量测试通过证据；后续生产实现批次仍须重新执行完整门禁。
 
 - V2-E7 已闭合，但 V2-only 总计划仍需完成 E8 统一 API/SSE/Web、E9 唯一入口、E10 旧链删除
   和 E11 发布验收；Long current 当前只进入统一索引，统一公开路由和页面消费属于 E8。

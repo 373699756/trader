@@ -52,7 +52,7 @@ def test_score_research_strategy_keeps_production_unchanged_until_manual_release
     strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
 
     assert "weight(lambda) = (1 - lambda) * current_weight + lambda * candidate_weight" in strategy
-    assert "R6 不得复用 P0 的 40+20 评价窗口" in strategy
+    assert "Score-R6 不得 复用 Score-R0 的 40+20 评价窗口" in strategy
     assert "PromotionDossier" in strategy
     assert "研究状态变化不得直接写活动策略配置" in strategy
     assert "DeepSeek 物理 HTTP 请求增量必须为 0" in strategy

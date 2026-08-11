@@ -6,16 +6,17 @@
 
 融合：`fusion_local68_deepseek32`
 
-状态：today、tomorrow、d25、long 活动生产契约
+状态：活动策略契约；V2-only 最终发布边界
 
 本文是候选、过滤、因子、评分、风险、DeepSeek、融合、动作、排名和策略验收的唯一
 权威。产品、架构、时间线、发布、API、运维和工程路线以
 [软件业务设计文档](software-business-design.md) 为准。策略用于研究，不构成投资建议，
 不保证收益，不触发真实交易。
 
-V2 原生决策是唯一活动评分与发布口径。活动运行不得构造或读取旧 `RecommendationSnapshot`；
-旧策略、旧引擎和旧 schema 不由新 release 回放。本文中仍出现的
-P6、旧 snapshot、兼容 envelope 和影子比较只描述当前待替代实现，不构成最终保留要求。
+最终 V2 评分口径只产生 `ScoredDecision`，Long 只产生无评分 `LongProjection`；新 release
+不得构造或读取旧 `RecommendationSnapshot`，也不回放旧策略、旧引擎或旧 schema。当前
+交付已完成 V2-E0 至 V2-E7，统一 Web 与旧链删除尚待 E8 至 E10；迁移期旧链只表示待删除实现，
+不定义候选、公式、风险、融合、动作或排名。历史问题与实施过程只进入 `CHANGELOG.md` 和报告。
 
 ## 1. 策略目标与共同纪律
 
@@ -49,9 +50,9 @@ tomorrow 是目标架构唯一最高优先级的生产选择任务，在交易�
 
 DeepSeek 继续参与融合分，但只能复核候选池内股票、返回经 schema 与证据校验的 facts，
 不能放宽硬过滤、引入池外股票或用自由文本直接扣分。正式融合在新挑战者通过样本外和
-前向影子门禁前继续使用当前固定 68/32 公式。DeepSeek 物理请求中，
-tomorrow 独占正常目标 36、硬上限 66；失败、超时和重试同样计数，耗尽后保留 local
-决策，不阻塞发布或冻结。
+前向影子门禁前继续使用当前固定 68/32 公式。普通阶段全策略合计目标 36、硬上限 66，
+其中 tomorrow 独占目标 21、硬上限 38；失败、超时和重试同样计数，耗尽后保留 local
+决策，不阻塞发布或冻结。独立 emergency 桶和全局 168 次灾难保护线以第 11 节为准。
 
 ## 2. 板块身份与交易规则
 
@@ -210,7 +211,7 @@ Tushare SDK `daily` 批量数据必须标记 `raw`/`unadjusted_daily`，不得�
 转元），东方财富前复权作为第二回退。历史不足 20 个有效交易日的
 代码记录为 `history_warming`，不得作为有效候选，也不得清除上一份有效推荐；已成功的
 单只历史立即进入下一次筛选，同批其他代码超时不能回滚。达到策略数据条件后必须继续
-完成硬过滤、九组预选、三板评分、全局 TopK 和 P6 发布，不能停在行情或历史内存池。
+完成硬过滤、九组预选、三板评分、全局 TopK 和统一决策提交，不能停在行情或历史内存池。
 生产 `versioned_dag` 只在候选行情、市场新闻或公司风险输入完成后触发评分；同一输入链
 尚未开始的旧评分由新 `data_version` 替换，不再与周期评分重复排队。已经开始的评分可
 完成，但冻结 CAS 和基础快照身份仍拒绝迟到结果。三板单 worker 通道的 latest-wins
@@ -241,7 +242,7 @@ DeepSeek 请求或尾盘分钟增强。
 0.85 时允许完成降级计算，但观察动作只保留在本轮内存，最终固化正式推荐为空，不得提升
 为可执行或进入 DeepSeek。
 若一轮全市场硬过滤因 `history_warming`、缺失/非法流动性历史或行情接收时间陈旧而全部
-为空，P3 必须保留最近有效候选身份并记录降级，等待候选定向报价与历史预热恢复；只有
+为空，候选状态必须保留最近有效身份并记录降级，等待候选定向报价与历史预热恢复；只有
 存在完成数据条件的股票且仍无候选时，才允许用真实空结果替换候选池。保留身份不得绕过
 后续原始 `source_time` 新鲜度、硬过滤、评分或动作门。
 
@@ -287,7 +288,7 @@ d25 禁止再用 `base_score * overheat_factor * market_regime_factor` 双乘。
 
 ### 7.1 确定性入场质量
 
-v17 为 tomorrow 和 d25 增加 `entry_quality`，取缩量回踩与放量突破两类确定性形态的
+tomorrow 和 d25 的 `entry_quality` 取缩量回踩与放量突破两类确定性形态的
 较高值。热度本身不阻止入选；只有形态、下行保护和既有硬过滤共同决定是否可执行。
 
 - 缩量回踩：`MA5 >= MA10 >= MA20`、MA20 斜率向上，价格距离 MA5 不超过 1% 或距离
@@ -352,7 +353,7 @@ current、冻结和恢复身份均与 D25 隔离。
 long 不是荐股策略，不计算价值、成长、质量、风险保护或任何旧长期评分，不调用
 DeepSeek，不执行 TopK/行业集中度选择，也不把研究字段缺失标记为策略降级。long 只从
 版本控制的 `long_watchlist.json` 读取固定股票池和分组，按配置顺序生成 `observe` 观察项，
-不生成评分字段并标记 `score_status=not_applicable`。long 不借用评分字段维持旧 Web envelope，
+不生成评分字段并标记 `score_status=not_applicable`。long 不借用评分字段伪造荐股决策形状，
 也不代表投资判断。运行时不得把 long 送入任何策略评分或 finalize 链。
 
 long 固定池的准入语义是“长期潜力赛道中的头部或弹性龙头观察标的”：卡脖子行业优先
@@ -398,7 +399,7 @@ long 完整当前快照从固定池定向行情专线携带价格、涨跌幅、
 
 #### 7.3.1 long v2 原生当前投影
 
-long v2 只发布 `LongProjection` current，不生成 `RecommendationSnapshot` 或任何评分 envelope。
+long v2 只发布 `LongProjection` current，不生成任何荐股评分或动作 envelope。
 投影按 `long_watchlist.json` 项目顺序保留完整固定名单，每个代码必须且只能映射到一个配置分组；
 同轮可用报价标记 `live`，同交易日最近有效报价标记 `retained`，无有效报价标记 `missing`。
 部分失败、整体失败、未来报价、未知代码或非正价格均不得自动换股，也不得删除席位、缩短
@@ -441,7 +442,7 @@ long current 的 `score_status` 固定为 `not_applicable`，item 只包含固�
 | `liquidity_contraction` | 通过绝对成交额门后相对流动性骤降 | 3 |
 | `trend_breakdown` | 价格、MA5/MA20 和短期收益共同破位 | 3 |
 
-### 9.1 v17 下行保护
+### 9.1 活动下行保护
 
 融合公式保持不变，下行保护在融合后、动作和 TopK 前独立执行。保护结果为 `pass` 或
 `observe`，高分和高热度不能覆盖 `observe`。下列任一条件将可执行候选降为观察：
@@ -583,7 +584,7 @@ shared preheat `2/4`、today main `3/5`、today late `2/3`、tomorrow morning
 `6/10`、afternoon `10/18`、final `5/10`、d25 morning `2/4`、afternoon `4/8`、
 final `2/4`、emergency `0/5`。未用额度不得从后段倒借给前段，确保 tomorrow 最终补审
 仍有独立空间。
-long 不保留兼容策略槽或阶段槽，物理请求始终为 0。
+long 不保留策略评分槽或模型阶段槽，物理请求始终为 0。
 
 today 主审与挑战者均在 11:18 停止提交并受 11:20 冻结 compare-and-set 保护；
 tomorrow/d25 的主审、挑战者和 emergency 均在 14:46 停止提交，14:48 后拒绝所有新请求。
@@ -613,7 +614,7 @@ tomorrow/d25 的主审、挑战者和 emergency 均在 14:46 停止提交，14:4
 原始 facts 缓存键至少包含股票、交易日、阶段、证据 manifest、模型、thinking 模式、
 prompt、schema 和配置版本，不包含普通报价 `data_version`；同股跨 today/tomorrow/d25
 在证据 manifest 未变时共享同一原始 facts。普通价格 change 命中缓存时只触发本地投影、
-融合和 P6/SSE 发布，不新增 DeepSeek HTTP；证据、结构化风险、模型、prompt、schema 或
+融合和决策/SSE 发布，不新增 DeepSeek HTTP；证据、结构化风险、模型、prompt、schema 或
 配置版本改变才进入复核路由。动作和策略解释必须按策略隔离。缓存淘汰不回退已发生的
 预算计数。
 
@@ -640,10 +641,11 @@ schema、证据与本地规则映射的独立 veto 仍可保持更保守动作�
 生产排序固定为：`final_score` 降序、`local_score` 降序、股票代码升序。模型评级、
 置信度、挑战状态和自由文本不得改变同分顺序。
 
-本地评分完成后必须立即生成并尝试接纳 `projection_stage=local` 的 P6/SSE 快照，不能等待
-DeepSeek。复核结果随后只对未冻结的同日草稿生成 `projection_stage=hybrid` 重发布；两阶段
-必须有不同 `snapshot_id`/ETag，迟到结果不得覆盖冻结或更新版本。失败、超时、预算耗尽或
-空响应保留已经发布的本地版。long 永远只发布 local，不调用 DeepSeek。
+本地评分完成后必须立即生成 local `ScoredDecision` 并尝试提交 `UnifiedDecisionIndex`，不能
+等待 DeepSeek。复核结果随后只对未冻结、仍为 current 的同日 local 父版本生成 hybrid
+`ScoredDecision`；两阶段必须有不同决策版本和 ETag，迟到结果不得覆盖冻结或更新版本。
+失败、超时、预算耗尽或空响应保留已经发布的 local。`LongProjection` 不含评分阶段且不调用
+DeepSeek。
 
 活动动作阈值：
 
@@ -653,16 +655,16 @@ DeepSeek。复核结果随后只对未冻结的同日草稿生成 `projection_st
 - d25：`final_score >= 76` 可执行；
 - 距对应门槛 5 分以内为观察，其余不可执行。
 
-可执行项还必须通过硬过滤、时间窗口、新鲜度、周期匹配且无 veto。`close_fallback` 的
-today 使用 today_late 门槛，tomorrow/d25 使用各自正常门槛；已有正式记录冻结后动作
+可执行项还必须通过硬过滤、时间窗口、新鲜度、周期匹配且无 veto。Tomorrow/D25 的
+`close_fallback` 使用各自正常门槛；Today 不允许 `close_fallback`。已有正式记录冻结后动作
 不可改变。
 旧动作和旧阈值只供带旧策略/引擎/schema 身份的冻结回放，不得成为活动默认值。
 
-### 12.1 tomorrow v2 local/hybrid DecisionEpoch
+### 12.1 tomorrow v2 local/hybrid ScoredDecision
 
-tomorrow v2 本地选择完成后先生成 local `DecisionEpoch`，其 `final_score=local_score`；
+tomorrow v2 本地选择完成后先生成 local `ScoredDecision`，其 `final_score=local_score`；
 存在至少一个合法 `applied/abstain` 结果时，再生成引用 local 父版本的 hybrid
-`DecisionEpoch`。逐股只对合法 review 执行固定 68/32 和本地证据规则映射的模型风险；
+`ScoredDecision`。逐股只对合法 review 执行固定 68/32 和本地证据规则映射的模型风险；
 缺失、拒绝、迟到和池外 review 不改变本地分，也不能创建模型 penalty 或 veto。固定向量
 仍必须为 `83.40`，本地风险只扣一次。epoch 完整条目固定只覆盖每板最多 120 只、全局最多
 360 只已评分候选；其余全市场过滤结果以总数和原因计数保存。
@@ -680,7 +682,7 @@ tomorrow v2 本地选择完成后先生成 local `DecisionEpoch`，其 `final_sc
 ### 12.2 tomorrow v2 风险事实时间规范化
 
 tomorrow v2 原生输入接受任意带时区、且不晚于本次评估时间的点时特征，但进入本地风险
-推导和 `DecisionEpoch` 前必须把候选特征、报价、证据及外部风险事实的时间转换为
+推导和 `ScoredDecision` 前必须把候选特征、报价、证据及外部风险事实的时间转换为
 `Asia/Shanghai`；全市场人口在组装规范 market epoch 时完成同样转换。该转换只统一同一
 绝对时刻的表示，不改变证据年龄、风险事实身份、触发规则、罚分、veto 或排序；仅时区表示
 不同的输入必须产生相同本地风险事实和决策结果。
@@ -701,9 +703,8 @@ DeepSeek review 继续在既有 schema、证据和截止校验后独立规范化
 物化的数据平面 epoch。相同规范输入、策略和 sequence 必须得到相同本地决策版本；直投影
 前后候选代码、local score、风险事实、动作、排名和硬拒绝计数必须完全一致。
 
-历史迁移门禁比较 v1/v2 硬过滤计数时，仅从 v1 剔除非硬拒绝诊断 `history_warming`，然后按
-原因名称和计数严格比较；不得忽略其他额外、缺失或计数不同的原因。选股结果按正式排名
-后的代码元组严格比较，顺序变化仍是不一致。发布和决策年龄从原生批次
+确定性一致性按规范输入、策略和 sequence 复算：硬过滤原因名称与计数、选股结果和正式排名
+后的代码元组都必须完全一致，顺序变化仍是不一致。发布和决策年龄从原生批次
 `evaluated_at` 起算，行情自身的新鲜度继续由点时过滤和特征审计约束。
 
 ### 12.4 tomorrow v2 临时空集与风险覆盖作用域
@@ -721,7 +722,7 @@ tomorrow v2 必须在本地 decision 生成后、CAS 前按显式候选集合判
 候选判断；缺失时仍可计算本地分，但 disposition 固定为 `observe_only`，不能进入
 DeepSeek 或正式执行池。板块身份、上市日期和上市交易日龄同样只在候选作用域决定动作
 资格；没有真实免费主数据时禁止补造。过滤审计必须分别输出 population 与 candidate
-计数，聚合总数只作兼容展示，不能作为切换门禁或空集性质判断的唯一证据。
+计数，聚合总数只作摘要展示，不能作为空集性质判断的唯一证据。
 
 ### 12.5 today v2 local/hybrid 与冻结
 
@@ -731,7 +732,7 @@ Today 原生输入直接使用本章既有候选、板内策略、本地风险�
 current 的同日 local 父版本；11:18 起停止新提交，完成时间等于或晚于 11:20 的结果一律迟到。
 
 11:20 精确关闭 Today 决策日：有不晚于边界的 current 时只冻结 official-only 投影；没有时
-保持 `not_ready`。边界时或之后启动不得用启动检查点、P6 或收盘行情补造 Today，同日也不允许
+保持 `not_ready`。边界时或之后启动不得用启动检查点、旧发布链或收盘行情补造 Today，同日也不允许
 `close_fallback`。已有正式记录不可被重新评分；后续行情只更新报价 overlay，且只覆盖正式入选
 代码，不改变股票、分数、风险、动作和排名。
 
@@ -771,9 +772,9 @@ long 使用固定研究池和当前报价，不参与三策略 TopK、最终集�
 决策投影、正式条目字段一致性和发布门禁保证。
 
 today 11:20、tomorrow/d25 14:50 后，迟到行情、模型结果、风险和补算不得改变已经存在的
-记录或 JSON。today 在 11:20 冻结时立即持久化；错过该边界后不得通过启动检查点、P6 或
+记录或 JSON。today 在 11:20 冻结时立即持久化；错过该边界后不得通过启动检查点、旧发布链或
 收盘行情追补，15:00 只为已有正式记录保存报价 overlay。tomorrow/d25 同日记录缺失时，
-连续运行直接保留本次进程 P6 的股票、分数、动作和排名并换入收盘锚点，冷启动则先查数据库，仍
+连续运行直接保留本次进程 V2 current 的股票、分数、动作和排名并换入收盘锚点，冷启动则先查正式记录，仍
 缺失才用完整同日收盘行情重新执行硬过滤、九组预选、三板本地评分和 TopK。冷启动补算
 不新增 DeepSeek HTTP，结果标记 `close_fallback`、`official_close` 和 `local_only` 后进入
 正常历史；提交后不可覆盖。新 release 只读取当前 V2 schema 的冻结记录，不导入或解释
@@ -783,7 +784,7 @@ today 11:20、tomorrow/d25 14:50 后，迟到行情、模型结果、风险和�
 前已经封存的相同对象；进程在边界时刻或之后才创建时，today 永久记为 missed，
 tomorrow/d25 仅在 14:50（含）至 15:00（不含）可恢复有效检查点，15:00 起只走
 `close_fallback` 判断。每个 `FreezeAttempt` 先完成 official-only 投影并固定 snapshot/decision
-ID、规范载荷和 SHA-256；队列拒绝、SQLite/JSON 临时错误或 P6 暂时拒绝只能按
+ID、规范载荷和 SHA-256；队列拒绝、SQLite/JSON 临时错误或正式记录提交暂时失败只能按
 1/2/5/10/30 秒重试这一对象，不得重新评分、重新选择或让收盘补算抢占 pending 14:50
 attempt。不同内容争用相同策略交易日时必须冲突并停止自动重试。
 
@@ -799,7 +800,7 @@ deadline 前完成的 hybrid 已经接纳则冻结 hybrid，否则冻结 local�
 锚点只覆盖这些正式代码，价格必须为正且来源时间不能晚于冻结提交时间。正常冻结和检查点
 恢复沿用决策内点时报价；`close_fallback` 使用正式代码的显式同日收盘锚点，但不得改变
 正式决策的分数、动作、排名或风险。
-冷启动收盘补算只能提交 local，不能新增或复用一次新的 DeepSeek HTTP；运行中 P6 固化可
+冷启动收盘补算只能提交 local，不能新增或复用一次新的 DeepSeek HTTP；运行中 V2 current 固化可
 保持边界前已经合法接纳的 hybrid。
 
 检查点、正式冻结和 `close_fallback` 都绑定决策内容哈希、配置/策略/融合/schema 版本和
@@ -828,15 +829,15 @@ T+1 的严重回撤定义为 `MAE/ATR20 <= -1.5`，d25 定义为 `MAE/ATR20 <= -
 公式、连续入场形态分、热度与弱结构组合观察规则、候选召回率审计或配对 bootstrap 晋级；
 运行配置名称中的版本号也不表示这些策略变体已经上线。
 
-本轮 P0（评分科学化研究，非生产）已预注册以下固定边界，先实现契约与审计再切入实现：
+Score-R0（评分科学化研究，非生产）已预注册以下固定边界，先实现契约与审计再切入实现：
 
 - 研究评价固定最多 60 个不同交易日，不允许“挑日”与“后验参数重估”；
 - 固定为最多 40 个历史回放交易日 + 20 个连续前向影子交易日；
 - 研究链只对硬过滤通过总体做逐股审计，硬过滤失败的逐股数据不纳入候选/评分/收益轨迹；
 - 目标变体为 `continuous_entry`、`coverage_shrink`、`candidate_upper_bound`、`heat_weak_structure`
-  与 `combined_v1`，先并行补齐研究端口与固定决策轨迹（不改本地、冻结、P6、Web）。
+  与 `combined_v1`，先并行补齐研究端口与固定决策轨迹（不改活动决策、冻结、发布或 Web）。
 
-P0 的窗口和统计常量固定如下，后续批次不得根据收益修改：
+Score-R0 的窗口和统计常量固定如下，后续批次不得根据收益修改：
 
 - 历史主窗口为 2026-06-15（含）至 2026-08-10（含），按当时有效的 A 股交易日历应覆盖
   40 个交易日；2026-06-19 休市，不得生成样本。主窗口内点时输入无效或缺失时，按交易日历
@@ -871,16 +872,17 @@ tomorrow v2 必须先在不可变点时输入上补齐紧凑决策轨迹，至�
 缺失、板块可靠度、本地组件和风险、DeepSeek 参与与结构化扣分、动作/下行保护、TopK
 跳过原因，以及数据、配置、规则、策略、融合、schema 和引擎版本。同一输入同时生成当前
 生产基线和不影响正式快照的影子结果；影子复用已有 DeepSeek facts，不得增加物理 HTTP
-请求、修改 P6、冻结记录、冻结 JSON 或普通推荐响应。
+请求、修改统一决策索引、冻结记录、冻结 JSON 或普通推荐响应。
 
-P1 的配对版本固定为 `production_local` 与 `research_shadow`。后者只复用本输入已经存在且
+Score-R1 的配对版本固定为 `production_local` 与 `research_shadow`。后者只复用本输入已经存在且
 通过 schema/证据校验的结构化 facts；没有可复用 facts 时保存 control 副本。
 每个 `input_version` 只保存一条配对轨迹，不复制候选输入；不得新增 DeepSeek 物理请求。
 硬过滤通过逐股最小轨迹包含候选组件、候选字段缺失掩码、覆盖率、板块
 可靠度、候选分/排名、生产 Top120 身份和生产预选状态；已进入完整评分集合的股票再记录
 本地组件、组件覆盖率、基础分、本地风险代码/扣分、本地分、融合状态、结构化模型风险代码、
-动作、排名和跳过原因。P2 才计算乐观上界和上界保护集合，P1 必须以 `not_computed` 明示，
-不得用默认满分或当前最终分伪装上界。研究轨迹不参与生产排序、动作、P6、冻结、API 或收益结算。
+动作、排名和跳过原因。Score-R2 才计算乐观上界和上界保护集合，Score-R1 必须以
+`not_computed` 明示，不得用默认满分或当前最终分伪装上界。研究轨迹不参与生产排序、动作、
+统一决策提交、冻结、API 或收益结算。
 
 第一轮只允许预注册并分别验证以下变体，禁止边运行边试参：
 
@@ -916,7 +918,7 @@ DeepSeek 融合还必须证明相对 local-only 的独立增益，未通过时�
 
 #### 15.1.1 研究身份、状态与生产隔离
 
-P0 研究身份固定为 `score_p0_v1`。一次研究决策必须同时绑定研究 spec、交易日、观察点、
+Score-R0 研究身份固定为 `score_p0_v1`。一次研究决策必须同时绑定研究 spec、交易日、观察点、
 `input_version`、生产 `decision_version`，以及数据、日历、规则、配置、策略、融合、schema、
 引擎和统计版本；规范载荷生成 SHA-256，写入时钟、文件路径和执行顺序不得参与内容哈希。
 研究状态固定为：
@@ -971,16 +973,20 @@ coverage_shrunk_score = 50 + coverage * (known_weighted_mean - 50)
 
 ```text
 optimistic_component_score = sum(known_weight * known_score) + sum(missing_weight * 100)
-local_upper_bound = clamp(optimistic_component_score, 0, 100)
+mandatory_known_local_risk_penalty = sum(confirmed_non_disappearing_local_risk_penalties)
+local_upper_bound = clamp(optimistic_component_score
+                          - mandatory_known_local_risk_penalty, 0, 100)
 hybrid_upper_bound = clamp(local_upper_bound * 0.68
                            + recorded_deepseek_score * 0.32
                            - recorded_deepseek_risk_penalty, 0, 100)
 ```
 
-上界假定未知一般组件取允许最大值、本地风险最小扣分为 0，但不得假定硬过滤、关键缺失或已确认
-风险消失。有合法可复用 DeepSeek facts 时，hybrid 上界使用既有 `deepseek_score` 和已验证模型
-风险扣分代入固定 68/32 公式；没有 facts 时 `hybrid_upper_bound = local_upper_bound`，不得假设一次
-新的模型满分。
+上界假定未知一般组件取允许最大值，但不得假定已确认风险消失。`mandatory_known_local_risk_penalty`
+只汇总在该点时身份下即使未知组件取最优值也仍然成立、且不会被字段补齐撤销的本地风险扣分；
+可被后续合法证据解除的风险必须以状态分支分别计算上界，不能直接归零。硬过滤、关键缺失、veto、
+`observe_only`、动作资格和集中度约束始终生效，不能通过分数上界绕过。有合法可复用 DeepSeek
+facts 时，hybrid 上界使用既有 `deepseek_score` 和已验证模型风险扣分代入固定 68/32 公式；没有
+facts 时 `hybrid_upper_bound = local_upper_bound`，不得假设一次新的模型满分。
 
 候选召回保护使用约束感知 `active-set`，不得采用事后分差或固定多取若干只：
 
@@ -1016,7 +1022,7 @@ TopK 微平均计算；证明排除项属于 oracle 已证实不可能入选的�
    高热带、弱收盘、尾盘和回撤的准确阈值必须在收益读取前签入本文和机器契约。
 5. `combined_v1`：同时启用上述四项，除此之外不得包含隐藏权重、额外阈值或新的风险规则。
 
-R4 在过渡宽度和弱结构阈值尚未完成预注册前只能实现类型、注册表和失败契约，不得运行收益比较；
+Score-R4 在过渡宽度和弱结构阈值尚未完成预注册前只能实现类型、注册表和失败契约，不得运行收益比较；
 参数一经进入首个历史回放 manifest 即冻结，后续不得根据收益修改。
 
 #### 15.1.4 同日同股收益与每日组合口径
@@ -1093,9 +1099,9 @@ Spearman Rank IC 必须大于 0；若最高分组相对最低分组的严重回�
 
 #### 15.1.7 第二轮权重、风险与门槛研究
 
-R6 只有至少一个 P0 结构挑战者进入 `promotion_eligible` 后才能建立，并必须先创建新的研究身份、
-日期窗口、训练/验证切分、候选网格、目标函数和确定性平局规则。R6 不得复用 P0 的 40+20 评价窗口，
-也不得把 P0 前向结果重新当训练集。
+Score-R6 只有至少一个 Score-R0 结构挑战者进入 `promotion_eligible` 后才能建立，并必须先创建
+新的研究身份、日期窗口、训练/验证切分、候选网格、目标函数和确定性平局规则。Score-R6 不得
+复用 Score-R0 的 40+20 评价窗口，也不得把 Score-R0 前向结果重新当训练集。
 
 候选权重必须非负且精确合计 1，并通过下式向当前生产权重收缩：
 
@@ -1160,5 +1166,5 @@ hybrid 相对 local-only 使用同日同股和相同组合口径另做增量检�
 - 不进行运行时自动调权、自动晋级、在线学习或看完结果后切换动量/反转。
 - 不引入多智能体生产编排、第三方项目的交易结论、券商连接或真实下单。
 - 不把 `flow_proxy` 解释为不可验证的主力或机构资金。
-- 不把历史回测、shadow 审计或社区 Star 当作生产收益证据。
+- 不把历史回测、研究审计或社区 Star 当作生产收益证据。
 - 不为补满 TopK 放宽质量门，不把缺失值伪装成 0 或真实中性观测。

@@ -203,7 +203,8 @@ def test_final_refactor_plan_is_retired_and_strict_debt_is_closed() -> None:
     expected_assignment = quality_script.split("EXPECTED_COUNTS:", 1)[1].split("\n", 1)[0]
 
     assert not (PROJECT_ROOT / "docs" / "plan.md").exists()
-    assert "原全工程重构第 2.1-2.6 节全部闭合" in design
+    assert "原全工程重构第 2.1-2.6 节全部闭合" not in design
+    assert "迁移过程、事故复盘和逐批实现" in design
     assert "{}" in expected_assignment
 
 

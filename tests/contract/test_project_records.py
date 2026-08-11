@@ -30,13 +30,14 @@ def test_each_pipeline_documents_user_problem_and_change_summary() -> None:
         assert "CHANGELOG.md" in contract
 
 
-def test_tomorrow_v2_api_sse_web_delivery_contract_is_recorded() -> None:
+def test_final_v2_api_sse_web_contract_and_current_delivery_state_are_recorded() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "### 2.6 tomorrow v2 API/SSE/Web 交付边界" in design
-    assert "UnifiedDecisionIndex -> UnifiedTomorrowDecisionQueries -> /api/v2" in design
-    assert "`GET /api/v2/tomorrow/current`" in design
-    assert "`GET /api/v2/tomorrow/history?date=YYYY-MM-DD`" in design
+    assert "### 2.6 V2 查询与发布目标" in design
+    assert "UnifiedDecisionIndex -> application queries -> /api/v2 -> SSE -> Web" in design
+    assert "GET /api/v2/decisions/<strategy>/current" in design
+    assert "GET /api/v2/decisions/<strategy>/history?date=YYYY-MM-DD" in design
+    assert "统一公开外壳尚未交付" in design
     assert "publisher 不等待客户端消费" in design
     assert "`bootstrap.py`" in design
     runner = PROJECT_ROOT / "tests/performance/run_tomorrow_v2_browser.py"
@@ -130,7 +131,8 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     assert "`docs/V2.md` 是用户明确保留的 V2 唯一产品目标概览" in design
     assert "评价最多 60 个不同交易日" in implementation_plan
     assert "研究不保存硬拒绝逐股身份" in implementation_plan
-    assert "已实施实时与降级基线" in design
+    assert "迁移过程、事故复盘和逐批实现" in design
+    assert "已实施实时与降级基线" not in design
     assert "待验证收益路线" in strategy
     assert "docs/celue.md" not in design
     assert "docs/hi.md" not in design
@@ -190,7 +192,8 @@ def test_authoritative_docs_define_ephemeral_observation_lifecycle() -> None:
         assert "`close_fallback`" in contract
     assert "不可变空记录" in design
     assert "不得用观察项补位" in design
-    assert "回测" in design
+    assert "回测" not in design
+    assert "回测" in strategy
 
 
 def test_authoritative_docs_define_startup_and_shutdown_lifecycle() -> None:
@@ -222,8 +225,8 @@ def test_authoritative_docs_define_the_v2_native_rebuild_contract() -> None:
         "MarketEpoch",
         "CandidateQuoteEpoch",
         "ResearchEpoch",
-        "DecisionEpoch",
-        "CurrentDecisionIndex",
+        "ScoredDecision",
+        "UnifiedDecisionIndex",
         "GET /api/v2/decisions/<strategy>/current",
         "GET /api/v2/decisions/<strategy>/history?date=YYYY-MM-DD",
         "GET /api/v2/decisions/<strategy>/dates",
@@ -247,7 +250,8 @@ def test_authoritative_docs_define_the_v2_native_rebuild_contract() -> None:
         "20 个连续计划交易日",
         "前向阶段至少 100 条",
         "DeepSeek 继续参与融合分",
-        "tomorrow 独占正常目标 36、硬上限 66",
+        "普通阶段全策略合计目标 36、硬上限 66",
+        "tomorrow 独占目标 21、硬上限 38",
     ):
         assert statement in strategy
     assert "历史回放最多 40 个" in strategy
@@ -263,7 +267,7 @@ def test_authoritative_design_defines_free_hedged_full_market_route() -> None:
         "先提交东方财富",
         "若东方财富失败或 1 秒仍未完成，立即提交新浪",
         "任一来源先返回",
-        "完整有效结果就原子发布 P2",
+        "完整有效结果就原子发布统一全市场索引",
         "3 次熔断 30 秒",
         "`physical_failure_count`",
         "`circuit_skipped_count`",
@@ -275,44 +279,35 @@ def test_authoritative_design_defines_free_hedged_full_market_route() -> None:
 def test_v2_rebuild_contract_is_direct_replacement_without_legacy_runtime() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "V2 是唯一活动产品链路" in design
+    assert "V2-only 最终 release 边界" in design
+    assert "V2-E8 至 V2-E11 尚未交付" in design
     assert "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema" in design
     assert "V2 唯一运行目录固定为 `.runtime/v2`" in design
     assert "不得提供旧 API 别名、重定向、弃用窗口、双读或双写" in design
     assert "旧 release 只能与其对应旧运行目录整体回退" in design
 
 
-def test_tomorrow_native_pipeline_contract_runs_before_v1_scoring() -> None:
+def test_superseded_native_pipeline_migration_chronology_is_not_authoritative() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    for statement in (
-        "tomorrow v2 原生输入驱动流水线交付边界",
-        "`TomorrowNativeInput`",
-        "再把同批",
-        "`RecommendationEngine.prepare_snapshot`",
-        "单 latest-wins 待处理槽",
-        "不包含后到的 v1 snapshot ID 或已校验 review 集合",
-        "已经发布的同输入 local 不得重复评分或换身份",
-        "不执行生产读写指针切换",
-    ):
-        assert statement in design
+    assert "tomorrow v2 原生输入驱动流水线交付边界" not in design
+    assert "`RecommendationEngine.prepare_snapshot`" not in design
+    assert "V2-E0 至 V2-E7 已把统一数据平面" in design
+    compact = " ".join(design.split())
+    assert "迁移期旧链仅可向已接管 策略提供同批不可变原生输入" in compact
 
 
-def test_tomorrow_cutover_evidence_contract_is_durable_and_pre_cutover() -> None:
+def test_superseded_cutover_evidence_chronology_is_not_authoritative() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     for statement in (
         "tomorrow v2 切换证据持久化与离线复核交付边界",
         "tomorrow-shadow-evidence.sqlite3",
-        "最近 4096 条",
-        "`evidence_persistence_failed`",
-        "`incomplete_trade_day`",
         "`trader-cli tomorrow-cutover-evidence`",
         "`--require-eligible`",
-        "不能自行证明样本来自真实完整交易日",
-        "本节不执行生产读写指针切换",
     ):
-        assert statement in design
+        assert statement not in design
+    assert "shadow、cutover、baseline 对比" in design
 
 
 def test_tomorrow_data_plane_retention_is_documented_but_not_implemented() -> None:
@@ -330,11 +325,11 @@ def test_tomorrow_deepseek_fusion_boundary_is_explicit() -> None:
     strategy = (PROJECT_ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
 
     for statement in (
-        "tomorrow v2 DeepSeek 融合交付边界",
+        "tomorrow v2 DeepSeek 融合契约",
         "同一只读快照",
-        "local `DecisionEpoch`",
-        "hybrid `DecisionEpoch`",
-        "不实现 `CurrentDecisionIndex`、冻结、v2 API/SSE/Web",
+        "local `ScoredDecision`",
+        "hybrid `ScoredDecision`",
+        "融合结果只提交 `UnifiedDecisionIndex`",
     ):
         assert statement in design
     for statement in (
@@ -353,15 +348,15 @@ def test_tomorrow_decision_index_and_freeze_boundary_is_explicit() -> None:
     source = PROJECT_ROOT / "src/trader"
 
     for statement in (
-        "tomorrow v2 决策索引与冻结交付边界",
+        "tomorrow v2 决策索引与冻结",
         "`UnifiedDecisionIndex`",
         "`ScoredDecision`",
         "`V2DecisionCheckpoint`",
         "原子封口",
         "本用例不抓行情、不评分、不调用 DeepSeek",
-        "不再读取旧 P6 baseline",
     ):
         assert statement in design
+    assert "旧 P6 baseline" not in design
     for statement in (
         "tomorrow v2 冻结选择与锚点",
         "`observed_at <= 14:50`",
@@ -391,7 +386,7 @@ def test_recommendation_availability_regression_matrix_is_permanent() -> None:
         assert state in matrix
     assert "热运行" in matrix
     assert "冷启动" in matrix
-    assert "重启真实" in matrix
+    assert "启动真实" in matrix
     assert "未替换旧进程" in matrix
 
 
@@ -444,14 +439,14 @@ def test_authoritative_docs_match_active_scoring_and_runtime_behavior() -> None:
     assert strategy_config["selection"]["minimum_board_reliability"] == 0.85
     assert "板块人口不足" in persistence
     assert "没有正式推荐时仍创建" in persistence
-    assert "冻结当前、`close_fallback` 和显式历史只返回最多 6 项" in " ".join(web.split())
+    compact_web = " ".join(web.split())
+    assert "冻结当前、 `close_fallback` 和显式历史只返回最多 6 项" in compact_web
 
-    p6_capacity = runtime["market_data"]["cache_policy"]["datasets"]["published_recommendation_view"]["capacity"]
-    assert f"published_recommendation_view.capacity={p6_capacity}" in cache_limits
-    assert "`4 + 20 * 3 = 64`" in cache_limits
-    assert "活动 `/api/status` 只承诺代码已经聚合的运行事实" in observability
-    assert "不承诺尚未实现的平均批次大小" in observability
-    assert "`trader-cli perf-check` 及发布验收报告提供" in observability
+    assert runtime["market_data"]["cache_policy"]["datasets"]["published_recommendation_view"]["capacity"] == 72
+    assert "旧 Pipeline 阶段编号" in cache_limits
+    assert "`GET /api/v2/status`" in observability
+    assert "不承诺尚未 实现的指标" in " ".join(observability.split())
+    assert "`trader-cli perf-check` 及发布验收报告提供" in " ".join(observability.split())
 
 
 def _section(path: Path, start: str, end: str) -> str:

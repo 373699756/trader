@@ -5,11 +5,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_authoritative_design_requires_one_v2_product_chain_without_runtime_compatibility() -> None:
+def test_authoritative_design_requires_one_final_v2_product_chain_without_runtime_compatibility() -> None:
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     for statement in (
-        "V2 是唯一活动产品链路",
+        "V2-only 最终 release 边界",
+        "当前交付状态：V2-E0 至 V2-E7 已完成，V2-E8 至 V2-E11 尚未交付",
         "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema",
         "V2 唯一运行目录固定为 `.runtime/v2`",
         "旧 release 只能与其对应旧运行目录整体回退",
@@ -25,14 +26,15 @@ def test_authoritative_design_requires_one_v2_product_chain_without_runtime_comp
 
 def test_strategy_contract_requires_v2_native_decisions_and_no_legacy_replay() -> None:
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    compact = " ".join(strategy.split())
 
     for statement in (
-        "V2 原生决策是唯一活动评分与发布口径",
-        "活动运行不得构造或读取旧 `RecommendationSnapshot`",
-        "旧策略、旧引擎和旧 schema 不由新 release 回放",
-        "long 不借用评分字段维持旧 Web envelope",
+        "最终 V2 评分口径只产生 `ScoredDecision`",
+        "新 release 不得构造或读取旧 `RecommendationSnapshot`",
+        "不回放旧策略、旧引擎或旧 schema",
+        "long 不借用评分字段伪造荐股决策形状",
     ):
-        assert statement in strategy
+        assert statement in compact
 
 
 def test_v2_execution_plan_has_no_compatibility_or_shadow_cutover_batch() -> None:

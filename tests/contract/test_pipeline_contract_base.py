@@ -8,13 +8,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def test_pipeline_dual_memory_contract_is_authoritative() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "P1-P6 逻辑缓存载荷" in design
+    assert "`cache_logical_bytes`" in design
     assert "248 MiB" in design
-    assert "迁移期进程峰值 RSS" in design
+    assert "`process_peak_rss_bytes`" in design
     assert "384 MiB（402,653,184 字节）" in design
-    assert "`process_peak_rss_bytes <= 402653184`" in design
-    assert "不得把多出的 136 MiB 分给缓存" in design
-    assert "用 Python 分配或逻辑缓存估算代替 RSS 峰值" in design
+    assert "不得把 136 MiB 差额分给缓存" in design
+    assert "不得用 Python 分配量或逻辑缓存估算代替 RSS 峰值" in design
 
 
 def test_pipeline_public_seams_keep_single_versions_and_historical_owner_evidence() -> None:
@@ -24,14 +23,15 @@ def test_pipeline_public_seams_keep_single_versions_and_historical_owner_evidenc
     g1 = (PROJECT_ROOT / "docs/reports/pipeline-g1-contract-base.md").read_text(encoding="utf-8")
     a2 = (PROJECT_ROOT / "docs/reports/pipeline-a2-public-skeleton.md").read_text(encoding="utf-8")
 
-    for token in (
+    legacy_tokens = (
         "pipeline_contracts_v1",
         "p3_p4_feature_snapshot_market_change_set_v1",
         "p4_p5_high_value_review_manifest_v1",
         "p4p5_p6_projection_event_v1",
         "p6_overlay_event_v1",
-    ):
-        assert token in design
+    )
+    for token in legacy_tokens:
+        assert token not in design
         assert token in report
         assert token in g1
         assert token in a2
@@ -40,8 +40,7 @@ def test_pipeline_public_seams_keep_single_versions_and_historical_owner_evidenc
     assert "deepseek_v4_review_facts_v1" in report
     assert "deepseek_v4_review_facts_v1" in g1
     assert "deepseek_v4_review_facts_v1" in a2
-    assert "不再表示阶段施工或代理分工" in design
-    assert "只能在各自活动模块中保留一套定义" in design
+    assert "迁移过程、事故复盘和逐批实现" in design
     assert "A 是唯一公共文件修改者和集成提交者" in report
     assert "B/C/D 内部算法 | 未执行、未修改" in report
 
@@ -51,10 +50,8 @@ def test_pipeline_g1_gate_is_preserved_as_historical_evidence() -> None:
     report = (PROJECT_ROOT / "docs/reports/pipeline-a1-baseline.md").read_text(encoding="utf-8")
     g1 = (PROJECT_ROOT / "docs/reports/pipeline-g1-contract-base.md").read_text(encoding="utf-8")
 
-    assert "历史分阶段交接、基线和 G1-G5 门禁" in design
-    assert "作为审计证据" in design
-    assert "不再作为活动" in design
-    assert "施工手册" in design
+    assert "`docs/reports/` 保存阶段性基线 和验收证据" in " ".join(design.split())
+    assert "G1-G5 门禁" not in design
     assert "B1 P1-P3 盘点报告 | 已收到" in report
     assert "C1 DeepSeek 盘点报告 | 已收到" in report
     assert "D1 P6/Web 盘点报告 | 已收到" in report
@@ -72,7 +69,7 @@ def test_pipeline_a2_memory_config_uses_dual_budget_keys() -> None:
     assert '"cache_logical_bytes": 260046848' in runtime_config
     assert '"process_peak_rss_bytes": 402653184' in runtime_config
     assert '"cache_total_bytes"' not in runtime_config
-    assert "旧 `cache_total_bytes`" in design
+    assert "旧单字段配置启动前拒绝" in design
     assert "旧 `cache_total_bytes`" in a2
 
 
@@ -133,8 +130,8 @@ def test_pipeline_a4_acceptance_closes_failures_without_starting_g4_or_a5() -> N
     assert "ready_for_gate: `yes; A4.1-A4.6 complete" in report
     assert "G4 is not published" in report
     assert "A5 has not started" in report
-    assert "必须先由 P6 接纳，再更新 RuntimeState、session、检查点和 SSE" in design
-    assert "通过 P6 前不得" in design
+    assert "`UnifiedDecisionIndex`" in design
+    assert "必须先由 P6 接纳" not in design
 
 
 def test_pipeline_g4_publishes_after_all_phase4_gates_are_ready() -> None:
@@ -171,9 +168,10 @@ def test_pipeline_a5_closes_final_review_after_bcd_sign_off_without_publishing_g
     assert "Codex D / D5.1-D5.2" in d5
     assert "verdict\nPASS" in d5
     assert "ready_for_gate\nyes" in d5
-    assert "387,186,688" in design
-    assert "254,447,616" in design
-    assert "收紧 384 MiB" in design
+    assert "387,186,688" in a5
+    assert "254,447,616" in a5
+    assert "收紧 384 MiB" in a5
+    assert "历史实测数字只属于验收报告，不进入本文" in design
     assert "A5.1-A5.5" in a5
     assert "A5.4 不改写已推送历史" in a5
     assert "A5 is complete and G5 is not published" in a5
