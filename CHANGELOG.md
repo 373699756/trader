@@ -22,6 +22,10 @@ All notable changes to this project are documented here.
   使用独立 latest-wins worker 与 observer，并与 Tomorrow 共享按策略隔离的统一索引、仓储和
   DeepSeek 预算链。
 
+- 评分研究权威契约新增候选覆盖率收缩和乐观上界公式、约束感知 active-set 召回证明、五个
+  挑战者的隔离行为、同日同股组合贡献、非循环移动区块 bootstrap、Holm step-down、固定
+  前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
+
 ### Changed
 
 - 用户发送“继续”，要求执行总计划下一个完整未完成章节。本批仅交付 V2-E7“Long 正式接管”：
@@ -93,6 +97,11 @@ All notable changes to this project are documented here.
   完整晋级指标，仍可能给后验挑日或试参留下解释空间。本批把历史主窗口固定为
   2026-06-15 至 2026-08-10、前向窗口固定为 2026-11-02 至 2026-11-27，并预注册 10,000 次
   配对移动区块 bootstrap、派生种子、Holm 检验族、五个挑战者和全部收益/回撤/召回/集中度门禁。
+
+- 用户要求把完整挑战者、候选召回、配对 bootstrap 和收益晋级设计同步到荐股策略文档。
+  原文只有预注册名称、窗口和高层门禁，尚不足以唯一实现；现将可执行计算口径、失败状态、
+  哈希绑定及“研究通过后另立生产批次”的顺序写入唯一策略权威，不改变当前活动评分、过滤、
+  融合、冻结、DeepSeek 预算或 Web 结果。
 
 ### Fixed
 
@@ -368,6 +377,14 @@ All notable changes to this project are documented here.
   在 1280x720、1440x900、1920x1080 的短线与 long 布局均非白屏、无页面级横向溢出、关键
   区域顺序正确且 `browserErrors=[]`。
 
+- 新增策略文档契约测试，固定覆盖率/上界公式、active-set、五挑战者、同日同股配对、非循环
+  区块抽样、固定 p 值修正、研究状态、前向日期、R6 新窗口和人工晋级关键语义；本批仅改变
+  文档与契约测试，不执行历史回放，也不声明已有收益改善。`make format-check`、`make lint`、
+  `make type-check`、`make test` 和 `make package` 全部通过；完整 pytest 到达 100%，只有 10 条
+  既有未知 DeepSeek fixture 模型警告。仓库外 wheel 已验证从安装目录导入包、执行
+  `trader-cli --help` 并读取 HTML、CSS、JavaScript 和 SVG 资源；本批无 Web 或布局行为变化，
+  三档桌面视觉验收不适用。
+
 ### Residual Risks
 
 - V2-E7 已闭合，但 V2-only 总计划仍需完成 E8 统一 API/SSE/Web、E9 唯一入口、E10 旧链删除
@@ -424,6 +441,11 @@ All notable changes to this project are documented here.
 - 评分收益研究仍处于非生产阶段；P0 只消除了预注册歧义，没有实现 P1 决策轨迹、P2 历史
   点时数据或后续回放/统计，因此没有收益提升结论。固定前向窗口尚未发生，能否取得 20 个
   连续有效日取决于届时数据与运行连续性；任一门禁不足时继续使用当前生产策略。
+
+- 详细策略现已冻结，但挑战者、历史点时提取、召回审计、统计引擎和前向 collector 仍需按
+  Score-R1-Migrate 至 R5 分节实现。历史主窗口的真实点时证据覆盖仍待 Score-R2 验证；固定
+  前向窗口须在 2026-11-27 结束且最后标签完成结算后才能形成晋级证据，不能用回填或模拟替代。
+
 ### Added
 
 - 新增 `TomorrowV2Runtime`、原生统一投影、`TomorrowV2FreezeCoordinator`、可校验且可消费的
