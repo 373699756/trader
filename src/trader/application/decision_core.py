@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Literal
 
 from trader.application.decision_events import V2DecisionCommitted, build_v2_decision_committed
 from trader.domain.recommendation.decision_identity import (
+    CommittedDecisionRecord,
     DecisionIdentity,
     DecisionOverlay,
     ScoredDecision,
+    formal_scored_decision,
     identity_codes,
 )
 from trader.domain.recommendation.models import Strategy
@@ -32,6 +36,23 @@ class UnifiedOverlayPublishResult:
 class UnifiedDecisionSnapshot:
     current: DecisionIdentity | None
     overlay: DecisionOverlay | None
+    formal: CommittedDecisionRecord | None
+
+
+@dataclass(frozen=True)
+class UnifiedDecisionSealResult:
+    accepted: bool
+    reason: str
+    decision: ScoredDecision | None = None
+    source: Literal["current", "checkpoint", "explicit"] | None = None
+
+
+@dataclass(frozen=True)
+class _UnifiedDecisionSeal:
+    boundary_at: datetime
+    source_version: str
+    decision: ScoredDecision
+    source: Literal["current", "checkpoint", "explicit"]
 
 
 class UnifiedDecisionIndex:
@@ -41,6 +62,8 @@ class UnifiedDecisionIndex:
         self._lock = threading.RLock()
         self._current: dict[Strategy, DecisionIdentity] = {}
         self._overlays: dict[Strategy, DecisionOverlay] = {}
+        self._seals: dict[Strategy, _UnifiedDecisionSeal] = {}
+        self._formal: dict[Strategy, CommittedDecisionRecord] = {}
 
     def publish(
         self,
@@ -50,10 +73,16 @@ class UnifiedDecisionIndex:
     ) -> UnifiedDecisionPublishResult:
         with self._lock:
             current = self._current.get(identity.strategy)
+            seal = self._seals.get(identity.strategy)
+            if seal is not None and seal.decision.trade_date == identity.trade_date:
+                return UnifiedDecisionPublishResult(False, "freeze_sealed")
             rejection = _identity_rejection(current, identity, expected_version)
             if rejection is not None:
                 return UnifiedDecisionPublishResult(False, rejection)
             self._current[identity.strategy] = identity
+            if current is not None and identity.trade_date > current.trade_date:
+                self._seals.pop(identity.strategy, None)
+                self._formal.pop(identity.strategy, None)
             overlay = self._overlays.get(identity.strategy)
             if overlay is not None and overlay.parent_version != identity.version:
                 self._overlays.pop(identity.strategy, None)
@@ -77,7 +106,133 @@ class UnifiedDecisionIndex:
 
     def snapshot(self, strategy: Strategy) -> UnifiedDecisionSnapshot:
         with self._lock:
-            return UnifiedDecisionSnapshot(self._current.get(strategy), self._overlays.get(strategy))
+            return UnifiedDecisionSnapshot(
+                self._current.get(strategy),
+                self._overlays.get(strategy),
+                self._formal.get(strategy),
+            )
+
+    def is_sealed(self, strategy: Strategy, trade_date: date) -> bool:
+        with self._lock:
+            seal = self._seals.get(strategy)
+            return seal is not None and seal.decision.trade_date == trade_date
+
+    def seal_for_freeze(
+        self,
+        strategy: Strategy,
+        *,
+        boundary_at: datetime,
+        fallback_decision: ScoredDecision | None = None,
+    ) -> UnifiedDecisionSealResult:
+        with self._lock:
+            existing = self._seals.get(strategy)
+            if existing is not None:
+                if existing.boundary_at == boundary_at:
+                    return UnifiedDecisionSealResult(
+                        True,
+                        "already_sealed",
+                        existing.decision,
+                        existing.source,
+                    )
+                return UnifiedDecisionSealResult(False, "different_boundary")
+            current = self._current.get(strategy)
+            if (
+                isinstance(current, ScoredDecision)
+                and current.trade_date == boundary_at.date()
+                and current.observed_at <= boundary_at
+            ):
+                return self._seal(current, boundary_at, "current")
+            if (
+                fallback_decision is not None
+                and fallback_decision.strategy is strategy
+                and fallback_decision.trade_date == boundary_at.date()
+                and fallback_decision.observed_at <= boundary_at
+            ):
+                return self._seal(fallback_decision, boundary_at, "checkpoint")
+            return UnifiedDecisionSealResult(False, "no_eligible_decision")
+
+    def seal_close_fallback(
+        self,
+        decision: ScoredDecision,
+        *,
+        boundary_at: datetime,
+        official_close_version: str,
+    ) -> UnifiedDecisionSealResult:
+        with self._lock:
+            existing = self._seals.get(decision.strategy)
+            if existing is not None:
+                if existing.source_version == decision.version:
+                    return UnifiedDecisionSealResult(
+                        True,
+                        "already_sealed",
+                        existing.decision,
+                        existing.source,
+                    )
+                return UnifiedDecisionSealResult(False, "scheduled_freeze_pending")
+            reasons = ["close_fallback", "official_close"]
+            if decision.stage == "local":
+                reasons.append("local_only")
+            return self._seal(
+                decision,
+                boundary_at,
+                "explicit",
+                degraded_reasons=tuple(reasons),
+                input_versions=(("official_close", official_close_version),),
+            )
+
+    def commit_formal(self, record: CommittedDecisionRecord) -> bool:
+        with self._lock:
+            existing = self._formal.get(record.strategy)
+            if existing is not None:
+                return existing == record
+            seal = self._seals.get(record.strategy)
+            if seal is None or seal.decision.version != record.decision.version:
+                return False
+            self._current[record.strategy] = record.decision
+            self._overlays.pop(record.strategy, None)
+            self._formal[record.strategy] = record
+            return True
+
+    def restore_formal(self, record: CommittedDecisionRecord) -> bool:
+        with self._lock:
+            current = self._current.get(record.strategy)
+            if current is not None and current.trade_date > record.trade_date:
+                return False
+            existing = self._formal.get(record.strategy)
+            if existing is not None and existing.trade_date == record.trade_date and existing != record:
+                return False
+            self._current[record.strategy] = record.decision
+            self._overlays.pop(record.strategy, None)
+            self._formal[record.strategy] = record
+            self._seals[record.strategy] = _UnifiedDecisionSeal(
+                record.committed_at,
+                record.decision.version,
+                record.decision,
+                "explicit" if record.commit_kind == "close_fallback" else "current",
+            )
+            return True
+
+    def _seal(
+        self,
+        decision: ScoredDecision,
+        boundary_at: datetime,
+        source: Literal["current", "checkpoint", "explicit"],
+        *,
+        degraded_reasons: tuple[str, ...] = (),
+        input_versions: tuple[tuple[str, str], ...] = (),
+    ) -> UnifiedDecisionSealResult:
+        formal = formal_scored_decision(
+            decision,
+            degraded_reasons=degraded_reasons,
+            input_versions=input_versions,
+        )
+        self._seals[decision.strategy] = _UnifiedDecisionSeal(
+            boundary_at,
+            decision.version,
+            formal,
+            source,
+        )
+        return UnifiedDecisionSealResult(True, "sealed", formal, source)
 
 
 def _identity_rejection(
@@ -146,6 +301,7 @@ def _overlay_rejection(
 __all__ = [
     "UnifiedDecisionIndex",
     "UnifiedDecisionPublishResult",
+    "UnifiedDecisionSealResult",
     "UnifiedDecisionSnapshot",
     "UnifiedOverlayPublishResult",
 ]

@@ -1,6 +1,6 @@
 # V2 与评分研究多 Codex 总实施计划
 
-状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、Score-R0、Score-R1 已完成，下一工程章节为 V2-E4，下一研究
+状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、Score-R0、Score-R1 已完成，下一工程章节为 V2-E5，下一研究
 章节为 Score-R2。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
@@ -168,7 +168,7 @@ C 固定执行：
 
 退出条件：停用旧 Pipeline 后 fixture 可完成数据、决策、发布、冻结和关闭；HTTP 无外部 I/O。
 
-### V2-E4：Tomorrow 正式接管
+### V2-E4：Tomorrow 正式接管（已完成）
 
 - native input 直接生成 local；合法结构化 facts 生成引用当前 local 的 hybrid。
 - 删除 baseline 关联、cutover gate、shadow evidence 和 shadow 冻结依赖。

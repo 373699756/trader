@@ -81,7 +81,11 @@ def recover_after_close_snapshots(
 
     with pipeline._after_close_lock:
         with _close_stage(pipeline, "restore_existing"):
-            missing = _restore_existing(pipeline, trade_date)
+            missing = tuple(
+                strategy
+                for strategy in _restore_existing(pipeline, trade_date)
+                if strategy not in pipeline._v2_owned_strategies
+            )
         published: list[RecommendationSnapshot] = []
         runtime_sources = {
             strategy: snapshot
@@ -96,14 +100,22 @@ def recover_after_close_snapshots(
                 published.extend(_persist_runtime_results(pipeline, runtime_sources, local, deadline=deadline))
 
         with _close_stage(pipeline, "restore_after_p6"):
-            missing = _restore_existing(pipeline, trade_date)
+            missing = tuple(
+                strategy
+                for strategy in _restore_existing(pipeline, trade_date)
+                if strategy not in pipeline._v2_owned_strategies
+            )
         rebuild = tuple(strategy for strategy in missing if strategy not in runtime_sources)
         if rebuild:
             with _close_stage(pipeline, "full_rebuild"):
                 published.extend(_rebuild_from_close(pipeline, rebuild, local, deadline=deadline))
 
         with _close_stage(pipeline, "completion_check"):
-            complete = not _restore_existing(pipeline, trade_date)
+            complete = not tuple(
+                strategy
+                for strategy in _restore_existing(pipeline, trade_date)
+                if strategy not in pipeline._v2_owned_strategies
+            )
         pipeline._record_after_close_recovery(local, complete=complete)
         return tuple(published)
 

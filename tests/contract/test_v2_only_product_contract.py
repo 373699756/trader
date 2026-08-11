@@ -41,7 +41,7 @@ def test_v2_execution_plan_has_no_compatibility_or_shadow_cutover_batch() -> Non
 
     assert "状态：V2-only 目标已确认" in overview
     assert "不保留旧版运行时兼容" in overview
-    assert "状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、Score-R0、Score-R1 已完成" in plan
+    assert "状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、Score-R0、Score-R1 已完成" in plan
     assert "### V2-E0：唯一产品契约重置（已完成）" in plan
     assert "### V2-E10：删除旧生产链" in plan
     assert "### V2-E11：最终验收与发布" in plan

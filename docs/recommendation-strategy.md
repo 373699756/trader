@@ -663,7 +663,7 @@ DeepSeek review 继续在既有 schema、证据和截止校验后独立规范化
 
 ### 12.3 tomorrow v2 原生直投影与一致性比较
 
-影子原生路径直接从深层不可变的 `TomorrowNativeInput.market_features` 建立全市场选择人口，
+生产原生路径直接从深层不可变的 `TomorrowNativeInput.market_features` 建立全市场选择人口，
 不得先合成再拆解 daily/market/candidate epoch。全市场人口仍逐项应用
 `preselection_replay_feature`，并只把发现行情的 source time 规范到不晚于批次评估水位；
 显式 `candidate_features` 是唯一可评分集合。共享选择函数必须与常规数据平面路径使用同一
@@ -673,7 +673,7 @@ DeepSeek review 继续在既有 schema、证据和截止校验后独立规范化
 物化的数据平面 epoch。相同规范输入、策略和 sequence 必须得到相同本地决策版本；直投影
 前后候选代码、local score、风险事实、动作、排名和硬拒绝计数必须完全一致。
 
-影子门禁比较 v1/v2 硬过滤计数时，仅从 v1 剔除非硬拒绝诊断 `history_warming`，然后按
+历史迁移门禁比较 v1/v2 硬过滤计数时，仅从 v1 剔除非硬拒绝诊断 `history_warming`，然后按
 原因名称和计数严格比较；不得忽略其他额外、缺失或计数不同的原因。选股结果按正式排名
 后的代码元组严格比较，顺序变化仍是不一致。发布和决策年龄从原生批次
 `evaluated_at` 起算，行情自身的新鲜度继续由点时过滤和特征审计约束。
@@ -750,7 +750,7 @@ attempt。不同内容争用相同策略交易日时必须冲突并停止自动�
 ### 14.1 tomorrow v2 冻结选择与锚点
 
 tomorrow v2 在 14:50 封口时只接受 `observed_at <= 14:50` 且已经通过
-`CurrentDecisionIndex` CAS 的最新完整 `DecisionEpoch`。local 与 hybrid 都可冻结；若
+`UnifiedDecisionIndex` CAS 的最新完整 `ScoredDecision`。local 与 hybrid 都可冻结；若
 deadline 前完成的 hybrid 已经接纳则冻结 hybrid，否则冻结 local，不等待模型，也不把
 迟到 review 的分数、风险或 veto 写入冻结。封口后同日任何新 sequence 均只供审计或下一
 交易日研究。

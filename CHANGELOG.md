@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续 `implementation-plan.md` 的未完成任务。本批完整交付 V2-E4“Tomorrow 正式
+  接管”：生产组合根改由原生 `TomorrowNativeInput` 直接生成统一 local/hybrid
+  `ScoredDecision`，Tomorrow 从旧 Pipeline 的正式评分、P6 冻结和盘后重建集合退出；计划
+  状态推进到 E4 已完成、E5 为下一工程章节。本批不提前接管 today、d25 或 long。
+
 - 用户要求继续 `implementation-plan.md` 的未完成任务。本批只交付下一完整工程章节
   V2-E3“独立调度与生命周期”：总计划状态推进到 E3 已完成、E4 下一章；独立 V2 runtime
   现在按策略调度数据刷新、local/hybrid 决策、CAS 发布、observer、冻结和结算，仍保持旁路，
@@ -58,6 +63,23 @@ All notable changes to this project are documented here.
   配对移动区块 bootstrap、派生种子、Holm 检验族、五个挑战者和全部收益/回撤/召回/集中度门禁。
 
 ### Fixed
+
+- 修正 Tomorrow hybrid 必须等待 v1 baseline、正式冻结仍依赖 shadow/cutover 身份的问题：
+  hybrid 现在只引用仍为 current 的 local V2 版本，14:48 后完成的模型结果拒绝，14:49:20
+  检查点、14:50 原子封口、失败重试、重启恢复与 15:00 收盘恢复全部只接受统一 V2 决策。
+  Review 另发现真实组合配置的 `config+strategy` 版本会被统一身份正则误拒绝，现已纳入合法
+  稳定版本字符并补回归。
+
+- 修正检查点可能保存观察池或未入选候选、正式冻结研究轨迹仍停留在盘中版本的问题：检查点
+  和正式记录均先执行 official-only 投影，合法空结果照常提交；formal 决策再通过同一个
+  `V2DecisionCommitted` observer 记录，current、freeze 和 trace 共享完全相同的决策版本。
+  收盘恢复把规范 `official_close` 输入版本写入不可变身份，运行中保留既有 current，冷启动
+  才执行一次 local-only 收盘重建，已有正式记录或待重试封口均不可覆盖。
+
+- 最终 Review 修正两个边界竞态：14:48:00 整点完成的 review 现在与更晚结果一样拒绝；
+  14:50 控制先于本轮评分封口并在评分后复查，因此边界后的 local/hybrid 无法抢先发布。
+  同时，14:50 后正式记录尚未提交时，Tomorrow 当前与状态查询返回 `not_ready`，不再把盘中
+  草稿误显示为正式结果；合法 formal 提交后才恢复 `ready`。
 
 - 修正独立 V2 调度若复用共享 worker 可能被 today 或其它策略阻塞 tomorrow 的容量风险：
   四个策略现各有一个运行项和一个 latest-wins pending 槽，tomorrow 从数据到发布拥有完整
@@ -117,6 +139,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从生产组合根移除 Tomorrow 的 `CurrentDecisionIndex`、`TomorrowShadowWorker`、baseline
+  snapshot wrapper、cutover gate、shadow evidence、旧冻结仓储和研究 baseline 捕获依赖；
+  旧实现文件仅作为 E10 待删除迁移代码保留，不再被活动组合根读取或写入。
+
 - 移除 V2-E3 新链路对隐式系统时钟、无界 observer 回调和跨策略共享决策排队的依赖；被更新
   pending 覆盖的旧周期及关闭时尚未运行的普通 pending 会明确丢弃并计数。本批未删除旧
   Pipeline 或生产资源，旧链删除仍严格属于 V2-E10。
@@ -146,6 +172,17 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- V2-E4 定向测试覆盖 native local/hybrid 父 CAS、证据 manifest、14:48 迟到拒绝、统一
+  formal event、14:49:20 检查点、14:50 热/冷冻结、幂等重试、冻结后不可覆盖、收盘恢复、
+  合法正式空结果、检查点消费及损坏 fail-closed。契约、unit、component、integration 扩展
+  回归均通过。`make format-check`、`make lint`（严格复杂度债务为零）、`make type-check`、
+  `make test` 和 `make package` 全部通过；pytest 到达 100%，仅保留既有 10 条 fixture 模型
+  名警告和 2 条 Python 3.14 SQLite datetime adapter 弃用警告。仓库外 `/tmp` 安装 wheel 后，
+  `trader` 从目标 `site-packages` 导入，`trader-cli --help` 可执行，模板、CSS、JavaScript 和
+  SVG 均可读取。Firefox 对 Tomorrow 页面和统一根页面分别完成 1280x720、1440x900、
+  1920x1080 验收，均无白屏、横向溢出、面板重叠或浏览器错误；根页面 patch-to-paint P95
+  为 42ms（门槛 100ms），浏览器 fixture 外部网络请求为 0。
 
 - V2-E3 定向契约、latest-wins 生命周期、异步 observer、统一决策核心、调度、worker、优雅
   关闭和停用旧 Pipeline fixture 回归通过，覆盖 tomorrow 独立进展、共享 DeepSeek 168 硬
@@ -226,26 +263,32 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- V2-E3 是未接入 `bootstrap.py` 的旁路运行基础，不改变当前生产请求、冻结、API、Web 或
-  DeepSeek 物理流量；V2-only 总计划尚未完成。下一次“继续”只应执行 V2-E4 Tomorrow 正式
-  接管，后续仍有 E5-E11、Score-R1-Migrate 和 Score-R2 至 R7。真实交易日外部来源延迟、模型
+- V2-only 总计划尚未完成：today、d25、long、统一根 API/SSE/Web、最终组合根与旧链删除仍属
+  E5-E10，最终发布验收属 E11；当前兼容 Tomorrow 页面从统一身份投影有限字段，完整统一
+  工作台与报价 overlay 仍由 E8 接管。旧 shadow/冻结源文件尚未物理删除，但生产组合根已无
+  可达依赖。免费外部来源在真实 14:50/15:00 边界的连续运行证据仍需 E11 留档，本批测试不
+  构成收益保证。
+
+- V2-E3 的通用调度基础仍保持旁路，但 E4 已用专属原生 runtime 接管 Tomorrow 组合根；
+  V2-only 总计划尚未完成。下一次“继续”只应执行 V2-E5 Today 正式接管，后续仍有
+  E6-E11、Score-R1-Migrate 和 Score-R2 至 R7。真实交易日外部来源延迟、模型
   限流及冻结时点仍需在对应接管和最终发布章节留证，本批固定 fixture 不构成收益证明。
 
-- V2-E2 决策核心和 V2-E3 调度生命周期仍是未接入组合根的旁路基础，不改变现有 P1-P6、
-  生产冻结、API/SSE、Web 或 DeepSeek 请求。总计划后续仍需逐批完成 V2-E4 至 E11、
+- V2-E2 决策核心已由 E4 的 Tomorrow 路径接入，V2-E3 通用调度仍为其余策略的旁路基础。
+  总计划后续仍需逐批完成 V2-E5 至 E11、
   Score-R1-Migrate 与 Score-R2 至 R7；下一次“继续”按规则只执行下一完整未完成章节，不得
   把当前基础设施完成误解为 V2-only 总迁移已发布。
 
-- 删除 G1 worker refs 及完成 V2-E2/E3 仍不代表总计划完成。Score-R2 最多 40 日提取器及后续
-  V2-E4 至 E11 仍未交付；旧 Pipeline、`.runtime/v17`、独立
+- 删除 G1 worker refs 及完成 V2-E2/E3/E4 仍不代表总计划完成。Score-R2 最多 40 日提取器及
+  后续 V2-E5 至 E11 仍未交付；旧 Pipeline、`.runtime/v17`、独立
   tomorrow 页面、shadow/cutover 及旧 CLI 当前仍存在，必须按后续章节逐批替换和删除。
 
 - Gate G1 只完成 E1 数据平面与 Score-R2 接口适配设计；最多 40 日点时提取、Top120 乐观
   上界保护、Polars 不可变分区和可复算 manifest 仍按 G2 的 Score-R2 整节实施。本批没有
   生产接线、外部行情请求、DeepSeek 请求或收益提升结论。
 
-- V2-E1 数据平面、V2-E2 决策核心与 V2-E3 调度生命周期仍是旁路基础，不接管当前生产
-  P1-P6、冻结、API 或 Web；各策略正式接管属于 V2-E4 及后续章节。交易所、mootdx 和 BaoStock
+- V2-E1 数据平面与 V2-E2 决策核心已由 E4 接入 Tomorrow，V2-E3 通用调度对其余策略仍为
+  旁路基础；Today、D25 与 Long 正式接管属于 V2-E5 至 E7。交易所、mootdx 和 BaoStock
   仍未准入；CNInfo 只允许离线风险登记簿。120 日/20GB 长期压缩审计仍是文档约束，尚未实现
   归档与容量驱逐，因此本批不宣称 V2-only 发布完成。
 
@@ -265,6 +308,11 @@ All notable changes to this project are documented here.
   点时数据或后续回放/统计，因此没有收益提升结论。固定前向窗口尚未发生，能否取得 20 个
   连续有效日取决于届时数据与运行连续性；任一门禁不足时继续使用当前生产策略。
 ### Added
+
+- 新增 `TomorrowV2Runtime`、原生统一投影、`TomorrowV2FreezeCoordinator`、可校验且可消费的
+  `V2DecisionCheckpoint`、统一 Tomorrow 只读投影与有界 committed-event 研究轨迹。正式记录
+  仓储新增隔离 checkpoint manifest/不可变 JSON，统一索引新增按策略原子 seal、formal commit
+  和 restore；所有路径保持可注入上海时钟、latest-wins 生命周期与只读 Web 无外部 I/O。
 
 - 新增应用层 `V2SchedulerRuntime`、类型化 V2 数据/决策/模型/冻结/结算端口、共享 DeepSeek
   运行契约、每策略 `LatestWinsWorker` 和有界 `AsyncDecisionObserver`。后台资源均显式

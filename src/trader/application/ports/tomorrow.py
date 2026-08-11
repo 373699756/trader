@@ -48,6 +48,10 @@ class TomorrowNativeInputPort(Protocol):
     def offer_native(self, native_input: TomorrowNativeInput) -> bool: ...
 
 
+class TomorrowV2ControlPort(Protocol):
+    def on_clock(self, at: datetime) -> object | None: ...
+
+
 def _validate_identity_and_limits(
     native_input: TomorrowNativeInput,
     evaluated_at: datetime,
@@ -181,4 +185,4 @@ def _shanghai(value: datetime) -> datetime:
     return value.astimezone(SHANGHAI)
 
 
-__all__ = ["TomorrowNativeInput", "TomorrowNativeInputPort"]
+__all__ = ["TomorrowNativeInput", "TomorrowNativeInputPort", "TomorrowV2ControlPort"]

@@ -14,7 +14,9 @@ from flask import Flask
 from trader.application.board_scoring import BoardScoringCoordinator
 from trader.application.board_scoring_cache import BoardScoringCache
 from trader.application.cadence import CadencePolicy, PipelineTask
-from trader.application.current_decisions import CurrentDecisionIndex
+from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decision_events import V2DecisionCommitted
+from trader.application.decision_observers import AsyncDecisionObserver
 from trader.application.events import InMemoryEventLedger
 from trader.application.latency import LatencyWaterfall
 from trader.application.long_groups import LongGroupDefinition, LongGroupSectionDefinition, LongWatchItemDefinition
@@ -37,24 +39,17 @@ from trader.application.system_lifecycle import (
     stop_application_resources,
 )
 from trader.application.tomorrow_events import TomorrowDecisionEventStream
-from trader.application.tomorrow_freezing import DecisionRuntimeIdentity, TomorrowFreezeCoordinator
-from trader.application.tomorrow_research_trace import create_tomorrow_research_trace_recorder
-from trader.application.tomorrow_shadow import TomorrowCutoverGate
-from trader.application.tomorrow_shadow_runtime import (
-    ShadowObservingSnapshotIndex,
-    TomorrowShadowDependencies,
-    TomorrowShadowRuntime,
-    TomorrowShadowWorker,
+from trader.application.tomorrow_v2_freezing import (
+    TomorrowV2FreezeCoordinator,
+    V2DecisionRuntimeIdentity,
 )
-from trader.application.tomorrow_views import (
-    TomorrowDecisionQueries,
-    TomorrowQuoteOverlayIndex,
-    TomorrowRuntimeTelemetry,
-)
+from trader.application.tomorrow_v2_runtime import TomorrowV2Runtime, TomorrowV2RuntimeDependencies
+from trader.application.tomorrow_v2_views import UnifiedTomorrowDecisionQueries
 from trader.application.trading_session import TradingSessionTracker
+from trader.application.v2_research_trace import InMemoryV2ResearchTraceStore
 from trader.application.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
-from trader.bootstrap_data_plane import _initialize_reference_data_plane, initialize_tomorrow_evidence
+from trader.bootstrap_data_plane import _initialize_reference_data_plane
 from trader.bootstrap_policy import _recommendation_policy
 from trader.domain.recommendation.models import Strategy
 from trader.infra.cache import BoundedLruCache
@@ -84,9 +79,8 @@ from trader.infra.market_data.sina import SinaClient
 from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
 from trader.infra.persistence.data_plane import DataPlaneRepository
+from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
-from trader.infra.persistence.tomorrow_decision_freezes import TomorrowDecisionFreezeRepository
-from trader.infra.persistence.tomorrow_shadow_evidence import TomorrowShadowEvidenceRepository
 from trader.infra.persistence.writer import SnapshotRepository
 from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.settings import (
@@ -118,8 +112,10 @@ class ApplicationSystem:
     history_pool: BoundedExecutor
     research_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry
-    tomorrow_shadow_worker: TomorrowShadowWorker | None = None
-    tomorrow_shadow_runtime: TomorrowShadowRuntime | None = None
+    tomorrow_v2_runtime: TomorrowV2Runtime | None = None
+    tomorrow_index: UnifiedDecisionIndex | None = None
+    tomorrow_records: SQLiteDecisionRecordRepository | None = None
+    tomorrow_trace: InMemoryV2ResearchTraceStore | None = None
 
     def _lifecycle_resources(self) -> SystemLifecycleResources:
         return SystemLifecycleResources(
@@ -127,7 +123,7 @@ class ApplicationSystem:
             self.source_lanes,
             self.history_pool,
             self.research_pool,
-            self.tomorrow_shadow_worker,
+            self.tomorrow_v2_runtime,
             self.market_cache,
         )
 
@@ -169,14 +165,13 @@ class _PublicationContext:
     state: RuntimeState
     publisher: SnapshotPublisher
     published_snapshots: PublishedSnapshotIndex
-    pipeline_snapshots: ShadowObservingSnapshotIndex
+    pipeline_snapshots: PublishedSnapshotIndex
     recommendation_engine: RecommendationEngine
-    tomorrow_repository: TomorrowDecisionFreezeRepository
-    tomorrow_evidence: TomorrowShadowEvidenceRepository
-    tomorrow_gate: TomorrowCutoverGate
-    tomorrow_runtime: TomorrowShadowRuntime
-    tomorrow_worker: TomorrowShadowWorker
-    tomorrow_queries: TomorrowDecisionQueries
+    tomorrow_repository: SQLiteDecisionRecordRepository
+    tomorrow_index: UnifiedDecisionIndex
+    tomorrow_trace: InMemoryV2ResearchTraceStore
+    tomorrow_runtime: TomorrowV2Runtime
+    tomorrow_queries: UnifiedTomorrowDecisionQueries
     tomorrow_events: TomorrowDecisionEventStream
 
 
@@ -203,7 +198,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     persistence = _build_persistence(context)
     market_data = _build_market_data(context, persistence.data_plane)
     reviewer = _build_reviewer(context, persistence.budget)
-    publication = _build_publication(context, calendar, persistence.repository)
+    publication = _build_publication(context, calendar, persistence.repository, reviewer)
     trading_session = TradingSessionTracker(now())
     adapters = _PipelineAdapters(market_data, calendar, reviewer)
     pipeline = _build_pipeline(context, adapters, persistence, publication, trading_session)
@@ -220,7 +215,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             now=now,
             initializers=(
                 publication.tomorrow_repository.initialize,
-                lambda: initialize_tomorrow_evidence(publication.tomorrow_evidence, publication.tomorrow_gate),
+                publication.tomorrow_runtime.initialize,
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane),
                 pipeline.initialize,
                 publication.published_snapshots.initialize,
@@ -239,7 +234,6 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         tomorrow=TomorrowWebServices(
             publication.tomorrow_queries,
             publication.tomorrow_events,
-            publication.tomorrow_runtime.status,
         ),
         api_config=WebApiConfig(
             default_top_n=settings.api.default_top_n,
@@ -262,8 +256,10 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         workers.history_pool,
         workers.research_pool,
         workers.source_lanes,
-        publication.tomorrow_worker,
         publication.tomorrow_runtime,
+        publication.tomorrow_index,
+        publication.tomorrow_repository,
+        publication.tomorrow_trace,
     )
 
 
@@ -552,6 +548,7 @@ def _build_publication(
     context: _BuildContext,
     calendar: ChinaTradingCalendar,
     repository: SnapshotRepository,
+    reviewer: DeepSeekReviewer,
 ) -> _PublicationContext:
     settings = context.settings
     state = RuntimeState()
@@ -562,76 +559,65 @@ def _build_publication(
     )
     published_snapshots = PublishedSnapshotIndex(repository)
     recommendation_engine = _build_recommendation_engine(context, calendar)
-    tomorrow_repository = TomorrowDecisionFreezeRepository(settings.runtime_dir)
-    tomorrow_evidence = TomorrowShadowEvidenceRepository(settings.runtime_dir)
-    tomorrow_decisions = CurrentDecisionIndex()
-    tomorrow_quotes = TomorrowQuoteOverlayIndex(tomorrow_decisions)
+    tomorrow_repository = SQLiteDecisionRecordRepository(settings.runtime_dir)
+    tomorrow_decisions = UnifiedDecisionIndex()
     tomorrow_events = TomorrowDecisionEventStream(
         history_size=settings.api.sse_history_size,
         client_queue_size=settings.api.sse_client_queue_size,
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    tomorrow_runtime_holder: list[TomorrowShadowRuntime] = []
-    tomorrow_research_trace = create_tomorrow_research_trace_recorder(context.workers.research_pool)
-    tomorrow_queries = TomorrowDecisionQueries(
+    tomorrow_queries = UnifiedTomorrowDecisionQueries(
         tomorrow_decisions,
         tomorrow_repository,
         clock,
-        quotes=tomorrow_quotes,
-        telemetry=lambda: (
-            tomorrow_runtime_holder[0].telemetry() if tomorrow_runtime_holder else TomorrowRuntimeTelemetry()
-        ),
     )
-    tomorrow_gate = TomorrowCutoverGate(evidence=tomorrow_evidence)
-    tomorrow_freezer = TomorrowFreezeCoordinator(
+    tomorrow_trace = InMemoryV2ResearchTraceStore()
+
+    def publish_tomorrow_event(_event: V2DecisionCommitted) -> None:
+        tomorrow_events.publish_decision(tomorrow_queries.current())
+
+    tomorrow_observer = AsyncDecisionObserver(
+        (
+            tomorrow_trace.record,
+            publish_tomorrow_event,
+        ),
+        capacity=max(16, settings.pipeline.event_queue_size),
+        thread_name="trader-v2-tomorrow-observer",
+    )
+    tomorrow_freezer = TomorrowV2FreezeCoordinator(
         tomorrow_decisions,
         tomorrow_repository,
         clock,
-        runtime_identity=DecisionRuntimeIdentity(
+        runtime_identity=V2DecisionRuntimeIdentity(
             context.effective_config_version,
             context.strategy.strategy_version,
             context.strategy.fusion.version,
         ),
     )
-    tomorrow_runtime = TomorrowShadowRuntime(
+    tomorrow_runtime = TomorrowV2Runtime(
         _recommendation_policy(context.strategy),
-        TomorrowShadowDependencies(
+        TomorrowV2RuntimeDependencies(
+            reviewer,
             tomorrow_decisions,
-            tomorrow_quotes,
-            tomorrow_events,
-            tomorrow_queries,
+            tomorrow_observer,
             tomorrow_freezer,
-            tomorrow_gate,
             clock,
-            tomorrow_research_trace,
         ),
-    )
-    tomorrow_runtime_holder.append(tomorrow_runtime)
-    tomorrow_worker = TomorrowShadowWorker(tomorrow_runtime)
-    pipeline_snapshots = ShadowObservingSnapshotIndex(
-        published_snapshots,
-        tomorrow_worker,
-        tomorrow_runtime,
     )
     return _PublicationContext(
         state,
         publisher,
         published_snapshots,
-        pipeline_snapshots,
+        published_snapshots,
         recommendation_engine,
         tomorrow_repository,
-        tomorrow_evidence,
-        tomorrow_gate,
+        tomorrow_decisions,
+        tomorrow_trace,
         tomorrow_runtime,
-        tomorrow_worker,
         tomorrow_queries,
         tomorrow_events,
     )
-
-
-def _initialize_tomorrow_evidence(publication: _PublicationContext) -> None:
-    initialize_tomorrow_evidence(publication.tomorrow_evidence, publication.tomorrow_gate)
 
 
 def _build_recommendation_engine(context: _BuildContext, calendar: ChinaTradingCalendar) -> RecommendationEngine:
@@ -682,7 +668,8 @@ def _build_pipeline(
                 session_distance=adapters.calendar.session_distance,
             ),
             latency=context.latency,
-            tomorrow_native_inputs=publication.tomorrow_worker,
+            tomorrow_native_inputs=publication.tomorrow_runtime,
+            tomorrow_v2_control=publication.tomorrow_runtime,
             trading_session=trading_session,
         ),
         PipelineOptions(
@@ -703,6 +690,7 @@ def _build_pipeline(
             ),
             long_target_prices={item.code: item.target_price for item in context.watchlist.items},
             long_groups=_long_groups(context.watchlist),
+            v2_owned_strategies=(Strategy.TOMORROW,),
         ),
         PipelineResources(data_pool=context.workers.data_pool, persistence_pool=context.workers.persistence_pool),
     )

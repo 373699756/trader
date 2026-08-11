@@ -8,7 +8,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import cast
 
@@ -16,6 +16,7 @@ from trader.application.ports.decision_records import (
     DecisionRecordConflictError,
     DecisionRecordRecoverySummary,
     DecisionRecordUnavailableError,
+    V2DecisionCheckpoint,
 )
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
@@ -45,13 +46,14 @@ class SQLiteDecisionRecordRepository:
         self._root = runtime_dir / "v2-decisions"
         self._database = self._root / "v2-decisions.sqlite3"
         self._records = self._root / "records"
+        self._checkpoints = self._root / "checkpoints"
         self._quarantine = self._root / "quarantine"
         self._fault_injector = fault_injector or (lambda _stage: None)
         self._lock = threading.RLock()
 
     def initialize(self) -> None:
         with self._lock:
-            for directory in (self._root, self._records, self._quarantine):
+            for directory in (self._root, self._records, self._checkpoints, self._quarantine):
                 directory.mkdir(parents=True, exist_ok=True)
             _fsync_directory(self._root)
             try:
@@ -169,6 +171,139 @@ class SQLiteDecisionRecordRepository:
                 return None
             return self._load_manifest(row)
 
+    def save_checkpoint(self, checkpoint: V2DecisionCheckpoint) -> None:
+        envelope = CommittedDecisionRecord(
+            checkpoint.decision,
+            checkpoint.boundary_at,
+            "checkpoint_recovery",
+        )
+        payload = committed_record_bytes(envelope)
+        digest = _bounded_digest(payload)
+        relative = (
+            Path("checkpoints")
+            / checkpoint.decision.strategy.value
+            / checkpoint.decision.trade_date.isoformat()
+            / f"{checkpoint.version}.json"
+        )
+        with self._lock:
+            try:
+                with self._connect() as connection:
+                    row = connection.execute(
+                        "SELECT * FROM decision_checkpoints WHERE strategy = ? AND trade_date = ?",
+                        (checkpoint.decision.strategy.value, checkpoint.decision.trade_date.isoformat()),
+                    ).fetchone()
+                    if row is not None:
+                        if row["version"] == checkpoint.version:
+                            self._load_checkpoint_row(row)
+                            return
+                        if row["consumed_at"] or str(row["boundary_at"]) != checkpoint.boundary_at.isoformat():
+                            raise DecisionRecordConflictError("decision checkpoint cannot be replaced")
+                        current = self._load_checkpoint_row(row)
+                        if current.decision.observed_at >= checkpoint.decision.observed_at:
+                            raise DecisionRecordConflictError("decision checkpoint is not newer")
+                    self._write_immutable(relative, payload, digest)
+                    changed = connection.execute(
+                        """
+                        INSERT INTO decision_checkpoints(
+                            strategy, trade_date, version, decision_version, observed_at, boundary_at,
+                            payload_sha256, relative_path, consumed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                        ON CONFLICT(strategy, trade_date) DO UPDATE SET
+                            version = excluded.version,
+                            decision_version = excluded.decision_version,
+                            observed_at = excluded.observed_at,
+                            boundary_at = excluded.boundary_at,
+                            payload_sha256 = excluded.payload_sha256,
+                            relative_path = excluded.relative_path,
+                            consumed_at = NULL
+                        WHERE decision_checkpoints.consumed_at IS NULL
+                          AND excluded.boundary_at = decision_checkpoints.boundary_at
+                          AND excluded.observed_at > decision_checkpoints.observed_at
+                        """,
+                        (
+                            checkpoint.decision.strategy.value,
+                            checkpoint.decision.trade_date.isoformat(),
+                            checkpoint.version,
+                            checkpoint.decision.version,
+                            checkpoint.decision.observed_at.isoformat(),
+                            checkpoint.boundary_at.isoformat(),
+                            digest,
+                            relative.as_posix(),
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        concurrent = connection.execute(
+                            "SELECT version FROM decision_checkpoints WHERE strategy = ? AND trade_date = ?",
+                            (checkpoint.decision.strategy.value, checkpoint.decision.trade_date.isoformat()),
+                        ).fetchone()
+                        if concurrent is None or concurrent["version"] != checkpoint.version:
+                            raise DecisionRecordConflictError("decision checkpoint concurrent update conflict")
+            except sqlite3.Error as exc:
+                raise DecisionRecordUnavailableError("decision checkpoint save failed") from exc
+
+    def load_checkpoint(self, strategy: Strategy, trade_date: date) -> V2DecisionCheckpoint | None:
+        with self._lock:
+            try:
+                with self._connect() as connection:
+                    row = connection.execute(
+                        "SELECT * FROM decision_checkpoints WHERE strategy = ? AND trade_date = ?",
+                        (strategy.value, trade_date.isoformat()),
+                    ).fetchone()
+            except sqlite3.Error as exc:
+                raise DecisionRecordUnavailableError("decision checkpoint read failed") from exc
+            if row is None or row["consumed_at"]:
+                return None
+            return self._load_checkpoint_row(row)
+
+    def consume_checkpoint(
+        self,
+        checkpoint: V2DecisionCheckpoint,
+        *,
+        consumed_at: datetime,
+    ) -> None:
+        with self._lock:
+            try:
+                with self._connect() as connection:
+                    changed = connection.execute(
+                        """
+                        UPDATE decision_checkpoints SET consumed_at = ?
+                        WHERE strategy = ? AND trade_date = ? AND version = ?
+                          AND consumed_at IS NULL
+                        """,
+                        (
+                            consumed_at.isoformat(),
+                            checkpoint.decision.strategy.value,
+                            checkpoint.decision.trade_date.isoformat(),
+                            checkpoint.version,
+                        ),
+                    ).rowcount
+                    if changed == 0:
+                        row = connection.execute(
+                            "SELECT version, consumed_at FROM decision_checkpoints WHERE strategy = ? AND trade_date = ?",
+                            (checkpoint.decision.strategy.value, checkpoint.decision.trade_date.isoformat()),
+                        ).fetchone()
+                        if row is None or row["version"] != checkpoint.version or not row["consumed_at"]:
+                            raise DecisionRecordConflictError("decision checkpoint consume conflict")
+            except sqlite3.Error as exc:
+                raise DecisionRecordUnavailableError("decision checkpoint consume failed") from exc
+
+    def _load_checkpoint_row(self, row: sqlite3.Row) -> V2DecisionCheckpoint:
+        payload = self._verified_payload(str(row["relative_path"]), str(row["payload_sha256"]))
+        try:
+            envelope = committed_record_from_bytes(payload)
+            boundary = envelope.committed_at
+            checkpoint = V2DecisionCheckpoint(envelope.decision, boundary)
+        except (TypeError, UnicodeError, ValueError) as exc:
+            raise DecisionRecordUnavailableError("decision checkpoint verification failed") from exc
+        if (
+            checkpoint.version != row["version"]
+            or checkpoint.decision.version != row["decision_version"]
+            or checkpoint.boundary_at.isoformat() != row["boundary_at"]
+            or envelope.commit_kind != "checkpoint_recovery"
+        ):
+            raise DecisionRecordUnavailableError("decision checkpoint identity mismatch")
+        return checkpoint
+
     def recover(self) -> DecisionRecordRecoverySummary:
         recovered = 0
         quarantined = 0
@@ -185,6 +320,14 @@ class SQLiteDecisionRecordRepository:
                     ).fetchall():
                         if self._committed_error(row):
                             self._quarantine_manifest(connection, row, "committed_file_invalid")
+                            quarantined += 1
+                    for row in connection.execute(
+                        "SELECT * FROM decision_checkpoints WHERE consumed_at IS NULL"
+                    ).fetchall():
+                        try:
+                            self._load_checkpoint_row(row)
+                        except DecisionRecordUnavailableError:
+                            self._quarantine_checkpoint(connection, row)
                             quarantined += 1
                     orphaned = self._quarantine_orphans(connection)
             except sqlite3.Error as exc:
@@ -362,18 +505,35 @@ class SQLiteDecisionRecordRepository:
         _fsync_directory(source_parent)
         _fsync_directory(destination.parent)
 
+    def _quarantine_checkpoint(self, connection: sqlite3.Connection, row: sqlite3.Row) -> None:
+        try:
+            source = self._safe_path(str(row["relative_path"]))
+        except DecisionRecordUnavailableError:
+            source = None
+        if source is not None:
+            self._isolate_file(source, "checkpoint_invalid")
+        connection.execute(
+            "DELETE FROM decision_checkpoints WHERE strategy = ? AND trade_date = ?",
+            (row["strategy"], row["trade_date"]),
+        )
+
     def _quarantine_orphans(self, connection: sqlite3.Connection) -> int:
-        known = {
+        known_records = {
             str(row["relative_path"])
             for row in connection.execute("SELECT relative_path FROM decision_records").fetchall()
         }
+        known_checkpoints = {
+            str(row["relative_path"])
+            for row in connection.execute("SELECT relative_path FROM decision_checkpoints").fetchall()
+        }
         count = 0
-        for path in self._records.rglob("*.json"):
-            relative = path.relative_to(self._root).as_posix()
-            if relative in known:
-                continue
-            self._isolate_file(path, "orphan_without_manifest")
-            count += 1
+        for root, known in ((self._records, known_records), (self._checkpoints, known_checkpoints)):
+            for path in root.rglob("*.json"):
+                relative = path.relative_to(self._root).as_posix()
+                if relative in known:
+                    continue
+                self._isolate_file(path, "orphan_without_manifest")
+                count += 1
         return count
 
     @staticmethod
@@ -432,6 +592,18 @@ CREATE TABLE IF NOT EXISTS decision_records (
     recovery_payload BLOB,
     recovery_sha256 TEXT NOT NULL DEFAULT '',
     error TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(strategy, trade_date)
+);
+CREATE TABLE IF NOT EXISTS decision_checkpoints (
+    strategy TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    version TEXT NOT NULL UNIQUE,
+    decision_version TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    boundary_at TEXT NOT NULL,
+    payload_sha256 TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    consumed_at TEXT,
     PRIMARY KEY(strategy, trade_date)
 );
 """

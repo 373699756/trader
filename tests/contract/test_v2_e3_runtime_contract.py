@@ -9,11 +9,11 @@ DESIGN = ROOT / "docs" / "software-business-design.md"
 RUNTIME = ROOT / "src" / "trader" / "application" / "v2_runtime.py"
 
 
-def test_v2_e3_is_complete_and_e4_is_the_next_engineering_section() -> None:
+def test_v2_e3_remains_complete_after_e4_progression() -> None:
     plan = PLAN.read_text(encoding="utf-8")
 
-    assert "V2-E0、V2-E1、V2-E2、V2-E3、Score-R0、Score-R1 已完成" in plan
-    assert "下一工程章节为 V2-E4" in plan
+    assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、Score-R0、Score-R1 已完成" in plan
+    assert "下一工程章节为 V2-E5" in plan
     assert "### V2-E3：独立调度与生命周期（已完成）" in plan
 
 

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.application.decision_core import UnifiedDecisionIndex
@@ -138,3 +139,20 @@ def test_overlay_rejects_wrong_parent_and_out_of_scope_code() -> None:
 
     assert index.publish_overlay(wrong_parent, expected_version=None).reason == "parent_mismatch"
     assert index.publish_overlay(outside, expected_version=None).reason == "quote_scope_mismatch"
+
+
+def test_freeze_seal_projects_official_items_and_rejects_all_same_day_updates() -> None:
+    index = UnifiedDecisionIndex()
+    local = decision()
+    assert index.publish(local, expected_version=None).accepted
+    boundary = datetime.combine(local.trade_date, datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai")).replace(
+        hour=14,
+        minute=50,
+    )
+
+    sealed = index.seal_for_freeze(Strategy.TOMORROW, boundary_at=boundary)
+    retry = index.seal_for_freeze(Strategy.TOMORROW, boundary_at=boundary)
+
+    assert sealed.accepted and sealed.decision is not None
+    assert retry.decision == sealed.decision
+    assert index.publish(decision(sequence=3), expected_version=local.version).reason == "freeze_sealed"

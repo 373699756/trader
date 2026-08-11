@@ -21,7 +21,7 @@ OVERLAY_SCHEMA_VERSION = "v2_decision_overlay_v1"
 COMMITTED_RECORD_SCHEMA_VERSION = "v2_committed_decision_v1"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _CODE = re.compile(r"^\d{6}$")
-_IDENTITY = re.compile(r"^[a-zA-Z0-9_.:-]{1,160}$")
+_IDENTITY = re.compile(r"^[a-zA-Z0-9_.:+-]{1,160}$")
 _REASON = re.compile(r"^[a-z0-9_]{1,64}$")
 _Json: TypeAlias = str | int | float | bool | None | list["_Json"] | dict[str, "_Json"]
 
@@ -280,6 +280,34 @@ def identity_codes(identity: DecisionIdentity) -> frozenset[str]:
     if isinstance(identity, ScoredDecision):
         return frozenset(item.code for item in identity.items if item.selected)
     return frozenset(item.code for item in identity.items)
+
+
+def formal_scored_decision(
+    decision: ScoredDecision,
+    *,
+    degraded_reasons: tuple[str, ...] = (),
+    input_versions: tuple[tuple[str, str], ...] = (),
+) -> ScoredDecision:
+    """Project an accepted scored identity to its immutable official-only form."""
+
+    official_items = tuple(
+        item for item in decision.items if item.selected and item.action is RecommendationAction.EXECUTABLE
+    )
+    return ScoredDecision(
+        strategy=decision.strategy,
+        trade_date=decision.trade_date,
+        sequence=decision.sequence,
+        observed_at=decision.observed_at,
+        stage=decision.stage,
+        parent_version=decision.parent_version,
+        input_versions=(*decision.input_versions, *input_versions),
+        config_version=decision.config_version,
+        strategy_version=decision.strategy_version,
+        fusion_version=decision.fusion_version,
+        items=official_items,
+        filter_aggregates=decision.filter_aggregates,
+        degraded_reasons=(*decision.degraded_reasons, *degraded_reasons),
+    )
 
 
 def committed_record_bytes(record: CommittedDecisionRecord) -> bytes:
@@ -595,5 +623,6 @@ __all__ = [
     "ScoredDecision",
     "committed_record_bytes",
     "committed_record_from_bytes",
+    "formal_scored_decision",
     "identity_codes",
 ]

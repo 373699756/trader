@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from tests.unit.domain.test_decision_identity import decision
+from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.tomorrow_v2_freezing import (
+    TomorrowV2FreezeCoordinator,
+    V2DecisionRuntimeIdentity,
+)
+from trader.domain.recommendation.decision_identity import ScoredDecision
+from trader.domain.recommendation.models import Strategy
+from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+@dataclass
+class _Clock:
+    value: datetime
+
+    def now(self) -> datetime:
+        return self.value
+
+
+def _coordinator(
+    index: UnifiedDecisionIndex,
+    repository: SQLiteDecisionRecordRepository,
+    clock: _Clock,
+) -> TomorrowV2FreezeCoordinator:
+    return TomorrowV2FreezeCoordinator(
+        index,
+        repository,
+        clock,
+        runtime_identity=V2DecisionRuntimeIdentity("config-v1", "strategy-v1", "fusion-v1"),
+    )
+
+
+def _at(hour: int, minute: int, second: int = 0) -> datetime:
+    return datetime(2026, 8, 11, hour, minute, second, tzinfo=SHANGHAI)
+
+
+def _publish(index: UnifiedDecisionIndex, value: ScoredDecision) -> None:
+    assert index.publish(value, expected_version=None).accepted
+
+
+def test_checkpoint_recovers_same_v2_identity_after_restart(tmp_path: Path) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    before = UnifiedDecisionIndex()
+    current = replace(decision(), observed_at=_at(14, 49, 35))
+    _publish(before, current)
+    clock = _Clock(_at(14, 49, 40))
+
+    assert _coordinator(before, repository, clock).capture_checkpoint().status == "checkpoint_saved"
+
+    restored = UnifiedDecisionIndex()
+    clock.value = _at(14, 50)
+    result = _coordinator(restored, repository, clock).freeze_scheduled()
+
+    assert result.status == "frozen"
+    assert result.record is not None
+    assert result.record.commit_kind == "checkpoint_recovery"
+    restored_current = restored.snapshot(Strategy.TOMORROW).current
+    assert isinstance(restored_current, ScoredDecision)
+    assert result.record.decision.content_hash == restored_current.content_hash
+
+
+def test_freeze_is_idempotent_non_overwritable_and_accepts_empty_formal_result(tmp_path: Path) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    index = UnifiedDecisionIndex()
+    empty = replace(decision(), observed_at=_at(14, 49, 50), items=())
+    _publish(index, empty)
+    clock = _Clock(_at(14, 50))
+    coordinator = _coordinator(index, repository, clock)
+
+    first = coordinator.freeze_scheduled()
+    second = coordinator.freeze_scheduled()
+
+    assert first.status == "frozen"
+    assert first.record is not None and first.record.decision.items == ()
+    assert second.status == "already_frozen"
+    assert second.version == first.version
+    late = replace(empty, sequence=3, observed_at=_at(14, 50, 1))
+    assert index.publish(late, expected_version=empty.version).reason == "freeze_sealed"
+
+
+def test_close_fallback_requires_official_close_and_never_overwrites(tmp_path: Path) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    index = UnifiedDecisionIndex()
+    current = replace(decision(), observed_at=_at(14, 49, 50))
+    _publish(index, current)
+    coordinator = _coordinator(index, repository, _Clock(_at(15, 0)))
+
+    invalid = coordinator.freeze_close_fallback(
+        current,
+        recovery_path="current",
+        official_close_version="candidate-v1",
+    )
+    frozen = coordinator.freeze_close_fallback(
+        current,
+        recovery_path="current",
+        official_close_version="official-close:20260811",
+    )
+    duplicate = coordinator.freeze_close_fallback(
+        current,
+        recovery_path="current",
+        official_close_version="official-close:20260811",
+    )
+
+    assert invalid.status == "invalid_official_close"
+    assert frozen.status == "frozen"
+    assert frozen.record is not None
+    assert frozen.record.decision.degraded_reasons == (
+        "close_fallback",
+        "local_only",
+        "official_close",
+    )
+    assert dict(frozen.record.decision.input_versions)["official_close"] == "official-close:20260811"
+    assert duplicate.status == "already_frozen"

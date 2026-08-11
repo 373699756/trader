@@ -1,0 +1,335 @@
+"""Production Tomorrow V2 native-input lane and formal freeze control."""
+
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass
+from datetime import datetime, time
+from typing import Literal
+
+from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decision_events import V2DecisionCommitted, build_v2_decision_committed
+from trader.application.decision_observers import DecisionObserverRuntime
+from trader.application.policy import RecommendationPolicy
+from trader.application.ports.clock import Clock
+from trader.application.ports.reviews import DeepSeekReviewUnavailableError, TomorrowDeepSeekReviewPort
+from trader.application.ports.tomorrow import TomorrowNativeInput
+from trader.application.shutdown import ShutdownDeadline, ShutdownStep
+from trader.application.tomorrow_v2_freezing import TomorrowV2FreezeCoordinator, V2FreezeOperationResult
+from trader.application.tomorrow_v2_projection import (
+    TomorrowV2LocalProjection,
+    build_tomorrow_v2_hybrid,
+    build_tomorrow_v2_local,
+    validate_review_manifests,
+)
+from trader.application.v2_lifecycle import LatestWinsStatus, LatestWinsWorker
+from trader.domain.recommendation.decision_identity import ScoredDecision
+from trader.domain.recommendation.models import Strategy
+
+
+@dataclass(frozen=True)
+class TomorrowV2RuntimeStatus:
+    worker: LatestWinsStatus
+    local_publish_count: int
+    hybrid_publish_count: int
+    publish_rejection_count: int
+    review_failure_count: int
+    review_late_count: int
+    observer_rejection_count: int
+    input_rejection_count: int
+    checkpoint_status: str
+    freeze_status: str
+    last_error_code: str
+
+
+@dataclass(frozen=True)
+class TomorrowV2RuntimeDependencies:
+    reviewer: TomorrowDeepSeekReviewPort
+    index: UnifiedDecisionIndex
+    observer: DecisionObserverRuntime
+    freezer: TomorrowV2FreezeCoordinator
+    clock: Clock
+
+
+class TomorrowV2Runtime:
+    """One latest-wins producer driven exclusively by native point-in-time inputs."""
+
+    def __init__(
+        self,
+        policy: RecommendationPolicy,
+        dependencies: TomorrowV2RuntimeDependencies,
+    ) -> None:
+        self._policy = policy
+        self._reviewer = dependencies.reviewer
+        self._index = dependencies.index
+        self._observer = dependencies.observer
+        self._freezer = dependencies.freezer
+        self._clock = dependencies.clock
+        self._lock = threading.RLock()
+        self._sequence = 1
+        self._local_publish_count = 0
+        self._hybrid_publish_count = 0
+        self._publish_rejection_count = 0
+        self._review_failure_count = 0
+        self._review_late_count = 0
+        self._observer_rejection_count = 0
+        self._input_rejection_count = 0
+        self._checkpoint_status = "not_attempted"
+        self._freeze_status = "not_attempted"
+        self._last_error_code = ""
+        self._worker = LatestWinsWorker(
+            "trader-v2-tomorrow",
+            self._process,
+            order_key=lambda item: int(item.evaluated_at.timestamp() * 1_000_000),
+        )
+
+    def start(self) -> bool:
+        if not self._observer.start():
+            return False
+        try:
+            started = self._worker.start()
+        except BaseException:
+            self._observer.close()
+            self._observer.stop(deadline=ShutdownDeadline.start(5.0))
+            raise
+        formal = self._index.snapshot(Strategy.TOMORROW).formal
+        if formal is not None:
+            self._observer.offer(build_v2_decision_committed(formal.decision))
+        return started
+
+    def initialize(self) -> None:
+        restored = self._freezer.restore(self._clock.now().date())
+        if restored.status == "persistence_failed":
+            with self._lock:
+                self._freeze_status = restored.status
+                self._last_error_code = "freeze:persistence_failed"
+
+    def offer_native(self, native_input: TomorrowNativeInput) -> bool:
+        return self._worker.offer(native_input).value in {"accepted", "replaced", "coalesced"}
+
+    def wait_idle(self, timeout_seconds: float) -> bool:
+        return self._worker.wait_idle(timeout_seconds)
+
+    def stop(
+        self,
+        *,
+        wait: bool,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownStep:
+        shared = deadline or ShutdownDeadline.start(30.0)
+        if not wait:
+            self._worker.close()
+            self._observer.close()
+            return ShutdownStep(name="trader-v2-tomorrow-close", completed=True, timed_out=False)
+        worker = self._worker.stop(deadline=shared)
+        observer = self._observer.stop(deadline=shared)
+        completed = worker.completed and observer.completed
+        return ShutdownStep(
+            name="trader-v2-tomorrow",
+            completed=completed,
+            timed_out=not completed and shared.expired,
+            cancelled_count=worker.cancelled_count + observer.cancelled_count,
+            detail="" if completed else "Tomorrow V2 runtime remains active",
+        )
+
+    def on_clock(self, at: datetime) -> V2FreezeOperationResult | None:
+        if at.tzinfo is None or at.utcoffset() is None:
+            raise ValueError("Tomorrow V2 control time must be timezone-aware")
+        local = at.astimezone(self._clock.now().tzinfo)
+        checkpoint_start = datetime.combine(local.date(), time(14, 49, 20), tzinfo=local.tzinfo)
+        boundary = datetime.combine(local.date(), time(14, 50), tzinfo=local.tzinfo)
+        close = datetime.combine(local.date(), time(15, 0), tzinfo=local.tzinfo)
+        result: V2FreezeOperationResult | None = None
+        if checkpoint_start <= local < boundary:
+            result = self._freezer.capture_checkpoint()
+            with self._lock:
+                self._checkpoint_status = result.status
+        elif boundary <= local < close:
+            result = self._freezer.freeze_scheduled()
+            with self._lock:
+                self._freeze_status = result.status
+            if result.status == "frozen" and result.record is not None:
+                self._offer_formal_event(result.record.decision)
+        return result
+
+    def recover_close_fallback(
+        self,
+        *,
+        official_close_version: str,
+        recovery_path: Literal["current", "close_rebuild"] = "current",
+    ) -> V2FreezeOperationResult:
+        current = self._index.snapshot(Strategy.TOMORROW).current
+        if not isinstance(current, ScoredDecision):
+            return V2FreezeOperationResult("no_eligible_decision")
+        if recovery_path not in {"current", "close_rebuild"}:
+            raise ValueError("Tomorrow V2 close recovery path is invalid")
+        result = self._freezer.freeze_close_fallback(
+            current,
+            recovery_path=recovery_path,
+            official_close_version=official_close_version,
+        )
+        with self._lock:
+            self._freeze_status = result.status
+        if result.status == "frozen" and result.record is not None:
+            self._offer_formal_event(result.record.decision)
+        return result
+
+    def status(self) -> TomorrowV2RuntimeStatus:
+        with self._lock:
+            return TomorrowV2RuntimeStatus(
+                self._worker.status(),
+                self._local_publish_count,
+                self._hybrid_publish_count,
+                self._publish_rejection_count,
+                self._review_failure_count,
+                self._review_late_count,
+                self._observer_rejection_count,
+                self._input_rejection_count,
+                self._checkpoint_status,
+                self._freeze_status,
+                self._last_error_code,
+            )
+
+    def _process(self, native_input: TomorrowNativeInput) -> None:
+        if native_input.phase == "close_fallback":
+            self._process_close_fallback(native_input)
+        else:
+            self._process_regular(native_input)
+
+    def _process_regular(self, native_input: TomorrowNativeInput) -> None:
+        sequence = self._next_sequence()
+        projection = build_tomorrow_v2_local(native_input, self._policy, sequence=sequence)
+        if not projection.input_quality.publishable:
+            self._reject_input(projection.input_quality.status)
+            return
+        local = projection.local
+        expected = self._index.snapshot(Strategy.TOMORROW).current
+        published = self._index.publish(
+            local,
+            expected_version=expected.version if expected is not None else None,
+        )
+        if not published.accepted:
+            self._reject_publish(published.reason)
+            return
+        self._record_publish(published.event, hybrid=False)
+        self._try_hybrid_upgrade(native_input, projection, local)
+
+    def _try_hybrid_upgrade(
+        self,
+        native_input: TomorrowNativeInput,
+        projection: TomorrowV2LocalProjection,
+        local: ScoredDecision,
+    ) -> None:
+        deadline = datetime.combine(native_input.trade_date, time(14, 48), tzinfo=native_input.evaluated_at.tzinfo)
+        if native_input.evaluated_at >= deadline or self._clock.now() >= deadline:
+            with self._lock:
+                self._review_late_count += 1
+            return
+        if not projection.review_candidates:
+            return
+        expected_manifests = {
+            candidate.code: self._reviewer.evidence_manifest_hash(candidate.features)
+            for candidate in projection.review_candidates
+        }
+        try:
+            reviews = dict(
+                self._reviewer.review(
+                    Strategy.TOMORROW,
+                    tuple(candidate.features for candidate in projection.review_candidates),
+                    phase=native_input.phase,
+                    deadline=deadline,
+                    contexts={candidate.code: candidate.context for candidate in projection.review_candidates},
+                )
+            )
+        except DeepSeekReviewUnavailableError:
+            with self._lock:
+                self._review_failure_count += 1
+                self._last_error_code = "deepseek_transport_failed"
+            return
+        if not validate_review_manifests(projection, reviews, expected_manifests):
+            with self._lock:
+                self._review_failure_count += 1
+                self._last_error_code = "deepseek_identity_rejected"
+            return
+        hybrid = build_tomorrow_v2_hybrid(projection, self._policy, reviews, review_deadline=deadline)
+        if hybrid is None:
+            with self._lock:
+                self._review_late_count += int(any(review.completed_at >= deadline for review in reviews.values()))
+            return
+        upgraded = self._index.publish(hybrid, expected_version=local.version)
+        if not upgraded.accepted:
+            self._reject_publish(upgraded.reason)
+            return
+        self._record_publish(upgraded.event, hybrid=True)
+
+    def _process_close_fallback(self, native_input: TomorrowNativeInput) -> None:
+        official_close_version = f"official-close:{native_input.input_version.removeprefix('native-input:')}"
+        current = self._index.snapshot(Strategy.TOMORROW).current
+        recovery_path: Literal["current", "close_rebuild"] = "current"
+        if not isinstance(current, ScoredDecision) or current.trade_date != native_input.trade_date:
+            projection = build_tomorrow_v2_local(
+                native_input,
+                self._policy,
+                sequence=self._next_sequence(),
+            )
+            if not projection.input_quality.publishable:
+                self._reject_input(projection.input_quality.status)
+                return
+            current = projection.local
+            expected = self._index.snapshot(Strategy.TOMORROW).current
+            published = self._index.publish(
+                current,
+                expected_version=expected.version if expected is not None else None,
+            )
+            if not published.accepted:
+                self._reject_publish(published.reason)
+                return
+            self._record_publish(published.event, hybrid=False)
+            recovery_path = "close_rebuild"
+        result = self._freezer.freeze_close_fallback(
+            current,
+            recovery_path=recovery_path,
+            official_close_version=official_close_version,
+        )
+        with self._lock:
+            self._freeze_status = result.status
+        if result.status == "frozen" and result.record is not None:
+            self._offer_formal_event(result.record.decision)
+
+    def _next_sequence(self) -> int:
+        with self._lock:
+            sequence = self._sequence
+            self._sequence += 2
+            return sequence
+
+    def _record_publish(self, event: V2DecisionCommitted | None, *, hybrid: bool) -> None:
+        with self._lock:
+            if hybrid:
+                self._hybrid_publish_count += 1
+            else:
+                self._local_publish_count += 1
+        if event is not None and not self._observer.offer(event):
+            with self._lock:
+                self._observer_rejection_count += 1
+
+    def _reject_publish(self, reason: str) -> None:
+        with self._lock:
+            self._publish_rejection_count += 1
+            self._last_error_code = f"publish:{reason}"
+
+    def _reject_input(self, reason: str) -> None:
+        with self._lock:
+            self._input_rejection_count += 1
+            self._last_error_code = f"input:{reason}"
+
+    def _offer_formal_event(self, decision: ScoredDecision) -> None:
+        if not self._observer.offer(build_v2_decision_committed(decision)):
+            with self._lock:
+                self._observer_rejection_count += 1
+
+
+__all__ = [
+    "TomorrowV2Runtime",
+    "TomorrowV2RuntimeDependencies",
+    "TomorrowV2RuntimeStatus",
+]

@@ -103,6 +103,8 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
         )
         self._outcome_settlement = dependencies.outcome_settlement
         self._tomorrow_native_inputs = dependencies.tomorrow_native_inputs
+        self._tomorrow_v2_control = dependencies.tomorrow_v2_control
+        self._v2_owned_strategies = frozenset(options.v2_owned_strategies)
         self._latency = dependencies.latency or LatencyWaterfall()
         self._market_data_manages_workers = options.market_data_manages_workers
         self._cadence = (
@@ -565,7 +567,10 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
         now: datetime,
         freeze_strategies: Sequence[str],
     ) -> tuple[RecommendationSnapshot, ...]:
-        return freeze_available_snapshots(self, now, freeze_strategies)
+        legacy_strategies = tuple(
+            value for value in freeze_strategies if Strategy(value) not in self._v2_owned_strategies
+        )
+        return freeze_available_snapshots(self, now, legacy_strategies)
 
     def _refresh_live_overlays(
         self,

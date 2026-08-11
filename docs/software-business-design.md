@@ -115,13 +115,13 @@ V2 唯一运行目录固定为 `.runtime/v2`，只接受当前 V2 配置、数�
                                       |
                                   MarketEpoch
                                       |
-              硬过滤 -> 候选预选 -> 本地评分 -> 本地 DecisionEpoch
+              硬过滤 -> 候选预选 -> 本地评分 -> local ScoredDecision
                                                     |
                      ResearchEpoch -> DeepSeek 复核-+
                                                     |
-                                      融合 DecisionEpoch
+                                      hybrid ScoredDecision
                                                     |
-                                      CurrentDecisionIndex
+                                      UnifiedDecisionIndex
                                                     |
                                       只读 API -> SSE -> Web
 ```
@@ -129,13 +129,13 @@ V2 唯一运行目录固定为 `.runtime/v2`，只接受当前 V2 配置、数�
 `DailyFeaturePack` 在开盘前构建并按新完成的历史、主数据和研究事实增量换版，不阻塞实时
 行情；`MarketEpoch` 是一次可审计的全市场决策输入；`CandidateQuoteEpoch` 只更新候选和
 已发布股票的高频报价；`ResearchEpoch` 保存经过 schema 和证据校验的结构化研究事实；
-`DecisionEpoch` 保存 local 或 hybrid 的完整决策身份。每个 epoch 都绑定交易日、上海
+`ScoredDecision` 保存 local 或 hybrid 的完整决策身份。每个 epoch 都绑定交易日、上海
 时区观察点、上游版本、规范内容哈希，以及按其职责适用的配置、规则、策略和 schema
 版本，已发布对象不可原地修改。
 
 硬过滤、候选预选、本地评分和稳定选择必须是一次确定性管道。过滤结果使用
 `pass`、`observe_only`、`reject` 三态并保留逐股原因；缺失关键行情、证券身份或点时
-证据不得静默降级为通过。`CurrentDecisionIndex` 只保存每个视图最后一个已提交的不可变
+证据不得静默降级为通过。`UnifiedDecisionIndex` 按策略保存最后一个已提交的不可变
 决策引用，并通过单提交者 compare-and-set 保证旧行情、迟到 DeepSeek 和失败批次不能
 覆盖更新结果。Web 只读取该索引和报价 overlay，不参与采集、过滤、评分或持久化。
 
@@ -255,8 +255,8 @@ today、tomorrow 和 d25 的正式记录仓储按策略和交易日唯一提交�
 SHA-256 写入 SQLite staged manifest，再原子创建不可变 JSON，最后提交 manifest；同键同
 内容重放幂等，不同内容冲突失败。启动恢复使用 manifest 内有界恢复载荷补齐半提交；已提交
 文件缺失、损坏、哈希或身份不一致时移入隔离目录并 fail closed，绝不向当前索引返回不可信
-记录。统一核心和仓储本阶段保持旁路，不在 `bootstrap.py` 接线；调度、冻结时线接管与四类
-视图迁移分别属于 V2-E3 至 V2-E7。
+记录。V2-E4 已把 tomorrow 的统一核心、原生 worker、正式记录仓储、observer 和冻结时线
+接入 `bootstrap.py`；today、d25 与 long 仍按 V2-E5 至 V2-E7 逐节接管。
 
 #### 独立 V2 调度与生命周期交付边界
 
@@ -282,11 +282,12 @@ today、tomorrow、d25 和 long 固定为每策略一个运行中任务和一个
 失败与完成状态；停止时先关闭接收门并取消普通 pending，再排空已接纳控制任务，所有组件
 读取同一个 `ShutdownDeadline` 的剩余时间，不得各自重置完整关闭期限。
 
-#### tomorrow v2 决策索引与冻结交付边界（迁移期）
+#### tomorrow v2 决策索引与冻结交付边界（已由 E4 接管）
 
-迁移期间既有 tomorrow v2 使用应用层 `CurrentDecisionIndex` 作为单提交者，禁止为当前指针
-引入持久化式仓储抽象。它继续只持有当前不可变 `DecisionEpoch`、冻结封口和已提交
-`TomorrowDecisionFreeze` 引用，直至后续章节将 tomorrow 调度与冻结切换到统一身份。
+既有 `CurrentDecisionIndex`、`DecisionEpoch`、`TomorrowDecisionFreeze` 和 shadow 仓储只属
+待删除迁移实现，不再由生产组合根引用。Tomorrow 当前指针、封口候选与已提交正式记录统一
+使用 `UnifiedDecisionIndex`、`ScoredDecision` 和 `CommittedDecisionRecord`；当前索引仍只
+保存内存引用，持久化只发生在显式检查点或正式提交边界。
 
 其 local/hybrid 发布必须携带调用方实际读取的
 `expected_current_version`，通过 compare-and-set 后才能替换当前指针。hybrid 还必须引用
@@ -294,27 +295,28 @@ today、tomorrow、d25 和 long 固定为每策略一个运行中任务和一个
 全部拒绝。索引不读取网络、配置、文件或数据库。
 
 14:49:20（含）至 14:50（不含）可为距边界不超过 30 秒的当前决策写
-`TomorrowFreezeCheckpoint`。14:50 冻结先在索引内原子封口并确定唯一候选，再持久化不可变
+`V2DecisionCheckpoint`。14:50 冻结先在索引内原子封口并确定唯一候选，再持久化不可变
 JSON 和 SQLite manifest，最后才把索引切换为 frozen；写入失败时保持原决策和同一封口候选，
 只允许幂等重试相同版本。持续运行优先冻结索引中不晚于边界的最新决策；重启恢复仅允许
 tomorrow 使用同日、同配置、哈希有效、尚未消费且边界年龄不超过 30 秒的检查点。已存在的
 同日正式记录优先恢复，任何迟到行情或 hybrid 都不能覆盖。
 
-`TomorrowDecisionFreeze` 单独保存实际入选代码的冻结/收盘锚点，锚点不改变
-`DecisionEpoch` 中的股票、分数、风险、动作和排名。15:00 后仅在同日正式记录不存在且没有
+正式记录先执行 official-only 投影，只保留 `selected=true` 且 `action=executable` 的条目；
+报价锚点作为匹配 overlay/official-close 输入版本，不改变 `ScoredDecision` 中的股票、分数、
+风险、动作和排名。15:00 后仅在同日正式记录不存在且没有
 待重试的 14:50 封口时允许创建一次 `close_fallback`：运行中路径只能固化当前索引决策，
 冷启动路径只接受调用方已经用完整同日收盘数据生成的 local 决策；两者都必须提供与入选
 代码完全一致的正价格收盘锚点，并标记 `close_fallback`、`official_close`，local 决策再
 标记 `local_only`。本用例不抓行情、不评分、不调用 DeepSeek。
 
-冻结 repository 使用独立 v2 表和目录，通过临时文件、flush、fsync、原子替换、SHA-256
+统一 decision repository 使用独立 v2 表和目录，通过临时文件、flush、fsync、原子创建、SHA-256
 和唯一交易日 manifest 提供检查点、正式冻结、冲突拒绝与恢复；损坏或半提交文件不得进入
-索引。原始行情 120 交易日/20GB 压缩归档仍只保留文档，不在本批实现。本阶段继续旁路，
-不接 `bootstrap.py`、旧 P6、旧运行库、API、SSE 或 Web；这些属于后续同级章节。
+索引。Tomorrow 已不再读取旧 P6 baseline、cutover gate、shadow evidence 或 shadow freeze；
+原始行情 120 交易日/20GB 压缩归档仍只保留文档，不在本批实现。
 
 ### 2.6 tomorrow v2 API/SSE/Web 交付边界
 
-tomorrow v2 当前读取链固定为 `CurrentDecisionIndex -> TomorrowDecisionQueries -> /api/v2
+tomorrow v2 当前读取链固定为 `UnifiedDecisionIndex -> UnifiedTomorrowDecisionQueries -> /api/v2
 -> SSE -> Web`。应用层查询一次读取完整不可变决策，并只叠加
 `projection_version == decision.version` 的内存报价 overlay；不匹配、迟到或旧交易日
 overlay 不得进入响应。当前接口只返回同一上海交易日的最新决策和按最终排名排序的最多
@@ -562,6 +564,32 @@ decision SSE、不得成为可比较的切换样本，也不得触发 snapshot �
 `history_data_degraded`；过期历史只允许形成观察项，不得进入可执行池，从未存在的历史仍
 不得评分。全量特征只有在行情、历史和特征构建全部完成后才算发布成功，原始来源成功不得
 冒充特征快照成功。
+
+### 2.15 tomorrow v2 正式接管边界
+
+V2-E4 起，活动组合根把 `TomorrowNativeInput` 直接送入单运行、单 pending 的
+`TomorrowV2Runtime`。原生输入先生成 `local ScoredDecision` 并以调用方实际读取的版本执行
+CAS；只有 14:48 前完成、代码与证据 manifest 一致且时间合法的结构化 DeepSeek facts 才能
+生成引用该 local 版本的 hybrid。模型失败、部分结果、迟到或父版本被更新时保留已发布 local，
+不得借用 v1 snapshot、baseline 关联或第二条 DeepSeek 请求链补齐。
+
+Tomorrow 从旧 Pipeline 的正式评分、P6 冻结与盘后重建集合中排除；旧 Pipeline 在迁移期只
+提供同批点时原生输入，today、d25 和 long 行为不变。生产组合根不再创建 cutover gate、
+shadow evidence、shadow worker、`CurrentDecisionIndex` 或 `TomorrowDecisionFreezeRepository`。
+当前、冻结和研究轨迹都消费同一个 `ScoredDecision.version`；formal 投影也作为通用
+`V2DecisionCommitted` 进入有界 observer，研究写入失败不能回写或阻塞正式链。
+
+14:49:20（含）至 14:50（不含）只允许保存距边界不超过 30 秒、同运行身份且已 official-only
+投影的 `V2DecisionCheckpoint`。14:50 先在 `UnifiedDecisionIndex` 原子封口，再提交按策略和
+交易日唯一的 `CommittedDecisionRecord`；持久化失败保留同一封口对象供幂等重试，任何同日
+local 或 hybrid 都不能越过封口，报价 overlay 只允许匹配封口后的正式父版本且不得改变决策内容。
+重启先恢复同日正式记录；仅在 15:00 前允许用未消费、
+哈希有效的同日检查点恢复。合法业务空结果与非空结果使用相同提交语义。
+
+15:00 后若同日记录仍缺失且没有待重试封口，运行中路径固化既有 V2 current，冷启动路径用
+完整同日收盘原生输入生成一次 local；两者都不调用 DeepSeek，并把规范收盘输入版本与
+`close_fallback`、`official_close`、必要时的 `local_only` 一并绑定到不可变决策身份。已有
+同日正式记录永远优先，收盘恢复不得覆盖。
 
 ## 3. 架构与代码边界
 

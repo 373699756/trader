@@ -35,7 +35,7 @@ class SourceLaneResource(Protocol):
     ) -> tuple[ShutdownStep, ...]: ...
 
 
-class ShadowResource(Protocol):
+class AuxiliaryRuntimeResource(Protocol):
     def start(self) -> bool: ...
 
     def stop(
@@ -61,7 +61,7 @@ class SystemLifecycleResources:
     source_lanes: SourceLaneResource
     history_pool: PoolResource
     research_pool: PoolResource
-    shadow_worker: ShadowResource | None
+    auxiliary_runtime: AuxiliaryRuntimeResource | None
     market_cache: CacheResource
 
 
@@ -73,8 +73,8 @@ def start_application_resources(
     supervisor = resources.supervisor
     history_pool = resources.history_pool
     research_pool = resources.research_pool
-    shadow_worker = resources.shadow_worker
-    shadow_started = shadow_worker.start() if shadow_worker is not None else False
+    auxiliary_runtime = resources.auxiliary_runtime
+    auxiliary_started = auxiliary_runtime.start() if auxiliary_runtime is not None else False
     history_started = False
     research_started = False
     try:
@@ -87,20 +87,20 @@ def start_application_resources(
             research_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
         if history_started:
             history_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-        if shadow_started and shadow_worker is not None:
-            shadow_worker.stop(wait=True, deadline=deadline)
+        if auxiliary_started and auxiliary_runtime is not None:
+            auxiliary_runtime.stop(wait=True, deadline=deadline)
         raise
     if started:
         return True
-    if not any((research_started, history_started, shadow_started)):
+    if not any((research_started, history_started, auxiliary_started)):
         return False
     deadline = ShutdownDeadline.start(timeout_seconds)
     if research_started:
         research_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
     if history_started:
         history_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-    if shadow_started and shadow_worker is not None:
-        shadow_worker.stop(wait=True, deadline=deadline)
+    if auxiliary_started and auxiliary_runtime is not None:
+        auxiliary_runtime.stop(wait=True, deadline=deadline)
     return False
 
 
@@ -113,19 +113,19 @@ def stop_application_resources(
     source_lanes = resources.source_lanes
     history_pool = resources.history_pool
     research_pool = resources.research_pool
-    shadow_worker = resources.shadow_worker
+    auxiliary_runtime = resources.auxiliary_runtime
     market_cache = resources.market_cache
     steps: list[ShutdownStep] = []
-    if shadow_worker is not None:
-        shadow_worker.stop(wait=False, deadline=deadline)
+    if auxiliary_runtime is not None:
+        auxiliary_runtime.stop(wait=False, deadline=deadline)
     source_lanes.stop(wait=False, deadline=deadline)
     supervisor_report = supervisor.stop(deadline)
     steps.extend(supervisor_report.steps)
     steps.extend(source_lanes.stop(wait=True, deadline=deadline))
     steps.append(history_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
     steps.append(research_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
-    if shadow_worker is not None:
-        steps.append(shadow_worker.stop(wait=True, deadline=deadline))
+    if auxiliary_runtime is not None:
+        steps.append(auxiliary_runtime.stop(wait=True, deadline=deadline))
     steps.append(market_cache.stop(wait=True, deadline=deadline))
     return ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
 

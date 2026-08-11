@@ -142,8 +142,8 @@ def test_application_system_uses_one_deadline_for_every_shutdown_resource() -> N
     history_pool.stop.return_value = completed
     research_pool = Mock()
     research_pool.stop.return_value = completed
-    shadow_worker = Mock()
-    shadow_worker.stop.return_value = completed
+    tomorrow_runtime = Mock()
+    tomorrow_runtime.stop.return_value = completed
     market_cache = Mock()
     market_cache.stop.return_value = completed
     system = ApplicationSystem(
@@ -161,7 +161,7 @@ def test_application_system_uses_one_deadline_for_every_shutdown_resource() -> N
         history_pool=history_pool,
         research_pool=research_pool,
         source_lanes=source_lanes,
-        tomorrow_shadow_worker=shadow_worker,
+        tomorrow_v2_runtime=tomorrow_runtime,
     )
 
     report = system.stop(deadline=deadline)
@@ -171,7 +171,7 @@ def test_application_system_uses_one_deadline_for_every_shutdown_resource() -> N
     assert all(call.kwargs["deadline"] is deadline for call in source_lanes.stop.call_args_list)
     assert history_pool.stop.call_args.kwargs["deadline"] is deadline
     assert research_pool.stop.call_args.kwargs["deadline"] is deadline
-    assert all(call.kwargs["deadline"] is deadline for call in shadow_worker.stop.call_args_list)
+    assert all(call.kwargs["deadline"] is deadline for call in tomorrow_runtime.stop.call_args_list)
     assert market_cache.stop.call_args.kwargs["deadline"] is deadline
 
 

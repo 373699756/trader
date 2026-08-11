@@ -34,7 +34,7 @@ def test_tomorrow_v2_api_sse_web_delivery_contract_is_recorded() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     assert "### 2.6 tomorrow v2 API/SSE/Web 交付边界" in design
-    assert "CurrentDecisionIndex -> TomorrowDecisionQueries -> /api/v2" in design
+    assert "UnifiedDecisionIndex -> UnifiedTomorrowDecisionQueries -> /api/v2" in design
     assert "`GET /api/v2/tomorrow/current`" in design
     assert "`GET /api/v2/tomorrow/history?date=YYYY-MM-DD`" in design
     assert "publisher 不等待客户端消费" in design
@@ -114,7 +114,7 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
-    assert "状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、Score-R0、Score-R1 已完成" in implementation_plan
+    assert "状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、Score-R0、Score-R1 已完成" in implementation_plan
     assert "`docs/recommendation-strategy.md`" in implementation_plan
     assert "本文是唯一活动施工计划" in implementation_plan
     assert "状态：V2-only 目标已确认" in v2_plan
@@ -353,12 +353,12 @@ def test_tomorrow_decision_index_and_freeze_boundary_is_explicit() -> None:
 
     for statement in (
         "tomorrow v2 决策索引与冻结交付边界",
-        "`CurrentDecisionIndex`",
-        "禁止为当前指针\n引入持久化式仓储抽象",
-        "`expected_current_version`",
-        "最后才把索引切换为 frozen",
+        "`UnifiedDecisionIndex`",
+        "`ScoredDecision`",
+        "`V2DecisionCheckpoint`",
+        "原子封口",
         "本用例不抓行情、不评分、不调用 DeepSeek",
-        "不接 `bootstrap.py`、旧 P6、旧运行库、API、SSE 或 Web",
+        "不再读取旧 P6 baseline",
     ):
         assert statement in design
     for statement in (

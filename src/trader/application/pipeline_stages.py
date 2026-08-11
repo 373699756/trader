@@ -82,6 +82,8 @@ def process_schedule_on_workers(
     phase: MarketPhase,
     freeze_strategies: Sequence[str],
 ) -> tuple[RecommendationSnapshot, ...]:
+    if pipeline._tomorrow_v2_control is not None:
+        pipeline._tomorrow_v2_control.on_clock(now)
     if phase in {
         MarketPhase.WARMUP,
         MarketPhase.TODAY_OBSERVE,
@@ -90,10 +92,14 @@ def process_schedule_on_workers(
         MarketPhase.AFTERNOON,
         MarketPhase.FINAL_REVIEW,
         MarketPhase.FINAL_QUOTE,
-    }:
+    } or (
+        phase is MarketPhase.AFTER_CLOSE and Strategy.TOMORROW in getattr(pipeline, "_v2_owned_strategies", frozenset())
+    ):
         _refresh_candidates_on_workers(pipeline, now, phase)
     _refresh_intraday_tail_before_score(pipeline, now, phase)
     snapshots = list(_score_strategies_on_workers(pipeline, now, phase, use_cached_data=False))
+    if pipeline._tomorrow_v2_control is not None:
+        pipeline._tomorrow_v2_control.on_clock(now)
     snapshots.extend(pipeline._freeze_available_snapshots(now, freeze_strategies))
     if phase is MarketPhase.AFTER_CLOSE:
         snapshots.extend(recover_after_close_snapshots(pipeline, now))
@@ -515,12 +521,20 @@ def _strategy_inputs(
 ) -> list[_StrategyInput]:
     inputs: list[_StrategyInput] = []
     feature_reader = read_strategy_features if use_cached_data else fetch_strategy_features
-    for strategy in strategies_for_phase(context.phase):
+    strategies = strategies_for_phase(context.phase)
+    if context.phase is MarketPhase.AFTER_CLOSE:
+        strategies = tuple(
+            strategy
+            for strategy in (Strategy.TOMORROW,)
+            if strategy in getattr(pipeline, "_v2_owned_strategies", frozenset())
+        )
+    for strategy in strategies:
         if not strategy_requires_scoring(pipeline, strategy, context.phase, context.trade_date):
             continue
-        if (strategy, context.trade_date) in pipeline._frozen_keys or pipeline._state.is_frozen(
-            strategy,
-            context.trade_date,
+        v2_owned = strategy in getattr(pipeline, "_v2_owned_strategies", frozenset())
+        if not v2_owned and (
+            (strategy, context.trade_date) in pipeline._frozen_keys
+            or pipeline._state.is_frozen(strategy, context.trade_date)
         ):
             continue
         codes = pipeline._candidate_codes
@@ -570,6 +584,8 @@ def _prepare_strategy_futures(
                     market_features,
                 ),
             )
+        if strategy in getattr(pipeline, "_v2_owned_strategies", frozenset()):
+            continue
         prepared_futures.append(
             (
                 strategy,
@@ -611,7 +627,7 @@ def _offer_tomorrow_native_input(
     try:
         native_input = TomorrowNativeInput(
             trade_date=trade_date_at(context.now),
-            phase=context.phase.value,
+            phase="close_fallback" if context.phase is MarketPhase.AFTER_CLOSE else context.phase.value,
             data_version=batch.data_version,
             config_version=pipeline._config_version,
             evaluated_at=batch.evaluated_at,
