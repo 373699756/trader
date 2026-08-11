@@ -5,8 +5,51 @@ from types import SimpleNamespace
 
 from trader.application import pipeline_stages
 from trader.application.pipeline_review_updates import ScoringContext
+from trader.application.ports.tomorrow import TodayNativeInput
 from trader.application.schedule import MarketPhase
 from trader.domain.recommendation.models import Strategy
+
+
+def test_today_v2_owned_strategy_receives_native_input_without_v1_prepare(
+    application_feature_factory,
+    utc_now,
+) -> None:
+    feature = application_feature_factory("600001", utc_now)
+    strategy_data: Future[tuple[tuple[object, ...], str]] = Future()
+    strategy_data.set_result(((feature,), "candidate-data-v1"))
+    offered: list[TodayNativeInput] = []
+
+    class Sink:
+        def offer_native(self, native_input):
+            offered.append(native_input)
+            return True
+
+    pipeline = SimpleNamespace(
+        _today_native_inputs=Sink(),
+        _tomorrow_native_inputs=None,
+        _market_features=(feature,),
+        _config_version="runtime:test",
+        _candidate_pool_size=120,
+        _now=lambda: utc_now,
+        _state=SimpleNamespace(increment=lambda *_args: None, record_error=lambda *_args: None),
+        _v2_owned_strategies=frozenset({Strategy.TODAY}),
+    )
+    context = ScoringContext(
+        now=utc_now,
+        phase=MarketPhase.TODAY_MAIN,
+        trade_date=utc_now.date().isoformat(),
+        started_at=0.0,
+        completion_deadline=None,
+    )
+
+    result = pipeline_stages._prepare_strategy_futures(
+        pipeline,
+        context,
+        [(Strategy.TODAY, ("600001",), strategy_data)],
+    )
+
+    assert result == []
+    assert len(offered) == 1 and offered[0].strategy is Strategy.TODAY
 
 
 def test_native_input_is_offered_before_v1_prepare_submission(

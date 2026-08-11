@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal
 
-from trader.application.ports.tomorrow import TomorrowNativeInput
+from trader.application.ports.tomorrow import ScoredNativeInput
 from trader.domain.recommendation.tomorrow_selection import (
     TomorrowDisposition,
     TomorrowSelectionResult,
@@ -93,7 +93,7 @@ class TomorrowInputQuality:
 
 
 def assess_tomorrow_input_quality(
-    native_input: TomorrowNativeInput,
+    native_input: ScoredNativeInput,
     selection: TomorrowSelectionResult,
 ) -> TomorrowInputQuality:
     candidate_codes = {feature.quote.code for feature in native_input.candidate_features}

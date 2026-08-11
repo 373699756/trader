@@ -55,10 +55,14 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert system.pipeline._data_pool._thread_name_prefix == "source-data"
     assert system.market_cache.status() == {}
     assert isinstance(system.pipeline._published_snapshots, PublishedSnapshotIndex)
+    assert system.today_v2_runtime is not None
     assert system.tomorrow_v2_runtime is not None
+    assert system.pipeline._today_native_inputs is system.today_v2_runtime
     assert system.pipeline._tomorrow_native_inputs is system.tomorrow_v2_runtime
-    assert system.pipeline._tomorrow_v2_control is system.tomorrow_v2_runtime
-    assert system.pipeline._v2_owned_strategies == frozenset({Strategy.TOMORROW})
+    assert system.pipeline._v2_controls == (system.today_v2_runtime, system.tomorrow_v2_runtime)
+    assert system.pipeline._v2_overlays == (system.today_v2_runtime,)
+    assert system.pipeline._v2_owned_strategies == frozenset({Strategy.TODAY, Strategy.TOMORROW})
+    assert system.today_v2_runtime.status().worker.accepting is False
     assert system.tomorrow_v2_runtime.status().worker.accepting is False
     assert system.tomorrow_v2_runtime.status().local_publish_count == 0
     assert system.tomorrow_index is not None
@@ -182,3 +186,36 @@ def test_system_start_failure_stops_tomorrow_v2_runtime_with_shutdown_budget() -
     history_pool.stop.assert_called_once_with(wait=True, cancel_futures=True, deadline=history_deadline)
     research_pool.stop.assert_called_once_with(wait=True, cancel_futures=True, deadline=history_deadline)
     tomorrow_runtime.stop.assert_called_once_with(wait=True, deadline=history_deadline)
+
+
+def test_second_v2_runtime_start_failure_stops_the_first_runtime() -> None:
+    settings = Mock()
+    settings.pipeline.shutdown_timeout_seconds = 7.0
+    today_runtime = Mock()
+    today_runtime.start.return_value = True
+    tomorrow_runtime = Mock()
+    tomorrow_runtime.start.side_effect = RuntimeError("tomorrow start failed")
+    system = ApplicationSystem(
+        settings=settings,
+        strategy=Mock(),
+        watchlist=Mock(),
+        app=Mock(),
+        supervisor=Mock(),
+        pipeline=Mock(),
+        repository=Mock(),
+        publisher=Mock(),
+        published_snapshots=Mock(),
+        state=Mock(),
+        market_cache=Mock(),
+        history_pool=Mock(),
+        research_pool=Mock(),
+        source_lanes=Mock(),
+        today_v2_runtime=today_runtime,
+        tomorrow_v2_runtime=tomorrow_runtime,
+    )
+
+    with pytest.raises(RuntimeError, match="tomorrow start failed"):
+        system.start()
+
+    today_runtime.stop.assert_called_once()
+    assert today_runtime.stop.call_args.kwargs["wait"] is True

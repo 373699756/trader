@@ -59,6 +59,7 @@ class TomorrowDecisionPolicy:
     maximum_per_industry: int = 2
     maximum_board_fraction: float = 0.60
     fusion: FusionPolicy = field(default_factory=FusionPolicy)
+    executable_enabled: bool = True
 
     def __post_init__(self) -> None:
         weights = dict(self.dimension_weights)
@@ -473,17 +474,31 @@ def _action_for(
     veto: bool,
     policy: TomorrowDecisionPolicy,
 ) -> tuple[RecommendationAction, str]:
-    if evaluation.local_score is None or evaluation.disposition is TomorrowDisposition.REJECT:
-        return RecommendationAction.UNAVAILABLE, evaluation.selection_skip_reason or "not_scored"
-    if veto:
-        return RecommendationAction.UNAVAILABLE, "risk_veto"
-    if score.final_score < policy.executable_threshold - policy.observation_margin:
-        return RecommendationAction.UNAVAILABLE, "below_score_threshold"
+    unavailable_reason = _unavailable_reason(evaluation, score, veto, policy)
+    if unavailable_reason is not None:
+        return RecommendationAction.UNAVAILABLE, unavailable_reason
     if evaluation.disposition is TomorrowDisposition.OBSERVE_ONLY:
         return RecommendationAction.OBSERVE, "filter_observe_only"
+    if not policy.executable_enabled:
+        return RecommendationAction.OBSERVE, "observation_phase"
     if score.final_score >= policy.executable_threshold:
         return RecommendationAction.EXECUTABLE, "score_threshold_met"
     return RecommendationAction.OBSERVE, "near_score_threshold"
+
+
+def _unavailable_reason(
+    evaluation: TomorrowStockEvaluation,
+    score: ScoreBreakdown,
+    veto: bool,
+    policy: TomorrowDecisionPolicy,
+) -> str | None:
+    if evaluation.local_score is None or evaluation.disposition is TomorrowDisposition.REJECT:
+        return evaluation.selection_skip_reason or "not_scored"
+    if veto:
+        return "risk_veto"
+    if score.final_score < policy.executable_threshold - policy.observation_margin:
+        return "below_score_threshold"
+    return None
 
 
 def _select_action_pools(

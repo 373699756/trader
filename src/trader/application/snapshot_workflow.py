@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -43,6 +43,7 @@ from trader.domain.review.models import DeepSeekReview
 
 if TYPE_CHECKING:
     from trader.application.pipeline import RecommendationPipeline
+    from trader.application.ports.tomorrow import V2OverlayPort
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -431,14 +432,47 @@ def refresh_live_overlays(
 ) -> None:
     trade_date = trade_date_at(now).isoformat()
     active = _active_overlay_targets(pipeline, trade_date)
-    if not active:
+    v2_active = _active_v2_overlay_targets(pipeline, trade_date_at(now))
+    if not active and not v2_active:
         return
-    requested = tuple(dict.fromkeys(code for target in active for code in target.codes))
+    requested = tuple(
+        dict.fromkeys(
+            (
+                *[code for target in active for code in target.codes],
+                *[code for _sink, codes in v2_active for code in codes],
+            )
+        )
+    )
     fetched_quotes = _fetch_overlay_quotes(pipeline, requested, now, deadline)
     if fetched_quotes is None:
         return
     for target in active:
         _publish_overlay_update(pipeline, target, fetched_quotes, now, phase)
+    for sink, codes in v2_active:
+        try:
+            sink.publish_overlay(
+                {code: fetched_quotes[code] for code in codes if code in fetched_quotes},
+                observed_at=now,
+                closing=phase is MarketPhase.AFTER_CLOSE,
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            pipeline._state.record_error(f"V2 live overlay degraded: {type(exc).__name__}")
+
+
+def _active_v2_overlay_targets(
+    pipeline: RecommendationPipeline,
+    trade_date: date,
+) -> tuple[tuple[V2OverlayPort, tuple[str, ...]], ...]:
+    active: list[tuple[V2OverlayPort, tuple[str, ...]]] = []
+    for sink in getattr(pipeline, "_v2_overlays", ()):
+        try:
+            codes = sink.overlay_codes(trade_date)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            pipeline._state.record_error(f"V2 live overlay degraded: {type(exc).__name__}")
+            continue
+        if codes:
+            active.append((sink, codes))
+    return tuple(active)
 
 
 def _active_overlay_targets(

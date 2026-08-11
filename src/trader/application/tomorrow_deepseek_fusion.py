@@ -248,6 +248,23 @@ def tomorrow_decision_policy(policy: RecommendationPolicy) -> TomorrowDecisionPo
     )
 
 
+def today_decision_policy(policy: RecommendationPolicy, phase: str) -> TomorrowDecisionPolicy:
+    threshold_key = "today_late" if phase == "today_late" else "today_main"
+    return TomorrowDecisionPolicy(
+        dimension_weights=policy.dimension_weights[Strategy.TODAY],
+        risk_rules=policy.risk_rules,
+        executable_threshold=policy.selection.thresholds[threshold_key],
+        observation_margin=policy.selection.observation_margin,
+        review_candidate_limit=min(policy.selection.review_candidate_limit, 28),
+        top_k=min(policy.selection.default_top_k, 10),
+        observation_limit=min(max(0, policy.selection.maximum_top_k - policy.selection.default_top_k), 8),
+        maximum_per_industry=policy.selection.maximum_per_industry,
+        maximum_board_fraction=min(policy.selection.maximum_board_fraction, 0.60),
+        fusion=policy.fusion,
+        executable_enabled=phase != "today_observe",
+    )
+
+
 def _effective_epoch_version(
     version: str | None,
     selection: TomorrowSelectionResult,
@@ -309,6 +326,7 @@ def _require_shanghai_time(value: datetime, name: str) -> None:
 
 __all__ = [
     "normalize_tomorrow_review_times",
+    "today_decision_policy",
     "tomorrow_decision_policy",
     "TomorrowDeepSeekFusionRequest",
     "TomorrowDeepSeekFusionResult",

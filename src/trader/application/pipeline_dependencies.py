@@ -16,7 +16,13 @@ from trader.application.ports.market import MarketDataPorts
 from trader.application.ports.outcomes import OutcomeSettlementPort
 from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.ports.snapshots import PublishedSnapshotWritePort, SnapshotPorts
-from trader.application.ports.tomorrow import TomorrowNativeInputPort, TomorrowV2ControlPort
+from trader.application.ports.tomorrow import (
+    TodayNativeInputPort,
+    TomorrowNativeInputPort,
+    TomorrowV2ControlPort,
+    V2ControlPort,
+    V2OverlayPort,
+)
 from trader.application.publisher import SnapshotPublisher
 from trader.application.recommendations import RecommendationEngine
 from trader.application.status import RuntimeState
@@ -41,6 +47,9 @@ class PipelineDependencies:
     latency: LatencyWaterfall | None = None
     tomorrow_native_inputs: TomorrowNativeInputPort | None = None
     tomorrow_v2_control: TomorrowV2ControlPort | None = None
+    today_native_inputs: TodayNativeInputPort | None = None
+    v2_controls: tuple[V2ControlPort, ...] = ()
+    v2_overlays: tuple[V2OverlayPort, ...] = ()
     trading_session: TradingSessionTracker | None = None
 
 

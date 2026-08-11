@@ -1,9 +1,9 @@
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, timedelta
 
 from trader.application.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.application.long_quotes import LongProjectionRequest, LongQuoteProjectionService
-from trader.application.snapshot_workflow import _active_overlay_targets
+from trader.application.snapshot_workflow import _active_overlay_targets, _active_v2_overlay_targets
 from trader.application.status import RuntimeState
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 
@@ -90,3 +90,23 @@ def test_shared_topk_overlay_excludes_long_snapshot(application_feature_factory,
     )()
 
     assert _active_overlay_targets(pipeline, "2026-07-16") == ()
+
+
+def test_v2_overlay_target_failure_is_degraded_without_blocking_other_targets() -> None:
+    state = RuntimeState()
+
+    class FailedSink:
+        @staticmethod
+        def overlay_codes(_trade_date):
+            raise RuntimeError("injected")
+
+    class HealthySink:
+        @staticmethod
+        def overlay_codes(_trade_date):
+            return ("600001",)
+
+    healthy = HealthySink()
+    pipeline = type("_Pipeline", (), {"_state": state, "_v2_overlays": (FailedSink(), healthy)})()
+
+    assert _active_v2_overlay_targets(pipeline, date(2026, 8, 11)) == ((healthy, ("600001",)),)
+    assert state.snapshot()["last_error"] == "V2 live overlay degraded: RuntimeError"

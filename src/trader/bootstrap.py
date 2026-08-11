@@ -38,6 +38,8 @@ from trader.application.system_lifecycle import (
     start_application_resources,
     stop_application_resources,
 )
+from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
+from trader.application.today_v2_runtime import TodayV2Runtime, TodayV2RuntimeDependencies
 from trader.application.tomorrow_events import TomorrowDecisionEventStream
 from trader.application.tomorrow_v2_freezing import (
     TomorrowV2FreezeCoordinator,
@@ -112,6 +114,7 @@ class ApplicationSystem:
     history_pool: BoundedExecutor
     research_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry
+    today_v2_runtime: TodayV2Runtime | None = None
     tomorrow_v2_runtime: TomorrowV2Runtime | None = None
     tomorrow_index: UnifiedDecisionIndex | None = None
     tomorrow_records: SQLiteDecisionRecordRepository | None = None
@@ -123,7 +126,7 @@ class ApplicationSystem:
             self.source_lanes,
             self.history_pool,
             self.research_pool,
-            self.tomorrow_v2_runtime,
+            tuple(runtime for runtime in (self.today_v2_runtime, self.tomorrow_v2_runtime) if runtime is not None),
             self.market_cache,
         )
 
@@ -170,6 +173,7 @@ class _PublicationContext:
     tomorrow_repository: SQLiteDecisionRecordRepository
     tomorrow_index: UnifiedDecisionIndex
     tomorrow_trace: InMemoryV2ResearchTraceStore
+    today_runtime: TodayV2Runtime
     tomorrow_runtime: TomorrowV2Runtime
     tomorrow_queries: UnifiedTomorrowDecisionQueries
     tomorrow_events: TomorrowDecisionEventStream
@@ -215,6 +219,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             now=now,
             initializers=(
                 publication.tomorrow_repository.initialize,
+                publication.today_runtime.initialize,
                 publication.tomorrow_runtime.initialize,
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane),
                 pipeline.initialize,
@@ -242,24 +247,25 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         ),
     )
     return ApplicationSystem(
-        settings,
-        strategy,
-        watchlist,
-        app,
-        supervisor,
-        pipeline,
-        persistence.repository,
-        publication.publisher,
-        publication.published_snapshots,
-        publication.state,
-        workers.market_cache,
-        workers.history_pool,
-        workers.research_pool,
-        workers.source_lanes,
-        publication.tomorrow_runtime,
-        publication.tomorrow_index,
-        publication.tomorrow_repository,
-        publication.tomorrow_trace,
+        settings=settings,
+        strategy=strategy,
+        watchlist=watchlist,
+        app=app,
+        supervisor=supervisor,
+        pipeline=pipeline,
+        repository=persistence.repository,
+        publisher=publication.publisher,
+        published_snapshots=publication.published_snapshots,
+        state=publication.state,
+        market_cache=workers.market_cache,
+        history_pool=workers.history_pool,
+        research_pool=workers.research_pool,
+        source_lanes=workers.source_lanes,
+        today_v2_runtime=publication.today_runtime,
+        tomorrow_v2_runtime=publication.tomorrow_runtime,
+        tomorrow_index=publication.tomorrow_index,
+        tomorrow_records=publication.tomorrow_repository,
+        tomorrow_trace=publication.tomorrow_trace,
     )
 
 
@@ -574,6 +580,12 @@ def _build_publication(
     )
     tomorrow_trace = InMemoryV2ResearchTraceStore()
 
+    today_observer = AsyncDecisionObserver(
+        (tomorrow_trace.record,),
+        capacity=max(16, settings.pipeline.event_queue_size),
+        thread_name="trader-v2-today-observer",
+    )
+
     def publish_tomorrow_event(_event: V2DecisionCommitted) -> None:
         tomorrow_events.publish_decision(tomorrow_queries.current())
 
@@ -595,6 +607,26 @@ def _build_publication(
             context.strategy.fusion.version,
         ),
     )
+    today_freezer = TodayV2FreezeCoordinator(
+        tomorrow_decisions,
+        tomorrow_repository,
+        clock,
+        runtime_identity=V2DecisionRuntimeIdentity(
+            context.effective_config_version,
+            context.strategy.strategy_version,
+            context.strategy.fusion.version,
+        ),
+    )
+    today_runtime = TodayV2Runtime(
+        _recommendation_policy(context.strategy),
+        TodayV2RuntimeDependencies(
+            reviewer,
+            tomorrow_decisions,
+            today_observer,
+            today_freezer,
+            clock,
+        ),
+    )
     tomorrow_runtime = TomorrowV2Runtime(
         _recommendation_policy(context.strategy),
         TomorrowV2RuntimeDependencies(
@@ -614,6 +646,7 @@ def _build_publication(
         tomorrow_repository,
         tomorrow_decisions,
         tomorrow_trace,
+        today_runtime,
         tomorrow_runtime,
         tomorrow_queries,
         tomorrow_events,
@@ -668,8 +701,10 @@ def _build_pipeline(
                 session_distance=adapters.calendar.session_distance,
             ),
             latency=context.latency,
+            today_native_inputs=publication.today_runtime,
             tomorrow_native_inputs=publication.tomorrow_runtime,
-            tomorrow_v2_control=publication.tomorrow_runtime,
+            v2_controls=(publication.today_runtime, publication.tomorrow_runtime),
+            v2_overlays=(publication.today_runtime,),
             trading_session=trading_session,
         ),
         PipelineOptions(
@@ -690,7 +725,7 @@ def _build_pipeline(
             ),
             long_target_prices={item.code: item.target_price for item in context.watchlist.items},
             long_groups=_long_groups(context.watchlist),
-            v2_owned_strategies=(Strategy.TOMORROW,),
+            v2_owned_strategies=(Strategy.TODAY, Strategy.TOMORROW),
         ),
         PipelineResources(data_pool=context.workers.data_pool, persistence_pool=context.workers.persistence_pool),
     )

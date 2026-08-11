@@ -61,7 +61,7 @@ class SystemLifecycleResources:
     source_lanes: SourceLaneResource
     history_pool: PoolResource
     research_pool: PoolResource
-    auxiliary_runtime: AuxiliaryRuntimeResource | None
+    auxiliary_runtimes: tuple[AuxiliaryRuntimeResource, ...]
     market_cache: CacheResource
 
 
@@ -73,35 +73,55 @@ def start_application_resources(
     supervisor = resources.supervisor
     history_pool = resources.history_pool
     research_pool = resources.research_pool
-    auxiliary_runtime = resources.auxiliary_runtime
-    auxiliary_started = auxiliary_runtime.start() if auxiliary_runtime is not None else False
+    auxiliary_runtimes = resources.auxiliary_runtimes
+    auxiliary_started: list[AuxiliaryRuntimeResource] = []
     history_started = False
     research_started = False
     try:
+        for runtime in auxiliary_runtimes:
+            if runtime.start():
+                auxiliary_started.append(runtime)
         history_started = history_pool.start()
         research_started = research_pool.start()
         started = supervisor.start()
     except BaseException:
         deadline = ShutdownDeadline.start(timeout_seconds)
-        if research_started:
-            research_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-        if history_started:
-            history_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-        if auxiliary_started and auxiliary_runtime is not None:
-            auxiliary_runtime.stop(wait=True, deadline=deadline)
+        _stop_started_resources(
+            resources,
+            tuple(auxiliary_started),
+            history_started,
+            research_started,
+            deadline,
+        )
         raise
     if started:
         return True
-    if not any((research_started, history_started, auxiliary_started)):
+    if not any((research_started, history_started, bool(auxiliary_started))):
         return False
     deadline = ShutdownDeadline.start(timeout_seconds)
-    if research_started:
-        research_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-    if history_started:
-        history_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-    if auxiliary_started and auxiliary_runtime is not None:
-        auxiliary_runtime.stop(wait=True, deadline=deadline)
+    _stop_started_resources(
+        resources,
+        tuple(auxiliary_started),
+        history_started,
+        research_started,
+        deadline,
+    )
     return False
+
+
+def _stop_started_resources(
+    resources: SystemLifecycleResources,
+    auxiliary_started: tuple[AuxiliaryRuntimeResource, ...],
+    history_started: bool,
+    research_started: bool,
+    deadline: ShutdownDeadline,
+) -> None:
+    if research_started:
+        resources.research_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
+    if history_started:
+        resources.history_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
+    for runtime in reversed(auxiliary_started):
+        runtime.stop(wait=True, deadline=deadline)
 
 
 def stop_application_resources(
@@ -113,19 +133,19 @@ def stop_application_resources(
     source_lanes = resources.source_lanes
     history_pool = resources.history_pool
     research_pool = resources.research_pool
-    auxiliary_runtime = resources.auxiliary_runtime
+    auxiliary_runtimes = resources.auxiliary_runtimes
     market_cache = resources.market_cache
     steps: list[ShutdownStep] = []
-    if auxiliary_runtime is not None:
-        auxiliary_runtime.stop(wait=False, deadline=deadline)
+    for runtime in auxiliary_runtimes:
+        runtime.stop(wait=False, deadline=deadline)
     source_lanes.stop(wait=False, deadline=deadline)
     supervisor_report = supervisor.stop(deadline)
     steps.extend(supervisor_report.steps)
     steps.extend(source_lanes.stop(wait=True, deadline=deadline))
     steps.append(history_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
     steps.append(research_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
-    if auxiliary_runtime is not None:
-        steps.append(auxiliary_runtime.stop(wait=True, deadline=deadline))
+    for runtime in auxiliary_runtimes:
+        steps.append(runtime.stop(wait=True, deadline=deadline))
     steps.append(market_cache.stop(wait=True, deadline=deadline))
     return ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
 

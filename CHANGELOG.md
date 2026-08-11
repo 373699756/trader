@@ -4,7 +4,19 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+### Added
+
+- V2-E5 新增 `TodayNativeInput`、`TodayV2Runtime`、11:20 精确冻结协调器和正式记录报价
+  overlay。Today 现在直接复用统一纯领域选择/融合核心生成 local/hybrid `ScoredDecision`，
+  使用独立 latest-wins worker 与 observer，并与 Tomorrow 共享按策略隔离的统一索引、仓储和
+  DeepSeek 预算链。
+
 ### Changed
+
+- 用户要求继续 `implementation-plan.md` 的下一个未完成任务。本批完整交付 V2-E5“Today
+  正式接管”：生产 Pipeline 只为 Today 组装同批点时原生输入，不再生成旧正式 snapshot；
+  全部 V2 冻结控制在评分前后执行，计划状态推进到 E5 已完成、E6 为下一工程章节。本批不
+  提前实现 D25、Long 或 E8 统一 API/Web。
 
 - 用户要求继续 `implementation-plan.md` 的未完成任务。本批完整交付 V2-E4“Tomorrow 正式
   接管”：生产组合根改由原生 `TomorrowNativeInput` 直接生成统一 local/hybrid
@@ -63,6 +75,17 @@ All notable changes to this project are documented here.
   配对移动区块 bootstrap、派生种子、Holm 检验族、五个挑战者和全部收益/回撤/召回/集中度门禁。
 
 ### Fixed
+
+- 修正 Today 在 11:20 无可冻结稿或边界后启动时仍可能接纳迟到 local/hybrid、再由启动、
+  checkpoint、P6 或收盘路径补造正式记录的问题。统一索引新增按策略/交易日关闭态；仅
+  11:20:00 精确边界可封口 11:19:59 及此前的 current，首次调用晚于边界即清除草稿并保持
+  `missed_freeze/not_ready`。正式提交失败只重试同一 sealed version，仓储读取失败也先关闭
+  发布门，模型即使伪报边界前完成时间也不能在实际返回越过 11:20 后升级 hybrid。
+
+- 修正单一辅助 runtime 生命周期无法同时拥有 Today 与 Tomorrow、第二个 runtime 启动异常
+  会遗留第一个线程的问题；组合根现在显式启动/关闭两个独立 runtime，共享一个关闭 deadline，
+  部分启动失败按逆序回收。已有正式 Today 只接受父版本、交易日和入选代码匹配的报价 overlay，
+  不修改名单、分数、风险、动作或排名；overlay 适配器异常仅记录降级，不阻塞其它策略。
 
 - 修正 Tomorrow hybrid 必须等待 v1 baseline、正式冻结仍依赖 shadow/cutover 身份的问题：
   hybrid 现在只引用仍为 current 的 local V2 版本，14:48 后完成的模型结果拒绝，14:49:20
@@ -139,6 +162,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从生产旧 Pipeline 的正式评分、P6 冻结和盘后恢复集合移除 Today；移除 Today 对旧
+  RecommendationSnapshot、启动检查点和 `close_fallback` 的正式决策依赖。迁移期旧实现文件
+  仍按 V2-E10 计划保留，本批未越界删除 D25、Long、旧 API 或 Web 资源。
+
 - 从生产组合根移除 Tomorrow 的 `CurrentDecisionIndex`、`TomorrowShadowWorker`、baseline
   snapshot wrapper、cutover gate、shadow evidence、旧冻结仓储和研究 baseline 捕获依赖；
   旧实现文件仅作为 E10 待删除迁移代码保留，不再被活动组合根读取或写入。
@@ -172,6 +199,16 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- V2-E5 回归覆盖 11:19:59/11:20:00、首次晚于边界、边界后冷启动、仓储读取/写入失败、
+  同 sealed version 重试、实际模型返回越界、local/hybrid 父 CAS、观察阶段无可执行动作、
+  正式记录 overlay 作用域、双 runtime 启动回滚和 Today/Tomorrow 生产接线。首次完整
+  `make test` 已到达 100%；最终格式、Ruff、mypy、package、仓库外 wheel 和三档桌面验收见
+  本批提交前最终门禁记录：
+  - `make format-check` / `make lint` / `make type-check` / `make test` / `make package` 全部通过；`make
+    package` 中 `ruff` 与 `mypy` 均为零复杂度债务。
+  - 外部 wheel 验收：仓库外独立 venv 从 wheel 安装成功，`trader-cli --help`、`validate-config`、模板/CSS/JavaScript/SVG 均可读取。
+  - 桌面验收：`run_t1_browser.py` 与 `run_tomorrow_v2_browser.py` 均生成 `passed: true` 报告，分辨率 1280x720、1440x900、1920x1080 全部 `body` 与 `overflow` 通过，主看板 patch-to-paint p95 为 30ms（P95 阈值 100ms），网络请求为 0，`tomorrow` 覆盖行数为 4。
 
 - V2-E4 定向测试覆盖 native local/hybrid 父 CAS、证据 manifest、14:48 迟到拒绝、统一
   formal event、14:49:20 检查点、14:50 热/冷冻结、幂等重试、冻结后不可覆盖、收盘恢复、
@@ -263,8 +300,13 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- V2-only 总计划尚未完成：today、d25、long、统一根 API/SSE/Web、最终组合根与旧链删除仍属
-  E5-E10，最终发布验收属 E11；当前兼容 Tomorrow 页面从统一身份投影有限字段，完整统一
+- V2-E6 至 V2-E11 与 Score 后续章节仍未完成；Today 的统一 current/history API、SSE 和根页面
+  按计划属于 V2-E8，本批只完成生产决策、冻结、observer 和 overlay 接管。固定输入证明状态机
+  与身份正确，不构成真实交易日行情覆盖、外部 DeepSeek 尾延迟或荐股收益改善证据；这些仍需
+  后续真实运行观测，且任何外部失败继续按契约显式降级。
+
+- V2-only 总计划尚未完成：d25、long、统一根 API/SSE/Web、最终组合根与旧链删除仍属
+  E6-E10，最终发布验收属 E11；当前兼容 Tomorrow 页面从统一身份投影有限字段，完整统一
   工作台与报价 overlay 仍由 E8 接管。旧 shadow/冻结源文件尚未物理删除，但生产组合根已无
   可达依赖。免费外部来源在真实 14:50/15:00 边界的连续运行证据仍需 E11 留档，本批测试不
   构成收益保证。

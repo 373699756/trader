@@ -13,8 +13,8 @@ MARKET_PORT = ROOT / "src" / "trader" / "application" / "ports" / "market.py"
 def test_v2_e1_remains_complete_after_e3_progression() -> None:
     plan = PLAN.read_text(encoding="utf-8")
 
-    assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、Score-R0、Score-R1 已完成" in plan
-    assert "下一工程章节为 V2-E5" in plan
+    assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、Score-R0、Score-R1 已完成" in plan
+    assert "下一工程章节为 V2-E6" in plan
     assert "### V2-E1：统一 V2 数据平面（已完成）" in plan
 
 

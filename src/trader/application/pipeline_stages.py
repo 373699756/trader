@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
@@ -15,6 +15,7 @@ from trader.application.cadence import PipelineTask, task_execution_budget_secon
 from trader.application.candidate_features import fetch_strategy_features, read_strategy_features
 from trader.application.events import EventPriority, EventSpec, PipelineEvent, new_event
 from trader.application.long_quotes import refresh_long_quotes
+from trader.application.pipeline_native_inputs import ScoredNativeBatch, offer_scored_native_input
 from trader.application.pipeline_review_updates import (
     ScoringContext,
     publish_pending_hybrid,
@@ -23,7 +24,6 @@ from trader.application.pipeline_review_updates import (
     schedule_async_reviews,
 )
 from trader.application.ports.market import MarketDataUnavailableError
-from trader.application.ports.tomorrow import TomorrowNativeInput
 from trader.application.recommendations import PreparedSnapshot
 from trader.application.schedule import MarketPhase, shanghai_now, trade_date_at
 from trader.domain.market.models import FeatureSnapshot
@@ -67,23 +67,14 @@ _StrategyInput = tuple[
 _PreparedFuture = tuple[Strategy, Future[PreparedSnapshot]]
 
 
-@dataclass(frozen=True)
-class _TomorrowScoringBatch:
-    requested_codes: tuple[str, ...]
-    candidate_features: tuple[FeatureSnapshot, ...]
-    data_version: str
-    evaluated_at: datetime
-    market_features: tuple[FeatureSnapshot, ...]
-
-
 def process_schedule_on_workers(
     pipeline: RecommendationPipeline,
     now: datetime,
     phase: MarketPhase,
     freeze_strategies: Sequence[str],
 ) -> tuple[RecommendationSnapshot, ...]:
-    if pipeline._tomorrow_v2_control is not None:
-        pipeline._tomorrow_v2_control.on_clock(now)
+    for control in pipeline._v2_controls:
+        control.on_clock(now)
     if phase in {
         MarketPhase.WARMUP,
         MarketPhase.TODAY_OBSERVE,
@@ -98,8 +89,8 @@ def process_schedule_on_workers(
         _refresh_candidates_on_workers(pipeline, now, phase)
     _refresh_intraday_tail_before_score(pipeline, now, phase)
     snapshots = list(_score_strategies_on_workers(pipeline, now, phase, use_cached_data=False))
-    if pipeline._tomorrow_v2_control is not None:
-        pipeline._tomorrow_v2_control.on_clock(now)
+    for control in pipeline._v2_controls:
+        control.on_clock(now)
     snapshots.extend(pipeline._freeze_available_snapshots(now, freeze_strategies))
     if phase is MarketPhase.AFTER_CLOSE:
         snapshots.extend(recover_after_close_snapshots(pipeline, now))
@@ -569,19 +560,23 @@ def _prepare_strategy_futures(
             continue
         market_features = tuple(pipeline._market_features)
         strategy_now = context.now
-        if strategy is Strategy.TOMORROW:
+        if strategy in {Strategy.TODAY, Strategy.TOMORROW}:
             completed_at = shanghai_now(max(context.now, pipeline._now()))
             if trade_date_at(completed_at).isoformat() == context.trade_date:
                 strategy_now = completed_at
-            _offer_tomorrow_native_input(
+            offer_scored_native_input(
                 pipeline,
-                context,
-                _TomorrowScoringBatch(
+                strategy,
+                ScoredNativeBatch(
+                    trade_date_at(context.now),
+                    "close_fallback" if context.phase is MarketPhase.AFTER_CLOSE else context.phase.value,
                     tuple(requested_codes),
                     tuple(features),
                     data_version,
                     strategy_now,
                     market_features,
+                    maximum_age_seconds(context.phase),
+                    maximum_age_seconds(context.phase, strategy),
                 ),
             )
         if strategy in getattr(pipeline, "_v2_owned_strategies", frozenset()):
@@ -614,36 +609,6 @@ def _prepare_strategy_futures(
             )
         )
     return prepared_futures
-
-
-def _offer_tomorrow_native_input(
-    pipeline: RecommendationPipeline,
-    context: ScoringContext,
-    batch: _TomorrowScoringBatch,
-) -> None:
-    sink = pipeline._tomorrow_native_inputs
-    if sink is None or not batch.market_features:
-        return
-    try:
-        native_input = TomorrowNativeInput(
-            trade_date=trade_date_at(context.now),
-            phase="close_fallback" if context.phase is MarketPhase.AFTER_CLOSE else context.phase.value,
-            data_version=batch.data_version,
-            config_version=pipeline._config_version,
-            evaluated_at=batch.evaluated_at,
-            market_features=batch.market_features,
-            requested_codes=batch.requested_codes,
-            candidate_features=batch.candidate_features,
-            preselect_max_age_seconds=maximum_age_seconds(context.phase),
-            score_max_age_seconds=maximum_age_seconds(context.phase, Strategy.TOMORROW),
-            candidate_pool_size=pipeline._candidate_pool_size,
-        )
-        accepted = sink.offer_native(native_input)
-    except (RuntimeError, TypeError, ValueError) as exc:
-        pipeline._state.increment("tomorrow_native_inputs_failed")
-        pipeline._state.record_error(f"tomorrow native input degraded: {type(exc).__name__}")
-        return
-    pipeline._state.increment("tomorrow_native_inputs_offered" if accepted else "tomorrow_native_inputs_rejected")
 
 
 def _resolve_prepared_snapshots(

@@ -255,8 +255,8 @@ today、tomorrow 和 d25 的正式记录仓储按策略和交易日唯一提交�
 SHA-256 写入 SQLite staged manifest，再原子创建不可变 JSON，最后提交 manifest；同键同
 内容重放幂等，不同内容冲突失败。启动恢复使用 manifest 内有界恢复载荷补齐半提交；已提交
 文件缺失、损坏、哈希或身份不一致时移入隔离目录并 fail closed，绝不向当前索引返回不可信
-记录。V2-E4 已把 tomorrow 的统一核心、原生 worker、正式记录仓储、observer 和冻结时线
-接入 `bootstrap.py`；today、d25 与 long 仍按 V2-E5 至 V2-E7 逐节接管。
+记录。V2-E4 与 V2-E5 已把 tomorrow、today 的统一核心、原生 worker、正式记录仓储、observer
+和冻结时线接入 `bootstrap.py`；d25 与 long 仍按 V2-E6 至 V2-E7 逐节接管。
 
 #### 独立 V2 调度与生命周期交付边界
 
@@ -590,6 +590,27 @@ local 或 hybrid 都不能越过封口，报价 overlay 只允许匹配封口后
 完整同日收盘原生输入生成一次 local；两者都不调用 DeepSeek，并把规范收盘输入版本与
 `close_fallback`、`official_close`、必要时的 `local_only` 一并绑定到不可变决策身份。已有
 同日正式记录永远优先，收盘恢复不得覆盖。
+
+### 2.16 today v2 正式接管边界
+
+V2-E5 起，活动组合根把 `TodayNativeInput` 直接送入独立单运行、单 pending 的
+`TodayV2Runtime`。Today 与 Tomorrow 复用同一套纯领域过滤、板内评分、结构化风险、融合和
+稳定排名函数，但原生输入、策略政策、sequence、worker、observer、当前指针和事件身份按策略
+隔离。`today_observe` 只允许观察动作；`today_main` 和 `today_late` 分别使用当前权威门槛。
+local 先以实际读取版本执行 `UnifiedDecisionIndex` CAS；只有 11:18 前提交且在 11:20 前完成、
+代码和证据 manifest 一致的结构化结果，才能形成引用当前 local 的 hybrid。
+
+11:19:59 及此前接纳的同日最新决策可在 11:20:00 当场原子封口；边界一到，索引即关闭同日
+Today 发布，即使当时没有可冻结稿也不得再接纳迟到 local、hybrid、行情或风险结果。封口后
+提交按策略和交易日唯一的 `CommittedDecisionRecord`；持久化失败保持同一 sealed version，
+后续只允许幂等重试。启动时先恢复已有同日正式记录；在 11:20:00 或之后启动且没有正式记录，
+立即进入 `missed_freeze`/`not_ready`，禁止 checkpoint、启动检查点、P6、午间补算和
+`close_fallback`，当日不可恢复。
+
+已有 Today 正式记录只允许创建父版本、策略、交易日和入选代码均匹配的 `DecisionOverlay`。
+overlay 只替换价格、涨跌幅、来源和报价时间；不得修改正式记录中的名单、分数、风险、动作或
+排名。Pipeline 在评分前后依次驱动全部 V2 控制端口，使 11:20:00 的关闭先于同轮评分提交；
+旧 Pipeline 不再为 Today 生成正式 snapshot、P6 冻结或盘后恢复，且 HTTP 仍只执行只读查询。
 
 ## 3. 架构与代码边界
 

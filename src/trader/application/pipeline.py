@@ -103,7 +103,12 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
         )
         self._outcome_settlement = dependencies.outcome_settlement
         self._tomorrow_native_inputs = dependencies.tomorrow_native_inputs
+        self._today_native_inputs = dependencies.today_native_inputs
         self._tomorrow_v2_control = dependencies.tomorrow_v2_control
+        self._v2_controls = dependencies.v2_controls or (
+            (dependencies.tomorrow_v2_control,) if dependencies.tomorrow_v2_control is not None else ()
+        )
+        self._v2_overlays = dependencies.v2_overlays
         self._v2_owned_strategies = frozenset(options.v2_owned_strategies)
         self._latency = dependencies.latency or LatencyWaterfall()
         self._market_data_manages_workers = options.market_data_manages_workers

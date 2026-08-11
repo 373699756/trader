@@ -11,45 +11,41 @@ BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
 PIPELINE_STAGES = ROOT / "src" / "trader" / "application" / "pipeline_stages.py"
 
 
-def test_v2_e4_remains_complete_after_e5_progression() -> None:
+def test_v2_e5_is_complete_and_e6_is_the_next_engineering_section() -> None:
     plan = PLAN.read_text(encoding="utf-8")
 
     assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、Score-R0、Score-R1 已完成" in plan
     assert "下一工程章节为 V2-E6" in plan
-    assert "### V2-E4：Tomorrow 正式接管（已完成）" in plan
+    assert "### V2-E5：Today 正式接管（已完成）" in plan
 
 
-def test_authoritative_contract_uses_one_v2_identity_for_current_freeze_and_trace() -> None:
+def test_authoritative_contract_defines_today_missed_freeze_and_overlay_only_behavior() -> None:
     design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")
 
     for token in (
-        "TomorrowV2Runtime",
-        "local ScoredDecision",
-        "V2DecisionCheckpoint",
-        "CommittedDecisionRecord",
-        "14:49:20",
-        "15:00 后",
+        "TodayV2Runtime",
+        "11:19:59",
+        "11:20:00",
+        "missed_freeze",
+        "禁止 checkpoint",
+        "DecisionOverlay",
     ):
         assert token in design
-    assert "`UnifiedDecisionIndex` CAS 的最新完整 `ScoredDecision`" in strategy
+    for token in ("Today 原生输入", "11:20", "not_ready", "只更新报价 overlay"):
+        assert token in strategy
 
 
-def test_production_composition_has_no_tomorrow_shadow_or_cutover_dependencies() -> None:
-    tree = ast.parse(BOOTSTRAP.read_text(encoding="utf-8"))
+def test_production_composition_installs_today_v2_without_legacy_today_scoring() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+    tree = ast.parse(source)
     imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None}
 
-    forbidden = (
-        "trader.application.tomorrow_shadow",
-        "trader.application.tomorrow_shadow_runtime",
-        "trader.infra.persistence.tomorrow_shadow_evidence",
-        "trader.infra.persistence.tomorrow_decision_freezes",
-        "trader.application.current_decisions",
-    )
-    assert not imports.intersection(forbidden)
+    assert "trader.application.today_v2_runtime" in imports
+    assert "v2_owned_strategies=(Strategy.TODAY, Strategy.TOMORROW)" in source
 
 
-def test_tomorrow_freeze_control_seals_before_the_boundary_scoring_offer() -> None:
+def test_all_v2_freeze_controls_run_before_and_after_scoring() -> None:
     source = PIPELINE_STAGES.read_text(encoding="utf-8")
 
     first_control = source.index("for control in pipeline._v2_controls:")

@@ -64,6 +64,7 @@ class UnifiedDecisionIndex:
         self._overlays: dict[Strategy, DecisionOverlay] = {}
         self._seals: dict[Strategy, _UnifiedDecisionSeal] = {}
         self._formal: dict[Strategy, CommittedDecisionRecord] = {}
+        self._closed: dict[Strategy, tuple[date, datetime]] = {}
 
     def publish(
         self,
@@ -76,6 +77,9 @@ class UnifiedDecisionIndex:
             seal = self._seals.get(identity.strategy)
             if seal is not None and seal.decision.trade_date == identity.trade_date:
                 return UnifiedDecisionPublishResult(False, "freeze_sealed")
+            closed = self._closed.get(identity.strategy)
+            if closed is not None and closed[0] == identity.trade_date:
+                return UnifiedDecisionPublishResult(False, "freeze_closed")
             rejection = _identity_rejection(current, identity, expected_version)
             if rejection is not None:
                 return UnifiedDecisionPublishResult(False, rejection)
@@ -83,6 +87,7 @@ class UnifiedDecisionIndex:
             if current is not None and identity.trade_date > current.trade_date:
                 self._seals.pop(identity.strategy, None)
                 self._formal.pop(identity.strategy, None)
+                self._closed.pop(identity.strategy, None)
             overlay = self._overlays.get(identity.strategy)
             if overlay is not None and overlay.parent_version != identity.version:
                 self._overlays.pop(identity.strategy, None)
@@ -116,6 +121,42 @@ class UnifiedDecisionIndex:
         with self._lock:
             seal = self._seals.get(strategy)
             return seal is not None and seal.decision.trade_date == trade_date
+
+    def is_closed(self, strategy: Strategy, trade_date: date) -> bool:
+        with self._lock:
+            closed = self._closed.get(strategy)
+            return closed is not None and closed[0] == trade_date
+
+    def close_for_date(self, strategy: Strategy, trade_date: date, *, boundary_at: datetime) -> bool:
+        with self._lock:
+            if (
+                boundary_at.tzinfo is None
+                or boundary_at.utcoffset() is None
+                or getattr(boundary_at.tzinfo, "key", None) != "Asia/Shanghai"
+            ):
+                raise ValueError("freeze close boundary must use Asia/Shanghai")
+            if boundary_at.date() != trade_date:
+                raise ValueError("freeze close boundary must match trade date")
+            existing = self._closed.get(strategy)
+            if existing is not None and existing[0] == trade_date:
+                return existing[1] == boundary_at
+            if existing is not None and existing[0] > trade_date:
+                return False
+            self._closed[strategy] = (trade_date, boundary_at)
+            return True
+
+    def discard_closed_current(self, strategy: Strategy, trade_date: date) -> bool:
+        with self._lock:
+            if not self.is_closed(strategy, trade_date) or self.is_sealed(strategy, trade_date):
+                return False
+            formal = self._formal.get(strategy)
+            if formal is not None and formal.trade_date == trade_date:
+                return False
+            current = self._current.get(strategy)
+            if current is not None and current.trade_date == trade_date:
+                self._current.pop(strategy, None)
+                self._overlays.pop(strategy, None)
+            return True
 
     def seal_for_freeze(
         self,
@@ -191,6 +232,7 @@ class UnifiedDecisionIndex:
             self._current[record.strategy] = record.decision
             self._overlays.pop(record.strategy, None)
             self._formal[record.strategy] = record
+            self._closed[record.strategy] = (record.trade_date, record.committed_at)
             return True
 
     def restore_formal(self, record: CommittedDecisionRecord) -> bool:
@@ -210,6 +252,7 @@ class UnifiedDecisionIndex:
                 record.decision,
                 "explicit" if record.commit_kind == "close_fallback" else "current",
             )
+            self._closed[record.strategy] = (record.trade_date, record.committed_at)
             return True
 
     def _seal(

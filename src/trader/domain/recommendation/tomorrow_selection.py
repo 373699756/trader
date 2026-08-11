@@ -59,15 +59,14 @@ class TomorrowSelectionPolicy:
     maximum_per_industry: int = 2
     minimum_local_score: float = 0.0
     hard_filter: HardFilterPolicy = field(default_factory=HardFilterPolicy)
+    strategy: Strategy = Strategy.TOMORROW
 
     def __post_init__(self) -> None:
         policies = dict(self.board_policies)
         rules = dict(self.risk_rules)
         if set(policies) != set(_SUPPORTED_BOARDS):
             raise ValueError("tomorrow selection requires one policy for each supported board")
-        if any(
-            policy.board is not board or policy.strategy is not Strategy.TOMORROW for board, policy in policies.items()
-        ):
+        if any(policy.board is not board or policy.strategy is not self.strategy for board, policy in policies.items()):
             raise ValueError("tomorrow selection board policies must match their board")
         if not math.isfinite(self.max_age_seconds) or self.max_age_seconds < 0.0:
             raise ValueError("maximum quote age must be finite and non-negative")
@@ -236,14 +235,14 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
         population_versions[board] = cross_section.population.population_version
         policy = request.policy.board_policies[board]
         _audit_board_population(
-            apply_board_policy(cross_section, Strategy.TOMORROW, policy),
+            apply_board_policy(cross_section, request.policy.strategy, policy),
             policy,
             evaluations,
         )
         enriched = (
-            apply_board_policy(cross_section, Strategy.TOMORROW, policy)
+            apply_board_policy(cross_section, request.policy.strategy, policy)
             if request.candidate_features is None
-            else project_board_policy(cross_section, Strategy.TOMORROW, policy, candidates)
+            else project_board_policy(cross_section, request.policy.strategy, policy, candidates)
         )
         scored_codes.extend(_score_board_candidates(enriched, policy, request, evaluations))
 
@@ -284,7 +283,7 @@ def _audit_board_population(
     evaluations: dict[str, TomorrowStockEvaluation],
 ) -> None:
     ranked: list[tuple[bool, float, str]] = []
-    required_fields = candidate_fields(Strategy.TOMORROW)
+    required_fields = candidate_fields(policy.strategy)
     for feature in features:
         code = feature.quote.code
         current = evaluations[code]
@@ -346,7 +345,7 @@ def _score_board_candidates(
     evaluations: dict[str, TomorrowStockEvaluation],
 ) -> tuple[str, ...]:
     candidates: list[tuple[bool, float, FeatureSnapshot, float]] = []
-    required_fields = candidate_fields(Strategy.TOMORROW)
+    required_fields = candidate_fields(request.policy.strategy)
     for feature in features:
         code = feature.quote.code
         current = evaluations[code]
@@ -398,7 +397,7 @@ def _score_board_candidates(
             feature,
             request.evaluated_at,
             request.policy.risk_rules,
-            strategy=Strategy.TOMORROW,
+            strategy=request.policy.strategy,
         )
         penalty = aggregate_risk_penalty(local_facts, cap=request.policy.local_risk_cap)
         current = evaluations[code]

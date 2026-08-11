@@ -18,6 +18,7 @@ from trader.domain.market.epochs import (
 from trader.domain.market.models import Board, Evidence, FeatureSnapshot, LiveQuote, MarketQuote
 from trader.domain.market.research import ResearchObservation, derive_corporate_risk_features
 from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.ranking import minimum_selection_score
 from trader.domain.recommendation.tomorrow_selection import (
     BoardCrossSectionFallback,
     TomorrowSelectionPolicy,
@@ -37,6 +38,7 @@ class TomorrowSelectionOptions:
     fallbacks: Mapping[Board, BoardCrossSectionFallback] | None = None
     candidate_features: tuple[FeatureSnapshot, ...] | None = None
     normalize_discovery_source_time: bool = False
+    strategy: Strategy = Strategy.TOMORROW
 
 
 @dataclass(frozen=True)
@@ -165,7 +167,7 @@ def select_tomorrow_features(
             phase=options.phase,
             data_version=identity.data_version,
             merge_epoch=identity.merge_epoch,
-            policy=_selection_policy(policy, options.max_age_seconds),
+            policy=_selection_policy(policy, options),
             candidate_features=options.candidate_features,
             fallbacks=options.fallbacks or {},
         )
@@ -174,24 +176,30 @@ def select_tomorrow_features(
 
 def _selection_policy(
     policy: RecommendationPolicy,
-    max_age_seconds: float,
+    options: TomorrowSelectionOptions,
 ) -> TomorrowSelectionPolicy:
     board_policies = {
         board: board_policy
         for board in _SUPPORTED_BOARDS
-        if (board_policy := policy.board_policy(Strategy.TOMORROW, board)) is not None
+        if (board_policy := policy.board_policy(options.strategy, board)) is not None
     }
-    threshold = policy.selection.thresholds.get("tomorrow", 0.0)
+    minimum_score = minimum_selection_score(
+        options.strategy,
+        policy.selection.thresholds,
+        phase=options.phase,
+        observation_margin=policy.selection.observation_margin,
+    )
     return TomorrowSelectionPolicy(
         board_policies=board_policies,
         risk_rules=policy.risk_rules,
-        max_age_seconds=max_age_seconds,
+        max_age_seconds=options.max_age_seconds,
         local_risk_cap=policy.fusion.local_risk_cap,
         candidate_limit_per_board=120,
         top_k=min(policy.selection.default_top_k, 10),
         maximum_per_industry=policy.selection.maximum_per_industry,
-        minimum_local_score=max(0.0, threshold - policy.selection.observation_margin),
+        minimum_local_score=minimum_score if minimum_score is not None else 100.0,
         hard_filter=policy.hard_filter,
+        strategy=options.strategy,
     )
 
 

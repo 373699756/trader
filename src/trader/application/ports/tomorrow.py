@@ -1,21 +1,24 @@
-"""Typed input boundary for the native tomorrow v2 pipeline."""
+"""Typed native-input and control boundaries for scored V2 strategies."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
-from typing import Protocol
+from typing import ClassVar, Protocol
 from zoneinfo import ZoneInfo
 
 from trader.application.cache import request_fingerprint
 from trader.application.recommendation_policy_codec import preselection_replay_feature
-from trader.domain.market.models import FeatureSnapshot
+from trader.domain.market.models import FeatureSnapshot, MarketQuote
+from trader.domain.recommendation.models import Strategy
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
-class TomorrowNativeInput:
+class ScoredNativeInput:
+    strategy: ClassVar[Strategy]
     trade_date: date
     phase: str
     data_version: str
@@ -30,6 +33,8 @@ class TomorrowNativeInput:
     input_version: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if type(self) is ScoredNativeInput:
+            raise TypeError("scored native input requires a concrete strategy")
         evaluated_at = _shanghai(self.evaluated_at)
         market_features = tuple(self.market_features)
         requested_codes = tuple(self.requested_codes)
@@ -44,26 +49,53 @@ class TomorrowNativeInput:
         object.__setattr__(self, "input_version", _input_version(self))
 
 
+class TodayNativeInput(ScoredNativeInput):
+    strategy = Strategy.TODAY
+
+
+class TomorrowNativeInput(ScoredNativeInput):
+    strategy = Strategy.TOMORROW
+
+
 class TomorrowNativeInputPort(Protocol):
     def offer_native(self, native_input: TomorrowNativeInput) -> bool: ...
 
 
-class TomorrowV2ControlPort(Protocol):
+class TodayNativeInputPort(Protocol):
+    def offer_native(self, native_input: TodayNativeInput) -> bool: ...
+
+
+class V2ControlPort(Protocol):
     def on_clock(self, at: datetime) -> object | None: ...
 
 
+class V2OverlayPort(Protocol):
+    def overlay_codes(self, trade_date: date) -> tuple[str, ...]: ...
+
+    def publish_overlay(
+        self,
+        quotes: Mapping[str, MarketQuote],
+        *,
+        observed_at: datetime,
+        closing: bool,
+    ) -> bool: ...
+
+
+TomorrowV2ControlPort = V2ControlPort
+
+
 def _validate_identity_and_limits(
-    native_input: TomorrowNativeInput,
+    native_input: ScoredNativeInput,
     evaluated_at: datetime,
 ) -> None:
     if native_input.trade_date != evaluated_at.date():
-        raise ValueError("tomorrow native input trade date must match evaluation time")
+        raise ValueError("scored native input trade date must match evaluation time")
     if not native_input.phase or not native_input.data_version or not native_input.config_version:
-        raise ValueError("tomorrow native input identities must not be empty")
+        raise ValueError("scored native input identities must not be empty")
     if native_input.candidate_pool_size < 1:
-        raise ValueError("tomorrow native candidate pool size must be positive")
+        raise ValueError("scored native candidate pool size must be positive")
     if native_input.preselect_max_age_seconds < 0 or native_input.score_max_age_seconds < 0:
-        raise ValueError("tomorrow native quote age limits cannot be negative")
+        raise ValueError("scored native quote age limits cannot be negative")
 
 
 def _validate_code_sets(
@@ -72,15 +104,15 @@ def _validate_code_sets(
     candidate_features: tuple[FeatureSnapshot, ...],
 ) -> None:
     if len(requested_codes) != len(set(requested_codes)):
-        raise ValueError("tomorrow native requested codes must be unique")
+        raise ValueError("scored native requested codes must be unique")
     market_codes = _unique_codes(market_features, "market")
     candidate_codes = _unique_codes(candidate_features, "candidate")
     if not market_codes:
-        raise ValueError("tomorrow native input requires market features")
+        raise ValueError("scored native input requires market features")
     if not candidate_codes.issubset(market_codes):
-        raise ValueError("tomorrow native candidates must belong to the market input")
+        raise ValueError("scored native candidates must belong to the market input")
     if not candidate_codes.issubset(set(requested_codes)):
-        raise ValueError("tomorrow native candidates must belong to requested codes")
+        raise ValueError("scored native candidates must belong to requested codes")
 
 
 def _validate_feature_times(
@@ -93,15 +125,15 @@ def _validate_feature_times(
             or _shanghai(feature.quote.source_time) > evaluated_at
             or _shanghai(feature.quote.received_time) > evaluated_at
         ):
-            raise ValueError("tomorrow native input cannot contain future features")
+            raise ValueError("scored native input cannot contain future features")
         if any(
             _shanghai(evidence.published_at) > evaluated_at
             or (evidence.received_at is not None and _shanghai(evidence.received_at) > evaluated_at)
             for evidence in feature.evidence
         ):
-            raise ValueError("tomorrow native input cannot contain future evidence")
+            raise ValueError("scored native input cannot contain future evidence")
         if any(_shanghai(fact.observed_at) > evaluated_at for fact in feature.external_risk_facts):
-            raise ValueError("tomorrow native input cannot contain future risk facts")
+            raise ValueError("scored native input cannot contain future risk facts")
 
 
 def _normalize_feature_times(feature: FeatureSnapshot) -> FeatureSnapshot:
@@ -131,12 +163,13 @@ def _normalize_feature_times(feature: FeatureSnapshot) -> FeatureSnapshot:
 def _unique_codes(features: tuple[FeatureSnapshot, ...], label: str) -> set[str]:
     codes = tuple(feature.quote.code for feature in features)
     if len(codes) != len(set(codes)):
-        raise ValueError(f"tomorrow native {label} feature codes must be unique")
+        raise ValueError(f"scored native {label} feature codes must be unique")
     return set(codes)
 
 
-def _input_version(native_input: TomorrowNativeInput) -> str:
+def _input_version(native_input: ScoredNativeInput) -> str:
     material = {
+        "strategy": native_input.strategy,
         "trade_date": native_input.trade_date,
         "phase": native_input.phase,
         "data_version": native_input.data_version,
@@ -181,8 +214,17 @@ def _market_feature_identity(feature: FeatureSnapshot) -> tuple[object, ...]:
 
 def _shanghai(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("tomorrow native input time must be timezone-aware")
+        raise ValueError("scored native input time must be timezone-aware")
     return value.astimezone(SHANGHAI)
 
 
-__all__ = ["TomorrowNativeInput", "TomorrowNativeInputPort", "TomorrowV2ControlPort"]
+__all__ = [
+    "ScoredNativeInput",
+    "TodayNativeInput",
+    "TodayNativeInputPort",
+    "TomorrowNativeInput",
+    "TomorrowNativeInputPort",
+    "TomorrowV2ControlPort",
+    "V2ControlPort",
+    "V2OverlayPort",
+]
