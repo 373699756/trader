@@ -166,16 +166,47 @@ def worker_status(pipeline: RecommendationPipeline) -> dict[str, object]:
             "rejected_count": queue_status["rejected_count"],
             "running": bool(worker is not None and worker.is_alive()),
         }
+    long_worker, long_lane = _long_worker_status(pipeline)
     return {
         "data": pipeline._data_pool.status(),
         "normalization": pipeline._normalization_pool.status(),
         "strategy": pipeline._strategy_pool.status(),
         "board_scoring": dict(pipeline._engine.board_scoring_status()),
         "deepseek": pipeline._deepseek_pool.status(),
-        "long_quotes": pipeline._long_quote_pool.status(),
-        "long_quote_lane": pipeline._long_quote_lane.status(),
+        "long_quotes": long_worker,
+        "long_quote_lane": long_lane,
         "overlay": pipeline._overlay_pool.status(),
         "overlay_lane": pipeline._overlay_lane.status(),
         "merge": merge_status,
         "persistence": pipeline._persistence_pool.status(),
     }
+
+
+def _long_worker_status(pipeline: RecommendationPipeline) -> tuple[dict[str, object], dict[str, object]]:
+    runtime = pipeline._long_runtime
+    if runtime is None or not hasattr(runtime, "status"):
+        return (
+            {"workers": 0, "queue_capacity": 0, "inflight": 0, "running": False},
+            {"source": "long-v2", "running": False, "pending": False},
+        )
+    status = runtime.status()
+    worker = status.worker
+    inflight = int(worker.running) + int(worker.pending)
+    return (
+        {
+            "workers": 1,
+            "queue_capacity": 1,
+            "inflight": inflight,
+            "submitted_count": worker.offered_count,
+            "completed_count": worker.completed_count,
+            "rejected_count": worker.rejected_count,
+            "running": worker.thread_alive,
+        },
+        {
+            "source": "long-v2",
+            "running": worker.running,
+            "pending": worker.pending,
+            "replaced_count": worker.replaced_count,
+            "coalesced_count": worker.coalesced_count,
+        },
+    )

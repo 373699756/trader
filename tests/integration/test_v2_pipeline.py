@@ -12,6 +12,7 @@ import pytest
 from tests.pipeline_factory import build_pipeline
 from trader.application.after_close_recovery import _cached_close_market_is_reusable
 from trader.application.cadence import CadencePolicy, PipelineTask, ScheduledPipelineTask
+from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.events import (
     EventAuditRecord,
     EventPriority,
@@ -23,6 +24,8 @@ from trader.application.events import (
 from trader.application.events import (
     new_event as create_event,
 )
+from trader.application.long_groups import LongGroupDefinition, LongWatchItemDefinition
+from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.ports.market import MarketDataUnavailableError, ResearchRefreshResult
 from trader.application.ports.snapshots import RecoverySummary
@@ -32,6 +35,7 @@ from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.schedule import MarketPhase
+from trader.application.shutdown import ShutdownDeadline
 from trader.application.snapshot_workflow import (
     freeze_available_snapshots,
     refresh_candidates,
@@ -46,6 +50,7 @@ from trader.application.tomorrow_shadow_projection import (
 )
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.decision_identity import LongProjection
 from trader.domain.recommendation.models import (
     LiveOverlay,
     RecommendationSnapshot,
@@ -61,6 +66,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 def new_event(event_type: str, **values) -> PipelineEvent:
     return create_event(EventSpec(event_type=event_type, **values))
+
+
+def _long_v2_runtime(
+    market_data,
+    codes: tuple[str, ...],
+    now: datetime,
+) -> tuple[LongV2Runtime, UnifiedDecisionIndex]:
+    index = UnifiedDecisionIndex()
+    runtime = LongV2Runtime(
+        LongV2RuntimeDependencies(market_data, index, lambda: now),
+        config_version="config-v2",
+        watchlist_version="watchlist-v2",
+        items=tuple(LongWatchItemDefinition(code, f"测试{code}", "工业") for code in codes),
+        groups=(LongGroupDefinition("固定组", "chokepoint", codes),),
+    )
+    return runtime, index
 
 
 def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
@@ -98,14 +119,10 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
         Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
-        Strategy.LONG,
     ]
     assert today[0].fusion_mode.value == "local_degraded"
     assert today[0].metadata["projection_stage"] == "local"
     assert "deepseek_pending" in today[1].degraded_reasons
-    assert today[-1].phase == "today_main"
-    assert today[-1].metadata["projection_stage"] == "current_quotes"
-    assert today[-1].metadata["score_status"] == "not_applicable"
     latency = pipeline.status()["dependencies"]["latency_waterfall"]
     assert latency["planned_count"] == 1
     assert latency["completed_count"] == 1
@@ -130,7 +147,7 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
 
     clock.set(datetime.fromisoformat("2026-07-16T14:30:00+08:00"))
     afternoon = pipeline.run_once(clock.now())
-    assert {snapshot.strategy for snapshot in afternoon} == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
+    assert {snapshot.strategy for snapshot in afternoon} == {Strategy.TOMORROW, Strategy.D25}
     assert market_data.candidate_tail_requests[-2:] == [True, False]
     assert market_data.tail_refreshes[-1] == tuple(feature.quote.code for feature in features)
 
@@ -141,10 +158,8 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
     assert {snapshot.strategy for snapshot in afternoon_freeze} == {
         Strategy.TOMORROW,
         Strategy.D25,
-        Strategy.LONG,
     }
-    assert all(snapshot.frozen for snapshot in afternoon_freeze if snapshot.strategy is not Strategy.LONG)
-    assert next(snapshot for snapshot in afternoon_freeze if snapshot.strategy is Strategy.LONG).frozen is False
+    assert all(snapshot.frozen for snapshot in afternoon_freeze)
     assert repository.frozen.keys() == {
         (Strategy.TODAY, "2026-07-16"),
         (Strategy.TOMORROW, "2026-07-16"),
@@ -153,9 +168,8 @@ def test_virtual_trading_day_publishes_and_freezes_expected_strategies(
 
     clock.set(datetime.fromisoformat("2026-07-16T14:50:30+08:00"))
     post_freeze = pipeline.run_once(clock.now())
-    assert [snapshot.strategy for snapshot in post_freeze] == [Strategy.LONG]
+    assert post_freeze == ()
     assert len(repository.frozen) == 3
-    assert state.latest(Strategy.LONG).frozen is False
 
 
 def test_midday_cold_start_recovers_current_drafts_once_without_today_or_review(
@@ -192,15 +206,13 @@ def test_midday_cold_start_recovers_current_drafts_once_without_today_or_review(
     assert [snapshot.strategy for snapshot in recovered] == [
         Strategy.TOMORROW,
         Strategy.D25,
-        Strategy.LONG,
     ]
     assert state.latest(Strategy.TODAY) is None
     assert all(snapshot.phase == "midday" for snapshot in recovered)
-    assert all(snapshot.metadata["projection_stage"] == "local" for snapshot in recovered[:-1])
-    assert recovered[-1].metadata["projection_stage"] == "current_quotes"
+    assert all(snapshot.metadata["projection_stage"] == "local" for snapshot in recovered)
     assert "deepseek_pending" in recovered[0].degraded_reasons
     refreshed = pipeline.run_once(now)
-    assert [snapshot.strategy for snapshot in refreshed] == [Strategy.LONG]
+    assert refreshed == ()
 
 
 @pytest.mark.parametrize(
@@ -712,8 +724,14 @@ def test_after_close_cold_start_builds_long_current_snapshot(
     features = _three_board_features(application_feature_factory, clock.now())
     repository = MemoryRepository()
     state = RuntimeState()
+    market_data = ClosingPriceMarketData(features)
+    long_runtime, long_index = _long_v2_runtime(
+        market_data,
+        ("600001", "300001", "688001"),
+        clock.now(),
+    )
     pipeline = build_pipeline(
-        ClosingPriceMarketData(features),
+        market_data,
         TradingDayCalendar(),
         None,
         repository,
@@ -727,26 +745,25 @@ def test_after_close_cold_start_builds_long_current_snapshot(
         priority_queue_size=4,
         now=clock.now,
         long_codes=("600001", "300001", "688001"),
+        long_runtime=long_runtime,
     )
     pipeline.initialize()
 
-    recovered = pipeline.run_once(clock.now())
+    long_runtime.start()
+    try:
+        recovered = pipeline.run_once(clock.now())
+        assert long_runtime.wait_idle(2.0)
+    finally:
+        long_runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
 
-    assert Strategy.LONG in {snapshot.strategy for snapshot in recovered}
-    long_snapshot = state.latest(Strategy.LONG)
-    assert long_snapshot is not None
-    assert long_snapshot.frozen is False
-    assert long_snapshot.phase == "close_fallback"
-    assert long_snapshot.metadata["recovery_path"] == "after_close_current"
-    assert long_snapshot.metadata["price_basis"] == "official_close"
-    assert {item.features.quote.code for item in long_snapshot.recommendations} == {
-        "600001",
-        "300001",
-        "688001",
-    }
-    assert all(item.features.quote.price == 20.0 for item in long_snapshot.recommendations)
+    assert Strategy.LONG not in {snapshot.strategy for snapshot in recovered}
+    long_projection = long_index.snapshot(Strategy.LONG).current
+    assert isinstance(long_projection, LongProjection)
+    assert tuple(item.code for item in long_projection.items) == ("600001", "300001", "688001")
+    assert all(item.price == 20.0 for item in long_projection.items)
+    assert long_index.snapshot(Strategy.LONG).formal is None
     assert repository.load_frozen(Strategy.LONG, "2026-07-16") is None
-    assert state.snapshot()["counters"]["long_quote_snapshots_published"] == 1
+    assert state.latest(Strategy.LONG) is None
 
 
 def test_after_close_p6_rejection_keeps_formal_records_without_publication(
@@ -2266,6 +2283,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     market_data = StaticMarketData(features)
     state = RuntimeState()
     tomorrow_native_inputs = RecordingTomorrowNativeInputSink()
+    long_runtime, long_index = _long_v2_runtime(market_data, ("600001",), now)
     pipeline = build_pipeline(
         market_data,
         TradingDayCalendar(),
@@ -2286,8 +2304,10 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
         now=lambda: now,
         long_codes=("600001",),
         tomorrow_native_inputs=tomorrow_native_inputs,
+        long_runtime=long_runtime,
     )
     pipeline.initialize()
+    assert long_runtime.start()
     assert pipeline.start() is True
     try:
         assert pipeline.submit_tick(now) is True
@@ -2295,16 +2315,17 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
             ScheduledPipelineTask(PipelineTask.LONG_QUOTES, now, MarketPhase.AFTERNOON)
         )
         _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
-        _wait_until(lambda: state.latest(Strategy.LONG) is not None)
+        _wait_until(lambda: long_index.snapshot(Strategy.LONG).current is not None)
         tomorrow_snapshot = state.latest(Strategy.TOMORROW)
         running_status = pipeline.status()
         running_thread_names = [thread.name for thread in threading.enumerate()]
     finally:
         pipeline.stop(timeout_seconds=2.0)
+        long_runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
 
     assert market_data.fetch_threads
     assert any(name.startswith("trader-data") for name in market_data.fetch_threads)
-    assert any(name.startswith("trader-long-quotes") for name in market_data.fetch_threads)
+    assert any(name.startswith("trader-v2-long") for name in market_data.fetch_threads)
     assert engine.preselect_threads and all(name.startswith("trader-normalize") for name in engine.preselect_threads)
     assert {strategy for strategy, _name in engine.prepare_threads} == {
         Strategy.TOMORROW,
@@ -2339,7 +2360,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert pools["strategy"]["workers"] == 3
     assert pools["deepseek"]["workers"] == 4
     assert pools["long_quotes"]["workers"] == 1
-    assert pools["long_quote_lane"]["source"] == "long-quotes"
+    assert pools["long_quote_lane"]["source"] == "long-v2"
     assert pools["merge"]["workers"] == 1
     assert pools["merge"]["queue_capacity"] == 16
     assert pools["merge"]["submitted_count"] == 1
@@ -2359,7 +2380,7 @@ def test_started_pipeline_routes_stages_to_bounded_workers_and_isolates_long(
     assert sum(name.startswith("trader-normalize") for name in running_thread_names) == 2
     assert sum(name.startswith("trader-strategy") for name in running_thread_names) == 3
     assert sum(name.startswith("trader-deepseek") for name in running_thread_names) == 4
-    assert sum(name.startswith("trader-long-quotes") for name in running_thread_names) == 1
+    assert sum(name.startswith("trader-v2-long") for name in running_thread_names) == 1
     assert sum(name.startswith("trader-persistence") for name in running_thread_names) == 1
     assert running_thread_names.count("trader-merge") == 1
     assert not any(thread.name.startswith("trader-") for thread in threading.enumerate())
@@ -2372,6 +2393,7 @@ def test_slow_long_quote_lane_does_not_block_short_strategy_pipeline(
     now = datetime.fromisoformat("2026-07-16T14:30:00+08:00")
     market_data = BlockingLongMarketData((application_feature_factory("600001", now),))
     state = RuntimeState()
+    long_runtime, long_index = _long_v2_runtime(market_data, ("600001",), now)
     pipeline = build_pipeline(
         market_data,
         TradingDayCalendar(),
@@ -2387,8 +2409,10 @@ def test_slow_long_quote_lane_does_not_block_short_strategy_pipeline(
         priority_queue_size=4,
         now=lambda: now,
         long_codes=("600001",),
+        long_runtime=long_runtime,
     )
     pipeline.initialize()
+    long_runtime.start()
     pipeline.start()
     try:
         assert pipeline._submit_scheduled_task(
@@ -2398,12 +2422,13 @@ def test_slow_long_quote_lane_does_not_block_short_strategy_pipeline(
         assert pipeline.submit_tick(now) is True
         _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
         assert state.latest(Strategy.D25) is not None
-        assert state.latest(Strategy.LONG) is None
+        assert long_index.snapshot(Strategy.LONG).current is None
     finally:
         market_data.release_long.set()
         pipeline.stop(timeout_seconds=2.0)
+        long_runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
 
-    assert state.latest(Strategy.LONG) is not None
+    assert long_index.snapshot(Strategy.LONG).current is not None
     assert not any(thread.name.startswith("trader-") for thread in threading.enumerate())
 
 
@@ -2787,7 +2812,6 @@ def test_synchronous_and_worker_paths_publish_identical_business_snapshots(
     assert tuple(snapshot.strategy for snapshot in sync_snapshots) == (
         Strategy.TOMORROW,
         Strategy.D25,
-        Strategy.LONG,
     )
 
 
@@ -3001,8 +3025,10 @@ def test_one_strategy_data_failure_does_not_block_other_snapshots(
     features = (application_feature_factory("600001", now),)
     repository = MemoryRepository()
     state = RuntimeState()
+    market_data = TomorrowFailingMarketData(features)
+    long_runtime, long_index = _long_v2_runtime(market_data, ("600001",), now)
     pipeline = build_pipeline(
-        TomorrowFailingMarketData(features),
+        market_data,
         TradingDayCalendar(),
         None,
         repository,
@@ -3016,8 +3042,10 @@ def test_one_strategy_data_failure_does_not_block_other_snapshots(
         priority_queue_size=2,
         now=lambda: now,
         long_codes=("600001",),
+        long_runtime=long_runtime,
     )
     pipeline.initialize()
+    long_runtime.start()
     pipeline.start()
     try:
         assert pipeline.submit_tick(now) is True
@@ -3025,13 +3053,14 @@ def test_one_strategy_data_failure_does_not_block_other_snapshots(
             ScheduledPipelineTask(PipelineTask.LONG_QUOTES, now, MarketPhase.AFTERNOON)
         )
         _wait_until(lambda: pipeline.status()["counters"]["events_completed"] == 1)
-        _wait_until(lambda: state.latest(Strategy.LONG) is not None)
+        _wait_until(lambda: long_index.snapshot(Strategy.LONG).current is not None)
     finally:
         pipeline.stop(timeout_seconds=2.0)
+        long_runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
 
     assert state.latest(Strategy.TOMORROW) is None
     assert state.latest(Strategy.D25) is not None
-    assert state.latest(Strategy.LONG) is not None
+    assert long_index.snapshot(Strategy.LONG).current is not None
     assert "tomorrow data degraded" in pipeline.status()["last_error"]
 
 

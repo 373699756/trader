@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- V2-E7 新增独立 `LongV2Runtime` 与 `LongRefreshRequest`。固定池定向行情现在由单 worker、单
+  latest-wins lane 直接生成统一 `LongProjection` current；投影按 `long_watchlist.json` 顺序
+  携带完整名单、唯一分组、价格、涨跌幅、成交额、换手率、总市值、来源、来源时间及
+  `live/retained/missing` 状态，schema 升级为 `v2_long_projection_v2`，运行状态固定公开
+  `score_status=not_applicable`。
+
 - V2-E6 新增 `D25NativeInput`、策略独占的 D25 latest-wins runtime、14:49:20 检查点、14:50
   正式冻结、15:00 `close_fallback` 和只读 `UnifiedScoredDecisionQueries` 实例。D25 复用统一
   纯领域选择/融合核心与正式记录仓储，但 current、sequence、observer、错误状态、事件、
@@ -17,6 +23,10 @@ All notable changes to this project are documented here.
   DeepSeek 预算链。
 
 ### Changed
+
+- 用户发送“继续”，要求执行总计划下一个完整未完成章节。本批仅交付 V2-E7“Long 正式接管”：
+  Long 从旧 Pipeline snapshot/P6/publisher 切换到统一索引 current projection，计划推进到 E7
+  已完成、E8 为下一工程章节；不提前修改统一 API/SSE/根页面、唯一入口或其余旧链删除。
 
 - 用户要求继续 `implementation-plan.md` 的未完成任务。同步上游后发现 V2-E6 代码提交已经
   推送，但计划仍标记 E6 待执行，权威文档与 Changelog 未更新，且定向测试和格式门禁实际
@@ -85,6 +95,14 @@ All notable changes to this project are documented here.
   配对移动区块 bootstrap、派生种子、Holm 检验族、五个挑战者和全部收益/回撤/召回/集中度门禁。
 
 ### Fixed
+
+- 修正 Long 名义上“不评分”但活动生产仍构造带零分 `ScoreBreakdown` 的旧
+  `RecommendationSnapshot`、经过 P6/publisher 并占用 Pipeline 自有 worker 的架构冲突。
+  Long 现使用无评分领域身份，定向行情慢请求仅占用 `trader-v2-long`；部分失败按代码保留
+  同日最近有效报价，未知、未来或非正价格被拒绝，完整固定名单和配置顺序不再因行情失败变化。
+  最终 Review 另修正把网络完成后的正常 `received_time` 误判为相对请求观察点的未来数据问题：
+  runtime 现使用注入完成时钟形成投影观察点，接纳请求后、完成前收到的真实行情，同时继续拒绝
+  晚于完成时刻的来源或接收时间。
 
 - 修正 D25 原生输入组装读取不存在的 `ScoredNativeBatch.candidate_pool_size`，导致 D25 每轮在
   进入 V2 worker 前抛出 `AttributeError`、无法形成任何 local/hybrid 决策的问题；现与
@@ -183,6 +201,11 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除旧 `application/long_quotes.py` 及其 legacy snapshot 单元测试；从 Pipeline 移除
+  `trader-long-quotes` executor、旧 latest-request lane、Long P6 admission、RuntimeState 发布、
+  SnapshotPublisher 推送和 `long_quote_snapshots_published` 路径。Long 不写正式记录、推荐历史、
+  结算或评分 committed event；其它旧生产链仍按 V2-E8 至 V2-E10 分节处理。
+
 - 从旧 Pipeline 的正式评分提交、P6 冻结和盘后旧链恢复集合移除 D25；迁移期 Pipeline 只形成
   同批点时 `D25NativeInput`。旧实现文件仍按 V2-E10 保留，本批不提前删除 Long、旧 API、
   shadow/cutover 或 Web 资源。
@@ -224,6 +247,17 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- V2-E7 定向领域、运行时、统一索引、Pipeline 集成和组合根回归覆盖完整固定顺序、分组唯一、
+  全字段 current、部分失败、同日 retained、missing 占位、未来/未知报价拒绝、整体行情失败、
+  收盘 current、零正式记录、慢 Long 不阻塞短线和 `create_app()` 无线程副作用。
+  `make format-check`、`make lint`、`make type-check`、4 worker 并行 `make test` 和 `make package`
+  全部通过；Ruff 严格复杂度债务为零，mypy 检查 256 个源码文件，完整 pytest 到达 100%，仅保留
+  10 条既有未知 DeepSeek fixture 模型警告。最终 wheel 从仓库外 `/tmp` 目标目录安装并导入，
+  `trader-cli --help`、模板、CSS、JavaScript 和 SVG 资源均可读取。Chrome + CDP 对统一根页面、
+  Long 和 Tomorrow V2 完成 1280x720、1440x900、1920x1080 实机验收，均无白屏、页面级横向
+  溢出或浏览器错误；Long 37 个分组无内部溢出，主看板 24 个 patch 全部应用、零 resync，
+  patch-to-paint P95 为 11ms（门槛 100ms），浏览器 fixture 外部网络请求为 0。
 
 - V2-E6 定向回归覆盖 D25 原生输入、专属 local/hybrid、父 CAS、14:49:20 检查点、14:50
   热/冷恢复、合法正式空结果、Tomorrow/D25 同日隔离、待重试封口、15:00 冷启动 local-only
@@ -336,18 +370,18 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- V2-E6 已闭合，但 V2-only 总计划仍需完成 E7 Long 接管、E8 统一 API/SSE/Web、E9 唯一入口、
-  E10 旧链删除和 E11 发布验收；D25 查询当前仅作为应用层只读实例，统一公开路由属于 E8。
+- V2-E7 已闭合，但 V2-only 总计划仍需完成 E8 统一 API/SSE/Web、E9 唯一入口、E10 旧链删除
+  和 E11 发布验收；Long current 当前只进入统一索引，统一公开路由和页面消费属于 E8。
   固定 fixture 证明身份、冻结与恢复状态机，不构成真实交易日外部行情连续性、DeepSeek 尾
   延迟或收益改善证据；外部失败继续按权威契约显式降级。
 
-- V2-E7 至 V2-E11 与 Score 后续章节仍未完成；Today/D25 的统一公开 API、SSE 和根页面
-  按计划属于 V2-E8，E5 当批只完成 Today 生产决策、冻结、observer 和 overlay 接管。固定输入证明状态机
+- V2-E8 至 V2-E11 与 Score 后续章节仍未完成；Today/D25/Long 的统一公开 API、SSE 和根页面
+  按计划属于 V2-E8。固定输入证明状态机
   与身份正确，不构成真实交易日行情覆盖、外部 DeepSeek 尾延迟或荐股收益改善证据；这些仍需
   后续真实运行观测，且任何外部失败继续按契约显式降级。
 
-- V2-only 总计划尚未完成：long、统一根 API/SSE/Web、最终组合根与旧链删除仍属
-  E7-E10，最终发布验收属 E11；当前兼容 Tomorrow 页面从统一身份投影有限字段，完整统一
+- V2-only 总计划尚未完成：统一根 API/SSE/Web、最终组合根与旧链删除仍属
+  E8-E10，最终发布验收属 E11；当前兼容 Tomorrow 页面从统一身份投影有限字段，完整统一
   工作台与报价 overlay 仍由 E8 接管。旧 shadow/冻结源文件尚未物理删除，但生产组合根已无
   可达依赖。免费外部来源在真实 14:50/15:00 边界的连续运行证据仍需 E11 留档，本批测试不
   构成收益保证。

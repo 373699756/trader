@@ -10,11 +10,9 @@ STRATEGY = ROOT / "docs" / "recommendation-strategy.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
 
 
-def test_v2_e6_is_complete_and_e7_is_the_next_engineering_section() -> None:
+def test_v2_e6_is_complete() -> None:
     plan = PLAN.read_text(encoding="utf-8")
 
-    assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6" in plan
-    assert "下一工程章节为 V2-E7" in plan
     assert "### V2-E6：D25 正式接管（已完成）" in plan
 
 
@@ -47,4 +45,3 @@ def test_production_composition_installs_d25_v2_and_unified_query() -> None:
     assert "trader.application.tomorrow_v2_runtime" in imports
     assert "d25_queries=publication.d25_queries" in source
     assert "strategy=Strategy.D25" in source
-    assert "v2_owned_strategies=(Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)" in source

@@ -114,8 +114,8 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
-    assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6" in implementation_plan
-    assert "下一工程章节为 V2-E7" in implementation_plan
+    assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7" in implementation_plan
+    assert "下一工程章节为 V2-E8" in implementation_plan
     assert "`docs/recommendation-strategy.md`" in implementation_plan
     assert "本文是唯一活动施工计划" in implementation_plan
     assert "状态：V2-only 目标已确认" in v2_plan

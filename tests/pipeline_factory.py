@@ -6,6 +6,7 @@ from datetime import datetime
 from trader.application.cadence import CadencePolicy
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
+from trader.application.ports.long import LongRefreshPort
 from trader.application.ports.market import MarketDataPorts, MarketSnapshotMetadata
 from trader.application.ports.outcomes import OutcomeSettlementPort
 from trader.application.ports.snapshots import PublishedSnapshotWritePort, SnapshotPorts
@@ -46,6 +47,7 @@ def build_pipeline(
     outcome_settlement: OutcomeSettlementPort | None = None,
     published_snapshots: PublishedSnapshotWritePort | None = None,
     tomorrow_native_inputs: TomorrowNativeInputPort | None = None,
+    long_runtime: LongRefreshPort | None = None,
 ) -> RecommendationPipeline:
     metadata = market_data if hasattr(market_data, "snapshot_metadata") else _MarketMetadataAdapter(market_data)
     return RecommendationPipeline(
@@ -70,6 +72,7 @@ def build_pipeline(
             outcome_settlement=outcome_settlement,
             published_snapshots=published_snapshots,
             tomorrow_native_inputs=tomorrow_native_inputs,
+            long_runtime=long_runtime,
         ),
         PipelineOptions(
             config_version=config_version,

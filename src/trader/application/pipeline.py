@@ -22,12 +22,12 @@ from trader.application.events import (
     PipelineEvent,
 )
 from trader.application.latency import LatencyWaterfall
-from trader.application.long_quotes import LongQuoteProjectionService, refresh_long_quotes
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
 from trader.application.pipeline_research import PipelineResearchMixin
 from trader.application.pipeline_stages import process_event_on_workers
 from trader.application.pipeline_status import PipelineStatusMixin
 from trader.application.pipeline_submission import PipelineSubmissionMixin
+from trader.application.ports.long import LongRefreshRequest
 from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.research_coordination import ResearchCoordinator
 from trader.application.schedule import (
@@ -93,14 +93,11 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
         self._config_version = options.config_version
         self._options_decision_execution_mode = options.decision_execution_mode
         self._candidate_pool_size = options.candidate_pool_size
+        self._long_codes = options.long_codes
         self._now = dependencies.now
         self._trading_session = dependencies.trading_session or TradingSessionTracker(self._now())
         self._trading_session.add_rotation_hook(self._handle_session_rotation)
-        self._long_projection = LongQuoteProjectionService(
-            codes=options.long_codes,
-            items=options.long_items,
-            groups=options.long_groups,
-        )
+        self._long_runtime = dependencies.long_runtime
         self._outcome_settlement = dependencies.outcome_settlement
         self._tomorrow_native_inputs = dependencies.tomorrow_native_inputs
         self._d25_native_inputs = dependencies.d25_native_inputs
@@ -150,17 +147,6 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
             queue_capacity=worker_queue_capacity,
             thread_name_prefix="trader-deepseek",
         )
-        self._long_quote_pool = BoundedExecutor(
-            worker_count=1,
-            queue_capacity=1,
-            thread_name_prefix="trader-long-quotes",
-        )
-        self._long_quote_lane = LatestRequestLane(
-            "long-quotes",
-            self._long_quote_pool,
-            latency=self._latency,
-            latency_stage="long_quote_queue_wait",
-        )
         self._overlay_pool = BoundedExecutor(
             worker_count=1,
             queue_capacity=1,
@@ -182,7 +168,6 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
             self._normalization_pool,
             self._strategy_pool,
             self._deepseek_pool,
-            self._long_quote_pool,
             self._overlay_pool,
         )
         self._research_coordinator = ResearchCoordinator(
@@ -389,7 +374,6 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
                 detail="priority events remain inflight" if not merge_completed else "",
             ),
             self._overlay_lane.stop(wait=True, deadline=deadline),
-            self._long_quote_lane.stop(wait=True, deadline=deadline),
             self._research_coordinator.stop(wait=True, deadline=deadline),
         ]
         for pool in self._compute_pools:
@@ -609,45 +593,39 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
 
     def _submit_long_quote_event(self, event: PipelineEvent) -> bool:
         self._latency.plan(event.event_id, event.event_type)
-        future = self._long_quote_lane.submit(
-            "long-watchlist",
-            event.created_at,
-            self._execute_long_quote_event,
-            event,
-        )
-        future.add_done_callback(lambda completed: self._finish_long_quote_event(event, completed))
-        if future.done():
-            try:
-                future.result()
-            except SourceRequestSupersededError:
-                return True
-            except RuntimeError:
-                return False
-        self._state.increment("long_quote_events_submitted")
-        return True
-
-    def _execute_long_quote_event(self, event: PipelineEvent) -> None:
         self._latency.enter(event.event_id)
-        refresh_long_quotes(
-            self,
+        accepted = self._offer_long_refresh(
             max(event.created_at, self._now()),
             MarketPhase(event.phase),
             deadline=event.deadline,
         )
-
-    def _finish_long_quote_event(self, event: PipelineEvent, future: Future[None]) -> None:
-        try:
-            future.result()
-        except SourceRequestSupersededError:
-            self._state.increment("long_quote_events_superseded")
-            self._latency.finish(event.event_id, outcome="superseded")
-        except Exception as exc:
-            self._state.increment("long_quote_events_failed")
-            self._state.record_error(f"long 行情刷新暂时降级：{type(exc).__name__}")
-            self._latency.finish(event.event_id, outcome="failed")
-        else:
-            self._state.increment("long_quote_events_completed")
+        if accepted:
+            self._state.increment("long_quote_events_submitted")
             self._latency.finish(event.event_id, outcome="success")
+            return True
+        self._state.increment("long_quote_events_failed")
+        self._state.record_strategy_degraded(Strategy.LONG, ("long_runtime_unavailable",))
+        self._latency.finish(event.event_id, outcome="failed")
+        return False
+
+    def _offer_long_refresh(
+        self,
+        now: datetime,
+        phase: MarketPhase,
+        *,
+        deadline: datetime | None = None,
+    ) -> bool:
+        runtime = self._long_runtime
+        if runtime is None:
+            return False
+        return runtime.offer_refresh(
+            LongRefreshRequest(
+                shanghai_now(now),
+                phase.value,
+                deadline=shanghai_now(deadline) if deadline is not None else None,
+                force=phase in {MarketPhase.FINAL_QUOTE, MarketPhase.AFTER_CLOSE},
+            )
+        )
 
     def _execute_overlay_event(self, event: PipelineEvent) -> None:
         self._latency.enter(event.event_id)

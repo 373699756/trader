@@ -58,21 +58,26 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert system.today_v2_runtime is not None
     assert system.tomorrow_v2_runtime is not None
     assert system.d25_v2_runtime is not None
+    assert system.long_v2_runtime is not None
     assert system.pipeline._today_native_inputs is system.today_v2_runtime
     assert system.pipeline._tomorrow_native_inputs is system.tomorrow_v2_runtime
     assert system.pipeline._d25_native_inputs is system.d25_v2_runtime
+    assert system.pipeline._long_runtime is system.long_v2_runtime
     assert system.pipeline._v2_controls == (
         system.today_v2_runtime,
         system.tomorrow_v2_runtime,
         system.d25_v2_runtime,
     )
     assert system.pipeline._v2_overlays == (system.today_v2_runtime,)
-    assert system.pipeline._v2_owned_strategies == frozenset({Strategy.TODAY, Strategy.TOMORROW, Strategy.D25})
+    assert system.pipeline._v2_owned_strategies == frozenset(Strategy)
     assert system.today_v2_runtime.status().worker.accepting is False
     assert system.tomorrow_v2_runtime.status().worker.accepting is False
     assert system.d25_v2_runtime.status().worker.accepting is False
+    assert system.long_v2_runtime.status().worker.accepting is False
     assert system.tomorrow_v2_runtime.status().local_publish_count == 0
     assert system.d25_v2_runtime.status().local_publish_count == 0
+    assert system.long_v2_runtime.status().published_count == 0
+    assert system.long_v2_runtime.status().score_status == "not_applicable"
     assert system.tomorrow_index is not None
     assert system.tomorrow_records is not None
     assert system.tomorrow_trace is not None
@@ -228,3 +233,44 @@ def test_second_v2_runtime_start_failure_stops_the_first_runtime() -> None:
 
     today_runtime.stop.assert_called_once()
     assert today_runtime.stop.call_args.kwargs["wait"] is True
+
+
+def test_long_v2_start_failure_stops_all_started_scored_runtimes() -> None:
+    settings = Mock()
+    settings.pipeline.shutdown_timeout_seconds = 7.0
+    today_runtime = Mock()
+    today_runtime.start.return_value = True
+    tomorrow_runtime = Mock()
+    tomorrow_runtime.start.return_value = True
+    d25_runtime = Mock()
+    d25_runtime.start.return_value = True
+    long_runtime = Mock()
+    long_runtime.start.side_effect = RuntimeError("long start failed")
+    system = ApplicationSystem(
+        settings=settings,
+        strategy=Mock(),
+        watchlist=Mock(),
+        app=Mock(),
+        supervisor=Mock(),
+        pipeline=Mock(),
+        repository=Mock(),
+        publisher=Mock(),
+        published_snapshots=Mock(),
+        state=Mock(),
+        market_cache=Mock(),
+        history_pool=Mock(),
+        research_pool=Mock(),
+        source_lanes=Mock(),
+        today_v2_runtime=today_runtime,
+        tomorrow_v2_runtime=tomorrow_runtime,
+        d25_v2_runtime=d25_runtime,
+        long_v2_runtime=long_runtime,
+    )
+
+    with pytest.raises(RuntimeError, match="long start failed"):
+        system.start()
+
+    for runtime in (today_runtime, tomorrow_runtime, d25_runtime):
+        runtime.stop.assert_called_once()
+        assert runtime.stop.call_args.kwargs["wait"] is True
+    long_runtime.stop.assert_not_called()

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from trader.application.long_groups import LongGroupDefinition, LongGroupSectionDefinition, LongWatchItemDefinition
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
 from trader.domain.market.models import Board
 from trader.domain.recommendation.filters import HardFilterPolicy
 from trader.domain.recommendation.fusion import FusionPolicy
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import RiskRule
-from trader.infra.settings import StrategySettings
+from trader.infra.settings import LongWatchlist, StrategySettings
 
 
 def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
@@ -76,4 +77,24 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
     )
 
 
-__all__ = ["_recommendation_policy"]
+def _long_item_definitions(watchlist: LongWatchlist) -> tuple[LongWatchItemDefinition, ...]:
+    return tuple(LongWatchItemDefinition(item.code, item.name, item.industry) for item in watchlist.items)
+
+
+def _long_group_definitions(watchlist: LongWatchlist) -> tuple[LongGroupDefinition, ...]:
+    return tuple(
+        LongGroupDefinition(
+            name=group.name,
+            category=group.category,
+            codes=group.codes,
+            source=group.source,
+            source_section=group.source_section,
+            sections=tuple(
+                LongGroupSectionDefinition(section.source_section, section.codes) for section in group.sections
+            ),
+        )
+        for group in watchlist.groups
+    )
+
+
+__all__ = ["_long_group_definitions", "_long_item_definitions", "_recommendation_policy"]

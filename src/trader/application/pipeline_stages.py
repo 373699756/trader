@@ -14,7 +14,6 @@ from trader.application.after_close_recovery import recover_after_close_snapshot
 from trader.application.cadence import PipelineTask, task_execution_budget_seconds
 from trader.application.candidate_features import fetch_strategy_features, read_strategy_features
 from trader.application.events import EventPriority, EventSpec, PipelineEvent, new_event
-from trader.application.long_quotes import refresh_long_quotes
 from trader.application.pipeline_native_inputs import ScoredNativeBatch, offer_scored_native_input
 from trader.application.pipeline_review_updates import (
     ScoringContext,
@@ -162,7 +161,8 @@ def _handle_long_quotes(
     phase: MarketPhase,
     event: PipelineEvent,
 ) -> tuple[RecommendationSnapshot, ...]:
-    return refresh_long_quotes(pipeline, now, phase, deadline=event.deadline)
+    pipeline._offer_long_refresh(now, phase, deadline=event.deadline)
+    return ()
 
 
 @_register_task(PipelineTask.CLOSE_QUOTES)

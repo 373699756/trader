@@ -15,7 +15,6 @@ from trader.application.after_close_recovery import recover_after_close_snapshot
 from trader.application.cadence import SchedulePointResult
 from trader.application.candidate_features import fetch_strategy_features
 from trader.application.freeze_attempts import FreezeAttempt, FreezeAttemptKey, FreezeAttemptStore
-from trader.application.long_quotes import refresh_long_quotes
 from trader.application.official_records import official_snapshot
 from trader.application.pipeline_market_tasks import _refresh_intraday_tail_before_score
 from trader.application.pipeline_review_updates import review_enabled_for_strategy_phase
@@ -101,7 +100,7 @@ def process_schedule(
         snapshot = score_strategy(pipeline, strategy, now, phase, trade_date)
         if snapshot is not None:
             snapshots.append(snapshot)
-    snapshots.extend(refresh_long_quotes(pipeline, now, phase))
+    pipeline._offer_long_refresh(now, phase)
 
     snapshots.extend(freeze_available_snapshots(pipeline, now, freeze_strategies))
     if phase is MarketPhase.AFTER_CLOSE:

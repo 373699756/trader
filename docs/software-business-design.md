@@ -255,8 +255,8 @@ today、tomorrow 和 d25 的正式记录仓储按策略和交易日唯一提交�
 SHA-256 写入 SQLite staged manifest，再原子创建不可变 JSON，最后提交 manifest；同键同
 内容重放幂等，不同内容冲突失败。启动恢复使用 manifest 内有界恢复载荷补齐半提交；已提交
 文件缺失、损坏、哈希或身份不一致时移入隔离目录并 fail closed，绝不向当前索引返回不可信
-记录。V2-E4 至 V2-E6 已把 tomorrow、today、d25 的统一核心、原生 worker、正式记录仓储、
-observer 和冻结时线接入 `bootstrap.py`；long 仍按 V2-E7 单独接管。
+记录。V2-E4 至 V2-E7 已把 tomorrow、today、d25 的统一核心、原生 worker、正式记录仓储、
+observer 和冻结时线，以及 long 无评分 current projection 接入 `bootstrap.py`。
 
 #### 独立 V2 调度与生命周期交付边界
 
@@ -631,6 +631,29 @@ tomorrow 的封口、恢复或仓储冲突不得影响 D25。热启动优先恢�
 纯本地 d25 评分并固化 local，均绑定规范 official-close 版本且不调用 DeepSeek。已有正式
 记录、待重试封口、错误策略身份、非官方收盘版本或迟到覆盖一律拒绝。迁移期旧 Pipeline
 只负责形成同批点时原生输入，不再为 D25 生成正式 snapshot、P6 冻结或盘后旧链恢复。
+
+### 2.18 long v2 正式接管边界
+
+V2-E7 起，活动组合根按 `long_watchlist.json` 的唯一版本、项目顺序和全局唯一分组构造
+`LongV2Runtime`。Pipeline 的 cadence 只提交带上海时区观察点、phase、deadline 和 force 标志的
+`LongRefreshRequest`；独立 `trader-v2-long` 单 worker、单 latest-wins 待处理槽直接调用固定池
+定向行情端口并向 `UnifiedDecisionIndex[strategy=long]` 发布 `LongProjection`。旧 Pipeline
+不再拥有 Long worker，不再构造 `RecommendationSnapshot`，也不经过 P6、publisher 或旧 Web
+仓储；Long current 的 `score_status=not_applicable` 由无评分投影类型和运行状态共同保证。
+投影观察点使用组合根注入的处理完成时钟，不得把请求发出后、网络完成前的正常接收时间误判为
+未来数据；来源时间或接收时间晚于处理完成时刻时仍必须拒绝。
+
+每个 `LongProjectionItem` 直接携带代码、配置名称、行业、唯一分组身份、价格、涨跌幅、成交额、
+换手率、总市值、来源、来源时间和 quote version，不存在候选分、本地分、融合分、风险扣分、
+动作阈值或排名字段。投影严格保留配置项目顺序和完整固定名单；同轮有效报价标记 `live`，部分
+代码失败时优先使用该代码同交易日最近有效报价并标记 `retained`，仍无报价则保留显式
+`missing` 占位。未来报价、未知代码、非正价格和错误时区输入不得进入 current，也不得自动换股。
+
+Long runtime 不注入 reviewer、observer、冻结协调器、正式记录仓储或结算端口，不创建正式记录、
+历史日期或结算事件，不读写旧 snapshot。定向行情整体失败时仍以完整固定名单发布或保持最近
+有效 current，并在状态中公开 `long_quote_unavailable` 与覆盖计数；同交易日最近有效报价只在
+进程内由该 runtime 持有，交易日切换立即清空。Long 慢请求只占用 `trader-v2-long`，不得阻塞
+today、tomorrow、d25 的评分、DeepSeek、冻结、overlay 或结算资源。
 
 ## 3. 架构与代码边界
 

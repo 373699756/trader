@@ -19,7 +19,7 @@ from trader.application.decision_events import V2DecisionCommitted
 from trader.application.decision_observers import AsyncDecisionObserver
 from trader.application.events import InMemoryEventLedger
 from trader.application.latency import LatencyWaterfall
-from trader.application.long_groups import LongGroupDefinition, LongGroupSectionDefinition, LongWatchItemDefinition
+from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
 from trader.application.outcome_settlement import OutcomeSettlementService
 from trader.application.pipeline import RecommendationPipeline
 from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
@@ -52,7 +52,7 @@ from trader.application.v2_research_trace import InMemoryV2ResearchTraceStore
 from trader.application.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane
-from trader.bootstrap_policy import _recommendation_policy
+from trader.bootstrap_policy import _long_group_definitions, _long_item_definitions, _recommendation_policy
 from trader.domain.recommendation.models import Strategy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
@@ -117,6 +117,7 @@ class ApplicationSystem:
     today_v2_runtime: TodayV2Runtime | None = None
     tomorrow_v2_runtime: TomorrowV2Runtime | None = None
     d25_v2_runtime: TomorrowV2Runtime | None = None
+    long_v2_runtime: LongV2Runtime | None = None
     d25_queries: UnifiedScoredDecisionQueries | None = None
     tomorrow_index: UnifiedDecisionIndex | None = None
     tomorrow_records: SQLiteDecisionRecordRepository | None = None
@@ -130,7 +131,12 @@ class ApplicationSystem:
             self.research_pool,
             tuple(
                 runtime
-                for runtime in (self.today_v2_runtime, self.tomorrow_v2_runtime, self.d25_v2_runtime)
+                for runtime in (
+                    self.today_v2_runtime,
+                    self.tomorrow_v2_runtime,
+                    self.d25_v2_runtime,
+                    self.long_v2_runtime,
+                )
                 if runtime is not None
             ),
             self.market_cache,
@@ -182,6 +188,7 @@ class _PublicationContext:
     today_runtime: TodayV2Runtime
     tomorrow_runtime: TomorrowV2Runtime
     d25_runtime: TomorrowV2Runtime
+    long_runtime: LongV2Runtime
     tomorrow_queries: UnifiedTomorrowDecisionQueries
     d25_queries: UnifiedScoredDecisionQueries
     tomorrow_events: TomorrowDecisionEventStream
@@ -210,7 +217,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     persistence = _build_persistence(context)
     market_data = _build_market_data(context, persistence.data_plane)
     reviewer = _build_reviewer(context, persistence.budget)
-    publication = _build_publication(context, calendar, persistence.repository, reviewer)
+    publication = _build_publication(context, calendar, persistence.repository, reviewer, market_data)
     trading_session = TradingSessionTracker(now())
     adapters = _PipelineAdapters(market_data, calendar, reviewer)
     pipeline = _build_pipeline(context, adapters, persistence, publication, trading_session)
@@ -273,6 +280,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         today_v2_runtime=publication.today_runtime,
         tomorrow_v2_runtime=publication.tomorrow_runtime,
         d25_v2_runtime=publication.d25_runtime,
+        long_v2_runtime=publication.long_runtime,
         d25_queries=publication.d25_queries,
         tomorrow_index=publication.tomorrow_index,
         tomorrow_records=publication.tomorrow_repository,
@@ -566,6 +574,7 @@ def _build_publication(
     calendar: ChinaTradingCalendar,
     repository: SnapshotRepository,
     reviewer: DeepSeekReviewer,
+    market_data: MarketFeatureService,
 ) -> _PublicationContext:
     settings = context.settings
     state = RuntimeState()
@@ -677,6 +686,13 @@ def _build_publication(
         ),
         strategy=Strategy.D25,
     )
+    long_runtime = LongV2Runtime(
+        LongV2RuntimeDependencies(market_data, tomorrow_decisions, context.now),
+        config_version=context.effective_config_version,
+        watchlist_version=context.watchlist.watchlist_version,
+        items=_long_item_definitions(context.watchlist),
+        groups=_long_group_definitions(context.watchlist),
+    )
     return _PublicationContext(
         state,
         publisher,
@@ -689,6 +705,7 @@ def _build_publication(
         today_runtime,
         tomorrow_runtime,
         d25_runtime,
+        long_runtime,
         tomorrow_queries,
         d25_queries,
         tomorrow_events,
@@ -746,6 +763,7 @@ def _build_pipeline(
             today_native_inputs=publication.today_runtime,
             tomorrow_native_inputs=publication.tomorrow_runtime,
             d25_native_inputs=publication.d25_runtime,
+            long_runtime=publication.long_runtime,
             v2_controls=(publication.today_runtime, publication.tomorrow_runtime, publication.d25_runtime),
             v2_overlays=(publication.today_runtime,),
             trading_session=trading_session,
@@ -763,30 +781,12 @@ def _build_pipeline(
             market_data_manages_workers=True,
             cadence_policy=context.cadence_policy,
             long_codes=tuple(item.code for item in context.watchlist.items),
-            long_items=tuple(
-                LongWatchItemDefinition(item.code, item.name, item.industry) for item in context.watchlist.items
-            ),
+            long_items=_long_item_definitions(context.watchlist),
             long_target_prices={item.code: item.target_price for item in context.watchlist.items},
-            long_groups=_long_groups(context.watchlist),
-            v2_owned_strategies=(Strategy.TODAY, Strategy.TOMORROW, Strategy.D25),
+            long_groups=_long_group_definitions(context.watchlist),
+            v2_owned_strategies=tuple(Strategy),
         ),
         PipelineResources(data_pool=context.workers.data_pool, persistence_pool=context.workers.persistence_pool),
-    )
-
-
-def _long_groups(watchlist: LongWatchlist) -> tuple[LongGroupDefinition, ...]:
-    return tuple(
-        LongGroupDefinition(
-            name=group.name,
-            category=group.category,
-            codes=group.codes,
-            source=group.source,
-            source_section=group.source_section,
-            sections=tuple(
-                LongGroupSectionDefinition(section.source_section, section.codes) for section in group.sections
-            ),
-        )
-        for group in watchlist.groups
     )
 
 

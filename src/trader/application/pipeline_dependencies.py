@@ -12,6 +12,7 @@ from trader.application.latency import LatencyWaterfall
 from trader.application.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.application.ports.clock import TradingCalendarPort
 from trader.application.ports.events import EventAuditPort
+from trader.application.ports.long import LongRefreshPort
 from trader.application.ports.market import MarketDataPorts
 from trader.application.ports.outcomes import OutcomeSettlementPort
 from trader.application.ports.reviews import DeepSeekReviewPort
@@ -50,6 +51,7 @@ class PipelineDependencies:
     d25_native_inputs: D25NativeInputPort | None = None
     tomorrow_v2_control: TomorrowV2ControlPort | None = None
     today_native_inputs: TodayNativeInputPort | None = None
+    long_runtime: LongRefreshPort | None = None
     v2_controls: tuple[V2ControlPort, ...] = ()
     v2_overlays: tuple[V2OverlayPort, ...] = ()
     trading_session: TradingSessionTracker | None = None
@@ -82,8 +84,8 @@ class PipelineOptions:
         object.__setattr__(self, "long_target_prices", MappingProxyType(dict(self.long_target_prices)))
         object.__setattr__(self, "long_groups", tuple(self.long_groups))
         owned = tuple(self.v2_owned_strategies)
-        if any(strategy is Strategy.LONG for strategy in owned) or len(set(owned)) != len(owned):
-            raise ValueError("V2-owned strategies must be unique scored strategies")
+        if len(set(owned)) != len(owned):
+            raise ValueError("V2-owned strategies must be unique")
         object.__setattr__(self, "v2_owned_strategies", owned)
 
 

@@ -210,8 +210,7 @@ def _run_shadow(runtime_dir: Path, recommendation_policy, application_feature_fa
     for raw_time in TIMELINE:
         pipeline.run_once(datetime.fromisoformat(raw_time))
 
-    assert pipeline._published_snapshots.latest(Strategy.LONG) is not None
-    assert pipeline._published_snapshots.latest(Strategy.LONG).frozen is False
+    assert pipeline._published_snapshots.latest(Strategy.LONG) is None
     with sqlite3.connect(runtime_dir / "runtime.sqlite3") as connection:
         manifest_rows = tuple(
             connection.execute(

@@ -84,12 +84,46 @@ def test_long_projection_has_no_scoring_fields_and_stable_identity() -> None:
         sequence=1,
         observed_at=NOW,
         input_versions=(("quotes", "quotes-v1"),),
-        items=(LongProjectionItem("600001", "core", "quote-v1"),),
+        items=(
+            LongProjectionItem(
+                "600001",
+                "group:001",
+                "quote-v1",
+                name="甲公司",
+                industry="设备",
+                price=10.5,
+                pct_change=1.2,
+                amount=100_000_000.0,
+                turnover_rate=2.0,
+                market_cap=10_000_000_000.0,
+                source="tencent",
+                source_time=NOW,
+                quote_status="live",
+            ),
+        ),
     )
 
     assert projection.strategy is Strategy.LONG
     assert "score" not in {item.name for item in fields(LongProjectionItem)}
+    assert projection.items[0].price == 10.5
+    assert projection.items[0].quote_status == "live"
     assert projection.version.startswith("projection:long:")
+
+
+def test_long_projection_preserves_watchlist_order_and_allows_missing_placeholders() -> None:
+    projection = LongProjection(
+        trade_date=NOW.date(),
+        sequence=1,
+        observed_at=NOW,
+        input_versions=(("watchlist", "watchlist-v1"),),
+        items=(
+            LongProjectionItem("600002", "group:002", "missing:watchlist-v1"),
+            LongProjectionItem("600001", "group:001", "missing:watchlist-v1"),
+        ),
+    )
+
+    assert tuple(item.code for item in projection.items) == ("600002", "600001")
+    assert all(item.quote_status == "missing" and item.price is None for item in projection.items)
 
 
 def test_overlay_and_formal_record_validate_parent_time_scope_and_hash() -> None:

@@ -6,7 +6,7 @@
 
 融合：`fusion_local68_deepseek32`
 
-状态：today、tomorrow、d25 活动生产契约；long 当前观察契约
+状态：today、tomorrow、d25、long 活动生产契约
 
 本文是候选、过滤、因子、评分、风险、DeepSeek、融合、动作、排名和策略验收的唯一
 权威。产品、架构、时间线、发布、API、运维和工程路线以
@@ -395,6 +395,20 @@ long 完整当前快照从固定池定向行情专线携带价格、涨跌幅、
 后停止；它不与候选报价或三策略 TopK 共用请求，也不触发新闻、风险、参考数据、历史准备、
 评分、DeepSeek、冻结、推荐历史或结算。long 不受 today/tomorrow/d25 的评分时段选择限制。
 股票增删、行业归属和低价潜力名单只能通过配置变更和同批测试/文档更新完成。
+
+#### 7.3.1 long v2 原生当前投影
+
+long v2 只发布 `LongProjection` current，不生成 `RecommendationSnapshot` 或任何评分 envelope。
+投影按 `long_watchlist.json` 项目顺序保留完整固定名单，每个代码必须且只能映射到一个配置分组；
+同轮可用报价标记 `live`，同交易日最近有效报价标记 `retained`，无有效报价标记 `missing`。
+部分失败、整体失败、未来报价、未知代码或非正价格均不得自动换股，也不得删除席位、缩短
+列表或跨组移动；“未来报价”以注入的本轮处理完成时刻为界，请求后至完成前正常收到的行情
+仍属于本轮有效输入；下一交易日不得沿用前一日价格。
+
+long current 的 `score_status` 固定为 `not_applicable`，item 只包含固定身份与当前行情事实；不得
+出现候选分、本地分、DeepSeek 分、融合分、风险扣分、动作阈值、TopK 或结算结果。Long runtime
+不持有 reviewer、冻结、正式记录、历史或结算端口，不发布评分 committed event；DeepSeek
+高价值集合固定为空，物理 HTTP 请求始终为 0。
 
 ## 8. 执行质量、可靠度与容量
 

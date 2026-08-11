@@ -16,7 +16,7 @@ from trader.domain.recommendation.models import RecommendationAction, Strategy
 DecisionStage = Literal["local", "hybrid"]
 CommitKind = Literal["scheduled", "checkpoint_recovery", "close_fallback"]
 DECISION_IDENTITY_SCHEMA_VERSION = "v2_decision_identity_v1"
-LONG_PROJECTION_SCHEMA_VERSION = "v2_long_projection_v1"
+LONG_PROJECTION_SCHEMA_VERSION = "v2_long_projection_v2"
 OVERLAY_SCHEMA_VERSION = "v2_decision_overlay_v1"
 COMMITTED_RECORD_SCHEMA_VERSION = "v2_committed_decision_v1"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -127,11 +127,42 @@ class LongProjectionItem:
     code: str
     group: str
     quote_version: str
+    name: str = ""
+    industry: str = ""
+    price: float | None = None
+    pct_change: float | None = None
+    amount: float | None = None
+    turnover_rate: float | None = None
+    market_cap: float | None = None
+    source: str = ""
+    source_time: datetime | None = None
+    quote_status: Literal["live", "retained", "missing"] = "missing"
 
     def __post_init__(self) -> None:
         _require_code(self.code)
         _require_identity(self.group, "long group")
         _require_identity(self.quote_version, "long quote version")
+        if self.quote_status not in {"live", "retained", "missing"}:
+            raise ValueError("long quote status is invalid")
+        _validate_optional_market_value(self.price, "long price", positive=True)
+        _validate_optional_market_value(self.pct_change, "long pct_change")
+        _validate_optional_market_value(self.amount, "long amount", non_negative=True)
+        _validate_optional_market_value(self.turnover_rate, "long turnover_rate", non_negative=True)
+        _validate_optional_market_value(self.market_cap, "long market_cap", non_negative=True)
+        if self.quote_status == "missing":
+            if (
+                any(
+                    value is not None
+                    for value in (self.price, self.pct_change, self.amount, self.turnover_rate, self.market_cap)
+                )
+                or self.source_time is not None
+            ):
+                raise ValueError("missing long quote cannot contain market values")
+        else:
+            if not self.name or not self.source or self.source_time is None or self.price is None:
+                raise ValueError("available long quote requires name, source, time, and price")
+            _require_identity(self.source, "long quote source")
+            _require_shanghai(self.source_time, "long quote source_time")
 
 
 @dataclass(frozen=True)
@@ -151,9 +182,11 @@ class LongProjection:
         if self.schema_version != LONG_PROJECTION_SCHEMA_VERSION:
             raise ValueError(f"long schema_version must be {LONG_PROJECTION_SCHEMA_VERSION}")
         versions = _normalize_versions(self.input_versions)
-        items = tuple(sorted(self.items, key=lambda item: item.code))
+        items = tuple(self.items)
         if len({item.code for item in items}) != len(items):
             raise ValueError("long projection items must contain unique codes")
+        if any(item.source_time is not None and item.source_time > self.observed_at for item in items):
+            raise ValueError("long projection cannot contain future quotes")
         payload: dict[str, _Json] = {
             "schema_version": self.schema_version,
             "strategy": self.strategy.value,
@@ -161,7 +194,7 @@ class LongProjection:
             "sequence": self.sequence,
             "observed_at": self.observed_at.isoformat(),
             "input_versions": [[name, version] for name, version in versions],
-            "items": [[item.code, item.group, item.quote_version] for item in items],
+            "items": [_long_item_payload(item) for item in items],
         }
         content_hash = _hash(payload)
         object.__setattr__(self, "input_versions", versions)
@@ -175,6 +208,24 @@ class LongProjection:
 
 
 DecisionIdentity: TypeAlias = ScoredDecision | LongProjection
+
+
+def _long_item_payload(item: LongProjectionItem) -> list[_Json]:
+    return [
+        item.code,
+        item.group,
+        item.quote_version,
+        item.name,
+        item.industry,
+        item.price,
+        item.pct_change,
+        item.amount,
+        item.turnover_rate,
+        item.market_cap,
+        item.source,
+        item.source_time.isoformat() if item.source_time is not None else None,
+        item.quote_status,
+    ]
 
 
 @dataclass(frozen=True)
@@ -476,6 +527,23 @@ def _validate_score(value: float, label: str) -> None:
 def _validate_optional_score(value: float | None, label: str) -> None:
     if value is not None:
         _validate_score(value, label)
+
+
+def _validate_optional_market_value(
+    value: float | None,
+    label: str,
+    *,
+    positive: bool = False,
+    non_negative: bool = False,
+) -> None:
+    if value is None:
+        return
+    if not math.isfinite(value):
+        raise ValueError(f"{label} must be finite")
+    if positive and value <= 0.0:
+        raise ValueError(f"{label} must be positive")
+    if non_negative and value < 0.0:
+        raise ValueError(f"{label} cannot be negative")
 
 
 def _require_code(value: str) -> None:
