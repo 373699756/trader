@@ -57,8 +57,16 @@ class TomorrowNativeInput(ScoredNativeInput):
     strategy = Strategy.TOMORROW
 
 
+class D25NativeInput(ScoredNativeInput):
+    strategy = Strategy.D25
+
+
 class TomorrowNativeInputPort(Protocol):
     def offer_native(self, native_input: TomorrowNativeInput) -> bool: ...
+
+
+class D25NativeInputPort(Protocol):
+    def offer_native(self, native_input: D25NativeInput) -> bool: ...
 
 
 class TodayNativeInputPort(Protocol):
@@ -224,6 +232,8 @@ __all__ = [
     "TodayNativeInputPort",
     "TomorrowNativeInput",
     "TomorrowNativeInputPort",
+    "D25NativeInput",
+    "D25NativeInputPort",
     "TomorrowV2ControlPort",
     "V2ControlPort",
     "V2OverlayPort",

@@ -248,6 +248,39 @@ def tomorrow_decision_policy(policy: RecommendationPolicy) -> TomorrowDecisionPo
     )
 
 
+def d25_decision_policy(policy: RecommendationPolicy) -> TomorrowDecisionPolicy:
+    return TomorrowDecisionPolicy(
+        dimension_weights=policy.dimension_weights[Strategy.D25],
+        risk_rules=policy.risk_rules,
+        executable_threshold=policy.selection.thresholds["d25"],
+        observation_margin=policy.selection.observation_margin,
+        review_candidate_limit=min(policy.selection.review_candidate_limit, 28),
+        top_k=min(policy.selection.default_top_k, 10),
+        observation_limit=min(
+            max(0, policy.selection.maximum_top_k - policy.selection.default_top_k),
+            8,
+        ),
+        maximum_per_industry=policy.selection.maximum_per_industry,
+        maximum_board_fraction=min(policy.selection.maximum_board_fraction, 0.60),
+        fusion=policy.fusion,
+    )
+
+
+def v2_decision_policy(
+    policy: RecommendationPolicy,
+    strategy: Strategy,
+    *,
+    phase: str = "",
+) -> TomorrowDecisionPolicy:
+    if strategy is Strategy.TODAY:
+        return today_decision_policy(policy, phase)
+    if strategy is Strategy.TOMORROW:
+        return tomorrow_decision_policy(policy)
+    if strategy is Strategy.D25:
+        return d25_decision_policy(policy)
+    raise ValueError("unsupported V2 strategy for deepseek policy")
+
+
 def today_decision_policy(policy: RecommendationPolicy, phase: str) -> TomorrowDecisionPolicy:
     threshold_key = "today_late" if phase == "today_late" else "today_main"
     return TomorrowDecisionPolicy(
@@ -328,6 +361,8 @@ __all__ = [
     "normalize_tomorrow_review_times",
     "today_decision_policy",
     "tomorrow_decision_policy",
+    "d25_decision_policy",
+    "v2_decision_policy",
     "TomorrowDeepSeekFusionRequest",
     "TomorrowDeepSeekFusionResult",
     "TomorrowDeepSeekFusionUseCase",

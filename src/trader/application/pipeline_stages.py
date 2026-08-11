@@ -84,7 +84,11 @@ def process_schedule_on_workers(
         MarketPhase.FINAL_REVIEW,
         MarketPhase.FINAL_QUOTE,
     } or (
-        phase is MarketPhase.AFTER_CLOSE and Strategy.TOMORROW in getattr(pipeline, "_v2_owned_strategies", frozenset())
+        phase is MarketPhase.AFTER_CLOSE
+        and (
+            Strategy.TOMORROW in getattr(pipeline, "_v2_owned_strategies", frozenset())
+            or Strategy.D25 in getattr(pipeline, "_v2_owned_strategies", frozenset())
+        )
     ):
         _refresh_candidates_on_workers(pipeline, now, phase)
     _refresh_intraday_tail_before_score(pipeline, now, phase)
@@ -516,7 +520,7 @@ def _strategy_inputs(
     if context.phase is MarketPhase.AFTER_CLOSE:
         strategies = tuple(
             strategy
-            for strategy in (Strategy.TOMORROW,)
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
             if strategy in getattr(pipeline, "_v2_owned_strategies", frozenset())
         )
     for strategy in strategies:
@@ -560,7 +564,7 @@ def _prepare_strategy_futures(
             continue
         market_features = tuple(pipeline._market_features)
         strategy_now = context.now
-        if strategy in {Strategy.TODAY, Strategy.TOMORROW}:
+        if strategy in {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
             completed_at = shanghai_now(max(context.now, pipeline._now()))
             if trade_date_at(completed_at).isoformat() == context.trade_date:
                 strategy_now = completed_at

@@ -26,6 +26,7 @@ from trader.application.ports.snapshots import (
     SnapshotWriterPort,
 )
 from trader.application.ports.tomorrow import (
+    D25NativeInputPort,
     TodayNativeInputPort,
     TomorrowNativeInputPort,
     V2ControlPort,
@@ -64,6 +65,7 @@ class PipelineState:
     _published_snapshots: PublishedSnapshotWritePort
     _reviews: DeepSeekReviewPort | None
     _tomorrow_native_inputs: TomorrowNativeInputPort | None
+    _d25_native_inputs: D25NativeInputPort | None
     _today_native_inputs: TodayNativeInputPort | None
     _v2_controls: tuple[V2ControlPort, ...]
     _v2_overlays: tuple[V2OverlayPort, ...]

@@ -57,14 +57,22 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert isinstance(system.pipeline._published_snapshots, PublishedSnapshotIndex)
     assert system.today_v2_runtime is not None
     assert system.tomorrow_v2_runtime is not None
+    assert system.d25_v2_runtime is not None
     assert system.pipeline._today_native_inputs is system.today_v2_runtime
     assert system.pipeline._tomorrow_native_inputs is system.tomorrow_v2_runtime
-    assert system.pipeline._v2_controls == (system.today_v2_runtime, system.tomorrow_v2_runtime)
+    assert system.pipeline._d25_native_inputs is system.d25_v2_runtime
+    assert system.pipeline._v2_controls == (
+        system.today_v2_runtime,
+        system.tomorrow_v2_runtime,
+        system.d25_v2_runtime,
+    )
     assert system.pipeline._v2_overlays == (system.today_v2_runtime,)
-    assert system.pipeline._v2_owned_strategies == frozenset({Strategy.TODAY, Strategy.TOMORROW})
+    assert system.pipeline._v2_owned_strategies == frozenset({Strategy.TODAY, Strategy.TOMORROW, Strategy.D25})
     assert system.today_v2_runtime.status().worker.accepting is False
     assert system.tomorrow_v2_runtime.status().worker.accepting is False
+    assert system.d25_v2_runtime.status().worker.accepting is False
     assert system.tomorrow_v2_runtime.status().local_publish_count == 0
+    assert system.d25_v2_runtime.status().local_publish_count == 0
     assert system.tomorrow_index is not None
     assert system.tomorrow_records is not None
     assert system.tomorrow_trace is not None

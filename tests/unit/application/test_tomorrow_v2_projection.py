@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from tests.unit.application.test_tomorrow_deepseek_fusion import _review
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_observers import AsyncDecisionObserver
-from trader.application.ports.tomorrow import TomorrowNativeInput
+from trader.application.ports.tomorrow import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.application.shutdown import ShutdownDeadline
 from trader.application.tomorrow_v2_freezing import (
     TomorrowV2FreezeCoordinator,
@@ -60,6 +60,36 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert hybrid_result.event is not None
     assert hybrid_result.event.decision_version == hybrid.version
     assert index.snapshot(Strategy.TOMORROW).current == hybrid
+
+
+def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    features = tuple(
+        _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
+        for index in range(100)
+    )
+    projection = build_tomorrow_v2_local(_native_input(features, D25NativeInput), policy, sequence=1)
+    assert projection.review_candidates
+    code = projection.review_candidates[0].code
+    applied = replace(_review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
+    hybrid = build_tomorrow_v2_hybrid(
+        projection,
+        policy,
+        {code: applied},
+        review_deadline=EVALUATED_AT.replace(hour=14, minute=48),
+    )
+
+    assert hybrid is not None
+    assert hybrid.parent_version == projection.local.version
+    index = UnifiedDecisionIndex()
+    local_result = index.publish(projection.local, expected_version=None)
+    hybrid_result = index.publish(hybrid, expected_version=projection.local.version)
+    assert local_result.accepted and hybrid_result.accepted
+    assert hybrid_result.event is not None
+    assert hybrid_result.event.decision_version == hybrid.version
+    assert index.snapshot(Strategy.D25).current == hybrid
 
 
 def test_review_completed_after_1448_cannot_create_hybrid(application_feature_factory) -> None:
@@ -228,8 +258,11 @@ class _DynamicReviewer:
         return {}
 
 
-def _native_input(features: tuple[FeatureSnapshot, ...]) -> TomorrowNativeInput:
-    return TomorrowNativeInput(
+def _native_input(
+    features: tuple[FeatureSnapshot, ...],
+    strategy: type[ScoredNativeInput] = TomorrowNativeInput,
+) -> ScoredNativeInput:
+    return strategy(
         trade_date=TRADE_DATE,
         phase="final_review",
         data_version="candidate-data:v2",

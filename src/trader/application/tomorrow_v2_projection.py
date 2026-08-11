@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.application.policy import RecommendationPolicy
-from trader.application.ports.tomorrow import ScoredNativeInput, TomorrowNativeInput
+from trader.application.ports.tomorrow import ScoredNativeInput
 from trader.application.recommendation_policy_codec import preselection_replay_feature
 from trader.application.tomorrow_deepseek_fusion import (
     normalize_tomorrow_review_times,
-    tomorrow_decision_policy,
+    v2_decision_policy,
 )
 from trader.application.tomorrow_quality import TomorrowInputQuality, assess_tomorrow_input_quality
 from trader.application.tomorrow_selection import (
@@ -45,7 +45,7 @@ class TomorrowV2LocalProjection:
 
 
 def build_tomorrow_v2_local(
-    native_input: TomorrowNativeInput,
+    native_input: ScoredNativeInput,
     policy: RecommendationPolicy,
     *,
     sequence: int,
@@ -53,8 +53,8 @@ def build_tomorrow_v2_local(
     return build_scored_v2_local(
         native_input,
         policy,
-        decision_policy=tomorrow_decision_policy(policy),
-        strategy=Strategy.TOMORROW,
+        decision_policy=v2_decision_policy(policy, native_input.strategy),
+        strategy=native_input.strategy,
         sequence=sequence,
     )
 
@@ -128,13 +128,11 @@ def build_tomorrow_v2_hybrid(
     *,
     review_deadline: datetime,
 ) -> ScoredDecision | None:
-    if projection.local.strategy is not Strategy.TOMORROW:
-        return None
     return build_scored_v2_hybrid(
         projection,
         policy,
         reviews,
-        decision_policy=tomorrow_decision_policy(policy),
+        decision_policy=v2_decision_policy(policy, projection.local.strategy),
         review_deadline=review_deadline,
     )
 

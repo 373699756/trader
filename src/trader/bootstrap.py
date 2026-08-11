@@ -116,6 +116,7 @@ class ApplicationSystem:
     source_lanes: SourceLaneRegistry
     today_v2_runtime: TodayV2Runtime | None = None
     tomorrow_v2_runtime: TomorrowV2Runtime | None = None
+    d25_v2_runtime: TomorrowV2Runtime | None = None
     tomorrow_index: UnifiedDecisionIndex | None = None
     tomorrow_records: SQLiteDecisionRecordRepository | None = None
     tomorrow_trace: InMemoryV2ResearchTraceStore | None = None
@@ -126,7 +127,11 @@ class ApplicationSystem:
             self.source_lanes,
             self.history_pool,
             self.research_pool,
-            tuple(runtime for runtime in (self.today_v2_runtime, self.tomorrow_v2_runtime) if runtime is not None),
+            tuple(
+                runtime
+                for runtime in (self.today_v2_runtime, self.tomorrow_v2_runtime, self.d25_v2_runtime)
+                if runtime is not None
+            ),
             self.market_cache,
         )
 
@@ -175,6 +180,7 @@ class _PublicationContext:
     tomorrow_trace: InMemoryV2ResearchTraceStore
     today_runtime: TodayV2Runtime
     tomorrow_runtime: TomorrowV2Runtime
+    d25_runtime: TomorrowV2Runtime
     tomorrow_queries: UnifiedTomorrowDecisionQueries
     tomorrow_events: TomorrowDecisionEventStream
 
@@ -221,6 +227,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
                 publication.tomorrow_repository.initialize,
                 publication.today_runtime.initialize,
                 publication.tomorrow_runtime.initialize,
+                publication.d25_runtime.initialize,
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane),
                 pipeline.initialize,
                 publication.published_snapshots.initialize,
@@ -263,6 +270,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         source_lanes=workers.source_lanes,
         today_v2_runtime=publication.today_runtime,
         tomorrow_v2_runtime=publication.tomorrow_runtime,
+        d25_v2_runtime=publication.d25_runtime,
         tomorrow_index=publication.tomorrow_index,
         tomorrow_records=publication.tomorrow_repository,
         tomorrow_trace=publication.tomorrow_trace,
@@ -597,6 +605,11 @@ def _build_publication(
         capacity=max(16, settings.pipeline.event_queue_size),
         thread_name="trader-v2-tomorrow-observer",
     )
+    d25_observer = AsyncDecisionObserver(
+        (tomorrow_trace.record,),
+        capacity=max(16, settings.pipeline.event_queue_size),
+        thread_name="trader-v2-d25-observer",
+    )
     tomorrow_freezer = TomorrowV2FreezeCoordinator(
         tomorrow_decisions,
         tomorrow_repository,
@@ -606,6 +619,18 @@ def _build_publication(
             context.strategy.strategy_version,
             context.strategy.fusion.version,
         ),
+        strategy=Strategy.TOMORROW,
+    )
+    d25_freezer = TomorrowV2FreezeCoordinator(
+        tomorrow_decisions,
+        tomorrow_repository,
+        clock,
+        runtime_identity=V2DecisionRuntimeIdentity(
+            context.effective_config_version,
+            context.strategy.strategy_version,
+            context.strategy.fusion.version,
+        ),
+        strategy=Strategy.D25,
     )
     today_freezer = TodayV2FreezeCoordinator(
         tomorrow_decisions,
@@ -636,6 +661,18 @@ def _build_publication(
             tomorrow_freezer,
             clock,
         ),
+        strategy=Strategy.TOMORROW,
+    )
+    d25_runtime = TomorrowV2Runtime(
+        _recommendation_policy(context.strategy),
+        TomorrowV2RuntimeDependencies(
+            reviewer,
+            tomorrow_decisions,
+            d25_observer,
+            d25_freezer,
+            clock,
+        ),
+        strategy=Strategy.D25,
     )
     return _PublicationContext(
         state,
@@ -648,6 +685,7 @@ def _build_publication(
         tomorrow_trace,
         today_runtime,
         tomorrow_runtime,
+        d25_runtime,
         tomorrow_queries,
         tomorrow_events,
     )
@@ -703,7 +741,8 @@ def _build_pipeline(
             latency=context.latency,
             today_native_inputs=publication.today_runtime,
             tomorrow_native_inputs=publication.tomorrow_runtime,
-            v2_controls=(publication.today_runtime, publication.tomorrow_runtime),
+            d25_native_inputs=publication.d25_runtime,
+            v2_controls=(publication.today_runtime, publication.tomorrow_runtime, publication.d25_runtime),
             v2_overlays=(publication.today_runtime,),
             trading_session=trading_session,
         ),
@@ -725,7 +764,7 @@ def _build_pipeline(
             ),
             long_target_prices={item.code: item.target_price for item in context.watchlist.items},
             long_groups=_long_groups(context.watchlist),
-            v2_owned_strategies=(Strategy.TODAY, Strategy.TOMORROW),
+            v2_owned_strategies=(Strategy.TODAY, Strategy.TOMORROW, Strategy.D25),
         ),
         PipelineResources(data_pool=context.workers.data_pool, persistence_pool=context.workers.persistence_pool),
     )

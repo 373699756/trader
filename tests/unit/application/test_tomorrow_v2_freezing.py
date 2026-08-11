@@ -30,12 +30,14 @@ def _coordinator(
     index: UnifiedDecisionIndex,
     repository: SQLiteDecisionRecordRepository,
     clock: _Clock,
+    strategy: Strategy = Strategy.TOMORROW,
 ) -> TomorrowV2FreezeCoordinator:
     return TomorrowV2FreezeCoordinator(
         index,
         repository,
         clock,
         runtime_identity=V2DecisionRuntimeIdentity("config-v1", "strategy-v1", "fusion-v1"),
+        strategy=strategy,
     )
 
 
@@ -59,7 +61,7 @@ def test_checkpoint_recovers_same_v2_identity_after_restart(tmp_path: Path) -> N
 
     restored = UnifiedDecisionIndex()
     clock.value = _at(14, 50)
-    result = _coordinator(restored, repository, clock).freeze_scheduled()
+    result = _coordinator(restored, repository, clock, strategy=Strategy.TOMORROW).freeze_scheduled()
 
     assert result.status == "frozen"
     assert result.record is not None
@@ -122,4 +124,57 @@ def test_close_fallback_requires_official_close_and_never_overwrites(tmp_path: P
         "official_close",
     )
     assert dict(frozen.record.decision.input_versions)["official_close"] == "official-close:20260811"
+    assert duplicate.status == "already_frozen"
+
+
+def test_d25_checkpoint_and_close_recovery_use_d25_path(tmp_path: Path) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    index = UnifiedDecisionIndex()
+    current = replace(
+        decision(Strategy.D25),
+        observed_at=_at(14, 49, 50),
+    )
+    _publish(index, current)
+    coordinator = _coordinator(index, repository, _Clock(_at(14, 49, 40)), strategy=Strategy.D25)
+    assert coordinator.capture_checkpoint().status == "checkpoint_saved"
+
+    clock = _Clock(_at(14, 50))
+    coordinator = _coordinator(index, repository, clock, strategy=Strategy.D25)
+    result = coordinator.freeze_scheduled()
+
+    assert result.status == "frozen"
+    assert result.record is not None
+    assert result.record.decision.strategy is Strategy.D25
+    restored = UnifiedDecisionIndex()
+    assert _coordinator(restored, repository, clock, strategy=Strategy.D25).restore(_at(14, 50).date()).status == "already_frozen"
+
+
+def test_d25_freeze_close_fallback_persists_d25_formal_record(tmp_path: Path) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    index = UnifiedDecisionIndex()
+    current = replace(
+        decision(Strategy.D25),
+        observed_at=_at(14, 49, 50),
+        sequence=2,
+    )
+    _publish(index, current)
+    coordinator = _coordinator(index, repository, _Clock(_at(15, 0, 1)), strategy=Strategy.D25)
+
+    first = coordinator.freeze_close_fallback(
+        current,
+        recovery_path="current",
+        official_close_version="official-close:20260811",
+    )
+    duplicate = coordinator.freeze_close_fallback(
+        current,
+        recovery_path="current",
+        official_close_version="official-close:20260811",
+    )
+
+    assert first.status == "frozen"
+    assert first.record is not None
+    assert first.record.decision.strategy is Strategy.D25
+    assert dict(first.record.decision.input_versions)["official_close"] == "official-close:20260811"
     assert duplicate.status == "already_frozen"

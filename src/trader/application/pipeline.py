@@ -103,6 +103,7 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
         )
         self._outcome_settlement = dependencies.outcome_settlement
         self._tomorrow_native_inputs = dependencies.tomorrow_native_inputs
+        self._d25_native_inputs = dependencies.d25_native_inputs
         self._today_native_inputs = dependencies.today_native_inputs
         self._tomorrow_v2_control = dependencies.tomorrow_v2_control
         self._v2_controls = dependencies.v2_controls or (

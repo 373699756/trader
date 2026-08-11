@@ -13,7 +13,7 @@ from trader.application.decision_observers import DecisionObserverRuntime
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.clock import Clock
 from trader.application.ports.reviews import DeepSeekReviewUnavailableError, TomorrowDeepSeekReviewPort
-from trader.application.ports.tomorrow import TomorrowNativeInput
+from trader.application.ports.tomorrow import ScoredNativeInput
 from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.tomorrow_v2_freezing import TomorrowV2FreezeCoordinator, V2FreezeOperationResult
 from trader.application.tomorrow_v2_projection import (
@@ -58,8 +58,11 @@ class TomorrowV2Runtime:
         self,
         policy: RecommendationPolicy,
         dependencies: TomorrowV2RuntimeDependencies,
+        *,
+        strategy: Strategy = Strategy.TOMORROW,
     ) -> None:
         self._policy = policy
+        self._strategy = strategy
         self._reviewer = dependencies.reviewer
         self._index = dependencies.index
         self._observer = dependencies.observer
@@ -78,7 +81,7 @@ class TomorrowV2Runtime:
         self._freeze_status = "not_attempted"
         self._last_error_code = ""
         self._worker = LatestWinsWorker(
-            "trader-v2-tomorrow",
+            self._worker_name(),
             self._process,
             order_key=lambda item: int(item.evaluated_at.timestamp() * 1_000_000),
         )
@@ -92,7 +95,7 @@ class TomorrowV2Runtime:
             self._observer.close()
             self._observer.stop(deadline=ShutdownDeadline.start(5.0))
             raise
-        formal = self._index.snapshot(Strategy.TOMORROW).formal
+        formal = self._index.snapshot(self._strategy).formal
         if formal is not None:
             self._observer.offer(build_v2_decision_committed(formal.decision))
         return started
@@ -106,7 +109,10 @@ class TomorrowV2Runtime:
         if restored.record is not None and self._observer.status().accepting:
             self._offer_formal_event(restored.record.decision)
 
-    def offer_native(self, native_input: TomorrowNativeInput) -> bool:
+    def offer_native(self, native_input: ScoredNativeInput) -> bool:
+        if native_input.strategy is not self._strategy:
+            self._reject_input("wrong_strategy")
+            return False
         return self._worker.offer(native_input).value in {"accepted", "replaced", "coalesced"}
 
     def wait_idle(self, timeout_seconds: float) -> bool:
@@ -122,16 +128,16 @@ class TomorrowV2Runtime:
         if not wait:
             self._worker.close()
             self._observer.close()
-            return ShutdownStep(name="trader-v2-tomorrow-close", completed=True, timed_out=False)
+            return ShutdownStep(name=f"{self._worker_name()}-close", completed=True, timed_out=False)
         worker = self._worker.stop(deadline=shared)
         observer = self._observer.stop(deadline=shared)
         completed = worker.completed and observer.completed
         return ShutdownStep(
-            name="trader-v2-tomorrow",
+            name=self._worker_name(),
             completed=completed,
             timed_out=not completed and shared.expired,
             cancelled_count=worker.cancelled_count + observer.cancelled_count,
-            detail="" if completed else "Tomorrow V2 runtime remains active",
+            detail="" if completed else f"{self._strategy.value} V2 runtime remains active",
         )
 
     def on_clock(self, at: datetime) -> V2FreezeOperationResult | None:
@@ -160,11 +166,11 @@ class TomorrowV2Runtime:
         official_close_version: str,
         recovery_path: Literal["current", "close_rebuild"] = "current",
     ) -> V2FreezeOperationResult:
-        current = self._index.snapshot(Strategy.TOMORROW).current
+        current = self._index.snapshot(self._strategy).current
         if not isinstance(current, ScoredDecision):
             return V2FreezeOperationResult("no_eligible_decision")
         if recovery_path not in {"current", "close_rebuild"}:
-            raise ValueError("Tomorrow V2 close recovery path is invalid")
+            raise ValueError(f"{self._strategy.value} V2 close recovery path is invalid")
         result = self._freezer.freeze_close_fallback(
             current,
             recovery_path=recovery_path,
@@ -192,20 +198,23 @@ class TomorrowV2Runtime:
                 self._last_error_code,
             )
 
-    def _process(self, native_input: TomorrowNativeInput) -> None:
+    def _process(self, native_input: ScoredNativeInput) -> None:
+        if native_input.strategy is not self._strategy:
+            self._reject_input("wrong_strategy")
+            return
         if native_input.phase == "close_fallback":
             self._process_close_fallback(native_input)
         else:
             self._process_regular(native_input)
 
-    def _process_regular(self, native_input: TomorrowNativeInput) -> None:
+    def _process_regular(self, native_input: ScoredNativeInput) -> None:
         sequence = self._next_sequence()
         projection = build_tomorrow_v2_local(native_input, self._policy, sequence=sequence)
         if not projection.input_quality.publishable:
             self._reject_input(projection.input_quality.status)
             return
         local = projection.local
-        expected = self._index.snapshot(Strategy.TOMORROW).current
+        expected = self._index.snapshot(self._strategy).current
         published = self._index.publish(
             local,
             expected_version=expected.version if expected is not None else None,
@@ -218,7 +227,7 @@ class TomorrowV2Runtime:
 
     def _try_hybrid_upgrade(
         self,
-        native_input: TomorrowNativeInput,
+        native_input: ScoredNativeInput,
         projection: TomorrowV2LocalProjection,
         local: ScoredDecision,
     ) -> None:
@@ -236,7 +245,7 @@ class TomorrowV2Runtime:
         try:
             reviews = dict(
                 self._reviewer.review(
-                    Strategy.TOMORROW,
+                    self._strategy,
                     tuple(candidate.features for candidate in projection.review_candidates),
                     phase=native_input.phase,
                     deadline=deadline,
@@ -264,9 +273,9 @@ class TomorrowV2Runtime:
             return
         self._record_publish(upgraded.event, hybrid=True)
 
-    def _process_close_fallback(self, native_input: TomorrowNativeInput) -> None:
+    def _process_close_fallback(self, native_input: ScoredNativeInput) -> None:
         official_close_version = f"official-close:{native_input.input_version.removeprefix('native-input:')}"
-        current = self._index.snapshot(Strategy.TOMORROW).current
+        current = self._index.snapshot(self._strategy).current
         recovery_path: Literal["current", "close_rebuild"] = "current"
         if not isinstance(current, ScoredDecision) or current.trade_date != native_input.trade_date:
             projection = build_tomorrow_v2_local(
@@ -278,7 +287,7 @@ class TomorrowV2Runtime:
                 self._reject_input(projection.input_quality.status)
                 return
             current = projection.local
-            expected = self._index.snapshot(Strategy.TOMORROW).current
+            expected = self._index.snapshot(self._strategy).current
             published = self._index.publish(
                 current,
                 expected_version=expected.version if expected is not None else None,
@@ -328,6 +337,9 @@ class TomorrowV2Runtime:
         if not self._observer.offer(build_v2_decision_committed(decision)):
             with self._lock:
                 self._observer_rejection_count += 1
+
+    def _worker_name(self) -> str:
+        return f"trader-v2-{self._strategy.value}"
 
 
 __all__ = [

@@ -42,7 +42,7 @@ def test_production_composition_installs_today_v2_without_legacy_today_scoring()
     imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None}
 
     assert "trader.application.today_v2_runtime" in imports
-    assert "v2_owned_strategies=(Strategy.TODAY, Strategy.TOMORROW)" in source
+    assert "v2_owned_strategies=(Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)" in source
 
 
 def test_all_v2_freeze_controls_run_before_and_after_scoring() -> None:

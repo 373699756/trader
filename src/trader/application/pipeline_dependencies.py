@@ -18,6 +18,7 @@ from trader.application.ports.reviews import DeepSeekReviewPort
 from trader.application.ports.snapshots import PublishedSnapshotWritePort, SnapshotPorts
 from trader.application.ports.tomorrow import (
     TodayNativeInputPort,
+    D25NativeInputPort,
     TomorrowNativeInputPort,
     TomorrowV2ControlPort,
     V2ControlPort,
@@ -46,6 +47,7 @@ class PipelineDependencies:
     outcome_settlement: OutcomeSettlementPort | None = None
     latency: LatencyWaterfall | None = None
     tomorrow_native_inputs: TomorrowNativeInputPort | None = None
+    d25_native_inputs: D25NativeInputPort | None = None
     tomorrow_v2_control: TomorrowV2ControlPort | None = None
     today_native_inputs: TodayNativeInputPort | None = None
     v2_controls: tuple[V2ControlPort, ...] = ()

@@ -61,11 +61,13 @@ class TomorrowV2FreezeCoordinator:
         clock: Clock,
         *,
         runtime_identity: V2DecisionRuntimeIdentity,
+        strategy: Strategy = Strategy.TOMORROW,
     ) -> None:
         self._index = index
         self._repository = repository
         self._clock = clock
         self._runtime_identity = runtime_identity
+        self._strategy = strategy
 
     def capture_checkpoint(self) -> V2FreezeOperationResult:
         now = _now(self._clock)
@@ -99,7 +101,7 @@ class TomorrowV2FreezeCoordinator:
         if current is not None and not self._runtime_identity.matches(current):
             return V2FreezeOperationResult("runtime_identity_mismatch")
         seal = self._index.seal_for_freeze(
-            Strategy.TOMORROW,
+            self._strategy,
             boundary_at=boundary,
             fallback_decision=checkpoint.decision if checkpoint is not None else None,
         )
@@ -161,9 +163,9 @@ class TomorrowV2FreezeCoordinator:
     ) -> str | None:
         current = self._current(now.date())
         rejections = (
-            (self._index.is_sealed(Strategy.TOMORROW, now.date()), "scheduled_freeze_pending"),
+            (self._index.is_sealed(self._strategy, now.date()), "scheduled_freeze_pending"),
             (
-                decision.strategy is not Strategy.TOMORROW or decision.trade_date != now.date(),
+                decision.strategy is not self._strategy or decision.trade_date != now.date(),
                 "no_eligible_decision",
             ),
             (
@@ -177,12 +179,12 @@ class TomorrowV2FreezeCoordinator:
         return next((reason for rejected, reason in rejections if rejected), None)
 
     def _current(self, trade_date: date) -> ScoredDecision | None:
-        current = self._index.snapshot(Strategy.TOMORROW).current
+        current = self._index.snapshot(self._strategy).current
         return current if isinstance(current, ScoredDecision) and current.trade_date == trade_date else None
 
     def _existing(self, trade_date: date) -> V2FreezeOperationResult | None:
         try:
-            record = self._repository.load(Strategy.TOMORROW, trade_date)
+            record = self._repository.load(self._strategy, trade_date)
         except (DecisionRecordError, OSError):
             return V2FreezeOperationResult("persistence_failed")
         if record is None:
@@ -197,7 +199,7 @@ class TomorrowV2FreezeCoordinator:
         boundary: datetime,
     ) -> tuple[V2DecisionCheckpoint | None, bool]:
         try:
-            checkpoint = self._repository.load_checkpoint(Strategy.TOMORROW, trade_date)
+            checkpoint = self._repository.load_checkpoint(self._strategy, trade_date)
         except (DecisionRecordError, OSError):
             return None, True
         if checkpoint is None:
