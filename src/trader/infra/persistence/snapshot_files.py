@@ -179,7 +179,16 @@ def _atomic_create_immutable(
             handle.flush()
             os.fsync(handle.fileno())
         inject("json_temporary_fsynced")
-        os.link(temporary_name, target)
+        try:
+            os.link(temporary_name, target)
+        except FileExistsError as exc:
+            if not _matches_hash(target, expected_sha256):
+                raise SnapshotConflictError(
+                    f"immutable snapshot path already exists with different content: {target}"
+                ) from exc
+            os.unlink(temporary_name)
+            _fsync_directory(target.parent)
+            return
         inject("json_created")
         os.unlink(temporary_name)
         _fsync_directory(target.parent)

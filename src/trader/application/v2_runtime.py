@@ -1,0 +1,436 @@
+"""Independent V2 scheduling, strategy lanes, publication, and shutdown."""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from datetime import datetime
+from datetime import time as wall_time
+from typing import cast
+
+from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decision_events import V2DecisionCommitted
+from trader.application.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
+from trader.application.ports.clock import Clock
+from trader.application.ports.v2_runtime import (
+    SharedDeepSeekRuntimeContract,
+    V2CycleRequest,
+    V2DataRefreshPort,
+    V2DataRefreshUnavailableError,
+    V2DecisionBuilderPort,
+    V2DecisionUnavailableError,
+    V2DeepSeekUpgradePort,
+    V2FreezePort,
+    V2FreezeUnavailableError,
+    V2ReviewUnavailableError,
+    V2SettlementPort,
+    V2SettlementUnavailableError,
+    V2TradingCalendarPort,
+)
+from trader.application.schedule import (
+    SHANGHAI,
+    SchedulePoint,
+    decision_at,
+    schedule_point_at,
+    seconds_until_next_schedule_boundary,
+    shanghai_now,
+)
+from trader.application.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.application.v2_lifecycle import LatestWinsOffer, LatestWinsStatus, LatestWinsWorker
+from trader.application.workers import BoundedExecutor
+from trader.domain.recommendation.decision_identity import DecisionIdentity, ScoredDecision
+from trader.domain.recommendation.models import Strategy
+
+
+@dataclass(frozen=True)
+class V2RuntimeDependencies:
+    clock: Clock
+    calendar: V2TradingCalendarPort
+    data: V2DataRefreshPort
+    decisions: V2DecisionBuilderPort
+    reviews: V2DeepSeekUpgradePort
+    index: UnifiedDecisionIndex
+    observer: DecisionObserverRuntime
+    freezes: V2FreezePort
+    settlement: V2SettlementPort
+
+
+@dataclass(frozen=True)
+class V2RuntimeStatus:
+    running: bool
+    config_version: str
+    lanes: tuple[LatestWinsStatus, ...]
+    observer: DecisionObserverStatus
+    deepseek: SharedDeepSeekRuntimeContract
+    control_running: bool
+    control_inflight: int
+    control_rejected_count: int
+    refresh_failure_count: int
+    decision_failure_count: int
+    review_failure_count: int
+    local_publish_count: int
+    hybrid_publish_count: int
+    publish_rejection_count: int
+    observer_rejection_count: int
+    freeze_completed_count: int
+    freeze_failure_count: int
+    settlement_completed_count: int
+    settlement_failure_count: int
+    last_error_code: str
+
+
+class V2SchedulerRuntime:
+    """Scheduler-facing V2 runtime that owns no legacy Pipeline resources."""
+
+    def __init__(
+        self,
+        dependencies: V2RuntimeDependencies,
+        *,
+        config_version: str,
+        shutdown_timeout_seconds: float = 30.0,
+    ) -> None:
+        if not config_version:
+            raise ValueError("V2 runtime config version must not be empty")
+        contract = dependencies.reviews.runtime_contract
+        if contract.daily_physical_limit != 168 or not contract.shared_cache or not contract.shared_single_flight:
+            raise ValueError("V2 runtime requires the shared 168-request DeepSeek boundary")
+        self._dependencies = dependencies
+        self._config_version = config_version
+        self._shutdown_timeout_seconds = max(0.1, shutdown_timeout_seconds)
+        self._lock = threading.RLock()
+        self._running = False
+        self._stopped = False
+        self._shutdown_report: ShutdownReport | None = None
+        self._sequences = dict.fromkeys(Strategy, 0)
+        self._control_pending: set[str] = set()
+        self._control_completed: OrderedDict[str, None] = OrderedDict()
+        self._control = BoundedExecutor(
+            worker_count=2,
+            urgent_worker_count=1,
+            queue_capacity=4,
+            thread_name_prefix="trader-v2-control",
+        )
+        self._lanes = {
+            strategy: LatestWinsWorker(
+                f"trader-v2-{strategy.value}",
+                self._process_cycle,
+                order_key=_cycle_order_key,
+            )
+            for strategy in Strategy
+        }
+        self._refresh_failure_count = 0
+        self._decision_failure_count = 0
+        self._review_failure_count = 0
+        self._local_publish_count = 0
+        self._hybrid_publish_count = 0
+        self._publish_rejection_count = 0
+        self._observer_rejection_count = 0
+        self._freeze_completed_count = 0
+        self._freeze_failure_count = 0
+        self._settlement_completed_count = 0
+        self._settlement_failure_count = 0
+        self._last_error_code = ""
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._running:
+                return False
+            if self._stopped:
+                raise RuntimeError("V2 scheduler runtime cannot restart after stop")
+            self._running = True
+        try:
+            self._start_components()
+        except BaseException:
+            self._abort_start()
+            raise
+        return True
+
+    def _start_components(self) -> None:
+        if not self._dependencies.observer.start():
+            raise RuntimeError("V2 observer did not start")
+        if not self._control.start():
+            raise RuntimeError("V2 control executor did not start")
+        for strategy in Strategy:
+            if not self._lanes[strategy].start():
+                raise RuntimeError(f"V2 {strategy.value} lane did not start")
+
+    def _abort_start(self) -> None:
+        deadline = ShutdownDeadline.start(self._shutdown_timeout_seconds)
+        for lane in self._lanes.values():
+            lane.close()
+        for lane in self._lanes.values():
+            lane.stop(deadline=deadline)
+        self._control.stop(wait=True, cancel_futures=True, deadline=deadline)
+        self._dependencies.observer.stop(deadline=deadline)
+        with self._lock:
+            self._running = False
+            self._stopped = True
+
+    def submit_due(self, at: datetime | None = None) -> float:
+        with self._lock:
+            if not self._running:
+                return 30.0
+        observed_at = shanghai_now(at or self._dependencies.clock.now())
+        is_trading_day = self._dependencies.calendar.is_trading_day(observed_at.date())
+        decision = decision_at(observed_at, is_trading_day=is_trading_day)
+        strategies: tuple[Strategy, ...] = ()
+        if decision.should_score:
+            strategies = (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
+        if decision.should_refresh_market:
+            strategies = (*strategies, Strategy.LONG)
+        for strategy in strategies:
+            self.submit_cycle(self._scheduled_request(strategy, observed_at, decision.phase.value))
+        for raw_strategy in decision.freeze_strategies:
+            self._submit_freeze(Strategy(raw_strategy), observed_at)
+        if schedule_point_at(observed_at, is_trading_day=is_trading_day) is SchedulePoint.CLOSE_QUOTES:
+            self._submit_settlement(observed_at)
+        return seconds_until_next_schedule_boundary(observed_at, maximum_seconds=30.0)
+
+    def submit_tick(self, at: datetime | None = None) -> bool:
+        with self._lock:
+            if not self._running:
+                return False
+        self.submit_due(at)
+        return True
+
+    def submit_cycle(self, request: V2CycleRequest) -> LatestWinsOffer:
+        with self._lock:
+            if not self._running:
+                return LatestWinsOffer.REJECTED
+        return self._lanes[request.strategy].offer(request)
+
+    def wait_idle(self, timeout_seconds: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        for strategy in Strategy:
+            if not self._lanes[strategy].wait_idle(max(0.0, deadline - time.monotonic())):
+                return False
+        while cast(int, self._control.status()["inflight"]) > 0:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return False
+            threading.Event().wait(min(0.01, remaining))
+        return self._dependencies.observer.wait_idle(max(0.0, deadline - time.monotonic()))
+
+    def stop(self, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
+        deadline = deadline or ShutdownDeadline.start(self._shutdown_timeout_seconds)
+        with self._lock:
+            if self._stopped:
+                return self._shutdown_report or ShutdownReport.from_steps(deadline, ())
+            self._running = False
+            self._stopped = True
+        self._dependencies.observer.close()
+        for lane in self._lanes.values():
+            lane.close()
+        steps: list[ShutdownStep] = [self._control.stop(wait=True, cancel_futures=False, deadline=deadline)]
+        steps.extend(self._lanes[strategy].stop(deadline=deadline) for strategy in Strategy)
+        steps.append(self._dependencies.observer.stop(deadline=deadline))
+        report = ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
+        with self._lock:
+            self._shutdown_report = report
+        return report
+
+    def status(self) -> V2RuntimeStatus:
+        control = self._control.status()
+        with self._lock:
+            return V2RuntimeStatus(
+                running=self._running,
+                config_version=self._config_version,
+                lanes=tuple(self._lanes[strategy].status() for strategy in Strategy),
+                observer=self._dependencies.observer.status(),
+                deepseek=self._dependencies.reviews.runtime_contract,
+                control_running=bool(control["running"]),
+                control_inflight=cast(int, control["inflight"]),
+                control_rejected_count=cast(int, control["rejected_count"]),
+                refresh_failure_count=self._refresh_failure_count,
+                decision_failure_count=self._decision_failure_count,
+                review_failure_count=self._review_failure_count,
+                local_publish_count=self._local_publish_count,
+                hybrid_publish_count=self._hybrid_publish_count,
+                publish_rejection_count=self._publish_rejection_count,
+                observer_rejection_count=self._observer_rejection_count,
+                freeze_completed_count=self._freeze_completed_count,
+                freeze_failure_count=self._freeze_failure_count,
+                settlement_completed_count=self._settlement_completed_count,
+                settlement_failure_count=self._settlement_failure_count,
+                last_error_code=self._last_error_code,
+            )
+
+    def _scheduled_request(self, strategy: Strategy, observed_at: datetime, phase: str) -> V2CycleRequest:
+        with self._lock:
+            sequence = self._sequences[strategy] + 1
+            self._sequences[strategy] += 2
+        deadline_time = wall_time(11, 18) if strategy is Strategy.TODAY else wall_time(14, 48)
+        review_deadline = datetime.combine(observed_at.date(), deadline_time, tzinfo=SHANGHAI)
+        allow_review = strategy is not Strategy.LONG and observed_at < review_deadline
+        return V2CycleRequest(
+            strategy=strategy,
+            trade_date=observed_at.date(),
+            observed_at=observed_at,
+            phase=phase,
+            sequence=sequence,
+            input_version=f"schedule:{strategy.value}:{observed_at:%Y%m%dT%H%M%S%f}",
+            allow_review=allow_review,
+            review_deadline=review_deadline,
+        )
+
+    def _process_cycle(self, request: V2CycleRequest) -> None:
+        self._refresh_data(request)
+        local = self._build_local(request)
+        if local is None or not self._publish(local, hybrid=False):
+            return
+        review_now = shanghai_now(self._dependencies.clock.now())
+        if request.allow_review and review_now < request.review_deadline and isinstance(local, ScoredDecision):
+            self._upgrade_hybrid(local, request)
+
+    def _refresh_data(self, request: V2CycleRequest) -> None:
+        try:
+            self._dependencies.data.refresh(request)
+        except V2DataRefreshUnavailableError:
+            self._record_failure("refresh", "refresh_unavailable")
+
+    def _build_local(self, request: V2CycleRequest) -> DecisionIdentity | None:
+        try:
+            local = self._dependencies.decisions.build_local(request)
+            if local is not None:
+                _validate_cycle_identity(request, local)
+        except V2DecisionUnavailableError:
+            self._record_failure("decision", "decision_unavailable")
+            return None
+        return local
+
+    def _publish(self, identity: DecisionIdentity, *, hybrid: bool) -> bool:
+        expected = self._dependencies.index.snapshot(identity.strategy).current
+        published = self._dependencies.index.publish(
+            identity,
+            expected_version=expected.version if expected is not None else None,
+        )
+        if not published.accepted:
+            self._record_publish_rejection(published.reason)
+            return False
+        self._record_publish(hybrid=hybrid, event=published.event)
+        return True
+
+    def _upgrade_hybrid(self, local: ScoredDecision, request: V2CycleRequest) -> None:
+        try:
+            hybrid = self._dependencies.reviews.build_hybrid(local, request)
+        except V2ReviewUnavailableError:
+            self._record_failure("review", "review_unavailable")
+            return
+        if hybrid is None:
+            return
+        try:
+            _validate_cycle_identity(request, hybrid)
+        except V2DecisionUnavailableError:
+            self._record_failure("review", "review_identity_mismatch")
+            return
+        self._publish(hybrid, hybrid=True)
+
+    def _record_publish(self, *, hybrid: bool, event: V2DecisionCommitted | None) -> None:
+        with self._lock:
+            if hybrid:
+                self._hybrid_publish_count += 1
+            else:
+                self._local_publish_count += 1
+        if event is not None and not self._dependencies.observer.offer(event):
+            with self._lock:
+                self._observer_rejection_count += 1
+
+    def _record_publish_rejection(self, reason: str) -> None:
+        with self._lock:
+            self._publish_rejection_count += 1
+            self._last_error_code = f"publish:{reason}"
+
+    def _submit_freeze(self, strategy: Strategy, at: datetime) -> None:
+        key = f"freeze:{at.date().isoformat()}:{strategy.value}"
+        if not self._reserve_control(key):
+            return
+        future = self._control.submit_urgent(self._run_freeze, key, strategy, at)
+        if future is None:
+            self._finish_control(key, success=False)
+            self._record_failure("freeze", "freeze_capacity_rejected")
+
+    def _run_freeze(self, key: str, strategy: Strategy, at: datetime) -> None:
+        success = False
+        try:
+            current = self._dependencies.index.snapshot(strategy).current
+            self._dependencies.freezes.freeze(strategy, at, current)
+        except V2FreezeUnavailableError:
+            self._record_failure("freeze", "freeze_unavailable")
+        except Exception as exc:
+            self._record_failure("freeze", f"freeze_unexpected:{type(exc).__name__}")
+        else:
+            success = True
+            with self._lock:
+                self._freeze_completed_count += 1
+        finally:
+            self._finish_control(key, success=success)
+
+    def _submit_settlement(self, at: datetime) -> None:
+        key = f"settlement:{at.date().isoformat()}"
+        if not self._reserve_control(key):
+            return
+        future = self._control.submit(self._run_settlement, key, at)
+        if future is None:
+            self._finish_control(key, success=False)
+            self._record_failure("settlement", "settlement_capacity_rejected")
+
+    def _run_settlement(self, key: str, at: datetime) -> None:
+        success = False
+        try:
+            self._dependencies.settlement.settle(at)
+        except V2SettlementUnavailableError:
+            self._record_failure("settlement", "settlement_unavailable")
+        except Exception as exc:
+            self._record_failure("settlement", f"settlement_unexpected:{type(exc).__name__}")
+        else:
+            success = True
+            with self._lock:
+                self._settlement_completed_count += 1
+        finally:
+            self._finish_control(key, success=success)
+
+    def _reserve_control(self, key: str) -> bool:
+        with self._lock:
+            if key in self._control_pending or key in self._control_completed:
+                return False
+            self._control_pending.add(key)
+            return True
+
+    def _finish_control(self, key: str, *, success: bool) -> None:
+        with self._lock:
+            self._control_pending.discard(key)
+            if not success:
+                return
+            self._control_completed[key] = None
+            while len(self._control_completed) > 128:
+                self._control_completed.popitem(last=False)
+
+    def _record_failure(self, stage: str, code: str) -> None:
+        with self._lock:
+            if stage == "refresh":
+                self._refresh_failure_count += 1
+            elif stage == "decision":
+                self._decision_failure_count += 1
+            elif stage == "review":
+                self._review_failure_count += 1
+            elif stage == "freeze":
+                self._freeze_failure_count += 1
+            elif stage == "settlement":
+                self._settlement_failure_count += 1
+            self._last_error_code = code
+
+
+def _validate_cycle_identity(request: V2CycleRequest, identity: DecisionIdentity) -> None:
+    if identity.strategy is not request.strategy or identity.trade_date != request.trade_date:
+        raise V2DecisionUnavailableError("decision identity does not match its scheduled cycle")
+    if identity.observed_at < request.observed_at:
+        raise V2DecisionUnavailableError("decision identity predates its scheduled cycle")
+
+
+def _cycle_order_key(request: V2CycleRequest) -> int:
+    return request.trade_date.toordinal() * 1_000_000_000 + request.sequence
+
+
+__all__ = ["V2RuntimeDependencies", "V2RuntimeStatus", "V2SchedulerRuntime"]

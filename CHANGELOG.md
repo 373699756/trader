@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续 `implementation-plan.md` 的未完成任务。本批只交付下一完整工程章节
+  V2-E3“独立调度与生命周期”：总计划状态推进到 E3 已完成、E4 下一章；独立 V2 runtime
+  现在按策略调度数据刷新、local/hybrid 决策、CAS 发布、observer、冻结和结算，仍保持旁路，
+  不提前接管 tomorrow/today/d25/long 的生产组合根、HTTP 或旧 Pipeline。
+
 - 用户再次确认两个 G1 分支是否彻底删除，并要求在总计划未完成时继续下一完整章节。本批先
   核对两个远端引用已不存在、对应提交均由 `feature/tomorrow-v2` 可达，再移除两个干净的
   本地 worktree 与本地分支；随后完整交付 V2-E2“统一决策核心与持久化”。总计划仍未完成，
@@ -53,6 +58,14 @@ All notable changes to this project are documented here.
   配对移动区块 bootstrap、派生种子、Holm 检验族、五个挑战者和全部收益/回撤/召回/集中度门禁。
 
 ### Fixed
+
+- 修正独立 V2 调度若复用共享 worker 可能被 today 或其它策略阻塞 tomorrow 的容量风险：
+  四个策略现各有一个运行项和一个 latest-wins pending 槽，tomorrow 从数据到发布拥有完整
+  独立 lane；同日冻结和结算控制键成功后有界记忆并去重，失败保留可重试语义。修正初稿直接
+  读取系统时间及停止后仍尝试控制提交的问题，改为显式注入 `Clock`、模型调用前复核 deadline，
+  且关闭门生效后不再触碰日历、数据或控制端口。完整测试另发现两个正式记录仓储实例同时
+  创建同一不可变文件的 TOCTOU 竞态；hard-link 竞争失败后现复核目标 SHA-256，同内容保持
+  幂等并 fsync 目录，异内容继续冲突。
 
 - 修正此前仅删除远端 worker 引用、本地 `codex/v2-g1-e1`、`codex/score-g1-r2` 与对应
   `/tmp` worktree 仍保留的清理不完整状态。统一 CAS 现拒绝跨交易日 hybrid 父版本、旧交易日、
@@ -104,6 +117,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 V2-E3 新链路对隐式系统时钟、无界 observer 回调和跨策略共享决策排队的依赖；被更新
+  pending 覆盖的旧周期及关闭时尚未运行的普通 pending 会明确丢弃并计数。本批未删除旧
+  Pipeline 或生产资源，旧链删除仍严格属于 V2-E10。
+
 - 删除本地 `codex/score-g1-r2`、`codex/v2-g1-e1` 分支及其干净 worktree；结合此前已完成的
   远端删除，这两个施工分支引用现已在本地和 origin 全部清理。分支中的有效提交继续由
   `feature/tomorrow-v2` 历史可达，未删除提交或改写历史。
@@ -129,6 +146,18 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- V2-E3 定向契约、latest-wins 生命周期、异步 observer、统一决策核心、调度、worker、优雅
+  关闭和停用旧 Pipeline fixture 回归通过，覆盖 tomorrow 独立进展、共享 DeepSeek 168 硬
+  上限契约、local/hybrid 发布、迟到模型跳过、数据/模型失败保留 local、冻结/结算去重、同一
+  deadline 超时与无线程残留。配置 Ruff 通过，严格重构债务为零，mypy 检查 246 个源码文件；
+  `make format-check`、`make lint`、`make type-check`、`make test` 和 `make package` 全部通过，
+  完整 1,244 项 pytest 仅有既存 10 条未知 DeepSeek 测试模型告警与 2 条 SQLite adapter 弃用告警；
+  并发正式记录回归额外连续运行 50 次通过。最终 wheel 在仓库外目标导入 5 个新增模块，
+  8 项关键模板/静态资源、`trader-cli --help` 和 `pip check` 通过。真实 Firefox 在主看板、
+  long 与 tomorrow V2 的 1280x720、1440x900、1920x1080 均无白屏、页面级横向溢出或浏览器
+  错误；主看板 25 个 patch 全部应用、零 resync/外部网络，patch-to-paint P95 为 77ms，
+  tomorrow overlay 更新未触发额外完整 GET。
 
 - V2-E2 领域、应用、持久化和契约定向测试通过，覆盖 today/tomorrow/d25 统一评分身份、long
   无评分投影、并发 CAS 单胜者、迟到与跨日父版本拒绝、overlay 隔离、同键幂等/冲突、半提交
@@ -197,20 +226,26 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- V2-E2 仍是未接入组合根的旁路基础，不改变现有 P1-P6、生产冻结、API/SSE、Web 或 DeepSeek
-  请求。总计划后续仍需逐批完成 V2-E3 至 E11、Score-R1-Migrate 与 Score-R2 至 R7；下一次
-  “继续”按规则只执行下一完整未完成章节，不得把本批完成误解为 V2-only 总迁移已发布。
+- V2-E3 是未接入 `bootstrap.py` 的旁路运行基础，不改变当前生产请求、冻结、API、Web 或
+  DeepSeek 物理流量；V2-only 总计划尚未完成。下一次“继续”只应执行 V2-E4 Tomorrow 正式
+  接管，后续仍有 E5-E11、Score-R1-Migrate 和 Score-R2 至 R7。真实交易日外部来源延迟、模型
+  限流及冻结时点仍需在对应接管和最终发布章节留证，本批固定 fixture 不构成收益证明。
 
-- 删除 G1 worker refs 及完成 V2-E2 仍不代表总计划完成。Score-R2 最多 40 日提取器及后续
-  V2-E3 至 E11 仍未交付；旧 Pipeline、`.runtime/v17`、独立
+- V2-E2 决策核心和 V2-E3 调度生命周期仍是未接入组合根的旁路基础，不改变现有 P1-P6、
+  生产冻结、API/SSE、Web 或 DeepSeek 请求。总计划后续仍需逐批完成 V2-E4 至 E11、
+  Score-R1-Migrate 与 Score-R2 至 R7；下一次“继续”按规则只执行下一完整未完成章节，不得
+  把当前基础设施完成误解为 V2-only 总迁移已发布。
+
+- 删除 G1 worker refs 及完成 V2-E2/E3 仍不代表总计划完成。Score-R2 最多 40 日提取器及后续
+  V2-E4 至 E11 仍未交付；旧 Pipeline、`.runtime/v17`、独立
   tomorrow 页面、shadow/cutover 及旧 CLI 当前仍存在，必须按后续章节逐批替换和删除。
 
 - Gate G1 只完成 E1 数据平面与 Score-R2 接口适配设计；最多 40 日点时提取、Top120 乐观
   上界保护、Polars 不可变分区和可复算 manifest 仍按 G2 的 Score-R2 整节实施。本批没有
   生产接线、外部行情请求、DeepSeek 请求或收益提升结论。
 
-- V2-E1 数据平面与 V2-E2 决策核心仍是旁路基础，不接管当前生产 P1-P6、冻结、API 或 Web；
-  调度生命周期和各策略正式接管分别属于 V2-E3 及后续章节。交易所、mootdx 和 BaoStock
+- V2-E1 数据平面、V2-E2 决策核心与 V2-E3 调度生命周期仍是旁路基础，不接管当前生产
+  P1-P6、冻结、API 或 Web；各策略正式接管属于 V2-E4 及后续章节。交易所、mootdx 和 BaoStock
   仍未准入；CNInfo 只允许离线风险登记簿。120 日/20GB 长期压缩审计仍是文档约束，尚未实现
   归档与容量驱逐，因此本批不宣称 V2-only 发布完成。
 
@@ -230,6 +265,11 @@ All notable changes to this project are documented here.
   点时数据或后续回放/统计，因此没有收益提升结论。固定前向窗口尚未发生，能否取得 20 个
   连续有效日取决于届时数据与运行连续性；任一门禁不足时继续使用当前生产策略。
 ### Added
+
+- 新增应用层 `V2SchedulerRuntime`、类型化 V2 数据/决策/模型/冻结/结算端口、共享 DeepSeek
+  运行契约、每策略 `LatestWinsWorker` 和有界 `AsyncDecisionObserver`。后台资源均显式
+  start/close/stop/wait/status，冻结拥有独立紧急控制容量，所有停止步骤共享调用方提供的
+  `ShutdownDeadline`，consumer 与受控外部失败只形成脱敏状态且不反向修改当前决策。
 
 - 新增纯领域 `ScoredDecision`、`LongProjection`、匹配身份的报价 overlay 和正式记录模型；
   规范载荷稳定派生 SHA-256 与版本，评分身份覆盖 today/tomorrow/d25，long 类型在结构上不含

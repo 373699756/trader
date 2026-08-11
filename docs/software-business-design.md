@@ -258,6 +258,30 @@ SHA-256 写入 SQLite staged manifest，再原子创建不可变 JSON，最后�
 记录。统一核心和仓储本阶段保持旁路，不在 `bootstrap.py` 接线；调度、冻结时线接管与四类
 视图迁移分别属于 V2-E3 至 V2-E7。
 
+#### 独立 V2 调度与生命周期交付边界
+
+应用层 `V2SchedulerRuntime` 是停用旧 Pipeline 后可独立运行的 V2 调度所有者。它只通过显式
+注入的 `Clock`、交易日历、数据刷新、local 决策、DeepSeek 升级、统一决策索引、observer、
+冻结和结算端口工作；调度点驱动数据、决策、发布、冻结与结算，HTTP 和只读 Web 不参与
+上述工作，也不得产生外部 I/O。本阶段保持旁路且不在 `bootstrap.py` 接线，正式策略接管仍
+按 V2-E4 至 V2-E7 分节完成。
+
+today、tomorrow、d25 和 long 固定为每策略一个运行中任务和一个 latest-wins 待处理槽；
+运行中的旧周期允许完成，积压只保留同策略最新交易日与 sequence。tomorrow 独占完整决策 lane，
+从数据刷新、local 计算、可选模型升级到 CAS 发布都不等待其它策略；冻结使用独立紧急
+控制容量，结算使用有界普通控制容量，重复的同日冻结或结算键只允许一个成功执行者。
+
+模型端口必须公开不可变 `SharedDeepSeekRuntimeContract`，并同时满足
+`daily_physical_limit=168`、共享预算/缓存和共享 single-flight；运行时在真正调用模型前再次
+检查注入时钟与 review deadline，失败或迟到只保留已发布 local，不回滚当前决策。该契约
+禁止各策略创建独立物理预算、缓存或请求链，long 不进入模型升级。
+
+通用 `V2DecisionCommitted` 只以非阻塞方式进入独立有界 `AsyncDecisionObserver`。队列满、
+研究消费者失败或停止中的拒绝只增加脱敏状态计数，不占用发布、tomorrow 或冻结容量，也
+不能反向修改当前决策。所有 worker、控制 executor 和 observer 显式公开运行、积压、拒绝、
+失败与完成状态；停止时先关闭接收门并取消普通 pending，再排空已接纳控制任务，所有组件
+读取同一个 `ShutdownDeadline` 的剩余时间，不得各自重置完整关闭期限。
+
 #### tomorrow v2 决策索引与冻结交付边界（迁移期）
 
 迁移期间既有 tomorrow v2 使用应用层 `CurrentDecisionIndex` 作为单提交者，禁止为当前指针
