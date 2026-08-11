@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求重新 Review 整份 `implementation-plan.md`，确认计划是否均已在远端
+  `feature/tomorrow-v2` 落实，并在安全时清理两个 G1 worker 分支。审计结论区分了“总计划
+  完成”和“G1 worker 已合并”：当前仅 V2-E0/E1、Score-R0/R1 与 G1 的 R2 接口设计完成，
+  V2-E2 至 E11、Score-R1-Migrate、完整 R2 至 R7 及 G2 至 G14 仍未完成；因此不宣称整个
+  V2/研究路线已经落地，但 G1 分支内容已完整进入远端 feature。
+
 - 用户要求解释并把 `codex/v2-g1-e1`、`codex/score-g1-r2` 两个 Gate G1 worker 分支合并到
   `feature/tomorrow-v2`。本批按冻结顺序先集成 E1 统一数据平面，再集成 R2 接口适配设计；
   R2 的历史读取扩展显式继承 E1 唯一 `DataPlaneReadPort`，只冻结日摘要与按代码完整字段的
@@ -42,6 +48,10 @@ All notable changes to this project are documented here.
   配对移动区块 bootstrap、派生种子、Holm 检验族、五个挑战者和全部收益/回撤/召回/集中度门禁。
 
 ### Fixed
+
+- 修正可能把“worker tip 已被 feature 包含”误判为“整份实施计划已完成”的状态歧义；总计划
+  继续明确下一工程章节为 V2-E2、下一研究章节为 Score-R2，并要求 G2 从本批记录推送后的
+  最新 feature tip 公布统一 `BASE_SHA`，避免后续会话从已退役 G1 分支继续施工。
 
 - 修正两个并行 worker 基于共同基线开发后形成两个同名但方法不同的 `DataPlaneReadPort`
   协议风险；研究侧现使用明确命名的历史扩展并继承 E1 规范端口，保持唯一数据平面边界。
@@ -80,6 +90,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除远端 `codex/score-g1-r2` 与 `codex/v2-g1-e1` 分支引用；两个 tip 及其全部提交仍由
+  `origin/feature/tomorrow-v2` 的合并历史可达，不删除提交、不改写历史，也未删除本地
+  worktree 或本地分支。
+
 - 移除应用层旧协议名 `RealtimeDataPlaneReaderPort`，统一使用契约规定的
   `DataPlaneReadPort`；未移除或接管旧生产 Pipeline、Web、冻结或评分链路，这些仍按后续
   V2-E2 至 V2-E10 的独立章节执行。
@@ -97,6 +111,15 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- 刷新 origin 后确认 `origin/feature/tomorrow-v2` 为
+  `200580272768a220c411814f39be21a04c93e4f9`；两个 worker tip 对 feature 的未包含提交数均为
+  0，且均列入 `git branch -r --merged origin/feature/tomorrow-v2`。删除后再次刷新并查询远端
+  heads，确认两个 worker ref 不再存在、feature tip 不变。`make format-check`、`make lint`、
+  `make type-check`、`make test` 和 `make package` 全部通过；严格复杂度债务为零，mypy 检查
+  237 个源码文件，完整 pytest 仅保留 10 条既有未知 DeepSeek 测试模型告警和 2 条 Python
+  SQLite adapter 弃用告警。最终 wheel 从仓库外环境导入，`trader-cli --help`、绝对配置
+  `validate-config`、9 项模板/静态资源和 `pip check` 通过。
 
 - Gate G1 合并后的研究领域、两阶段历史端口、唯一数据平面定义、点时截止、三板覆盖、共享
   复权窗口、架构分区和总计划契约定向回归通过。最终 `make format-check`、`make lint`、
@@ -146,6 +169,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 删除 G1 worker refs 只清理已合并的远端施工分支，不代表总计划完成。G2 仍须分别完整交付
+  V2-E2 统一决策核心和 Score-R2 最多 40 日提取器；旧 Pipeline、`.runtime/v17`、独立
+  tomorrow 页面、shadow/cutover 及旧 CLI 当前仍存在，必须按后续章节逐批替换和删除。
+
 - Gate G1 只完成 E1 数据平面与 Score-R2 接口适配设计；最多 40 日点时提取、Top120 乐观
   上界保护、Polars 不可变分区和可复算 manifest 仍按 G2 的 Score-R2 整节实施。本批没有
   生产接线、外部行情请求、DeepSeek 请求或收益提升结论。
@@ -171,6 +198,9 @@ All notable changes to this project are documented here.
   点时数据或后续回放/统计，因此没有收益提升结论。固定前向窗口尚未发生，能否取得 20 个
   连续有效日取决于届时数据与运行连续性；任一门禁不足时继续使用当前生产策略。
 ### Added
+
+- 新增 G2 基线发布约束：在 G2 开始时读取本批审计记录推送后的最新 feature tip 并公布精确
+  SHA，新 worker 必须从该提交创建，防止已删除远端引用后出现隐式旧基线或重复集成。
 
 - 新增 Score-R2 研究专用不可变接口值：逐字段来源与内容哈希、候选/最终组件、日摘要、
   硬拒绝聚合、三板点时覆盖、完整候选字段、日线/分钟、共享复权因子窗口及成本结算证据；

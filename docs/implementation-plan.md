@@ -103,6 +103,9 @@ C 固定执行：
 - G1 的 Score-R2 接口适配设计已冻结：研究侧历史扩展显式继承唯一的
   `DataPlaneReadPort`，并固定日摘要与按代码完整字段的两阶段读取值；40 日提取、分区和
   manifest 仍属于 G2 的 Score-R2 整节实现，当前状态不提前标记完成。
+- G1 两个 worker tip 已合并并推送，远端 worker 分支已退役；G2 开始时必须以本批审计记录
+  推送后的最新 `feature/tomorrow-v2` tip 公布统一 `BASE_SHA`，E/R 不得复用 G1 分支或其旧
+  worktree 作为新基线。
 - 当前活动实现仍包含旧 Pipeline、snapshot、shadow/cutover、旧 Web 和旧运行目录逻辑；它们
   只可作为待替代代码，不能成为新增 V2 功能的依赖。
 - 当前研究采集仍位于 tomorrow shadow 运行接缝；迁移到 V2 committed event 前不得扩展新的
