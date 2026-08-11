@@ -27,6 +27,7 @@ class LongV2RuntimeDependencies:
     quotes: QuoteReaderPort
     index: UnifiedDecisionIndex
     now: Callable[[], datetime]
+    publish_projection: Callable[[LongProjection], object] = lambda _projection: None
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class LongV2Runtime:
         self._quotes = dependencies.quotes
         self._index = dependencies.index
         self._now = dependencies.now
+        self._publish_projection_event = dependencies.publish_projection
         self._config_version = config_version
         self._watchlist_version = watchlist_version
         self._lock = threading.RLock()
@@ -185,6 +187,8 @@ class LongV2Runtime:
             else:
                 self._publish_rejection_count += 1
                 self._last_error_code = f"publish:{published.reason}"
+        if published.accepted:
+            self._publish_projection_event(projection)
 
     def _projection_items(
         self,

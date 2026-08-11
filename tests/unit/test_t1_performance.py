@@ -68,9 +68,9 @@ def test_perf_check_uses_production_api_and_sse_paths() -> None:
         "strategies": 3,
     }
     assert report["operation_provenance"] == {
-        "sse_publish": "trader.application.publisher.SnapshotPublisher.publish_overlay",
-        "snapshot_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
-        "etag_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
-        "dates_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
-        "status_api": "trader.web.routes_status.create_status_blueprint",
+        "sse_publish": "trader.application.decision_stream.UnifiedDecisionEventStream.publish_committed",
+        "snapshot_api": "trader.web.routes_v2.create_v2_blueprint",
+        "etag_api": "trader.web.routes_v2.create_v2_blueprint",
+        "dates_api": "trader.web.routes_v2.create_v2_blueprint",
+        "status_api": "trader.web.routes_v2.create_v2_blueprint",
     }

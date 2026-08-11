@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- V2-E8 新增统一 `UnifiedDecisionQueries`、`UnifiedDecisionEventStream` 和只读 Web 外壳。today、
+  tomorrow、d25、long 现在共同使用 decisions current/history/dates、status 与 events；正式日期
+  由 V2 仓储倒序有界读取，current/history 支持 ETag，SSE 使用跨策略单调序列、有界历史、
+  有界客户端队列、显式游标恢复、重同步和慢客户端隔离。
+
 - 新增权威文档一致性负向契约，锁定“当前迁移状态”与“最终发布契约”的区分、Today/Tomorrow/D25
   唯一冻结边界、V2 决策类型，以及迁移流水账和已退役术语不得重新进入两份权威文档。
 
@@ -35,6 +40,11 @@ All notable changes to this project are documented here.
   非运行元数据只做相关契约与格式检查，局部实现验证受影响包和定向测试；共享架构、评分/
   冻结、持久化、API/SSE、打包入口、Web 行为和最终发布仍必须执行完整命令组及适用专项验收。
   未运行的门禁必须记录为“不适用”并说明原因，不能冒充通过。
+
+- 用户发送“继续”，要求执行总计划下一个完整未完成章节。本批完整交付 V2-E8“统一 API、SSE
+  与根页面”：根页面改为单一 V2 工作台，展示数据年龄、覆盖、漏斗、DeepSeek 预算、冻结、
+  降级和逐股诊断；四策略 committed event、Today overlay 与 Long current 投影统一进入事件流。
+  计划推进到 E8 已完成、E9 为下一工程章节，不提前切换 `.runtime/v2` 入口或物理删除全部旧链。
 
 - 用户要求先做一次独立“权威文档去历史化与冲突清理”批次。现将两份权威文档收敛为当前
   有效产品/策略契约：明确 V2-E0 至 E7 已交付、E8 至 E11 未交付，最终 V2-only 状态不再冒充
@@ -228,6 +238,11 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 取消旧 `/api/status`、`/api/recommendations/*`、`/api/recommendation-dates`、
+  `/api/events/stream`、`/v2/tomorrow` 和 `/api/v2/tomorrow/*` 的路由注册；根页面不再加载
+  `dashboard_patches.js`、旧拆分渲染脚本或独立 Tomorrow CSS/JavaScript。旧源文件保留为
+  V2-E10 的物理清理对象，但已不可从活动 Flask 产品路由到达。
+
 - 从权威文档移除已闭合的影子/cutover 章节、版本事故时间线、旧 P1-P6 公共接缝施工细节、
   旧 API/envelope 兼容说明和重复迁移决策，避免其与 V2 最终契约形成第二套定义。
 
@@ -282,6 +297,14 @@ All notable changes to this project are documented here.
   format/check 通过，`AGENTS.md` 完整 diff、章节引用、分级覆盖与 `git diff --check` 无发现。
   不改变生产 Python、依赖、构建、运行时、API 或 Web，因此全量 pytest、mypy、package、
   wheel 和浏览器验收均不适用。
+
+- V2-E8 定向回归覆盖四策略统一 shape、Long 无历史、正式日期、ETag/304、错误 strategy/date、
+  旧 URL 404、HTTP 无外部 I/O、SSE 跨策略单调序列、游标超前/过期、显式 identity resync、
+  慢客户端隔离、组合根及 Today/Long 事件接缝，全部通过；`make format-check`、`make lint`、
+  `make type-check` 和 `make package` 通过。仓库外 wheel 导入、HTML/CSS/JavaScript 资源读取及
+  `trader-cli --help` 通过；Chrome 1280x720、1440x900、1920x1080 验收无白屏、横向溢出、
+  顺序错误或浏览器错误，且外部网络请求为零。`make test` 全量运行因持续超过 17 分钟被中止，
+  未记录为通过；本批以直接覆盖 E8 的 unit、contract、component 和 performance 回归作为证据。
 
 - 权威文档及适用契约测试共 162 项通过；`make format-check`、`make lint`、`make type-check`
   和 `make package` 通过，Ruff 严格复杂度债务为零，mypy 检查 256 个源码文件。最终 wheel
@@ -420,6 +443,13 @@ All notable changes to this project are documented here.
 
 - 风险等级依赖对实际 diff 和依赖传播的审查；若定向验证无法证明影响范围，规则要求立即升级
   门禁。该分级不会降低最终 release 或评分、冻结、预算、持久化等高风险边界的完整验收要求。
+
+- V2-E8 已闭合统一 Web 产品面，但 V2-only 总计划仍需完成 E9 唯一入口与 `.runtime/v2`、E10
+  旧生产链和未注册 Web 源文件物理删除、E11 最终发布验收。固定离线 fixture 只证明读取、事件、
+  布局和降级契约，不构成真实交易日外部来源连续性、DeepSeek 尾延迟或收益改善证据。
+
+- V2-E8 的全仓 pytest 未在本批取得完成结果；此前运行超过 17 分钟后按用户要求停止长时间等待。
+  E11 最终发布前仍必须完成全量测试，并应先定位或拆分拖慢全仓反馈的测试组，避免再次无界等待。
 
 - 本批只清理权威契约，不提前实现 V2-E8 至 E11，也不改变生产代码、运行配置或活动评分。
   `continuous_entry` 的过渡宽度、`heat_weak_structure` 的准确阈值及研究零分母等机器契约仍须

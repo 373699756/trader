@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
@@ -53,6 +53,7 @@ class TodayV2RuntimeDependencies:
     observer: DecisionObserverRuntime
     freezer: TodayV2FreezeCoordinator
     clock: Clock
+    publish_overlay: Callable[[DecisionOverlay], object] = lambda _overlay: None
 
 
 class TodayV2Runtime:
@@ -69,6 +70,7 @@ class TodayV2Runtime:
         self._observer = dependencies.observer
         self._freezer = dependencies.freezer
         self._clock = dependencies.clock
+        self._publish_overlay_event = dependencies.publish_overlay
         self._lock = threading.RLock()
         self._sequence = 1
         self._local_publish_count = 0
@@ -198,7 +200,10 @@ class TodayV2Runtime:
             tuple(existing_quotes.values()),
         )
         expected = snapshot.overlay.version if snapshot.overlay is not None else None
-        return self._index.publish_overlay(overlay, expected_version=expected).accepted
+        result = self._index.publish_overlay(overlay, expected_version=expected)
+        if result.accepted:
+            self._publish_overlay_event(overlay)
+        return result.accepted
 
     def status(self) -> TodayV2RuntimeStatus:
         with self._lock:

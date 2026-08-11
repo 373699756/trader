@@ -5,10 +5,14 @@ import sqlite3
 import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 
 import pytest
 import requests
 
+from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decision_queries import UnifiedDecisionQueries
+from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.ports.reviews import DeepSeekReviewUnavailableError
 from trader.domain.market.models import (
     Evidence,
@@ -40,6 +44,7 @@ from trader.infra.deepseek.schema import (
 from trader.infra.failures import AdapterFailureCode
 from trader.infra.settings import DeepSeekSettings
 from trader.web import create_app
+from trader.web.route_services import UnifiedWebServices
 
 NOW = datetime(2026, 7, 16, 6, 30, tzinfo=timezone.utc)
 
@@ -459,17 +464,26 @@ def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, 
         raise sqlite3.OperationalError("unable to open database file")
 
     monkeypatch.setattr(budget, "summary", fail_summary)
+    history = Mock()
+    history.load.return_value = None
+    history.list_dates.return_value = ()
+    clock = Mock()
+    clock.now.return_value = NOW
     app = create_app(
-        status_provider=lambda: {
-            "runtime_started": True,
-            "dependencies": {"deepseek": dict(reviewer.status())},
-        }
+        services=UnifiedWebServices(
+            UnifiedDecisionQueries(UnifiedDecisionIndex(), history, clock),
+            UnifiedDecisionEventStream(),
+            lambda: {
+                "runtime_started": True,
+                "dependencies": {"deepseek": dict(reviewer.status())},
+            },
+        )
     )
 
-    response = app.test_client().get("/api/status")
+    response = app.test_client().get("/api/v2/status")
 
     assert response.status_code == 200
-    budget_status = response.get_json()["dependencies"]["deepseek"]["budget"]
+    budget_status = response.get_json()["deepseek_budget"]
     assert budget_status == {
         "available": False,
         "error": "budget_ledger_unavailable",

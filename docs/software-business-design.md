@@ -11,7 +11,7 @@
 [荐股策略文档](recommendation-strategy.md) 为唯一权威；依赖、构建和入口以根目录
 `pyproject.toml` 为唯一权威；协作流程以根目录 `AGENTS.md` 为准。
 
-当前交付状态：V2-E0 至 V2-E7 已完成，V2-E8 至 V2-E11 尚未交付。最终发布契约要求
+当前交付状态：V2-E0 至 V2-E8 已完成，V2-E9 至 V2-E11 尚未交付。最终发布契约要求
 V2-only；在 E10 删除完成前，旧 Pipeline、旧 Web 路由和旧运行目录只作为待删除实现存在，
 不得被描述成最终 release 的兼容能力，也不得反向定义 V2。迁移过程、事故复盘和逐批实现
 记录只保存在 `CHANGELOG.md`、`docs/reports/` 与非权威 `docs/implementation-plan.md`，
@@ -312,25 +312,30 @@ tomorrow 使用同日、同配置、哈希有效、尚未消费且边界年龄�
 和唯一交易日 manifest 提供检查点、正式冻结、冲突拒绝与恢复；损坏或半提交文件不得进入
 索引。原始行情 120 交易日/20GB 压缩归档仍只保留目标约束；实现前必须另立交付批次。
 
-### 2.6 V2 查询与发布目标
+### 2.6 V2 查询与发布
 
-V2-E8 的最终读取链固定为 `UnifiedDecisionIndex -> application queries -> /api/v2 -> SSE -> Web`。
+V2-E8 已交付的读取链固定为 `UnifiedDecisionIndex -> application queries -> /api/v2 -> SSE -> Web`。
 应用层查询一次读取完整不可变决策，并只叠加父版本、策略和交易日匹配的报价 overlay；历史查询
 只精确读取请求日期的正式记录。HTTP 不得抓行情、评分、调用 DeepSeek、触发冻结或现场重放旧规则。
 
 统一事件流使用单调序列、有界历史、有界客户端队列和最多 32 个订阅者。无游标连接从打开时的
 当前序列开始；显式 `Last-Event-ID` 或 `cursor` 才回放。游标超前、过期、不连续，schema、
 base 或 identity 不匹配，以及慢客户端统一发送 `resync_required`，浏览器随后以 ETag 重新读取
-current。publisher 不等待客户端消费；SSE 正常时页面不持续轮询完整决策。
+current。publisher 不等待客户端消费；SSE 正常时页面只在对应策略事件到达时按 ETag 重读，
+不持续轮询完整决策。
 
-截至 V2-E7，统一公开外壳尚未交付；现存旧路由和独立 tomorrow 旁路只属于 E8/E10 的待替代对象，
-不构成最终 API、兼容期或保留承诺。最终唯一接口以第 1.2 和第 9 节为准。
+统一公开外壳已交付。`DecisionView` 对 today、tomorrow、d25 和 long 使用同一 envelope；评分策略
+公开决策身份、阶段、冻结、覆盖、过滤、分数、风险和匹配父版本的报价 overlay，long 固定
+`score_status=not_applicable` 且 history/dates 不适用。current 与 history 支持 ETag/304，dates
+只列按交易日倒序的正式记录。status 汇总四策略数据年龄、覆盖、冻结、降级、DeepSeek 预算和
+事件流健康；根页面只消费这些统一接口。旧 URL 和独立 tomorrow 页面不再注册，源文件物理删除
+仍属于 V2-E10，不构成兼容期或保留承诺。
 
 ### 2.7 当前迁移边界
 
-V2-E0 至 V2-E7 已把统一数据平面、决策核心、独立运行时及 today、tomorrow、d25、long
-原生运行时接入活动组合根。V2-E8 至 V2-E11 尚未交付：统一 `/api/v2/*` 与根页面、V2-only
-组合根和入口、旧生产链删除以及最终发布验收仍是未完成工程边界。迁移期旧链仅可向已接管
+V2-E0 至 V2-E8 已把统一数据平面、决策核心、独立运行时、today、tomorrow、d25、long
+原生运行时及统一 `/api/v2/*` 与根页面接入活动组合根。V2-E9 至 V2-E11 尚未交付：V2-only
+入口与运行目录、旧生产链物理删除以及最终发布验收仍是未完成工程边界。迁移期旧链仅可向已接管
 策略提供同批不可变原生输入或尚未替代的 Web 外壳，不得再次成为评分、冻结或降级来源。
 
 已经闭合的 shadow、cutover、baseline 对比、版本事故修复和分阶段门禁不是活动产品契约；
@@ -1148,8 +1153,7 @@ fixture 不算最终发布证据。
 
 | 范围 | 当前状态 | 本文中的有效含义 |
 | --- | --- | --- |
-| V2-E0 至 V2-E7 | 已完成 | 数据平面、决策核心、运行时和四策略原生接管已进入活动组合 |
-| V2-E8 | 未完成 | 统一 `/api/v2/*`、SSE 与根页面仍待交付 |
+| V2-E0 至 V2-E8 | 已完成 | 数据平面、决策核心、运行时、四策略原生接管和统一 Web 已进入活动组合 |
 | V2-E9 | 未完成 | 组合根、入口和状态面仍未达到 V2-only |
 | V2-E10 | 未完成 | 旧 Pipeline、snapshot、Web、配置、测试和资源仍待删除 |
 | V2-E11 | 未完成 | 全量门禁、仓库外 wheel、真实进程和桌面证据仍待最终验收 |

@@ -171,6 +171,25 @@ class SQLiteDecisionRecordRepository:
                 return None
             return self._load_manifest(row)
 
+    def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
+        if limit < 1 or limit > 366:
+            raise ValueError("decision date limit must be between 1 and 366")
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT trade_date
+                    FROM decision_records
+                    WHERE strategy = ? AND status = 'committed'
+                    ORDER BY trade_date DESC
+                    LIMIT ?
+                    """,
+                    (strategy.value, limit),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise DecisionRecordUnavailableError("decision date listing failed") from exc
+        return tuple(date.fromisoformat(str(row["trade_date"])) for row in rows)
+
     def save_checkpoint(self, checkpoint: V2DecisionCheckpoint) -> None:
         envelope = CommittedDecisionRecord(
             checkpoint.decision,

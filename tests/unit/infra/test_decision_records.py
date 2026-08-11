@@ -38,6 +38,23 @@ def test_formal_records_are_idempotent_and_isolated_by_strategy_and_date(tmp_pat
     assert repository.load(Strategy.D25, tomorrow.trade_date) is None
 
 
+def test_formal_record_dates_are_bounded_and_newest_first(tmp_path: Path) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    older_at = NOW - timedelta(days=1)
+    older_decision = replace(decision(), trade_date=older_at.date(), observed_at=older_at)
+    older = CommittedDecisionRecord(older_decision, older_at, "scheduled")
+    newest = record()
+    repository.commit(older)
+    repository.commit(newest)
+
+    assert repository.list_dates(Strategy.TOMORROW, limit=1) == (newest.trade_date,)
+    assert repository.list_dates(Strategy.TOMORROW, limit=2) == (newest.trade_date, older.trade_date)
+    assert repository.list_dates(Strategy.TODAY) == ()
+    with pytest.raises(ValueError, match="between 1 and 366"):
+        repository.list_dates(Strategy.TOMORROW, limit=0)
+
+
 def test_same_strategy_date_hash_conflict_is_rejected(tmp_path: Path) -> None:
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()

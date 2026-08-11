@@ -17,6 +17,8 @@ from trader.application.cadence import CadencePolicy, PipelineTask
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_events import V2DecisionCommitted
 from trader.application.decision_observers import AsyncDecisionObserver
+from trader.application.decision_queries import UnifiedDecisionQueries
+from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.events import InMemoryEventLedger
 from trader.application.latency import LatencyWaterfall
 from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
@@ -27,7 +29,6 @@ from trader.application.ports.market import MarketDataPorts
 from trader.application.ports.snapshots import SnapshotPorts
 from trader.application.published_snapshots import PublishedSnapshotIndex
 from trader.application.publisher import SnapshotPublisher
-from trader.application.queries import CloseFallbackReplay, RecommendationQueries
 from trader.application.recommendations import RecommendationEngine
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport
@@ -40,13 +41,11 @@ from trader.application.system_lifecycle import (
 )
 from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
 from trader.application.today_v2_runtime import TodayV2Runtime, TodayV2RuntimeDependencies
-from trader.application.tomorrow_events import TomorrowDecisionEventStream
 from trader.application.tomorrow_v2_freezing import (
     TomorrowV2FreezeCoordinator,
     V2DecisionRuntimeIdentity,
 )
 from trader.application.tomorrow_v2_runtime import TomorrowV2Runtime, TomorrowV2RuntimeDependencies
-from trader.application.tomorrow_v2_views import UnifiedScoredDecisionQueries, UnifiedTomorrowDecisionQueries
 from trader.application.trading_session import TradingSessionTracker
 from trader.application.v2_research_trace import InMemoryV2ResearchTraceStore
 from trader.application.workers import BoundedExecutor
@@ -94,8 +93,7 @@ from trader.infra.settings import (
     load_strategy_settings,
 )
 from trader.web import create_app
-from trader.web.route_services import TomorrowWebServices
-from trader.web.routes import WebApiConfig
+from trader.web.route_services import UnifiedWebServices, WebApiConfig
 
 
 @dataclass(frozen=True)
@@ -118,7 +116,8 @@ class ApplicationSystem:
     tomorrow_v2_runtime: TomorrowV2Runtime | None = None
     d25_v2_runtime: TomorrowV2Runtime | None = None
     long_v2_runtime: LongV2Runtime | None = None
-    d25_queries: UnifiedScoredDecisionQueries | None = None
+    decision_queries: UnifiedDecisionQueries | None = None
+    decision_events: UnifiedDecisionEventStream | None = None
     tomorrow_index: UnifiedDecisionIndex | None = None
     tomorrow_records: SQLiteDecisionRecordRepository | None = None
     tomorrow_trace: InMemoryV2ResearchTraceStore | None = None
@@ -189,9 +188,8 @@ class _PublicationContext:
     tomorrow_runtime: TomorrowV2Runtime
     d25_runtime: TomorrowV2Runtime
     long_runtime: LongV2Runtime
-    tomorrow_queries: UnifiedTomorrowDecisionQueries
-    d25_queries: UnifiedScoredDecisionQueries
-    tomorrow_events: TomorrowDecisionEventStream
+    decision_queries: UnifiedDecisionQueries
+    decision_events: UnifiedDecisionEventStream
 
 
 @dataclass(frozen=True)
@@ -221,13 +219,6 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     trading_session = TradingSessionTracker(now())
     adapters = _PipelineAdapters(market_data, calendar, reviewer)
     pipeline = _build_pipeline(context, adapters, persistence, publication, trading_session)
-    queries = RecommendationQueries(
-        publication.published_snapshots,
-        now=now,
-        current_quote_reader=market_data,
-        close_fallback_replay=CloseFallbackReplay(persistence.repository, publication.recommendation_engine),
-        session_status=pipeline.session_status,
-    )
     supervisor = RuntimeSupervisor(
         pipeline,
         RuntimeSupervisorConfig(
@@ -249,18 +240,12 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         ),
     )
     app = create_app(
-        status_provider=pipeline.status,
-        queries=queries,
-        publisher=publication.publisher,
-        tomorrow=TomorrowWebServices(
-            publication.tomorrow_queries,
-            publication.tomorrow_events,
-        ),
-        api_config=WebApiConfig(
-            default_top_n=settings.api.default_top_n,
-            maximum_top_n=settings.api.maximum_top_n,
-            heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
-        ),
+        services=UnifiedWebServices(
+            publication.decision_queries,
+            publication.decision_events,
+            pipeline.status,
+            WebApiConfig(heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds),
+        )
     )
     return ApplicationSystem(
         settings=settings,
@@ -281,7 +266,8 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         tomorrow_v2_runtime=publication.tomorrow_runtime,
         d25_v2_runtime=publication.d25_runtime,
         long_v2_runtime=publication.long_runtime,
-        d25_queries=publication.d25_queries,
+        decision_queries=publication.decision_queries,
+        decision_events=publication.decision_events,
         tomorrow_index=publication.tomorrow_index,
         tomorrow_records=publication.tomorrow_repository,
         tomorrow_trace=publication.tomorrow_trace,
@@ -587,38 +573,34 @@ def _build_publication(
     recommendation_engine = _build_recommendation_engine(context, calendar)
     tomorrow_repository = SQLiteDecisionRecordRepository(settings.runtime_dir)
     tomorrow_decisions = UnifiedDecisionIndex()
-    tomorrow_events = TomorrowDecisionEventStream(
+    decision_events = UnifiedDecisionEventStream(
         history_size=settings.api.sse_history_size,
         client_queue_size=settings.api.sse_client_queue_size,
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    tomorrow_queries = UnifiedTomorrowDecisionQueries(
-        tomorrow_decisions,
-        tomorrow_repository,
-        clock,
-    )
-    d25_queries = UnifiedScoredDecisionQueries(tomorrow_decisions, tomorrow_repository, clock, strategy=Strategy.D25)
+    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, tomorrow_repository, clock)
     tomorrow_trace = InMemoryV2ResearchTraceStore()
+
+    def publish_decision_event(event: V2DecisionCommitted) -> None:
+        decision_events.publish_committed(event)
+
     today_observer = AsyncDecisionObserver(
-        (tomorrow_trace.record,),
+        (tomorrow_trace.record, publish_decision_event),
         capacity=max(16, settings.pipeline.event_queue_size),
         thread_name="trader-v2-today-observer",
     )
 
-    def publish_tomorrow_event(_event: V2DecisionCommitted) -> None:
-        tomorrow_events.publish_decision(tomorrow_queries.current())
-
     tomorrow_observer = AsyncDecisionObserver(
         (
             tomorrow_trace.record,
-            publish_tomorrow_event,
+            publish_decision_event,
         ),
         capacity=max(16, settings.pipeline.event_queue_size),
         thread_name="trader-v2-tomorrow-observer",
     )
     d25_observer = AsyncDecisionObserver(
-        (tomorrow_trace.record,),
+        (tomorrow_trace.record, publish_decision_event),
         capacity=max(16, settings.pipeline.event_queue_size),
         thread_name="trader-v2-d25-observer",
     )
@@ -662,6 +644,7 @@ def _build_publication(
             today_observer,
             today_freezer,
             clock,
+            decision_events.publish_overlay,
         ),
     )
     tomorrow_runtime = TomorrowV2Runtime(
@@ -687,7 +670,12 @@ def _build_publication(
         strategy=Strategy.D25,
     )
     long_runtime = LongV2Runtime(
-        LongV2RuntimeDependencies(market_data, tomorrow_decisions, context.now),
+        LongV2RuntimeDependencies(
+            market_data,
+            tomorrow_decisions,
+            context.now,
+            decision_events.publish_projection,
+        ),
         config_version=context.effective_config_version,
         watchlist_version=context.watchlist.watchlist_version,
         items=_long_item_definitions(context.watchlist),
@@ -706,9 +694,8 @@ def _build_publication(
         tomorrow_runtime,
         d25_runtime,
         long_runtime,
-        tomorrow_queries,
-        d25_queries,
-        tomorrow_events,
+        decision_queries,
+        decision_events,
     )
 
 

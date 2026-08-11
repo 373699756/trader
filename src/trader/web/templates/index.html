@@ -4,154 +4,69 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <title>A股策略看板</title>
+    <title>A股 V2 决策工作台</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
-    <link rel="stylesheet" href="{{ web_asset('dashboard_base.css') }}" />
-    <link rel="stylesheet" href="{{ web_asset('dashboard_components.css') }}" />
-    <link rel="stylesheet" href="{{ web_asset('dashboard_responsive.css') }}" />
-    <script defer src="{{ web_asset('render.js') }}"></script>
-    <script defer src="{{ web_asset('selection.js') }}"></script>
-    <script defer src="{{ web_asset('long_watchlist_data.js') }}"></script>
-    <script defer src="{{ web_asset('long_groups.js') }}"></script>
-    <script defer src="{{ web_asset('dashboard_formatters.js') }}"></script>
-    <script defer src="{{ web_asset('dashboard_patches.js') }}"></script>
+    <link rel="stylesheet" href="{{ web_asset('dashboard.css') }}" />
     <script defer src="{{ web_asset('dashboard.js') }}"></script>
   </head>
   <body>
     <header class="app-header">
-      <div class="brand" aria-label="A股策略看板">
-        <img src="{{ url_for('static', filename='trader-mark.svg') }}" alt="" width="32" height="32" />
-        <div>
-          <h1>A股策略看板</h1>
-          <span id="marketPhase">等待运行时</span>
-        </div>
+      <div class="brand">
+        <img src="{{ url_for('static', filename='trader-mark.svg') }}" alt="" width="36" height="36" />
+        <div><h1>A股 V2 决策工作台</h1><span>统一当前、历史与运行状态</span></div>
       </div>
-      <div class="runtime-strip" aria-label="运行状态">
-        <span><i id="runtimeDot" class="status-dot" data-state="idle"></i><b id="runtimeStatus">未启动</b></span>
-        <span>行情 <b id="quoteSource">-</b> <b id="quoteTime">-</b> / <b id="quoteAge">-</b></span>
-        <span>推送 <b id="streamStatus">连接中</b></span>
-        <span>评分 <b id="scoreTime">-</b></span>
-        <span>模型额度 已用/剩余 <b id="budgetStatus">0 / 168</b></span>
-        <span>冻结 <b id="headerFreeze">-</b></span>
+      <div class="header-status" aria-label="运行状态">
+        <span><i id="runtimeDot" class="status-dot"></i><b id="runtimeStatus">读取中</b></span>
+        <span>事件流 <b id="streamStatus">连接中</b></span>
+        <span>交易日 <b id="tradeDate">-</b></span>
       </div>
-      <button id="refreshButton" class="icon-button" type="button" title="刷新当前策略" aria-label="刷新当前策略">
-        <svg class="lucide-icon" aria-hidden="true"><use href="{{ url_for('static', filename='lucide.svg') }}#refresh-cw"></use></svg>
-      </button>
-      <div class="runtime-messages" aria-label="快照状态与最近错误">
-        <div id="notice" class="runtime-message notice" data-level="idle" role="status" aria-live="polite">
-          <span>快照状态</span>
-          <b id="noticeText">正在读取推荐快照</b>
-        </div>
-        <div class="runtime-error runtime-message" role="status" aria-live="polite">
-          <span>最近错误</span>
-          <b id="lastError">无</b>
-        </div>
-      </div>
+      <button id="refreshButton" class="refresh-button" type="button">刷新</button>
     </header>
 
     <main class="workspace">
-      <section class="summary-band" aria-label="推荐摘要">
-        <div class="summary-item"><span>正式推荐</span><strong id="recommendationCount">-</strong></div>
-        <div class="summary-item"><span>观察池</span><strong id="observationCount">-</strong></div>
-        <div class="summary-item"><span>过滤数</span><strong id="filteredCount">-</strong></div>
-        <div class="summary-item"><span>行情源</span><strong id="dataSource">-</strong></div>
-        <div class="summary-item"><span>最高评分</span><strong id="topScore">-</strong></div>
-        <div class="summary-item"><span>模型复核</span><strong id="modelReview">-</strong></div>
-        <div class="summary-item"><span>数据状态</span><strong id="dataQuality">-</strong></div>
+      <section class="toolbar" aria-label="策略和日期">
+        <nav id="strategyTabs" class="strategy-tabs" aria-label="策略">
+          <button class="is-active" data-strategy="today" type="button">Today</button>
+          <button data-strategy="tomorrow" type="button">Tomorrow</button>
+          <button data-strategy="d25" type="button">D2-5</button>
+          <button data-strategy="long" type="button">Long</button>
+        </nav>
+        <label class="date-control"><span>查看</span><select id="dateSelect"><option value="">当前</option></select></label>
+        <div id="viewLabel" class="view-label">当前决策</div>
       </section>
 
-      <section class="control-band" aria-label="策略和日期">
-        <div class="strategy-choice">
-          <nav class="strategy-tabs" role="tablist" aria-label="推荐策略" aria-describedby="strategyDescription">
-            <button class="strategy-tab is-active" type="button" role="tab" aria-selected="true" data-strategy="today">今早</button>
-            <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="tomorrow">明日</button>
-            <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="d25">2-5日</button>
-            <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="long">长期</button>
-          </nav>
-          <p id="strategyDescription" class="strategy-description" aria-live="polite">
-            盘中短线 · 面向 T+1 · 11:20 冻结
-          </p>
-          <nav id="longScopeTabs" class="long-scope-tabs" role="tablist" aria-label="长期研究类别" hidden>
-            <button class="long-scope-tab is-active" type="button" role="tab" aria-selected="true" data-scope="chokepoint">卡脖子行业</button>
-            <button class="long-scope-tab" type="button" role="tab" aria-selected="false" data-scope="future_growth">高成长赛道</button>
-            <button class="long-scope-tab" type="button" role="tab" aria-selected="false" data-scope="low_price_potential">低价潜力股</button>
-          </nav>
-        </div>
-        <label class="date-control">
-          <span>推荐日期</span>
-          <select id="dateSelect" aria-label="推荐日期">
-            <option value="">当前</option>
-          </select>
-        </label>
+      <section class="metric-grid" aria-label="决策指标">
+        <article><span>数据年龄</span><strong id="dataAge">-</strong><small id="observedAt">尚无数据</small></article>
+        <article><span>覆盖</span><strong id="coverage">-</strong><small id="coverageDetail">候选 / 已评估</small></article>
+        <article><span>漏斗</span><strong id="funnel">-</strong><small id="funnelDetail">过滤 / 入选</small></article>
+        <article><span>模型预算</span><strong id="budget">-</strong><small>已用 / 剩余 / 上限</small></article>
+        <article><span>冻结</span><strong id="freeze">-</strong><small id="freezeDetail">当前滚动结果</small></article>
+        <article class="degraded-card"><span>降级状态</span><strong id="degraded">读取中</strong><small id="lastError">最近错误：无</small></article>
       </section>
 
-      <section id="recommendation-layout" class="recommendation-layout" aria-label="推荐列表">
-        <aside id="long-sidebar" class="long-sidebar" aria-label="长期研究分组" hidden>
-          <header class="long-panel-heading">
-            <div>
-              <span>重点研究方向</span>
-              <h2 id="long-panel-title">卡脖子行业</h2>
-            </div>
-            <b id="long-panel-meta">-</b>
-          </header>
-          <nav id="longIndustryTabs" class="long-industry-tabs" role="tablist" aria-label="长期行业赛道"></nav>
-        </aside>
-
-        <section class="table-region" aria-label="股票信息">
-          <header id="longStockHeader" class="long-stock-header" hidden>
-            <div>
-              <span>长期重点观察池</span>
-              <h2>重点股票行情</h2>
-            </div>
-            <b id="longStockContext">请选择左侧行业</b>
-          </header>
+      <section class="content-grid">
+        <section class="table-panel" aria-label="逐股诊断">
+          <header><div><span>逐股诊断</span><h2 id="panelTitle">Today 当前决策</h2></div><b id="itemCount">0 项</b></header>
           <div class="table-scroll">
-            <table id="recommendationTable">
-              <colgroup id="tableColumns"></colgroup>
-              <thead id="tableHead"></thead>
-              <tbody id="tableBody">
-                <tr><td class="table-state" colspan="9">加载中</td></tr>
-              </tbody>
+            <table id="decisionTable">
+              <thead><tr><th>排名</th><th>股票</th><th>分组 / 行业</th><th>行情</th><th>本地分</th><th>模型分</th><th>最终分</th><th>动作</th><th>风险 / 原因</th></tr></thead>
+              <tbody id="decisionRows"><tr><td colspan="9" class="empty-state">加载中</td></tr></tbody>
             </table>
           </div>
         </section>
+        <aside class="identity-panel" aria-label="决策身份">
+          <span>决策身份</span>
+          <h2 id="decisionStage">-</h2>
+          <dl>
+            <div><dt>状态</dt><dd id="decisionStatus">-</dd></div>
+            <div><dt>评分</dt><dd id="scoreStatus">-</dd></div>
+            <div><dt>版本</dt><dd id="decisionVersion">-</dd></div>
+            <div><dt>数据版本</dt><dd id="inputVersions">-</dd></div>
+            <div><dt>过滤诊断</dt><dd id="filterReasons">-</dd></div>
+          </dl>
+        </aside>
       </section>
-
-      <section id="observationPool" class="observation-pool" aria-label="观察池" hidden>
-        <header class="observation-heading">
-          <div>
-            <span>观察池</span>
-            <h2>不可执行，仅供观察</h2>
-          </div>
-          <b id="observationPoolMeta">0 / 6</b>
-        </header>
-        <div class="table-scroll">
-          <table id="observationTable">
-            <colgroup id="observationColumns"></colgroup>
-            <thead id="observationHead"></thead>
-            <tbody id="observationBody">
-              <tr><td class="table-state" colspan="9">加载中</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
     </main>
-
-    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
-    <aside id="detailDrawer" class="detail-drawer" aria-hidden="true" aria-labelledby="drawerTitle">
-      <header class="drawer-header">
-        <div>
-          <span id="drawerCode" class="drawer-code">-</span>
-          <h2 id="drawerTitle">股票详情</h2>
-        </div>
-        <button id="drawerClose" class="icon-button" type="button" title="关闭详情" aria-label="关闭详情">
-          <svg class="lucide-icon" aria-hidden="true"><use href="{{ url_for('static', filename='lucide.svg') }}#x"></use></svg>
-        </button>
-      </header>
-      <div id="drawerContent" class="drawer-content"></div>
-    </aside>
-
-    <noscript>此看板需要浏览器启用 JavaScript。</noscript>
+    <footer>仅供研究，不构成投资建议</footer>
   </body>
 </html>

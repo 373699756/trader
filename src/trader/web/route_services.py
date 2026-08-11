@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from trader.application.decision_queries import UnifiedDecisionQueries
+from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.publisher import SnapshotPublisher
 from trader.application.queries import RecommendationQueries
 from trader.application.tomorrow_events import TomorrowDecisionEventStream
@@ -28,6 +30,14 @@ class TomorrowWebServices:
 
 
 @dataclass(frozen=True)
+class UnifiedWebServices:
+    queries: UnifiedDecisionQueries
+    events: UnifiedDecisionEventStream
+    status_provider: StatusProvider
+    config: WebApiConfig = WebApiConfig()
+
+
+@dataclass(frozen=True)
 class WebServices:
     status_provider: StatusProvider
     queries: RecommendationQueries | None = None
@@ -38,4 +48,10 @@ class WebServices:
     config: WebApiConfig = WebApiConfig()
 
 
-__all__ = ["StatusProvider", "TomorrowWebServices", "WebApiConfig", "WebServices"]
+__all__ = [
+    "StatusProvider",
+    "TomorrowWebServices",
+    "UnifiedWebServices",
+    "WebApiConfig",
+    "WebServices",
+]

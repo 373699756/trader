@@ -33,37 +33,28 @@ def test_each_pipeline_documents_user_problem_and_change_summary() -> None:
 def test_final_v2_api_sse_web_contract_and_current_delivery_state_are_recorded() -> None:
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "### 2.6 V2 查询与发布目标" in design
+    assert "### 2.6 V2 查询与发布" in design
     assert "UnifiedDecisionIndex -> application queries -> /api/v2 -> SSE -> Web" in design
     assert "GET /api/v2/decisions/<strategy>/current" in design
     assert "GET /api/v2/decisions/<strategy>/history?date=YYYY-MM-DD" in design
-    assert "统一公开外壳尚未交付" in design
+    assert "统一公开外壳已交付" in design
     assert "publisher 不等待客户端消费" in design
     assert "`bootstrap.py`" in design
-    runner = PROJECT_ROOT / "tests/performance/run_tomorrow_v2_browser.py"
+    runner = PROJECT_ROOT / "tests/performance/run_chrome_dashboard.py"
     script = runner.read_text(encoding="utf-8")
     assert "VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))" in script
-    assert "overlay_without_full_get" in script
+    assert 'REPORT_SCHEMA = "unified-v2-browser-v1"' in script
 
 
 def test_chrome_dashboard_gate_is_persisted_under_tests() -> None:
     script = (PROJECT_ROOT / "tests" / "performance" / "run_chrome_dashboard.py").read_text(encoding="utf-8")
-    firefox_script = (PROJECT_ROOT / "tests" / "performance" / "run_t1_browser.py").read_text(encoding="utf-8")
-
-    assert 'REPORT_SCHEMA = "chrome-dashboard-performance-v1"' in script
+    assert 'REPORT_SCHEMA = "unified-v2-browser-v1"' in script
     assert "VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))" in script
     assert "pipeline_d4_browser_fixture" in script
     assert "WEB_ASSET_REVISION" in script
-    assert "patchToPaint" in script
-    assert "browserErrors" in script
+    assert "TraderV2Diagnostics" in script
     assert '"long_viewports"' in script
-    assert ".long-industry-average" in script
-    assert "+20.00%" in script
-    assert "-20.00%" in script
-    assert '"long_viewports"' in firefox_script
-    assert ".long-industry-average" in firefox_script
-    assert "+20.00%" in firefox_script
-    assert "-20.00%" in firefox_script
+    assert 'button[data-strategy=\\"long\\"]' in script
     assert "/tmp/trader_cdp" not in script
 
 
@@ -115,8 +106,8 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     strategy = (docs_root / "recommendation-strategy.md").read_text(encoding="utf-8")
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
-    assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7" in implementation_plan
-    assert "下一工程章节为 V2-E8" in implementation_plan
+    assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7、V2-E8" in implementation_plan
+    assert "下一工程章节为 V2-E9" in implementation_plan
     assert "`docs/recommendation-strategy.md`" in implementation_plan
     assert "本文是唯一活动施工计划" in implementation_plan
     assert "状态：V2-only 目标已确认" in v2_plan
@@ -280,7 +271,7 @@ def test_v2_rebuild_contract_is_direct_replacement_without_legacy_runtime() -> N
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     assert "V2-only 最终 release 边界" in design
-    assert "V2-E8 至 V2-E11 尚未交付" in design
+    assert "V2-E9 至 V2-E11 尚未交付" in design
     assert "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema" in design
     assert "V2 唯一运行目录固定为 `.runtime/v2`" in design
     assert "不得提供旧 API 别名、重定向、弃用窗口、双读或双写" in design
@@ -292,7 +283,7 @@ def test_superseded_native_pipeline_migration_chronology_is_not_authoritative() 
 
     assert "tomorrow v2 原生输入驱动流水线交付边界" not in design
     assert "`RecommendationEngine.prepare_snapshot`" not in design
-    assert "V2-E0 至 V2-E7 已把统一数据平面" in design
+    assert "V2-E0 至 V2-E8 已把统一数据平面" in design
     compact = " ".join(design.split())
     assert "迁移期旧链仅可向已接管 策略提供同批不可变原生输入" in compact
 

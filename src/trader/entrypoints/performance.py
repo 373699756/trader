@@ -12,17 +12,19 @@ import sys
 import time
 import tracemalloc
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol, cast
 from zoneinfo import ZoneInfo
 
 from trader.application.board_scoring import BoardScoringCoordinator, BoardScoringPlan
 from trader.application.board_scoring_cache import ScoringCacheContext
-from trader.application.published_snapshots import PublishedSnapshotIndex
-from trader.application.publisher import SnapshotPublisher
-from trader.application.queries import RecommendationQueries
-from trader.domain.market.models import Board, FeatureSnapshot, LiveQuote, MarketQuote
+from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decision_events import build_v2_decision_committed
+from trader.application.decision_queries import UnifiedDecisionQueries
+from trader.application.decision_stream import UnifiedDecisionEventStream
+from trader.domain.market.models import Board, FeatureSnapshot, MarketQuote
+from trader.domain.recommendation.decision_identity import CommittedDecisionRecord, DecisionItem, ScoredDecision
 from trader.domain.recommendation.models import (
     BoardStrategyPolicy,
     FusionMode,
@@ -50,6 +52,7 @@ from trader.infra.market_data.normalize import MarketQuoteInput, build_market_qu
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings_models import PerformanceBudgetSettings
 from trader.web import create_app
+from trader.web.route_services import UnifiedWebServices
 
 _SUITE_METRICS = {
     "market-data": (
@@ -182,11 +185,11 @@ def _operations(
         "quote_to_draft": "trader.application.recommendations.RecommendationEngine.prepare_snapshot",
         "deepseek_to_hybrid": "trader.application.recommendations.RecommendationEngine.finalize_snapshot",
         "tomorrow_native_projection": ("trader.application.tomorrow_shadow_projection.project_tomorrow_input"),
-        "sse_publish": "trader.application.publisher.SnapshotPublisher.publish_overlay",
-        "snapshot_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
-        "etag_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
-        "dates_api": "trader.web.routes_recommendations.create_recommendation_blueprint",
-        "status_api": "trader.web.routes_status.create_status_blueprint",
+        "sse_publish": "trader.application.decision_stream.UnifiedDecisionEventStream.publish_committed",
+        "snapshot_api": "trader.web.routes_v2.create_v2_blueprint",
+        "etag_api": "trader.web.routes_v2.create_v2_blueprint",
+        "dates_api": "trader.web.routes_v2.create_v2_blueprint",
+        "status_api": "trader.web.routes_v2.create_v2_blueprint",
     }
     if any(name in _SUITE_METRICS["api-sse"] for name in metric_names):
         operations.update(_api_sse_operations())
@@ -509,57 +512,91 @@ class _EmptyArchive:
 
 def _api_sse_operations() -> dict[str, Callable[[], object]]:
     now = datetime(2026, 7, 23, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-    archive: _Archive = _EmptyArchive()
-    index = PublishedSnapshotIndex(archive)
-    publisher = SnapshotPublisher(history_size=256, client_queue_size=16, now=lambda: now)
-    base = _snapshot("perf-api-000", now)
-    index.publish(base)
-    publisher.publish(base)
-    queries = RecommendationQueries(index, now=lambda: now)
+    index = UnifiedDecisionIndex()
+    stream = UnifiedDecisionEventStream(history_size=256, client_queue_size=16)
+    base = _performance_decision(1, now)
+    index.publish(base, expected_version=None)
+    stream.publish_committed(build_v2_decision_committed(base))
+    history = _EmptyDecisionHistory()
+    queries = UnifiedDecisionQueries(index, history, _FixedClock(now))
     app = create_app(
-        lambda: {"schema_version": "v3", "status": "running", "runtime_started": True},
-        queries=queries,
-        publisher=publisher,
+        services=UnifiedWebServices(
+            queries,
+            stream,
+            lambda: {"status": "running", "runtime_started": True},
+        )
     )
     client = app.test_client()
-    current_path = "/api/recommendations/today?view=current&top_n=12"
+    current_path = "/api/v2/decisions/today/current"
     initial = client.get(current_path)
     etag = initial.headers["ETag"]
     counter = 0
 
-    def publish_overlay() -> object:
+    def publish_decision() -> object:
         nonlocal counter
         counter += 1
-        observed_at = now + timedelta(microseconds=counter)
-        return publisher.publish_overlay(
-            LiveOverlay(
-                snapshot_id=base.snapshot_id,
-                strategy=base.strategy,
-                trade_date=base.trade_date,
-                version=f"perf-overlay-{counter:03d}",
-                observed_at=observed_at,
-                quotes={
-                    item.features.quote.code: LiveQuote(
-                        code=item.features.quote.code,
-                        price=(item.features.quote.price or 0.0) + counter / 100.0,
-                        pct_change=item.features.quote.pct_change,
-                        source="offline-performance-fixture",
-                        source_time=observed_at,
-                        received_time=observed_at,
-                        data_version=f"overlay:{counter:03d}",
-                    )
-                    for item in base.recommendations
-                },
-            )
-        )
+        current = index.snapshot(Strategy.TODAY).current
+        if current is None:
+            raise RuntimeError("performance decision identity is unavailable")
+        decision = _performance_decision(counter + 1, now)
+        index.publish(decision, expected_version=current.version)
+        return stream.publish_committed(build_v2_decision_committed(decision))
 
     return {
-        "sse_publish": publish_overlay,
+        "sse_publish": publish_decision,
         "snapshot_api": lambda: client.get(current_path),
         "etag_api": lambda: client.get(current_path, headers={"If-None-Match": etag}),
-        "dates_api": lambda: client.get("/api/recommendation-dates?strategy=today"),
-        "status_api": lambda: client.get("/api/status"),
+        "dates_api": lambda: client.get("/api/v2/decisions/today/dates"),
+        "status_api": lambda: client.get("/api/v2/status"),
     }
+
+
+class _FixedClock:
+    def __init__(self, now: datetime) -> None:
+        self._now = now
+
+    def now(self) -> datetime:
+        return self._now
+
+
+class _EmptyDecisionHistory:
+    def load(self, strategy: Strategy, trade_date: date) -> CommittedDecisionRecord | None:
+        return None
+
+    def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
+        return ()
+
+
+def _performance_decision(sequence: int, observed_at: datetime) -> ScoredDecision:
+    items = tuple(
+        DecisionItem(
+            f"600{index:03d}",
+            RecommendationAction.EXECUTABLE if index <= 6 else RecommendationAction.OBSERVE,
+            True,
+            index,
+            90.0 - index,
+            85.0 - index / 10,
+            85.0 - index / 10,
+            (("local_score", 85.0 - index / 10),),
+            (),
+            "threshold_met" if index <= 6 else "near_threshold",
+        )
+        for index in range(1, 13)
+    )
+    return ScoredDecision(
+        Strategy.TODAY,
+        observed_at.date(),
+        sequence,
+        observed_at,
+        "local",
+        None,
+        (("market", f"market:{sequence}"),),
+        "config:performance",
+        "strategy:performance",
+        "fusion:performance",
+        items,
+        (("hard_filter", 342),),
+    )
 
 
 def _snapshot(snapshot_id: str, observed_at: datetime) -> RecommendationSnapshot:

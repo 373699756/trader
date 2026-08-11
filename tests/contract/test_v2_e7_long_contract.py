@@ -11,11 +11,11 @@ BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
 LONG_RUNTIME = ROOT / "src" / "trader" / "application" / "long_v2_runtime.py"
 
 
-def test_v2_e7_is_complete_and_e8_is_the_next_engineering_section() -> None:
+def test_v2_e7_is_complete() -> None:
     plan = PLAN.read_text(encoding="utf-8")
 
     assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7" in plan
-    assert "下一工程章节为 V2-E8" in plan
+    assert "下一工程章节为 V2-E9" in plan
     assert "### V2-E7：Long 正式接管（已完成）" in plan
 
 

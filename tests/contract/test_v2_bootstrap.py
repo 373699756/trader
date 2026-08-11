@@ -81,12 +81,14 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert system.tomorrow_index is not None
     assert system.tomorrow_records is not None
     assert system.tomorrow_trace is not None
-    assert system.d25_queries is not None
+    assert system.decision_queries is not None
+    assert system.decision_events is not None
     assert system.tomorrow_trace.status().recorded == 0
     assert system.tomorrow_trace.get("missing") is None
     status_response = system.app.test_client().get("/api/v2/status")
     assert status_response.status_code == 200
     assert "shadow" not in status_response.get_json()
+    assert system.app.test_client().get("/api/status").status_code == 404
 
 
 def test_production_tomorrow_runtime_has_no_baseline_or_cutover_dependency() -> None:

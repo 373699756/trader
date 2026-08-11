@@ -1,6 +1,6 @@
 # V2 与评分研究多 Codex 总实施计划
 
-状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7、Score-R0、Score-R1 已完成，下一工程章节为 V2-E8，下一研究
+状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7、V2-E8、Score-R0、Score-R1 已完成，下一工程章节为 V2-E9，下一研究
 章节为 Score-R2。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
@@ -203,7 +203,7 @@ C 固定执行：
 
 退出条件：`score_status=not_applicable`、分组唯一、失败降级和零 DeepSeek 请求通过。
 
-### V2-E8：统一 API、SSE 与根页面
+### V2-E8：统一 API、SSE 与根页面（已完成）
 
 - 根页面直接渲染统一 V2 工作台，不保留独立 tomorrow 页面。
 - 只保留统一 decisions current/history/dates、status 和 events。
