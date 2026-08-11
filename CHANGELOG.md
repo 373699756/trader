@@ -31,6 +31,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户指出每次改动都强制全量测试没有必要。协作流程现改为低/中/高风险三级门禁：文档和
+  非运行元数据只做相关契约与格式检查，局部实现验证受影响包和定向测试；共享架构、评分/
+  冻结、持久化、API/SSE、打包入口、Web 行为和最终发布仍必须执行完整命令组及适用专项验收。
+  未运行的门禁必须记录为“不适用”并说明原因，不能冒充通过。
+
 - 用户要求先做一次独立“权威文档去历史化与冲突清理”批次。现将两份权威文档收敛为当前
   有效产品/策略契约：明确 V2-E0 至 E7 已交付、E8 至 E11 未交付，最终 V2-only 状态不再冒充
   当前代码事实；逐批影子、cutover、v17/P1-P6 施工记录只由 Changelog 和报告保存。
@@ -273,6 +278,11 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批只修改协作流程、交付记录和对应契约测试；新增流程契约 pytest 通过，测试文件的 Ruff
+  format/check 通过，`AGENTS.md` 完整 diff、章节引用、分级覆盖与 `git diff --check` 无发现。
+  不改变生产 Python、依赖、构建、运行时、API 或 Web，因此全量 pytest、mypy、package、
+  wheel 和浏览器验收均不适用。
+
 - 权威文档及适用契约测试共 162 项通过；`make format-check`、`make lint`、`make type-check`
   和 `make package` 通过，Ruff 严格复杂度债务为零，mypy 检查 256 个源码文件。最终 wheel
   从仓库外目标目录导入，`trader-cli --help`、`validate-config`、`pip check` 及 HTML、CSS、
@@ -407,6 +417,9 @@ All notable changes to this project are documented here.
   三档桌面视觉验收不适用。
 
 ### Residual Risks
+
+- 风险等级依赖对实际 diff 和依赖传播的审查；若定向验证无法证明影响范围，规则要求立即升级
+  门禁。该分级不会降低最终 release 或评分、冻结、预算、持久化等高风险边界的完整验收要求。
 
 - 本批只清理权威契约，不提前实现 V2-E8 至 E11，也不改变生产代码、运行配置或活动评分。
   `continuous_entry` 的过渡宽度、`heat_weak_structure` 的准确阈值及研究零分母等机器契约仍须
