@@ -235,11 +235,36 @@ candidate/research、配置、策略、融合、阶段、待审集合、逐股�
 事件流、持久化、生产影子或切换；这些属于
 后续同级章节。
 
-### 2.5 tomorrow v2 决策索引与冻结交付边界
+### 2.5 统一 V2 决策索引与冻结交付边界
 
-tomorrow v2 使用应用层 `CurrentDecisionIndex` 作为单提交者，禁止为当前指针
-引入持久化式仓储抽象。索引只持有当前不可变 `DecisionEpoch`、冻结封口和已提交
-`TomorrowDecisionFreeze` 引用；local/hybrid 发布必须携带调用方实际读取的
+统一 V2 决策核心以 `ScoredDecision` 表示 today、tomorrow 和 d25 的评分结果，以不含任何
+评分字段的 `LongProjection` 表示 long 当前观察投影。两类身份都绑定策略、交易日、上海
+时区观察点、单调 sequence、上游版本与规范 SHA-256；评分身份另绑定配置、策略、融合、
+local/hybrid 阶段、结构化过滤聚合和逐项分数、风险、动作与排名。long 不生成正式记录，
+也不发布评分提交事件。
+
+应用层 `UnifiedDecisionIndex` 按策略隔离当前身份和报价 overlay。每次发布必须携带调用方
+实际读取的 `expected_version` 并执行内存 compare-and-set；旧交易日、旧 sequence、同
+sequence 不同内容均拒绝。hybrid 必须引用同策略、同交易日且仍为当前版本的 local 父身份。
+overlay 必须匹配当前 decision/projection version、策略和交易日，只能包含当前身份范围内
+的代码，未来报价、迟到 overlay 和错误 expected version 不得覆盖当前视图。成功提交评分
+身份时生成应用层通用 `V2DecisionCommitted`；事件携带完整决策身份和逐项结果，不导入或
+依赖 research 类型，observer 失败也无权反向修改决策。
+
+today、tomorrow 和 d25 的正式记录仓储按策略和交易日唯一提交。仓储先把规范载荷及其
+SHA-256 写入 SQLite staged manifest，再原子创建不可变 JSON，最后提交 manifest；同键同
+内容重放幂等，不同内容冲突失败。启动恢复使用 manifest 内有界恢复载荷补齐半提交；已提交
+文件缺失、损坏、哈希或身份不一致时移入隔离目录并 fail closed，绝不向当前索引返回不可信
+记录。统一核心和仓储本阶段保持旁路，不在 `bootstrap.py` 接线；调度、冻结时线接管与四类
+视图迁移分别属于 V2-E3 至 V2-E7。
+
+#### tomorrow v2 决策索引与冻结交付边界（迁移期）
+
+迁移期间既有 tomorrow v2 使用应用层 `CurrentDecisionIndex` 作为单提交者，禁止为当前指针
+引入持久化式仓储抽象。它继续只持有当前不可变 `DecisionEpoch`、冻结封口和已提交
+`TomorrowDecisionFreeze` 引用，直至后续章节将 tomorrow 调度与冻结切换到统一身份。
+
+其 local/hybrid 发布必须携带调用方实际读取的
 `expected_current_version`，通过 compare-and-set 后才能替换当前指针。hybrid 还必须引用
 当前 local 父版本；旧交易日、旧 sequence、同 sequence 不同内容、父版本错配和冻结后更新
 全部拒绝。索引不读取网络、配置、文件或数据库。

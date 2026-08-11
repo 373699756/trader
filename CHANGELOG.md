@@ -6,10 +6,15 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户再次确认两个 G1 分支是否彻底删除，并要求在总计划未完成时继续下一完整章节。本批先
+  核对两个远端引用已不存在、对应提交均由 `feature/tomorrow-v2` 可达，再移除两个干净的
+  本地 worktree 与本地分支；随后完整交付 V2-E2“统一决策核心与持久化”。总计划仍未完成，
+  当前状态推进到下一工程章节 V2-E3，下一研究章节仍为 Score-R2。
+
 - 用户要求重新 Review 整份 `implementation-plan.md`，确认计划是否均已在远端
   `feature/tomorrow-v2` 落实，并在安全时清理两个 G1 worker 分支。审计结论区分了“总计划
-  完成”和“G1 worker 已合并”：当前仅 V2-E0/E1、Score-R0/R1 与 G1 的 R2 接口设计完成，
-  V2-E2 至 E11、Score-R1-Migrate、完整 R2 至 R7 及 G2 至 G14 仍未完成；因此不宣称整个
+  完成”和“G1 worker 已合并”：当次审计时仅 V2-E0/E1、Score-R0/R1 与 G1 的 R2 接口设计完成，
+  V2-E2 至 E11、Score-R1-Migrate、完整 R2 至 R7 及 G2 至 G14 尚未完成；因此不宣称整个
   V2/研究路线已经落地，但 G1 分支内容已完整进入远端 feature。
 
 - 用户要求解释并把 `codex/v2-g1-e1`、`codex/score-g1-r2` 两个 Gate G1 worker 分支合并到
@@ -49,9 +54,18 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正此前仅删除远端 worker 引用、本地 `codex/v2-g1-e1`、`codex/score-g1-r2` 与对应
+  `/tmp` worktree 仍保留的清理不完整状态。统一 CAS 现拒绝跨交易日 hybrid 父版本、旧交易日、
+  旧 sequence、同 sequence 异内容和错误 expected version；报价 overlay 同步拒绝错误父身份、
+  未来报价、迟到内容、越界代码和跨策略污染。
+- 修正正式记录可能在 SQLite staged manifest 与不可变 JSON 之间中断的问题：manifest 保存
+  有界恢复载荷，恢复时校验规范 SHA-256 与完整业务身份，补齐合法半提交，并把缺失、损坏、
+  哈希不符或身份不符的已提交文件移入隔离目录后 fail closed。同键同内容并发提交保持幂等，
+  同键异内容明确冲突且不可覆盖。
+
 - 修正可能把“worker tip 已被 feature 包含”误判为“整份实施计划已完成”的状态歧义；总计划
-  继续明确下一工程章节为 V2-E2、下一研究章节为 Score-R2，并要求 G2 从本批记录推送后的
-  最新 feature tip 公布统一 `BASE_SHA`，避免后续会话从已退役 G1 分支继续施工。
+  在该审计批次推进到 V2-E2，本批完成 E2 后已继续推进到 V2-E3；下一研究章节仍为 Score-R2。
+  后续会话必须从最新 feature tip 公布统一 `BASE_SHA`，避免从已退役 G1 分支继续施工。
 
 - 修正两个并行 worker 基于共同基线开发后形成两个同名但方法不同的 `DataPlaneReadPort`
   协议风险；研究侧现使用明确命名的历史扩展并继承 E1 规范端口，保持唯一数据平面边界。
@@ -90,6 +104,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除本地 `codex/score-g1-r2`、`codex/v2-g1-e1` 分支及其干净 worktree；结合此前已完成的
+  远端删除，这两个施工分支引用现已在本地和 origin 全部清理。分支中的有效提交继续由
+  `feature/tomorrow-v2` 历史可达，未删除提交或改写历史。
+
 - 删除远端 `codex/score-g1-r2` 与 `codex/v2-g1-e1` 分支引用；两个 tip 及其全部提交仍由
   `origin/feature/tomorrow-v2` 的合并历史可达，不删除提交、不改写历史，也未删除本地
   worktree 或本地分支。
@@ -111,6 +129,16 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- V2-E2 领域、应用、持久化和契约定向测试通过，覆盖 today/tomorrow/d25 统一评分身份、long
+  无评分投影、并发 CAS 单胜者、迟到与跨日父版本拒绝、overlay 隔离、同键幂等/冲突、半提交
+  恢复、损坏隔离和通用无 research 依赖事件。`make format-check`、`make lint`、`make type-check`、
+  `make test` 和 `make package` 全部通过；严格复杂度债务为零，mypy 检查 242 个源码文件，完整
+  pytest 仅保留 10 条既有未知 DeepSeek 测试模型告警和 2 条 SQLite adapter 弃用告警。最终
+  wheel 从仓库外目标导入新增领域、应用与仓储模块，`trader-cli --help`、9 项模板/静态资源和
+  `pip check` 通过。Firefox 在 1280x720、1440x900、1920x1080 对主看板、long 和 tomorrow V2
+  均无白屏、页面级横向溢出或浏览器错误；主看板 25 个 patch 全部应用、零 resync/外部网络，
+  patch-to-paint P95 为 79ms，tomorrow overlay 更新没有触发额外完整 GET。
 
 - 刷新 origin 后确认 `origin/feature/tomorrow-v2` 为
   `200580272768a220c411814f39be21a04c93e4f9`；两个 worker tip 对 feature 的未包含提交数均为
@@ -169,16 +197,20 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 删除 G1 worker refs 只清理已合并的远端施工分支，不代表总计划完成。G2 仍须分别完整交付
-  V2-E2 统一决策核心和 Score-R2 最多 40 日提取器；旧 Pipeline、`.runtime/v17`、独立
+- V2-E2 仍是未接入组合根的旁路基础，不改变现有 P1-P6、生产冻结、API/SSE、Web 或 DeepSeek
+  请求。总计划后续仍需逐批完成 V2-E3 至 E11、Score-R1-Migrate 与 Score-R2 至 R7；下一次
+  “继续”按规则只执行下一完整未完成章节，不得把本批完成误解为 V2-only 总迁移已发布。
+
+- 删除 G1 worker refs 及完成 V2-E2 仍不代表总计划完成。Score-R2 最多 40 日提取器及后续
+  V2-E3 至 E11 仍未交付；旧 Pipeline、`.runtime/v17`、独立
   tomorrow 页面、shadow/cutover 及旧 CLI 当前仍存在，必须按后续章节逐批替换和删除。
 
 - Gate G1 只完成 E1 数据平面与 Score-R2 接口适配设计；最多 40 日点时提取、Top120 乐观
   上界保护、Polars 不可变分区和可复算 manifest 仍按 G2 的 Score-R2 整节实施。本批没有
   生产接线、外部行情请求、DeepSeek 请求或收益提升结论。
 
-- V2-E1 仍是旁路数据平面基础，不接管当前生产 P1-P6、冻结、API 或 Web；统一决策持久化、
-  调度生命周期和各策略正式接管分别属于 V2-E2 及后续章节。交易所、mootdx 和 BaoStock
+- V2-E1 数据平面与 V2-E2 决策核心仍是旁路基础，不接管当前生产 P1-P6、冻结、API 或 Web；
+  调度生命周期和各策略正式接管分别属于 V2-E3 及后续章节。交易所、mootdx 和 BaoStock
   仍未准入；CNInfo 只允许离线风险登记簿。120 日/20GB 长期压缩审计仍是文档约束，尚未实现
   归档与容量驱逐，因此本批不宣称 V2-only 发布完成。
 
@@ -198,6 +230,15 @@ All notable changes to this project are documented here.
   点时数据或后续回放/统计，因此没有收益提升结论。固定前向窗口尚未发生，能否取得 20 个
   连续有效日取决于届时数据与运行连续性；任一门禁不足时继续使用当前生产策略。
 ### Added
+
+- 新增纯领域 `ScoredDecision`、`LongProjection`、匹配身份的报价 overlay 和正式记录模型；
+  规范载荷稳定派生 SHA-256 与版本，评分身份覆盖 today/tomorrow/d25，long 类型在结构上不含
+  评分字段。新增应用层 `UnifiedDecisionIndex` expected-version CAS 和通用
+  `V2DecisionCommitted`，事件完整携带决策版本、输入版本、过滤聚合、降级原因及逐项结果，
+  且不依赖 research 类型。
+- 新增正式记录端口与隔离的 `v2-decisions` SQLite/不可变 JSON 仓储，按策略和交易日唯一提交，
+  支持并发幂等、类型化冲突/不可用错误、启动恢复、损坏隔离与孤儿文件清理。本能力保持旁路，
+  等待后续策略迁移章节通过唯一组合根装配。
 
 - 新增 G2 基线发布约束：在 G2 开始时读取本批审计记录推送后的最新 feature tip 并公布精确
   SHA，新 worker 必须从该提交创建，防止已删除远端引用后出现隐式旧基线或重复集成。

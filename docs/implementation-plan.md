@@ -1,6 +1,6 @@
 # V2 与评分研究多 Codex 总实施计划
 
-状态：总计划已建立；V2-E0、V2-E1、Score-R0、Score-R1 已完成，下一工程章节为 V2-E2，下一研究
+状态：总计划已建立；V2-E0、V2-E1、V2-E2、Score-R0、Score-R1 已完成，下一工程章节为 V2-E3，下一研究
 章节为 Score-R2。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
@@ -149,7 +149,7 @@ C 固定执行：
 退出条件：同一快照无新旧拼接；潜在可执行代码主数据覆盖 100%，候选核心历史覆盖不低于
 99%，无效空不得覆盖最近有效数据。
 
-### V2-E2：统一决策核心与持久化
+### V2-E2：统一决策核心与持久化（已完成）
 
 - today/tomorrow/d25 使用统一 scored identity；long 使用无评分 projection identity。
 - 当前索引使用 expected-version CAS；hybrid 必须引用当前 local 父版本。
